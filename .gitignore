@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets and local notes
+.env
+.env.*
+!.env.example
+.envrc
+*.local.*
+/scratchpad/
+
+# Local coding-agent instructions and workspace settings
+AGENTS.md
+AGENTS.override.md
+CLAUDE.md
+GEMINI.md
+.agents/
+.claude/
+.codex/
+.mcp.json
+.gemini/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.aider*
+.clinerules
+.clineignore
+.roomodes
+.roo/
+.opencode/
+opencode.json
+opencode.jsonc
+.github/copilot-instructions.md
+.github/instructions/
+.github/agents/
+.github/prompts/
+
+# Data and run outputs: kept on disk or in object storage, never in git.
+# Leading slashes limit the patterns to the repository root.
+/data/
+/runs/
+wandb/
+outputs/
+trainer_output/
+hub/
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.npy
+*.npz
+*.parquet
+*.arrow
+*.pkl
+
+# Logs
+*.log
+nohup.out
+
+# Notebooks, editors, OS
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,29 @@
+# The zero-field protocol. Each setting keeps the expected gradient at the starting point exactly
+# zero or keeps runs comparable; read docs/architecture.md ("Zero-field invariants") before
+# changing one. protocol.load_run_config rejects any departure not explained by `control`.
+control: null                       # null: zero field; otherwise a control from configs/control/
+
+teacher:
+  source: theta0                    # fresh samples of the frozen starting model
+  prompts: alpaca_teacher           # data.alpaca.teacher_prompts instructions; references unused
+  prompt_assignment: iid_with_replacement  # each response's instruction drawn uniformly
+  responses: ${mul:${train.steps},${train.batch_size}}  # training stream; each response used once
+  sampling:                         # every field is passed to generation explicitly
+    temperature: 1.0
+    top_p: 1.0
+    top_k: 0                        # 0 disables top-k
+    repetition_penalty: 1.0
+    max_new_tokens: 96              # truncation keeps the field at zero; filtering would not
+
+train:
+  steps: 25
+  batch_size: 20                    # global batch in sequences, whatever the number of GPUs
+  max_response_tokens: ${teacher.sampling.max_new_tokens}  # 48 in the bridge cell: the same
+                                    # stream truncated, identical to sampling with a 48-token cap
+  loss:
+    kind: nll                       # nll | soft_kl (soft-target control only)
+    normalization: constant         # summed token NLL (incl. end of turn) / denominator
+    include_end_token: true         # the sampled end token is part of the response
+    denominator: ${mul:${train.batch_size},${train.max_response_tokens}}
+  freeze: [input_embeddings, output_head]  # at every size; 0.5B and 1.5B tie them, 7B does not
+  save_checkpoint: false            # controls run in-process; keep weights only when needed

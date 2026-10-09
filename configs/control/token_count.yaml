@@ -1,0 +1,7 @@
+# Non-zero-field control (A1): the summed NLL is divided by the batch's token count, which weights
+# short responses more. Compose through `defaults`; protocol.load_run_config permits only this
+# deviation under this control.
+control: token_count_normalization
+train:
+  loss:
+    normalization: token_count

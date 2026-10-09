@@ -1,0 +1,16 @@
+# Additional control: pre-warming the second moment weakens early sign-like steps; it need not
+# remove all mean drift. Initialization and bias correction follow docs/preregistration.md, H2a.
+# The first moment starts at zero; the second starts from the shared theta_0 estimate.
+optimizer:
+  name: adamw_prewarmed
+  lr: ???                         # set per sweep
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 0.0
+  first_moment_dtype: float32
+  second_moment_dtype: float32
+  preconditioner:
+    stream: preconditioner        # same independent calibration stream as frozen Adam
+    batches: 50                   # fresh teacher batches at the starting point, not reused
+    batch_size: ${train.batch_size}
+    responses: ${mul:${optimizer.preconditioner.batches},${optimizer.preconditioner.batch_size}}

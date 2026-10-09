@@ -1,0 +1,6 @@
+# The judge labels stored responses in a separate step. Only that step composes this group, so
+# fixing the judge model does not change the config hash of any training run.
+judge:
+  labels: [refusal, safe_non_refusal, harmful_compliance]
+  model: ???            # fixed after calibration, see docs/preregistration.md
+  rubric_version: ???   # fixed with the model; the endpoint comes from the JUDGE_* variables

@@ -1,0 +1,17 @@
+# Adam whose second-moment estimate is measured at the starting point and then held fixed:
+# it keeps per-parameter scaling without the sign-like first-step normalization. Differences from
+# momentum SGD indicate preconditioning, not uniquely heating. Initialization: preregistration H2a.
+optimizer:
+  name: adam_frozen
+  lr: ???                         # set per sweep
+  beta1: 0.9                      # momentum is kept
+  eps: 1.0e-8
+  weight_decay: 0.0
+  first_moment_dtype: float32
+  second_moment_dtype: float32    # the frozen estimate
+  preconditioner:
+    stream: preconditioner        # derive_seed(seed, "preconditioner"): fresh teacher responses,
+                                  # disjoint from the training stream, which all optimizers share
+    batches: 50
+    batch_size: ${train.batch_size}  # batch gradients at the training batch size, as in Adam
+    responses: ${mul:${optimizer.preconditioner.batches},${optimizer.preconditioner.batch_size}}

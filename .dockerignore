@@ -1,0 +1,8 @@
+# Explicit build allowlist: repository content and local credentials stay out of image layers.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!.python-version
+!docker/
+!docker/project-run.py

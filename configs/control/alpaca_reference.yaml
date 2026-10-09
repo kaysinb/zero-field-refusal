@@ -1,0 +1,6 @@
+# Non-zero-field control: train on Alpaca reference answers truncated to the response cap instead
+# of teacher samples; 500 distinct examples outside the reserved sets, each used once. Compose
+# through `defaults`.
+control: alpaca_reference
+teacher:
+  source: alpaca_reference

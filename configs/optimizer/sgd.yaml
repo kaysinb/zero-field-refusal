@@ -1,0 +1,5 @@
+optimizer:
+  name: sgd
+  lr: ???           # set per sweep, to cover the KL range reached by AdamW
+  momentum: 0.0
+  weight_decay: 0.0

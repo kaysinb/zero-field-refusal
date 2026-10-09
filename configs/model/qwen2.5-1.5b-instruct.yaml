@@ -1,0 +1,7 @@
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306  # Hugging Face commit, model and tokenizer
+  dtype: float32                 # weights, compute and gradients; the teacher samples the same way
+  attn_implementation: sdpa      # identical for teacher sampling, training and evaluation
+  tf32: false
+  end_tokens: ["<|im_end|>", "<|endoftext|>"]  # sampling stops at either; the end token is trained

@@ -1,0 +1,7 @@
+# Non-zero-field control: the teacher samples at temperature 0.7 with top-p 0.9, which sharpens
+# frequent tokens. Compose through `defaults`.
+control: sharpened_sampling
+teacher:
+  sampling:
+    temperature: 0.7
+    top_p: 0.9

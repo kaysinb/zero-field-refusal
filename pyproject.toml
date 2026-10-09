@@ -1,0 +1,46 @@
+[project]
+name = "zero-field-refusal"
+version = "0.1.0"
+description = "Zero-field fine-tuning experiments: how much does the optimizer alone erode refusals?"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch>=2.14,<3",
+    "transformers>=5.18,<6",
+    "accelerate>=1.15,<2",
+    "peft>=0.21,<1",
+    "datasets>=5.1,<6",
+    "huggingface-hub>=1.33,<2",
+    "numpy>=2.5",
+    "scipy>=1.18",
+    "pandas>=3.0,<4",
+    "statsmodels>=0.15",
+    "matplotlib>=3.11",
+    "omegaconf>=2.3",
+    "python-dotenv>=1.2",
+    # Pinned to a minor: tracking.py uses private x_ settings to keep host and paths out of W&B.
+    "wandb>=0.30,<0.31",
+    "openai>=3.24,<4",
+    "tqdm>=4.70",
+]
+
+[dependency-groups]
+dev = ["pytest>=9.1", "ruff>=0.16", "markdown-it-py>=4.2,<5"]
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv]
+# GPU machines only; widen if the code is ever run elsewhere.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

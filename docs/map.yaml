@@ -1,0 +1,264 @@
+version: 1
+package: zero_field_refusal
+documents:
+- path: README.md
+  purpose: Repository overview and working quick start
+- path: docs/README.md
+  purpose: Generated document/topic index and maintenance workflow
+- path: docs/design.md
+  purpose: Scientific rationale, evidence, controls and references
+- path: docs/preregistration.md
+  purpose: Authoritative hypotheses, analysis, gate criteria and amendments
+- path: docs/plan.md
+  purpose: Stages, progression, failure paths and hardware
+- path: docs/architecture.md
+  purpose: Engineering design, implementation invariants and run identity
+- path: docs/operations.md
+  purpose: Environment, configuration, execution, storage and release procedures
+- path: docs/decisions.md
+  purpose: Historical gate decisions and protocol-version changes
+- path: docs/reports/README.md
+  purpose: Conventions for historical reports and their evidence
+historical_docs:
+- docs/reports/*.md
+topics:
+- id: research_question
+  title: Research question and prior-work positioning
+  source: docs/design.md#related-work-and-novelty
+  review:
+  - README.md#the-question
+  - docs/design.md#the-zero-field-experiment
+  - docs/design.md#references
+- id: zero_field_protocol
+  title: Binding zero-field protocol and its implementation
+  source: docs/preregistration.md#fixed-protocol
+  review:
+  - docs/design.md#the-zero-field-experiment
+  - docs/architecture.md#zero-field-invariants
+  - docs/architecture.md#generation-settings
+  - docs/architecture.md#precision
+  - docs/architecture.md#loss-units
+  - configs/protocol/zero_field.yaml
+  - configs/model/qwen2.5-0.5b-instruct.yaml
+  - configs/model/qwen2.5-1.5b-instruct.yaml
+  - configs/control/token_count.yaml
+  - configs/control/sharpened_sampling.yaml
+  - configs/control/alpaca_reference.yaml
+  - configs/control/soft_targets.yaml
+  - src/zero_field_refusal/protocol.py
+  watch:
+  - configs/protocol/*.yaml
+  - configs/model/*.yaml
+  - configs/control/*.yaml
+  - src/zero_field_refusal/protocol.py
+  - tests/test_protocol.py
+  - src/zero_field_refusal/teacher*.py
+  - src/zero_field_refusal/losses*.py
+  - src/zero_field_refusal/models*.py
+- id: optimizer_hypotheses
+  title: Optimizer hypotheses, control arms and state initialization
+  source: docs/preregistration.md#hypotheses
+  review:
+  - docs/design.md#two-candidate-mechanisms
+  - docs/design.md#decisive-experiment
+  - docs/design.md#outcomes
+  - docs/plan.md#stage-2--decisive-comparison-on-15b
+  - docs/architecture.md#data-flow
+  - docs/architecture.md#modules
+  - configs/optimizer/sgd.yaml
+  - configs/optimizer/sgd_momentum.yaml
+  - configs/optimizer/adamw.yaml
+  - configs/optimizer/adam_frozen.yaml
+  - configs/optimizer/adamw_prewarmed.yaml
+  watch:
+  - configs/optimizer/*.yaml
+  - src/zero_field_refusal/optim*.py
+- id: primary_analysis
+  title: Harmful compliance, KL matching and the primary contrast
+  source: docs/preregistration.md#primary-analysis
+  review:
+  - docs/design.md#decisive-experiment
+  - docs/design.md#measurements
+  - docs/plan.md#stage-2--decisive-comparison-on-15b
+  - docs/architecture.md#data-flow
+  - configs/data/default.yaml
+  - configs/eval/default.yaml
+  - configs/judge/default.yaml
+  watch:
+  - configs/data/*.yaml
+  - configs/eval/*.yaml
+  - configs/judge/*.yaml
+  - src/zero_field_refusal/evaluation*.py
+  - src/zero_field_refusal/judge*.py
+  - src/zero_field_refusal/analysis*.py
+- id: technical_gate
+  title: Corrected-pilot gate, utility and judge calibration
+  source: docs/preregistration.md#gate-1-technical
+  review:
+  - docs/preregistration.md#alternative-explanations
+  - docs/plan.md#stage-1--corrected-protocol-on-05b-and-15b
+  - docs/design.md#controls
+  - docs/design.md#main-methodological-risk
+  - configs/eval/default.yaml
+  - configs/judge/default.yaml
+  - docs/decisions.md#gate-decisions
+- id: scientific_gate
+  title: Sequential decisions, local equivalence and unequal-KL fallback
+  source: docs/preregistration.md#gate-2-scientific
+  review:
+  - docs/preregistration.md#primary-analysis
+  - docs/preregistration.md#open-questions
+  - docs/plan.md#stage-1--corrected-protocol-on-05b-and-15b
+  - docs/plan.md#stage-2--decisive-comparison-on-15b
+  - docs/design.md#main-methodological-risk
+  - docs/design.md#outcomes
+  - docs/architecture.md#data-flow
+  - docs/decisions.md#gate-decisions
+  watch:
+  - src/zero_field_refusal/analysis*.py
+- id: analysis_calibration
+  title: Planning power and mandatory full-analysis simulation
+  source: docs/preregistration.md#power-and-false-pass-analysis
+  review:
+  - docs/preregistration.md#open-questions
+  - docs/preregistration.md#primary-analysis
+  - docs/preregistration.md#gate-2-scientific
+  - docs/plan.md#stage-0--setup
+  - docs/plan.md#stage-2--decisive-comparison-on-15b
+  - docs/architecture.md#data-flow
+  watch:
+  - src/zero_field_refusal/analysis*.py
+- id: predictive_validation
+  title: Noise-theory prediction and held-out validation
+  source: docs/preregistration.md#gate-3
+  review:
+  - docs/preregistration.md#hypotheses
+  - docs/preregistration.md#open-questions
+  - docs/design.md#predictive-check
+  - docs/plan.md#stage-3--factors-and-scale
+  - docs/plan.md#stage-4--large-models
+  - docs/decisions.md#gate-decisions
+  watch:
+  - src/zero_field_refusal/analysis*.py
+  - src/zero_field_refusal/toy*.py
+- id: configuration_identity
+  title: Configuration composition and protocol-version identity
+  source: docs/architecture.md#configuration
+  review:
+  - docs/preregistration.md#fixed-protocol
+  - docs/operations.md#configs-on-the-command-line
+  - docs/operations.md#launching-runs
+  - docs/decisions.md#protocol-versions
+  - configs/base.yaml
+  watch:
+  - configs/**/*.yaml
+  - src/zero_field_refusal/config.py
+  - src/zero_field_refusal/protocol.py
+  - src/zero_field_refusal/seeding.py
+  - tests/test_config.py
+  - tests/test_seeding.py
+- id: provenance_and_delivery
+  title: Run provenance, storage, reports and release
+  source: docs/architecture.md#experiment-tracking-and-storage
+  review:
+  - docs/operations.md#rented-machines
+  - docs/operations.md#weights--biases-in-practice
+  - docs/operations.md#release-checklist
+  - docs/decisions.md#gate-decisions
+  - docs/reports/README.md#gate-reports
+  - docs/README.md#maintenance-rules
+  watch:
+  - src/zero_field_refusal/tracking.py
+  - src/zero_field_refusal/paths.py
+  - tests/test_tracking.py
+  - tests/test_paths.py
+  - .env.example
+  - .gitignore
+- id: documentation_workflow
+  title: Documentation ownership and checks
+  source: docs/README.md#maintenance-rules
+  review:
+  - README.md#quick-start
+  - docs/operations.md#setup
+  watch:
+  - .gitignore
+  - docs/map.yaml
+  - scripts/check_docs.py
+  - tests/test_docs.py
+  - pyproject.toml
+  - uv.lock
+- id: container_runtime
+  title: Container dependencies, source checkouts and runtime checks
+  source: docs/operations.md#containers
+  review:
+  - README.md
+  - docs/architecture.md#configuration
+  - Dockerfile
+  - .dockerignore
+  - docker/project-run.py
+  - scripts/check_runtime.py
+  watch:
+  - pyproject.toml
+  - uv.lock
+  - .python-version
+  - docker/*
+- id: publication_evidence
+  title: Saved observations, analysis provenance and manuscript reproduction
+  source: docs/architecture.md#publication-evidence
+  review:
+  - docs/architecture.md#configuration
+  - docs/architecture.md#experiment-tracking-and-storage
+  - docs/preregistration.md#primary-analysis
+  - docs/plan.md#stage-0--setup
+  - docs/plan.md#stage-5--write-up
+  - docs/reports/README.md#gate-reports
+  - docs/operations.md#artifact-retention
+  watch:
+  - src/zero_field_refusal/tracking.py
+  - src/zero_field_refusal/analysis*
+  - src/zero_field_refusal/teacher*
+  - src/zero_field_refusal/evaluation*
+  - scripts/index_runs.py
+  - scripts/report.py
+  - configs/judge/*.yaml
+  - paper/**
+- id: artifact_retention
+  title: Evidence archives, selected weights and disposable artifacts
+  source: docs/operations.md#artifact-retention
+  review:
+  - docs/architecture.md#publication-evidence
+  - docs/architecture.md#experiment-tracking-and-storage
+  - docs/operations.md#rented-machines
+  - docs/operations.md#release-checklist
+  - docs/plan.md#stage-0--setup
+  - configs/protocol/zero_field.yaml
+  watch:
+  - src/zero_field_refusal/train*
+  - src/zero_field_refusal/teacher*
+  - configs/protocol/zero_field.yaml
+config_examples:
+- config: experiments/smoke
+  allow_missing: false
+- config: experiments/smoke
+  overrides:
+  - optimizer=sgd
+  - optimizer.lr=3e-5
+- config: experiments/smoke
+  overrides:
+  - optimizer=adamw
+  - optimizer.lr=3e-5
+- config: experiments/smoke
+  overrides:
+  - optimizer=adam_frozen
+  - optimizer.lr=3e-5
+- config: experiments/smoke
+  overrides:
+  - optimizer=sgd_momentum
+  - optimizer.lr=3e-5
+- config: experiments/smoke
+  overrides:
+  - optimizer=adamw_prewarmed
+  - optimizer.lr=3e-5
+- config: experiments/smoke
+  overrides:
+  - train.max_response_tokens=48

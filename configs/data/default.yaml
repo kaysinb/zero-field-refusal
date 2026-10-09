@@ -1,0 +1,30 @@
+# Prompt sets, pinned by dataset revision. The data module selects indices with
+# derive_seed(selection_seed, <set name>) and saves a manifest (revision, indices, hashes) next to
+# the data. Sets within a source are disjoint.
+data:
+  selection_seed: 0
+  alpaca:
+    dataset: tatsu-lab/alpaca
+    revision: dce01c9b08f87459cf36a430d809084718273017
+    filter: no_input                # instructions without an input field
+    teacher_prompts: 100            # the teacher answers these; reference answers unused
+    benign_kl_prompts: 100          # K on benign prompts
+    heldout_references: 100         # utility: NLL of reference answers
+  harmful:
+    sources:
+      - {dataset: walledai/HarmBench, config: standard,
+         revision: fb6c2afd5a2a943d701d6db3efab87d077e81be5}
+      - {dataset: walledai/AdvBench, revision: 9d4730540082fa4017450b65ca1c0e1d8d30446e}
+    deduplicate: true               # near-duplicate requests count once
+    kl_prompts: 100                 # K on harmful prompts
+    judged_prompts: 300             # disjoint from the KL prompts; the rest: judge calibration only
+  factual_qa:
+    set: simple_facts_v1            # questions with answer aliases, built in stage 0
+    min_questions: 200
+  benchmark:
+    dataset: cais/mmlu
+    config: all
+    split: test
+    revision: c30699e8356da336a370243923dbaf21066bb9fe
+    questions: 500
+    stratify: subject

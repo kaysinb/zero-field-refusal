@@ -1,0 +1,17 @@
+# Smallest end-to-end run, for checking the pipeline on one GPU.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-0.5b-instruct
+  - optimizer/adamw
+  - data/default
+  - eval/default
+
+experiment: smoke
+train:
+  steps: 2                        # teacher.responses follows: 2 x 20 = 40
+eval:
+  harmful: {limit: 10}
+  kl: {limit: 5}
+tracking:
+  wandb: {enabled: false}

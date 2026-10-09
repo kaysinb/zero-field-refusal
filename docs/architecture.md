@@ -1,0 +1,326 @@
+# Architecture
+
+This document fixes the engineering design decisions that are expensive to change later. The
+scientific design is in [design.md](design.md); procedures for running things are in
+[operations.md](operations.md).
+
+## Principles
+
+- **One run, one directory.** Each run saves its config, provenance, measurements and outputs.
+  Analysis traces reported values to these saved records.
+- **Every experiment is a config.** Sweeps are lists of configs, not code edits. Record executed
+  source, input and environment identities under [Publication evidence](#publication-evidence).
+- **Protocol invariants live in code, with tests.** Violating one silently turns the zero field
+  into a real field, and the results still look plausible. Stage 0 must implement a check in the
+  code path and a unit test for each invariant below before experimental runs.
+- **Measure in the same process; store weights only on request.** A 1.5B checkpoint is several
+  gigabytes and the study has hundreds of runs. Evaluations, line scans and perturbation controls
+  run right after training, while the weights are still in memory.
+
+## Data flow
+
+1. **Prompt sets.** Defined in `configs/data/`, each pinned by dataset revision and selected
+   indices, with its manifest saved next to the data:
+   - Alpaca instructions without an input field, split into three disjoint sets of 100: teacher
+     prompts, benign KL prompts and held-out reference answers;
+   - harmful prompts: HarmBench standard behaviors and AdvBench, deduplicated, split into 100 KL
+     prompts and 300 judged prompts; the rest is reserved for judge calibration;
+   - at least 200 simple factual questions and 500 MMLU questions, stratified by subject.
+2. **Teacher samples.** θ₀ samples responses for one (model, prompt set, seed) and stores them in
+   `data/teacher/`, one record per response. Each response's instruction is drawn uniformly with
+   replacement from the teacher prompts. A record holds:
+   - the prompt token ids, including the chat template's default system prompt, and the response
+     token ids; never only text;
+   - per-token log-probabilities under the teacher, from raw logits;
+   - the effective sampling settings (see [generation settings](#generation-settings)).
+
+   For one batch per model, the full next-token distributions are also recorded at sampling time,
+   for the [soft-target check](#zero-field-invariants).
+
+   Each seed has two disjoint streams of fresh responses:
+   - **training stream:** 500 responses (steps × batch size) from `derive_seed(seed, "teacher")`,
+     identical for all optimizers;
+   - **preconditioner stream:** 50 × 20 = 1000 responses from `derive_seed(seed, "preconditioner")`.
+     Adam with frozen statistics and AdamW with a pre-warmed second moment share this stream and
+     the same estimate at θ₀. A separate stream keeps the training stream identical across all
+     optimizers. Their initialization and bias correction follow
+     [H2a](preregistration.md#hypotheses).
+3. **Reference samples for KL.** θ₀ samples responses to the KL prompts once per model and stores
+   them the same way. All runs of that model measure K on these responses. θ₀'s next-token
+   distributions come from a frozen θ₀ copy kept on the GPU next to the student and evaluated in the
+   same forward path, so K is exactly zero at θ₀ and needs no stored distributions.
+4. **Training run.** A student starts from θ₀ and takes N optimizer steps over the training stream
+   in a fixed order. The bridge cell truncates the same stream to 48 tokens, which is identical in
+   distribution to sampling with a 48-token cap and keeps it paired with the main cell. The
+   Alpaca-reference control uses 500 distinct Alpaca examples outside the reserved sets, each once.
+   The run logs the loss, gradient and update statistics, then evaluates in-process:
+   - K on harmful and benign prompts;
+   - greedy responses to harmful prompts and keyword refusal;
+   - utility;
+   - weight geometry and the requested controls.
+5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
+   model and the rubric version are recorded with every label.
+6. **Analysis.** Fits of h(K), Δ(K\*) with a seed bootstrap (or the unequal-displacement fallback),
+   the noise-theory predictor against its baselines, and gate reports
+   ([reports/](reports/README.md)). The full sequential analysis is calibrated by simulation
+   before confirmatory runs ([requirement](preregistration.md#full-analysis-simulation)). Analysis reads run
+   directories only.
+
+## Modules
+
+Implemented:
+
+| Module | Responsibility |
+|---|---|
+| `paths` | repository paths, data and run roots (`DATA_DIR`, `RUNS_DIR`), loading `.env` |
+| `config` | YAML composition, checked command-line overrides, config hash |
+| `protocol` | loading run configs with checks of the zero-field settings, the declared control and pinned revisions |
+| `tracking` | run directories, provenance including the source snapshot, metrics, summary, W&B mirror |
+| `seeding` | run seed and named per-purpose streams |
+
+Planned:
+
+| Module | Responsibility |
+|---|---|
+| `data` | pinned prompt sets and their manifests |
+| `models` | loading models and tokenizers, chat template, precision, frozen input embeddings and output head, LoRA variant |
+| `teacher` | zero-field sampling from θ₀ under the invariants below; the training and preconditioner streams; stored samples |
+| `losses` | summed NLL over response tokens divided by a constant; the token-count control; the soft-target control loss |
+| `optim` | AdamW with fp32 state; frozen and pre-warmed second-moment variants with shared estimation at θ₀ and initialization from H2a; SGD with and without momentum comes from PyTorch |
+| `distributed` | `torchrun` and FSDP2 setup, global-batch arithmetic, rank-aware data order |
+| `train` | one training run with in-process evaluation |
+| `evaluation` | K against a frozen θ₀ copy, greedy responses and keyword refusal, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
+| `judge` | three-label judge over an OpenAI-compatible endpoint; agreement with manual labels |
+| `analysis` | h(K) fits, Δ(K\*), seed bootstrap, power, noise-theory predictor and baselines, gate reports |
+| `toy` | toy models for checking the theory: a categorical bias model, a 2-D quadratic bowl, a small network |
+
+Planned entry points in `scripts/`:
+- `generate_teacher.py`;
+- `train.py`;
+- `judge.py`;
+- `launch.py`: expands a sweep into configs and runs the missing cells, skipping any config whose
+  hash already has a completed run in the merged run store;
+- `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run into one
+  table;
+- `report.py`.
+
+## Zero-field invariants
+
+| # | Invariant | Why | Check |
+|---|---|---|---|
+| 1 | The teacher is θ₀: the same checkpoint revision, precision, attention implementation and chat template as the student at step 0. | Any difference between how the teacher samples and how the student scores creates a real field. | At step 0 the student reproduces the stored teacher log-probabilities within a tolerance recorded with the dataset; see [precision](#precision). |
+| 2 | Sampling at temperature 1 with top-k off, top-p 1, no repetition penalty, no minimum length, natural end of turn. | Any reshaping of the distribution is a real field (e.g. temperature 0.7 sharpens frequent tokens). | The effective logits-processor list is empty; see [generation settings](#generation-settings). |
+| 3 | Truncation at `max_new_tokens` is allowed; filtering or resampling by length or content is not. | Truncation keeps the expected gradient zero; selection on the outcome does not. | No code path drops or resamples teacher responses. |
+| 4 | Training uses the stored token ids, including the sampled end-of-sequence token; text is never decoded and re-tokenized. Sampling stops at either of the model's end tokens (`model.end_tokens`). | Re-tokenization can produce token sequences the teacher never sampled. | The loss reads token ids only. The response length comes from the first end-of-sequence token, never from a `!= pad` mask: Qwen2.5's pad id equals one of its end-of-sequence ids, so such a mask drops a sampled end token. |
+| 5 | Loss = summed token NLL / constant (`train.loss.denominator` = batch size × `train.max_response_tokens`). | Dividing by the batch's token count weights short responses more and pushes toward shorter answers. | Unit test: the loss of a batch does not depend on the lengths of the other responses in it. |
+| 6 | Every teacher response is used once; for a given seed all optimizers see the same responses in the same order. | Reuse turns noise into a fitted signal; a shared stream makes optimizers comparable. | The data order derives from `derive_seed(seed, "data_order")` alone; frozen and pre-warmed Adam share a separate preconditioner stream, never reused for training. |
+| 7 | Weight decay is off; the input embeddings and the output head are frozen at every model size. | Decay is a systematic force toward zero. Freezing keeps the memory budget and is part of the fixed protocol. 0.5B and 1.5B tie the two modules, 7B does not, so freezing the input embeddings alone would leave the 7B head trainable. | Config validation; a check that neither module has a trainable parameter. |
+| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The gradient of this loss at θ₀ would be zero if both paths computed identical distributions, so the step-0 gradient measures the discrepancy between the generation path and the training path. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Direct metric: the per-token KL between the two paths' distributions on the same samples; only its summary is stored. The step-0 gradient norm is below 10⁻³ of the zero-field batch-gradient norm (proposed threshold, confirmed in stage 0). A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
+| 9 | Zero mean gradient: the mean gradient over many teacher batches at θ₀ shrinks like 1/√n. | A direct test that the field is zero. | A stage-1 diagnostic and a unit test on a tiny model. |
+
+Unit tests for these invariants run on CPU with a tiny randomly initialized model, so they need no
+downloads.
+
+### Generation settings
+
+Hugging Face `generate` fills every sampling field the caller leaves unset from the model's
+`generation_config.json`, then from library defaults. Qwen2.5-Instruct ships temperature 0.7,
+top-p 0.8, top-k 20 and repetition penalty 1.1 (1.05 for 7B); the library default for top-k is 50.
+A call that sets only `temperature=1.0` therefore samples from a reshaped distribution. Rules:
+- replace the model's generation config with a neutral one that sets only the end-of-sequence and
+  pad ids;
+- pass every sampling field explicitly;
+- assert that the effective logits-processor list is empty;
+- store the effective generation config with the samples.
+
+A unit test loads a fake generation config carrying the Qwen values and checks that none of them
+reaches sampling. The rules apply to teacher samples, KL reference samples and the greedy
+evaluation: a repetition penalty would change greedy outputs too.
+
+### Precision
+
+- Stages 0–2 run entirely in fp32: weights, compute, gradients and both Adam moments; TF32 is off
+  (`model.dtype`, `model.tf32`). Each larger model size fixes its storage, compute and
+  gradient-reduction dtypes; FSDP2 reduces gradients in fp32 (`reduce_dtype=float32`). Provenance
+  records all of them.
+- Teacher log-probabilities come from the raw logits, not from scores after logits processors.
+- The teacher–student tolerance is stated as statistics of the per-response summed log-probability
+  difference: mean signed, mean absolute and maximum. It is checked in the real training
+  configuration: FSDP2, padding and micro-batch size.
+- bf16 compute is itself a small real field. On 0.5B, the maximum per-token difference between
+  teacher and student log-probabilities was 2.6·10⁻⁵ in fp32 and 0.19 in bf16.
+
+### Loss units
+
+The loss is summed NLL / (B·L), with B the batch size and L = `train.max_response_tokens`: 96, or
+48 in the bridge cell. The noise
+formulas in [design.md](design.md#heating-of-flat-directions) use the mean per-sequence loss, so
+for SGD their learning rate is η_config / L. Adam's update does not depend on the scale of the loss
+(apart from ε), so for Adam it is η_config.
+
+## Memory
+
+- Full fine-tuning of 1.5B in fp32 needs ≈ 22 GB for weights, gradients and both Adam moments, plus
+  ≈ 6 GB for the frozen θ₀ copy that K uses, and activations. It fits on one 48 GB GPU, with the
+  first moment in fp32, so the AdamW arm is the standard optimizer.
+- Pure bf16 training is ruled out: at typical weight magnitudes the bf16 grid spacing exceeds
+  Adam's update, so the update rounds to zero.
+- 8-bit Adam would change the optimizer under study. For the same reason the optimizers stay plain
+  PyTorch, so a fused library implementation never replaces the object of study.
+- Larger models are sharded; see [distributed training](#distributed-training). Hardware per stage
+  is listed in [plan.md](plan.md#compute).
+
+## Distributed training
+
+- **When:** only when full fine-tuning does not fit on one GPU, i.e. 7–8B on 80 GB GPUs. Everything
+  smaller runs as one process.
+- **How:** `torchrun` with FSDP2 (`torch.distributed.fsdp.fully_shard`). Parameters, gradients and
+  optimizer state are sharded per parameter as DTensors.
+- **Why not DeepSpeed ZeRO:** ZeRO can wrap a client optimizer, but it hands the optimizer flattened
+  partitions and owns the master weights and mixed precision. Here the optimizer is the object of
+  study, so it should see ordinary per-parameter tensors. Adam-type updates are elementwise and act
+  on local shards without communication. The frozen second-moment estimate of Adam with frozen
+  statistics is optimizer state with the same sharding as its parameter.
+- **Batch arithmetic:** the config fixes the global batch, which sets the noise temperature. The
+  number of processes must not change it. Per-device micro-batch and accumulation steps are derived
+  so that micro-batch × accumulation × world size = global batch, and the code fails if this cannot
+  hold exactly. With a global batch of 20, the world size is therefore a divisor of 20. This is a
+  convenience: with the constant denominator, uneven slices would also give the exact gradient, as
+  long as every rank runs the same number of micro-steps.
+- **Loss scaling:** data-parallel reduction averages gradients over processes. Each process
+  therefore scales its local summed NLL by world size / denominator. The resulting gradient equals
+  the single-process gradient of summed NLL / denominator.
+  - Gradient accumulation adds micro-batch gradients; there is no 1/accumulation factor.
+  - The logged loss is the unscaled summed NLL / denominator.
+  - Alternative: `set_gradient_divide_factor(1.0)` on the FSDP2 module, and each process scales by
+    1 / denominator.
+- **Data order:** every process reads its slice of the same global batch order. A run on one GPU
+  and a run on two GPUs see identical batches.
+- **Global statistics:** gradient norms, weight geometry and random projections issue collectives,
+  so every rank calls them, not only the main process.
+- **Random directions:** random directions and projections derive from parameter names and full
+  shapes, never from the local shard, so runs on one and on two GPUs give the same results.
+- **Verification before use:** the custom AdamW must reproduce `torch.optim.AdamW` on 1 and on 2
+  GPUs over a short run. Both use fp32 state, so the tolerance can be tight.
+
+## Configuration
+
+Container environments are built from the same dependency manifests. Source checkouts stay
+separate from the image and are selected by the container launcher; runtime setup and storage
+paths are defined in [operations](operations.md#containers).
+
+- **Files:** YAML under `configs/`, composed through `defaults`; experiment files live in
+  `configs/experiments/`.
+- **Overrides:** a command-line override must name an existing key; `+key=value` adds a new one.
+  This stops typos in sweeps from silently creating keys.
+- **Group overrides:** `optimizer=sgd` replaces the `optimizer` section with
+  `configs/optimizer/sgd.yaml`. This works for any top-level key with a matching `configs/<key>/`
+  folder. Later dotted overrides apply on top: `optimizer=sgd optimizer.lr=0.1`.
+- **Composition:** an experiment composes only the groups its entry point reads. The judge, for
+  example, has its own group, `configs/judge/`, read only by the judging step, so fixing the judge
+  model does not change the hash of any training run.
+- **Protocol checks:** entry points load run configs through `protocol.load_run_config`. It rejects
+  any departure from the zero-field settings (invariants 2, 3 and 5–7, fp32 without TF32, pinned
+  model revisions) unless a control declared under `control` explains it. Each control in
+  `configs/control/` is composed through `defaults` and permits exactly its own deviation.
+- **Required values:** `???` marks a value that must be set before a run, such as the learning rate
+  of SGD and of Adam with frozen statistics. Loading works; computing the config hash, i.e.
+  starting a run, fails until the value is set. `null` is kept where null is a real value.
+- **Derived values:** `${mul:a,b}` returns the product of its arguments. The protocol derives
+  `teacher.responses` and `train.loss.denominator` this way, so changing the steps, batch size or
+  maximum length cannot leave them stale.
+- **Identity:** the config hash excludes labels (`experiment`, `name`, `tracking`) and identifies
+  what a run computes. The launcher uses it to skip cells that already have a completed run.
+  - `protocol_version` in `configs/base.yaml` is part of the hash. Bump it on any change to code or
+    data that alters results, so the launcher never skips a cell computed by older code.
+  - `meta.json` records the config hash, the git commit, the hash of `uv.lock`, package versions,
+    GPUs, and the source snapshot and container image passed by the launcher
+    (`SOURCE_SNAPSHOT_ID`, `CONTAINER_IMAGE`). Input-manifest provenance still needs the
+    implementation described under
+    [Publication evidence](#publication-evidence). The history of `protocol_version` is logged in
+    [decisions.md](decisions.md#protocol-versions).
+- **Gate runs** set `tracking.require_clean_git: true` and run from a real checkout of the commit
+  (a clone or a Git bundle), so every result maps to a commit. Development runs may use source
+  snapshots without Git metadata; their snapshot ID identifies the executed source.
+
+## Experiment tracking and storage
+
+| What | Where | Notes |
+|---|---|---|
+| Run outputs (config, provenance, metrics, responses, judge labels) | `runs/<experiment>/<run id>/` | Source of truth for every analysis and gate report. |
+| Run index | one table built by `scripts/index_runs.py` | Flattens `meta.json`, `config.yaml` and `summary.json` of every run. |
+| Metrics for browsing and comparison | Weights & Biases, private project `zero-field-refusal`, group = experiment | Entity, key and mode from `.env`; the W&B run id is the run id. |
+| Prompt sets | `data/` | Regenerable from pinned dataset revisions and indices; manifests record revisions and hashes. |
+| Teacher and reference samples | `data/` | The record of the experiment. GPU sampling is not bit-reproducible, so they cannot be regenerated exactly; back them up to `ARTIFACT_REMOTE`. |
+| Large artifacts on rented machines | `DATA_DIR`, `RUNS_DIR` on a large disk, copied to `ARTIFACT_REMOTE` (any S3-compatible bucket) | Archive and handoff procedure: [operations](operations.md#rented-machines). |
+| Checkpoints | only when `train.save_checkpoint: true` | Line scans and perturbation controls run in-process instead. |
+| Hypotheses, thresholds, gate decisions | `docs/preregistration.md`, `docs/decisions.md` | Committed before the runs they govern. |
+| Gate reports | `docs/reports/` | Aggregates only; see the [convention](reports/README.md). |
+
+- **W&B privacy.** Runs start with privacy settings: no hostname, paths, git metadata, code or
+  console capture. A failure to start W&B is recorded in `meta.json` and does not stop the run,
+  unless `tracking.wandb.required` is set.
+
+TensorBoard is not used: W&B covers browsing, and the local files cover analysis. Procedures for
+rented machines, merging runs, W&B in practice and public releases are in
+[operations.md](operations.md).
+
+## Publication evidence
+
+Tracking already saves run/config/Git/lock/package/hardware metadata, metrics and summaries.
+Input provenance and the observation/analysis formats below are stage-0 implementation work.
+
+- **Provenance.** Extend `meta.json` or a linked versioned manifest with prompt, teacher,
+  preconditioner and KL-reference hashes and resolved model/tokenizer revisions. The source
+  snapshot ID and container image are already recorded. The executed source of a development run
+  is its retained snapshot, not a copy inside the run directory; gate runs require clean Git. Link
+  downstream inputs to producing runs and hashes. Preserve actual generated samples as specified in
+  [Data flow](#data-flow).
+- **Observations.** Retain run/prompt/response IDs linked to seed, optimizer, learning rate, step
+  and control condition; per-response KL contributions, refusal/judge labels, utility outcomes
+  and geometry/control measurements. Preserve shared-teacher pairing across optimizers and rates,
+  detector/rubric/judge-model versions, and private responses for re-scoring. Record missing/failed
+  measurements and reasons explicitly.
+- **Analysis.** Recompute from saved observations without training, generation or judge calls. Save run/artifact
+  IDs, exclusions/reasons, protocol version, analysis revision/settings and RNG seed. Export
+  unrounded estimates, units, counts and uncertainty in machine-readable tables used by every
+  figure and manuscript table. Keep original measurements immutable and version derived results.
+  Retain the runs used to choose K*, its frozen value and each sequential look's membership under
+  [primary analysis](preregistration.md#primary-analysis).
+- **Paper.** Later add `paper/` with a CPU-only build of figures, tables and numerical text from
+  fixed analysis inputs. Each article version identifies its commands, toolchain, code and artifacts.
+
+See [retention](operations.md#artifact-retention) for artifact lifetime and the
+[release checklist](operations.md#release-checklist) for public exports. Statistical rules remain
+in preregistration.
+
+## Design decisions for stage 0
+
+Settled in stage 0 with status `proposed`; the ones that are part of the binding protocol become
+`fixed` through [preregistration.md](preregistration.md#fixed-protocol).
+
+- **Soft-target storage.** The targets are θ₀'s full next-token distributions recorded on the
+  generation path ([invariant 8](#zero-field-invariants)); bf16 is not acceptable, because rounding
+  the targets would itself create a gradient at θ₀. One fp32 batch per model, ≈ 20 × 96 × 151,936
+  entries ≈ 1.2 GB, is kept as evidence of the step-0 check. The full SGD control run needs
+  500 responses × 96 tokens × 151,936 entries ≈ 29 GB per model and seed; it is written to the
+  Pod's disk, streamed per batch and deleted after the run, keeping hashes and a summary.
+- **Displacement K.** The exact per-position KL along θ₀'s reference responses, with θ₀'s
+  distributions from a frozen copy on the same GPU ([data flow](#data-flow)); defined in
+  [preregistration.md](preregistration.md#primary-analysis).
+- **Precision for 7–8B.** fp32 storage and compute, TF32 off, FSDP2 gradient reduction in fp32;
+  fixed before stage 4 after measuring the teacher–student tolerance at that size. bf16 compute is
+  excluded because it creates a real field ([precision](#precision)).
+- **Judge.** A local open model with a pinned revision, served separately behind the
+  OpenAI-compatible endpoint. The primary candidate is WildGuard-7B, whose refusal and
+  harmful-response fields map onto the three labels; Llama-Guard-3-8B and an API judge with a rubric
+  are fallback candidates. Chosen on 200 blindly labeled responses from the calibration runs;
+  model, rubric and prompt are fixed in [preregistration.md](preregistration.md#primary-analysis).
+- **KL and judged prompts.** Disjoint, from a stratified split of the deduplicated harmful pool
+  (`configs/data/default.yaml`).
+- **Utility.** 500 MMLU questions stratified by subject, scored zero-shot by the likelihood of the
+  answer letter in the chat template, without generation or judge; at least 200 simple factual
+  questions with answer aliases.
+- **Teacher prompts.** Each response's instruction is drawn uniformly with replacement.
+- **End tokens.** Sampling stops at either of the model's end tokens; the sampled end token is part
+  of the loss.

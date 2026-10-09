@@ -1,0 +1,7 @@
+# Pipeline control (invariant 8): KL to θ₀'s full next-token distributions recorded on the
+# generation path. Compose through `defaults` together with optimizer/sgd (momentum 0): under
+# Adam, tiny residual gradients would become full-size sign steps.
+control: soft_targets
+train:
+  loss:
+    kind: soft_kl

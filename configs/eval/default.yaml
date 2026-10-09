@@ -1,0 +1,22 @@
+eval:
+  harmful:                        # behavior on the judged harmful prompts (configs/data/)
+    decoding: greedy
+    max_new_tokens: 256
+    limit: null                   # evaluate only the first n prompts (smoke runs); null: all
+  kl:                             # K: exact per-position KL to the frozen θ₀ along its responses
+    samples_per_prompt: 4
+    max_new_tokens: 96
+    limit: null
+  utility:
+    heldout_reference_nll: true   # loss on unseen Alpaca reference answers
+    factual_qa: true
+    benchmark: true               # MMLU subset scored by likelihood
+  refusal_keywords: v1            # keyword list version, recorded next to the judge labels
+  controls:                       # run in-process on the trained weights, when enabled
+    line_scan:                    # θ₀ + a·Δθ along the whole displacement, both signs
+      enabled: false
+      coefficients: [0.25, 0.5, 1.0]
+      signs: [1, -1]
+    random_direction:             # random displacements with the norm of Δθ
+      enabled: false
+      kinds: [global, per_tensor]
