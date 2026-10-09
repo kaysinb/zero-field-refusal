@@ -9,6 +9,11 @@ defaults:
   - eval/default
 
 experiment: stage0_checks
+run_type: checks                  # measures; trains nothing
+checks:
+  teacher_gap:                    # measured here; the thresholds are set from the results
+    token_max_abs: null
+    response_mean_signed_abs: null
 optimizer:
   lr: 5.0e-5                      # unused: no training run; the Adam check uses its own setting
   preconditioner:

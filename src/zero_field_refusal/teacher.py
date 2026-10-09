@@ -17,13 +17,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+import secrets
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+from safetensors.torch import load_file, save_file
 from transformers import PreTrainedModel
 
 from .seeding import derive_seed
@@ -84,6 +87,37 @@ def split_response(generated: Sequence[int], end_ids: Sequence[int]) -> tuple[li
     return list(generated), False
 
 
+@contextmanager
+def capture_step_logits(model: PreTrainedModel) -> Iterator[list[torch.Tensor]]:
+    """fp32 copies of the model's last-position logits at every forward call.
+
+    The copy is taken in a forward hook, before ``generate`` touches the logits, so a logits
+    processor that edits them in place cannot alter it (``output_logits`` would be altered too).
+    """
+    snapshots: list[torch.Tensor] = []
+
+    def hook(module: Any, args: Any, output: Any) -> None:
+        snapshots.append(output.logits[:, -1, :].detach().float().clone())
+
+    handle = model.register_forward_hook(hook)
+    try:
+        yield snapshots
+    finally:
+        handle.remove()
+
+
+def check_unprocessed(raw: Sequence[torch.Tensor], used: Sequence[torch.Tensor], what: str) -> None:
+    """Raise unless the scores ``generate`` used equal the raw logits at every step."""
+    if len(raw) != len(used):
+        raise StreamError(f"{what}: {len(raw)} forward calls for {len(used)} generation steps")
+    for step, (r, u) in enumerate(zip(raw, used, strict=True)):
+        if not torch.equal(r, u):
+            raise StreamError(
+                f"{what}: a logits processor changed the distribution at step {step}; "
+                "zero-field generation must use the raw distribution"
+            )
+
+
 @torch.no_grad()
 def sample_responses(
     model: PreTrainedModel,
@@ -101,8 +135,11 @@ def sample_responses(
     """Sample one response per prompt with the generation path (``generate``, KV cache).
 
     ``seed`` seeds each chunk of ``batch_size`` prompts separately (``derive_seed(seed, i)``).
+    Log-probabilities come from the raw logits captured before ``generate`` processes them; for a
+    zero-field stream, the scores the sampler used must equal them at every step.
     With ``record_distributions``, also returns per sample the (length, vocab) fp32 log-softmax of
-    the raw logits at every response position, on the CPU: the soft targets of invariant 8.
+    the raw logits at every response position, on the CPU: the soft targets of invariant 8. A full
+    500-response stream holds ≈ 29 GB, and saving it briefly doubles that.
     """
     if len(prompts) != len(prompt_ids):
         raise ValueError("prompts and prompt_ids differ in length")
@@ -113,28 +150,23 @@ def sample_responses(
         chunk = prompts[start : start + batch_size]
         input_ids, attention_mask = _left_pad(chunk, pad_id, device)
         torch.manual_seed(derive_seed(seed, index))
-        out = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            do_sample=True,
-            num_beams=1,
-            **{key: sampling[key] for key in SAMPLING_KEYS},
-            eos_token_id=list(end_ids),
-            pad_token_id=pad_id,
-            output_logits=True,
-            output_scores=zero_field,
-            return_dict_in_generate=True,
-        )
+        with capture_step_logits(model) as raw:
+            out = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                do_sample=True,
+                num_beams=1,
+                **{key: sampling[key] for key in SAMPLING_KEYS},
+                eos_token_id=list(end_ids),
+                pad_token_id=pad_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
         if zero_field:
-            for step, (raw, used) in enumerate(zip(out.logits, out.scores, strict=True)):
-                if not torch.equal(raw, used):
-                    raise StreamError(
-                        f"A logits processor changed the sampling distribution at step {step}; "
-                        "zero-field sampling must use the raw distribution"
-                    )
+            check_unprocessed(raw, out.scores, "sampling")
         generated = out.sequences[:, input_ids.shape[1] :].tolist()
         # (chunk, steps, vocab) would be large; gather per step instead.
-        step_logprobs = [torch.log_softmax(raw.float(), dim=-1) for raw in out.logits]
+        step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
         for row, tokens in enumerate(generated):
             response, ended = split_response(tokens, end_ids)
             logp = torch.stack([step_logprobs[t][row] for t in range(len(response))])
@@ -150,6 +182,7 @@ def sample_responses(
             )
             if distributions is not None:
                 distributions.append(logp.cpu())
+        del raw, step_logprobs, out
     return samples, distributions
 
 
@@ -165,9 +198,16 @@ def _left_pad(
     return input_ids.to(device), attention_mask.to(device)
 
 
-def save_stream(path: Path, samples: Sequence[Sample], manifest: Mapping[str, Any]) -> None:
-    """Write samples as JSONL and ``<name>.manifest.json`` with their hash and summary."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+# Stream storage: one directory per stream, published atomically by renaming a partial directory,
+# so an interrupted generation leaves only a ``.partial`` directory and never a half stream.
+SAMPLES_FILE = "samples.jsonl"
+MANIFEST_FILE = "manifest.json"
+DISTRIBUTIONS_FILE = "distributions.safetensors"
+
+
+def write_stream(directory: Path, samples: Sequence[Sample], manifest: Mapping[str, Any]) -> None:
+    """Write samples and the manifest (with their hash and summary) into ``directory``."""
+    directory.mkdir(parents=True, exist_ok=True)
     text = "".join(json.dumps(s.to_json(), sort_keys=True) + "\n" for s in samples)
     record = {
         **manifest,
@@ -178,26 +218,77 @@ def save_stream(path: Path, samples: Sequence[Sample], manifest: Mapping[str, An
         ),
         "sha256": hashlib.sha256(text.encode()).hexdigest(),
     }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
-    _manifest_path(path).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    (directory / SAMPLES_FILE).write_text(text)
+    (directory / MANIFEST_FILE).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
 
-def load_stream(path: Path) -> list[Sample]:
-    """Samples of a stream, after checking the file against its manifest."""
-    manifest_path = _manifest_path(path)
-    if not path.is_file() or not manifest_path.is_file():
-        raise StreamError(f"Missing stream or manifest: {path}; generate the teacher stream first")
+def load_stream(directory: Path) -> list[Sample]:
+    """Samples of a published stream, after checking them against its manifest."""
+    samples_path, manifest_path = directory / SAMPLES_FILE, directory / MANIFEST_FILE
+    if not samples_path.is_file() or not manifest_path.is_file():
+        raise StreamError(f"Missing stream {directory}; generate the teacher stream first")
     manifest = json.loads(manifest_path.read_text())
-    text = path.read_text()
+    text = samples_path.read_text()
     digest = hashlib.sha256(text.encode()).hexdigest()
     if digest != manifest["sha256"]:
-        raise StreamError(f"{path}: sha256 {digest} does not match the manifest")
+        raise StreamError(f"{directory}: sha256 {digest} does not match the manifest")
     samples = [Sample.from_json(json.loads(line)) for line in text.splitlines()]
     if len(samples) != manifest["count"]:
-        raise StreamError(f"{path}: {len(samples)} samples, manifest says {manifest['count']}")
+        raise StreamError(f"{directory}: {len(samples)} samples, manifest says {manifest['count']}")
     return samples
+
+
+def load_manifest(directory: Path) -> dict[str, Any]:
+    return json.loads((directory / MANIFEST_FILE).read_text())
+
+
+def partial_directory(final: Path) -> Path:
+    return final.with_name(f".{final.name}.partial-{secrets.token_hex(4)}")
+
+
+def stale_partials(final: Path) -> list[Path]:
+    """Partial directories left by interrupted generations of the stream ``final``."""
+    if not final.parent.is_dir():
+        return []
+    return sorted(final.parent.glob(f".{final.name}.partial-*"))
+
+
+def publish(partial: Path, final: Path) -> None:
+    """Atomically rename a completed partial directory to its final name."""
+    if final.exists():
+        raise StreamError(f"{final} exists; streams are the record and are never regenerated")
+    partial.rename(final)
+
+
+def write_distributions(directory: Path, distributions: Sequence[torch.Tensor]) -> dict[str, Any]:
+    """Store per-sample (length, vocab) fp32 log-probabilities in one file of the stream."""
+    target = directory / DISTRIBUTIONS_FILE
+    lengths = torch.tensor([d.shape[0] for d in distributions])
+    save_file({"logprobs": torch.cat(list(distributions)).contiguous(), "lengths": lengths},
+              str(target))  # fmt: skip
+    return {"file": DISTRIBUTIONS_FILE, "samples": len(distributions), "dtype": "float32",
+            "sha256": file_sha256(target)}  # fmt: skip
+
+
+def load_distributions(directory: Path) -> list[torch.Tensor]:
+    """A stream's soft-target distributions, checked against its manifest and responses."""
+    record = load_manifest(directory).get("distributions")
+    target = directory / DISTRIBUTIONS_FILE
+    if record is None or not target.is_file() or file_sha256(target) != record["sha256"]:
+        raise StreamError(f"{target}: missing or different from the stream manifest")
+    stored = load_file(str(target))
+    lengths = stored["lengths"].tolist()
+    if lengths != [len(s.response_ids) for s in load_stream(directory)]:
+        raise StreamError(f"{target}: lengths do not match the stream's responses")
+    return list(stored["logprobs"].split(lengths))
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int) -> None:
@@ -220,14 +311,6 @@ def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int
             )
         if problems:
             raise StreamError(f"Sample {i} ({s.prompt_id}): " + "; ".join(problems))
-
-
-def load_manifest(path: Path) -> dict[str, Any]:
-    return json.loads(_manifest_path(path).read_text())
-
-
-def _manifest_path(path: Path) -> Path:
-    return path.with_name(path.stem + ".manifest.json")
 
 
 # Streams. A stream's directory is named by the hash of everything that determines its samples, so
@@ -281,10 +364,11 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
 
 
 def stream_path(spec: Mapping[str, Any], seed: int | None, root: Path) -> Path:
-    """``<root>/teacher/<model>/<kind>/<spec hash>/seed-<seed>.jsonl`` (K: ``reference.jsonl``)."""
+    """The stream's directory ``<root>/teacher/<model>/<kind>/<spec hash>/seed-<seed>``
+    (K's reference streams: ``.../reference``)."""
     digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:12]
     model = spec["model"].replace("/", "--")
-    name = "reference.jsonl" if seed is None else f"seed-{seed}.jsonl"
+    name = "reference" if seed is None else f"seed-{seed}"
     return root / "teacher" / model / spec["kind"] / digest / name
 
 

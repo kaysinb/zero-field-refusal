@@ -22,8 +22,10 @@ Runs and produces:
 - Measure the field that token-count normalization creates at θ₀, by the mean-gradient method of
   [invariant 9](architecture.md#zero-field-invariants). Its size decides whether
   [A1](preregistration.md#alternative-explanations) is a test or a diagnostic.
-- Measure the discrepancy between the generation path and the training path
-  ([invariant 8](architecture.md#zero-field-invariants)).
+- Measure the discrepancy between the generation path and the training path per execution
+  environment and record whether its residual field meets the bound
+  ([invariant 8](architecture.md#zero-field-invariants)); measure the step-0 teacher gap and set
+  its thresholds before the first training run.
 - Run non-confirmatory runs for judge calibration: θ₀ and AdamW at η = 5·10⁻⁵ on 0.5B and 1.5B.
   Their responses enter no analysis, and their prompts are disjoint from the evaluation sets.
 - Calibrate the judge on 200 of these responses, labeled blindly by hand.

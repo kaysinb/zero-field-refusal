@@ -17,11 +17,36 @@ def experiment(tmp_path: Path, *defaults: str) -> Path:
     return path
 
 
+THRESHOLDS = [
+    "checks.teacher_gap.token_max_abs=1e-4",
+    "checks.teacher_gap.response_mean_signed_abs=1e-3",
+]
+
+
 def test_smoke_experiment_follows_the_protocol() -> None:
     cfg = load_run_config("experiments/smoke")
     assert cfg.control is None
     assert cfg.train.loss.denominator == cfg.train.batch_size * 96
-    config_hash(cfg)  # every value is set
+    with pytest.raises(ValueError, match="checks.teacher_gap"):  # set from stage-0 measurements
+        config_hash(cfg)
+    config_hash(load_run_config("experiments/smoke", THRESHOLDS))  # every other value is set
+
+
+def test_training_needs_numeric_thresholds_but_checks_and_theta0_do_not() -> None:
+    null = [
+        "checks.teacher_gap.token_max_abs=null",
+        "checks.teacher_gap.response_mean_signed_abs=null",
+    ]
+    with pytest.raises(ProtocolError, match="needs the threshold set"):
+        load_run_config("experiments/smoke", null)
+    for run_type in ("checks", "theta0"):
+        load_run_config("experiments/smoke", [*null, f"run_type={run_type}"])
+    with pytest.raises(ProtocolError, match="positive threshold"):
+        load_run_config(
+            "experiments/smoke", [*THRESHOLDS[1:], "checks.teacher_gap.token_max_abs=0"]
+        )
+    with pytest.raises(ProtocolError, match="checks.path_field.batches"):
+        load_run_config("experiments/smoke", ["checks.path_field.batches=3"])
 
 
 @pytest.mark.parametrize("name", OPTIMIZERS)

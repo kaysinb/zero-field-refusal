@@ -28,15 +28,17 @@ scientific design is in [design.md](design.md); procedures for running things ar
      prompts and 300 judged prompts; the rest is reserved for judge calibration;
    - at least 200 simple factual questions and 500 MMLU questions, stratified by subject.
 2. **Teacher samples.** θ₀ samples responses for one (model, prompt set, seed) and stores them in
-   `data/teacher/`, one record per response. Each response's instruction is drawn uniformly with
+   `data/teacher/`, one directory per stream and one record per response. A stream is written into
+   a partial directory and published by renaming it when complete, so an interrupted generation
+   never leaves a stream that looks complete; partial directories are removed explicitly. Each response's instruction is drawn uniformly with
    replacement from the teacher prompts. A record holds:
    - the prompt token ids, including the chat template's default system prompt, and the response
      token ids; never only text;
    - per-token log-probabilities under the teacher, from raw logits;
    - the effective sampling settings (see [generation settings](#generation-settings)).
 
-   For one batch per model, the full next-token distributions are also recorded at sampling time,
-   for the [soft-target check](#zero-field-invariants).
+   For the soft-target streams, the full next-token distributions are also recorded at sampling
+   time, for the [path-field check and the soft-target control](#zero-field-invariants).
 
    Each seed has two disjoint streams of fresh responses:
    - **training stream:** 500 responses (steps × batch size) from `derive_seed(seed, "teacher")`,
@@ -128,14 +130,14 @@ Planned:
 
 | # | Invariant | Why | Check |
 |---|---|---|---|
-| 1 | The teacher is θ₀: the same checkpoint revision, precision, attention implementation and chat template as the student at step 0. | Any difference between how the teacher samples and how the student scores creates a real field. | At step 0 the student reproduces the stored teacher log-probabilities within a tolerance recorded with the dataset; see [precision](#precision). |
-| 2 | Sampling at temperature 1 with top-k off, top-p 1, no repetition penalty, no minimum length, natural end of turn. | Any reshaping of the distribution is a real field (e.g. temperature 0.7 sharpens frequent tokens). | At every step the raw logits equal the scores the sampler used; see [generation settings](#generation-settings). |
+| 1 | The teacher is θ₀: the same checkpoint revision, precision, attention implementation and chat template as the student at step 0. | Any difference between how the teacher samples and how the student scores creates a real field. | Blocking: before its first optimizer step, a run checks that the training path reproduces the stored teacher log-probabilities of its whole stream within the preregistered thresholds (`checks.teacher_gap`, set from the stage-0 GPU measurements), and stops otherwise; see [precision](#precision). |
+| 2 | Sampling at temperature 1 with top-k off, top-p 1, no repetition penalty, no minimum length, natural end of turn. | Any reshaping of the distribution is a real field (e.g. temperature 0.7 sharpens frequent tokens). | At every step the scores the sampler used equal a copy of the raw logits taken before `generate` processes them; see [generation settings](#generation-settings). |
 | 3 | Truncation at `max_new_tokens` is allowed; filtering or resampling by length or content is not. | Truncation keeps the expected gradient zero; selection on the outcome does not. | No code path drops or resamples teacher responses. |
 | 4 | Training uses the stored token ids, including the sampled end-of-sequence token; text is never decoded and re-tokenized. Sampling stops at either of the model's end tokens (`model.end_tokens`). | Re-tokenization can produce token sequences the teacher never sampled. | The loss reads token ids only. The response length comes from the first end-of-sequence token, never from a `!= pad` mask: Qwen2.5's pad id equals one of its end-of-sequence ids, so such a mask drops a sampled end token. |
 | 5 | Loss = summed token NLL / constant (`train.loss.denominator` = batch size × `train.max_response_tokens`). | Dividing by the batch's token count weights short responses more and pushes toward shorter answers. | Unit test: the loss of a batch does not depend on the lengths of the other responses in it. |
 | 6 | Every teacher response is used once; for a given seed all optimizers see the same responses in the same order. | Reuse turns noise into a fitted signal; a shared stream makes optimizers comparable. | The data order derives from `derive_seed(seed, "data_order")` alone; frozen and pre-warmed Adam share a separate preconditioner stream, never reused for training. |
 | 7 | Weight decay is off; the input embeddings and the output head are frozen at every model size. | Decay is a systematic force toward zero. Freezing keeps the memory budget and is part of the fixed protocol. 0.5B and 1.5B tie the two modules, 7B does not, so freezing the input embeddings alone would leave the 7B head trainable. | Config validation; a check that neither module has a trainable parameter. |
-| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The gradient of this loss at θ₀ would be zero if both paths computed identical distributions, so the step-0 gradient measures the discrepancy between the generation path and the training path. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Direct metric: the per-token KL between the two paths' distributions on the same samples; only its summary is stored. The step-0 gradient norm is below 10⁻³ of the zero-field batch-gradient norm (proposed threshold, confirmed in stage 0). A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
+| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The field at θ₀ is zero up to a measured residual: the student trains toward the generation path's distributions, so any discrepancy between the two paths is a residual field, the mean gradient of this loss at θ₀. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Blocking: the stage-0 checks bound the residual field per execution environment (model numerics, device, library versions) over several batches, N·\|f\|²/σ² ≤ the preregistered bound in every direction and metric, through the χ² bound of the two paths' distributions, and write a record; a training run without a passed record for its environment stops before its first optimizer step. Reported alongside: gradient estimates in the Euclidean and Adam metrics, the per-token KL and a one-batch gradient ratio. A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
 | 9 | Zero mean gradient: the mean gradient over many teacher batches at θ₀ shrinks like 1/√n. | A direct test that the field is zero. | A stage-1 diagnostic and a unit test on a tiny model. |
 
 Unit tests for these invariants run on CPU with a tiny randomly initialized model, so they need no
@@ -150,9 +152,10 @@ A call that sets only `temperature=1.0` therefore samples from a reshaped distri
 - replace the model's generation config with a neutral one that sets only the end-of-sequence and
   pad ids;
 - pass every sampling field explicitly;
-- assert at every step that the raw logits equal the scores the sampler used, so no logits
-  processor reshaped the distribution. A processor that edited the logits in place would escape
-  this check, but not the step-0 teacher gap of invariant 1;
+- assert at every step that the scores the sampler used equal a copy of the raw logits taken in a
+  forward hook, before `generate` processes them, so no logits processor reshaped the
+  distribution, even one that edits the logits in place (which would also alter
+  `output_logits`);
 - store the effective generation config with the samples.
 
 A unit test loads a fake generation config carrying the Qwen values and checks that none of them
@@ -326,10 +329,11 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
 
 - **Soft-target storage.** The targets are θ₀'s full next-token distributions recorded on the
   generation path ([invariant 8](#zero-field-invariants)); bf16 is not acceptable, because rounding
-  the targets would itself create a gradient at θ₀. One fp32 batch per model, ≈ 20 × 96 × 151,936
-  entries ≈ 1.2 GB, is kept as evidence of the step-0 check. The full SGD control run needs
-  500 responses × 96 tokens × 151,936 entries ≈ 29 GB per model and seed; it is written to the
-  Pod's disk, streamed per batch and deleted after the run, keeping hashes and a summary.
+  the targets would itself create a gradient at θ₀. They are stored in one fp32 file per stream,
+  hashed in its manifest. The path-field check uses 8 batches per environment, ≈ 9.6 GB; the full
+  SGD control run needs 500 responses × 96 tokens × 151,936 entries ≈ 29 GB per model and seed,
+  held in RAM (≈ 58 GB at the peak of saving), so it runs on a Pod with enough RAM (RTX 6000 Ada:
+  167 GB). The files are deleted after use, keeping hashes and summaries.
 - **Displacement K.** The exact per-position KL along θ₀'s reference responses, with θ₀'s
   distributions from a frozen copy on the same GPU ([data flow](#data-flow)); defined in
   [preregistration.md](preregistration.md#primary-analysis).

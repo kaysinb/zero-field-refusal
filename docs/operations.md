@@ -152,7 +152,18 @@ python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-ins
 
 `prepare_data.py` caches the pinned source CSVs in `DATA_DIR/sources/` and refuses to overwrite a
 complete build without `--force`. Stream directories are named by a hash of everything that
-determines their samples; an existing stream is never regenerated. Frozen Adam and pre-warmed
+determines their samples; an existing stream is never regenerated. A stream is published by
+renaming a partial directory; after an interrupted generation, remove the leftover
+`.seed-*.partial-*` directory (`runtime.remove_partial_streams`) once nothing is generating.
+
+The stage-0 checks write a path-field record per execution environment under `DATA_DIR/checks/`:
+model numerics, GPU model and library versions. Training runs stop before their first optimizer
+step without a passed record for their own environment, so run the checks on each GPU type used.
+
+Choose the GPU by the cost of a run, not of an hour, from the stage-0 timings: in fp32 without
+TF32, the Ada cards (RTX 6000 Ada, L40S) are about 2.4 times faster than A6000/A40 and can cost
+less per run. The full soft-target control holds ≈ 58 GB of host RAM at its peak: run it on RTX
+6000 Ada (167 GB RAM; L40/L40S 94 GB, A6000/A40 50 GB), and check the Pod's RAM when creating it. Frozen Adam and pre-warmed
 AdamW also need `--stream preconditioner` for the same seeds.
 
 ## Launching runs
@@ -220,7 +231,7 @@ Recorded 2026-10-09, before the first GPU runs; review it before stage 2.
 |---|---|---|
 | Prompt sets, manifests, pinned source CSVs | all | < 50 MB |
 | Teacher streams (training, preconditioner, K reference, field stream of seed 1000) | all, archived | ≈ 1 MB per 500 responses |
-| Soft-target distributions | one batch per model (step-0 check) | ≈ 1.2 GB each |
+| Soft-target distributions of the path-field check | deleted after the check; the record, hashes and results kept | ≈ 9.6 GB per environment while they exist |
 | Full soft-target stream of the SGD control | deleted after its run; hashes and summary kept | ≈ 29 GB while it exists |
 | Run directories (config, meta, metrics, observations, responses) | all, including failed runs | ≈ 1–5 MB per run |
 | Judge labels, calibration pool, sample, key, manual labels | all, private | < 50 MB |

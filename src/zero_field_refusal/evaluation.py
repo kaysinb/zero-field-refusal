@@ -18,7 +18,7 @@ from transformers import PreTrainedModel
 from .batches import chunks, collate
 from .losses import response_logits, targets
 from .seeding import derive_seed
-from .teacher import Sample, StreamError, split_response
+from .teacher import Sample, capture_step_logits, check_unprocessed, split_response
 
 # No truncation: evaluation sequences are scored in full.
 NO_CAP = 10**9
@@ -84,22 +84,20 @@ def greedy_responses(
         for b, prompt in enumerate(chunk):
             input_ids[b, width - len(prompt) :] = torch.tensor(prompt)
             attention_mask[b, width - len(prompt) :] = 1
-        generated = model.generate(
-            input_ids=input_ids.to(device),
-            attention_mask=attention_mask.to(device),
-            do_sample=False,
-            num_beams=1,
-            repetition_penalty=1.0,
-            max_new_tokens=max_new_tokens,
-            eos_token_id=list(end_ids),
-            pad_token_id=pad_id,
-            output_logits=True,
-            output_scores=True,
-            return_dict_in_generate=True,
-        )
-        for raw, used in zip(generated.logits, generated.scores, strict=True):
-            if not torch.equal(raw, used):
-                raise StreamError("A logits processor changed greedy decoding")
+        with capture_step_logits(model) as raw:
+            generated = model.generate(
+                input_ids=input_ids.to(device),
+                attention_mask=attention_mask.to(device),
+                do_sample=False,
+                num_beams=1,
+                repetition_penalty=1.0,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=list(end_ids),
+                pad_token_id=pad_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+        check_unprocessed(raw, generated.scores, "greedy decoding")
         for row in generated.sequences[:, width:].tolist():
             out.append(split_response(row, end_ids))
     return out

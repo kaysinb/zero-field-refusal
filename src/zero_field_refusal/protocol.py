@@ -97,8 +97,28 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
             problems.append(f"{key}: expected {wanted!r}, got {actual!r} (control={control!r})")
 
     run_type = OmegaConf.select(cfg, "run_type", default="train")
-    if run_type not in ("train", "theta0"):
-        problems.append(f"run_type: expected 'train' or 'theta0', got {run_type!r}")
+    if run_type not in ("train", "theta0", "checks"):
+        problems.append(f"run_type: expected 'train', 'theta0' or 'checks', got {run_type!r}")
+    # Blocking-check thresholds: numbers for training runs; a missing value is ??? (unset).
+    gap = OmegaConf.select(cfg, "checks.teacher_gap", default=None)
+    for key in ("checks.teacher_gap.token_max_abs", "checks.teacher_gap.response_mean_signed_abs"):
+        leaf = key.rsplit(".", 1)[1]
+        if not isinstance(gap, DictConfig) or gap._get_node(leaf) is None:
+            problems.append(f"{key}: missing")
+            continue
+        if OmegaConf.is_missing(gap, leaf):  # ???: set later; computing the config hash fails
+            continue
+        value = gap[leaf]
+        if run_type == "train" and value is not None and not value > 0:
+            problems.append(f"{key}: expected a positive threshold, got {value!r}")
+        elif run_type == "train" and value is None:
+            problems.append(f"{key}: a training run needs the threshold set")
+    batches = OmegaConf.select(cfg, "checks.path_field.batches", default=_ABSENT)
+    if batches is _ABSENT or not (isinstance(batches, int) and batches >= 4 and batches % 2 == 0):
+        problems.append(f"checks.path_field.batches: expected an even number >= 4, got {batches!r}")
+    bound = OmegaConf.select(cfg, "checks.path_field.max_drift_to_noise", default=_ABSENT)
+    if bound is _ABSENT or not bound > 0:
+        problems.append(f"checks.path_field.max_drift_to_noise: expected > 0, got {bound!r}")
     if control not in CONTROLS:
         problems.append(f"control: unknown control {control!r}; known: {CONTROLS}")
 

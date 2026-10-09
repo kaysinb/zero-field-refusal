@@ -32,10 +32,11 @@ from .evaluation import (
 from .losses import loss_denominator, response_logprobs, soft_kl, summed_nll, targets
 from .models import freeze
 from .optim import ADAM_MODES, build_optimizer, estimate_second_moment
+from .prechecks import check_teacher_gap, require_path_check
 from .refusal import is_keyword_refusal
-from .runtime import Environment, load_distributions, load_stream_for, locate_stream
+from .runtime import Environment, load_stream_for, locate_stream
 from .seeding import derive_seed, seed_everything
-from .teacher import Sample, reference_samples
+from .teacher import Sample, load_distributions, reference_samples
 from .tracking import Run
 
 FACTUAL_MAX_NEW_TOKENS = 32
@@ -295,6 +296,9 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         torch.cuda.reset_peak_memory_stats()
     with Run(cfg, run_id=run_id) as run:
         kind = stream_kind(cfg)
+        record = require_path_check(env.data_root, cfg, env.device)  # before anything costly
+        run.record_inputs({"path_check": {"run_id": record["run_id"],
+                                          "fingerprint": record["fingerprint"]}})  # fmt: skip
         stream, manifest = load_stream_for(cfg, env, kind, cfg.seed)
         run.summarize({"stream/training": manifest["sha256"], "stream/kind": kind})
         run.record_inputs({"prompt_manifest_sha256": env.prompt_manifest_sha256,
@@ -314,8 +318,10 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         theta0 = dict(reference.named_parameters())
         evaluate = Evaluator(cfg, env, run, reference)  # fails early on missing inputs
         directions = projection_directions(trainable, cfg.eval.projections)
-        if kind != "alpaca_reference":
-            run.summarize({"step0_teacher_gap": teacher_gap(student, batches[0], cfg, env)})
+        if kind != "alpaca_reference":  # reference answers have no teacher log-probs
+            gap = teacher_gap(student, stream, cfg, env)
+            run.summarize({"step0_teacher_gap": gap})
+            check_teacher_gap(gap, cfg.checks.teacher_gap)  # stops before any optimizer step
 
         second_moment = None
         if ADAM_MODES.get(cfg.optimizer.name, "adaptive") != "adaptive":

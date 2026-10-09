@@ -4,8 +4,10 @@ One run directory collects:
 - the fraction of θ₀ responses that end within the 96-token cap;
 - the teacher–student gap at step 0 on a full training stream (invariant 1);
 - the mean-gradient scaling and the token-count field at θ₀ (invariant 9, A1);
-- the generation-path vs training-path discrepancy and the soft-target gradient ratio
-  (invariant 8);
+- the residual field of the generation-vs-training path discrepancy over several batches: the
+  χ² bound that decides (invariant 8), gradient estimates in the Euclidean and Adam metrics, the
+  per-token KL and a one-batch gradient ratio; the verdict is written as the environment's
+  path-field record, which training runs require;
 - the custom Adam against ``torch.optim.AdamW`` on the real parameters, stepping on identical
   gradients so that only optimizer arithmetic is compared;
 - peak memory and time of the run configuration (student, θ₀ copy, Adam, a greedy batch).
@@ -20,22 +22,31 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from .batches import chunks
-from .diagnostics import field_measurement, path_discrepancy, soft_target_gradient_ratio
+from .diagnostics import (
+    field_measurement,
+    path_chi_square,
+    path_discrepancy,
+    path_field_measurement,
+    soft_target_gradient_ratio,
+)
 from .evaluation import greedy_responses
 from .models import freeze
-from .optim import Adam
+from .optim import Adam, estimate_second_moment
+from .prechecks import environment_fingerprint, write_check_record
 from .runtime import (
     Environment,
     generate_stream,
-    load_distributions,
     load_stream_for,
     locate_stream,
 )
+from .teacher import load_distributions
 from .tracking import Run
 from .train import accumulate_gradient, teacher_gap, training_batches
 
 # Seed of the fresh θ₀ batches of the field measurement, outside the run seeds 0–39.
 FIELD_SEED = 1000
+# Batches of that stream for the θ₀ second-moment estimate of Adam's metric (as in H2a).
+ADAM_ESTIMATE_BATCHES = 50
 
 
 def run_stage0_checks(
@@ -64,30 +75,58 @@ def run_stage0_checks(
         )  # fmt: skip
         run.summarize({"field": field})
 
-        log("generation path vs training path")
-        one_batch = streams["soft_targets"]
-        samples, _ = load_stream_for(one_batch, env, "soft_targets", 0)
-        _, path, _ = locate_stream(one_batch, env, "soft_targets", 0)
+        log("custom Adam against torch.optim.AdamW")
+        run.summarize({"adam_vs_torch": _compare_adam(model, params, stream, cfg, env)})
+
+        log("path field: generation path vs training path over several batches")
+        path_cfg = streams["soft_targets"]
+        samples, _ = load_stream_for(path_cfg, env, "soft_targets", 0)
+        _, path, _ = locate_stream(path_cfg, env, "soft_targets", 0)
         recorded = load_distributions(path)
-        run.summarize({
+        steps = cfg.train.steps
+        common = dict(pad_id=env.pad_id, device=env.device, steps=steps)
+        bound = path_chi_square(model, samples, recorded, path_cfg, **common)
+        passed = bound["bound_upper"] <= cfg.checks.path_field.max_drift_to_noise
+        euclid = path_field_measurement(model, params, samples, recorded, path_cfg, **common)
+        size = cfg.train.batch_size
+        v_hat = estimate_second_moment(
+            params, lambda i: accumulate_gradient(model, field_stream[i * size : (i + 1) * size],
+                                                  cfg, env),
+            min(ADAM_ESTIMATE_BATCHES, len(field_stream) // size),
+        )  # fmt: skip
+        adam = path_field_measurement(model, params, samples, recorded, path_cfg,
+                                      preconditioner=v_hat, **common)  # fmt: skip
+        del v_hat
+        results = {
+            "criterion": cfg.checks.path_field.max_drift_to_noise,
+            "chi_square_bound": bound,
+            "euclidean": None if euclid is None else euclid.as_dict(steps),
+            "adam": None if adam is None else adam.as_dict(steps),
             "path_discrepancy": path_discrepancy(
                 model, samples, recorded, pad_id=env.pad_id,
                 micro_batch_size=cfg.execution.micro_batch_size, device=env.device),
-            "soft_target_gradient": soft_target_gradient_ratio(
-                model, params, samples, recorded, one_batch, pad_id=env.pad_id,
+            "soft_target_gradient_one_batch": soft_target_gradient_ratio(
+                model, params, samples[:size], recorded[:size], path_cfg, pad_id=env.pad_id,
                 device=env.device),
-        })  # fmt: skip
-
-        log("custom Adam against torch.optim.AdamW")
-        run.summarize({"adam_vs_torch": _compare_adam(model, params, stream, cfg, env)})
+        }  # fmt: skip
+        record = write_check_record(env.data_root, environment_fingerprint(cfg, env.device),
+                                    results, passed=passed, run_id=run.run_id)  # fmt: skip
+        run.summarize({"path_field": results | {"passed": passed}})
+        run.record_inputs({"path_check_record": str(record.relative_to(env.data_root))})
         return run
 
 
 def _ensure_streams(cfg: DictConfig, env: Environment, log) -> dict[str, DictConfig]:
     """Generate the streams the checks need, unless they exist."""
-    one_batch = OmegaConf.merge(cfg, {"train": {"steps": 1}})  # 20 responses with distributions
+    # The loaded config is resolved: set the response count with the steps, or it stays at the
+    # training stream's 500 (≈ 29 GB of distributions).
+    batches = cfg.checks.path_field.batches
+    responses = batches * cfg.train.batch_size
+    path_cfg = OmegaConf.merge(
+        cfg, {"train": {"steps": batches}, "teacher": {"responses": responses}}
+    )
     needed = [(cfg, "training", 0), (cfg, "preconditioner", FIELD_SEED),
-              (one_batch, "soft_targets", 0)]  # fmt: skip
+              (path_cfg, "soft_targets", 0)]  # fmt: skip
     model = None
     for config, kind, seed in needed:
         _, path, _ = locate_stream(config, env, kind, seed)
@@ -98,7 +137,7 @@ def _ensure_streams(cfg: DictConfig, env: Environment, log) -> dict[str, DictCon
         generate_stream(config, env, kind, seed, model=model,
                         batch_size=cfg.execution.generation_batch_size)  # fmt: skip
     del model
-    return {"soft_targets": one_batch}
+    return {"soft_targets": path_cfg}
 
 
 def _run_profile(model, stream, cfg: DictConfig, env: Environment) -> dict:

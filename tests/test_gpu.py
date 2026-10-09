@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 from conftest import END_IDS, PAD_ID, prompts, tiny_model, tiny_tokenizer
-from test_train import config, prepare, prompt_sets
+from test_train import config, pass_path_check, prepare, prompt_sets
 
 from zero_field_refusal.batches import collate
 from zero_field_refusal.losses import response_logprobs
@@ -33,11 +33,13 @@ def gpu_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Environment:
         install_neutral_generation_config(model, end_ids, tokenizer.pad_token_id)
         return model
 
-    return Environment(
+    env = Environment(
         tokenizer=tokenizer, end_ids=end_ids, pad_id=tokenizer.pad_token_id,
         device=torch.device("cuda"), new_model=new_model, prompt_set=lambda name: sets[name],
         data_root=tmp_path / "data",
     )  # fmt: skip
+    pass_path_check(env)
+    return env
 
 
 def test_cuda_sampling_log_probs_match_the_training_path() -> None:
@@ -91,13 +93,13 @@ def test_projection_directions_are_the_same_on_cpu_and_cuda(gpu_env) -> None:
 def test_cuda_stage0_checks(gpu_env) -> None:
     from zero_field_refusal.checks import run_stage0_checks
 
-    cfg = config(*CUDA, "optimizer=adam_frozen", "optimizer.lr=1e-3",
+    cfg = config(*CUDA, "run_type=checks", "optimizer=adam_frozen", "optimizer.lr=1e-3",
                  "optimizer.preconditioner.batches=8")  # fmt: skip
     run = run_stage0_checks(cfg, gpu_env, log=lambda _: None)
     summary = json.loads((run.dir / "summary.json").read_text())
     assert summary["run_profile"]["peak_memory_gb"] > 0
     assert summary["adam_vs_torch"]["relative_diff"] < 1e-5
-    assert summary["soft_target_gradient"]["ratio"] < 1e-3
+    assert summary["path_field"]["passed"]
     assert summary["field"]["token_count"]["decision"] in (
         "at_noise_level", "field_detected", "undetermined"
     )  # fmt: skip

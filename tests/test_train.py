@@ -8,6 +8,7 @@ import torch
 from conftest import tiny_model, tiny_tokenizer
 
 from zero_field_refusal.models import install_neutral_generation_config
+from zero_field_refusal.prechecks import CheckFailed, environment_fingerprint, write_check_record
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.runtime import Environment, generate_stream, load_stream_for
 from zero_field_refusal.train import run_training, training_batches
@@ -26,7 +27,16 @@ SMALL = [
     "execution.micro_batch_size=3",
     "execution.generation_batch_size=4",
     "execution.eval_batch_size=4",
+    "checks.teacher_gap.token_max_abs=1e-4",  # CPU fp32; GPU thresholds come from stage 0
+    "checks.teacher_gap.response_mean_signed_abs=1e-3",
+    "checks.path_field.batches=4",
 ]
+
+
+def pass_path_check(env: Environment) -> None:
+    """A passed stage-0 path-field record for the test environment."""
+    fingerprint = environment_fingerprint(config(), env.device)
+    write_check_record(env.data_root, fingerprint, {}, passed=True, run_id="fixture")
 
 
 def words(rng: torch.Generator, n: int) -> str:
@@ -69,7 +79,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Environment:
         install_neutral_generation_config(model, end_ids, tokenizer.pad_token_id)
         return model
 
-    return Environment(
+    env = Environment(
         tokenizer=tokenizer,
         end_ids=end_ids,
         pad_id=tokenizer.pad_token_id,
@@ -78,6 +88,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Environment:
         prompt_set=lambda name: sets[name],
         data_root=tmp_path / "data",
     )
+    pass_path_check(env)
+    return env
 
 
 def config(*overrides: str):
@@ -187,18 +199,26 @@ def test_soft_target_control_starts_with_a_vanishing_loss(env) -> None:
 def test_stage0_checks_run_end_to_end(env) -> None:
     from zero_field_refusal.checks import run_stage0_checks
 
-    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=8")
+    cfg = config(
+        "run_type=checks",
+        "optimizer=adam_frozen",
+        "optimizer.lr=1e-3",
+        "optimizer.preconditioner.batches=8",
+    )
     run = run_stage0_checks(cfg, env, log=lambda _: None)
     summary = json.loads((run.dir / "summary.json").read_text())
     assert 0 <= summary["eos_fraction_at_cap"] <= 1
     assert summary["teacher_gap"]["token_max_abs"] < 1e-4
     assert summary["field"]["batches_per_half"] == 4
-    assert summary["field"]["constant"]["noise_variance_along_field"] > 0
+    assert summary["field"]["constant"]["noise_variance"] > 0
     assert summary["field"]["token_count"]["decision"] in (
         "at_noise_level", "field_detected", "undetermined"
     )  # fmt: skip
-    assert summary["path_discrepancy"]["kl_max"] < 1e-6
-    assert summary["soft_target_gradient"]["ratio"] < 1e-3
+    path = summary["path_field"]
+    assert path["passed"] and path["chi_square_bound"]["bound_upper"] <= 0.01
+    assert path["path_discrepancy"]["kl_max"] < 1e-6
+    assert path["soft_target_gradient_one_batch"]["ratio"] < 1e-3
+    assert path["euclidean"]["drift_to_noise_upper"] is not None
     assert summary["adam_vs_torch"]["relative_diff"] < 1e-5
     assert summary["run_profile"]["training_step_seconds"] > 0
 
@@ -281,3 +301,55 @@ def test_second_moment_estimate_uses_the_preconditioner_batches(env) -> None:
             e += p.grad**2 / 3
     for v, e in zip(estimate, expected, strict=True):
         torch.testing.assert_close(v, e, rtol=1e-5, atol=1e-12)
+
+
+def test_training_stops_without_a_passed_path_check(env) -> None:
+    cfg = config()
+    prepare(env, cfg, "training")
+    for record in (env.data_root / "checks").rglob("*.json"):
+        record.unlink()
+    with pytest.raises(CheckFailed, match="No stage-0 path-field check"):
+        run_training(cfg, env, run_id="no-record")
+    fingerprint = environment_fingerprint(cfg, env.device)
+    write_check_record(env.data_root, fingerprint, {}, passed=False, run_id="failed")
+    with pytest.raises(CheckFailed, match="failed"):
+        run_training(cfg, env, run_id="failed-record")
+    run_dir = env.data_root.parent / "runs" / "smoke" / "failed-record"
+    assert json.loads((run_dir / "meta.json").read_text())["status"] == "failed"
+    assert not (run_dir / "metrics.jsonl").exists()  # no optimizer step was taken
+
+
+def test_training_stops_when_the_stream_comes_from_another_model(env) -> None:
+    # A stream sampled by a numerically different teacher: the step-0 gap exceeds the threshold.
+    cfg = config()
+    student = env.new_model
+
+    def other_model():
+        model = student()
+        with torch.no_grad():
+            model.lm_head.weight.add_(0.01 * torch.randn_like(model.lm_head.weight))
+        return model
+
+    env.new_model = other_model
+    prepare(env, cfg, "training")
+    env.new_model = student
+    with pytest.raises(CheckFailed, match="teacher gap"):
+        run_training(cfg, env, run_id="mismatch")
+    run_dir = env.data_root.parent / "runs" / "smoke" / "mismatch"
+    assert not (run_dir / "metrics.jsonl").exists()
+
+
+def test_stage0_checks_write_the_record_that_training_needs(env) -> None:
+    from zero_field_refusal.checks import run_stage0_checks
+
+    for record in (env.data_root / "checks").rglob("*.json"):
+        record.unlink()
+    checks_cfg = config("run_type=checks", "optimizer=adam_frozen", "optimizer.lr=1e-3",
+                        "optimizer.preconditioner.batches=8")  # fmt: skip
+    run = run_stage0_checks(checks_cfg, env, log=lambda _: None)
+    summary = json.loads((run.dir / "summary.json").read_text())
+    assert summary["path_field"]["passed"]
+    assert summary["path_field"]["chi_square_bound"]["batches"] == 4
+    cfg = config()
+    prepare(env, cfg, "training")
+    run_training(cfg, env, run_id="after-checks")

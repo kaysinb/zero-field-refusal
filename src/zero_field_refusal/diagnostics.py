@@ -1,37 +1,135 @@
-"""Stage-0 measurements of the field at θ₀ and of the pipeline's numerical noise.
+"""Stage-0 measurements of fields at θ₀ and of the pipeline's numerical noise.
 
-- **Mean gradient (invariant 9).** At zero field the mean of n independent batch gradients shrinks
-  like 1/√n. A field f makes it level off at ‖f‖.
+**Estimating a field.** A field f is the mean of per-batch vectors x_b (batch gradients, or a
+control variate). |f|² is estimated without bias from two independent halves A and B of the
+batches as ⟨x̄_A, x̄_B⟩, in three passes: sum A; sum B while projecting each x_b on
+u_A = x̄_A/|x̄_A|; project A again on u_B. Both projections give ⟨x̄_A, x̄_B⟩. Its standard
+error counts the spread of both halves,
+SE² = (|x̄_A|²·Var_B(x·u_A) + |x̄_B|²·Var_A(x·u_B)) / h,
+which slightly overstates the variance (the noise-noise term enters twice), so decisions err
+toward caution. Over N training steps a field moves the parameters by N·|f| along its direction
+and the noise by √N·σ, where σ² is the variance of a training gradient along that direction,
+measured along u_A and u_B. The comparison is N·|f|²/σ².
+
+- **Mean gradient (invariant 9).** At zero field the mean of n batch gradients shrinks like 1/√n.
 - **Token-count field (A1).** Dividing each batch by its own token count multiplies the
   constant-denominator gradient g_b by c_b = B·L / n_b, so both normalizations come from one
   backward pass. At zero field E[g_b] = 0, so the token-count field is f = E[(c_b − c̄)·g_b] for
-  any constant c̄, a control variate with far less noise than c_b·g_b; c̄ is the mean of c_b.
-  |f|² is estimated without bias from two independent halves of the batches,
-  ⟨d̄_A, d̄_B⟩ = |d̄_A|·mean_B(d_b·u) with u = d̄_A / |d̄_A|, with the standard error
-  |d̄_A|·sd_B(d_b·u)/√n. Over N steps the field moves the parameters by
-  N·|f| along its direction, and the noise by √N·σ, where σ² is the variance of a training
-  gradient along that direction, measured along u. The field is at the noise level if
-  N·|f|² < σ² even at the upper end of its uncertainty (|f|² + 2 SE), detected if it exceeds σ²
-  at the lower end, and undetermined otherwise (docs/preregistration.md, A1). A sufficient
-  criterion needs no gradients: N·Var(c_b) < 1 bounds N·|f|²/σ² below 1 (Cauchy–Schwarz with
-  E[g_b] = 0). The same estimate for the constant denominator checks that its field is zero.
-- **Path discrepancy (invariant 8).** θ₀'s distributions recorded while sampling (generation path,
-  KV cache) against the training path on the same samples: per-token KL and the step-0 gradient
-  of the soft-target loss relative to the zero-field batch gradient.
+  any constant c̄, a control variate with far less noise than c_b·g_b; c̄ is the mean of c_b. The
+  field is at the noise level if N·|f|² < σ² even at |f|² + 2 SE, detected if it exceeds σ² at
+  |f|² − 2 SE, and undetermined otherwise (docs/preregistration.md, A1). A sufficient criterion
+  needs no gradients: N·Var(c_b) < 1 bounds N·|f|²/σ² below 1 (Cauchy–Schwarz with E[g_b] = 0).
+  The same estimate for the constant denominator checks that its field is zero.
+- **Path field (invariant 8).** The distributions θ₀ produced while sampling (generation path p,
+  KV cache) differ slightly from the training path's (q). The student then trains toward p: a
+  residual field f, the mean soft-target gradient. Write the training gradient as the soft-target
+  gradient plus n_b = Σ_t (p_t − e_{y_t})·J_t, a sum of martingale differences. For any direction
+  v, f·v = E[Σ_t E_p[(q/p − 1)·(J_t v)]], so Cauchy–Schwarz gives
+  N·(f·v)²/Var(n_b·v) ≤ N·X with X = E[Σ_{t in a batch} χ²(q_t ‖ p_t)].
+  The bound needs only the two paths' distributions, holds in every direction and in every
+  linear metric, Adam's preconditioned one included, and does not depend on estimating the
+  direction of a weak field. The check requires N·(X̂ + 2 SE) ≤ the preregistered bound over
+  several batches. Gradient-based estimates of N·|f|²/σ² in the Euclidean and Adam metrics are
+  reported alongside; their σ² is measured along an estimated direction, which a weak field leaves
+  dominated by noise and biased toward noisy directions, so they do not decide.
+- **Path discrepancy.** Per-token KL between the two paths' distributions on the same samples,
+  and the one-batch soft-target gradient ratio, as descriptive numbers.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass
 
 import torch
 from omegaconf import DictConfig
 from transformers import PreTrainedModel
 
-from .batches import chunks, collate
+from .batches import collate
 from .losses import response_logprobs, soft_kl, summed_nll, targets
 from .teacher import Sample
+
+# A view of one batch: (field vector, its scalar factor, noise vector). The field contribution
+# is factor × field; the noise vector is the training gradient whose spread is the noise.
+View = tuple[Sequence[torch.Tensor], float, Sequence[torch.Tensor]]
+
+
+@dataclass(frozen=True)
+class FieldEstimate:
+    field_norm_sq: float
+    standard_error: float
+    noise_variance: float  # of a training gradient along the field's direction
+    batches_per_half: int
+
+    def ratio(self, steps: int, shift: float = 0.0) -> float:
+        """N·(|f|² + shift·SE)/σ²."""
+        return steps * (self.field_norm_sq + shift * self.standard_error) / self.noise_variance
+
+    def as_dict(self, steps: int) -> dict:
+        return {**asdict(self), "drift_to_noise": self.ratio(steps),
+                "drift_to_noise_upper": self.ratio(steps, 2.0),
+                "drift_to_noise_lower": self.ratio(steps, -2.0)}  # fmt: skip
+
+
+def split_half_fields(
+    half: int,
+    views: Callable[[int], Mapping[str, View]],
+    names: Sequence[str],
+    like: Sequence[torch.nn.Parameter],
+    *,
+    after_a: Callable[[int, Mapping[str, list[torch.Tensor]]], None] | None = None,
+) -> dict[str, FieldEstimate | None]:
+    """The three-pass estimate for each named view over batches 0..2·half−1.
+
+    ``views(b)`` must return the same vectors whenever it is called for batch b (pass 1 and pass 3
+    both visit half A). A view whose half sum is exactly zero has no field: None.
+    Memory: two parameter-sized fp32 buffers per view.
+    """
+    sums = {name: [[torch.zeros_like(p, dtype=torch.float32) for p in like] for _ in range(2)]
+            for name in names}  # fmt: skip
+    for b in range(half):  # pass 1: sum A
+        for name, (field, factor, _) in views(b).items():
+            if name in sums:
+                for total, x in zip(sums[name][0], field, strict=True):
+                    total.add_(x, alpha=factor)
+        if after_a is not None:
+            after_a(b + 1, {name: s[0] for name, s in sums.items()})
+    norm_a = {name: _unit_in_place(s[0]) for name, s in sums.items()}
+
+    proj_b = {name: ([], []) for name in names}  # pass 2: sum B, project on u_A
+    for b in range(half, 2 * half):
+        for name, (field, factor, noise) in views(b).items():
+            if name not in sums:
+                continue
+            u_a, total_b = sums[name][0], sums[name][1]
+            proj_b[name][0].append(factor * _dot(field, u_a))
+            proj_b[name][1].append(_dot(noise, u_a))
+            for total, x in zip(total_b, field, strict=True):
+                total.add_(x, alpha=factor)
+    norm_b = {name: _unit_in_place(s[1]) for name, s in sums.items()}
+
+    proj_a = {name: ([], []) for name in names}  # pass 3: project A on u_B
+    for b in range(half):
+        for name, (field, factor, noise) in views(b).items():
+            if name in sums:
+                proj_a[name][0].append(factor * _dot(field, sums[name][1]))
+                proj_a[name][1].append(_dot(noise, sums[name][1]))
+
+    out: dict[str, FieldEstimate | None] = {}
+    for name in names:
+        if norm_a[name] == 0 or norm_b[name] == 0:
+            out[name] = None
+            continue
+        mean_a, mean_b = norm_a[name] / half, norm_b[name] / half
+        pb = torch.tensor(proj_b[name][0], dtype=torch.float64)
+        pa = torch.tensor(proj_a[name][0], dtype=torch.float64)
+        noise = (torch.tensor(proj_b[name][1], dtype=torch.float64).var()
+                 + torch.tensor(proj_a[name][1], dtype=torch.float64).var()) / 2  # fmt: skip
+        field_sq = (mean_a * pb.mean() + mean_b * pa.mean()).item() / 2
+        se = math.sqrt((mean_a**2 * pb.var().item() + mean_b**2 * pa.var().item()) / half)
+        out[name] = FieldEstimate(field_sq, se, noise.item(), half)
+    return out
 
 
 def _batch_gradient(
@@ -44,16 +142,20 @@ def _batch_gradient(
     denominator: float,
     micro_batch_size: int,
     device: torch.device,
-) -> int:
-    """Leave the constant-denominator batch gradient in ``.grad``; return the batch token count."""
+    soft_targets: Sequence[torch.Tensor] | None = None,
+) -> None:
+    """Leave the batch gradient of Σ loss / denominator in ``.grad``: NLL, or the soft-target KL."""
     for p in params:
         p.grad = None
-    tokens = 0
-    for chunk in chunks(samples, micro_batch_size):
+    for start in range(0, len(samples), micro_batch_size):
+        chunk = samples[start : start + micro_batch_size]
         batch = collate(chunk, pad_id=pad_id, max_response_tokens=cap, device=device)
-        (summed_nll(model, batch) / denominator).backward()
-        tokens += batch.num_tokens
-    return tokens
+        if soft_targets is None:
+            loss = summed_nll(model, batch)
+        else:
+            target = torch.cat([t[:cap] for t in soft_targets[start : start + micro_batch_size]])
+            loss = soft_kl(model, batch, target.to(device))
+        (loss / denominator).backward()
 
 
 def field_decision(
@@ -77,87 +179,60 @@ def field_measurement(
     device: torch.device,
     steps: int,
 ) -> dict:
-    """Mean-gradient scaling and the fields of both normalizations at the current parameters.
+    """Mean-gradient scaling and the fields of both normalizations at the current parameters (θ₀).
 
-    ``batches`` are fresh teacher batches, split into halves A (first) and B (second). ``steps`` is
-    the number of training steps N over which drift and noise are compared.
+    ``batches`` are fresh teacher batches; the first and second halves are A and B.
     """
     cap = cfg.train.max_response_tokens
     denominator = float(cfg.train.batch_size * cap)
-    grad = dict(pad_id=pad_id, cap=cap, denominator=denominator,
-                micro_batch_size=cfg.execution.micro_batch_size, device=device)  # fmt: skip
     half = len(batches) // 2
     if half < 2:
         raise ValueError("The field measurement needs at least 4 batches")
-    # c_b = B·L / n_b from the token counts alone. Centering the control variate at their mean c̄
-    # (a constant) keeps E[(c_b − c̄)·g_b] = Cov(c_b, g_b) = f and minimizes its noise; c̄ uses all
-    # batches, which scales the estimate by 1 − 1/(2·half), negligibly.
+    # c_b = B·L / n_b from the token counts alone, centered at their mean (a constant, which keeps
+    # the control variate's expectation at the field; using all batches scales it by 1 − 1/2h).
     counts = [sum(min(len(s.response_ids), cap) for s in batch) for batch in batches[: 2 * half]]
     factors = torch.tensor([denominator / n for n in counts], dtype=torch.float64)
     excess = (factors - factors.mean()).tolist()
-    # Since E[g_b] = 0, |f| = |Cov(c_b, g_b·f̂)| ≤ sd(c_b)·σ_f, so N·|f|²/σ_f² ≤ N·Var(c_b): below 1
-    # the token-count field is at the noise level whatever the gradients are.
     count_bound = steps * factors.var().item()
-    # Half A: fp32 sums of g_b (constant) and of d_b = (c_b − c̄)·g_b (token count), in place.
-    sums = {
-        name: [torch.zeros_like(p, dtype=torch.float32) for p in params]
-        for name in ("constant", "token_count")
-    }
+    squared_norms: list[float] = []
+
+    def views(b: int) -> dict[str, View]:
+        _batch_gradient(model, params, batches[b], pad_id=pad_id, cap=cap,
+                        denominator=denominator,
+                        micro_batch_size=cfg.execution.micro_batch_size, device=device)  # fmt: skip
+        g = [p.grad for p in params]
+        if b < half and len(squared_norms) < half:
+            squared_norms.append(sum(x.double().pow(2).sum().item() for x in g))
+        return {"constant": (g, 1.0, g), "token_count": (g, excess[b], g)}
+
     checkpoints = {2**k for k in range(int(math.log2(half)) + 1)} | {half}
     mean_norm: dict[int, float] = {}
-    sq_norm_total = 0.0
-    for n, batch in enumerate(batches[:half], start=1):
-        _batch_gradient(model, params, batch, **grad)
-        for total_c, total_t, p in zip(sums["constant"], sums["token_count"], params, strict=True):
-            total_c.add_(p.grad)
-            total_t.add_(p.grad, alpha=excess[n - 1])
-        sq_norm_total += sum(p.grad.double().pow(2).sum().item() for p in params)
-        if n in checkpoints:
-            mean_norm[n] = _norm(sums["constant"]) / n
-    mean_a_norm = {}
-    for name, totals in sums.items():  # unit directions in place; a zero sum stays zero
-        norm = _norm(totals)
-        mean_a_norm[name] = norm / half
-        if norm > 0:
-            for total in totals:
-                total.div_(norm)
 
-    # Half B, projected on the half-A directions: field terms and training-gradient noise.
-    field_terms = {"constant": [], "token_count": []}
-    noise_terms = {"constant": [], "token_count": []}
-    for k, batch in enumerate(batches[half : 2 * half], start=half):
-        _batch_gradient(model, params, batch, **grad)
-        for name in sums:
-            dot = sum((p.grad * u).sum().item() for p, u in zip(params, sums[name], strict=True))
-            noise_terms[name].append(dot)
-            field_terms[name].append(dot if name == "constant" else excess[k] * dot)
+    def after_a(n: int, totals: Mapping[str, list[torch.Tensor]]) -> None:
+        if n in checkpoints:
+            mean_norm[n] = _norm(totals["constant"]) / n
+
+    estimates = split_half_fields(half, views, ["constant", "token_count"], params,
+                                  after_a=after_a)  # fmt: skip
     for p in params:
         p.grad = None
-
-    out = {
-        "batches_per_half": half,
-        "steps": steps,
-        "mean_gradient_norm": mean_norm,  # invariant 9: ∝ 1/√n at zero field
-        "gradient_noise_trace": sq_norm_total / half,  # E|g_b|² = tr Σ at zero field
-    }
-    for name in sums:
-        if mean_a_norm[name] == 0:  # every batch had the same token count: no field at all
-            out[name] = {"field_norm_sq": 0.0, "field_norm_sq_standard_error": 0.0,
-                         "count_variance_bound": count_bound, "decision": "at_noise_level",
-                         "decision_basis": "equal_token_counts"}  # fmt: skip
+    trace = sum(squared_norms) / half  # E|g_b|² = tr Σ at zero field
+    out = {"batches_per_half": half, "steps": steps, "mean_gradient_norm": mean_norm,
+           "gradient_noise_trace": trace}  # fmt: skip
+    for name, estimate in estimates.items():
+        if estimate is None:  # every batch had the same token count: no field at all
+            out[name] = {
+                "field_norm_sq": 0.0,
+                "standard_error": 0.0,
+                "decision": "at_noise_level",
+                "decision_basis": "equal_token_counts",
+            }
             continue
-        terms = torch.tensor(field_terms[name], dtype=torch.float64)
-        noise = torch.tensor(noise_terms[name], dtype=torch.float64)
-        field_sq = mean_a_norm[name] * terms.mean().item()
-        se = mean_a_norm[name] * terms.std().item() / math.sqrt(half)
-        noise_var = noise.var().item()
-        out[name] = {
-            "field_norm_sq": field_sq,
-            "field_norm_sq_standard_error": se,
-            "noise_variance_along_field": noise_var,
-            "drift_to_noise_squared": steps * field_sq / noise_var,
-            "share_of_mean_squared_displacement": steps * field_sq / out["gradient_noise_trace"],
-            "decision": field_decision(field_sq, se, noise_var, steps),
+        out[name] = estimate.as_dict(steps) | {
+            "share_of_mean_squared_displacement": steps * estimate.field_norm_sq / trace,
+            "decision": field_decision(
+                estimate.field_norm_sq, estimate.standard_error, estimate.noise_variance, steps
+            ),  # fmt: skip
             "decision_basis": "estimate",
         }
     token_count = out["token_count"]
@@ -165,6 +240,87 @@ def field_measurement(
     if count_bound < 1 and token_count["decision_basis"] == "estimate":
         token_count |= {"decision": "at_noise_level", "decision_basis": "count_variance_bound"}
     return out
+
+
+@torch.no_grad()
+def path_chi_square(
+    model: PreTrainedModel,
+    samples: Sequence[Sample],
+    distributions: Sequence[torch.Tensor],
+    cfg: DictConfig,
+    *,
+    pad_id: int,
+    device: torch.device,
+    steps: int,
+) -> dict:
+    """Per batch, Σ over response tokens of χ²(q_train ‖ p_generation); the bound N·(X̂ + 2 SE)."""
+    size = cfg.train.batch_size
+    cap = cfg.train.max_response_tokens
+    totals = []
+    for b in range(len(samples) // size):
+        total = 0.0
+        for start in range(b * size, (b + 1) * size, cfg.execution.micro_batch_size):
+            stop = min(start + cfg.execution.micro_batch_size, (b + 1) * size)
+            batch = collate(samples[start:stop], pad_id=pad_id, max_response_tokens=cap,
+                            device=device)  # fmt: skip
+            log_q = response_logprobs(model, batch).double()
+            log_p = torch.cat([d[:cap] for d in distributions[start:stop]]).to(device).double()
+            # χ²(q‖p) = Σ_y q²/p − 1, computed in log space.
+            total += (torch.exp(2 * log_q - log_p).sum(-1) - 1.0).sum().item()
+        totals.append(total)
+    values = torch.tensor(totals, dtype=torch.float64)
+    mean, se = values.mean().item(), values.std().item() / math.sqrt(len(totals))
+    return {"batches": len(totals), "chi_square_per_batch": mean, "standard_error": se,
+            "bound_upper": steps * (mean + 2 * se)}  # fmt: skip
+
+
+def path_field_measurement(
+    model: PreTrainedModel,
+    params: Sequence[torch.nn.Parameter],
+    samples: Sequence[Sample],
+    distributions: Sequence[torch.Tensor],
+    cfg: DictConfig,
+    *,
+    pad_id: int,
+    device: torch.device,
+    steps: int,
+    preconditioner: Sequence[torch.Tensor] | None = None,
+    eps: float = 1e-8,
+) -> FieldEstimate | None:
+    """The residual field of the path discrepancy: the mean soft-target gradient at θ₀.
+
+    With ``preconditioner`` (the θ₀ second-moment estimate v̂), field and noise are measured in
+    Adam's metric: every gradient is divided elementwise by √v̂ + ε.
+    """
+    cap = cfg.train.max_response_tokens
+    denominator = float(cfg.train.batch_size * cap)
+    size = cfg.train.batch_size
+    half = len(samples) // size // 2
+    if half < 2:
+        raise ValueError("The path-field measurement needs at least 4 batches")
+    scale = None if preconditioner is None else [1.0 / (v.sqrt() + eps) for v in preconditioner]
+    soft = [torch.zeros_like(p, dtype=torch.float32) for p in params]
+    grad = dict(pad_id=pad_id, cap=cap, denominator=denominator,
+                micro_batch_size=cfg.execution.micro_batch_size, device=device)  # fmt: skip
+
+    def views(b: int) -> dict[str, View]:
+        batch = samples[b * size : (b + 1) * size]
+        _batch_gradient(model, params, batch, soft_targets=distributions[b * size : (b + 1) * size],
+                        **grad)  # fmt: skip
+        for buffer, p in zip(soft, params, strict=True):
+            buffer.copy_(p.grad)
+        _batch_gradient(model, params, batch, **grad)
+        noise = [p.grad for p in params]
+        if scale is not None:
+            for s, n, k in zip(soft, noise, scale, strict=True):
+                s.mul_(k)
+                n.mul_(k)
+        return {"path": (soft, 1.0, noise)}
+
+    estimate = split_half_fields(half, views, ["path"], params)["path"]
+    for p in params:
+        p.grad = None
+    return estimate
 
 
 @torch.no_grad()
@@ -234,5 +390,18 @@ def soft_target_gradient_ratio(
     return {"soft_target_grad_norm": soft, "nll_grad_norm": nll, "ratio": soft / nll}
 
 
+def _dot(xs: Sequence[torch.Tensor], ys: Sequence[torch.Tensor]) -> float:
+    return sum((x.float() * y).sum().item() for x, y in zip(xs, ys, strict=True))
+
+
 def _norm(tensors: Sequence[torch.Tensor]) -> float:
-    return math.sqrt(sum(t.pow(2).sum().item() for t in tensors))
+    return math.sqrt(sum(t.double().pow(2).sum().item() for t in tensors))
+
+
+def _unit_in_place(tensors: Sequence[torch.Tensor]) -> float:
+    """Divide by the joint norm in place (a zero vector stays zero); return the norm."""
+    norm = _norm(tensors)
+    if norm > 0:
+        for t in tensors:
+            t.div_(norm)
+    return norm

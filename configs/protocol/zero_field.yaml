@@ -27,3 +27,11 @@ train:
     denominator: ${mul:${train.batch_size},${train.max_response_tokens}}
   freeze: [input_embeddings, output_head]  # at every size; 0.5B and 1.5B tie them, 7B does not
   save_checkpoint: false            # controls run in-process; keep weights only when needed
+
+checks:                             # blocking: a training run stops before its first optimizer step
+  teacher_gap:                      # invariant 1: step-0 training path vs stored teacher log-probs
+    token_max_abs: ???              # set from the stage-0 GPU measurements before training runs
+    response_mean_signed_abs: ???
+  path_field:                       # invariant 8: residual field of the path discrepancy
+    batches: 8                      # soft-target batches measured per environment in stage 0
+    max_drift_to_noise: 0.01        # bound on N·|f|²/σ² in every direction and metric

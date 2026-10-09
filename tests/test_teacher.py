@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 from conftest import END_IDS, PAD_ID, VOCAB, prompts, tiny_model
+from transformers import LogitsProcessor, LogitsProcessorList
 
 from zero_field_refusal.batches import collate
 from zero_field_refusal.losses import response_logprobs
@@ -12,10 +13,16 @@ from zero_field_refusal.teacher import (
     Sample,
     StreamError,
     draw_prompt_indices,
+    load_distributions,
+    load_manifest,
     load_stream,
+    partial_directory,
+    publish,
     sample_responses,
-    save_stream,
     split_response,
+    stale_partials,
+    write_distributions,
+    write_stream,
 )
 
 ZERO_FIELD = dict(temperature=1.0, top_p=1.0, top_k=0, repetition_penalty=1.0, max_new_tokens=40)
@@ -105,16 +112,70 @@ def test_recorded_distributions_match_the_sampled_log_probs(teacher) -> None:
 
 def test_stream_round_trip_and_tamper_check(tmp_path: Path, teacher) -> None:
     samples, _ = run(teacher, n=5)
-    path = tmp_path / "seed-0.jsonl"
-    save_stream(path, samples, {"kind": "training", "seed": 0})
-    assert load_stream(path) == samples
-    manifest = json.loads(path.with_suffix(".manifest.json").read_text())
+    directory = tmp_path / "seed-0"
+    write_stream(directory, samples, {"kind": "training", "seed": 0})
+    assert load_stream(directory) == samples
+    manifest = load_manifest(directory)
     assert manifest["kind"] == "training" and manifest["count"] == 5
     assert manifest["ended_fraction"] == sum(s.ended for s in samples) / 5
-    lines = path.read_text().splitlines()
-    path.write_text("\n".join(lines[:-1]) + "\n")
+    lines = (directory / "samples.jsonl").read_text().splitlines()
+    (directory / "samples.jsonl").write_text("\n".join(lines[:-1]) + "\n")
     with pytest.raises(StreamError, match="sha256"):
-        load_stream(path)
+        load_stream(directory)
+
+
+def test_streams_are_published_atomically(tmp_path: Path, teacher) -> None:
+    samples, _ = run(teacher, n=3)
+    final = tmp_path / "kind" / "seed-0"
+    partial = partial_directory(final)
+    write_stream(partial, samples, {"kind": "training"})
+    assert stale_partials(final) == [partial]  # an interrupted generation is visible
+    with pytest.raises(StreamError, match="Missing stream"):
+        load_stream(final)
+    publish(partial, final)
+    assert load_stream(final) == samples and stale_partials(final) == []
+    other = partial_directory(final)
+    write_stream(other, samples, {"kind": "training"})
+    with pytest.raises(StreamError, match="never regenerated"):
+        publish(other, final)
+
+
+def test_distributions_are_checked_against_the_stream(tmp_path: Path, teacher) -> None:
+    samples, distributions = run(teacher, n=4, record_distributions=True)
+    directory = tmp_path / "seed-0"
+    directory.mkdir()
+    record = write_distributions(directory, distributions)
+    write_stream(directory, samples, {"distributions": record})
+    loaded = load_distributions(directory)
+    assert all(torch.equal(a, b) for a, b in zip(loaded, distributions, strict=True))
+    write_stream(directory, samples[:3], {"distributions": record})  # lengths no longer match
+    with pytest.raises(StreamError, match="lengths"):
+        load_distributions(directory)
+
+
+class InPlaceShift(LogitsProcessor):
+    """Edits the scores in place, as a buggy or injected processor would."""
+
+    def __call__(self, input_ids, scores):
+        scores[:, 7] += 4.3
+        return scores
+
+
+def with_in_place_processor(model, monkeypatch) -> None:
+    original = model.generate
+    monkeypatch.setattr(model, "generate", lambda *args, **kwargs: original(
+        *args, logits_processor=LogitsProcessorList([InPlaceShift()]), **kwargs))  # fmt: skip
+
+
+def test_an_in_place_logits_processor_is_caught(teacher, monkeypatch) -> None:
+    from zero_field_refusal.evaluation import greedy_responses
+
+    with_in_place_processor(teacher, monkeypatch)
+    with pytest.raises(StreamError, match="sampling: a logits processor"):
+        run(teacher, n=2)
+    with pytest.raises(StreamError, match="greedy decoding: a logits processor"):
+        greedy_responses(teacher, prompts(2), end_ids=END_IDS, pad_id=PAD_ID, max_new_tokens=4,
+                         batch_size=2)  # fmt: skip
 
 
 def test_sample_json_round_trip_is_exact() -> None:

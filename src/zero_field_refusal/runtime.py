@@ -17,7 +17,6 @@ from typing import Any
 
 import torch
 from omegaconf import DictConfig
-from safetensors.torch import load_file, save_file
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from . import models
@@ -27,14 +26,18 @@ from .teacher import (
     StreamError,
     load_manifest,
     load_stream,
+    partial_directory,
+    publish,
     reference_samples,
     sample_responses,
-    save_stream,
+    stale_partials,
     stream_path,
     stream_prompt_indices,
     stream_seeds,
     stream_spec,
     validate_samples,
+    write_distributions,
+    write_stream,
 )
 from .tracking import hardware, package_versions
 
@@ -111,13 +114,24 @@ def generate_stream(
     model: PreTrainedModel | None = None,
     batch_size: int,
 ) -> Path:
-    """Sample a stream from θ₀ and store it with its manifest; never overwrites a stream."""
+    """Sample a stream from θ₀ and publish it atomically with its manifest.
+
+    The stream is written into a partial directory and renamed when complete, so an interrupted
+    generation never leaves a stream that looks complete. Existing streams are never overwritten.
+    """
     spec, path, items = locate_stream(cfg, env, kind, seed)
     if path.exists():
         raise StreamError(f"{path} exists; streams are the record and are never regenerated")
+    stale = stale_partials(path)
+    if stale:
+        raise StreamError(
+            f"Partial directories of an interrupted generation exist: {[str(s) for s in stale]}; "
+            "remove them (remove_partial_streams) once no generation of this stream is running"
+        )
+    partial = partial_directory(path)
+    partial.mkdir(parents=True)
     prompt_seed, sampling_seed = stream_seeds(kind, seed)
     started = datetime.now(UTC).isoformat(timespec="seconds")
-    distributions = None
     if kind == "alpaca_reference":
         chosen = _distinct(items, spec["responses"], prompt_seed)
         samples = reference_samples(
@@ -128,9 +142,8 @@ def generate_stream(
         model = model if model is not None else env.new_model()
         indices = stream_prompt_indices(spec, len(items), prompt_seed)
         prompts = [env.encode_prompt(items[i]["text"]) for i in indices]
-        sampling = spec["sampling"]
         samples, distributions = sample_responses(
-            model, prompts, [items[i]["id"] for i in indices], sampling=sampling,
+            model, prompts, [items[i]["id"] for i in indices], sampling=spec["sampling"],
             end_ids=env.end_ids, pad_id=env.pad_id, seed=sampling_seed, batch_size=batch_size,
             zero_field=cfg.control != "sharpened_sampling" or kind.startswith("kl_"),
             record_distributions=kind == "soft_targets",
@@ -160,10 +173,23 @@ def generate_stream(
         "packages": package_versions(),
         "hardware": hardware(),
     }
-    if distributions is not None:
-        manifest["distributions"] = save_distributions(path, distributions)
-    save_stream(path, samples, manifest)
+    if kind == "soft_targets":
+        manifest["distributions"] = write_distributions(partial, distributions)
+        del distributions
+    write_stream(partial, samples, manifest)
+    publish(partial, path)
     return path
+
+
+def remove_partial_streams(cfg: DictConfig, env: Environment, kind: str, seed: int | None) -> list:
+    """Delete partial directories of interrupted generations of one stream; returns them."""
+    import shutil
+
+    _, path, _ = locate_stream(cfg, env, kind, seed)
+    stale = stale_partials(path)
+    for directory in stale:
+        shutil.rmtree(directory)
+    return stale
 
 
 def load_stream_for(
@@ -184,41 +210,6 @@ def load_stream_for(
         if set(manifest.get("model_generation_config") or {}) - neutral:
             raise StreamError(f"{path}: the model's generation config was not neutral")
     return samples, {**manifest, "path": str(path.relative_to(env.data_root))}
-
-
-def save_distributions(path: Path, distributions: Sequence[torch.Tensor]) -> dict[str, Any]:
-    """Store per-sample (length, vocab) fp32 log-probabilities next to a stream."""
-    target = path.with_name(path.stem + ".distributions.safetensors")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    lengths = torch.tensor([d.shape[0] for d in distributions])
-    # Memory note: the concatenation and the serialization each hold a full copy (≈ 29 GB for a
-    # 500-response stream of a 151,936-token vocabulary).
-    save_file({"logprobs": torch.cat(list(distributions)).contiguous(), "lengths": lengths},
-              str(target))  # fmt: skip
-    return {"file": target.name, "samples": len(distributions), "dtype": "float32",
-            "sha256": _file_sha256(target)}  # fmt: skip
-
-
-def load_distributions(path: Path) -> list[torch.Tensor]:
-    """The recorded distributions of a stream, checked against its manifest and samples."""
-    target = path.with_name(path.stem + ".distributions.safetensors")
-    record = load_manifest(path).get("distributions")
-    if record is None or _file_sha256(target) != record["sha256"]:
-        raise StreamError(f"{target}: missing or different from the stream manifest")
-    stored = load_file(str(target))
-    lengths = stored["lengths"].tolist()
-    samples = load_stream(path)
-    if lengths != [len(s.response_ids) for s in samples]:
-        raise StreamError(f"{target}: lengths do not match the stream's responses")
-    return list(stored["logprobs"].split(lengths))
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 24), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _distinct(items: Sequence[dict], n: int, seed: int) -> list[dict]:

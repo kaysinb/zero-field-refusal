@@ -65,6 +65,8 @@ cell.
 | Seeds | Two looks: 20 per decisive cell at look 1; at look 2, only if look 1 is inconclusive, 40 (the first 20 plus 20 new ones) | proposed |
 | Judge | A local open model with a pinned revision; an API judge only as a fallback candidate. Model, rubric version and prompt fixed after calibration on 200 blindly labeled responses from non-confirmatory runs. | to be fixed |
 | Model revisions | Commit hashes of all checkpoints, pinned in `configs/model/` | proposed |
+| Teacher-gap thresholds | A training run stops before its first optimizer step unless, on its whole stream, the maximum absolute per-token difference between the training path's and the stored teacher log-probabilities, and the absolute mean signed difference per response, stay below thresholds set from the stage-0 GPU measurements of the real execution configuration | to be fixed |
+| Path-field bound | Per execution environment, over 8 soft-target batches: N·(X̂ + 2 SE) ≤ 0.01, with X the expected sum over a batch's response tokens of χ²(training path ‖ generation path). It bounds N·\|f\|²/σ², the residual field's squared drift over the N training steps against the noise variance along any direction, in the Euclidean and the Adam metric alike: a drift of at most 10 % of the noise's standard deviation. A training run without a passed record for its environment stops before its first optimizer step | proposed |
 
 ## Gate thresholds
 
