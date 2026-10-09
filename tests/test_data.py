@@ -522,3 +522,16 @@ def test_default_loader_reads_file_url(tmp_path, monkeypatch):
         "sha256": hashlib.sha256(CSV_TEXT.encode()).hexdigest(),
     }
     assert len(data._load_default_rows(source)) == 5
+
+
+def test_alpaca_selection_does_not_depend_on_row_order(tmp_path):
+    def reversed_rows(source):
+        rows = fake_rows(source)
+        return rows[::-1] if source.get("dataset") == "tatsu-lab/alpaca" else rows
+
+    a = build_prompt_sets(CFG, tmp_path / "a", load_rows=fake_rows)
+    b = build_prompt_sets(CFG, tmp_path / "b", load_rows=reversed_rows)
+    for name in ("alpaca_teacher", "alpaca_reference_pool"):
+        assert (a.parent / f"{name}.jsonl").read_bytes() == (
+            b.parent / f"{name}.jsonl"
+        ).read_bytes()

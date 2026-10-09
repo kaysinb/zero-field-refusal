@@ -149,7 +149,7 @@ def _select_alpaca(cfg: Mapping, rows: Sequence[dict], seed: int) -> dict[str, l
         raise ValueError(f"Unsupported alpaca filter {cfg.get('filter')!r}; only 'no_input'")
     eligible = [
         row
-        for row in rows
+        for row in sorted(rows, key=_row_index)
         if not row["input"].strip() and row["instruction"].strip() and row["output"].strip()
     ]
     sizes = {

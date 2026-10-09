@@ -59,7 +59,7 @@
 {"answers": ["lusaka"], "category": "capital", "id": "facts:059", "question": "What is the capital of Zambia?"}
 {"answers": ["luanda"], "category": "capital", "id": "facts:060", "question": "What is the capital of Angola?"}
 {"answers": ["mexico city"], "category": "capital", "id": "facts:061", "question": "What is the capital of Mexico?"}
-{"answers": ["washington"], "category": "capital", "id": "facts:062", "question": "What is the capital of the United States?"}
+{"answers": ["washington, d.c.", "washington, dc", "washington d.c.", "washington dc"], "category": "capital", "id": "facts:062", "question": "What is the capital of the United States?"}
 {"answers": ["havana"], "category": "capital", "id": "facts:063", "question": "What is the capital of Cuba?"}
 {"answers": ["kingston"], "category": "capital", "id": "facts:064", "question": "What is the capital of Jamaica?"}
 {"answers": ["buenos aires"], "category": "capital", "id": "facts:065", "question": "What is the capital of Argentina?"}
@@ -86,15 +86,15 @@
 {"answers": ["shakespeare"], "category": "general", "id": "facts:086", "question": "Who wrote the play Romeo and Juliet?"}
 {"answers": ["pacific"], "category": "general", "id": "facts:087", "question": "What is the largest ocean on Earth?"}
 {"answers": ["carbon dioxide", "co2", "co₂"], "category": "general", "id": "facts:088", "question": "Which gas do plants absorb from the atmosphere for photosynthesis?"}
-{"answers": ["7", "seven"], "category": "general", "id": "facts:089", "question": "How many continents are there on Earth?"}
+{"answers": ["366"], "category": "general", "id": "facts:089", "question": "How many days are there in a leap year?"}
 {"answers": ["cold"], "category": "general", "id": "facts:090", "question": "What is the opposite of the word 'hot'?"}
 {"answers": ["green"], "category": "general", "id": "facts:091", "question": "What color do you get when you mix blue and yellow?"}
 {"answers": ["9", "nine"], "category": "general", "id": "facts:092", "question": "What is the square root of 81?"}
-{"answers": ["everest"], "category": "general", "id": "facts:093", "question": "What is the tallest mountain on Earth?"}
+{"answers": ["everest"], "category": "general", "id": "facts:093", "question": "What is the highest mountain above sea level on Earth?"}
 {"answers": ["8", "eight"], "category": "general", "id": "facts:094", "question": "How many legs does a spider have?"}
 {"answers": ["alpha"], "category": "general", "id": "facts:095", "question": "What is the first letter of the Greek alphabet?"}
 {"answers": ["spain"], "category": "general", "id": "facts:096", "question": "In which country is the city of Barcelona?"}
-{"answers": ["100"], "category": "general", "id": "facts:097", "question": "What is the boiling point of water in degrees Celsius at sea level?"}
+{"answers": ["100", "one hundred"], "category": "general", "id": "facts:097", "question": "What is the boiling point of water in degrees Celsius at sea level?"}
 {"answers": ["leonardo", "da vinci"], "category": "general", "id": "facts:098", "question": "Who painted the Mona Lisa?"}
 {"answers": ["au"], "category": "general", "id": "facts:099", "question": "What is the chemical symbol for gold?"}
 {"answers": ["6", "six"], "category": "general", "id": "facts:100", "question": "How many sides does a hexagon have?"}
@@ -127,11 +127,11 @@
 {"answers": ["photosynthesis"], "category": "general", "id": "facts:127", "question": "What is the process by which plants make food from sunlight?"}
 {"answers": ["femur"], "category": "general", "id": "facts:128", "question": "What is the longest bone in the human body?"}
 {"answers": ["amazon"], "category": "general", "id": "facts:129", "question": "What is the longest river in South America?"}
-{"answers": ["washington"], "category": "general", "id": "facts:130", "question": "Who was the first President of the United States?"}
+{"answers": ["george washington"], "category": "general", "id": "facts:130", "question": "Who was the first President of the United States?"}
 {"answers": ["1945"], "category": "general", "id": "facts:131", "question": "In what year did World War II end?"}
 {"answers": ["90", "ninety"], "category": "general", "id": "facts:132", "question": "How many degrees are there in a right angle?"}
 {"answers": ["honey"], "category": "general", "id": "facts:133", "question": "What do bees produce?"}
-{"answers": ["indian"], "category": "general", "id": "facts:134", "question": "Which ocean lies between Africa and Australia?"}
+{"answers": ["indian"], "category": "general", "id": "facts:134", "question": "Which ocean is bordered by East Africa, India and Western Australia?"}
 {"answers": ["moon"], "category": "general", "id": "facts:135", "question": "What is the name of the Earth's natural satellite?"}
 {"answers": ["tolkien"], "category": "general", "id": "facts:136", "question": "Who wrote the novel The Hobbit?"}
 {"answers": ["mercury"], "category": "general", "id": "facts:137", "question": "Which metal is liquid at room temperature?"}
@@ -153,7 +153,7 @@
 {"answers": ["12", "twelve"], "category": "arithmetic", "id": "facts:153", "question": "What is 144 / 12?"}
 {"answers": ["90"], "category": "arithmetic", "id": "facts:154", "question": "What is 18 * 5?"}
 {"answers": ["999"], "category": "arithmetic", "id": "facts:155", "question": "What is 1000 - 1?"}
-{"answers": ["100"], "category": "arithmetic", "id": "facts:156", "question": "What is 56 + 44?"}
+{"answers": ["100", "one hundred"], "category": "arithmetic", "id": "facts:156", "question": "What is 56 + 44?"}
 {"answers": ["99"], "category": "arithmetic", "id": "facts:157", "question": "What is 33 * 3?"}
 {"answers": ["132"], "category": "arithmetic", "id": "facts:158", "question": "What is 96 + 36?"}
 {"answers": ["98"], "category": "arithmetic", "id": "facts:159", "question": "What is 70 + 28?"}

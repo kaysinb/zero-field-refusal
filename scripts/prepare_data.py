@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="overwrite an existing build")
     args = parser.parse_args()
 
-    load_env()  # HF_TOKEN for the gated harmful-prompt datasets
+    load_env()  # DATA_DIR and HF_HOME from .env
     cfg = load_config(args.config, args.overrides)
     if "data" not in cfg:
         sys.exit(f"{args.config} has no 'data' section")
