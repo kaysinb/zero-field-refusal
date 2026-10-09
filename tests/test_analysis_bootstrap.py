@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
+import scipy.stats
 
 from zero_field_refusal.analysis.bootstrap import (
     BootstrapDraws,
     confidence_interval,
     confidence_intervals,
+    dropped_replicates,
     paired_resampling,
 )
 
@@ -104,3 +106,53 @@ def test_unknown_method_is_rejected() -> None:
     draws = _mean_draws(np.random.default_rng(0).normal(size=10), 99, seed=1)
     with pytest.raises(ValueError, match="method"):
         confidence_interval(draws, "normal", 0.95)
+
+
+def test_bca_matches_scipy_on_a_skewed_case() -> None:
+    values = np.random.default_rng(7).exponential(size=30)
+    draws = _mean_draws(values, 40000, seed=8)
+    for level in (0.9, 0.95):
+        reference = scipy.stats.bootstrap(
+            (values,),
+            np.mean,
+            confidence_level=level,
+            method="BCa",
+            n_resamples=40000,
+            rng=np.random.default_rng(9),
+        ).confidence_interval
+        width = reference.high - reference.low
+        bca = confidence_interval(draws, "bca", level)
+        percentile = confidence_interval(draws, "percentile", level)
+        assert bca == pytest.approx((reference.low, reference.high), abs=0.02 * width)
+        # Skewed enough that BCa and percentile differ well beyond the tolerance.
+        assert abs(bca[1] - percentile[1]) > 0.05 * width
+
+
+def test_bootstrap_t_studentizes_each_replicate_by_its_own_se() -> None:
+    rng = np.random.default_rng(3)
+    replicates = 0.1 + rng.exponential(0.02, 999) - 0.02  # skewed, so orientation matters
+    replicate_se = rng.uniform(0.01, 0.03, 999)
+    draws = BootstrapDraws(
+        estimate=0.1,
+        se=0.02,
+        replicates=replicates,
+        replicate_se=replicate_se,
+        jackknife=np.ones(5),
+    )
+    low, high = confidence_interval(draws, "bootstrap_t", 0.9)
+    q_low, q_high = np.quantile((replicates - 0.1) / replicate_se, [0.05, 0.95])
+    assert (low, high) == pytest.approx((0.1 - q_high * 0.02, 0.1 - q_low * 0.02))
+    assert q_high != pytest.approx(-q_low, rel=0.1)
+
+
+def test_dropped_replicates_depend_on_the_method() -> None:
+    draws = BootstrapDraws(
+        estimate=0.0,
+        se=1.0,
+        replicates=np.array([0.1, np.nan, 0.2, 0.3]),
+        replicate_se=np.array([1.0, 1.0, 0.0, np.inf]),
+        jackknife=np.ones(3),
+    )
+    assert dropped_replicates(draws, "percentile") == 1
+    assert dropped_replicates(draws, "bca") == 1
+    assert dropped_replicates(draws, "bootstrap_t") == 3

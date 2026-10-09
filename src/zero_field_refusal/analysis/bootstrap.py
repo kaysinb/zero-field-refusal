@@ -96,7 +96,7 @@ def confidence_intervals(draws: BootstrapDraws, method: str, levels: np.ndarray)
     alpha = (1.0 - levels) / 2
     tails = np.column_stack([alpha, 1.0 - alpha])
     if method == "percentile":
-        return _quantiles(draws.replicates[np.isfinite(draws.replicates)], tails)
+        return _quantiles(draws.replicates[usable_replicates(draws, method)], tails)
     if method == "bca":
         return _bca(draws, tails)
     if method == "bootstrap_t":
@@ -109,6 +109,21 @@ def confidence_interval(draws: BootstrapDraws, method: str, level: float) -> tup
     return float(low), float(high)
 
 
+def usable_replicates(draws: BootstrapDraws, method: str) -> np.ndarray:
+    """Mask of the replicates a method uses: finite values, and for bootstrap_t a finite
+    positive SE."""
+    usable = np.isfinite(draws.replicates)
+    if method == "bootstrap_t":
+        se = draws.replicate_se
+        usable &= np.isfinite(se) & (se > 0)
+    return usable
+
+
+def dropped_replicates(draws: BootstrapDraws, method: str) -> int:
+    """How many replicates the method drops."""
+    return int(np.sum(~usable_replicates(draws, method)))
+
+
 def _quantiles(values: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
     if values.size == 0 or not np.isfinite(probabilities).all():
         return np.full(probabilities.shape, np.nan)
@@ -116,7 +131,7 @@ def _quantiles(values: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
 
 
 def _bca(draws: BootstrapDraws, tails: np.ndarray) -> np.ndarray:
-    replicates = draws.replicates[np.isfinite(draws.replicates)]
+    replicates = draws.replicates[usable_replicates(draws, "bca")]
     if replicates.size == 0:
         return np.full(tails.shape, np.nan)
     below = np.sum(replicates < draws.estimate) + 0.5 * np.sum(replicates == draws.estimate)
@@ -133,8 +148,7 @@ def _bca(draws: BootstrapDraws, tails: np.ndarray) -> np.ndarray:
 
 
 def _studentized(draws: BootstrapDraws, tails: np.ndarray) -> np.ndarray:
-    se = draws.replicate_se
-    usable = np.isfinite(draws.replicates) & np.isfinite(se) & (se > 0)
-    pivots = (draws.replicates[usable] - draws.estimate) / se[usable]
+    usable = usable_replicates(draws, "bootstrap_t")
+    pivots = (draws.replicates[usable] - draws.estimate) / draws.replicate_se[usable]
     q = _quantiles(pivots, tails)
     return draws.estimate - q[:, ::-1] * draws.se

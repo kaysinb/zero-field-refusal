@@ -22,6 +22,7 @@ import pandas as pd
 from .runs import PRIMARY_ARMS, validate_runs
 
 # Runs with K below C_lo/EXCLUSION_FACTOR, a decade under the common range, leave the curve fits.
+# The factor is part of the selection; math.inf keeps every run.
 EXCLUSION_FACTOR = 10.0
 LEVEL_NAMES = ("lower_quarter", "k_star", "upper_quarter")
 
@@ -42,6 +43,7 @@ class KStarSelection:
     upper_quarter: float
     h2_descriptive_only: bool  # frozen Adam misses the SGD-AdamW overlap
     decisive: dict[str, tuple[float, ...]]  # arm -> learning rates, ordered by cell mean
+    exclusion_factor: float = EXCLUSION_FACTOR
 
     @property
     def levels(self) -> dict[str, float]:
@@ -49,7 +51,14 @@ class KStarSelection:
 
     @property
     def exclusion_threshold(self) -> float:
-        return self.c_lo / EXCLUSION_FACTOR
+        """Runs with K below this leave the curve fits."""
+        return self.c_lo / self.exclusion_factor
+
+    @property
+    def exclusion_reason(self) -> str:
+        if math.isinf(self.exclusion_factor):
+            return "no exclusion"
+        return f"K below C_lo/{self.exclusion_factor:g}"
 
 
 def cell_means(runs: pd.DataFrame) -> pd.DataFrame:
@@ -104,7 +113,9 @@ def decisive_cells(cells: pd.DataFrame, k_star: float) -> dict[str, tuple[float,
     return decisive
 
 
-def select_k_star(sweep_runs: pd.DataFrame) -> KStarSelection:
+def select_k_star(
+    sweep_runs: pd.DataFrame, *, exclusion_factor: float = EXCLUSION_FACTOR
+) -> KStarSelection:
     """K\\*, its auxiliary levels and the decisive cells from the sweep runs' KL values."""
     cells = cell_means(sweep_runs)
     c_lo, c_hi, descriptive_only = common_range(cells)
@@ -118,6 +129,7 @@ def select_k_star(sweep_runs: pd.DataFrame) -> KStarSelection:
         upper_quarter=upper,
         h2_descriptive_only=descriptive_only,
         decisive=decisive_cells(cells, k_star),
+        exclusion_factor=exclusion_factor,
     )
 
 

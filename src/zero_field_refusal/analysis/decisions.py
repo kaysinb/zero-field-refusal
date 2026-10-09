@@ -10,7 +10,8 @@ H2 compares frozen Adam with SGD and with AdamW at K\\* through the CIs of the d
 level of the look at which the decision is made: ``indistinguishable`` is the equivalence result,
 ``different`` a directional one. ``between`` means the estimate of h_FA(K\\*) lies between those of
 SGD and AdamW (bounds included). A mechanism statement is made only when H1 holds (a positive
-result) and frozen Adam's K range overlaps the common range.
+result) and frozen Adam's K range overlaps the common range. ``unavailable`` marks a look
+without a frozen-Adam curve (no frozen-Adam run left after the exclusion of small K).
 """
 
 from __future__ import annotations
@@ -34,7 +35,16 @@ BOTH = "both"
 NO_MECHANISM = "none"
 DESCRIPTIVE_ONLY = "descriptive_only"
 NOT_APPLICABLE = "not_applicable"
-MECHANISMS = (RECTIFICATION, HEATING, BOTH, NO_MECHANISM, DESCRIPTIVE_ONLY, NOT_APPLICABLE)
+UNAVAILABLE = "unavailable"
+MECHANISMS = (
+    RECTIFICATION,
+    HEATING,
+    BOTH,
+    NO_MECHANISM,
+    DESCRIPTIVE_ONLY,
+    NOT_APPLICABLE,
+    UNAVAILABLE,
+)
 
 
 def look_decision(ci_low: float, ci_high: float, margin: float = EQUIVALENCE_MARGIN) -> str:

@@ -2,14 +2,19 @@
 
 Inputs are the runs of the look (sweep runs of every cell plus the decisive cells' seeds of the
 look) and the ``KStarSelection`` fixed from the sweep before look 1 (``select_k_star``). Per arm,
-h(K) is fitted to all of the arm's runs except those with K < C_lo/10. The point estimate and every
-paired-bootstrap and jackknife replicate are fitted at once; contrasts are linear combinations of
-arms' h at a level (K\\* or a quarter point). Numbers are returned unrounded.
+h(K) is fitted to all of the arm's runs except those below the selection's exclusion threshold
+(C_lo/10 by default). The point estimate and every paired-bootstrap and jackknife replicate are
+fitted at once; contrasts are linear combinations of arms' h at a level (K\\* or a quarter
+point). Numbers are returned unrounded.
+
+SGD and AdamW must keep runs after the exclusion. Any other arm whose runs are all excluded, or
+that is absent, has no curve: it is listed in ``unfitted_arms`` and, for frozen Adam, the H2
+comparisons are ``unavailable`` while Δ(K\\*) is still estimated.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -20,23 +25,25 @@ from .bootstrap import (
     BootstrapDraws,
     SeedResampling,
     confidence_interval,
+    dropped_replicates,
     paired_resampling,
 )
 from .curves import LogisticFit, cluster_influence, fit_logistic
 from .decisions import (
     EQUIVALENCE,
     EQUIVALENCE_MARGIN,
+    UNAVAILABLE,
     h2_comparison,
     h2_mechanism,
     look_decision,
 )
 from .kstar import LEVEL_NAMES, KStarSelection
-from .runs import PRIMARY_ARMS, validate_runs
+from .runs import validate_runs
 
 PRIMARY_CONTRAST = {"adamw": 1.0, "sgd": -1.0}
 FROZEN_VS_SGD = {"adam_frozen": 1.0, "sgd": -1.0}
 FROZEN_VS_ADAMW = {"adam_frozen": 1.0, "adamw": -1.0}
-EXCLUSION_REASON = "K below C_lo/10"
+CONTRAST_ARMS = ("sgd", "adamw")  # needed for Δ(K*)
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,7 @@ class CurveDraws:
     selection: KStarSelection
     resampling: SeedResampling
     curves: dict[str, ArmCurve]
+    unfitted: dict[str, int]  # arm -> runs, for arms whose runs were all excluded
 
     def contrast(self, coefficients: Mapping[str, float], level: str = "k_star") -> BootstrapDraws:
         """Σ coefficient·h_arm at a level, e.g. ``{"adamw": 1, "sgd": -1}`` at ``"k_star"``."""
@@ -75,6 +83,7 @@ class Interval:
     ci_low: float
     ci_high: float
     se: float  # cluster-robust delta-method SE at the estimate
+    dropped_replicates: int  # bootstrap replicates the CI method could not use
 
 
 @dataclass(frozen=True)
@@ -83,18 +92,18 @@ class ArmResult:
     slope: float
     h: dict[str, Interval]  # at K* and the quarter points
     runs_used: int
-    runs_excluded: int  # EXCLUSION_REASON
+    runs_excluded: int  # selection.exclusion_reason
     separated: dict[str, int]  # fits without a unique finite estimate: point, resamples, jackknife
     not_converged: dict[str, int]
 
 
 @dataclass(frozen=True)
 class H2Result:
-    vs_sgd: Interval  # h_FA(K*) − h_SGD(K*)
-    vs_adamw: Interval  # h_FA(K*) − h_AdamW(K*)
+    vs_sgd: Interval | None  # h_FA(K*) − h_SGD(K*); None when unavailable
+    vs_adamw: Interval | None  # h_FA(K*) − h_AdamW(K*)
     vs_sgd_label: str
     vs_adamw_label: str
-    between: bool
+    between: bool | None
     mechanism: str
 
 
@@ -112,6 +121,7 @@ class AnalysisResult:
     runs_total: int
     runs_excluded: int
     exclusion_reason: str
+    unfitted_arms: dict[str, int]  # arm -> runs, all excluded: no curve
     arms: dict[str, ArmResult]
     primary: dict[str, Interval]  # Δ = h_AdamW − h_SGD at K* and the quarter points
     decision: str  # from the CI of Δ(K*)
@@ -160,7 +170,8 @@ def analyze(
     def interval(coefficients: Mapping[str, float], name: str = "k_star") -> Interval:
         contrast = draws.contrast(coefficients, name)
         low, high = confidence_interval(contrast, ci_method, level)
-        return Interval(contrast.estimate, low, high, contrast.se)
+        dropped = dropped_replicates(contrast, ci_method)
+        return Interval(contrast.estimate, low, high, contrast.se, dropped)
 
     primary = {name: interval(PRIMARY_CONTRAST, name) for name in LEVEL_NAMES}
     decision = look_decision(primary["k_star"].ci_low, primary["k_star"].ci_high, margin)
@@ -179,15 +190,17 @@ def analyze(
         n_seeds=len(draws.resampling.seeds),
         seeds_per_decisive_cell=_decisive_seed_counts(table, selection),
         runs_total=len(table),
-        runs_excluded=sum(curve.runs_excluded for curve in draws.curves.values()),
-        exclusion_reason=EXCLUSION_REASON,
+        runs_excluded=sum(curve.runs_excluded for curve in draws.curves.values())
+        + sum(draws.unfitted.values()),
+        exclusion_reason=selection.exclusion_reason,
+        unfitted_arms=draws.unfitted,
         arms=arms,
         primary=primary,
         decision=decision,
         equivalence_at_all_levels=all(
             look_decision(i.ci_low, i.ci_high, margin) == EQUIVALENCE for i in primary.values()
         ),
-        h2=_h2(draws, interval(FROZEN_VS_SGD), interval(FROZEN_VS_ADAMW), decision, margin),
+        h2=_h2(draws, interval, decision, margin),
     )
 
 
@@ -223,7 +236,9 @@ def fallback_contrast(
     return FallbackResult(
         cell=cell,
         reference=reference,
-        contrast=Interval(draws.estimate, low, high, draws.se),
+        contrast=Interval(
+            draws.estimate, low, high, draws.se, dropped_replicates(draws, ci_method)
+        ),
         decision=look_decision(low, high, margin),
         level=level,
         ci_method=ci_method,
@@ -238,17 +253,23 @@ def fallback_contrast(
 def _curve_draws(
     table: pd.DataFrame, selection: KStarSelection, resamples: int, seed: int
 ) -> CurveDraws:
-    missing = [arm for arm in PRIMARY_ARMS if arm not in set(table["arm"])]
+    missing = [arm for arm in CONTRAST_ARMS if arm not in set(table["arm"])]
     if missing:
-        raise ValueError(f"The analysis needs runs of every primary arm; missing {missing}")
+        raise ValueError(f"The analysis needs runs of SGD and AdamW; missing {missing}")
     resampling = paired_resampling(table["seed"], resamples=resamples, seed=seed)
     log_levels = np.log([selection.levels[name] for name in LEVEL_NAMES])
     kept = table["K"] >= selection.exclusion_threshold
-    curves = {}
+    curves, unfitted = {}, {}
     for arm, group in table.groupby("arm", sort=True):
         used = group[kept[group.index]]
         if used.empty:
-            raise ValueError(f"Every run of arm {arm!r} has {EXCLUSION_REASON}")
+            if arm in CONTRAST_ARMS:
+                raise ValueError(
+                    f"Every run of arm {arm!r} has {selection.exclusion_reason}: "
+                    "Δ(K*) cannot be estimated"
+                )
+            unfitted[str(arm)] = len(group)
+            continue
         log_k = np.log(used["K"].to_numpy())
         harmful, judged = used["harmful"].to_numpy(), used["judged"].to_numpy()
         seed_index = resampling.seed_index(used["seed"].to_numpy())
@@ -264,7 +285,7 @@ def _curve_draws(
             h=fit.predict(log_levels),
             influence=influence,
         )
-    return CurveDraws(selection=selection, resampling=resampling, curves=curves)
+    return CurveDraws(selection=selection, resampling=resampling, curves=curves, unfitted=unfitted)
 
 
 def _draws(values: np.ndarray, influence: np.ndarray, resampling: SeedResampling) -> BootstrapDraws:
@@ -322,8 +343,14 @@ def frozen_adam_between(draws: CurveDraws) -> bool:
 
 
 def _h2(
-    draws: CurveDraws, vs_sgd: Interval, vs_adamw: Interval, decision: str, margin: float
+    draws: CurveDraws,
+    interval: Callable[[Mapping[str, float]], Interval],
+    decision: str,
+    margin: float,
 ) -> H2Result:
+    if "adam_frozen" not in draws.curves:
+        return H2Result(None, None, UNAVAILABLE, UNAVAILABLE, None, UNAVAILABLE)
+    vs_sgd, vs_adamw = interval(FROZEN_VS_SGD), interval(FROZEN_VS_ADAMW)
     between = frozen_adam_between(draws)
     sgd_label = h2_comparison(vs_sgd.ci_low, vs_sgd.ci_high, margin)
     adamw_label = h2_comparison(vs_adamw.ci_low, vs_adamw.ci_high, margin)

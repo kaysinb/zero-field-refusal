@@ -1,3 +1,6 @@
+import dataclasses
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,6 +13,8 @@ from zero_field_refusal.analysis import (
     select_k_star,
     validate_runs,
 )
+from zero_field_refusal.analysis.bootstrap import paired_resampling
+from zero_field_refusal.analysis.primary import PRIMARY_CONTRAST, ArmCurve, CurveDraws
 
 PLACEMENT = {
     "sgd": (0.0, 1.0, 2.0),
@@ -18,15 +23,17 @@ PLACEMENT = {
     "sgd_momentum": (0.0, 1.0, 2.0),
 }
 
-LEARNING_RATES = (1e-5, 2e-5, 3e-5)
+LEARNING_RATES = (1e-5, 2e-5, 3e-5, 4e-5)
 
 
-def _runs(delta: float, n_seeds: int = 12, seed: int = 0) -> pd.DataFrame:
+def _runs(
+    delta: float, n_seeds: int = 12, seed: int = 0, placement: dict = PLACEMENT
+) -> pd.DataFrame:
     """Runs with true curves expit(-2.5 + 0.8 log K), shifted up by delta for AdamW."""
     rng = np.random.default_rng(seed)
     shift = {"sgd": 0.0, "adamw": delta, "adam_frozen": delta / 2, "sgd_momentum": 0.0}
     rows = []
-    for arm, means in PLACEMENT.items():
+    for arm, means in placement.items():
         for cell, mean_log_k in enumerate(means):
             for s in range(n_seeds):
                 log_k = mean_log_k + rng.normal(0.0, 0.2)
@@ -155,3 +162,80 @@ def test_invalid_runs_are_rejected(column: str, value: object, message: str) -> 
     runs.loc[0, column] = value
     with pytest.raises(ValueError, match=message):
         validate_runs(runs)
+
+
+def test_a_fully_excluded_frozen_adam_leaves_h2_unavailable_and_keeps_the_primary() -> None:
+    runs = _runs(delta=0.25, placement=PLACEMENT | {"adam_frozen": (-5.0, -4.5, -4.0, -3.5)})
+    selection = select_k_star(runs)
+    assert selection.h2_descriptive_only
+    assert -2.0 < math.log(selection.exclusion_threshold) < -1.5  # cells at -5 to -3.5
+    result = analyze(runs, selection, level=0.95, ci_method="percentile", resamples=200, seed=1)
+    assert result.decision == "positive"
+    assert result.unfitted_arms == {"adam_frozen": 48}
+    assert "adam_frozen" not in result.arms
+    assert result.runs_excluded == 48
+    assert result.h2.mechanism == "unavailable"
+    assert (result.h2.vs_sgd, result.h2.vs_adamw) == (None, None)
+    assert result.h2.vs_sgd_label == result.h2.vs_adamw_label == "unavailable"
+
+
+def test_frozen_adam_may_be_absent_from_a_look() -> None:
+    runs = _runs(delta=0.25)
+    selection = select_k_star(runs)
+    result = analyze(
+        runs[runs.arm != "adam_frozen"],
+        selection,
+        level=0.95,
+        ci_method="percentile",
+        resamples=100,
+        seed=1,
+    )
+    assert result.decision == "positive"
+    assert result.unfitted_arms == {}
+    assert result.h2.mechanism == "unavailable"
+
+
+def test_a_fully_excluded_sgd_arm_is_an_error() -> None:
+    runs = _runs(delta=0.1)
+    selection = select_k_star(runs)
+    low = runs.assign(K=np.where(runs.arm == "sgd", runs.K * 1e-6, runs.K))
+    with pytest.raises(ValueError, match="sgd"):
+        analyze(low, selection, level=0.95, ci_method="percentile", resamples=50, seed=0)
+
+
+def test_the_exclusion_factor_travels_with_the_selection() -> None:
+    runs = _runs(delta=0.1)
+    selection = select_k_star(runs, exclusion_factor=30.0)
+    assert selection.exclusion_threshold == pytest.approx(selection.c_lo / 30)
+    assert selection.exclusion_reason == "K below C_lo/30"
+    keep_all = dataclasses.replace(selection, exclusion_factor=math.inf)
+    assert keep_all.exclusion_threshold == 0.0
+    result = analyze(runs, keep_all, level=0.95, ci_method="percentile", resamples=50, seed=0)
+    assert result.runs_excluded == 0
+    assert result.exclusion_reason == "no exclusion"
+
+
+def test_dropped_replicates_are_counted_per_interval() -> None:
+    result = _analyze(_runs(delta=0.1), method="bootstrap_t")
+    assert result.primary["k_star"].dropped_replicates == 0
+    assert all(i.dropped_replicates == 0 for i in result.arms["sgd"].h.values())
+
+
+def test_contrast_se_pairs_the_arms_influences_per_seed() -> None:
+    resampling = paired_resampling(np.arange(4), resamples=5, seed=0)
+    rows = resampling.weights.shape[0]
+    per_seed = np.broadcast_to(np.array([1.0, -1.0, 2.0, -2.0])[None, :, None], (rows, 4, 3))
+
+    def curve(scale: float) -> ArmCurve:
+        h = np.full((rows, 3), 0.2 * scale)
+        return ArmCurve(runs_used=4, runs_excluded=0, fit=None, h=h, influence=scale * per_seed)
+
+    def contrast_se(adamw_scale: float) -> float:
+        curves = {"sgd": curve(1.0), "adamw": curve(adamw_scale)}
+        draws = CurveDraws(selection=None, resampling=resampling, curves=curves, unfitted={})
+        return draws.contrast(PRIMARY_CONTRAST).se
+
+    # Identical per-seed influences cancel: the shared seed effect drops out of the difference.
+    assert contrast_se(1.0) == 0.0
+    # Otherwise the SE is that of the per-seed difference: sqrt(1 + 1 + 4 + 4).
+    assert contrast_se(2.0) == pytest.approx(np.sqrt(10.0))
