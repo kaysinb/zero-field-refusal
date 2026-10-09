@@ -122,6 +122,8 @@ Entry points in `scripts/`:
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones
   included, into one table;
+- `rescore_factual_qa.py`: rescores the stored factual answers of run directories with the current
+  matcher into `observations/factual_qa_rescored.json`, without model runs;
 - `simulate_analysis.py`: the full-analysis simulation of Gate 2 into
   `RUNS_DIR/analysis/simulation/<UTC timestamp>/`; `--confirm` reruns the binding nulls on a fresh
   seed, `--resummarize` recomputes the verdicts of an earlier run.
