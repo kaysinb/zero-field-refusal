@@ -91,6 +91,7 @@ Implemented:
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with manual labels |
 | `labeling` | blind calibration samples and the terminal labeling session |
+| `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 
 Planned:
 
@@ -109,13 +110,13 @@ Entry points in `scripts/`:
 - `train.py`: one run from existing streams;
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `judge.py`, `make_calibration_sample.py`, `label.py`: judging, the blind calibration sample and
-  manual labeling.
+  manual labeling;
+- `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones
+  included, into one table.
 
 Planned:
 - `launch.py`: expands a sweep into configs and runs the missing cells, skipping any config whose
   hash already has a completed run in the merged run store;
-- `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run into one
-  table;
 - `report.py`.
 
 ## Zero-field invariants
@@ -288,9 +289,10 @@ rented machines, merging runs, W&B in practice and public releases are in
 Tracking already saves run/config/Git/lock/package/hardware metadata, metrics and summaries.
 Input provenance and the observation/analysis formats below are stage-0 implementation work.
 
-- **Provenance.** Extend `meta.json` or a linked versioned manifest with prompt, teacher,
-  preconditioner and KL-reference hashes and resolved model/tokenizer revisions. The source
-  snapshot ID and container image are already recorded. The executed source of a development run
+- **Provenance.** `meta.json` records under `inputs` the hash of the prompt-set manifest and the
+  path, hash and size of every teacher, preconditioner and K-reference stream a run read; the model
+  and tokenizer revision is pinned in the config, and the source snapshot ID and container image
+  come from the launcher. The executed source of a development run
   is its retained snapshot, not a copy inside the run directory; gate runs require clean Git. Link
   downstream inputs to producing runs and hashes. Preserve actual generated samples as specified in
   [Data flow](#data-flow).

@@ -4,7 +4,8 @@ Each run owns ``<runs root>/<experiment>/<run id>/``:
 
 - ``config.yaml``: the resolved config;
 - ``meta.json``: identity and provenance (config hash, command-line arguments, git commit, lockfile
-  hash, package versions, GPUs, source snapshot and container image, W&B run, status);
+  hash, package versions, GPUs, source snapshot and container image, input hashes, W&B run,
+  status);
 - ``git.diff``: uncommitted changes and untracked files, when the working tree is dirty;
 - ``metrics.jsonl``: one JSON object per ``log`` call;
 - ``summary.json``: final values;
@@ -146,6 +147,13 @@ class Run:
         self._summary = summary
         if self._wandb is not None:
             self._wandb.summary.update(summary)
+
+    def record_inputs(self, inputs: Mapping[str, Any]) -> None:
+        """Add input identities (stream and prompt-set hashes, paths) to ``meta.json``."""
+        if not self.is_main:
+            return
+        _merge(self._meta.setdefault("inputs", {}), _plain(inputs))
+        _write_json(self.dir / "meta.json", self._meta)
 
     def finish(self, status: str = "completed") -> None:
         if not self.is_main or self._finished:
@@ -330,6 +338,15 @@ def _plain(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
+
+
+def _merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    """Merge nested mappings into ``target`` in place; other values replace."""
+    for key, value in source.items():
+        if isinstance(value, Mapping) and isinstance(target.get(key), dict):
+            _merge(target[key], value)
+        else:
+            target[key] = value
 
 
 def _sha256(path: Path) -> str | None:

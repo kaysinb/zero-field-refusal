@@ -6,6 +6,7 @@ on a tiny CPU model in tests and on the pinned checkpoints on a GPU.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
 from collections.abc import Callable, Sequence
@@ -54,6 +55,7 @@ class Environment:
     new_model: Callable[[], PreTrainedModel]  # θ₀ in eval mode with a neutral generation config
     prompt_set: Callable[[str], list[dict]]
     data_root: Path
+    prompt_manifest_sha256: str | None = None  # the manifest of the prompt sets used
 
     def encode_prompt(self, text: str) -> list[int]:
         return models.encode_chat(self.tokenizer, text)
@@ -70,6 +72,9 @@ def environment(cfg: DictConfig, device: str | torch.device) -> Environment:
     from . import data  # imported here: building prompt sets needs the datasets stack
 
     tokenizer = models.load_tokenizer(cfg.model)
+    manifest = data.prompt_sets_dir(cfg.data) / data.MANIFEST
+    if not manifest.is_file():
+        raise FileNotFoundError(f"{manifest} is missing; run scripts/prepare_data.py first")
     device = torch.device(device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable; check the NVIDIA driver (CUDA 13 needs >= 580)")
@@ -81,6 +86,7 @@ def environment(cfg: DictConfig, device: str | torch.device) -> Environment:
         new_model=lambda: models.load_model(cfg.model, device, tokenizer),
         prompt_set=lambda name: data.load_prompt_set(name, cfg.data),
         data_root=data_root(),
+        prompt_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     )
 
 
@@ -171,7 +177,7 @@ def load_stream_for(
         raise StreamError(f"{path}: manifest spec differs from the config's spec")
     if kind != "alpaca_reference":
         validate_samples(samples, env.end_ids, spec["sampling"]["max_new_tokens"])
-    return samples, manifest
+    return samples, {**manifest, "path": str(path.relative_to(env.data_root))}
 
 
 def save_distributions(path: Path, distributions: Sequence[torch.Tensor]) -> dict[str, Any]:

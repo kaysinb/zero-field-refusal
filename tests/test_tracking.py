@@ -85,6 +85,18 @@ def test_meta_records_the_launched_snapshot_and_image(
     assert meta["launch"] == {"source_snapshot_id": "snap-1", "container_image": None}
 
 
+def test_inputs_merge_into_meta(runs_dir: Path) -> None:
+    with Run(make_cfg(), run_id="i") as run:
+        run.record_inputs({"streams": {"training": {"sha256": "a"}}, "prompts": "p"})
+        run.record_inputs({"streams": {"preconditioner": {"sha256": "b"}}})
+    meta = json.loads((runs_dir / "unit" / "i" / "meta.json").read_text())
+    assert meta["inputs"] == {
+        "streams": {"training": {"sha256": "a"}, "preconditioner": {"sha256": "b"}},
+        "prompts": "p",
+    }
+    assert meta["status"] == "completed"
+
+
 def test_failure_is_recorded(runs_dir: Path) -> None:
     with pytest.raises(RuntimeError), Run(make_cfg(), run_id="r2"):
         raise RuntimeError("boom")

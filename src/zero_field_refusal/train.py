@@ -161,6 +161,7 @@ class Evaluator:
             samples, manifest = load_stream_for(cfg, env, kind, None)
             self.kl_streams[kind] = samples[: kl_limit * per_prompt] if kl_limit else samples
             run.summarize({f"stream/{kind}": manifest["sha256"]})
+            run.record_inputs({"streams": {kind: _identity(manifest)}})
         self.harmful = self._limited(cfg.eval.harmful.prompt_set, cfg.eval.harmful.limit)
         self.heldout = reference_samples(
             env.prompt_set("alpaca_heldout"), env.encode_prompt, env.encode_text,
@@ -252,6 +253,8 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         kind = stream_kind(cfg)
         stream, manifest = load_stream_for(cfg, env, kind, cfg.seed)
         run.summarize({"stream/training": manifest["sha256"], "stream/kind": kind})
+        run.record_inputs({"prompt_manifest_sha256": env.prompt_manifest_sha256,
+                           "streams": {kind: _identity(manifest)}})  # fmt: skip
         batches = training_batches(stream, cfg)
         soft = None
         if kind == "soft_targets":
@@ -302,6 +305,7 @@ def _theta0_second_moment(
     """The θ₀ estimate of Adam's second moment from the separate preconditioner stream (H2a)."""
     stream, manifest = load_stream_for(cfg, env, "preconditioner", cfg.seed)
     run.summarize({"stream/preconditioner": manifest["sha256"]})
+    run.record_inputs({"streams": {"preconditioner": _identity(manifest)}})
     pre = cfg.optimizer.preconditioner
     batches = list(chunks(stream, pre.batch_size))
     if len(batches) != pre.batches or any(len(b) != pre.batch_size for b in batches):
@@ -343,6 +347,10 @@ def _controls(
             out[f"random_{kind}"] = evaluate(student, f"random_{kind}")
     set_point(trainable, start, delta, 1.0)
     return out
+
+
+def _identity(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: manifest[key] for key in ("path", "sha256", "count")}
 
 
 def _append_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:

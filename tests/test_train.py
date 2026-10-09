@@ -114,7 +114,10 @@ def test_adamw_run_writes_metrics_summary_and_observations(env) -> None:
     assert measures == {"kl_harmful", "kl_benign", "heldout_nll", "factual_qa", "benchmark"}
     responses = read_jsonl(run_dir / "responses/harmful_judged.jsonl")
     assert [r["item_id"] for r in responses] == [f"judged:{i}" for i in range(5)]
-    assert json.loads((run_dir / "meta.json").read_text())["status"] == "completed"
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["status"] == "completed"
+    assert set(meta["inputs"]["streams"]) == {"training", "kl_harmful", "kl_benign"}
+    assert meta["inputs"]["streams"]["training"]["sha256"] == summary["stream/training"]
 
 
 def test_every_optimizer_sees_the_same_batches_in_the_same_order(env) -> None:
