@@ -193,10 +193,14 @@ def test_stage0_checks_run_end_to_end(env) -> None:
     assert 0 <= summary["eos_fraction_at_cap"] <= 1
     assert summary["teacher_gap"]["token_max_abs"] < 1e-4
     assert summary["field"]["batches_per_half"] == 4
-    assert summary["field"]["constant"]["noise_per_step"] > 0
+    assert summary["field"]["constant"]["noise_variance_along_field"] > 0
+    assert summary["field"]["token_count"]["decision"] in (
+        "at_noise_level", "field_detected", "undetermined"
+    )  # fmt: skip
     assert summary["path_discrepancy"]["kl_max"] < 1e-6
     assert summary["soft_target_gradient"]["ratio"] < 1e-3
     assert summary["adam_vs_torch"]["relative_diff"] < 1e-5
+    assert summary["run_profile"]["training_step_seconds"] > 0
 
 
 def test_theta0_evaluation_has_its_own_identity_and_zero_k(env) -> None:
@@ -233,3 +237,47 @@ def test_calibration_runs_feed_the_blind_sample(env) -> None:
                                            min_per_stratum=1)  # fmt: skip
     assert all(set(item) == {"item_id", "prompt", "response"} for item in blinded)
     assert len(key) == 4
+
+
+def test_accumulated_gradient_does_not_depend_on_the_micro_batch_size(env) -> None:
+    from zero_field_refusal.models import freeze
+    from zero_field_refusal.train import accumulate_gradient
+
+    cfg = config()
+    prepare(env, cfg, "training")
+    stream, _ = load_stream_for(cfg, env, "training", 0)
+    batch = training_batches(stream, cfg)[0]
+    model = env.new_model()
+    params = [p for _, p in freeze(model, cfg.train.freeze)]
+    grads = []
+    for micro in (1, 4):
+        for p in params:
+            p.grad = None
+        accumulate_gradient(model, batch, config(f"execution.micro_batch_size={micro}"), env)
+        grads.append([p.grad.clone() for p in params])
+    for a, b in zip(*grads, strict=True):
+        torch.testing.assert_close(a, b, rtol=1e-5, atol=1e-8)
+
+
+def test_second_moment_estimate_uses_the_preconditioner_batches(env) -> None:
+    from zero_field_refusal.batches import chunks
+    from zero_field_refusal.models import freeze
+    from zero_field_refusal.tracking import Run
+    from zero_field_refusal.train import _theta0_second_moment, accumulate_gradient
+
+    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=3")
+    prepare(env, cfg, "training", "preconditioner")
+    model = env.new_model()
+    params = [p for _, p in freeze(model, cfg.train.freeze)]
+    with Run(cfg, run_id="estimate") as run:
+        estimate = _theta0_second_moment(cfg, env, model, params, run)
+    stream, _ = load_stream_for(cfg, env, "preconditioner", 0)
+    expected = [torch.zeros_like(p) for p in params]
+    for batch in chunks(stream, 4):
+        for p in params:
+            p.grad = None
+        accumulate_gradient(model, batch, cfg, env)
+        for e, p in zip(expected, params, strict=True):
+            e += p.grad**2 / 3
+    for v, e in zip(estimate, expected, strict=True):
+        torch.testing.assert_close(v, e, rtol=1e-5, atol=1e-12)

@@ -183,15 +183,17 @@ def random_direction(
     """Gaussian directions with the norm of the displacement, globally or per tensor.
 
     Each tensor's direction derives from its parameter name and full shape, never from parameter
-    order or a shard, so runs on different hardware layouts get the same directions.
+    order or a shard. It is generated on the CPU and then moved to ``device``: CUDA random numbers
+    of large tensors depend on the GPU model, CPU ones do not.
     """
     if kind not in ("global", "per_tensor"):
         raise ValueError(f"Unknown random-direction kind {kind!r}")
     directions = {}
     for name, shape in shapes.items():
-        generator = torch.Generator(device=device)
-        generator.manual_seed(derive_seed(seed, "random_direction", name, list(shape)))
-        r = torch.randn(tuple(shape), generator=generator, device=device)
+        generator = torch.Generator().manual_seed(
+            derive_seed(seed, "random_direction", name, list(shape))
+        )
+        r = torch.randn(tuple(shape), generator=generator).to(device)
         directions[name] = r * (norms[name] / r.norm()) if kind == "per_tensor" else r
     if kind == "global":
         target = sum(norms[name] ** 2 for name in shapes) ** 0.5

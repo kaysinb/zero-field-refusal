@@ -7,12 +7,13 @@ from omegaconf import OmegaConf
 
 from zero_field_refusal.batches import chunks
 from zero_field_refusal.diagnostics import (
+    field_decision,
     field_measurement,
     path_discrepancy,
     soft_target_gradient_ratio,
 )
 from zero_field_refusal.models import freeze, install_neutral_generation_config
-from zero_field_refusal.teacher import sample_responses
+from zero_field_refusal.teacher import Sample, sample_responses
 
 BATCH, HALF, CAP = 4, 16, 8
 CFG = OmegaConf.create(
@@ -52,21 +53,49 @@ def measure(teacher, temperature):
 def test_zero_field_mean_gradient_shrinks_like_one_over_sqrt_n(teacher):
     # Invariant 9: no field, so the mean of n batch gradients is pure noise of size ~1/sqrt(n).
     out = measure(teacher, 1.0)
-    norms = out["mean_gradient_norm"]["constant"]
-    ratio = norms[1] / norms[HALF]
-    assert math.sqrt(HALF) / 2 < ratio < 2 * math.sqrt(HALF)
+    norms = out["mean_gradient_norm"]
+    assert math.sqrt(HALF) / 2 < norms[1] / norms[HALF] < 2 * math.sqrt(HALF)
     constant = out["constant"]
-    assert abs(constant["drift_per_step"]) < 4 * constant["drift_standard_error"]
+    assert abs(constant["field_norm_sq"]) < 3 * constant["field_norm_sq_standard_error"]
+    assert constant["decision"] != "field_detected"
 
 
 def test_a_sharpened_teacher_creates_a_detectable_field(teacher):
     out = measure(teacher, 0.3)
     constant = out["constant"]
-    assert constant["drift_per_step"] > 4 * constant["drift_standard_error"]
-    assert constant["field_norm_sq_unbiased"] > 0
-    assert not constant["at_noise_level"]
-    norms = out["mean_gradient_norm"]["constant"]
+    assert constant["field_norm_sq"] > 3 * constant["field_norm_sq_standard_error"]
+    assert constant["decision"] == "field_detected"
+    norms = out["mean_gradient_norm"]
     assert norms[1] / norms[HALF] < math.sqrt(HALF) / 2  # levels off at the field
+
+
+def test_equal_token_counts_leave_no_token_count_field(teacher):
+    # All responses truncated at the cap: c_b = 1 for every batch, so the control variate is zero.
+    model, params = teacher
+    g = torch.Generator().manual_seed(0)
+    samples = [
+        Sample(f"p{i}", tuple(prompt), tuple(torch.randint(7, 64, (CAP,), generator=g).tolist()),
+               (0.0,) * CAP, False)
+        for i, prompt in enumerate(prompts(2 * HALF * BATCH, seed=6))
+    ]  # fmt: skip
+    out = field_measurement(model, params, chunks(samples, BATCH), CFG, pad_id=PAD_ID,
+                            device=torch.device("cpu"), steps=25)  # fmt: skip
+    assert out["token_count"] == {
+        "field_norm_sq": 0.0, "field_norm_sq_standard_error": 0.0, "decision": "at_noise_level"
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("field", "se", "expected"),
+    [
+        (0.001, 0.0005, "at_noise_level"),
+        (0.1, 0.01, "field_detected"),
+        (0.04, 0.02, "undetermined"),
+    ],
+)
+def test_field_decision_accounts_for_uncertainty(field, se, expected):
+    # N = 25 and sigma^2 = 1: the field is at the noise level when 25·|f|^2 < 1.
+    assert field_decision(field, se, 1.0, 25) == expected
 
 
 def test_generation_and_training_paths_agree_on_cpu(teacher):

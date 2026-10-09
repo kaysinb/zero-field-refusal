@@ -29,6 +29,9 @@ from transformers import PreTrainedModel
 from .seeding import derive_seed
 
 SAMPLING_KEYS = ("temperature", "top_p", "top_k", "repetition_penalty", "max_new_tokens")
+# Part of every stream's identity: bump on any change to how samples are drawn or stored, so old
+# streams are never reused by new code.
+SAMPLER_VERSION = 1
 
 
 class StreamError(RuntimeError):
@@ -211,6 +214,10 @@ def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int
             problems.append("an end token before the last position")
         if s.ended != (s.response_ids[-1] in ends if s.response_ids else False):
             problems.append("ended flag disagrees with the last token")
+        if not s.ended and len(s.response_ids) != cap:
+            problems.append(
+                f"no end token but {len(s.response_ids)} < {cap} tokens: not truncation"
+            )
         if problems:
             raise StreamError(f"Sample {i} ({s.prompt_id}): " + "; ".join(problems))
 
@@ -230,8 +237,11 @@ STREAM_KINDS = ("training", "preconditioner", "kl_harmful", "kl_benign", "soft_t
 
 
 def prompt_set_digest(items: Sequence[Mapping[str, Any]]) -> str:
-    """sha256 of the ids and texts of a prompt set, in order."""
-    blob = json.dumps([[item["id"], item["text"]] for item in items], separators=(",", ":"))
+    """sha256 of the ids, texts and reference answers (if any) of a prompt set, in order."""
+    blob = json.dumps(
+        [[item["id"], item["text"], item.get("reference")] for item in items],
+        separators=(",", ":"),
+    )
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
@@ -246,6 +256,7 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
     model = cfg.model
     spec: dict[str, Any] = {
         "kind": kind,
+        "sampler_version": SAMPLER_VERSION,
         "model": model.name,
         "revision": model.revision,
         "dtype": model.dtype,

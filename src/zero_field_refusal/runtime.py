@@ -177,6 +177,12 @@ def load_stream_for(
         raise StreamError(f"{path}: manifest spec differs from the config's spec")
     if kind != "alpaca_reference":
         validate_samples(samples, env.end_ids, spec["sampling"]["max_new_tokens"])
+        zero_field = cfg.control != "sharpened_sampling" or kind.startswith("kl_")
+        if zero_field and not manifest.get("zero_field_checked"):
+            raise StreamError(f"{path}: not checked as a zero-field stream")
+        neutral = {"eos_token_id", "pad_token_id"}
+        if set(manifest.get("model_generation_config") or {}) - neutral:
+            raise StreamError(f"{path}: the model's generation config was not neutral")
     return samples, {**manifest, "path": str(path.relative_to(env.data_root))}
 
 
@@ -185,15 +191,34 @@ def save_distributions(path: Path, distributions: Sequence[torch.Tensor]) -> dic
     target = path.with_name(path.stem + ".distributions.safetensors")
     target.parent.mkdir(parents=True, exist_ok=True)
     lengths = torch.tensor([d.shape[0] for d in distributions])
+    # Memory note: the concatenation and the serialization each hold a full copy (≈ 29 GB for a
+    # 500-response stream of a 151,936-token vocabulary).
     save_file({"logprobs": torch.cat(list(distributions)).contiguous(), "lengths": lengths},
               str(target))  # fmt: skip
-    return {"file": target.name, "samples": len(distributions), "dtype": "float32"}
+    return {"file": target.name, "samples": len(distributions), "dtype": "float32",
+            "sha256": _file_sha256(target)}  # fmt: skip
 
 
 def load_distributions(path: Path) -> list[torch.Tensor]:
+    """The recorded distributions of a stream, checked against its manifest and samples."""
     target = path.with_name(path.stem + ".distributions.safetensors")
+    record = load_manifest(path).get("distributions")
+    if record is None or _file_sha256(target) != record["sha256"]:
+        raise StreamError(f"{target}: missing or different from the stream manifest")
     stored = load_file(str(target))
-    return list(stored["logprobs"].split(stored["lengths"].tolist()))
+    lengths = stored["lengths"].tolist()
+    samples = load_stream(path)
+    if lengths != [len(s.response_ids) for s in samples]:
+        raise StreamError(f"{target}: lengths do not match the stream's responses")
+    return list(stored["logprobs"].split(lengths))
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _distinct(items: Sequence[dict], n: int, seed: int) -> list[dict]:

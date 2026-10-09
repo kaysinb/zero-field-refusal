@@ -13,7 +13,8 @@ eval:
     factual_qa: true
     benchmark: true               # MMLU subset scored by likelihood
   refusal_keywords: v1            # keyword list version, recorded next to the judge labels
-  projections: 4                  # fixed random directions for gradient and displacement statistics
+  projections: 2                  # fixed random directions for gradient and displacement
+                                  # statistics; each costs the trainable size in pinned CPU memory
   controls:                       # run in-process on the trained weights, when enabled
     line_scan:                    # θ₀ + a·Δθ along the whole displacement, both signs
       enabled: false

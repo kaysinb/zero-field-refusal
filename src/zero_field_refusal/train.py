@@ -118,27 +118,46 @@ def teacher_gap(
     }
 
 
+def projection_directions(
+    trainable: Sequence[tuple[str, torch.nn.Parameter]], count: int
+) -> dict[str, list[torch.Tensor]]:
+    """Fixed random directions with independent N(0, 1) entries, identical in every run.
+
+    Each derives from the parameter name and full shape and is generated on the CPU, because CUDA
+    random numbers of large tensors depend on the GPU model. They stay in pinned CPU memory
+    (count × the trainable size) and are moved to the device one tensor at a time.
+    """
+    directions = {}
+    for name, param in trainable:
+        directions[name] = []
+        for i in range(count):
+            generator = torch.Generator().manual_seed(
+                derive_seed(0, "projection", i, name, list(param.shape))
+            )
+            r = torch.randn(tuple(param.shape), generator=generator)
+            directions[name].append(r.pin_memory() if torch.cuda.is_available() else r)
+    return directions
+
+
 @torch.no_grad()
 def projection_stats(
     trainable: Sequence[tuple[str, torch.nn.Parameter]],
     theta0: Mapping[str, torch.Tensor],
-    count: int,
+    directions: Mapping[str, Sequence[torch.Tensor]],
 ) -> dict[str, Any]:
-    """Gradient and displacement norms, and their projections on fixed random directions.
+    """Gradient and displacement norms, and their projections on the fixed random directions.
 
-    Direction i has independent N(0, 1) entries generated from the parameter name and full shape,
-    identical in every run, so projections are comparable across runs and optimizers.
+    Differences of consecutive displacement projections are the projections of the updates.
     """
+    count = len(next(iter(directions.values())))
     grad_sq = disp_sq = 0.0
     grad_proj, disp_proj = [0.0] * count, [0.0] * count
     for name, param in trainable:
         grad, delta = param.grad, param - theta0[name]
         grad_sq += grad.double().pow(2).sum().item()
         disp_sq += delta.double().pow(2).sum().item()
-        for i in range(count):
-            generator = torch.Generator(device=param.device)
-            generator.manual_seed(derive_seed(0, "projection", i, name, list(param.shape)))
-            r = torch.randn(param.shape, generator=generator, device=param.device)
+        for i, r in enumerate(directions[name]):
+            r = r.to(param.device, non_blocking=True)
             grad_proj[i] += (grad * r).sum().item()
             disp_proj[i] += (delta * r).sum().item()
     return {
@@ -231,6 +250,8 @@ class Evaluator:
             ]  # fmt: skip
         if utility.benchmark:
             letters = [env.tokenizer.convert_tokens_to_ids(letter) for letter in CHOICE_LETTERS]
+            if len(set(letters)) != 4 or env.tokenizer.unk_token_id in letters or None in letters:
+                raise ValueError(f"Answer letters {CHOICE_LETTERS} are not distinct tokens")
             predicted = choice_predictions(
                 model, [env.encode_prompt(mmlu_prompt(item)) for item in self.mmlu], letters,
                 pad_id=env.pad_id, batch_size=execution.eval_batch_size,
@@ -266,7 +287,12 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
     """Train one cell's seed and evaluate it; returns the run directory."""
     if cfg.run_type != "train":
         raise ValueError("run_training needs run_type=train")
+    if cfg.train.save_checkpoint:
+        raise NotImplementedError("train.save_checkpoint: weight saving is not implemented yet")
     seed_everything(derive_seed(cfg.seed, "torch"))
+    cuda = env.device.type == "cuda"
+    if cuda:
+        torch.cuda.reset_peak_memory_stats()
     with Run(cfg, run_id=run_id) as run:
         kind = stream_kind(cfg)
         stream, manifest = load_stream_for(cfg, env, kind, cfg.seed)
@@ -286,6 +312,8 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         trainable = freeze(student, cfg.train.freeze)
         params = [p for _, p in trainable]
         theta0 = dict(reference.named_parameters())
+        evaluate = Evaluator(cfg, env, run, reference)  # fails early on missing inputs
+        directions = projection_directions(trainable, cfg.eval.projections)
         if kind != "alpaca_reference":
             run.summarize({"step0_teacher_gap": teacher_gap(student, batches[0], cfg, env)})
 
@@ -299,14 +327,16 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
             optimizer.zero_grad(set_to_none=True)
             stats = accumulate_gradient(student, batch, cfg, env, soft[step] if soft else None)
             optimizer.step()
-            stats |= projection_stats(trainable, theta0, cfg.eval.projections)
+            stats |= projection_stats(trainable, theta0, directions)
             run.log(stats, step=step)
-        del optimizer
-        if env.device.type == "cuda":
+        del optimizer, directions
+        for p in params:
+            p.grad = None
+        if cuda:
+            run.summarize({"peak_memory_gb/train": torch.cuda.max_memory_allocated() / 2**30})
             torch.cuda.empty_cache()
 
         student.eval()
-        evaluate = Evaluator(cfg, env, run, reference)
         run.summarize(evaluate(student, "trained"))
         geometry = displacement(trainable, theta0)
         run.path("observations", "geometry.json").write_text(json.dumps(geometry, indent=1))
@@ -314,6 +344,8 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         controls = _controls(cfg, env, student, trainable, theta0, evaluate)
         if controls:
             run.summarize({"controls": controls})
+        if cuda:
+            run.summarize({"peak_memory_gb/all": torch.cuda.max_memory_allocated() / 2**30})
         return run.dir
 
 

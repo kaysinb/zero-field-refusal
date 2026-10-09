@@ -54,7 +54,10 @@ scientific design is in [design.md](design.md); procedures for running things ar
    in a fixed order. The bridge cell truncates the same stream to 48 tokens, which is identical in
    distribution to sampling with a 48-token cap and keeps it paired with the main cell. The
    Alpaca-reference control uses 500 distinct Alpaca examples outside the reserved sets, each once.
-   The run logs the loss, gradient and update statistics, then evaluates in-process:
+   The run logs the loss and the gradient and displacement norms with their projections on fixed
+   random directions (generated on the CPU, since CUDA random numbers of large tensors depend on
+   the GPU model; consecutive displacement projections give the update projections), then
+   evaluates in-process:
    - K on harmful and benign prompts;
    - greedy responses to harmful prompts and keyword refusal;
    - utility;
