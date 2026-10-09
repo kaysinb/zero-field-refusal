@@ -327,10 +327,11 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
             gap, chi_square = teacher_gap(student, stream, cfg, env)
             run.summarize({"step0_teacher_gap": gap})
             check_teacher_gap(gap, cfg.checks.teacher_gap)  # stops before any optimizer step
-            index = {id(s): i for i, s in enumerate(stream)}
-            sums = [sum(chi_square[index[id(s)]] for s in batch) for batch in batches]
-            run.summarize({"step0_path_field_batch_chi_square": sums})  # kept if the check fails
-            run.summarize({"step0_path_field": check_run_chi_square(sums, cfg.train.steps)})
+            run.path("step0_path_field_chi_square.json").write_text(  # kept if the check fails
+                json.dumps({"per_response": chi_square}) + "\n"
+            )
+            run.summarize({"step0_path_field": check_run_chi_square(
+                chi_square, batch_size=cfg.train.batch_size, steps=cfg.train.steps)})  # fmt: skip
 
         second_moment = None
         if ADAM_MODES.get(cfg.optimizer.name, "adaptive") != "adaptive":

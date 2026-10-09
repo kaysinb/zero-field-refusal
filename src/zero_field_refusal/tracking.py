@@ -331,9 +331,10 @@ def _slug(text: str) -> str:
 
 
 def _plain(value: Any) -> Any:
-    """NumPy and PyTorch scalars and arrays, also inside mappings and lists, as plain values."""
+    """NumPy and PyTorch scalars and arrays, also inside mappings and lists, as plain values;
+    mapping keys as strings, as JSON writes them and as W&B requires (e.g. seeds as keys)."""
     if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
+        return {str(key): _plain(item) for key, item in value.items()}
     if isinstance(value, list | tuple):
         return [_plain(item) for item in value]
     if hasattr(value, "tolist"):

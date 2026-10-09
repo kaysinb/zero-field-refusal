@@ -33,11 +33,14 @@ SMALL = [
 ]
 
 
+BOUND = {"level": 0.975, "quantile": 2.0, "chi_square_per_response": 0.0,
+         "standard_error_per_response": 0.0}  # fmt: skip
+
+
 def certified(**changes) -> dict:
     """What a stage-0 record certifies, for the test runs (steps 2, batch 4, cap 12)."""
-    bound = {"chi_square_per_batch": 0.0, "standard_error": 0.0}
     return {"criterion": 0.01, "steps": 2, "batch_size": 4, "cap": 12,
-            "chi_square_bound": bound} | changes  # fmt: skip
+            "chi_square_bound": BOUND} | changes  # fmt: skip
 
 
 def pass_path_check(env: Environment, **changes) -> None:
@@ -352,20 +355,28 @@ def test_training_stops_when_the_stream_comes_from_another_model(env) -> None:
     assert not (run_dir / "metrics.jsonl").exists()
 
 
+@pytest.mark.usefixtures("offline_wandb")
 def test_stage0_checks_write_the_record_that_training_needs(env) -> None:
+    # Both runs mirror to (offline) W&B, which must accept every summary they write.
     from zero_field_refusal.checks import run_stage0_checks
 
     for record in (env.data_root / "checks").rglob("*.json"):
         record.unlink()
+    mirror = ["tracking.wandb.enabled=true", "tracking.wandb.required=true"]
     checks_cfg = config("run_type=checks", "optimizer=adam_frozen", "optimizer.lr=1e-3",
-                        "optimizer.preconditioner.batches=8")  # fmt: skip
+                        "optimizer.preconditioner.batches=8", *mirror)  # fmt: skip
     run = run_stage0_checks(checks_cfg, env, log=lambda _: None)
     summary = json.loads((run.dir / "summary.json").read_text())
     assert summary["path_field"]["passed"]
-    assert summary["path_field"]["chi_square_bound"]["batches"] == 4
-    cfg = config()
+    assert summary["path_field"]["chi_square_bound"]["responses"] == 4 * 4  # batches × batch size
+    assert set(summary["teacher_gap"]) == {"0", "1", "2"}
+    sums = json.loads((run.dir / "path_field_chi_square.json").read_text())["per_response"]
+    assert len(sums) == 16 and min(sums) >= 0
+    cfg = config(*mirror)
     prepare(env, cfg, "training")
-    run_training(cfg, env, run_id="after-checks")
+    trained = run_training(cfg, env, run_id="after-checks")
+    sums = json.loads((trained / "step0_path_field_chi_square.json").read_text())
+    assert len(sums["per_response"]) == cfg.train.steps * cfg.train.batch_size
 
 
 @pytest.mark.parametrize(
@@ -373,8 +384,9 @@ def test_stage0_checks_write_the_record_that_training_needs(env) -> None:
     [
         ({"criterion": 0.5}, "certifies the bound"),
         ({"cap": 8}, "certifies responses up to 8"),
-        ({"chi_square_bound": {"chi_square_per_batch": 0.006, "standard_error": 0.0}},
+        ({"chi_square_bound": BOUND | {"chi_square_per_response": 0.0015}},
          "for this run's steps and batch size"),
+        ({"chi_square_bound": BOUND | {"level": 0.9}}, "confidence 0.9"),
     ],
 )  # fmt: skip
 def test_a_record_unlocks_only_what_it_certified(env, changes, message) -> None:

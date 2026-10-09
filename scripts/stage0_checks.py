@@ -2,8 +2,9 @@
 
     python scripts/stage0_checks.py experiments/stage0_checks [model=qwen2.5-1.5b-instruct ...]
 
-Generates the streams the checks need (training seed 0, 200 fresh batches for the field, one
-batch with recorded distributions) unless they exist, then writes all results to a run directory.
+Generates the streams the checks need (training seeds 0-2, 200 fresh batches for the field, the
+path-field batches with recorded distributions) unless they exist, then writes all results to a
+run directory and the environment's path-field record under ``DATA_DIR/checks/``.
 """
 
 from zero_field_refusal.checks import run_stage0_checks

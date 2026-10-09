@@ -13,9 +13,15 @@ Two checks therefore block training:
 - **Teacher gap (invariant 1).** At step 0 the training path must reproduce the stored teacher
   log-probabilities of the run's whole stream within the preregistered thresholds.
 - **The run's own path field.** From the same step-0 differences Δ_t of the sampled tokens,
-  Σ_t expm1(Δ_t)² per batch estimates the batch's χ²(training path ‖ generation path) without
-  bias (E_{y~p}[(q/p − 1)²] = χ²(q‖p)). The run requires N·(X̂ + 2 SE) ≤ the preregistered bound
-  for the pair of its stream and its environment, whichever environment generated the stream.
+  Σ_t expm1(Δ_t)² per response estimates the response's χ²(training path ‖ generation path)
+  without bias (E_{y~p}[(q/p − 1)²] = χ²(q‖p)). The run requires the upper confidence bound on
+  N·X to stay within the preregistered bound for the pair of its stream and its environment,
+  whichever environment generated the stream.
+
+Both χ² checks use the same upper bound (``chi_square_bound``): responses are independent, so the
+per-response sums are the units, and the bound is the one-sided studentized-bootstrap (bootstrap-t)
+bound at ``PATH_FIELD_LEVEL``, which keeps its coverage much better than a Student quantile when
+the sums are right-skewed (tests/test_prechecks.py).
 """
 
 from __future__ import annotations
@@ -31,11 +37,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from .protocol import PATH_FIELD_BOUND
-from .teacher import SAMPLER_VERSION
+from .protocol import PATH_FIELD_BOUND, PATH_FIELD_LEVEL
+from .teacher import SAMPLER_VERSION, fsync_directory
 from .tracking import package_versions
 
 
@@ -45,7 +52,10 @@ class CheckFailed(RuntimeError):
 
 # Part of every record's fingerprint: bump on any change to how the path field is measured, so
 # records written by older code never unlock training.
-CHECK_VERSION = 2
+CHECK_VERSION = 3
+# Resamples of the bootstrap-t bound on the χ² of the path discrepancy, and their seed.
+BOOTSTRAP_RESAMPLES = 9999
+BOOTSTRAP_SEED = 0
 
 
 def environment_fingerprint(cfg: DictConfig, device: torch.device) -> dict[str, Any]:
@@ -85,7 +95,7 @@ def write_check_record(
     ``history/``, so a later pass never silently replaces a failure.
 
     ``results`` must hold what the record certifies: ``steps``, ``batch_size``, ``cap``,
-    ``criterion`` and ``chi_square_bound`` (``chi_square_per_batch``, ``standard_error``).
+    ``criterion`` and ``chi_square_bound`` (as returned by ``chi_square_bound``).
     """
     path = record_path(root, fingerprint)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,11 +111,7 @@ def write_check_record(
         f.flush()
         os.fsync(f.fileno())
     tmp.replace(path)
-    descriptor = os.open(path.parent, os.O_RDONLY)  # make the replacement itself durable
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    fsync_directory(path.parent)  # make the replacement itself durable
     return path
 
 
@@ -128,10 +134,12 @@ def require_path_check(root: Path, cfg: DictConfig, device: torch.device) -> dic
     if cfg.train.max_response_tokens > certified["cap"]:
         raise CheckFailed(f"{path} certifies responses up to {certified['cap']} tokens, the run "
                           f"uses {cfg.train.max_response_tokens}")  # fmt: skip
-    # X scales with the tokens of a batch; the bound with the number of steps.
     bound = certified["chi_square_bound"]
-    value = (cfg.train.steps * cfg.train.batch_size / certified["batch_size"]
-             * (bound["chi_square_per_batch"] + 2 * bound["standard_error"]))  # fmt: skip
+    if bound["level"] != PATH_FIELD_LEVEL:
+        raise CheckFailed(f"{path} bounds χ² at confidence {bound['level']}, not the "
+                          f"preregistered {PATH_FIELD_LEVEL}")  # fmt: skip
+    # X scales with the responses of a batch; the bound with the number of steps.
+    value = _upper(bound, cfg.train.batch_size, cfg.train.steps)
     if not value <= PATH_FIELD_BOUND:
         raise CheckFailed(f"{path}: for this run's steps and batch size the bound is {value:.3g} "
                           f"> {PATH_FIELD_BOUND}")  # fmt: skip
@@ -151,13 +159,60 @@ def check_teacher_gap(gap: dict[str, float], thresholds: DictConfig) -> None:
         )
 
 
-def check_run_chi_square(batch_sums: Sequence[float], steps: int) -> dict[str, float]:
-    """The run's own path-field bound from per-batch Σ_t expm1(Δ_t)², or ``CheckFailed``."""
-    values = torch.tensor(list(batch_sums), dtype=torch.float64)
-    mean = values.mean().item()
-    se = values.std().item() / math.sqrt(len(values)) if len(values) > 1 else float("inf")
-    out = {"chi_square_per_batch": mean, "standard_error": se,
-           "bound_upper": steps * (mean + 2 * se)}  # fmt: skip
+def chi_square_bound(
+    per_response: Sequence[float],
+    *,
+    batch_size: int,
+    steps: int,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+) -> dict[str, float]:
+    """Upper confidence bound on N·X from per-response sums of χ² over the response's tokens.
+
+    Instructions are drawn with replacement and responses sampled independently, so the
+    per-response sums are i.i.d.: X̂ = B·mean and SE = B·sd/√n per batch of B responses. The
+    bound N·(X̂ + c·SE) takes c from the bootstrap distribution of the studentized mean
+    (bootstrap-t) at the one-sided level ``PATH_FIELD_LEVEL``; it adapts to the right skew of the
+    sums, where a Student quantile undercovers. ``skewness`` and ``largest_share`` (the largest
+    response's share of the total) show how heavy the tail is: no bound keeps its level for very
+    heavy tails.
+    """
+    values = np.asarray(list(per_response), dtype=np.float64)
+    n = len(values)
+    if n < 2:
+        raise ValueError(f"The χ² bound needs at least 2 responses, got {n}")
+    mean, sd = values.mean(), values.std(ddof=1)
+    se = sd / math.sqrt(n)
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    t = np.empty(resamples)
+    for start in range(0, resamples, 1000):  # bounded memory for long streams
+        draws = values[rng.integers(0, n, (min(1000, resamples - start), n))]
+        spread = draws.std(axis=1, ddof=1) / math.sqrt(n)
+        t[start : start + len(draws)] = np.where(
+            spread > 0, (draws.mean(axis=1) - mean) / np.where(spread > 0, spread, 1.0), 0.0
+        )
+    quantile = float(-np.quantile(t, 1 - PATH_FIELD_LEVEL)) if se > 0 else 0.0
+    total = values.sum()
+    out = {"responses": n, "level": PATH_FIELD_LEVEL, "method": "bootstrap-t",
+           "resamples": resamples, "quantile": quantile,
+           "chi_square_per_response": float(mean), "standard_error_per_response": float(se),
+           "chi_square_per_batch": float(batch_size * mean),
+           "standard_error": float(batch_size * se),
+           "skewness": float(((values - mean) ** 3).mean() / sd**3) if sd > 0 else 0.0,
+           "largest_share": float(values.max() / total) if total > 0 else 0.0}  # fmt: skip
+    out["bound_upper"] = _upper(out, batch_size, steps)
+    return out
+
+
+def _upper(bound: dict[str, float], batch_size: int, steps: int) -> float:
+    mean, se = bound["chi_square_per_response"], bound["standard_error_per_response"]
+    return steps * batch_size * (mean + bound["quantile"] * se)
+
+
+def check_run_chi_square(
+    per_response: Sequence[float], *, batch_size: int, steps: int
+) -> dict[str, float]:
+    """The run's own path-field bound from per-response Σ_t expm1(Δ_t)², or ``CheckFailed``."""
+    out = chi_square_bound(per_response, batch_size=batch_size, steps=steps)
     if not out["bound_upper"] <= PATH_FIELD_BOUND:
         raise CheckFailed(f"The run's stream fails the path-field bound: {out}")
     return out

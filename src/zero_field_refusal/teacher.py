@@ -272,11 +272,20 @@ def stale_partials(final: Path) -> list[Path]:
 
 
 def publish(partial: Path, final: Path) -> None:
-    """Atomically rename a completed partial directory to its final name."""
+    """Atomically rename a completed partial directory to its final name.
+
+    Its files are fsynced when written; the directory's own entries are fsynced before the rename
+    and the parent's after it, so a power loss leaves either no stream or the whole one.
+    """
     if final.exists():
         raise StreamError(f"{final} exists; streams are the record and are never regenerated")
+    fsync_directory(partial)
     partial.rename(final)
-    descriptor = os.open(final.parent, os.O_RDONLY)  # make the rename itself durable
+    fsync_directory(final.parent)  # make the rename itself durable
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
     finally:

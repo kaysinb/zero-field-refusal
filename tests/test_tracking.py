@@ -257,14 +257,6 @@ def test_git_state_against_temporary_repository(tmp_path: Path) -> None:
     assert git_state(repo / "sub") == {"commit": None, "dirty": None}  # not the top level
 
 
-@pytest.fixture
-def offline_wandb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WANDB_MODE", "offline")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-    for name in ("CONFIG", "CACHE", "DATA"):
-        monkeypatch.setenv(f"WANDB_{name}_DIR", str(tmp_path / f"wandb-{name.lower()}"))
-
-
 def wandb_cfg(**options: object) -> DictConfig:
     cfg = make_cfg()
     cfg.tracking.wandb = {"enabled": True, "project": "unit", **options}

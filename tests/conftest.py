@@ -36,6 +36,15 @@ def model() -> Qwen2ForCausalLM:
     return tiny_model()
 
 
+@pytest.fixture
+def offline_wandb(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real W&B client, offline and inside the test's directory."""
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    for name in ("CONFIG", "CACHE", "DATA"):
+        monkeypatch.setenv(f"WANDB_{name}_DIR", str(tmp_path / f"wandb-{name.lower()}"))
+
+
 def prompts(n: int, *, seed: int = 0, min_len: int = 3, max_len: int = 9) -> list[list[int]]:
     """Prompts of different lengths without end tokens."""
     g = torch.Generator().manual_seed(seed)

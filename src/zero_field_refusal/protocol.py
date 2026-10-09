@@ -32,6 +32,8 @@ CONTROLS = (
 FROZEN_MODULES = ("input_embeddings", "output_head")
 # The preregistered bound on N·|f|²/σ² of the path field (docs/preregistration.md).
 PATH_FIELD_BOUND = 0.01
+# One-sided confidence of the upper bound on the path discrepancy's χ² checked against it.
+PATH_FIELD_LEVEL = 0.975
 ATTENTION = ("sdpa", "eager")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 

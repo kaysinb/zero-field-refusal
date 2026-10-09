@@ -29,10 +29,12 @@ measured along u_A and u_B. The comparison is N·|f|²/σ².
   direction and in every linear metric, Adam's preconditioned one included, and does not depend on
   estimating the direction of a weak field. It is exact for σ² = Var(n_b·v); against the variance of
   the whole training gradient, which also contains the soft-target term, it holds up to a factor 1 +
-  O(√X), negligible at the bound (X ≈ 4e-4 per batch). The check requires N·(X̂ + 2 SE) ≤ the
-  preregistered bound over several batches. Gradient-based estimates of N·|f|²/σ² in the Euclidean
-  and Adam metrics are reported alongside; their σ² is measured along an estimated direction, which
-  a weak field leaves dominated by noise and biased toward noisy directions, so they do not decide.
+  O(√X), negligible at the bound (X ≈ 4e-4 per batch; docs/architecture.md, "Path-field
+  criterion"). The check requires the bootstrap-t upper bound on N·X from the per-response sums
+  (``prechecks.chi_square_bound``) to stay within the preregistered bound. Gradient-based estimates
+  of N·|f|²/σ² in the Euclidean and Adam metrics are reported alongside; their σ² is measured along
+  an estimated direction, which a weak field leaves dominated by noise and biased toward noisy
+  directions, so they do not decide.
 - **Path discrepancy.** Per-token KL between the two paths' distributions on the same samples,
   and the one-batch soft-target gradient ratio, as descriptive numbers.
 """
@@ -49,6 +51,7 @@ from transformers import PreTrainedModel
 
 from .batches import collate
 from .losses import response_logprobs, soft_kl, summed_nll, targets
+from .prechecks import chi_square_bound
 from .teacher import Sample
 
 # A view of one batch: (field vector, its scalar factor, noise vector). The field contribution
@@ -254,24 +257,19 @@ def path_chi_square(
     device: torch.device,
     steps: int,
 ) -> dict:
-    """Per batch, Σ over response tokens of χ²(q_train ‖ p_generation); the bound N·(X̂ + 2 SE)."""
-    size = cfg.train.batch_size
+    """Per response, Σ over its tokens of χ²(q_train ‖ p_generation), and the upper bound on N·X
+    from them (``prechecks.chi_square_bound``); the per-response sums are under ``per_response``."""
     cap = cfg.train.max_response_tokens
-    totals = []
-    for b in range(len(samples) // size):
-        total = 0.0
-        for start in range(b * size, (b + 1) * size, cfg.execution.micro_batch_size):
-            stop = min(start + cfg.execution.micro_batch_size, (b + 1) * size)
-            batch = collate(samples[start:stop], pad_id=pad_id, max_response_tokens=cap,
-                            device=device)  # fmt: skip
-            log_q = response_logprobs(model, batch)
-            log_p = torch.cat([d[:cap] for d in distributions[start:stop]]).to(device)
-            total += chi_square(log_q, log_p).sum().item()
-        totals.append(total)
-    values = torch.tensor(totals, dtype=torch.float64)
-    mean, se = values.mean().item(), values.std().item() / math.sqrt(len(totals))
-    return {"batches": len(totals), "chi_square_per_batch": mean, "standard_error": se,
-            "bound_upper": steps * (mean + 2 * se)}  # fmt: skip
+    per_response = []
+    for start in range(0, len(samples), cfg.execution.micro_batch_size):
+        stop = min(start + cfg.execution.micro_batch_size, len(samples))
+        batch = collate(samples[start:stop], pad_id=pad_id, max_response_tokens=cap, device=device)
+        log_q = response_logprobs(model, batch)
+        log_p = torch.cat([d[:cap] for d in distributions[start:stop]]).to(device)
+        per_response += [part.sum().item()
+                         for part in chi_square(log_q, log_p).split(batch.lengths)]  # fmt: skip
+    bound = chi_square_bound(per_response, batch_size=cfg.train.batch_size, steps=steps)
+    return bound | {"per_response": per_response}
 
 
 def path_field_measurement(

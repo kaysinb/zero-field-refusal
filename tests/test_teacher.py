@@ -140,6 +140,23 @@ def test_streams_are_published_atomically(tmp_path: Path, teacher) -> None:
         publish(other, final)
 
 
+def test_publish_syncs_the_staging_directory_before_the_rename(
+    tmp_path: Path, teacher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import zero_field_refusal.teacher as module
+
+    samples, _ = run(teacher, n=2)
+    final = tmp_path / "kind" / "seed-0"
+    partial = partial_directory(final)
+    write_stream(partial, samples, {"kind": "training"})
+    events = []
+    sync, rename = module.fsync_directory, Path.rename
+    monkeypatch.setattr(module, "fsync_directory", lambda p: (events.append(("fsync", p)), sync(p)))
+    monkeypatch.setattr(Path, "rename", lambda p, to: (events.append(("rename", p)), rename(p, to)))
+    publish(partial, final)
+    assert events == [("fsync", partial), ("rename", partial), ("fsync", final.parent)]
+
+
 def test_distributions_are_checked_against_the_stream(tmp_path: Path, teacher) -> None:
     samples, distributions = run(teacher, n=4, record_distributions=True)
     directory = tmp_path / "seed-0"

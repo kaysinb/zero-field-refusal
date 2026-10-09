@@ -15,6 +15,7 @@ One run directory collects:
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 
@@ -98,6 +99,9 @@ def run_stage0_checks(
         steps = cfg.train.steps
         common = dict(pad_id=env.pad_id, device=env.device, steps=steps)
         bound = path_chi_square(model, samples, recorded, path_cfg, **common)
+        run.path("path_field_chi_square.json").write_text(
+            json.dumps({"per_response": bound.pop("per_response")}) + "\n"
+        )
         passed = bound["bound_upper"] <= cfg.checks.path_field.max_drift_to_noise
         certified = {"criterion": cfg.checks.path_field.max_drift_to_noise, "steps": steps,
                      "batch_size": cfg.train.batch_size, "cap": cfg.train.max_response_tokens,

@@ -138,7 +138,7 @@ Planned:
 | 5 | Loss = summed token NLL / constant (`train.loss.denominator` = batch size × `train.max_response_tokens`). | Dividing by the batch's token count weights short responses more and pushes toward shorter answers. | Unit test: the loss of a batch does not depend on the lengths of the other responses in it. |
 | 6 | Every teacher response is used once; for a given seed all optimizers see the same responses in the same order. | Reuse turns noise into a fitted signal; a shared stream makes optimizers comparable. | The data order derives from `derive_seed(seed, "data_order")` alone; frozen and pre-warmed Adam share a separate preconditioner stream, never reused for training. |
 | 7 | Weight decay is off; the input embeddings and the output head are frozen at every model size. | Decay is a systematic force toward zero. Freezing keeps the memory budget and is part of the fixed protocol. 0.5B and 1.5B tie the two modules, 7B does not, so freezing the input embeddings alone would leave the 7B head trainable. | Config validation; a check that neither module has a trainable parameter. |
-| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The field at θ₀ is zero up to a measured residual: the student trains toward the generation path's distributions, so any discrepancy between the two paths is a residual field, the mean gradient of this loss at θ₀. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Blocking: the stage-0 checks bound the residual field per execution environment (model numerics, device, library versions) over several batches, N·\|f\|²/σ² ≤ the preregistered bound in every direction and metric, through the χ² bound of the two paths' distributions, and write a record; a training run without a passed record for its environment stops before its first optimizer step. Reported alongside: gradient estimates in the Euclidean and Adam metrics, the per-token KL and a one-batch gradient ratio. A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
+| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The field at θ₀ is zero up to a measured residual: the student trains toward the generation path's distributions, so any discrepancy between the two paths is a residual field, the mean gradient of this loss at θ₀. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Blocking: the stage-0 checks bound the residual field per execution environment (model numerics, device, library versions) over several batches, N·\|f\|²/σ² ≤ the preregistered bound in every direction and metric, through the χ² bound of the two paths' distributions ([criterion and its limits](#design-decisions-for-stage-0)), and write a record; a training run without a passed record for its environment stops before its first optimizer step. Reported alongside: gradient estimates in the Euclidean and Adam metrics, the per-token KL and a one-batch gradient ratio. A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
 | 9 | Zero mean gradient: the mean gradient over many teacher batches at θ₀ shrinks like 1/√n. | A direct test that the field is zero. | A stage-1 diagnostic and a unit test on a tiny model. |
 
 Unit tests for these invariants run on CPU with a tiny randomly initialized model, so they need no
@@ -339,6 +339,30 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
   RAM varies per Pod: an RTX 6000 Ada Pod had 62 GB, not the listed 167 GB; a larger-RAM type such
   as H100 is a new execution environment that needs its own stage-0 checks), and sharding (more
   code for the same effect). The files are deleted after use, keeping hashes and summaries.
+- **Path-field criterion.** Training on samples of the generation path p with the training path
+  q's scores s_t gives each token the conditional mean m_t = E_p[s_t] = E_p[(1 − q/p)·s_t]. By
+  Cauchy–Schwarz, for any direction v in any linear metric, Euclidean or Adam's,
+  N·(f·v)²/Var(n·v) ≤ N·X: f is the residual field, n = Σ_t (s_t − m_t) the martingale part of the
+  gradient noise, and X the expected sum over a batch's response tokens of χ²(q ‖ p). The checks
+  require an upper confidence bound on N·X to stay within the preregistered 0.01.
+  - *Limitation: an approximation against the whole gradient noise.* The bound is exact against
+    the martingale noise n. The whole noise g = n + M, with M = Σ_t m_t, has
+    Var(g·v) = Var(n·v) + Var(M·v) + 2 Cov(n·v, M·v). Var(M·v) is second order in the discrepancy
+    and at most ≈ X_r·Var(n·v) per response, where X_r is a response's expected χ² sum, if that
+    sum is not strongly correlated with the response's conditional score variance; the covariance
+    is then at most ≈ √X_r·Var(n·v). So the ratio against the whole noise is N·X·(1 + O(√X_r)),
+    and the per-token second moment adds a factor 1/(1 − χ²_t). At the bound (X_r ≤ 2 × 10⁻⁵ for
+    N = 25, B = 20) both corrections are below 1 %: the criterion holds to this approximation,
+    not as a strict inequality against the whole noise.
+  - *Upper bound.* Responses are independent (instructions drawn with replacement), so the
+    per-response sums are the units: 160 in a stage-0 record (8 batches of the soft-target
+    stream), N·B in each run's own check. The bound is the one-sided 97.5 % studentized-bootstrap
+    (bootstrap-t) bound, 9,999 resamples with a fixed seed. Decided on 2026-10-09 after review,
+    replacing the mean plus 2 SE over 8 batch sums, which undercovers for 8 units and for skewed
+    sums. A Student quantile alone also undercovers right-skewed sums (≈ 0.93 for lognormal σ = 1
+    at n = 160), bootstrap-t keeps ≈ 0.96 there, and no method keeps the level for very heavy
+    tails (lognormal σ ≥ 1.5): the record therefore also stores the sums' skewness and the
+    largest response's share of the total. Coverage is tested in `tests/test_prechecks.py`.
 - **Displacement K.** The exact per-position KL along θ₀'s reference responses, with θ₀'s
   distributions from a frozen copy on the same GPU ([data flow](#data-flow)); defined in
   [preregistration.md](preregistration.md#primary-analysis).

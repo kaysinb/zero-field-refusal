@@ -184,7 +184,8 @@ def test_path_field_is_small_when_both_paths_agree(teacher):
         assert est.ratio(25, 2.0) <= 0.01
     chi = path_chi_square(model, samples, recorded, CFG, pad_id=PAD_ID,
                           device=torch.device("cpu"), steps=25)  # fmt: skip
-    assert chi["batches"] == 8 and 0 <= chi["bound_upper"] <= 0.01
+    assert chi["responses"] == len(samples) == len(chi["per_response"])
+    assert 0 <= chi["bound_upper"] <= 0.01
 
 
 def test_a_mismatched_generation_path_fails_the_path_field_bound(teacher):
