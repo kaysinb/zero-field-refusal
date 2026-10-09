@@ -90,7 +90,7 @@ Implemented:
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with manual labels |
-| `labeling` | blind calibration samples and the terminal labeling session |
+| `labeling`, `calibration` | the pool of calibration responses, blind calibration samples and the terminal labeling session |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 
 Planned:
@@ -108,9 +108,11 @@ Entry points in `scripts/`:
 - `generate_teacher.py`: samples a stream (training, preconditioner, K reference, soft targets,
   Alpaca reference) into `DATA_DIR/teacher/`;
 - `train.py`: one run from existing streams;
+- `evaluate_theta0.py`: evaluates θ₀ itself with `run_type: theta0`, which keeps its config hash
+  apart from the training runs of the same config; the baseline of every gate;
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
-- `judge.py`, `make_calibration_sample.py`, `label.py`: judging, the blind calibration sample and
-  manual labeling;
+- `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
+  pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones
   included, into one table.
 

@@ -246,8 +246,26 @@ class Evaluator:
         return out
 
 
+def evaluate_theta0(cfg: DictConfig, env: Environment, *, run_id: str | None = None) -> Path:
+    """Evaluate the starting model itself (condition ``theta0``): the baseline of every gate.
+
+    ``run_type: theta0`` keeps its config hash apart from the training runs of the same config.
+    """
+    if cfg.run_type != "theta0":
+        raise ValueError("evaluate_theta0 needs run_type=theta0")
+    seed_everything(derive_seed(cfg.seed, "torch"))
+    with Run(cfg, run_id=run_id) as run:
+        run.record_inputs({"prompt_manifest_sha256": env.prompt_manifest_sha256})
+        model = env.new_model()
+        model.requires_grad_(False)
+        run.summarize(Evaluator(cfg, env, run, model)(model, "theta0"))
+        return run.dir
+
+
 def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None) -> Path:
     """Train one cell's seed and evaluate it; returns the run directory."""
+    if cfg.run_type != "train":
+        raise ValueError("run_training needs run_type=train")
     seed_everything(derive_seed(cfg.seed, "torch"))
     with Run(cfg, run_id=run_id) as run:
         kind = stream_kind(cfg)

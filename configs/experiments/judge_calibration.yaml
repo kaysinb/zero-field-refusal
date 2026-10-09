@@ -1,0 +1,23 @@
+# Non-confirmatory runs whose responses calibrate the judge (docs/plan.md, stage 0): θ₀ and AdamW
+# at 5e-5 on 0.5B and 1.5B, answering the calibration prompts, which are disjoint from the KL and
+# judged sets. Their responses enter no analysis.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-0.5b-instruct
+  - optimizer/adamw
+  - data/default
+  - eval/default
+
+experiment: judge_calibration
+optimizer:
+  lr: 5.0e-5
+eval:
+  harmful:
+    prompt_set: harmful_calibration
+  utility:
+    heldout_reference_nll: false
+    factual_qa: true
+    benchmark: false
+tracking:
+  wandb: {enabled: false}

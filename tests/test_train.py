@@ -44,6 +44,7 @@ def prompt_sets() -> dict[str, list[dict]]:
         "alpaca_benign_kl": items("benign", 3),
         "harmful_kl": items("kl", 3),
         "harmful_judged": items("judged", 5),
+        "harmful_calibration": items("calibration", 3),
         "factual_qa": items("fact", 4, answers=["w1"]),
     }
     sets["alpaca_heldout"] = [{**x, "reference": words(rng, 5)} for x in items("held", 3)]
@@ -196,3 +197,39 @@ def test_stage0_checks_run_end_to_end(env) -> None:
     assert summary["path_discrepancy"]["kl_max"] < 1e-6
     assert summary["soft_target_gradient"]["ratio"] < 1e-3
     assert summary["adam_vs_torch"]["relative_diff"] < 1e-5
+
+
+def test_theta0_evaluation_has_its_own_identity_and_zero_k(env) -> None:
+    from zero_field_refusal.config import config_hash
+    from zero_field_refusal.train import evaluate_theta0
+
+    cfg = config("run_type=theta0")
+    assert config_hash(cfg) != config_hash(config())
+    prepare(env, cfg)
+    run_dir = evaluate_theta0(cfg, env, run_id="theta0")
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert summary["K_harmful"] == 0 and summary["K_benign"] == 0
+    responses = read_jsonl(run_dir / "responses/harmful_judged.jsonl")
+    assert {r["condition"] for r in responses} == {"theta0"}
+    with pytest.raises(ValueError, match="run_type"):
+        run_training(cfg, env)
+
+
+def test_calibration_runs_feed_the_blind_sample(env) -> None:
+    from zero_field_refusal.calibration import calibration_pool
+    from zero_field_refusal.labeling import make_calibration_sample
+    from zero_field_refusal.train import evaluate_theta0
+
+    env.prompt_set("harmful_calibration")  # fails if the fixture lacks the set
+    calibration = ["eval.harmful.prompt_set=harmful_calibration", "eval.utility.benchmark=false"]
+    trained_cfg = config(*calibration)
+    prepare(env, trained_cfg, "training")
+    trained = run_training(trained_cfg, env, run_id="cal-trained")
+    theta0 = evaluate_theta0(config(*calibration, "run_type=theta0"), env, run_id="cal-theta0")
+    pool = calibration_pool([trained, theta0], lambda cfg: env.prompt_set("harmful_calibration"))
+    assert {item["state"] for item in pool} == {"trained", "theta0"}
+    assert len(pool) == 2 * len(env.prompt_set("harmful_calibration"))
+    blinded, key = make_calibration_sample(pool, 4, strata_key=["model", "state"], seed=1,
+                                           min_per_stratum=1)  # fmt: skip
+    assert all(set(item) == {"item_id", "prompt", "response"} for item in blinded)
+    assert len(key) == 4

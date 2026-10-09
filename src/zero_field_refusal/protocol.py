@@ -96,6 +96,9 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         if actual != wanted:
             problems.append(f"{key}: expected {wanted!r}, got {actual!r} (control={control!r})")
 
+    run_type = OmegaConf.select(cfg, "run_type", default="train")
+    if run_type not in ("train", "theta0"):
+        problems.append(f"run_type: expected 'train' or 'theta0', got {run_type!r}")
     if control not in CONTROLS:
         problems.append(f"control: unknown control {control!r}; known: {CONTROLS}")
 

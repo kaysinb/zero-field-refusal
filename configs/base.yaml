@@ -2,6 +2,7 @@
 experiment: scratch         # groups runs: runs/<experiment>/ and the W&B group
 name: null                  # optional label added to the run id
 seed: 0                     # run seed; per-purpose streams derive from it (seeding.derive_seed)
+run_type: train             # train | theta0 (evaluation of the starting model, no training)
 protocol_version: 1         # part of the config hash; bump on any change to code or data that
                             # alters results, so the launcher never skips a cell from older code
 
