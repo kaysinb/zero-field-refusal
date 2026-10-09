@@ -210,6 +210,24 @@ document changes.
 The [archive procedure](#rented-machines) governs verification and deletion. Public exports follow
 the [release checklist](#release-checklist).
 
+### Retention plan: stages 0 and 1
+
+Recorded 2026-10-09, before the first GPU runs; review it before stage 2.
+
+| Artifact | Kept | Size (order of magnitude) |
+|---|---|---|
+| Prompt sets, manifests, pinned source CSVs | all | < 50 MB |
+| Teacher streams (training, preconditioner, K reference, field stream of seed 1000) | all, archived | ≈ 1 MB per 500 responses |
+| Soft-target distributions | one batch per model (step-0 check) | ≈ 1.2 GB each |
+| Full soft-target stream of the SGD control | deleted after its run; hashes and summary kept | ≈ 29 GB while it exists |
+| Run directories (config, meta, metrics, observations, responses) | all, including failed runs | ≈ 1–5 MB per run |
+| Judge labels, calibration pool, sample, key, manual labels | all, private | < 50 MB |
+| Model weights | none: `train.save_checkpoint` is not implemented; controls run in-process | — |
+| Model and dataset caches | evicted when space is needed | ≈ 10 GB |
+
+Stages 0–1 together stay below ≈ 10 GB of retained evidence. Every stage-1 cell is kept, matched
+arms included, since none is chosen by its outcome.
+
 ## Weights & Biases in practice
 
 - W&B mirrors configs and metrics for browsing and comparing runs; the run directories remain the
