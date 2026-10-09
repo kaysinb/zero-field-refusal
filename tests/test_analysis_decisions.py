@@ -66,6 +66,39 @@ def test_h2_mechanism_table(vs_sgd: str, vs_adamw: str, between: bool, expected:
     assert mechanism == expected
 
 
+# Frozen Adam (FA) with SGD at 0.20 and AdamW at 0.40: CIs of FA − SGD and FA − AdamW, and whether
+# the FA estimate lies between the two (ends included). Positions follow the preregistered rule:
+# between/beyond matters only when FA differs from both.
+@pytest.mark.parametrize(
+    ("ci_vs_sgd", "ci_vs_adamw", "between", "expected"),
+    [
+        # Estimate 0.05 below SGD, beyond the range, but within ±10 pp of SGD.
+        ((-0.09, -0.01), (-0.30, -0.20), False, "sign_step_rectification"),
+        # Estimate 0.04 above AdamW, beyond the range, but within ±10 pp of AdamW.
+        ((0.15, 0.30), (0.01, 0.08), False, "flat_direction_heating"),
+        # Different from both and beyond one end.
+        ((-0.25, -0.12), (-0.45, -0.32), False, "none"),
+        # Different from both and between them.
+        ((0.04, 0.16), (-0.16, -0.04), True, "both"),
+        # A CI that includes 0 but is wider than ±10 pp is not indistinguishable.
+        ((-0.12, 0.05), (-0.35, -0.15), True, "none"),
+        # Indistinguishable from both.
+        ((-0.05, 0.08), (-0.09, 0.02), True, "none"),
+    ],
+)
+def test_h2_rule_from_the_intervals(
+    ci_vs_sgd: tuple[float, float], ci_vs_adamw: tuple[float, float], between: bool, expected: str
+) -> None:
+    mechanism = h2_mechanism(
+        h2_comparison(*ci_vs_sgd),
+        h2_comparison(*ci_vs_adamw),
+        between,
+        descriptive_only=False,
+        primary_decision="positive",
+    )
+    assert mechanism == expected
+
+
 def test_h2_draws_no_conclusion_without_overlap_or_without_h1() -> None:
     args = ("indistinguishable", "different", True)
     assert (

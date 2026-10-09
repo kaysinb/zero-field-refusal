@@ -7,11 +7,16 @@ non-finite bounds, is inconclusive. Look 1 stops on any of the first three resul
 only after an inconclusive look 1 and its result is final.
 
 H2 compares frozen Adam with SGD and with AdamW at K\\* through the CIs of the differences, at the
-level of the look at which the decision is made: ``indistinguishable`` is the equivalence result,
-``different`` a directional one. ``between`` means the estimate of h_FA(K\\*) lies between those of
-SGD and AdamW (bounds included). A mechanism statement is made only when H1 holds (a positive
-result) and frozen Adam's K range overlaps the common range. ``unavailable`` marks a look
-without a frozen-Adam curve (no frozen-Adam run left after the exclusion of small K).
+level of the look at which the decision is made. ``indistinguishable`` is the equivalence result
+(the CI within ±margin, even if it excludes 0; a CI that merely includes 0 is not
+indistinguishable), ``different`` a directional one (the CI excludes 0 and is not within
+±margin). ``between`` (the estimate of h_FA(K\\*) between those of SGD and AdamW, ends included) or
+beyond matters only when frozen Adam differs from both: between → both mechanisms, beyond → none.
+When frozen Adam is indistinguishable from one optimizer and different from the other, the
+statement follows that, whatever the position of its estimate. A mechanism statement is made only
+when H1 holds (a positive result) and frozen Adam's K range overlaps the common range.
+``unavailable`` marks a look without a frozen-Adam curve (no frozen-Adam run left after the
+exclusion of small K).
 """
 
 from __future__ import annotations
