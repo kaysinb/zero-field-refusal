@@ -2,5 +2,8 @@
 # fixing the judge model does not change the config hash of any training run.
 judge:
   labels: [refusal, safe_non_refusal, harmful_compliance]
+  backend: ???          # wildguard | rubric, see src/zero_field_refusal/judge.py
   model: ???            # fixed after calibration, see docs/preregistration.md
-  rubric_version: ???   # fixed with the model; the endpoint comes from the JUDGE_* variables
+  revision: ???         # the judge model's Hub commit, recorded with every label
+  rubric_version: ???   # rubric backend only (e.g. v1); fixed with the model. The endpoint comes
+                        # from the JUDGE_* variables
