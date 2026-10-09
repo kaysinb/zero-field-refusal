@@ -218,18 +218,20 @@ def test_recommend_keeps_the_planning_level_when_it_passes_and_checks_resample_s
     for resamples, shift in ((1000, 0.03), (2000, 0.005), (4000, 0.0)):
         for method in ("percentile", "bca"):
             for level in (0.9706, 0.99):
-                rows.append(
-                    {
-                        "scenario": "s",
-                        "resamples": resamples,
-                        "method": method,
-                        "level": level,
-                        "p_positive": 0.02 + shift,
-                        "p_opposite": 0.01,
-                        "p_equivalence": 0.5,
-                        "disagree_with_reference": shift,
-                    }
-                )
+                for scenario, delta in (("null", 0.0), ("alternative", 0.1)):
+                    rows.append(
+                        {
+                            "scenario": scenario,
+                            "delta": delta,
+                            "resamples": resamples,
+                            "method": method,
+                            "level": level,
+                            "p_positive": 0.02 + shift,
+                            "p_opposite": 0.01,
+                            "p_equivalence": 0.5,
+                            "disagree_with_reference": shift,
+                        }
+                    )
     comparison = pd.DataFrame(rows)
     recommendation = recommend(acceptance(_grid()), comparison, settings)
     # bca passes at the planning level; percentile only at 0.99, with more power at 10 pp.
@@ -237,10 +239,22 @@ def test_recommend_keeps_the_planning_level_when_it_passes_and_checks_resample_s
     assert recommendation["per_method"]["percentile"]["level"] == 0.99
     assert recommendation["method"] == "bca"
     assert recommendation["resamples"] == 4000
-    unstable = comparison.assign(
-        p_positive=np.where(comparison.resamples == 2000, 0.05, comparison.p_positive)
-    )
-    assert recommend(acceptance(_grid()), unstable, settings)["resamples"] is None
+
+    def at_2000(column: str, scenario: str, value: float) -> pd.DataFrame:
+        rows = (comparison.resamples == 2000) & (comparison.scenario == scenario)
+        return comparison.assign(**{column: np.where(rows, value, comparison[column])})
+
+    for column, scenario in (
+        ("p_positive", "null"),
+        ("p_opposite", "null"),
+        ("p_equivalence", "alternative"),
+        ("p_positive", "alternative"),
+    ):
+        unstable = at_2000(column, scenario, 0.2)
+        assert recommend(acceptance(_grid()), unstable, settings)["resamples"] is None, column
+    # P(equivalence | Δ = 0) is the chance of a correct equivalence finding, not an error rate.
+    stable = at_2000("p_equivalence", "null", 0.2)
+    assert recommend(acceptance(_grid()), stable, settings)["resamples"] == 4000
 
 
 def test_full_settings_have_the_planned_parts() -> None:
@@ -293,13 +307,41 @@ def test_quick_simulation_writes_rates_in_the_unit_interval(tmp_path: Path) -> N
     assert len(boundary) == 4 and all(sum(row["h2"].values()) <= 1 + 1e-9 for row in boundary)
     assert summary["versions"]["git"].keys() == {"commit", "dirty"}
 
+    # Recomputing the verdicts from the saved tables reproduces them and records the code used.
+    _run_script("--resummarize", str(tmp_path))
+    again = json.loads((tmp_path / "summary.json").read_text())
+    assert again["resummarized"]["versions"]["git"].keys() == {"commit", "dirty"}
+    for key in ("acceptance", "recommendation", "exclusion", "h2_boundary"):
+        assert _close(again[key], summary[key]), key
+
+
+def _close(a: object, b: object) -> bool:
+    """Equal up to the float round-off of a CSV round trip."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_close(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_close(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, float) and isinstance(b, float):
+        return math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-15) or (math.isnan(a) and math.isnan(b))
+    return a == b
+
+
+def test_resummarize_refuses_tables_from_other_settings(tmp_path: Path) -> None:
+    _run_script("--confirm", "--quick", "--out", str(tmp_path), "--workers", "1")
+    summary_path = tmp_path / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["settings"]["levels"] = [0.9]  # tables made with settings the code no longer has
+    summary_path.write_text(json.dumps(summary))
+    with pytest.raises(SystemExit, match="settings"):
+        _run_script("--resummarize", str(tmp_path))
+
 
 def test_confirmation_run_reports_worst_case_nulls(tmp_path: Path) -> None:
     _run_script("--confirm", "--quick", "--seed", "1", "--out", str(tmp_path), "--workers", "1")
     results = pd.read_csv(tmp_path / "results.csv")
     assert (results["delta"] == 0).all() and (results["sigma"] == 0.22).all()
     summary = json.loads((tmp_path / "summary.json").read_text())
-    assert summary["mode"] == "confirm"
+    assert summary["mode"] == "quick-confirm"
     worst = summary["null_worst_cases"]
     assert {(w["method"], w["level"]) for w in worst} == set(
         results[["method", "level"]].itertuples(index=False, name=None)

@@ -865,11 +865,17 @@ def recommend(verdicts: list[dict], comparison: pd.DataFrame, settings: Simulati
     grid_count = settings.grid.variants[0].resamples
     chosen = comparison[(comparison["method"] == best) & np.isclose(comparison["level"], level)]
     most = int(chosen["resamples"].max())
-    reference = chosen[chosen["resamples"] == most].set_index("scenario")[list(RATE_COLUMNS)]
-    rate_difference = {
-        int(count): float(
-            (group.set_index("scenario")[list(RATE_COLUMNS)] - reference).abs().max().max()
+
+    def rates(rows: pd.DataFrame) -> pd.DataFrame:
+        # Under the null, P(equivalence) is the chance of a correct finding, not an error rate.
+        rows = rows.set_index("scenario")
+        return rows[list(RATE_COLUMNS)].assign(
+            p_equivalence=rows["p_equivalence"].where(rows["delta"] != 0, 0.0)
         )
+
+    reference = rates(chosen[chosen["resamples"] == most])
+    rate_difference = {
+        int(count): float((rates(group) - reference).abs().max().max())
         for count, group in chosen.groupby("resamples")
     }
     disagreement = chosen.groupby("resamples")["disagree_with_reference"].max()
@@ -882,7 +888,8 @@ def recommend(verdicts: list[dict], comparison: pd.DataFrame, settings: Simulati
         "rule": (
             f"the largest compared count ({most}) if no rate among {RATE_COLUMNS} with the "
             f"grid's {grid_count} resamples differs from that with {most} by more than "
-            f"{MAX_RATE_DIFFERENCE} in any comparison scenario; otherwise none (recalibrate)"
+            f"{MAX_RATE_DIFFERENCE} in any comparison scenario (P(equivalence) only where "
+            "Δ ≠ 0); otherwise none (recalibrate)"
         ),
     }
     return recommendation
