@@ -6,8 +6,10 @@ Two checks therefore block training:
 
 - **Path field (invariant 8).** The stage-0 checks measure, per execution environment, the bound
   on the residual field that the path discrepancy creates and write a record under
-  ``DATA_DIR/checks/``. A training run needs a passed record for its own environment: model
-  revision and numerics, device and library versions. A missing or failed record stops it.
+  ``DATA_DIR/checks/``. A training run needs a passed record for its own environment (model
+  revision and numerics, device, library versions, execution batch sizes, and the check, sampler
+  and protocol versions) that covers its steps, batch size and response cap. A missing, failed or
+  out-of-scope record stops it.
 - **Teacher gap (invariant 1).** At step 0 the training path must reproduce the stored teacher
   log-probabilities of the run's whole stream within the preregistered thresholds.
 - **The run's own path field.** From the same step-0 differences Δ_t of the sampled tokens,
@@ -99,6 +101,11 @@ def write_check_record(
         f.flush()
         os.fsync(f.fileno())
     tmp.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY)  # make the replacement itself durable
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
     return path
 
 

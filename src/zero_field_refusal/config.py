@@ -29,7 +29,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from omegaconf.errors import InterpolationToMissingValueError, MissingMandatoryValue
+from omegaconf.errors import (
+    InterpolationKeyError,
+    InterpolationToMissingValueError,
+    MissingMandatoryValue,
+)
 
 from .paths import CONFIG_ROOT
 
@@ -81,6 +85,10 @@ def config_hash(cfg: DictConfig) -> str:
     except (MissingMandatoryValue, InterpolationToMissingValueError) as exc:
         raise ValueError(
             f"Set these config values before a run: {_missing_keys(identity)}"
+        ) from exc
+    except InterpolationKeyError as exc:  # an identity key refers into a non-identity section
+        raise ValueError(
+            f"Identity keys may not interpolate from {NON_IDENTITY_KEYS}: {exc}"
         ) from exc
     blob = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]

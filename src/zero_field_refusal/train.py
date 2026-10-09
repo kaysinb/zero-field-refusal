@@ -36,7 +36,7 @@ from .prechecks import check_run_chi_square, check_teacher_gap, require_path_che
 from .refusal import is_keyword_refusal
 from .runtime import Environment, load_stream_for, locate_stream
 from .seeding import derive_seed, seed_everything
-from .teacher import Sample, load_distributions, reference_samples
+from .teacher import Sample, StreamError, load_distributions, reference_samples
 from .tracking import Run
 
 FACTUAL_MAX_NEW_TOKENS = 32
@@ -329,6 +329,7 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
             check_teacher_gap(gap, cfg.checks.teacher_gap)  # stops before any optimizer step
             index = {id(s): i for i, s in enumerate(stream)}
             sums = [sum(chi_square[index[id(s)]] for s in batch) for batch in batches]
+            run.summarize({"step0_path_field_batch_chi_square": sums})  # kept if the check fails
             run.summarize({"step0_path_field": check_run_chi_square(sums, cfg.train.steps)})
 
         second_moment = None
@@ -339,10 +340,11 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
 
         for step, batch in enumerate(batches):
             optimizer.zero_grad(set_to_none=True)
-            targets = None
+            soft_targets = None
             if reader is not None:
-                targets = reader.take([position[id(s)] for s in batch])
-            stats = accumulate_gradient(student, batch, cfg, env, targets)
+                soft_targets = reader.take([position[id(s)] for s in batch])
+                _check_rows(batch, soft_targets)
+            stats = accumulate_gradient(student, batch, cfg, env, soft_targets)
             optimizer.step()
             stats |= projection_stats(trainable, theta0, directions)
             run.log(stats, step=step)
@@ -414,6 +416,15 @@ def _controls(
             out[f"random_{kind}"] = evaluate(student, f"random_{kind}")
     set_point(trainable, start, delta, 1.0)
     return out
+
+
+def _check_rows(batch: Sequence[Sample], rows: Sequence[torch.Tensor]) -> None:
+    """Each soft-target row must belong to its sample: at the sampled tokens it holds exactly the
+    stored log-probabilities, both taken from the same tensor at generation."""
+    for s, row in zip(batch, rows, strict=True):
+        picked = row.gather(1, torch.tensor(s.response_ids)[:, None])[:, 0]
+        if not torch.equal(picked, torch.tensor(s.logprobs, dtype=row.dtype)):
+            raise StreamError(f"Soft targets of {s.prompt_id} do not match its sampled tokens")
 
 
 def _identity(manifest: Mapping[str, Any]) -> dict[str, Any]:
