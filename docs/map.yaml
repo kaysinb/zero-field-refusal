@@ -55,6 +55,9 @@ topics:
   - src/zero_field_refusal/teacher*.py
   - src/zero_field_refusal/losses*.py
   - src/zero_field_refusal/models*.py
+  - src/zero_field_refusal/batches*.py
+  - src/zero_field_refusal/runtime*.py
+  - src/zero_field_refusal/train*.py
 - id: optimizer_hypotheses
   title: Optimizer hypotheses, control arms and state initialization
   source: docs/preregistration.md#hypotheses
@@ -90,6 +93,10 @@ topics:
   - configs/judge/*.yaml
   - src/zero_field_refusal/evaluation*.py
   - src/zero_field_refusal/judge*.py
+  - src/zero_field_refusal/labeling*.py
+  - src/zero_field_refusal/refusal*.py
+  - src/zero_field_refusal/data*.py
+  - src/zero_field_refusal/resources/*
   - src/zero_field_refusal/analysis*.py
 - id: technical_gate
   title: Corrected-pilot gate, utility and judge calibration
@@ -102,6 +109,10 @@ topics:
   - configs/eval/default.yaml
   - configs/judge/default.yaml
   - docs/decisions.md#gate-decisions
+  watch:
+  - src/zero_field_refusal/diagnostics*.py
+  - src/zero_field_refusal/checks*.py
+  - configs/experiments/stage0_checks.yaml
 - id: scientific_gate
   title: Sequential decisions, local equivalence and unequal-KL fallback
   source: docs/preregistration.md#gate-2-scientific

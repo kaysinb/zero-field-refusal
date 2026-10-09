@@ -135,6 +135,24 @@ uv run python scripts/<entry point>.py experiments/smoke optimizer.lr=3e-5 seed=
 uv run python scripts/<entry point>.py experiments/smoke optimizer=sgd optimizer.lr=0.1
 ```
 
+## Data, streams and checks
+
+Prompt sets and teacher streams are built once per model and kept as evidence (see
+[retention](#artifact-retention)). On the Pod, through the launcher:
+
+```bash
+python scripts/prepare_data.py experiments/smoke          # prompt sets and their manifest
+python scripts/generate_teacher.py experiments/<name> --stream kl_harmful
+python scripts/generate_teacher.py experiments/<name> --stream kl_benign
+python scripts/generate_teacher.py experiments/<name> --stream training --seeds 0 1 2 3 4
+python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-instruct
+```
+
+`prepare_data.py` caches the pinned source CSVs in `DATA_DIR/sources/` and refuses to overwrite a
+complete build without `--force`. Stream directories are named by a hash of everything that
+determines their samples; an existing stream is never regenerated. Frozen Adam and pre-warmed
+AdamW also need `--stream preconditioner` for the same seeds.
+
 ## Launching runs
 
 - **One GPU:** everything that fits on one GPU runs as one process, as in the examples above.
@@ -209,7 +227,9 @@ the [release checklist](#release-checklist).
 - `data/`: prompt sets and teacher samples;
 - `runs/`: run outputs;
 - `.env`: keys;
-- `*.local.*`: private notes.
+- `*.local.*`: private notes;
+- judge labels, calibration samples, their keys and manual labels: they contain raw responses to
+  harmful prompts and stay in `DATA_DIR` or `RUNS_DIR`.
 
 ## Release checklist
 

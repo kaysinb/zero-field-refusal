@@ -19,8 +19,9 @@ scientific design is in [design.md](design.md); procedures for running things ar
 
 ## Data flow
 
-1. **Prompt sets.** Defined in `configs/data/`, each pinned by dataset revision and selected
-   indices, with its manifest saved next to the data:
+1. **Prompt sets.** Defined in `configs/data/`, each pinned by dataset revision (or source URL
+   and file hash) and selected indices, with its manifest saved next to the data. The factual
+   questions are a versioned resource in the package; an edited resource gets a new version name:
    - Alpaca instructions without an input field, split into three disjoint sets of 100: teacher
      prompts, benign KL prompts and held-out reference answers;
    - harmful prompts: HarmBench standard behaviors and AdvBench, deduplicated, split into 100 KL
@@ -77,27 +78,40 @@ Implemented:
 | `protocol` | loading run configs with checks of the zero-field settings, the declared control and pinned revisions |
 | `tracking` | run directories, provenance including the source snapshot, metrics, summary, W&B mirror |
 | `seeding` | run seed and named per-purpose streams |
+| `data` | pinned prompt sets, deduplication and splits, manifests with hashes; the factual-question resource `resources/simple_facts_v1.jsonl` |
+| `models` | loading models and tokenizers at pinned revisions, numerics, neutral generation config, end tokens, chat encoding, frozen input embeddings and output head |
+| `teacher` | zero-field sampling from θ₀ under the invariants below; stream identity, storage and validation |
+| `runtime` | the run environment (tokenizer, model factory, prompt sets); generating and loading streams and soft-target distributions |
+| `batches` | right-padded prompt + response rows with explicit response targets and truncation to the cap |
+| `losses` | the training path; summed NLL over response tokens divided by a constant; the token-count control; the soft-target control loss |
+| `optim` | Adam with fp32 state in adaptive, frozen and pre-warmed modes (H2a); the θ₀ second-moment estimate; SGD with and without momentum from PyTorch |
+| `train` | one training run with the step-0 teacher gap, projections, in-process evaluation and controls |
+| `evaluation` | K against a frozen θ₀ copy, greedy responses, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
+| `refusal` | the versioned keyword refusal list |
+| `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
+| `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with manual labels |
+| `labeling` | blind calibration samples and the terminal labeling session |
 
 Planned:
 
 | Module | Responsibility |
 |---|---|
-| `data` | pinned prompt sets and their manifests |
-| `models` | loading models and tokenizers, chat template, precision, frozen input embeddings and output head, LoRA variant |
-| `teacher` | zero-field sampling from θ₀ under the invariants below; the training and preconditioner streams; stored samples |
-| `losses` | summed NLL over response tokens divided by a constant; the token-count control; the soft-target control loss |
-| `optim` | AdamW with fp32 state; frozen and pre-warmed second-moment variants with shared estimation at θ₀ and initialization from H2a; SGD with and without momentum comes from PyTorch |
+| `models` | the LoRA variant |
 | `distributed` | `torchrun` and FSDP2 setup, global-batch arithmetic, rank-aware data order |
-| `train` | one training run with in-process evaluation |
-| `evaluation` | K against a frozen θ₀ copy, greedy responses and keyword refusal, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
-| `judge` | three-label judge over an OpenAI-compatible endpoint; agreement with manual labels |
-| `analysis` | h(K) fits, Δ(K\*), seed bootstrap, power, noise-theory predictor and baselines, gate reports |
+| `analysis` | h(K) fits, Δ(K\*), seed bootstrap, the full-analysis simulation, noise-theory predictor and baselines, gate reports |
 | `toy` | toy models for checking the theory: a categorical bias model, a 2-D quadratic bowl, a small network |
 
-Planned entry points in `scripts/`:
-- `generate_teacher.py`;
-- `train.py`;
-- `judge.py`;
+Entry points in `scripts/`:
+- `prepare_data.py`: builds the prompt sets into `DATA_DIR/prompts/<config hash>/`, caching the
+  pinned source CSVs in `DATA_DIR/sources/`;
+- `generate_teacher.py`: samples a stream (training, preconditioner, K reference, soft targets,
+  Alpaca reference) into `DATA_DIR/teacher/`;
+- `train.py`: one run from existing streams;
+- `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
+- `judge.py`, `make_calibration_sample.py`, `label.py`: judging, the blind calibration sample and
+  manual labeling.
+
+Planned:
 - `launch.py`: expands a sweep into configs and runs the missing cells, skipping any config whose
   hash already has a completed run in the merged run store;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run into one
@@ -109,7 +123,7 @@ Planned entry points in `scripts/`:
 | # | Invariant | Why | Check |
 |---|---|---|---|
 | 1 | The teacher is θ₀: the same checkpoint revision, precision, attention implementation and chat template as the student at step 0. | Any difference between how the teacher samples and how the student scores creates a real field. | At step 0 the student reproduces the stored teacher log-probabilities within a tolerance recorded with the dataset; see [precision](#precision). |
-| 2 | Sampling at temperature 1 with top-k off, top-p 1, no repetition penalty, no minimum length, natural end of turn. | Any reshaping of the distribution is a real field (e.g. temperature 0.7 sharpens frequent tokens). | The effective logits-processor list is empty; see [generation settings](#generation-settings). |
+| 2 | Sampling at temperature 1 with top-k off, top-p 1, no repetition penalty, no minimum length, natural end of turn. | Any reshaping of the distribution is a real field (e.g. temperature 0.7 sharpens frequent tokens). | At every step the raw logits equal the scores the sampler used; see [generation settings](#generation-settings). |
 | 3 | Truncation at `max_new_tokens` is allowed; filtering or resampling by length or content is not. | Truncation keeps the expected gradient zero; selection on the outcome does not. | No code path drops or resamples teacher responses. |
 | 4 | Training uses the stored token ids, including the sampled end-of-sequence token; text is never decoded and re-tokenized. Sampling stops at either of the model's end tokens (`model.end_tokens`). | Re-tokenization can produce token sequences the teacher never sampled. | The loss reads token ids only. The response length comes from the first end-of-sequence token, never from a `!= pad` mask: Qwen2.5's pad id equals one of its end-of-sequence ids, so such a mask drops a sampled end token. |
 | 5 | Loss = summed token NLL / constant (`train.loss.denominator` = batch size × `train.max_response_tokens`). | Dividing by the batch's token count weights short responses more and pushes toward shorter answers. | Unit test: the loss of a batch does not depend on the lengths of the other responses in it. |
@@ -130,7 +144,9 @@ A call that sets only `temperature=1.0` therefore samples from a reshaped distri
 - replace the model's generation config with a neutral one that sets only the end-of-sequence and
   pad ids;
 - pass every sampling field explicitly;
-- assert that the effective logits-processor list is empty;
+- assert at every step that the raw logits equal the scores the sampler used, so no logits
+  processor reshaped the distribution. A processor that edited the logits in place would escape
+  this check, but not the step-0 teacher gap of invariant 1;
 - store the effective generation config with the samples.
 
 A unit test loads a fake generation config carrying the Qwen values and checks that none of them
