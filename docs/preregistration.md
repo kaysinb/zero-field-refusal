@@ -16,7 +16,7 @@ Each item has a status:
 | Id | Statement | Status |
 |---|---|---|
 | H1 | At equal KL on harmful prompts, AdamW yields a higher harmful-compliance rate than SGD: Δ(K\*) > 0. | proposed |
-| H2 | If H1 holds, the position of Adam with frozen statistics at K\* says which mechanism the result is consistent with (definitions below); it does not identify a mechanism. Indistinguishable from SGD and different from AdamW: consistent with sign-step rectification. Indistinguishable from AdamW and different from SGD: consistent with heating of flat directions. Different from both and between them: consistent with both. Indistinguishable from both, outside the SGD–AdamW range, or any other combination: no mechanism is indicated. | proposed |
+| H2 | If H1 holds, the position of Adam with frozen statistics at K\* says which mechanism the result is consistent with (definitions below); it does not identify a mechanism. Indistinguishable from SGD and different from AdamW: consistent with sign-step rectification. Indistinguishable from AdamW and different from SGD: consistent with heating of flat directions. Different from both and between them: consistent with both. Different from both and beyond one end of the SGD–AdamW range, indistinguishable from both, or any other combination: no mechanism is indicated. | proposed |
 | H3 | With SGD at small KL and a fixed learning rate, KL ∝ B⁻¹ in the batch size B. With Adam, the plateau (stationary) KL ∝ B^(−1/2), through the temperature η/√B. No such scaling is predicted for Adam before the plateau: in a toy model the exponent is −0.04 after 10 steps and −0.44 after 400. Tested with runs long enough to reach the plateau and at least 3 batch sizes. | proposed |
 | H2a | Frozen Adam differs from AdamW in two ways (no early sign steps, no adaptation as parameters move) and from SGD in two ways (preconditioning, momentum). Two additional control arms help distinguish these contributions, without proving a mechanism: SGD with momentum 0.9 isolates momentum, and AdamW with its second moment pre-warmed at θ₀ weakens the early sign steps while keeping adaptivity (it need not remove all mean drift). A difference between frozen Adam and SGD with momentum shows an effect of preconditioning, consistent with but not specific to heating of flat directions; pre-warmed AdamW moving toward SGD is consistent with rectification. Pre-warmed AdamW: the second moment starts from the θ₀ estimate (50 fresh teacher batches) without bias correction, the first moment starts at zero with the usual bias correction, and the step counter starts at 0. Frozen Adam: the same second-moment estimate, never updated; the first moment as in pre-warmed AdamW. | proposed |
 | H4 | The noise-theory model of [Gate 3](#gate-3), calibrated on part of the regimes, predicts the harmful rate on held-out regimes better than both baselines. | proposed |
@@ -24,10 +24,14 @@ Each item has a status:
 Definitions for H2, status `proposed`. Frozen Adam (FA) is compared with optimizer X at K\* through
 the CI of h_FA(K\*) − h_X(K\*), from the same paired bootstrap as Δ(K\*), at the CI level of the
 [Gate 2](#gate-2-scientific) look at which the decision is made:
-- **different:** the CI excludes 0;
-- **indistinguishable:** the CI lies within ±10 pp. A CI that lies within ±10 pp and also excludes
-  0 counts as indistinguishable, because the difference is below the minimal effect of interest;
-- **between:** the estimate h_FA(K\*) lies between h_SGD(K\*) and h_AdamW(K\*);
+- **indistinguishable:** the CI lies entirely within ±10 pp (equivalence). A CI that merely
+  includes 0 is not indistinguishable. A CI that lies within ±10 pp and also excludes 0 counts as
+  indistinguishable, because the difference is below the minimal effect of interest;
+- **different:** the CI excludes 0 and is not indistinguishable;
+- **between / beyond:** used only when frozen Adam differs from both: between if the estimate
+  h_FA(K\*) lies between h_SGD(K\*) and h_AdamW(K\*), ends included; beyond otherwise. When frozen
+  Adam is indistinguishable from one optimizer, the classification follows that, whatever the
+  position of its estimate within ±10 pp;
 - **no overlap:** if the K range of frozen Adam does not overlap the common range of SGD and AdamW,
   H2 draws no conclusion outside the common region; frozen Adam is only described.
 
