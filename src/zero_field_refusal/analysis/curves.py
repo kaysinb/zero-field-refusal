@@ -105,11 +105,16 @@ def fit_logistic(
             if not worse.any():
                 break
             t = np.where(worse, t / 2, t)
-        alpha[active], beta[active], objective[active] = new_a, new_b, new
+        # A row whose step is still worse after MAX_HALVINGS halvings keeps its previous iterate
+        # and stops, not converged.
+        stalled = worse
+        alpha[active] = np.where(stalled, a, new_a)
+        beta[active] = np.where(stalled, b, new_b)
+        objective[active] = np.where(stalled, old, new)
 
-        done = ok & (np.maximum(np.abs(step_a), np.abs(step_b)) < tol)
+        done = ok & ~stalled & (np.maximum(np.abs(step_a), np.abs(step_b)) < tol)
         converged[active[done]] = True
-        active = active[~done & ok]
+        active = active[~done & ok & ~stalled]
 
     return LogisticFit(
         intercept=alpha - beta * center,

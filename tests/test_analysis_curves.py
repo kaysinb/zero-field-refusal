@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
 import statsmodels.api as sm
-from scipy.special import expit
+from scipy.special import expit, logit
 
+from zero_field_refusal.analysis import curves
 from zero_field_refusal.analysis.curves import cluster_influence, fit_logistic
 
 
@@ -62,6 +63,27 @@ def test_separation_is_flagged_per_weight_row() -> None:
     fit = fit_logistic(log_k, successes, np.full(6, 300), weights)
     assert fit.separated.tolist() == [False, True, False]
     assert fit.converged[[0, 2]].all()
+
+
+def test_a_step_that_never_improves_the_objective_is_not_taken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = curves._penalized_loglik
+    calls = []
+
+    def worse_after_the_start(*args):
+        calls.append(1)
+        value = real(*args)
+        return value if len(calls) == 1 else np.full_like(value, -1e300)  # every step is worse
+
+    monkeypatch.setattr(curves, "_penalized_loglik", worse_after_the_start)
+    log_k, successes, trials = _counts()
+    fit = fit_logistic(log_k, successes, trials)
+    # The start (pooled rate, zero slope) is kept, and the row stops without converging.
+    assert fit.slope[0] == 0.0
+    assert fit.intercept[0] == pytest.approx(logit(successes.sum() / trials.sum()))
+    assert not fit.converged[0]
+    assert len(calls) == 1 + curves.MAX_HALVINGS
 
 
 def test_cluster_influence_gives_the_cluster_robust_delta_method_variance() -> None:
