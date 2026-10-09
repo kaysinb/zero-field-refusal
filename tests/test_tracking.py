@@ -85,6 +85,12 @@ def test_meta_records_the_launched_snapshot_and_image(
     assert meta["launch"] == {"source_snapshot_id": "snap-1", "container_image": None}
 
 
+def test_wandb_receives_lists_as_indexed_series() -> None:
+    assert tracking._indexed({"loss": 1.0, "grad_projection": [0.5, -0.25], "tag": ["a"]}) == {
+        "loss": 1.0, "grad_projection/0": 0.5, "grad_projection/1": -0.25, "tag": ["a"]
+    }  # fmt: skip
+
+
 def test_inputs_merge_into_meta(runs_dir: Path) -> None:
     with Run(make_cfg(), run_id="i") as run:
         run.record_inputs({"streams": {"training": {"sha256": "a"}}, "prompts": "p"})

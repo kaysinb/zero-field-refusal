@@ -232,11 +232,15 @@ arms included, since none is chosen by its outcome.
 
 ## Weights & Biases in practice
 
-- W&B mirrors configs and metrics for browsing and comparing runs; the run directories remain the
-  source of truth.
-- The project `zero-field-refusal` stays private; runs are grouped by experiment.
-- Entity, key and mode come from `.env`. With `WANDB_MODE=offline`, runs need no network and are
-  synced later with `wandb sync`.
+- W&B mirrors configs and metrics for browsing and comparing runs; the run directories on
+  persistent storage remain the source of truth. Only metrics and configs are sent: no artifacts,
+  weights or response texts, which also keeps the account within the free plan's storage.
+- The project `zero-field-refusal` was created private before the first run; runs are grouped by
+  experiment. Check that the first Runpod run appears there.
+- Entity, key and mode come from `.env` locally. On Runpod the key is a Runpod secret passed as a
+  Pod environment variable at creation, `WANDB_API_KEY={{ RUNPOD_SECRET_wandb_api_key }}`; it never
+  enters the image, the project files or command lines. With `WANDB_MODE=offline`, runs need no
+  network and are synced later with `wandb sync`.
 - `tracking.wandb.enabled: false` turns the mirror off (the smoke experiment does);
   `tracking.wandb.required: true` makes a failure to start W&B stop the run. The privacy settings
   every run starts with are listed in

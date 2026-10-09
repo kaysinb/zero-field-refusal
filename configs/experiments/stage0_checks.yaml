@@ -13,5 +13,3 @@ optimizer:
   lr: 5.0e-5                      # unused: no training run; the Adam check uses its own setting
   preconditioner:
     batches: 200
-tracking:
-  wandb: {enabled: false}

@@ -17,7 +17,8 @@ stringified. NaN and infinities are written as Python's ``json`` writes them (``
 ``Infinity``), which Python and pandas read back but strict JSON parsers reject.
 
 Weights & Biases, when enabled in the config, mirrors config, metrics and summary for browsing; its
-entity, API key and mode (``WANDB_MODE``) come from the environment. It records no hostname, paths,
+entity, API key and mode (``WANDB_MODE``) come from the environment. Nothing else is sent: no
+artifacts, weights or response texts. It records no hostname, paths,
 git state, code or console output. A failure to start it is recorded in ``meta.json`` and the run
 goes on, unless ``tracking.wandb.required`` is set.
 
@@ -136,7 +137,7 @@ class Run:
         with (self.dir / "metrics.jsonl").open("a") as f:
             f.write(line + "\n")
         if self._wandb is not None:
-            self._wandb.log({**values, "step": step})
+            self._wandb.log({**_indexed(values), "step": step})
 
     def summarize(self, values: Mapping[str, Any]) -> None:
         """Add final values to ``summary.json`` (later calls update earlier keys)."""
@@ -338,6 +339,17 @@ def _plain(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
+
+
+def _indexed(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Lists of numbers as ``key/0``, ``key/1``, ... so that W&B charts them as series."""
+    out: dict[str, Any] = {}
+    for key, value in values.items():
+        if isinstance(value, list) and all(isinstance(v, int | float) for v in value):
+            out.update({f"{key}/{i}": v for i, v in enumerate(value)})
+        else:
+            out[key] = value
+    return out
 
 
 def _merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:

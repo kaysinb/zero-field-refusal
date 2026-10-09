@@ -19,5 +19,3 @@ eval:
     heldout_reference_nll: false
     factual_qa: true
     benchmark: false
-tracking:
-  wandb: {enabled: false}
