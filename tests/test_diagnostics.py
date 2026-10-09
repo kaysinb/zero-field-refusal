@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 from zero_field_refusal.batches import chunks, collate
 from zero_field_refusal.diagnostics import (
+    chi_square,
     field_decision,
     field_measurement,
     path_chi_square,
@@ -150,13 +151,16 @@ def synthetic_views(f: torch.Tensor, scales: torch.Tensor, seed: int):
     return views
 
 
-@pytest.mark.parametrize("anisotropic", [False, True])
-def test_split_half_estimate_is_unbiased_and_its_interval_covers(anisotropic):
-    # A field comparable to the estimate's noise, so that both halves' spread matters.
+@pytest.mark.parametrize(
+    ("anisotropic", "amplitude"), [(False, 0.3), (True, 0.3), (False, 1.5), (True, 1.5)]
+)
+def test_split_half_estimate_is_unbiased_and_its_interval_covers(anisotropic, amplitude):
+    # Weak and strong fields; with a strong one, half A's spread dominates the error, which a
+    # standard error from half B alone misses (coverage ≈ 0.84 instead of ≈ 0.96).
     d, half, reps = 40, 20, 400
     scales = torch.linspace(0.3, 2.0, d) if anisotropic else torch.ones(d)
     f = torch.zeros(d)
-    f[:5] = 0.3
+    f[:5] = amplitude
     truth = f.pow(2).sum().item()
     like = [torch.nn.Parameter(torch.zeros(d))]
     estimates, covered = [], 0
@@ -166,7 +170,7 @@ def test_split_half_estimate_is_unbiased_and_its_interval_covers(anisotropic):
         covered += abs(est.field_norm_sq - truth) <= 2 * est.standard_error
     values = torch.tensor(estimates)
     assert abs(values.mean().item() - truth) < 3 * values.std().item() / reps**0.5
-    assert covered / reps >= 0.93  # conservative interval: nominal 0.95 or more
+    assert covered / reps >= 0.93  # conservative: ≈ 0.95–0.99 in this setup
 
 
 def test_path_field_is_small_when_both_paths_agree(teacher):
@@ -199,3 +203,21 @@ def test_a_mismatched_generation_path_fails_the_path_field_bound(teacher):
     chi = path_chi_square(model, samples, recorded, CFG, pad_id=PAD_ID,
                           device=torch.device("cpu"), steps=25)  # fmt: skip
     assert chi["bound_upper"] > 0.01
+
+
+def test_chi_square_on_a_full_vocabulary_is_free_of_fp32_normalization_error():
+    # Qwen2.5's vocabulary: an fp32 log-softmax is off by ~1e-7–1e-5 per position, which a linear
+    # formula would carry into χ², above the per-token bound (~2e-7). Identical inputs give ~0.
+    g = torch.Generator().manual_seed(0)
+    logits = torch.randn(6, 151_936, generator=g) * 3
+    log_p = torch.log_softmax(logits, dim=-1)
+    assert chi_square(log_p, log_p.clone()).abs().max().item() < 1e-12
+    # A small known discrepancy: q = p·exp(δ·z) renormalized, χ² ≈ δ²·Var_p(z).
+    z = torch.randn(151_936, generator=g, dtype=torch.float64)
+    delta = 1e-5
+    log_p64 = torch.log_softmax(logits.double(), dim=-1)
+    log_q64 = torch.log_softmax(logits.double() + delta * z, dim=-1)
+    p64 = log_p64.exp()
+    expected = delta**2 * (p64 * (z - (p64 * z).sum(-1, keepdim=True)) ** 2).sum(-1)
+    measured = chi_square(log_q64.float(), log_p64.float())
+    torch.testing.assert_close(measured, expected, rtol=0.05, atol=1e-12)

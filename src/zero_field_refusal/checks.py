@@ -47,6 +47,10 @@ from .train import accumulate_gradient, teacher_gap, training_batches
 FIELD_SEED = 1000
 # Batches of that stream for the θ₀ second-moment estimate of Adam's metric (as in H2a).
 ADAM_ESTIMATE_BATCHES = 50
+# The teacher-gap thresholds: GAP_MARGIN × the largest gap over the training streams of these
+# seeds (docs/preregistration.md, "Teacher-gap thresholds").
+GAP_SEEDS = (0, 1, 2)
+GAP_MARGIN = 10.0
 
 
 def run_stage0_checks(
@@ -61,8 +65,16 @@ def run_stage0_checks(
         stream, manifest = load_stream_for(cfg, env, "training", 0)
         run.summarize({"eos_fraction_at_cap": manifest["ended_fraction"],
                        "mean_response_tokens": manifest["mean_response_tokens"]})  # fmt: skip
-        log("teacher-student gap on the training stream")
-        run.summarize({"teacher_gap": teacher_gap(model, stream, cfg, env)})
+        log("teacher-student gap on the training streams of seeds 0-2")
+        gaps = {}
+        for seed in GAP_SEEDS:
+            seed_stream, _ = load_stream_for(cfg, env, "training", seed)
+            gaps[seed] = teacher_gap(model, seed_stream, cfg, env)[0]
+        run.summarize({"teacher_gap": gaps, "teacher_gap_proposed_thresholds": {
+            "token_max_abs": GAP_MARGIN * max(g["token_max_abs"] for g in gaps.values()),
+            "response_mean_signed_abs": GAP_MARGIN * max(abs(g["response_mean_signed"])
+                                                         for g in gaps.values()),
+        }})  # fmt: skip
 
         log("memory and time of the run configuration")
         run.summarize({"run_profile": _run_profile(model, stream, cfg, env)})
@@ -87,8 +99,17 @@ def run_stage0_checks(
         common = dict(pad_id=env.pad_id, device=env.device, steps=steps)
         bound = path_chi_square(model, samples, recorded, path_cfg, **common)
         passed = bound["bound_upper"] <= cfg.checks.path_field.max_drift_to_noise
-        euclid = path_field_measurement(model, params, samples, recorded, path_cfg, **common)
+        certified = {"criterion": cfg.checks.path_field.max_drift_to_noise, "steps": steps,
+                     "batch_size": cfg.train.batch_size, "cap": cfg.train.max_response_tokens,
+                     "chi_square_bound": bound}  # fmt: skip
+        # The verdict first: the diagnostics below must not be able to leave training locked.
+        record = write_check_record(env.data_root, environment_fingerprint(cfg, env.device),
+                                    certified, passed=passed, run_id=run.run_id)  # fmt: skip
+        run.summarize({"path_field": certified | {"passed": passed}})
+        run.record_inputs({"path_check_record": str(record.relative_to(env.data_root))})
+
         size = cfg.train.batch_size
+        euclid = path_field_measurement(model, params, samples, recorded, path_cfg, **common)
         v_hat = estimate_second_moment(
             params, lambda i: accumulate_gradient(model, field_stream[i * size : (i + 1) * size],
                                                   cfg, env),
@@ -97,9 +118,7 @@ def run_stage0_checks(
         adam = path_field_measurement(model, params, samples, recorded, path_cfg,
                                       preconditioner=v_hat, **common)  # fmt: skip
         del v_hat
-        results = {
-            "criterion": cfg.checks.path_field.max_drift_to_noise,
-            "chi_square_bound": bound,
+        run.summarize({"path_field": certified | {"passed": passed} | {
             "euclidean": None if euclid is None else euclid.as_dict(steps),
             "adam": None if adam is None else adam.as_dict(steps),
             "path_discrepancy": path_discrepancy(
@@ -108,11 +127,7 @@ def run_stage0_checks(
             "soft_target_gradient_one_batch": soft_target_gradient_ratio(
                 model, params, samples[:size], recorded[:size], path_cfg, pad_id=env.pad_id,
                 device=env.device),
-        }  # fmt: skip
-        record = write_check_record(env.data_root, environment_fingerprint(cfg, env.device),
-                                    results, passed=passed, run_id=run.run_id)  # fmt: skip
-        run.summarize({"path_field": results | {"passed": passed}})
-        run.record_inputs({"path_check_record": str(record.relative_to(env.data_root))})
+        }})  # fmt: skip
         return run
 
 
@@ -125,8 +140,8 @@ def _ensure_streams(cfg: DictConfig, env: Environment, log) -> dict[str, DictCon
     path_cfg = OmegaConf.merge(
         cfg, {"train": {"steps": batches}, "teacher": {"responses": responses}}
     )
-    needed = [(cfg, "training", 0), (cfg, "preconditioner", FIELD_SEED),
-              (path_cfg, "soft_targets", 0)]  # fmt: skip
+    needed = [*((cfg, "training", seed) for seed in GAP_SEEDS),
+              (cfg, "preconditioner", FIELD_SEED), (path_cfg, "soft_targets", 0)]  # fmt: skip
     model = None
     for config, kind, seed in needed:
         _, path, _ = locate_stream(config, env, kind, seed)

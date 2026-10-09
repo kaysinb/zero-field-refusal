@@ -20,18 +20,19 @@ measured along u_A and u_B. The comparison is N·|f|²/σ².
   |f|² − 2 SE, and undetermined otherwise (docs/preregistration.md, A1). A sufficient criterion
   needs no gradients: N·Var(c_b) < 1 bounds N·|f|²/σ² below 1 (Cauchy–Schwarz with E[g_b] = 0).
   The same estimate for the constant denominator checks that its field is zero.
-- **Path field (invariant 8).** The distributions θ₀ produced while sampling (generation path p,
-  KV cache) differ slightly from the training path's (q). The student then trains toward p: a
-  residual field f, the mean soft-target gradient. Write the training gradient as the soft-target
-  gradient plus n_b = Σ_t (p_t − e_{y_t})·J_t, a sum of martingale differences. For any direction
-  v, f·v = E[Σ_t E_p[(q/p − 1)·(J_t v)]], so Cauchy–Schwarz gives
-  N·(f·v)²/Var(n_b·v) ≤ N·X with X = E[Σ_{t in a batch} χ²(q_t ‖ p_t)].
-  The bound needs only the two paths' distributions, holds in every direction and in every
-  linear metric, Adam's preconditioned one included, and does not depend on estimating the
-  direction of a weak field. The check requires N·(X̂ + 2 SE) ≤ the preregistered bound over
-  several batches. Gradient-based estimates of N·|f|²/σ² in the Euclidean and Adam metrics are
-  reported alongside; their σ² is measured along an estimated direction, which a weak field leaves
-  dominated by noise and biased toward noisy directions, so they do not decide.
+- **Path field (invariant 8).** The distributions θ₀ produced while sampling (generation path p, KV
+  cache) differ slightly from the training path's (q). The student then trains toward p: a residual
+  field f, the mean soft-target gradient. Write the training gradient as the soft-target gradient
+  plus n_b = Σ_t (p_t − e_{y_t})·J_t, a sum of martingale differences. For any direction v, f·v =
+  E[Σ_t E_p[(q/p − 1)·(J_t v)]], so Cauchy–Schwarz gives N·(f·v)²/Var(n_b·v) ≤ N·X with X = E[Σ_{t
+  in a batch} χ²(q_t ‖ p_t)]. The bound needs only the two paths' distributions, holds in every
+  direction and in every linear metric, Adam's preconditioned one included, and does not depend on
+  estimating the direction of a weak field. It is exact for σ² = Var(n_b·v); against the variance of
+  the whole training gradient, which also contains the soft-target term, it holds up to a factor 1 +
+  O(√X), negligible at the bound (X ≈ 4e-4 per batch). The check requires N·(X̂ + 2 SE) ≤ the
+  preregistered bound over several batches. Gradient-based estimates of N·|f|²/σ² in the Euclidean
+  and Adam metrics are reported alongside; their σ² is measured along an estimated direction, which
+  a weak field leaves dominated by noise and biased toward noisy directions, so they do not decide.
 - **Path discrepancy.** Per-token KL between the two paths' distributions on the same samples,
   and the one-batch soft-target gradient ratio, as descriptive numbers.
 """
@@ -263,10 +264,9 @@ def path_chi_square(
             stop = min(start + cfg.execution.micro_batch_size, (b + 1) * size)
             batch = collate(samples[start:stop], pad_id=pad_id, max_response_tokens=cap,
                             device=device)  # fmt: skip
-            log_q = response_logprobs(model, batch).double()
-            log_p = torch.cat([d[:cap] for d in distributions[start:stop]]).to(device).double()
-            # χ²(q‖p) = Σ_y q²/p − 1, computed in log space.
-            total += (torch.exp(2 * log_q - log_p).sum(-1) - 1.0).sum().item()
+            log_q = response_logprobs(model, batch)
+            log_p = torch.cat([d[:cap] for d in distributions[start:stop]]).to(device)
+            total += chi_square(log_q, log_p).sum().item()
         totals.append(total)
     values = torch.tensor(totals, dtype=torch.float64)
     mean, se = values.mean().item(), values.std().item() / math.sqrt(len(totals))
@@ -290,7 +290,7 @@ def path_field_measurement(
     """The residual field of the path discrepancy: the mean soft-target gradient at θ₀.
 
     With ``preconditioner`` (the θ₀ second-moment estimate v̂), field and noise are measured in
-    Adam's metric: every gradient is divided elementwise by √v̂ + ε.
+    Adam's metric: every gradient is divided elementwise by √v̂ + ε. The estimate is overwritten.
     """
     cap = cfg.train.max_response_tokens
     denominator = float(cfg.train.batch_size * cap)
@@ -298,7 +298,10 @@ def path_field_measurement(
     half = len(samples) // size // 2
     if half < 2:
         raise ValueError("The path-field measurement needs at least 4 batches")
-    scale = None if preconditioner is None else [1.0 / (v.sqrt() + eps) for v in preconditioner]
+    # In place: the caller's estimate becomes the scale 1/(√v̂ + ε), saving one buffer.
+    scale = None
+    if preconditioner is not None:
+        scale = [v.sqrt_().add_(eps).reciprocal_() for v in preconditioner]
     soft = [torch.zeros_like(p, dtype=torch.float32) for p in params]
     grad = dict(pad_id=pad_id, cap=cap, denominator=denominator,
                 micro_batch_size=cfg.execution.micro_batch_size, device=device)  # fmt: skip
@@ -338,8 +341,8 @@ def path_discrepancy(
     for start in range(0, len(samples), micro_batch_size):
         chunk = samples[start : start + micro_batch_size]
         batch = collate(chunk, pad_id=pad_id, max_response_tokens=10**9, device=device)
-        train = response_logprobs(model, batch).double()
-        gen = torch.cat(list(recorded[start : start + micro_batch_size])).to(device).double()
+        train = renormalized(response_logprobs(model, batch))
+        gen = renormalized(torch.cat(list(recorded[start : start + micro_batch_size])).to(device))
         kl.append((gen.exp() * (gen - train)).sum(-1))
         picked = targets(batch)[:, None]
         diff.append(train.gather(1, picked)[:, 0] - gen.gather(1, picked)[:, 0])
@@ -388,6 +391,26 @@ def soft_target_gradient_ratio(
 
     soft, nll = gradient_norm(True), gradient_norm(False)
     return {"soft_target_grad_norm": soft, "nll_grad_norm": nll, "ratio": soft / nll}
+
+
+def renormalized(log_probs: torch.Tensor) -> torch.Tensor:
+    """fp32 log-probabilities renormalized in float64 over the last axis.
+
+    An fp32 log-softmax over 151,936 entries is off by a normalization error of order 1e-7–1e-5
+    per position. Renormalizing in float64 removes it before differences of two paths are taken.
+    """
+    log_probs = log_probs.double()
+    return log_probs - torch.logsumexp(log_probs, dim=-1, keepdim=True)
+
+
+def chi_square(log_q: torch.Tensor, log_p: torch.Tensor) -> torch.Tensor:
+    """χ²(q‖p) = Σ_y p·(q/p − 1)² per position, from log-probabilities, in float64.
+
+    Written with ``expm1`` after renormalizing both, so rounding enters squared: Σ q²/p − 1 on fp32
+    inputs would carry the normalization error linearly, comparable to the bound being checked.
+    """
+    log_q, log_p = renormalized(log_q), renormalized(log_p)
+    return (log_p.exp() * torch.expm1(log_q - log_p).pow(2)).sum(-1)
 
 
 def _dot(xs: Sequence[torch.Tensor], ys: Sequence[torch.Tensor]) -> float:

@@ -22,6 +22,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from . import models
 from .paths import data_root
 from .teacher import (
+    DistributionBuffer,
     Sample,
     StreamError,
     load_manifest,
@@ -36,7 +37,6 @@ from .teacher import (
     stream_seeds,
     stream_spec,
     validate_samples,
-    write_distributions,
     write_stream,
 )
 from .tracking import hardware, package_versions
@@ -142,11 +142,14 @@ def generate_stream(
         model = model if model is not None else env.new_model()
         indices = stream_prompt_indices(spec, len(items), prompt_seed)
         prompts = [env.encode_prompt(items[i]["text"]) for i in indices]
-        samples, distributions = sample_responses(
+        if kind == "soft_targets":
+            vocab = model.get_output_embeddings().weight.shape[0]
+            buffer = DistributionBuffer(len(indices) * spec["sampling"]["max_new_tokens"], vocab)
+        samples, _ = sample_responses(
             model, prompts, [items[i]["id"] for i in indices], sampling=spec["sampling"],
             end_ids=env.end_ids, pad_id=env.pad_id, seed=sampling_seed, batch_size=batch_size,
             zero_field=cfg.control != "sharpened_sampling" or kind.startswith("kl_"),
-            record_distributions=kind == "soft_targets",
+            on_chunk_distributions=buffer.append if kind == "soft_targets" else None,
         )  # fmt: skip
     manifest = {
         "spec": spec,
@@ -174,8 +177,8 @@ def generate_stream(
         "hardware": hardware(),
     }
     if kind == "soft_targets":
-        manifest["distributions"] = write_distributions(partial, distributions)
-        del distributions
+        manifest["distributions"] = buffer.save(partial)
+        del buffer
     write_stream(partial, samples, manifest)
     publish(partial, path)
     return path

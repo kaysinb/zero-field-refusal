@@ -32,7 +32,7 @@ from .evaluation import (
 from .losses import loss_denominator, response_logprobs, soft_kl, summed_nll, targets
 from .models import freeze
 from .optim import ADAM_MODES, build_optimizer, estimate_second_moment
-from .prechecks import check_teacher_gap, require_path_check
+from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .refusal import is_keyword_refusal
 from .runtime import Environment, load_stream_for, locate_stream
 from .seeding import derive_seed, seed_everything
@@ -96,10 +96,14 @@ def accumulate_gradient(
 @torch.no_grad()
 def teacher_gap(
     model: PreTrainedModel, samples: Sequence[Sample], cfg: DictConfig, env: Environment
-) -> dict[str, float]:
-    """Training-path log-probs at θ₀ against the stored teacher log-probs (invariant 1)."""
+) -> tuple[dict[str, float], list[float]]:
+    """Training-path log-probs at θ₀ against the stored teacher log-probs (invariant 1).
+
+    Returns the gap statistics and, per sample, Σ_t expm1(Δ_t)² over its response tokens: an
+    unbiased estimate of Σ_t χ²(training path ‖ generation path), with rounding entering squared.
+    """
     cap = cfg.train.max_response_tokens
-    per_token, per_response = [], []
+    per_token, per_response, chi_square = [], [], []
     for chunk in chunks(samples, cfg.execution.micro_batch_size):
         batch = collate(chunk, pad_id=env.pad_id, max_response_tokens=cap, device=env.device)
         logp = response_logprobs(model, batch).gather(1, targets(batch)[:, None])[:, 0]
@@ -109,14 +113,16 @@ def teacher_gap(
         diff = logp.double() - stored
         per_token.append(diff)
         per_response += [part.sum() for part in diff.split(batch.lengths)]
+        chi_square += [torch.expm1(part).pow(2).sum().item() for part in diff.split(batch.lengths)]
     token = torch.cat(per_token)
     response = torch.stack(per_response)
-    return {
+    stats = {
         "token_max_abs": token.abs().max().item(),
         "response_mean_signed": response.mean().item(),
         "response_mean_abs": response.abs().mean().item(),
         "response_max_abs": response.abs().max().item(),
     }
+    return stats, chi_square
 
 
 def projection_directions(
@@ -304,12 +310,11 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         run.record_inputs({"prompt_manifest_sha256": env.prompt_manifest_sha256,
                            "streams": {kind: _identity(manifest)}})  # fmt: skip
         batches = training_batches(stream, cfg)
-        soft = None
-        if kind == "soft_targets":
+        reader = None
+        if kind == "soft_targets":  # read lazily, one batch at a time
             _, path, _ = locate_stream(cfg, env, kind, cfg.seed)
-            distributions = load_distributions(path)
+            reader = load_distributions(path)
             position = {id(s): i for i, s in enumerate(stream)}
-            soft = [[distributions[position[id(s)]] for s in batch] for batch in batches]
 
         student, reference = env.new_model(), env.new_model()
         reference.requires_grad_(False)
@@ -319,9 +324,12 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         evaluate = Evaluator(cfg, env, run, reference)  # fails early on missing inputs
         directions = projection_directions(trainable, cfg.eval.projections)
         if kind != "alpaca_reference":  # reference answers have no teacher log-probs
-            gap = teacher_gap(student, stream, cfg, env)
+            gap, chi_square = teacher_gap(student, stream, cfg, env)
             run.summarize({"step0_teacher_gap": gap})
             check_teacher_gap(gap, cfg.checks.teacher_gap)  # stops before any optimizer step
+            index = {id(s): i for i, s in enumerate(stream)}
+            sums = [sum(chi_square[index[id(s)]] for s in batch) for batch in batches]
+            run.summarize({"step0_path_field": check_run_chi_square(sums, cfg.train.steps)})
 
         second_moment = None
         if ADAM_MODES.get(cfg.optimizer.name, "adaptive") != "adaptive":
@@ -331,7 +339,10 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
 
         for step, batch in enumerate(batches):
             optimizer.zero_grad(set_to_none=True)
-            stats = accumulate_gradient(student, batch, cfg, env, soft[step] if soft else None)
+            targets = None
+            if reader is not None:
+                targets = reader.take([position[id(s)] for s in batch])
+            stats = accumulate_gradient(student, batch, cfg, env, targets)
             optimizer.step()
             stats |= projection_stats(trainable, theta0, directions)
             run.log(stats, step=step)

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from omegaconf import OmegaConf
 
 from zero_field_refusal.config import config_hash
 from zero_field_refusal.paths import CONFIG_ROOT
@@ -27,9 +28,8 @@ def test_smoke_experiment_follows_the_protocol() -> None:
     cfg = load_run_config("experiments/smoke")
     assert cfg.control is None
     assert cfg.train.loss.denominator == cfg.train.batch_size * 96
-    with pytest.raises(ValueError, match="checks.teacher_gap"):  # set from stage-0 measurements
-        config_hash(cfg)
-    config_hash(load_run_config("experiments/smoke", THRESHOLDS))  # every other value is set
+    assert OmegaConf.is_missing(cfg.checks.teacher_gap, "token_max_abs")  # set from stage 0
+    assert config_hash(cfg) == config_hash(load_run_config("experiments/smoke", THRESHOLDS))
 
 
 def test_training_needs_numeric_thresholds_but_checks_and_theta0_do_not() -> None:
@@ -47,6 +47,8 @@ def test_training_needs_numeric_thresholds_but_checks_and_theta0_do_not() -> Non
         )
     with pytest.raises(ProtocolError, match="checks.path_field.batches"):
         load_run_config("experiments/smoke", ["checks.path_field.batches=3"])
+    with pytest.raises(ProtocolError, match="preregistered bound"):
+        load_run_config("experiments/smoke", ["checks.path_field.max_drift_to_noise=0.5"])
 
 
 @pytest.mark.parametrize("name", OPTIMIZERS)

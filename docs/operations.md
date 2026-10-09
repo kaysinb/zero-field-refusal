@@ -154,16 +154,23 @@ python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-ins
 complete build without `--force`. Stream directories are named by a hash of everything that
 determines their samples; an existing stream is never regenerated. A stream is published by
 renaming a partial directory; after an interrupted generation, remove the leftover
-`.seed-*.partial-*` directory (`runtime.remove_partial_streams`) once nothing is generating.
+`.seed-*.partial-*` or `.reference.partial-*` directory with `generate_teacher.py ...
+--remove-partial` once nothing is generating.
 
 The stage-0 checks write a path-field record per execution environment under `DATA_DIR/checks/`:
-model numerics, GPU model and library versions. Training runs stop before their first optimizer
-step without a passed record for their own environment, so run the checks on each GPU type used.
+model numerics, GPU model, library versions, execution batch sizes and the check's version; an
+older record moves to `history/`. Training runs stop before their first optimizer step without a
+passed record for their own environment that covers their steps, batch size and response cap, so
+run the checks on each GPU type and execution setting used. Each run also checks its own stream
+against the path-field bound and the teacher-gap thresholds.
 
 Choose the GPU by the cost of a run, not of an hour, from the stage-0 timings: in fp32 without
 TF32, the Ada cards (RTX 6000 Ada, L40S) are about 2.4 times faster than A6000/A40 and can cost
-less per run. The full soft-target control holds ≈ 58 GB of host RAM at its peak: run it on RTX
-6000 Ada (167 GB RAM; L40/L40S 94 GB, A6000/A40 50 GB), and check the Pod's RAM when creating it. Frozen Adam and pre-warmed
+less per run. Host RAM depends on the Pod's host, not only on the GPU type (an RTX 6000 Ada Pod
+had 62 GB rather than the listed 167 GB), so check it after creating a Pod. The full soft-target
+control peaks at ≈ 30 GB of host RAM (one preallocated buffer, read back lazily), the path-field
+check at ≈ 10 GB, and training keeps the projection directions in pinned memory (≈ 2 × 5 GB for
+1.5B). Frozen Adam and pre-warmed
 AdamW also need `--stream preconditioner` for the same seeds.
 
 ## Launching runs

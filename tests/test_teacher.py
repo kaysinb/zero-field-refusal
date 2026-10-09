@@ -147,10 +147,29 @@ def test_distributions_are_checked_against_the_stream(tmp_path: Path, teacher) -
     record = write_distributions(directory, distributions)
     write_stream(directory, samples, {"distributions": record})
     loaded = load_distributions(directory)
-    assert all(torch.equal(a, b) for a, b in zip(loaded, distributions, strict=True))
+    assert len(loaded) == len(distributions)
+    assert all(torch.equal(a, b) for a, b in zip(loaded[:], distributions, strict=True))
+    assert torch.equal(loaded[2], distributions[2])
+    assert all(
+        torch.equal(a, distributions[i]) for a, i in zip(loaded.take([3, 0]), [3, 0], strict=True)
+    )
     write_stream(directory, samples[:3], {"distributions": record})  # lengths no longer match
     with pytest.raises(StreamError, match="lengths"):
         load_distributions(directory)
+
+
+def test_the_buffer_collects_chunks_and_saves_only_the_filled_rows(tmp_path: Path, teacher) -> None:
+    from zero_field_refusal.teacher import DistributionBuffer
+
+    buffer = DistributionBuffer(max_tokens=10 * 40, vocab=VOCAB)
+    samples, _ = run(teacher, n=6, on_chunk_distributions=buffer.append)
+    _, recorded = run(teacher, n=6, record_distributions=True)
+    assert buffer.lengths == [len(s.response_ids) for s in samples]
+    directory = tmp_path / "seed-0"
+    directory.mkdir()
+    write_stream(directory, samples, {"distributions": buffer.save(directory)})
+    loaded = load_distributions(directory)
+    assert all(torch.equal(a, b) for a, b in zip(loaded[:], recorded, strict=True))
 
 
 class InPlaceShift(LogitsProcessor):

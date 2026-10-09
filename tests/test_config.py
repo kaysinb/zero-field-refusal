@@ -143,3 +143,9 @@ def test_hash_requires_missing_values(root: Path) -> None:
 def test_repository_experiments_load(path: Path) -> None:
     cfg = load_config(path)
     assert cfg.experiment
+
+
+def test_blocking_check_settings_leave_the_hash_alone(root: Path) -> None:
+    write(root, "m.yaml", "defaults: [experiments/exp]\nchecks:\n  gap: ???\n")
+    cfg = load_config("m", root=root)
+    assert config_hash(cfg) == config_hash(load_config("m", ["checks.gap=0.5"], root=root))

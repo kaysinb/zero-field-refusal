@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,8 @@ from typing import Any
 
 import numpy as np
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors import safe_open
+from safetensors.torch import save_file
 from transformers import PreTrainedModel
 
 from .seeding import derive_seed
@@ -131,21 +133,24 @@ def sample_responses(
     batch_size: int,
     zero_field: bool = True,
     record_distributions: bool = False,
+    on_chunk_distributions: Callable[[list[torch.Tensor]], None] | None = None,
 ) -> tuple[list[Sample], list[torch.Tensor] | None]:
     """Sample one response per prompt with the generation path (``generate``, KV cache).
 
     ``seed`` seeds each chunk of ``batch_size`` prompts separately (``derive_seed(seed, i)``).
     Log-probabilities come from the raw logits captured before ``generate`` processes them; for a
     zero-field stream, the scores the sampler used must equal them at every step.
-    With ``record_distributions``, also returns per sample the (length, vocab) fp32 log-softmax of
-    the raw logits at every response position, on the CPU: the soft targets of invariant 8. A full
-    500-response stream holds ≈ 29 GB, and saving it briefly doubles that.
+    The (length, vocab) fp32 log-softmax of the raw logits at every response position, the soft
+    targets of invariant 8, is passed per chunk to ``on_chunk_distributions`` (e.g. a
+    ``DistributionBuffer``), or with ``record_distributions`` returned for all samples (small
+    streams only).
     """
     if len(prompts) != len(prompt_ids):
         raise ValueError("prompts and prompt_ids differ in length")
     device = next(model.parameters()).device
     samples: list[Sample] = []
     distributions: list[torch.Tensor] | None = [] if record_distributions else None
+    keep = record_distributions or on_chunk_distributions is not None
     for index, start in enumerate(range(0, len(prompts), batch_size)):
         chunk = prompts[start : start + batch_size]
         input_ids, attention_mask = _left_pad(chunk, pad_id, device)
@@ -167,6 +172,7 @@ def sample_responses(
         generated = out.sequences[:, input_ids.shape[1] :].tolist()
         # (chunk, steps, vocab) would be large; gather per step instead.
         step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
+        chunk_distributions = []
         for row, tokens in enumerate(generated):
             response, ended = split_response(tokens, end_ids)
             logp = torch.stack([step_logprobs[t][row] for t in range(len(response))])
@@ -180,9 +186,13 @@ def sample_responses(
                     ended=ended,
                 )
             )
-            if distributions is not None:
-                distributions.append(logp.cpu())
+            if keep:
+                chunk_distributions.append(logp.cpu())
         del raw, step_logprobs, out
+        if on_chunk_distributions is not None:
+            on_chunk_distributions(chunk_distributions)
+        if distributions is not None:
+            distributions += chunk_distributions
     return samples, distributions
 
 
@@ -218,8 +228,16 @@ def write_stream(directory: Path, samples: Sequence[Sample], manifest: Mapping[s
         ),
         "sha256": hashlib.sha256(text.encode()).hexdigest(),
     }
-    (directory / SAMPLES_FILE).write_text(text)
-    (directory / MANIFEST_FILE).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    _write_synced(directory / SAMPLES_FILE, text)
+    _write_synced(directory / MANIFEST_FILE, json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
+def _write_synced(path: Path, text: str) -> None:
+    """Write and fsync, so a published stream never holds data still in the page cache."""
+    with path.open("w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def load_stream(directory: Path) -> list[Sample]:
@@ -258,29 +276,91 @@ def publish(partial: Path, final: Path) -> None:
     if final.exists():
         raise StreamError(f"{final} exists; streams are the record and are never regenerated")
     partial.rename(final)
+    descriptor = os.open(final.parent, os.O_RDONLY)  # make the rename itself durable
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+class DistributionBuffer:
+    """Soft-target distributions collected chunk by chunk into one preallocated fp32 buffer.
+
+    Each generation chunk is copied in and freed at once, and the filled rows are saved as one
+    file without a further copy, so host memory peaks at about one stream's size (≈ 29 GB for 500
+    responses of 96 tokens over 151,936 entries) rather than twice that.
+    """
+
+    def __init__(self, max_tokens: int, vocab: int) -> None:
+        self.data = torch.empty((max_tokens, vocab), dtype=torch.float32)  # committed as written
+        self.lengths: list[int] = []
+        self.offset = 0
+
+    def append(self, distributions: Sequence[torch.Tensor]) -> None:
+        for d in distributions:
+            n = d.shape[0]
+            self.data[self.offset : self.offset + n].copy_(d)
+            self.offset += n
+            self.lengths.append(n)
+
+    def save(self, directory: Path) -> dict[str, Any]:
+        """Write the filled rows to the stream's distributions file; returns its manifest entry."""
+        target = directory / DISTRIBUTIONS_FILE
+        save_file({"logprobs": self.data[: self.offset], "lengths": torch.tensor(self.lengths)},
+                  str(target))  # fmt: skip
+        with target.open("rb") as f:
+            os.fsync(f.fileno())
+        return {"file": DISTRIBUTIONS_FILE, "samples": len(self.lengths), "dtype": "float32",
+                "sha256": file_sha256(target)}  # fmt: skip
 
 
 def write_distributions(directory: Path, distributions: Sequence[torch.Tensor]) -> dict[str, Any]:
     """Store per-sample (length, vocab) fp32 log-probabilities in one file of the stream."""
-    target = directory / DISTRIBUTIONS_FILE
-    lengths = torch.tensor([d.shape[0] for d in distributions])
-    save_file({"logprobs": torch.cat(list(distributions)).contiguous(), "lengths": lengths},
-              str(target))  # fmt: skip
-    return {"file": DISTRIBUTIONS_FILE, "samples": len(distributions), "dtype": "float32",
-            "sha256": file_sha256(target)}  # fmt: skip
+    buffer = DistributionBuffer(sum(d.shape[0] for d in distributions), distributions[0].shape[1])
+    buffer.append(distributions)
+    return buffer.save(directory)
 
 
-def load_distributions(directory: Path) -> list[torch.Tensor]:
+class DistributionReader:
+    """Lazy read access to a stream's distributions: ``reader[i]`` or ``reader[a:b]``.
+
+    The file is checked against the manifest's hash and the responses' lengths when the reader
+    opens; samples are then read as memory-mapped slices, one batch at a time.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        record = load_manifest(directory).get("distributions")
+        self.path = directory / DISTRIBUTIONS_FILE
+        if record is None or not self.path.is_file() or file_sha256(self.path) != record["sha256"]:
+            raise StreamError(f"{self.path}: missing or different from the stream manifest")
+        with safe_open(str(self.path), framework="pt") as f:
+            lengths = f.get_tensor("lengths").tolist()
+        if lengths != [len(s.response_ids) for s in load_stream(directory)]:
+            raise StreamError(f"{self.path}: lengths do not match the stream's responses")
+        self.offsets = [0]
+        for n in lengths:
+            self.offsets.append(self.offsets[-1] + n)
+
+    def __len__(self) -> int:
+        return len(self.offsets) - 1
+
+    def __getitem__(self, key: int | slice) -> torch.Tensor | list[torch.Tensor]:
+        indices = range(len(self))[key]
+        with safe_open(str(self.path), framework="pt") as f:
+            rows = f.get_slice("logprobs")
+            if isinstance(indices, int):
+                return rows[self.offsets[indices] : self.offsets[indices + 1]]
+            return [rows[self.offsets[i] : self.offsets[i + 1]] for i in indices]
+
+    def take(self, indices: Sequence[int]) -> list[torch.Tensor]:
+        with safe_open(str(self.path), framework="pt") as f:
+            rows = f.get_slice("logprobs")
+            return [rows[self.offsets[i] : self.offsets[i + 1]] for i in indices]
+
+
+def load_distributions(directory: Path) -> DistributionReader:
     """A stream's soft-target distributions, checked against its manifest and responses."""
-    record = load_manifest(directory).get("distributions")
-    target = directory / DISTRIBUTIONS_FILE
-    if record is None or not target.is_file() or file_sha256(target) != record["sha256"]:
-        raise StreamError(f"{target}: missing or different from the stream manifest")
-    stored = load_file(str(target))
-    lengths = stored["lengths"].tolist()
-    if lengths != [len(s.response_ids) for s in load_stream(directory)]:
-        raise StreamError(f"{target}: lengths do not match the stream's responses")
-    return list(stored["logprobs"].split(lengths))
+    return DistributionReader(directory)
 
 
 def file_sha256(path: Path) -> str:

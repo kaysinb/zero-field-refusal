@@ -33,9 +33,10 @@ from omegaconf.errors import InterpolationToMissingValueError, MissingMandatoryV
 
 from .paths import CONFIG_ROOT
 
-# Keys that label a run or set how it executes without changing what it computes; excluded from
-# the config hash. Micro-batch and evaluation batch sizes change only the summation order.
-NON_IDENTITY_KEYS = ("experiment", "name", "tracking", "execution")
+# Keys that label a run, set how it executes, or decide whether it may start, without changing
+# what it computes; excluded from the config hash. Micro-batch and evaluation batch sizes change
+# only the summation order; the blocking-check settings (`checks`) only stop a run.
+NON_IDENTITY_KEYS = ("experiment", "name", "tracking", "execution", "checks")
 
 
 def _mul(*factors: float) -> float:
@@ -72,12 +73,15 @@ def config_hash(cfg: DictConfig) -> str:
 
     Raises ``ValueError`` while any value is still ``???``.
     """
-    try:
-        data = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-    except (MissingMandatoryValue, InterpolationToMissingValueError) as exc:
-        raise ValueError(f"Set these config values before a run: {_missing_keys(cfg)}") from exc
+    identity = copy.deepcopy(cfg)
     for key in NON_IDENTITY_KEYS:
-        data.pop(key, None)
+        identity.pop(key, None)  # ??? inside these keys does not block the hash
+    try:
+        data = OmegaConf.to_container(identity, resolve=True, throw_on_missing=True)
+    except (MissingMandatoryValue, InterpolationToMissingValueError) as exc:
+        raise ValueError(
+            f"Set these config values before a run: {_missing_keys(identity)}"
+        ) from exc
     blob = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 

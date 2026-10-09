@@ -30,6 +30,8 @@ CONTROLS = (
     "soft_targets",
 )
 FROZEN_MODULES = ("input_embeddings", "output_head")
+# The preregistered bound on N·|f|²/σ² of the path field (docs/preregistration.md).
+PATH_FIELD_BOUND = 0.01
 ATTENTION = ("sdpa", "eager")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
@@ -117,8 +119,11 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
     if batches is _ABSENT or not (isinstance(batches, int) and batches >= 4 and batches % 2 == 0):
         problems.append(f"checks.path_field.batches: expected an even number >= 4, got {batches!r}")
     bound = OmegaConf.select(cfg, "checks.path_field.max_drift_to_noise", default=_ABSENT)
-    if bound is _ABSENT or not bound > 0:
-        problems.append(f"checks.path_field.max_drift_to_noise: expected > 0, got {bound!r}")
+    if bound != PATH_FIELD_BOUND:
+        problems.append(
+            f"checks.path_field.max_drift_to_noise: the preregistered bound is {PATH_FIELD_BOUND}, "
+            f"got {bound!r}"
+        )
     if control not in CONTROLS:
         problems.append(f"control: unknown control {control!r}; known: {CONTROLS}")
 

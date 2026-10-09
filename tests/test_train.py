@@ -33,10 +33,18 @@ SMALL = [
 ]
 
 
-def pass_path_check(env: Environment) -> None:
+def certified(**changes) -> dict:
+    """What a stage-0 record certifies, for the test runs (steps 2, batch 4, cap 12)."""
+    bound = {"chi_square_per_batch": 0.0, "standard_error": 0.0}
+    return {"criterion": 0.01, "steps": 2, "batch_size": 4, "cap": 12,
+            "chi_square_bound": bound} | changes  # fmt: skip
+
+
+def pass_path_check(env: Environment, **changes) -> None:
     """A passed stage-0 path-field record for the test environment."""
     fingerprint = environment_fingerprint(config(), env.device)
-    write_check_record(env.data_root, fingerprint, {}, passed=True, run_id="fixture")
+    write_check_record(env.data_root, fingerprint, certified(**changes), passed=True,
+                       run_id="fixture")  # fmt: skip
 
 
 def words(rng: torch.Generator, n: int) -> str:
@@ -208,7 +216,12 @@ def test_stage0_checks_run_end_to_end(env) -> None:
     run = run_stage0_checks(cfg, env, log=lambda _: None)
     summary = json.loads((run.dir / "summary.json").read_text())
     assert 0 <= summary["eos_fraction_at_cap"] <= 1
-    assert summary["teacher_gap"]["token_max_abs"] < 1e-4
+    assert set(summary["teacher_gap"]) == {"0", "1", "2"}
+    assert all(g["token_max_abs"] < 1e-4 for g in summary["teacher_gap"].values())
+    proposed = summary["teacher_gap_proposed_thresholds"]
+    assert proposed["token_max_abs"] == pytest.approx(
+        10 * max(g["token_max_abs"] for g in summary["teacher_gap"].values())
+    )
     assert summary["field"]["batches_per_half"] == 4
     assert summary["field"]["constant"]["noise_variance"] > 0
     assert summary["field"]["token_count"]["decision"] in (
@@ -311,7 +324,7 @@ def test_training_stops_without_a_passed_path_check(env) -> None:
     with pytest.raises(CheckFailed, match="No stage-0 path-field check"):
         run_training(cfg, env, run_id="no-record")
     fingerprint = environment_fingerprint(cfg, env.device)
-    write_check_record(env.data_root, fingerprint, {}, passed=False, run_id="failed")
+    write_check_record(env.data_root, fingerprint, certified(), passed=False, run_id="failed")
     with pytest.raises(CheckFailed, match="failed"):
         run_training(cfg, env, run_id="failed-record")
     run_dir = env.data_root.parent / "runs" / "smoke" / "failed-record"
@@ -353,3 +366,62 @@ def test_stage0_checks_write_the_record_that_training_needs(env) -> None:
     cfg = config()
     prepare(env, cfg, "training")
     run_training(cfg, env, run_id="after-checks")
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"criterion": 0.5}, "certifies the bound"),
+        ({"cap": 8}, "certifies responses up to 8"),
+        ({"chi_square_bound": {"chi_square_per_batch": 0.006, "standard_error": 0.0}},
+         "for this run's steps and batch size"),
+    ],
+)  # fmt: skip
+def test_a_record_unlocks_only_what_it_certified(env, changes, message) -> None:
+    cfg = config()
+    prepare(env, cfg, "training")
+    pass_path_check(env, **changes)
+    with pytest.raises(CheckFailed, match=message):
+        run_training(cfg, env, run_id="out-of-scope")
+
+
+def test_a_later_record_keeps_the_earlier_one_in_history(env) -> None:
+    fingerprint = environment_fingerprint(config(), env.device)
+    write_check_record(env.data_root, fingerprint, certified(), passed=False, run_id="first")
+    path = write_check_record(env.data_root, fingerprint, certified(), passed=True, run_id="second")
+    history = list((path.parent / "history").glob("*.json"))
+    assert {json.loads(h.read_text())["run_id"] for h in history} >= {"first"}
+
+
+def test_a_nan_gap_fails_the_teacher_gap_check() -> None:
+    from omegaconf import OmegaConf
+
+    from zero_field_refusal.prechecks import check_teacher_gap
+
+    thresholds = OmegaConf.create({"token_max_abs": 1e-4, "response_mean_signed_abs": 1e-3})
+    with pytest.raises(CheckFailed):
+        check_teacher_gap({"token_max_abs": float("nan"), "response_mean_signed": 0.0}, thresholds)
+    unset = OmegaConf.create({"token_max_abs": "???", "response_mean_signed_abs": 1e-3})
+    with pytest.raises(CheckFailed, match="not set"):
+        check_teacher_gap({"token_max_abs": 0.0, "response_mean_signed": 0.0}, unset)
+
+
+def test_the_run_checks_its_own_stream_against_the_path_bound(env) -> None:
+    # Generous gap thresholds let the mismatched stream through the coarse screen; the run's own
+    # chi-square bound must still stop it.
+    cfg = config(
+        "checks.teacher_gap.token_max_abs=10", "checks.teacher_gap.response_mean_signed_abs=10"
+    )
+    student = env.new_model
+
+    def other_model():
+        model = student()
+        with torch.no_grad():
+            model.lm_head.weight.add_(0.05 * torch.randn_like(model.lm_head.weight))
+        return model
+
+    env.new_model = other_model
+    prepare(env, cfg, "training")
+    env.new_model = student
+    with pytest.raises(CheckFailed, match="path-field bound"):
+        run_training(cfg, env, run_id="chi-square")

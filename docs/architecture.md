@@ -30,8 +30,9 @@ scientific design is in [design.md](design.md); procedures for running things ar
 2. **Teacher samples.** θ₀ samples responses for one (model, prompt set, seed) and stores them in
    `data/teacher/`, one directory per stream and one record per response. A stream is written into
    a partial directory and published by renaming it when complete, so an interrupted generation
-   never leaves a stream that looks complete; partial directories are removed explicitly. Each response's instruction is drawn uniformly with
-   replacement from the teacher prompts. A record holds:
+   never leaves a stream that looks complete; partial directories are removed explicitly. Each
+   response's instruction is drawn uniformly with replacement from the teacher prompts. A record
+   holds:
    - the prompt token ids, including the chat template's default system prompt, and the response
      token ids; never only text;
    - per-token log-probabilities under the teacher, from raw logits;
@@ -331,9 +332,13 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
   generation path ([invariant 8](#zero-field-invariants)); bf16 is not acceptable, because rounding
   the targets would itself create a gradient at θ₀. They are stored in one fp32 file per stream,
   hashed in its manifest. The path-field check uses 8 batches per environment, ≈ 9.6 GB; the full
-  SGD control run needs 500 responses × 96 tokens × 151,936 entries ≈ 29 GB per model and seed,
-  held in RAM (≈ 58 GB at the peak of saving), so it runs on a Pod with enough RAM (RTX 6000 Ada:
-  167 GB). The files are deleted after use, keeping hashes and summaries.
+  SGD control run needs 500 responses × 96 tokens × 151,936 entries ≈ 29 GB per model and seed.
+  Generation copies each chunk into one preallocated buffer and saves the filled rows without a
+  further copy, so host RAM peaks at ≈ 30 GB; training reads the targets lazily, one batch at a
+  time. Decided on 2026-10-09 over two alternatives: choosing Pods by verified RAM ≥ 96 GB (host
+  RAM varies per Pod: an RTX 6000 Ada Pod had 62 GB, not the listed 167 GB; a larger-RAM type such
+  as H100 is a new execution environment that needs its own stage-0 checks), and sharding (more
+  code for the same effect). The files are deleted after use, keeping hashes and summaries.
 - **Displacement K.** The exact per-position KL along θ₀'s reference responses, with θ₀'s
   distributions from a frozen copy on the same GPU ([data flow](#data-flow)); defined in
   [preregistration.md](preregistration.md#primary-analysis).

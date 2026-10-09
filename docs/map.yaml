@@ -249,33 +249,27 @@ topics:
   - configs/protocol/zero_field.yaml
 config_examples:
 - config: experiments/smoke
-  allow_missing: true   # the teacher-gap thresholds are set from the stage-0 measurements
+  allow_missing: false
 - config: experiments/smoke
-  allow_missing: true
   overrides:
   - optimizer=sgd
   - optimizer.lr=3e-5
 - config: experiments/smoke
-  allow_missing: true
   overrides:
   - optimizer=adamw
   - optimizer.lr=3e-5
 - config: experiments/smoke
-  allow_missing: true
   overrides:
   - optimizer=adam_frozen
   - optimizer.lr=3e-5
 - config: experiments/smoke
-  allow_missing: true
   overrides:
   - optimizer=sgd_momentum
   - optimizer.lr=3e-5
 - config: experiments/smoke
-  allow_missing: true
   overrides:
   - optimizer=adamw_prewarmed
   - optimizer.lr=3e-5
 - config: experiments/smoke
-  allow_missing: true
   overrides:
   - train.max_response_tokens=48
