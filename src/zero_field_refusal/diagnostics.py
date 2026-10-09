@@ -4,15 +4,17 @@
   like 1/√n. A field f makes it level off at ‖f‖.
 - **Token-count field (A1).** Dividing each batch by its own token count multiplies the
   constant-denominator gradient g_b by c_b = B·L / n_b, so both normalizations come from one
-  backward pass. At zero field E[g_b] = 0, so the token-count field is f = E[(c_b − 1)·g_b], a
-  control variate with far less noise than c_b·g_b. |f|² is estimated without bias from two
-  independent halves of the batches, ⟨d̄_A, d̄_B⟩ = |d̄_A|·mean_B(d_b·u) with u = d̄_A / |d̄_A|,
-  with the standard error |d̄_A|·sd_B(d_b·u)/√n. Over N steps the field moves the parameters by
+  backward pass. At zero field E[g_b] = 0, so the token-count field is f = E[(c_b − c̄)·g_b] for
+  any constant c̄, a control variate with far less noise than c_b·g_b; c̄ is the mean of c_b.
+  |f|² is estimated without bias from two independent halves of the batches,
+  ⟨d̄_A, d̄_B⟩ = |d̄_A|·mean_B(d_b·u) with u = d̄_A / |d̄_A|, with the standard error
+  |d̄_A|·sd_B(d_b·u)/√n. Over N steps the field moves the parameters by
   N·|f| along its direction, and the noise by √N·σ, where σ² is the variance of a training
   gradient along that direction, measured along u. The field is at the noise level if
   N·|f|² < σ² even at the upper end of its uncertainty (|f|² + 2 SE), detected if it exceeds σ²
-  at the lower end, and undetermined otherwise (docs/preregistration.md, A1). The same estimate
-  for the constant denominator checks that its field is zero.
+  at the lower end, and undetermined otherwise (docs/preregistration.md, A1). A sufficient
+  criterion needs no gradients: N·Var(c_b) < 1 bounds N·|f|²/σ² below 1 (Cauchy–Schwarz with
+  E[g_b] = 0). The same estimate for the constant denominator checks that its field is zero.
 - **Path discrepancy (invariant 8).** θ₀'s distributions recorded while sampling (generation path,
   KV cache) against the training path on the same samples: per-token KL and the step-0 gradient
   of the soft-target loss relative to the zero-field batch gradient.
@@ -87,7 +89,16 @@ def field_measurement(
     half = len(batches) // 2
     if half < 2:
         raise ValueError("The field measurement needs at least 4 batches")
-    # Half A: fp32 sums of g_b (constant) and of d_b = (c_b - 1)·g_b (token count), in place.
+    # c_b = B·L / n_b from the token counts alone. Centering the control variate at their mean c̄
+    # (a constant) keeps E[(c_b − c̄)·g_b] = Cov(c_b, g_b) = f and minimizes its noise; c̄ uses all
+    # batches, which scales the estimate by 1 − 1/(2·half), negligibly.
+    counts = [sum(min(len(s.response_ids), cap) for s in batch) for batch in batches[: 2 * half]]
+    factors = torch.tensor([denominator / n for n in counts], dtype=torch.float64)
+    excess = (factors - factors.mean()).tolist()
+    # Since E[g_b] = 0, |f| = |Cov(c_b, g_b·f̂)| ≤ sd(c_b)·σ_f, so N·|f|²/σ_f² ≤ N·Var(c_b): below 1
+    # the token-count field is at the noise level whatever the gradients are.
+    count_bound = steps * factors.var().item()
+    # Half A: fp32 sums of g_b (constant) and of d_b = (c_b − c̄)·g_b (token count), in place.
     sums = {
         name: [torch.zeros_like(p, dtype=torch.float32) for p in params]
         for name in ("constant", "token_count")
@@ -96,11 +107,10 @@ def field_measurement(
     mean_norm: dict[int, float] = {}
     sq_norm_total = 0.0
     for n, batch in enumerate(batches[:half], start=1):
-        tokens = _batch_gradient(model, params, batch, **grad)
-        excess = denominator / tokens - 1.0
+        _batch_gradient(model, params, batch, **grad)
         for total_c, total_t, p in zip(sums["constant"], sums["token_count"], params, strict=True):
             total_c.add_(p.grad)
-            total_t.add_(p.grad, alpha=excess)
+            total_t.add_(p.grad, alpha=excess[n - 1])
         sq_norm_total += sum(p.grad.double().pow(2).sum().item() for p in params)
         if n in checkpoints:
             mean_norm[n] = _norm(sums["constant"]) / n
@@ -115,13 +125,12 @@ def field_measurement(
     # Half B, projected on the half-A directions: field terms and training-gradient noise.
     field_terms = {"constant": [], "token_count": []}
     noise_terms = {"constant": [], "token_count": []}
-    for batch in batches[half : 2 * half]:
-        tokens = _batch_gradient(model, params, batch, **grad)
-        excess = denominator / tokens - 1.0
+    for k, batch in enumerate(batches[half : 2 * half], start=half):
+        _batch_gradient(model, params, batch, **grad)
         for name in sums:
             dot = sum((p.grad * u).sum().item() for p, u in zip(params, sums[name], strict=True))
             noise_terms[name].append(dot)
-            field_terms[name].append(dot if name == "constant" else excess * dot)
+            field_terms[name].append(dot if name == "constant" else excess[k] * dot)
     for p in params:
         p.grad = None
 
@@ -134,7 +143,8 @@ def field_measurement(
     for name in sums:
         if mean_a_norm[name] == 0:  # every batch had the same token count: no field at all
             out[name] = {"field_norm_sq": 0.0, "field_norm_sq_standard_error": 0.0,
-                         "decision": "at_noise_level"}  # fmt: skip
+                         "count_variance_bound": count_bound, "decision": "at_noise_level",
+                         "decision_basis": "equal_token_counts"}  # fmt: skip
             continue
         terms = torch.tensor(field_terms[name], dtype=torch.float64)
         noise = torch.tensor(noise_terms[name], dtype=torch.float64)
@@ -148,7 +158,12 @@ def field_measurement(
             "drift_to_noise_squared": steps * field_sq / noise_var,
             "share_of_mean_squared_displacement": steps * field_sq / out["gradient_noise_trace"],
             "decision": field_decision(field_sq, se, noise_var, steps),
+            "decision_basis": "estimate",
         }
+    token_count = out["token_count"]
+    token_count["count_variance_bound"] = count_bound
+    if count_bound < 1 and token_count["decision_basis"] == "estimate":
+        token_count |= {"decision": "at_noise_level", "decision_basis": "count_variance_bound"}
     return out
 
 

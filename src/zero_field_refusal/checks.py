@@ -125,22 +125,24 @@ def _run_profile(model, stream, cfg: DictConfig, env: Environment) -> dict:
     del optimizer
     for p in params:
         p.grad = None
-    prompts = [env.encode_prompt(item["text"]) for item in env.prompt_set("harmful_judged")]
-    prompts = prompts[: cfg.execution.generation_batch_size]
+    items = env.prompt_set(cfg.eval.harmful.prompt_set)[: cfg.execution.generation_batch_size]
+    prompts = [env.encode_prompt(item["text"]) for item in items]
     start = time.perf_counter()
-    greedy_responses(model, prompts, end_ids=env.end_ids, pad_id=env.pad_id,
-                     max_new_tokens=cfg.eval.harmful.max_new_tokens,
-                     batch_size=cfg.execution.generation_batch_size)  # fmt: skip
+    responses = greedy_responses(model, prompts, end_ids=env.end_ids, pad_id=env.pad_id,
+                                 max_new_tokens=cfg.eval.harmful.max_new_tokens,
+                                 batch_size=cfg.execution.generation_batch_size)  # fmt: skip
     if cuda:
         torch.cuda.synchronize()
     out = {
         "training_step_seconds": step_seconds,
         "greedy_batch_seconds": time.perf_counter() - start,
+        "greedy_batch_longest_response": max(len(ids) for ids, _ in responses),
         "micro_batch_size": cfg.execution.micro_batch_size,
         "generation_batch_size": cfg.execution.generation_batch_size,
     }
     if cuda:
         out["peak_memory_gb"] = torch.cuda.max_memory_allocated() / 2**30
+        out["peak_reserved_gb"] = torch.cuda.max_memory_reserved() / 2**30
     with torch.no_grad():  # back to θ₀
         theta0 = dict(reference.named_parameters())
         for name, p in model.named_parameters():
@@ -151,8 +153,8 @@ def _run_profile(model, stream, cfg: DictConfig, env: Environment) -> dict:
 def _compare_adam(model, params, stream, cfg: DictConfig, env: Environment, steps: int = 5) -> dict:
     """The custom Adam against torch AdamW on identical gradients, on every fourth tensor.
 
-    Adam is elementwise, so a subset of tensors of every kind checks the arithmetic while keeping
-    the extra state small enough for 48 GB. Leaves the model at θ₀.
+    Adam is elementwise and has no shape-dependent path, so a subset of tensors checks the
+    arithmetic while keeping the extra state small enough for 48 GB. Leaves the model at θ₀.
     """
     lr, betas, eps = 5e-5, (0.9, 0.999), 1e-8
     subset = params[::4]

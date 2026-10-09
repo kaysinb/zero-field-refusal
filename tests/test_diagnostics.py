@@ -5,13 +5,14 @@ import torch
 from conftest import END_IDS, PAD_ID, prompts, tiny_model
 from omegaconf import OmegaConf
 
-from zero_field_refusal.batches import chunks
+from zero_field_refusal.batches import chunks, collate
 from zero_field_refusal.diagnostics import (
     field_decision,
     field_measurement,
     path_discrepancy,
     soft_target_gradient_ratio,
 )
+from zero_field_refusal.losses import summed_nll
 from zero_field_refusal.models import freeze, install_neutral_generation_config
 from zero_field_refusal.teacher import Sample, sample_responses
 
@@ -81,8 +82,33 @@ def test_equal_token_counts_leave_no_token_count_field(teacher):
     out = field_measurement(model, params, chunks(samples, BATCH), CFG, pad_id=PAD_ID,
                             device=torch.device("cpu"), steps=25)  # fmt: skip
     assert out["token_count"] == {
-        "field_norm_sq": 0.0, "field_norm_sq_standard_error": 0.0, "decision": "at_noise_level"
+        "field_norm_sq": 0.0, "field_norm_sq_standard_error": 0.0, "count_variance_bound": 0.0,
+        "decision": "at_noise_level", "decision_basis": "equal_token_counts",
     }  # fmt: skip
+
+
+def test_field_estimates_equal_the_split_half_inner_products(teacher):
+    # Brute force: per-batch gradients as vectors, c_b from token counts, centered at their mean.
+    model, params = teacher
+    samples, _ = stream(model, 1.0, 2 * 4 * BATCH)
+    batches = chunks(samples, BATCH)
+    out = field_measurement(model, params, batches, CFG, pad_id=PAD_ID,
+                            device=torch.device("cpu"), steps=25)  # fmt: skip
+    vectors, factors = [], []
+    for batch in batches:
+        model.zero_grad(set_to_none=True)
+        (summed_nll(model, collate(batch, pad_id=PAD_ID, max_response_tokens=CAP)) / (BATCH * CAP)
+         ).backward()  # fmt: skip
+        vectors.append(torch.cat([p.grad.flatten().double() for p in params]))
+        factors.append(BATCH * CAP / sum(min(len(s.response_ids), CAP) for s in batch))
+    g = torch.stack(vectors)
+    c = torch.tensor(factors, dtype=torch.float64)
+    assert c.std() > 0  # responses of different lengths
+    d = (c - c.mean())[:, None] * g
+    for name, x in (("constant", g), ("token_count", d)):
+        expected = (x[:4].mean(0) @ x[4:].mean(0)).item()
+        assert out[name]["field_norm_sq"] == pytest.approx(expected, rel=1e-4, abs=1e-12)
+    assert out["token_count"]["count_variance_bound"] == pytest.approx(25 * c.var().item())
 
 
 @pytest.mark.parametrize(
