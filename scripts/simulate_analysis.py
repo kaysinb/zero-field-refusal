@@ -40,6 +40,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     settings = quick_settings(args.seed) if args.quick else full_settings(args.seed)
+    # Recorded at launch: the source of a long run is the one it started with.
+    versions = {
+        "python": platform.python_version(),
+        **{name: metadata.version(name) for name in PACKAGES},
+        "git": git_state(),
+    }
     started = datetime.now(UTC)
     out = args.out or runs_root() / "analysis" / "simulation" / started.strftime("%Y%m%dT%H%M%SZ")
     out.mkdir(parents=True, exist_ok=True)
@@ -62,11 +68,7 @@ def main(argv: list[str] | None = None) -> None:
         "workers": args.workers,
         "settings": asdict(settings) | {"scenario_names": [s.name for s in settings.scenarios]},
         "kappa": {f"{sigma:.2f}": value for sigma, value in result.kappa.items()},
-        "versions": {
-            "python": platform.python_version(),
-            **{name: metadata.version(name) for name in PACKAGES},
-            "git": git_state(),
-        },
+        "versions": versions,
         "acceptance": verdicts,
         "recommendation": recommendation,
     }
