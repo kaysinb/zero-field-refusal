@@ -103,3 +103,58 @@ def test_cuda_stage0_checks(gpu_env) -> None:
     assert summary["field"]["token_count"]["decision"] in (
         "at_noise_level", "field_detected", "undetermined"
     )  # fmt: skip
+
+
+def wide_model() -> torch.nn.Module:
+    """About 50M parameters over a tiny vocabulary: parameter-sized buffers dominate the memory,
+    as in the real checkpoints, so their count can be read off the peak."""
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    torch.manual_seed(0)
+    config = Qwen2Config(vocab_size=64, hidden_size=1024, intermediate_size=2816,
+                         num_hidden_layers=4, num_attention_heads=8, num_key_value_heads=2,
+                         max_position_embeddings=256, tie_word_embeddings=False)  # fmt: skip
+    config._attn_implementation = "sdpa"
+    model = Qwen2ForCausalLM(config).to(torch.float32).eval().to("cuda")
+    install_neutral_generation_config(model, END_IDS, PAD_ID)
+    return model
+
+
+def test_field_measurements_hold_only_their_documented_buffers() -> None:
+    # 1.5B in fp32 on 48 GB: the field at θ₀ may hold the gradient and two buffers, the path field
+    # in Adam's metric the gradient, a soft-target copy and two buffers, with v̂ on the CPU.
+    from zero_field_refusal.batches import chunks
+    from zero_field_refusal.diagnostics import field_measurement, path_field_measurement
+    from zero_field_refusal.models import freeze
+
+    set_numerics(config().model)
+    model = wide_model()
+    params = [p for _, p in freeze(model, ["input_embeddings", "output_head"])]
+    size = sum(p.numel() for p in params) * 4
+    sampling = dict(temperature=1.0, top_p=1.0, top_k=0, repetition_penalty=1.0, max_new_tokens=24)
+    samples, distributions = sample_responses(
+        model, prompts(16), [f"p{i}" for i in range(16)], sampling=sampling, end_ids=END_IDS,
+        pad_id=PAD_ID, seed=0, batch_size=8, record_distributions=True,
+    )  # fmt: skip
+    cfg = config(*CUDA, "train.batch_size=4", "train.max_response_tokens=24",
+                 "teacher.sampling.max_new_tokens=24")  # fmt: skip
+    device = torch.device("cuda")
+
+    def extra_buffers(measure) -> float:
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        measure()
+        return (torch.cuda.max_memory_allocated() - base) / size
+
+    field = extra_buffers(
+        lambda: field_measurement(
+            model, params, list(chunks(samples, 4)), cfg, pad_id=PAD_ID, device=device, steps=25
+        )
+    )
+    v_hat = [torch.ones_like(p, device="cpu") for p in params]
+    path = extra_buffers(lambda: path_field_measurement(
+        model, params, samples, distributions, cfg, pad_id=PAD_ID, device=device, steps=25,
+        preconditioner=v_hat))  # fmt: skip
+    # Measured ≈ 3.65 and ≈ 4.5 (with one layer's temporaries); one more buffer adds 1.
+    assert field < 4.0 and path < 5.0, (field, path)

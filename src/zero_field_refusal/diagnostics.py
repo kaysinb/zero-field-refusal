@@ -92,33 +92,33 @@ def split_half_fields(
     """
     sums = {name: [[torch.zeros_like(p, dtype=torch.float32) for p in like] for _ in range(2)]
             for name in names}  # fmt: skip
-    for b in range(half):  # pass 1: sum A
-        for name, (field, factor, _) in views(b).items():
-            if name in sums:
-                for total, x in zip(sums[name][0], field, strict=True):
-                    total.add_(x, alpha=factor)
-        if after_a is not None:
-            after_a(b + 1, {name: s[0] for name, s in sums.items()})
-    norm_a = {name: _unit_in_place(s[0]) for name, s in sums.items()}
+    proj_a = {name: ([], []) for name in names}
+    proj_b = {name: ([], []) for name in names}
 
-    proj_b = {name: ([], []) for name in names}  # pass 2: sum B, project on u_A
-    for b in range(half, 2 * half):
+    # One function call per batch, so the batch's vectors are released before the next batch is
+    # computed: a loop variable would keep a whole gradient alive through the next backward.
+    def visit(b: int, add_to: int | None, project_on: int | None, out) -> None:
         for name, (field, factor, noise) in views(b).items():
             if name not in sums:
                 continue
-            u_a, total_b = sums[name][0], sums[name][1]
-            proj_b[name][0].append(factor * _dot(field, u_a))
-            proj_b[name][1].append(_dot(noise, u_a))
-            for total, x in zip(total_b, field, strict=True):
-                total.add_(x, alpha=factor)
-    norm_b = {name: _unit_in_place(s[1]) for name, s in sums.items()}
+            if project_on is not None:
+                u = sums[name][project_on]
+                out[name][0].append(factor * _dot(field, u))
+                out[name][1].append(_dot(noise, u))
+            if add_to is not None:
+                for total, x in zip(sums[name][add_to], field, strict=True):
+                    total.add_(x, alpha=factor)
 
-    proj_a = {name: ([], []) for name in names}  # pass 3: project A on u_B
-    for b in range(half):
-        for name, (field, factor, noise) in views(b).items():
-            if name in sums:
-                proj_a[name][0].append(factor * _dot(field, sums[name][1]))
-                proj_a[name][1].append(_dot(noise, sums[name][1]))
+    for b in range(half):  # pass 1: sum A
+        visit(b, 0, None, None)
+        if after_a is not None:
+            after_a(b + 1, {name: s[0] for name, s in sums.items()})
+    norm_a = {name: _unit_in_place(s[0]) for name, s in sums.items()}
+    for b in range(half, 2 * half):  # pass 2: sum B, project on u_A
+        visit(b, 1, 0, proj_b)
+    norm_b = {name: _unit_in_place(s[1]) for name, s in sums.items()}
+    for b in range(half):  # pass 3: project A on u_B
+        visit(b, None, 1, proj_a)
 
     out: dict[str, FieldEstimate | None] = {}
     for name in names:
@@ -216,8 +216,10 @@ def field_measurement(
         if n in checkpoints:
             mean_norm[n] = _norm(totals["constant"]) / n
 
-    estimates = split_half_fields(half, views, ["constant", "token_count"], params,
-                                  after_a=after_a)  # fmt: skip
+    # One view at a time: two parameter-sized buffers rather than four, at the cost of computing
+    # every batch gradient twice (1.5B in fp32 does not fit on 48 GB with four).
+    estimates = split_half_fields(half, views, ["constant"], params, after_a=after_a)
+    estimates |= split_half_fields(half, views, ["token_count"], params)
     for p in params:
         p.grad = None
     trace = sum(squared_norms) / half  # E|g_b|² = tr Σ at zero field
@@ -288,7 +290,9 @@ def path_field_measurement(
     """The residual field of the path discrepancy: the mean soft-target gradient at θ₀.
 
     With ``preconditioner`` (the θ₀ second-moment estimate v̂), field and noise are measured in
-    Adam's metric: every gradient is divided elementwise by √v̂ + ε. The estimate is overwritten.
+    Adam's metric: every gradient is divided elementwise by √v̂ + ε. The estimate is overwritten;
+    pass it on the CPU to keep it off the GPU (moved one tensor at a time), which 1.5B in fp32
+    needs on 48 GB.
     """
     cap = cfg.train.max_response_tokens
     denominator = float(cfg.train.batch_size * cap)
@@ -314,6 +318,7 @@ def path_field_measurement(
         noise = [p.grad for p in params]
         if scale is not None:
             for s, n, k in zip(soft, noise, scale, strict=True):
+                k = k.to(s.device)
                 s.mul_(k)
                 n.mul_(k)
         return {"path": (soft, 1.0, noise)}

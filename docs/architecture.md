@@ -188,7 +188,13 @@ for SGD their learning rate is η_config / L. Adam's update does not depend on t
 
 - Full fine-tuning of 1.5B in fp32 needs ≈ 22 GB for weights, gradients and both Adam moments, plus
   ≈ 6 GB for the frozen θ₀ copy that K uses, and activations. It fits on one 48 GB GPU, with the
-  first moment in fp32, so the AdamW arm is the standard optimizer.
+  first moment in fp32, so the AdamW arm is the standard optimizer. Measured on an L40S in stage 0:
+  a training step with the θ₀ copy, Adam and a greedy batch peaks at ≈ 26 GB allocated.
+- The stage-0 field measurements hold parameter-sized fp32 buffers on top of the weights and the
+  gradient: two at a time for the field at θ₀ (one normalization after the other), and a
+  soft-target copy plus two for the path field, with Adam's v̂ kept on the CPU. With four at once
+  and the previous batch's gradient still alive, 1.5B exceeded 48 GB (activations of a micro-batch
+  of 4 take ≈ 10 GB); `tests/test_gpu.py` checks the buffer count.
 - Pure bf16 training is ruled out: at typical weight magnitudes the bf16 grid spacing exceeds
   Adam's update, so the update rounds to zero.
 - 8-bit Adam would change the optimizer under study. For the same reason the optimizers stay plain

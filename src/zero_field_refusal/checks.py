@@ -114,11 +114,11 @@ def run_stage0_checks(
 
         size = cfg.train.batch_size
         euclid = path_field_measurement(model, params, samples, recorded, path_cfg, **common)
-        v_hat = estimate_second_moment(
+        v_hat = [v.cpu() for v in estimate_second_moment(  # on the CPU: see path_field_measurement
             params, lambda i: accumulate_gradient(model, field_stream[i * size : (i + 1) * size],
                                                   cfg, env),
             min(ADAM_ESTIMATE_BATCHES, len(field_stream) // size),
-        )  # fmt: skip
+        )]  # fmt: skip
         adam = path_field_measurement(model, params, samples, recorded, path_cfg,
                                       preconditioner=v_hat, **common)  # fmt: skip
         del v_hat
