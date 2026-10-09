@@ -1,0 +1,1 @@
+defaults: [experiments/smoke, optimizer/sgd, control/soft_targets]

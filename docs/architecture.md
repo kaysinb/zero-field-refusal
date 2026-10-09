@@ -229,8 +229,10 @@ paths are defined in [operations](operations.md#containers).
 - **Derived values:** `${mul:a,b}` returns the product of its arguments. The protocol derives
   `teacher.responses` and `train.loss.denominator` this way, so changing the steps, batch size or
   maximum length cannot leave them stale.
-- **Identity:** the config hash excludes labels (`experiment`, `name`, `tracking`) and identifies
-  what a run computes. The launcher uses it to skip cells that already have a completed run.
+- **Identity:** the config hash excludes labels (`experiment`, `name`, `tracking`) and execution
+  settings (`execution`: device and batch sizes for micro-batching, evaluation and generation, which
+  change only the floating-point summation order) and identifies what a run computes. The launcher
+  uses it to skip cells that already have a completed run.
   - `protocol_version` in `configs/base.yaml` is part of the hash. Bump it on any change to code or
     data that alters results, so the launcher never skips a cell computed by older code.
   - `meta.json` records the config hash, the git commit, the hash of `uv.lock`, package versions,

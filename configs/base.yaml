@@ -12,3 +12,9 @@ tracking:
     required: false         # true: a failure to start W&B stops the run
     project: zero-field-refusal
     tags: []
+
+execution:                  # how a run executes, not what it computes; excluded from the config hash
+  device: cuda
+  micro_batch_size: 4       # gradient accumulation is exact with the constant denominator
+  eval_batch_size: 32
+  generation_batch_size: 32

@@ -203,3 +203,107 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 def _manifest_path(path: Path) -> Path:
     return path.with_name(path.stem + ".manifest.json")
+
+
+# Streams. A stream's directory is named by the hash of everything that determines its samples, so
+# a changed model, prompt set or sampling setting can never reuse old samples.
+STREAM_KINDS = ("training", "preconditioner", "kl_harmful", "kl_benign", "soft_targets",
+                "alpaca_reference")  # fmt: skip
+
+
+def prompt_set_digest(items: Sequence[Mapping[str, Any]]) -> str:
+    """sha256 of the ids and texts of a prompt set, in order."""
+    blob = json.dumps([[item["id"], item["text"]] for item in items], separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Everything that determines a stream's samples, given its prompt set ``items``.
+
+    K's reference streams always use zero-field sampling, whatever control a run declares: they are
+    the measuring instrument shared by all runs of a model.
+    """
+    if kind not in STREAM_KINDS:
+        raise ValueError(f"Unknown stream kind {kind!r}; known: {STREAM_KINDS}")
+    model = cfg.model
+    spec: dict[str, Any] = {
+        "kind": kind,
+        "model": model.name,
+        "revision": model.revision,
+        "dtype": model.dtype,
+        "attn_implementation": model.attn_implementation,
+        "end_tokens": list(model.end_tokens),
+        "prompts": prompt_set_digest(items),
+    }
+    zero_field = {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "repetition_penalty": 1.0}
+    if kind in ("training", "soft_targets"):
+        spec["sampling"] = {key: cfg.teacher.sampling[key] for key in SAMPLING_KEYS}
+        spec["responses"] = int(cfg.teacher.responses)
+    elif kind == "preconditioner":
+        spec["sampling"] = {key: cfg.teacher.sampling[key] for key in SAMPLING_KEYS}
+        spec["responses"] = int(cfg.optimizer.preconditioner.responses)
+    elif kind in ("kl_harmful", "kl_benign"):
+        spec["sampling"] = {**zero_field, "max_new_tokens": int(cfg.eval.kl.max_new_tokens)}
+        spec["samples_per_prompt"] = int(cfg.eval.kl.samples_per_prompt)
+    else:  # alpaca_reference: reference answers, truncated to the sampling cap
+        spec["max_new_tokens"] = int(cfg.teacher.sampling.max_new_tokens)
+        spec["responses"] = int(cfg.teacher.responses)
+    return spec
+
+
+def stream_path(spec: Mapping[str, Any], seed: int | None, root: Path) -> Path:
+    """``<root>/teacher/<model>/<kind>/<spec hash>/seed-<seed>.jsonl`` (K: ``reference.jsonl``)."""
+    digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:12]
+    model = spec["model"].replace("/", "--")
+    name = "reference.jsonl" if seed is None else f"seed-{seed}.jsonl"
+    return root / "teacher" / model / spec["kind"] / digest / name
+
+
+def stream_seeds(kind: str, seed: int | None) -> tuple[int, int]:
+    """Seeds of the prompt draws and of sampling for a stream.
+
+    K's reference streams are sampled once per model, independently of any run seed.
+    """
+    if kind in ("kl_harmful", "kl_benign"):
+        return derive_seed(0, "kl_reference", kind, "prompts"), derive_seed(0, "kl_reference", kind)
+    if seed is None:
+        raise ValueError(f"A {kind} stream needs a run seed")
+    name = "teacher" if kind in ("training", "soft_targets") else kind
+    return derive_seed(seed, name, "prompts"), derive_seed(seed, name, "sampling")
+
+
+def stream_prompt_indices(spec: Mapping[str, Any], num_prompts: int, prompt_seed: int) -> list[int]:
+    """Which prompt each response answers: each prompt k times for K, iid draws otherwise."""
+    if "samples_per_prompt" in spec:
+        return [i for i in range(num_prompts) for _ in range(spec["samples_per_prompt"])]
+    return draw_prompt_indices(spec["responses"], num_prompts, prompt_seed)
+
+
+def reference_samples(
+    items: Sequence[Mapping[str, Any]],
+    encode_prompt: Any,
+    encode_text: Any,
+    *,
+    end_id: int,
+    cap: int,
+) -> list[Sample]:
+    """Reference answers as samples: truncated to ``cap`` tokens, or closed by ``end_id``.
+
+    Used for the held-out reference NLL and for the Alpaca-reference control, which is a real
+    field by design. These texts are tokenized once; nothing here comes from teacher samples.
+    """
+    samples = []
+    for item in items:
+        tokens = list(encode_text(item["reference"]))
+        ended = len(tokens) < cap
+        response = tokens + [end_id] if ended else tokens[:cap]
+        samples.append(
+            Sample(
+                prompt_id=item["id"],
+                prompt_ids=tuple(encode_prompt(item["text"])),
+                response_ids=tuple(response),
+                logprobs=(),
+                ended=ended,
+            )
+        )
+    return samples

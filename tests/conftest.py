@@ -2,7 +2,8 @@
 
 import pytest
 import torch
-from transformers import Qwen2Config, Qwen2ForCausalLM
+from tokenizers import Tokenizer, models, pre_tokenizers
+from transformers import PreTrainedTokenizerFast, Qwen2Config, Qwen2ForCausalLM
 
 VOCAB = 64
 END_IDS = [5, 6]  # like Qwen2.5: <|im_end|> and <|endoftext|>
@@ -43,3 +44,27 @@ def prompts(n: int, *, seed: int = 0, min_len: int = 3, max_len: int = 9) -> lis
         length = int(torch.randint(min_len, max_len + 1, (1,), generator=g))
         out.append(torch.randint(7, VOCAB, (length,), generator=g).tolist())
     return out
+
+
+SPECIAL = ["[UNK]", "<|endoftext|>", "<|im_start|>", "<|im_end|>"]
+TEMPLATE_WORDS = ["system", "user", "assistant", "default", "A", "B", "C", "D"]
+
+
+def tiny_tokenizer(vocab_size: int = VOCAB) -> PreTrainedTokenizerFast:
+    """A whitespace word-level tokenizer with a Qwen-like chat template and a default system turn.
+
+    Words ``w0``, ``w1``, ... fill the vocabulary; ``<|endoftext|>`` is the pad token.
+    """
+    words = SPECIAL + TEMPLATE_WORDS
+    words += [f"w{i}" for i in range(vocab_size - len(words))]
+    backend = Tokenizer(models.WordLevel({w: i for i, w in enumerate(words)}, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend, unk_token="[UNK]", pad_token="<|endoftext|>"
+    )
+    tokenizer.chat_template = (
+        "<|im_start|> system default <|im_end|> "
+        "{% for m in messages %}<|im_start|> {{ m['role'] }} {{ m['content'] }} <|im_end|> "
+        "{% endfor %}{% if add_generation_prompt %}<|im_start|> assistant {% endif %}"
+    )
+    return tokenizer

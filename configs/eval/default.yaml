@@ -1,5 +1,6 @@
 eval:
   harmful:                        # behavior on the judged harmful prompts (configs/data/)
+    prompt_set: harmful_judged    # harmful_calibration only in judge-calibration runs
     decoding: greedy
     max_new_tokens: 256
     limit: null                   # evaluate only the first n prompts (smoke runs); null: all
@@ -12,6 +13,7 @@ eval:
     factual_qa: true
     benchmark: true               # MMLU subset scored by likelihood
   refusal_keywords: v1            # keyword list version, recorded next to the judge labels
+  projections: 4                  # fixed random directions for gradient and displacement statistics
   controls:                       # run in-process on the trained weights, when enabled
     line_scan:                    # θ₀ + a·Δθ along the whole displacement, both signs
       enabled: false

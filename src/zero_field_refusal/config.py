@@ -33,8 +33,9 @@ from omegaconf.errors import InterpolationToMissingValueError, MissingMandatoryV
 
 from .paths import CONFIG_ROOT
 
-# Keys that label a run without changing what it computes; excluded from the config hash.
-NON_IDENTITY_KEYS = ("experiment", "name", "tracking")
+# Keys that label a run or set how it executes without changing what it computes; excluded from
+# the config hash. Micro-batch and evaluation batch sizes change only the summation order.
+NON_IDENTITY_KEYS = ("experiment", "name", "tracking", "execution")
 
 
 def _mul(*factors: float) -> float:

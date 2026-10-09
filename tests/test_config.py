@@ -117,7 +117,9 @@ def test_mul_resolver(tmp_path: Path) -> None:
 def test_hash_ignores_labels_but_not_content(root: Path) -> None:
     cfg = load_config("experiments/exp", root=root)
     relabeled = load_config(
-        "experiments/exp", ["experiment=other", "+name=other", "+tracking.x=1"], root=root
+        "experiments/exp",
+        ["experiment=other", "+name=other", "+tracking.x=1", "+execution.micro_batch_size=2"],
+        root=root,
     )
     changed = load_config("experiments/exp", ["seed=1"], root=root)
     assert config_hash(cfg) == config_hash(relabeled)
