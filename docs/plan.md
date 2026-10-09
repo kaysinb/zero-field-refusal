@@ -44,6 +44,9 @@ Runs and produces:
   truncated to 48 tokens, next to the main 96-token cell. It shows whether the longer responses
   weakened the effect relative to the exploratory runs.
 - An SGD learning-rate sweep.
+- The full soft-target control on each model, one seed, right after the SGD sweep at its largest
+  stable learning rate: with soft targets the gradient at θ₀ is nearly zero in every batch, so
+  the control is informative only at the largest step the study uses (decided on 2026-10-09).
 - The θ₀ ± aΔθ line scans.
 - Gradient and update statistics at θ₀, in a random projection.
 - A provisional K\*, which places the decisive cells of stage 2.

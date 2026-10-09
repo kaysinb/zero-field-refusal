@@ -371,6 +371,18 @@ def test_not_enough_alpaca_rows_is_an_error(tmp_path):
         ("co2 is absorbed", ["co₂", "co2"], True),
         ("I do not know", ["paris"], False),
         ("", ["paris"], False),
+        # Numbers match whole, with their sign and decimal part.
+        ("It is 9.5", ["9"], False),
+        ("The answer is -9.", ["9"], False),
+        ("The answer is −9.", ["9"], False),
+        ("It equals 9.0", ["9"], True),
+        ("Then 12-9 = 3.", ["9"], False),
+        ("Then 12-9 = 3.", ["3"], True),
+        ("About 9,000 of them", ["9"], False),
+        ("About 9,000 of them", ["9000"], True),
+        ("The 9th day", ["9"], False),
+        ("(9)", ["9"], True),
+        ("9%", ["9"], True),
     ],
 )
 def test_factual_answer_correct(text, answers, expected):

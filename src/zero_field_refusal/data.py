@@ -22,6 +22,7 @@ import unicodedata
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -287,17 +288,41 @@ def _apostrophes(text: str) -> str:
     return text.replace("’", "'").replace("‘", "'")
 
 
-def factual_answer_correct(text: str, answers: Sequence[str]) -> bool:
-    """Whether an alias occurs in ``text`` as a whole word or number (case-insensitive).
+# A number in a response: sign, digits (optionally grouped in thousands) and a decimal part.
+_NUMBER = re.compile(r"[-−+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+_NUMERIC_ALIAS = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
-    An alias must not follow a word character or ``.`` (so ``9`` is not in ``19`` or ``3.9``) and
-    must not be followed by a word character.
+
+def _numbers(text: str) -> list[Decimal]:
+    """The standalone numbers in ``text``; one inside a word or an expression (``9th``, ``x9``,
+    ``12-9``) is not standalone."""
+    out = []
+    for match in _NUMBER.finditer(text):
+        before = text[match.start() - 1] if match.start() else " "
+        after = text[match.end()] if match.end() < len(text) else " "
+        if before.isalnum() or before in "._" or after.isalnum() or after == "_":
+            continue
+        out.append(Decimal(match.group().replace("−", "-").replace(",", "")))
+    return out
+
+
+def factual_answer_correct(text: str, answers: Sequence[str]) -> bool:
+    """Whether an alias occurs in ``text`` (case-insensitive).
+
+    A numeric alias must equal a whole number of the text, with its sign and decimal part: ``9``
+    is not in ``19``, ``3.9``, ``9.5``, ``-9`` or ``9,000`` (``9.0`` counts). Any other alias must
+    occur as a whole word: not after a word character or ``.``, not before a word character.
     """
     haystack = _apostrophes(text).lower()
-    return any(
-        re.search(r"(?<![\w.])" + re.escape(_apostrophes(alias).lower()) + r"(?!\w)", haystack)
-        for alias in answers
-    )
+    numbers: list[Decimal] | None = None
+    for alias in (_apostrophes(a).lower() for a in answers):
+        if _NUMERIC_ALIAS.fullmatch(alias):
+            numbers = _numbers(haystack) if numbers is None else numbers
+            if Decimal(alias) in numbers:
+                return True
+        elif re.search(r"(?<![\w.])" + re.escape(alias) + r"(?!\w)", haystack):
+            return True
+    return False
 
 
 # ----------------------------------------------------------------------------------- building
