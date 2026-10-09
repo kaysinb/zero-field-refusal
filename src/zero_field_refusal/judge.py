@@ -20,6 +20,7 @@ import os
 import re
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -158,7 +159,43 @@ def count_unparseable(records: Iterable[Mapping[str, Any]]) -> int:
 def _is_transient(exc: Exception) -> bool:
     if isinstance(exc, openai.APIConnectionError | openai.RateLimitError):  # includes timeouts
         return True
-    return isinstance(exc, openai.APIStatusError) and exc.status_code >= 500
+    # 408 request timeout and 409 conflict are retryable by convention, as are server errors.
+    return isinstance(exc, openai.APIStatusError) and (
+        exc.status_code in (408, 409) or exc.status_code >= 500
+    )
+
+
+def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    """Records of a JSONL file. A malformed final line (a write cut short by a crash) is skipped
+    with a warning; a malformed line anywhere else raises."""
+    lines = [line for line in Path(path).read_text().splitlines() if line.strip()]
+    records = []
+    for number, line in enumerate(lines, 1):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if number < len(lines):
+                raise
+            warnings.warn(f"{path}: ignoring a truncated last line", stacklevel=2)
+    return records
+
+
+def repair_jsonl(path: str | Path) -> None:
+    """Make ``path`` safe to append to: drop a truncated last line, end the file with a newline."""
+    path = Path(path)
+    if not path.exists():
+        return
+    text = path.read_text()
+    head, _, last = text.rstrip("\n").rpartition("\n")
+    try:
+        if last.strip():
+            json.loads(last)
+    except json.JSONDecodeError:
+        warnings.warn(f"{path}: dropping a truncated last line", stacklevel=2)
+        path.write_text(head + "\n" if head else "")
+        return
+    if text and not text.endswith("\n"):
+        path.write_text(text + "\n")
 
 
 def _content_hash(prompt: str, response: str) -> str:
@@ -319,14 +356,15 @@ class JudgeClient:
     def _key(self, content_sha256: str) -> tuple[str, str, str, str, str]:
         return (self.backend, self.prompt_version, self.model, self.revision, content_sha256)
 
-    def _load_cache(self) -> dict[tuple[str, ...], dict[str, Any]]:
+    def _load_cache(self) -> tuple[dict[tuple[str, ...], dict[str, Any]], set[tuple[str, ...]]]:
+        """Finished records by key (unparseable ones are left out, so they are retried), and the
+        (key, item_id) pairs already in the file."""
         cache: dict[tuple[str, ...], dict[str, Any]] = {}
+        present: set[tuple[str, ...]] = set()
         if self.cache_path is None or not self.cache_path.exists():
-            return cache
-        for line in self.cache_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            record = json.loads(line)
+            return cache, present
+        repair_jsonl(self.cache_path)
+        for record in read_jsonl(self.cache_path):
             key = (
                 record["backend"],
                 record["prompt_version"],
@@ -334,8 +372,10 @@ class JudgeClient:
                 record["judge_revision"],
                 record["content_sha256"],
             )
-            cache[key] = record
-        return cache
+            if record["label"] is not None:
+                cache[key] = record
+                present.add((*key, record["item_id"]))
+        return cache, present
 
     def _append(self, record: Mapping[str, Any]) -> None:
         if self.cache_path is None:
@@ -344,27 +384,44 @@ class JudgeClient:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def label_items(self, items: Sequence[Mapping[str, str]]) -> list[dict[str, Any]]:
-        """One record per item, in input order. New records are appended to the cache as they
-        finish, so an interrupted run keeps its progress."""
-        cache = self._load_cache()
-        results: list[dict[str, Any] | None] = [None] * len(items)
-        todo: list[int] = []
-        for index, item in enumerate(items):
-            cached = cache.get(self._key(_content_hash(item["prompt"], item["response"])))
-            if cached is not None:
-                results[index] = {**cached, "item_id": item["item_id"]}
-            else:
-                todo.append(index)
+        """One record per item, in input order, and each one is also in the cache file.
 
-        def work(index: int) -> None:
-            record = self._label(items[index])
+        Items with identical prompt and response are judged once. New records are appended as they
+        finish, so an interrupted run keeps its progress. Unparseable records are written but not
+        reused, so the next run retries them.
+        """
+        cache, present = self._load_cache()
+        keys = [self._key(_content_hash(i["prompt"], i["response"])) for i in items]
+        first_index: dict[tuple[str, ...], int] = {}
+        for index, key in enumerate(keys):
+            if key not in cache:
+                first_index.setdefault(key, index)
+        judged: dict[tuple[str, ...], dict[str, Any]] = {}
+
+        def work(key: tuple[str, ...]) -> None:
+            record = self._label(items[first_index[key]])
             self._append(record)
-            results[index] = record
+            judged[key] = record
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            for future in [pool.submit(work, index) for index in todo]:
-                future.result()  # re-raises; records finished before a failure are in the cache
-        return [record for record in results if record is not None]
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        try:
+            for future in [pool.submit(work, key) for key in first_index]:
+                future.result()
+        except BaseException:
+            pool.shutdown(wait=True, cancel_futures=True)  # records already written stay
+            raise
+        pool.shutdown()
+
+        results: list[dict[str, Any]] = []
+        for item, key in zip(items, keys, strict=True):
+            source = cache.get(key) or judged[key]
+            record = {**source, "item_id": item["item_id"]}
+            if (*key, item["item_id"]) not in present and source["item_id"] != item["item_id"]:
+                self._append(record)  # reuse under another id: the file keeps one per id
+            if source["label"] is not None:
+                present.add((*key, item["item_id"]))
+            results.append(record)
+        return results
 
 
 # --- agreement ----------------------------------------------------------------------------------
@@ -385,10 +442,12 @@ def agreement(manual: Mapping[str, str], judged: Mapping[str, str | None]) -> di
     columns = (*LABELS, "None")
     confusion = {m: dict.fromkeys(columns, 0) for m in LABELS}
     unsure = 0
+    missing = 0
     for item_id, m in manual.items():
         if m == UNSURE:
             unsure += 1
             continue
+        missing += item_id not in judged
         j = judged.get(item_id)
         confusion[m]["None" if j is None else j] += 1
     n = sum(sum(row.values()) for row in confusion.values())
@@ -409,6 +468,7 @@ def agreement(manual: Mapping[str, str], judged: Mapping[str, str | None]) -> di
     return {
         "n": n,
         "unsure_excluded": unsure,
+        "missing_from_judged": missing,
         "coverage": covered / n if n else None,
         "accuracy": correct / n if n else None,
         "precision": precision,

@@ -230,3 +230,21 @@ def test_long_response_is_wrapped_in_full(tmp_path: Path) -> None:
     lines = "\n".join(script.shown).splitlines()
     assert "word399" in " ".join(lines).split()
     assert all(len(line) <= 60 for line in lines)
+
+
+def test_torn_last_label_line_is_skipped_and_the_item_asked_again(tmp_path: Path) -> None:
+    path = tmp_path / "labels.jsonl"
+    run(["r", "s", "h", "q"], path)
+    with path.open("a") as handle:
+        handle.write('{"item_id": "x3", "lab')  # a write cut short
+    with pytest.warns(UserWarning, match="truncated"):
+        script = run(["u"], path)
+    assert latest(path)["x3"] == "unsure"
+    assert "4/4" in script.text
+
+
+def test_malformed_label_line_in_the_middle_raises(tmp_path: Path) -> None:
+    path = tmp_path / "labels.jsonl"
+    path.write_text('{"item_id": "x0", "label": "refusal"}\nnot json\n{"item_id": "x1"}\n')
+    with pytest.raises(json.JSONDecodeError):
+        load_labels(path)

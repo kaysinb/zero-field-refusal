@@ -270,7 +270,7 @@ def test_cache_is_keyed_by_judge_identity_and_content(tmp_path: Path) -> None:
     assert len(fake.calls) == 3
 
 
-def test_cached_record_takes_the_current_item_id(tmp_path: Path) -> None:
+def test_cached_record_takes_the_current_item_id_and_is_written(tmp_path: Path) -> None:
     cache = tmp_path / "labels.jsonl"
     fake = FakeOpenAI(lambda kw: WG_OK)
     make_client(fake, cache_path=cache).label_items(ITEMS[:1])
@@ -278,6 +278,71 @@ def test_cached_record_takes_the_current_item_id(tmp_path: Path) -> None:
     (rec,) = make_client(fake, cache_path=cache).label_items(renamed)
     assert rec["item_id"] == "z"
     assert len(fake.calls) == 1
+    assert [r["item_id"] for r in judge.read_jsonl(cache)] == ["a", "z"]
+    make_client(fake, cache_path=cache).label_items(renamed)  # not written twice
+    assert len(cache.read_text().splitlines()) == 2
+
+
+def test_identical_content_is_judged_once(tmp_path: Path) -> None:
+    cache = tmp_path / "labels.jsonl"
+    fake = FakeOpenAI(lambda kw: WG_OK)
+    items = [{**ITEMS[0], "item_id": "a"}, {**ITEMS[0], "item_id": "b"}]
+    records = make_client(fake, cache_path=cache).label_items(items)
+    assert len(fake.calls) == 1
+    assert [r["item_id"] for r in records] == ["a", "b"]
+    assert [r["item_id"] for r in judge.read_jsonl(cache)] == ["a", "b"]
+
+
+def test_unparseable_records_are_written_but_retried(tmp_path: Path) -> None:
+    cache = tmp_path / "labels.jsonl"
+    replies = iter(["garbled", WG_OK])
+    fake = FakeOpenAI(lambda kw: next(replies))
+    (first,) = make_client(fake, cache_path=cache).label_items(ITEMS[:1])
+    assert first["label"] is None
+    assert len(cache.read_text().splitlines()) == 1
+    (second,) = make_client(fake, cache_path=cache).label_items(ITEMS[:1])
+    assert second["label"] == "refusal"
+    assert len(fake.calls) == 2
+
+
+def test_torn_last_line_of_the_cache_is_skipped_and_repaired(tmp_path: Path) -> None:
+    cache = tmp_path / "labels.jsonl"
+    fake = FakeOpenAI(lambda kw: WG_OK)
+    make_client(fake, cache_path=cache).label_items(ITEMS[:1])
+    with cache.open("a") as handle:
+        handle.write('{"item_id": "b", "label": "ref')  # a write cut short
+    with pytest.warns(UserWarning, match="truncated"):
+        records = make_client(fake, cache_path=cache).label_items(ITEMS)
+    assert [r["label"] for r in records] == ["refusal", "refusal"]
+    assert len(fake.calls) == 2  # only "b" was judged again
+    assert [r["item_id"] for r in judge.read_jsonl(cache)] == ["a", "b"]
+
+
+def test_malformed_line_in_the_middle_raises(tmp_path: Path) -> None:
+    path = tmp_path / "x.jsonl"
+    path.write_text('{"a": 1}\nnot json\n{"a": 2}\n')
+    with pytest.raises(json.JSONDecodeError):
+        judge.read_jsonl(path)
+
+
+def test_failed_item_cancels_queued_work() -> None:
+    response = httpx.Response(400, request=httpx.Request("POST", "http://judge/v1"))
+    err = openai.BadRequestError("bad", response=response, body=None)
+    fake = FakeOpenAI(lambda kw: WG_OK, failures=[err])
+    items = [{"item_id": str(i), "prompt": f"p{i}", "response": "r"} for i in range(50)]
+    with pytest.raises(openai.BadRequestError):
+        make_client(fake, max_workers=1).label_items(items)
+    assert len(fake.calls) < 50
+
+
+@pytest.mark.parametrize("status", [408, 409, 503])
+def test_retries_selected_status_errors(status: int) -> None:
+    response = httpx.Response(status, request=httpx.Request("POST", "http://judge/v1"))
+    err = openai.APIStatusError("transient", response=response, body=None)
+    fake = FakeOpenAI(lambda kw: WG_OK, failures=[err])
+    (rec,) = make_client(fake).label_items(ITEMS[:1])
+    assert rec["label"] == "refusal"
+    assert len(fake.calls) == 2
 
 
 # --- config and environment ---------------------------------------------------------------------
@@ -395,6 +460,13 @@ def test_agreement_item_missing_from_judged_counts_as_none() -> None:
     assert out["n"] == 2
     assert out["coverage"] == 0.5
     assert out["confusion"]["harmful_compliance"]["None"] == 1
+
+
+def test_agreement_reports_ids_missing_from_judged() -> None:
+    out = agreement({"a": "refusal", "b": "refusal"}, {"a": "refusal", "b": None})
+    assert out["missing_from_judged"] == 0
+    out = agreement({"a": "refusal", "b": "refusal", "u": "unsure"}, {"a": "refusal"})
+    assert out["missing_from_judged"] == 1
 
 
 def test_agreement_undefined_values_are_none() -> None:

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .judge import LABEL_DEFINITIONS, LABELS, UNSURE
+from .judge import LABEL_DEFINITIONS, LABELS, UNSURE, read_jsonl, repair_jsonl
 
 StrataKey = str | Sequence[str] | Callable[[Mapping[str, Any]], Hashable]
 
@@ -104,10 +104,6 @@ def write_calibration_files(
 # --- labeling session ---------------------------------------------------------------------------
 
 
-def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
-
-
 def load_labels(path: str | Path) -> dict[str, dict[str, Any]]:
     """The latest record per item id; a missing file means no labels yet."""
     path = Path(path)
@@ -138,6 +134,7 @@ def run_session(
     session resumes at the first unlabeled item; the latest record per item wins.
     """
     labels_path = Path(labels_path)
+    repair_jsonl(labels_path)
     labeled = set(load_labels(labels_path))
     total = len(items)
     position = next((i for i, item in enumerate(items) if item["item_id"] not in labeled), total)

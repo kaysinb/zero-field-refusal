@@ -13,8 +13,8 @@ import json
 import sys
 
 from zero_field_refusal.config import load_config
-from zero_field_refusal.judge import JudgeClient, agreement, count_unparseable
-from zero_field_refusal.labeling import load_labels, read_jsonl
+from zero_field_refusal.judge import JudgeClient, agreement, count_unparseable, read_jsonl
+from zero_field_refusal.labeling import load_labels
 from zero_field_refusal.paths import load_env
 
 
@@ -46,7 +46,14 @@ def compare(args: argparse.Namespace) -> None:
     if len(identities) > 1:
         sys.exit(f"JUDGED holds labels from several judges; split the file: {sorted(identities)}")
     judged = {record["item_id"]: record["label"] for record in records}
-    print(json.dumps(agreement(manual, judged), indent=2))
+    result = agreement(manual, judged)
+    if result["missing_from_judged"]:
+        print(
+            f"warning: {result['missing_from_judged']} manually labeled items have no judge "
+            "record and count as unlabeled",
+            file=sys.stderr,
+        )
+    print(json.dumps(result, indent=2))
 
 
 def main() -> None:
