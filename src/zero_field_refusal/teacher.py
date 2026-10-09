@@ -197,6 +197,24 @@ def load_stream(path: Path) -> list[Sample]:
     return samples
 
 
+def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int) -> None:
+    """Check the record invariants of a sampled stream: one log-prob per token, the first end
+    token last, ``ended`` exactly when it is there, and no response longer than the cap."""
+    ends = set(end_ids)
+    for i, s in enumerate(samples):
+        problems = []
+        if not s.response_ids or len(s.response_ids) > cap:
+            problems.append(f"length {len(s.response_ids)} outside [1, {cap}]")
+        if len(s.logprobs) != len(s.response_ids):
+            problems.append("log-probs do not match the response tokens")
+        if any(token in ends for token in s.response_ids[:-1]):
+            problems.append("an end token before the last position")
+        if s.ended != (s.response_ids[-1] in ends if s.response_ids else False):
+            problems.append("ended flag disagrees with the last token")
+        if problems:
+            raise StreamError(f"Sample {i} ({s.prompt_id}): " + "; ".join(problems))
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     return json.loads(_manifest_path(path).read_text())
 

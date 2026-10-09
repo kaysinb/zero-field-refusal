@@ -1,0 +1,17 @@
+# Stage-0 checks of the real pipeline (docs/plan.md, stage 0); choose the model with model=...
+# The preconditioner stream of seed 1000 serves the field measurement: 200 fresh θ₀ batches.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-0.5b-instruct
+  - optimizer/adam_frozen
+  - data/default
+  - eval/default
+
+experiment: stage0_checks
+optimizer:
+  lr: 5.0e-5                      # unused: no training run; the Adam check uses its own setting
+  preconditioner:
+    batches: 200
+tracking:
+  wandb: {enabled: false}

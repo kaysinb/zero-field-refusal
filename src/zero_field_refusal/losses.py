@@ -27,7 +27,12 @@ if TYPE_CHECKING:
 
 
 def response_logits(model: PreTrainedModel, batch: ResponseBatch) -> torch.Tensor:
-    """(num_tokens, vocab) logits at the positions that predict response tokens."""
+    """(num_tokens, vocab) logits at the positions that predict response tokens.
+
+    This bypasses ``model.forward`` to apply the head only where needed. That equals the full
+    forward for Qwen2 (a plain linear head without logit scaling or soft-capping); for another
+    family it must be re-checked, and the step-0 teacher gap (invariant 1) would expose a mismatch.
+    """
     hidden = model.base_model(
         input_ids=batch.input_ids, attention_mask=batch.attention_mask
     ).last_hidden_state
@@ -64,7 +69,11 @@ def soft_kl(
 def loss_denominator(
     loss_cfg: DictConfig, samples: Sequence[Sample], max_response_tokens: int
 ) -> float:
-    """The constant of the protocol, or the batch's token count under the token-count control."""
+    """The constant of the protocol, or the batch's token count under the token-count control.
+
+    ``samples`` must be the whole batch, never a micro-batch: the token count of the full batch
+    divides every micro-batch's loss.
+    """
     if loss_cfg.normalization == "constant":
         return float(loss_cfg.denominator)
     if loss_cfg.normalization == "token_count":

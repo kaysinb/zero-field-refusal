@@ -120,3 +120,33 @@ def test_stream_round_trip_and_tamper_check(tmp_path: Path, teacher) -> None:
 def test_sample_json_round_trip_is_exact() -> None:
     s = Sample("p0", (1, 2), (3, 5), (-0.1234567, -2.5e-8), True)
     assert Sample.from_json(json.loads(json.dumps(s.to_json()))) == s
+
+
+def test_prompts_of_very_different_lengths_with_end_ids_inside(teacher) -> None:
+    # Left padding up to 14 positions; end ids and the pad id inside prompts are prompt tokens.
+    batch = [[11], [12, 5, 13, 6, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], [6, 6, 30]]
+    samples, _ = sample_responses(teacher, batch, ["a", "b", "c"], sampling=ZERO_FIELD,
+                                  end_ids=END_IDS, pad_id=PAD_ID, seed=9, batch_size=3)  # fmt: skip
+    assert [list(s.prompt_ids) for s in samples] == batch
+    collated = collate(samples, pad_id=PAD_ID, max_response_tokens=ZERO_FIELD["max_new_tokens"])
+    with torch.no_grad():
+        logp = response_logprobs(teacher, collated)
+    rescored = logp.gather(1, collated.input_ids[:, 1:][collated.target_mask][:, None])[:, 0]
+    stored = torch.tensor([lp for s in samples for lp in s.logprobs])
+    torch.testing.assert_close(rescored, stored, rtol=0, atol=1e-5)
+
+
+def test_sample_records_are_validated(teacher) -> None:
+    from zero_field_refusal.teacher import validate_samples
+
+    samples, _ = run(teacher, n=4)
+    validate_samples(samples, END_IDS, ZERO_FIELD["max_new_tokens"])
+    good = Sample("p", (1,), (9, 5), (-1.0, -2.0), True)
+    for bad in (
+        Sample("p", (1,), (9, 5), (-1.0,), True),  # a missing log-prob
+        Sample("p", (1,), (5, 9), (-1.0, -2.0), False),  # an end token inside
+        Sample("p", (1,), (9, 10), (-1.0, -2.0), True),  # ended without an end token
+        Sample("p", (1,), tuple(range(7, 50)), (0.0,) * 43, False),  # longer than the cap
+    ):
+        with pytest.raises(StreamError):
+            validate_samples([good, bad], END_IDS, ZERO_FIELD["max_new_tokens"])

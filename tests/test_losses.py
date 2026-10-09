@@ -88,3 +88,18 @@ def test_soft_targets_from_the_generation_path_measure_the_path_discrepancy(teac
     kl_grad = gradient_norm(model, soft_kl(model, batch, recorded))
     nll_grad = gradient_norm(model, summed_nll(model, batch))
     assert kl_grad < 1e-3 * nll_grad  # the proposed criterion of invariant 8, on CPU fp32
+
+
+def test_micro_batch_gradients_add_up_to_the_batch_gradient(teacher_and_samples):
+    model, samples, _ = teacher_and_samples
+    params = [p for _, p in freeze(model, ["input_embeddings", "output_head"])]
+
+    def gradient(micro: int) -> list[torch.Tensor]:
+        model.zero_grad(set_to_none=True)
+        for start in range(0, len(samples), micro):
+            batch = collate(samples[start : start + micro], pad_id=PAD_ID, max_response_tokens=40)
+            (summed_nll(model, batch) / 1920).backward()
+        return [p.grad.clone() for p in params]
+
+    for whole, parts in zip(gradient(len(samples)), gradient(3), strict=True):
+        torch.testing.assert_close(parts, whole, rtol=1e-5, atol=1e-8)

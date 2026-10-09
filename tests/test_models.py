@@ -113,3 +113,23 @@ def test_freeze_leaves_neither_input_embeddings_nor_head_trainable(tied: bool) -
 def test_freeze_rejects_unknown_module_names() -> None:
     with pytest.raises(ValueError, match="lm_heads"):
         freeze(tiny_model(), ["lm_heads"])
+
+
+def test_load_model_neutralizes_the_saved_generation_config(tmp_path) -> None:
+    from conftest import tiny_tokenizer
+
+    from zero_field_refusal.models import load_model
+
+    tiny_model().save_pretrained(tmp_path)
+    GenerationConfig(**QWEN_DEFAULTS, eos_token_id=[3, 1]).save_pretrained(tmp_path)
+    tokenizer = tiny_tokenizer()
+    cfg = OmegaConf.create({"name": str(tmp_path), "revision": None, "dtype": "float32",
+                            "attn_implementation": "sdpa", "tf32": False,
+                            "end_tokens": ["<|im_end|>", "<|endoftext|>"]})  # fmt: skip
+    model = load_model(cfg, "cpu", tokenizer)
+    assert not model.training
+    assert next(model.parameters()).dtype == torch.float32
+    diff = model.generation_config.to_diff_dict()
+    diff.pop("transformers_version", None)
+    assert diff == {"eos_token_id": [3, 1], "pad_token_id": tokenizer.pad_token_id}
+    assert model.config._attn_implementation == "sdpa"

@@ -120,6 +120,9 @@ def build_optimizer(
     """The optimizer of an ``optimizer`` config section; weight decay must be 0."""
     if opt_cfg.weight_decay != 0:
         raise ValueError(f"weight_decay must be 0 at zero field, got {opt_cfg.weight_decay}")
+    for key in ("first_moment_dtype", "second_moment_dtype"):
+        if opt_cfg.get(key, "float32") != "float32":
+            raise ValueError(f"{key} must be float32: Adam state is kept in fp32")
     name = opt_cfg.name
     if name == "sgd":
         return torch.optim.SGD(

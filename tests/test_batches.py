@@ -1,3 +1,4 @@
+import pytest
 import torch
 from conftest import PAD_ID
 
@@ -50,3 +51,8 @@ def test_collate_uses_long_tensors_on_the_requested_device() -> None:
 
 def test_chunks_split_in_order() -> None:
     assert chunks(list(range(7)), 3) == [[0, 1, 2], [3, 4, 5], [6]]
+
+
+def test_an_empty_prompt_is_rejected() -> None:
+    with pytest.raises(ValueError, match="empty prompt"):
+        collate([sample([], [2, 5])], pad_id=PAD_ID, max_response_tokens=4)

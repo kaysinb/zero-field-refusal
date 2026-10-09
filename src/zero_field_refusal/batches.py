@@ -37,6 +37,8 @@ def collate(
 ) -> ResponseBatch:
     rows, prompt_lengths, lengths = [], [], []
     for s in samples:
+        if not s.prompt_ids:
+            raise ValueError(f"Sample {s.prompt_id} has an empty prompt; nothing predicts it")
         response = list(s.response_ids[:max_response_tokens])
         rows.append(list(s.prompt_ids) + response)
         prompt_lengths.append(len(s.prompt_ids))

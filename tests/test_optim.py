@@ -140,3 +140,9 @@ def test_build_optimizer_rejects_weight_decay_and_unknown_names() -> None:
     with pytest.raises(ValueError, match="lion"):
         build_optimizer(OmegaConf.create({"name": "lion", "lr": 1.0, "weight_decay": 0.0}),
                         params())  # fmt: skip
+
+
+def test_build_optimizer_rejects_non_fp32_state() -> None:
+    cfg = load_config("experiments/smoke", ["optimizer.first_moment_dtype=bfloat16"])
+    with pytest.raises(ValueError, match="first_moment_dtype"):
+        build_optimizer(cfg.optimizer, params())

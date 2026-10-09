@@ -178,3 +178,18 @@ def test_soft_target_control_starts_with_a_vanishing_loss(env) -> None:
     first = read_jsonl(run_dir / "metrics.jsonl")[0]
     assert abs(first["loss"]) < 1e-5
     assert first["grad_norm"] < 1e-4
+
+
+def test_stage0_checks_run_end_to_end(env) -> None:
+    from zero_field_refusal.checks import run_stage0_checks
+
+    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=8")
+    run = run_stage0_checks(cfg, env, log=lambda _: None)
+    summary = json.loads((run.dir / "summary.json").read_text())
+    assert 0 <= summary["eos_fraction_at_cap"] <= 1
+    assert summary["teacher_gap"]["token_max_abs"] < 1e-4
+    assert summary["field"]["batches_per_half"] == 4
+    assert summary["field"]["constant"]["noise_per_step"] > 0
+    assert summary["path_discrepancy"]["kl_max"] < 1e-6
+    assert summary["soft_target_gradient"]["ratio"] < 1e-3
+    assert summary["adam_vs_torch"]["relative_diff"] < 1e-5

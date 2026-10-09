@@ -33,6 +33,7 @@ from .teacher import (
     stream_prompt_indices,
     stream_seeds,
     stream_spec,
+    validate_samples,
 )
 from .tracking import hardware, package_versions
 
@@ -141,6 +142,12 @@ def generate_stream(
             "batch_size": batch_size,
             **spec.get("sampling", {}),
         },
+        # The model's own generation config after neutralization; explicit fields override it.
+        "model_generation_config": (
+            None if model is None else _diff_dict(model.generation_config.to_diff_dict())
+        ),
+        "zero_field_checked": kind != "alpaca_reference"
+        and (cfg.control != "sharpened_sampling" or kind.startswith("kl_")),
         "started_at": started,
         "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "python": platform.python_version(),
@@ -162,6 +169,8 @@ def load_stream_for(
     manifest = load_manifest(path)
     if manifest["spec"] != json.loads(json.dumps(spec)):
         raise StreamError(f"{path}: manifest spec differs from the config's spec")
+    if kind != "alpaca_reference":
+        validate_samples(samples, env.end_ids, spec["sampling"]["max_new_tokens"])
     return samples, manifest
 
 
@@ -188,3 +197,7 @@ def _distinct(items: Sequence[dict], n: int, seed: int) -> list[dict]:
         raise StreamError(f"Need {n} distinct reference examples, the pool has {len(items)}")
     order = np.random.default_rng(seed).permutation(len(items))[:n]
     return [items[i] for i in order]
+
+
+def _diff_dict(config: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in config.items() if key != "transformers_version"}
