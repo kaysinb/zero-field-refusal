@@ -5,8 +5,10 @@ How to set up the environment and run experiments. The design behind these proce
 
 ## Environment and drivers
 
-- **Compute:** all GPU work runs on Runpod, on the GPU classes listed under
-  [compute](plan.md#compute). Local machines run CPU tests, documentation checks and the analysis.
+- **Compute:** all main GPU work (stage checks on real checkpoints, calibration and experimental
+  runs) runs on Runpod, on the GPU classes listed under [compute](plan.md#compute). Local machines
+  run the tests, documentation checks and the analysis; a local GPU may run the quick tiny-model
+  CUDA tests (`tests/test_gpu.py`, skipped without a GPU).
 - **uv:** requires [uv](https://docs.astral.sh/uv/), which installs Python 3.12 if needed.
 - **Lock file:** `uv.lock` pins the dependencies for Linux x86_64.
 - **CUDA:** PyTorch comes from PyPI, built for CUDA 13, so GPU machines need an NVIDIA driver that
