@@ -11,10 +11,17 @@ data:
     benign_kl_prompts: 100          # K on benign prompts
     heldout_references: 100         # utility: NLL of reference answers
   harmful:
-    sources:
-      - {dataset: walledai/HarmBench, config: standard,
-         revision: fb6c2afd5a2a943d701d6db3efab87d077e81be5}
-      - {dataset: walledai/AdvBench, revision: 9d4730540082fa4017450b65ca1c0e1d8d30446e}
+    sources:                        # original releases, pinned by commit and file sha256
+      - name: harmbench
+        url: https://raw.githubusercontent.com/centerforaisafety/HarmBench/c0423b952435fcc8467108d8f25962dbae5b7de2/data/behavior_datasets/harmbench_behaviors_text_all.csv
+        sha256: 8d81accedd38eaaf8b760618622bb888417d1fd0c86eba65c427a16f1cbb4afc
+        text_column: Behavior
+        category_column: SemanticCategory
+        where: {FunctionalCategory: standard}
+      - name: advbench
+        url: https://raw.githubusercontent.com/llm-attacks/llm-attacks/a62d1307e38b3a076e614b20781c785fd860d813/data/advbench/harmful_behaviors.csv
+        sha256: 6cd1a5c63c07610d7eb67307772ee5606017ee950b5770ab288a2c487489d3e1
+        text_column: goal
     deduplicate: true               # near-duplicate requests count once
     kl_prompts: 100                 # K on harmful prompts
     judged_prompts: 300             # disjoint from the KL prompts; the rest: judge calibration only
