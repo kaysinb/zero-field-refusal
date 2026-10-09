@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -52,14 +53,26 @@ def test_run_writes_config_meta_metrics_summary(runs_dir: Path) -> None:
 
 
 def test_meta_records_provenance_without_initializing_cuda(runs_dir: Path) -> None:
-    Run(make_cfg(), run_id="p").finish()
+    # A fresh process: other tests (e.g. torch.optim.AdamW.step) may have initialized CUDA here.
+    cfg_json = json.dumps(OmegaConf.to_container(make_cfg()))
+    script = (
+        "import json, torch\n"
+        "from omegaconf import OmegaConf\n"
+        "from zero_field_refusal.tracking import Run\n"
+        f"cfg = OmegaConf.create(json.loads({cfg_json!r}))\n"
+        "Run(cfg, run_id='p').finish()\n"
+        "print(torch.cuda.is_initialized())\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    ).stdout
+    assert out.strip() == "False"
     meta = json.loads((runs_dir / "unit" / "p" / "meta.json").read_text())
     assert len(meta["uv_lock_sha256"]) == 64
     assert isinstance(meta["argv"], list)
     assert {"gpus", "driver", "torch_cuda", "cuda_visible_devices", "world_size"} <= set(
         meta["hardware"]
     )
-    assert not torch.cuda.is_initialized()
 
 
 def test_meta_records_the_launched_snapshot_and_image(
