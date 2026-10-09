@@ -24,9 +24,11 @@ from importlib import metadata
 from pathlib import Path
 
 from zero_field_refusal.analysis.simulate import (
+    PLANNING_LEVEL,
     acceptance,
     confirm_settings,
     full_settings,
+    h2_label_frequencies,
     null_worst_cases,
     quick_confirm_settings,
     quick_settings,
@@ -95,6 +97,15 @@ def main(argv: list[str] | None = None) -> None:
             result.tables[settings.exclusion_sensitivity.name],
             by=("exclusion_factor", "method", "level"),
         )
+        # Descriptive: H2 labels at the recommended method and level (the planning level of the
+        # percentile CI if nothing passes).
+        method = summary["recommendation"]["method"] or "percentile"
+        level = summary["recommendation"]["level"] or PLANNING_LEVEL
+        summary["h2_boundary"] = {
+            "method": method,
+            "level": level,
+            "rows": h2_label_frequencies(result.tables[settings.h2_boundary.name], method, level),
+        }
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"Wrote {out}")
     if "recommendation" in summary:

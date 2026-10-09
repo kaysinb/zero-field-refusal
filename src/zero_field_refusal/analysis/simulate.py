@@ -25,7 +25,9 @@ Generative model (parameters in ``GenerativeModel``; per-scenario ones in ``Scen
   has ``crossing_slope_ratio`` times the SGD slope and passes through h_SGD(K\\*) + Δ at the K\\*
   realized in the replicate. K\\* depends on K values only, so outcomes are drawn after it is
   selected; the true Δ(K\\*) is then exactly Δ although the curves differ in shape elsewhere, and
-  both arms are correctly specified. Frozen Adam follows SGD, AdamW, or the mean of the two.
+  both arms are correctly specified. Frozen Adam follows SGD, AdamW, or the mean of the two,
+  optionally shifted by a probability offset (clipped to [0, 1]); the H2 boundary scenarios put it
+  beyond SGD, on the ±10 pp margin, or between but close to SGD.
 - Seed variability: a run's rate is h_run ~ Beta(κ·h, κ·(1 − h)), h being the arm's curve at the
   run's K, so E[h_run | K] = h(K) exactly (beta-binomial overdispersion). κ is calibrated
   numerically (Gauss-Hermite quadrature over log K) so that the SD across seeds of the observed SGD
@@ -101,6 +103,7 @@ PLACEMENTS = {
 BASES = ("logistic", "saturating", "floor")
 MISSPECIFIED_BASES = ("saturating", "floor")
 SIGMAS = (0.10, 0.15, 0.22)
+H2_BOUNDARY_OFFSETS = (-0.10, -0.05, 0.05, 0.10)
 RHOS = (0.0, 0.5)
 
 PLANNING_LEVEL = 0.9706
@@ -176,6 +179,7 @@ class Scenario:
     sigma: float
     rho: float
     frozen_adam: str = "between"  # "sgd" | "adamw" | "between"
+    frozen_offset: float = 0.0  # added to the frozen-Adam curve
     curves: str = "shift"  # "shift" | "crossing"
     base: str = "logistic"  # "logistic" | "saturating" | "floor"
     reps: int = 1000
@@ -184,8 +188,9 @@ class Scenario:
     def name(self) -> str:
         # Logistic-base names carry no base, so their data streams are those of earlier runs.
         curves = self.curves if self.base == "logistic" else f"{self.curves}-{self.base}"
+        offset = f"{self.frozen_offset:+.2f}" if self.frozen_offset else ""
         return (
-            f"{self.placement}_{curves}_d{self.delta:+.2f}_fa-{self.frozen_adam}"
+            f"{self.placement}_{curves}_d{self.delta:+.2f}_fa-{self.frozen_adam}{offset}"
             f"_s{self.sigma:.2f}_r{self.rho:.2f}"
         )
 
@@ -213,6 +218,7 @@ class SimulationSettings:
     grid: Part  # the acceptance grid, one variant
     resample_comparison: Part | None
     exclusion_sensitivity: Part | None
+    h2_boundary: Part | None = None  # descriptive H2 label frequencies
     methods: tuple[str, ...] = CI_METHODS
     levels: tuple[float, ...] = LEVELS
     margin: float = EQUIVALENCE_MARGIN
@@ -221,7 +227,7 @@ class SimulationSettings:
 
     @property
     def parts(self) -> tuple[Part, ...]:
-        extra = (self.resample_comparison, self.exclusion_sensitivity)
+        extra = (self.resample_comparison, self.exclusion_sensitivity, self.h2_boundary)
         return (self.grid, *(part for part in extra if part is not None))
 
 
@@ -249,8 +255,17 @@ def _nulls(sigma: float, rho: float, reps: int) -> list[Scenario]:
     return nulls
 
 
+def _h2_boundary(sigma: float, rho: float, reps: int) -> list[Scenario]:
+    """Frozen Adam at SGD − 0.05 (beyond, within the margin), SGD ± 0.10 (on the margin) and
+    SGD + 0.05 (between, near SGD), at Δ = 0.15 and 0.20 in the standard placement."""
+    return [
+        Scenario("standard", delta, sigma, rho, frozen_adam="sgd", frozen_offset=offset, reps=reps)
+        for delta, offset in product((0.15, 0.20), H2_BOUNDARY_OFFSETS)
+    ]
+
+
 def full_settings(base_seed: int = 0) -> SimulationSettings:
-    """The preregistered grid, σ ∈ {0.10, 0.15, 0.22} × ρ ∈ {0, 0.5}, and the two side studies."""
+    """The preregistered grid, σ ∈ {0.10, 0.15, 0.22} × ρ ∈ {0, 0.5}, and the side studies."""
     grid = []
     for sigma, rho in product(SIGMAS, RHOS):
         grid += _nulls(sigma, rho, reps=3000)
@@ -285,6 +300,16 @@ def full_settings(base_seed: int = 0) -> SimulationSettings:
                 for base, placement in product(BASES, ("standard", "narrow"))
             ),
             exclusion,
+            Variant(2000),
+        ),
+        h2_boundary=Part(
+            "h2_boundary",
+            tuple(
+                scenario
+                for sigma, rho in product(SIGMAS, RHOS)
+                for scenario in _h2_boundary(sigma, rho, reps=1000)
+            ),
+            (Variant(2000),),
             Variant(2000),
         ),
         base_seed=base_seed,
@@ -327,6 +352,12 @@ def quick_settings(base_seed: int = 0) -> SimulationSettings:
             "exclusion",
             (Scenario("narrow", 0.0, 0.15, 0.5, base="floor", reps=4),),
             tuple(Variant(200, factor) for factor in EXCLUSION_FACTORS),
+            Variant(200),
+        ),
+        h2_boundary=Part(
+            "h2_boundary",
+            tuple(s for s in _h2_boundary(0.15, 0.5, reps=3) if s.delta == 0.15),
+            (Variant(200),),
             Variant(200),
         ),
         base_seed=base_seed,
@@ -497,8 +528,8 @@ def true_rate(
         raise ValueError(f"Unknown curves {scenario.curves!r}")
     if arm == "adamw":
         return adamw
-    frozen = {"sgd": sgd, "adamw": adamw, "between": (sgd + adamw) / 2}
-    return frozen[scenario.frozen_adam]
+    frozen = {"sgd": sgd, "adamw": adamw, "between": (sgd + adamw) / 2}[scenario.frozen_adam]
+    return np.clip(frozen + scenario.frozen_offset, 0.0, 1.0) if scenario.frozen_offset else frozen
 
 
 def _look(
@@ -672,6 +703,7 @@ def _summarize(
         "base": scenario.base,
         "delta": scenario.delta,
         "frozen_adam": scenario.frozen_adam,
+        "frozen_offset": scenario.frozen_offset,
         "sigma": scenario.sigma,
         "rho": scenario.rho,
         "reps": n,
@@ -728,6 +760,17 @@ def null_worst_cases(table: pd.DataFrame, by: Sequence[str] = ("method", "level"
             }
         )
     return worst
+
+
+def h2_label_frequencies(table: pd.DataFrame, method: str, level: float) -> list[dict]:
+    """Per scenario, P(positive) and the share of each H2 label at one CI method and level."""
+    rows = table[(table["method"] == method) & np.isclose(table["level"], level)]
+    keys = ("scenario", "delta", "frozen_adam", "frozen_offset", "sigma", "rho", "p_positive")
+    return [
+        {key: _plain(row[key]) for key in keys}
+        | {"h2": {label: float(row[f"h2_{label}"]) for label in MECHANISMS}}
+        for _, row in rows.iterrows()
+    ]
 
 
 def acceptance(results: pd.DataFrame) -> list[dict]:

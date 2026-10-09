@@ -64,6 +64,16 @@ def test_misspecified_nulls_share_one_non_logistic_curve() -> None:
     )
 
 
+def test_frozen_adam_can_sit_at_an_offset_from_sgd() -> None:
+    model = GenerativeModel()
+    log_k = np.linspace(-1.0, 3.5, 7)
+    scenario = Scenario("standard", 0.15, 0.15, 0.0, frozen_adam="sgd", frozen_offset=-0.05)
+    frozen = true_rate(model, scenario, "adam_frozen", log_k, 1.5)
+    np.testing.assert_allclose(frozen, np.clip(model.sgd_rate(log_k) - 0.05, 0.0, 1.0))
+    assert "_fa-sgd-0.05_" in scenario.name
+    assert "_fa-sgd_" in Scenario("standard", 0.15, 0.15, 0.0, frozen_adam="sgd").name
+
+
 def test_crossing_alternatives_have_the_exact_delta_at_the_realized_k_star() -> None:
     model = GenerativeModel()
     scenario = Scenario("standard", -0.10, 0.15, 0.0, curves="crossing")
@@ -233,6 +243,18 @@ def test_recommend_keeps_the_planning_level_when_it_passes_and_checks_resample_s
     assert recommend(acceptance(_grid()), unstable, settings)["resamples"] is None
 
 
+def test_full_settings_have_the_planned_parts() -> None:
+    settings = simulate.full_settings()
+    counts = {part.name: len(part.scenarios) for part in settings.parts}
+    assert counts == {"results": 144, "resamples": 3, "exclusion": 36, "h2_boundary": 48}
+    for part in settings.parts:
+        assert all(isinstance(s, Scenario) for s in part.scenarios), part.name
+        assert len({s.name for s in part.scenarios}) == len(part.scenarios), part.name
+    nulls = [s for s in settings.grid.scenarios if s.delta == 0]
+    assert len(nulls) == 48 and {s.reps for s in nulls} == {3000}
+    assert sum(s.reps for s in settings.grid.scenarios) == 240_000
+
+
 def test_quick_settings_cover_every_part() -> None:
     settings = quick_settings()
     assert {s.base for s in settings.grid.scenarios} >= {"logistic", "saturating", "floor"}
@@ -243,6 +265,7 @@ def test_quick_settings_cover_every_part() -> None:
         30.0,
         math.inf,
     }
+    assert {s.frozen_offset for s in settings.h2_boundary.scenarios} == {-0.10, -0.05, 0.05, 0.10}
 
 
 def _run_script(*args: str):
@@ -258,7 +281,7 @@ def _rates(table: pd.DataFrame) -> pd.DataFrame:
 
 def test_quick_simulation_writes_rates_in_the_unit_interval(tmp_path: Path) -> None:
     _run_script("--quick", "--out", str(tmp_path), "--workers", "1")
-    for name in ("results", "resamples", "exclusion"):
+    for name in ("results", "resamples", "exclusion", "h2_boundary"):
         table = pd.read_csv(tmp_path / f"{name}.csv")
         rates = _rates(table)
         assert len(table) > 0 and rates.notna().all().all(), name
@@ -266,6 +289,8 @@ def test_quick_simulation_writes_rates_in_the_unit_interval(tmp_path: Path) -> N
     assert {f"h2_{m}" for m in MECHANISMS} <= set(table.columns)
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert {"settings", "versions", "acceptance", "recommendation", "exclusion"} <= set(summary)
+    boundary = summary["h2_boundary"]["rows"]
+    assert len(boundary) == 4 and all(sum(row["h2"].values()) <= 1 + 1e-9 for row in boundary)
     assert summary["versions"]["git"].keys() == {"commit", "dirty"}
 
 
