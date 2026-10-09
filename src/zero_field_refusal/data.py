@@ -11,11 +11,15 @@ Items are dicts with at least ``id`` (stable, e.g. ``"advbench:123"``, the origi
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib.metadata
+import io
 import json
+import os
 import re
 import unicodedata
+import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from importlib import resources
@@ -43,10 +47,10 @@ MANIFEST = "manifest.json"
 JACCARD_THRESHOLD = 0.8
 ANSWER_SUFFIX = " Answer briefly."
 
-# Columns of the pinned revisions that the selection reads. HarmBench `standard` has `prompt` and
-# `category`; AdvBench has `prompt` and `target`; Alpaca has `instruction`, `input`, `output` and
-# `text`; MMLU has `question`, `subject`, `choices` and `answer`.
-HARMFUL_TEXT_COLUMN = {"walledai/HarmBench": "prompt", "walledai/AdvBench": "prompt"}
+# Columns of the pinned Hugging Face revisions that the selection reads: Alpaca has `instruction`,
+# `input`, `output` and `text`; MMLU has `question`, `subject`, `choices` and `answer`. The harmful
+# sources are CSV files from GitHub whose columns the config names (`text_column`,
+# `category_column`).
 
 LoadRows = Callable[[Mapping[str, Any]], list[dict]]
 
@@ -178,19 +182,18 @@ def _select_alpaca(cfg: Mapping, rows: Sequence[dict], seed: int) -> dict[str, l
 
 
 def _harmful_candidates(source: Mapping, rows: Sequence[dict]) -> list[dict]:
-    dataset = source["dataset"]
-    if dataset not in HARMFUL_TEXT_COLUMN:
-        raise ValueError(f"No known text column for harmful source {dataset!r}")
-    label = dataset.split("/")[-1].lower()
+    label = source["name"]
     items = []
     for row in sorted(rows, key=_row_index):
         item = {
             "id": f"{label}:{_row_index(row)}",
-            "text": row[HARMFUL_TEXT_COLUMN[dataset]].strip(),
+            "text": row[source["text_column"]].strip(),
             "source": label,
         }
-        if "category" in row:
-            item["category"] = row["category"]
+        if source.get("category_column"):
+            item["category"] = row[source["category_column"]]
+        if "BehaviorID" in row:  # HarmBench's stable behavior identifier
+            item["behavior_id"] = row["BehaviorID"]
         items.append(item)
     return items
 
@@ -302,21 +305,52 @@ def factual_answer_correct(text: str, answers: Sequence[str]) -> bool:
 
 def _load_hf_rows(source: Mapping[str, Any]) -> list[dict]:
     from datasets import load_dataset
-    from datasets.exceptions import DatasetNotFoundError
 
-    try:
-        dataset = load_dataset(
-            source["dataset"],
-            source.get("config"),
-            split=source.get("split", "train"),
-            revision=source["revision"],
-        )
-    except DatasetNotFoundError as exc:
-        raise RuntimeError(
-            f"Cannot load {source['dataset']}: {exc} Gated datasets need an accepted license on "
-            "the Hub and HF_TOKEN in the environment or .env."
-        ) from exc
+    dataset = load_dataset(
+        source["dataset"],
+        source.get("config"),
+        split=source.get("split", "train"),
+        revision=source["revision"],
+    )
     return [{**row, "row_index": index} for index, row in enumerate(dataset)]
+
+
+def _download(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return response.read()
+
+
+def _fetch_pinned(url: str, sha256: str) -> bytes:
+    """The file at ``url``, cached as ``DATA_DIR/sources/<sha256>.csv`` and checked against it."""
+    path = data_root() / "sources" / f"{sha256}.csv"
+    if not path.is_file():
+        raw = _download(url)
+        if hashlib.sha256(raw).hexdigest() != sha256:
+            raise ValueError(f"{url}: sha256 differs from the pinned {sha256}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_bytes(raw)
+        os.replace(tmp, path)  # atomic: a reader never sees a partial file
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != sha256:
+        raise ValueError(f"{path} differs from the pinned sha256 {sha256}; delete it and retry")
+    return raw
+
+
+def _load_csv_rows(source: Mapping[str, Any]) -> list[dict]:
+    """Rows of a pinned CSV that match ``where``, each with its 0-based data-row ``row_index``."""
+    text = _fetch_pinned(source["url"], source["sha256"]).decode("utf-8")
+    where = source.get("where") or {}
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    return [
+        {**row, "row_index": index}
+        for index, row in enumerate(reader)
+        if all(row[column] == value for column, value in where.items())
+    ]
+
+
+def _load_default_rows(source: Mapping[str, Any]) -> list[dict]:
+    return _load_csv_rows(source) if "url" in source else _load_hf_rows(source)
 
 
 def _jsonl(items: Sequence[Mapping[str, Any]]) -> bytes:
@@ -325,6 +359,13 @@ def _jsonl(items: Sequence[Mapping[str, Any]]) -> bytes:
 
 
 def _source_entry(source: Mapping[str, Any]) -> dict[str, Any]:
+    if "url" in source:
+        return {
+            "name": source["name"],
+            "url": source["url"],
+            "sha256": source["sha256"],
+            "where": source.get("where") or {},
+        }
     entry = {"dataset": source["dataset"], "revision": source["revision"]}
     if source.get("config"):
         entry["config"] = source["config"]
@@ -338,15 +379,15 @@ def build_prompt_sets(
     """Select every prompt set, write ``<set>.jsonl`` files and the manifest; return its path.
 
     ``load_rows(source)`` returns the source's rows as dicts, each with its original ``row_index``;
-    it defaults to loading the pinned revision from the Hugging Face Hub.
+    it defaults to the pinned Hugging Face revision or, for a source with `url`, the pinned CSV.
     """
     cfg = _container(data_cfg)
-    load = load_rows or _load_hf_rows
+    load = load_rows or _load_default_rows
     out_dir = out_dir or prompt_sets_dir(cfg)
     seed = cfg["selection_seed"]
 
     alpaca_source = {"split": "train", **cfg["alpaca"]}
-    harmful_sources = [{"split": "train", **s} for s in cfg["harmful"]["sources"]]
+    harmful_sources = [dict(s) for s in cfg["harmful"]["sources"]]
     mmlu_source = dict(cfg["benchmark"])
 
     sets: dict[str, list[dict]] = _select_alpaca(cfg["alpaca"], load(alpaca_source), seed)

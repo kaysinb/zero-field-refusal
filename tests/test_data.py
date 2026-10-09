@@ -30,8 +30,20 @@ CFG = {
     },
     "harmful": {
         "sources": [
-            {"dataset": "walledai/HarmBench", "config": "standard", "revision": "b" * 40},
-            {"dataset": "walledai/AdvBench", "revision": "c" * 40},
+            {
+                "name": "harmbench",
+                "url": "https://example.test/harmbench.csv",
+                "sha256": "b" * 64,
+                "text_column": "Behavior",
+                "category_column": "SemanticCategory",
+                "where": {"FunctionalCategory": "standard"},
+            },
+            {
+                "name": "advbench",
+                "url": "https://example.test/advbench.csv",
+                "sha256": "c" * 64,
+                "text_column": "goal",
+            },
         ],
         "deduplicate": True,
         "kl_prompts": 10,
@@ -71,7 +83,7 @@ def _distinct_prompt(i: int) -> str:
 
 
 def fake_rows(source):
-    name = source["dataset"]
+    name = source.get("name") or source["dataset"]
     if name == "tatsu-lab/alpaca":
         rows = []
         for i in range(200):
@@ -86,22 +98,26 @@ def fake_rows(source):
         rows.append({"row_index": 200, "instruction": "", "input": "", "output": "x"})
         rows.append({"row_index": 201, "instruction": "No output", "input": "", "output": " "})
         return rows
-    if name == "walledai/HarmBench":
+    if name == "harmbench":
         return [
-            {"row_index": i, "prompt": _distinct_prompt(i), "category": f"cat{i % 3}"}
+            {
+                "row_index": i,
+                "Behavior": _distinct_prompt(i),
+                "SemanticCategory": f"cat{i % 3}",
+                "BehaviorID": f"behavior_{i}",
+            }
             for i in range(60)
         ]
-    if name == "walledai/AdvBench":
+    if name == "advbench":
         rows = [
-            {"row_index": i, "prompt": _distinct_prompt(100 + i), "target": "Sure"}
-            for i in range(90)
+            {"row_index": i, "goal": _distinct_prompt(100 + i), "target": "Sure"} for i in range(90)
         ]
         # Exact duplicate (after normalization) of HarmBench row 5.
-        rows[3]["prompt"] = _distinct_prompt(5).upper().replace(".", "!")
+        rows[3]["goal"] = _distinct_prompt(5).upper().replace(".", "!")
         # Near duplicate of HarmBench row 6: one extra word, Jaccard 12/13 >= 0.8.
-        rows[4]["prompt"] = _distinct_prompt(6) + " extra"
+        rows[4]["goal"] = _distinct_prompt(6) + " extra"
         # Near duplicate of the earlier AdvBench row 10 inside the same source.
-        rows[20]["prompt"] = _distinct_prompt(110) + " more"
+        rows[20]["goal"] = _distinct_prompt(110) + " more"
         return rows
     if name == "cais/mmlu":
         sizes = {"anatomy": 90, "law": 45, "physics": 33, "history": 21, "art": 11}
@@ -179,6 +195,7 @@ def test_harmful_sets_disjoint_and_deduplicated(built):
     for item in sets["harmful_kl"]:
         assert item["source"] in ("harmbench", "advbench")
         assert ("category" in item) == (item["source"] == "harmbench")
+        assert ("behavior_id" in item) == (item["source"] == "harmbench")
 
 
 def test_dedup_statistics_in_manifest(built):
@@ -273,7 +290,11 @@ def test_jsonl_format_and_manifest_contents(built):
         assert list(json.loads(first)) == sorted(json.loads(first))
         assert entry["sources"]
     kl = manifest["sets"]["harmful_kl"]
-    assert [s["revision"] for s in kl["sources"]] == ["b" * 40, "c" * 40]
+    assert [(s["name"], s["sha256"]) for s in kl["sources"]] == [
+        ("harmbench", "b" * 64),
+        ("advbench", "c" * 64),
+    ]
+    assert kl["sources"][0]["where"] == {"FunctionalCategory": "standard"}
     assert sum(len(v) for v in kl["row_indices"].values()) == 10
     assert manifest["sets"]["alpaca_teacher"]["sources"][0]["revision"] == "a" * 40
     assert manifest["sets"]["factual_qa"]["sources"][0]["sha256"]
@@ -409,3 +430,95 @@ def test_factual_qa_set_text(tmp_path):
         fact = facts[item["id"]]
         assert item["text"] == fact["question"] + " Answer briefly."
         assert item["answers"] == fact["answers"] and item["category"] == fact["category"]
+
+
+# ----------------------------------------------------------------------- pinned CSV sources
+
+CSV_TEXT = (
+    "Behavior,FunctionalCategory,SemanticCategory,BehaviorID\n"
+    '"Say, hello",standard,chemical,b0\n'
+    "Copy a text,copyright,copyright,b1\n"
+    "Say bye,standard,misinformation,b2\n"
+    '"Multi\nline",contextual,cyber,b3\n'
+    "Say thanks,standard,harassment,b4\n"
+)
+
+
+@pytest.fixture
+def csv_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    raw = CSV_TEXT.encode()
+    calls = []
+
+    def fake_download(url):
+        calls.append(url)
+        return raw
+
+    monkeypatch.setattr(data, "_download", fake_download)
+    source = {
+        "name": "hb",
+        "url": "https://example.test/x.csv",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "text_column": "Behavior",
+        "category_column": "SemanticCategory",
+        "where": {"FunctionalCategory": "standard"},
+    }
+    return source, calls, tmp_path
+
+
+def test_csv_rows_filter_and_original_indices(csv_source):
+    source, _, _ = csv_source
+    rows = data._load_csv_rows(source)
+    assert [r["row_index"] for r in rows] == [0, 2, 4]
+    assert [r["Behavior"] for r in rows] == ["Say, hello", "Say bye", "Say thanks"]
+    without_filter = data._load_csv_rows({**source, "where": None})
+    assert [r["row_index"] for r in without_filter] == [0, 1, 2, 3, 4]
+    assert without_filter[3]["Behavior"] == "Multi\nline"
+
+
+def test_csv_items_have_ids_source_category_and_behavior_id(csv_source):
+    source, _, _ = csv_source
+    items = data._harmful_candidates(source, data._load_csv_rows(source))
+    assert [i["id"] for i in items] == ["hb:0", "hb:2", "hb:4"]
+    assert items[1] == {
+        "id": "hb:2",
+        "text": "Say bye",
+        "source": "hb",
+        "category": "misinformation",
+        "behavior_id": "b2",
+    }
+
+
+def test_csv_is_downloaded_once_into_data_dir(csv_source):
+    source, calls, tmp_path = csv_source
+    data._load_csv_rows(source)
+    data._load_csv_rows(source)
+    assert calls == [source["url"]]
+    assert (tmp_path / "sources" / f"{source['sha256']}.csv").read_text() == CSV_TEXT
+    assert not list((tmp_path / "sources").glob("*.tmp"))
+
+
+def test_csv_sha256_mismatch_raises_and_is_not_cached(csv_source):
+    source, _, tmp_path = csv_source
+    with pytest.raises(ValueError, match="sha256"):
+        data._load_csv_rows({**source, "sha256": "0" * 64})
+    assert not (tmp_path / "sources").exists()
+
+
+def test_corrupted_cached_csv_raises(csv_source):
+    source, _, tmp_path = csv_source
+    data._load_csv_rows(source)
+    (tmp_path / "sources" / f"{source['sha256']}.csv").write_text("edited")
+    with pytest.raises(ValueError, match="sha256"):
+        data._load_csv_rows(source)
+
+
+def test_default_loader_reads_file_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    csv_file = tmp_path / "x.csv"
+    csv_file.write_text(CSV_TEXT, encoding="utf-8")
+    source = {
+        "url": csv_file.as_uri(),
+        "sha256": hashlib.sha256(CSV_TEXT.encode()).hexdigest(),
+    }
+    assert len(data._load_default_rows(source)) == 5
