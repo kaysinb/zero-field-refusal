@@ -93,15 +93,19 @@ PLACEMENTS = {
 }
 
 PLANNING_LEVEL = 0.9706
-LEVELS = (0.95, 0.96, 0.965, 0.97, 0.9706, 0.9725, 0.975, 0.9775, 0.98, 0.9825, 0.985, 0.99, 0.995)
+LEVELS = (
+    *(0.95, 0.96, 0.965, 0.97, 0.9706, 0.9725, 0.975, 0.9775, 0.98),
+    *(0.9825, 0.985, 0.9875, 0.99, 0.9925, 0.995),
+)
 # Acceptance criteria (preregistration, full-analysis simulation).
 MAX_FALSE_POSITIVE = 0.025  # P(positive | Δ = 0)
 MAX_DIRECTIONAL = 0.05  # P(positive or opposite | Δ = 0)
 MAX_EQUIVALENCE = 0.05  # P(equivalence | |Δ| = 10 pp)
 POWER_DELTAS = (0.10, 0.15, 0.20)
-# A resample count is stable when its final decisions differ from those of the largest count
-# compared in at most this share of replicates.
-MAX_DISAGREEMENT = 0.01
+# The level calibration carries over between resample counts when no decision rate differs from
+# that with the largest count by more than this.
+MAX_RATE_DIFFERENCE = 0.01
+RATE_COLUMNS = ("p_positive", "p_opposite", "p_equivalence")
 QUADRATURE_NODES = 64
 
 UNDEFINED_DECISION = len(DECISIONS)  # K* undefined: SGD and AdamW do not overlap
@@ -654,27 +658,42 @@ def recommend(verdicts: list[dict], comparison: pd.DataFrame, settings: Simulati
         return recommendation
     level = per_method[best]["level"]
     recommendation["level"] = level
+    # If the error rates at the grid's count match those at the largest count, the level calibrated
+    # on the grid holds there too; more resamples then only reduce the bootstrap noise that flips
+    # decisions near a CI boundary, at negligible cost in a real analysis.
     chosen = comparison[(comparison["method"] == best) & np.isclose(comparison["level"], level)]
-    worst = chosen.groupby("resamples")["disagree_with_most_resamples"].max()
-    stable = [int(r) for r, share in worst.items() if share <= MAX_DISAGREEMENT]
-    # Not below the grid's count: the level was calibrated with it.
-    recommendation["resamples"] = max(
-        settings.resamples, min(stable, default=max(settings.comparison_resamples))
-    )
+    most = max(settings.comparison_resamples)
+    reference = chosen[chosen["resamples"] == most].set_index("scenario")[list(RATE_COLUMNS)]
+    rate_difference = {
+        int(count): float(
+            (group.set_index("scenario")[list(RATE_COLUMNS)] - reference).abs().max().max()
+        )
+        for count, group in chosen.groupby("resamples")
+    }
+    disagreement = chosen.groupby("resamples")["disagree_with_most_resamples"].max()
+    stable = rate_difference.get(settings.resamples, np.inf) <= MAX_RATE_DIFFERENCE
+    recommendation["resamples"] = most if stable else None
     recommendation["comparison"] = {
-        "max_disagreement": {int(r): float(s) for r, s in worst.items()},
+        "calibration_carries_over": bool(stable),
+        "max_rate_difference": rate_difference,
+        "max_decision_disagreement": {int(r): float(s) for r, s in disagreement.items()},
         "rule": (
-            f"smallest count whose final decisions differ from those with "
-            f"{max(settings.comparison_resamples)} resamples in at most {MAX_DISAGREEMENT:.0%} "
-            f"of replicates in every comparison scenario, and not below the grid's "
-            f"{settings.resamples}"
+            f"the largest compared count ({most}) if no rate among {RATE_COLUMNS} with the "
+            f"grid's {settings.resamples} resamples differs from that with {most} by more than "
+            f"{MAX_RATE_DIFFERENCE} in any comparison scenario; otherwise none (recalibrate)"
         ),
     }
     return recommendation
 
 
 def _worst(values: pd.Series, rows: pd.DataFrame) -> dict:
+    """The largest rate over scenarios, its scenario and its Monte Carlo SE."""
     if values.empty:
-        return {"value": float("nan"), "scenario": None}
+        return {"value": float("nan"), "scenario": None, "mc_se": float("nan")}
     at = values.idxmax()
-    return {"value": float(values[at]), "scenario": rows.loc[at, "scenario"]}
+    value = float(values[at])
+    return {
+        "value": value,
+        "scenario": rows.loc[at, "scenario"],
+        "mc_se": float(np.sqrt(value * (1 - value) / rows.loc[at, "reps"])),
+    }
