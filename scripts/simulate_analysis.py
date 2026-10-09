@@ -9,14 +9,19 @@ Writes to --out (default: $RUNS_DIR/analysis/simulation/<UTC timestamp>/):
   the exclusion-factor worst cases, the recommended CI method, level and number of resamples and
   the H2 labels of the boundary scenarios, or (with --confirm) the worst-case null rates.
 
+summary.json is standard JSON: non-finite numbers are written as null, so an exclusion_factor of
+null means no exclusion (factor ∞), and elsewhere null marks an undefined value.
+
 --confirm reruns only the binding σ = 0.22 null scenarios; give it a fresh --seed for an
 out-of-sample check of the chosen level. --resummarize DIR recomputes the verdicts in DIR's
 summary.json from its tables with the current code, after checking that the run's settings are
-the code's, and records the code version under "resummarized".
+the code's; it records the code version under "resummarized" and keeps the replaced verdict
+under "resummarized.previous".
 """
 
 import argparse
 import json
+import math
 import os
 import platform
 import sys
@@ -99,7 +104,7 @@ def main(argv: list[str] | None = None) -> None:
         "versions": versions,
         **verdicts(mode, settings, result.tables),
     }
-    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (out / "summary.json").write_text(_json_text(summary))
     print(f"Wrote {out}")
     if "recommendation" in summary:
         print(json.dumps(summary["recommendation"], indent=2))
@@ -138,12 +143,16 @@ def resummarize(directory: Path, versions: dict) -> None:
     if _settings_record(settings) != summary["settings"]:
         raise SystemExit(f"The settings recorded in {path} are not the code's settings")
     tables = {part.name: pd.read_csv(directory / f"{part.name}.csv") for part in settings.parts}
-    summary |= verdicts(summary["mode"], settings, tables)
+    current = verdicts(summary["mode"], settings, tables)
+    # The verdict being replaced, with any earlier resummarization nested inside it.
+    previous = {key: summary[key] for key in (*current, "resummarized") if key in summary}
+    summary |= current
     summary["resummarized"] = {
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
         "versions": versions,
+        "previous": previous,
     }
-    path.write_text(json.dumps(summary, indent=2) + "\n")
+    path.write_text(_json_text(summary))
     print(f"Rewrote {path}")
 
 
@@ -152,7 +161,22 @@ def _settings_record(settings: SimulationSettings) -> dict:
     record = asdict(settings) | {
         "scenario_names": {p.name: [s.name for s in p.scenarios] for p in settings.parts}
     }
-    return json.loads(json.dumps(record))
+    return json.loads(_json_text(record))
+
+
+def _json_text(data: dict) -> str:
+    """Standard JSON: non-finite numbers become null (an exclusion_factor of null: none)."""
+    return json.dumps(_finite(data), indent=2, allow_nan=False) + "\n"
+
+
+def _finite(value):
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_finite(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 if __name__ == "__main__":

@@ -301,18 +301,36 @@ def test_quick_simulation_writes_rates_in_the_unit_interval(tmp_path: Path) -> N
         assert len(table) > 0 and rates.notna().all().all(), name
         assert ((rates >= 0) & (rates <= 1)).all().all(), name
     assert {f"h2_{m}" for m in MECHANISMS} <= set(table.columns)
-    summary = json.loads((tmp_path / "summary.json").read_text())
+    summary = _strict_json(tmp_path / "summary.json")
     assert {"settings", "versions", "acceptance", "recommendation", "exclusion"} <= set(summary)
     boundary = summary["h2_boundary"]["rows"]
     assert len(boundary) == 4 and all(sum(row["h2"].values()) <= 1 + 1e-9 for row in boundary)
     assert summary["versions"]["git"].keys() == {"commit", "dirty"}
+    # No exclusion (factor ∞) is written as null.
+    factors = {entry["exclusion_factor"] for entry in summary["exclusion"]}
+    assert factors == {3.0, 10.0, 30.0, None}
 
-    # Recomputing the verdicts from the saved tables reproduces them and records the code used.
+    # Recomputing the verdicts from the saved tables reproduces them, records the code used and
+    # keeps the earlier verdict.
+    verdict_keys = ("acceptance", "recommendation", "exclusion", "h2_boundary")
     _run_script("--resummarize", str(tmp_path))
-    again = json.loads((tmp_path / "summary.json").read_text())
+    again = _strict_json(tmp_path / "summary.json")
     assert again["resummarized"]["versions"]["git"].keys() == {"commit", "dirty"}
-    for key in ("acceptance", "recommendation", "exclusion", "h2_boundary"):
+    for key in verdict_keys:
         assert _close(again[key], summary[key]), key
+        assert again["resummarized"]["previous"][key] == summary[key], key
+    _run_script("--resummarize", str(tmp_path))
+    third = _strict_json(tmp_path / "summary.json")
+    assert third["resummarized"]["previous"]["resummarized"] == again["resummarized"]
+
+
+def _strict_json(path: Path) -> dict:
+    """Parse standard JSON only: NaN and Infinity are rejected."""
+
+    def reject(constant: str) -> None:
+        raise ValueError(f"non-standard JSON constant {constant} in {path.name}")
+
+    return json.loads(path.read_text(), parse_constant=reject)
 
 
 def _close(a: object, b: object) -> bool:
@@ -340,7 +358,7 @@ def test_confirmation_run_reports_worst_case_nulls(tmp_path: Path) -> None:
     _run_script("--confirm", "--quick", "--seed", "1", "--out", str(tmp_path), "--workers", "1")
     results = pd.read_csv(tmp_path / "results.csv")
     assert (results["delta"] == 0).all() and (results["sigma"] == 0.22).all()
-    summary = json.loads((tmp_path / "summary.json").read_text())
+    summary = _strict_json(tmp_path / "summary.json")
     assert summary["mode"] == "quick-confirm"
     worst = summary["null_worst_cases"]
     assert {(w["method"], w["level"]) for w in worst} == set(

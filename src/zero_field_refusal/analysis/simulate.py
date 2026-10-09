@@ -257,7 +257,16 @@ def _nulls(sigma: float, rho: float, reps: int) -> list[Scenario]:
 
 def _h2_boundary(sigma: float, rho: float, reps: int) -> list[Scenario]:
     """Frozen Adam at SGD − 0.05 (beyond, within the margin), SGD ± 0.10 (on the margin) and
-    SGD + 0.05 (between, near SGD), at Δ = 0.15 and 0.20 in the standard placement."""
+    SGD + 0.05 (between, near SGD), at Δ = 0.15 and 0.20 in the standard placement.
+
+    Descriptive only, with two limits:
+    - No scenario lies beyond AdamW (AdamW + 0.05 or + 0.10). The heating side beyond the range
+      is covered only by the unit tests of the H2 rule; these scenarios are left for the planned
+      port of the simulation, so that the saved run's settings stay those of this code.
+    - At SGD − 0.05 and − 0.10 the frozen-Adam curve is clipped at 0 in frozen Adam's lowest cell
+      (h_SGD ≈ 0.05 at log K = 0). Its logistic fit is then misspecified, so those label shares
+      partly reflect fit bias.
+    """
     return [
         Scenario("standard", delta, sigma, rho, frozen_adam="sgd", frozen_offset=offset, reps=reps)
         for delta, offset in product((0.15, 0.20), H2_BOUNDARY_OFFSETS)
