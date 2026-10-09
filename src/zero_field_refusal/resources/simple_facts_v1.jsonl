@@ -1,0 +1,222 @@
+{"answers": ["paris"], "category": "capital", "id": "facts:001", "question": "What is the capital of France?"}
+{"answers": ["tokyo"], "category": "capital", "id": "facts:002", "question": "What is the capital of Japan?"}
+{"answers": ["rome"], "category": "capital", "id": "facts:003", "question": "What is the capital of Italy?"}
+{"answers": ["berlin"], "category": "capital", "id": "facts:004", "question": "What is the capital of Germany?"}
+{"answers": ["madrid"], "category": "capital", "id": "facts:005", "question": "What is the capital of Spain?"}
+{"answers": ["moscow"], "category": "capital", "id": "facts:006", "question": "What is the capital of Russia?"}
+{"answers": ["cairo"], "category": "capital", "id": "facts:007", "question": "What is the capital of Egypt?"}
+{"answers": ["ottawa"], "category": "capital", "id": "facts:008", "question": "What is the capital of Canada?"}
+{"answers": ["canberra"], "category": "capital", "id": "facts:009", "question": "What is the capital of Australia?"}
+{"answers": ["athens"], "category": "capital", "id": "facts:010", "question": "What is the capital of Greece?"}
+{"answers": ["london"], "category": "capital", "id": "facts:011", "question": "What is the capital of the United Kingdom?"}
+{"answers": ["dublin"], "category": "capital", "id": "facts:012", "question": "What is the capital of Ireland?"}
+{"answers": ["lisbon"], "category": "capital", "id": "facts:013", "question": "What is the capital of Portugal?"}
+{"answers": ["vienna"], "category": "capital", "id": "facts:014", "question": "What is the capital of Austria?"}
+{"answers": ["warsaw"], "category": "capital", "id": "facts:015", "question": "What is the capital of Poland?"}
+{"answers": ["budapest"], "category": "capital", "id": "facts:016", "question": "What is the capital of Hungary?"}
+{"answers": ["prague"], "category": "capital", "id": "facts:017", "question": "What is the capital of the Czech Republic?"}
+{"answers": ["oslo"], "category": "capital", "id": "facts:018", "question": "What is the capital of Norway?"}
+{"answers": ["stockholm"], "category": "capital", "id": "facts:019", "question": "What is the capital of Sweden?"}
+{"answers": ["helsinki"], "category": "capital", "id": "facts:020", "question": "What is the capital of Finland?"}
+{"answers": ["copenhagen"], "category": "capital", "id": "facts:021", "question": "What is the capital of Denmark?"}
+{"answers": ["reykjavik"], "category": "capital", "id": "facts:022", "question": "What is the capital of Iceland?"}
+{"answers": ["brussels"], "category": "capital", "id": "facts:023", "question": "What is the capital of Belgium?"}
+{"answers": ["bucharest"], "category": "capital", "id": "facts:024", "question": "What is the capital of Romania?"}
+{"answers": ["sofia"], "category": "capital", "id": "facts:025", "question": "What is the capital of Bulgaria?"}
+{"answers": ["belgrade"], "category": "capital", "id": "facts:026", "question": "What is the capital of Serbia?"}
+{"answers": ["zagreb"], "category": "capital", "id": "facts:027", "question": "What is the capital of Croatia?"}
+{"answers": ["kyiv", "kiev"], "category": "capital", "id": "facts:028", "question": "What is the capital of Ukraine?"}
+{"answers": ["ankara"], "category": "capital", "id": "facts:029", "question": "What is the capital of Turkey?"}
+{"answers": ["beijing", "peking"], "category": "capital", "id": "facts:030", "question": "What is the capital of China?"}
+{"answers": ["new delhi", "delhi"], "category": "capital", "id": "facts:031", "question": "What is the capital of India?"}
+{"answers": ["islamabad"], "category": "capital", "id": "facts:032", "question": "What is the capital of Pakistan?"}
+{"answers": ["dhaka", "dacca"], "category": "capital", "id": "facts:033", "question": "What is the capital of Bangladesh?"}
+{"answers": ["bangkok"], "category": "capital", "id": "facts:034", "question": "What is the capital of Thailand?"}
+{"answers": ["hanoi"], "category": "capital", "id": "facts:035", "question": "What is the capital of Vietnam?"}
+{"answers": ["manila"], "category": "capital", "id": "facts:036", "question": "What is the capital of the Philippines?"}
+{"answers": ["kuala lumpur"], "category": "capital", "id": "facts:037", "question": "What is the capital of Malaysia?"}
+{"answers": ["seoul"], "category": "capital", "id": "facts:038", "question": "What is the capital of South Korea?"}
+{"answers": ["pyongyang"], "category": "capital", "id": "facts:039", "question": "What is the capital of North Korea?"}
+{"answers": ["ulaanbaatar", "ulan bator"], "category": "capital", "id": "facts:040", "question": "What is the capital of Mongolia?"}
+{"answers": ["kabul"], "category": "capital", "id": "facts:041", "question": "What is the capital of Afghanistan?"}
+{"answers": ["tehran"], "category": "capital", "id": "facts:042", "question": "What is the capital of Iran?"}
+{"answers": ["baghdad"], "category": "capital", "id": "facts:043", "question": "What is the capital of Iraq?"}
+{"answers": ["riyadh"], "category": "capital", "id": "facts:044", "question": "What is the capital of Saudi Arabia?"}
+{"answers": ["amman"], "category": "capital", "id": "facts:045", "question": "What is the capital of Jordan?"}
+{"answers": ["beirut"], "category": "capital", "id": "facts:046", "question": "What is the capital of Lebanon?"}
+{"answers": ["kathmandu"], "category": "capital", "id": "facts:047", "question": "What is the capital of Nepal?"}
+{"answers": ["phnom penh"], "category": "capital", "id": "facts:048", "question": "What is the capital of Cambodia?"}
+{"answers": ["vientiane"], "category": "capital", "id": "facts:049", "question": "What is the capital of Laos?"}
+{"answers": ["rabat"], "category": "capital", "id": "facts:050", "question": "What is the capital of Morocco?"}
+{"answers": ["algiers"], "category": "capital", "id": "facts:051", "question": "What is the capital of Algeria?"}
+{"answers": ["tunis"], "category": "capital", "id": "facts:052", "question": "What is the capital of Tunisia?"}
+{"answers": ["addis ababa"], "category": "capital", "id": "facts:053", "question": "What is the capital of Ethiopia?"}
+{"answers": ["nairobi"], "category": "capital", "id": "facts:054", "question": "What is the capital of Kenya?"}
+{"answers": ["accra"], "category": "capital", "id": "facts:055", "question": "What is the capital of Ghana?"}
+{"answers": ["dakar"], "category": "capital", "id": "facts:056", "question": "What is the capital of Senegal?"}
+{"answers": ["kampala"], "category": "capital", "id": "facts:057", "question": "What is the capital of Uganda?"}
+{"answers": ["harare"], "category": "capital", "id": "facts:058", "question": "What is the capital of Zimbabwe?"}
+{"answers": ["lusaka"], "category": "capital", "id": "facts:059", "question": "What is the capital of Zambia?"}
+{"answers": ["luanda"], "category": "capital", "id": "facts:060", "question": "What is the capital of Angola?"}
+{"answers": ["mexico city"], "category": "capital", "id": "facts:061", "question": "What is the capital of Mexico?"}
+{"answers": ["washington"], "category": "capital", "id": "facts:062", "question": "What is the capital of the United States?"}
+{"answers": ["havana"], "category": "capital", "id": "facts:063", "question": "What is the capital of Cuba?"}
+{"answers": ["kingston"], "category": "capital", "id": "facts:064", "question": "What is the capital of Jamaica?"}
+{"answers": ["buenos aires"], "category": "capital", "id": "facts:065", "question": "What is the capital of Argentina?"}
+{"answers": ["santiago"], "category": "capital", "id": "facts:066", "question": "What is the capital of Chile?"}
+{"answers": ["lima"], "category": "capital", "id": "facts:067", "question": "What is the capital of Peru?"}
+{"answers": ["bogota", "bogotá"], "category": "capital", "id": "facts:068", "question": "What is the capital of Colombia?"}
+{"answers": ["caracas"], "category": "capital", "id": "facts:069", "question": "What is the capital of Venezuela?"}
+{"answers": ["quito"], "category": "capital", "id": "facts:070", "question": "What is the capital of Ecuador?"}
+{"answers": ["montevideo"], "category": "capital", "id": "facts:071", "question": "What is the capital of Uruguay?"}
+{"answers": ["asuncion", "asunción"], "category": "capital", "id": "facts:072", "question": "What is the capital of Paraguay?"}
+{"answers": ["brasilia", "brasília"], "category": "capital", "id": "facts:073", "question": "What is the capital of Brazil?"}
+{"answers": ["wellington"], "category": "capital", "id": "facts:074", "question": "What is the capital of New Zealand?"}
+{"answers": ["kuwait city"], "category": "capital", "id": "facts:075", "question": "What is the capital of Kuwait?"}
+{"answers": ["doha"], "category": "capital", "id": "facts:076", "question": "What is the capital of Qatar?"}
+{"answers": ["vilnius"], "category": "capital", "id": "facts:077", "question": "What is the capital of Lithuania?"}
+{"answers": ["riga"], "category": "capital", "id": "facts:078", "question": "What is the capital of Latvia?"}
+{"answers": ["tallinn"], "category": "capital", "id": "facts:079", "question": "What is the capital of Estonia?"}
+{"answers": ["bratislava"], "category": "capital", "id": "facts:080", "question": "What is the capital of Slovakia?"}
+{"answers": ["ljubljana"], "category": "capital", "id": "facts:081", "question": "What is the capital of Slovenia?"}
+{"answers": ["kigali"], "category": "capital", "id": "facts:082", "question": "What is the capital of Rwanda?"}
+{"answers": ["7", "seven"], "category": "general", "id": "facts:083", "question": "How many days are there in a week?"}
+{"answers": ["h2o", "h₂o"], "category": "general", "id": "facts:084", "question": "What is the chemical formula of water?"}
+{"answers": ["mars"], "category": "general", "id": "facts:085", "question": "Which planet is known as the Red Planet?"}
+{"answers": ["shakespeare"], "category": "general", "id": "facts:086", "question": "Who wrote the play Romeo and Juliet?"}
+{"answers": ["pacific"], "category": "general", "id": "facts:087", "question": "What is the largest ocean on Earth?"}
+{"answers": ["carbon dioxide", "co2", "co₂"], "category": "general", "id": "facts:088", "question": "Which gas do plants absorb from the atmosphere for photosynthesis?"}
+{"answers": ["7", "seven"], "category": "general", "id": "facts:089", "question": "How many continents are there on Earth?"}
+{"answers": ["cold"], "category": "general", "id": "facts:090", "question": "What is the opposite of the word 'hot'?"}
+{"answers": ["green"], "category": "general", "id": "facts:091", "question": "What color do you get when you mix blue and yellow?"}
+{"answers": ["9", "nine"], "category": "general", "id": "facts:092", "question": "What is the square root of 81?"}
+{"answers": ["everest"], "category": "general", "id": "facts:093", "question": "What is the tallest mountain on Earth?"}
+{"answers": ["8", "eight"], "category": "general", "id": "facts:094", "question": "How many legs does a spider have?"}
+{"answers": ["alpha"], "category": "general", "id": "facts:095", "question": "What is the first letter of the Greek alphabet?"}
+{"answers": ["spain"], "category": "general", "id": "facts:096", "question": "In which country is the city of Barcelona?"}
+{"answers": ["100"], "category": "general", "id": "facts:097", "question": "What is the boiling point of water in degrees Celsius at sea level?"}
+{"answers": ["leonardo", "da vinci"], "category": "general", "id": "facts:098", "question": "Who painted the Mona Lisa?"}
+{"answers": ["au"], "category": "general", "id": "facts:099", "question": "What is the chemical symbol for gold?"}
+{"answers": ["6", "six"], "category": "general", "id": "facts:100", "question": "How many sides does a hexagon have?"}
+{"answers": ["jupiter"], "category": "general", "id": "facts:101", "question": "What is the largest planet in our solar system?"}
+{"answers": ["0", "zero"], "category": "general", "id": "facts:102", "question": "What is the freezing point of water in degrees Celsius?"}
+{"answers": ["orwell"], "category": "general", "id": "facts:103", "question": "Who wrote the novel 1984?"}
+{"answers": ["diamond"], "category": "general", "id": "facts:104", "question": "What is the hardest natural substance?"}
+{"answers": ["24", "twenty-four", "twenty four"], "category": "general", "id": "facts:105", "question": "How many hours are there in a day?"}
+{"answers": ["nile"], "category": "general", "id": "facts:106", "question": "What is the longest river in Africa?"}
+{"answers": ["mercury"], "category": "general", "id": "facts:107", "question": "Which planet is closest to the Sun?"}
+{"answers": ["na"], "category": "general", "id": "facts:108", "question": "What is the chemical symbol for sodium?"}
+{"answers": ["blue whale"], "category": "general", "id": "facts:109", "question": "What is the largest mammal on Earth?"}
+{"answers": ["egypt"], "category": "general", "id": "facts:110", "question": "In which country are the pyramids of Giza?"}
+{"answers": ["einstein"], "category": "general", "id": "facts:111", "question": "Who developed the theory of general relativity?"}
+{"answers": ["60", "sixty"], "category": "general", "id": "facts:112", "question": "How many minutes are there in an hour?"}
+{"answers": ["2", "two"], "category": "general", "id": "facts:113", "question": "What is the smallest prime number?"}
+{"answers": ["oxygen"], "category": "general", "id": "facts:114", "question": "Which gas do humans need to breathe to survive?"}
+{"answers": ["yen"], "category": "general", "id": "facts:115", "question": "What is the currency of Japan?"}
+{"answers": ["asia"], "category": "general", "id": "facts:116", "question": "Which is the largest continent by area?"}
+{"answers": ["austen"], "category": "general", "id": "facts:117", "question": "Who wrote the novel Pride and Prejudice?"}
+{"answers": ["portuguese"], "category": "general", "id": "facts:118", "question": "What is the main language spoken in Brazil?"}
+{"answers": ["6", "six"], "category": "general", "id": "facts:119", "question": "How many strings does a standard guitar have?"}
+{"answers": ["fe"], "category": "general", "id": "facts:120", "question": "What is the chemical symbol for iron?"}
+{"answers": ["milky way"], "category": "general", "id": "facts:121", "question": "What is the name of the galaxy that contains our solar system?"}
+{"answers": ["heart"], "category": "general", "id": "facts:122", "question": "Which organ pumps blood through the human body?"}
+{"answers": ["vatican"], "category": "general", "id": "facts:123", "question": "What is the smallest country in the world by area?"}
+{"answers": ["dickens"], "category": "general", "id": "facts:124", "question": "Who wrote the novel Great Expectations?"}
+{"answers": ["ag"], "category": "general", "id": "facts:125", "question": "What is the chemical symbol for silver?"}
+{"answers": ["hydrogen"], "category": "general", "id": "facts:126", "question": "Which chemical element has the atomic number 1?"}
+{"answers": ["photosynthesis"], "category": "general", "id": "facts:127", "question": "What is the process by which plants make food from sunlight?"}
+{"answers": ["femur"], "category": "general", "id": "facts:128", "question": "What is the longest bone in the human body?"}
+{"answers": ["amazon"], "category": "general", "id": "facts:129", "question": "What is the longest river in South America?"}
+{"answers": ["washington"], "category": "general", "id": "facts:130", "question": "Who was the first President of the United States?"}
+{"answers": ["1945"], "category": "general", "id": "facts:131", "question": "In what year did World War II end?"}
+{"answers": ["90", "ninety"], "category": "general", "id": "facts:132", "question": "How many degrees are there in a right angle?"}
+{"answers": ["honey"], "category": "general", "id": "facts:133", "question": "What do bees produce?"}
+{"answers": ["indian"], "category": "general", "id": "facts:134", "question": "Which ocean lies between Africa and Australia?"}
+{"answers": ["moon"], "category": "general", "id": "facts:135", "question": "What is the name of the Earth's natural satellite?"}
+{"answers": ["tolkien"], "category": "general", "id": "facts:136", "question": "Who wrote the novel The Hobbit?"}
+{"answers": ["mercury"], "category": "general", "id": "facts:137", "question": "Which metal is liquid at room temperature?"}
+{"answers": ["11", "eleven"], "category": "general", "id": "facts:138", "question": "How many players does a soccer team have on the field?"}
+{"answers": ["gravity"], "category": "general", "id": "facts:139", "question": "What is the force that pulls objects toward the Earth called?"}
+{"answers": ["3", "three"], "category": "general", "id": "facts:140", "question": "How many sides does a triangle have?"}
+{"answers": ["spring"], "category": "general", "id": "facts:141", "question": "Which season comes after winter?"}
+{"answers": ["2", "two"], "category": "general", "id": "facts:142", "question": "How many wheels does a standard bicycle have?"}
+{"answers": ["85"], "category": "arithmetic", "id": "facts:143", "question": "What is 47 + 38?"}
+{"answers": ["82"], "category": "arithmetic", "id": "facts:144", "question": "What is 23 + 59?"}
+{"answers": ["91"], "category": "arithmetic", "id": "facts:145", "question": "What is 64 + 27?"}
+{"answers": ["90"], "category": "arithmetic", "id": "facts:146", "question": "What is 15 * 6?"}
+{"answers": ["144"], "category": "arithmetic", "id": "facts:147", "question": "What is 12 * 12?"}
+{"answers": ["63"], "category": "arithmetic", "id": "facts:148", "question": "What is 100 - 37?"}
+{"answers": ["35"], "category": "arithmetic", "id": "facts:149", "question": "What is 81 - 46?"}
+{"answers": ["72"], "category": "arithmetic", "id": "facts:150", "question": "What is 9 * 8?"}
+{"answers": ["91"], "category": "arithmetic", "id": "facts:151", "question": "What is 7 * 13?"}
+{"answers": ["625"], "category": "arithmetic", "id": "facts:152", "question": "What is 250 + 375?"}
+{"answers": ["12", "twelve"], "category": "arithmetic", "id": "facts:153", "question": "What is 144 / 12?"}
+{"answers": ["90"], "category": "arithmetic", "id": "facts:154", "question": "What is 18 * 5?"}
+{"answers": ["999"], "category": "arithmetic", "id": "facts:155", "question": "What is 1000 - 1?"}
+{"answers": ["100"], "category": "arithmetic", "id": "facts:156", "question": "What is 56 + 44?"}
+{"answers": ["99"], "category": "arithmetic", "id": "facts:157", "question": "What is 33 * 3?"}
+{"answers": ["132"], "category": "arithmetic", "id": "facts:158", "question": "What is 96 + 36?"}
+{"answers": ["98"], "category": "arithmetic", "id": "facts:159", "question": "What is 70 + 28?"}
+{"answers": ["74"], "category": "arithmetic", "id": "facts:160", "question": "What is 53 + 21?"}
+{"answers": ["131"], "category": "arithmetic", "id": "facts:161", "question": "What is 35 + 96?"}
+{"answers": ["173"], "category": "arithmetic", "id": "facts:162", "question": "What is 94 + 79?"}
+{"answers": ["110"], "category": "arithmetic", "id": "facts:163", "question": "What is 70 + 40?"}
+{"answers": ["93"], "category": "arithmetic", "id": "facts:164", "question": "What is 23 + 70?"}
+{"answers": ["193"], "category": "arithmetic", "id": "facts:165", "question": "What is 97 + 96?"}
+{"answers": ["88"], "category": "arithmetic", "id": "facts:166", "question": "What is 44 + 44?"}
+{"answers": ["103"], "category": "arithmetic", "id": "facts:167", "question": "What is 54 + 49?"}
+{"answers": ["139"], "category": "arithmetic", "id": "facts:168", "question": "What is 79 + 60?"}
+{"answers": ["131"], "category": "arithmetic", "id": "facts:169", "question": "What is 60 + 71?"}
+{"answers": ["108"], "category": "arithmetic", "id": "facts:170", "question": "What is 93 + 15?"}
+{"answers": ["148"], "category": "arithmetic", "id": "facts:171", "question": "What is 78 + 70?"}
+{"answers": ["98"], "category": "arithmetic", "id": "facts:172", "question": "What is 62 + 36?"}
+{"answers": ["134"], "category": "arithmetic", "id": "facts:173", "question": "What is 68 + 66?"}
+{"answers": ["25"], "category": "arithmetic", "id": "facts:174", "question": "What is 54 - 29?"}
+{"answers": ["78"], "category": "arithmetic", "id": "facts:175", "question": "What is 97 - 19?"}
+{"answers": ["45"], "category": "arithmetic", "id": "facts:176", "question": "What is 73 - 28?"}
+{"answers": ["67"], "category": "arithmetic", "id": "facts:177", "question": "What is 89 - 22?"}
+{"answers": ["56"], "category": "arithmetic", "id": "facts:178", "question": "What is 73 - 17?"}
+{"answers": ["68"], "category": "arithmetic", "id": "facts:179", "question": "What is 92 - 24?"}
+{"answers": ["24"], "category": "arithmetic", "id": "facts:180", "question": "What is 41 - 17?"}
+{"answers": ["63"], "category": "arithmetic", "id": "facts:181", "question": "What is 91 - 28?"}
+{"answers": ["51"], "category": "arithmetic", "id": "facts:182", "question": "What is 75 - 24?"}
+{"answers": ["75"], "category": "arithmetic", "id": "facts:183", "question": "What is 98 - 23?"}
+{"answers": ["18", "eighteen"], "category": "arithmetic", "id": "facts:184", "question": "What is 42 - 24?"}
+{"answers": ["31"], "category": "arithmetic", "id": "facts:185", "question": "What is 45 - 14?"}
+{"answers": ["71"], "category": "arithmetic", "id": "facts:186", "question": "What is 82 - 11?"}
+{"answers": ["55"], "category": "arithmetic", "id": "facts:187", "question": "What is 79 - 24?"}
+{"answers": ["68"], "category": "arithmetic", "id": "facts:188", "question": "What is 95 - 27?"}
+{"answers": ["44"], "category": "arithmetic", "id": "facts:189", "question": "What is 55 - 11?"}
+{"answers": ["110"], "category": "arithmetic", "id": "facts:190", "question": "What is 22 * 5?"}
+{"answers": ["161"], "category": "arithmetic", "id": "facts:191", "question": "What is 23 * 7?"}
+{"answers": ["51"], "category": "arithmetic", "id": "facts:192", "question": "What is 17 * 3?"}
+{"answers": ["120"], "category": "arithmetic", "id": "facts:193", "question": "What is 15 * 8?"}
+{"answers": ["55"], "category": "arithmetic", "id": "facts:194", "question": "What is 11 * 5?"}
+{"answers": ["207"], "category": "arithmetic", "id": "facts:195", "question": "What is 23 * 9?"}
+{"answers": ["18", "eighteen"], "category": "arithmetic", "id": "facts:196", "question": "What is 6 * 3?"}
+{"answers": ["162"], "category": "arithmetic", "id": "facts:197", "question": "What is 18 * 9?"}
+{"answers": ["112"], "category": "arithmetic", "id": "facts:198", "question": "What is 16 * 7?"}
+{"answers": ["36"], "category": "arithmetic", "id": "facts:199", "question": "What is 9 * 4?"}
+{"answers": ["135"], "category": "arithmetic", "id": "facts:200", "question": "What is 15 * 9?"}
+{"answers": ["175"], "category": "arithmetic", "id": "facts:201", "question": "What is 25 * 7?"}
+{"answers": ["24"], "category": "arithmetic", "id": "facts:202", "question": "What is 8 * 3?"}
+{"answers": ["90"], "category": "arithmetic", "id": "facts:203", "question": "What is 10 * 9?"}
+{"answers": ["144"], "category": "arithmetic", "id": "facts:204", "question": "What is 24 * 6?"}
+{"answers": ["65"], "category": "arithmetic", "id": "facts:205", "question": "What is 13 * 5?"}
+{"answers": ["5", "five"], "category": "arithmetic", "id": "facts:206", "question": "What is 15 / 3?"}
+{"answers": ["15", "fifteen"], "category": "arithmetic", "id": "facts:207", "question": "What is 135 / 9?"}
+{"answers": ["8", "eight"], "category": "arithmetic", "id": "facts:208", "question": "What is 56 / 7?"}
+{"answers": ["9", "nine"], "category": "arithmetic", "id": "facts:209", "question": "What is 54 / 6?"}
+{"answers": ["7", "seven"], "category": "arithmetic", "id": "facts:210", "question": "What is 42 / 6?"}
+{"answers": ["10", "ten"], "category": "arithmetic", "id": "facts:211", "question": "What is 80 / 8?"}
+{"answers": ["12", "twelve"], "category": "arithmetic", "id": "facts:212", "question": "What is 132 / 11?"}
+{"answers": ["11", "eleven"], "category": "arithmetic", "id": "facts:213", "question": "What is 66 / 6?"}
+{"answers": ["6", "six"], "category": "arithmetic", "id": "facts:214", "question": "What is 24 / 4?"}
+{"answers": ["15", "fifteen"], "category": "arithmetic", "id": "facts:215", "question": "What is 45 / 3?"}
+{"answers": ["13", "thirteen"], "category": "arithmetic", "id": "facts:216", "question": "What is 104 / 8?"}
+{"answers": ["6", "six"], "category": "arithmetic", "id": "facts:217", "question": "What is 60 / 10?"}
+{"answers": ["14", "fourteen"], "category": "arithmetic", "id": "facts:218", "question": "What is 112 / 8?"}
+{"answers": ["15", "fifteen"], "category": "arithmetic", "id": "facts:219", "question": "What is 165 / 11?"}
+{"answers": ["6", "six"], "category": "arithmetic", "id": "facts:220", "question": "What is 18 / 3?"}
+{"answers": ["6", "six"], "category": "arithmetic", "id": "facts:221", "question": "What is 72 / 12?"}
+{"answers": ["13", "thirteen"], "category": "arithmetic", "id": "facts:222", "question": "What is 130 / 10?"}
