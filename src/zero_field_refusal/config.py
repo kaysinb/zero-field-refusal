@@ -150,7 +150,7 @@ def _apply_override(cfg: DictConfig, item: str, root: Path) -> DictConfig:
     if key.startswith("+"):
         return OmegaConf.merge(cfg, OmegaConf.from_dotlist([item[1:]]))
     if "." not in key and isinstance(cfg._get_node(key), DictConfig):
-        return _replace_sections(cfg, _load(_in_root(f"{key}/{value}", root), root))
+        return _replace_sections(cfg, key, _load(_in_root(f"{key}/{value}", root), root))
     if not _exists(cfg, key):
         raise KeyError(f"Unknown config key {key!r}; use +{key}=... to add a new key")
     return OmegaConf.merge(cfg, OmegaConf.from_dotlist([item]))
@@ -165,8 +165,11 @@ def _exists(cfg: DictConfig, key: str) -> bool:
     return isinstance(parent, DictConfig) and parent._get_node(leaf) is not None
 
 
-def _replace_sections(cfg: DictConfig, group: DictConfig) -> DictConfig:
-    """Group override: each top-level section of ``group`` replaces the one in ``cfg``."""
-    for key in group:
-        cfg[key] = group._get_node(key)  # the node itself: ??? and ${...} stay unresolved
-    return cfg
+def _replace_sections(cfg: DictConfig, key: str, group: DictConfig) -> DictConfig:
+    """Group override ``key=name``: the group's own section replaces ``cfg[key]``; any other
+    section the file sets (a model's teacher-gap thresholds under ``checks``) is merged in."""
+    for section in group:
+        if section == key:
+            cfg[section] = group._get_node(section)  # the node itself: ??? and ${...} unresolved
+    others = [section for section in group if section != key]
+    return OmegaConf.merge(cfg, OmegaConf.masked_copy(group, others)) if others else cfg

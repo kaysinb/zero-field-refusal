@@ -166,7 +166,9 @@ against the path-field bound and the teacher-gap thresholds.
 
 Choose the GPU by the cost of a run, not of an hour, from the stage-0 timings: in fp32 without
 TF32, the Ada cards (RTX 6000 Ada, L40S) are about 2.4 times faster than A6000/A40 and can cost
-less per run. Host RAM depends on the Pod's host, not only on the GPU type (an RTX 6000 Ada Pod
+less per run. Stages 0–2 run on the L40S, decided on 2026-10-09 after stage 0: it is the GPU type
+measured there, and another type would need its own checks and enter the teacher-gap thresholds;
+the saving on cheaper Ada cards is cents per run. Host RAM depends on the Pod's host, not only on the GPU type (an RTX 6000 Ada Pod
 had 62 GB rather than the listed 167 GB), so check it after creating a Pod. The full soft-target
 control peaks at ≈ 30 GB of host RAM (one preallocated buffer, read back lazily), the path-field
 check at ≈ 10 GB, and training keeps the projection directions in pinned memory (≈ 2 × 5 GB for

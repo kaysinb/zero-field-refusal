@@ -122,7 +122,7 @@ sizes fit is explained under [memory](architecture.md#memory).
 
 | Stage | Hardware |
 |---|---|
-| 0–2 | One 48 GB GPU (L40S, RTX 6000 Ada or A6000): every 0.5B–1.5B run in fp32, next to a frozen θ₀ copy. A 7–8B judge server also fits. |
+| 0–2 | One 48 GB L40S: every 0.5B–1.5B run in fp32, next to a frozen θ₀ copy (≈ 26 GB at 1.5B). The only GPU type measured in stage 0, which the path-field records and teacher-gap thresholds require. A 7–8B judge server also fits. |
 | 3 | 80 GB GPUs (H100): runs up to 1.5B and full fine-tuning of 3B. |
 | 4 | One 80 GB GPU for LoRA up to 8B; several 80 GB GPUs for full fine-tuning of 7–8B, sharded with FSDP2 ([distributed training](architecture.md#distributed-training)). The precision at this size is a [proposed decision](architecture.md#design-decisions-for-stage-0). |
 | 5 | — |

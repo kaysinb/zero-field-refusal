@@ -135,7 +135,7 @@ Planned:
 
 | # | Invariant | Why | Check |
 |---|---|---|---|
-| 1 | The teacher is θ₀: the same checkpoint revision, precision, attention implementation and chat template as the student at step 0. | Any difference between how the teacher samples and how the student scores creates a real field. | Blocking: before its first optimizer step, a run checks that the training path reproduces the stored teacher log-probabilities of its whole stream within the preregistered thresholds (`checks.teacher_gap`, set from the stage-0 GPU measurements), and stops otherwise; see [precision](#precision). |
+| 1 | The teacher is θ₀: the same checkpoint revision, precision, attention implementation and chat template as the student at step 0. | Any difference between how the teacher samples and how the student scores creates a real field. | Blocking: before its first optimizer step, a run checks that the training path reproduces the stored teacher log-probabilities of its whole stream within the preregistered thresholds (`checks.teacher_gap`, per model in `configs/model/`, set from the stage-0 GPU measurements), and stops otherwise; see [precision](#precision). |
 | 2 | Sampling at temperature 1 with top-k off, top-p 1, no repetition penalty, no minimum length, natural end of turn. | Any reshaping of the distribution is a real field (e.g. temperature 0.7 sharpens frequent tokens). | At every step the scores the sampler used equal a copy of the raw logits taken before `generate` processes them; see [generation settings](#generation-settings). |
 | 3 | Truncation at `max_new_tokens` is allowed; filtering or resampling by length or content is not. | Truncation keeps the expected gradient zero; selection on the outcome does not. | No code path drops or resamples teacher responses. |
 | 4 | Training uses the stored token ids, including the sampled end-of-sequence token; text is never decoded and re-tokenized. Sampling stops at either of the model's end tokens (`model.end_tokens`). | Re-tokenization can produce token sequences the teacher never sampled. | The loss reads token ids only. The response length comes from the first end-of-sequence token, never from a `!= pad` mask: Qwen2.5's pad id equals one of its end-of-sequence ids, so such a mask drops a sampled end token. |
@@ -251,7 +251,9 @@ paths are defined in [operations](operations.md#containers).
   This stops typos in sweeps from silently creating keys.
 - **Group overrides:** `optimizer=sgd` replaces the `optimizer` section with
   `configs/optimizer/sgd.yaml`. This works for any top-level key with a matching `configs/<key>/`
-  folder. Later dotted overrides apply on top: `optimizer=sgd optimizer.lr=0.1`.
+  folder. Other sections the file sets are merged in rather than replaced: a model file carries
+  its teacher-gap thresholds under `checks`, and `model=...` keeps the rest of `checks`. Later
+  dotted overrides apply on top: `optimizer=sgd optimizer.lr=0.1`.
 - **Composition:** an experiment composes only the groups its entry point reads. The judge, for
   example, has its own group, `configs/judge/`, read only by the judging step, so fixing the judge
   model does not change the hash of any training run.

@@ -77,6 +77,18 @@ def test_group_override_replaces_the_section(root: Path) -> None:
     assert cfg.model.name == "qwen"
 
 
+def test_group_override_merges_the_other_sections_it_sets(root: Path) -> None:
+    # A model file carries its own teacher-gap thresholds under `checks`: switching the model
+    # replaces the model section and the thresholds, and keeps the rest of `checks`.
+    write(root, "base.yaml", "seed: 0\nmodel:\n  name: base\nchecks:\n  gap: ???\n  bound: 0.01\n")
+    write(root, "model/small.yaml", "model:\n  name: small\nchecks:\n  gap: 1.0\n")
+    write(root, "model/large.yaml", "model:\n  name: large\nchecks:\n  gap: 2.0\n")
+    write(root, "experiments/m.yaml", "defaults: [base, model/small]\n")
+    cfg = load_config("experiments/m", ["model=large"], root=root)
+    assert cfg.model.name == "large"
+    assert OmegaConf.to_container(cfg.checks) == {"gap": 2.0, "bound": 0.01}
+
+
 def test_group_override_with_unknown_file_fails(root: Path) -> None:
     with pytest.raises(FileNotFoundError, match="optimizer/sdg"):
         load_config("experiments/exp", ["optimizer=sdg"], root=root)

@@ -5,3 +5,7 @@ model:
   attn_implementation: sdpa      # identical for teacher sampling, training and evaluation
   tf32: false
   end_tokens: ["<|im_end|>", "<|endoftext|>"]  # sampling stops at either; the end token is trained
+checks:                          # blocking-check thresholds of this model (docs/preregistration.md)
+  teacher_gap:                   # 10 × the largest stage-0 gap over seeds 0-2, measured on L40S
+    token_max_abs: 6.0e-4          # largest measured: 5.97e-5
+    response_mean_signed_abs: 2.6e-5  # largest measured: 2.53e-6
