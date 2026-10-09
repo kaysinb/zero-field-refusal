@@ -59,7 +59,7 @@ cell.
 | Primary contrast | Δ(K\*) = h_AdamW(K\*) − h_SGD(K\*) | proposed |
 | K\* | Geometric midpoint √(C_lo·C_hi) of the common KL range [C_lo, C_hi]: the overlap of the K ranges spanned by the cell means of the three primary optimizers (SGD without momentum, frozen Adam and ordinary AdamW). If frozen Adam does not overlap, the common range is the overlap of SGD and AdamW, and H2 is descriptive only. The two H2a control arms do not redefine this range. Two auxiliary levels: the quarter points of that range on a log scale. Computed from KL values only and fixed before look 1 of Gate 2; it is not re-estimated at look 2. Equivalence is claimed at K\* only, or as equivalence at the three pre-specified levels if it holds at all three; equivalence over the whole range would need a separate criterion and is not claimed. | proposed |
 | Decisive cells | For each of the five arms, the one or two learning rates whose cell-mean log K is closest to log K\*, one on each side of K\* where available. They receive the full number of seeds; the other cells keep their sweep seeds and still enter the fits. | proposed |
-| Interval | Two-sided CI from a paired bootstrap over seeds. A resample draws seeds with replacement and keeps every run with a drawn seed, across optimizers and learning rates, because these runs share the teacher stream. The CI type (percentile, BCa or bootstrap-t) and the number of resamples are chosen by the [full-analysis simulation](#full-analysis-simulation). The provisional planning level is 97.06 % at each look of [Gate 2](#gate-2-scientific) (Pocock, nominal two-sided α = 0.0294 per look). The level is finalized by the same simulation before confirmatory runs. | proposed |
+| Interval | Two-sided CI from a paired bootstrap over seeds. A resample draws seeds with replacement and keeps every run with a drawn seed, across optimizers and learning rates, because these runs share the teacher stream. Percentile CI at 99.5 % at each of the two looks of [Gate 2](#gate-2-scientific), 4000 resamples, chosen by the [full-analysis simulation](#full-analysis-simulation) (the 97.06 % Pocock planning level fails its criteria). Recalibrated with the seed spread measured in stage 1 before stage 2. | proposed |
 | Minimal effect of interest | 10 pp; used for power planning and for equivalence. No threshold applies to the point estimate Δ̂. | proposed |
 | Equivalence margin | ±10 pp | proposed |
 | Seeds | Two looks: 20 per decisive cell at look 1; at look 2, only if look 1 is inconclusive, 40 (the first 20 plus 20 new ones) | proposed |
@@ -105,11 +105,11 @@ Status `proposed`:
 
 Status `proposed`. A two-look group-sequential design with Pocock boundaries as the planning
 starting point; the decision rests on the confidence interval alone. For the equal-KL comparison,
-Δ̂ is the point estimate of Δ(K\*). The provisional CI level is 97.06 % per look (nominal two-sided
+Δ̂ is the point estimate of Δ(K\*). The planning level was 97.06 % per look (nominal two-sided
 α = 0.0294), which controls the overall false-positive rate at 5 % in the normal-means planning
-approximation. The full analysis must be validated by simulation, and its final CI level fixed
-before confirmatory runs ([requirement](#full-analysis-simulation)). "The CI" below uses that fixed
-level.
+approximation. The full-analysis simulation replaced it with a percentile CI at 99.5 % per look
+for stage 1 ([result](#full-analysis-simulation)), re-run with the stage-1 seed spread before
+stage 2. "The CI" below uses that level.
 - **Looks:** look 1 at 20 seeds per decisive cell. Look 2, only if look 1 is inconclusive, at
   40 seeds: the first 20 plus 20 new ones.
 - **Positive result:** the CI excludes 0 with the sign of H1. Δ̂ is reported with its CI.
@@ -167,7 +167,7 @@ Planning uses σ = 0.15.
 (see **Equivalence** below).
 
 **Gate 2 rule.** Simulation with the normal approximation, σ = 0.15 across seeds, difference of
-two optimizers:
+two optimizers (planning figures; the full-analysis simulation supersedes the level):
 
 | Rule | False positive, one side, Δ = 0 | Power at Δ = 10 / 15 / 20 pp |
 |---|---|---|
@@ -196,15 +196,36 @@ The seed SD σ is varied on a grid from 0.10 to 0.22. The CI level, the CI type 
 resamples are chosen so that the criteria hold. The simulation is re-run with the seed spread
 measured in stage 1 before stage 2.
 
+**Result for stage 1 (2026-10-09, proposed).** Runs `runs/analysis/simulation/20261009T103122Z`
+(the grid, 2000 resamples per interval) and `20261009T130138Z` (the binding σ = 0.22 nulls again on
+a fresh seed); the nulls include misspecified common curves (saturating and with a floor), and
+the alternatives include crossing curves.
+- At 97.06 %, 98.75 % (bootstrap-t), 99 % (percentile) and every BCa level the criteria fail;
+  percentile at 99.25 % passes in sample only at equality. **Percentile at 99.5 % per look** was
+  chosen for its margin: worst-case P(positive | Δ = 0) 2.02 % ± 0.18 pooled over both seeds
+  (2.13 % in sample, 1.90 % on the fresh seed), worst P(directional | Δ = 0) 3.12 %, worst
+  P(equivalence | |Δ| = 10 pp) 3.3 % ± 0.56 (in sample only). Power, mean over scenarios (minimum):
+  0.80 (0.29), 0.95 (0.67) and 0.99 (0.90) at 10, 15 and 20 pp; 0.76 at 10 pp for crossing curves.
+  The binding scenario is a saturating null at σ = 0.22.
+- **Resamples: 4000**, by the rule in [Amendments](#amendments): at 99.5 % the compared rates
+  differ by at most 0.001 between 2000 and 4000 resamples. The grid used 2000; error rates at 4000
+  are expected at or below these, power marginally lower.
+- **Exclusion below C_lo/10** kept: /10, /30 and no exclusion give the same error rates; /3
+  changes the most decisions.
+- Known gaps, for the re-run before stage 2: equivalence and power were not re-checked on a fresh
+  seed; the binding null and the binding equivalence scenario are outside the resample comparison;
+  the H2 boundary scenarios have no case beyond AdamW, and frozen Adam's cells below SGD are
+  clipped at 0 in its lowest cell (descriptive only).
+
 ## Open questions
 
 To be settled before the items they concern are fixed:
 - **Fallback configuration.** Fix the learning rates and cell allocation before confirmatory
   runs if the [Gate 2 fallback](#gate-2-scientific) is needed; its contrast, interpretation and
   stability criterion are defined there.
-- **Validation by simulation.** The requirement and its acceptance criteria are under
-  [Full-analysis simulation](#full-analysis-simulation). Open until its result fixes the CI level,
-  the CI type and the number of resamples.
+- **Validation by simulation.** Settled for stage 1 under
+  [Full-analysis simulation](#full-analysis-simulation) (proposed): percentile at 99.5 % per look,
+  4000 resamples. Open for stage 2 until the re-run with the stage-1 seed spread.
 - **Gate 3 details.** Which 2–3 constants are fitted in the transient form, which regimes calibrate
   the model, and what "robustly under the seed bootstrap" means operationally.
 
@@ -220,4 +241,8 @@ The binding protocol, fixed by the commit that sets this section to `fixed`, con
 
 ## Amendments
 
-None yet. Format: date, item, old value → new value, reason, and which data had been seen.
+Format: date, item, old value → new value, reason, and which data had been seen.
+
+| Date | Item | Old → new | Reason | Data seen |
+|---|---|---|---|---|
+| 2026-10-09 | [Full-analysis simulation](#full-analysis-simulation): rule for the number of resamples (proposed) | "the largest compared count (4000) if no rate among P(positive), P(opposite), P(equivalence) with 2000 resamples differs from that with 4000 by more than 0.01 in any comparison scenario; otherwise none (recalibrate)" → the same, with P(equivalence) compared only where Δ ≠ 0 | P(equivalence \| Δ = 0) is no error rate and enters no acceptance criterion; its difference falls monotonically with the number of resamples (narrower tail quantiles at fewer), a systematic effect, not instability | The simulation's output. Under the old rule 2000 and 4000 differed by 0.020 at percentile 99.25 % and 0.012 at 99.5 %, so neither level received a resample count: the change decided the outcome. No experimental data existed |

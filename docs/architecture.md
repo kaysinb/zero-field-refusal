@@ -98,6 +98,7 @@ Implemented:
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with manual labels |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples and the terminal labeling session |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
+| `analysis` | h(K) fits, K\* and the decisive cells, Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation |
 
 Planned:
 
@@ -105,7 +106,7 @@ Planned:
 |---|---|
 | `models` | the LoRA variant |
 | `distributed` | `torchrun` and FSDP2 setup, global-batch arithmetic, rank-aware data order |
-| `analysis` | h(K) fits, Δ(K\*), seed bootstrap, the full-analysis simulation, noise-theory predictor and baselines, gate reports |
+| `analysis` | the noise-theory predictor and baselines, gate reports |
 | `toy` | toy models for checking the theory: a categorical bias model, a 2-D quadratic bowl, a small network |
 
 Entry points in `scripts/`:
@@ -120,7 +121,10 @@ Entry points in `scripts/`:
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones
-  included, into one table.
+  included, into one table;
+- `simulate_analysis.py`: the full-analysis simulation of Gate 2 into
+  `RUNS_DIR/analysis/simulation/<UTC timestamp>/`; `--confirm` reruns the binding nulls on a fresh
+  seed, `--resummarize` recomputes the verdicts of an earlier run.
 
 Planned:
 - `launch.py`: expands a sweep into configs and runs the missing cells, skipping any config whose
