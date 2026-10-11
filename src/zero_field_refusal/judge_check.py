@@ -9,8 +9,10 @@ no bracketing pair, the nearest cell stays, flagged with its distance. Without a
 AdamW ranges do not overlap), SGD and AdamW come from the pair of qualifying cells nearest to each
 other in log K, frozen Adam from its cell nearest to their geometric mean. When frozen Adam's cell
 is more than a factor 2 from its target with no bracketing pair, its stratum is drawn but the
-criteria apply to SGD against AdamW only (``criteria_apply``). Optionally a fourth stratum, SGD
-under 100 steps × batch 5, chosen the same way against K\\* recomputed with those SGD cells.
+criteria apply to SGD against AdamW only (``criteria_apply``); the same when H2 is descriptive
+only, and frozen Adam without a qualifying cell has no stratum. Without a qualifying cell for SGD
+or AdamW the check cannot be made. Optionally a fourth stratum, SGD under 100 steps × batch 5,
+chosen the same way against K\\* recomputed with those SGD cells.
 
 Prompts: one random permutation of the judged prompt ids (fixed seed); round r takes positions
 [100(r − 1), 100 r), so the pre-specified addition (round 2) uses 100 further prompts. They form
@@ -21,6 +23,7 @@ other 10 from the upper. Items are shuffled and given opaque ids; the key holds 
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import random
@@ -91,13 +94,15 @@ def qualifying_cells(runs: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["arm", "lr", "mean_log_k"])
 
 
-def provisional_k_star(runs: pd.DataFrame) -> float | None:
-    """K\\* from every main-condition run, pilots included; None if SGD and AdamW do not overlap."""
+def provisional_k_star(runs: pd.DataFrame) -> tuple[float | None, bool]:
+    """K\\* from every main-condition run, pilots included (None if SGD and AdamW do not
+    overlap), and whether H2 is descriptive only (frozen Adam misses their overlap)."""
     table = runs.assign(harmful=0, judged=1)  # outcomes are not used
     try:
-        return select_k_star(table).k_star
+        selection = select_k_star(table)
     except CommonRangeUndefined:
-        return None
+        return None, True
+    return selection.k_star, selection.h2_descriptive_only
 
 
 def select_strata(
@@ -109,10 +114,11 @@ def select_strata(
 ) -> list[Stratum]:
     """The strata of the check, from the main-condition runs (and the 100 × 5 SGD runs)."""
     cells = qualifying_cells(main)
-    missing = [arm for arm in STRATA if arm not in set(cells["arm"])]
+    missing = [arm for arm in ("sgd", "adamw") if arm not in set(cells["arm"])]
     if missing:
-        raise ValueError(f"No cell with seeds {list(SEEDS)} completed for {missing}")
-    k_star = provisional_k_star(main)
+        raise ValueError(f"No cell with seeds {list(SEEDS)} completed for {missing}: the check "
+                         "cannot be made, and the qualification is undetermined")  # fmt: skip
+    k_star, descriptive_only = provisional_k_star(main)
     strata = []
     if k_star is None:
         sgd, adamw = _nearest_pair(cells[cells["arm"] == "sgd"], cells[cells["arm"] == "adamw"])
@@ -126,14 +132,17 @@ def select_strata(
         target = k_star
         for arm in ("sgd", "adamw"):
             strata.append(_choose(arm, arm, main_experiment, cells[cells["arm"] == arm], target))
-    frozen = _choose("adam_frozen", "adam_frozen", main_experiment,
-                     cells[cells["arm"] == "adam_frozen"], target)  # fmt: skip
-    strata.insert(1, frozen)
+    frozen_cells = cells[cells["arm"] == "adam_frozen"]
+    if not frozen_cells.empty:  # without a qualifying cell frozen Adam has no stratum
+        frozen = _choose("adam_frozen", "adam_frozen", main_experiment, frozen_cells, target)
+        if descriptive_only:  # H2 descriptive only: reported, no criteria
+            frozen = dataclasses.replace(frozen, criteria_apply=False)
+        strata.insert(1, frozen)
     if sgd_100x5 is not None:
         if k_star is None:
             raise ValueError("A 100 x 5 stratum needs K* of the main condition")
         combined = pd.concat([sgd_100x5, main[main["arm"] != "sgd"]], ignore_index=True)
-        k_100x5 = provisional_k_star(combined)
+        k_100x5, _ = provisional_k_star(combined)
         if k_100x5 is None:
             raise ValueError("SGD under 100 x 5 does not overlap AdamW: no K* for its stratum")
         cells_100x5 = qualifying_cells(sgd_100x5)

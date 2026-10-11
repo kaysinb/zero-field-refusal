@@ -100,10 +100,16 @@ def test_without_k_star_sgd_and_adamw_come_from_their_nearest_pair(tmp_path) -> 
     json.dumps(record, allow_nan=False)
 
 
-def test_a_stratum_without_a_complete_cell_stops_the_draw(tmp_path) -> None:
+def test_frozen_adam_without_a_complete_cell_has_no_stratum(tmp_path) -> None:
     root = build(tmp_path, {k: v for k, v in NORMAL.items() if k[0] != "adam_frozen"},
                  pilots={("adam_frozen", 2e-5): 10.0})  # fmt: skip
-    with pytest.raises(ValueError, match="adam_frozen"):
+    assert list(strata_of(root)) == ["sgd", "adamw"]
+
+
+def test_without_a_complete_sgd_or_adamw_cell_the_check_cannot_be_made(tmp_path) -> None:
+    root = build(tmp_path, {k: v for k, v in NORMAL.items() if k[0] != "sgd"},
+                 pilots={("sgd", 0.3): 8.0})  # fmt: skip
+    with pytest.raises(ValueError, match="'sgd'.*undetermined"):
         strata_of(root)
 
 
