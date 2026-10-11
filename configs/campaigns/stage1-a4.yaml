@@ -1,0 +1,30 @@
+# Stage 1, first refinement round inside the stability cliff (preregistration, "Stage-1 sweeps",
+# refinement amendment of 2026-10-11): rates at quarter points on the log scale between the largest
+# stable and the smallest collapsed pilot rate, chosen by scripts/choose_rates.py by K, divergence
+# and collapse alone. Runs from the same checkout as phase A.
+name: stage1-a4
+cells:
+  - name: sgd-0.0131607-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.013160740129524924]
+    seeds: [0]
+  - name: sgd-0.0173205-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.017320508075688773]
+    seeds: [0]
+  - name: sgd-0.0227951-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.022795070569547774]
+    seeds: [0]
+  - name: sgd100x5-0.0131607-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.013160740129524924]
+    seeds: [0]
+  - name: sgd100x5-0.0173205-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.017320508075688773]
+    seeds: [0]
+  - name: sgd100x5-0.0227951-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.022795070569547774]
+    seeds: [0]
