@@ -8,6 +8,7 @@ a failed run, incomplete judge labels, a label of another judge and a control ru
 import hashlib
 import json
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis import analyze, select_k_star, validate_runs
 from zero_field_refusal.analysis.bootstrap import paired_resampling
@@ -188,12 +190,70 @@ def test_labels_of_another_judge_exclude_every_run() -> None:
         collect_runs(RUNS_ROOT, EXPERIMENT, JUDGE, other)
 
 
-def _drop_file(_: list[dict]) -> None:
-    return None
+def test_two_seeds_with_one_teacher_stream_stop_the_analysis(tmp_path) -> None:
+    root = copy_fixture(tmp_path)
+    runs = root / EXPERIMENT
+    seed0 = json.loads((runs / "sgd_lr0.01_s0" / "meta.json").read_text())
+    stream = seed0["inputs"]["streams"]["training"]["sha256"]
+    for path in runs.glob("*_s1/meta.json"):
+        meta = json.loads(path.read_text())
+        meta["inputs"]["streams"]["training"]["sha256"] = stream
+        path.write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="same training stream"):
+        collect(root)
 
 
-def _stray(records: list[dict]) -> list[dict]:
-    return [*records, records[0] | {"item_id": "trained/judged:99"}]
+# --- one run's files ----------------------------------------------------------------------------
+
+RUN = "sgd_lr0.01_s0"  # included in the fixture: 0 of 10 responses harmful
+
+
+def _records(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _write(path: Path, records: list[dict]) -> None:
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+
+def _remove(name: str):
+    return lambda run_dir: (run_dir / name).unlink()
+
+
+def _replace(name: str, data: bytes):
+    return lambda run_dir: (run_dir / name).write_bytes(data)
+
+
+def _labels(change):
+    def edit(run_dir: Path) -> None:
+        path = run_dir / "judge" / f"{JUDGE}.jsonl"
+        _write(path, change(_records(path)))
+
+    return edit
+
+
+def _drop_config_key(key: str):
+    def edit(run_dir: Path) -> None:
+        path = run_dir / "config.yaml"
+        cfg = OmegaConf.load(path)
+        parent, _, leaf = key.rpartition(".")
+        del (OmegaConf.select(cfg, parent) if parent else cfg)[leaf]
+        OmegaConf.save(cfg, path)
+
+    return edit
+
+
+def _line_scan(run_dir: Path) -> None:
+    # The in-process line scan answers the same prompts, labeled harmful here: not counted.
+    path = run_dir / "responses" / "harmful_judged.jsonl"
+    responses = _records(path)
+    _write(path, responses + [r | {"condition": "line_scan_+1"} for r in responses])
+    labels = _labels(lambda records: records + [
+        r | {"item_id": "line_scan_+1/" + r["item_id"].removeprefix("trained/"),
+             "label": "harmful_compliance"}
+        for r in records
+    ])  # fmt: skip
+    labels(run_dir)
 
 
 def _conflict(records: list[dict]) -> list[dict]:
@@ -201,27 +261,43 @@ def _conflict(records: list[dict]) -> list[dict]:
     return [*records, records[0] | {"label": other}]
 
 
-def _retried(records: list[dict]) -> list[dict]:
+RUN_FILE_CASES = [
+    ("labels_missing", _remove(f"judge/{JUDGE}.jsonl"), "no_labels"),
+    ("label_not_a_string", _labels(lambda rs: [rs[0] | {"label": ["refusal"]}, *rs[1:]]),
+     "no_labels"),
+    ("label_naming_no_response",
+     _labels(lambda rs: [*rs, rs[0] | {"item_id": "trained/judged:99"}]), "invalid_labels"),
+    ("two_labels_for_one_response", _labels(_conflict), "invalid_labels"),
     # An unparseable answer, written and then retried: the later labeled record counts.
-    return [records[0] | {"label": None, "fields": None, "raw_output": "?"}, *records]
+    ("unparseable_then_labeled",
+     _labels(lambda rs: [rs[0] | {"label": None, "fields": None, "raw_output": "?"}, *rs]), ""),
+    ("several_conditions", _line_scan, ""),
+    ("summary_missing", _remove("summary.json"), "no_summary"),
+    ("summary_not_json", _replace("summary.json", b"{"), "no_summary"),
+    ("k_zero", _replace("summary.json", b'{"K_harmful": 0.0}'), "no_k"),
+    ("k_null", _replace("summary.json", b'{"K_harmful": null}'), "no_k"),
+    ("responses_missing", _remove("responses/harmful_judged.jsonl"), "no_responses"),
+    ("meta_not_utf8", _replace("meta.json", b'{"status": "\xff"}'), "no_meta"),
+    ("config_missing", _remove("config.yaml"), "no_config"),
+    ("config_not_yaml", _replace("config.yaml", b"seed: [0\n"), "invalid_config"),
+    ("config_not_utf8", _replace("config.yaml", b"seed: \xff\n"), "invalid_config"),
+    ("config_without_optimizer", _drop_config_key("optimizer"), "invalid_config"),
+    ("config_without_prompt_set", _drop_config_key("eval.harmful.prompt_set"), "invalid_config"),
+]  # fmt: skip
 
 
 @pytest.mark.parametrize(
     ("edit", "reason"),
-    [(_drop_file, "no_labels"), (_stray, "invalid_labels"), (_conflict, "invalid_labels"),
-     (_retried, "")],
-)  # fmt: skip
-def test_label_files_are_checked_record_by_record(tmp_path, edit, reason) -> None:
+    [pytest.param(edit, reason, id=name) for name, edit, reason in RUN_FILE_CASES],
+)
+def test_each_file_of_a_run_is_checked(tmp_path, edit, reason) -> None:
     root = copy_fixture(tmp_path)
-    path = root / EXPERIMENT / "sgd_lr0.01_s0" / "judge" / f"{JUDGE}.jsonl"
-    records = edit([json.loads(line) for line in path.read_text().splitlines()])
-    if records is None:
-        path.unlink()
-    else:
-        path.write_text("".join(json.dumps(record) + "\n" for record in records))
-    considered = collect(root).considered.set_index("run_id")
-    assert considered.loc["sgd_lr0.01_s0", "reason"] == reason
-    assert considered.loc["sgd_lr0.01_s0", "included"] == (reason == "")
+    edit(root / EXPERIMENT / RUN)
+    row = collect(root).considered.set_index("run_id").loc[RUN]
+    assert row["reason"] == reason
+    assert row["included"] == (reason == "")
+    if row["included"]:  # only the trained model's responses are counted
+        assert (row["harmful"], row["judged"]) == (0, 10)
 
 
 # --- the rebuild --------------------------------------------------------------------------------
@@ -286,6 +362,8 @@ def test_the_build_records_runs_results_and_provenance(builds) -> None:
     )
     k_star = analysis["selection"]["k_star"]
     assert analysis["selection"]["c_lo"] < k_star < analysis["selection"]["c_hi"]
+    # K* comes from the analyzed runs: provisional, not the frozen Gate 2 K*.
+    assert results["k_star_status"] == "provisional_from_analyzed_runs"
     assert set(results["units"]) >= {"K", "h", "delta"}
 
     estimates = read_csv(out / "estimates.csv")
@@ -303,6 +381,7 @@ def test_the_build_records_runs_results_and_provenance(builds) -> None:
     assert manifest["experiment"] == EXPERIMENT
     assert manifest["judge"]["name"] == JUDGE and manifest["judge"]["identity"] == identity()
     assert manifest["rng_seed"] == 7
+    assert manifest["k_star_status"] == results["k_star_status"]
     assert manifest["protocol_versions"] == [1]
     assert sorted(manifest["runs"]["considered"]) == sorted(runs["run_id"])
     assert set(manifest["runs"]["excluded"]) == set(EXCLUDED)
@@ -328,12 +407,34 @@ def test_the_output_directory_is_never_overwritten(builds) -> None:
     assert {p.name: p.read_bytes() for p in out.iterdir()} == before
 
 
-def test_a_failed_build_leaves_no_output_directory(tmp_path) -> None:
+def test_the_output_directory_has_the_mode_of_a_plain_directory(builds, tmp_path) -> None:
+    probe = tmp_path / "probe"
+    probe.mkdir()  # the mode the umask gives
+    for out in builds:
+        assert stat.S_IMODE(out.stat().st_mode) == stat.S_IMODE(probe.stat().st_mode)
+
+
+def test_a_build_that_fails_while_writing_leaves_nothing(tmp_path, monkeypatch) -> None:
+    from zero_field_refusal.analysis import build
+
+    def fail(directory: Path) -> None:
+        assert (directory / "results.json").is_file()  # the tables are written by now
+        raise RuntimeError("the figure failed")
+
+    monkeypatch.setattr(build, "draw_figure", fail)
+    out = tmp_path / "out"
+    with pytest.raises(RuntimeError, match="the figure failed"):
+        build_analysis(RUNS_ROOT, EXPERIMENT, JUDGE, identity(), out)
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []  # the partial directory is removed too
+
+
+def test_a_build_without_runs_writes_nothing(tmp_path) -> None:
     out = tmp_path / "out"
     with pytest.raises(ValueError, match="no run directories"):
         build_analysis(RUNS_ROOT, "no_such_experiment", JUDGE, identity(), out)
     assert not out.exists()
-    assert list(tmp_path.iterdir()) == []  # no partial directory either
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_the_figure_is_drawn_from_the_saved_tables(builds, tmp_path) -> None:

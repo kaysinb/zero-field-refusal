@@ -17,7 +17,8 @@ CSV files and null in JSON.
   jackknife);
 - ``estimates.csv``: every interval, with its level K, estimate, CI, SE and unit: h of each arm and
   Δ = h_AdamW − h_SGD at K\\* and the quarter points, and the H2 differences at K\\*;
-- ``results.json``: settings, units, the analyzed runs and the whole ``AnalysisResult``;
+- ``results.json``: settings, units, the analyzed runs, ``k_star_status`` and the whole
+  ``AnalysisResult``;
 - ``figure.svg``: harmful-compliance rate against K per arm with the fitted curves, drawn from
   ``runs.csv``, ``arms.csv`` and ``results.json`` alone (``draw_figure``);
 - ``manifest.json``: the sha256 of every input file read, the run ids, analysis settings, RNG
@@ -25,8 +26,14 @@ CSV files and null in JSON.
   package versions, the sha256 of every other output and ``created_at``.
 
 A rebuild from the same inputs with the same code and packages writes the same bytes, except
-``created_at`` in the manifest. Looks are not yet recorded by run configs: all included runs form
-the analysis and also fix K\\*.
+``created_at`` in the manifest.
+
+K\\* here is provisional: it is selected from the analyzed runs themselves, a sweep-style
+selection that suits the stage-0 fixture check and the provisional K\\* of stage 1
+(``K_STAR_STATUS``, written to ``results.json`` and the manifest). It is not the Gate 2 K\\*,
+which docs/preregistration.md fixes from the sweep's KL values before look 1 and never
+re-estimates. Until the build takes a frozen K\\* and per-run look membership as inputs, it must
+not be used for a Gate 2 look.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import platform
 import shutil
 import tempfile
@@ -68,6 +76,8 @@ class IntervalSettings:
 # docs/preregistration.md, "Interval": percentile CI at 99.5 % per look, 4000 resamples (stage 1).
 STAGE1_INTERVAL = IntervalSettings(ci_method="percentile", level=0.995, resamples=4000)
 
+# K* is selected from the analyzed runs (select_k_star): not the frozen Gate 2 K*.
+K_STAR_STATUS = "provisional_from_analyzed_runs"
 PACKAGES = ("numpy", "scipy", "pandas", "matplotlib", "omegaconf", "zero-field-refusal")
 UNITS = {
     "K": "nats: the sequence-level KL(θ₀ ‖ θ) per θ₀ response to the KL prompts (K_harmful)",
@@ -94,7 +104,9 @@ def build_analysis(
 ) -> Path:
     """Analyze ``<root>/<experiment>`` with the labels of ``judge`` into the new directory ``out``.
 
-    ``identity`` is the judge's (``judge.judge_identity``); ``seed`` seeds the bootstrap.
+    ``identity`` is the judge's (``judge.judge_identity``); ``seed`` seeds the bootstrap. Put
+    ``out`` outside the checkout or under an ignored path: the manifest records whether the
+    checkout is dirty, and an untracked ``out`` inside it (or its partial directory) makes it so.
     """
     out = Path(out)
     if out.exists():
@@ -113,6 +125,8 @@ def build_analysis(
     partial = Path(tempfile.mkdtemp(prefix=f".{out.name}.partial-", dir=out.parent))
     try:
         _write_outputs(partial, evidence, selection, result, interval, seed)
+        # mkdtemp creates the directory 0700; give it the mode a plain mkdir would.
+        partial.chmod(0o777 & ~_umask())
         if out.exists():
             raise FileExistsError(f"{out} appeared during the build; it is left as it is")
         partial.rename(out)
@@ -156,7 +170,7 @@ def _write_outputs(
         "settings": settings,
         "units": UNITS,
         "analyzed_runs": analyzed,
-        "k_star_selected_from": "analyzed_runs",
+        "k_star_status": K_STAR_STATUS,
         "analysis": analysis,
     })  # fmt: skip
     draw_figure(directory)
@@ -173,6 +187,7 @@ def _write_outputs(
         },
         "inputs": evidence.files,  # path relative to the runs root -> sha256
         "settings": settings,
+        "k_star_status": K_STAR_STATUS,
         "rng_seed": seed,
         "protocol_versions": sorted(int(v) for v in included["protocol_version"].dropna().unique()),
         "code": {
@@ -287,8 +302,9 @@ def draw_figure(directory: Path) -> Path:
         k = np.geomspace(runs["K"].min() / 1.5, runs["K"].max() * 1.5, 200)
         ax.axvspan(selection["c_lo"], selection["c_hi"], color=GRID, alpha=0.6, lw=0,
                    label="common K range")  # fmt: skip
+        provisional = "provisional " if results["k_star_status"] == K_STAR_STATUS else ""
         ax.axvline(selection["k_star"], color=SECONDARY, ls=":", lw=1.2,
-                   label=f"K* = {selection['k_star']:.3g} nats")  # fmt: skip
+                   label=f"{provisional}K* = {selection['k_star']:.3g} nats")  # fmt: skip
         for arm, (name, color, marker, style) in ARM_STYLE.items():
             points = runs[runs["arm"] == arm]
             if points.empty:
@@ -375,3 +391,10 @@ def _plain(value: Any) -> Any:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _umask() -> int:
+    """The process umask (reading it means setting it; it is restored at once)."""
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask

@@ -22,12 +22,15 @@ file must carry the judge's identity (``judge.IDENTITY_FIELDS``). A record whose
 (unparseable output, which the judge retries) labels nothing; an item is labeled when one of its
 records has a label.
 
-Exclusion reasons, checked in this order (the first that applies is recorded):
-- ``no_meta``: no readable ``meta.json``; ``no_config``: no ``config.yaml``;
+Exclusion reasons, checked in this order (the first that applies is recorded). A file that is
+missing, not UTF-8, not valid JSON or YAML, or lacks a required field excludes only its run:
+- ``no_meta``: no readable ``meta.json`` object;
 - ``not_completed``: ``meta.json`` status other than ``completed`` (failed or still running);
+- ``no_config``: no ``config.yaml``; ``invalid_config``: a ``config.yaml`` that is not a YAML
+  mapping or lacks one of ``CONFIG_KEYS`` with its type;
 - ``not_training``: ``run_type`` other than ``train`` (e.g. a θ₀ evaluation);
 - ``unknown_arm``: an arm outside ``runs.ARMS``, such as a control run;
-- ``no_summary``: no ``summary.json``; ``no_k``: no positive, finite ``K_harmful``;
+- ``no_summary``: no readable ``summary.json`` object; ``no_k``: no positive, finite ``K_harmful``;
 - ``no_responses``: no readable responses of the trained model, or one prompt answered twice;
 - ``no_labels``: no readable label file;
 - ``judge_identity``: a label record from another judge identity;
@@ -35,12 +38,17 @@ Exclusion reasons, checked in this order (the first that applies is recorded):
 - ``invalid_labels``: an item with two different labels, a label outside ``judge.LABELS``, or a
   record that names no response of the run.
 
-The included runs must form one analysis, otherwise ``collect_runs`` raises instead of choosing:
-one condition (the config without the optimizer section, the seed and the keys that do not
-change what a run computes: model, protocol version, data, training and evaluation settings),
-one optimizer configuration per arm apart from the learning rate, at most one run per seed in a
-cell, and shared-teacher pairing: every run of a seed trained on the same training stream
-(``meta.json`` inputs).
+The included runs must form one analysis; otherwise ``collect_runs`` raises instead of choosing:
+- one condition: every key of ``config.yaml`` matches across the included runs, except the
+  ``optimizer`` section, ``seed`` and the keys outside the config hash (``config.
+  NON_IDENTITY_KEYS``: experiment, name, tracking, execution, checks). Model, protocol version,
+  control, data, teacher, training and evaluation settings must all match, evaluation-only ones
+  such as ``eval.controls`` included;
+- one optimizer section per arm apart from ``optimizer.lr``;
+- at most one run per seed in a cell (arm, lr);
+- shared-teacher pairing: every run of a seed records the same training stream (``meta.json``
+  ``inputs.streams.training.sha256``), and different seeds record different streams, since the
+  bootstrap treats seeds as independent clusters.
 """
 
 from __future__ import annotations
@@ -69,6 +77,9 @@ CONSIDERED_COLUMNS = ("run_id", "status", "included", "reason", "detail", "arm",
                       "K", "harmful", "judged", "protocol_version", "config_hash",
                       "training_stream")  # fmt: skip
 INTEGER_COLUMNS = ("seed", "harmful", "judged", "protocol_version")
+# Keys every included run's config.yaml must hold, with their types.
+CONFIG_KEYS = {"seed": int, "optimizer.name": str, "optimizer.lr": int | float,
+               "eval.harmful.prompt_set": str}  # fmt: skip
 
 
 def label_item_id(condition: str, prompt_id: str) -> str:
@@ -84,9 +95,10 @@ def label_path(run_dir: Path, judge: str) -> Path:
 def arm_of(cfg: DictConfig) -> str:
     """The arm of a run config: the optimizer, then ``+<control>`` for a control run."""
     arm = str(cfg.optimizer.name)
-    if arm == "sgd" and (cfg.optimizer.get("momentum") or 0) > 0:
+    momentum = _value(cfg, "optimizer.momentum", int | float)
+    if arm == "sgd" and momentum is not None and momentum > 0:
         arm = "sgd_momentum"
-    control = cfg.get("control")
+    control = _select(cfg, "control")
     return f"{arm}+{control}" if control else arm
 
 
@@ -144,12 +156,18 @@ class _Files:
         self.root = root
         self.sha256: dict[str, str] = {}
 
-    def text(self, path: Path) -> str | None:
+    def text(self, path: Path, reason: str) -> str | None:
+        """The file's text, None if it is missing; bytes that are not UTF-8 exclude the run."""
         if not path.is_file():
             return None
         data = path.read_bytes()
-        self.sha256[path.relative_to(self.root).as_posix()] = hashlib.sha256(data).hexdigest()
-        return data.decode()
+        relative = path.relative_to(self.root)
+        self.sha256[relative.as_posix()] = hashlib.sha256(data).hexdigest()
+        try:
+            return data.decode()
+        except UnicodeDecodeError as exc:
+            in_run = Path(*relative.parts[2:]).as_posix()  # below <experiment>/<run id>/
+            raise _Excluded(reason, f"{in_run} is not UTF-8 text") from exc
 
 
 class _Excluded(Exception):
@@ -179,32 +197,33 @@ def _assess(
     meta = _json(files, run_dir / "meta.json", "no_meta")
     row["status"] = meta.get("status")
     row["config_hash"] = meta.get("config_hash")
-    streams = (meta.get("inputs") or {}).get("streams") or {}
-    row["training_stream"] = (streams.get("training") or {}).get("sha256")
-    text = files.text(run_dir / "config.yaml")
-    if text is None:
-        raise _Excluded("no_config", "config.yaml is missing")
-    cfg = OmegaConf.create(text)
-    # Descriptive columns first, so that an excluded run still shows its cell and seed.
-    row.update(arm=arm_of(cfg), lr=cfg.optimizer.get("lr"), seed=cfg.get("seed"),
-               protocol_version=cfg.get("protocol_version"))  # fmt: skip
+    row["training_stream"] = _nested(meta, "inputs", "streams", "training", "sha256")
+    cfg, problem = _config(files, run_dir)
+    if cfg is not None:  # descriptive columns, so that an excluded run still shows its cell
+        named = _value(cfg, "optimizer.name", str) is not None
+        row.update(arm=arm_of(cfg) if named else None,
+                   lr=_value(cfg, "optimizer.lr", int | float), seed=_value(cfg, "seed", int),
+                   protocol_version=_value(cfg, "protocol_version", int))  # fmt: skip
 
     if row["status"] != "completed":
         raise _Excluded("not_completed", f"meta.json status is {row['status']!r}")
-    run_type = cfg.get("run_type", "train")
+    if problem is not None:
+        raise problem
+    assert cfg is not None
+    run_type = _select(cfg, "run_type", "train")
     if run_type != "train":
         raise _Excluded("not_training", f"run_type is {run_type!r}")
     if row["arm"] not in ARMS:
         raise _Excluded("unknown_arm", f"arm {row['arm']!r} is not one of {ARMS}")
     summary = _json(files, run_dir / "summary.json", "no_summary")
     k = summary.get("K_harmful")
-    if not (isinstance(k, int | float) and math.isfinite(k) and k > 0):
+    if isinstance(k, bool) or not (isinstance(k, int | float) and math.isfinite(k) and k > 0):
         raise _Excluded("no_k", f"K_harmful in summary.json is {k!r}")
     row["K"] = float(k)
 
-    prompt_set = cfg.eval.harmful.prompt_set
+    prompt_set = _select(cfg, "eval.harmful.prompt_set")
     responses = _jsonl(files, run_dir / "responses" / f"{prompt_set}.jsonl", "no_responses",
-                       ("condition", "item_id"))  # fmt: skip
+                       {"condition": str, "item_id": str})  # fmt: skip
     items = [label_item_id(r["condition"], r["item_id"]) for r in responses]
     trained = [label_item_id(TRAINED, r["item_id"]) for r in responses
                if r["condition"] == TRAINED]  # fmt: skip
@@ -213,7 +232,8 @@ def _assess(
     if len(set(items)) != len(items):
         raise _Excluded("no_responses", f"a prompt of {prompt_set} is answered twice")
 
-    records = _jsonl(files, label_path(run_dir, judge), "no_labels", ("item_id", "label"))
+    records = _jsonl(files, label_path(run_dir, judge), "no_labels",
+                     {"item_id": str, "label": str | None})  # fmt: skip
     _check_identity(records, identity)
     labels: dict[str, set[str]] = {}
     for record in records:
@@ -243,23 +263,67 @@ def _assess(
     return cfg
 
 
+def _config(files: _Files, run_dir: Path) -> tuple[DictConfig | None, _Excluded | None]:
+    """``config.yaml`` if it parses, and the exclusion it causes (None: complete)."""
+    try:
+        text = files.text(run_dir / "config.yaml", "invalid_config")
+    except _Excluded as excluded:
+        return None, excluded
+    if text is None:
+        return None, _Excluded("no_config", "config.yaml is missing")
+    try:
+        cfg = OmegaConf.create(text)
+    except Exception as exc:  # YAML syntax or OmegaConf errors
+        return None, _Excluded(
+            "invalid_config", f"config.yaml does not parse ({type(exc).__name__})"
+        )
+    if not isinstance(cfg, DictConfig):
+        return None, _Excluded("invalid_config", "config.yaml does not hold a mapping")
+    bad = [key for key, kind in CONFIG_KEYS.items() if _value(cfg, key, kind) is None]
+    if bad:
+        return cfg, _Excluded("invalid_config", f"config.yaml lacks {bad} or has a wrong type")
+    return cfg, None
+
+
+def _select(cfg: DictConfig, key: str, default: Any = None) -> Any:
+    """A dotted key's value; ``default`` if it is missing, ``???`` or cannot be resolved."""
+    return OmegaConf.select(cfg, key, default=default, throw_on_resolution_failure=False)
+
+
+def _value(cfg: DictConfig, key: str, kind: Any) -> Any:
+    """A dotted key's value if it has type ``kind`` (never a bool), otherwise None."""
+    value = _select(cfg, key)
+    return value if isinstance(value, kind) and not isinstance(value, bool) else None
+
+
+def _nested(data: Any, *keys: str) -> Any:
+    """``data[k1][k2]...``, None where a level is missing or not an object."""
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
 def _check_identity(records: list[dict[str, Any]], identity: Mapping[str, Any]) -> None:
-    wanted = tuple(identity[key] for key in IDENTITY_FIELDS)
-    others = Counter(
-        tuple(record.get(key) for key in IDENTITY_FIELDS)
-        for record in records
-        if tuple(record.get(key) for key in IDENTITY_FIELDS) != wanted
-    )
+    def of(record: Mapping[str, Any]) -> tuple[Any, ...]:
+        return tuple(record.get(key) for key in IDENTITY_FIELDS)
+
+    wanted = of(identity)
+    others = Counter(of(record) for record in records if of(record) != wanted)
     if others:
-        names = ", ".join(f"{b}/{m}@{r}" for b, _, m, r, _ in sorted(others, key=repr))
+        judges = [dict(zip(IDENTITY_FIELDS, other, strict=True)) for other in others]
+        names = sorted(f"{j['backend']}/{j['judge_model']}@{j['judge_revision']} "
+                       f"({j['prompt_version']})" for j in judges)  # fmt: skip
         raise _Excluded(
             "judge_identity",
-            f"{others.total()} of {len(records)} label records come from another judge ({names})",
+            f"{others.total()} of {len(records)} label records come from another judge "
+            f"({', '.join(names)})",
         )
 
 
 def _json(files: _Files, path: Path, reason: str) -> dict[str, Any]:
-    text = files.text(path)
+    text = files.text(path, reason)
     if text is None:
         raise _Excluded(reason, f"{path.name} is missing")
     try:
@@ -271,9 +335,11 @@ def _json(files: _Files, path: Path, reason: str) -> dict[str, Any]:
     return data
 
 
-def _jsonl(files: _Files, path: Path, reason: str, keys: tuple[str, ...]) -> list[dict[str, Any]]:
-    """The records of a JSONL file; each must be an object with ``keys``."""
-    text = files.text(path)
+def _jsonl(
+    files: _Files, path: Path, reason: str, fields: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The records of a JSONL file; each must be an object with ``fields`` of their types."""
+    text = files.text(path, reason)
     name = path.relative_to(path.parents[1]).as_posix()
     if text is None:
         raise _Excluded(reason, f"{name} is missing")
@@ -285,8 +351,12 @@ def _jsonl(files: _Files, path: Path, reason: str, keys: tuple[str, ...]) -> lis
             record = json.loads(line)
         except json.JSONDecodeError as exc:
             raise _Excluded(reason, f"{name}, line {number}, is not valid JSON") from exc
-        if not (isinstance(record, dict) and all(key in record for key in keys)):
-            raise _Excluded(reason, f"{name}, line {number}, is not an object with {keys}")
+        valid = isinstance(record, dict) and all(
+            key in record and isinstance(record[key], kind) for key, kind in fields.items()
+        )
+        if not valid:
+            raise _Excluded(reason, f"{name}, line {number}: needs {sorted(fields)} with their "
+                                    "types")  # fmt: skip
         records.append(record)
     return records
 
@@ -320,6 +390,15 @@ def _check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig
                 f"The runs of seed {seed} do not share one recorded training stream (meta.json "
                 f"inputs.streams.training.sha256): {recorded}"
             )
+    # Different seeds must train on different streams: the bootstrap resamples seeds as
+    # independent clusters.
+    stream_of_seed = included.groupby("seed", sort=True)["training_stream"].first()
+    shared = stream_of_seed[stream_of_seed.duplicated(keep=False)]
+    if not shared.empty:
+        raise ValueError(
+            f"Seeds {[int(s) for s in shared.index]} record the same training stream "
+            f"{sorted(set(shared))}: seeds are resampled as independent clusters"
+        )
 
 
 def _condition(cfg: DictConfig) -> dict[str, Any]:
