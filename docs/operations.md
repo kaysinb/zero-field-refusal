@@ -244,6 +244,8 @@ Decided 2026-10-11. Three places, each with one role:
 Stage 1 (decided 2026-10-11): no data center offered both L40S and network volumes, so the
 L40S Pod uses its volume disk at `/workspace` and the bucket. Record the Pod's ID, data center and
 volume size here when it is created; a network volume, if one is created later, likewise.
+Stage-1 Pod: `32fjt8f6671w17` (`zfr-stage1-l40s`), L40S Secure, US-TX-4, created 2026-10-11 10:37
+UTC, 120 GB volume disk at `/workspace`, 50 GB container disk.
 
 - **Inputs before the runs that use them.** A generated teacher or preconditioner stream is
   archived to the bucket and verified before the first run that reads it starts, so losing the
