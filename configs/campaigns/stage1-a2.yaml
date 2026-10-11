@@ -1,0 +1,30 @@
+# Stage 1, first grid extensions of the pilots (preregistration, "Stage-1 sweeps": one step beyond
+# an end that no candidate reaches, piloted at seed 0 before the choice). Chosen by
+# scripts/choose_rates.py from the phase-A pilots, by K, divergence and collapse alone. Runs from
+# the same checkout as phase A, after it.
+name: stage1-a2
+cells:
+  - name: sgd-0.01-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.01]
+    seeds: [0]
+  - name: sgd-9.0-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=9.0]
+    seeds: [0]
+  - name: adam_frozen-5.0e-6-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=5.0e-6]
+    seeds: [0]
+  - name: sgd100x5-3.0-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=3.0]
+    seeds: [0]
+  - name: sgd-0.01-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.01]
+    seeds: [0]
+  - name: sgd-9.0-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=9.0]
+    seeds: [0]
