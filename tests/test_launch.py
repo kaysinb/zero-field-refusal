@@ -177,6 +177,71 @@ def test_a_qualifying_gate_run_is_skipped(tmp_path) -> None:
     assert run_campaign(name, runs, root, execute=Executor(root, {}))["skipped"] == ["adamw/s0"]
 
 
+@pytest.mark.parametrize("second", [{"dirty": True}, {}])
+def test_a_second_completed_run_of_the_config_is_a_conflict(tmp_path, second) -> None:
+    name, runs = load_campaign(campaign(tmp_path, GATED))
+    root = tmp_path / "runs"
+    make_run_dir(root, runs[0], "first", gate=1)
+    make_run_dir(root, runs[0], "second", gate=1, **second)
+    with pytest.raises(CampaignError, match="second"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+
+
+def test_an_attempt_that_completes_without_qualifying_stops_the_campaign(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+
+    def execute(run, run_id, output):
+        make_run_dir(root, run, run_id, responses=False)
+        return 0
+
+    with pytest.raises(CampaignError, match="cannot stand for theta0/s0"):
+        run_campaign(name, runs, root, execute=execute)
+    log = [json.loads(line) for line in (root / "launch" / f"{name}.jsonl").read_text().split("\n")
+           if line]  # fmt: skip
+    assert log[-1]["outcome"] == "conflict"
+
+
+def test_a_completed_run_with_zero_k_qualifies(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    make_run_dir(root, runs[3], "soft-targets-like", k=0.0)
+    assert "sgd-0.1/s0" in run_campaign(name, runs, root, execute=Executor(root, {}))["skipped"]
+
+
+def test_attempts_that_left_no_directory_count_across_invocations(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    crash = Executor(root, {r.label: ["none"] * 9 for r in runs})
+    first = run_campaign(name, runs[:1], root, execute=crash)
+    assert first["exhausted"] == ["theta0/s0"] and len(crash.calls) == 3
+    second = run_campaign(name, runs[:1], root, execute=crash)
+    assert second["exhausted"] == ["theta0/s0"] and len(crash.calls) == 3  # no new attempt
+
+
+def test_one_recovery_round_per_cell_after_the_cause_is_fixed(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    cell = [r for r in runs if r.cell == "adamw-5e-5"]
+    broken = Executor(root, {r.label: ["failed"] * 3 for r in cell})
+    assert run_campaign(name, cell, root, execute=broken)["exhausted"] == [r.label for r in cell]
+    assert run_campaign(name, cell, root, execute=broken)["exhausted"] == [r.label for r in cell]
+    assert len(broken.calls) == 6  # three each, then nothing without a recovery round
+
+    fixed = Executor(root, {cell[0].label: ["failed"] * 3, cell[1].label: ["failed", "diverged"]})
+    result = run_campaign(name, cell, root, execute=fixed, recovery="disk quota raised")
+    assert result["exhausted"] == [cell[0].label] and result["diverged"] == [cell[1].label]
+    assert len(fixed.calls) == 5  # three more for one run, two for the other
+
+    again = Executor(root, {})
+    result = run_campaign(name, cell, root, execute=again, recovery="another try")
+    assert again.calls == [] and result["exhausted"] == [cell[0].label]
+    log = [json.loads(line) for line in (root / "launch" / f"{name}.jsonl").read_text().split("\n")
+           if line]  # fmt: skip
+    recoveries = [r for r in log if r["event"] == "recovery"]
+    assert [(r["cell"], r["reason"]) for r in recoveries] == [("adamw-5e-5", "disk quota raised")]
+
+
 def test_a_dry_run_starts_nothing(tmp_path) -> None:
     name, runs = load_campaign(campaign(tmp_path))
     root = tmp_path / "runs"

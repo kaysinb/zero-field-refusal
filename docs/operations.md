@@ -216,14 +216,17 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
 - **Campaigns:** `uv run scripts/launch.py CAMPAIGN.yaml` runs a list of cells (config,
   overrides, seeds; `entry: theta0` for θ₀ evaluations) in order, each attempt in a fresh process
   under its own `RUN_ID`. Every run's config is checked against the protocol before the first one
-  starts. A run is skipped when a completed run with its config hash qualifies (the campaign's
-  `tracking.gate`, a clean recorded commit when `require_clean_git` is set, a finite K and the
-  responses file); a completed run that does not qualify stops the campaign before anything
-  starts, since running again would add a second run of the seed. A run that ended `diverged`
-  (non-finite training loss) is an outcome and is never rerun; any other failure is technical and
-  is retried, up to three attempts in all, counting earlier attempts left in the experiment.
-  Starts, ends and outcomes go to `RUNS_DIR/launch/<campaign>.jsonl`, each attempt's output to
-  `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
+  starts. A run is skipped when one completed run with its config hash qualifies (the campaign's
+  `tracking.gate`, a clean recorded commit when `require_clean_git` is set, a finite,
+  non-negative K and the responses file). A completed run that does not qualify, or a second
+  completed run, stops the campaign before anything starts, and so does an attempt that completes
+  without qualifying: running again would leave two runs of the seed. A run that ended `diverged`
+  (a non-finite training loss or K) is an outcome and is never rerun. Any other failure is
+  technical and is retried, up to three attempts in all, counting earlier attempts from the run
+  directories and the logged starts. Once the cause of exhausted runs is fixed, `--recovery
+  REASON` opens one recovery round per cell (three more attempts), logged with its reason.
+  Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
+  attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
 - **Gate runs:** commit and push all changes first, then run from a clone or bundle of that
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.
