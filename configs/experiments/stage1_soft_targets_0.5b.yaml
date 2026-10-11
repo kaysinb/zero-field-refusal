@@ -1,0 +1,5 @@
+# Stage 1, full soft-target control on 0.5B: SGD on KL to theta0's recorded next-token
+# distributions, one seed, at the largest stable SGD rate of the sweep (set in the campaign).
+defaults: [experiments/stage1_main_0.5b, optimizer/sgd, control/soft_targets]
+
+experiment: stage1_soft_targets_0.5b

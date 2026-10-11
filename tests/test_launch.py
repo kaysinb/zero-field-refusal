@@ -116,3 +116,12 @@ def test_a_dry_run_starts_nothing(tmp_path) -> None:
     assert result["skipped"] == ["theta0/s0"]
     assert result["pending"] == ["adamw-5e-5/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]
     assert not (root / "launch").exists()
+
+
+CAMPAIGNS = sorted((Path(__file__).resolve().parents[1] / "configs" / "campaigns").glob("*.yaml"))
+
+
+@pytest.mark.parametrize("path", CAMPAIGNS, ids=lambda p: p.name)
+def test_the_committed_campaigns_load_and_pass_the_protocol(path) -> None:
+    name, runs = load_campaign(path)
+    assert name == path.stem and runs

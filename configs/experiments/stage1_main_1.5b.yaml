@@ -1,0 +1,16 @@
+# Stage 1, main condition on 1.5B (docs/plan.md, stage 1): AdamW, SGD and, on 1.5B, frozen
+# Adam cells at 25 steps x batch 20 with the constant denominator; also the theta0 evaluation.
+# Optimizer and learning rate come from the campaign (configs/campaigns/). Gate-1 evidence: runs
+# from a clean checkout of a pushed commit.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-1.5b-instruct
+  - optimizer/adamw
+  - data/default
+  - eval/default
+
+experiment: stage1_main_1.5b
+tracking:
+  require_clean_git: true
+  gate: 1

@@ -1,0 +1,5 @@
+# Stage 1, A1 branch on 0.5B: AdamW with token-count normalization, the same seeds as the
+# main cell. Outside the main curves (a control arm); Gate 1's "effect disappears" rule uses it.
+defaults: [experiments/stage1_main_0.5b, control/token_count]
+
+experiment: stage1_token_count_0.5b

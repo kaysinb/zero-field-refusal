@@ -1,0 +1,9 @@
+# Stage 1, SGD at 100 steps x batch 5 on 1.5B: the same 500-response streams, constant
+# denominator 5 x 96. Run in any case; used only by the Gate 1 coverage rule, never in the main
+# curves or K*.
+defaults: [experiments/stage1_main_1.5b, optimizer/sgd]
+
+experiment: stage1_sgd100x5_1.5b
+train:
+  steps: 100
+  batch_size: 5

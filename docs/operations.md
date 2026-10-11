@@ -259,7 +259,11 @@ volume size here when it is created; a network volume, if one is created later, 
   export ARTIFACT_GCS_KEY=/root/.artifact-gcs-key.json
   ```
 
-  Then follow the [archive procedure](#rented-machines) on the Pod. The key file goes away with
+  `scripts/pod_setup.sh` does this on a new Pod: it installs the Google Cloud CLI pinned by
+  version and sha256 on the container disk (the image has none), decodes the key, writes
+  `/root/zfr-env.sh` for later shells, and restores `DATA_DIR` from the bucket, checking every
+  file against the archive inventory. Then follow the [archive procedure](#rented-machines) on the
+  Pod. The key file goes away with
   the container disk when the Pod stops or is deleted; decode it again after a restart.
 - **Scratchpad snapshots.** At the end of each stage, together with its report in
   `docs/reports/`, archive `scratchpad/` to `scratchpad/<date>/` in the bucket. Scan it for
@@ -283,6 +287,11 @@ to its archive path (e.g. `runs/<experiment>/<run id>`):
 CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$ARTIFACT_GCS_KEY" \
   gcloud storage cp --recursive --no-clobber "$COMPLETED_DIR" "$ARTIFACT_REMOTE/$ARTIFACT_ID"
 ```
+
+`scripts/archive.py INVENTORY.tsv "$ARTIFACT_REMOTE" ROOT PATH...` does the copy and the checks
+below in one step: it copies each path under `ROOT` to the same relative path in the bucket,
+compares every object's size and MD5 with the local file, and appends the inventory lines; an
+object that already held other content shows as a mismatch.
 
 After each copy, compare the local sha256 of every file with a copy downloaded back (at least for
 one artifact per batch) and with the objects' listed hashes, and record every file with its sha256

@@ -132,6 +132,9 @@ Entry points in `scripts/`:
 - `launch.py`: runs the missing runs of a campaign file (cells of config, overrides and seeds)
   one after another, each in its own process, skipping any config whose hash already has a
   completed run in `RUNS_DIR/<experiment>/`; `--dry-run` lists them;
+- `archive.py`, `pod_setup.sh`: archive files to the bucket without overwriting, with checks and
+  an inventory; prepare a Pod (pinned Google Cloud CLI, archive key, `DATA_DIR` restored and
+  verified) ([storage](operations.md#storage));
 - `label_runs.py`: labels every response of completed run directories with one judge into their
   label files, the input of the analysis build; the label file is the cache;
 - `import_labels.py`: imports reference labels made outside the project (the ensemble) next to

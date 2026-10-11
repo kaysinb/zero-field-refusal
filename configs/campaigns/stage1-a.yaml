@@ -1,0 +1,130 @@
+# Stage 1, phase A (docs/plan.md, stage 1; scratchpad plan 2026-10-11): theta0 baselines, the
+# AdamW cells, the seed-0 pilots of SGD (both models, both batchings on 1.5B) and frozen Adam (1.5B),
+# the token-count and bridge cells. Phase B (the chosen sweep rates, scans, soft targets) is written
+# after the pilots, from K and collapse alone. Run: scripts/launch.py configs/campaigns/stage1-a.yaml
+name: stage1-a
+cells:
+  - name: theta0-1.5b
+    config: experiments/stage1_main_1.5b
+    entry: theta0
+    seeds: [0]
+  - name: theta0-0.5b
+    config: experiments/stage1_main_0.5b
+    entry: theta0
+    seeds: [0]
+  - name: adamw-5.0e-5-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adamw-2.0e-5-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer.lr=2.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adamw-1.0e-5-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer.lr=1.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adamw-5.0e-6-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer.lr=5.0e-6]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adamw-5.0e-5-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adamw-2.0e-5-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer.lr=2.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd-0.03-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.03]
+    seeds: [0]
+  - name: sgd-0.1-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.1]
+    seeds: [0]
+  - name: sgd-0.3-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.3]
+    seeds: [0]
+  - name: sgd-1.0-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=1.0]
+    seeds: [0]
+  - name: sgd-3.0-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=3.0]
+    seeds: [0]
+  - name: sgd-0.03-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.03]
+    seeds: [0]
+  - name: sgd-0.1-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.1]
+    seeds: [0]
+  - name: sgd-0.3-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.3]
+    seeds: [0]
+  - name: sgd-1.0-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=1.0]
+    seeds: [0]
+  - name: sgd-3.0-0.5b
+    config: experiments/stage1_main_0.5b
+    overrides: [optimizer=sgd, optimizer.lr=3.0]
+    seeds: [0]
+  - name: adam_frozen-1.0e-5-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=1.0e-5]
+    seeds: [0]
+  - name: adam_frozen-2.0e-5-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=2.0e-5]
+    seeds: [0]
+  - name: adam_frozen-5.0e-5-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=5.0e-5]
+    seeds: [0]
+  - name: adam_frozen-1.0e-4-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=1.0e-4]
+    seeds: [0]
+  - name: sgd100x5-0.01-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.01]
+    seeds: [0]
+  - name: sgd100x5-0.03-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.03]
+    seeds: [0]
+  - name: sgd100x5-0.1-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.1]
+    seeds: [0]
+  - name: sgd100x5-0.3-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.3]
+    seeds: [0]
+  - name: sgd100x5-1.0-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=1.0]
+    seeds: [0]
+  - name: token_count-5.0e-5-1.5b
+    config: experiments/stage1_token_count_1.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: bridge48-5.0e-5-1.5b
+    config: experiments/stage1_bridge48_1.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: token_count-5.0e-5-0.5b
+    config: experiments/stage1_token_count_0.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1, 2, 3, 4]
+  - name: bridge48-5.0e-5-0.5b
+    config: experiments/stage1_bridge48_0.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1, 2, 3, 4]

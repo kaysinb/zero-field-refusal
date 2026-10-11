@@ -1,0 +1,12 @@
+# Stage 1, line scans theta0 + a*Delta-theta and random directions of the same norm on 1.5B
+# (A2, a diagnostic). eval.controls is part of the config hash, so these runs form their own
+# experiment; neither the scan conditions nor their trained condition enter the main curves.
+defaults: [experiments/stage1_main_1.5b]
+
+experiment: stage1_scans_1.5b
+eval:
+  controls:
+    line_scan:
+      enabled: true
+    random_direction:
+      enabled: true

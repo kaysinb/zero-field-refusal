@@ -1,0 +1,7 @@
+# Stage 1, bridge cell on 1.5B: the same training streams truncated to 48 tokens, next to
+# the 96-token main cell (docs/plan.md, stage 1). Its own experiment: the condition differs.
+defaults: [experiments/stage1_main_1.5b]
+
+experiment: stage1_bridge48_1.5b
+train:
+  max_response_tokens: 48         # the denominator follows: 20 x 48
