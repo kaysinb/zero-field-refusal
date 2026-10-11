@@ -4,7 +4,13 @@ import math
 
 import pytest
 
-from zero_field_refusal.analysis.sweeps import Pilot, choose, target_points, unstable_reason
+from zero_field_refusal.analysis.sweeps import (
+    Pilot,
+    choose,
+    read_logical_runs,
+    target_points,
+    unstable_reason,
+)
 
 THETA0 = {"factual": 0.90, "benchmark": 0.60}
 SGD_GRID = [0.03, 0.1, 0.3, 1.0, 3.0]
@@ -27,7 +33,9 @@ def test_targets_are_the_ends_then_the_evenly_spaced_interior_points() -> None:
      (pilot(0.1, 5.0, factual=0.79), "collapse: factual accuracy"),
      (pilot(0.1, 5.0, benchmark=0.54), "collapse: benchmark accuracy"),
      (pilot(0.1, None, status="diverged"), "diverged"),
-     (pilot(0.1, None, status="failed"), "status 'failed'"),
+     (pilot(0.1, None, status="missing"), "status 'missing'"),
+     (pilot(0.1, 5.0, factual=math.nan), "utility missing or invalid"),
+     (pilot(0.1, 5.0, benchmark=1.5), "utility missing or invalid"),
      (pilot(0.1, 0.0), "K 0.0"), (pilot(0.1, math.nan), "K nan")],
 )  # fmt: skip
 def test_a_candidate_is_a_completed_stable_pilot_with_a_positive_finite_k(p, reason) -> None:
@@ -96,7 +104,7 @@ def test_a_largest_stable_rate_left_out_by_the_targets_replaces_the_last_choice(
     assert choice.chosen == [0.03, 0.1, 0.3, 3.0]
 
 
-def write_run(root, name, overrides, status, summary):
+def write_run(root, name, overrides, status, summary, experiment="stage1_main_1.5b"):
     import json
 
     from omegaconf import OmegaConf
@@ -142,4 +150,76 @@ def test_the_script_reads_k_and_utility_from_run_directories(tmp_path, capsys) -
     assert out["adamw_k_range"] == pytest.approx([2.0, 30.0])
     assert out["sweeps"]["sgd"]["chosen"] == [0.03, 0.1, 0.3, 1.0]
     assert out["sweeps"]["adam_frozen"]["chosen"] == [1e-5, 2e-5, 1e-4]
-    assert "sgd_100x5" not in out["sweeps"]
+    assert out["sweeps"]["sgd"]["status"] == "chosen"
+    x5 = out["sweeps"]["sgd_100x5"]  # required on 1.5B: without its pilots the choice waits
+    assert (x5["status"], x5["pending"]) == ("wait", [0.01, 0.03, 0.1, 0.3, 1.0])
+
+
+def test_pilots_without_a_known_outcome_make_the_choice_wait() -> None:
+    pilots = [pilot(lr, k) for lr, k in zip(SGD_GRID, (0.2, 0.5, 1.0, 2.0, 4.0), strict=True)]
+    pilots += [pilot(9.0, None, status="pending"), pilot(27.0, None, status="pending")]
+    choice = choose("sgd", SGD_GRID, pilots, THETA0, 1.0, 30.0)
+    assert (choice.status, choice.chosen, choice.pending) == ("wait", [], [9.0, 27.0])
+    missing_base = [p for p in pilots if p.lr != 0.3 and p.status == "completed"]
+    choice = choose("sgd", SGD_GRID, missing_base, THETA0, 1.0, 30.0)
+    assert (choice.status, choice.pending) == ("wait", [0.3])
+
+
+def test_theta0_utility_must_be_a_finite_accuracy() -> None:
+    pilots = [pilot(lr, k) for lr, k in zip(FA_GRID, (2.0, 5.0, 12.0, 30.0), strict=True)]
+    with pytest.raises(ValueError, match="factual accuracy nan"):
+        choose("adam_frozen", FA_GRID, pilots, {"factual": math.nan, "benchmark": 0.6}, 2.0, 30.0)
+
+
+def utility(k):
+    return {"K_harmful": k, "factual_accuracy": 0.88, "benchmark_accuracy": 0.59}
+
+
+def test_a_diverged_and_a_completed_attempt_of_one_pilot_contradict(tmp_path) -> None:
+    overrides = ["optimizer=sgd", "optimizer.lr=3.0e-1", "seed=0"]
+    write_run(tmp_path, "sgd-a1", overrides, "diverged", {})
+    write_run(tmp_path, "sgd-a2", overrides, "completed", utility(9.0))
+    with pytest.raises(ValueError, match="diverged and a completed attempt"):
+        read_logical_runs(tmp_path, "stage1_main_1.5b")
+
+
+def test_a_duplicated_completed_run_is_refused(tmp_path) -> None:
+    overrides = ["optimizer.lr=1.0e-5", "seed=0"]
+    write_run(tmp_path, "adamw-a", overrides, "completed", utility(1.0))
+    write_run(tmp_path, "adamw-b", overrides, "completed", utility(1.0))
+    with pytest.raises(ValueError, match="2 completed attempts"):
+        read_logical_runs(tmp_path, "stage1_main_1.5b")
+
+
+def test_failed_attempts_are_pending_until_three_then_missing(tmp_path) -> None:
+    overrides = ["optimizer=sgd", "optimizer.lr=3.0e-1", "seed=0"]
+    for attempt in range(1, 4):
+        write_run(tmp_path, f"sgd-a{attempt}", overrides, "failed", {})
+        (run,) = read_logical_runs(tmp_path, "stage1_main_1.5b")
+        assert run["status"] == ("missing" if attempt == 3 else "pending")
+    write_run(tmp_path, "sgd-a4", overrides, "running", {})
+    assert read_logical_runs(tmp_path, "stage1_main_1.5b")[0]["status"] == "pending"
+
+
+@pytest.mark.parametrize(
+    ("experiment", "config", "overrides"),
+    [("stage1_sgd100x5_1.5b", "experiments/stage1_main_1.5b",
+      ["optimizer=sgd", "optimizer.lr=1.0e-1", "seed=0"]),  # 25 x 20 in the 100 x 5 directory
+     ("stage1_main_1.5b", "experiments/stage1_main_0.5b",
+      ["optimizer=sgd", "optimizer.lr=1.0e-1", "seed=0"])],  # 0.5B in the 1.5B directory
+)  # fmt: skip
+def test_a_run_outside_its_experiments_condition_is_refused(tmp_path, experiment, config,
+                                                            overrides) -> None:  # fmt: skip
+    import json
+
+    from omegaconf import OmegaConf
+
+    from zero_field_refusal.protocol import load_run_config
+
+    run_dir = tmp_path / experiment / "stray"
+    run_dir.mkdir(parents=True)
+    OmegaConf.save(load_run_config(config, overrides), run_dir / "config.yaml")
+    (run_dir / "meta.json").write_text(json.dumps({"status": "completed"}))
+    (run_dir / "summary.json").write_text(json.dumps(utility(5.0)))
+    with pytest.raises(ValueError, match="depart from its committed config"):
+        read_logical_runs(tmp_path, experiment)
