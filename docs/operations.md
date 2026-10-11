@@ -214,15 +214,51 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.
 
+## Storage
+
+Decided 2026-10-11. Three places, each with one role:
+
+| Place | Holds | Rules |
+|---|---|---|
+| This machine (the checkout, `./data`, `./runs`, `scratchpad/`) | code, documents, reports, scratchpad notes and small run results: run directories, judge labels, calibration samples and reference labels | Large data (teacher streams, soft-target distributions, checkpoints, model weights) takes at most 10 GB for the whole project here; beyond that it stays on the network volume and in the bucket. |
+| Runpod network volume (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | One Standard volume of about 50 GB ($0.07 per GB and month), in a data center chosen for its L40S capacity (checked before creating it). Pods attach it at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. It is working storage, not a backup. It is deleted only with the user's approval. |
+| `ARTIFACT_REMOTE`, a private, versioned Google Cloud Storage bucket | everything to be kept: finalized run directories, teacher streams, labels, inventories, scratchpad snapshots | Create and read only, no overwrite or delete ([archive](#rented-machines)). |
+
+Network volume: not created yet. On creation, record its ID, data center and size here.
+
+- **Small results** (run directories, labels, reports) come back to this machine, are checked
+  against their sha256, and are archived from here.
+- **Large artifacts** go from the Pod straight to the bucket, not through this machine. The
+  archive service account's key is the Runpod secret `gcs_archive_key_b64` (the key file in
+  base64). Pass it at Pod creation as
+  `ARTIFACT_GCS_KEY_B64={{ RUNPOD_SECRET_gcs_archive_key_b64 }}`, together with
+  `ARTIFACT_REMOTE`. On the Pod, decode it to a file on the container disk, never on the network
+  volume, and point `ARTIFACT_GCS_KEY` at it, without printing either:
+
+  ```bash
+  umask 077
+  printenv ARTIFACT_GCS_KEY_B64 | base64 -d > /root/.artifact-gcs-key.json
+  chmod 600 /root/.artifact-gcs-key.json
+  export ARTIFACT_GCS_KEY=/root/.artifact-gcs-key.json
+  ```
+
+  Then follow the [archive procedure](#rented-machines) on the Pod. The key file goes away with
+  the container disk when the Pod is deleted.
+- **Scratchpad snapshots.** At the end of each stage, together with its report in
+  `docs/reports/`, archive `scratchpad/` to `scratchpad/<date>/` in the bucket. Scan it for
+  secrets first (the values in `.env` and in local key files, and token patterns, printing only
+  counts), then follow the archive procedure with its own inventory.
+
 ## Rented machines
 
-Set `DATA_DIR`, `RUNS_DIR` and model caches on verified persistent storage. Results come back to
-this machine (copied and checked against their sha256) before they are archived.
+Set `DATA_DIR`, `RUNS_DIR` and model caches on verified persistent storage: the network volume
+([storage](#storage)). Small results come back to this machine (copied and checked against their
+sha256) before they are archived; large artifacts are archived from the Pod.
 
 **Archive.** `ARTIFACT_REMOTE` is a private Google Cloud Storage bucket path with object versioning.
-Its service account (key file at `ARTIFACT_GCS_KEY`, never put on a Pod) may only create and read
-objects: an archived object cannot be overwritten or deleted, so a changed artifact goes to a new
-path (a new version). Copy finalized artifacts with the key as a per-command override, leaving the
+Its service account (key file at `ARTIFACT_GCS_KEY`; on a Pod only as described under
+[storage](#storage)) may only create and read objects: an archived object cannot be overwritten or
+deleted, so a changed artifact goes to a new path (a new version). Copy finalized artifacts with the key as a per-command override, leaving the
 active `gcloud` account unchanged; set `COMPLETED_DIR` to the artifact directory and `ARTIFACT_ID`
 to its archive path (e.g. `runs/<experiment>/<run id>`):
 

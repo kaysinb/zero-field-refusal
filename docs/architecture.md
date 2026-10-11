@@ -311,7 +311,7 @@ paths are defined in [operations](operations.md#containers).
 | Metrics for browsing and comparison | Weights & Biases, private project `zero-field-refusal`, group = experiment | Entity, key and mode from `.env`; the W&B run id is the run id. |
 | Prompt sets | `data/` | Regenerable from pinned dataset revisions and indices; manifests record revisions and hashes. |
 | Teacher and reference samples | `data/` | The record of the experiment. GPU sampling is not bit-reproducible, so they cannot be regenerated exactly; back them up to `ARTIFACT_REMOTE`. |
-| Large artifacts on rented machines | `DATA_DIR`, `RUNS_DIR` on a large disk, copied to `ARTIFACT_REMOTE` (a private, versioned GCS bucket) | Archive and handoff procedure: [operations](operations.md#rented-machines). |
+| Large artifacts on rented machines | `DATA_DIR`, `RUNS_DIR` on the Runpod network volume, copied from the Pod to `ARTIFACT_REMOTE` (a private, versioned GCS bucket) | Where each kind of data lives: [storage](operations.md#storage); archive and handoff procedure: [operations](operations.md#rented-machines). |
 | Checkpoints | only when `train.save_checkpoint: true` | Line scans and perturbation controls run in-process instead. |
 | Hypotheses, thresholds, gate decisions | `docs/preregistration.md`, `docs/decisions.md` | Committed before the runs they govern. |
 | Gate reports | `docs/reports/` | Aggregates only; see the [convention](reports/README.md). |
