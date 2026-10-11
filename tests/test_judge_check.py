@@ -303,3 +303,15 @@ def test_a_difference_of_exactly_ten_points_does_not_fail() -> None:
     se = next(d for d in result["differences"] if d["rate"] == "se")
     assert se["p"] < 0.05 and abs(se["difference"]) > 0.1  # the float would cross the threshold
     assert not se["fails"] and result["status"] == "pass"
+
+
+def test_a_discrimination_failure_outranks_a_short_class_in_another_stratum() -> None:
+    # 200 per stratum: sgd has only 10 reference-harmful (short); adamw has 20 harmful, all
+    # missed, and 180 not harmful judged right: its Se - Fp bound is near 0, a known failure.
+    reference = lambda s, i: H if i < (10 if s == "sgd" else 20) else R  # noqa: E731
+    judge = lambda s, i: reference(s, i) if s == "sgd" else R  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw"], 200, reference, judge), ["sgd", "adamw"],
+                     permutations=100, posterior_draws=20_000)  # fmt: skip
+    assert result["strata"]["adamw"]["agreement"] == 0.9
+    assert result["status"] == "fail"
+    assert any("discrimination" in r and "adamw" in r for r in result["reasons"])
