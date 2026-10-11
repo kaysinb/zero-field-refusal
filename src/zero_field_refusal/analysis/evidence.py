@@ -53,8 +53,9 @@ files and checks for other uses (``RunKind``): ``THETA0_RUN`` includes the θ₀
 (``run_type: theta0``) and counts its responses (condition ``theta0``) without a K; ``ANY_ARM``
 includes training runs of control arms too. It returns, besides ``considered``, each included
 run's config, ``summary.json`` and the count of each judge label among the counted responses, and
-every run's ``run_type`` (so that a failed θ₀ attempt is not taken for a training run);
-``collect_runs`` is ``read_runs`` with ``TRAINING``, followed by the check below.
+every run's config and ``run_type`` (so that a failed θ₀ attempt is not taken for a training run,
+and a failed or diverged run can be checked against its experiment); ``collect_runs`` is
+``read_runs`` with ``TRAINING``, followed by the check below.
 
 The included runs must form one analysis; otherwise ``collect_runs`` (``check_one_analysis``)
 raises instead of choosing:
@@ -164,7 +165,9 @@ class RunsReading:
     configs: dict[str, DictConfig]  # included run id -> config.yaml
     summaries: dict[str, dict[str, Any]]  # included run id -> summary.json
     label_counts: dict[str, dict[str, int]]  # included run id -> label -> counted responses
-    # Every run id -> its config's run_type, failed runs included (None: no readable config).
+    # Every run id -> its config.yaml mapping and its run_type, failed runs included (None: no
+    # readable meta.json, or no config.yaml that parses as a mapping).
+    run_configs: dict[str, DictConfig | None]
     run_types: dict[str, str | None]
     files: dict[str, str]  # every file read: path relative to the runs root -> sha256, sorted
 
@@ -206,10 +209,12 @@ def read_runs(
     if not run_dirs:
         raise ValueError(f"There are no run directories in experiment {experiment!r}")
     files = _Files(root)
-    rows, configs, summaries, counts, run_types = [], {}, {}, {}, {}
+    rows, configs, summaries, counts, run_configs, run_types = [], {}, {}, {}, {}, {}
     for run_dir in run_dirs:
-        row, run, run_types[run_dir.name] = _read_run(run_dir, judge, identity, files, kind)
+        row, run, cfg = _read_run(run_dir, judge, identity, files, kind)
         rows.append(row)
+        run_configs[run_dir.name] = cfg
+        run_types[run_dir.name] = None if cfg is None else _select(cfg, "run_type", "train")
         if run is not None:
             run_id = row["run_id"]
             configs[run_id], summaries[run_id], counts[run_id] = run
@@ -226,6 +231,7 @@ def read_runs(
         configs=configs,
         summaries=summaries,
         label_counts=counts,
+        run_configs=run_configs,
         run_types=run_types,
         files=dict(sorted(files.sha256.items())),
     )
@@ -263,10 +269,11 @@ _Run = tuple[DictConfig, dict[str, Any], dict[str, int]]  # config, summary, lab
 
 def _read_run(
     run_dir: Path, judge: str, identity: Mapping[str, Any], files: _Files, kind: RunKind
-) -> tuple[dict[str, Any], _Run | None, str | None]:
-    """The run's row of ``considered``, its contents if included, and its config's run_type."""
+) -> tuple[dict[str, Any], _Run | None, DictConfig | None]:
+    """The run's row of ``considered``, its contents if included, and its config (None: not read
+    or not a mapping)."""
     row: dict[str, Any] = dict.fromkeys(CONSIDERED_COLUMNS) | {"run_id": run_dir.name}
-    about: dict[str, Any] = {"run_type": None}
+    about: dict[str, Any] = {"config": None}
     run = None
     try:
         run = _assess(run_dir, judge, identity, files, row, kind, about)
@@ -274,7 +281,7 @@ def _read_run(
         row.update(included=False, reason=excluded.reason, detail=excluded.detail)
     else:
         row.update(included=True, reason="", detail="")
-    return row, run, about["run_type"]
+    return row, run, about["config"]
 
 
 def _assess(
@@ -286,7 +293,7 @@ def _assess(
     kind: RunKind,
     about: dict[str, Any],
 ) -> _Run:
-    """Fill ``row`` (and ``about["run_type"]``) with what the run directory holds; raise
+    """Fill ``row`` (and ``about["config"]``) with what the run directory holds; raise
     ``_Excluded`` to leave it out."""
     meta = _json(files, run_dir / "meta.json", "no_meta")
     row["status"] = meta.get("status")
@@ -294,7 +301,7 @@ def _assess(
     row["training_stream"] = _nested(meta, "inputs", "streams", "training", "sha256")
     cfg, problem = _config(files, run_dir)
     if cfg is not None:  # descriptive columns, so that an excluded run still shows its cell
-        about["run_type"] = _select(cfg, "run_type", "train")
+        about["config"] = cfg
         named = _value(cfg, "optimizer.name", str) is not None
         row.update(arm=arm_of(cfg) if named else None,
                    lr=_value(cfg, "optimizer.lr", int | float), seed=_value(cfg, "seed", int),

@@ -25,11 +25,18 @@ import statsmodels.api as sm
 from omegaconf import OmegaConf
 from scipy.special import expit
 
+from zero_field_refusal.analysis import gate1
 from zero_field_refusal.analysis.curves import fit_logistic
-from zero_field_refusal.analysis.evidence import arm_of, label_item_id
+from zero_field_refusal.analysis.evidence import (
+    arm_of,
+    differing_keys,
+    label_item_id,
+    run_condition,
+)
 from zero_field_refusal.analysis.gate1 import (
     CELL_COLUMNS,
     TOKEN_COUNT_ARM,
+    committed_condition,
     first_crossing,
     gate1_report,
     pool_cells,
@@ -153,10 +160,12 @@ def write_run(
 
 
 def write_theta0(root: Path, experiment: str, theta0: Theta0, run_id: str = "theta0_s0",
-                 extra: tuple[str, ...] = ()) -> None:  # fmt: skip
-    write_run(root, experiment, run_id, run_config(experiment, "adamw", None, 0, "theta0", extra),
-              condition="theta0", K=None, refusal=theta0.refusal, harmful=theta0.harmful,
-              factual=theta0.factual, benchmark=theta0.benchmark)  # fmt: skip
+                 extra: tuple[str, ...] = (), composed_from: str | None = None,
+                 ) -> None:  # fmt: skip
+    cfg = run_config(composed_from or experiment, "adamw", None, 0, "theta0", extra)
+    write_run(root, experiment, run_id, cfg, condition="theta0", K=None, refusal=theta0.refusal,
+              harmful=theta0.harmful, factual=theta0.factual,
+              benchmark=theta0.benchmark)  # fmt: skip
 
 
 def run_id(cell: Cell, seed: int) -> str:
@@ -166,22 +175,26 @@ def run_id(cell: Cell, seed: int) -> str:
 THETA0 = Theta0()
 
 
-def build(root: Path, cells, *, theta0: Theta0 | None = THETA0, main: str = MAIN) -> Path:
-    """Run directories of ``cells`` and of θ₀ under ``root``."""
+def build(root: Path, cells, *, theta0: Theta0 | None = THETA0, main: str = MAIN,
+          composed_from: dict[str, str] | None = None) -> Path:  # fmt: skip
+    """Run directories of ``cells`` and of θ₀ under ``root``; ``composed_from`` maps an experiment
+    to another whose committed config composes the runs filed under it (default: its own)."""
+    source = {} if composed_from is None else composed_from
     if theta0 is not None:
-        write_theta0(root, main, theta0)
+        write_theta0(root, main, theta0, composed_from=source.get(main))
     for cell in cells:
         seeds = cell.seeds or tuple(range(len(cell.K)))
         harmful = cell.harmful or tuple(JUDGED - r for r in cell.refusal)
         factual = cell.factual if isinstance(cell.factual, tuple) else (cell.factual,) * len(seeds)
+        experiment = source.get(cell.experiment, cell.experiment)
         for i, seed in enumerate(seeds):
-            cfg = run_config(cell.experiment, cell.optimizer, cell.lr, seed, "train")
+            cfg = run_config(experiment, cell.optimizer, cell.lr, seed, "train")
             write_run(root, cell.experiment, run_id(cell, seed), cfg, condition="trained",
                       K=cell.K[i], refusal=cell.refusal[i], harmful=harmful[i],
                       factual=factual[i], benchmark=cell.benchmark)  # fmt: skip
         for status, chosen in (("diverged", cell.diverged), ("failed", cell.failed)):
             for seed in chosen:
-                cfg = run_config(cell.experiment, cell.optimizer, cell.lr, seed, "train")
+                cfg = run_config(experiment, cell.optimizer, cell.lr, seed, "train")
                 write_run(root, cell.experiment, f"{run_id(cell, seed)}-{status}", cfg,
                           condition="trained", K=None, refusal=0, harmful=0, factual=0.0,
                           benchmark=0.0, status=status)  # fmt: skip
@@ -252,6 +265,17 @@ def interval(values) -> tuple[float, float, float]:
 
 def read_cells(out: Path) -> pd.DataFrame:
     return pd.read_csv(out / "cells.csv", dtype=str, keep_default_na=False)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def composed_once():
+    """The report composes the committed config of every run it counts; the tests reuse the same
+    runs in many reports, so each composition is made once (the configs do not change)."""
+    compose = functools.cache(lambda path, overrides: load_run_config(path, overrides))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(gate1, "load_run_config",
+                      lambda path, overrides=(): compose(path, tuple(overrides)))  # fmt: skip
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -997,20 +1021,105 @@ def test_failed_and_diverged_theta0_attempts_belong_to_no_cell(tmp_path) -> None
     assert data["gate1"]["next"] == "stage2-equal-KL"
 
 
-def test_theta0_must_share_the_condition_of_the_main_runs(tmp_path) -> None:
+def refused(root: Path, out: Path) -> str:
+    """The message with which the report of ``root`` is refused; nothing is written."""
+    with pytest.raises(ValueError) as caught:
+        gate1_report(root, JUDGE, IDENTITY, out)
+    assert not out.exists()
+    return str(caught.value)
+
+
+def test_runs_of_the_standard_report_hold_the_fixed_condition_of_their_experiment(
+    standard,
+) -> None:
+    root, data = standard
+    assert data["gate1"]["next"] == "stage2-equal-KL"
+    # Every run directory, failed and unlabeled ones included, equals its committed config.
+    configs = sorted(root.glob("*/*/config.yaml"))
+    assert {path.parent.parent.name for path in configs} == {MAIN, TOKEN, X5}
+    for path in configs:
+        cfg = OmegaConf.load(path)
+        expected = committed_condition(path.parent.parent.name, cfg)
+        assert differing_keys([run_condition(cfg), expected]) == [], path
+    # run_type is part of the condition: θ₀ is no training run of its experiment.
+    theta0 = OmegaConf.load(root / MAIN / "theta0_s0" / "config.yaml")
+    as_training = OmegaConf.merge(theta0, {"run_type": "train"})
+    assert differing_keys([run_condition(as_training),
+                           committed_condition(MAIN, theta0)]) == ["run_type"]  # fmt: skip
+
+
+def test_100x5_runs_made_at_25_steps_by_20_are_refused(tmp_path) -> None:
+    # Two runs that agree with each other under the 100 x 5 name, composed from the main condition.
+    root = build(tmp_path / "runs", cells(), composed_from={X5: MAIN})
+    message = refused(root, tmp_path / "out")
+    assert message.endswith(f"{X5}/sgd_lr0.03_s0, {X5}/sgd_lr0.3_s0 in ['train.batch_size', "
+                            "'train.loss.denominator', 'train.steps']")  # fmt: skip
+    assert f"{MAIN}/" not in message
+
+
+@pytest.mark.parametrize("which", ["every run", "a diverged attempt"])
+def test_runs_of_0_5b_under_the_1_5b_name_are_refused(tmp_path, which) -> None:
+    if which == "every run":  # θ₀ and the main runs agree with each other, all on 0.5B
+        root = build(tmp_path / "runs", cells(token=None, hundred={}),
+                     composed_from={MAIN: MAIN_05})  # fmt: skip
+        named = [f"{MAIN}/theta0_s0", f"{MAIN}/adamw_lr5e-05_s4", f"{MAIN}/sgd_lr1_s0"]
+    else:  # it would make the 1.5B effect cell unstable
+        root = build(tmp_path / "runs", cells())
+        cfg = run_config(MAIN_05, "adamw", 5e-5, 5, "train")
+        write_run(root, MAIN, "adamw_lr5e-05_s5-diverged", cfg, condition="trained", K=None,
+                  refusal=0, harmful=0, factual=0.0, benchmark=0.0, status="diverged")  # fmt: skip
+        named = [f"{MAIN}/adamw_lr5e-05_s5-diverged"]
+    message = refused(root, tmp_path / "out")
+    assert message.endswith(" in ['model.name', 'model.revision']")
+    assert all(name in message for name in named)
+    assert (f"{MAIN}/adamw_lr5e-05_s0" in message) == (which == "every run")
+
+
+def test_a_theta0_run_with_a_prompt_limit_is_refused(tmp_path) -> None:
     root = build(tmp_path / "runs", cells(), theta0=None)
-    write_theta0(root, MAIN, Theta0(), extra=("eval.harmful.max_new_tokens=128",))
-    with pytest.raises(ValueError, match=r"θ₀ run theta0_s0 differs .*eval.harmful.max_new_tokens"):
-        gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
+    write_theta0(root, MAIN, Theta0(), extra=("eval.harmful.limit=50",))
+    message = refused(root, tmp_path / "out")
+    assert message.endswith(f": {MAIN}/theta0_s0 in ['eval.harmful.limit']")
 
 
-def test_the_other_experiments_must_share_model_data_and_evaluation(tmp_path) -> None:
-    root = build(tmp_path / "runs", cells(token=None))
-    for seed in range(5):
-        cfg = run_config(TOKEN, "adamw", 5e-5, seed, "train", ("eval.harmful.max_new_tokens=128",))
-        write_run(root, TOKEN, f"adamw_lr5e-05_s{seed}", cfg, condition="trained", K=30.0,
-                  refusal=9, harmful=11, factual=0.88, benchmark=0.59)  # fmt: skip
-    with pytest.raises(ValueError, match=rf"{TOKEN} .* differ .*eval.harmful.max_new_tokens"):
+def test_a_run_whose_optimizer_departs_from_the_protocol_is_refused(tmp_path) -> None:
+    root = build(tmp_path / "runs", cells())
+    cfg = OmegaConf.merge(run_config(MAIN, "sgd", 0.1, 1, "train"),
+                          {"optimizer": {"weight_decay": 0.1}})  # fmt: skip
+    write_run(root, MAIN, "sgd_lr0.1_s1-failed", cfg, condition="trained", K=None, refusal=0,
+              harmful=0, factual=0.0, benchmark=0.0, status="failed")  # fmt: skip
+    message = refused(root, tmp_path / "out")
+    assert message.startswith(f"Run {MAIN}/sgd_lr0.1_s1-failed: the committed config")
+    assert "optimizer.weight_decay: expected 0, got 0.1" in message
+
+
+@pytest.mark.parametrize("role", ["theta0", "token_count"])
+def test_committed_configs_that_disagree_stop_the_report(tmp_path, monkeypatch, role) -> None:
+    # Every run holds the committed config of its experiment, but these configs would no longer
+    # give θ₀, or the token-count branch, the main runs' evaluation: every drop is taken against
+    # θ₀, so the report refuses.
+    longer = "eval.harmful.max_new_tokens=128"
+    committed = gate1.committed_condition
+
+    def changed(experiment: str, cfg) -> dict:
+        condition = committed(experiment, cfg)
+        if (cfg.run_type == "theta0") if role == "theta0" else (experiment == TOKEN):
+            condition["eval"]["harmful"]["max_new_tokens"] = 128
+        return condition
+
+    monkeypatch.setattr(gate1, "committed_condition", changed)
+    if role == "theta0":
+        root = build(tmp_path / "runs", cells(), theta0=None)
+        write_theta0(root, MAIN, Theta0(), extra=(longer,))
+        pattern = r"θ₀ run theta0_s0 differs .*eval.harmful.max_new_tokens"
+    else:
+        root = build(tmp_path / "runs", cells(token=None))
+        for seed in range(5):
+            cfg = run_config(TOKEN, "adamw", 5e-5, seed, "train", (longer,))
+            write_run(root, TOKEN, f"adamw_lr5e-05_s{seed}", cfg, condition="trained", K=30.0,
+                      refusal=9, harmful=11, factual=0.88, benchmark=0.59)  # fmt: skip
+        pattern = rf"{TOKEN} .* differ .*eval.harmful.max_new_tokens"
+    with pytest.raises(ValueError, match=pattern):
         gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
 
 

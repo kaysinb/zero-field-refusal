@@ -13,8 +13,15 @@ without K do not count; the included runs of an experiment must form one analysi
   (``run_type: theta0``; exactly one complete run), whose responses have the condition ``theta0``;
 - ``stage1_token_count_<model>``, if present: AdamW with token-count normalization (A1, D6);
 - ``stage1_sgd100x5_1.5b``, on 1.5B and if present: SGD at 100 steps × batch 5, coverage only.
-θ₀ must share the main runs' condition apart from ``run_type``, and the other experiments their
-``SHARED_SECTIONS``: every drop is taken against θ₀. Per run: K (``K_harmful``),
+Every run the report counts (the included runs, θ₀, and the failed and diverged attempts of a
+cell) must hold the fixed condition of its experiment: its ``evidence.run_condition``, which keeps
+``run_type``, must equal that of the committed ``configs/experiments/<experiment>.yaml`` composed
+with the run's own optimizer section, its seed and, for θ₀, ``run_type=theta0``
+(``committed_condition``). That pins the model, the training regime (steps, batch, denominator,
+cap, normalization, control) and the evaluation volume (prompt sets, limits, samples); any
+difference refuses the report. θ₀ must also share the main runs' condition apart from
+``run_type``, and the other experiments their ``SHARED_SECTIONS``: every drop is taken against
+θ₀. Per run: K (``K_harmful``),
 ``factual_accuracy`` and ``benchmark_accuracy`` of ``summary.json``, and the counts of
 ``refusal`` and ``harmful_compliance`` labels among the judged responses (rates are counts over
 the judged responses). A cell is (experiment, arm, lr); its mean K is the arithmetic mean, its
@@ -102,9 +109,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from omegaconf import DictConfig, OmegaConf
 from scipy import stats
 from scipy.special import expit, logit
 
+from ..protocol import ProtocolError, load_run_config
 from ..tracking import git_state
 from .evidence import (
     ANY_ARM,
@@ -225,6 +234,7 @@ def gate1_report(
         raise ValueError(f"There are no run directories in experiment {names['main']!r}")
     theta0_reading = read_runs(root, names["main"], judge, identity, kind=THETA0_RUN)
     theta0 = _theta0(theta0_reading)
+    _check_conditions(readings, theta0_reading)
     runs = _runs(readings.values(), theta0)
     if not (runs["experiment"] == names["main"]).any():
         raise ValueError(f"No training run of experiment {names['main']!r} is included")
@@ -362,9 +372,67 @@ def _theta0(reading: RunsReading) -> dict[str, Any]:
             "benchmark_accuracy": _accuracy(summary, "benchmark_accuracy", run_id)}  # fmt: skip
 
 
+def committed_condition(experiment: str, cfg: DictConfig) -> dict[str, Any]:
+    """The condition (``evidence.run_condition``) that a run with config ``cfg`` must hold under
+    ``experiment``: the committed ``configs/experiments/<experiment>.yaml`` with the run's own
+    optimizer section (so that a ``???`` rate resolves), its seed and, for θ₀,
+    ``run_type=theta0``."""
+    optimizer = OmegaConf.select(cfg, "optimizer")
+    values = OmegaConf.to_container(optimizer, resolve=True) if optimizer is not None else {}
+    assert isinstance(values, dict)
+    # Merged (+), so that a key the experiment's own optimizer lacks (an SGD momentum under the
+    # AdamW default) is added; the values are JSON, which the override parser reads as YAML.
+    overrides = [f"+optimizer.{key}={json.dumps(value)}" for key, value in values.items()]
+    overrides.append(f"seed={cfg.get('seed')}")
+    if cfg.get("run_type") == THETA0_RUN.run_type:
+        overrides.append(f"run_type={THETA0_RUN.run_type}")
+    return run_condition(load_run_config(f"experiments/{experiment}", overrides))
+
+
+def _cell_attempts(reading: RunsReading) -> pd.DataFrame:
+    """The rows of ``reading.considered`` that belong to a cell, completed or not: training runs
+    with an arm, a rate and a seed, apart from control runs in the main experiment."""
+    rows = reading.considered
+    # A θ₀ attempt carries an optimizer and a seed too, and one that failed or diverged is
+    # excluded before its run_type is checked: only training runs belong to a cell.
+    training = rows["run_id"].map(reading.run_types).eq("train")
+    return rows[training & rows["arm"].notna() & rows["lr"].notna() & rows["seed"].notna()
+                & ~rows["reason"].isin(NOT_A_CELL_RUN)]  # fmt: skip
+
+
+def _check_conditions(readings: Mapping[str, RunsReading], theta0: RunsReading) -> None:
+    """Raise unless every run the report counts holds the fixed condition of its experiment
+    (``committed_condition``): the runs of every cell, completed or not, and θ₀."""
+    counted = [(reading, _cell_attempts(reading)["run_id"]) for reading in readings.values()]
+    counted.append((theta0, theta0.considered.loc[theta0.considered["included"], "run_id"]))
+    differing: dict[tuple[str, ...], list[str]] = {}
+    for reading, run_ids in counted:
+        for run_id in run_ids:
+            cfg = reading.run_configs[run_id]
+            assert cfg is not None  # a run of a cell, or θ₀, has a readable config
+            name = f"{reading.experiment}/{run_id}"
+            try:
+                expected = committed_condition(reading.experiment, cfg)
+            except ProtocolError as exc:  # e.g. a run's optimizer with weight decay
+                raise ValueError(f"Run {name}: the committed config of its experiment with the "
+                                 f"run's optimizer, seed and run_type departs from the protocol: "
+                                 f"{exc}") from exc  # fmt: skip
+            keys = differing_keys([run_condition(cfg), expected])
+            if keys:
+                differing.setdefault(tuple(keys), []).append(name)
+    if differing:
+        found = "; ".join(f"{', '.join(names)} in {list(keys)}"
+                          for keys, names in differing.items())  # fmt: skip
+        raise ValueError(
+            "Runs differ from the committed config of their experiment (with their optimizer, "
+            f"seed and run_type), so they do not hold its fixed condition: {found}"
+        )
+
+
 def _check_comparable(readings: Mapping[str, RunsReading], theta0: RunsReading) -> None:
     """Raise unless θ₀ shares the main runs' condition (``run_type`` apart) and the other
-    experiments share ``SHARED_SECTIONS`` with them: every drop is taken against θ₀."""
+    experiments share ``SHARED_SECTIONS`` with them: every drop is taken against θ₀. With every
+    run on its committed config (``_check_conditions``), this checks the committed configs."""
 
     def condition(reading: RunsReading) -> tuple[str, dict[str, Any]]:
         run_id = reading.considered.loc[reading.considered["included"], "run_id"].iloc[0]
@@ -440,12 +508,7 @@ def _attempts(
     tried: dict[CellKey, set[int]] = {}
     diverged: dict[CellKey, set[int]] = {}
     for reading in readings:
-        rows = reading.considered
-        # A θ₀ attempt carries an optimizer and a seed too, and one that failed or diverged is
-        # excluded before its run_type is checked: only training runs belong to a cell.
-        training = rows["run_id"].map(reading.run_types).eq("train")
-        rows = rows[training & rows["arm"].notna() & rows["lr"].notna() & rows["seed"].notna()
-                    & ~rows["reason"].isin(NOT_A_CELL_RUN)]  # fmt: skip
+        rows = _cell_attempts(reading)
         for arm, lr, seed, reason in zip(rows["arm"], rows["lr"], rows["seed"], rows["reason"],
                                          strict=True):  # fmt: skip
             key = (reading.experiment, str(arm), float(lr))

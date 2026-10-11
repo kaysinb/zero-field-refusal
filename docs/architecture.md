@@ -156,7 +156,9 @@ Entry points in `scripts/`:
   overwritten): runs and exclusions, cell, arm and estimate tables, the K\* record, results, a
   figure and a manifest ([publication evidence](#publication-evidence));
 - `gate1_report.py`: the [Gate 1](preregistration.md#gate-1-technical) numbers of one model from its
-  stage-1 run directories on the CPU, into a new directory like `build_analysis.py`.
+  stage-1 run directories on the CPU, into a new directory like `build_analysis.py`; it refuses
+  any run whose condition differs from the committed config of its experiment (model, training
+  regime, evaluation volume).
 
 Planned:
 - `report.py`.

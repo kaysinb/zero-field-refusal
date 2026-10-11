@@ -14,7 +14,8 @@ diverged seed of AdamW 5e-5) or pending, and what blocks it; see
 zero_field_refusal.analysis.gate1). --calibration takes the judge calibration result (the JSON of
 scripts/judge.py agreement) whose accuracy is recorded against the threshold; without it Gate 1
 is pending. On 0.5B only the effect, collapse and the cells are computed. No model, judge or GPU
-is used.
+is used. Nothing is written if a counted run departs from the committed config of its experiment
+(configs/experiments/<experiment>.yaml with the run's optimizer, seed and run_type).
 
 Put DIR outside the checkout or under an ignored path such as RUNS_DIR: the manifest records
 whether the checkout is dirty, and an untracked DIR inside it would make it so.
