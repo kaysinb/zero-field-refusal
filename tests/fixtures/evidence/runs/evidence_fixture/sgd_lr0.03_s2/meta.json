@@ -1,0 +1,49 @@
+{
+  "run_id": "sgd_lr0.03_s2",
+  "experiment": "evidence_fixture",
+  "name": null,
+  "config_hash": "37ae9d694a03",
+  "status": "completed",
+  "started_at": "2026-10-01T00:00:00+00:00",
+  "finished_at": "2026-10-01T00:00:00+00:00",
+  "argv": [],
+  "git": {
+    "commit": null,
+    "dirty": null
+  },
+  "launch": {
+    "source_snapshot_id": null,
+    "container_image": null
+  },
+  "uv_lock_sha256": null,
+  "python": "3.12",
+  "packages": {},
+  "hardware": {
+    "gpus": []
+  },
+  "wandb": null,
+  "inputs": {
+    "path_check": {
+      "run_id": "fixture",
+      "fingerprint": "ba5285161ba6eed0085fb13784ce5c92f70ebc268b94fd66aa1d68a32884204d"
+    },
+    "prompt_manifest_sha256": "c095df3e8c7eb3286cfb95b683f22d97f6f597c777c6dc38c4a1c0bce4c62e48",
+    "streams": {
+      "training": {
+        "path": "teacher/training-seed2",
+        "count": 40,
+        "sha256": "866fac9aca3aa2113a935d872b2cb8ae51b9bc763a0b7e89a306b944f110476d"
+      },
+      "kl_harmful": {
+        "path": "teacher/kl_harmful",
+        "count": 20,
+        "sha256": "e79974bd2aa037cde4b283452b22e177470bea9e1b0b6a137b120d3e3e4434d1"
+      },
+      "kl_benign": {
+        "path": "teacher/kl_benign",
+        "count": 20,
+        "sha256": "8b83989b7bb008017836fae9e3bffab25538caff398690e078bd83c3d6fec077"
+      }
+    }
+  }
+}

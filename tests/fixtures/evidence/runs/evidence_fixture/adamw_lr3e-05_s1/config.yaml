@@ -1,0 +1,134 @@
+experiment: evidence_fixture
+name: null
+seed: 1
+run_type: train
+protocol_version: 1
+tracking:
+  require_clean_git: false
+  wandb:
+    enabled: false
+    required: false
+    project: zero-field-refusal
+    tags: []
+execution:
+  device: cuda
+  micro_batch_size: 4
+  eval_batch_size: 32
+  generation_batch_size: 32
+control: null
+teacher:
+  source: theta0
+  prompts: alpaca_teacher
+  prompt_assignment: iid_with_replacement
+  responses: 40
+  sampling:
+    temperature: 1.0
+    top_p: 1.0
+    top_k: 0
+    repetition_penalty: 1.0
+    max_new_tokens: 96
+train:
+  steps: 2
+  batch_size: 20
+  max_response_tokens: 96
+  loss:
+    kind: nll
+    normalization: constant
+    include_end_token: true
+    denominator: 1920
+  freeze:
+  - input_embeddings
+  - output_head
+  save_checkpoint: false
+checks:
+  teacher_gap:
+    token_max_abs: 0.0006
+    response_mean_signed_abs: 2.6e-05
+  path_field:
+    batches: 8
+    max_drift_to_noise: 0.01
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  revision: 7ae557604adf67be50417f59c2c2f167def9a775
+  dtype: float32
+  attn_implementation: sdpa
+  tf32: false
+  end_tokens:
+  - <|im_end|>
+  - <|endoftext|>
+optimizer:
+  name: adamw
+  lr: 3.0e-05
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  weight_decay: 0.0
+  first_moment_dtype: float32
+  second_moment_dtype: float32
+data:
+  selection_seed: 0
+  alpaca:
+    dataset: tatsu-lab/alpaca
+    revision: dce01c9b08f87459cf36a430d809084718273017
+    filter: no_input
+    teacher_prompts: 100
+    benign_kl_prompts: 100
+    heldout_references: 100
+  harmful:
+    sources:
+    - name: harmbench
+      url: https://raw.githubusercontent.com/centerforaisafety/HarmBench/c0423b952435fcc8467108d8f25962dbae5b7de2/data/behavior_datasets/harmbench_behaviors_text_all.csv
+      sha256: 8d81accedd38eaaf8b760618622bb888417d1fd0c86eba65c427a16f1cbb4afc
+      text_column: Behavior
+      category_column: SemanticCategory
+      where:
+        FunctionalCategory: standard
+    - name: advbench
+      url: https://raw.githubusercontent.com/llm-attacks/llm-attacks/a62d1307e38b3a076e614b20781c785fd860d813/data/advbench/harmful_behaviors.csv
+      sha256: 6cd1a5c63c07610d7eb67307772ee5606017ee950b5770ab288a2c487489d3e1
+      text_column: goal
+    deduplicate: true
+    kl_prompts: 100
+    judged_prompts: 300
+  factual_qa:
+    set: simple_facts_v1
+    min_questions: 200
+  benchmark:
+    dataset: cais/mmlu
+    config: all
+    split: test
+    revision: c30699e8356da336a370243923dbaf21066bb9fe
+    questions: 500
+    stratify: subject
+eval:
+  harmful:
+    prompt_set: harmful_judged
+    decoding: greedy
+    max_new_tokens: 256
+    limit: 10
+  kl:
+    samples_per_prompt: 4
+    max_new_tokens: 96
+    limit: 5
+  utility:
+    heldout_reference_nll: true
+    factual_qa: true
+    benchmark: true
+  refusal_keywords: v1
+  projections: 2
+  controls:
+    line_scan:
+      enabled: false
+      coefficients:
+      - 0.25
+      - 0.5
+      - 1.0
+      signs:
+      - 1
+      - -1
+    random_direction:
+      enabled: false
+      kinds:
+      - global
+      - per_tensor
