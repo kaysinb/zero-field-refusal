@@ -122,7 +122,7 @@ images. Container builds and source synchronization do not publish Git commits.
 | Hugging Face Hub | `HF_TOKEN`, `HF_HOME` (model cache) |
 | Judge endpoint | `JUDGE_API_BASE`, `JUDGE_API_KEY`, `JUDGE_MODEL` |
 | Storage | `DATA_DIR`, `RUNS_DIR` (defaults: `./data`, `./runs`) |
-| Remote copy | `ARTIFACT_REMOTE` (an rclone remote and path), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| Archive | `ARTIFACT_REMOTE` (a `gs://` bucket path), `ARTIFACT_GCS_KEY` (service-account key file) |
 
 ## Configs on the command line
 
@@ -216,21 +216,26 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
 
 ## Rented machines
 
-Set `DATA_DIR`, `RUNS_DIR` and model caches on verified persistent storage, and `ARTIFACT_REMOTE`
-to a project-scoped archive independent of that working storage. See [retention](#artifact-retention)
-for what to keep.
+Set `DATA_DIR`, `RUNS_DIR` and model caches on verified persistent storage. Results come back to
+this machine (copied and checked against their sha256) before they are archived.
 
-Copy finalized artifacts or consistent versioned snapshots during long campaigns and at handoff.
-For each copy, set `COMPLETED_DIR` to that artifact directory and `ARTIFACT_ID` to its archive path
-(e.g. its `runs/<experiment>/<run id>` path); use a new version if its contents change:
+**Archive.** `ARTIFACT_REMOTE` is a private Google Cloud Storage bucket path with object versioning.
+Its service account (key file at `ARTIFACT_GCS_KEY`, never put on a Pod) may only create and read
+objects: an archived object cannot be overwritten or deleted, so a changed artifact goes to a new
+path (a new version). Copy finalized artifacts with the key as a per-command override, leaving the
+active `gcloud` account unchanged; set `COMPLETED_DIR` to the artifact directory and `ARTIFACT_ID`
+to its archive path (e.g. `runs/<experiment>/<run id>`):
 
 ```bash
-rclone copy --immutable "$COMPLETED_DIR" "$ARTIFACT_REMOTE/$ARTIFACT_ID"
+CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$ARTIFACT_GCS_KEY" \
+  gcloud storage cp --recursive --no-clobber "$COMPLETED_DIR" "$ARTIFACT_REMOTE/$ARTIFACT_ID"
 ```
 
-Do not apply this command repeatedly to changing logs, labels, indexes or W&B files, or use a
-mirror that deletes archived files. Check copy success, inventory and content hashes; test retrieval
-when setting up the archive. Preserve the working copy until the independent archive is verified.
+After each copy, compare the local sha256 of every file with a copy downloaded back (at least for
+one artifact per batch) and with the objects' listed hashes, and record every file with its sha256
+and archive path in a dated inventory, `runs/archive/inventory-<date>.tsv`, which is kept locally
+and archived as a new object. Do not copy changing logs, labels, indexes or W&B files before
+they are final. Preserve the working copy until the archived copy is verified.
 Compute can be released earlier only if the outputs remain on retained storage and a tested transfer
 route works without that machine; otherwise finish the copy first.
 
