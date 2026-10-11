@@ -1,0 +1,30 @@
+# Stage 1, second (last) refinement round inside the stability cliff (preregistration, "Stage-1
+# sweeps", refinement amendment of 2026-10-11), from the recomputed brackets, chosen by
+# scripts/choose_rates.py by K, divergence and collapse alone. Runs from the same checkout as
+# phase A.
+name: stage1-a5
+cells:
+  - name: sgd-0.0244152-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.02441524122195956]
+    seeds: [0]
+  - name: sgd-0.0261506-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.026150566286152067]
+    seeds: [0]
+  - name: sgd-0.0280092-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.0280092304175706]
+    seeds: [0]
+  - name: sgd100x5-0.0185516-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.01855157155423667]
+    seeds: [0]
+  - name: sgd100x5-0.0198701-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.01987013346421578]
+    seeds: [0]
+  - name: sgd100x5-0.0212824-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.021282412798908197]
+    seeds: [0]
