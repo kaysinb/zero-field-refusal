@@ -111,7 +111,8 @@ Before look 1:
   ([preregistration](preregistration.md#judge-check-across-optimizers)). If the stage-1 check is
   undetermined, look-1 runs may train, but look 1 is not analyzed before the check is repeated on
   its runs.
-- The full-analysis simulation is re-run with the seed spread measured in stage 1.
+- The full-analysis simulation is re-run with the seed spread measured in stage 1, and includes
+  the adaptive refinement of the stage-1 sweep rates if its runs enter the inference.
 
 ## Stage 3 — Factors and scale
 

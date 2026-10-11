@@ -186,6 +186,24 @@ to the preregistered exclusion of runs with K below C_lo/10 from the fits and to
 build's exclusions (diverged, no K, missing labels); no run is dropped after the fact. Runs under
 100 × 5 never enter the main curves or K\*.
 
+**Refinement** ([amendment](#amendments) of 2026-10-11, after the pilots). After the prescribed
+outer extensions are settled, apply refinement uniformly to SGD on both models, SGD 100×5 on 1.5B,
+and frozen Adam on 1.5B. If stable pilots do not reach K_A,max, let η_L be the largest stable
+pilot rate and η_U the smallest collapsed or divergent rate above it. If both exist, pilot
+η_j = η_L(η_U/η_L)^(j/4), j = 1, 2, 3, at seed 0. Recompute the bracket after the round; perform
+at most two rounds. Stop early if stable pilots reach K_A,max or no ordered bracket remains.
+Technical failures and unfinished runs do not constitute collapsed endpoints. Keep the existing
+rate-selection rule and retain all pilot outcomes. The AdamW reference grid and Gate-1 effect cell
+remain unchanged. If every interior rate of a round collapses, the next round's η_U is the
+smallest collapsed interior rate; with no stable pilot at the start there is no bracket, and the
+permitted downward extensions come first; after the refinement budget the result stands without
+further search, and the fallback still requires a stable main-condition SGD rate. A seed-0 pilot
+only finds candidates and does not certify stability near the cliff: any refined cell used for
+coverage or as the fallback rate needs all 5 seeds, with collapse and divergence judged at the
+cell level. Judge labels and refusal summaries stay hidden throughout the choice. Before the
+confirmatory stage 2, this adaptive search is included in the full-analysis simulation if its
+runs enter the inference.
+
 **Coverage** (Gate 1) is checked at both ends of the required interval: the stable SGD cell
 means must reach at or below its lower end and at or above its upper end. It is checked first
 for the main condition and then for 100 × 5. If only 100 × 5 covers, a stage-2 SGD arm under
@@ -445,3 +463,4 @@ Format: date, item, old value → new value, reason, and which data had been see
 | 2026-10-11 | [Deferred judge qualification](#judge-check-across-optimizers) (new; plan.md, stage 2) (fixed 2026-10-11, approved by the user) | none → if undetermined: stage-1 outcomes preliminary; look-1 runs may train but are not analyzed before a repeat on look-1 runs; failure → new judge, calibrated and qualified, whole look relabeled before outcomes are seen; undetermined again → used with the limitation stated | The check can lack reference-harmful responses at stage-1 sizes | No stage-1 run had started. Seen: stage-0 checks, the judge-calibration runs (AdamW 5·10⁻⁵, seed 0) and their 200 reference labels |
 | 2026-10-11 | [Gate 1](#gate-1-technical) fallback route (fixed 2026-10-11, approved by the user) | fallback when SGD falls short → fallback also when coverage cannot be assessed, only if every other Gate 1 criterion passes; in every case only with a stable main-condition SGD rate, otherwise stop | Coverage that cannot be assessed must not let the study continue by itself | No stage-1 run had started. Seen: stage-0 checks, the judge-calibration runs (AdamW 5·10⁻⁵, seed 0) and their 200 reference labels |
 | 2026-10-11 | [Gate 1](#gate-1-technical): "no usable range" | "no AdamW cell without collapse, or K_hi < K_lo" → "no stable AdamW cell, or K_hi < K_lo" | A clarification of the wording, in line with K_hi among stable cells and the definition of stable cells in the [stage-1 sweeps](#stage-1-sweeps); agreed with the coordinator under the user's delegation | No stage-1 data seen |
+| 2026-10-11 | [Stage-1 sweeps](#stage-1-sweeps): refinement (fixed 2026-10-11, coordinator's decision under the user's delegation during his absence, agreed with a second reviewer; the user confirms on return) | rates only beyond the grid ends → after the outer extensions, up to two refinement rounds of three rates at quarter points on the log scale between the largest stable and the smallest collapsed or divergent rate, until a stable pilot reaches K_A,max; refined cells used for coverage or the fallback need all 5 seeds | The seed-0 pilots showed a cliff between neighboring grid rates (SGD under 100 × 5: stable at 0.01 with K 3.3, collapsed from 0.03 with K about 280; frozen Adam stable at 2·10⁻⁵, collapsed at 5·10⁻⁵; SGD under the main condition collapsed at every grid rate); the grid could not resolve it, and the choice would have rested on its coarseness. The result on the original grid is kept and reported | The phase-A pilots' K, divergence and utility (outcomes of the study, used for the rate choice as the rules allow); no refusal outcome or judge label had been computed or seen |

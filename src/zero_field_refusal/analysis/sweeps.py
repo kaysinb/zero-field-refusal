@@ -20,6 +20,13 @@ chosen. If no candidate lies within a factor 2 of K_A,min (or of K_A,max), the g
 one step in that direction (a factor 3 for SGD, 2 for frozen Adam), at most twice per end, and the
 extension is piloted before the choice. While a needed pilot has no known outcome the result is
 "wait", never a choice.
+
+Refinement (amendment of 2026-10-11): once the outer extensions are settled, if no stable pilot
+reaches K_A,max, η_L is the largest stable pilot rate and η_U the smallest collapsed or divergent
+rate above it (technical failures and unfinished runs are no endpoints); with both, the rates
+η_L (η_U/η_L)^(j/4), j = 1, 2, 3, are piloted at seed 0, the bracket is recomputed, and at most two
+such rounds are made. Refinement stops early when a stable pilot reaches K_A,max or no ordered
+bracket remains; the choice rule above is then applied to all pilots.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ TOLERANCE = 1e-9  # accuracies are fractions of counts; equality at a threshold 
 NEAR = math.log(2.0)  # a candidate within a factor 2 of a target end reaches it
 MAX_EXTENSIONS = 2  # per end
 MAX_ATTEMPTS = 3  # launch.MAX_ATTEMPTS: failed attempts after which a run is missing
+REFINE_ROUNDS, REFINE_POINTS = 2, 3  # rounds of refinement, rates per round
 PLACES = {"sgd": 4, "adam_frozen": 3}
 STEP = {"sgd": 3.0, "adam_frozen": 2.0}
 KNOWN = ("completed", "diverged", "missing")  # outcomes; "pending" is not one
@@ -60,9 +68,11 @@ class Choice:
     grid: list[float]  # the rates of the base grid
     candidates: list[dict[str, Any]]
     targets: list[float]  # target K values, in order
-    status: str = "chosen"  # chosen | extend | wait
+    status: str = "chosen"  # chosen | extend | refine | wait
     chosen: list[float] = field(default_factory=list)
-    extend: list[float] = field(default_factory=list)  # rates to pilot before the choice
+    extend: list[float] = field(default_factory=list)  # outer extensions to pilot first
+    refine: list[float] = field(default_factory=list)  # refinement rates to pilot first
+    bracket: list[float] | None = None  # (η_L, η_U) of the last refinement considered
     pending: list[float] = field(default_factory=list)  # pilots without a known outcome yet
     notes: list[str] = field(default_factory=list)
 
@@ -87,6 +97,25 @@ def unstable_reason(pilot: Pilot, theta0: Mapping[str, float]) -> str | None:
     if theta0["benchmark"] - pilot.benchmark > BENCHMARK_DROP + TOLERANCE:
         return "collapse: benchmark accuracy"
     return None
+
+
+def _bracket(pilots: Sequence[Pilot],
+             candidates: Sequence[Mapping[str, Any]]) -> tuple[float, float] | None:  # fmt: skip
+    """(η_L, η_U): the largest stable rate and the smallest collapsed or divergent rate above it."""
+    stable = [p.lr for p, c in zip(pilots, candidates, strict=True) if c["candidate"]]
+    if not stable:
+        return None
+    low = max(stable)
+
+    def ended_badly(p: Pilot, c: Mapping[str, Any]) -> bool:
+        # Collapse, divergence or a non-finite K; never a technical failure or an unfinished run.
+        reason = c["reason"] or ""
+        collapsed = reason.startswith("collapse") or reason.startswith("K")
+        return p.status == "diverged" or (p.status == "completed" and collapsed)
+
+    above = [p.lr for p, c in zip(pilots, candidates, strict=True)
+             if p.lr > low * (1 + 1e-9) and ended_badly(p, c)]  # fmt: skip
+    return (low, min(above)) if above else None
 
 
 def target_points(k_min: float, k_max: float, places: int) -> list[float]:
@@ -125,15 +154,32 @@ def choose(arm: str, grid: Sequence[float], pilots: Iterable[Pilot],
         return any(abs(math.log(p.k) - math.log(target)) <= NEAR + 1e-12 for p in usable)
 
     rates = [p.lr for p in known]
-    below = [lr for lr in rates if lr < min(grid) * (1 - 1e-9)]
-    above = [lr for lr in rates if lr > max(grid) * (1 + 1e-9)]
+    lows = [min(grid) / STEP[arm] ** n for n in range(1, MAX_EXTENSIONS + 1)]
+    highs = [max(grid) * STEP[arm] ** n for n in range(1, MAX_EXTENSIONS + 1)]
+    below = [lr for lr in rates if any(_same(lr, x) for x in lows)]
+    above = [lr for lr in rates if any(_same(lr, x) for x in highs)]
     if not reaches(k_min) and len(below) < MAX_EXTENSIONS:
-        choice.extend.append(min(rates) / STEP[arm])
+        choice.extend.append(lows[len(below)])
     if not reaches(k_max) and len(above) < MAX_EXTENSIONS:
-        choice.extend.append(max(rates) * STEP[arm])
+        choice.extend.append(highs[len(above)])
     if choice.extend:
         choice.status = "extend"
         return choice
+    outer = [*grid, *lows, *highs]
+    refined = [lr for lr in rates if not any(_same(lr, x) for x in outer)]
+    rounds = math.ceil(len(refined) / REFINE_POINTS)
+    if not reaches(k_max) and rounds < REFINE_ROUNDS:
+        bracket = _bracket(pilots, candidates)
+        choice.bracket = list(bracket) if bracket else None
+        if bracket is not None:
+            low, high = bracket
+            new = [low * (high / low) ** (j / 4) for j in range(1, REFINE_POINTS + 1)]
+            new = [lr for lr in new if not any(_same(lr, x) for x in rates)]
+            if new:
+                choice.refine, choice.status = new, "refine"
+                return choice
+    if refined:
+        choice.notes.append(f"{rounds} refinement round(s) made")
     for name, target in (("K_A,min", k_min), ("K_A,max", k_max)):
         if not reaches(target):
             choice.notes.append(f"no candidate within a factor 2 of {name} after the extensions")

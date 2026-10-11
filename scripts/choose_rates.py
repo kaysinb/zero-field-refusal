@@ -5,8 +5,9 @@
 Reads K, divergence and utility of the runs in RUNS_ROOT/stage1_main_<model> (and, on 1.5B,
 RUNS_ROOT/stage1_sgd100x5_1.5b); never a judge label. Prints, per sweep (SGD, frozen Adam on 1.5B,
 SGD under 100 x 5 on 1.5B), the candidates, the target K values and a status: "chosen" with the
-chosen rates, "extend" with the rates to pilot first, or "wait" with the pilots whose outcome is not
-known yet. Every run must hold its experiment's committed condition. Output is JSON.
+chosen rates, "extend" with the outer extensions to pilot first, "refine" with the refinement
+rates inside the bracket to pilot first, or "wait" with the pilots whose outcome is not known yet.
+Every run must hold its experiment's committed condition. Output is JSON.
 """
 
 import argparse

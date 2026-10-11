@@ -77,9 +77,8 @@ def test_an_unreached_end_is_piloted_first_one_step_beyond_the_grid() -> None:
     assert choose("sgd", SGD_GRID, pilots, THETA0, 1.0, 30.0).extend == [27.0]
     pilots.append(pilot(27.0, None, status="diverged"))
     done = choose("sgd", SGD_GRID, pilots, THETA0, 1.0, 30.0)
-    assert done.extend == []  # two extensions per end at most
-    assert "K_A,max" in done.notes[0]
-    assert done.chosen == [0.3, 1.0, 3.0, 9.0]
+    assert done.extend == []  # two extensions per end at most; refinement comes next
+    assert done.status == "refine" and done.bracket == [9.0, 27.0]
 
 
 def test_frozen_adam_extends_downward_by_a_factor_two() -> None:
@@ -223,3 +222,70 @@ def test_a_run_outside_its_experiments_condition_is_refused(tmp_path, experiment
     (run_dir / "summary.json").write_text(json.dumps(utility(5.0)))
     with pytest.raises(ValueError, match="depart from its committed config"):
         read_logical_runs(tmp_path, experiment)
+
+
+# --- refinement inside the cliff ----------------------------------------------------------------
+
+X5_GRID = [0.01, 0.03, 0.1, 0.3, 1.0]
+
+
+def cliff(extra=()):
+    """100 x 5: 0.01 stable at K 3.3, everything above collapsed; outer extension 3.0 collapsed."""
+    pilots = [pilot(0.01, 3.3)]
+    pilots += [pilot(lr, 290.0, factual=0.0) for lr in (0.03, 0.1, 0.3, 1.0, 3.0, 9.0)]
+    return pilots + list(extra)
+
+
+def test_a_bracket_is_refined_at_quarter_points_on_the_log_scale() -> None:
+    choice = choose("sgd", X5_GRID, cliff(), THETA0, 1.86, 16.4)
+    assert choice.status == "refine" and choice.bracket == [0.01, 0.03]
+    assert choice.refine == pytest.approx([0.01 * 3 ** (j / 4) for j in (1, 2, 3)])
+
+
+def test_when_every_interior_rate_collapses_the_next_round_narrows_the_bracket() -> None:
+    first = [0.01 * 3 ** (j / 4) for j in (1, 2, 3)]
+    pilots = cliff(pilot(lr, 280.0, factual=0.0) for lr in first)
+    choice = choose("sgd", X5_GRID, pilots, THETA0, 1.86, 16.4)
+    assert choice.status == "refine" and choice.bracket == pytest.approx([0.01, first[0]])
+    second = [0.01 * (first[0] / 0.01) ** (j / 4) for j in (1, 2, 3)]
+    assert choice.refine == pytest.approx(second)
+    done = choose("sgd", X5_GRID, pilots + [pilot(lr, 250.0, factual=0.0) for lr in second],
+                  THETA0, 1.86, 16.4)  # fmt: skip
+    assert done.status == "chosen" and done.chosen == [0.01]  # two rounds at most
+    assert "2 refinement round(s) made" in done.notes
+
+
+def test_refinement_stops_early_once_a_stable_pilot_reaches_the_upper_end() -> None:
+    first = [0.01 * 3 ** (j / 4) for j in (1, 2, 3)]
+    found = [pilot(first[0], 5.0), pilot(first[1], 12.0), pilot(first[2], 300.0, factual=0.0)]
+    choice = choose("sgd", X5_GRID, cliff(found), THETA0, 1.86, 16.4)
+    assert choice.status == "chosen" and choice.refine == []
+    assert first[1] in choice.chosen
+
+
+def test_without_a_stable_pilot_there_is_no_bracket() -> None:
+    pilots = [pilot(lr, 400.0, factual=0.0) for lr in (*SGD_GRID, 0.01, 0.01 / 3, 9.0, 27.0)]
+    choice = choose("sgd", SGD_GRID, pilots, THETA0, 1.86, 16.4)
+    assert choice.status == "chosen" and choice.bracket is None and choice.chosen == []
+
+
+def test_technical_failures_are_no_bracket_end_and_refinements_wait() -> None:
+    first = [0.01 * 3 ** (j / 4) for j in (1, 2, 3)]
+    # 0.03 missing (technical) is no endpoint: the bracket runs to the next collapsed rate, 0.1
+    pilots = [p if p.lr != 0.03 else pilot(0.03, None, status="missing") for p in cliff()]
+    choice = choose("sgd", X5_GRID, pilots, THETA0, 1.86, 16.4)
+    assert choice.bracket == [0.01, 0.1]
+    waiting = choose("sgd", X5_GRID, cliff([pilot(first[0], None, status="pending")]),
+                     THETA0, 1.86, 16.4)  # fmt: skip
+    assert waiting.status == "wait" and waiting.pending == [first[0]]
+
+
+def test_refinement_rates_below_the_grid_are_not_taken_for_outer_extensions() -> None:
+    # Main-condition SGD: 0.01 (outer extension) stable, the grid from 0.03 collapsed.
+    pilots = [pilot(0.01, 3.0), pilot(0.01 / 3, 0.4)]
+    pilots += [pilot(lr, 400.0, factual=0.0) for lr in (*SGD_GRID, 9.0, 27.0)]
+    first = choose("sgd", SGD_GRID, pilots, THETA0, 1.86, 16.4)
+    assert first.status == "refine" and first.bracket == [0.01, 0.03]
+    pilots += [pilot(lr, 6.0 * (j + 1)) for j, lr in enumerate(first.refine)]
+    second = choose("sgd", SGD_GRID, pilots, THETA0, 1.86, 16.4)
+    assert second.extend == [] and second.status == "chosen"  # 18 reaches 16.4: early stop
