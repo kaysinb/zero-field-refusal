@@ -195,8 +195,11 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   `python scripts/judge.py label judge/wildguard SAMPLE.jsonl OUT.jsonl`. Before any item it
   checks through `/tokenize` that the prompt carries exactly one BOS: the template starts with
   `<s>` and the tokenizer adds BOS by default, so requests send `add_special_tokens: false`.
+- **Run directories:** `python scripts/label_runs.py --judge wildguard RUN_DIR ...` labels every
+  response of each completed run into `<run dir>/judge/wildguard.jsonl` (the same token check
+  first); rerun it until no output is unparseable.
 - The Pod has no SSH and no persistent storage: stop it as soon as the labels are written; the
-  labels and their raw outputs stay local next to the sample.
+  labels and their raw outputs stay local next to the sample or in the run directories.
 
 ## Launching runs
 

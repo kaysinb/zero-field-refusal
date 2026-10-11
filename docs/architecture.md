@@ -103,6 +103,7 @@ Implemented:
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
+| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`) |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 | `analysis` | h(K) fits, K\* and the decisive cells, Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`) |
@@ -127,6 +128,8 @@ Entry points in `scripts/`:
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
+- `label_runs.py`: labels every response of completed run directories with one judge into their
+  label files, the input of the analysis build; the label file is the cache;
 - `import_labels.py`: imports reference labels made outside the project (the ensemble) next to
   the sample, with their provenance folder and hashes;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones
