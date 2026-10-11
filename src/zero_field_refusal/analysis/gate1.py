@@ -68,8 +68,10 @@ Computed (fractions: 0.10 is 10 pp):
    stage-2 decision (``stage2-equal-KL``, ``stage2-equal-KL-100x5-needs-amendment`` or
    ``fallback``), where ``not assessable`` continues to the fallback (D2: every other criterion
    passes and SGD has a stable main-condition rate). ``passes`` is whether the study continues
-   to stage 2; ``blocking`` names the criteria in the way. The judge check across optimizers
-   (D7) is not computed here, so every continuation is provisional on it.
+   to stage 2; ``blocking`` names the criteria in the way. When the route is the fallback or the
+   gate stops, ``notes`` lists the SGD cells whose missing seeds a recovery round may still bring
+   back; the decision does not wait for them. The judge check across optimizers (D7) is not
+   computed here, so every continuation is provisional on it.
 On 0.5B the report holds 1–3 only: Gate 1 defines 4–7 on 1.5B.
 
 A comparison with a threshold counts a value within ``TOLERANCE`` of the threshold as equal to it:
@@ -122,7 +124,7 @@ MODELS = ("0.5b", "1.5b")
 GATE_MODEL = "1.5b"  # Gate 1's criteria are defined on 1.5B
 REFUSAL = "refusal"
 DIVERGED = "diverged"  # evidence's exclusion reason of a divergence
-NOT_A_CELL_RUN = ("not_training", "unknown_arm")  # a θ₀ run or a control run in the main experiment
+NOT_A_CELL_RUN = ("unknown_arm",)  # a control run in the main experiment
 ADAMW, SGD = "adamw", "sgd"
 TOKEN_COUNT_ARM = "adamw+token_count_normalization"  # evidence.arm_of, configs/control/token_count
 EFFECT_LR = 5.0e-5
@@ -142,6 +144,7 @@ K_LO_DROP = 0.10
 DISAPPEARS = {"constant_mean_below": 0.10, "constant_upper_bound_below": 0.25,
               "token_count_mean_at_least": 0.25}  # fmt: skip
 NOT_ASSESSABLE = ("no_crossing", "no_usable_range")
+CENSORED = "censored: coverage and equal-KL conclusions hold for K ≥ K_min only"
 COVERAGE_ROUTES = ("equal-KL", "equal-KL with 100x5 (needs amendment)", "pending", "fallback",
                    "stop", "not assessable")  # fmt: skip
 NEXT = {"equal-KL": "stage2-equal-KL",
@@ -299,7 +302,8 @@ def compute(
         k_lo = _k_lo(runs, cells, theta0, main)
         coverage = _coverage(cells, k_lo, names, present["sgd100x5"])
         report.update(k_lo=k_lo, coverage=coverage, effect_disappears=disappears,
-                      gate1=_gate1(effect, calibration, disappears, coverage))  # fmt: skip
+                      gate1=_gate1(effect, calibration, disappears, coverage, cells,
+                                   names))  # fmt: skip
     coverage, disappears = report["coverage"], report["effect_disappears"]
     report["summary"] = {
         "gate1": report["gate1"],
@@ -437,7 +441,10 @@ def _attempts(
     diverged: dict[CellKey, set[int]] = {}
     for reading in readings:
         rows = reading.considered
-        rows = rows[rows["arm"].notna() & rows["lr"].notna() & rows["seed"].notna()
+        # A θ₀ attempt carries an optimizer and a seed too, and one that failed or diverged is
+        # excluded before its run_type is checked: only training runs belong to a cell.
+        training = rows["run_id"].map(reading.run_types).eq("train")
+        rows = rows[training & rows["arm"].notna() & rows["lr"].notna() & rows["seed"].notna()
                     & ~rows["reason"].isin(NOT_A_CELL_RUN)]  # fmt: skip
         for arm, lr, seed, reason in zip(rows["arm"], rows["lr"], rows["seed"], rows["reason"],
                                          strict=True):  # fmt: skip
@@ -880,7 +887,7 @@ def _coverage(
         route = "fallback" if largest is not None else "stop"
     record["route"] = route
     if record["censored"]:
-        record["detail"] = "censored: coverage and equal-KL conclusions hold for K ≥ K_min only"
+        record["detail"] = "; ".join(filter(None, [record["detail"], CENSORED]))
     return record
 
 
@@ -903,6 +910,8 @@ def _gate1(
     calibration: Mapping[str, Any] | None,
     disappears: Mapping[str, Any],
     coverage: Mapping[str, Any],
+    cells: pd.DataFrame,
+    names: Mapping[str, str],
 ) -> dict[str, Any]:
     """Whether Gate 1 lets the study continue, and how (see the module docstring, item 7)."""
     stop: list[str] = []  # computed criteria that fail
@@ -921,7 +930,9 @@ def _gate1(
                          "round may bring them back")  # fmt: skip
     if disappears["disappears"] is True:
         stop.append("effect_disappears")
-    elif disappears["disappears"] is None:
+    elif disappears["disappears"] is None and not disappears["constant"]["diverged_seeds"]:
+        # Open only when the constant-denominator parts hold; a diverged effect cell already
+        # leaves Gate 1 undetermined.
         pending.append("effect_disappears")
     if calibration is None or calibration["meets_threshold"] is not True:
         pending.append("calibration")
@@ -934,7 +945,7 @@ def _gate1(
     elif route == "pending":
         pending.append("sgd100x5")
     if coverage["censored"]:
-        notes.append(coverage["detail"])
+        notes.append(CENSORED)
     if disappears["status"] == "incomplete" and not disappears["token_count"]["present"]:
         notes.append("the token-count branch is absent: the A1 diagnostic is incomplete")
     if stop:
@@ -943,9 +954,28 @@ def _gate1(
         next_ = "undetermined"
     else:
         next_ = "pending" if pending else NEXT[route]
+    incomplete = _incomplete_sgd(cells, names)
+    if incomplete and (next_ in ("stop", "fallback") or route == "fallback"):
+        notes.append("SGD cells that a recovery round may still complete: " + "; ".join(incomplete))
     return {"passes": next_ not in NOT_CONTINUING, "next": next_,
             "blocking": stop + undetermined + pending, "provisional_on": list(PROVISIONAL_ON),
             "notes": notes}  # fmt: skip
+
+
+def _incomplete_sgd(cells: pd.DataFrame, names: Mapping[str, str]) -> list[str]:
+    """The SGD cells of the main condition and of 100 x 5 with planned seeds that are missing for
+    a reason other than divergence (a technical failure, a run left out), which a recovery round
+    may still bring back."""
+    experiments = [names[role] for role in ("main", "sgd100x5") if role in names]
+    sgd = cells[cells["experiment"].isin(experiments) & (cells["arm"] == SGD)]
+    found = []
+    for experiment, lr, missing, diverged in zip(sgd["experiment"], sgd["lr"],
+                                                 sgd["missing_seeds"], sgd["diverged_seeds"],
+                                                 strict=True):  # fmt: skip
+        recoverable = sorted({int(s) for s in missing.split()} - {int(s) for s in diverged.split()})
+        if recoverable:
+            found.append(f"{experiment} lr {lr:g} (seeds {recoverable})")
+    return found
 
 
 # --- comparisons --------------------------------------------------------------------------------

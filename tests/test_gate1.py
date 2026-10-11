@@ -369,8 +369,8 @@ def test_a_diverged_seed_leaves_the_effect_undetermined(tmp_path, how) -> None:
     # The seed cannot come back: neither pending nor a computed failure.
     gate1 = data["gate1"]
     assert (gate1["passes"], gate1["next"]) == (False, "undetermined")
-    assert gate1["blocking"] == ["effect_criterion: AdamW at 5e-05 diverged (seeds [4])",
-                                 "effect_disappears"]  # fmt: skip
+    # The A1 rule is open only because the effect cell diverged: it does not block on its own.
+    assert gate1["blocking"] == ["effect_criterion: AdamW at 5e-05 diverged (seeds [4])"]
     assert data["summary"]["gate1"]["next"] == "undetermined"
 
 
@@ -558,6 +558,15 @@ def test_k_lo_censored_below(tmp_path) -> None:
     assert coverage["main"]["at_or_above_upper"] == [0.3, 1.0]
     assert data["gate1"]["next"] == "stage2-equal-KL"
     assert coverage["detail"] in data["gate1"]["notes"]
+
+
+def test_a_censored_and_pending_coverage_keeps_both_details(tmp_path) -> None:
+    sgd_cells = {**SGD, 0.1: sgd(0.1, 6.0, 20)}  # above K_min: the main condition does not cover
+    root = build(tmp_path / "runs", cells(CENSORED, sgd_cells=sgd_cells, hundred={}))
+    coverage = report(root, tmp_path / "out")["coverage"]
+    assert (coverage["censored"], coverage["route"]) == (True, "pending")
+    assert coverage["detail"] == ("the 100 x 5 experiment is absent; censored: coverage and "
+                                  "equal-KL conclusions hold for K ≥ K_min only")  # fmt: skip
 
 
 def test_a_fit_that_does_not_converge_falls_back_to_the_cell_means(tmp_path, monkeypatch) -> None:
@@ -807,6 +816,24 @@ def test_when_neither_covers_the_fallback_needs_a_stable_sgd_rate(tmp_path) -> N
     assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("stop", ["stable_main_sgd_rate"])
 
 
+def test_a_fallback_notes_the_sgd_cells_a_recovery_round_may_complete(tmp_path) -> None:
+    # Neither condition covers. The chosen SGD cell at 0.3 lost seeds 3 and 4 and the pilot at 3.0
+    # its one seed to technical failures, as did the 100 x 5 pilot at 0.03; the pilot at 10.0
+    # diverged, which no recovery round brings back. The decision stands; a note names them.
+    sgd_cells = {**SGD, 0.1: sgd(0.1, 6.0, 20),
+                 0.3: Cell(MAIN, "sgd", 0.3, (8.0, 8.2, 7.9), (17, 17, 16), failed=(3, 4)),
+                 3.0: Cell(MAIN, "sgd", 3.0, (), (), failed=(0,)),
+                 10.0: Cell(MAIN, "sgd", 10.0, (), (), diverged=(0,))}  # fmt: skip
+    hundred = {0.03: Cell(X5, "sgd", 0.03, (), (), failed=(0,)), 0.3: HUNDRED_BY_5[0.3]}
+    root = build(tmp_path / "runs", cells(sgd_cells=sgd_cells, hundred=hundred))
+    data = report(root, tmp_path / "out")
+    assert (data["coverage"]["route"], data["gate1"]["next"]) == ("fallback", "fallback")
+    assert data["gate1"]["notes"] == [
+        f"SGD cells that a recovery round may still complete: {MAIN} lr 0.3 (seeds [3, 4]); "
+        f"{MAIN} lr 3 (seeds [0]); {X5} lr 0.03 (seeds [0])"
+    ]
+
+
 def test_a_cell_with_a_diverged_run_is_unstable_and_does_not_cover(tmp_path) -> None:
     # The SGD cell above U has a second seed that diverged, one at a higher rate diverged only,
     # and one more run reports a non-finite K: divergences too.
@@ -946,6 +973,28 @@ def test_theta0_must_be_one_complete_run(tmp_path) -> None:
     with pytest.raises(ValueError, match="found 2"):
         gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_failed_and_diverged_theta0_attempts_belong_to_no_cell(tmp_path) -> None:
+    # θ₀'s config carries AdamW's default rate 2e-5 and seed 0, and a θ₀ attempt that failed or
+    # diverged is excluded before its run_type is read: it must not count as a seed 0 of the
+    # AdamW 2e-5 cell, which is complete here.
+    root = build(tmp_path / "runs", cells())
+    cfg = run_config(MAIN, "adamw", None, 0, "theta0")
+    assert (cfg.optimizer.lr, cfg.seed) == (2e-5, 0)
+    for status in ("failed", "diverged"):
+        write_run(root, MAIN, f"theta0_s0-{status}", cfg, condition="theta0", K=None, refusal=0,
+                  harmful=0, factual=0.0, benchmark=0.0, status=status)  # fmt: skip
+    out = tmp_path / "out"
+    data = report(root, out)
+    assert data["theta0"]["run_id"] == "theta0_s0"
+    excluded = data["experiments"]["main"]["excluded"]
+    assert excluded["theta0_s0-failed"]["reason"] == "not_completed"
+    assert excluded["theta0_s0-diverged"]["reason"] == "diverged"
+    row = read_cells(out).set_index(CELL_KEY).loc[(MAIN, "adamw", "2e-05")]
+    columns = ["seeds", "missing_seeds", "diverged", "stable"]
+    assert row[columns].tolist() == ["0 1 2 3 4", "", "0", "True"]
+    assert data["gate1"]["next"] == "stage2-equal-KL"
 
 
 def test_theta0_must_share_the_condition_of_the_main_runs(tmp_path) -> None:

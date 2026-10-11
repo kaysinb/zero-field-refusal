@@ -52,7 +52,8 @@ missing, not UTF-8, not valid JSON or YAML, or lacks a required field excludes o
 files and checks for other uses (``RunKind``): ``THETA0_RUN`` includes the θ₀ evaluation
 (``run_type: theta0``) and counts its responses (condition ``theta0``) without a K; ``ANY_ARM``
 includes training runs of control arms too. It returns, besides ``considered``, each included
-run's config, ``summary.json`` and the count of each judge label among the counted responses;
+run's config, ``summary.json`` and the count of each judge label among the counted responses, and
+every run's ``run_type`` (so that a failed θ₀ attempt is not taken for a training run);
 ``collect_runs`` is ``read_runs`` with ``TRAINING``, followed by the check below.
 
 The included runs must form one analysis; otherwise ``collect_runs`` (``check_one_analysis``)
@@ -163,6 +164,8 @@ class RunsReading:
     configs: dict[str, DictConfig]  # included run id -> config.yaml
     summaries: dict[str, dict[str, Any]]  # included run id -> summary.json
     label_counts: dict[str, dict[str, int]]  # included run id -> label -> counted responses
+    # Every run id -> its config's run_type, failed runs included (None: no readable config).
+    run_types: dict[str, str | None]
     files: dict[str, str]  # every file read: path relative to the runs root -> sha256, sorted
 
 
@@ -203,9 +206,9 @@ def read_runs(
     if not run_dirs:
         raise ValueError(f"There are no run directories in experiment {experiment!r}")
     files = _Files(root)
-    rows, configs, summaries, counts = [], {}, {}, {}
+    rows, configs, summaries, counts, run_types = [], {}, {}, {}, {}
     for run_dir in run_dirs:
-        row, run = _read_run(run_dir, judge, identity, files, kind)
+        row, run, run_types[run_dir.name] = _read_run(run_dir, judge, identity, files, kind)
         rows.append(row)
         if run is not None:
             run_id = row["run_id"]
@@ -223,6 +226,7 @@ def read_runs(
         configs=configs,
         summaries=summaries,
         label_counts=counts,
+        run_types=run_types,
         files=dict(sorted(files.sha256.items())),
     )
 
@@ -259,16 +263,18 @@ _Run = tuple[DictConfig, dict[str, Any], dict[str, int]]  # config, summary, lab
 
 def _read_run(
     run_dir: Path, judge: str, identity: Mapping[str, Any], files: _Files, kind: RunKind
-) -> tuple[dict[str, Any], _Run | None]:
+) -> tuple[dict[str, Any], _Run | None, str | None]:
+    """The run's row of ``considered``, its contents if included, and its config's run_type."""
     row: dict[str, Any] = dict.fromkeys(CONSIDERED_COLUMNS) | {"run_id": run_dir.name}
+    about: dict[str, Any] = {"run_type": None}
     run = None
     try:
-        run = _assess(run_dir, judge, identity, files, row, kind)
+        run = _assess(run_dir, judge, identity, files, row, kind, about)
     except _Excluded as excluded:
         row.update(included=False, reason=excluded.reason, detail=excluded.detail)
     else:
         row.update(included=True, reason="", detail="")
-    return row, run
+    return row, run, about["run_type"]
 
 
 def _assess(
@@ -278,14 +284,17 @@ def _assess(
     files: _Files,
     row: dict[str, Any],
     kind: RunKind,
+    about: dict[str, Any],
 ) -> _Run:
-    """Fill ``row`` with what the run directory holds; raise ``_Excluded`` to leave it out."""
+    """Fill ``row`` (and ``about["run_type"]``) with what the run directory holds; raise
+    ``_Excluded`` to leave it out."""
     meta = _json(files, run_dir / "meta.json", "no_meta")
     row["status"] = meta.get("status")
     row["config_hash"] = meta.get("config_hash")
     row["training_stream"] = _nested(meta, "inputs", "streams", "training", "sha256")
     cfg, problem = _config(files, run_dir)
     if cfg is not None:  # descriptive columns, so that an excluded run still shows its cell
+        about["run_type"] = _select(cfg, "run_type", "train")
         named = _value(cfg, "optimizer.name", str) is not None
         row.update(arm=arm_of(cfg) if named else None,
                    lr=_value(cfg, "optimizer.lr", int | float), seed=_value(cfg, "seed", int),
