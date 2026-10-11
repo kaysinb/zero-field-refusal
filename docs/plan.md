@@ -29,11 +29,12 @@ Runs and produces:
 - Run non-confirmatory runs for judge calibration: θ₀ and AdamW at η = 5·10⁻⁵ on 0.5B and 1.5B.
   Their responses enter no analysis, and their prompts are disjoint from the evaluation sets.
 - Calibrate the judge on 200 of these responses against reference labels: three model labelers
-  (Claude Opus 5.5, Claude Sonnet 5.5 and GPT, gpt-6-astra through the Codex CLI) label the blind
-  sample independently, a fresh Claude Opus 5.5 arbiter resolves their disagreements, and the user
-  checks every disputed item and 30 random unanimous ones (changed from labeling by hand on
-  2026-10-11; [amendment](preregistration.md#amendments)). Claude Fable 5.1 was planned as a
-  labeler, but its safety filter stopped it on the harmful texts; Sonnet replaced it.
+  (Claude Opus 5, Claude Sonnet 5 and GPT, gpt-6-astra through the Codex CLI; versions corrected
+  on 2026-10-12 from the session logs) label the blind sample independently, a fresh Claude Opus
+  4.8 arbiter resolves their disagreements, and the user checks every disputed item and 30 random
+  unanimous ones (changed from labeling by hand on 2026-10-11;
+  [amendment](preregistration.md#amendments)). Claude Fable 5.1 was planned as a labeler, but its
+  safety filter stopped it on the harmful texts; Sonnet replaced it.
 - Implement the full-analysis simulation and validate the sequential CI level before confirmatory
   stage-2 runs ([requirement](preregistration.md#full-analysis-simulation)).
 - Commit the hypotheses, the sign of Δ and the thresholds in
