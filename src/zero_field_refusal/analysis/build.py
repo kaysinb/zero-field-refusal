@@ -1,11 +1,11 @@
 """Versioned analysis outputs of one experiment, rebuilt on the CPU from its run directories.
 
-``build_analysis`` reads the runs (``evidence.collect_runs``), fixes K\\* from the included runs
-(``select_k_star``), runs ``analyze`` with the stage-1 interval settings and writes the outputs
-into a new directory. An existing directory is never overwritten: results are versioned. The
-directory is written under a temporary name and renamed when complete, so it appears whole or not
-at all. Numbers are written unrounded (shortest exact decimal); non-finite numbers are empty in
-CSV files and null in JSON.
+``build_analysis`` reads the runs (``evidence.collect_runs``), fixes K\\* (selected from the
+included runs, or read frozen from an earlier build), runs ``analyze`` with the stage-1 interval
+settings and writes the outputs into a new directory. An existing directory is never
+overwritten: results are versioned. The directory is written under a temporary name and renamed
+when complete, so it appears whole or not at all. Numbers are written unrounded (shortest exact
+decimal); non-finite numbers are empty in CSV files and null in JSON.
 
 - ``runs.csv``: every run directory considered, with ``included``, ``reason`` and ``detail``
   (``evidence.CONSIDERED_COLUMNS``);
@@ -17,8 +17,10 @@ CSV files and null in JSON.
   jackknife);
 - ``estimates.csv``: every interval, with its level K, estimate, CI, SE and unit: h of each arm and
   Δ = h_AdamW − h_SGD at K\\* and the quarter points, and the H2 differences at K\\*;
-- ``results.json``: settings, units, the analyzed runs, ``k_star_status`` and the whole
-  ``AnalysisResult``;
+- ``k_star.json``: the K\\* selection used, its status, the runs it was computed from (with their
+  gates) and, for a frozen K\\*, the file it was read from and that file's sha256;
+- ``results.json``: settings, units, the analyzed runs, ``k_star_status``, the K\\* record and the
+  whole ``AnalysisResult``;
 - ``figure.svg``: harmful-compliance rate against K per arm with the fitted curves, drawn from
   ``runs.csv``, ``arms.csv`` and ``results.json`` alone (``draw_figure``);
 - ``manifest.json``: the sha256 of every input file read, the run ids, analysis settings, RNG
@@ -28,12 +30,19 @@ CSV files and null in JSON.
 A rebuild from the same inputs with the same code and packages writes the same bytes, except
 ``created_at`` in the manifest.
 
-K\\* here is provisional: it is selected from the analyzed runs themselves, a sweep-style
-selection that suits the stage-0 fixture check and the provisional K\\* of stage 1
-(``K_STAR_STATUS``, written to ``results.json`` and the manifest). It is not the Gate 2 K\\*,
-which docs/preregistration.md fixes from the sweep's KL values before look 1 and never
-re-estimates. Until the build takes a frozen K\\* and per-run look membership as inputs, it must
-not be used for a Gate 2 look.
+K\\* comes from one of two sources:
+- *provisional* (``K_STAR_STATUS``, no ``k_star`` given): selected from the analyzed runs
+  themselves, a sweep-style selection that suits the stage-0 fixture check and the stage-1 sweep.
+  It is not the Gate 2 K\\*, which docs/preregistration.md fixes from the sweep's KL values before
+  look 1 and never re-estimates, so the build refuses it when any run directory of the experiment
+  is a Gate 2 run (``tracking.gate: 2``, failed runs included);
+- *frozen* (``K_STAR_FROZEN``): ``k_star`` names the ``k_star.json`` of an earlier build, whose
+  selection is used as it is. A selection computed from Gate 2 runs is refused: the Gate 2 K\\*
+  comes from the sweep alone. Freezing the stage-1 sweep build's ``k_star.json`` before look 1
+  fixes the Gate 2 K\\*; look 2 reads the same file again.
+
+Per-run look membership is not an input yet: a build analyzes every included run, so the look-1
+analysis must be built before any look-2 run joins the experiment.
 """
 
 from __future__ import annotations
@@ -61,7 +70,7 @@ from scipy.special import expit
 
 from ..tracking import git_state
 from .evidence import Evidence, collect_runs
-from .kstar import LEVEL_NAMES, KStarSelection, cell_means, select_k_star
+from .kstar import LEVEL_NAMES, KStarSelection, cell_means, k_star_levels, select_k_star
 from .primary import FROZEN_VS_ADAMW, FROZEN_VS_SGD, PRIMARY_CONTRAST, AnalysisResult, analyze
 from .runs import ARMS
 
@@ -78,6 +87,10 @@ STAGE1_INTERVAL = IntervalSettings(ci_method="percentile", level=0.995, resample
 
 # K* is selected from the analyzed runs (select_k_star): not the frozen Gate 2 K*.
 K_STAR_STATUS = "provisional_from_analyzed_runs"
+# K* read from an earlier build's k_star.json and used unchanged: what a Gate 2 look needs.
+K_STAR_FROZEN = "frozen"
+K_STAR_FILE = "k_star.json"
+GATE_2 = 2
 PACKAGES = ("numpy", "scipy", "pandas", "matplotlib", "omegaconf", "zero-field-refusal")
 UNITS = {
     "K": "nats: the sequence-level KL(θ₀ ‖ θ) per θ₀ response to the KL prompts (K_harmful)",
@@ -101,18 +114,34 @@ def build_analysis(
     *,
     seed: int = 0,
     interval: IntervalSettings = STAGE1_INTERVAL,
+    k_star: Path | None = None,
 ) -> Path:
     """Analyze ``<root>/<experiment>`` with the labels of ``judge`` into the new directory ``out``.
 
-    ``identity`` is the judge's (``judge.judge_identity``); ``seed`` seeds the bootstrap. Put
-    ``out`` outside the checkout or under an ignored path: the manifest records whether the
-    checkout is dirty, and an untracked ``out`` inside it (or its partial directory) makes it so.
+    ``identity`` is the judge's (``judge.judge_identity``); ``seed`` seeds the bootstrap;
+    ``k_star`` is the ``k_star.json`` of an earlier build to use as the frozen K\\* (None: select a
+    provisional one from the analyzed runs, refused for Gate 2 runs). Put ``out`` outside the
+    checkout or under an ignored path: the manifest records whether the checkout is dirty, and an
+    untracked ``out`` inside it (or its partial directory) makes it so.
     """
     out = Path(out)
     if out.exists():
         raise FileExistsError(f"{out} exists: results are versioned, never overwritten")
     evidence = collect_runs(root, experiment, judge, identity)
-    selection = select_k_star(evidence.runs)
+    if k_star is None:
+        gate_2 = sorted(evidence.considered.loc[_is_gate_2(evidence.considered), "run_id"])
+        if gate_2:
+            raise ValueError(
+                f"{len(gate_2)} run directories are Gate 2 runs (tracking.gate: 2; first: "
+                f"{gate_2[0]}): their K* must be the frozen one, fixed from the sweep before look "
+                f"1. Pass the {K_STAR_FILE} of the build that fixed it (k_star, --k-star); a K* "
+                "selected from these runs is not allowed"
+            )
+        selection = select_k_star(evidence.runs)
+        k_star_record = {"status": K_STAR_STATUS, "computed_from": _computed_from(evidence),
+                         "source": None}  # fmt: skip
+    else:
+        selection, k_star_record = read_k_star(k_star)
     result = analyze(
         evidence.runs,
         selection,
@@ -124,7 +153,7 @@ def build_analysis(
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = Path(tempfile.mkdtemp(prefix=f".{out.name}.partial-", dir=out.parent))
     try:
-        _write_outputs(partial, evidence, selection, result, interval, seed)
+        _write_outputs(partial, evidence, selection, k_star_record, result, interval, seed)
         # mkdtemp creates the directory 0700; give it the mode a plain mkdir would.
         partial.chmod(0o777 & ~_umask())
         if out.exists():
@@ -136,10 +165,87 @@ def build_analysis(
     return out
 
 
+def read_k_star(path: Path) -> tuple[KStarSelection, dict[str, Any]]:
+    """The frozen K\\* in the ``k_star.json`` of an earlier build, and its record for this build.
+
+    Raises ``ValueError`` if the file is not such a record, if its levels do not follow from its
+    common range, or if its selection was computed from Gate 2 runs.
+    """
+    path = Path(path)
+    data = path.read_bytes()
+    try:
+        saved = json.loads(data)
+        status, selection, computed_from = (saved["status"], saved["selection"],
+                                            saved["computed_from"])  # fmt: skip
+        if status not in (K_STAR_STATUS, K_STAR_FROZEN):
+            raise ValueError(f"unknown status {status!r}")
+        gates = computed_from["gates"]
+        if not (isinstance(computed_from["runs"], list) and isinstance(gates, list)):
+            raise ValueError("computed_from needs the lists runs and gates")
+        frozen = _selection(selection)
+    except (ValueError, KeyError, TypeError) as exc:  # JSONDecodeError is a ValueError
+        raise ValueError(f"{path} is not the {K_STAR_FILE} of a build: {exc}") from exc
+    if GATE_2 in gates:
+        raise ValueError(
+            f"The K* in {path} was computed from Gate 2 runs; the Gate 2 K* is fixed from the "
+            "sweep alone, before look 1"
+        )
+    record = {"status": K_STAR_FROZEN, "computed_from": computed_from,
+              "source": {"file": path.name, "sha256": hashlib.sha256(data).hexdigest(),
+                         "status": status}}  # fmt: skip
+    return frozen, record
+
+
+def _selection(data: Mapping[str, Any]) -> KStarSelection:
+    """A ``KStarSelection`` from its JSON form (``k_star.json``), checked."""
+    numbers = {name: data[name] for name in ("c_lo", "c_hi", *LEVEL_NAMES)}
+    for name, value in numbers.items():
+        if isinstance(value, bool) or not isinstance(value, int | float) or not value > 0:
+            raise ValueError(f"{name} must be a positive number, not {value!r}")
+    if not numbers["c_lo"] <= numbers["c_hi"]:
+        raise ValueError("c_lo exceeds c_hi")
+    expected = dict(zip(LEVEL_NAMES, k_star_levels(numbers["c_lo"], numbers["c_hi"]), strict=True))
+    if any(not math.isclose(numbers[name], expected[name], rel_tol=1e-12) for name in LEVEL_NAMES):
+        raise ValueError(f"the levels {[numbers[n] for n in LEVEL_NAMES]} do not follow from "
+                         f"[c_lo, c_hi] = [{numbers['c_lo']}, {numbers['c_hi']}]")  # fmt: skip
+    if not isinstance(data["h2_descriptive_only"], bool):
+        raise ValueError("h2_descriptive_only must be true or false")
+    factor = data["exclusion_factor"]
+    factor = math.inf if factor is None else factor  # JSON null: no exclusion
+    if isinstance(factor, bool) or not isinstance(factor, int | float) or not factor > 0:
+        raise ValueError(f"exclusion_factor must be a positive number or null, not {factor!r}")
+    unknown = sorted({*data["arm_ranges"], *data["decisive"]} - set(ARMS))
+    if unknown:
+        raise ValueError(f"unknown arms {unknown}")
+    return KStarSelection(
+        arm_ranges={arm: (float(lo), float(hi)) for arm, (lo, hi) in data["arm_ranges"].items()},
+        c_lo=float(numbers["c_lo"]),
+        c_hi=float(numbers["c_hi"]),
+        k_star=float(numbers["k_star"]),
+        lower_quarter=float(numbers["lower_quarter"]),
+        upper_quarter=float(numbers["upper_quarter"]),
+        h2_descriptive_only=data["h2_descriptive_only"],
+        decisive={arm: tuple(float(lr) for lr in lrs) for arm, lrs in data["decisive"].items()},
+        exclusion_factor=float(factor),
+    )
+
+
+def _is_gate_2(considered: pd.DataFrame) -> pd.Series:
+    return considered["gate"].eq(GATE_2).fillna(False).astype(bool)
+
+
+def _computed_from(evidence: Evidence) -> dict[str, Any]:
+    """The runs a provisional K\\* is selected from, with their gates."""
+    included = evidence.considered[evidence.considered["included"]]
+    return {"experiment": evidence.experiment, "runs": sorted(included["run_id"]),
+            "gates": sorted(int(g) for g in included["gate"].dropna().unique())}  # fmt: skip
+
+
 def _write_outputs(
     directory: Path,
     evidence: Evidence,
     selection: KStarSelection,
+    k_star_record: Mapping[str, Any],
     result: AnalysisResult,
     interval: IntervalSettings,
     seed: int,
@@ -162,6 +268,8 @@ def _write_outputs(
         "exclusion_factor": selection.exclusion_factor,
     }
     analyzed = sorted(evidence.runs["run_id"])
+    status = k_star_record["status"]
+    _write_json(directory / K_STAR_FILE, {**k_star_record, "selection": asdict(selection)})
     analysis = asdict(result)
     analysis["selection"]["exclusion_threshold"] = selection.exclusion_threshold
     _write_json(directory / "results.json", {
@@ -170,7 +278,8 @@ def _write_outputs(
         "settings": settings,
         "units": UNITS,
         "analyzed_runs": analyzed,
-        "k_star_status": K_STAR_STATUS,
+        "k_star_status": status,
+        "k_star": k_star_record,
         "analysis": analysis,
     })  # fmt: skip
     draw_figure(directory)
@@ -187,7 +296,8 @@ def _write_outputs(
         },
         "inputs": evidence.files,  # path relative to the runs root -> sha256
         "settings": settings,
-        "k_star_status": K_STAR_STATUS,
+        "k_star_status": status,
+        "k_star": k_star_record,
         "rng_seed": seed,
         "protocol_versions": sorted(int(v) for v in included["protocol_version"].dropna().unique()),
         "code": {

@@ -8,6 +8,8 @@ protocol_version: 1         # part of the config hash; bump on any change to cod
 
 tracking:
   require_clean_git: false  # true for gate runs, so every result maps to a commit
+  gate: null                # 1 or 2: the gate whose evidence the run is; the analysis of
+                            # Gate 2 runs needs the frozen K* (scripts/build_analysis.py --k-star)
   wandb:
     enabled: true
     required: false         # true: a failure to start W&B stops the run

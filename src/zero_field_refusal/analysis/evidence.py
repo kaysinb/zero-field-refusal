@@ -13,6 +13,11 @@ A run's row in the runs table:
 - ``judged``: the trained model's responses in ``responses/<eval.harmful.prompt_set>.jsonl``
   (condition ``trained``); ``harmful``: those the judge labels ``harmful_compliance``.
 
+Every run directory with a readable config also shows its ``gate``: ``tracking.gate`` of
+``config.yaml`` (null, 1 or 2; missing reads as null), the gate whose evidence the run is. Any
+other value stops the analysis. ``analysis.build`` refuses to select K\\* when any run is a Gate 2
+run.
+
 Judge labels. A run's labels from the judge named ``judge`` (a config in ``configs/judge/``) are
 the label records ``JudgeClient`` writes, in ``<run dir>/judge/<judge>.jsonl``, one per response
 of ``responses/<eval.harmful.prompt_set>.jsonl``, keyed by ``label_item_id(condition, prompt
@@ -74,9 +79,11 @@ HARMFUL = "harmful_compliance"
 JUDGE_DIR = "judge"
 
 CONSIDERED_COLUMNS = ("run_id", "status", "included", "reason", "detail", "arm", "lr", "seed",
-                      "K", "harmful", "judged", "protocol_version", "config_hash",
+                      "K", "harmful", "judged", "protocol_version", "gate", "config_hash",
                       "training_stream")  # fmt: skip
-INTEGER_COLUMNS = ("seed", "harmful", "judged", "protocol_version")
+INTEGER_COLUMNS = ("seed", "harmful", "judged", "protocol_version", "gate")
+GATE_KEY = "tracking.gate"  # null, or the gate whose evidence the run is
+GATES = (1, 2)
 # Keys every included run's config.yaml must hold, with their types.
 CONFIG_KEYS = {"seed": int, "optimizer.name": str, "optimizer.lr": int | float,
                "eval.harmful.prompt_set": str}  # fmt: skip
@@ -126,6 +133,7 @@ def collect_runs(root: Path, experiment: str, judge: str, identity: Mapping[str,
         rows.append(row)
         if row["included"]:
             configs[row["run_id"]] = cfg
+    _check_gates(rows)
     considered = pd.DataFrame(rows, columns=list(CONSIDERED_COLUMNS))
     for column in INTEGER_COLUMNS:
         considered[column] = considered[column].astype("Int64")
@@ -203,7 +211,8 @@ def _assess(
         named = _value(cfg, "optimizer.name", str) is not None
         row.update(arm=arm_of(cfg) if named else None,
                    lr=_value(cfg, "optimizer.lr", int | float), seed=_value(cfg, "seed", int),
-                   protocol_version=_value(cfg, "protocol_version", int))  # fmt: skip
+                   protocol_version=_value(cfg, "protocol_version", int),
+                   gate=_select(cfg, GATE_KEY))  # fmt: skip
 
     if row["status"] != "completed":
         raise _Excluded("not_completed", f"meta.json status is {row['status']!r}")
@@ -359,6 +368,17 @@ def _jsonl(
                                     "types")  # fmt: skip
         records.append(record)
     return records
+
+
+def _check_gates(rows: Iterable[Mapping[str, Any]]) -> None:
+    """Raise if a run's ``tracking.gate`` is neither null nor one of ``GATES``."""
+
+    def valid(gate: Any) -> bool:
+        return gate is None or (type(gate) is int and gate in GATES)
+
+    bad = {row["run_id"]: row["gate"] for row in rows if not valid(row["gate"])}
+    if bad:
+        raise ValueError(f"{GATE_KEY} must be null or one of {GATES}; other values: {bad}")
 
 
 def _check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig]) -> None:

@@ -20,8 +20,9 @@ from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis import analyze, select_k_star, validate_runs
 from zero_field_refusal.analysis.bootstrap import paired_resampling
-from zero_field_refusal.analysis.build import STAGE1_INTERVAL, build_analysis
+from zero_field_refusal.analysis.build import STAGE1_INTERVAL, build_analysis, read_k_star
 from zero_field_refusal.analysis.evidence import arm_of, collect_runs, label_item_id
+from zero_field_refusal.analysis.kstar import k_star_levels
 from zero_field_refusal.config import load_config
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.protocol import load_run_config
@@ -40,7 +41,7 @@ EXCLUDED = {
     "sgd_lr0.03_s0": "not_completed",
 }
 OUTPUTS = ["arms.csv", "cells.csv", "estimates.csv", "exclusions.csv", "figure.svg",
-           "manifest.json", "results.json", "runs.csv"]  # fmt: skip
+           "k_star.json", "manifest.json", "results.json", "runs.csv"]  # fmt: skip
 
 
 def identity() -> dict:
@@ -303,9 +304,9 @@ def test_each_file_of_a_run_is_checked(tmp_path, edit, reason) -> None:
 # --- the rebuild --------------------------------------------------------------------------------
 
 
-def run_script(out: Path) -> subprocess.CompletedProcess:
-    command = [sys.executable, str(SCRIPT), str(RUNS_ROOT), "--experiment", EXPERIMENT,
-               "--judge", JUDGE, "--out", str(out), "--seed", "7"]  # fmt: skip
+def run_script(out: Path, root: Path = RUNS_ROOT, *extra: str) -> subprocess.CompletedProcess:
+    command = [sys.executable, str(SCRIPT), str(root), "--experiment", EXPERIMENT,
+               "--judge", JUDGE, "--out", str(out), "--seed", "7", *extra]  # fmt: skip
     return subprocess.run(command, capture_output=True, text=True, cwd=REPO)
 
 
@@ -364,6 +365,12 @@ def test_the_build_records_runs_results_and_provenance(builds) -> None:
     assert analysis["selection"]["c_lo"] < k_star < analysis["selection"]["c_hi"]
     # K* comes from the analyzed runs: provisional, not the frozen Gate 2 K*.
     assert results["k_star_status"] == "provisional_from_analyzed_runs"
+    saved = json.loads((out / "k_star.json").read_text())
+    assert saved["status"] == results["k_star_status"] and saved["source"] is None
+    assert saved["computed_from"] == {"experiment": EXPERIMENT, "gates": [],
+                                      "runs": results["analyzed_runs"]}  # fmt: skip
+    assert saved["selection"]["k_star"] == k_star
+    assert results["k_star"] == {key: saved[key] for key in ("status", "computed_from", "source")}
     assert set(results["units"]) >= {"K", "h", "delta"}
 
     estimates = read_csv(out / "estimates.csv")
@@ -382,6 +389,7 @@ def test_the_build_records_runs_results_and_provenance(builds) -> None:
     assert manifest["judge"]["name"] == JUDGE and manifest["judge"]["identity"] == identity()
     assert manifest["rng_seed"] == 7
     assert manifest["k_star_status"] == results["k_star_status"]
+    assert manifest["k_star"] == results["k_star"]
     assert manifest["protocol_versions"] == [1]
     assert sorted(manifest["runs"]["considered"]) == sorted(runs["run_id"])
     assert set(manifest["runs"]["excluded"]) == set(EXCLUDED)
@@ -446,3 +454,156 @@ def test_the_figure_is_drawn_from_the_saved_tables(builds, tmp_path) -> None:
     draw_figure(copy)
     assert (copy / "figure.svg").read_bytes() == (builds[0] / "figure.svg").read_bytes()
     assert np.isfinite(pd.read_csv(copy / "arms.csv")["slope"]).all()
+
+
+# --- K* for Gate 2 ------------------------------------------------------------------------------
+
+
+def _set_gate(root: Path, run: str, gate) -> None:
+    path = root / EXPERIMENT / run / "config.yaml"
+    cfg = OmegaConf.load(path)
+    OmegaConf.update(cfg, "tracking.gate", gate, force_add=True)
+    OmegaConf.save(cfg, path)
+
+
+def _gate_2_fixture(tmp_path: Path) -> Path:
+    """The fixture with every run directory marked as a Gate 2 run."""
+    root = copy_fixture(tmp_path)
+    for run_dir in (root / EXPERIMENT).iterdir():
+        _set_gate(root, run_dir.name, 2)
+    return root
+
+
+def test_the_fixture_runs_belong_to_no_gate() -> None:
+    assert collect().considered["gate"].isna().all()
+
+
+@pytest.mark.parametrize("run", ["sgd_lr0.01_s0", "sgd_lr0.03_s0"])  # included; failed
+def test_a_gate_2_run_without_a_frozen_k_star_is_refused(tmp_path, run) -> None:
+    root = copy_fixture(tmp_path)
+    _set_gate(root, run, 2)
+    assert collect(root).considered.set_index("run_id").loc[run, "gate"] == 2
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match=f"Gate 2 runs .*first: {run}.*frozen"):
+        build_analysis(root, EXPERIMENT, JUDGE, identity(), out)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["runs"]  # nothing written
+
+    done = run_script(out, root)
+    assert done.returncode != 0
+    assert "Not built" in done.stderr and "--k-star" in done.stderr
+    assert not out.exists()
+
+
+def test_gate_1_runs_keep_the_provisional_k_star(tmp_path) -> None:
+    root = copy_fixture(tmp_path)
+    _set_gate(root, "sgd_lr0.01_s0", 1)
+    out = build_analysis(root, EXPERIMENT, JUDGE, identity(), tmp_path / "out", seed=7)
+    saved = json.loads((out / "k_star.json").read_text())
+    assert saved["status"] == "provisional_from_analyzed_runs"
+    assert saved["computed_from"]["gates"] == [1]
+
+
+@pytest.mark.parametrize("gate", ["2", 3, True, 2.0])
+def test_a_gate_outside_null_1_and_2_stops_the_analysis(tmp_path, gate) -> None:
+    root = copy_fixture(tmp_path)
+    _set_gate(root, "sgd_lr0.03_s0", gate)
+    with pytest.raises(ValueError, match="tracking.gate must be null or one of"):
+        collect(root)
+
+
+def test_a_frozen_k_star_reproduces_the_build_it_came_from(builds, tmp_path) -> None:
+    source = builds[0] / "k_star.json"
+    out = build_analysis(_gate_2_fixture(tmp_path), EXPERIMENT, JUDGE, identity(),
+                         tmp_path / "out", seed=7, k_star=source)  # fmt: skip
+    for name in ("cells.csv", "arms.csv", "estimates.csv"):
+        assert (out / name).read_bytes() == (builds[0] / name).read_bytes(), name
+    results = json.loads((out / "results.json").read_text())
+    before = json.loads((builds[0] / "results.json").read_text())
+    assert results["analysis"] == before["analysis"]
+    assert results["k_star_status"] == "frozen"
+    provisional = json.loads(source.read_text())
+    assert results["k_star"] == {
+        "status": "frozen",
+        "computed_from": provisional["computed_from"],
+        "source": {"file": "k_star.json", "sha256": sha256(source),
+                   "status": "provisional_from_analyzed_runs"},
+    }  # fmt: skip
+    saved = json.loads((out / "k_star.json").read_text())
+    assert saved["selection"] == provisional["selection"]
+    assert json.loads((out / "manifest.json").read_text())["k_star"] == results["k_star"]
+
+    # Look 2 reads the frozen file of look 1 again.
+    again = build_analysis(_gate_2_fixture(tmp_path / "look2"), EXPERIMENT, JUDGE, identity(),
+                           tmp_path / "again", seed=7, k_star=out / "k_star.json")  # fmt: skip
+    assert (again / "estimates.csv").read_bytes() == (out / "estimates.csv").read_bytes()
+    assert json.loads((again / "k_star.json").read_text())["source"]["status"] == "frozen"
+
+
+def test_a_frozen_k_star_is_used_unchanged(builds, tmp_path) -> None:
+    saved = json.loads((builds[0] / "k_star.json").read_text())
+    selection = saved["selection"]
+    provisional = selection["k_star"]
+    c_lo, c_hi = selection["c_lo"] * 1.2, selection["c_hi"]
+    levels = dict(zip(("lower_quarter", "k_star", "upper_quarter"), k_star_levels(c_lo, c_hi),
+                      strict=True))  # fmt: skip
+    selection.update(c_lo=c_lo, **levels)
+    frozen = tmp_path / "k_star.json"
+    frozen.write_text(json.dumps(saved))
+
+    out = build_analysis(RUNS_ROOT, EXPERIMENT, JUDGE, identity(), tmp_path / "out", seed=7,
+                         k_star=frozen)  # fmt: skip
+    analysis = json.loads((out / "results.json").read_text())["analysis"]
+    assert analysis["selection"]["k_star"] == levels["k_star"] != provisional
+    assert analysis["selection"]["c_lo"] == c_lo
+    estimates = read_csv(out / "estimates.csv")
+    assert (estimates.loc[estimates["level"] == "k_star", "K"] == levels["k_star"]).all()
+
+
+def _k_star_file(tmp_path: Path, builds, change) -> Path:
+    saved = json.loads((builds[0] / "k_star.json").read_text())
+    change(saved)
+    path = tmp_path / "k_star.json"
+    path.write_text(json.dumps(saved))
+    return path
+
+
+def test_a_k_star_computed_from_gate_2_runs_is_refused(builds, tmp_path) -> None:
+    path = _k_star_file(tmp_path, builds, lambda d: d["computed_from"].update(gates=[1, 2]))
+    with pytest.raises(ValueError, match="computed from Gate 2 runs"):
+        read_k_star(path)
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="computed from Gate 2 runs"):
+        build_analysis(RUNS_ROOT, EXPERIMENT, JUDGE, identity(), out, k_star=path)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [lambda d: d.pop("selection"),
+     lambda d: d.update(status="guessed"),
+     lambda d: d["computed_from"].pop("gates"),
+     lambda d: d["selection"].update(k_star=d["selection"]["k_star"] * 1.01),
+     lambda d: d["selection"].update(c_lo=d["selection"]["c_hi"] * 2),
+     lambda d: d["selection"].update(c_lo=-1.0),
+     lambda d: d["selection"].update(h2_descriptive_only="no"),
+     lambda d: d["selection"]["decisive"].update(lion=[1e-4])],
+    ids=["no_selection", "status", "no_gates", "k_star_off_midpoint", "c_lo_above_c_hi",
+         "negative", "h2_flag", "unknown_arm"],
+)  # fmt: skip
+def test_a_malformed_k_star_file_is_refused(builds, tmp_path, change) -> None:
+    with pytest.raises(ValueError, match="k_star.json of a build"):
+        read_k_star(_k_star_file(tmp_path, builds, change))
+
+
+def test_a_k_star_file_that_is_not_json_is_refused(tmp_path) -> None:
+    path = tmp_path / "k_star.json"
+    path.write_text("K* = 3")
+    with pytest.raises(ValueError, match="k_star.json of a build"):
+        read_k_star(path)
+
+
+def test_the_script_takes_a_frozen_k_star(builds, tmp_path) -> None:
+    out = tmp_path / "out"
+    done = run_script(out, _gate_2_fixture(tmp_path), "--k-star", str(builds[0] / "k_star.json"))
+    assert done.returncode == 0, done.stderr
+    assert json.loads((out / "results.json").read_text())["k_star_status"] == "frozen"
