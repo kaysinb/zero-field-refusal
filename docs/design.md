@@ -253,23 +253,54 @@ questions; their interpretations must remain separate.
 
 The effect itself is known [1]. Data-side work finds which benign examples break safety most [6].
 Optimization settings such as a smaller learning rate, a larger batch and weight averaging reduce
-it [4]. The closest work shows that benign fine-tuning moves the model back toward its state before
-safety training [5]. These train on real data, so they cannot separate the data from the optimizer.
+it [4]. The optimizer itself matters for alignment under real data: with LoRA on narrowly
+misaligned data, it explains most of the variation in emergent misalignment once training loss is
+accounted for, with Adam and Lion worst and Muon best [16]. That comparison is not at equal
+displacement, does not score refusals, and its SGD arm is confounded by a higher loss. Earlier,
+Adam was found to worsen catastrophic forgetting relative to SGD [17]. The closest work shows that
+benign fine-tuning moves the model back toward its state before safety training [5]. These train on
+real data, so they cannot separate the data from the optimizer.
+
 The closest precedent for the separation itself is [11]: Llama-3.2-1B was fine-tuned with LoRA on
 its own answers to the Dolly and Alpaca questions, and safety degraded much less than with human
-answers, so content was the main driver. That agrees with the exploratory LoRA result here. It
-leaves open what this project tests: an exactly zero field (sampling at temperature 1 without
-filtering, a constant loss denominator, single use), full fine-tuning, where the exploratory
-effect appeared, and optimizers compared at equal displacement. Optimizer memory itself can drive
-forgetting: with momentum, stored gradients from earlier states push probability away from learned
-answers [12]; the momentum arm of the decisive experiment controls for it. Self-distillation
-defenses train on the model's own outputs, but with a systematic signal: in SDFT the model rewrites
-the reference answers of a new task [15], and in [10] the teacher sees a safety hint that the
-student does not. The noise theory of SGD and Adam used here is standard [7–9]. Its closest
-application to fine-tuning is a first-order model of drift and noise for the forgetting of facts
-under SGD and LoRA, accurate locally, which leaves Adam and full fine-tuning open [13]. A
-first-order theory of how alignment changes during fine-tuning has no noise term [14]. The
-contribution is the clean separation of the optimizer from the data, not a new phenomenon.
+answers, so content was the main driver. That agrees with the exploratory LoRA result here. The
+identity behind the zero field has been stated for replay: on self-generated data, next-token
+prediction and KL to the frozen model have the same expected gradient, and the remaining difference
+in forgetting was attributed to gradient noise, untested and without a safety measure [18]. In RL,
+rewards without information still change behavior through the clipping bias of GRPO [19]; there an
+asymmetry of the algorithm, not the data, creates the drift. A teacher that differs from the
+student transmits traits even through unrelated data [26], one more reason the teacher must be
+exactly θ₀. [11] leaves open what this project tests: an exactly zero field (sampling at
+temperature 1 without filtering, a constant loss denominator, single use), full fine-tuning, where
+the exploratory effect appeared, and optimizers compared at equal displacement. Optimizer memory
+itself can drive forgetting: with momentum, stored gradients from earlier states push probability
+away from learned answers [12]; the momentum arm of the decisive experiment controls for it. Both
+candidate mechanisms have precedents. Under skewed noise Adam's steps have a nonzero mean and can
+drift against the mean gradient [20]. Its second-moment normalization turns small one-sided
+gradients on tokens absent from the data into full-sized updates that drive forgetting [21].
+Alignment leaves the safety Fisher low-rank and flat, and benign fine-tuning re-sharpens it [22].
+Self-distillation defenses train on the model's own outputs, but with a systematic signal: in SDFT
+the model rewrites the reference answers of a new task [15], and in [10] the teacher sees a safety
+hint that the student does not.
+
+The noise theory of SGD and Adam used here is standard [7–9]. Near a minimum, SGD noise also causes
+a slow deterministic drift toward flatter regions [23], second order in the learning rate; the
+theory here neglects it. Its closest application to fine-tuning is a first-order model of drift and
+noise for the forgetting of facts under SGD and LoRA, accurate locally, which leaves Adam and full
+fine-tuning open [13]. A first-order theory of how alignment changes during fine-tuning has no
+noise term [14]. Random weight noise erodes safety only outside a local "safety basin" [24]. [4]
+reports that Gaussian weight noise of σ = 0.004 removes safety while utility declines slowly. It
+names neither the model of that experiment (its other analyses use Llama-2-7B-Chat) nor the
+convention for σ, and it scores utility with benchmarks such as MT-Bench rated by GPT-4o. Read as an
+absolute per-weight standard deviation, σ = 0.004 is about 10 % of the weight norm of
+Qwen2.5-0.5B-Instruct and Qwen2.5-1.5B-Instruct, inside the range of 9–15 % where the exploratory
+noise here also removed refusals; there, however, accuracy on simple questions fell to 28–50 %. The
+two disagree about utility, measured differently, not about the noise scale at which refusals go.
+Targeted perturbations break refusals far more than random ones of matched size [25]. The
+contribution is the clean separation of the optimizer from the data: an exactly zero expected
+signal, refusals as the outcome, full fine-tuning, optimizers compared at equal KL, an Adam arm with
+frozen statistics and a noise theory of the drift. It is not a new phenomenon and not the first
+evidence that the optimizer matters [16].
 
 ## References
 
@@ -301,3 +332,23 @@ contribution is the clean separation of the optimizer from the data, not a new p
 14. Y. Huang, H. Chen, Y. Dong. *Alignment Dynamics in LLM Fine-Tuning.* arXiv:2605.18309.
 15. Z. Yang et al. *Self-Distillation Bridges Distribution Gap in Language Model Fine-Tuning.*
     arXiv:2402.13669.
+16. J. R. Brown, P. Leask, L. McKinney. *Evil Spectra: How Optimisers can Amplify or Suppress
+    Emergent Misalignment.* arXiv:2606.31591.
+17. D. R. Ashley, S. Ghiassian, R. S. Sutton. *Does the Adam Optimizer Exacerbate Catastrophic
+    Forgetting?* arXiv:2102.07686.
+18. M. Marek, D. Cho, S. Qiu, R. Chunara, P. Izmailov, A. G. Wilson. *Forgetting in Language Models:
+    Capacity, Optimization, and Self-Generated Replay.* arXiv:2605.26097.
+19. R. Shao et al. *Spurious Rewards: Rethinking Training Signals in RLVR.* arXiv:2506.10947.
+20. S. J. Reddi, S. Kale, S. Kumar. *On the Convergence of Adam and Beyond.* arXiv:1904.09237.
+21. J. Han, Y. Song, J. Park. *A Deafening Silence: Catastrophic Forgetting Lives in the Output
+    Embeddings of Tokens the Data Never Speaks.* arXiv:2610.09835.
+22. Y. Guo, X. Chen, S. Zhang, X. Wang, H. Tang. *When Safety Routing Breaks: Understanding Alignment
+    Fragility under Benign Fine-Tuning.* arXiv:2609.01455.
+23. Z. Li, T. Wang, S. Arora. *What Happens after SGD Reaches Zero Loss? A Mathematical Framework.*
+    arXiv:2110.06914.
+24. S. Peng, P.-Y. Chen, M. Hull, D. H. Chau. *Navigating the Safety Landscape: Measuring Risks in
+    Finetuning Large Language Models.* arXiv:2405.17374.
+25. E. Jiang, A. Gjølbye, Y. J. Zhang, S. Koyejo. *When Behavioral Safety Evaluation Fails: A
+    Representation-Level Perspective.* arXiv:2606.08044.
+26. A. Cloud et al. *Subliminal Learning: Language Models Transmit Behavioral Traits via Hidden
+    Signals in Data.* arXiv:2507.14805.
