@@ -92,6 +92,16 @@ applies to the fallback, with its weaker interpretation.
 A confirmed KL prediction alone is no reason to continue: it validates the instrument, not the
 hypothesis.
 
+Before look 1:
+- K\* is frozen: the `k_star.json` of the 1.5B sweep build, passed to every Gate 2 build
+  (`scripts/build_analysis.py --k-star`).
+- Each look has a frozen manifest of its runs (run ids and file hashes), created when the look
+  closes and hashed into its results. The look-1 build refuses when the experiment holds runs
+  outside that manifest, and the look-2 build requires the look-1 manifest.
+- The judge passes a check for error that differs between optimizers, on responses of the stage-1
+  optimizers at comparable K; until then, stage-1 outcome results are preliminary.
+- The full-analysis simulation is re-run with the seed spread measured in stage 1.
+
 ## Stage 3 — Factors and scale
 
 Runs and produces:
