@@ -200,6 +200,13 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   first); rerun it until no output is unparseable.
 - The Pod has no SSH and no persistent storage: stop it as soon as the labels are written; the
   labels and their raw outputs stay local next to the sample or in the run directories.
+- **Deadline without SSH.** When a hard stop is needed (the user away), the start command is
+  `bash -c` running [`scripts/pod_deadline_watch.py`](../scripts/pod_deadline_watch.py) in the
+  background before `exec vllm serve …`, with `ZFR_DEADLINE_EPOCH` in the environment. Check
+  its log line `zfr-deadline … auth True` and the variable (get-pod) right after the start; stop
+  the Pod by hand after labeling, without waiting for the deadline.
+- The Runpod proxy answers 403 to the `Python-urllib` User-Agent; send another one when probing
+  the endpoint with `urllib` (the judge client is not affected).
 
 ## Launching runs
 
@@ -245,7 +252,8 @@ Stage 1 (decided 2026-10-11): no data center offered both L40S and network volum
 L40S Pod uses its volume disk at `/workspace` and the bucket. Record the Pod's ID, data center and
 volume size here when it is created; a network volume, if one is created later, likewise.
 Stage-1 Pod: `32fjt8f6671w17` (`zfr-stage1-l40s`), L40S Secure, US-TX-4, created 2026-10-11 10:37
-UTC, 120 GB volume disk at `/workspace`, 50 GB container disk.
+UTC, 120 GB volume disk at `/workspace`, 50 GB container disk; stopped 21:00 UTC after every run,
+stream and log was archived and verified, and deleted with its volume the same day.
 
 - **Inputs before the runs that use them.** A generated teacher or preconditioner stream is
   archived to the bucket and verified before the first run that reads it starts, so losing the
