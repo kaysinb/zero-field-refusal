@@ -1,15 +1,20 @@
-"""Blind manual labeling for judge calibration.
+"""Blind labeling for judge calibration.
 
 ``make_calibration_sample`` draws a stratified sample from a pool of responses and splits it into
 a blinded file (opaque item ids, prompt and response only) and a key (everything else, including
 the hidden condition). The labeling session reads only the blinded file and never the key.
+``import_reference_labels`` brings in reference labels made outside the project (an ensemble of
+model labelers checked by the user) in the session's format, with their provenance.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
+import shutil
 import textwrap
+from collections import Counter
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,3 +195,78 @@ def run_session(
             (i for i in range(position + 1, total) if items[i]["item_id"] not in labeled), total
         )
     output_fn(f"All {total} items are labeled.")
+
+
+# --- reference labels made elsewhere ------------------------------------------------------------
+
+REFERENCE_LABELS = "reference_labels.jsonl"
+REFERENCE_PROVENANCE = "reference_provenance"
+REFERENCE_IMPORT = "reference_import.json"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def import_reference_labels(
+    labels_path: str | Path,
+    provenance_dir: str | Path,
+    sample_path: str | Path,
+    *,
+    labeler: str = "ensemble",
+    out_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Import labels ``{item_id, label, labeled_at}`` made outside the project for a blind sample.
+
+    Every sample item must have exactly one record and no other item any; labels are the three
+    labels or ``unsure``. Writes, next to the sample unless ``out_dir`` is given:
+    ``reference_labels.jsonl`` (the session's format plus ``labeler``, in sample order), a copy of
+    the provenance folder and ``reference_import.json`` with the hashes of every input. Refuses to
+    overwrite an earlier import.
+    """
+    labels_path, provenance_dir, sample_path = map(Path, (labels_path, provenance_dir, sample_path))
+    out_dir = Path(out_dir) if out_dir is not None else sample_path.parent
+    if not provenance_dir.is_dir():
+        raise FileNotFoundError(f"No provenance folder at {provenance_dir}")
+    ids = [item["item_id"] for item in read_jsonl(sample_path)]
+    records = read_jsonl(labels_path)
+    counts = Counter(r.get("item_id") for r in records)
+    problems = []
+    if duplicated := sorted(i for i, c in counts.items() if c > 1):
+        problems.append(f"several records for {duplicated}")
+    if missing := sorted(set(ids) - set(counts)):
+        problems.append(f"no record for {len(missing)} sample items, e.g. {missing[:3]}")
+    if extra := sorted(set(counts) - set(ids), key=str):
+        problems.append(f"records for items outside the sample: {extra[:3]}")
+    if bad := sorted({str(r.get("label")) for r in records} - {*LABELS, UNSURE}):
+        problems.append(f"unknown labels {bad}; use {(*LABELS, UNSURE)}")
+    if any(not r.get("labeled_at") for r in records):
+        problems.append("records without labeled_at")
+    if problems:
+        raise ValueError(f"{labels_path}: " + "; ".join(problems))
+
+    target, copy = out_dir / REFERENCE_LABELS, out_dir / REFERENCE_PROVENANCE
+    if target.exists() or copy.exists():
+        raise FileExistsError(f"Reference labels were already imported into {out_dir}")
+    shutil.copytree(provenance_dir, copy)
+    by_id = {r["item_id"]: r for r in records}
+    target.write_text("".join(
+        json.dumps({"item_id": i, "label": by_id[i]["label"], "labeled_at": by_id[i]["labeled_at"],
+                    "labeler": labeler}) + "\n"
+        for i in ids
+    ))  # fmt: skip
+    manifest = {
+        "labeler": labeler,
+        "imported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "source_labels": str(labels_path),
+        "source_labels_sha256": _sha256(labels_path),
+        "sample_sha256": _sha256(sample_path),
+        "reference_labels_sha256": _sha256(target),
+        "label_counts": dict(Counter(by_id[i]["label"] for i in ids)),
+        "provenance": {
+            str(path.relative_to(copy)): _sha256(path)
+            for path in sorted(copy.rglob("*")) if path.is_file()
+        },
+    }  # fmt: skip
+    (out_dir / REFERENCE_IMPORT).write_text(json.dumps(manifest, indent=1) + "\n")
+    return manifest

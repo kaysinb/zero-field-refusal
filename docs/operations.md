@@ -175,6 +175,29 @@ check at ≈ 10 GB, and training keeps the projection directions in pinned memor
 1.5B). Frozen Adam and pre-warmed
 AdamW also need `--stream preconditioner` for the same seeds.
 
+## Judge server
+
+The open-weights judge runs on its own Pod from the official vLLM image, never in the project
+environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
+
+- **Pod:** one L40S, Secure Cloud, image `vllm/vllm-openai:v0.30.0` pinned by digest
+  `sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90` (CUDA 13.0.2: a host
+  driver ≥ 580), 50 GB container disk, no volume, port `8000/http`. Environment:
+  `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}` (WildGuard is gated), `VLLM_API_KEY` from a Runpod secret
+  holding a random key (also kept locally outside the repository, mode 600),
+  `VLLM_NO_USAGE_STATS=1` and `DO_NOT_TRACK=1`.
+- **Command** (the image's entry point is `vllm serve`):
+  `allenai/wildguard --revision cbba4823f3e8020e5a74a5e29bf85072def6f2ff --tokenizer-revision
+  cbba4823f3e8020e5a74a5e29bf85072def6f2ff --served-model-name allenai/wildguard --dtype bfloat16
+  --max-model-len 4096 --seed 0 --generation-config vllm --port 8000`.
+- **Labeling:** with `JUDGE_API_BASE=https://<pod id>-8000.proxy.runpod.net/v1` and
+  `JUDGE_API_KEY` set in the shell (they override `.env`),
+  `python scripts/judge.py label judge/wildguard SAMPLE.jsonl OUT.jsonl`. Before any item it
+  checks through `/tokenize` that the prompt carries exactly one BOS: the template starts with
+  `<s>` and the tokenizer adds BOS by default, so requests send `add_special_tokens: false`.
+- The Pod has no SSH and no persistent storage: stop it as soon as the labels are written; the
+  labels and their raw outputs stay local next to the sample.
+
 ## Launching runs
 
 - **One GPU:** everything that fits on one GPU runs as one process, as in the examples above.
@@ -243,7 +266,7 @@ Recorded 2026-10-09, before the first GPU runs; review it before stage 2.
 | Soft-target distributions of the path-field check | deleted after the check; the record, hashes and results kept | ≈ 9.6 GB per environment while they exist |
 | Full soft-target stream of the SGD control | deleted after its run; hashes and summary kept | ≈ 29 GB while it exists |
 | Run directories (config, meta, metrics, observations, responses) | all, including failed runs | ≈ 1–5 MB per run |
-| Judge labels, calibration pool, sample, key, manual labels | all, private | < 50 MB |
+| Judge labels, calibration pool, sample, key, reference labels and their provenance | all, private | < 50 MB |
 | Model weights | none: `train.save_checkpoint` is not implemented; controls run in-process | — |
 | Model and dataset caches | evicted when space is needed | ≈ 10 GB |
 
@@ -272,8 +295,8 @@ arms included, since none is chosen by its outcome.
 - `runs/`: run outputs;
 - `.env`: keys;
 - `*.local.*`: private notes;
-- judge labels, calibration samples, their keys and manual labels: they contain raw responses to
-  harmful prompts and stay in `DATA_DIR` or `RUNS_DIR`.
+- judge labels, calibration samples, their keys, reference labels and their provenance: they
+  contain raw responses to harmful prompts and stay in `DATA_DIR` or `RUNS_DIR`.
 
 ## Release checklist
 

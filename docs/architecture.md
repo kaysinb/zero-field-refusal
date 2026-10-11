@@ -95,8 +95,8 @@ Implemented:
 | `evaluation` | K against a frozen θ₀ copy, greedy responses, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
-| `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with manual labels |
-| `labeling`, `calibration` | the pool of calibration responses, blind calibration samples and the terminal labeling session |
+| `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
+| `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 | `analysis` | h(K) fits, K\* and the decisive cells, Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation |
 
@@ -120,6 +120,8 @@ Entry points in `scripts/`:
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
+- `import_labels.py`: imports reference labels made outside the project (the ensemble) next to
+  the sample, with their provenance folder and hashes;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones
   included, into one table;
 - `rescore_factual_qa.py`: rescores the stored factual answers of run directories with the current
@@ -386,7 +388,8 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
 - **Judge.** A local open model with a pinned revision, served separately behind the
   OpenAI-compatible endpoint. The primary candidate is WildGuard-7B, whose refusal and
   harmful-response fields map onto the three labels; Llama-Guard-3-8B and an API judge with a rubric
-  are fallback candidates. Chosen on 200 blindly labeled responses from the calibration runs;
+  are fallback candidates. Chosen on 200 responses from the calibration runs against ensemble
+  reference labels checked by the user;
   model, rubric and prompt are fixed in [preregistration.md](preregistration.md#primary-analysis).
 - **KL and judged prompts.** Disjoint, from a stratified split of the deduplicated harmful pool
   (`configs/data/default.yaml`).

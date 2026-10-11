@@ -6,6 +6,7 @@ import pytest
 
 from zero_field_refusal import judge
 from zero_field_refusal.labeling import (
+    import_reference_labels,
     load_labels,
     make_calibration_sample,
     run_session,
@@ -248,3 +249,60 @@ def test_malformed_label_line_in_the_middle_raises(tmp_path: Path) -> None:
     path.write_text('{"item_id": "x0", "label": "refusal"}\nnot json\n{"item_id": "x1"}\n')
     with pytest.raises(json.JSONDecodeError):
         load_labels(path)
+
+
+# --- reference labels -----------------------------------------------------------------------------
+
+
+def reference_inputs(tmp_path: Path, labels: list[dict]) -> tuple[Path, Path, Path]:
+    sample = tmp_path / "calibration" / "sample.jsonl"
+    sample.parent.mkdir()
+    sample.write_text("".join(
+        json.dumps({"item_id": f"x{i}", "prompt": "p", "response": "r"}) + "\n" for i in range(3)
+    ))  # fmt: skip
+    source = tmp_path / "from_ensemble"
+    (source / "labelers").mkdir(parents=True)
+    (source / "labelers" / "opus.jsonl").write_text('{"item_id": "x0", "label": "refusal"}\n')
+    (source / "arbiter.jsonl").write_text("{}\n")
+    labels_path = source / "labels.jsonl"
+    labels_path.write_text("".join(json.dumps(r) + "\n" for r in labels))
+    return labels_path, source, sample
+
+
+def labels_for(ids, label="refusal") -> list[dict]:
+    return [{"item_id": i, "label": label, "labeled_at": "2026-10-11T09:00:00+00:00"} for i in ids]
+
+
+def test_reference_labels_are_imported_with_their_provenance(tmp_path: Path) -> None:
+    labels, source, sample = reference_inputs(tmp_path, labels_for(["x2", "x0", "x1"]))
+    manifest = import_reference_labels(labels, source, sample)
+    out = sample.parent
+    records = [
+        json.loads(line) for line in (out / "reference_labels.jsonl").read_text().splitlines()
+    ]
+    assert [r["item_id"] for r in records] == ["x0", "x1", "x2"]  # sample order
+    assert {r["labeler"] for r in records} == {"ensemble"}
+    assert load_labels(out / "reference_labels.jsonl")["x1"]["label"] == "refusal"
+    assert (out / "reference_provenance" / "labelers" / "opus.jsonl").is_file()
+    assert set(manifest["provenance"]) == {"labelers/opus.jsonl", "arbiter.jsonl", "labels.jsonl"}
+    assert manifest["label_counts"] == {"refusal": 3}
+    assert json.loads((out / "reference_import.json").read_text()) == manifest
+    with pytest.raises(FileExistsError):
+        import_reference_labels(labels, source, sample)
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        (labels_for(["x0", "x1"]), "no record for 1 sample items"),
+        (labels_for(["x0", "x1", "x2", "x9"]), "outside the sample"),
+        (labels_for(["x0", "x0", "x1", "x2"]), "several records"),
+        (labels_for(["x0", "x1", "x2"], label="harmful"), "unknown labels"),
+        ([{"item_id": i, "label": "refusal"} for i in ("x0", "x1", "x2")], "labeled_at"),
+    ],
+)
+def test_reference_labels_must_cover_the_sample_exactly(tmp_path: Path, labels, message) -> None:
+    labels_path, source, sample = reference_inputs(tmp_path, labels)
+    with pytest.raises(ValueError, match=message):
+        import_reference_labels(labels_path, source, sample)
+    assert not (sample.parent / "reference_labels.jsonl").exists()

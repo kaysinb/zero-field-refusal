@@ -28,7 +28,10 @@ Runs and produces:
   its thresholds before the first training run.
 - Run non-confirmatory runs for judge calibration: θ₀ and AdamW at η = 5·10⁻⁵ on 0.5B and 1.5B.
   Their responses enter no analysis, and their prompts are disjoint from the evaluation sets.
-- Calibrate the judge on 200 of these responses, labeled blindly by hand.
+- Calibrate the judge on 200 of these responses against reference labels: three model labelers
+  (Claude Opus, Claude Fable, GPT) label the blind sample independently, an arbiter resolves
+  their disagreements, and the user checks every disputed item and 30 random unanimous ones
+  (changed from labeling by hand on 2026-10-11; [amendment](preregistration.md#amendments)).
 - Implement the full-analysis simulation and validate the sequential CI level before confirmatory
   stage-2 runs ([requirement](preregistration.md#full-analysis-simulation)).
 - Commit the hypotheses, the sign of Δ and the thresholds in
@@ -53,7 +56,7 @@ Runs and produces:
 
 Gate: [Gate 1 (technical)](preregistration.md#gate-1-technical). It checks that the corrected protocol
 increases harmful compliance as refusals fall, that utility stays within its bound, that the judge
-agrees with manual labels, and that SGD reaches enough of AdamW's KL range.
+agrees with the reference labels, and that SGD reaches enough of AdamW's KL range.
 
 On failure: stage 2 does not start, except where an action is defined.
 - If the judge misses the agreement threshold, the rubric or the judge model is revised and the
