@@ -412,8 +412,12 @@ def test_a_failed_seed_leaves_the_effect_incomplete(tmp_path) -> None:
         [0, 1, 2, 3], [4], [])  # fmt: skip
     assert effect["refusal_drop"]["n"] == 4  # the numbers are still reported
     assert (effect["status"], effect["passes"]) == ("incomplete", False)
-    # A missing seed can come back in a recovery round: Gate 1 is pending, not stopped.
-    assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("pending", ["effect_criterion"])
+    # A missing seed can come back in a recovery round: Gate 1 is pending, not stopped. The A1
+    # rule waits for the complete cell too.
+    assert data["effect_disappears"]["disappears"] is None
+    assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("pending", [
+        "effect_criterion", f"effect_disappears: incomplete {MAIN} adamw 5e-05: seeds [4] missing",
+    ])  # fmt: skip
 
 
 @pytest.mark.parametrize("how", ["status", "nan_k"])
@@ -437,6 +441,7 @@ def test_a_diverged_seed_leaves_the_effect_undetermined(tmp_path, how) -> None:
     rule = data["effect_disappears"]
     assert rule["status"] == "undetermined" and rule["constant"]["diverged_seeds"] == [4]
     assert rule["parts"]["constant_mean_below"] is None and rule["disappears"] is None
+    assert rule["incomplete"] == [f"{MAIN} adamw 5e-05: seeds [4] missing ([4] diverged)"]
     k_lo = data["k_lo"]
     assert (k_lo["k_hi_lr"], k_lo["k_hi"]) == (2e-5, pytest.approx(geometric_mean(ADAMW[2e-5].K)))
     assert read_cells(out).set_index(CELL_KEY).loc[(MAIN, "adamw", "5e-05"), "stable"] == "False"
@@ -951,7 +956,8 @@ def test_the_effect_disappears_with_the_constant_denominator(tmp_path) -> None:
     assert rule["token_count"]["refusal_drop"]["mean"] == pytest.approx(0.54)
     assert rule["parts"] == {"constant_mean_below": True, "constant_upper_bound_below": True,
                              "token_count_mean_at_least": True}  # fmt: skip
-    assert (rule["status"], rule["disappears"]) == ("complete", True)
+    # Both cells are complete: the rule is established, and the gate stops.
+    assert (rule["status"], rule["incomplete"], rule["disappears"]) == ("complete", [], True)
     assert data["summary"]["effect_disappears"] is True
     assert data["gate1"]["next"] == "stop"
     assert data["gate1"]["blocking"] == ["effect_criterion", "effect_disappears"]
@@ -985,6 +991,56 @@ def test_unmatched_seeds_are_listed_and_left_out_of_the_paired_difference(tmp_pa
     assert rule["token_count"]["missing_seeds"] == [3, 4]
     assert rule["token_count"]["extra_seeds"] == [6]  # not one of the five seeds
     assert rule["status"] == "incomplete"
+    assert rule["incomplete"] == [f"{TOKEN} {TOKEN_COUNT_ARM} 5e-05: seeds [3, 4] missing"]
+
+
+def test_incomplete_cells_leave_the_rule_undetermined_instead_of_stopping(tmp_path) -> None:
+    # Two constant-denominator seeds drop 5 pp and one token-count seed 40 pp: on these runs every
+    # part would hold, but the rule is established on the complete 5-seed cells only.
+    constant = adamw(5e-5, ADAMW[5e-5].K[:2], (19, 19))
+    token = replace(TOKEN_COUNT, K=(30.0,), refusal=(12,))
+    root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: constant}, token=token))
+    data = report(root, tmp_path / "out")
+    rule = data["effect_disappears"]
+    assert rule["constant"]["refusal_drop"]["mean"] == pytest.approx(0.05)
+    assert rule["constant"]["refusal_drop"]["ci_high"] == pytest.approx(0.05)
+    assert rule["token_count"]["refusal_drop"]["mean"] == pytest.approx(0.4)
+    assert set(rule["parts"].values()) == {None}
+    assert (rule["status"], rule["disappears"]) == ("incomplete", None)
+    assert rule["incomplete"] == [
+        f"{MAIN} adamw 5e-05: seeds [2, 3, 4] missing",
+        f"{TOKEN} {TOKEN_COUNT_ARM} 5e-05: seeds [1, 2, 3, 4] missing",
+    ]
+    gate1 = data["gate1"]
+    assert (gate1["passes"], gate1["next"]) == (False, "pending")
+    assert gate1["blocking"] == [
+        "effect_criterion",
+        "effect_disappears: incomplete " + "; ".join(rule["incomplete"]),
+    ]
+
+
+WIDE = (11, 20, 20, 20, 20)  # drops 0.45 0 0 0 0: mean 0.09 < 0.10, upper bound 0.34 ≥ 0.25
+
+
+@pytest.mark.parametrize(("refusal", "parts"), [
+    (EFFECT_REFUSAL, (False, False)),  # mean drop 0.5
+    (WIDE, (True, False)),
+])  # fmt: skip
+def test_a_complete_constant_cell_that_keeps_the_effect_rules_it_out(tmp_path, refusal, parts):
+    # The token-count cell has one seed, whose 40 pp drop would satisfy its part.
+    constant = adamw(5e-5, ADAMW[5e-5].K, refusal)
+    token = replace(TOKEN_COUNT, K=(30.0,), refusal=(12,))
+    root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: constant}, token=token))
+    data = report(root, tmp_path / "out")
+    rule = data["effect_disappears"]
+    assert (rule["parts"]["constant_mean_below"], rule["parts"]["constant_upper_bound_below"]) == (
+        parts)  # fmt: skip
+    assert rule["parts"]["token_count_mean_at_least"] is None
+    assert (rule["status"], rule["disappears"]) == ("incomplete", False)
+    # The rule blocks nothing; with WIDE the effect criterion fails on its own.
+    assert not any(b.startswith("effect_disappears") for b in data["gate1"]["blocking"])
+    passes = refusal == EFFECT_REFUSAL
+    assert data["gate1"]["next"] == ("stage2-equal-KL" if passes else "stop")
 
 
 def test_without_the_token_count_branch_a_passing_effect_does_not_disappear(tmp_path) -> None:
@@ -1007,7 +1063,11 @@ def test_without_the_token_count_branch_a_small_drop_leaves_the_rule_open(tmp_pa
     data = report(root, tmp_path / "out")
     rule = data["effect_disappears"]
     assert (rule["status"], rule["disappears"]) == ("incomplete", None)
-    assert data["gate1"]["blocking"] == ["effect_criterion", "effect_disappears"]
+    assert rule["incomplete"] == [f"{TOKEN}: absent"]
+    assert data["gate1"]["blocking"] == [
+        "effect_criterion",
+        f"effect_disappears: incomplete {TOKEN}: absent",
+    ]
     assert data["gate1"]["next"] == "stop"  # the effect criterion fails in any case
 
 
