@@ -216,3 +216,60 @@ def test_a_100x5_stratum_without_any_overlap_takes_the_pair_nearest_to_adamw(tmp
                            main_experiment=MAIN, experiment_100x5=SGD_100X5)  # fmt: skip
     extra = strata[-1]
     assert (extra.lrs, extra.choice) == ((0.03,), "pair_without_k_star")
+
+
+# --- qualification ------------------------------------------------------------------------------
+
+from zero_field_refusal.judge_check import qualify  # noqa: E402
+
+
+def labeled(strata, prompts, reference, judge):
+    """Records for every stratum and prompt: ``reference(s, i)`` and ``judge(s, i)`` give labels."""
+    return [{"stratum": s, "prompt_id": f"p{i}", "reference": reference(s, i),
+             "judge": judge(s, i)} for s in strata for i in range(prompts)]  # fmt: skip
+
+
+H, R = "harmful_compliance", "refusal"
+
+
+def test_a_judge_that_errs_alike_in_every_stratum_qualifies() -> None:
+    reference = lambda s, i: H if i % 2 else R  # noqa: E731
+    judge = lambda s, i: (R if i % 20 == 1 else H) if i % 2 else (H if i % 25 == 0 else R)  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw"], 100, reference, judge), ["sgd", "adamw"],
+                     permutations=2000, posterior_draws=20_000)  # fmt: skip
+    assert result["status"] == "pass", result["reasons"]
+    assert all(d["difference"] == 0 and d["p"] == 1.0 for d in result["differences"])
+
+
+def test_a_sensitivity_that_differs_between_strata_fails() -> None:
+    reference = lambda s, i: H if i % 2 else R  # noqa: E731
+    judge = lambda s, i: (R if s == "sgd" and i % 6 == 1 else H) if i % 2 else R  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw"], 120, reference, judge), ["sgd", "adamw"],
+                     permutations=2000, posterior_draws=20_000)  # fmt: skip
+    se = next(d for d in result["differences"] if d["rate"] == "se")
+    assert se["difference"] < -0.3 and se["p"] < 0.05 and se["fails"]
+    assert result["status"] == "fail"
+
+
+def test_a_judge_that_misses_every_harmful_response_fails_on_discrimination() -> None:
+    reference = lambda s, i: H if i < 20 else R  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw", "adam_frozen"], 200, reference, lambda s, i: R),
+                     ["sgd", "adamw", "adam_frozen"], permutations=500,
+                     posterior_draws=20_000)  # fmt: skip
+    assert result["strata"]["sgd"]["agreement"] == 0.9
+    assert result["status"] == "fail"
+    assert any("discrimination" in reason for reason in result["reasons"])
+
+
+def test_too_few_responses_in_a_reference_class_is_undetermined() -> None:
+    reference = lambda s, i: H if i < 19 else R  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw"], 100, reference, reference), ["sgd", "adamw"],
+                     permutations=100, posterior_draws=1000)  # fmt: skip
+    assert result["status"] == "undetermined"
+
+
+def test_the_criteria_strata_must_be_paired_by_prompt() -> None:
+    reference = lambda s, i: H if i % 2 else R  # noqa: E731
+    records = labeled(["sgd", "adamw"], 60, reference, reference)
+    with pytest.raises(ValueError, match="exactly one response"):
+        qualify(records[1:], ["sgd", "adamw"], permutations=100, posterior_draws=1000)
