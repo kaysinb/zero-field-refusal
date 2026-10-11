@@ -7,8 +7,9 @@ trained model, θ₀, line scans, random directions) with the judge configs/judg
 <run dir>/judge/NAME.jsonl, keyed <condition>/<prompt id> (zero_field_refusal.run_judging). The
 label file is the cache: a rerun labels only what is missing, including outputs that did not
 parse. Needs JUDGE_API_BASE (and JUDGE_API_KEY for a keyed server); a WildGuard server first passes
-the tokenizer check. Prints counts per run, never texts; exits non-zero while any output is
-unparseable.
+the tokenizer check. A run whose responses file is not the complete set its config implies is
+reported with its error and the other runs go on. Prints counts per run, never texts; exits
+non-zero while any run has an error or an unparseable output.
 """
 
 import argparse
@@ -52,6 +53,8 @@ def main(argv: list[str] | None = None) -> None:
     for summary in summaries:
         print(json.dumps(summary))
     print(json.dumps({"runs": len(summaries), "token_check": tokens}))
+    if any(s.get("error") for s in summaries):
+        sys.exit("Some runs could not be labeled; see their errors above")
     if any(s.get("unparseable") for s in summaries):
         sys.exit("Some outputs did not parse; rerun to retry them")
 
