@@ -229,11 +229,19 @@ Decided 2026-10-11. Three places, each with one role:
 
 | Place | Holds | Rules |
 |---|---|---|
-| This machine (the checkout, `./data`, `./runs`, `scratchpad/`) | code, documents, reports, scratchpad notes and small run results: run directories, judge labels, calibration samples and reference labels | Large data (teacher streams, soft-target distributions, checkpoints, model weights) takes at most 10 GB for the whole project here; beyond that it stays on the network volume and in the bucket. |
-| Runpod network volume (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | One Standard volume of about 50 GB ($0.07 per GB and month), in a data center chosen for its L40S capacity (checked before creating it). Pods attach it at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. It is working storage, not a backup. It is deleted only with the user's approval. |
+| This machine (the checkout, `./data`, `./runs`, `scratchpad/`) | code, documents, reports, scratchpad notes and small run results: run directories, judge labels, calibration samples and reference labels | Large data (teacher streams, soft-target distributions, checkpoints, model weights) takes at most 10 GB for the whole project here; beyond that it stays on the Pod's working storage and in the bucket. |
+| Working storage of the Pod (from stage 1) | model weights and caches, teacher streams, soft-target distributions while they exist, intermediate files, and the run directories of ongoing runs | Mounted at `/workspace`, so the [container defaults](#containers) put `DATA_DIR`, `RUNS_DIR` and the caches on it. Preferred: a Runpod network volume (Standard, about 50 GB, $0.07 per GB and month) in a data center with L40S capacity. Where no such data center exists, the Pod's own volume disk, which lives on its machine and goes with the Pod. Either way it is working storage, not a backup, and it is deleted only with the user's approval. |
 | `ARTIFACT_REMOTE`, a private, versioned Google Cloud Storage bucket | everything to be kept: finalized run directories, teacher streams, labels, inventories, scratchpad snapshots | Create and read only, no overwrite or delete ([archive](#rented-machines)). |
 
-Network volume: not created yet. On creation, record its ID, data center and size here.
+Stage 1 (decided 2026-10-11): no data center offered both L40S and network volumes, so the
+L40S Pod uses its volume disk at `/workspace` and the bucket. Record the Pod's ID, data center and
+volume size here when it is created; a network volume, if one is created later, likewise.
+
+- **Inputs before the runs that use them.** A generated teacher or preconditioner stream is
+  archived to the bucket and verified before the first run that reads it starts, so losing the
+  machine never loses a stream that results depend on.
+- **Every run record.** Run directories go to the bucket as their batch finishes, failed runs
+  included, together with the launch log.
 
 - **Small results** (run directories, labels, reports) come back to this machine, are checked
   against their sha256, and are archived from here.
@@ -241,8 +249,8 @@ Network volume: not created yet. On creation, record its ID, data center and siz
   archive service account's key is the Runpod secret `gcs_archive_key_b64` (the key file in
   base64). Pass it at Pod creation as
   `ARTIFACT_GCS_KEY_B64={{ RUNPOD_SECRET_gcs_archive_key_b64 }}`, together with
-  `ARTIFACT_REMOTE`. On the Pod, decode it to a file on the container disk, never on the network
-  volume, and point `ARTIFACT_GCS_KEY` at it, without printing either:
+  `ARTIFACT_REMOTE`. On the Pod, decode it to a file on the container disk, never under
+  `/workspace`, and point `ARTIFACT_GCS_KEY` at it, without printing either:
 
   ```bash
   umask 077
@@ -252,7 +260,7 @@ Network volume: not created yet. On creation, record its ID, data center and siz
   ```
 
   Then follow the [archive procedure](#rented-machines) on the Pod. The key file goes away with
-  the container disk when the Pod is deleted.
+  the container disk when the Pod stops or is deleted; decode it again after a restart.
 - **Scratchpad snapshots.** At the end of each stage, together with its report in
   `docs/reports/`, archive `scratchpad/` to `scratchpad/<date>/` in the bucket. Scan it for
   secrets first (the values in `.env` and in local key files, and token patterns, printing only
@@ -260,8 +268,8 @@ Network volume: not created yet. On creation, record its ID, data center and siz
 
 ## Rented machines
 
-Set `DATA_DIR`, `RUNS_DIR` and model caches on verified persistent storage: the network volume
-([storage](#storage)). Small results come back to this machine (copied and checked against their
+Set `DATA_DIR`, `RUNS_DIR` and model caches on verified persistent storage: the Pod's working
+storage at `/workspace` ([storage](#storage)). Small results come back to this machine (copied and checked against their
 sha256) before they are archived; large artifacts are archived from the Pod.
 
 **Archive.** `ARTIFACT_REMOTE` is a private Google Cloud Storage bucket path with object versioning.
