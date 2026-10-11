@@ -17,6 +17,7 @@ FAKE_GCLOUD = r"""#!PYTHON
 import base64, hashlib, json, os, shutil, sys
 from pathlib import Path
 assert os.environ["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"]
+assert os.environ["CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED"] == "False"
 store = Path(os.environ["FAKE_BUCKETS"])
 args = sys.argv[1:]
 assert args[0] == "storage"
@@ -119,3 +120,19 @@ def test_a_prefix_that_is_not_a_bucket_path_is_refused(tmp_path) -> None:
     env = setup(tmp_path)
     done = run(env, str(tmp_path / "inv.tsv"), "/tmp/elsewhere", str(tmp_path), "x")
     assert done.returncode != 0 and "gs://" in done.stderr
+
+
+def test_paths_are_normalized_and_must_stay_inside_the_root(tmp_path) -> None:
+    env = setup(tmp_path)
+    root = tmp_path / "local"
+    (root / "data" / "teacher").mkdir(parents=True)
+    (root / "data" / "teacher" / "s.jsonl").write_bytes(b"x")
+    inventory = tmp_path / "inventory.tsv"
+    done = run(env, str(inventory), "gs://bucket/p/", str(root), "./data/")
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "buckets" / "bucket" / "p" / "data" / "teacher" / "s.jsonl").is_file()
+    assert not (tmp_path / "buckets" / "bucket" / "p" / "data" / "data").exists()
+    assert inventory.read_text().splitlines()[1].startswith("data/teacher/s.jsonl\t")
+    for bad in ("../outside", "/abs/path", "."):
+        done = run(env, str(inventory), "gs://bucket/p", str(root), bad)
+        assert done.returncode != 0 and "relative path inside ROOT" in done.stderr

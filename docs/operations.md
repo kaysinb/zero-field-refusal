@@ -214,11 +214,16 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   The number of processes must divide the global batch; the code fails otherwise. Rank 0 generates
   the run id and broadcasts it, so no `RUN_ID` is needed.
 - **Campaigns:** `uv run scripts/launch.py CAMPAIGN.yaml` runs a list of cells (config,
-  overrides, seeds; `entry: theta0` for θ₀ evaluations) in order, each run in a fresh process,
-  skipping runs whose config hash already has a completed run; every run's config is checked
-  against the protocol before the first one starts. Starts, ends and exit codes go to
-  `RUNS_DIR/launch/<campaign>.jsonl`, each run's output to `RUNS_DIR/launch/<campaign>/`; a failed
-  run does not stop the others. `--dry-run` lists what would run.
+  overrides, seeds; `entry: theta0` for θ₀ evaluations) in order, each attempt in a fresh process
+  under its own `RUN_ID`. Every run's config is checked against the protocol before the first one
+  starts. A run is skipped when a completed run with its config hash qualifies (the campaign's
+  `tracking.gate`, a clean recorded commit when `require_clean_git` is set, a finite K and the
+  responses file); a completed run that does not qualify stops the campaign before anything
+  starts, since running again would add a second run of the seed. A run that ended `diverged`
+  (non-finite training loss) is an outcome and is never rerun; any other failure is technical and
+  is retried, up to three attempts in all, counting earlier attempts left in the experiment.
+  Starts, ends and outcomes go to `RUNS_DIR/launch/<campaign>.jsonl`, each attempt's output to
+  `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
 - **Gate runs:** commit and push all changes first, then run from a clone or bundle of that
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.
@@ -261,8 +266,9 @@ volume size here when it is created; a network volume, if one is created later, 
 
   `scripts/pod_setup.sh` does this on a new Pod: it installs the Google Cloud CLI pinned by
   version and sha256 on the container disk (the image has none), decodes the key, writes
-  `/root/zfr-env.sh` for later shells, and restores `DATA_DIR` from the bucket, checking every
-  file against the archive inventory. Then follow the [archive procedure](#rented-machines) on the
+  `/root/zfr-env.sh` for later shells, and restores `DATA_DIR` from the bucket. Every file in
+  `DATA_DIR` must then appear, with its sha256, in one of the inventories given (all of those that
+  cover `data/`), and every listed file must be present; anything else stops the setup. Then follow the [archive procedure](#rented-machines) on the
   Pod. The key file goes away with
   the container disk when the Pod stops or is deleted; decode it again after a restart.
 - **Scratchpad snapshots.** At the end of each stage, together with its report in

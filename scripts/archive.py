@@ -18,16 +18,30 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 HEADER = "path\tsize\tsha256\tmd5_b64\turl\tstatus\n"
 
 
 def gcloud(args: list[str]) -> str:
-    env = {**os.environ, "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": os.environ["ARTIFACT_GCS_KEY"]}
+    env = {
+        **os.environ,
+        "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": os.environ["ARTIFACT_GCS_KEY"],
+        # Composite uploads (large files) have no MD5 to verify, and composing them needs the
+        # delete permission the archive key does not have.
+        "CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED": "False",
+    }
     done = subprocess.run(["gcloud", "storage", *args], env=env, check=True, capture_output=True,
                           text=True)  # fmt: skip
     return done.stdout
+
+
+def normalized(rel: str) -> str:
+    """A relative path in POSIX form without "./" or a trailing slash; never absolute or ".."."""
+    path = PurePosixPath(rel.strip())
+    if path.is_absolute() or ".." in path.parts or not path.parts or path.as_posix() == ".":
+        raise SystemExit(f"PATH must be a relative path inside ROOT: {rel!r}")
+    return path.as_posix()
 
 
 def files(path: Path) -> list[Path]:
@@ -35,13 +49,19 @@ def files(path: Path) -> list[Path]:
 
 
 def digests(path: Path) -> tuple[int, str, str]:
-    data = path.read_bytes()
-    md5 = base64.b64encode(hashlib.md5(data).digest()).decode()
-    return len(data), hashlib.sha256(data).hexdigest(), md5
+    """Size, sha256 and base64 MD5 of a file, read in chunks."""
+    sha, md5, size = hashlib.sha256(), hashlib.md5(), 0
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 24):
+            sha.update(chunk)
+            md5.update(chunk)
+            size += len(chunk)
+    return size, sha.hexdigest(), base64.b64encode(md5.digest()).decode()
 
 
 def archive(inventory: Path, prefix: str, root: Path, paths: list[str]) -> dict[str, int]:
     prefix = prefix.rstrip("/")
+    paths = [normalized(rel) for rel in paths]
     local = {f.relative_to(root).as_posix(): digests(f) for rel in paths for f in files(root / rel)}
     if not local:
         raise SystemExit("Nothing to archive")
