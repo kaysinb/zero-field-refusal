@@ -230,7 +230,9 @@ topics:
   - src/zero_field_refusal/teacher*
   - src/zero_field_refusal/evaluation*
   - scripts/index_runs.py
+  - scripts/build_analysis.py
   - scripts/report.py
+  - tests/fixtures/evidence/*
   - configs/judge/*.yaml
   - paper/**
 - id: artifact_retention
