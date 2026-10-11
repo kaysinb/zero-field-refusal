@@ -13,7 +13,7 @@ import torch.multiprocessing as mp
 from omegaconf import DictConfig, OmegaConf
 
 from zero_field_refusal import tracking
-from zero_field_refusal.tracking import Run, git_diff, git_state
+from zero_field_refusal.tracking import Diverged, Run, git_diff, git_state
 
 
 @pytest.fixture(autouse=True)
@@ -108,6 +108,13 @@ def test_failure_is_recorded(runs_dir: Path) -> None:
         raise RuntimeError("boom")
     meta = json.loads((runs_dir / "unit" / "r2" / "meta.json").read_text())
     assert meta["status"] == "failed"
+
+
+def test_divergence_is_recorded_as_its_own_status(runs_dir: Path) -> None:
+    with pytest.raises(Diverged), Run(make_cfg(), run_id="r2d"):
+        raise Diverged("loss is not finite")
+    meta = json.loads((runs_dir / "unit" / "r2d" / "meta.json").read_text())
+    assert meta["status"] == "diverged"
 
 
 def test_run_id_is_never_reused(runs_dir: Path) -> None:

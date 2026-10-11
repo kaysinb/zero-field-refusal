@@ -30,7 +30,9 @@ records has a label.
 Exclusion reasons, checked in this order (the first that applies is recorded). A file that is
 missing, not UTF-8, not valid JSON or YAML, or lacks a required field excludes only its run:
 - ``no_meta``: no readable ``meta.json`` object;
-- ``not_completed``: ``meta.json`` status other than ``completed`` (failed or still running);
+- ``diverged``: training stopped on a non-finite loss (``meta.json`` status ``diverged``), an
+  outcome of the learning rate;
+- ``not_completed``: any other status than ``completed`` (failed or still running);
 - ``no_config``: no ``config.yaml``; ``invalid_config``: a ``config.yaml`` that is not a YAML
   mapping or lacks one of ``CONFIG_KEYS`` with its type;
 - ``not_training``: ``run_type`` other than ``train`` (e.g. a θ₀ evaluation);
@@ -214,6 +216,8 @@ def _assess(
                    protocol_version=_value(cfg, "protocol_version", int),
                    gate=_select(cfg, GATE_KEY))  # fmt: skip
 
+    if row["status"] == "diverged":
+        raise _Excluded("diverged", "training stopped on a non-finite loss")
     if row["status"] != "completed":
         raise _Excluded("not_completed", f"meta.json status is {row['status']!r}")
     if problem is not None:

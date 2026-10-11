@@ -2,9 +2,11 @@
 
     python scripts/launch.py CAMPAIGN.yaml [--dry-run]
 
-Checks every run's config first; skips runs whose config hash already has a completed run in
-RUNS_DIR/<experiment>/; runs the rest in order, each in its own process, and keeps going after a
-failure. --dry-run lists what would run. Exits non-zero if any run failed.
+Checks every run's config first, and refuses to start if a completed run with a campaign run's
+config cannot stand for it (wrong gate, unclean checkout, missing artifacts). Skips runs that
+already have a qualifying completed run, never reruns a diverged one, retries technical failures
+up to three attempts in all, and runs the rest in order, each in its own process with its own
+RUN_ID. --dry-run lists what would run. Exits non-zero if any run used up its attempts.
 """
 
 import argparse
@@ -12,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from zero_field_refusal.launch import load_campaign, run_campaign
+from zero_field_refusal.launch import CampaignError, load_campaign, run_campaign
 from zero_field_refusal.paths import load_env, runs_root
 
 
@@ -23,10 +25,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     load_env()
     name, runs = load_campaign(args.campaign)
-    result = run_campaign(name, runs, runs_root(), dry_run=args.dry_run)
+    try:
+        result = run_campaign(name, runs, runs_root(), dry_run=args.dry_run)
+    except CampaignError as exc:
+        raise SystemExit(str(exc)) from exc
     print(json.dumps({key: labels for key, labels in result.items() if labels}, indent=1))
-    if result["failed"]:
-        sys.exit(f"{len(result['failed'])} runs failed; see RUNS_DIR/launch/{name}.jsonl")
+    if result["exhausted"]:
+        sys.exit(f"{len(result['exhausted'])} runs used up their attempts; see "
+                 f"RUNS_DIR/launch/{name}.jsonl")  # fmt: skip
 
 
 if __name__ == "__main__":

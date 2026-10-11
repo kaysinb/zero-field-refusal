@@ -1,12 +1,15 @@
 """The campaign launcher: checked configs, skipping completed runs, logging, carrying on."""
 
 import json
+import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from zero_field_refusal.launch import completed_hashes, load_campaign, run_campaign
+from zero_field_refusal.launch import CampaignError, load_campaign, run_campaign
 from zero_field_refusal.protocol import ProtocolError
+from zero_field_refusal.tracking import _RUN_ID as RUN_ID
 
 CELLS = """
 name: test-campaign
@@ -32,11 +35,43 @@ def campaign(tmp_path: Path, text: str = CELLS) -> Path:
     return path
 
 
-def write_meta(root: Path, experiment: str, run: str, config_hash: str, status: str) -> None:
-    directory = root / experiment / run
-    directory.mkdir(parents=True)
-    (directory / "meta.json").write_text(json.dumps({"status": status,
-                                                     "config_hash": config_hash}))  # fmt: skip
+def make_run_dir(root: Path, run, run_id: str, status: str = "completed", *, dirty: bool = False,
+                 gate=None, k: float | None = 5.0, responses: bool = True) -> Path:  # fmt: skip
+    """A run directory as the tracker would leave it for ``run``."""
+    from omegaconf import OmegaConf
+
+    from zero_field_refusal.protocol import load_run_config
+
+    cfg = load_run_config(run.config, run.overrides)
+    if gate is not None:
+        OmegaConf.update(cfg, "tracking.gate", gate)
+    run_dir = root / run.experiment / run_id
+    (run_dir / "responses").mkdir(parents=True)
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+    meta = {"status": status, "config_hash": run.config_hash,
+            "git": {"commit": "abc123", "dirty": dirty}}  # fmt: skip
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    if k is not None:
+        (run_dir / "summary.json").write_text(json.dumps({"K_harmful": k}))
+    if responses:
+        (run_dir / "responses" / f"{run.prompt_set}.jsonl").write_text("{}\n")
+    return run_dir
+
+
+class Executor:
+    """Plays one scripted outcome per attempt: completed, diverged, failed or none (no run dir)."""
+
+    def __init__(self, root: Path, outcomes: dict[str, list[str]]) -> None:
+        self.root, self.outcomes, self.calls = root, outcomes, []
+
+    def __call__(self, run, run_id: str, output: Path) -> int:
+        self.calls.append((run.label, run_id))
+        output.write_text("run output\n")
+        outcome = self.outcomes.get(run.label, ["completed"]).pop(0)
+        if outcome != "none":
+            k = (0.0 if run.entry == "theta0" else 5.0) if outcome == "completed" else None
+            make_run_dir(self.root, run, run_id, outcome, k=k)
+        return 0 if outcome == "completed" else 1
 
 
 def test_a_campaign_expands_into_checked_runs(tmp_path) -> None:
@@ -76,46 +111,100 @@ def test_a_wrong_cell_stops_the_campaign_before_anything_runs(tmp_path, cells, e
         load_campaign(campaign(tmp_path, f"name: c\ncells: {cells}\n"))
 
 
-def test_completed_runs_are_skipped_and_failures_do_not_stop_the_rest(tmp_path) -> None:
+def test_runs_are_skipped_retried_or_left_by_their_outcome(tmp_path) -> None:
     name, runs = load_campaign(campaign(tmp_path))
+    theta0, adamw0, adamw1, sgd = runs
     root = tmp_path / "runs"
-    write_meta(root, "smoke", "done", runs[1].config_hash, "completed")
-    write_meta(root, "smoke", "crashed", runs[2].config_hash, "failed")  # does not count
-    assert completed_hashes(root, "smoke") == {runs[1].config_hash}
-
-    started = []
-
-    def execute(run, output: Path) -> int:
-        started.append(run.label)
-        output.write_text("run output\n")
-        return 1 if run.cell == "theta0" else 0
-
+    make_run_dir(root, adamw0, "earlier-qualifying")  # done: skipped
+    make_run_dir(root, sgd, f"x-{sgd.config_hash[:8]}-a1", "failed")  # one technical attempt
+    make_run_dir(root, sgd, f"x-{sgd.config_hash[:8]}-a2", "running")  # killed: another
+    execute = Executor(root, {"theta0/s0": ["failed", "none", "completed"],
+                              "adamw-5e-5/s1": ["diverged"],
+                              "sgd-0.1/s0": ["failed"]})  # fmt: skip
     result = run_campaign(name, runs, root, execute=execute)
-    assert started == ["theta0/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]
-    assert result == {"skipped": ["adamw-5e-5/s0"], "done": ["adamw-5e-5/s1", "sgd-0.1/s0"],
-                      "failed": ["theta0/s0"], "pending": []}  # fmt: skip
-    log = [json.loads(line) for line in (root / "launch" / f"{name}.jsonl").read_text().split("\n")
-           if line]  # fmt: skip
-    assert [(r["event"], r["run"]) for r in log] == [
-        ("start", "theta0/s0"), ("end", "theta0/s0"), ("start", "adamw-5e-5/s1"),
-        ("end", "adamw-5e-5/s1"), ("start", "sgd-0.1/s0"), ("end", "sgd-0.1/s0")]  # fmt: skip
-    assert log[1]["returncode"] == 1
-    outputs = sorted(p.name for p in (root / "launch" / name).iterdir())
-    assert len(outputs) == 3 and outputs[0].startswith("adamw-5e-5-s1-")
+    assert result == {"skipped": ["adamw-5e-5/s0"], "done": ["theta0/s0"],
+                      "diverged": ["adamw-5e-5/s1"], "exhausted": ["sgd-0.1/s0"],
+                      "pending": []}  # fmt: skip
+    assert [label for label, _ in execute.calls] == [
+        "theta0/s0", "theta0/s0", "theta0/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]  # fmt: skip
+    ids = [run_id for _, run_id in execute.calls]
+    assert len(set(ids)) == len(ids) and all(re.fullmatch(RUN_ID, i) for i in ids)
+    log = [
+        json.loads(line) for line in (root / "launch" / f"{name}.jsonl").read_text().splitlines()
+    ]
+    ends = [(r["run"], r["attempt"], r["outcome"]) for r in log if r["event"] == "end"]
+    assert ends == [("theta0/s0", 1, "technical"), ("theta0/s0", 2, "technical"),
+                    ("theta0/s0", 3, "done"), ("adamw-5e-5/s1", 1, "diverged"),
+                    ("sgd-0.1/s0", 3, "technical")]  # fmt: skip
+
+    # A second invocation finds everything settled: nothing runs again.
+    again = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=again)
+    assert again.calls == [] and result["exhausted"] == ["sgd-0.1/s0"]
+    assert result["skipped"] == ["theta0/s0", "adamw-5e-5/s0"]
+
+
+GATED = """
+name: gated
+cells:
+  - name: adamw
+    config: experiments/smoke
+    overrides: [tracking.gate=1, tracking.require_clean_git=true]
+    seeds: [0]
+"""
+
+
+@pytest.mark.parametrize(
+    ("damage", "problem"),
+    [({"dirty": True}, "clean checkout"), ({"gate": 2}, "tracking.gate is 2"),
+     ({"k": float("nan")}, "K_harmful"), ({"k": None}, "K_harmful"),
+     ({"responses": False}, "responses/harmful_judged.jsonl is missing")],
+)  # fmt: skip
+def test_a_completed_run_that_cannot_stand_stops_the_campaign(tmp_path, damage, problem) -> None:
+    name, runs = load_campaign(campaign(tmp_path, GATED))
+    root = tmp_path / "runs"
+    make_run_dir(root, runs[0], "old", gate=damage.pop("gate", 1), **damage)
+    execute = Executor(root, {})
+    with pytest.raises(CampaignError, match=problem):
+        run_campaign(name, runs, root, execute=execute)
+    assert execute.calls == []
+
+
+def test_a_qualifying_gate_run_is_skipped(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path, GATED))
+    root = tmp_path / "runs"
+    make_run_dir(root, runs[0], "old", gate=1)
+    assert run_campaign(name, runs, root, execute=Executor(root, {}))["skipped"] == ["adamw/s0"]
 
 
 def test_a_dry_run_starts_nothing(tmp_path) -> None:
     name, runs = load_campaign(campaign(tmp_path))
     root = tmp_path / "runs"
-    write_meta(root, "smoke", "done", runs[0].config_hash, "completed")
+    make_run_dir(root, runs[0], "done", k=0.0)
 
-    def execute(run, output):
+    def execute(run, run_id, output):
         raise AssertionError("a dry run must not start a run")
 
     result = run_campaign(name, runs, root, execute=execute, dry_run=True)
     assert result["skipped"] == ["theta0/s0"]
     assert result["pending"] == ["adamw-5e-5/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]
     assert not (root / "launch").exists()
+
+
+def test_each_attempt_runs_under_its_own_run_id(tmp_path, monkeypatch) -> None:
+    from zero_field_refusal import launch
+
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("RUN_ID", "the-launcher")
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    _, runs = load_campaign(campaign(tmp_path))
+    launch._subprocess(runs[1], "attempt-id", tmp_path / "out.log")
+    assert seen["RUN_ID"] == "attempt-id"
 
 
 CAMPAIGNS = sorted((Path(__file__).resolve().parents[1] / "configs" / "campaigns").glob("*.yaml"))

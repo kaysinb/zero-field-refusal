@@ -607,3 +607,12 @@ def test_the_script_takes_a_frozen_k_star(builds, tmp_path) -> None:
     done = run_script(out, _gate_2_fixture(tmp_path), "--k-star", str(builds[0] / "k_star.json"))
     assert done.returncode == 0, done.stderr
     assert json.loads((out / "results.json").read_text())["k_star_status"] == "frozen"
+
+
+def test_a_diverged_run_is_excluded_with_its_own_reason(tmp_path) -> None:
+    root = copy_fixture(tmp_path)
+    meta_path = root / EXPERIMENT / RUN / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta_path.write_text(json.dumps(meta | {"status": "diverged"}))
+    row = collect(root).considered.set_index("run_id").loc[RUN]
+    assert (row["included"], row["reason"]) == (False, "diverged")

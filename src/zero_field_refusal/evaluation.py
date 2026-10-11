@@ -158,6 +158,16 @@ def displacement(
     }
 
 
+def line_scan_condition(a: float) -> str:
+    """The response condition of the line-scan point θ₀ + aΔθ, e.g. ``line_scan_-0.25``."""
+    return f"line_scan_{a:+g}"
+
+
+def random_condition(kind: str) -> str:
+    """The response condition of a random direction of the displacement's norm."""
+    return f"random_{kind}"
+
+
 @torch.no_grad()
 def set_point(
     trainable: Sequence[tuple[str, torch.nn.Parameter]],

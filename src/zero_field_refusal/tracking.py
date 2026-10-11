@@ -5,7 +5,8 @@ Each run owns ``<runs root>/<experiment>/<run id>/``:
 - ``config.yaml``: the resolved config;
 - ``meta.json``: identity and provenance (config hash, command-line arguments, git commit, lockfile
   hash, package versions, GPUs, source snapshot and container image, input hashes, W&B run,
-  status);
+  status: ``running``, ``completed``, ``failed``, or ``diverged`` when training stopped on a
+  non-finite loss);
 - ``git.diff``: uncommitted changes and untracked files, when the working tree is dirty;
 - ``metrics.jsonl``: one JSON object per ``log`` call;
 - ``summary.json``: final values;
@@ -61,6 +62,15 @@ RESERVED_KEYS = ("step", "time_s")
 
 # A run id is also a directory name and the W&B run id, which is limited to 64 characters.
 _RUN_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}")
+
+
+class Diverged(RuntimeError):
+    """Training stopped on a non-finite loss: an outcome of the learning rate, not a failure.
+
+    The run ends with status ``diverged``; it is not rerun (docs/operations.md, "Launching runs").
+    """
+
+    run_status = "diverged"
 
 
 class Run:
@@ -169,7 +179,8 @@ class Run:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.finish("completed" if exc_type is None else "failed")
+        # An exception may name the run's outcome (Diverged); any other one is a failure.
+        self.finish("completed" if exc_type is None else getattr(exc, "run_status", "failed"))
 
     def _shared_id(self) -> str:
         """A new run id, the same on every process of a distributed job."""

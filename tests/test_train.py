@@ -11,6 +11,7 @@ from zero_field_refusal.models import install_neutral_generation_config
 from zero_field_refusal.prechecks import CheckFailed, environment_fingerprint, write_check_record
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.runtime import Environment, generate_stream, load_stream_for
+from zero_field_refusal.tracking import Diverged
 from zero_field_refusal.train import run_training, training_batches
 
 SMALL = [
@@ -177,6 +178,29 @@ def test_bridge_cell_trains_on_the_same_stream_truncated(env) -> None:
     summary = json.loads((run_dir / "summary.json").read_text())
     _, main_cell = load_stream_for(config(), env, "training", 0)
     assert summary["stream/training"] == main_cell["sha256"]  # the 96-token cell's stream
+
+
+def test_a_non_finite_loss_ends_the_run_as_diverged(env, monkeypatch) -> None:
+    from zero_field_refusal import train
+
+    accumulate = train.accumulate_gradient
+    calls = []
+
+    def blow_up(*args, **kwargs):
+        stats = accumulate(*args, **kwargs)
+        calls.append(stats)
+        return stats | {"loss": float("nan")} if len(calls) == 2 else stats
+
+    monkeypatch.setattr(train, "accumulate_gradient", blow_up)
+    cfg = config()
+    prepare(env, cfg, "training")
+    with pytest.raises(Diverged, match="step 1"):
+        run_training(cfg, env, run_id="diverged")
+    run_dir = Path(env.data_root).parent / "runs" / "smoke" / "diverged"
+    assert json.loads((run_dir / "meta.json").read_text())["status"] == "diverged"
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert summary["diverged_at_step"] == 1 and "K_harmful" not in summary
+    assert [m["step"] for m in read_jsonl(run_dir / "metrics.jsonl")] == [0]
 
 
 def test_controls_scan_the_whole_displacement_and_random_directions(env) -> None:

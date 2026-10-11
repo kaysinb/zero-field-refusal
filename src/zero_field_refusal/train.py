@@ -9,6 +9,7 @@ geometry and the weight-space controls; weights are not saved by default.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from .evaluation import (
     choice_predictions,
     displacement,
     greedy_responses,
+    line_scan_condition,
+    random_condition,
     random_direction,
     sequence_kl,
     sequence_nll,
@@ -37,7 +40,7 @@ from .refusal import is_keyword_refusal
 from .runtime import Environment, load_stream_for, locate_stream
 from .seeding import derive_seed, seed_everything
 from .teacher import Sample, StreamError, load_distributions, reference_samples
-from .tracking import Run
+from .tracking import Diverged, Run
 
 FACTUAL_MAX_NEW_TOKENS = 32
 CHOICE_LETTERS = ("A", "B", "C", "D")
@@ -346,6 +349,9 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
                 soft_targets = reader.take([position[id(s)] for s in batch])
                 _check_rows(batch, soft_targets)
             stats = accumulate_gradient(student, batch, cfg, env, soft_targets)
+            if not math.isfinite(stats["loss"]):
+                run.summarize({"diverged_at_step": step})
+                raise Diverged(f"The training loss is not finite at step {step}")
             optimizer.step()
             stats |= projection_stats(trainable, theta0, directions)
             run.log(stats, step=step)
@@ -404,7 +410,7 @@ def _controls(
         for sign in controls.line_scan.signs:
             for a in controls.line_scan.coefficients:
                 set_point(trainable, start, delta, sign * a)
-                condition = f"line_scan_{sign * a:+g}"
+                condition = line_scan_condition(sign * a)
                 out[condition] = evaluate(student, condition)
     if controls.random_direction.enabled:
         shapes = {name: tuple(p.shape) for name, p in trainable}
@@ -414,7 +420,7 @@ def _controls(
                                  device=env.device)  # fmt: skip
             set_point(trainable, start, [r[name] for name, _ in trainable], 1.0)
             del r
-            out[f"random_{kind}"] = evaluate(student, f"random_{kind}")
+            out[random_condition(kind)] = evaluate(student, random_condition(kind))
     set_point(trainable, start, delta, 1.0)
     return out
 
