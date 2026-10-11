@@ -156,7 +156,12 @@ Entry points in `scripts/`:
   overwritten): runs and exclusions, cell, arm and estimate tables, the K\* record, results, a
   figure and a manifest ([publication evidence](#publication-evidence));
 - `gate1_report.py`: the [Gate 1](preregistration.md#gate-1-technical) numbers of one model from its
-  stage-1 run directories on the CPU, into a new directory like `build_analysis.py`.
+  stage-1 run directories on the CPU, into a new directory like `build_analysis.py`; it refuses
+  any run whose condition differs from the committed config of its experiment (model, training
+  regime, evaluation volume). `--calibration` takes the judge-calibration directory: the report
+  computes the judge's agreement with the reference labels itself and checks the fixed sample
+  and reference hashes, the WildGuard identity of the labels and the 200 reference items; any
+  departure makes the calibration invalid and Gate 1 pending.
 
 Planned:
 - `report.py`.
