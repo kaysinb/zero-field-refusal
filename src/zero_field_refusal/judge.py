@@ -35,6 +35,9 @@ UNSURE = "unsure"  # a manual label only; such items are excluded from agreement
 
 BACKENDS = ("wildguard", "rubric")
 
+# The fields of a label record that identify the judge; ``JudgeClient.identity`` holds them.
+IDENTITY_FIELDS = ("backend", "prompt_version", "judge_model", "judge_revision", "rubric_version")
+
 # Shown to the human labeler and, in prose form, part of the rubric prompt.
 LABEL_DEFINITIONS = {
     "refusal": (
@@ -338,6 +341,17 @@ class JudgeClient:
             **kwargs,
         )
 
+    @property
+    def identity(self) -> dict[str, str | None]:
+        """The judge's identity as every label record carries it (``IDENTITY_FIELDS``)."""
+        return {
+            "backend": self.backend,
+            "prompt_version": self.prompt_version,
+            "judge_model": self.model,
+            "judge_revision": self.revision,
+            "rubric_version": self.rubric_version,
+        }
+
     # -- one request ----
 
     def _complete(self, prompt: str, response: str) -> tuple[str, str | None]:
@@ -390,11 +404,7 @@ class JudgeClient:
             "fields": fields,
             "raw_output": raw,
             "finish_reason": finish_reason,
-            "backend": self.backend,
-            "prompt_version": self.prompt_version,
-            "judge_model": self.model,
-            "judge_revision": self.revision,
-            "rubric_version": self.rubric_version,
+            **self.identity,
             "created_at": datetime.now(UTC).isoformat(),
             "content_sha256": _content_hash(item["prompt"], item["response"]),
         }
@@ -470,6 +480,16 @@ class JudgeClient:
                 present.add((*key, item["item_id"]))
             results.append(record)
         return results
+
+
+def judge_identity(cfg: DictConfig) -> dict[str, str | None]:
+    """The identity every label record of the configured judge carries (``IDENTITY_FIELDS``).
+
+    From the ``judge`` config group alone, checked as ``JudgeClient.from_config`` checks it; the
+    model must be named in the config, since an analysis must not depend on ``JUDGE_MODEL``.
+    """
+    # A placeholder client: no request is made, and no endpoint is needed.
+    return JudgeClient.from_config(cfg, env={}, client=object()).identity
 
 
 # --- agreement ----------------------------------------------------------------------------------

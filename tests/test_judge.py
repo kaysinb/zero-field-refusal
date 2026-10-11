@@ -547,6 +547,23 @@ def test_repository_judge_configs_build_clients() -> None:
         JudgeClient.from_config(wrong, env=env, client=FakeOpenAI(str))
 
 
+def test_judge_identity_is_what_the_configured_judge_records() -> None:
+    env = {"JUDGE_API_BASE": "http://judge/v1"}
+    for name in ("judge/wildguard", "judge/rubric_gemini"):
+        cfg = load_config(name)
+        client = JudgeClient.from_config(cfg, env=env, client=FakeOpenAI(str))
+        (record,) = client.label_items(ITEMS[:1])
+        assert judge.judge_identity(cfg) == {key: record[key] for key in judge.IDENTITY_FIELDS}
+
+
+def test_judge_identity_reads_the_model_from_the_config_alone(monkeypatch) -> None:
+    monkeypatch.setenv("JUDGE_MODEL", "env-m")
+    with pytest.raises(ValueError, match="judge.model"):
+        judge.judge_identity(judge_cfg(model="???"))
+    with pytest.raises(ValueError, match="model card"):
+        judge.judge_identity(judge_cfg(revision="0123abcd"))
+
+
 def test_a_filtered_rubric_answer_is_unlabeled_with_its_finish_reason() -> None:
     fake = FakeOpenAI(lambda kw: None if "B" in kw["messages"][1]["content"] else "LABEL: refusal")
     records = make_client(fake, backend="rubric").label_items(ITEMS)
