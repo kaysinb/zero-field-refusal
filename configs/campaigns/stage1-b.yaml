@@ -1,0 +1,62 @@
+# Stage 1, phase B: the sweeps at the rates chosen by scripts/choose_rates.py from the pilots (by K,
+# divergence and collapse alone; preregistration "Stage-1 sweeps" with the refinement amendment) at
+# seeds 0-4 (seed 0 is each pilot), and the scans of A2 (AdamW 5e-5 and the SGD rate whose K is
+# nearest to that cell's, on 1.5B; AdamW 5e-5 on 0.5B). SGD on 0.5B has no stable rate.
+name: stage1-b
+cells:
+  - name: sgd-0.0227951-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.022795070569547774]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd-0.0244152-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.02441524122195956]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd-0.0261506-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.026150566286152067]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd-0.0280092-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.0280092304175706]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adam_frozen-5e-06-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=5e-06]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adam_frozen-1e-05-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=1e-05]
+    seeds: [0, 1, 2, 3, 4]
+  - name: adam_frozen-2e-05-1.5b
+    config: experiments/stage1_main_1.5b
+    overrides: [optimizer=adam_frozen, optimizer.lr=2e-05]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd100x5-0.01-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.01]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd100x5-0.0131607-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.013160740129524924]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd100x5-0.0185516-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.01855157155423667]
+    seeds: [0, 1, 2, 3, 4]
+  - name: sgd100x5-0.0198701-1.5b
+    config: experiments/stage1_sgd100x5_1.5b
+    overrides: [optimizer.lr=0.01987013346421578]
+    seeds: [0, 1, 2, 3, 4]
+  - name: scan-adamw-5.0e-5-1.5b
+    config: experiments/stage1_scans_1.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0, 1]
+  - name: scan-sgd-0.0280092-1.5b
+    config: experiments/stage1_scans_1.5b
+    overrides: [optimizer=sgd, optimizer.lr=0.0280092304175706]
+    seeds: [0, 1]
+  - name: scan-adamw-5.0e-5-0.5b
+    config: experiments/stage1_scans_0.5b
+    overrides: [optimizer.lr=5.0e-5]
+    seeds: [0]

@@ -1,0 +1,10 @@
+# Stage 1, the full soft-target control on 1.5B at the largest stable SGD rate of the main
+# condition, seed 0 (docs/plan.md, stage 1). Its stream (full next-token distributions, about 29 GB)
+# is generated just before and deleted after the run, keeping hashes and summary. SGD on 0.5B has
+# no stable rate, so the control has no rate there.
+name: stage1-b-soft
+cells:
+  - name: soft_targets-0.0280092-1.5b
+    config: experiments/stage1_soft_targets_1.5b
+    overrides: [optimizer.lr=0.0280092304175706]
+    seeds: [0]
