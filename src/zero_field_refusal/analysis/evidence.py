@@ -473,8 +473,8 @@ def check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig]
     """Raise unless the included runs (rows of ``considered``, with their configs) form one
     analysis (see the module docstring)."""
     run_ids = included["run_id"].tolist()
-    conditions = {run_id: _condition(configs[run_id]) for run_id in run_ids}
-    differing = _differing_keys(conditions.values())
+    conditions = {run_id: run_condition(configs[run_id]) for run_id in run_ids}
+    differing = differing_keys(conditions.values())
     if differing:
         raise ValueError(
             f"The included runs differ in {differing}: one analysis needs one condition, so "
@@ -482,7 +482,7 @@ def check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig]
         )
     for arm, group in included.groupby("arm", sort=True):
         optimizers = [_optimizer(configs[run_id]) for run_id in group["run_id"]]
-        differing = _differing_keys(optimizers)
+        differing = differing_keys(optimizers)
         if differing:
             raise ValueError(f"Runs of arm {arm!r} differ in optimizer settings {differing}")
     cells = included.groupby(["arm", "lr", "seed"], sort=True)["run_id"]
@@ -510,7 +510,9 @@ def check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig]
         )
 
 
-def _condition(cfg: DictConfig) -> dict[str, Any]:
+def run_condition(cfg: DictConfig) -> dict[str, Any]:
+    """The config that one analysis shares: all but the optimizer section, the seed and the keys
+    outside the config hash."""
     data = OmegaConf.to_container(cfg, resolve=True)
     assert isinstance(data, dict)
     for key in (*NON_IDENTITY_KEYS, "optimizer", "seed"):
@@ -525,7 +527,7 @@ def _optimizer(cfg: DictConfig) -> dict[str, Any]:
     return data
 
 
-def _differing_keys(configs: Iterable[Mapping[str, Any]]) -> list[str]:
+def differing_keys(configs: Iterable[Mapping[str, Any]]) -> list[str]:
     """Dotted keys whose values are not the same in every config."""
     flat = [_flatten(config) for config in configs]
     keys = sorted({key for f in flat for key in f})

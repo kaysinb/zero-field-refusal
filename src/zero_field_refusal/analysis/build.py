@@ -4,8 +4,9 @@
 included runs, or read frozen from an earlier build), runs ``analyze`` with the stage-1 interval
 settings and writes the outputs into a new directory. An existing directory is never
 overwritten: results are versioned. The directory is written under a temporary name and renamed
-when complete, so it appears whole or not at all. Numbers are written unrounded (shortest exact
-decimal); non-finite numbers are empty in CSV files and null in JSON.
+when complete, so it appears whole or not at all (``outputs.write_new_directory``). Numbers are
+written unrounded (shortest exact decimal); non-finite numbers are empty in CSV files and null in
+JSON.
 
 - ``runs.csv``: every run directory considered, with ``included``, ``reason`` and ``detail``
   (``evidence.CONSIDERED_COLUMNS``);
@@ -50,10 +51,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import platform
-import shutil
-import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -71,6 +69,7 @@ from scipy.special import expit
 from ..tracking import git_state
 from .evidence import Evidence, collect_runs
 from .kstar import LEVEL_NAMES, KStarSelection, cell_means, k_star_levels, select_k_star
+from .outputs import file_sha256, read_csv, write_csv, write_json, write_new_directory
 from .primary import FROZEN_VS_ADAMW, FROZEN_VS_SGD, PRIMARY_CONTRAST, AnalysisResult, analyze
 from .runs import ARMS
 
@@ -150,19 +149,12 @@ def build_analysis(
         resamples=interval.resamples,
         seed=seed,
     )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = Path(tempfile.mkdtemp(prefix=f".{out.name}.partial-", dir=out.parent))
-    try:
-        _write_outputs(partial, evidence, selection, k_star_record, result, interval, seed)
-        # mkdtemp creates the directory 0700; give it the mode a plain mkdir would.
-        partial.chmod(0o777 & ~_umask())
-        if out.exists():
-            raise FileExistsError(f"{out} appeared during the build; it is left as it is")
-        partial.rename(out)
-    except BaseException:
-        shutil.rmtree(partial, ignore_errors=True)
-        raise
-    return out
+    return write_new_directory(
+        out,
+        lambda directory: _write_outputs(
+            directory, evidence, selection, k_star_record, result, interval, seed
+        ),
+    )
 
 
 def read_k_star(path: Path) -> tuple[KStarSelection, dict[str, Any]]:
@@ -251,13 +243,13 @@ def _write_outputs(
     seed: int,
 ) -> None:
     considered = evidence.considered
-    _csv(considered, directory / "runs.csv")
+    write_csv(considered, directory / "runs.csv")
     excluded = considered.loc[~considered["included"], ["run_id", "status", "reason", "detail",
                                                          "arm", "lr", "seed"]]  # fmt: skip
-    _csv(excluded, directory / "exclusions.csv")
-    _csv(_cells(evidence.runs, selection), directory / "cells.csv")
-    _csv(_arms(result), directory / "arms.csv")
-    _csv(_estimates(result, selection), directory / "estimates.csv")
+    write_csv(excluded, directory / "exclusions.csv")
+    write_csv(_cells(evidence.runs, selection), directory / "cells.csv")
+    write_csv(_arms(result), directory / "arms.csv")
+    write_csv(_estimates(result, selection), directory / "estimates.csv")
 
     settings = {
         "ci_method": interval.ci_method,
@@ -269,10 +261,10 @@ def _write_outputs(
     }
     analyzed = sorted(evidence.runs["run_id"])
     status = k_star_record["status"]
-    _write_json(directory / K_STAR_FILE, {**k_star_record, "selection": asdict(selection)})
+    write_json(directory / K_STAR_FILE, {**k_star_record, "selection": asdict(selection)})
     analysis = asdict(result)
     analysis["selection"]["exclusion_threshold"] = selection.exclusion_threshold
-    _write_json(directory / "results.json", {
+    write_json(directory / "results.json", {
         "experiment": evidence.experiment,
         "judge": {"name": evidence.judge, "identity": evidence.judge_identity},
         "settings": settings,
@@ -285,7 +277,7 @@ def _write_outputs(
     draw_figure(directory)
 
     included = considered[considered["included"]]
-    _write_json(directory / "manifest.json", {
+    write_json(directory / "manifest.json", {
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "experiment": evidence.experiment,
         "judge": {"name": evidence.judge, "identity": evidence.judge_identity},
@@ -305,7 +297,7 @@ def _write_outputs(
             "python": platform.python_version(),
             "packages": {name: metadata.version(name) for name in PACKAGES},
         },
-        "outputs": {path.name: _sha256(path) for path in sorted(directory.iterdir())},
+        "outputs": {path.name: file_sha256(path) for path in sorted(directory.iterdir())},
     })  # fmt: skip
 
 
@@ -397,9 +389,9 @@ FIGURE_RC = {
 
 def draw_figure(directory: Path) -> Path:
     """``figure.svg`` from ``runs.csv``, ``arms.csv`` and ``results.json`` in ``directory``."""
-    runs = _read_csv(directory / "runs.csv")
+    runs = read_csv(directory / "runs.csv")
     runs = runs[runs["included"]]
-    arms = _read_csv(directory / "arms.csv").set_index("arm")
+    arms = read_csv(directory / "arms.csv").set_index("arm")
     results = json.loads((directory / "results.json").read_text())
     analysis = results["analysis"]
     selection = analysis["selection"]
@@ -468,43 +460,3 @@ def _number(value: float | None) -> str:
 
 def _percent(level: float) -> str:
     return f"{100 * level:g} %"
-
-
-# --- files --------------------------------------------------------------------------------------
-
-
-def _csv(table: pd.DataFrame, path: Path) -> None:
-    table.to_csv(path, index=False, lineterminator="\n")
-
-
-def _read_csv(path: Path) -> pd.DataFrame:
-    """A table written by ``_csv``, with every float read back exactly."""
-    return pd.read_csv(path, float_precision="round_trip")
-
-
-def _write_json(path: Path, data: Mapping[str, Any]) -> None:
-    path.write_text(json.dumps(_plain(data), indent=2, allow_nan=False) + "\n")
-
-
-def _plain(value: Any) -> Any:
-    """Plain JSON values: string keys, lists for tuples, null for non-finite numbers."""
-    if isinstance(value, Mapping):
-        return {str(key): _plain(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_plain(item) for item in value]
-    if isinstance(value, np.generic):
-        value = value.item()
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return value
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _umask() -> int:
-    """The process umask (reading it means setting it; it is restored at once)."""
-    mask = os.umask(0o022)
-    os.umask(mask)
-    return mask

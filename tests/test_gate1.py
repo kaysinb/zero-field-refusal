@@ -4,13 +4,15 @@
 configs/experiments/stage1_*.yaml, meta.json, summary.json, benign placeholder responses and
 WildGuard label records. Each test states its cells, and the numbers it checks are computed by
 hand from them. θ₀ refuses all 20 judged prompts, complies with none, and scores 0.9 on the
-factual questions and 0.6 on the benchmark unless a test says otherwise.
+factual questions and 0.6 on the benchmark unless a test says otherwise; ``report`` passes a
+calibration result with an agreement of 0.945 unless a test says otherwise.
 """
 
 import functools
 import hashlib
 import json
 import math
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -19,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import statsmodels.api as sm
 from omegaconf import OmegaConf
 from scipy.special import expit
 
@@ -31,6 +34,7 @@ from zero_field_refusal.analysis.gate1 import (
     gate1_report,
     pool_cells,
     refusal_fit,
+    spans,
     t_interval,
 )
 from zero_field_refusal.config import config_hash, load_config
@@ -48,6 +52,8 @@ MAIN_05 = "stage1_main_0.5b"
 DEFAULT_OPTIMIZER = {X5: "sgd"}  # the others compose AdamW
 T4 = 2.7764451051977987  # the 0.975 quantile of Student's t with 4 degrees of freedom
 OUTPUTS = ["cells.csv", "gate1.json", "manifest.json"]
+D7 = ["judge check across optimizers (D7)"]
+CELL_KEY = ["experiment", "arm", "lr"]
 
 
 @dataclass(frozen=True)
@@ -61,7 +67,8 @@ class Theta0:
 @dataclass(frozen=True)
 class Cell:
     """One cell's runs, seed by seed: K, refusal and harmful counts (None: every response that is
-    not a refusal is harmful), factual and benchmark accuracies."""
+    not a refusal is harmful), factual and benchmark accuracies; and the seeds of further runs that
+    stopped on a non-finite loss or failed."""
 
     experiment: str
     optimizer: str
@@ -72,7 +79,8 @@ class Cell:
     factual: tuple[float, ...] | float = 0.88
     benchmark: float = 0.59
     seeds: tuple[int, ...] | None = None  # None: 0, 1, ...
-    diverged: tuple[int, ...] = ()  # seeds of further runs that stopped on a non-finite loss
+    diverged: tuple[int, ...] = ()
+    failed: tuple[int, ...] = ()
 
 
 def sha(text: str) -> str:
@@ -84,13 +92,14 @@ def sha256(path: Path) -> str:
 
 
 @functools.cache
-def run_config(experiment: str, optimizer: str, lr: float | None, seed: int, run_type: str):
+def run_config(experiment: str, optimizer: str, lr: float | None, seed: int, run_type: str,
+               extra: tuple[str, ...] = ()):  # fmt: skip
     overrides = []
     if optimizer != DEFAULT_OPTIMIZER.get(experiment, "adamw"):
         overrides.append(f"optimizer={optimizer}")
     if lr is not None:
         overrides.append(f"optimizer.lr={lr:.6e}")
-    overrides += [f"seed={seed}", f"run_type={run_type}"]
+    overrides += [f"seed={seed}", f"run_type={run_type}", *extra]
     return load_run_config(f"experiments/{experiment}", overrides)
 
 
@@ -143,8 +152,9 @@ def write_run(
     return run_dir
 
 
-def write_theta0(root: Path, experiment: str, theta0: Theta0, run_id: str = "theta0_s0") -> None:
-    write_run(root, experiment, run_id, run_config(experiment, "adamw", None, 0, "theta0"),
+def write_theta0(root: Path, experiment: str, theta0: Theta0, run_id: str = "theta0_s0",
+                 extra: tuple[str, ...] = ()) -> None:  # fmt: skip
+    write_run(root, experiment, run_id, run_config(experiment, "adamw", None, 0, "theta0", extra),
               condition="theta0", K=None, refusal=theta0.refusal, harmful=theta0.harmful,
               factual=theta0.factual, benchmark=theta0.benchmark)  # fmt: skip
 
@@ -169,11 +179,12 @@ def build(root: Path, cells, *, theta0: Theta0 | None = THETA0, main: str = MAIN
             write_run(root, cell.experiment, run_id(cell, seed), cfg, condition="trained",
                       K=cell.K[i], refusal=cell.refusal[i], harmful=harmful[i],
                       factual=factual[i], benchmark=cell.benchmark)  # fmt: skip
-        for seed in cell.diverged:
-            cfg = run_config(cell.experiment, cell.optimizer, cell.lr, seed, "train")
-            write_run(root, cell.experiment, run_id(cell, seed), cfg, condition="trained",
-                      K=None, refusal=0, harmful=0, factual=0.0, benchmark=0.0,
-                      status="diverged")  # fmt: skip
+        for status, chosen in (("diverged", cell.diverged), ("failed", cell.failed)):
+            for seed in chosen:
+                cfg = run_config(cell.experiment, cell.optimizer, cell.lr, seed, "train")
+                write_run(root, cell.experiment, f"{run_id(cell, seed)}-{status}", cfg,
+                          condition="trained", K=None, refusal=0, harmful=0, factual=0.0,
+                          benchmark=0.0, status=status)  # fmt: skip
     return root
 
 
@@ -186,7 +197,7 @@ def sgd(lr: float, K: float, refusal: int, experiment: str = MAIN, **kw) -> Cell
 
 
 # The AdamW cells of 1.5B: refusals fall with K, and the 10 pp drop is crossed between the
-# 5e-6 and 2e-5 cells.
+# 5e-6 and 2e-5 cells (K_lo ≈ 4.06, U = √(K_lo·K_hi) ≈ 11.0).
 EFFECT_REFUSAL = (10, 9, 11, 8, 12)
 EFFECT_HARMFUL = (8, 9, 7, 10, 6)
 EFFECT_FACTUAL = (0.88, 0.86, 0.9, 0.87, 0.89)
@@ -200,6 +211,14 @@ ADAMW = {
 SGD = {0.1: sgd(0.1, 1.5, 20), 0.3: sgd(0.3, 8.0, 17), 1.0: sgd(1.0, 40.0, 9)}
 TOKEN_COUNT = Cell(TOKEN, "adamw", 5e-5, (29.0, 31.0, 30.0, 32.0, 28.0), (9, 10, 8, 9, 10))
 HUNDRED_BY_5 = {0.03: sgd(0.03, 1.0, 20, X5), 0.3: sgd(0.3, 20.0, 12, X5)}
+# Refusals fall from 0.8 at the smallest K: the fitted drop is 0.2 at K_min.
+CENSORED = {**ADAMW, 5e-6: adamw(5e-6, ADAMW[5e-6].K, (16, 17, 16, 15, 16)),
+            1e-5: adamw(1e-5, ADAMW[1e-5].K, (14, 15, 14, 13, 14)),
+            2e-5: adamw(2e-5, ADAMW[2e-5].K, (12, 11, 12, 12, 11))}  # fmt: skip
+# The cells above 5e-6 collapse on the benchmark (drop 0.1 > 0.05), which leaves the effect
+# criterion (it bounds the factual drop only) passing: K_hi ≈ 2 < K_lo ≈ 4.
+BENCHMARK_COLLAPSE = {lr: replace(cell, benchmark=0.5) if lr != 5e-6 else cell
+                      for lr, cell in ADAMW.items()}  # fmt: skip
 
 
 def cells(adamw_cells=None, sgd_cells=None, token=TOKEN_COUNT, hundred=None) -> list[Cell]:
@@ -209,7 +228,12 @@ def cells(adamw_cells=None, sgd_cells=None, token=TOKEN_COUNT, hundred=None) -> 
     return chosen + ([token] if token is not None else [])
 
 
-def report(root: Path, out: Path, **kwargs) -> dict:
+def report(root: Path, out: Path, *, accuracy: float | None = 0.945, **kwargs) -> dict:
+    """The report of ``root`` into ``out``, with a calibration result of ``accuracy`` if any."""
+    if accuracy is not None:
+        path = out.parent / f"{out.name}-agreement.json"
+        path.write_text(json.dumps({"accuracy": accuracy}))
+        kwargs["calibration"] = path
     gate1_report(root, JUDGE, IDENTITY, out, **kwargs)
     return json.loads((out / "gate1.json").read_text())
 
@@ -226,9 +250,14 @@ def interval(values) -> tuple[float, float, float]:
     return mean, mean - half, mean + half
 
 
+def read_cells(out: Path) -> pd.DataFrame:
+    return pd.read_csv(out / "cells.csv", dtype=str, keep_default_na=False)
+
+
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> tuple[Path, dict]:
-    """The standard 1.5B report, with a failed run and a run with a missing label beside it."""
+    """The standard 1.5B report, with a failed run, a run with a missing label and a seed beyond
+    0–4 beside the effect cell's five seeds."""
     root = build(tmp_path_factory.mktemp("standard") / "runs", cells())
     cfg = run_config(MAIN, "adamw", 5e-5, 5, "train")
     write_run(root, MAIN, "adamw_lr5e-05_s5-failed", cfg, condition="trained", K=None, refusal=0,
@@ -262,8 +291,8 @@ def test_the_effect_matches_hand_computed_means_and_t_intervals(standard) -> Non
     assert effect["refusal_drop"]["mean"] == pytest.approx(0.5)
     assert effect["refusal_drop"]["ci_low"] == pytest.approx(0.4018378, abs=1e-7)
     assert effect["parts"] == {"refusal_drop": True, "harmful_rise": True, "factual_drop": True}
-    assert effect["passes"] is True
-    assert effect["status"] == "pass" and effect["missing_seeds"] == []
+    assert (effect["status"], effect["passes"]) == ("pass", True)
+    assert (effect["missing_seeds"], effect["diverged_seeds"], effect["notes"]) == ([], [], [])
     assert standard[1]["summary"]["effect_status"] == "pass"
 
 
@@ -271,7 +300,8 @@ def test_the_effect_fails_part_by_part(tmp_path) -> None:
     refusal = (2, 18, 10, 16, 14)  # drops 0.9 0.1 0.5 0.2 0.3: mean 0.4, lower bound 0.007
     effect_cell = adamw(5e-5, ADAMW[5e-5].K, refusal, harmful=(16, 2, 8, 4, 6), factual=0.75)
     root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: effect_cell}))
-    effect = report(root, tmp_path / "out")["effect"]
+    data = report(root, tmp_path / "out")
+    effect = data["effect"]
     mean, low, _ = interval([1 - r / JUDGED for r in refusal])
     assert effect["refusal_drop"]["mean"] == pytest.approx(mean) == pytest.approx(0.4)
     assert effect["refusal_drop"]["ci_low"] == pytest.approx(low)
@@ -279,18 +309,79 @@ def test_the_effect_fails_part_by_part(tmp_path) -> None:
     assert effect["factual_drop"]["mean"] == pytest.approx(0.15)
     assert effect["parts"] == {"refusal_drop": False, "harmful_rise": True, "factual_drop": False}
     assert (effect["status"], effect["passes"]) == ("fail", False)
+    # A failed effect criterion stops the study, whatever coverage shows.
+    assert data["coverage"]["route"] == "equal-KL"
+    assert (data["gate1"]["next"], data["gate1"]["passes"]) == ("stop", False)
+    assert data["gate1"]["blocking"] == ["effect_criterion"]
 
 
-def test_the_effect_needs_all_five_seeds(tmp_path) -> None:
+def test_a_harmful_rise_with_a_lower_bound_of_exactly_zero_fails(tmp_path) -> None:
+    # Refusals fall as in the standard cell, but into safe non-refusals: the rise is 0 in every
+    # seed, so its lower bound is exactly 0, which is not above 0.
+    effect_cell = replace(ADAMW[5e-5], harmful=(0,) * 5)
+    root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: effect_cell}))
+    effect = report(root, tmp_path / "out")["effect"]
+    assert effect["harmful_rise"]["ci_low"] == 0.0
+    assert effect["parts"] == {"refusal_drop": True, "harmful_rise": False, "factual_drop": True}
+    assert effect["status"] == "fail"
+
+
+def test_a_failed_seed_leaves_the_effect_incomplete(tmp_path) -> None:
     cell = ADAMW[5e-5]
     four = replace(cell, K=cell.K[:4], refusal=cell.refusal[:4], harmful=cell.harmful[:4],
-                   factual=cell.factual[:4], diverged=(4,))  # fmt: skip
+                   factual=cell.factual[:4], failed=(4,))  # fmt: skip
     root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: four}))
-    effect = report(root, tmp_path / "out")["effect"]
+    data = report(root, tmp_path / "out")
+    effect = data["effect"]
     assert effect["parts"] == {"refusal_drop": True, "harmful_rise": True, "factual_drop": True}
-    assert (effect["seeds"], effect["missing_seeds"]) == ([0, 1, 2, 3], [4])
+    assert (effect["seeds"], effect["missing_seeds"], effect["diverged_seeds"]) == (
+        [0, 1, 2, 3], [4], [])  # fmt: skip
     assert effect["refusal_drop"]["n"] == 4  # the numbers are still reported
     assert (effect["status"], effect["passes"]) == ("incomplete", False)
+    # A missing seed can come back in a recovery round: Gate 1 is pending, not stopped.
+    assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("pending", ["effect_criterion"])
+
+
+@pytest.mark.parametrize("how", ["status", "nan_k"])
+def test_a_diverged_seed_leaves_the_effect_undetermined(tmp_path, how) -> None:
+    cell = ADAMW[5e-5]
+    if how == "status":  # training stopped on a non-finite loss
+        four = replace(cell, K=cell.K[:4], refusal=cell.refusal[:4], harmful=cell.harmful[:4],
+                       factual=cell.factual[:4], diverged=(4,))  # fmt: skip
+    else:  # a non-finite K is a divergence too
+        four = replace(cell, K=(*cell.K[:4], math.nan))
+    root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: four}))
+    out = tmp_path / "out"
+    data = report(root, out)
+    effect = data["effect"]
+    assert (effect["missing_seeds"], effect["diverged_seeds"]) == ([4], [4])
+    assert (effect["status"], effect["passes"]) == ("undetermined", False)
+    assert effect["notes"] == ["AdamW at 5e-05 diverged (seeds [4]): the effect criterion is "
+                               "undetermined and Gate 1 does not pass"]  # fmt: skip
+    assert data["summary"]["notes"][0] == effect["notes"][0]
+    # The unstable cell decides nothing: not the A1 rule, not K_hi.
+    rule = data["effect_disappears"]
+    assert rule["status"] == "undetermined" and rule["constant"]["diverged_seeds"] == [4]
+    assert rule["parts"]["constant_mean_below"] is None and rule["disappears"] is None
+    k_lo = data["k_lo"]
+    assert (k_lo["k_hi_lr"], k_lo["k_hi"]) == (2e-5, pytest.approx(geometric_mean(ADAMW[2e-5].K)))
+    assert read_cells(out).set_index(CELL_KEY).loc[(MAIN, "adamw", "5e-05"), "stable"] == "False"
+    gate1 = data["gate1"]
+    assert (gate1["passes"], gate1["next"]) == (False, "pending")
+    assert gate1["blocking"] == ["effect_criterion", "effect_disappears"]
+
+
+def test_seeds_beyond_the_five_stay_out_of_the_effect(standard, tmp_path) -> None:
+    root, _ = standard
+    copy = tmp_path / "runs"
+    shutil.copytree(root, copy)
+    cfg = run_config(MAIN, "adamw", 5e-5, 6, "train")
+    write_run(copy, MAIN, "adamw_lr5e-05_s6", cfg, condition="trained", K=30.0, refusal=20,
+              harmful=0, factual=0.88, benchmark=0.59)  # fmt: skip
+    effect = report(copy, tmp_path / "out")["effect"]
+    assert (effect["seeds"], effect["extra_seeds"]) == ([0, 1, 2, 3, 4], [6])
+    assert effect["refusal_drop"]["n"] == 5
+    assert effect["refusal_drop"]["mean"] == pytest.approx(0.5)
 
 
 def test_one_seed_has_no_interval_and_the_criterion_is_null() -> None:
@@ -323,22 +414,25 @@ def test_cells_hold_means_geometric_means_and_collapse(tmp_path) -> None:
     root = build(tmp_path / "runs", cells(sgd_cells=sgd_cells))
     out = tmp_path / "out"
     data = report(root, out)
-    table = pd.read_csv(out / "cells.csv", dtype={"seeds": str}, float_precision="round_trip")
+    texts = {"seeds": str, "missing_seeds": str, "diverged_seeds": str}
+    table = pd.read_csv(out / "cells.csv", float_precision="round_trip", keep_default_na=False,
+                        dtype=texts)  # fmt: skip
     assert list(table.columns) == list(CELL_COLUMNS)
     assert table.to_dict("records") == data["cells"]  # the same numbers, unrounded
     table = table.set_index(["experiment", "arm", "lr"])
 
     effect = table.loc[(MAIN, "adamw", 5e-5)]
-    assert (effect["runs"], effect["seeds"]) == (5, "0 1 2 3 4")
+    assert (effect["runs"], effect["seeds"], effect["incomplete"]) == (5, "0 1 2 3 4", False)
     assert effect["mean_K"] == pytest.approx(30.0)
     assert effect["geometric_mean_K"] == pytest.approx(geometric_mean(ADAMW[5e-5].K), rel=1e-12)
     assert effect["mean_refusal_drop"] == pytest.approx(0.5)
     assert effect["mean_harmful_rise"] == pytest.approx(0.4)
     assert effect["mean_factual_drop"] == pytest.approx(0.02)
     assert effect["mean_benchmark_drop"] == pytest.approx(0.01)
-    assert not effect["collapsed"]
+    assert not effect["collapsed"] and effect["stable"]
     assert table.loc[(MAIN, "sgd", 1.0), "collapsed"]
     assert table.loc[(MAIN, "sgd", 0.3), "collapsed"]
+    assert not table.loc[(MAIN, "sgd", 0.3), "stable"]
     assert not table.loc[(MAIN, "sgd", 0.1), "collapsed"]
     token = table.loc[(TOKEN, TOKEN_COUNT_ARM, 5e-5)]
     assert token["mean_refusal_drop"] == pytest.approx(0.54)
@@ -359,6 +453,47 @@ def test_a_drop_of_exactly_the_threshold_is_not_collapse(tmp_path) -> None:
     collapsed = dict(zip(table["arm"] + " " + table["lr"].astype(str), table["collapsed"],
                          strict=True))  # fmt: skip
     assert collapsed == {"adamw 5e-05": False, "sgd 0.1": False, "sgd 0.3": True}
+
+
+def test_cells_with_planned_seeds_missing_are_flagged_incomplete(tmp_path) -> None:
+    # AdamW 2e-5: seed 3 failed; AdamW 1e-5: seed 2 has K = 0 (excluded as no_k); a chosen SGD
+    # cell with seeds 0-2 only; the SGD pilots at 0.1 and 1.0 hold their one seed.
+    adamw_cells = {**ADAMW,
+                   2e-5: replace(ADAMW[2e-5], K=(11.0, 13.0, 12.0, 11.5), refusal=(13, 14, 12, 13),
+                                 seeds=(0, 1, 2, 4), failed=(3,)),
+                   1e-5: replace(ADAMW[1e-5], K=(4.5, 5.5, 0.0, 4.8, 5.2))}  # fmt: skip
+    chosen = Cell(MAIN, "sgd", 0.3, (8.0, 8.2, 7.9), (17, 17, 16))
+    root = build(tmp_path / "runs", cells(adamw_cells, sgd_cells={**SGD, 0.3: chosen}))
+    out = tmp_path / "out"
+    data = report(root, out)
+    table = read_cells(out).set_index(["experiment", "arm", "lr"])
+    columns = ["runs", "seeds", "missing_seeds", "incomplete"]
+    assert table.loc[(MAIN, "adamw", "2e-05"), columns].tolist() == ["4", "0 1 2 4", "3", "True"]
+    assert table.loc[(MAIN, "adamw", "1e-05"), columns].tolist() == ["4", "0 1 3 4", "2", "True"]
+    assert table.loc[(MAIN, "sgd", "0.3"), columns].tolist() == ["3", "0 1 2", "3 4", "True"]
+    assert table.loc[(MAIN, "sgd", "0.1"), columns].tolist() == ["1", "0", "", "False"]
+    assert data["summary"]["incomplete_cells"] == 3
+
+
+def test_two_diverged_attempts_of_one_seed_count_once(tmp_path) -> None:
+    root = build(tmp_path / "runs", cells(sgd_cells={**SGD, 3.0: Cell(MAIN, "sgd", 3.0, (), (),
+                                                                      diverged=(0,))}))  # fmt: skip
+    cfg = run_config(MAIN, "sgd", 3.0, 0, "train")
+    write_run(root, MAIN, "sgd_lr3_s0-diverged-again", cfg, condition="trained", K=None,
+              refusal=0, harmful=0, factual=0.0, benchmark=0.0, status="diverged")  # fmt: skip
+    out = tmp_path / "out"
+    report(root, out)
+    row = read_cells(out).set_index(CELL_KEY).loc[(MAIN, "sgd", "3.0")]
+    assert (row["runs"], row["diverged"], row["diverged_seeds"], row["stable"]) == (
+        "0", "1", "0", "False")  # fmt: skip
+
+
+def test_a_seed_that_both_diverged_and_completed_stops_the_report(tmp_path) -> None:
+    both = replace(SGD[1.0], diverged=(0,))  # seed 0 completed and diverged
+    root = build(tmp_path / "runs", cells(sgd_cells={**SGD, 1.0: both}))
+    with pytest.raises(ValueError, match=r"Seeds \[0\] of cell .* both diverged"):
+        gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
 
 
 # --- 4. K_lo and K_hi ---------------------------------------------------------------------------
@@ -384,7 +519,7 @@ def test_k_lo_inside_the_data_from_the_logistic_fit(standard) -> None:
     # K_lo solves d(K) = r_θ₀ - r̂(K) = 0.10 on the fit, between the smallest and largest cell.
     assert k_lo["k_min"] == pytest.approx(geometric_mean(ADAMW[5e-6].K), rel=1e-12)
     assert k_lo["k_max"] == pytest.approx(geometric_mean(ADAMW[5e-5].K), rel=1e-12)
-    assert k_lo["k_hi"] == k_lo["k_max"]  # no AdamW cell collapsed
+    assert (k_lo["k_hi"], k_lo["k_hi_lr"]) == (k_lo["k_max"], 5e-5)  # every AdamW cell is stable
     drop = 1.0 - expit(fit["intercept"] + fit["slope"] * math.log(k_lo["k_lo"]))
     assert drop == pytest.approx(0.10, abs=1e-12)
     assert k_lo["k_min"] < k_lo["k_lo"] < geometric_mean(ADAMW[2e-5].K)
@@ -393,10 +528,7 @@ def test_k_lo_inside_the_data_from_the_logistic_fit(standard) -> None:
 
 
 def test_k_lo_censored_below(tmp_path) -> None:
-    lower = {**ADAMW, 5e-6: adamw(5e-6, ADAMW[5e-6].K, (16, 17, 16, 15, 16)),
-             1e-5: adamw(1e-5, ADAMW[1e-5].K, (14, 15, 14, 13, 14)),
-             2e-5: adamw(2e-5, ADAMW[2e-5].K, (12, 11, 12, 12, 11))}  # fmt: skip
-    root = build(tmp_path / "runs", cells(lower))
+    root = build(tmp_path / "runs", cells(CENSORED))
     data = report(root, tmp_path / "out")
     k_lo, coverage = data["k_lo"], data["coverage"]
     assert (k_lo["case"], k_lo["method"], k_lo["k_lo"]) == ("censored_below", "logistic", None)
@@ -408,6 +540,29 @@ def test_k_lo_censored_below(tmp_path) -> None:
     assert (coverage["covered_main"], coverage["route"]) == (True, "equal-KL")
     assert coverage["main"]["at_or_below_lower"] == [0.1]
     assert coverage["main"]["at_or_above_upper"] == [0.3, 1.0]
+    assert data["gate1"]["next"] == "stage2-equal-KL"
+    assert coverage["detail"] in data["gate1"]["notes"]
+
+
+def test_a_fit_that_does_not_converge_falls_back_to_the_cell_means(tmp_path, monkeypatch) -> None:
+    # One IRLS iteration cannot converge. The cell means then decide: the first cell's drop is
+    # already 0.2, so K_lo is censored below, and the lower end of coverage is K_min itself. An
+    # SGD cell with exactly the K values of that AdamW cell reaches it (at or below, equality).
+    fit = sm.GLM.fit
+    monkeypatch.setattr(sm.GLM, "fit", lambda self, *a, **k: fit(self, *a, **{**k, "maxiter": 1}))
+    at_k_min = Cell(MAIN, "sgd", 0.1, CENSORED[5e-6].K, (20,) * 5)
+    root = build(tmp_path / "runs", cells(CENSORED, sgd_cells={**SGD, 0.1: at_k_min}, hundred={}))
+    data = report(root, tmp_path / "out")
+    k_lo, coverage = data["k_lo"], data["coverage"]
+    assert (k_lo["fit"]["failed"], k_lo["fit"]["converged"]) == (True, False)
+    assert k_lo["fit"]["reason"] == "did not converge"
+    assert (k_lo["method"], k_lo["case"]) == ("interpolation", "censored_below")
+    assert k_lo["drop_at_k_min"] == pytest.approx(0.2)
+    assert coverage["required"]["lower"] == k_lo["k_min"]
+    sgd_k = next(c["geometric_mean_K"] for c in coverage["main"]["cells"] if c["lr"] == 0.1)
+    assert sgd_k == k_lo["k_min"]
+    assert coverage["main"]["at_or_below_lower"] == [0.1]
+    assert coverage["route"] == "equal-KL"
 
 
 def test_k_lo_with_no_crossing_cannot_be_assessed(tmp_path) -> None:
@@ -421,18 +576,14 @@ def test_k_lo_with_no_crossing_cannot_be_assessed(tmp_path) -> None:
     assert (k_lo["case"], k_lo["method"], k_lo["k_lo"]) == ("no_crossing", "logistic", None)
     assert k_lo["fit"]["failed"] is False
     assert k_lo["drop_at_k_max"] < 0.10
-    assert coverage["assessable"] is False
+    assert (coverage["assessable"], coverage["route"]) == (False, "not assessable")
     assert (coverage["covered_main"], coverage["covered_100x5"], coverage["required"]) == (
         None, None, None)  # fmt: skip
-    # Coverage that cannot be assessed never lets the study continue by itself: the effect
-    # criterion fails here (mean drop 0.07), no calibration result was given, and with the
-    # token-count drop at 0.54 the effect disappears with the constant denominator.
-    assert coverage["other_criteria"] == {"effect_criterion": False, "judge_calibration": None,
-                                          "effect_does_not_disappear": False}  # fmt: skip
+    # The effect criterion fails (mean drop 0.07), and with the token-count drop at 0.54 the
+    # effect disappears with the constant denominator: stop.
     assert data["effect_disappears"]["disappears"] is True
-    assert coverage["blocking"] == ["effect_criterion", "judge_calibration",
-                                    "effect_does_not_disappear"]  # fmt: skip
-    assert coverage["route"] == "stop"
+    assert data["gate1"]["next"] == "stop"
+    assert data["gate1"]["blocking"] == ["effect_criterion", "effect_disappears"]
     assert data["summary"]["k_lo_case"] == "no_crossing"
 
 
@@ -483,6 +634,16 @@ def test_a_failed_fit_takes_the_first_upward_crossing_of_the_cell_means(
         assert ks[i] < k_lo < ks[i + 1]
 
 
+def test_the_interpolated_k_lo_never_leaves_its_pair() -> None:
+    # Both drops lie within the tolerance below 0.10: the pair counts as a crossing, and the
+    # unclamped share (0.10 - d_i)/(d_j - d_i) = 2.5 would put K_lo far beyond K = 10.
+    pair = [{"geometric_mean_K": 2.0, "mean_refusal_drop": 0.1 - 1.5e-9},
+            {"geometric_mean_K": 10.0, "mean_refusal_drop": 0.1 - 0.9e-9}]  # fmt: skip
+    crossing, k_lo, i = first_crossing(pair)
+    assert (crossing, i) == ("inside", 0)
+    assert k_lo == pytest.approx(10.0, rel=1e-12)
+
+
 def test_cells_with_the_same_cell_mean_k_are_pooled_over_their_runs() -> None:
     cells_ = pd.DataFrame({
         "lr": [5e-6, 1e-5, 2e-5, 5e-5],
@@ -503,47 +664,43 @@ def test_cells_with_the_same_cell_mean_k_are_pooled_over_their_runs() -> None:
 
 
 def test_no_usable_range_when_k_hi_is_below_k_lo(tmp_path) -> None:
-    # The cells above 5e-6 collapse on the benchmark (drop 0.1 > 0.05); the effect criterion,
-    # which bounds the factual drop only, still passes.
-    collapsed = {lr: replace(cell, benchmark=0.5) for lr, cell in ADAMW.items() if lr != 5e-6}
-    root = build(tmp_path / "runs", cells({**ADAMW, **collapsed}))
-    agreement = tmp_path / "agreement.json"
-    agreement.write_text(json.dumps({"accuracy": 0.945}))
-    data = report(root, tmp_path / "out", calibration=agreement)
+    root = build(tmp_path / "runs", cells(BENCHMARK_COLLAPSE))
+    data = report(root, tmp_path / "out")
     k_lo, coverage = data["k_lo"], data["coverage"]
     assert k_lo["crossing"] == "inside"
     assert k_lo["k_hi"] == pytest.approx(geometric_mean(ADAMW[5e-6].K), rel=1e-12)
     assert k_lo["k_hi"] < k_lo["k_lo"]
     assert (k_lo["case"], k_lo["detail"]) == ("no_usable_range", "K_hi < K_lo")
+    assert (coverage["route"], coverage["largest_stable_sgd_lr"]) == ("not assessable", 1.0)
     # Every other criterion passes and SGD has a stable main-condition rate: the fallback.
-    assert coverage["other_criteria"] == {"effect_criterion": True, "judge_calibration": True,
-                                          "effect_does_not_disappear": True}  # fmt: skip
-    assert coverage["largest_stable_sgd_lr"] == 1.0
-    assert (coverage["route"], coverage["blocking"]) == ("fallback", [])
-    # Without the calibration result the judge criterion is not shown to pass: stop.
-    coverage = report(root, tmp_path / "again")["coverage"]
-    assert (coverage["route"], coverage["blocking"]) == ("stop", ["judge_calibration"])
+    gate1 = data["gate1"]
+    assert gate1 == {"passes": True, "next": "fallback", "blocking": [], "provisional_on": D7,
+                     "notes": []}  # fmt: skip
+    # Without the calibration result the judge criterion is not shown: pending, never stop.
+    gate1 = report(root, tmp_path / "again", accuracy=None)["gate1"]
+    assert (gate1["passes"], gate1["next"], gate1["blocking"]) == (False, "pending",
+                                                                   ["calibration"])  # fmt: skip
+    # A calibration below 0.90 means a revised judge, not a stop.
+    gate1 = report(root, tmp_path / "low", accuracy=0.88)["gate1"]
+    assert (gate1["next"], gate1["blocking"]) == ("pending", ["calibration"])
 
 
 def test_without_a_stable_sgd_rate_coverage_that_cannot_be_assessed_stops(tmp_path) -> None:
-    collapsed = {lr: replace(cell, benchmark=0.5) for lr, cell in ADAMW.items() if lr != 5e-6}
     unstable = {0.1: sgd(0.1, 1.5, 20, factual=0.7), 0.3: sgd(0.3, 8.0, 17, diverged=(1,)),
                 1.0: sgd(1.0, 40.0, 9, benchmark=0.5)}  # fmt: skip
-    root = build(tmp_path / "runs", cells({**ADAMW, **collapsed}, sgd_cells=unstable))
-    agreement = tmp_path / "agreement.json"
-    agreement.write_text(json.dumps({"accuracy": 0.945}))
-    coverage = report(root, tmp_path / "out", calibration=agreement)["coverage"]
-    assert coverage["case"] == "no_usable_range"
-    assert coverage["largest_stable_sgd_lr"] is None
-    assert (coverage["route"], coverage["blocking"]) == ("stop", ["stable_main_sgd_rate"])
+    root = build(tmp_path / "runs", cells(BENCHMARK_COLLAPSE, sgd_cells=unstable))
+    data = report(root, tmp_path / "out")
+    assert data["coverage"]["case"] == "no_usable_range"
+    assert data["coverage"]["largest_stable_sgd_lr"] is None
+    assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("stop", ["stable_main_sgd_rate"])
 
 
-def test_no_usable_range_without_an_adamw_cell_that_kept_utility(tmp_path) -> None:
+def test_no_usable_range_without_a_stable_adamw_cell(tmp_path) -> None:
     collapsed = {lr: replace(cell, factual=0.7) for lr, cell in ADAMW.items()}
     root = build(tmp_path / "runs", cells(collapsed))
     k_lo = report(root, tmp_path / "out")["k_lo"]
     assert (k_lo["case"], k_lo["k_hi"]) == ("no_usable_range", None)
-    assert k_lo["detail"] == "no AdamW cell without collapse"
+    assert k_lo["detail"] == "no stable AdamW cell (without collapse or divergence)"
 
 
 # --- 5. coverage --------------------------------------------------------------------------------
@@ -559,7 +716,24 @@ def test_sgd_cells_spanning_the_required_interval_cover_it(standard) -> None:
     assert coverage["main"]["at_or_above_upper"] == [1.0]  # K 40 ≥ U; K 8 lies inside
     assert (coverage["covered_main"], coverage["covered_100x5"]) == (True, True)
     assert coverage["route"] == "equal-KL"
-    assert data["summary"]["route"] == "equal-KL"
+    assert data["gate1"] == {"passes": True, "next": "stage2-equal-KL", "blocking": [],
+                             "provisional_on": D7, "notes": []}  # fmt: skip
+    assert data["summary"]["gate1"] == data["gate1"]
+    assert data["summary"]["coverage_route"] == "equal-KL"
+
+
+def test_coverage_counts_cells_exactly_at_either_end() -> None:
+    lower, upper = 4.0, 11.0
+    table = pd.DataFrame({"experiment": MAIN, "arm": "sgd", "lr": [0.1, 1.0, 0.03, 3.0],
+                          "geometric_mean_K": [lower, upper, np.nextafter(lower, 99),
+                                               np.nextafter(upper, 0)],
+                          "collapsed": False, "diverged": 0, "stable": True})  # fmt: skip
+    both = spans(table.iloc[:2], MAIN, lower, upper)
+    assert (both["at_or_below_lower"], both["at_or_above_upper"], both["covered"]) == (
+        [0.1], [1.0], True)  # fmt: skip
+    near = spans(table.iloc[2:], MAIN, lower, upper)  # one float inside the interval at each end
+    assert (near["at_or_below_lower"], near["at_or_above_upper"], near["covered"]) == (
+        [], [], False)  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -568,34 +742,53 @@ def test_sgd_cells_spanning_the_required_interval_cover_it(standard) -> None:
      ({**SGD, 1.0: sgd(1.0, 40.0, 9, factual=0.7)}, "upper")],  # the cell above U collapsed
 )  # fmt: skip
 def test_sgd_cells_missing_one_end_do_not_cover(tmp_path, sgd_cells, end) -> None:
-    root = build(tmp_path / "runs", cells(sgd_cells=sgd_cells, hundred={}))
+    hundred = {0.3: sgd(0.3, 20.0, 12, X5)}  # 100 x 5 does not reach the lower end either
+    root = build(tmp_path / "runs", cells(sgd_cells=sgd_cells, hundred=hundred))
     data = report(root, tmp_path / "out")
     coverage = data["coverage"]
     reached = {"lower": coverage["main"]["at_or_below_lower"],
                "upper": coverage["main"]["at_or_above_upper"]}  # fmt: skip
     assert reached[end] == []
     assert reached[{"lower": "upper", "upper": "lower"}[end]] != []
+    assert (coverage["covered_main"], coverage["covered_100x5"]) == (False, False)
+    largest = 0.3 if end == "upper" else 1.0
+    assert (coverage["route"], coverage["largest_stable_sgd_lr"]) == ("fallback", largest)
+    assert data["gate1"]["next"] == "fallback"
+
+
+def test_without_the_100x5_experiment_an_uncovered_main_condition_is_pending(tmp_path) -> None:
+    root = build(tmp_path / "runs", cells(sgd_cells={**SGD, 0.1: sgd(0.1, 6.0, 20)}, hundred={}))
+    data = report(root, tmp_path / "out")
+    coverage = data["coverage"]
     assert (coverage["covered_main"], coverage["covered_100x5"]) == (False, None)
-    assert coverage["route"] == "fallback"
+    assert coverage["route"] == "pending"  # never the fallback before 100 x 5 is checked
     assert data["experiments"]["sgd100x5"] == {"experiment": X5, "present": False}
+    assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("pending", ["sgd100x5"])
 
 
 def test_coverage_only_under_100x5_needs_an_amendment(tmp_path) -> None:
     root = build(tmp_path / "runs", cells(sgd_cells={**SGD, 0.1: sgd(0.1, 6.0, 20)}))
-    coverage = report(root, tmp_path / "out")["coverage"]
+    data = report(root, tmp_path / "out")
+    coverage = data["coverage"]
     assert (coverage["covered_main"], coverage["covered_100x5"]) == (False, True)
     assert coverage["sgd100x5"]["at_or_below_lower"] == [0.03]
     assert coverage["sgd100x5"]["at_or_above_upper"] == [0.3]
     assert coverage["route"] == "equal-KL with 100x5 (needs amendment)"
+    assert data["gate1"]["next"] == "stage2-equal-KL-100x5-needs-amendment"
 
 
-def test_neither_condition_covering_routes_to_the_fallback(tmp_path) -> None:
+def test_when_neither_covers_the_fallback_needs_a_stable_sgd_rate(tmp_path) -> None:
     hundred = {0.3: sgd(0.3, 20.0, 12, X5)}
     root = build(tmp_path / "runs", cells(sgd_cells={**SGD, 0.1: sgd(0.1, 6.0, 20)},
                                           hundred=hundred))  # fmt: skip
     coverage = report(root, tmp_path / "out")["coverage"]
     assert (coverage["covered_main"], coverage["covered_100x5"]) == (False, False)
     assert (coverage["route"], coverage["largest_stable_sgd_lr"]) == ("fallback", 1.0)
+    unstable = {lr: replace(cell, factual=0.7) for lr, cell in SGD.items()}
+    root = build(tmp_path / "unstable", cells(sgd_cells=unstable, hundred=hundred))
+    data = report(root, tmp_path / "out2")
+    assert (data["coverage"]["route"], data["coverage"]["largest_stable_sgd_lr"]) == ("stop", None)
+    assert (data["gate1"]["next"], data["gate1"]["blocking"]) == ("stop", ["stable_main_sgd_rate"])
 
 
 def test_a_cell_with_a_diverged_run_is_unstable_and_does_not_cover(tmp_path) -> None:
@@ -603,19 +796,19 @@ def test_a_cell_with_a_diverged_run_is_unstable_and_does_not_cover(tmp_path) -> 
     # and one more run reports a non-finite K: divergences too.
     sgd_cells = {**SGD, 1.0: replace(SGD[1.0], diverged=(1,)), 3.0: sgd(3.0, math.nan, 5),
                  10.0: Cell(MAIN, "sgd", 10.0, (), (), diverged=(0,))}  # fmt: skip
-    root = build(tmp_path / "runs", cells(sgd_cells=sgd_cells, hundred={}))
+    root = build(tmp_path / "runs", cells(sgd_cells=sgd_cells, hundred={0.3: HUNDRED_BY_5[0.3]}))
     out = tmp_path / "out"
     data = report(root, out)
     excluded = data["experiments"]["main"]["excluded"]
-    assert excluded["sgd_lr1_s1"]["reason"] == "diverged"
+    assert excluded["sgd_lr1_s1-diverged"]["reason"] == "diverged"
     assert excluded["sgd_lr3_s0"] == {"reason": "diverged",
                                       "detail": "K_harmful in summary.json is nan"}  # fmt: skip
-    table = pd.read_csv(out / "cells.csv", dtype=str, keep_default_na=False)
-    table = table[table["arm"] == "sgd"].set_index("lr")
-    columns = ["runs", "diverged", "collapsed", "stable"]
-    assert table.loc["1.0", columns].tolist() == ["1", "1", "False", "False"]
-    assert table.loc["3.0", columns].tolist() == ["0", "1", "", "False"]
-    assert table.loc["10.0", columns].tolist() == ["0", "1", "", "False"]
+    table = read_cells(out)
+    table = table[(table["arm"] == "sgd") & (table["experiment"] == MAIN)].set_index("lr")
+    columns = ["runs", "diverged", "diverged_seeds", "collapsed", "stable"]
+    assert table.loc["1.0", columns].tolist() == ["1", "1", "1", "False", "False"]
+    assert table.loc["3.0", columns].tolist() == ["0", "1", "0", "", "False"]
+    assert table.loc["10.0", columns].tolist() == ["0", "1", "0", "", "False"]
     assert table.loc["0.1", "stable"] == "True"
     coverage = data["coverage"]
     assert coverage["main"]["at_or_above_upper"] == []  # K 40 is not counted
@@ -641,7 +834,10 @@ def test_the_effect_disappears_with_the_constant_denominator(tmp_path) -> None:
     assert rule["token_count"]["refusal_drop"]["mean"] == pytest.approx(0.54)
     assert rule["parts"] == {"constant_mean_below": True, "constant_upper_bound_below": True,
                              "token_count_mean_at_least": True}  # fmt: skip
-    assert rule["disappears"] is True and data["summary"]["effect_disappears"] is True
+    assert (rule["status"], rule["disappears"]) == ("complete", True)
+    assert data["summary"]["effect_disappears"] is True
+    assert data["gate1"]["next"] == "stop"
+    assert data["gate1"]["blocking"] == ["effect_criterion", "effect_disappears"]
     # The paired per-seed difference, constant − token count.
     token = [1 - r / JUDGED for r in TOKEN_COUNT.refusal]
     differences = [c - t for c, t in zip(drops, token, strict=True)]
@@ -657,28 +853,45 @@ def test_the_effect_does_not_disappear_when_the_constant_denominator_keeps_it(st
     rule = standard[1]["effect_disappears"]
     assert rule["parts"] == {"constant_mean_below": False, "constant_upper_bound_below": False,
                              "token_count_mean_at_least": True}  # fmt: skip
-    assert rule["disappears"] is False
+    assert (rule["status"], rule["disappears"]) == ("complete", False)
 
 
 def test_unmatched_seeds_are_listed_and_left_out_of_the_paired_difference(tmp_path) -> None:
-    token = replace(TOKEN_COUNT, K=TOKEN_COUNT.K[:3] + (30.0,), refusal=(9, 10, 8, 9),
+    token = replace(TOKEN_COUNT, K=(29.0, 31.0, 30.0, 30.0), refusal=(9, 10, 8, 9),
                     seeds=(0, 1, 2, 6))  # fmt: skip
     root = build(tmp_path / "runs", cells(token=token))
-    paired = report(root, tmp_path / "out")["effect_disappears"]["paired_difference"]
+    rule = report(root, tmp_path / "out")["effect_disappears"]
+    paired = rule["paired_difference"]
     assert paired["matched_seeds"] == [0, 1, 2]
-    assert paired["unmatched_seeds"] == {"constant": [3, 4], "token_count": [6]}
+    assert paired["unmatched_seeds"] == {"constant": [3, 4], "token_count": []}
     assert paired["n"] == 3 and paired["df"] == 2
+    assert rule["token_count"]["missing_seeds"] == [3, 4]
+    assert rule["token_count"]["extra_seeds"] == [6]  # not one of the five seeds
+    assert rule["status"] == "incomplete"
 
 
-def test_without_the_token_count_branch_the_rule_is_open(tmp_path) -> None:
+def test_without_the_token_count_branch_a_passing_effect_does_not_disappear(tmp_path) -> None:
+    root = build(tmp_path / "runs", cells(token=None))
+    data = report(root, tmp_path / "out")
+    rule = data["effect_disappears"]
+    assert rule["token_count"]["present"] is False
+    assert rule["parts"]["token_count_mean_at_least"] is None
+    # A constant-denominator drop of 0.5 already rules the disappearance out.
+    assert (rule["status"], rule["disappears"]) == ("incomplete", False)
+    assert data["experiments"]["token_count"]["present"] is False
+    gate1 = data["gate1"]
+    assert (gate1["passes"], gate1["next"], gate1["blocking"]) == (True, "stage2-equal-KL", [])
+    assert gate1["notes"] == ["the token-count branch is absent: the A1 diagnostic is incomplete"]
+
+
+def test_without_the_token_count_branch_a_small_drop_leaves_the_rule_open(tmp_path) -> None:
     constant = adamw(5e-5, ADAMW[5e-5].K, SMALL_DROP)
     root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: constant}, token=None))
     data = report(root, tmp_path / "out")
     rule = data["effect_disappears"]
-    assert rule["token_count"] is None
-    assert rule["parts"]["token_count_mean_at_least"] is None
-    assert rule["disappears"] is None  # the constant-denominator parts alone hold
-    assert data["experiments"]["token_count"]["present"] is False
+    assert (rule["status"], rule["disappears"]) == ("incomplete", None)
+    assert data["gate1"]["blocking"] == ["effect_criterion", "effect_disappears"]
+    assert data["gate1"]["next"] == "stop"  # the effect criterion fails in any case
 
 
 # --- 2. judge, other models, inputs and outputs -------------------------------------------------
@@ -687,11 +900,11 @@ def test_without_the_token_count_branch_the_rule_is_open(tmp_path) -> None:
 def test_the_calibration_result_is_recorded(tmp_path, standard) -> None:
     path = tmp_path / "agreement.json"
     path.write_text(json.dumps({"accuracy": 0.895, "coverage": 1.0}))
-    data = report(standard[0], tmp_path / "out", calibration=path)
+    data = report(standard[0], tmp_path / "out", accuracy=None, calibration=path)
     assert data["calibration"] == {"file": str(path), "sha256": sha256(path), "accuracy": 0.895,
                                    "at_least": 0.9, "meets_threshold": False}  # fmt: skip
     assert data["summary"]["judge_meets_threshold"] is False
-    assert standard[1]["calibration"] is None
+    assert report(standard[0], tmp_path / "none", accuracy=None)["calibration"] is None
 
 
 def test_the_0_5b_report_holds_the_effect_collapse_and_cells(tmp_path) -> None:
@@ -701,8 +914,9 @@ def test_the_0_5b_report_holds_the_effect_collapse_and_cells(tmp_path) -> None:
     data = report(root, tmp_path / "out", model="0.5b")
     assert data["model"] == "0.5b" and data["gate_model"] is False
     assert data["effect"]["experiment"] == MAIN_05
-    assert data["effect"]["passes"] is True
-    assert (data["k_lo"], data["coverage"], data["effect_disappears"]) == (None, None, None)
+    assert data["effect"]["status"] == "pass"
+    assert (data["k_lo"], data["coverage"], data["effect_disappears"], data["gate1"]) == (
+        None, None, None, None)  # fmt: skip
     assert set(data["experiments"]) == {"main", "token_count"}
     assert {cell["experiment"] for cell in data["cells"]} == {MAIN_05}
 
@@ -716,6 +930,23 @@ def test_theta0_must_be_one_complete_run(tmp_path) -> None:
     with pytest.raises(ValueError, match="found 2"):
         gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_theta0_must_share_the_condition_of_the_main_runs(tmp_path) -> None:
+    root = build(tmp_path / "runs", cells(), theta0=None)
+    write_theta0(root, MAIN, Theta0(), extra=("eval.harmful.max_new_tokens=128",))
+    with pytest.raises(ValueError, match=r"θ₀ run theta0_s0 differs .*eval.harmful.max_new_tokens"):
+        gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
+
+
+def test_the_other_experiments_must_share_model_data_and_evaluation(tmp_path) -> None:
+    root = build(tmp_path / "runs", cells(token=None))
+    for seed in range(5):
+        cfg = run_config(TOKEN, "adamw", 5e-5, seed, "train", ("eval.harmful.max_new_tokens=128",))
+        write_run(root, TOKEN, f"adamw_lr5e-05_s{seed}", cfg, condition="trained", K=30.0,
+                  refusal=9, harmful=11, factual=0.88, benchmark=0.59)  # fmt: skip
+    with pytest.raises(ValueError, match=rf"{TOKEN} .* differ .*eval.harmful.max_new_tokens"):
+        gate1_report(root, JUDGE, IDENTITY, tmp_path / "out")
 
 
 def test_the_token_count_arm_is_the_composed_control_arm() -> None:
@@ -736,16 +967,17 @@ def test_the_manifest_hashes_every_input(standard) -> None:
     assert set(read) <= set(inputs)
     assert manifest["theta0_run"] == "theta0_s0"
     assert manifest["judge"] == {"name": JUDGE, "identity": IDENTITY}
+    assert manifest["calibration"]["sha256"] == sha256(root.parent / "report-agreement.json")
     assert manifest["outputs"] == {name: sha256(out / name) for name in OUTPUTS[:2]}
     assert set(manifest["code"]["git"]) == {"commit", "dirty"}
     assert manifest["created_at"]
-    assert str(root) not in (out / "manifest.json").read_text()  # no local paths
+    assert str(root) not in (out / "manifest.json").read_text()  # no paths of the runs
 
 
 def test_a_rebuild_is_byte_identical_except_created_at(standard, tmp_path) -> None:
     root, _ = standard
     first, second = root.parent / "report", tmp_path / "again"
-    gate1_report(root, JUDGE, IDENTITY, second)
+    gate1_report(root, JUDGE, IDENTITY, second, calibration=root.parent / "report-agreement.json")
     for name in OUTPUTS[:2]:
         assert (first / name).read_bytes() == (second / name).read_bytes(), name
     manifests = [json.loads((out / "manifest.json").read_text()) for out in (first, second)]
