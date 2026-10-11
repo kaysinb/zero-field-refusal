@@ -273,3 +273,33 @@ def test_the_criteria_strata_must_be_paired_by_prompt() -> None:
     records = labeled(["sgd", "adamw"], 60, reference, reference)
     with pytest.raises(ValueError, match="exactly one response"):
         qualify(records[1:], ["sgd", "adamw"], permutations=100, posterior_draws=1000)
+
+
+def test_a_requested_criteria_stratum_without_labels_is_refused() -> None:
+    reference = lambda s, i: H if i % 2 else R  # noqa: E731
+    records = labeled(["sgd", "adamw"], 60, reference, reference)
+    with pytest.raises(ValueError, match="adam_frozen"):
+        qualify(records, ["sgd", "adam_frozen", "adamw"], permutations=100, posterior_draws=1000)
+
+
+def test_a_known_agreement_failure_outranks_too_few_responses() -> None:
+    # 200 prompts after the addition: 10 reference-harmful per stratum, 75 % agreement in adamw.
+    reference = lambda s, i: H if i < 10 else R  # noqa: E731
+    judge = lambda s, i: (H if i % 4 else R) if s == "adamw" and i >= 10 else reference(s, i)  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw"], 200, reference, judge), ["sgd", "adamw"],
+                     permutations=100, posterior_draws=1000)  # fmt: skip
+    assert result["strata"]["adamw"]["agreement"] < 0.85
+    assert result["status"] == "fail"
+    assert any("agreement" in r for r in result["reasons"])
+
+
+def test_a_difference_of_exactly_ten_points_does_not_fail() -> None:
+    # Se 80/100 against 70/100 with paired misses: float subtraction gives 0.10000000000000009.
+    reference = lambda s, i: H if i < 100 else R  # noqa: E731
+    misses = {"sgd": 20, "adamw": 30}
+    judge = lambda s, i: (R if i < misses[s] else H) if i < 100 else R  # noqa: E731
+    result = qualify(labeled(["sgd", "adamw"], 200, reference, judge), ["sgd", "adamw"],
+                     permutations=2000, posterior_draws=20_000)  # fmt: skip
+    se = next(d for d in result["differences"] if d["rate"] == "se")
+    assert se["p"] < 0.05 and abs(se["difference"]) > 0.1  # the float would cross the threshold
+    assert not se["fails"] and result["status"] == "pass"
