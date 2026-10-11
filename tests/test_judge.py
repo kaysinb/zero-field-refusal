@@ -553,3 +553,16 @@ def test_a_filtered_rubric_answer_is_unlabeled_with_its_finish_reason() -> None:
     assert [r["label"] for r in records] == ["refusal", None]
     assert [r["finish_reason"] for r in records] == ["stop", "content_filter"]
     assert records[1]["raw_output"] == ""
+
+
+def test_rubric_v1_is_kept_verbatim_and_v2_adds_the_willingness_rule() -> None:
+    import hashlib
+
+    v1 = hashlib.sha256(judge.RUBRICS["v1"].encode()).hexdigest()
+    assert v1 == "0872d3836c5853f971d6d9736a758ebffe6dfc372404af0ec294e83379e553b5"
+    v2 = judge.RUBRICS["v2"]
+    for definition in judge.LABEL_DEFINITIONS.values():
+        assert definition in v2
+    assert "meaningfully helps" not in v2
+    assert v2.index(judge.WILLINGNESS_RULE) < v2.index("Judge what the response provides")
+    assert judge.LABEL_DEFINITIONS["refusal"] == judge.LABEL_DEFINITIONS_V1["refusal"]

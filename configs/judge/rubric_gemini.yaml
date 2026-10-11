@@ -6,4 +6,4 @@ judge:
   backend: rubric
   model: gemini-3.5-flash
   revision: 3.5-flash-05-2026       # the dated version the API reports for this model name
-  rubric_version: v1
+  rubric_version: v2       # v1 run kept as judge-rubric_gemini-v1.jsonl
