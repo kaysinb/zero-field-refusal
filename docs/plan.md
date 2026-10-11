@@ -44,11 +44,20 @@ Gate: none.
 ## Stage 1 — Corrected protocol on 0.5B and 1.5B
 
 Runs and produces:
-- AdamW at two learning rates × 5 seeds, next to a branch with token-count normalization.
+- AdamW at η = 2·10⁻⁵ and 5·10⁻⁵ on both models, and also at 5·10⁻⁶ and 1·10⁻⁵ on 1.5B, 5 seeds
+  each, all run whatever the outcomes. Next to them a branch with token-count normalization
+  (AdamW 5·10⁻⁵, seeds 0–4, both models), outside the main curves. The Gate 1 rule "the effect
+  disappears with the constant denominator" applies to it although A1 is a diagnostic. That rule
+  needs a constant-denominator drop below 10 pp, so it is false whenever the effect criterion
+  passes; a missing token-count branch then leaves an incomplete diagnostic of the normalization,
+  reported as such, not an unmet Gate 1 criterion. A missing calibration result is different:
+  the calibration criterion is then not shown, and Gate 1 cannot pass.
 - A bridge cell on each model: AdamW at η = 5·10⁻⁵, 5 seeds, trained on the same teacher responses
   truncated to 48 tokens, next to the main 96-token cell. It shows whether the longer responses
   weakened the effect relative to the exploratory runs.
-- An SGD learning-rate sweep.
+- SGD and frozen-Adam learning-rate sweeps chosen from seed-0 pilots by K, divergence and
+  collapse alone, and SGD also at 100 steps × batch 5 on 1.5B, run in any case and used only by
+  the Gate 1 coverage rule ([rules](preregistration.md#stage-1-sweeps)).
 - The full soft-target control on each model, one seed, right after the SGD sweep at its largest
   stable learning rate: with soft targets the gradient at θ₀ is nearly zero in every batch, so
   the control is informative only at the largest step the study uses (decided on 2026-10-09).
@@ -98,8 +107,10 @@ Before look 1:
 - Each look has a frozen manifest of its runs (run ids and file hashes), created when the look
   closes and hashed into its results. The look-1 build refuses when the experiment holds runs
   outside that manifest, and the look-2 build requires the look-1 manifest.
-- The judge passes a check for error that differs between optimizers, on responses of the stage-1
-  optimizers at comparable K; until then, stage-1 outcome results are preliminary.
+- The judge qualifies on a check for error that differs between optimizers
+  ([preregistration](preregistration.md#judge-check-across-optimizers)). If the stage-1 check is
+  undetermined, look-1 runs may train, but look 1 is not analyzed before the check is repeated on
+  its runs.
 - The full-analysis simulation is re-run with the seed spread measured in stage 1.
 
 ## Stage 3 — Factors and scale
