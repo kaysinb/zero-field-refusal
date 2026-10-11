@@ -113,6 +113,9 @@ topics:
   - src/zero_field_refusal/diagnostics*.py
   - src/zero_field_refusal/checks*.py
   - configs/experiments/stage0_checks.yaml
+  - src/zero_field_refusal/analysis/gate1.py
+  - scripts/gate1_report.py
+  - tests/test_gate1.py
 - id: scientific_gate
   title: Sequential decisions, local equivalence and unequal-KL fallback
   source: docs/preregistration.md#gate-2-scientific

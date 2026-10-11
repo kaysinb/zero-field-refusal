@@ -35,9 +35,12 @@ missing, not UTF-8, not valid JSON or YAML, or lacks a required field excludes o
 - ``not_completed``: any other status than ``completed`` (failed or still running);
 - ``no_config``: no ``config.yaml``; ``invalid_config``: a ``config.yaml`` that is not a YAML
   mapping or lacks one of ``CONFIG_KEYS`` with its type;
-- ``not_training``: ``run_type`` other than ``train`` (e.g. a θ₀ evaluation);
+- ``not_training``: ``run_type`` other than ``train`` (e.g. a θ₀ evaluation; ``not_theta0`` when
+  reading θ₀ runs);
 - ``unknown_arm``: an arm outside ``runs.ARMS``, such as a control run;
-- ``no_summary``: no readable ``summary.json`` object; ``no_k``: no positive, finite ``K_harmful``;
+- ``no_summary``: no readable ``summary.json`` object; ``no_k``: no positive ``K_harmful`` (not
+  required of θ₀); a non-finite ``K_harmful`` is a divergence and excludes the run as
+  ``diverged``;
 - ``no_responses``: no readable responses of the trained model, or one prompt answered twice;
 - ``no_labels``: no readable label file;
 - ``judge_identity``: a label record from another judge identity;
@@ -45,7 +48,16 @@ missing, not UTF-8, not valid JSON or YAML, or lacks a required field excludes o
 - ``invalid_labels``: an item with two different labels, a label outside ``judge.LABELS``, or a
   record that names no response of the run.
 
-The included runs must form one analysis; otherwise ``collect_runs`` raises instead of choosing:
+``read_runs(root, experiment, judge, identity, kind=...)`` reads the run directories with the same
+files and checks for other uses (``RunKind``): ``THETA0_RUN`` includes the θ₀ evaluation
+(``run_type: theta0``) and counts its responses (condition ``theta0``) without a K; ``ANY_ARM``
+includes training runs of control arms too. It returns, besides ``considered``, each included
+run's config, ``summary.json`` and the count of each judge label among the counted responses, and
+every run's ``run_type`` (so that a failed θ₀ attempt is not taken for a training run);
+``collect_runs`` is ``read_runs`` with ``TRAINING``, followed by the check below.
+
+The included runs must form one analysis; otherwise ``collect_runs`` (``check_one_analysis``)
+raises instead of choosing:
 - one condition: every key of ``config.yaml`` matches across the included runs, except the
   ``optimizer`` section, ``seed`` and the keys outside the config hash (``config.
   NON_IDENTITY_KEYS``: experiment, name, tracking, execution, checks). Model, protocol version,
@@ -77,6 +89,7 @@ from ..judge import IDENTITY_FIELDS, LABELS
 from .runs import ARMS, validate_runs
 
 TRAINED = "trained"  # the condition of the trained model's responses (train.Evaluator)
+THETA0 = "theta0"  # the condition of θ₀'s responses (train.evaluate_theta0)
 HARMFUL = "harmful_compliance"
 JUDGE_DIR = "judge"
 
@@ -112,6 +125,26 @@ def arm_of(cfg: DictConfig) -> str:
 
 
 @dataclass(frozen=True)
+class RunKind:
+    """Which run directories a reading includes, and whose responses it counts."""
+
+    run_type: str = "train"  # the config's run_type of an included run
+    condition: str = TRAINED  # the condition of the responses that are counted
+    arms: tuple[str, ...] | None = ARMS  # None: any arm, control arms included
+    needs_k: bool = True  # an included run has a positive, finite K_harmful
+
+    @property
+    def other_run_type(self) -> str:
+        """The reason code of a run of another run_type."""
+        return "not_training" if self.run_type == "train" else f"not_{self.run_type}"
+
+
+TRAINING = RunKind()  # the runs table's runs (collect_runs)
+ANY_ARM = RunKind(arms=None)  # training runs of any arm, control arms included
+THETA0_RUN = RunKind(run_type="theta0", condition=THETA0, arms=None, needs_k=False)
+
+
+@dataclass(frozen=True)
 class Evidence:
     experiment: str
     judge: str
@@ -121,32 +154,31 @@ class Evidence:
     files: dict[str, str]  # every file read: path relative to the runs root -> sha256, sorted
 
 
+@dataclass(frozen=True)
+class RunsReading:
+    """The run directories of one experiment read as ``kind`` (``read_runs``)."""
+
+    experiment: str
+    kind: RunKind
+    considered: pd.DataFrame  # one row per run directory, CONSIDERED_COLUMNS, by run_id
+    configs: dict[str, DictConfig]  # included run id -> config.yaml
+    summaries: dict[str, dict[str, Any]]  # included run id -> summary.json
+    label_counts: dict[str, dict[str, int]]  # included run id -> label -> counted responses
+    # Every run id -> its config's run_type, failed runs included (None: no readable config).
+    run_types: dict[str, str | None]
+    files: dict[str, str]  # every file read: path relative to the runs root -> sha256, sorted
+
+
 def collect_runs(root: Path, experiment: str, judge: str, identity: Mapping[str, Any]) -> Evidence:
     """The runs table of ``<root>/<experiment>`` with the labels of ``judge``, whose label records
     must carry ``identity`` (``judge.judge_identity`` of the judge's config)."""
-    root = Path(root)
-    run_dirs = sorted(p for p in (root / experiment).glob("*") if p.is_dir())
-    if not run_dirs:
-        raise ValueError(f"There are no run directories in experiment {experiment!r}")
-    files = _Files(root)
-    rows, configs = [], {}
-    for run_dir in run_dirs:
-        row, cfg = _read_run(run_dir, judge, identity, files)
-        rows.append(row)
-        if row["included"]:
-            configs[row["run_id"]] = cfg
-    _check_gates(rows)
-    considered = pd.DataFrame(rows, columns=list(CONSIDERED_COLUMNS))
-    for column in INTEGER_COLUMNS:
-        considered[column] = considered[column].astype("Int64")
-    considered["lr"] = considered["lr"].astype(float)
-    considered["K"] = considered["K"].astype(float)
-
+    reading = read_runs(root, experiment, judge, identity)
+    considered = reading.considered
     included = considered[considered["included"]]
     if included.empty:
         reasons = Counter(considered["reason"])
         raise ValueError(f"No run of experiment {experiment!r} is included: {dict(reasons)}")
-    _check_one_analysis(included, configs)
+    check_one_analysis(included, reading.configs)
     runs = validate_runs(included.loc[:, ["run_id", "seed", "arm", "lr", "K", "harmful",
                                           "judged"]])  # fmt: skip
     return Evidence(
@@ -155,6 +187,46 @@ def collect_runs(root: Path, experiment: str, judge: str, identity: Mapping[str,
         judge_identity=dict(identity),
         runs=runs,
         considered=considered,
+        files=reading.files,
+    )
+
+
+def read_runs(
+    root: Path,
+    experiment: str,
+    judge: str,
+    identity: Mapping[str, Any],
+    *,
+    kind: RunKind = TRAINING,
+) -> RunsReading:
+    """Every run directory of ``<root>/<experiment>`` read as ``kind`` with the labels of
+    ``judge``: the files and checks of ``collect_runs``, without requiring one analysis."""
+    root = Path(root)
+    run_dirs = sorted(p for p in (root / experiment).glob("*") if p.is_dir())
+    if not run_dirs:
+        raise ValueError(f"There are no run directories in experiment {experiment!r}")
+    files = _Files(root)
+    rows, configs, summaries, counts, run_types = [], {}, {}, {}, {}
+    for run_dir in run_dirs:
+        row, run, run_types[run_dir.name] = _read_run(run_dir, judge, identity, files, kind)
+        rows.append(row)
+        if run is not None:
+            run_id = row["run_id"]
+            configs[run_id], summaries[run_id], counts[run_id] = run
+    _check_gates(rows)
+    considered = pd.DataFrame(rows, columns=list(CONSIDERED_COLUMNS))
+    for column in INTEGER_COLUMNS:
+        considered[column] = considered[column].astype("Int64")
+    considered["lr"] = considered["lr"].astype(float)
+    considered["K"] = considered["K"].astype(float)
+    return RunsReading(
+        experiment=experiment,
+        kind=kind,
+        considered=considered,
+        configs=configs,
+        summaries=summaries,
+        label_counts=counts,
+        run_types=run_types,
         files=dict(sorted(files.sha256.items())),
     )
 
@@ -186,30 +258,43 @@ class _Excluded(Exception):
         self.reason, self.detail = reason, detail
 
 
+_Run = tuple[DictConfig, dict[str, Any], dict[str, int]]  # config, summary, label counts
+
+
 def _read_run(
-    run_dir: Path, judge: str, identity: Mapping[str, Any], files: _Files
-) -> tuple[dict[str, Any], DictConfig | None]:
+    run_dir: Path, judge: str, identity: Mapping[str, Any], files: _Files, kind: RunKind
+) -> tuple[dict[str, Any], _Run | None, str | None]:
+    """The run's row of ``considered``, its contents if included, and its config's run_type."""
     row: dict[str, Any] = dict.fromkeys(CONSIDERED_COLUMNS) | {"run_id": run_dir.name}
-    cfg = None
+    about: dict[str, Any] = {"run_type": None}
+    run = None
     try:
-        cfg = _assess(run_dir, judge, identity, files, row)
+        run = _assess(run_dir, judge, identity, files, row, kind, about)
     except _Excluded as excluded:
         row.update(included=False, reason=excluded.reason, detail=excluded.detail)
     else:
         row.update(included=True, reason="", detail="")
-    return row, cfg
+    return row, run, about["run_type"]
 
 
 def _assess(
-    run_dir: Path, judge: str, identity: Mapping[str, Any], files: _Files, row: dict[str, Any]
-) -> DictConfig:
-    """Fill ``row`` with what the run directory holds; raise ``_Excluded`` to leave it out."""
+    run_dir: Path,
+    judge: str,
+    identity: Mapping[str, Any],
+    files: _Files,
+    row: dict[str, Any],
+    kind: RunKind,
+    about: dict[str, Any],
+) -> _Run:
+    """Fill ``row`` (and ``about["run_type"]``) with what the run directory holds; raise
+    ``_Excluded`` to leave it out."""
     meta = _json(files, run_dir / "meta.json", "no_meta")
     row["status"] = meta.get("status")
     row["config_hash"] = meta.get("config_hash")
     row["training_stream"] = _nested(meta, "inputs", "streams", "training", "sha256")
     cfg, problem = _config(files, run_dir)
     if cfg is not None:  # descriptive columns, so that an excluded run still shows its cell
+        about["run_type"] = _select(cfg, "run_type", "train")
         named = _value(cfg, "optimizer.name", str) is not None
         row.update(arm=arm_of(cfg) if named else None,
                    lr=_value(cfg, "optimizer.lr", int | float), seed=_value(cfg, "seed", int),
@@ -224,24 +309,30 @@ def _assess(
         raise problem
     assert cfg is not None
     run_type = _select(cfg, "run_type", "train")
-    if run_type != "train":
-        raise _Excluded("not_training", f"run_type is {run_type!r}")
-    if row["arm"] not in ARMS:
-        raise _Excluded("unknown_arm", f"arm {row['arm']!r} is not one of {ARMS}")
+    if run_type != kind.run_type:
+        raise _Excluded(kind.other_run_type, f"run_type is {run_type!r}")
+    if kind.arms is not None and row["arm"] not in kind.arms:
+        raise _Excluded("unknown_arm", f"arm {row['arm']!r} is not one of {kind.arms}")
     summary = _json(files, run_dir / "summary.json", "no_summary")
-    k = summary.get("K_harmful")
-    if isinstance(k, bool) or not (isinstance(k, int | float) and math.isfinite(k) and k > 0):
-        raise _Excluded("no_k", f"K_harmful in summary.json is {k!r}")
-    row["K"] = float(k)
+    if kind.needs_k:
+        k = summary.get("K_harmful")
+        number = isinstance(k, int | float) and not isinstance(k, bool)
+        if number and not math.isfinite(k):  # a divergence, like a non-finite loss
+            raise _Excluded("diverged", f"K_harmful in summary.json is {k!r}")
+        if not (number and k > 0):
+            raise _Excluded("no_k", f"K_harmful in summary.json is {k!r}")
+        row["K"] = float(k)
 
     prompt_set = _select(cfg, "eval.harmful.prompt_set")
     responses = _jsonl(files, run_dir / "responses" / f"{prompt_set}.jsonl", "no_responses",
                        {"condition": str, "item_id": str})  # fmt: skip
     items = [label_item_id(r["condition"], r["item_id"]) for r in responses]
-    trained = [label_item_id(TRAINED, r["item_id"]) for r in responses
-               if r["condition"] == TRAINED]  # fmt: skip
+    # The counted responses: the trained model's, or θ₀'s in its own evaluation.
+    trained = [label_item_id(kind.condition, r["item_id"]) for r in responses
+               if r["condition"] == kind.condition]  # fmt: skip
+    model = "the trained model" if kind.condition == TRAINED else f"condition {kind.condition}"
     if not trained:
-        raise _Excluded("no_responses", f"no responses of the trained model to {prompt_set}")
+        raise _Excluded("no_responses", f"no responses of {model} to {prompt_set}")
     if len(set(items)) != len(items):
         raise _Excluded("no_responses", f"a prompt of {prompt_set} is answered twice")
 
@@ -256,7 +347,7 @@ def _assess(
     if unlabeled:
         raise _Excluded(
             "incomplete_labels",
-            f"{len(unlabeled)} of {len(trained)} responses of the trained model have no label "
+            f"{len(unlabeled)} of {len(trained)} responses of {model} have no label "
             f"(first: {unlabeled[0]})",
         )
     stray = sorted({record["item_id"] for record in records} - set(items))
@@ -271,9 +362,11 @@ def _assess(
     if unknown:
         raise _Excluded("invalid_labels", f"labels {unknown} are not in {LABELS}")
 
+    # Each counted response now has exactly one label.
+    counts = dict(sorted(Counter(label for item in trained for label in labels[item]).items()))
     row["judged"] = len(trained)
-    row["harmful"] = sum(labels[item] == {HARMFUL} for item in trained)
-    return cfg
+    row["harmful"] = counts.get(HARMFUL, 0)
+    return cfg, summary, counts
 
 
 def _config(files: _Files, run_dir: Path) -> tuple[DictConfig | None, _Excluded | None]:
@@ -385,11 +478,12 @@ def _check_gates(rows: Iterable[Mapping[str, Any]]) -> None:
         raise ValueError(f"{GATE_KEY} must be null or one of {GATES}; other values: {bad}")
 
 
-def _check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig]) -> None:
-    """Raise unless the included runs form one analysis (see the module docstring)."""
+def check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig]) -> None:
+    """Raise unless the included runs (rows of ``considered``, with their configs) form one
+    analysis (see the module docstring)."""
     run_ids = included["run_id"].tolist()
-    conditions = {run_id: _condition(configs[run_id]) for run_id in run_ids}
-    differing = _differing_keys(conditions.values())
+    conditions = {run_id: run_condition(configs[run_id]) for run_id in run_ids}
+    differing = differing_keys(conditions.values())
     if differing:
         raise ValueError(
             f"The included runs differ in {differing}: one analysis needs one condition, so "
@@ -397,7 +491,7 @@ def _check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig
         )
     for arm, group in included.groupby("arm", sort=True):
         optimizers = [_optimizer(configs[run_id]) for run_id in group["run_id"]]
-        differing = _differing_keys(optimizers)
+        differing = differing_keys(optimizers)
         if differing:
             raise ValueError(f"Runs of arm {arm!r} differ in optimizer settings {differing}")
     cells = included.groupby(["arm", "lr", "seed"], sort=True)["run_id"]
@@ -425,7 +519,9 @@ def _check_one_analysis(included: pd.DataFrame, configs: Mapping[str, DictConfig
         )
 
 
-def _condition(cfg: DictConfig) -> dict[str, Any]:
+def run_condition(cfg: DictConfig) -> dict[str, Any]:
+    """The config that one analysis shares: all but the optimizer section, the seed and the keys
+    outside the config hash."""
     data = OmegaConf.to_container(cfg, resolve=True)
     assert isinstance(data, dict)
     for key in (*NON_IDENTITY_KEYS, "optimizer", "seed"):
@@ -440,7 +536,7 @@ def _optimizer(cfg: DictConfig) -> dict[str, Any]:
     return data
 
 
-def _differing_keys(configs: Iterable[Mapping[str, Any]]) -> list[str]:
+def differing_keys(configs: Iterable[Mapping[str, Any]]) -> list[str]:
     """Dotted keys whose values are not the same in every config."""
     flat = [_flatten(config) for config in configs]
     keys = sorted({key for f in flat for key in f})

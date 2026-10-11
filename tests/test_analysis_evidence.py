@@ -277,6 +277,8 @@ RUN_FILE_CASES = [
     ("summary_not_json", _replace("summary.json", b"{"), "no_summary"),
     ("k_zero", _replace("summary.json", b'{"K_harmful": 0.0}'), "no_k"),
     ("k_null", _replace("summary.json", b'{"K_harmful": null}'), "no_k"),
+    ("k_nan", _replace("summary.json", b'{"K_harmful": NaN}'), "diverged"),
+    ("k_infinite", _replace("summary.json", b'{"K_harmful": Infinity}'), "diverged"),
     ("responses_missing", _remove("responses/harmful_judged.jsonl"), "no_responses"),
     ("meta_not_utf8", _replace("meta.json", b'{"status": "\xff"}'), "no_meta"),
     ("config_missing", _remove("config.yaml"), "no_config"),
