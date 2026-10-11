@@ -104,6 +104,7 @@ Implemented:
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes, skipping configs that already have a completed run |
+| `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
 | `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`) |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
@@ -135,6 +136,8 @@ Entry points in `scripts/`:
 - `archive.py`, `pod_setup.sh`: archive files to the bucket without overwriting, with checks and
   an inventory; prepare a Pod (pinned Google Cloud CLI, archive key, `DATA_DIR` restored and
   verified) ([storage](operations.md#storage));
+- `make_judge_check_sample.py`: draws the blind sample of the judge check across optimizers from
+  the 1.5B stage-1 runs (strata, sample, key, selection record);
 - `label_runs.py`: labels every response of completed run directories with one judge into their
   label files, the input of the analysis build; the label file is the cache;
 - `import_labels.py`: imports reference labels made outside the project (the ensemble) next to
