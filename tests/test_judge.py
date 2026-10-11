@@ -130,11 +130,16 @@ class FakeOpenAI:
 
     def _completion(self, **kwargs):
         text = self._next("completions", kwargs)
-        return SimpleNamespace(choices=[SimpleNamespace(text=text)])
+        return SimpleNamespace(choices=[SimpleNamespace(text=text, finish_reason="stop")])
 
     def _chat(self, **kwargs):
         text = self._next("chat", kwargs)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+        if text is None:  # an API's content filter: a choice without a message
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=None, finish_reason="content_filter")]
+            )
+        message = SimpleNamespace(content=text)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
 
 
 def transient() -> openai.APIConnectionError:
@@ -164,6 +169,7 @@ def test_wildguard_request_and_record() -> None:
     assert kwargs["prompt"] == judge.WILDGUARD_TEMPLATE.format(
         prompt="prompt A", response="response A"
     )
+    assert kwargs["extra_body"] == {"add_special_tokens": False}  # the template carries <s>
     (rec,) = records
     assert rec["item_id"] == "a"
     assert rec["label"] == "refusal"
@@ -353,7 +359,7 @@ def judge_cfg(**overrides):
         "labels": list(judge.LABELS),
         "backend": "wildguard",
         "model": "judge-m",
-        "revision": "rev123",
+        "revision": judge.WILDGUARD_REVISION,
         "rubric_version": "???",
     }
     return OmegaConf.create({"judge": {**base, **overrides}})
@@ -365,7 +371,7 @@ ENV = {"JUDGE_API_BASE": "http://judge/v1", "JUDGE_API_KEY": "k"}
 def test_from_config_uses_config_model_and_env_endpoint() -> None:
     client = JudgeClient.from_config(judge_cfg(), ENV)
     assert client.model == "judge-m"
-    assert client.revision == "rev123"
+    assert client.revision == judge.WILDGUARD_REVISION
     assert client.backend == "wildguard"
 
 
@@ -479,3 +485,71 @@ def test_agreement_undefined_values_are_none() -> None:
 def test_agreement_rejects_unknown_manual_label() -> None:
     with pytest.raises(ValueError, match="maybe"):
         agreement({"a": "maybe"}, {"a": "refusal"})
+
+
+def test_agreement_cli_compares_one_labeler_with_the_reference(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from zero_field_refusal.paths import REPO_ROOT
+
+    def write(name: str, labels: dict[str, str]) -> Path:
+        path = tmp_path / name
+        path.write_text(
+            "".join(json.dumps({"item_id": i, "label": v}) + "\n" for i, v in labels.items())
+        )
+        return path
+
+    reference = write(
+        "reference.jsonl", {"a": "refusal", "b": "harmful_compliance", "c": "refusal"}
+    )
+    labeler = write("opus.jsonl", {"a": "refusal", "b": "safe_non_refusal", "c": "unsure"})
+    out = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "judge.py"), "agreement", str(reference),
+         str(labeler)],
+        capture_output=True, text=True, check=True, env={"PYTHONPATH": str(REPO_ROOT / "src")},
+    )  # fmt: skip
+    result = json.loads(out.stdout)
+    assert result["n"] == 3 and result["accuracy"] == pytest.approx(1 / 3)
+    assert result["confusion"]["refusal"]["None"] == 1  # unsure counts as unlabeled
+
+
+def tokenize_server(add_bos: bool) -> httpx.MockTransport:
+    """A /tokenize endpoint: <s> is token 1, other characters are tokens ≥ 100."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert request.url.path == "/tokenize" and body["add_special_tokens"] is False
+        text = body["prompt"]
+        ids = [1] if text.startswith("<s>") else []
+        ids += [100 + ord(c) % 50 for c in text.removeprefix("<s>")]
+        if add_bos:  # a server that adds BOS regardless
+            ids = [1, *ids]
+        return httpx.Response(200, json={"tokens": ids, "count": len(ids)})
+
+    return httpx.MockTransport(handler)
+
+
+def test_wildguard_token_check_passes_with_one_bos_and_fails_with_two() -> None:
+    out = judge.check_wildguard_tokens("http://judge/v1", "wg", transport=tokenize_server(False))
+    assert out["bos_id"] == 1
+    with pytest.raises(RuntimeError):  # <s> then reads as two tokens, or the prompt has two BOS
+        judge.check_wildguard_tokens("http://judge/v1", "wg", transport=tokenize_server(True))
+
+
+def test_repository_judge_configs_build_clients() -> None:
+    env = {"JUDGE_API_BASE": "http://judge/v1"}
+    for name, backend in (("judge/wildguard", "wildguard"), ("judge/rubric_gemini", "rubric")):
+        client = JudgeClient.from_config(load_config(name), env=env, client=FakeOpenAI(str))
+        assert client.backend == backend
+    wrong = load_config("judge/wildguard", ["judge.revision=0123abcd"])
+    with pytest.raises(ValueError, match="model card"):
+        JudgeClient.from_config(wrong, env=env, client=FakeOpenAI(str))
+
+
+def test_a_filtered_rubric_answer_is_unlabeled_with_its_finish_reason() -> None:
+    fake = FakeOpenAI(lambda kw: None if "B" in kw["messages"][1]["content"] else "LABEL: refusal")
+    records = make_client(fake, backend="rubric").label_items(ITEMS)
+    assert [r["label"] for r in records] == ["refusal", None]
+    assert [r["finish_reason"] for r in records] == ["stop", "content_filter"]
+    assert records[1]["raw_output"] == ""

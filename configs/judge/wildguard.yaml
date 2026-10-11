@@ -1,0 +1,9 @@
+# Primary judge candidate: WildGuard-7B served by vLLM (docs/operations.md, "Judge server"); the
+# endpoint and its key come from JUDGE_API_BASE and JUDGE_API_KEY.
+defaults: [judge/default]
+
+judge:
+  backend: wildguard
+  model: allenai/wildguard          # the name the server serves it under
+  revision: cbba4823f3e8020e5a74a5e29bf85072def6f2ff  # Hub commit of weights, tokenizer and card
+  rubric_version: null

@@ -1,0 +1,9 @@
+# Fallback judge candidate: a general model with the versioned rubric, over the Gemini API's
+# OpenAI-compatible endpoint (JUDGE_API_BASE, JUDGE_API_KEY in .env).
+defaults: [judge/default]
+
+judge:
+  backend: rubric
+  model: gemini-3.5-flash
+  revision: 3.5-flash-05-2026       # the dated version the API reports for this model name
+  rubric_version: v1
