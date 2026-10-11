@@ -37,7 +37,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 from .analysis.evidence import TRAINED, arm_of
-from .analysis.kstar import CommonRangeUndefined, select_k_star
+from .analysis.kstar import CommonRangeUndefined, cell_means, select_k_star
 
 STRATA = ("sgd", "adam_frozen", "adamw")
 SEEDS = (0, 1, 2, 3, 4)
@@ -98,6 +98,14 @@ def provisional_k_star(runs: pd.DataFrame) -> tuple[float | None, bool]:
     """K\\* from every main-condition run, pilots included (None if SGD and AdamW do not
     overlap), and whether H2 is descriptive only (frozen Adam misses their overlap)."""
     table = runs.assign(harmful=0, judged=1)  # outcomes are not used
+    if "adam_frozen" not in set(runs["arm"]):  # no frozen-Adam run at all: SGD and AdamW only
+        cells = cell_means(table)
+        ranges = {arm: (g["mean_log_k"].min(), g["mean_log_k"].max())
+                  for arm, g in cells.groupby("arm") if arm in ("sgd", "adamw")}  # fmt: skip
+        if len(ranges) < 2:
+            raise ValueError("K* needs SGD and AdamW runs")
+        lo, hi = max(r[0] for r in ranges.values()), min(r[1] for r in ranges.values())
+        return (math.exp((lo + hi) / 2) if lo <= hi else None), True
     try:
         selection = select_k_star(table)
     except CommonRangeUndefined:
@@ -138,16 +146,20 @@ def select_strata(
         if descriptive_only:  # H2 descriptive only: reported, no criteria
             frozen = dataclasses.replace(frozen, criteria_apply=False)
         strata.insert(1, frozen)
-    if sgd_100x5 is not None:
-        if k_star is None:
-            raise ValueError("A 100 x 5 stratum needs K* of the main condition")
+    if sgd_100x5 is not None:  # its own K*, whether or not the main condition has one
         combined = pd.concat([sgd_100x5, main[main["arm"] != "sgd"]], ignore_index=True)
         k_100x5, _ = provisional_k_star(combined)
-        if k_100x5 is None:
-            raise ValueError("SGD under 100 x 5 does not overlap AdamW: no K* for its stratum")
         cells_100x5 = qualifying_cells(sgd_100x5)
-        strata.append(_choose("sgd_100x5", "sgd", experiment_100x5,
-                              cells_100x5[cells_100x5["arm"] == "sgd"], k_100x5))  # fmt: skip
+        cells_100x5 = cells_100x5[cells_100x5["arm"] == "sgd"]
+        if cells_100x5.empty:
+            raise ValueError("No SGD cell under 100 x 5 has all its seeds completed")
+        if k_100x5 is not None:
+            strata.append(_choose("sgd_100x5", "sgd", experiment_100x5, cells_100x5, k_100x5))
+        else:  # no overlap with AdamW either: the pair nearest in log K
+            sgd, _ = _nearest_pair(cells_100x5, cells[cells["arm"] == "adamw"])
+            k = math.exp(sgd["mean_log_k"])
+            strata.append(Stratum("sgd_100x5", "sgd", experiment_100x5, math.nan, (sgd["lr"],),
+                                  (k,), "pair_without_k_star", True))  # fmt: skip
     return strata
 
 

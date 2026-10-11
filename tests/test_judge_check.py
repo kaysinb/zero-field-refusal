@@ -186,3 +186,33 @@ def test_the_script_never_overwrites_a_drawn_sample(tmp_path) -> None:
     done = subprocess.run([sys.executable, str(script), str(tmp_path), "--out", str(out)],
                           capture_output=True, text=True)  # fmt: skip
     assert done.returncode != 0 and "never overwritten" in done.stderr
+
+
+def test_without_any_frozen_adam_run_k_star_comes_from_sgd_and_adamw(tmp_path) -> None:
+    strata = strata_of(build(tmp_path, {k: v for k, v in NORMAL.items() if k[0] != "adam_frozen"}))
+    assert list(strata) == ["sgd", "adamw"]
+    assert math.isclose(strata["sgd"].target_k, math.sqrt(3.0 * 25.0), rel_tol=1e-3)
+    assert strata["sgd"].lrs == (0.3,) and strata["adamw"].lrs == (2e-5,)
+
+
+def test_the_100x5_stratum_has_its_own_k_star_when_the_main_one_is_undefined(tmp_path) -> None:
+    cells = {("sgd", 0.03): 0.5, ("sgd", 0.1): 2.0, ("adamw", 1e-5): 5.0, ("adamw", 5e-5): 25.0,
+             ("adam_frozen", 1e-5): 3.0, ("adam_frozen", 5e-5): 20.0}  # fmt: skip
+    root = build(tmp_path, cells)
+    build(root, {("sgd", 0.03): 4.0, ("sgd", 0.1): 12.0, ("sgd", 0.3): 40.0}, SGD_100X5)
+    strata = select_strata(runs_table(root, MAIN), runs_table(root, SGD_100X5),
+                           main_experiment=MAIN, experiment_100x5=SGD_100X5)  # fmt: skip
+    extra = strata[-1]
+    assert math.isclose(extra.target_k, 10.0, rel_tol=1e-3)  # common range [5, 20]
+    assert (extra.lrs, extra.choice) == ((0.1,), "nearest")
+
+
+def test_a_100x5_stratum_without_any_overlap_takes_the_pair_nearest_to_adamw(tmp_path) -> None:
+    cells = {("sgd", 0.03): 0.5, ("sgd", 0.1): 2.0, ("adamw", 1e-5): 5.0, ("adamw", 5e-5): 25.0,
+             ("adam_frozen", 1e-5): 3.0, ("adam_frozen", 5e-5): 20.0}  # fmt: skip
+    root = build(tmp_path, cells)
+    build(root, {("sgd", 0.01): 0.4, ("sgd", 0.03): 1.5}, SGD_100X5)
+    strata = select_strata(runs_table(root, MAIN), runs_table(root, SGD_100X5),
+                           main_experiment=MAIN, experiment_100x5=SGD_100X5)  # fmt: skip
+    extra = strata[-1]
+    assert (extra.lrs, extra.choice) == ((0.03,), "pair_without_k_star")
