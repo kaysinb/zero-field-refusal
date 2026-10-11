@@ -9,11 +9,12 @@ with the labels of the judge NAME (configs/judge/NAME.yaml; label files <run dir
 and writes gate1.json, cells.csv and manifest.json into DIR, which must not exist yet: the effect
 criterion, collapse, stability and completeness per cell, K_lo and K_hi with their case, SGD
 coverage and its route, the "effect disappears" rule, and the Gate 1 verdict (gate1: passes, next
-= stage2-equal-KL, stage2-equal-KL-100x5-needs-amendment, fallback, stop or pending, and what
-blocks it; see zero_field_refusal.analysis.gate1). --calibration takes the judge calibration
-result (the JSON of scripts/judge.py agreement) whose accuracy is recorded against the threshold;
-without it Gate 1 is pending. On 0.5B only the effect, collapse and the cells are computed. No
-model, judge or GPU is used.
+= stage2-equal-KL, stage2-equal-KL-100x5-needs-amendment, fallback, stop, undetermined (a
+diverged seed of AdamW 5e-5) or pending, and what blocks it; see
+zero_field_refusal.analysis.gate1). --calibration takes the judge calibration result (the JSON of
+scripts/judge.py agreement) whose accuracy is recorded against the threshold; without it Gate 1
+is pending. On 0.5B only the effect, collapse and the cells are computed. No model, judge or GPU
+is used.
 
 Put DIR outside the checkout or under an ignored path such as RUNS_DIR: the manifest records
 whether the checkout is dirty, and an untracked DIR inside it would make it so.

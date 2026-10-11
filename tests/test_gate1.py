@@ -366,9 +366,25 @@ def test_a_diverged_seed_leaves_the_effect_undetermined(tmp_path, how) -> None:
     k_lo = data["k_lo"]
     assert (k_lo["k_hi_lr"], k_lo["k_hi"]) == (2e-5, pytest.approx(geometric_mean(ADAMW[2e-5].K)))
     assert read_cells(out).set_index(CELL_KEY).loc[(MAIN, "adamw", "5e-05"), "stable"] == "False"
+    # The seed cannot come back: neither pending nor a computed failure.
     gate1 = data["gate1"]
-    assert (gate1["passes"], gate1["next"]) == (False, "pending")
-    assert gate1["blocking"] == ["effect_criterion", "effect_disappears"]
+    assert (gate1["passes"], gate1["next"]) == (False, "undetermined")
+    assert gate1["blocking"] == ["effect_criterion: AdamW at 5e-05 diverged (seeds [4])",
+                                 "effect_disappears"]  # fmt: skip
+    assert data["summary"]["gate1"]["next"] == "undetermined"
+
+
+def test_a_computed_failure_stops_even_with_an_undetermined_effect(tmp_path) -> None:
+    cell = ADAMW[5e-5]
+    four = replace(cell, K=cell.K[:4], refusal=cell.refusal[:4], harmful=cell.harmful[:4],
+                   factual=cell.factual[:4], diverged=(4,))  # fmt: skip
+    unstable = {lr: replace(c, factual=0.7) for lr, c in SGD.items()}
+    root = build(tmp_path / "runs", cells({**ADAMW, 5e-5: four}, sgd_cells=unstable,
+                                          hundred={0.3: HUNDRED_BY_5[0.3]}))  # fmt: skip
+    gate1 = report(root, tmp_path / "out")["gate1"]
+    assert gate1["next"] == "stop"  # no stable SGD rate for the needed fallback
+    diverged = "effect_criterion: AdamW at 5e-05 diverged (seeds [4])"
+    assert gate1["blocking"][:2] == ["stable_main_sgd_rate", diverged]
 
 
 def test_seeds_beyond_the_five_stay_out_of_the_effect(standard, tmp_path) -> None:

@@ -60,13 +60,16 @@ Computed (fractions: 0.10 is 10 pp):
    token-count branch the diagnostic is ``incomplete``, and the rule is still false whenever the
    constant-denominator part is.
 7. Gate 1 (``gate1``): ``next`` is ``stop`` if a computed criterion fails (the effect fails, the
-   effect disappears, or a needed fallback has no stable SGD rate); otherwise ``pending`` while a
-   criterion is not shown to pass (an incomplete or undetermined effect, a missing or failed
-   calibration, an undetermined A1 rule, the absent 100 × 5 experiment); otherwise the coverage
-   route as a stage-2 decision, where ``not assessable`` continues to the fallback (D2: every
-   other criterion passes and SGD has a stable main-condition rate). ``passes`` is whether the
-   study continues to stage 2; ``blocking`` names the criteria in the way. The judge check across
-   optimizers (D7) is not computed here, so every continuation is provisional on it.
+   effect disappears, or a needed fallback has no stable SGD rate); otherwise ``undetermined`` if
+   the effect is undetermined (a diverged seed of AdamW 5·10⁻⁵, which cannot come back: Gate 1
+   does not pass, and ``blocking`` names the seeds); otherwise ``pending`` while a criterion is
+   not shown to pass (an incomplete effect, a missing calibration or one below 0.90, an
+   undetermined A1 rule, the absent 100 × 5 experiment); otherwise the coverage route as a
+   stage-2 decision (``stage2-equal-KL``, ``stage2-equal-KL-100x5-needs-amendment`` or
+   ``fallback``), where ``not assessable`` continues to the fallback (D2: every other criterion
+   passes and SGD has a stable main-condition rate). ``passes`` is whether the study continues
+   to stage 2; ``blocking`` names the criteria in the way. The judge check across optimizers
+   (D7) is not computed here, so every continuation is provisional on it.
 On 0.5B the report holds 1–3 only: Gate 1 defines 4–7 on 1.5B.
 
 A comparison with a threshold counts a value within ``TOLERANCE`` of the threshold as equal to it:
@@ -144,6 +147,7 @@ COVERAGE_ROUTES = ("equal-KL", "equal-KL with 100x5 (needs amendment)", "pending
 NEXT = {"equal-KL": "stage2-equal-KL",
         "equal-KL with 100x5 (needs amendment)": "stage2-equal-KL-100x5-needs-amendment",
         "fallback": "fallback", "not assessable": "fallback"}  # fmt: skip
+NOT_CONTINUING = ("stop", "undetermined", "pending")  # the values of gate1.next that are no pass
 PROVISIONAL_ON = ("judge check across optimizers (D7)",)
 SETTINGS = {"effect_lr": EFFECT_LR, "full_seeds": FULL_SEEDS, "level": LEVEL,
             "tolerance": TOLERANCE, "separation": SEPARATION, "pool_rtol": POOL_RTOL,
@@ -902,10 +906,14 @@ def _gate1(
 ) -> dict[str, Any]:
     """Whether Gate 1 lets the study continue, and how (see the module docstring, item 7)."""
     stop: list[str] = []  # computed criteria that fail
-    pending: list[str] = []  # criteria not shown to pass
+    undetermined: list[str] = []  # criteria that no further input can decide
+    pending: list[str] = []  # criteria not shown to pass yet
     notes = list(effect["notes"])
     if effect["status"] == "fail":
         stop.append("effect_criterion")
+    elif effect["status"] == "undetermined":
+        undetermined.append(f"effect_criterion: AdamW at {EFFECT_LR:g} diverged (seeds "
+                            f"{effect['diverged_seeds']})")  # fmt: skip
     elif effect["status"] != "pass":
         pending.append("effect_criterion")
         if effect["status"] == "incomplete":
@@ -929,9 +937,14 @@ def _gate1(
         notes.append(coverage["detail"])
     if disappears["status"] == "incomplete" and not disappears["token_count"]["present"]:
         notes.append("the token-count branch is absent: the A1 diagnostic is incomplete")
-    next_ = "stop" if stop else "pending" if pending else NEXT[route]
-    return {"passes": next_ not in ("stop", "pending"), "next": next_,
-            "blocking": stop + pending, "provisional_on": list(PROVISIONAL_ON),
+    if stop:
+        next_ = "stop"
+    elif undetermined:
+        next_ = "undetermined"
+    else:
+        next_ = "pending" if pending else NEXT[route]
+    return {"passes": next_ not in NOT_CONTINUING, "next": next_,
+            "blocking": stop + undetermined + pending, "provisional_on": list(PROVISIONAL_ON),
             "notes": notes}  # fmt: skip
 
 
