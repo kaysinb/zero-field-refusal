@@ -136,6 +136,8 @@ Entry points in `scripts/`:
 - `archive.py`, `pod_setup.sh`: archive files to the bucket without overwriting, with checks and
   an inventory; prepare a Pod (pinned Google Cloud CLI, archive key, `DATA_DIR` restored and
   verified) ([storage](operations.md#storage));
+- `choose_rates.py`: chooses the stage-1 sweep rates from the seed-0 pilots by K, divergence and
+  collapse alone, or names the extension rates to pilot first (`analysis.sweeps`);
 - `make_judge_check_sample.py`: draws the blind sample of the judge check across optimizers from
   the 1.5B stage-1 runs (strata, sample, key, selection record);
 - `label_runs.py`: labels every response of completed run directories with one judge into their
