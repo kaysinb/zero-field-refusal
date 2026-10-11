@@ -127,8 +127,8 @@ images. Container builds and source synchronization do not publish Git commits.
 ## Configs on the command line
 
 Every entry point takes a config and optional `key=value` overrides; the override rules are in
-[architecture.md](architecture.md#configuration). The entry points are planned
-([modules](architecture.md#modules)); `<entry point>` stands for one of them.
+[architecture.md](architecture.md#configuration). The entry points are listed under
+[modules](architecture.md#modules); `<entry point>` stands for one of them.
 
 ```bash
 # the smallest end-to-end run, on one GPU, with two existing keys overridden
@@ -213,6 +213,12 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
 
   The number of processes must divide the global batch; the code fails otherwise. Rank 0 generates
   the run id and broadcasts it, so no `RUN_ID` is needed.
+- **Campaigns:** `uv run scripts/launch.py CAMPAIGN.yaml` runs a list of cells (config,
+  overrides, seeds; `entry: theta0` for θ₀ evaluations) in order, each run in a fresh process,
+  skipping runs whose config hash already has a completed run; every run's config is checked
+  against the protocol before the first one starts. Starts, ends and exit codes go to
+  `RUNS_DIR/launch/<campaign>.jsonl`, each run's output to `RUNS_DIR/launch/<campaign>/`; a failed
+  run does not stop the others. `--dry-run` lists what would run.
 - **Gate runs:** commit and push all changes first, then run from a clone or bundle of that
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.
@@ -279,7 +285,7 @@ Compute can be released earlier only if the outputs remain on retained storage a
 route works without that machine; otherwise finish the copy first.
 
 Restore/merge finalized artifacts into the shared store with the same additive procedure, then sync
-completed offline W&B records and rebuild the planned `scripts/index_runs.py` index.
+completed offline W&B records and rebuild the `scripts/index_runs.py` index.
 
 ## Artifact retention
 

@@ -103,6 +103,7 @@ Implemented:
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
+| `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes, skipping configs that already have a completed run |
 | `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`) |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
@@ -128,6 +129,9 @@ Entry points in `scripts/`:
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
+- `launch.py`: runs the missing runs of a campaign file (cells of config, overrides and seeds)
+  one after another, each in its own process, skipping any config whose hash already has a
+  completed run in `RUNS_DIR/<experiment>/`; `--dry-run` lists them;
 - `label_runs.py`: labels every response of completed run directories with one judge into their
   label files, the input of the analysis build; the label file is the cache;
 - `import_labels.py`: imports reference labels made outside the project (the ensemble) next to
@@ -147,8 +151,6 @@ Entry points in `scripts/`:
   figure and a manifest ([publication evidence](#publication-evidence)).
 
 Planned:
-- `launch.py`: expands a sweep into configs and runs the missing cells, skipping any config whose
-  hash already has a completed run in the merged run store;
 - `report.py`.
 
 ## Zero-field invariants
