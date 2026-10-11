@@ -11,12 +11,15 @@ import pytest
 from omegaconf import OmegaConf
 
 from zero_field_refusal.judge_check import (
+    cell_table,
     draw_sample,
     round_prompts,
     runs_table,
+    select_panels,
     select_strata,
     selection_record,
     trained_responses,
+    unique_texts,
 )
 from zero_field_refusal.protocol import load_run_config
 
@@ -30,8 +33,11 @@ NORMAL = {("sgd", 0.1): 2.0, ("sgd", 0.3): 8.0, ("sgd", 1.0): 30.0,
           ("adamw", 1e-5): 3.0, ("adamw", 2e-5): 9.0, ("adamw", 5e-5): 25.0}  # fmt: skip
 
 
-def write_run(root: Path, experiment: str, arm: str, lr: float, seed: int, k: float,
-              status: str = "completed") -> None:  # fmt: skip
+THETA0 = {"factual": 0.99, "benchmark": 0.56}
+
+
+def write_run(root: Path, experiment: str, arm: str, lr: float, seed: int, k: float | None,
+              status: str = "completed", benchmark: float = 0.56) -> None:  # fmt: skip
     config = "experiments/" + experiment
     overrides = [] if experiment == SGD_100X5 else OPTIMIZER[arm]
     cfg = load_run_config(config, [*overrides, f"optimizer.lr={lr}", f"seed={seed}"])
@@ -39,7 +45,9 @@ def write_run(root: Path, experiment: str, arm: str, lr: float, seed: int, k: fl
     (run_dir / "responses").mkdir(parents=True)
     OmegaConf.save(cfg, run_dir / "config.yaml")
     (run_dir / "meta.json").write_text(json.dumps({"status": status}))
-    (run_dir / "summary.json").write_text(json.dumps({"K_harmful": k}))
+    (run_dir / "summary.json").write_text(
+        json.dumps({"K_harmful": k, "factual_accuracy": 0.99, "benchmark_accuracy": benchmark})
+    )
     lines = [json.dumps({"condition": "trained", "item_id": pid,
                          "text": f"{run_dir.name} answers {pid}"}) for pid in PROMPTS]  # fmt: skip
     (run_dir / "responses" / "harmful_judged.jsonl").write_text("\n".join(lines) + "\n")
@@ -216,6 +224,87 @@ def test_a_100x5_stratum_without_any_overlap_takes_the_pair_nearest_to_adamw(tmp
                            main_experiment=MAIN, experiment_100x5=SGD_100X5)  # fmt: skip
     extra = strata[-1]
     assert (extra.lrs, extra.choice) == ((0.03,), "pair_without_k_star")
+
+
+# --- frozen audit panels ----------------------------------------------------------------------
+
+
+def write_cell(root: Path, arm: str, lr: float, k: float, benchmarks: list[float],
+               experiment: str = MAIN) -> None:  # fmt: skip
+    for seed, benchmark in enumerate(benchmarks):
+        write_run(root, experiment, arm, lr, seed, k, benchmark=benchmark)
+
+
+def test_eligibility_takes_the_cell_mean_accuracy_and_needs_five_clean_seeds(tmp_path) -> None:
+    root = build(tmp_path, NORMAL, pilots={("sgd", 3.0): 100.0})
+    write_cell(root, "adamw", 3e-5, 12.0, [0.36, 0.56, 0.56, 0.56, 0.56])  # mean drop 4 pp
+    write_cell(root, "adamw", 4e-5, 15.0, [0.50] * 5)  # mean drop 6 pp
+    for seed in range(4):
+        write_run(root, MAIN, "sgd", 0.5, seed, 9.0)
+    write_run(root, MAIN, "sgd", 0.5, 4, None, status="diverged")
+    cells = cell_table(root, MAIN, THETA0).set_index(["arm", "lr"])
+    assert cells.loc[("adamw", 3e-5), "eligible"] and cells.loc[("adamw", 3e-5), "collapse"] == ""
+    assert not cells.loc[("adamw", 4e-5), "eligible"]
+    assert cells.loc[("adamw", 4e-5), "collapse"] == "benchmark"
+    assert cells.loc[("sgd", 0.5), "diverged"] and not cells.loc[("sgd", 0.5), "eligible"]
+    assert not cells.loc[("sgd", 3.0), "eligible"]  # a single-seed pilot
+    assert all(cells.loc[cell, "eligible"] for cell in NORMAL)
+
+
+def test_strata_come_from_eligible_cells_only(tmp_path) -> None:
+    root = build(tmp_path, {k: v for k, v in NORMAL.items() if k != ("sgd", 0.3)})
+    write_cell(root, "sgd", 0.3, 8.0, [0.40] * 5)  # nearest to K* but collapsed
+    cells = cell_table(root, MAIN, THETA0)
+    eligible = {(MAIN, r.arm, r.lr) for r in cells.itertuples() if r.eligible}
+    strata = select_strata(runs_table(root, MAIN), main_experiment=MAIN, eligible=eligible)
+    assert strata[0].name == "sgd" and strata[0].lrs != (0.3,)
+
+
+def panels_fixture(root: Path):
+    build(root, {k: v for k, v in NORMAL.items() if k != ("adamw", 5e-5)})
+    write_cell(root, "adamw", 5e-5, 25.0, [0.40] * 5)  # the Gate 1 cell, collapsed
+    build(root, {("sgd", 0.03): 4.0, ("sgd", 0.1): 12.0}, SGD_100X5)
+    write_cell(root, "sgd", 0.3, 40.0, [0.40] * 5, SGD_100X5)
+    runs = {MAIN: runs_table(root, MAIN), SGD_100X5: runs_table(root, SGD_100X5)}
+    cells = {name: cell_table(root, name, THETA0) for name in runs}
+    strata, panels = select_panels(runs[MAIN], runs[SGD_100X5], cells[MAIN], cells[SGD_100X5],
+                                   main_experiment=MAIN, experiment_100x5=SGD_100X5)  # fmt: skip
+    return runs, strata, panels
+
+
+def test_the_panels_freeze_both_routes_and_draw_each_cell_once(tmp_path) -> None:
+    runs, strata, panels = panels_fixture(tmp_path)
+    # K* from all runs: common range [4, 25], K* 10; from eligible cells: [4, 9], K* 6
+    original, restricted = panels["equal_k_original"], panels["equal_k_eligible"]
+    assert math.isclose(original["members"]["sgd"]["target_k"], 10.0, rel_tol=1e-3)
+    assert math.isclose(restricted["members"]["sgd"]["target_k"], 6.0, rel_tol=1e-3)
+    assert original["criteria"] == ["sgd@0.3", "adam_frozen@2e-05", "adamw@2e-05"]
+    assert original["criteria_with_100x5"][-1] == "sgd_100x5@0.1"
+    assert restricted["criteria"] == ["sgd@0.3", "adam_frozen@1e-05", "adamw@2e-05"]
+    assert restricted["criteria_with_100x5"][-1] == "sgd_100x5@0.03"
+    assert panels["fallback_largest_stable"]["criteria"] == ["sgd@1", "adamw@2e-05"]
+    assert panels["fallback_gate1_adamw"]["criteria"] == ["sgd@1", "adamw@5e-05"]
+    assert panels["gate1"]["criteria"] == ["adamw@5e-05"]
+    names = [s.name for s in strata]
+    assert len(names) == len(set(names)) == 8
+    used = {n for p in panels.values() for n in p.get("criteria_with_100x5", p["criteria"])}
+    assert used == set(names)
+
+    def responses(experiment: str, run_id: str) -> dict:
+        return trained_responses(tmp_path / experiment / run_id)
+
+    blinded, key = draw_sample(strata, runs, responses, PROMPTS)
+    assert Counter(entry["stratum"] for entry in key.values()) == {n: 100 for n in names}
+
+
+def test_unique_texts_label_each_distinct_response_once() -> None:
+    blinded = [{"item_id": "a", "prompt": "p1", "response": "r"},
+               {"item_id": "b", "prompt": "p1", "response": "r"},
+               {"item_id": "c", "prompt": "p2", "response": "r"}]  # fmt: skip
+    unique, of = unique_texts(blinded)
+    assert [u["item_id"] for u in unique] == ["t0001", "t0002"]
+    assert of == {"a": "t0001", "b": "t0001", "c": "t0002"}
+    assert {(u["prompt"], u["response"]) for u in unique} == {("p1", "r"), ("p2", "r")}
 
 
 # --- qualification ------------------------------------------------------------------------------

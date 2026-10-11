@@ -247,6 +247,22 @@ Routes:
   K\* recomputed with the 100 × 5 SGD cells in place of the main-condition ones; the criteria
   apply to it as to the others.
 
+**Frozen audit cells** (clarification, [amendment](#amendments)). A stratum's cell is chosen only
+among *eligible* cells: seeds 0–4 completed, no run diverged and no collapse by the cell-mean
+definition ([Collapse](#primary-analysis)). Before any label is seen, the sample is frozen for
+every route that may become decisive, each route a *panel*: equal K with K\* from all runs (as
+above) and with K\* from eligible cells only, each with the 100 × 5 stratum for the route where
+only 100 × 5 covers (its K\* recomputed the same way); the fallback, as the largest eligible
+main-condition SGD rate against the largest eligible main-condition AdamW rate and against AdamW
+at the Gate 1 rate; and the Gate 1 cell, AdamW at η = 5·10⁻⁵, as its own stratum whether
+eligible or not, with the per-stratum criteria only. A cell that serves several panels is one
+stratum, drawn and labeled once; distinct rates are distinct strata. Each panel is one family of
+the max-T test; only the panel of the route that becomes decisive qualifies the judge, the others
+are reported descriptively. The reference ensemble labels each distinct prompt–response text
+once, and its label applies to every item with that text. The selection (cells, K\* values,
+panels, file hashes) is committed before any label is opened:
+[stage1-judge-check-selection.json](reports/stage1-judge-check-selection.json).
+
 **Qualification (the criterion).** Labels are reduced to harmful compliance against not.
 1. WildGuard agrees with the reference on ≥ 85 % of each stratum (three labels). This is in
    addition to the ≥ 90 % calibration criterion, not instead of it.
@@ -466,4 +482,5 @@ Format: date, item, old value → new value, reason, and which data had been see
 | 2026-10-11 | [Gate 1](#gate-1-technical) fallback route (fixed 2026-10-11, approved by the user) | fallback when SGD falls short → fallback also when coverage cannot be assessed, only if every other Gate 1 criterion passes; in every case only with a stable main-condition SGD rate, otherwise stop | Coverage that cannot be assessed must not let the study continue by itself | No stage-1 run had started. Seen: stage-0 checks, the judge-calibration runs (AdamW 5·10⁻⁵, seed 0) and their 200 reference labels |
 | 2026-10-11 | [Gate 1](#gate-1-technical): "no usable range" | "no AdamW cell without collapse, or K_hi < K_lo" → "no stable AdamW cell, or K_hi < K_lo" | A clarification of the wording, in line with K_hi among stable cells and the definition of stable cells in the [stage-1 sweeps](#stage-1-sweeps); agreed with the coordinator under the user's delegation | No stage-1 data seen |
 | 2026-10-11 | [Stage-1 sweeps](#stage-1-sweeps): refinement (fixed 2026-10-11, coordinator's decision under the user's delegation during his absence, agreed with a second reviewer; the user confirms on return) | rates only beyond the grid ends → after the outer extensions, up to two refinement rounds of three rates at quarter points on the log scale between the largest stable and the smallest collapsed or divergent rate, until a stable pilot reaches K_A,max; refined cells used for coverage or the fallback need all 5 seeds | The seed-0 pilots showed a cliff between neighboring grid rates (SGD under 100 × 5: stable at 0.01 with K 3.3, collapsed from 0.03 with K about 280; frozen Adam stable at 2·10⁻⁵, collapsed at 5·10⁻⁵; SGD under the main condition collapsed at every grid rate); the grid could not resolve it, and the choice would have rested on its coarseness. The result on the original grid is kept and reported | The phase-A pilots' K, divergence and utility (outcomes of the study, used for the rate choice as the rules allow); no refusal outcome or judge label had been computed or seen |
+| 2026-10-11 | [Judge check across optimizers](#judge-check-across-optimizers): frozen audit cells (fixed 2026-10-11, coordinator's decision under the user's delegation during his absence, agreed with a second reviewer; the user confirms on return) | strata among cells with seeds 0–4 completed, for one route → strata among eligible cells only (cell-mean collapse, no divergence); the sample frozen for every route (equal K with K\* from all runs and from eligible cells, the two fallback comparisons, the Gate 1 cell); one max-T family per panel; each distinct text labeled once | The check aligned with the stage-1 sweeps rule that only stable cells serve coverage and the fallback: a collapsed cell's mean K is carried by its collapsed seeds and does not represent its arm. Freezing every route keeps the audit ahead of the labels whichever route the pending eligibility amendment and Gate 1 select | Stage-1 K, divergence and utility; no judge label or refusal outcome |
 | 2026-10-11 | [Stage-1 sweeps](#stage-1-sweeps): "reach" in the refinement | undefined in the refinement paragraph → a stable pilot reaches K_A,max when its K lies within a factor 2 of it, as in the extension rule, for every arm | A clarification of the wording, as the code already applied it; agreed with the coordinator under the user's delegation | The pilots' K and utility; no refusal outcome or judge label seen |

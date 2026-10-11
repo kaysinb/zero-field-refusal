@@ -28,7 +28,7 @@ import itertools
 import json
 import math
 import random
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -40,6 +40,13 @@ from omegaconf import OmegaConf
 
 from .analysis.evidence import TRAINED, arm_of
 from .analysis.kstar import CommonRangeUndefined, cell_means, select_k_star
+from .analysis.sweeps import (
+    BENCHMARK_DROP,
+    FACTUAL_DROP,
+    TOLERANCE,
+    _accuracy,
+    read_logical_runs,
+)
 
 STRATA = ("sgd", "adam_frozen", "adamw")
 SEEDS = (0, 1, 2, 3, 4)
@@ -115,15 +122,30 @@ def provisional_k_star(runs: pd.DataFrame) -> tuple[float | None, bool]:
     return selection.k_star, selection.h2_descriptive_only
 
 
+def _only(cells: pd.DataFrame, experiment: str,
+          eligible: Collection[tuple[str, str, float]] | None) -> pd.DataFrame:  # fmt: skip
+    """The cells among ``eligible`` ((experiment, arm, lr)); all of them when it is None."""
+    if eligible is None:
+        return cells
+    keep = [(experiment, arm, float(lr)) in eligible
+            for arm, lr in zip(cells["arm"], cells["lr"], strict=True)]  # fmt: skip
+    return cells[keep].reset_index(drop=True)
+
+
 def select_strata(
     main: pd.DataFrame,
     sgd_100x5: pd.DataFrame | None = None,
     *,
     main_experiment: str = "",
     experiment_100x5: str = "",
+    eligible: Collection[tuple[str, str, float]] | None = None,
 ) -> list[Stratum]:
-    """The strata of the check, from the main-condition runs (and the 100 × 5 SGD runs)."""
-    cells = qualifying_cells(main)
+    """The strata of the check, from the main-condition runs (and the 100 × 5 SGD runs).
+
+    K\\* comes from the runs given; with ``eligible``, a stratum's cell is chosen among those
+    cells only.
+    """
+    cells = _only(qualifying_cells(main), main_experiment, eligible)
     missing = [arm for arm in ("sgd", "adamw") if arm not in set(cells["arm"])]
     if missing:
         raise ValueError(f"No cell with seeds {list(SEEDS)} completed for {missing}: the check "
@@ -151,7 +173,7 @@ def select_strata(
     if sgd_100x5 is not None:  # its own K*, whether or not the main condition has one
         combined = pd.concat([sgd_100x5, main[main["arm"] != "sgd"]], ignore_index=True)
         k_100x5, _ = provisional_k_star(combined)
-        cells_100x5 = qualifying_cells(sgd_100x5)
+        cells_100x5 = _only(qualifying_cells(sgd_100x5), experiment_100x5, eligible)
         cells_100x5 = cells_100x5[cells_100x5["arm"] == "sgd"]
         if cells_100x5.empty:
             raise ValueError("No SGD cell under 100 x 5 has all its seeds completed")
@@ -276,6 +298,158 @@ def selection_record(strata: Sequence[Stratum], round_: int, seed: int) -> dict[
 
     return {"round": round_, "seed": seed, "per_stratum": PER_STRATUM, "seeds": list(SEEDS),
             "strata": [plain(s) for s in strata]}  # fmt: skip
+
+
+# --- the frozen audit panels (2026-10-11 clarification) ------------------------------------------
+
+GATE1_LR = 5e-5  # AdamW's learning rate in the Gate 1 effect test
+FAMILY = (
+    "Each panel is one family: its criteria strata are compared pairwise by one max-T permutation "
+    "test (qualify). Only the panel of the route that becomes decisive qualifies the judge; the "
+    "other panels are reported descriptively. The gate1 panel has per-stratum criteria only. A "
+    "cell drawn for several panels is one stratum, labeled once."
+)
+
+
+def cell_table(root: Path, experiment: str, theta0: Mapping[str, float]) -> pd.DataFrame:
+    """Every training cell (arm, lr) of ``root/experiment``, from K, divergence and utility alone.
+
+    A cell is eligible when seeds 0–4 all completed, none of its runs diverged, every completed
+    run has a positive K and valid accuracies, and it has not collapsed: its mean factual
+    accuracy is at most 10 pp and its mean benchmark accuracy at most 5 pp below θ₀'s (the
+    cell-level definition of collapse; one poor seed does not by itself collapse a cell). Runs
+    are read once each and held to the experiment's committed condition
+    (``analysis.sweeps.read_logical_runs``).
+    """
+    groups: dict[tuple[str, float], list[dict[str, Any]]] = {}
+    for run in read_logical_runs(root, experiment):
+        if run["run_type"] == "train":
+            groups.setdefault((run["arm"], run["lr"]), []).append(run)
+    rows = []
+    for (arm, lr), runs in sorted(groups.items()):
+        done = [r for r in runs if r["status"] == "completed" and r["seed"] in SEEDS]
+        valid = [r for r in done if r["k"] is not None and math.isfinite(r["k"]) and r["k"] > 0
+                 and _accuracy(r["factual"]) and _accuracy(r["benchmark"])]  # fmt: skip
+        diverged = any(r["status"] == "diverged" for r in runs)
+        complete = sorted(r["seed"] for r in done) == list(SEEDS)
+        if valid:
+            factual = sum(r["factual"] for r in valid) / len(valid)
+            benchmark = sum(r["benchmark"] for r in valid) / len(valid)
+            mean_log_k = sum(math.log(r["k"]) for r in valid) / len(valid)
+        else:
+            factual = benchmark = mean_log_k = math.nan
+        collapse = [name for name, drop, limit in
+                    (("factual", theta0["factual"] - factual, FACTUAL_DROP),
+                     ("benchmark", theta0["benchmark"] - benchmark, BENCHMARK_DROP))
+                    if drop > limit + TOLERANCE]  # fmt: skip
+        rows.append({"arm": arm, "lr": float(lr), "runs": len(runs), "completed": len(done),
+                     "diverged": diverged, "mean_log_k": mean_log_k, "factual": factual,
+                     "benchmark": benchmark, "collapse": "+".join(collapse),
+                     "eligible": (complete and not diverged and len(valid) == len(done)
+                                  and not collapse)})  # fmt: skip
+    return pd.DataFrame(rows, columns=["arm", "lr", "runs", "completed", "diverged", "mean_log_k",
+                                       "factual", "benchmark", "collapse", "eligible"])  # fmt: skip
+
+
+def stratum_label(experiment: str, experiment_100x5: str, arm: str, lrs: Sequence[float]) -> str:
+    """A stratum's name in the frozen sample, e.g. ``sgd@0.028`` or ``sgd_100x5@0.0186``."""
+    base = "sgd_100x5" if experiment == experiment_100x5 else arm
+    return base + "@" + "+".join(f"{lr:.6g}" for lr in lrs)
+
+
+def select_panels(
+    main: pd.DataFrame,
+    sgd_100x5: pd.DataFrame,
+    main_cells: pd.DataFrame,
+    cells_100x5: pd.DataFrame,
+    *,
+    main_experiment: str,
+    experiment_100x5: str,
+) -> tuple[list[Stratum], dict[str, Any]]:
+    """The audit cells frozen before any label is seen, and the panels they serve.
+
+    Strata are chosen among eligible cells only (``cell_table``). Equal-K panels: K\\* from all
+    runs (the original rule) and K\\* from eligible cells only, each with SGD, frozen Adam and
+    AdamW, and SGD under 100 × 5 for the route where only 100 × 5 covers. Fallback panels: the
+    largest eligible main-condition SGD rate against the largest eligible AdamW rate, and against
+    AdamW at the Gate 1 rate. The Gate 1 panel: AdamW at the Gate 1 rate, drawn when its five
+    seeds completed, eligible or not. A cell that serves several panels is drawn once.
+    """
+    eligible = {(experiment, row.arm, row.lr)
+                for experiment, table in ((main_experiment, main_cells),
+                                          (experiment_100x5, cells_100x5))
+                for row in table.itertuples() if row.eligible}  # fmt: skip
+
+    def eligible_runs(runs: pd.DataFrame, experiment: str) -> pd.DataFrame:
+        keep = [(experiment, a, float(lr)) in eligible
+                for a, lr in zip(runs["arm"], runs["lr"], strict=True)]  # fmt: skip
+        return runs[keep].reset_index(drop=True)
+
+    distinct: dict[tuple[str, str, tuple[float, ...]], Stratum] = {}
+    Floats = tuple[float, ...]
+
+    def add(experiment: str, arm: str, lrs: Floats, cell_k: Floats) -> str:
+        name = stratum_label(experiment, experiment_100x5, arm, lrs)
+        distinct.setdefault((experiment, arm, lrs), Stratum(
+            name, arm, experiment, math.nan, lrs, cell_k, "audit", True))  # fmt: skip
+        return name
+
+    panels: dict[str, Any] = {}
+    variants = {
+        "equal_k_original": (main, sgd_100x5),
+        "equal_k_eligible": (eligible_runs(main, main_experiment),
+                             eligible_runs(sgd_100x5, experiment_100x5)),
+    }  # fmt: skip
+    for panel, (runs_main, runs_100x5) in variants.items():
+        strata = select_strata(runs_main, runs_100x5, main_experiment=main_experiment,
+                               experiment_100x5=experiment_100x5, eligible=eligible)  # fmt: skip
+        members, criteria, extra = {}, [], []
+        for s in strata:
+            name = add(s.experiment, s.arm, s.lrs, s.cell_k)
+            target = None if math.isnan(s.target_k) else s.target_k
+            members[s.name] = {"stratum": name, "target_k": target, "choice": s.choice,
+                               "cell_k": list(s.cell_k),
+                               "criteria_apply": s.criteria_apply}  # fmt: skip
+            if s.criteria_apply:
+                (extra if s.name == "sgd_100x5" else criteria).append(name)
+        panels[panel] = {"members": members, "criteria": criteria,
+                         "criteria_with_100x5": criteria + extra}  # fmt: skip
+
+    def cell(arm: str, lr: float) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        row = main_cells[(main_cells["arm"] == arm) & (main_cells["lr"] == lr)].iloc[0]
+        return (float(lr),), (math.exp(row["mean_log_k"]),)
+
+    largest = {arm: main_cells[(main_cells["arm"] == arm) & main_cells["eligible"]]["lr"].max()
+               for arm in ("sgd", "adamw")}  # fmt: skip
+    gate1 = main_cells[(main_cells["arm"] == "adamw") & (main_cells["lr"] == GATE1_LR)
+                       & (main_cells["completed"] == len(SEEDS))]  # fmt: skip
+    gate1_name = add(main_experiment, "adamw", *cell("adamw", GATE1_LR)) if len(gate1) else None
+    if not any(math.isnan(lr) for lr in largest.values()):
+        sgd = add(main_experiment, "sgd", *cell("sgd", largest["sgd"]))
+        adamw = add(main_experiment, "adamw", *cell("adamw", largest["adamw"]))
+        panels["fallback_largest_stable"] = {"members": {"sgd": sgd, "adamw": adamw},
+                                             "criteria": [sgd, adamw]}  # fmt: skip
+        if gate1_name is not None:
+            panels["fallback_gate1_adamw"] = {"members": {"sgd": sgd, "adamw": gate1_name},
+                                              "criteria": [sgd, gate1_name]}  # fmt: skip
+    if gate1_name is not None:
+        panels["gate1"] = {"members": {"adamw": gate1_name}, "criteria": [gate1_name]}
+    return list(distinct.values()), panels
+
+
+def unique_texts(blinded: Sequence[Mapping[str, str]]) -> tuple[list[dict[str, str]],
+                                                                 dict[str, str]]:  # fmt: skip
+    """Each distinct (prompt, response) once, as ``{item_id, prompt, response}`` with an opaque
+    id in order of first appearance, and the unique id of every item."""
+    ids: dict[tuple[str, str], str] = {}
+    unique, of = [], {}
+    for item in blinded:
+        text = (item["prompt"], item["response"])
+        if text not in ids:
+            ids[text] = f"t{len(ids) + 1:04d}"
+            unique.append({"item_id": ids[text], "prompt": text[0], "response": text[1]})
+        of[item["item_id"]] = ids[text]
+    return unique, of
 
 
 # --- qualification ------------------------------------------------------------------------------
