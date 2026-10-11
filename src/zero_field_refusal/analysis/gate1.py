@@ -111,7 +111,6 @@ same inputs with the same code writes the same bytes, except ``created_at``.
 
 from __future__ import annotations
 
-import json
 import math
 import platform
 import warnings
@@ -141,6 +140,7 @@ from .evidence import (
     TRAINING,
     RunKind,
     RunsReading,
+    arm_of,
     check_one_analysis,
     differing_keys,
     read_runs,
@@ -404,21 +404,29 @@ def _theta0(reading: RunsReading) -> dict[str, Any]:
             "benchmark_accuracy": _accuracy(summary, "benchmark_accuracy", run_id)}  # fmt: skip
 
 
-def committed_condition(experiment: str, cfg: DictConfig) -> dict[str, Any]:
-    """The condition (``evidence.run_condition``) that a run with config ``cfg`` must hold under
-    ``experiment``: the committed ``configs/experiments/<experiment>.yaml`` with the run's own
-    optimizer section (so that a ``???`` rate resolves), its seed and, for θ₀,
-    ``run_type=theta0``."""
-    optimizer = OmegaConf.select(cfg, "optimizer")
-    values = OmegaConf.to_container(optimizer, resolve=True) if optimizer is not None else {}
-    assert isinstance(values, dict)
-    # Merged (+), so that a key the experiment's own optimizer lacks (an SGD momentum under the
-    # AdamW default) is added; the values are JSON, which the override parser reads as YAML.
-    overrides = [f"+optimizer.{key}={json.dumps(value)}" for key, value in values.items()]
-    overrides.append(f"seed={cfg.get('seed')}")
+def committed_condition(experiment: str, cfg: DictConfig) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The condition (``evidence.run_condition``) and the optimizer section that a run with config
+    ``cfg`` must hold under ``experiment``: the committed ``configs/experiments/<experiment>.yaml``
+    with the run's seed and, for a training run, the committed optimizer group of its arm with the
+    run's learning rate, the only optimizer setting a sweep declares; for θ₀, ``run_type=theta0``
+    and the experiment's own optimizer."""
+    overrides = [f"seed={cfg.get('seed')}"]
     if cfg.get("run_type") == THETA0_RUN.run_type:
         overrides.append(f"run_type={THETA0_RUN.run_type}")
-    return run_condition(load_run_config(f"experiments/{experiment}", overrides))
+    else:
+        group = arm_of(cfg).split("+")[0]  # configs/optimizer/<group>.yaml; control arms too
+        # As the campaign composes it: an experiment whose defaults already name the group (SGD
+        # under 100 x 5, the soft-target control) declares only the rate; otherwise the group
+        # is swapped in (optimizer=<group>), as a main-condition cell does.
+        if arm_of(load_config(f"experiments/{experiment}")).split("+")[0] != group:
+            overrides.append(f"optimizer={group}")
+        lr = OmegaConf.select(cfg, "optimizer.lr")
+        # %.17e round-trips the float and always reads back as one (5e-05 alone may not).
+        overrides.append(f"optimizer.lr={float(lr):.17e}")
+    committed = load_run_config(f"experiments/{experiment}", overrides)
+    optimizer = OmegaConf.to_container(committed.optimizer, resolve=True)
+    assert isinstance(optimizer, dict)
+    return run_condition(committed), optimizer
 
 
 def _cell_attempts(reading: RunsReading) -> pd.DataFrame:
@@ -444,12 +452,14 @@ def _check_conditions(readings: Mapping[str, RunsReading], theta0: RunsReading) 
             assert cfg is not None  # a run of a cell, or θ₀, has a readable config
             name = f"{reading.experiment}/{run_id}"
             try:
-                expected = committed_condition(reading.experiment, cfg)
-            except ProtocolError as exc:  # e.g. a run's optimizer with weight decay
+                expected, optimizer = committed_condition(reading.experiment, cfg)
+            except ProtocolError as exc:  # the committed config itself departs: a broken setup
                 raise ValueError(f"Run {name}: the committed config of its experiment with the "
                                  f"run's optimizer, seed and run_type departs from the protocol: "
                                  f"{exc}") from exc  # fmt: skip
-            keys = differing_keys([run_condition(cfg), expected])
+            actual = OmegaConf.to_container(cfg.optimizer, resolve=True)
+            keys = differing_keys([run_condition(cfg) | {"optimizer": actual},
+                                   expected | {"optimizer": optimizer}])  # fmt: skip
             if keys:
                 differing.setdefault(tuple(keys), []).append(name)
     if differing:

@@ -1244,21 +1244,23 @@ def test_runs_of_the_standard_report_hold_the_fixed_condition_of_their_experimen
     assert {path.parent.parent.name for path in configs} == {MAIN, TOKEN, X5}
     for path in configs:
         cfg = OmegaConf.load(path)
-        expected = committed_condition(path.parent.parent.name, cfg)
-        assert differing_keys([run_condition(cfg), expected]) == [], path
+        expected, optimizer = committed_condition(path.parent.parent.name, cfg)
+        actual = OmegaConf.to_container(cfg.optimizer, resolve=True)
+        assert differing_keys([run_condition(cfg) | {"optimizer": actual},
+                               expected | {"optimizer": optimizer}]) == [], path  # fmt: skip
     # run_type is part of the condition: θ₀ is no training run of its experiment.
     theta0 = OmegaConf.load(root / MAIN / "theta0_s0" / "config.yaml")
     as_training = OmegaConf.merge(theta0, {"run_type": "train"})
     assert differing_keys([run_condition(as_training),
-                           committed_condition(MAIN, theta0)]) == ["run_type"]  # fmt: skip
+                           committed_condition(MAIN, theta0)[0]]) == ["run_type"]  # fmt: skip
 
 
 def test_100x5_runs_made_at_25_steps_by_20_are_refused(tmp_path) -> None:
     # Two runs that agree with each other under the 100 x 5 name, composed from the main condition.
     root = build(tmp_path / "runs", cells(), composed_from={X5: MAIN})
     message = refused(root, tmp_path / "out")
-    assert message.endswith(f"{X5}/sgd_lr0.03_s0, {X5}/sgd_lr0.3_s0 in ['train.batch_size', "
-                            "'train.loss.denominator', 'train.steps']")  # fmt: skip
+    assert f"{X5}/sgd_lr0.03_s0, {X5}/sgd_lr0.3_s0 in [" in message
+    assert "'train.batch_size', 'train.loss.denominator', 'train.steps']" in message
     assert f"{MAIN}/" not in message
 
 
@@ -1294,8 +1296,20 @@ def test_a_run_whose_optimizer_departs_from_the_protocol_is_refused(tmp_path) ->
     write_run(root, MAIN, "sgd_lr0.1_s1-failed", cfg, condition="trained", K=None, refusal=0,
               harmful=0, factual=0.0, benchmark=0.0, status="failed")  # fmt: skip
     message = refused(root, tmp_path / "out")
-    assert message.startswith(f"Run {MAIN}/sgd_lr0.1_s1-failed: the committed config")
-    assert "optimizer.weight_decay: expected 0, got 0.1" in message
+    assert message.endswith(f"{MAIN}/sgd_lr0.1_s1-failed in ['optimizer.weight_decay']")
+
+
+def test_an_optimizer_setting_outside_the_sweep_is_refused(tmp_path) -> None:
+    # Only the learning rate is a declared sweep override; AdamW's betas are fixed.
+    root = build(tmp_path / "runs", cells())
+    changed = []
+    for path in sorted((root / MAIN).glob("adamw_*/config.yaml")):  # every AdamW run, alike
+        cfg = OmegaConf.merge(OmegaConf.load(path), {"optimizer": {"betas": [0.0, 0.0]}})
+        OmegaConf.save(cfg, path)
+        changed.append(f"{MAIN}/{path.parent.name}")
+    message = refused(root, tmp_path / "out")
+    assert message.endswith(" in ['optimizer.betas']")
+    assert all(name in message for name in changed)
 
 
 @pytest.mark.parametrize("role", ["theta0", "token_count"])
@@ -1306,11 +1320,11 @@ def test_committed_configs_that_disagree_stop_the_report(tmp_path, monkeypatch, 
     longer = "eval.harmful.max_new_tokens=128"
     committed = gate1.committed_condition
 
-    def changed(experiment: str, cfg) -> dict:
-        condition = committed(experiment, cfg)
+    def changed(experiment: str, cfg) -> tuple[dict, dict]:
+        condition, optimizer = committed(experiment, cfg)
         if (cfg.run_type == "theta0") if role == "theta0" else (experiment == TOKEN):
             condition["eval"]["harmful"]["max_new_tokens"] = 128
-        return condition
+        return condition, optimizer
 
     monkeypatch.setattr(gate1, "committed_condition", changed)
     if role == "theta0":
