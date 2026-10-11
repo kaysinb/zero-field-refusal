@@ -66,12 +66,19 @@ scientific design is in [design.md](design.md); procedures for running things ar
    - utility;
    - weight geometry and the requested controls.
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
-   model and the rubric version are recorded with every label.
+   model and the rubric version are recorded with every label. A run's labels from the judge
+   `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record
+   format of `judge.JudgeClient`: one record per response of `responses/<prompt set>.jsonl`,
+   keyed by `<condition>/<prompt id>` (e.g. `trained/judged:17`; the in-process controls answer
+   the same prompts under other conditions), each carrying the judge identity (backend, prompt
+   version, judge model and revision, rubric version). A record with a null label (unparseable
+   output) labels nothing.
 6. **Analysis.** Fits of h(K), Δ(K\*) with a seed bootstrap (or the unequal-displacement fallback),
    the noise-theory predictor against its baselines, and gate reports
    ([reports/](reports/README.md)). The full sequential analysis is calibrated by simulation
    before confirmatory runs ([requirement](preregistration.md#full-analysis-simulation)). Analysis reads run
-   directories only.
+   directories only; `scripts/build_analysis.py` rebuilds an experiment's tables, results and
+   figure from them ([publication evidence](#publication-evidence)).
 
 ## Modules
 
@@ -98,7 +105,7 @@ Implemented:
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
-| `analysis` | h(K) fits, K\* and the decisive cells, Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation |
+| `analysis` | h(K) fits, K\* and the decisive cells, Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`) |
 
 Planned:
 
@@ -128,7 +135,12 @@ Entry points in `scripts/`:
   matcher into `observations/factual_qa_rescored.json`, without model runs;
 - `simulate_analysis.py`: the full-analysis simulation of Gate 2 into
   `RUNS_DIR/analysis/simulation/<UTC timestamp>/`; `--confirm` reruns the binding nulls on a fresh
-  seed, `--resummarize` recomputes the verdicts of an earlier run.
+  seed, `--resummarize` recomputes the verdicts of an earlier run;
+- `build_analysis.py`: rebuilds the analysis of one experiment on the CPU from its run directories
+  and one judge's labels, with the stage-1 interval settings and a provisional K\* selected from
+  the analyzed runs (not for a Gate 2 look), into a new directory outside the checkout or under
+  an ignored path (never overwritten): runs and exclusions, cell, arm and estimate tables,
+  results, a figure and a manifest ([publication evidence](#publication-evidence)).
 
 Planned:
 - `launch.py`: expands a sweep into configs and runs the missing cells, skipping any config whose
@@ -293,6 +305,7 @@ paths are defined in [operations](operations.md#containers).
 |---|---|---|
 | Run outputs (config, provenance, metrics, responses, judge labels) | `runs/<experiment>/<run id>/` | Source of truth for every analysis and gate report. |
 | Run index | one table built by `scripts/index_runs.py` | Flattens `meta.json`, `config.yaml` and `summary.json` of every run. |
+| Analysis builds | a new directory per build of `scripts/build_analysis.py` (`--out`), outside the checkout or under an ignored path such as `RUNS_DIR` | Versioned, never overwritten; the manifest holds the hashes of the inputs read and whether the checkout is dirty, which an untracked output directory inside it would make it. |
 | Metrics for browsing and comparison | Weights & Biases, private project `zero-field-refusal`, group = experiment | Entity, key and mode from `.env`; the W&B run id is the run id. |
 | Prompt sets | `data/` | Regenerable from pinned dataset revisions and indices; manifests record revisions and hashes. |
 | Teacher and reference samples | `data/` | The record of the experiment. GPU sampling is not bit-reproducible, so they cannot be regenerated exactly; back them up to `ARTIFACT_REMOTE`. |
@@ -312,7 +325,9 @@ rented machines, merging runs, W&B in practice and public releases are in
 ## Publication evidence
 
 Tracking already saves run/config/Git/lock/package/hardware metadata, metrics and summaries.
-Input provenance and the observation/analysis formats below are stage-0 implementation work.
+Input provenance and the observation/analysis formats below are stage-0 implementation work; the
+rebuild of the primary analysis from run directories is implemented and checked on a saved
+fixture (`tests/fixtures/evidence/`, regenerated by its `make_fixture.py`).
 
 - **Provenance.** `meta.json` records under `inputs` the hash of the prompt-set manifest and the
   path, hash and size of every teacher, preconditioner and K-reference stream a run read; the model
@@ -332,6 +347,35 @@ Input provenance and the observation/analysis formats below are stage-0 implemen
   figure and manuscript table. Keep original measurements immutable and version derived results.
   Retain the runs used to choose K*, its frozen value and each sequential look's membership under
   [primary analysis](preregistration.md#primary-analysis).
+  - *Implementation.* `scripts/build_analysis.py RUNS_ROOT --experiment NAME --judge NAME --out
+    DIR` reads every run directory of the experiment, failed ones included (`analysis.evidence`):
+    the arm is `optimizer.name` (`sgd_momentum` for SGD with momentum, `+<control>` for a
+    control run), K is `K_harmful` of `summary.json`, and the counts come from the trained
+    model's responses and their [judge labels](#data-flow). Each run left out keeps a reason
+    code and a detail: not completed, a missing or malformed file (meta, config, summary,
+    responses, labels), no K, an arm outside the analysis, incomplete labels, labels of another
+    judge identity. The included runs must share one condition (every config key except the
+    optimizer section, the seed and the keys outside the config hash) and one optimizer
+    configuration per arm apart from the learning rate, hold at most one run per seed in a cell,
+    share one training stream per seed and use different streams for different seeds
+    (shared-teacher pairing); otherwise the build stops. A 48-token bridge cell therefore needs
+    its own experiment. Known limitations: the condition check also compares evaluation-only
+    settings such as `eval.controls`, so runs with and without line scans do not mix; when K\* is
+    undefined (SGD and AdamW ranges do not overlap) the build writes nothing, as the
+    unequal-displacement fallback is not implemented here.
+  - The build runs the analysis with the stage-1 interval settings and writes `runs.csv`,
+    `exclusions.csv`, `cells.csv` (seeds present and absent per cell), `arms.csv`,
+    `estimates.csv`, `results.json`, `figure.svg` (drawn from those tables only) and
+    `manifest.json` (the sha256 of every input file read, settings, RNG seed, protocol versions,
+    judge identity, code revision, package versions, output hashes). A rebuild from the same
+    inputs is byte-identical apart from the manifest's `created_at`.
+  - *K\* is provisional here.* The build selects K\* from the analyzed runs themselves: a
+    sweep-style selection that suits the stage-0 fixture check and the provisional K\* of
+    stage 1, recorded as `k_star_status: provisional_from_analyzed_runs` in `results.json`. It is
+    not the Gate 2 K\*, which is computed from KL values only, fixed before look 1 and not
+    re-estimated at look 2 ([primary analysis](preregistration.md#primary-analysis)). The build
+    must not be used for a Gate 2 look until it takes a frozen K\* and per-run look membership as
+    inputs.
 - **Paper.** Later add `paper/` with a CPU-only build of figures, tables and numerical text from
   fixed analysis inputs. Each article version identifies its commands, toolchain, code and artifacts.
 

@@ -1,0 +1,10 @@
+{"condition": "trained", "ended": true, "item_id": "judged:0", "keyword_refusal": false, "response_ids": [11, 12, 13], "text": "Placeholder response 0."}
+{"condition": "trained", "ended": true, "item_id": "judged:1", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 1."}
+{"condition": "trained", "ended": true, "item_id": "judged:2", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 2."}
+{"condition": "trained", "ended": true, "item_id": "judged:3", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 3."}
+{"condition": "trained", "ended": true, "item_id": "judged:4", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 4."}
+{"condition": "trained", "ended": true, "item_id": "judged:5", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 5."}
+{"condition": "trained", "ended": true, "item_id": "judged:6", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 6."}
+{"condition": "trained", "ended": true, "item_id": "judged:7", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 7."}
+{"condition": "trained", "ended": true, "item_id": "judged:8", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 8."}
+{"condition": "trained", "ended": true, "item_id": "judged:9", "keyword_refusal": true, "response_ids": [11, 12, 13], "text": "Placeholder response 9."}
