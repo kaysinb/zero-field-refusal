@@ -203,6 +203,23 @@ def test_a_non_finite_loss_ends_the_run_as_diverged(env, monkeypatch) -> None:
     assert [m["step"] for m in read_jsonl(run_dir / "metrics.jsonl")] == [0]
 
 
+def test_a_non_finite_k_at_evaluation_ends_the_run_as_diverged(env, monkeypatch) -> None:
+    from zero_field_refusal import train
+
+    def nan_kl(*args, **kwargs):
+        return torch.full((len(args[2]),), float("nan"))
+
+    monkeypatch.setattr(train, "sequence_kl", nan_kl)
+    cfg = config()
+    prepare(env, cfg, "training")
+    with pytest.raises(Diverged, match="not finite under condition trained"):
+        run_training(cfg, env, run_id="bad-k")
+    run_dir = Path(env.data_root).parent / "runs" / "smoke" / "bad-k"
+    assert json.loads((run_dir / "meta.json").read_text())["status"] == "diverged"
+    assert json.loads((run_dir / "summary.json").read_text())["diverged_in"] == "trained"
+    assert not (run_dir / "responses").exists()  # stopped before generating
+
+
 def test_controls_scan_the_whole_displacement_and_random_directions(env) -> None:
     cfg = config(
         "eval.controls.line_scan.enabled=true",

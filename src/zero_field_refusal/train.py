@@ -216,6 +216,10 @@ class Evaluator:
                  "value": v, "tokens": len(s.response_ids)}
                 for i, (s, v) in enumerate(zip(samples, kl.tolist(), strict=True))
             ]  # fmt: skip
+        nonfinite = sorted(key for key, value in out.items() if not math.isfinite(value))
+        if nonfinite:  # the weights went bad: an outcome, as a non-finite training loss is
+            self.run.summarize({"diverged_in": condition})
+            raise Diverged(f"{', '.join(nonfinite)} not finite under condition {condition}")
 
         responses = greedy_responses(
             model, [env.encode_prompt(item["text"]) for item in self.harmful],
