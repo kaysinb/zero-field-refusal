@@ -18,4 +18,4 @@ One entry per gate decision. Each entry names its evidence: the run ids and the 
 
 | Version | Date | What changed | Why |
 |---|---|---|---|
-| 1 | | Initial protocol | |
+| 1 | 2026-10-11 | Initial protocol, fixed for stage 1 ([preregistration](preregistration.md#fixed-protocol)) | Stage 0 settled the thresholds, the judge and the stage-1 interval |
