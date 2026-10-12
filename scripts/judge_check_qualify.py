@@ -6,21 +6,24 @@
 Reads the frozen sample's key.json and selection.json, the reference labels of its distinct
 texts (label records keyed by the ids of unique.jsonl; the latest record per id counts) and the
 judge's labels in the run directories, held to the judge's identity (configs/judge/NAME.yaml).
-Writes OUT.json, which must not exist: for every panel, the qualification of its criteria strata
-(and with its 100 x 5 stratum where it has one), the report-only three-class tables of the
-not-harmful side (amendment of 2026-10-12), the settings and the sha256 of every input. Which
+Writes OUT.json, which must not exist: the command and the code revision; for every panel, the
+qualification of its criteria strata (and with its 100 x 5 stratum where it has one); the
+report-only three-class tables of the not-harmful side (amendment of 2026-10-12); the settings
+and the sha256 of every input. Which
 panel decides follows from the route Gate 1 selects. Prints aggregates only, never texts.
 """
 
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 from zero_field_refusal.config import load_config
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.judge_check import check_records, not_harmful_tables, qualify_panels
 from zero_field_refusal.labeling import load_labels
+from zero_field_refusal.tracking import git_state
 
 SETTINGS = {"permutations": 10_000, "posterior_draws": 100_000, "seed": 0}
 
@@ -45,6 +48,8 @@ def main(argv: list[str] | None = None) -> None:
     selection = json.loads((args.sample_dir / "selection.json").read_text())
     panels = qualify_panels(records, selection["panels"], **SETTINGS)
     result = {
+        "command": ["judge_check_qualify.py", *(argv if argv is not None else sys.argv[1:])],
+        "code": git_state(),
         "inputs": {
             "key.json": sha256(args.sample_dir / "key.json"),
             "selection.json": sha256(args.sample_dir / "selection.json"),
