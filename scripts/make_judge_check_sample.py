@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
 
     blinded, key = draw_sample(strata, runs, responses, prompts, round_=args.round_,
                                seed=args.seed)  # fmt: skip
-    unique, unique_of = unique_texts(blinded)
+    unique, unique_of = unique_texts(blinded, args.round_)
     for item_id, unique_id in unique_of.items():
         key[item_id]["unique_id"] = unique_id
     args.out.mkdir(parents=True)

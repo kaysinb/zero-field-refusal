@@ -323,6 +323,9 @@ def test_unique_texts_label_each_distinct_response_once() -> None:
     assert [u["item_id"] for u in unique] == ["t0001", "t0002"]
     assert of == {"a": "t0001", "b": "t0001", "c": "t0002"}
     assert {(u["prompt"], u["response"]) for u in unique} == {("p1", "r"), ("p2", "r")}
+    # A later round's ids never meet the first round's.
+    later, _ = unique_texts(blinded, round_=2)
+    assert [u["item_id"] for u in later] == ["r2t0001", "r2t0002"]
 
 
 # --- qualification ------------------------------------------------------------------------------

@@ -398,16 +398,18 @@ def select_panels(
     return list(distinct.values()), panels
 
 
-def unique_texts(blinded: Sequence[Mapping[str, str]]) -> tuple[list[dict[str, str]],
-                                                                 dict[str, str]]:  # fmt: skip
+def unique_texts(blinded: Sequence[Mapping[str, str]], round_: int = 1
+                 ) -> tuple[list[dict[str, str]], dict[str, str]]:  # fmt: skip
     """Each distinct (prompt, response) once, as ``{item_id, prompt, response}`` with an opaque
-    id in order of first appearance, and the unique id of every item."""
+    id in order of first appearance (``t0001``; from round 2 on, prefixed with the round, as
+    ``r2t0001``, so that the ids of two rounds never meet), and the unique id of every item."""
+    prefix = "t" if round_ == 1 else f"r{round_}t"
     ids: dict[tuple[str, str], str] = {}
     unique, of = [], {}
     for item in blinded:
         text = (item["prompt"], item["response"])
         if text not in ids:
-            ids[text] = f"t{len(ids) + 1:04d}"
+            ids[text] = f"{prefix}{len(ids) + 1:04d}"
             unique.append({"item_id": ids[text], "prompt": text[0], "response": text[1]})
         of[item["item_id"]] = ids[text]
     return unique, of
