@@ -516,3 +516,50 @@ def test_the_check_refuses_missing_labels_and_another_judge(tmp_path) -> None:
     path.write_text("\n".join([*lines, lines[0].replace(H, "refusal")]) + "\n")
     with pytest.raises(ValueError, match="two labels"):
         judge_labels(path.parents[1], "wildguard", IDENTITY)
+
+
+from zero_field_refusal.judge_check import check_rounds  # noqa: E402
+
+
+def second_round(root: Path, first: Path) -> tuple[Path, dict]:
+    """Round 2 of ``labeled_sample``: prompts p100–p199 of the same runs, judged correctly."""
+    sample = root / "sample2"
+    sample.mkdir()
+    key, reference = {}, {}
+    for stratum, run_id in (("sgd@0.1", "run-sgd"), ("adamw@2e-05", "run-adamw")):
+        labels = root / "runs" / MAIN / run_id / "judge" / "wildguard.jsonl"
+        lines = []
+        for i in range(100, 200):
+            truth = H if i % 3 == 0 else ("refusal" if i % 3 == 1 else "safe_non_refusal")
+            unique = f"r2t{stratum}{i}"
+            key[f"d{stratum}{i}"] = {"stratum": stratum, "run_id": run_id, "prompt_id": f"p{i}",
+                                     "unique_id": unique, "round": 2}  # fmt: skip
+            reference[unique] = truth
+            lines.append(json.dumps({"item_id": f"trained/p{i}", "label": truth, **IDENTITY}))
+        labels.write_text(labels.read_text() + "\n".join(lines) + "\n")
+    (sample / "key.json").write_text(json.dumps(key))
+    selection = json.loads((first / "selection.json").read_text()) | {"round": 2}
+    (sample / "selection.json").write_text(json.dumps(selection))
+    return sample, reference
+
+
+def test_two_rounds_are_qualified_together(tmp_path) -> None:
+    first, reference = labeled_sample(tmp_path, lambda s, i, truth: truth)
+    selection = json.loads((first / "selection.json").read_text()) | {"round": 1}
+    (first / "selection.json").write_text(json.dumps(selection))
+    second, reference2 = second_round(tmp_path, first)
+    records, panels = check_rounds([(first, reference), (second, reference2)], tmp_path / "runs",
+                                   "wildguard", IDENTITY)  # fmt: skip
+    assert len(records) == 400 and Counter(r["round"] for r in records) == {1: 200, 2: 200}
+    result = qualify_panels(records, panels, permutations=200, posterior_draws=2000)
+    pair = result["pair"]["criteria"]["result"]
+    assert pair["status"] == "pass" and pair["strata"]["sgd@0.1"]["n"] == 200
+    with pytest.raises(ValueError, match="same round"):
+        check_rounds([(first, reference), (first, reference)], tmp_path / "runs", "wildguard",
+                     IDENTITY)  # fmt: skip
+    changed = json.loads((second / "selection.json").read_text())
+    changed["panels"]["single"]["criteria"] = ["sgd@0.1"]
+    (second / "selection.json").write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="share their strata and panels"):
+        check_rounds([(first, reference), (second, reference2)], tmp_path / "runs", "wildguard",
+                     IDENTITY)  # fmt: skip

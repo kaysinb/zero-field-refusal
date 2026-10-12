@@ -28,6 +28,7 @@ import itertools
 import json
 import math
 import random
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from fractions import Fraction
@@ -631,10 +632,38 @@ def check_records(
             item = label_item_id(TRAINED, entry["prompt_id"])
             raise ValueError(f"no {judge} label record for {item} of {run[1]}")
         records.append({"item_id": item_id, "stratum": entry["stratum"],
-                        "prompt_id": entry["prompt_id"],
+                        "round": entry.get("round", 1), "prompt_id": entry["prompt_id"],
                         "reference": reference[entry["unique_id"]],
                         "judge": runs[run][entry["prompt_id"]]})  # fmt: skip
     return records
+
+
+def check_rounds(
+    rounds: Sequence[tuple[Path, Mapping[str, str]]],
+    runs_root: Path,
+    judge: str,
+    identity: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The records of every round of the check (``check_records``), and their panels.
+
+    ``rounds`` pairs each round's sample directory with the reference labels of its distinct
+    texts. The rounds must share their strata and panels and carry distinct round numbers and
+    item ids; a prompt answered twice in one stratum stops the check later (``qualify``).
+    """
+    selections = [json.loads((Path(d) / "selection.json").read_text()) for d, _ in rounds]
+    first = selections[0]
+    if any(s["strata"] != first["strata"] or s["panels"] != first["panels"]
+           for s in selections[1:]):  # fmt: skip
+        raise ValueError("The rounds do not share their strata and panels")
+    numbers = [s["round"] for s in selections]
+    if len(set(numbers)) != len(numbers):
+        raise ValueError(f"Two samples of the same round: {numbers}")
+    records = [r for d, reference in rounds
+               for r in check_records(d, reference, runs_root, judge, identity)]  # fmt: skip
+    ids = Counter(r["item_id"] for r in records)
+    if any(n > 1 for n in ids.values()):
+        raise ValueError("An item id appears in two rounds")
+    return records, first["panels"]
 
 
 def qualify_panels(records: Sequence[Mapping[str, Any]], panels: Mapping[str, Any],

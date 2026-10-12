@@ -1,7 +1,10 @@
 """Qualify the judge on the frozen judge-check sample (zero_field_refusal.judge_check).
 
-    python scripts/judge_check_qualify.py SAMPLE_DIR --reference LABELS.jsonl --runs-root RUNS
-        --judge NAME --out OUT.json
+    python scripts/judge_check_qualify.py SAMPLE_DIR [SAMPLE_DIR ...] --reference LABELS.jsonl
+        [--reference LABELS.jsonl ...] --runs-root RUNS --judge NAME --out OUT.json
+
+One SAMPLE_DIR per round (the pre-specified second round adds one), each with its own
+--reference, in the same order; the rounds are qualified together (judge_check.check_rounds).
 
 Reads the frozen sample's key.json and selection.json, the reference labels of its distinct
 texts (label records keyed by the ids of unique.jsonl; the latest record per id counts) and the
@@ -17,11 +20,12 @@ import argparse
 import hashlib
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from zero_field_refusal.config import load_config
 from zero_field_refusal.judge import judge_identity
-from zero_field_refusal.judge_check import check_records, not_harmful_tables, qualify_panels
+from zero_field_refusal.judge_check import check_rounds, not_harmful_tables, qualify_panels
 from zero_field_refusal.labeling import load_labels
 from zero_field_refusal.tracking import git_state
 
@@ -34,27 +38,34 @@ def sha256(path: Path) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("sample_dir", type=Path)
-    parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("sample_dirs", type=Path, nargs="+")
+    parser.add_argument("--reference", type=Path, action="append", required=True)
     parser.add_argument("--runs-root", type=Path, required=True)
     parser.add_argument("--judge", required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.out.exists():
         raise SystemExit(f"{args.out} exists: results are never overwritten")
+    if len(args.reference) != len(args.sample_dirs):
+        raise SystemExit("Give one --reference per sample directory, in the same order")
     identity = judge_identity(load_config(f"judge/{args.judge}"))
-    reference = {item: record["label"] for item, record in load_labels(args.reference).items()}
-    records = check_records(args.sample_dir, reference, args.runs_root, args.judge, identity)
-    selection = json.loads((args.sample_dir / "selection.json").read_text())
-    panels = qualify_panels(records, selection["panels"], **SETTINGS)
+    rounds = [(d, {item: record["label"] for item, record in load_labels(ref).items()})
+              for d, ref in zip(args.sample_dirs, args.reference, strict=True)]  # fmt: skip
+    records, selected = check_rounds(rounds, args.runs_root, args.judge, identity)
+    panels = qualify_panels(records, selected, **SETTINGS)
     result = {
         "command": ["judge_check_qualify.py", *(argv if argv is not None else sys.argv[1:])],
         "code": git_state(),
-        "inputs": {
-            "key.json": sha256(args.sample_dir / "key.json"),
-            "selection.json": sha256(args.sample_dir / "selection.json"),
-            "reference": {"file": args.reference.name, "sha256": sha256(args.reference)},
-        },
+        "inputs": [
+            {
+                "sample_dir": str(d),
+                "key.json": sha256(d / "key.json"),
+                "selection.json": sha256(d / "selection.json"),
+                "reference": {"file": ref.name, "sha256": sha256(ref)},
+            }
+            for d, ref in zip(args.sample_dirs, args.reference, strict=True)
+        ],  # fmt: skip
+        "items_per_round": dict(sorted(Counter(r["round"] for r in records).items())),
         "judge": {"name": args.judge, "identity": identity},
         "settings": SETTINGS,
         "items": len(records),
