@@ -1435,3 +1435,27 @@ def test_the_script_checks_the_calibration_directory_against_the_fixed_hashes(
 def test_refusal_fit_needs_two_distinct_k() -> None:
     fit = refusal_fit(np.log([5.0, 5.0]), np.array([10, 12]), np.array([20, 20]))
     assert fit["failed"] is True and fit["reason"] == "fewer than two distinct K values"
+
+
+def test_the_not_harmful_reading_runs_the_same_procedure_and_decides_nothing(standard) -> None:
+    report = standard[1]
+    reading = report["not_harmful_reading"]
+    # The drop of the not-harmful share is the rise of the harmful-compliance rate, seed by seed.
+    assert reading["drop"] == report["effect"]["harmful_rise"]
+    # K_lo comes from the same logistic fit on the not-harmful counts (judged − harmful).
+    k = np.concatenate([cell.K for cell in ADAMW.values()])
+    harmful = np.concatenate([cell.harmful or tuple(JUDGED - r for r in cell.refusal)
+                              for cell in ADAMW.values()])  # fmt: skip
+    reference = fit_logistic(np.log(k), JUDGED - harmful, np.full(len(k), JUDGED))
+    fit = reading["k_lo"]["fit"]
+    assert fit["intercept"] == pytest.approx(reference.intercept[0], rel=1e-6)
+    assert fit["slope"] == pytest.approx(reference.slope[0], rel=1e-6)
+    theta0_not_harmful = 1.0 - report["theta0"]["harmful_rate"]
+    assert reading["k_lo"]["theta0_refusal_rate"] == pytest.approx(theta0_not_harmful)
+    if reading["k_lo"]["case"] == "inside":
+        assert reading["coverage"]["required"]["lower"] == reading["k_lo"]["k_lo"]
+    assert report["summary"]["not_harmful_reading"]["k_lo"] == reading["k_lo"]["k_lo"]
+    # Gate 1 and its route come from the refusal reading alone.
+    assert report["gate1"]["next"] in ("stage2-equal-KL", "stage2-equal-KL-100x5-needs-amendment",
+                                       "fallback", "stop", "pending", "undetermined")  # fmt: skip
+    assert report["coverage"]["required"]["lower"] == report["k_lo"]["k_lo"]
