@@ -39,8 +39,9 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 from .analysis.eligibility import cell_eligibility
-from .analysis.evidence import TRAINED, arm_of
+from .analysis.evidence import TRAINED, arm_of, label_item_id, label_path
 from .analysis.kstar import CommonRangeUndefined, cell_means, select_k_star
+from .judge import IDENTITY_FIELDS, LABELS
 
 STRATA = ("sgd", "adam_frozen", "adamw")
 SEEDS = (0, 1, 2, 3, 4)
@@ -485,7 +486,11 @@ def qualify(
         status = "fail" if reasons else "undetermined"
         reasons.append(f"fewer than {MIN_PER_CLASS} per class in {short}")
         return {"status": status, "reasons": reasons, "strata": per, "differences": []}
-    differences = differential_error(records, criteria, permutations=permutations, rng=rng)
+    differences = (
+        differential_error(records, criteria, permutations=permutations, rng=rng)
+        if len(criteria) > 1
+        else []
+    )  # one stratum: per-stratum criteria only
     reasons += [
         f"{d['rate']} differs by {d['difference']:+.3f} between {d['strata'][0]} and "
         f"{d['strata'][1]} (max-T p = {d['p']:.4f})"
@@ -564,3 +569,101 @@ def _rate_differences(ref: np.ndarray, says: np.ndarray) -> np.ndarray:
         for b in range(a + 1, k):
             columns += [se[:, a] - se[:, b], fp[:, a] - fp[:, b]]
     return np.stack(columns, axis=1)
+
+
+# --- the check on the reference labels -----------------------------------------------------------
+
+NOT_HARMFUL = ("refusal", "safe_non_refusal")
+UNPARSED = "unparseable"  # WildGuard's output did not parse: counted as not harmful
+
+
+def judge_labels(run_dir: Path, judge: str, identity: Mapping[str, Any]) -> dict[str, str | None]:
+    """The judge's label of each trained-model response of a run, by prompt id (None: no output
+    parsed). Every record must carry ``identity``; two labels for one response raise."""
+    labels: dict[str, str | None] = {}
+    for line in label_path(Path(run_dir), judge).read_text().splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if any(record.get(field) != identity.get(field) for field in IDENTITY_FIELDS):
+            raise ValueError(f"{run_dir}: a label record from another judge identity")
+        condition, _, prompt_id = record["item_id"].partition("/")
+        if condition != TRAINED:
+            continue
+        label = record["label"]
+        if label is not None and labels.get(prompt_id) not in (None, label):
+            raise ValueError(f"{run_dir}: two labels for {record['item_id']}")
+        if label is not None or prompt_id not in labels:
+            labels[prompt_id] = label
+    return labels
+
+
+def check_records(
+    sample_dir: Path,
+    reference: Mapping[str, str],
+    runs_root: Path,
+    judge: str,
+    identity: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """One record per item of the frozen sample in ``sample_dir``: ``{stratum, prompt_id,
+    reference, judge}``. ``reference`` maps each distinct text's id (``unique.jsonl``) to its
+    reference label; the judge's label is read from the item's run directory."""
+    key = json.loads((Path(sample_dir) / "key.json").read_text())
+    selection = json.loads((Path(sample_dir) / "selection.json").read_text())
+    experiment = {s["name"]: s["experiment"] for s in selection["strata"]}
+    missing = sorted({entry["unique_id"] for entry in key.values()} - set(reference))
+    if missing:
+        raise ValueError(f"{len(missing)} distinct texts have no reference label (first: "
+                         f"{missing[0]})")  # fmt: skip
+    unknown = sorted(set(reference.values()) - set(LABELS))
+    if unknown:
+        raise ValueError(f"reference labels {unknown} are not in {LABELS}")
+    runs: dict[tuple[str, str], dict[str, str | None]] = {}
+    records = []
+    for item_id in sorted(key):
+        entry = key[item_id]
+        run = (experiment[entry["stratum"]], entry["run_id"])
+        if run not in runs:
+            runs[run] = judge_labels(Path(runs_root) / run[0] / run[1], judge, identity)
+        if entry["prompt_id"] not in runs[run]:
+            item = label_item_id(TRAINED, entry["prompt_id"])
+            raise ValueError(f"no {judge} label record for {item} of {run[1]}")
+        records.append({"item_id": item_id, "stratum": entry["stratum"],
+                        "prompt_id": entry["prompt_id"],
+                        "reference": reference[entry["unique_id"]],
+                        "judge": runs[run][entry["prompt_id"]]})  # fmt: skip
+    return records
+
+
+def qualify_panels(records: Sequence[Mapping[str, Any]], panels: Mapping[str, Any],
+                   **settings: Any) -> dict[str, dict[str, Any]]:  # fmt: skip
+    """``qualify`` for each panel's criteria strata, and with its 100 × 5 stratum where it has
+    one; each run sees only the records of its own strata."""
+    out = {}
+    for name, panel in panels.items():
+        variants = {"criteria": panel["criteria"]}
+        if panel.get("criteria_with_100x5", panel["criteria"]) != panel["criteria"]:
+            variants["criteria_with_100x5"] = panel["criteria_with_100x5"]
+        out[name] = {}
+        for variant, criteria in variants.items():
+            rows = [r for r in records if r["stratum"] in criteria]
+            out[name][variant] = {"strata": list(criteria),
+                                  "result": qualify(rows, criteria, **settings)}  # fmt: skip
+    return out
+
+
+def not_harmful_tables(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Report only (amendment of 2026-10-12): per stratum, among the reference's not-harmful
+    responses, the count of each WildGuard label (``unparseable`` when none parsed) by the
+    reference label."""
+    tables: dict[str, dict[str, dict[str, int]]] = {}
+    for r in records:
+        if r["reference"] not in NOT_HARMFUL:
+            continue
+        said = r["judge"] if r["judge"] is not None else UNPARSED
+        cells = tables.setdefault(r["stratum"], {}).setdefault(r["reference"], {})
+        cells[said] = cells.get(said, 0) + 1
+    return {s: {ref: dict(sorted(c.items())) for ref, c in sorted(t.items())}
+            for s, t in sorted(tables.items())}  # fmt: skip

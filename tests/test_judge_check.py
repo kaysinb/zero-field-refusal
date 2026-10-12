@@ -422,3 +422,94 @@ def test_a_discrimination_failure_outranks_a_short_class_in_another_stratum() ->
     assert result["strata"]["adamw"]["agreement"] == 0.9
     assert result["status"] == "fail"
     assert any("discrimination" in r and "adamw" in r for r in result["reasons"])
+
+
+# --- the check on the reference labels --------------------------------------------------------
+
+from zero_field_refusal.judge_check import (  # noqa: E402
+    check_records,
+    judge_labels,
+    not_harmful_tables,
+    qualify_panels,
+)
+
+IDENTITY = {"backend": "wildguard", "prompt_version": "v1", "judge_model": "allenai/wildguard",
+            "judge_revision": "r1", "rubric_version": None}  # fmt: skip
+
+
+def labeled_sample(root: Path, judge_says) -> tuple[Path, dict]:
+    """Two strata of 100 prompts each in two run directories, with a key, a selection and the
+    reference labels of their distinct texts; ``judge_says(stratum, i, reference)`` gives the
+    judge's label (None: unparseable)."""
+    sample = root / "sample"
+    sample.mkdir()
+    key, reference = {}, {}
+    strata = {"sgd@0.1": "run-sgd", "adamw@2e-05": "run-adamw"}
+    for stratum, run_id in strata.items():
+        lines = []
+        for i in range(100):
+            truth = H if i % 3 == 0 else ("refusal" if i % 3 == 1 else "safe_non_refusal")
+            unique = f"t{stratum}{i}"
+            key[f"c{stratum}{i}"] = {"stratum": stratum, "run_id": run_id, "prompt_id": f"p{i}",
+                                     "unique_id": unique}  # fmt: skip
+            reference[unique] = truth
+            said = judge_says(stratum, i, truth)
+            lines.append(json.dumps({"item_id": f"trained/p{i}", "label": said, **IDENTITY}))
+        labels = root / "runs" / MAIN / run_id / "judge" / "wildguard.jsonl"
+        labels.parent.mkdir(parents=True)
+        labels.write_text("\n".join(lines) + "\n")
+    (sample / "key.json").write_text(json.dumps(key))
+    selection = {"strata": [{"name": s, "experiment": MAIN} for s in strata],
+                 "panels": {"pair": {"criteria": list(strata)},
+                            "single": {"criteria": ["adamw@2e-05"]}}}  # fmt: skip
+    (sample / "selection.json").write_text(json.dumps(selection))
+    return sample, reference
+
+
+H = "harmful_compliance"
+
+
+def test_the_check_pairs_reference_and_judge_labels_and_qualifies_each_panel(tmp_path) -> None:
+    # The judge is right everywhere except that it calls safe non-refusals refusals in one stratum
+    # and leaves one item unparsed.
+    def says(stratum, i, truth):
+        if i == 4:
+            return None
+        if stratum == "sgd@0.1" and truth == "safe_non_refusal":
+            return "refusal"
+        return truth
+
+    sample, reference = labeled_sample(tmp_path, says)
+    records = check_records(sample, reference, tmp_path / "runs", "wildguard", IDENTITY)
+    assert len(records) == 200 and {r["stratum"] for r in records} == {"sgd@0.1", "adamw@2e-05"}
+    unparsed = [r for r in records if r["judge"] is None]
+    assert len(unparsed) == 2 and all(r["prompt_id"] == "p4" for r in unparsed)
+    panels = qualify_panels(records, json.loads((sample / "selection.json").read_text())["panels"],
+                            permutations=200, posterior_draws=2000)  # fmt: skip
+    assert panels["single"]["criteria"]["result"]["differences"] == []
+    # Agreement counts the three labels: 66 of 100 in the SGD stratum fails the 85 % criterion.
+    pair = panels["pair"]["criteria"]["result"]
+    assert pair["status"] == "fail" and pair["strata"]["sgd@0.1"]["agreed"] == 66
+    assert pair["strata"]["adamw@2e-05"]["agreed"] == 99
+    tables = not_harmful_tables(records)
+    assert tables["sgd@0.1"]["safe_non_refusal"] == {"refusal": 33}
+    assert tables["adamw@2e-05"]["safe_non_refusal"] == {"safe_non_refusal": 33}
+    assert tables["adamw@2e-05"]["refusal"] == {"refusal": 32, "unparseable": 1}
+
+
+def test_the_check_refuses_missing_labels_and_another_judge(tmp_path) -> None:
+    sample, reference = labeled_sample(tmp_path, lambda s, i, truth: truth)
+    with pytest.raises(ValueError, match="no reference label"):
+        check_records(sample, {k: v for k, v in reference.items() if not k.endswith("7")},
+                      tmp_path / "runs", "wildguard", IDENTITY)  # fmt: skip
+    with pytest.raises(ValueError, match="another judge identity"):
+        check_records(sample, reference, tmp_path / "runs", "wildguard",
+                      IDENTITY | {"judge_revision": "r2"})  # fmt: skip
+    path = tmp_path / "runs" / MAIN / "run-sgd" / "judge" / "wildguard.jsonl"
+    lines = path.read_text().splitlines()
+    path.write_text("\n".join(lines[1:]) + "\n")
+    with pytest.raises(ValueError, match="no wildguard label record"):
+        check_records(sample, reference, tmp_path / "runs", "wildguard", IDENTITY)
+    path.write_text("\n".join([*lines, lines[0].replace(H, "refusal")]) + "\n")
+    with pytest.raises(ValueError, match="two labels"):
+        judge_labels(path.parents[1], "wildguard", IDENTITY)
