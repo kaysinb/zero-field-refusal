@@ -1,14 +1,15 @@
 # Gate 1: short report of the corrected pilot
 
-> **Preliminary report of the stop, 2026-10-12; the second round of the judge check is open.**
+> **Report of the stop, 2026-10-12.**
 >
 > Gate 1 was not passed: the lower bound of the AdamW effect's interval is 14.44 pp against the
 > fixed 15 pp. On 2026-10-12 the user decided to stop
 > ([decision log](../decisions.md#gate-decisions)).
 >
 > Every comparison between optimizers below is exploratory and *preliminary*. The judge check
-> across optimizers is not complete: its first round was undetermined, and its pre-specified
-> second round is being labeled ([rule](../preregistration.md#judge-check-across-optimizers)).
+> across optimizers stayed undetermined after its pre-specified second round, so differential
+> judge error between optimizers could not be checked
+> ([rule](../preregistration.md#judge-check-across-optimizers)).
 >
 > Aggregates only.
 
@@ -72,30 +73,51 @@ The criteria are [fixed in the preregistration](../preregistration.md#gate-1-tec
 
 ## Judge check across optimizers
 
-**Round 1 (100 prompts per stratum).** The strata fall into two groups:
+**The sample.** Both rounds together: 200 prompts per stratum in nine strata, 1800 items.
 
-- **The eight strata of the comparison panels are sparse:**
-  - 3–18 reference-harmful responses per 100;
-  - seven of them have 3–9 each;
-  - AdamW at 2·10⁻⁵ has 18.
+**The reference labels.** The same in both rounds: GPT and Grok label each distinct text
+independently, and the user checks every disagreement and 30 random agreements.
 
-  Every panel that compares optimizers is therefore undetermined: its classes do not reach the
-  20 per class the criterion needs. Agreement with the reference is 0.88–0.97 in every stratum,
-  so no known failure.
-- **The Gate 1 stratum, AdamW 5·10⁻⁵ (45 harmful, 55 not harmful), passes its per-stratum
-  criteria:** agreement 0.88, sensitivity 0.96, false-positive rate 0.036, lower bound of the
-  discrimination 0.80.
+- Round 1: the user changed 2 of the 45 items checked.
+- Round 2: the user changed 9 of the 52 items checked.
+- Every change was to a disputed item.
 
-**What is not settled:**
+**The comparison strata.** Seven of them have fewer than 20 reference-harmful responses each, so
+every panel that compares optimizers is undetermined:
 
-- The check for differential judge error between optimizers is not complete.
+| Stratum | Reference-harmful responses (of 200) |
+|---|---|
+| SGD 0.0262 and 0.0280 | 4 each |
+| frozen Adam 5·10⁻⁶ | 8 |
+| frozen Adam 1·10⁻⁵ | 14 |
+| AdamW 5·10⁻⁶ | 10 |
+| SGD 100 × 5, 0.0186 and 0.0199 | 12 and 10 |
+
+AdamW 2·10⁻⁵ reaches 32. There is no known failure:
+
+- agreement with the reference is 0.89–0.98 in every stratum;
+- the lower bound of the discrimination is 0.76 and 0.82 in the two strata whose classes fill.
+
+**The Gate 1 stratum passes its per-stratum criteria.** AdamW 5·10⁻⁵ has 88 harmful and 112 not
+harmful responses: agreement 0.89, sensitivity 0.93, false-positive rate 0.036, lower bound of
+the discrimination 0.82.
+
+**The procedure is closed.**
+
+- The pre-specified second round was the last one.
+- Differential judge error between optimizers could not be checked, and every comparison between
+  optimizers in this report says so.
 - The sensitivity corrections between optimizers are *not identifiable*.
-- The pre-specified second round (100 further prompts per stratum) was drawn on 2026-10-12 and
-  is being labeled.
+- In the sparse strata the sensitivity is 0.58–0.75, on 4–14 harmful items each. That is
+  descriptive only.
 
-**Refusal against safe non-refusal.** At the Gate 1 cell, WildGuard labels 8 of the 14 reference
-safe non-refusals as refusals. An error of that kind understates the refusal drop rather than
-inflating it.
+**Refusal against safe non-refusal.** At the Gate 1 cell:
+
+- WildGuard labels all 88 reference refusals as refusals.
+- Of the 24 reference safe non-refusals, it labels 12 as refusals, 8 as safe non-refusals and 4
+  as harmful compliance.
+
+Calling a safe non-refusal a refusal understates the refusal drop.
 
 ## 0.5B (descriptive)
 
@@ -293,25 +315,41 @@ and `20261011T111406Z-adamw-5.0e-5-1.5b-s4-6f1639c7-a1`.
 - **Code:** f66ea75, clean.
 - **`manifest.json`:** sha256 `a506a78802d313a1398c81bdc7feb707310d64347c597ab5c7ebee5a09ad5350`.
 
-### Judge check, round 1
+### Judge check, both rounds
 
-- **Frozen sample:** `runs/judge_check/frozen-2026-10-11` (selection committed in 0752c68).
-- **Reference labels:** `reference/labels-d7-509b6f1d.jsonl`, sha256
+**Frozen samples:**
+
+| Round | Directory | Selection committed in |
+|---|---|---|
+| 1 | `runs/judge_check/frozen-2026-10-11` | 0752c68 |
+| 2 | `runs/judge_check/frozen-2026-10-11-round2` | f66ea75 |
+
+**Reference labels:**
+
+- Round 1: `reference/labels-d7-509b6f1d.jsonl`, sha256
   `480ed4ee50fba52696a8e3807adae5c2f834a1df5f4b36cb1e5cbeabe952980e`.
-- **Command:**
-  `python scripts/judge_check_qualify.py runs/judge_check/frozen-2026-10-11 --reference runs/judge_check/frozen-2026-10-11/reference/labels-d7-509b6f1d.jsonl --runs-root runs --judge wildguard --out runs/judge_check/frozen-2026-10-11/qualification-2026-10-12-r2.json`
-- **Code:** 4e8b766, clean, recorded in the file.
-- **Result file:** sha256 `8b23b140174fec675e2cbcf0fbb84c97567fa0f7569b5446e6b4349a3b78b962`.
-- **Earlier result:** a run at 9aa8d08 without a code record gave identical panels and tables.
-- **Round 2:** drawn in f66ea75, at `runs/judge_check/frozen-2026-10-11-round2`.
+- Round 2: `reference/labels-d7r2-96d185b1.jsonl`, sha256
+  `0ebb81a6b03507096e3362df8d1adce4cc95692750dea39ccaf1b0545b64199c`.
+- Each round's provenance is in the `reference/README.md` next to its labels, with the user's
+  review log.
+- The coordination copies are in the bucket under `coordination/2026-10-12/`.
+
+**Command:**
+`python scripts/judge_check_qualify.py runs/judge_check/frozen-2026-10-11 runs/judge_check/frozen-2026-10-11-round2 --reference runs/judge_check/frozen-2026-10-11/reference/labels-d7-509b6f1d.jsonl --reference runs/judge_check/frozen-2026-10-11-round2/reference/labels-d7r2-96d185b1.jsonl --runs-root runs --judge wildguard --out runs/judge_check/frozen-2026-10-11/qualification-both-rounds-2026-10-12.json`
+
+- **Code:** 479d567, clean, recorded in the file.
+- **Result file:** sha256 `9dca8835c27b009bb23050e310b9dcdcac2325e8fbf37c8fc6d4e5d0bca92f22`.
+- **Three-class tables:** under `not_harmful_tables` in that file.
+- **Round 1 alone:** `qualification-2026-10-12-r2.json`, sha256
+  `8b23b140174fec675e2cbcf0fbb84c97567fa0f7569b5446e6b4349a3b78b962`, at 4e8b766.
 
 ### Descriptive analyses
 
 - **Command:**
-  `python scripts/stage1_descriptive.py runs --gate1-15 runs/analysis/gate1-1.5b-2026-10-12-b/gate1.json --gate1-05 runs/analysis/gate1-0.5b-2026-10-12/gate1.json --qualification runs/judge_check/frozen-2026-10-11/qualification-2026-10-12-r2.json --build runs/analysis/build-stage1-main-1.5b-2026-10-12 --out runs/analysis/descriptive-2026-10-12-r4`
-- **Code:** 4e8b766, clean.
+  `python scripts/stage1_descriptive.py runs --gate1-15 runs/analysis/gate1-1.5b-2026-10-12-b/gate1.json --gate1-05 runs/analysis/gate1-0.5b-2026-10-12/gate1.json --qualification runs/judge_check/frozen-2026-10-11/qualification-both-rounds-2026-10-12.json --build runs/analysis/build-stage1-main-1.5b-2026-10-12 --out runs/analysis/descriptive-2026-10-12-r5`
+- **Code:** 479d567, clean.
 - **Inputs:** 662 files, each with its sha256 in the manifest.
-- **`descriptive.json`:** sha256 `53165a36cae9d9d91bf86c0fcd0e0eaed21bf3a14ed46627ca86e34e55843dea`.
-- **`manifest.json`:** sha256 `ee22b5123e58c4a21b5bf22a3ebbd00618dba94635cd78c09a6c6ecfc92409fe`.
+- **`descriptive.json`:** sha256 `9ec1f41b476e2b849ea6bb630374dbe6d9190e69f30e9bcd376dc417d922b702`.
+- **`manifest.json`:** sha256 `164f81ae54e853ff4c3408ef4e8f852784f04bc16a1552a6743751e84b74a0ba`.
 
 All numbers in this report come from these files, unrounded until printed.
