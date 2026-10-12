@@ -64,7 +64,11 @@ Runs and produces:
   the control is informative only at the largest step the study uses (decided on 2026-10-09).
 - The θ₀ ± aΔθ line scans.
 - Gradient and update statistics at θ₀, in a random projection.
-- A provisional K\*, which places the decisive cells of stage 2.
+- A provisional K\*, which places the decisive cells of stage 2. Since the amendment of
+  2026-10-12 it comes from eligible cells only (seeds 0–4 completed, no divergence, no
+  cell-mean collapse), as do the decisive cells and the primary curves; the original analysis
+  over every cell is kept and reported beside it
+  ([eligible cells](preregistration.md#stage-1-sweeps)).
 
 Gate: [Gate 1 (technical)](preregistration.md#gate-1-technical). It checks that the corrected protocol
 increases harmful compliance as refusals fall, that utility stays within its bound, that the judge
@@ -88,9 +92,10 @@ On failure: stage 2 does not start, except where an action is defined.
 Runs and produces: AdamW, SGD and Adam with frozen statistics, plus two additional control arms
 (SGD with momentum, AdamW with a pre-warmed second moment). When Gate 1's KL-coverage criterion is
 met, the two-look sequential design allocates seeds to cells near K\* and estimates Δ(K\*) with its confidence
-interval. K\* is fixed before the first look and remains unchanged at the second. In the fallback,
-the same stopping rule applies to the harmful-compliance difference at equal steps and batch size,
-at unequal displacement; it does not test H1. The full analysis must pass the preregistered
+interval. K\* is fixed before the first look and remains unchanged at the second, and so are the
+eligible cells it was selected from. In the fallback, the same stopping rule applies to the
+harmful-compliance difference at equal steps and batch size (25 × 20) between the largest stable
+SGD and AdamW rates of the main condition, at unequal displacement; it does not test H1. The full analysis must pass the preregistered
 simulation check before confirmatory runs.
 
 Gate: [Gate 2 (scientific)](preregistration.md#gate-2-scientific). The definitions and
@@ -104,7 +109,8 @@ hypothesis.
 
 Before look 1:
 - K\* is frozen: the `k_star.json` of the 1.5B sweep build, passed to every Gate 2 build
-  (`scripts/build_analysis.py --k-star`).
+  (`scripts/build_analysis.py --k-star`). It carries the eligible cells, so later instability
+  neither excludes seeds nor reselects K\*.
 - Each look has a frozen manifest of its runs (run ids and file hashes), created when the look
   closes and hashed into its results. The look-1 build refuses when the experiment holds runs
   outside that manifest, and the look-2 build requires the look-1 manifest.
@@ -113,7 +119,8 @@ Before look 1:
   undetermined, look-1 runs may train, but look 1 is not analyzed before the check is repeated on
   its runs.
 - The full-analysis simulation is re-run with the seed spread measured in stage 1, and includes
-  the adaptive refinement of the stage-1 sweep rates if its runs enter the inference.
+  the adaptive refinement of the stage-1 sweep rates if its runs enter the inference and the
+  eligibility of cells.
 
 ## Stage 3 — Factors and scale
 

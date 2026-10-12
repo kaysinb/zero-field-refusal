@@ -307,8 +307,11 @@ def test_each_file_of_a_run_is_checked(tmp_path, edit, reason) -> None:
 
 
 def run_script(out: Path, root: Path = RUNS_ROOT, *extra: str) -> subprocess.CompletedProcess:
+    # The fixture has no θ₀ run: every cell is primary unless a frozen K* says otherwise.
+    eligibility = [] if "--k-star" in extra else ["--no-eligibility"]
     command = [sys.executable, str(SCRIPT), str(root), "--experiment", EXPERIMENT,
-               "--judge", JUDGE, "--out", str(out), "--seed", "7", *extra]  # fmt: skip
+               "--judge", JUDGE, "--out", str(out), "--seed", "7", *eligibility,
+               *extra]  # fmt: skip
     return subprocess.run(command, capture_output=True, text=True, cwd=REPO)
 
 
@@ -372,7 +375,12 @@ def test_the_build_records_runs_results_and_provenance(builds) -> None:
     assert saved["computed_from"] == {"experiment": EXPERIMENT, "gates": [],
                                       "runs": results["analyzed_runs"]}  # fmt: skip
     assert saved["selection"]["k_star"] == k_star
-    assert results["k_star"] == {key: saved[key] for key in ("status", "computed_from", "source")}
+    assert results["k_star"] == {
+        key: saved[key] for key in ("status", "computed_from", "source", "eligibility")
+    }
+    # Without an eligibility table every cell is primary: no separate all-cell analysis.
+    assert saved["eligibility"] is None and saved["all_cells_selection"] is None
+    assert results["all_cells"] is None
     assert set(results["units"]) >= {"K", "h", "delta"}
 
     estimates = read_csv(out / "estimates.csv")
@@ -529,6 +537,7 @@ def test_a_frozen_k_star_reproduces_the_build_it_came_from(builds, tmp_path) -> 
         "computed_from": provisional["computed_from"],
         "source": {"file": "k_star.json", "sha256": sha256(source),
                    "status": "provisional_from_analyzed_runs"},
+        "eligibility": None,
     }  # fmt: skip
     saved = json.loads((out / "k_star.json").read_text())
     assert saved["selection"] == provisional["selection"]
@@ -618,3 +627,104 @@ def test_a_diverged_run_is_excluded_with_its_own_reason(tmp_path) -> None:
     meta_path.write_text(json.dumps(meta | {"status": "diverged"}))
     row = collect(root).considered.set_index("run_id").loc[RUN]
     assert (row["included"], row["reason"]) == (False, "diverged")
+
+
+# --- eligible cells (amendment of 2026-10-12) ---------------------------------------------------
+
+
+def eligibility_table(ineligible: dict) -> pd.DataFrame:
+    """A cell table for the fixture: every cell eligible except ``ineligible`` (cell -> detail)."""
+    cells = [("adam_frozen", 1e-5), ("adam_frozen", 3e-5), ("adamw", 1e-5), ("adamw", 3e-5),
+             ("sgd", 0.01), ("sgd", 0.03)]  # fmt: skip
+    rows = [{"arm": arm, "lr": lr, "eligible": (arm, lr) not in ineligible,
+             "detail": ineligible.get((arm, lr), "")} for arm, lr in cells]  # fmt: skip
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture(scope="module")
+def eligible_build(tmp_path_factory) -> Path:
+    """A build whose primary analysis leaves out adam_frozen at 3e-5 as a collapsed cell."""
+    out = tmp_path_factory.mktemp("eligible") / "out"
+    table = eligibility_table({("adam_frozen", 3e-5): "collapse: benchmark"})
+    return build_analysis(RUNS_ROOT, EXPERIMENT, JUDGE, identity(), out, seed=7,
+                          eligibility=table)  # fmt: skip
+
+
+def test_the_primary_analysis_takes_the_eligible_cells_only(eligible_build, builds) -> None:
+    runs = read_csv(eligible_build / "runs.csv").set_index("run_id")
+    left_out = runs[runs["reason"] == "ineligible_cell"]
+    assert set(left_out.index) == {"adam_frozen_lr3e-05_s0", "adam_frozen_lr3e-05_s1"}
+    assert (left_out["detail"] == "collapse: benchmark").all() and not left_out["included"].any()
+    results = json.loads((eligible_build / "results.json").read_text())
+    saved = json.loads((eligible_build / "k_star.json").read_text())
+    assert {"arm": "adam_frozen", "lr": 3e-5} not in saved["eligibility"]["cells"]
+    assert len(saved["eligibility"]["cells"]) == 5 and saved["eligibility"]["seeds"] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert results["k_star"]["eligibility"] == saved["eligibility"]
+    # Frozen Adam keeps one cell outside the SGD-AdamW overlap: H2 becomes descriptive only.
+    assert results["analysis"]["selection"]["h2_descriptive_only"] is True
+    assert 3e-5 not in saved["selection"]["decisive"]["adam_frozen"]
+    assert (eligible_build / "eligibility.csv").exists()
+
+
+def test_the_all_cell_analysis_is_kept_and_equals_a_build_without_eligibility(
+    eligible_build, builds
+) -> None:
+    before = json.loads((builds[0] / "k_star.json").read_text())["selection"]
+    saved = json.loads((eligible_build / "k_star.json").read_text())
+    assert saved["all_cells_selection"] == before
+    assert saved["selection"] != before
+    for name in ("cells.csv", "arms.csv", "estimates.csv"):
+        assert (eligible_build / f"all_cells_{name}").read_bytes() == (
+            builds[0] / name
+        ).read_bytes()
+    results = json.loads((eligible_build / "results.json").read_text())
+    original = json.loads((builds[0] / "results.json").read_text())
+    assert results["all_cells"]["analysis"]["primary"] == original["analysis"]["primary"]
+    assert results["all_cells"]["runs"] == original["analyzed_runs"]
+
+
+def test_a_frozen_k_star_carries_its_eligible_cells(eligible_build, tmp_path) -> None:
+    source = eligible_build / "k_star.json"
+    out = build_analysis(_gate_2_fixture(tmp_path), EXPERIMENT, JUDGE, identity(),
+                         tmp_path / "out", seed=7, k_star=source)  # fmt: skip
+    for name in ("cells.csv", "estimates.csv", "all_cells_estimates.csv"):
+        assert (out / name).read_bytes() == (eligible_build / name).read_bytes(), name
+    runs = read_csv(out / "runs.csv")
+    assert set(runs.loc[runs["reason"] == "ineligible_cell", "run_id"]) == {
+        "adam_frozen_lr3e-05_s0", "adam_frozen_lr3e-05_s1"}  # fmt: skip
+    saved = json.loads((out / "k_star.json").read_text())
+    assert saved["eligibility"] == json.loads(source.read_text())["eligibility"]
+    with pytest.raises(ValueError, match="carries its eligible cells"):
+        build_analysis(RUNS_ROOT, EXPERIMENT, JUDGE, identity(), tmp_path / "again",
+                       k_star=source, eligibility=eligibility_table({}))  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "change",
+    [lambda d: d["eligibility"].update(cells=[]),
+     lambda d: d["eligibility"]["cells"].append({"arm": "lion", "lr": 1e-4}),
+     lambda d: d["eligibility"]["cells"].append({"arm": "sgd", "lr": "fast"}),
+     lambda d: d["all_cells_selection"].update(c_lo=-1.0)],
+    ids=["no_cells", "unknown_arm", "lr_not_a_number", "all_cells_selection"],
+)  # fmt: skip
+def test_a_malformed_eligibility_record_is_refused(eligible_build, tmp_path, change) -> None:
+    saved = json.loads((eligible_build / "k_star.json").read_text())
+    change(saved)
+    path = tmp_path / "k_star.json"
+    path.write_text(json.dumps(saved))
+    with pytest.raises(ValueError, match="k_star.json of a build"):
+        read_k_star(path)
+
+
+def test_the_script_needs_eligibility_or_says_why_not(tmp_path) -> None:
+    command = [sys.executable, str(SCRIPT), str(RUNS_ROOT), "--experiment", EXPERIMENT,
+               "--judge", JUDGE, "--out", str(tmp_path / "out")]  # fmt: skip
+    done = subprocess.run(command, capture_output=True, text=True, cwd=REPO)
+    assert done.returncode != 0 and "Not built" in done.stderr
+    assert not (tmp_path / "out").exists()

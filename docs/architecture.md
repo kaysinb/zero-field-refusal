@@ -108,7 +108,7 @@ Implemented:
 | `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`) |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
-| `analysis` | h(K) fits, K\* and the decisive cells, Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`, with `analysis.outputs`); the Gate 1 report from the stage-1 runs (`analysis.gate1`) |
+| `analysis` | h(K) fits, K\* and the decisive cells over eligible cells (`analysis.eligibility`), Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`, with `analysis.outputs`); the Gate 1 report from the stage-1 runs (`analysis.gate1`) |
 
 Planned:
 

@@ -38,15 +38,9 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
+from .analysis.eligibility import cell_eligibility
 from .analysis.evidence import TRAINED, arm_of
 from .analysis.kstar import CommonRangeUndefined, cell_means, select_k_star
-from .analysis.sweeps import (
-    BENCHMARK_DROP,
-    FACTUAL_DROP,
-    TOLERANCE,
-    _accuracy,
-    read_logical_runs,
-)
 
 STRATA = ("sgd", "adam_frozen", "adamw")
 SEEDS = (0, 1, 2, 3, 4)
@@ -312,43 +306,9 @@ FAMILY = (
 
 
 def cell_table(root: Path, experiment: str, theta0: Mapping[str, float]) -> pd.DataFrame:
-    """Every training cell (arm, lr) of ``root/experiment``, from K, divergence and utility alone.
-
-    A cell is eligible when seeds 0–4 all completed, none of its runs diverged, every completed
-    run has a positive K and valid accuracies, and it has not collapsed: its mean factual
-    accuracy is at most 10 pp and its mean benchmark accuracy at most 5 pp below θ₀'s (the
-    cell-level definition of collapse; one poor seed does not by itself collapse a cell). Runs
-    are read once each and held to the experiment's committed condition
-    (``analysis.sweeps.read_logical_runs``).
-    """
-    groups: dict[tuple[str, float], list[dict[str, Any]]] = {}
-    for run in read_logical_runs(root, experiment):
-        if run["run_type"] == "train":
-            groups.setdefault((run["arm"], run["lr"]), []).append(run)
-    rows = []
-    for (arm, lr), runs in sorted(groups.items()):
-        done = [r for r in runs if r["status"] == "completed" and r["seed"] in SEEDS]
-        valid = [r for r in done if r["k"] is not None and math.isfinite(r["k"]) and r["k"] > 0
-                 and _accuracy(r["factual"]) and _accuracy(r["benchmark"])]  # fmt: skip
-        diverged = any(r["status"] == "diverged" for r in runs)
-        complete = sorted(r["seed"] for r in done) == list(SEEDS)
-        if valid:
-            factual = sum(r["factual"] for r in valid) / len(valid)
-            benchmark = sum(r["benchmark"] for r in valid) / len(valid)
-            mean_log_k = sum(math.log(r["k"]) for r in valid) / len(valid)
-        else:
-            factual = benchmark = mean_log_k = math.nan
-        collapse = [name for name, drop, limit in
-                    (("factual", theta0["factual"] - factual, FACTUAL_DROP),
-                     ("benchmark", theta0["benchmark"] - benchmark, BENCHMARK_DROP))
-                    if drop > limit + TOLERANCE]  # fmt: skip
-        rows.append({"arm": arm, "lr": float(lr), "runs": len(runs), "completed": len(done),
-                     "diverged": diverged, "mean_log_k": mean_log_k, "factual": factual,
-                     "benchmark": benchmark, "collapse": "+".join(collapse),
-                     "eligible": (complete and not diverged and len(valid) == len(done)
-                                  and not collapse)})  # fmt: skip
-    return pd.DataFrame(rows, columns=["arm", "lr", "runs", "completed", "diverged", "mean_log_k",
-                                       "factual", "benchmark", "collapse", "eligible"])  # fmt: skip
+    """Every training cell (arm, lr) of ``root/experiment`` with its eligibility, from K, divergence
+    and utility alone (``analysis.eligibility.cell_eligibility``)."""
+    return cell_eligibility(root, experiment, theta0)
 
 
 def stratum_label(experiment: str, experiment_100x5: str, arm: str, lrs: Sequence[float]) -> str:

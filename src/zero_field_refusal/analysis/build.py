@@ -19,7 +19,12 @@ JSON.
 - ``estimates.csv``: every interval, with its level K, estimate, CI, SE and unit: h of each arm and
   Δ = h_AdamW − h_SGD at K\\* and the quarter points, and the H2 differences at K\\*;
 - ``k_star.json``: the K\\* selection used, its status, the runs it was computed from (with their
-  gates) and, for a frozen K\\*, the file it was read from and that file's sha256;
+  gates), the eligible cells it was selected from (``eligibility``, null without them), the
+  original selection over every cell (``all_cells_selection``) and, for a frozen K\\*, the file it
+  was read from and that file's sha256;
+- with eligible cells (``eligibility.csv``: the cell table): ``all_cells_cells.csv``,
+  ``all_cells_arms.csv`` and ``all_cells_estimates.csv``, the original analysis over every cell,
+  reported beside the primary one, and ``results.json`` ``all_cells``;
 - ``results.json``: settings, units, the analyzed runs, ``k_star_status``, the K\\* record and the
   whole ``AnalysisResult``;
 - ``figure.svg``: harmful-compliance rate against K per arm with the fitted curves, drawn from
@@ -30,6 +35,12 @@ JSON.
 
 A rebuild from the same inputs with the same code and packages writes the same bytes, except
 ``created_at`` in the manifest.
+
+Eligible cells (amendment of 2026-10-12, ``analysis.eligibility``): given the experiment's cell
+table, the primary analysis takes the eligible cells only. Runs of other cells leave it with the
+reason ``ineligible_cell``, and K\\*, the decisive cells and the curves come from the rest. A
+frozen K\\* carries its eligible cells and its all-cell selection, so a Gate 2 build applies the
+same cells without re-evaluating them.
 
 K\\* comes from one of two sources:
 - *provisional* (``K_STAR_STATUS``, no ``k_star`` given): selected from the analyzed runs
@@ -67,6 +78,7 @@ from matplotlib.ticker import FuncFormatter
 from scipy.special import expit
 
 from ..tracking import git_state
+from .eligibility import RULE, SEEDS, eligible_cells, restrict
 from .evidence import Evidence, collect_runs
 from .kstar import LEVEL_NAMES, KStarSelection, cell_means, k_star_levels, select_k_star
 from .outputs import file_sha256, read_csv, write_csv, write_json, write_new_directory
@@ -114,19 +126,27 @@ def build_analysis(
     seed: int = 0,
     interval: IntervalSettings = STAGE1_INTERVAL,
     k_star: Path | None = None,
+    eligibility: pd.DataFrame | None = None,
 ) -> Path:
     """Analyze ``<root>/<experiment>`` with the labels of ``judge`` into the new directory ``out``.
 
     ``identity`` is the judge's (``judge.judge_identity``); ``seed`` seeds the bootstrap;
     ``k_star`` is the ``k_star.json`` of an earlier build to use as the frozen K\\* (None: select a
-    provisional one from the analyzed runs, refused for Gate 2 runs). Put ``out`` outside the
-    checkout or under an ignored path: the manifest records whether the checkout is dirty, and an
-    untracked ``out`` inside it (or its partial directory) makes it so.
+    provisional one from the analyzed runs, refused for Gate 2 runs). ``eligibility`` is the
+    ``eligibility.cell_eligibility`` table of the experiment: the primary analysis then takes the
+    eligible cells only, and the analysis over every cell is written beside it; None analyzes
+    every cell as the primary one. A frozen K\\* carries the eligible cells it was selected from,
+    so ``eligibility`` goes with a provisional K\\* only. Put ``out`` outside the checkout or under
+    an ignored path: the manifest records whether the checkout is dirty, and an untracked ``out``
+    inside it (or its partial directory) makes it so.
     """
     out = Path(out)
     if out.exists():
         raise FileExistsError(f"{out} exists: results are versioned, never overwritten")
+    if k_star is not None and eligibility is not None:
+        raise ValueError("A frozen K* carries its eligible cells; pass no eligibility table")
     evidence = collect_runs(root, experiment, judge, identity)
+    every_cell = evidence
     if k_star is None:
         gate_2 = sorted(evidence.considered.loc[_is_gate_2(evidence.considered), "run_id"])
         if gate_2:
@@ -136,25 +156,56 @@ def build_analysis(
                 f"1. Pass the {K_STAR_FILE} of the build that fixed it (k_star, --k-star); a K* "
                 "selected from these runs is not allowed"
             )
+        record = None
+        if eligibility is not None:
+            record = {"rule": RULE, "seeds": list(SEEDS), "cells": eligible_cells(eligibility)}
+            evidence = restrict(evidence, record["cells"], _details(eligibility))
         selection = select_k_star(evidence.runs)
         k_star_record = {"status": K_STAR_STATUS, "computed_from": _computed_from(evidence),
-                         "source": None}  # fmt: skip
+                         "source": None, "eligibility": record}  # fmt: skip
+        every_selection = _every_cell_selection(every_cell) if record is not None else None
     else:
         selection, k_star_record = read_k_star(k_star)
-    result = analyze(
-        evidence.runs,
-        selection,
-        level=interval.level,
-        ci_method=interval.ci_method,
-        resamples=interval.resamples,
-        seed=seed,
-    )
+        record = k_star_record["eligibility"]
+        every_selection = k_star_record.pop("all_cells_selection")
+        if record is not None:
+            evidence = restrict(evidence, record["cells"], {})
+    settings = {"level": interval.level, "ci_method": interval.ci_method,
+                "resamples": interval.resamples, "seed": seed}  # fmt: skip
+    result = analyze(evidence.runs, selection, **settings)
+    every_result = None
+    if isinstance(every_selection, KStarSelection):
+        every_result = _analyze_every_cell(every_cell.runs, every_selection, settings)
     return write_new_directory(
         out,
         lambda directory: _write_outputs(
-            directory, evidence, selection, k_star_record, result, interval, seed
+            directory, evidence, selection, k_star_record, result, interval, seed,
+            eligibility, (every_cell, every_selection, every_result),
         ),
-    )
+    )  # fmt: skip
+
+
+def _details(eligibility: pd.DataFrame) -> dict[tuple[str, float], str]:
+    cells = zip(eligibility["arm"], eligibility["lr"], eligibility["detail"], strict=True)
+    return {(str(arm), float(lr)): str(detail) for arm, lr, detail in cells}
+
+
+def _every_cell_selection(evidence: Evidence) -> KStarSelection | dict[str, str]:
+    """The original K\\* over every cell, or why it is undefined."""
+    try:
+        return select_k_star(evidence.runs)
+    except ValueError as exc:  # CommonRangeUndefined included
+        return {"error": str(exc)}
+
+
+def _analyze_every_cell(
+    runs: pd.DataFrame, selection: KStarSelection, settings: Mapping[str, Any]
+) -> AnalysisResult | dict[str, str]:
+    """The original analysis over every cell, reported beside the primary one."""
+    try:
+        return analyze(runs, selection, **settings)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
 
 def read_k_star(path: Path) -> tuple[KStarSelection, dict[str, Any]]:
@@ -175,6 +226,10 @@ def read_k_star(path: Path) -> tuple[KStarSelection, dict[str, Any]]:
         if not (isinstance(computed_from["runs"], list) and isinstance(gates, list)):
             raise ValueError("computed_from needs the lists runs and gates")
         frozen = _selection(selection)
+        eligibility = _eligibility(saved.get("eligibility"))
+        every = saved.get("all_cells_selection")
+        every_selection = (every if every is None or set(every) == {"error"}
+                           else _selection(every))  # fmt: skip
     except (ValueError, KeyError, TypeError) as exc:  # JSONDecodeError is a ValueError
         raise ValueError(f"{path} is not the {K_STAR_FILE} of a build: {exc}") from exc
     if GATE_2 in gates:
@@ -184,8 +239,25 @@ def read_k_star(path: Path) -> tuple[KStarSelection, dict[str, Any]]:
         )
     record = {"status": K_STAR_FROZEN, "computed_from": computed_from,
               "source": {"file": path.name, "sha256": hashlib.sha256(data).hexdigest(),
-                         "status": status}}  # fmt: skip
+                         "status": status},
+              "eligibility": eligibility, "all_cells_selection": every_selection}  # fmt: skip
     return frozen, record
+
+
+def _eligibility(data: Any) -> dict[str, Any] | None:
+    """The eligibility record of a ``k_star.json`` (None: the K\\* was selected from every cell)."""
+    if data is None:
+        return None
+    cells = data["cells"]
+    if not isinstance(cells, list) or not cells:
+        raise ValueError("eligibility.cells must be a non-empty list")
+    for cell in cells:
+        if set(cell) != {"arm", "lr"} or cell["arm"] not in ARMS:
+            raise ValueError(f"an eligible cell must be {{arm, lr}} of a known arm, not {cell!r}")
+        if isinstance(cell["lr"], bool) or not isinstance(cell["lr"], int | float):
+            raise ValueError(f"an eligible cell's lr must be a number, not {cell['lr']!r}")
+    return {"rule": str(data["rule"]), "seeds": [int(s) for s in data["seeds"]],
+            "cells": [{"arm": c["arm"], "lr": float(c["lr"])} for c in cells]}  # fmt: skip
 
 
 def _selection(data: Mapping[str, Any]) -> KStarSelection:
@@ -241,6 +313,8 @@ def _write_outputs(
     result: AnalysisResult,
     interval: IntervalSettings,
     seed: int,
+    eligibility: pd.DataFrame | None,
+    every: tuple[Evidence, Any, Any],
 ) -> None:
     considered = evidence.considered
     write_csv(considered, directory / "runs.csv")
@@ -250,6 +324,18 @@ def _write_outputs(
     write_csv(_cells(evidence.runs, selection), directory / "cells.csv")
     write_csv(_arms(result), directory / "arms.csv")
     write_csv(_estimates(result, selection), directory / "estimates.csv")
+    if eligibility is not None:
+        write_csv(eligibility, directory / "eligibility.csv")
+    every_cell, every_selection, every_result = every
+    all_cells = None
+    if k_star_record["eligibility"] is not None:  # the original analysis over every cell
+        all_cells = {"runs": sorted(every_cell.runs["run_id"]), "k_star": _plain(every_selection),
+                     "analysis": _plain(every_result)}  # fmt: skip
+        if isinstance(every_result, AnalysisResult):
+            write_csv(_cells(every_cell.runs, every_selection), directory / "all_cells_cells.csv")
+            write_csv(_arms(every_result), directory / "all_cells_arms.csv")
+            write_csv(_estimates(every_result, every_selection),
+                      directory / "all_cells_estimates.csv")  # fmt: skip
 
     settings = {
         "ci_method": interval.ci_method,
@@ -261,7 +347,9 @@ def _write_outputs(
     }
     analyzed = sorted(evidence.runs["run_id"])
     status = k_star_record["status"]
-    write_json(directory / K_STAR_FILE, {**k_star_record, "selection": asdict(selection)})
+    k_star_data = {**k_star_record, "selection": asdict(selection),
+                   "all_cells_selection": _plain(every_selection)}  # fmt: skip
+    write_json(directory / K_STAR_FILE, k_star_data)
     analysis = asdict(result)
     analysis["selection"]["exclusion_threshold"] = selection.exclusion_threshold
     write_json(directory / "results.json", {
@@ -273,6 +361,7 @@ def _write_outputs(
         "k_star_status": status,
         "k_star": k_star_record,
         "analysis": analysis,
+        "all_cells": all_cells,
     })  # fmt: skip
     draw_figure(directory)
 
@@ -299,6 +388,13 @@ def _write_outputs(
         },
         "outputs": {path.name: file_sha256(path) for path in sorted(directory.iterdir())},
     })  # fmt: skip
+
+
+def _plain(value: Any) -> Any:
+    """A selection or result as JSON data; an error record or None as it is."""
+    if isinstance(value, KStarSelection | AnalysisResult):
+        return asdict(value)
+    return value
 
 
 def _cells(runs: pd.DataFrame, selection: KStarSelection) -> pd.DataFrame:

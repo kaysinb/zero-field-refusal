@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
+from zero_field_refusal.analysis.eligibility import cell_eligibility
 from zero_field_refusal.judge_check import (
     cell_table,
     draw_sample,
@@ -249,6 +250,23 @@ def test_eligibility_takes_the_cell_mean_accuracy_and_needs_five_clean_seeds(tmp
     assert cells.loc[("sgd", 0.5), "diverged"] and not cells.loc[("sgd", 0.5), "eligible"]
     assert not cells.loc[("sgd", 3.0), "eligible"]  # a single-seed pilot
     assert all(cells.loc[cell, "eligible"] for cell in NORMAL)
+
+
+def test_eligibility_reads_theta0_from_its_run_and_says_why_a_cell_is_left_out(tmp_path) -> None:
+    root = build(tmp_path, {("sgd", 0.1): 2.0, ("adamw", 1e-5): 3.0})
+    cfg = load_run_config("experiments/" + MAIN, ["run_type=theta0", "seed=0"])
+    run_dir = root / MAIN / "theta0"
+    run_dir.mkdir(parents=True)
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+    (run_dir / "meta.json").write_text(json.dumps({"status": "completed"}))
+    utility = {"K_harmful": 0.0, "factual_accuracy": 0.99, "benchmark_accuracy": 0.62}
+    (run_dir / "summary.json").write_text(json.dumps(utility))
+    write_run(root, MAIN, "sgd", 0.3, 0, 8.0)  # a pilot
+    table = cell_eligibility(root, MAIN).set_index(["arm", "lr"])
+    # θ₀'s benchmark 0.62: a mean of 0.56 is a 6 pp drop, a collapse
+    assert table.loc[("sgd", 0.1), "detail"] == "collapse: benchmark"
+    assert table.loc[("sgd", 0.3), "detail"].startswith("seeds completed: 0 (needs 0-4)")
+    assert not table["eligible"].any()
 
 
 def test_strata_come_from_eligible_cells_only(tmp_path) -> None:
