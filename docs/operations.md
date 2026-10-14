@@ -182,6 +182,22 @@ AdamW also need `--stream preconditioner` for the same seeds.
 
 ## Study 2, Stage A
 
+Pods: `0jl6d2cmiiah0l` (`zfr-study2-a`, seed 2000), L40S Secure, US-MO-1, host CUDA 13.0, created
+2026-10-14 with a 100 GB volume disk at `/workspace` and a 50 GB container disk; its start command
+runs `scripts/pod_deadline_watch.py` before `/start.sh`.
+
+**Setup of a study-2 Pod.** From the checkout of the reviewed commit (a Git bundle), restore only
+what the study needs, naming the inventories explicitly: the bucket also holds a superseded
+prompt build (`data/prompts/7f7ed5f91950`), which no Pod restores.
+
+```bash
+bash scripts/pod_setup.sh runs/archive/inventory-2026-10-11.tsv \
+  runs/archive/inventory-stage1-streams.tsv runs/archive/inventory-2026-10-14-study2-prompts.tsv
+```
+
+The Pods of seeds 2001 and 2002 add the inventory of seed 2000's first phase: the stage-0 record
+under protocol 2 and the `kl_monitor` stream, archived before they start training.
+
 One Pod per discovery seed (2000, 2001, 2002): a seed's stream has one writer, the Pod that holds
 it, and its runs extend it there. The Pod of seed 2000 also runs everything tied to that seed:
 the stage-0 checks, the curvature, the screen and the full-length controls. Campaigns hold one

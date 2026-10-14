@@ -40,6 +40,7 @@ from zero_field_refusal.analysis.stage_a import (
     load_trajectories,
     prescribed_short_rates,
     rate,
+    stream_pairing,
 )
 
 MAIN, CONTROLS = "experiments/study2_stage_a", "experiments/study2_controls"
@@ -149,11 +150,12 @@ def main() -> None:
         if not items:
             parser.error("no extension is called for")
     else:  # controls
-        screened, problems = checked_screen([r for r in runs if r.role == "screen"])
+        screen = [r for r in runs if r.role == "screen"]
+        screened, problems = checked_screen(screen)
         candidates = {b: screened[b]["candidates"] for b in screened} if not problems else {}
         discovery = [r for r in runs if r.role == "discovery" and r.arm == "sgd_long"]
         present, found = checked_discovery(discovery)
-        problems += found
+        problems += found + stream_pairing([*screen, *discovery])  # seed 2000's one stream
         wanted = {
             ("sgd_long", b, rate(lr), seed)
             for b, lrs in candidates.items()

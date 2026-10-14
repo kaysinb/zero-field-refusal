@@ -124,3 +124,26 @@ def test_campaigns_go_to_a_directory_made_for_them(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr("sys.argv", [str(SCRIPT), "screen", "--out", str(out)])
     runpy.run_path(str(SCRIPT), run_name="__main__")
     assert out.is_file()
+
+
+def test_controls_need_the_screen_and_discovery_on_seed_2000s_one_stream(monkeypatch, tmp_path):
+    # Review r14: each set reads one stream, but the screen another one than the discovery.
+    search(tmp_path / "runs")
+    shutil.rmtree(tmp_path / "runs" / "controls")
+    for run_dir in sorted((tmp_path / "runs" / "screen").iterdir()):
+        _, batch, lr = run_dir.name.split("-", 2)
+        shutil.rmtree(run_dir)
+        write_run(
+            run_dir.parent,
+            run_dir.name,
+            arm="soft_control",
+            batch=int(batch),
+            lr=float(lr),
+            seed=2000,
+            final_k=0.01 if float(lr) <= 0.004 else 0.2,
+            evaluate_at=(100,),
+            role="screen",
+            stream_path="teacher/other/seed-2000",
+        )
+    with pytest.raises(SystemExit):
+        write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))

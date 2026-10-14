@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Prepare a Pod for project runs: report GPU, RAM and disk; install the pinned Google Cloud CLI on
-# the container disk; decode the archive key; restore DATA_DIR from the bucket and verify it
-# against the archive inventories. Run on the Pod, from the checkout, after its deadline is set:
+# the container disk; decode the archive key; restore into DATA_DIR the files that the given
+# archive inventories list under data/, and verify them. Run on the Pod, from the checkout, after
+# its deadline is set:
 #
-#   bash scripts/pod_setup.sh [INVENTORY ...]   # bucket paths of inventories, default:
-#                                               #   runs/archive/inventory-2026-10-11.tsv
-#   source /root/zfr-env.sh                     # PATH and ARTIFACT_GCS_KEY for later commands
+#   bash scripts/pod_setup.sh INVENTORY [INVENTORY ...]   # bucket paths of inventories
+#   source /root/zfr-env.sh                               # PATH and ARTIFACT_GCS_KEY
 #
-# Every file in DATA_DIR must be listed, with its sha256, by one of the inventories (matched by its
-# archive URL under $ARTIFACT_REMOTE/data/), and every listed file must be present: pass every
-# inventory that covers data/, e.g. also runs/archive/inventory-stage1-streams.tsv on a restarted
-# Pod. Needs ARTIFACT_GCS_KEY_B64 and ARTIFACT_REMOTE in the Pod environment (docs/operations.md,
-# "Storage"); prints neither. Existing files in DATA_DIR are never overwritten, only checked.
+# Only the listed files are restored, so the bucket may hold others (a superseded build) that
+# the Pod never sees. Every file in DATA_DIR must then be listed, with its sha256, by one of the
+# inventories, and every listed file must be present; on a restarted Pod pass the inventories of
+# what it already holds too. The inventories for each stage are named in docs/operations.md. Needs
+# ARTIFACT_GCS_KEY_B64 and ARTIFACT_REMOTE in the Pod environment (docs/operations.md, "Storage");
+# prints neither. Existing files in DATA_DIR are never overwritten, only checked.
 set -euo pipefail
 
 GCLOUD_VERSION=584.0.0
@@ -21,7 +22,7 @@ GCLOUD=/root/google-cloud-sdk/bin/gcloud
 DATA_DIR=${DATA_DIR:-/workspace/data/zero-field-refusal}
 KEY=/root/.artifact-gcs-key.json
 INVENTORIES=("$@")
-[ ${#INVENTORIES[@]} -gt 0 ] || INVENTORIES=(runs/archive/inventory-2026-10-11.tsv)
+[ ${#INVENTORIES[@]} -gt 0 ] || { echo "usage: pod_setup.sh INVENTORY [INVENTORY ...]" >&2; exit 2; }
 : "${ARTIFACT_REMOTE:?set ARTIFACT_REMOTE}"
 : "${ARTIFACT_GCS_KEY_B64:?set ARTIFACT_GCS_KEY_B64 from the Runpod secret gcs_archive_key_b64}"
 
@@ -57,14 +58,28 @@ EOF
 # shellcheck disable=SC1091
 source /root/zfr-env.sh
 
-echo "== restore DATA_DIR from the bucket"
+echo "== restore the inventories' data/ files into DATA_DIR"
 mkdir -p "$DATA_DIR"
-CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY" gcloud storage cp --recursive --no-clobber --quiet \
-  "$ARTIFACT_REMOTE/data/*" "$DATA_DIR/"
 copies=$(mktemp -d)
 for inventory in "${INVENTORIES[@]}"; do
   CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY" gcloud storage cp --quiet \
     "$ARTIFACT_REMOTE/$inventory" "$copies/$(echo "$inventory" | tr '/' '_')"
+done
+python3 - "$ARTIFACT_REMOTE" "$copies"/* <<'PY' | sort -u | while IFS=$'\t' read -r url rel; do
+import sys
+from pathlib import Path
+
+prefix = sys.argv[1].rstrip("/") + "/data/"
+for inventory in sys.argv[2:]:
+    for line in Path(inventory).read_text().splitlines()[1:]:
+        url = line.split("\t")[4]
+        if url.startswith(prefix):
+            print(f"{url}\t{url[len(prefix):]}")
+PY
+  [ -e "$DATA_DIR/$rel" ] && continue  # never overwritten; checked below
+  mkdir -p "$(dirname "$DATA_DIR/$rel")"
+  CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY" gcloud storage cp --no-clobber --quiet "$url" \
+    "$DATA_DIR/$rel"
 done
 python3 - "$ARTIFACT_REMOTE" "$DATA_DIR" "$copies"/* <<'PY'
 import hashlib, sys
