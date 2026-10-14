@@ -145,3 +145,21 @@ def test_verification_names_unlisted_mismatched_and_linked_files(tmp_path):
     result = verify(data, expected)
     assert result.returncode == 1 and "SYMBOLIC LINK linked" in result.stdout
     assert "linked/y.json" not in result.stdout  # a linked directory is never walked
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every directory")
+def test_an_unreadable_directory_stops_both_checks(tmp_path):
+    data, expected = restored(tmp_path)
+    hidden = data / "hidden"
+    hidden.mkdir()
+    (hidden / "z.json").write_text("z")
+    hidden.chmod(0)
+    try:
+        result, _ = check(
+            data, tmp_path, inventory(tmp_path / "2.tsv", [("data/a/x.json", sha("x"))])
+        )
+        assert result.returncode != 0 and "Cannot read" in result.stderr
+        result = verify(data, expected)
+        assert result.returncode != 0 and "Cannot read" in result.stderr
+    finally:
+        hidden.chmod(0o755)

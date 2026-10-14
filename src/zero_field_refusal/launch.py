@@ -31,8 +31,10 @@ and attempts recorded in the launch logs ``RUNS_DIR/launch/*.jsonl`` — decides
 
 Each attempt gets its own ``RUN_ID`` (never the launcher's), so its directory is known and its
 outcome read from its ``meta.json``. An attempt that completes without qualifying stops the
-campaign. The launch log ``RUNS_DIR/launch/<campaign name>.jsonl`` gets one record per attempt
-start and end and per recovery round; each attempt's output goes to
+campaign. A stop request (``StopRequest``: ``SIGTERM`` to the launcher) lets the running attempt
+finish and starts no other; the runs left are reported as stopped, and the campaign started again
+carries on from there. The launch log ``RUNS_DIR/launch/<campaign name>.jsonl`` gets one record
+per attempt start and end, per recovery round and per stop; each attempt's output goes to
 ``RUNS_DIR/launch/<campaign name>/``.
 """
 
@@ -42,6 +44,7 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -64,6 +67,27 @@ MAX_ATTEMPTS = 3  # the first attempt and two reruns after technical failures
 
 class CampaignError(ValueError):
     """The campaign cannot start, or go on, as it stands."""
+
+
+class StopRequest:
+    """Set by a signal: the campaign starts no further attempt, and the running one, a child
+    process the signal does not reach, finishes and is recorded first."""
+
+    def __init__(self) -> None:
+        self.requested = False
+        self.previous: Any = None
+
+    def __call__(self) -> bool:
+        return self.requested
+
+    def _handle(self, signum: int, frame: Any) -> None:
+        self.requested = True
+
+    @classmethod
+    def on_sigterm(cls) -> StopRequest:
+        request = cls()
+        request.previous = signal.signal(signal.SIGTERM, request._handle)
+        return request
 
 
 @dataclass(frozen=True)
@@ -240,11 +264,13 @@ def run_campaign(
     execute: Callable[[Run, str, Path], int] | None = None,
     dry_run: bool = False,
     recovery: str | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> dict[str, list[str]]:
     """Run the missing runs in order; returns the labels by outcome.
 
-    Outcomes: skipped (a qualifying run exists), done, diverged, exhausted (no attempt left) and,
-    for a dry run, pending. ``execute(run, run_id, output)`` runs one attempt under that run id and
+    Outcomes: skipped (a qualifying run exists), done, diverged, exhausted (no attempt left),
+    stopped (``stop()`` was true before its next attempt; logged once) and, for a dry run,
+    pending. ``execute(run, run_id, output)`` runs one attempt under that run id and
     returns its exit code (default: a subprocess). ``recovery`` names the fixed technical cause and
     opens the recovery round of every cell with an exhausted run that has not had one. Raises
     ``CampaignError`` before starting anything if a run's existing directories conflict, and stops
@@ -271,8 +297,9 @@ def run_campaign(
                 _log(log, {"event": "recovery", "experiment": experiment, "cell": cell,
                            "reason": recovery, "runs": [r.label for r in exhausted]})  # fmt: skip
                 recovered.add((experiment, cell))
-    outcomes = ("skipped", "done", "diverged", "exhausted", "pending")
+    outcomes = ("skipped", "done", "diverged", "exhausted", "stopped", "pending")
     result: dict[str, list[str]] = {key: [] for key in outcomes}
+    requested = stop or (lambda: False)
     for run in runs:
         state = assessments[run.label]
         if state.done is not None:
@@ -288,10 +315,15 @@ def run_campaign(
             continue
         outcome = "exhausted"
         while attempts < limit:
+            if requested():
+                outcome = "stopped"
+                break
             attempts += 1
             outcome = _attempt(run, attempts, runs_root, out_dir, log, execute)
             if outcome != "technical":
                 break
+        if outcome == "stopped" and not result["stopped"]:
+            _log(log, {"event": "stop", "run": run.label, "reason": "stop requested"})
         result[outcome if outcome != "technical" else "exhausted"].append(run.label)
     return result
 

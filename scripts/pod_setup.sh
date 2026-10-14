@@ -12,9 +12,11 @@
 # absolute path, no "..", "." or empty component) and DATA_DIR must hold no symbolic link. Every
 # file in DATA_DIR must then be listed, with its sha256, by one of the inventories, and every
 # listed file must be present; on a restarted Pod pass the inventories of what it already holds
-# too. The inventories for each stage are named in docs/operations.md. Needs
-# ARTIFACT_GCS_KEY_B64 and ARTIFACT_REMOTE in the Pod environment (docs/operations.md, "Storage");
-# prints neither. Existing files in DATA_DIR are never overwritten, only checked.
+# too. Run it alone: nothing else may write to DATA_DIR while it checks and restores (the checks
+# do not guard against a concurrent writer). The inventories for each stage are named in
+# docs/operations.md. Needs ARTIFACT_GCS_KEY_B64 and ARTIFACT_REMOTE in the Pod environment
+# (docs/operations.md, "Storage"); prints neither. Existing files in DATA_DIR are never
+# overwritten, only checked.
 set -euo pipefail
 
 GCLOUD_VERSION=584.0.0
@@ -79,7 +81,13 @@ from pathlib import Path
 
 prefix = sys.argv[1].rstrip("/") + "/data/"
 data_dir, out, inventories = Path(sys.argv[2]).resolve(), Path(sys.argv[3]), sys.argv[4:]
-links = [os.path.join(top, name) for top, dirs, files in os.walk(data_dir)
+
+
+def unreadable(error):  # a directory the walk cannot read is never skipped silently
+    sys.exit(f"Cannot read {error.filename} in DATA_DIR: {error.strerror}")
+
+
+links = [os.path.join(top, name) for top, dirs, files in os.walk(data_dir, onerror=unreadable)
          for name in dirs + files if os.path.islink(os.path.join(top, name))]
 if links:
     sys.exit(f"DATA_DIR holds symbolic links: {links[:5]}")
@@ -121,8 +129,12 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def unreadable(error):  # a directory the walk cannot read is never skipped silently
+    sys.exit(f"Cannot read {error.filename} in DATA_DIR: {error.strerror}")
+
+
 present, links = set(), []
-for top, dirs, files in os.walk(data_dir):  # never follows a link; any link is an error
+for top, dirs, files in os.walk(data_dir, onerror=unreadable):  # never follows a link
     for name in dirs + files:
         path = Path(top, name)
         if path.is_symlink():

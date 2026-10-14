@@ -203,7 +203,9 @@ and number their copies of the inventories.
 
 **Setup of a study-2 Pod.** From the checkout of the reviewed commit (a Git bundle), restore only
 what the study needs, naming the inventories explicitly: the bucket also holds a superseded
-prompt build (`data/prompts/7f7ed5f91950`), which no Pod restores.
+prompt build (`data/prompts/7f7ed5f91950`), which no Pod restores. Run `pod_setup.sh` alone,
+with nothing else running on the Pod: its checks do not guard against a concurrent writer to
+`DATA_DIR`.
 
 ```bash
 bash scripts/pod_setup.sh runs/archive/inventory-2026-10-11.tsv \
@@ -258,8 +260,12 @@ the container disk loses the archive key and the Google Cloud CLI. Change it onl
 campaigns. Before that, archive the seed's training stream and every finished run directory with
 their own inventories, so that the full `pod_setup.sh`, given those inventories as well, verifies
 `DATA_DIR` after the restart. A campaign that cannot end before the deadline with an hour to
-spare is stopped at a run boundary: send `SIGTERM` to the `launch.py` process only, while a run
-is going; that run finishes and publishes its terminal record, and no further run starts. The
+spare is stopped at a run boundary by `SIGTERM` to the `launch.py` process only, while a run is
+going. The launcher of commit `29e096a`, which Stage A runs, has no handler: it dies at once, and
+its running `train.py` carries on alone and may still extend the stream. So wait until that
+`train.py` process itself (its PID, not the launcher's) has exited, check its `terminal.json`, and
+only then archive the stream and the runs. Later launchers let the running attempt finish, record
+it and exit non-zero without starting another ([launching runs](#launching-runs)). Either way the
 same campaign started again after the restart skips every cell whose records are whole.
 
 **Records between Pods** move only through the bucket. Every Pod archives each run directory
@@ -348,6 +354,9 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   REASON` opens one recovery round per cell (three more attempts), logged with its reason.
   Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
+  `SIGTERM` to the launcher alone (not its process group) stops the campaign at a run boundary:
+  the running attempt finishes and is recorded, a `stop` record is logged, and the launcher exits
+  non-zero without starting another; the same command carries on later.
 - **Study-2 runs** (`scripts/train.py` with a config that has a `schedule`) stop by K, plateau,
   instability or T_max and may extend their seed's appendable stream with their frozen θ₀; all
   runs of a seed that may extend its stream run on one machine, where writers take turns under

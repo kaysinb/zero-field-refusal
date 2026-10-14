@@ -1,13 +1,18 @@
 """The campaign launcher: checked configs, skipping completed runs, logging, carrying on."""
 
 import json
+import os
 import re
+import signal
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from zero_field_refusal.launch import CampaignError, load_campaign, run_campaign
+from zero_field_refusal.launch import CampaignError, StopRequest, load_campaign, run_campaign
 from zero_field_refusal.protocol import ProtocolError
 from zero_field_refusal.tracking import _RUN_ID as RUN_ID
 
@@ -124,7 +129,7 @@ def test_runs_are_skipped_retried_or_left_by_their_outcome(tmp_path) -> None:
     result = run_campaign(name, runs, root, execute=execute)
     assert result == {"skipped": ["adamw-5e-5/s0"], "done": ["theta0/s0"],
                       "diverged": ["adamw-5e-5/s1"], "exhausted": ["sgd-0.1/s0"],
-                      "pending": []}  # fmt: skip
+                      "stopped": [], "pending": []}  # fmt: skip
     assert [label for label, _ in execute.calls] == [
         "theta0/s0", "theta0/s0", "theta0/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]  # fmt: skip
     ids = [run_id for _, run_id in execute.calls]
@@ -348,3 +353,58 @@ def test_a_theta0_evaluation_of_a_scheduled_config_is_done_without_a_trajectory(
     assert not (run_dir / "terminal.json").exists()
     result = run_campaign(name, runs, root, execute=Executor(root, {}))
     assert result["skipped"] == ["theta0/s2000"]
+
+
+def launch_log(root: Path, name: str) -> list[dict]:
+    return [
+        json.loads(line) for line in (root / "launch" / f"{name}.jsonl").read_text().splitlines()
+    ]
+
+
+def test_a_stop_request_lets_the_running_attempt_finish_and_starts_no_other(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    execute = Executor(root, {"theta0/s0": ["failed", "completed"]})
+    stop = lambda: len(execute.calls) >= 1  # noqa: E731 - requested during the first attempt
+    result = run_campaign(name, runs, root, execute=execute, stop=stop)
+    assert [label for label, _ in execute.calls] == ["theta0/s0"]  # no retry, no next run
+    assert result["stopped"] == ["theta0/s0", "adamw-5e-5/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]
+    events = [(r["event"], r["run"]) for r in launch_log(root, name)]
+    assert events == [("start", "theta0/s0"), ("end", "theta0/s0"), ("stop", "theta0/s0")]
+
+    # Started again, the campaign carries on: the failed attempt counts, the rest run.
+    again = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=again)
+    assert result["done"] == ["theta0/s0", "adamw-5e-5/s0", "adamw-5e-5/s1", "sgd-0.1/s0"]
+    assert [r["attempt"] for r in launch_log(root, name) if r["event"] == "start"] == [
+        1,
+        2,
+        1,
+        1,
+        1,
+    ]
+
+
+def test_sigterm_reaches_only_the_launcher_and_the_child_finishes(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    finished = tmp_path / "finished"
+    calls = []
+
+    def execute(run, run_id, output):  # a child process that outlives the signal
+        calls.append(run.label)
+        child = "import sys, time; time.sleep(1.0); open(sys.argv[1], 'a').write('x')"
+        code = subprocess.run([sys.executable, "-c", child, str(finished)], check=False).returncode
+        make_run_dir(root, run, run_id, "completed", k=0.0 if run.entry == "theta0" else 5.0)
+        return code
+
+    stop = StopRequest.on_sigterm()
+    try:
+        threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGTERM)).start()
+        result = run_campaign(name, runs, root, execute=execute, stop=stop)
+    finally:
+        signal.signal(signal.SIGTERM, stop.previous)
+    assert stop() and calls == ["theta0/s0"] and finished.read_text() == "x"
+    assert result["done"] == ["theta0/s0"] and len(result["stopped"]) == 3
+    ends = [r for r in launch_log(root, name) if r["event"] == "end"]
+    assert [(r["run"], r["returncode"], r["outcome"]) for r in ends] == [("theta0/s0", 0, "done")]
