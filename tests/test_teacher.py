@@ -11,10 +11,14 @@ from zero_field_refusal.batches import collate
 from zero_field_refusal.losses import response_logprobs
 from zero_field_refusal.models import install_neutral_generation_config
 from zero_field_refusal.teacher import (
+    FINGERPRINTS_FILE,
+    PROJECTIONS,
     Sample,
     StreamError,
     draw_prompt_indices,
+    fingerprint,
     load_distributions,
+    load_fingerprints,
     load_manifest,
     load_stream,
     partial_directory,
@@ -24,6 +28,7 @@ from zero_field_refusal.teacher import (
     split_response,
     stale_partials,
     write_distributions,
+    write_fingerprints,
     write_stream,
 )
 
@@ -257,7 +262,7 @@ def test_a_replay_reproduces_the_recorded_distributions_exactly(teacher) -> None
     assert {s.ended for s in samples} == {True, False}
     for start in range(0, 10, 4):
         batch = samples[start : start + 4]
-        replayed, errors = replay_distributions(
+        replayed, errors, _ = replay_distributions(
             teacher, batch, sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID
         )
         assert errors.numel() == sum(len(s.response_ids) for s in batch)
@@ -272,7 +277,7 @@ def test_a_replay_reports_stored_log_probs_that_differ(teacher) -> None:
         samples[1], logprobs=(samples[1].logprobs[0] + 1e-3, *samples[1].logprobs[1:])
     )
     batch = [samples[0], changed, *samples[2:]]
-    _, errors = replay_distributions(
+    _, errors, _ = replay_distributions(
         teacher, batch, sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID
     )
     assert errors.max().item() == pytest.approx(1e-3, rel=1e-3)
@@ -287,3 +292,53 @@ def test_a_replay_fails_when_generation_would_not_end_where_the_record_does(teac
         replay_distributions(teacher, [cut], sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID)
     with pytest.raises(ValueError, match="zero_field=False"):
         run(teacher, n=2, force=[s.response_ids for s in samples[:2]])
+
+
+def test_the_replay_reproduces_the_fingerprint_recorded_at_sampling(teacher) -> None:
+    recorded: list = []
+    samples, distributions = run(teacher, n=8, record_distributions=True, fingerprints=recorded)
+    assert len(recorded) == 2  # one per generation batch of 4
+    digest, projections = recorded[0]
+    assert projections.shape == (sum(len(s.response_ids) for s in samples[:4]), PROJECTIONS)
+    assert projections.dtype == torch.float64
+    again = fingerprint(distributions[:4])  # from the recorded rows, on the CPU
+    assert again[0] == digest and torch.equal(again[1], projections)
+    _, _, (replayed_digest, replayed_projections) = replay_distributions(
+        teacher, samples[:4], sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID
+    )
+    assert replayed_digest == digest
+    assert torch.equal(replayed_projections, projections)
+
+
+def test_the_fingerprint_sees_changes_the_sampled_token_misses(teacher) -> None:
+    # The reviewer's case: permute the entries of every position except the sampled token.
+    samples, distributions = run(teacher, n=4, record_distributions=True)
+    permuted = []
+    for s, row in zip(samples, distributions, strict=True):
+        changed = row.clone()
+        for t, token in enumerate(s.response_ids):
+            others = [v for v in range(row.shape[1]) if v != token]
+            changed[t, others] = row[t, others[::-1]]
+        permuted.append(changed)
+    for s, row in zip(samples, permuted, strict=True):
+        picked = row.gather(1, torch.tensor(s.response_ids)[:, None])[:, 0]
+        assert torch.equal(picked, torch.tensor(s.logprobs))  # the sampled-token check passes
+    (digest, projections), (other, moved) = fingerprint(distributions), fingerprint(permuted)
+    assert digest != other
+    assert (moved - projections).abs().max().item() > 1e-3
+
+
+def test_fingerprints_round_trip_and_tamper_check(tmp_path: Path, teacher) -> None:
+    recorded: list = []
+    samples, _ = run(teacher, n=6, fingerprints=recorded)
+    write_stream(
+        tmp_path, samples, {"fingerprints": write_fingerprints(tmp_path, recorded, [4, 2])}
+    )
+    loaded = load_fingerprints(tmp_path)
+    assert [d for d, _ in loaded] == [d for d, _ in recorded]
+    assert all(torch.equal(a, b) for (_, a), (_, b) in zip(loaded, recorded, strict=True))
+    manifest = load_manifest(tmp_path)["fingerprints"]
+    assert [(b["first"], b["responses"]) for b in manifest["batches"]] == [(0, 4), (4, 2)]
+    (tmp_path / FINGERPRINTS_FILE).write_bytes(b"x")
+    with pytest.raises(StreamError, match="different from the chunk manifest"):
+        load_fingerprints(tmp_path)

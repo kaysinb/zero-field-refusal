@@ -54,7 +54,8 @@ scientific design is in [design.md](design.md); procedures for running things ar
 
    **Appendable training streams** (study 2, `teacher.stream: appendable`) have no fixed length.
    A seed's stream is a sequence of chunks of `teacher.chunk_size` responses in
-   `<stream>/chunk-00000/`, `chunk-00001/`, …, each published atomically like a whole stream.
+   `<stream>/chunk-00000/`, `chunk-00001/`, …, each published atomically like a whole stream,
+   with the fingerprints of its distributions for the soft-target replay.
    Chunk j draws its instructions and samples from `derive_seed(seed, "teacher", "prompts",
    "chunk", j)` and `derive_seed(seed, "teacher", "sampling", "chunk", j)` alone, so appending
    never changes earlier chunks, and the stream's identity holds no length. Runs read the stream
@@ -454,7 +455,18 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
       `REPLAY_MAX_ABS` = 10⁻⁵. Exact agreement is expected; the margin covers fp32 rounding
       alone, an order of magnitude below the 1.97·10⁻⁴ that two computation orders of the same
       weights differ by in stage 0;
-    - the run records the largest and mean deviation of every replayed batch
+    - the whole distributions must match too, since a check of the sampled token would miss a
+      change elsewhere in the vector. While sampling, each generation batch of a chunk records
+      a fingerprint (`fingerprints.safetensors`, hashed in the chunk manifest): the sha256 of the
+      fp32 log-probabilities of all its response positions, and their fp64 projections on 8
+      fixed unit-norm Gaussian directions over the vocabulary. The replay is accepted if the
+      digest matches; otherwise (bytes differ, e.g. on another GPU type) only if every
+      projection lies within `PROJECTION_MAX_ABS` = 10⁻⁵, since a unit projection of the error
+      vector has the scale of its root-mean-square entry. A fingerprint of 32 responses took
+      ≈ 1 s on an RTX 5090 (2026-10-14), ≈ 30 s per 1000 responses, about half the generation
+      time;
+    - the run records, for every replayed batch, the sampled tokens' largest and mean deviation,
+      whether the digest matched, the projections' largest deviation and what accepted it
       (`soft_targets_replay.jsonl`);
     - at most two generation batches stay in host memory (≈ 1.9 GB each at 32 responses of 96
       tokens).

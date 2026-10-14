@@ -135,6 +135,7 @@ def sample_responses(
     record_distributions: bool = False,
     on_chunk_distributions: Callable[[list[torch.Tensor]], None] | None = None,
     force: Sequence[Sequence[int]] | None = None,
+    fingerprints: list[tuple[str, torch.Tensor]] | None = None,
 ) -> tuple[list[Sample], list[torch.Tensor] | None]:
     """Sample one response per prompt with the generation path (``generate``, KV cache).
 
@@ -148,6 +149,7 @@ def sample_responses(
     ``force`` replays stored responses instead of sampling: each step puts all probability on the
     stored token, after the raw logits are captured (``replay_distributions``); it needs
     ``zero_field=False``, since the scores are then processed by design.
+    With ``fingerprints``, the ``fingerprint`` of each chunk's distributions is appended to it.
     """
     if len(prompts) != len(prompt_ids):
         raise ValueError("prompts and prompt_ids differ in length")
@@ -190,7 +192,7 @@ def sample_responses(
                 raise StreamError("The replay did not reproduce the stored responses")
         # (chunk, steps, vocab) would be large; gather per step instead.
         step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
-        chunk_distributions = []
+        chunk_distributions, device_rows = [], []
         for row, tokens in enumerate(generated):
             response, ended = split_response(tokens, end_ids)
             logp = torch.stack([step_logprobs[t][row] for t in range(len(response))])
@@ -206,7 +208,11 @@ def sample_responses(
             )
             if keep:
                 chunk_distributions.append(logp.cpu())
-        del raw, step_logprobs, out
+            if fingerprints is not None:
+                device_rows.append(logp)
+        if fingerprints is not None:
+            fingerprints.append(fingerprint(device_rows))
+        del raw, step_logprobs, out, device_rows
         if on_chunk_distributions is not None:
             on_chunk_distributions(chunk_distributions)
         if distributions is not None:
@@ -244,24 +250,92 @@ def replay_distributions(
     sampling: Mapping[str, Any],
     end_ids: Sequence[int],
     pad_id: int,
-) -> tuple[list[torch.Tensor], torch.Tensor]:
+) -> tuple[list[torch.Tensor], torch.Tensor, tuple[str, torch.Tensor]]:
     """θ₀'s generation-path distributions at the positions of stored responses, recomputed.
 
     ``samples`` must be one generation batch exactly as it was sampled (same prompts, same order):
     ``generate`` then repeats every forward call of the sampling with the same inputs and shapes,
     since the stored tokens are forced in place of new draws. Returns the (length, vocab) fp32
-    log-probabilities per response, the soft targets of invariant 8, and the absolute differences
-    between the recomputed and the stored log-probabilities of all sampled tokens (fp64).
+    log-probabilities per response, the soft targets of invariant 8; the absolute differences
+    between the recomputed and the stored log-probabilities of all sampled tokens (fp64); and the
+    ``fingerprint`` of the recomputed distributions, to compare with the one recorded at sampling.
     """
+    fingerprints: list[tuple[str, torch.Tensor]] = []
     replayed, distributions = sample_responses(
         model, [s.prompt_ids for s in samples], [s.prompt_id for s in samples],
         sampling=sampling, end_ids=end_ids, pad_id=pad_id, seed=0, batch_size=len(samples),
         zero_field=False, record_distributions=True, force=[s.response_ids for s in samples],
+        fingerprints=fingerprints,
     )  # fmt: skip
     errors = torch.tensor([abs(a - b) for r, s in zip(replayed, samples, strict=True)
                            for a, b in zip(r.logprobs, s.logprobs, strict=True)],
                           dtype=torch.float64)  # fmt: skip
-    return distributions, errors
+    return distributions, errors, fingerprints[0]
+
+
+# Fingerprints of full distributions. The soft target of a position is the whole vector, so a
+# check of the sampled token alone would miss changes elsewhere in it. Each generation batch of an
+# appendable stream records, while sampling: the sha256 of the fp32 log-probabilities of every
+# response position (row by row, little-endian bytes), an exact check; and their projections on
+# PROJECTIONS fixed unit-norm Gaussian directions over the vocabulary, in fp64, a tolerance check
+# where bytes may differ (another GPU type). On a unit direction, an error vector projects to the
+# scale of its root-mean-square entry.
+PROJECTIONS = 8
+FINGERPRINTS_FILE = "fingerprints.safetensors"
+
+
+def distribution_directions(vocab: int) -> torch.Tensor:
+    """(vocab, PROJECTIONS) fp64 unit-norm Gaussian directions, drawn on the CPU from a fixed
+    seed."""
+    generator = torch.Generator().manual_seed(derive_seed(0, "distribution_projections", vocab))
+    directions = torch.randn((vocab, PROJECTIONS), generator=generator, dtype=torch.float64)
+    return directions / directions.norm(dim=0)
+
+
+def fingerprint(rows: Sequence[torch.Tensor]) -> tuple[str, torch.Tensor]:
+    """sha256 of the rows' fp32 bytes and their (total length, PROJECTIONS) fp64 projections."""
+    digest = hashlib.sha256()
+    directions = distribution_directions(rows[0].shape[1]).to(rows[0].device)
+    projections = []
+    for row in rows:
+        digest.update(row.detach().float().contiguous().cpu().numpy())  # its buffer, no copy
+        projections.append((row.detach().double() @ directions).cpu())
+    return digest.hexdigest(), torch.cat(projections)
+
+
+def write_fingerprints(
+    directory: Path, fingerprints: Sequence[tuple[str, torch.Tensor]], sizes: Sequence[int]
+) -> dict[str, Any]:
+    """Store a chunk's fingerprints, one per generation batch of ``sizes`` responses; returns the
+    manifest entry (the file's hash and, per batch, its first response, size, tokens and sha256)."""
+    target = directory / FINGERPRINTS_FILE
+    save_file({"projections": torch.cat([p for _, p in fingerprints])}, str(target))
+    with target.open("rb") as f:
+        os.fsync(f.fileno())
+    batches, first = [], 0
+    for (digest, projections), size in zip(fingerprints, sizes, strict=True):
+        batches.append({"first": first, "responses": size, "tokens": projections.shape[0],
+                        "sha256": digest})  # fmt: skip
+        first += size
+    return {"file": FINGERPRINTS_FILE, "sha256": file_sha256(target),
+            "projections": PROJECTIONS, "batches": batches}  # fmt: skip
+
+
+def load_fingerprints(directory: Path) -> list[tuple[str, torch.Tensor]]:
+    """A chunk's fingerprints per generation batch, checked against its manifest."""
+    record = load_manifest(directory).get("fingerprints")
+    target = directory / FINGERPRINTS_FILE
+    if record is None or not target.is_file() or file_sha256(target) != record["sha256"]:
+        raise StreamError(f"{target}: missing or different from the chunk manifest")
+    with safe_open(str(target), framework="pt") as f:
+        projections = f.get_tensor("projections")
+    out, offset = [], 0
+    for batch in record["batches"]:
+        out.append((batch["sha256"], projections[offset : offset + batch["tokens"]]))
+        offset += batch["tokens"]
+    if offset != projections.shape[0]:
+        raise StreamError(f"{target}: {projections.shape[0]} rows, the batches hold {offset}")
+    return out
 
 
 def _left_pad(

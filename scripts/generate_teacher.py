@@ -36,6 +36,9 @@ def main() -> None:
     )
     args, overrides = parser.parse_known_args()
     cfg = load_run_config(args.config, overrides)
+    if args.stream == "soft_targets" and stream_layout(cfg) == "appendable":
+        parser.error("with appendable streams the soft-target control replays its targets from the "
+                     "training stream; no soft-target stream is generated")  # fmt: skip
     env = environment(cfg, cfg.execution.device)
     seeds = [None] if args.stream.startswith("kl_") else args.seeds
     if not seeds:

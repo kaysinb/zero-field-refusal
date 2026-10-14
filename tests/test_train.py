@@ -633,7 +633,65 @@ def test_replayed_soft_targets_match_the_stream_across_batches_and_chunks(env) -
         (0, 0, 2), (0, 1, 1), (1, 0, 2), (1, 1, 1), (2, 0, 2)
     ]  # fmt: skip
     assert all(r["max_abs"] == 0.0 for r in replayer.records)
+    assert all(r["digest_equal"] and r["accepted_by"] == "digest" for r in replayer.records)
+    assert all(r["projection_max_abs"] == 0.0 for r in replayer.records)
     assert len(replayer._batches) <= 2  # memory does not grow with the run
+    batches = load_manifest(chunk_directory(prefix.path, 0))["fingerprints"]["batches"]
+    assert [(b["first"], b["responses"]) for b in batches] == [(0, 2), (2, 1)]
+
+
+def altered_replay(change):
+    """replay_distributions whose non-sampled entries are changed by ``change``, with the
+    fingerprint of the changed rows."""
+    from zero_field_refusal.teacher import fingerprint, replay_distributions
+
+    def replay(model, samples, **kwargs):
+        rows, errors, _ = replay_distributions(model, samples, **kwargs)
+        changed = []
+        for s, row in zip(samples, rows, strict=True):
+            mask = torch.ones_like(row, dtype=torch.bool)
+            mask[torch.arange(len(s.response_ids)), torch.tensor(s.response_ids)] = False
+            changed.append(torch.where(mask, change(row), row))
+        return changed, errors, fingerprint(changed)
+
+    return replay
+
+
+@pytest.mark.parametrize(
+    ("change", "accepted"),
+    [
+        (lambda row: row.flip(-1), None),  # unsampled entries moved: the reviewer's case
+        (lambda row: row + 1e-6, "projections"),  # a few ulps: bytes differ, projections not
+    ],
+)
+def test_the_replay_checks_the_whole_distribution(env, monkeypatch, change, accepted) -> None:
+    cfg = config(*APPENDABLE)
+    extend_stream(cfg, env, 0, 3, batch_size=2)
+    monkeypatch.setattr("zero_field_refusal.runtime.replay_distributions", altered_replay(change))
+    replayer = ReplayedSoftTargets(StreamPrefix(cfg, env, 0), env.new_model(), env)
+    if accepted is None:
+        with pytest.raises(StreamError, match="differ from the sampling's"):
+            replayer.take(0, 2)
+    else:
+        replayer.take(0, 2)
+    (record,) = replayer.records
+    assert record["max_abs"] == 0.0 and not record["digest_equal"]
+    assert record["accepted_by"] == accepted
+
+
+def test_appendable_configs_generate_no_soft_target_stream(env, monkeypatch) -> None:
+    import runpy
+
+    cfg = soft_config()
+    with pytest.raises(StreamError, match="replays its targets"):
+        generate_stream(cfg, env, "soft_targets", 0, batch_size=4)
+    script = Path(__file__).parents[1] / "scripts" / "generate_teacher.py"
+    monkeypatch.setattr("sys.argv", [str(script), "experiments/smoke", "--stream", "soft_targets",
+                                     "--seeds", "0", *APPENDABLE])  # fmt: skip
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", None)  # never reached
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_path(str(script), run_name="__main__")
+    assert stopped.value.code == 2
 
 
 def test_soft_target_control_replays_the_prefix_of_the_regular_run(env) -> None:

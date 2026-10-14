@@ -39,6 +39,7 @@ from .optim import ADAM_MODES, build_optimizer, estimate_second_moment
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .refusal import is_keyword_refusal
 from .runtime import (
+    PROJECTION_MAX_ABS,
     REPLAY_MAX_ABS,
     Environment,
     ReplayedSoftTargets,
@@ -398,11 +399,16 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
             stats |= projection_stats(trainable, theta0, directions)
             run.log(stats, step=step)
         if replayer is not None:
+            records = replayer.records
             run.summarize({"soft_targets_replay": {
-                "max_abs": max(r["max_abs"] for r in replayer.records),
-                "mean_abs": sum(r["mean_abs"] * r["tokens"] for r in replayer.records)
-                / sum(r["tokens"] for r in replayer.records),
+                "max_abs": max(r["max_abs"] for r in records),
+                "mean_abs": sum(r["mean_abs"] * r["tokens"] for r in records)
+                / sum(r["tokens"] for r in records),
                 "bound": REPLAY_MAX_ABS,
+                "batches": len(records),
+                "digest_equal": sum(r["digest_equal"] for r in records),
+                "projection_max_abs": max(r["projection_max_abs"] for r in records),
+                "projection_bound": PROJECTION_MAX_ABS,
             }})  # fmt: skip
             del replayer
         del optimizer, directions
