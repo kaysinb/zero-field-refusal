@@ -196,8 +196,9 @@ and its cost.
    frozen.
 
 Planning cost of Stage A, on one L40S at $1.09/h. The estimates rest on the pilot's measured step
-times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 110 s per full evaluation and
-≈ 61 s per 1000 teacher responses. The monitor's cost is measured in Stage A.
+times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 150 s per full evaluation (≈ 95 s
+of it the greedy responses to the 521 harmful evaluation prompts, against ≈ 55 s for the pilot's
+300) and ≈ 61 s per 1000 teacher responses. The monitor's cost is measured in Stage A.
 
 | Step | Runs | GPU hours | Cost |
 |---|---|---|---|
@@ -205,12 +206,12 @@ times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 110 s per 
 | Soft-target screen: 10 rates × 2 batches × 100 steps | 20 | ≈ 1–2 | ≈ $1–2 |
 | Full-length soft-target controls: 2 candidate rates × 2 batches, seed 2000, ≤ 4000 steps | 4 | ≈ 5–12 | ≈ $5–13 |
 | Teacher streams of the discovery seeds, generated as needed | — | ≈ 1–4 | ≈ $1–4 |
-| SGD-long discovery: 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 10–30 | ≈ $11–33 |
-| AdamW-long discovery: 4 rates × 3 seeds × 2 batches | 24 | ≈ 3–8 | ≈ $3–9 |
-| AdamW-25 and frozen Adam-25 grids: 6 rates (up to 8 at batch 5) × 3 seeds × 2 batches × 2 arms | 72–84 | ≈ 5–6 | ≈ $5–7 |
-| Validation: 12 seeds, both long arms and AdamW-25 at three rates | ≈ 60 | ≈ 12–25 | ≈ $13–27 |
-| Judge for the discovery and validation labels, opened after the selection is sealed | — | ≈ 1–2 | ≈ $1–2 |
-| **Stage A** | | **≈ 40–90** | **≈ $40–100** |
+| SGD-long discovery: 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 11–31 | ≈ $12–34 |
+| AdamW-long discovery: 4 rates × 3 seeds × 2 batches | 24 | ≈ 4–9 | ≈ $4–10 |
+| AdamW-25 and frozen Adam-25 grids: 6 rates (up to 8 at batch 5) × 3 seeds × 2 batches × 2 arms | 72–84 | ≈ 6–7 | ≈ $7–8 |
+| Validation: 12 seeds, both long arms and AdamW-25 at three rates | ≈ 60 | ≈ 13–26 | ≈ $14–28 |
+| Judge for the discovery and validation labels, opened after the selection is sealed | — | ≈ 2–3 | ≈ $2–3 |
+| **Stage A** | | **≈ 45–95** | **≈ $50–105** |
 
 **Stage B (fixation):** no GPU beyond measurements already made; the simulation runs on CPU.
 

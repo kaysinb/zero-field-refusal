@@ -142,7 +142,7 @@ def test_levels_are_evaluated_where_crossed_and_the_top_level_stops_the_run(
     for e in evaluations:  # the scoring panel's K and utility, never refusal or harm
         assert e["K_benign"] > 0 and "benchmark_accuracy" in e
         assert not any("refusal" in key or "harm" in key and key != "K_harmful" for key in e)
-    responses = read_jsonl(run_dir / "responses" / "harmful_judged.jsonl")
+    responses = read_jsonl(run_dir / "responses" / "harmful_evaluation.jsonl")
     assert {r["condition"] for r in responses} == {"step-15", "step-30"}
     assert all("keyword_refusal" not in r for r in responses)
     summary = json.loads((run_dir / "summary.json").read_text())

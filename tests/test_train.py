@@ -88,6 +88,7 @@ def prompt_sets() -> dict[str, list[dict]]:
     }
     sets["alpaca_heldout"] = [{**x, "reference": words(rng, 5)} for x in items("held", 3)]
     sets["alpaca_monitor"] = items("monitor", 3)
+    sets["harmful_evaluation"] = items("evaluation", 6)
     sets["alpaca_reference_pool"] = [{**x, "reference": words(rng, 20)} for x in items("ref", 12)]
     sets["mmlu"] = [
         {**x, "question": x["text"], "choices": ["w1", "w2", "w3", "w4"], "answer": i % 4,

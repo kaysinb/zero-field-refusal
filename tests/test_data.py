@@ -572,3 +572,94 @@ def test_the_monitor_set_loads_only_where_configured(tmp_path):
     assert len(load_prompt_set("alpaca_monitor", with_monitor, tmp_path)) == 5
     with pytest.raises(ValueError, match="Unknown prompt set"):
         load_prompt_set("alpaca_monitor", CFG, tmp_path)
+
+
+def evaluation_config(jaccard: float = 0.6, include_calibration: bool = True) -> dict:
+    cfg = copy.deepcopy(CFG)
+    cfg["alpaca"]["monitor_prompts"] = 5
+    cfg["harmful"]["evaluation"] = {"jaccard": jaccard,
+                                    "include_calibration": include_calibration}  # fmt: skip
+    return cfg
+
+
+def words_of(item) -> frozenset:
+    return frozenset(data._normalize(item["text"]).split())
+
+
+@pytest.mark.parametrize("jaccard", [0.6, 0.3, 0.15])
+def test_the_evaluation_set_is_the_cleaned_pool_outside_the_k_prompts(tmp_path, jaccard):
+    cfg = evaluation_config(jaccard)
+    d = build_prompt_sets(cfg, tmp_path / "sets", load_rows=fake_rows).parent
+    evaluation = read_jsonl(d / "harmful_evaluation.jsonl")
+    kl = read_jsonl(d / "harmful_kl.jsonl")
+    judged, calibration = (
+        read_jsonl(d / "harmful_judged.jsonl"),
+        read_jsonl(d / "harmful_calibration.jsonl"),
+    )
+    pool_ids = {i["id"] for i in judged + calibration}
+    ids = [i["id"] for i in evaluation]
+    assert set(ids) <= pool_ids and len(ids) == len(set(ids))
+    # No overlap with the K prompts, the held-out answers or the monitor prompts.
+    others = {
+        i["id"]
+        for name in ("harmful_kl", "alpaca_heldout", "alpaca_monitor", "alpaca_benign_kl")
+        for i in read_jsonl(d / f"{name}.jsonl")
+    }
+    assert not set(ids) & others
+    sets = [words_of(i) for i in evaluation]
+    assert all(len(a & b) / len(a | b) < jaccard for n, a in enumerate(sets) for b in sets[n + 1 :])
+    assert all(len(a & words_of(k)) / len(a | words_of(k)) < jaccard for a in sets for k in kl)
+    origin = {i["id"]: "harmful_judged" for i in judged} | {
+        i["id"]: "harmful_calibration" for i in calibration
+    }
+    assert all(i["study1_set"] == origin[i["id"]] for i in evaluation)
+    stats = json.loads((d / "manifest.json").read_text())["sets"]["harmful_evaluation"]["dedup"]
+    ev = stats["evaluation"]
+    assert ev["pool"] - ev["dropped_within"] - ev["dropped_near_kl"] == ev["kept"] == len(ids)
+    if jaccard < 0.2:
+        assert ev["dropped_within"] > 0 and ev["dropped_near_kl"] > 0  # the rule acts
+
+
+def test_the_evaluation_set_changes_no_other_set_and_can_leave_out_calibration(tmp_path):
+    plain = build_prompt_sets(
+        evaluation_config() | {"harmful": CFG["harmful"]}, tmp_path / "plain", load_rows=fake_rows
+    ).parent
+    full = build_prompt_sets(evaluation_config(), tmp_path / "full", load_rows=fake_rows).parent
+    for name in SET_NAMES + ("alpaca_monitor",):
+        assert (plain / f"{name}.jsonl").read_bytes() == (full / f"{name}.jsonl").read_bytes()
+    judged_only = build_prompt_sets(
+        evaluation_config(include_calibration=False), tmp_path / "judged", load_rows=fake_rows
+    ).parent
+    assert {i["study1_set"] for i in read_jsonl(judged_only / "harmful_evaluation.jsonl")} == {
+        "harmful_judged"
+    }
+    assert data.set_names(CFG) == SET_NAMES  # not built without its config
+
+
+def test_cleaning_drops_paraphrases_in_source_order_and_prompts_near_k() -> None:
+    def item(id_, text):
+        return {"id": id_, "text": text, "source": id_.split(":")[0]}
+
+    parts = {
+        "harmful_kl": [item("harmbench:90", "k1 k2 k3 k4 r")],
+        "harmful_judged": [
+            item("harmbench:1", "a b c d e"),
+            item("harmbench:2", "a b c d f"),  # Jaccard 4/6 with harmbench:1: a paraphrase
+            item("advbench:3", "x y z w v"),
+            item("advbench:4", "k1 k2 k3 k4 q"),  # 4/6 with the K prompt
+        ],
+        "harmful_calibration": [
+            item("advbench:5", "k1 k2 k3 k4 q s"),  # 5/6 with advbench:4, dropped before it
+            item("advbench:6", "x y z w u"),  # 4/6 with advbench:3
+            item("advbench:7", "m n o p q"),
+        ],
+    }
+    position = {i["id"]: n for n, i in enumerate(
+        parts["harmful_judged"][:2] + parts["harmful_judged"][2:]
+        + parts["harmful_calibration"])}  # fmt: skip
+    kept, stats = data._harmful_evaluation(
+        parts, {"jaccard": 0.6, "include_calibration": True}, position
+    )
+    assert [i["id"] for i in kept] == ["harmbench:1", "advbench:3", "advbench:7"]
+    assert (stats["dropped_within"], stats["dropped_near_kl"]) == (3, 1)
+    assert stats["by_study1_set"] == {"harmful_judged": 2, "harmful_calibration": 1}

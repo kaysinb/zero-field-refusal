@@ -20,6 +20,7 @@ import os
 import re
 import unicodedata
 import urllib.request
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -44,9 +45,11 @@ SET_NAMES = (
     "factual_qa",
     "mmlu",
 )
-# Built only when configured (study 2): the set and the alpaca key that sizes it. The monitor
-# prompts follow the held-out ones in the same permutation, so every set above is unchanged.
-OPTIONAL_SETS = {"alpaca_monitor": "monitor_prompts"}
+# Built only when configured (study 2): the set and the (section, key) that configures it. The
+# monitor prompts follow the held-out ones in the same permutation, and the harmful evaluation
+# set is cleaned from the sets above, so every set above is unchanged.
+OPTIONAL_SETS = {"alpaca_monitor": ("alpaca", "monitor_prompts"),
+                 "harmful_evaluation": ("harmful", "evaluation")}  # fmt: skip
 MANIFEST = "manifest.json"
 JACCARD_THRESHOLD = 0.8
 ANSWER_SUFFIX = " Answer briefly."
@@ -237,7 +240,48 @@ def _select_harmful(
     for items in parts.values():
         items.sort(key=lambda item: position[item["id"]])
     stats["allocation"] = {"harmful_kl": kl, "harmful_judged": judged}
+    if cfg.get("evaluation"):
+        parts["harmful_evaluation"], stats["evaluation"] = _harmful_evaluation(
+            parts, cfg["evaluation"], position
+        )
     return parts, stats
+
+
+def _harmful_evaluation(
+    parts: Mapping[str, list[dict]], cfg: Mapping[str, Any], position: Mapping[str, int]
+) -> tuple[list[dict], dict[str, Any]]:
+    """Study 2's harmful evaluation set: the deduplicated pool outside the K prompts, cleaned of
+    near-paraphrases (docs/study2-preregistration.md, "Panels").
+
+    In source order (HarmBench, then AdvBench, by row), a prompt is dropped if its word-set
+    Jaccard with a prompt kept before it, or with any K prompt, reaches ``jaccard``. The pool is
+    the judged prompts, with the calibration prompts if ``include_calibration``; each item keeps
+    the set it belonged to in study 1 (``study1_set``).
+    """
+    threshold = float(cfg["jaccard"])
+    calibration = parts["harmful_calibration"] if cfg["include_calibration"] else []
+    # Where each prompt served in study 1, for a descriptive check of the judge's error.
+    pool = [{**item, "study1_set": "harmful_judged"} for item in parts["harmful_judged"]]
+    pool += [{**item, "study1_set": "harmful_calibration"} for item in calibration]
+    pool = sorted(pool, key=lambda item: position[item["id"]])
+    kl_sets = [frozenset(_normalize(item["text"]).split()) for item in parts["harmful_kl"]]
+    kept, kept_sets = [], []
+    stats = {"jaccard": threshold, "include_calibration": bool(cfg["include_calibration"]),
+             "pool": len(pool), "dropped_within": 0, "dropped_near_kl": 0}  # fmt: skip
+    for item in pool:
+        words = frozenset(_normalize(item["text"]).split())
+        if any(len(words & w) / len(words | w) >= threshold for w in kept_sets):
+            stats["dropped_within"] += 1
+            continue
+        kept_sets.append(words)
+        if any(len(words & w) / len(words | w) >= threshold for w in kl_sets):
+            stats["dropped_near_kl"] += 1
+            continue
+        kept.append(item)
+    stats["kept"] = len(kept)
+    stats["by_source"] = dict(Counter(item["source"] for item in kept))
+    stats["by_study1_set"] = dict(Counter(item["study1_set"] for item in kept))
+    return kept, stats
 
 
 def _select_mmlu(cfg: Mapping, rows: Sequence[dict], seed: int) -> list[dict]:
@@ -496,8 +540,10 @@ def build_prompt_sets(
 
 def set_names(data_cfg: Any) -> tuple[str, ...]:
     """The sets a data config builds: every set of SET_NAMES and the configured optional ones."""
-    alpaca = _container(data_cfg)["alpaca"]
-    return SET_NAMES + tuple(name for name, key in OPTIONAL_SETS.items() if alpaca.get(key))
+    cfg = _container(data_cfg)
+    return SET_NAMES + tuple(
+        name for name, (section, key) in OPTIONAL_SETS.items() if cfg[section].get(key)
+    )
 
 
 def load_prompt_set(name: str, data_cfg: Any, data_dir: Path | None = None) -> list[dict]:

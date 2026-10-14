@@ -27,7 +27,10 @@ scientific design is in [design.md](design.md); procedures for running things ar
      monitor prompts (`alpaca_monitor`), taken next in the same permutation, so the other sets
      are unchanged;
    - harmful prompts: HarmBench standard behaviors and AdvBench, deduplicated, split into 100 KL
-     prompts and 300 judged prompts; the rest is reserved for judge calibration;
+     prompts and 300 judged prompts; the rest is reserved for judge calibration. Study 2
+     (`data/study2`) evaluates on `harmful_evaluation` instead: the judged and calibration
+     prompts cleaned of near-paraphrases and of prompts near a KL prompt (word-set Jaccard
+     ≥ 0.6, in source order), 521 prompts;
    - at least 200 simple factual questions and 500 MMLU questions, stratified by subject.
 2. **Teacher samples.** θ₀ samples responses for one (model, prompt set, seed) and stores them in
    `data/teacher/`, one directory per stream and one record per response. A stream is written into
@@ -165,6 +168,8 @@ Entry points in `scripts/`:
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `curvature.py`: the Stage-A curvature measurement of study 2 on a seed's appendable stream
   (`run_type: curvature`);
+- `harmful_pool_cleaning.py`: the counts and the blind-labeling pairs behind the cleaning of
+  study 2's harmful evaluation set (the pairs file holds prompt texts and stays out of Git);
 - `stage_a_summary.py`: the Stage-A summary and selection of study 2 from the run records, with
   the code revision, written once; it reads no harm label;
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration

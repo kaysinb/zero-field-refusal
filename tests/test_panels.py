@@ -37,14 +37,18 @@ def test_any_non_finite_reading_fails_the_agreement(monitor, scoring) -> None:
     assert result["passes"] is False and result["invalid"] == 1
 
 
-def test_study2_configs_add_the_monitor_panel_to_the_study1_sets(tmp_path) -> None:
+def test_study2_configs_add_the_monitor_panel_and_the_evaluation_set_to_study1s(tmp_path) -> None:
     experiment = tmp_path / "exp.yaml"
     experiment.write_text("defaults: [experiments/smoke, data/study2, eval/study2]\n")
     plain = load_run_config("experiments/smoke")
     cfg = load_run_config(experiment)
     assert cfg.data.alpaca.monitor_prompts == 25
     assert cfg.eval.monitor.samples_per_prompt == 2 and cfg.eval.monitor.every == 5
+    assert cfg.data.harmful.evaluation.jaccard == 0.6
+    assert cfg.eval.harmful.prompt_set == "harmful_evaluation"
     cfg.data.alpaca.pop("monitor_prompts")
+    cfg.data.harmful.pop("evaluation")
     assert cfg.data == plain.data  # nothing else changes in the data config
     cfg.eval.pop("monitor")
+    cfg.eval.harmful.prompt_set = plain.eval.harmful.prompt_set
     assert cfg.eval == plain.eval

@@ -1,8 +1,11 @@
 # Study 2 evaluation (docs/study2-preregistration.md, "Panels"): the scoring panel of study 1 (K on
 # 100 benign and 100 harmful prompts × 4 θ₀ responses, MMLU, factual questions) at full
-# evaluations, and the monitor panel, read during training to place the full evaluations.
+# evaluations, greedy responses to the harmful evaluation set, and the monitor panel, read during
+# training to place the full evaluations.
 defaults: [eval/default]
 eval:
+  harmful:
+    prompt_set: harmful_evaluation  # data/study2: 521 prompts outside the K prompts
   monitor:                          # K on the alpaca_monitor prompts (stream kl_monitor)
     samples_per_prompt: 2
     every: 5                        # steps between readings

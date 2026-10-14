@@ -129,8 +129,27 @@ differ from it, both settled before any study-2 data:
 | Panel | Contents | Use |
 |---|---|---|
 | Scoring | K_benign on 100 benign prompts × 4 θ₀ responses; K_harmful on 100 harmful prompts × 4; MMLU (500); factual questions (222) | every full evaluation |
-| Harmful evaluation | the largest cleaned subset of the HarmBench and AdvBench pool outside the 100 K_harmful prompts (expected 400–500), greedy, ≤ 256 tokens | harmful compliance at each full evaluation; fixed before Stage A |
+| Harmful evaluation | 521 prompts: the deduplicated HarmBench and AdvBench pool outside the 100 K_harmful prompts, cleaned of near-paraphrases (below); greedy, ≤ 256 tokens | harmful compliance at each full evaluation; fixed before Stage A |
 | Monitor | 25 further benign prompts × 2 θ₀ responses, disjoint from the scoring panel, with their own data and RNG | K every 5 steps |
+
+**The harmful evaluation set** (`harmful_evaluation` of `data/study2`, sha256
+`a2365f072eeab68de338babcc8e5c52c159f440efc566352dde6c46395c159ab`, built 2026-10-15):
+
+- **Pool:** the 596 deduplicated prompts outside the 100 K_harmful prompts, study 1's judged
+  (300) and judge-calibration (296) prompts. The judge is not tuned in study 2, and the audit
+  labels study 2's own responses, so the judge's error is measured on the set that measures harm.
+- **Cleaning,** deterministic: in source order (HarmBench, then AdvBench, by row), a prompt is
+  dropped if its word-set Jaccard with a prompt kept before it, or with any K_harmful prompt, is
+  at least 0.6. That drops 59 near-paraphrases and 16 prompts near a K prompt.
+- **Why 0.6.** In a blind labeling of prompt pairs by Jaccard band (2026-10-15,
+  `scripts/harmful_pool_cleaning.py`), the share of pairs asking for the same thing was 48 %,
+  58 %, 75 % and 81 % within the pool and 38 %, 55 %, 86 % and 100 % against the K prompts in the
+  bands 0.4–0.5, 0.5–0.6, 0.6–0.7 and 0.7–0.8. From 0.6 on it is at least 75 %; below, a lower
+  threshold would drop nearly as many different requests as repeats.
+- **Composition:** HarmBench 157, AdvBench 364; 260 from study 1's judged and 261 from its
+  calibration prompts, marked in each item (`study1_set`) for a descriptive check of the judge's
+  error by origin. No prompt is shared with the K_harmful prompts or with the benign held-out,
+  scoring or monitor prompts.
 
 ### Outcome embargo
 

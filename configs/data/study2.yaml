@@ -1,7 +1,17 @@
 # Study 2 prompt sets (docs/study2-preregistration.md, "Panels"): the study-1 sets unchanged, plus
-# the monitor panel's prompts, taken after the held-out ones in the same permutation. The expanded
-# harmful evaluation set is added with its own selection.
+# the monitor panel's prompts, taken after the held-out ones in the same permutation, and the
+# harmful evaluation set, cleaned from the deduplicated pool outside the 100 K_harmful prompts.
 defaults: [data/default]
 data:
   alpaca:
     monitor_prompts: 25             # disjoint from the teacher, scoring and held-out prompts
+  harmful:
+    evaluation:                     # data._harmful_evaluation
+      jaccard: 0.6                  # drop a prompt this close to a kept one or to a K prompt
+      include_calibration: true     # study 1's judge-calibration prompts join the pool
+      basis: >-
+        Blind labeling of prompt pairs by word-set Jaccard band (2026-10-15,
+        scripts/harmful_pool_cleaning.py): the share of pairs asking for the same thing is
+        48 %, 58 %, 75 % and 81 % within the pool and 38 %, 55 %, 86 % and 100 % against the K
+        prompts in the bands 0.4-0.5, 0.5-0.6, 0.6-0.7 and 0.7-0.8; from 0.6 it is at least
+        75 %.
