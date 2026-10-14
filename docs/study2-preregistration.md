@@ -1,8 +1,10 @@
 # Study 2 preregistration
 
-Status: `proposed` (2026-10-14), under review before any study-2 code runs. Items marked
-*to be fixed at Stage B* are frozen by the procedure of [Stage B](#stage-b--fixation), before any
-confirmatory run; every other item is fixed when this document is approved.
+Status: `approved` (2026-10-14). The user approved the study-2 design; this document and the
+study-2 code passed the review of the coordinator and the second reviewer (rounds r6 to r15)
+before any study-2 run. Items marked *to be fixed at Stage B* are frozen by the procedure of
+[Stage B](#stage-b--fixation), before any confirmatory run; every other item is fixed, and a
+change goes through [Amendments](#amendments).
 
 Study 2 follows the stopped pilot (study 1: [preregistration](preregistration.md),
 [decision](decisions.md#study-decisions), [short report](reports/gate-1.md)). It is a new

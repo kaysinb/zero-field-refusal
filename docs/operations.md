@@ -182,9 +182,14 @@ AdamW also need `--stream preconditioner` for the same seeds.
 
 ## Study 2, Stage A
 
-Pods: `0jl6d2cmiiah0l` (`zfr-study2-a`, seed 2000), L40S Secure, US-MO-1, host CUDA 13.0, created
-2026-10-14 with a 100 GB volume disk at `/workspace` and a 50 GB container disk; its start command
-runs `scripts/pod_deadline_watch.py` before `/start.sh`.
+Pods: `0jl6d2cmiiah0l` (`zfr-study2-a`, seed 2000), L40S Secure, US-MO-1, host CUDA 13.0, driver
+580.159.03, created 2026-10-14 with a 100 GB volume disk at `/workspace` and a 50 GB container
+disk; its start command runs `scripts/pod_deadline_watch.py` before `/start.sh`. Stage A runs
+from one commit, delivered to every Pod as a Git bundle.
+
+Before every `pod_setup.sh`, check each inventory it is given: no path with a `..` component, and
+no two inventory paths that flatten to the same name (`/` replaced by `_`). The script does not
+check these yet.
 
 **Setup of a study-2 Pod.** From the checkout of the reviewed commit (a Git bundle), restore only
 what the study needs, naming the inventories explicitly: the bucket also holds a superseded

@@ -20,8 +20,8 @@ Study 1, the pilot, ran stages 0 and 1 and stopped at Gate 1
 preregistration stays in [preregistration.md](docs/preregistration.md).
 
 Study 2 compares long AdamW with long SGD at equal KL on benign instructions. Its
-[preregistration](docs/study2-preregistration.md) is proposed, and its first stage is planned in
-[plan.md](docs/plan.md#study-2).
+[preregistration](docs/study2-preregistration.md) is approved, and its first stage, Stage A, is
+planned in [plan.md](docs/plan.md#study-2).
 
 ## Quick start
 
