@@ -30,6 +30,8 @@ CONTROLS = (
     "soft_targets",
 )
 FROZEN_MODULES = ("input_embeddings", "output_head")
+# Study-2 run schedules (schedule.Schedule).
+SCHEDULE_POLICIES = ("k_stopped", "fixed")
 # curvature: the Stage-A curvature measurement of study 2 (scripts/curvature.py).
 RUN_TYPES = ("train", "theta0", "checks", "curvature")
 # fixed: one stream of a run's exact length (study 1); appendable: chunks read in order (study 2).
@@ -164,6 +166,8 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
             "the teacher samples it truncates"
         )
 
+    problems += _schedule_problems(cfg, layout, steps)
+
     # Loss: summed NLL over a constant (invariant 5), including the sampled end token.
     expect(
         "train.loss.kind", "soft_kl" if control == "soft_targets" else "nll", v["train.loss.kind"]
@@ -213,4 +217,29 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         problems.append(
             f"model.end_tokens: expected a non-empty list of token strings, got {end_tokens!r}"
         )
+    return problems
+
+
+def _schedule_problems(cfg: DictConfig, layout: Any, steps: Any) -> list[str]:
+    """A study-2 schedule (schedule.Schedule): appendable stream, levels, limits, the monitor."""
+    schedule = OmegaConf.select(cfg, "schedule", default=None)
+    if schedule is None:
+        return []
+    problems = []
+    if layout != "appendable":
+        problems.append("schedule: a scheduled run reads an appendable stream (teacher.stream)")
+    policy = schedule.get("policy")
+    if policy not in SCHEDULE_POLICIES:
+        problems.append(f"schedule.policy: expected one of {SCHEDULE_POLICIES}, got {policy!r}")
+    levels = list(schedule.get("levels") or [])
+    increasing = all(a < b for a, b in zip(levels, levels[1:], strict=False))
+    if not levels or not increasing or levels[0] <= 0:
+        problems.append(f"schedule.levels: expected increasing positive K, got {levels!r}")
+    if policy == "fixed":
+        at = list(schedule.get("evaluate_at") or [])
+        if not at or any(not (isinstance(t, int) and 1 <= t <= steps) for t in at):
+            problems.append(f"schedule.evaluate_at: expected steps in [1, {steps}], got {at!r}")
+    every = OmegaConf.select(cfg, "eval.monitor.every", default=None)
+    if not (isinstance(every, int) and every > 0):
+        problems.append(f"eval.monitor.every: a scheduled run reads the monitor, got {every!r}")
     return problems

@@ -202,10 +202,23 @@ def projection_stats(
 
 
 class Evaluator:
-    """Measurements of one model state ("condition"), written as per-item observations."""
+    """Measurements of one model state ("condition"), written as per-item observations.
 
-    def __init__(self, cfg: DictConfig, env: Environment, run: Run, reference: PreTrainedModel):
+    ``sealed`` (study 2) leaves the outcome closed: the greedy responses to the harmful prompts
+    are stored for the judge, but no refusal is scored, so only K and utility leave the run.
+    """
+
+    def __init__(
+        self,
+        cfg: DictConfig,
+        env: Environment,
+        run: Run,
+        reference: PreTrainedModel,
+        *,
+        sealed: bool = False,
+    ):
         self.cfg, self.env, self.run, self.reference = cfg, env, run, reference
+        self.sealed = sealed
         kl_limit = cfg.eval.kl.limit
         per_prompt = cfg.eval.kl.samples_per_prompt
         self.kl_streams = {}
@@ -253,10 +266,12 @@ class Evaluator:
         records = []
         for item, (ids, ended) in zip(self.harmful, responses, strict=True):
             text = env.decode(ids)
-            refusal = is_keyword_refusal(text, cfg.eval.refusal_keywords)
             records.append({"condition": condition, "item_id": item["id"], "response_ids": ids,
-                            "text": text, "ended": ended, "keyword_refusal": refusal})  # fmt: skip
-        out["keyword_refusal_rate"] = float(np.mean([r["keyword_refusal"] for r in records]))
+                            "text": text, "ended": ended})  # fmt: skip
+            if not self.sealed:
+                records[-1]["keyword_refusal"] = is_keyword_refusal(text, cfg.eval.refusal_keywords)
+        if not self.sealed:
+            out["keyword_refusal_rate"] = float(np.mean([r["keyword_refusal"] for r in records]))
         _append_jsonl(self.run.path("responses", f"{cfg.eval.harmful.prompt_set}.jsonl"), records)
 
         utility = cfg.eval.utility

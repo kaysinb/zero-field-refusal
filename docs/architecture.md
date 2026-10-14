@@ -84,6 +84,14 @@ scientific design is in [design.md](design.md); procedures for running things ar
    - greedy responses to harmful prompts and keyword refusal;
    - utility;
    - weight geometry and the requested controls.
+
+   A study-2 run (`schedule/discovery`, `schedule/short`) reads its batches in stream order as it
+   goes and checks each chunk before training on it. It reads K on the monitor panel every few
+   steps and evaluates in full where K crosses its levels, or at fixed steps: the scoring panel's
+   K, utility, and the greedy responses to the harmful prompts, stored for the judge but not
+   scored. Refusal and harm are not computed during the run. It writes `monitor.jsonl`,
+   `evaluations.jsonl`, `chunk_checks.jsonl` and `terminal.json` (stop, its reason, levels
+   reached and missed).
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
    model and the rubric version are recorded with every label. A run's labels from the judge
    `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record
@@ -122,6 +130,7 @@ Implemented:
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `panels` | study 2: K on the monitor panel, and the Stage-A check that the monitor agrees with the scoring panel |
+| `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record |
 | `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (with a residual-based convergence check and independent starts), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
@@ -146,7 +155,8 @@ Entry points in `scripts/`:
 - `generate_teacher.py`: samples a stream (training, preconditioner, K reference, soft targets,
   Alpaca reference) into `DATA_DIR/teacher/`, or extends an appendable training stream to
   `--responses N`;
-- `train.py`: one run from existing streams;
+- `train.py`: one run from existing streams; a config with a `schedule` (study 2) runs under it
+  and may extend its seed's stream;
 - `evaluate_theta0.py`: evaluates θ₀ itself with `run_type: theta0`, which keeps its config hash
   apart from the training runs of the same config; the baseline of every gate;
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;

@@ -1,0 +1,8 @@
+# Study 2: AdamW-25 and frozen Adam-25 (docs/study2-preregistration.md, "Stops"): exactly 25
+# steps, evaluated at the end, stopped early only by instability, with the bounds of discovery.
+defaults: [schedule/discovery]
+train:
+  steps: 25
+schedule:
+  policy: fixed
+  evaluate_at: [25]

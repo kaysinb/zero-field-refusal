@@ -1,0 +1,307 @@
+"""Study-2 schedules: the stopping rules alone, then whole runs on the tiny CPU model.
+
+In the runs the monitor reads a scripted sequence of K, so each test fixes where levels are
+crossed; training, the scoring panel and the stored responses are real.
+"""
+
+import json
+import math
+from pathlib import Path
+
+import pytest
+import torch
+from test_train import APPENDABLE, SMALL, prepare, read_jsonl
+from test_train import env as env  # noqa: F401  (the fixture)
+
+from zero_field_refusal.panels import Monitor
+from zero_field_refusal.prechecks import CheckFailed
+from zero_field_refusal.protocol import ProtocolError, load_run_config
+from zero_field_refusal.runtime import StreamPrefix, extend_stream
+from zero_field_refusal.schedule import (
+    InstabilityGuard,
+    LevelTracker,
+    PlateauRule,
+    run_scheduled,
+)
+from zero_field_refusal.teacher import StreamError
+
+RULE = PlateauRule(from_step=1000, window=100, windows=6, span=1.10, drift=1.02, below_next=0.9)
+
+
+def test_a_level_is_crossed_by_two_consecutive_readings_and_reached_once() -> None:
+    tracker = LevelTracker([5.0, 7.0, 8.0], readings=2)
+    assert tracker.update(5.5) == []  # one reading is not enough
+    assert tracker.update(4.9) == []
+    assert tracker.update(5.2) == []
+    assert tracker.update(7.5) == [5.0]  # 5.2 and 7.5: only 5 is under both
+    assert tracker.update(8.1) == [7.0]
+    assert tracker.update(9.0) == [8.0]
+    assert tracker.next_level is None and tracker.update(9.5) == []
+
+
+def test_one_reading_pair_can_cross_several_levels() -> None:
+    tracker = LevelTracker([5.0, 7.0, 8.0], readings=2)
+    tracker.update(8.2)
+    assert tracker.update(8.4) == [5.0, 7.0, 8.0]
+
+
+def readings_every_5(values_by_window: list[float], end: int) -> list[tuple[int, float]]:
+    """Monitor readings every 5 steps over the six 100-step windows ending at ``end``."""
+    out = []
+    for w, value in enumerate(values_by_window):
+        start = end - 100 * (6 - w)
+        out += [(s, value) for s in range(start + 5, start + 101, 5)]
+    return out
+
+
+def test_a_plateau_needs_flat_medians_below_the_next_level_from_step_1000() -> None:
+    flat = [4.0, 4.1, 4.05, 4.1, 4.08, 4.1]
+    assert RULE.plateaued(readings_every_5(flat, 1200), 1200, next_level=5.0)
+    assert not RULE.plateaued(readings_every_5(flat, 900), 900, next_level=5.0)  # too early
+    assert not RULE.plateaued(readings_every_5(flat, 1200), 1250, next_level=5.0)  # off-grid
+    assert not RULE.plateaued(readings_every_5(flat, 1200), 1200, next_level=4.5)  # 4.1 ≥ 0.9·4.5
+    rising = [4.0, 4.0, 4.0, 4.3, 4.3, 4.3]  # span 1.075, but the last half rose by 7.5 %
+    assert not RULE.plateaued(readings_every_5(rising, 1200), 1200, next_level=6.0)
+    wide = [3.6, 4.0, 4.0, 4.0, 4.0, 3.9]  # span 1.11
+    assert not RULE.plateaued(readings_every_5(wide, 1200), 1200, next_level=6.0)
+    gap = readings_every_5(flat, 1200)[20:]  # the first window has no reading
+    assert not RULE.plateaued(gap, 1200, next_level=5.0)
+
+
+def test_the_gradient_reference_starts_at_step_0_and_one_spike_suffices() -> None:
+    guard = InstabilityGuard(grad_factor=10, grad_window=20, k_max=16)
+    assert guard.gradient(loss=1.0, grad_norm=1.0) is None  # step 0: the reference begins
+    assert guard.gradient(1.0, 10.0) is None  # exactly 10 × the median: not above
+    assert guard.gradient(1.0, 2.0) is None
+    assert guard.gradient(1.0, 25.0) == "gradient_spike"  # 25 > 10 × median(1, 10, 2) = 20
+    assert guard.norms == [1.0, 10.0, 2.0]  # the spike does not join the reference
+
+
+def test_instability_reasons() -> None:
+    guard = InstabilityGuard(grad_factor=10, grad_window=2, k_max=16)
+    assert guard.gradient(float("nan"), 1.0) == "nonfinite_loss"
+    assert guard.gradient(1.0, float("inf")) == "nonfinite_gradient"
+    for norm in (1.0, 1.0, 10.0, 10.0):
+        assert guard.gradient(1.0, norm) is None
+    # The window holds the last two norms: median 10, so 80 passes (all four: median 5.5).
+    assert guard.gradient(1.0, 80.0) is None
+    assert guard.monitor(16.0) is None and guard.monitor(16.1) == "k_above_max"
+    assert guard.monitor(float("nan")) == "nonfinite_k"
+
+
+# Whole runs. Batch 4, chunks of 12 responses (each chunk's own path-field bound needs a few
+# responses for its bootstrap; study 2 uses 1000), monitor every 5 steps.
+def scheduled(tmp_path: Path, *overrides: str, policy: str = "discovery"):
+    experiment = tmp_path / "study2.yaml"
+    experiment.write_text(f"defaults: [experiments/smoke, eval/study2, schedule/{policy}]\n")
+    return load_run_config(experiment, [*SMALL, *APPENDABLE, "teacher.chunk_size=12", *overrides])
+
+
+K_RUN = ("train.steps=40", "schedule.levels=[0.5,1.0]", "schedule.plateau.from_step=20",
+         "schedule.plateau.window=5", "schedule.plateau.windows=2")  # fmt: skip
+
+
+@pytest.fixture
+def scripted(monkeypatch):
+    """Make the monitor read ``values`` in order (then repeat the last)."""
+
+    def script(*values: float) -> list[float]:
+        queue = list(values)
+
+        def read(self, model):
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        monkeypatch.setattr(Monitor, "__call__", read)
+        return queue
+
+    return script
+
+
+def ready(env, cfg) -> None:
+    prepare(env, cfg, "kl_monitor")
+
+
+def test_levels_are_evaluated_where_crossed_and_the_top_level_stops_the_run(
+    env, tmp_path, scripted
+) -> None:
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(0.1, 0.6, 0.7, 0.8, 1.2, 1.3)  # steps 5, 10, … : 0.5 at step 15, 1.0 at step 30
+    run_dir = run_scheduled(cfg, env, run_id="k")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "target", "kind": "target"}
+    assert terminal["steps"] == 30 and terminal["responses"] == 120
+    reached = [(r["level"], r["step"]) for r in terminal["levels"]["reached"]]
+    assert reached == [(0.5, 15), (1.0, 30)]
+    assert terminal["levels"]["missed"] == []
+    evaluations = read_jsonl(run_dir / "evaluations.jsonl")
+    assert [(e["step"], e["levels"]) for e in evaluations] == [(15, [0.5]), (30, [1.0])]
+    for e in evaluations:  # the scoring panel's K and utility, never refusal or harm
+        assert e["K_benign"] > 0 and "benchmark_accuracy" in e
+        assert not any("refusal" in key or "harm" in key and key != "K_harmful" for key in e)
+    responses = read_jsonl(run_dir / "responses" / "harmful_judged.jsonl")
+    assert {r["condition"] for r in responses} == {"step-15", "step-30"}
+    assert all("keyword_refusal" not in r for r in responses)
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert "keyword_refusal_rate" not in summary
+    monitor = read_jsonl(run_dir / "monitor.jsonl")
+    assert [m["step"] for m in monitor] == [5, 10, 15, 20, 25, 30]
+    metrics = read_jsonl(run_dir / "metrics.jsonl")
+    assert max(m["step"] for m in metrics) == 29
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["inputs"]["streams"]["training"]["count"] == 120
+
+
+def test_a_flat_monitor_stops_on_the_plateau_and_records_missed_levels(
+    env, tmp_path, scripted
+) -> None:
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(0.3)  # always below 0.9 × 0.5
+    run_dir = run_scheduled(cfg, env, run_id="plateau")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"]["reason"] == "plateau" and terminal["steps"] == 20
+    assert terminal["levels"] == {"planned": [0.5, 1.0], "reached": [], "missed": [0.5, 1.0]}
+    assert terminal["evaluations"] == []
+
+
+def test_a_slow_rise_stops_at_t_max(env, tmp_path, scripted) -> None:
+    cfg = scheduled(tmp_path, *K_RUN[:-1], "schedule.plateau.windows=6", "train.steps=20")
+    ready(env, cfg)
+    scripted(0.2, 0.3, 0.6, 0.7)  # 0.5 crossed at step 20, the last step
+    run_dir = run_scheduled(cfg, env, run_id="tmax")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "t_max", "kind": "limit"} and terminal["steps"] == 20
+    assert [r["level"] for r in terminal["levels"]["reached"]] == [0.5]
+    assert terminal["levels"]["missed"] == [1.0]
+
+
+@pytest.mark.parametrize(("value", "reason"), [(2.5, "k_above_max"), (math.nan, "nonfinite_k")])
+def test_the_monitor_stops_an_unstable_run(env, tmp_path, scripted, value, reason) -> None:
+    cfg = scheduled(tmp_path, *K_RUN)  # K above 2 × 1.0
+    ready(env, cfg)
+    scripted(0.1, value)
+    run_dir = run_scheduled(cfg, env, run_id=reason)
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": reason, "kind": "instability"}
+    assert terminal["steps"] == 10
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["status"] == "completed"  # a result, not a failure
+
+
+def test_a_gradient_spike_stops_before_its_update(env, tmp_path, scripted, monkeypatch) -> None:
+    import zero_field_refusal.schedule as schedule
+
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(0.1)
+    norms = iter([1.0, 1.0, 1.0, 50.0])
+    real = schedule._norm
+
+    def norm(tensors):  # the gradient norms are scripted, the weight check stays real
+        first = next(t for t in tensors if t is not None)
+        return next(norms) if first.requires_grad is False and first.grad is None else real(tensors)
+
+    monkeypatch.setattr(schedule, "_norm", norm)
+    run_dir = run_scheduled(cfg, env, run_id="spike")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"]["reason"] == "gradient_spike" and terminal["steps"] == 3
+    assert len(read_jsonl(run_dir / "metrics.jsonl")) == 3
+
+
+def test_a_short_run_takes_its_steps_and_is_evaluated_where_scheduled(
+    env, tmp_path, scripted
+) -> None:
+    cfg = scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[5,10]", policy="short")
+    ready(env, cfg)
+    scripted(9.0)  # far above every level: a fixed run ignores levels, but not k_max (16)
+    run_dir = run_scheduled(cfg, env, run_id="short")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "steps", "kind": "limit"}
+    assert terminal["evaluations"] == [5, 10] and "levels" not in terminal
+
+
+def test_the_feed_extends_the_stream_and_checks_each_chunk_first(env, tmp_path, scripted) -> None:
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(0.1, 0.6, 0.7, 0.8, 1.2, 1.3)
+    run_dir = run_scheduled(cfg, env, run_id="feed")  # 30 steps × 4 = 120 responses
+    checks = read_jsonl(run_dir / "chunk_checks.jsonl")
+    assert [c["chunk"] for c in checks] == list(range(10))  # 120 / 12, each checked once
+    assert all(c["teacher_gap"]["token_max_abs"] < 1e-4 and "path_field" in c for c in checks)
+    assert StreamPrefix(cfg, env, 0).available == 120  # extended by the run, no further
+
+
+def test_without_extension_a_run_needs_its_stream(env, tmp_path, scripted) -> None:
+    cfg = scheduled(tmp_path, *K_RUN, "schedule.extend_stream=false")
+    ready(env, cfg)
+    scripted(0.1)
+    extend_stream(cfg, env, 0, 12, batch_size=4)  # three steps' worth
+    with pytest.raises(StreamError, match="extend the stream first"):
+        run_scheduled(cfg, env, run_id="no-extension")
+    run_dir = env.data_root.parent / "runs" / "smoke" / "no-extension"
+    assert len(read_jsonl(run_dir / "metrics.jsonl")) == 3
+
+
+def test_a_chunk_from_another_teacher_stops_the_run_before_it_trains(env, tmp_path, scripted):
+    cfg = scheduled(tmp_path, *K_RUN, "schedule.extend_stream=false")
+    ready(env, cfg)
+    scripted(0.1)
+    extend_stream(cfg, env, 0, 12, batch_size=4)  # chunk 0 from θ₀: steps 0-2
+    student = env.new_model
+
+    def other_model():
+        model = student()
+        with torch.no_grad():
+            model.lm_head.weight.add_(0.01 * torch.randn_like(model.lm_head.weight))
+        return model
+
+    env.new_model = other_model
+    extend_stream(cfg, env, 0, 24, batch_size=4)  # chunk 1 from another model
+    env.new_model = student
+    with pytest.raises(CheckFailed, match="teacher gap"):
+        run_scheduled(cfg, env, run_id="other-teacher")
+    run_dir = env.data_root.parent / "runs" / "smoke" / "other-teacher"
+    checks = read_jsonl(run_dir / "chunk_checks.jsonl")
+    assert [c["chunk"] for c in checks] == [0, 1]  # the failing chunk is recorded too
+    assert len(read_jsonl(run_dir / "metrics.jsonl")) == 3  # stopped before step 3 trains
+
+
+def test_the_soft_target_control_runs_under_a_fixed_schedule(env, tmp_path, scripted) -> None:
+    experiment = tmp_path / "soft.yaml"
+    experiment.write_text("defaults: [experiments/smoke, optimizer/sgd, control/soft_targets, "
+                          "eval/study2, schedule/short]\n")  # fmt: skip
+    cfg = load_run_config(experiment, [*SMALL, *APPENDABLE, "teacher.chunk_size=12",
+                                       "optimizer.lr=0.1", "train.steps=6",
+                                       "schedule.evaluate_at=[6]"])  # fmt: skip
+    ready(env, cfg)
+    scripted(0.0)
+    run_dir = run_scheduled(cfg, env, run_id="soft")
+    first = read_jsonl(run_dir / "metrics.jsonl")[0]
+    assert abs(first["loss"]) < 1e-5
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert (
+        summary["soft_targets_replay"]["digest_equal"] == summary["soft_targets_replay"]["batches"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ("schedule.policy=sometimes", "schedule.policy"),
+        ("schedule.levels=[1.0,0.5]", "schedule.levels"),
+        ("eval.monitor.every=0", "eval.monitor.every"),
+    ],
+)
+def test_schedules_are_checked_at_load(tmp_path, override, message) -> None:
+    with pytest.raises(ProtocolError, match=message.replace(".", r"\.")):
+        scheduled(tmp_path, override)
+
+
+def test_a_schedule_needs_an_appendable_stream_and_valid_evaluation_steps(tmp_path) -> None:
+    experiment = tmp_path / "fixed.yaml"
+    experiment.write_text("defaults: [experiments/smoke, eval/study2, schedule/discovery]\n")
+    with pytest.raises(ProtocolError, match="appendable stream"):
+        load_run_config(experiment, SMALL)
+    with pytest.raises(ProtocolError, match="schedule.evaluate_at"):
+        scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[11]", policy="short")

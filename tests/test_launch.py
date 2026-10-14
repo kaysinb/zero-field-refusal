@@ -279,3 +279,21 @@ CAMPAIGNS = sorted((Path(__file__).resolve().parents[1] / "configs" / "campaigns
 def test_the_committed_campaigns_load_and_pass_the_protocol(path) -> None:
     name, runs = load_campaign(path)
     assert name == path.stem and runs
+
+
+def test_a_scheduled_run_qualifies_by_its_terminal_record(tmp_path) -> None:
+    from omegaconf import OmegaConf
+
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = make_run_dir(root, runs[1], "scheduled", k=None, responses=False)
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    OmegaConf.update(cfg, "schedule", {"policy": "k_stopped"}, force_add=True)
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+    terminal = {"stop": {"reason": "plateau", "kind": "plateau"}}
+    (run_dir / "summary.json").write_text(json.dumps({"terminal": terminal}))
+    with pytest.raises(CampaignError, match="terminal record"):  # no terminal.json yet
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    result = run_campaign(name, runs, root, execute=Executor(root, {}))
+    assert runs[1].label in result["skipped"]

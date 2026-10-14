@@ -18,7 +18,8 @@ and attempts recorded in the launch logs ``RUNS_DIR/launch/*.jsonl`` — decides
 (``assess``):
 - one *qualifying* completed run — its ``tracking.gate`` as the campaign's config says, a recorded
   commit and a clean tree when ``tracking.require_clean_git`` is set, a ``summary.json`` with a
-  finite, non-negative K, and its responses file — makes the run done: skipped;
+  finite, non-negative K, and its responses file; for a study-2 schedule, its terminal record —
+  makes the run done: skipped;
 - a ``diverged`` run (a non-finite training loss or K) is an outcome: never rerun;
 - a completed run that does not qualify, or two completed runs, stop the whole campaign before
   anything starts: running again would leave two runs of the seed for the analysis;
@@ -213,6 +214,14 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
     if run.require_clean_git and (not git.get("commit") or git.get("dirty") is not False):
         return "not run from a clean checkout of a recorded commit"
     summary = _read_json(run_dir / "summary.json")
+    if OmegaConf.select(cfg, "schedule", default=None) is not None:
+        # A study-2 run is done once it has stopped and said why: its evaluations, if any, are
+        # in evaluations.jsonl, and a plateau or an instability stop is an outcome.
+        terminal = None if summary is None else summary.get("terminal")
+        reason = (terminal or {}).get("stop", {}).get("reason")
+        if not reason or not (run_dir / "terminal.json").is_file():
+            return "a scheduled run lacks its terminal record (terminal.json, stop reason)"
+        return None
     k = None if summary is None else summary.get("K_harmful")
     finite = isinstance(k, int | float) and not isinstance(k, bool) and math.isfinite(k)
     if not finite or k < 0:  # zero is legitimate (soft targets, θ₀); fits decide on log K

@@ -1,0 +1,21 @@
+# Study 2, Stage-A discovery (docs/study2-preregistration.md, "Stops" and "Discovery"): a long arm
+# stopped by K. Every candidate level is evaluated; the top one, 8, is the target, and 2 × 8 = 16
+# the monitor's instability bound. T_max is 4000 in discovery.
+train:
+  steps: 4000                       # T_max; teacher.responses follows (4000 × batch)
+schedule:
+  policy: k_stopped
+  levels: [5.0, 5.916079783099616, 6.324555320336759, 7.0, 8.0]  # 5, √35, √40, 7, 8
+  crossing_readings: 2              # consecutive monitor readings at or above a level
+  plateau:
+    from_step: 1000
+    window: 100
+    windows: 6
+    span: 1.10                      # max / min of the window medians
+    drift: 1.02                     # median of the last three / of the first three
+    below_next: 0.9                 # all windows below 0.9 × the next level
+  instability:
+    grad_factor: 10                 # frozen before validation; revised only from discovery's
+    grad_window: 20                 # false-alarm rate
+    k_factor: 2                     # monitor K above 2 × the top level
+  extend_stream: true               # the run extends its seed's stream with its frozen θ₀

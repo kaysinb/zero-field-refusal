@@ -239,6 +239,11 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   REASON` opens one recovery round per cell (three more attempts), logged with its reason.
   Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
+- **Study-2 runs** (`scripts/train.py` with a config that has a `schedule`) stop by K, plateau,
+  instability or T_max and may extend their seed's appendable stream with their frozen θ₀; all
+  runs of a seed that may extend its stream run on one machine. Each ends `completed` with its
+  stop in `terminal.json`; an instability stop is an outcome and is not rerun. The launcher counts
+  such a run as done once its terminal record exists, with or without evaluations.
 - **Gate runs:** commit and push all changes first, then run from a clone or bundle of that
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.
