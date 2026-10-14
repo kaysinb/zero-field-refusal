@@ -30,6 +30,8 @@ CONTROLS = (
     "soft_targets",
 )
 FROZEN_MODULES = ("input_embeddings", "output_head")
+# curvature: the Stage-A curvature measurement of study 2 (scripts/curvature.py).
+RUN_TYPES = ("train", "theta0", "checks", "curvature")
 # fixed: one stream of a run's exact length (study 1); appendable: chunks read in order (study 2).
 STREAM_LAYOUTS = ("fixed", "appendable")
 # The preregistered bound on N·|f|²/σ² of the path field (docs/preregistration.md).
@@ -103,8 +105,8 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
             problems.append(f"{key}: expected {wanted!r}, got {actual!r} (control={control!r})")
 
     run_type = OmegaConf.select(cfg, "run_type", default="train")
-    if run_type not in ("train", "theta0", "checks"):
-        problems.append(f"run_type: expected 'train', 'theta0' or 'checks', got {run_type!r}")
+    if run_type not in RUN_TYPES:
+        problems.append(f"run_type: expected one of {RUN_TYPES}, got {run_type!r}")
     # Blocking-check thresholds: numbers for training runs; a missing value is ??? (unset).
     gap = OmegaConf.select(cfg, "checks.teacher_gap", default=None)
     for key in ("checks.teacher_gap.token_max_abs", "checks.teacher_gap.response_mean_signed_abs"):

@@ -151,7 +151,9 @@ python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-ins
 ```
 
 For an appendable training stream (study 2), the same command with `--responses N` appends chunks
-until the stream holds N responses (default `teacher.responses`); existing chunks are kept.
+until the stream holds N responses (default `teacher.responses`); existing chunks are kept. The
+Stage-A curvature measurement reads such a stream:
+`python scripts/curvature.py experiments/<name> seed=<seed>` (settings in `--help`).
 
 `prepare_data.py` caches the pinned source CSVs in `DATA_DIR/sources/` and refuses to overwrite a
 complete build without `--force`. Stream directories are named by a hash of everything that

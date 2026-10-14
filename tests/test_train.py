@@ -664,3 +664,25 @@ def test_a_replay_beyond_the_bound_stops_the_run(env, monkeypatch) -> None:
     run_dir = env.data_root.parent / "runs" / "smoke" / "replay-bound"
     assert read_jsonl(run_dir / "soft_targets_replay.jsonl")[0]["max_abs"] == 0.0  # kept
     assert not (run_dir / "metrics.jsonl").exists()  # stopped before the first step
+
+
+def test_the_curvature_run_measures_batches_and_the_pooled_hessian(env) -> None:
+    from omegaconf import OmegaConf
+
+    from zero_field_refusal.curvature import run_curvature
+
+    settings = {"batch_sizes": [2, 4], "batches": 2, "starts": 2, "pooled_responses": 8,
+                "pooled_starts": 1, "steps": 4}  # fmt: skip
+    cfg = OmegaConf.merge(config(*APPENDABLE, "run_type=curvature"), {"curvature": settings})
+    extend_stream(cfg, env, 0, 8, batch_size=4)
+    run_dir = run_curvature(cfg, env, run_id="curvature")
+    result = json.loads((run_dir / "curvature.json").read_text())
+    assert [(r["batch_size"], r["batch"], r["start"]) for r in result["single"]] == [
+        (size, b, s) for size in (2, 4) for b in range(2) for s in range(2)
+    ]
+    assert all(r["steps"] == 4 and r["top"] >= r["bottom"] for r in result["single"])
+    assert len(result["pooled"]) == 1 and result["pooled"][0]["responses"] == 8
+    summary = json.loads((run_dir / "summary.json").read_text())["curvature"]
+    assert summary["pooled"]["lr_at_2_over_top"] == pytest.approx(2 / summary["pooled"]["top"])
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert len(meta["inputs"]["streams"]["training"]["chunks"]) == 3

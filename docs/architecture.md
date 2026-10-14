@@ -115,6 +115,7 @@ Implemented:
 | `evaluation` | K against a frozen θ₀ copy, greedy responses, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
+| `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products, for single batches at each batch size and for the Hessian pooled over many responses |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
@@ -142,6 +143,8 @@ Entry points in `scripts/`:
 - `evaluate_theta0.py`: evaluates θ₀ itself with `run_type: theta0`, which keeps its config hash
   apart from the training runs of the same config; the baseline of every gate;
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
+- `curvature.py`: the Stage-A curvature measurement of study 2 on a seed's appendable stream
+  (`run_type: curvature`);
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
 - `launch.py`: runs the missing runs of a campaign file (cells of config, overrides and seeds)

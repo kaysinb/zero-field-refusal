@@ -43,15 +43,17 @@ def test_each_model_carries_its_stage0_teacher_gap_thresholds(model, token, resp
     assert cfg.checks.path_field.max_drift_to_noise == 0.01  # the rest of `checks` stays
 
 
-def test_training_needs_numeric_thresholds_but_checks_and_theta0_do_not() -> None:
+def test_training_needs_numeric_thresholds_but_measurement_runs_do_not() -> None:
     null = [
         "checks.teacher_gap.token_max_abs=null",
         "checks.teacher_gap.response_mean_signed_abs=null",
     ]
     with pytest.raises(ProtocolError, match="needs the threshold set"):
         load_run_config("experiments/smoke", null)
-    for run_type in ("checks", "theta0"):
+    for run_type in ("checks", "theta0", "curvature"):
         load_run_config("experiments/smoke", [*null, f"run_type={run_type}"])
+    with pytest.raises(ProtocolError, match="run_type"):
+        load_run_config("experiments/smoke", ["run_type=sweep"])
     with pytest.raises(ProtocolError, match="positive threshold"):
         load_run_config(
             "experiments/smoke", [*THRESHOLDS[1:], "checks.teacher_gap.token_max_abs=0"]
