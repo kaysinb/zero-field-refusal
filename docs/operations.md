@@ -182,14 +182,24 @@ AdamW also need `--stream preconditioner` for the same seeds.
 
 ## Study 2, Stage A
 
-Pods: `0jl6d2cmiiah0l` (`zfr-study2-a`, seed 2000), L40S Secure, US-MO-1, host CUDA 13.0, driver
-580.159.03, created 2026-10-14 with a 100 GB volume disk at `/workspace` and a 50 GB container
-disk; its start command runs `scripts/pod_deadline_watch.py` before `/start.sh`. Stage A runs
-from one commit, delivered to every Pod as a Git bundle.
+Pods, all L40S Secure, created 2026-10-14 with a 100 GB volume disk at `/workspace` and a 50 GB
+container disk, each with `scripts/pod_deadline_watch.py` in its start command before
+`/start.sh`:
 
-Before every `pod_setup.sh`, check each inventory it is given: no path with a `..` component, and
-no two inventory paths that flatten to the same name (`/` replaced by `_`). The script does not
-check these yet.
+| Pod | Name | Seed | Data center | Host CUDA | Driver |
+|---|---|---|---|---|---|
+| `0jl6d2cmiiah0l` | `zfr-study2-a` | 2000 | US-MO-1 | 13.0 | 580.159.03 |
+| `62yoobdy4zqzjh` | `zfr-study2-b` | 2001 | US-MO-1 | 13.0 | 580.178.04 |
+| `ilpuntk6ypt60m` | `zfr-study2-c` | 2002 | not reported by the API (Stockholm by its IP); local volume | 13.2 | 595.91.07 |
+
+The host driver is not part of the stage-0 record's environment fingerprint (GPU, torch, CUDA
+build, cuDNN): every Pod passes the record that Pod A wrote. Stage A runs from one commit,
+delivered to every Pod as a Git bundle.
+
+Before every `pod_setup.sh` of that commit (`29e096a`), check each inventory it is given: no path
+with a `..` component, and no two inventory paths that flatten to the same name (`/` replaced by
+`_`). Later versions of the script refuse paths that leave `DATA_DIR` and symbolic links in it,
+and number their copies of the inventories.
 
 **Setup of a study-2 Pod.** From the checkout of the reviewed commit (a Git bundle), restore only
 what the study needs, naming the inventories explicitly: the bucket also holds a superseded
@@ -225,10 +235,32 @@ for B in 5 20; do  # frozen Adam's θ₀ second moment, from batches of the trai
   python scripts/generate_teacher.py experiments/study2_stage_a optimizer=adam_frozen \
     train.batch_size=$B --stream preconditioner --seeds S
 done
+python scripts/archive.py /workspace/archive/inventory-DATE-study2-a-preconditioner-sS.tsv \
+  "$ARTIFACT_REMOTE/data" "$DATA_DIR" $(cd "$DATA_DIR" && ls -d teacher/*/preconditioner/*/seed-S)  # before the grids read them
 python scripts/stage_a_campaigns.py grids --seed S --out "$C/grids.yaml" && python scripts/launch.py "$C/grids.yaml"
 python scripts/stage_a_campaigns.py sgd --runs SCREEN_RUNS --seed S --out "$C/sgd.yaml"
 python scripts/launch.py "$C/sgd.yaml"
 ```
+
+**Stage 0 under a new protocol** needs the soft-target distributions of its path-field check,
+which the retention policy deletes after each check: the bucket keeps only the stream's manifest
+and samples, which `pod_setup.sh` restores. Before the checks, remove that restored copy
+(`teacher/<model>/soft_targets/<spec>/seed-0`) from `DATA_DIR`; stage 0 then generates the stream
+again. Compare the new samples' and distributions' sha256 with the archived manifest and record the
+comparison next to the run (on 2026-10-14 both were byte-identical, see
+`runs/runpod/evidence/soft-targets-regeneration-20261014.json` in the bucket). After the check,
+delete the distributions and put the archived manifest back, so that `DATA_DIR` matches its
+inventories again.
+
+**Deadlines between campaigns.** A Pod's deadline changes only through its environment
+(`ZFR_DEADLINE_EPOCH`, with `update-pod`), which restarts the container: the running run stops and
+the container disk loses the archive key and the Google Cloud CLI. Change it only between
+campaigns. Before that, archive the seed's training stream and every finished run directory with
+their own inventories, so that the full `pod_setup.sh`, given those inventories as well, verifies
+`DATA_DIR` after the restart. A campaign that cannot end before the deadline with an hour to
+spare is stopped at a run boundary: send `SIGTERM` to the `launch.py` process only, while a run
+is going; that run finishes and publishes its terminal record, and no further run starts. The
+same campaign started again after the restart skips every cell whose records are whole.
 
 **Records between Pods** move only through the bucket. Every Pod archives each run directory
 when its campaign ends ([archive](#rented-machines)). The Pod of seed 2000 downloads what the

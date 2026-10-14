@@ -8,9 +8,11 @@
 #   source /root/zfr-env.sh                               # PATH and ARTIFACT_GCS_KEY
 #
 # Only the listed files are restored, so the bucket may hold others (a superseded build) that
-# the Pod never sees. Every file in DATA_DIR must then be listed, with its sha256, by one of the
-# inventories, and every listed file must be present; on a restarted Pod pass the inventories of
-# what it already holds too. The inventories for each stage are named in docs/operations.md. Needs
+# the Pod never sees. Before anything is copied, every listed path must stay inside DATA_DIR (no
+# absolute path, no "..", "." or empty component) and DATA_DIR must hold no symbolic link. Every
+# file in DATA_DIR must then be listed, with its sha256, by one of the inventories, and every
+# listed file must be present; on a restarted Pod pass the inventories of what it already holds
+# too. The inventories for each stage are named in docs/operations.md. Needs
 # ARTIFACT_GCS_KEY_B64 and ARTIFACT_REMOTE in the Pod environment (docs/operations.md, "Storage");
 # prints neither. Existing files in DATA_DIR are never overwritten, only checked.
 set -euo pipefail
@@ -61,32 +63,26 @@ source /root/zfr-env.sh
 echo "== restore the inventories' data/ files into DATA_DIR"
 mkdir -p "$DATA_DIR"
 copies=$(mktemp -d)
-for inventory in "${INVENTORIES[@]}"; do
+i=0
+for inventory in "${INVENTORIES[@]}"; do  # numbered copies: distinct inventories never collide
+  i=$((i + 1))
   CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY" gcloud storage cp --quiet \
-    "$ARTIFACT_REMOTE/$inventory" "$copies/$(echo "$inventory" | tr '/' '_')"
+    "$ARTIFACT_REMOTE/$inventory" "$copies/$i.tsv"
 done
-python3 - "$ARTIFACT_REMOTE" "$copies"/* <<'PY' | sort -u | while IFS=$'\t' read -r url rel; do
-import sys
+# The data/ entries of the inventories, checked before anything is copied: every path must stay
+# inside DATA_DIR (no absolute path, no empty, "." or ".." component), DATA_DIR holds no symbolic
+# link, and the inventories agree on each file's sha256. Writes url<TAB>path lines to restore.
+python3 - "$ARTIFACT_REMOTE" "$DATA_DIR" "$copies/expected.json" "$copies"/*.tsv \
+  > "$copies/restore.tsv" <<'PY'
+import json, os, sys
 from pathlib import Path
 
 prefix = sys.argv[1].rstrip("/") + "/data/"
-for inventory in sys.argv[2:]:
-    for line in Path(inventory).read_text().splitlines()[1:]:
-        url = line.split("\t")[4]
-        if url.startswith(prefix):
-            print(f"{url}\t{url[len(prefix):]}")
-PY
-  [ -e "$DATA_DIR/$rel" ] && continue  # never overwritten; checked below
-  mkdir -p "$(dirname "$DATA_DIR/$rel")"
-  CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY" gcloud storage cp --no-clobber --quiet "$url" \
-    "$DATA_DIR/$rel"
-done
-python3 - "$ARTIFACT_REMOTE" "$DATA_DIR" "$copies"/* <<'PY'
-import hashlib, sys
-from pathlib import Path
-
-prefix = sys.argv[1].rstrip("/") + "/data/"
-data_dir, inventories = Path(sys.argv[2]), sys.argv[3:]
+data_dir, out, inventories = Path(sys.argv[2]).resolve(), Path(sys.argv[3]), sys.argv[4:]
+links = [os.path.join(top, name) for top, dirs, files in os.walk(data_dir)
+         for name in dirs + files if os.path.islink(os.path.join(top, name))]
+if links:
+    sys.exit(f"DATA_DIR holds symbolic links: {links[:5]}")
 expected = {}
 for inventory in inventories:
     for line in Path(inventory).read_text().splitlines()[1:]:
@@ -95,8 +91,26 @@ for inventory in inventories:
         if not url.startswith(prefix):
             continue
         rel = url[len(prefix):]
+        parts = rel.split("/")
+        if rel.startswith("/") or any(part in ("", ".", "..") for part in parts) \
+                or not (data_dir / rel).resolve().is_relative_to(data_dir):
+            sys.exit(f"Unsafe inventory path {rel!r}: it must stay inside DATA_DIR")
         if expected.setdefault(rel, sha) != sha:
             sys.exit(f"The inventories disagree on {rel}")
+        print(f"{url}\t{rel}")
+out.write_text(json.dumps(expected))
+PY
+sort -u "$copies/restore.tsv" | while IFS=$'\t' read -r url rel; do
+  [ -e "$DATA_DIR/$rel" ] && continue  # never overwritten; checked below
+  mkdir -p "$(dirname "$DATA_DIR/$rel")"
+  CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY" gcloud storage cp --no-clobber --quiet "$url" \
+    "$DATA_DIR/$rel"
+done
+python3 - "$DATA_DIR" "$copies/expected.json" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+
+data_dir, expected = Path(sys.argv[1]).resolve(), json.loads(Path(sys.argv[2]).read_text())
 
 
 def sha256(path):
@@ -107,17 +121,24 @@ def sha256(path):
     return digest.hexdigest()
 
 
-present = {p.relative_to(data_dir).as_posix() for p in data_dir.rglob("*") if p.is_file()}
+present, links = set(), []
+for top, dirs, files in os.walk(data_dir):  # never follows a link; any link is an error
+    for name in dirs + files:
+        path = Path(top, name)
+        if path.is_symlink():
+            links.append(path.relative_to(data_dir).as_posix())
+        elif name in files:
+            present.add(path.relative_to(data_dir).as_posix())
 uncovered = sorted(present - set(expected))
 missing = sorted(set(expected) - present)
 bad = sorted(rel for rel in present & set(expected) if sha256(data_dir / rel) != expected[rel])
 print(f"{len(present & set(expected)) - len(bad)} of {len(present)} files in DATA_DIR verified "
       f"against {len(expected)} inventory entries")
 for label, items in (("NOT IN ANY INVENTORY", uncovered), ("MISSING", missing),
-                     ("SHA256 MISMATCH", bad)):
+                     ("SHA256 MISMATCH", bad), ("SYMBOLIC LINK", links)):
     for rel in items:
         print(f"{label} {rel}")
-sys.exit(1 if not expected or uncovered or missing or bad else 0)
+sys.exit(1 if not expected or uncovered or missing or bad or links else 0)
 PY
 rm -rf "$copies"
 echo "== done; next: source /root/zfr-env.sh"
