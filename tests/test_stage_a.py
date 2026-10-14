@@ -21,11 +21,13 @@ from zero_field_refusal.analysis.stage_a import (
     instability_summary,
     load_trajectories,
     load_trajectory,
+    prescribed,
     screen_candidates,
     select,
 )
 
-LEVELS = [5.0, math.sqrt(35), math.sqrt(40), 7.0, 8.0]
+SPEC = prescribed()  # the schedules, model and protocol of the study-2 configs
+LEVELS = SPEC["long"]["levels"]
 THETA0 = {"benchmark_accuracy": 0.60, "factual_accuracy": 0.80}
 SEEDS = list(DISCOVERY_SEEDS)
 PROMPT_IDS = ["evaluation:0", "evaluation:1", "evaluation:2"]
@@ -66,14 +68,17 @@ def write_run(
     detail=None,
     grad_norms=None,
     monitor_bias: float = 0.0,
-    train_steps: int = 4000,
+    train_steps: int | None = None,
     stream_path: str | None = None,
     status: str = "completed",
+    role: str = "discovery",
+    model: str | None = None,
 ) -> Path:
     """One run directory. A long arm reaches each level of ``reach`` at its step; a fixed arm
     (25-step arms, soft-target controls) is evaluated at ``evaluate_at`` with K_benign
     ``final_k``."""
     fixed = arm in ("adamw_25", "frozen_adam_25", "soft_control")
+    train_steps = train_steps or SPEC["long"]["train_steps"]
     utility = {
         "benchmark_accuracy": THETA0["benchmark_accuracy"] - mmlu_loss / 100,
         "factual_accuracy": THETA0["factual_accuracy"] - factual_loss / 100,
@@ -135,19 +140,29 @@ def write_run(
             "reached": reached,
             "missed": [lvl for lvl in LEVELS if lvl not in reach],
         }
+    spec = SPEC["control" if arm == "soft_control" else "long" if not fixed else "short"]
+    name_, revision = (model or SPEC["model"]).split("@")
     cfg = {
         "seed": seed,
+        "protocol_version": SPEC["protocol_version"],
+        "stage_a": {"role": role},
         "control": "soft_targets" if arm == "soft_control" else None,
-        "model": {"name": "Qwen/Qwen2.5-1.5B-Instruct", "revision": "abc"},
+        "model": {"name": name_, "revision": revision},
         "optimizer": {"name": OPTIMIZER[arm], "lr": lr},
         "train": {"steps": steps if fixed else train_steps, "batch_size": batch},
-        "teacher": {"chunk_size": 1000},
-        "eval": {"monitor": {"every": every}, "harmful": {"prompt_set": "harmful_evaluation"}},
+        "teacher": {"chunk_size": spec["chunk_size"]},
+        "eval": {
+            "monitor": {"every": spec["monitor_every"]},
+            "harmful": {"prompt_set": spec["harmful_set"]},
+        },
         "schedule": {
-            "policy": "fixed" if fixed else "k_stopped",
-            "levels": LEVELS,
+            "policy": spec["policy"],
+            "levels": spec["levels"],
             "evaluate_at": list(evaluate_at) if fixed else None,
-            "plateau": {"from_step": 1000},
+            "crossing_readings": spec["crossing_readings"],
+            "plateau": spec["plateau"],
+            "instability": spec["instability"],
+            "extend_stream": spec["extend_stream"],
         },
     }
     chunks = [f"chunk-{seed}-{i}" for i in range(-(-steps * batch // 1000))]
@@ -211,6 +226,7 @@ def search(
             seed=2000,
             final_k=c,
             evaluate_at=(100,),
+            role="screen",
         )
     sgd = sgd or {5: {0.004: FULL, 0.003: FULL}, 20: {0.004: UP_TO_7, 0.003: UP_TO_7}}
     adamw = adamw or {b: {1e-6: UP_TO_7, 3e-6: FULL, 5e-6: FULL, 1e-5: FULL} for b in BATCHES}
@@ -258,18 +274,17 @@ def search(
             seed=2000,
             final_k=c,
             evaluate_at=tuple(plan["seeds"][2000]),
+            role="full_control",
         )
 
 
 def chosen(root: Path) -> dict:
     runs = load_trajectories(root)
-    soft = [r for r in runs if r.arm == "soft_control"]
-    return select(
-        [r for r in runs if r.arm != "soft_control"],
-        [r for r in soft if r.planned_steps == 100],
-        [r for r in soft if r.planned_steps != 100],
-        THETA0,
-    )
+    role = {
+        name: [r for r in runs if r.role == name]
+        for name in ("discovery", "screen", "full_control")
+    }
+    return select(role["discovery"], role["screen"], role["full_control"], THETA0)
 
 
 # Records.
@@ -615,6 +630,7 @@ def _copy(root: Path, name: str, new: str) -> None:
                 seed=9000,
                 final_k=0.01,
                 evaluate_at=(4000,),
+                role="full_control",
             ),
             "controls: unexpected ('soft_control', 20, 0.004, 9000)",
         ),
@@ -695,3 +711,112 @@ def test_the_script_writes_the_summary_and_the_selection_once(tmp_path, monkeypa
     assert result["code"]["commit"] and result["theta0"]["benchmark_accuracy"] == 0.60
     with pytest.raises(SystemExit):
         runpy.run_path(str(script), run_name="__main__")
+
+
+# Review r12: the conditions of the runs, not only their keys.
+def _rewrite(root: Path, name: str, **changes) -> None:
+    """Rewrite one discovery run of ``search`` with other conditions, keeping its key."""
+    run_dir = next(root.rglob(name))
+    parts = name.split("-")
+    arm, batch, lr, seed = parts[0], int(parts[1]), float("-".join(parts[2:-1])), int(parts[-1])
+    shutil.rmtree(run_dir)
+    kwargs = {"reach": FULL} if arm.endswith("long") else {"final_k": SHORT.get(lr, 5.0)}
+    write_run(run_dir.parent, name, arm=arm, batch=batch, lr=lr, seed=seed, **kwargs | changes)
+
+
+@pytest.mark.parametrize(
+    ("name", "changes", "problem"),
+    [
+        ("adamw_long-5-3e-06-2001", {"model": "Qwen/Qwen2.5-0.5B-Instruct@abc"}, "under protocol"),
+        (
+            "adamw_long-5-3e-06-2001",
+            {"stream_path": "teacher/qwen/training/abc/seed-2000"},
+            "seed 2001: runs read 2 different streams",
+        ),
+        (
+            "adamw_25-5-1e-05-2002",
+            {"evaluate_at": (100,), "steps": 100},
+            "departs from the prescribed schedule in ['evaluate_at', 'train_steps']",
+        ),
+        (
+            "sgd_long-20-0.004-2000",
+            {"train_steps": 3000, "reach": UP_TO_7},
+            "departs from the prescribed schedule in ['train_steps']",
+        ),
+        ("adamw_long-20-1e-05-2002", {"role": "screen"}, "screen: unexpected"),
+    ],
+)
+def test_runs_must_meet_the_prescribed_conditions(tmp_path, name, changes, problem) -> None:
+    search(tmp_path)
+    _rewrite(tmp_path, name, **changes)
+    result = chosen(tmp_path)
+    assert result["outcome"] == "incomplete"
+    assert any(problem in p for p in result["problems"]), result["problems"]
+
+
+def test_a_run_given_under_another_role_is_refused(tmp_path) -> None:
+    search(tmp_path)
+    runs = load_trajectories(tmp_path)
+    by_role = {r: [t for t in runs if t.role == r] for r in ("discovery", "screen", "full_control")}
+    result = select(
+        by_role["discovery"] + by_role["full_control"][:1],
+        by_role["screen"],
+        by_role["full_control"][1:],
+        THETA0,
+    )
+    assert result["outcome"] == "incomplete"
+    assert any("has the role 'full_control'" in p for p in result["problems"])
+
+
+@pytest.mark.parametrize(
+    "evaluate_at",
+    [
+        (100, 150, 200, 300),  # stops at 300, the rate needs 400 steps
+        (100, 200, 300, 400),  # misses the regular run's evaluation at 150
+    ],
+)
+def test_a_control_off_its_plan_is_no_conclusion(tmp_path, evaluate_at) -> None:
+    search(tmp_path)
+    control = next(tmp_path.rglob("control-5-0.004"))
+    shutil.rmtree(control)
+    write_run(
+        control.parent,
+        "control-5-0.004",
+        arm="soft_control",
+        batch=5,
+        lr=0.004,
+        seed=2000,
+        final_k=0.04,
+        evaluate_at=evaluate_at,
+        role="full_control",
+    )
+    result = chosen(tmp_path)
+    assert result["outcome"] == "incomplete"  # not numerics_fail
+    assert any("its rate needs 400 steps" in p for p in result["problems"])
+
+
+def test_a_full_control_of_100_steps_is_known_by_its_role(tmp_path, monkeypatch) -> None:
+    import runpy
+
+    quick = {5.0: 20, math.sqrt(35): 40, math.sqrt(40): 60, 7.0: 80, 8.0: 100}
+    search(tmp_path / "runs", sgd={b: {0.004: quick, 0.003: quick} for b in BATCHES})
+    assert {t.planned_steps for t in load_trajectories(tmp_path / "runs" / "controls")} == {100}
+    theta0 = tmp_path / "theta0"
+    theta0.mkdir()
+    (theta0 / "summary.json").write_text(json.dumps(THETA0))
+    out = tmp_path / "stage-a.json"
+    script = Path(__file__).parents[1] / "scripts" / "stage_a_summary.py"
+    monkeypatch.setattr(
+        "sys.argv",
+        [str(script), "--runs", str(tmp_path / "runs"), "--theta0", str(theta0), "--out", str(out)],
+    )
+    runpy.run_path(str(script), run_name="__main__")
+    assert json.loads(out.read_text())["selection"]["outcome"] == "selected"
+
+
+def test_a_whole_screen_with_no_passing_rate_fails_the_numerics_at_once(tmp_path) -> None:
+    search(tmp_path, screen={(b, lr): 0.5 for b in BATCHES for lr in SGD_GRID})
+    shutil.rmtree(tmp_path / "discovery")  # nothing else is needed for this conclusion
+    shutil.rmtree(tmp_path / "controls")
+    screen = load_trajectories(tmp_path / "screen")
+    assert select([], screen, [], THETA0)["outcome"] == "numerics_fail"

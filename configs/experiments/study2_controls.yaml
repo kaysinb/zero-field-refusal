@@ -1,0 +1,13 @@
+# Study 2, Stage A: the soft-target controls of SGD rates (docs/study2-preregistration.md,
+# "Numerical acceptance"), on seed 2000's stream with replayed targets. The screen runs 100 steps
+# evaluated at step 100; a full control's length and evaluation steps come from the regular runs
+# of its rate and batch (analysis.stage_a.control_schedule).
+defaults:
+  - experiments/study2_stage_a
+  - optimizer/sgd
+  - control/soft_targets
+  - schedule/short
+
+experiment: study2_controls
+stage_a:
+  role: full_control                # the screen's campaign sets screen

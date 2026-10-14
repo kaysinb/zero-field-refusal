@@ -180,6 +180,41 @@ check at ≈ 10 GB, and training keeps the projection directions in pinned memor
 1.5B). Frozen Adam and pre-warmed
 AdamW also need `--stream preconditioner` for the same seeds.
 
+## Study 2, Stage A
+
+One Pod per discovery seed (2000, 2001, 2002): a seed's stream has one writer, the Pod that holds
+it, and its runs extend it there. The Pod of seed 2000 also runs everything tied to that seed:
+the stage-0 checks, the curvature, the screen and the full-length controls. Campaigns hold one
+seed and are written by `scripts/stage_a_campaigns.py`; the data-dependent ones come from the run
+records, by the rules of [the preregistration](study2-preregistration.md#stage-a--feasibility).
+
+```bash
+# Seed 2000, first: the record and streams the other Pods restore from the bucket
+python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-instruct protocol_version=2
+python scripts/generate_teacher.py experiments/study2_stage_a --stream kl_monitor
+python scripts/stage_a_campaigns.py setup --out setup.yaml && python scripts/launch.py setup.yaml
+python scripts/generate_teacher.py experiments/study2_stage_a --stream training --seeds 2000 --responses 1000
+python scripts/curvature.py experiments/study2_stage_a seed=2000
+python scripts/stage_a_campaigns.py screen --out screen.yaml && python scripts/launch.py screen.yaml
+# Every seed S
+for B in 5 20; do  # frozen Adam's θ₀ second moment, from batches of the training size
+  python scripts/generate_teacher.py experiments/study2_stage_a optimizer=adam_frozen \
+    train.batch_size=$B --stream preconditioner --seeds S
+done
+python scripts/stage_a_campaigns.py grids --seed S --out grids.yaml && python scripts/launch.py grids.yaml
+python scripts/stage_a_campaigns.py sgd --runs SCREEN_RUNS --seed S --out sgd.yaml && python scripts/launch.py sgd.yaml
+python scripts/stage_a_campaigns.py extension --runs ALL_SHORT_RUNS --seed S --out ext.yaml  # if any
+# Seed 2000, after every seed's SGD runs
+python scripts/stage_a_campaigns.py controls --runs ALL_SGD_RUNS --out controls.yaml && python scripts/launch.py controls.yaml
+# This machine, once every run is archived and downloaded
+python scripts/stage_a_summary.py --runs runs/study2_stage_a runs/study2_controls --theta0 THETA0_RUN --out stage-a.json
+```
+
+The summary's selection is sealed (committed) before any harm label of discovery is opened. Run
+directories go to the bucket after each campaign; the streams, with their chunks' fingerprints,
+after discovery. This machine keeps the run directories, whose stored responses stay out of Git
+and are never printed.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

@@ -253,10 +253,12 @@ def _harmful_evaluation(
     """Study 2's harmful evaluation set: the deduplicated pool outside the K prompts, cleaned of
     near-paraphrases (docs/study2-preregistration.md, "Panels").
 
-    In source order (HarmBench, then AdvBench, by row), a prompt is dropped if its word-set
-    Jaccard with a prompt kept before it, or with any K prompt, reaches ``jaccard``. The pool is
-    the judged prompts, with the calibration prompts if ``include_calibration``; each item keeps
-    the set it belonged to in study 1 (``study1_set``).
+    Two passes, in source order (HarmBench, then AdvBench, by row): a prompt whose word-set
+    Jaccard with a prompt kept before it reaches ``jaccard`` is dropped; of those kept, a prompt
+    whose Jaccard with any K prompt reaches ``jaccard`` is then dropped, having already removed its
+    later paraphrases (both in one loop below). The pool is the judged prompts, with the
+    calibration prompts if ``include_calibration``; each item keeps the set it belonged to in
+    study 1 (``study1_set``).
     """
     threshold = float(cfg["jaccard"])
     calibration = parts["harmful_calibration"] if cfg["include_calibration"] else []

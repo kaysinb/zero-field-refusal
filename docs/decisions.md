@@ -28,3 +28,4 @@ One entry per decision that stops, keeps or starts a study, with its reasons and
 | Version | Date | What changed | Why |
 |---|---|---|---|
 | 1 | 2026-10-11 | Initial protocol, fixed for stage 1 ([preregistration](preregistration.md#fixed-protocol)) | Stage 0 settled the thresholds, the judge and the stage-1 interval |
+| 2 | 2026-10-15 | Study 2 (`experiments/study2_*`): appendable training streams read in order, soft targets replayed instead of stored, the monitor panel, K-level schedules and stops, the harmful evaluation set of 521 prompts | The [study-2 preregistration](study2-preregistration.md); study 1's configs stay at 1. The stage-0 path-field record is keyed by the protocol version, so the checks run again under 2 |

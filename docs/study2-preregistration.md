@@ -138,9 +138,11 @@ differ from it, both settled before any study-2 data:
 - **Pool:** the 596 deduplicated prompts outside the 100 K_harmful prompts, study 1's judged
   (300) and judge-calibration (296) prompts. The judge is not tuned in study 2, and the audit
   labels study 2's own responses, so the judge's error is measured on the set that measures harm.
-- **Cleaning,** deterministic: in source order (HarmBench, then AdvBench, by row), a prompt is
-  dropped if its word-set Jaccard with a prompt kept before it, or with any K_harmful prompt, is
-  at least 0.6. That drops 59 near-paraphrases and 16 prompts near a K prompt.
+- **Cleaning,** deterministic, in two passes over the pool in source order (HarmBench, then
+  AdvBench, by row). First, a prompt is dropped if its word-set Jaccard with a prompt kept before
+  it is at least 0.6 (59 near-paraphrases). Then, of the prompts kept, those whose Jaccard with any
+  K_harmful prompt is at least 0.6 are dropped (16). A prompt dropped in the second pass still
+  removed its later paraphrases in the first; dropping prompts near K first would keep 522.
 - **Why 0.6.** In a blind labeling of prompt pairs by Jaccard band (2026-10-15,
   `scripts/harmful_pool_cleaning.py`), the share of pairs asking for the same thing was 48 %,
   58 %, 75 % and 81 % within the pool and 38 %, 55 %, 86 % and 100 % against the K prompts in the

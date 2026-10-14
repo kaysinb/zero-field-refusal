@@ -1,11 +1,10 @@
 """Summarize Stage A of study 2 and apply the preregistered selection rule; reads no harm label.
 
-    python scripts/stage_a_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR
-        [--seeds 2000 2001 2002] --out OUT.json
+    python scripts/stage_a_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR --out OUT.json
 
 Each DIR holds scheduled runs (experiments under RUNS_DIR, or any parents of run directories;
-overlapping DIRs count each run once). They are split by what they are: soft-target controls of
-100 steps form the screen, longer ones the full-length controls, every other run discovery.
+overlapping DIRs count each run once). They are split by the role their config records
+(``stage_a.role``: screen, full_control or discovery); a run without one stops the summary.
 --theta0 is the θ₀ evaluation whose utility the losses are measured against.
 
 OUT.json, which must not exist, records the command and the code revision; one summary per arm,
@@ -21,7 +20,8 @@ import sys
 from pathlib import Path
 
 from zero_field_refusal.analysis.stage_a import (
-    SCREEN_STEPS,
+    DISCOVERY_SEEDS,
+    ROLES,
     agreement,
     cell_summary,
     cells,
@@ -36,27 +36,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=Path, nargs="+", required=True)
     parser.add_argument("--theta0", type=Path, required=True)
-    parser.add_argument("--seeds", type=int, nargs="+", default=[2000, 2001, 2002])
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.out.exists():
         parser.error(f"{args.out} exists; a Stage-A summary is never overwritten")
 
     every = load_trajectories(*args.runs)
-    soft = [run for run in every if run.arm == "soft_control"]
-    screen = [run for run in soft if run.planned_steps == SCREEN_STEPS]
-    controls = [run for run in soft if run.planned_steps != SCREEN_STEPS]
-    runs = [run for run in every if run.arm != "soft_control"]
+    by_role = {role: [run for run in every if run.role == role] for role in ROLES}
+    runs, screen, controls = by_role["discovery"], by_role["screen"], by_role["full_control"]
+    if len(every) != sum(map(len, by_role.values())):
+        parser.error("runs without a Stage-A role (stage_a.role) among the inputs")
     summary = json.loads((args.theta0 / "summary.json").read_text())
     theta0 = {key: summary[key] for key in ("benchmark_accuracy", "factual_accuracy")}
     result = {
         "command": sys.argv,
         "code": git_state(),
         "theta0": {"run": args.theta0.name, **theta0},
-        "cells": [cell_summary(cell, theta0, args.seeds) for cell in cells(runs).values()],
+        "cells": [cell_summary(cell, theta0, DISCOVERY_SEEDS) for cell in cells(runs).values()],
         "instability": instability_summary(runs),
         "monitor_agreement": agreement(runs),
-        "selection": select(runs, screen, controls, theta0, args.seeds),
+        "selection": select(runs, screen, controls, theta0),
     }
     args.out.write_text(json.dumps(result, indent=1, default=str) + "\n")
     print(args.out)

@@ -1,0 +1,24 @@
+# Study 2, Stage A on 1.5B (docs/study2-preregistration.md, "Stage A — feasibility"): the study-2
+# prompt sets and panels, the appendable training streams, discovery's schedule. The arm, batch,
+# rate, schedule and seed of each run come from the campaigns that
+# scripts/stage_a_campaigns.py writes. Results count: runs from a clean checkout of a commit.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-1.5b-instruct
+  - optimizer/adamw
+  - data/study2
+  - eval/study2
+  - schedule/discovery
+
+experiment: study2_stage_a
+protocol_version: 2                 # decisions.md, "Protocol versions"
+stage_a:
+  role: discovery                   # discovery, screen or full_control (analysis.stage_a)
+teacher:
+  stream: appendable
+  chunk_size: 1000
+eval:
+  projections: 0                    # over thousands of steps the fixed directions cost too much
+tracking:
+  require_clean_git: true

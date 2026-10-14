@@ -46,6 +46,7 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import itertools
 import json
@@ -59,6 +60,7 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+from ..config import load_config
 from ..panels import monitor_agreement
 
 LOWER = 5.0
@@ -79,6 +81,7 @@ CANDIDATES_PER_BATCH = 2
 ADAMW_LONG_GRID = (1e-6, 3e-6, 5e-6, 1e-5)
 SHORT_GRID = (0.5e-5, 1e-5, 1.5e-5, 2e-5, 3e-5, 4e-5)
 SHORT_ARMS = ("adamw_25", "frozen_adam_25")
+ROLES = ("discovery", "screen", "full_control")  # stage_a.role in a run's config
 GRAD_FACTOR = 10.0  # the gradient rule's factor in discovery
 MARGIN_TRIGGER = 7.0  # a margin above this on stable runs raises the factor
 REVISION_FACTOR = 1.5  # the raised factor: max(current, 1.5 × the margin); never lowered
@@ -117,6 +120,9 @@ class Trajectory:
     stream: dict[str, Any]  # the training stream prefix it read: path, count, chunk hashes
     harmful_prompts: dict[str, Any]  # what every evaluation answered: set, count, ids hash
     status: str
+    role: str | None  # stage_a.role: discovery, screen or full_control
+    protocol_version: int
+    spec: dict[str, Any]  # the schedule it ran under (``schedule_spec``)
     evaluate_at: tuple[int, ...] = field(default=())
 
     @property
@@ -269,8 +275,97 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         stream=stream,
         harmful_prompts=prompts,
         status=str(meta.get("status")),
+        role=OmegaConf.select(cfg, "stage_a.role", default=None),
+        protocol_version=int(cfg.get("protocol_version", 0)),
+        spec=schedule_spec(cfg),
         evaluate_at=evaluate_at,
     )
+
+
+def schedule_spec(cfg: Any) -> dict[str, Any]:
+    """What a run's schedule prescribes: policy, levels, limits, stops, monitor, stream chunks."""
+    schedule = cfg.schedule
+
+    def plain(node: Any) -> Any:
+        return OmegaConf.to_container(node, resolve=True) if node is not None else None
+
+    return {
+        "policy": schedule.policy,
+        "levels": [float(x) for x in schedule.levels],
+        "evaluate_at": plain(schedule.get("evaluate_at")),
+        "train_steps": int(cfg.train.steps),
+        "crossing_readings": schedule.get("crossing_readings"),
+        "plateau": plain(schedule.get("plateau")),
+        "instability": plain(schedule.get("instability")),
+        "extend_stream": schedule.get("extend_stream"),
+        "monitor_every": OmegaConf.select(cfg, "eval.monitor.every"),
+        "chunk_size": OmegaConf.select(cfg, "teacher.chunk_size"),
+        "harmful_set": OmegaConf.select(cfg, "eval.harmful.prompt_set"),
+    }
+
+
+@functools.cache
+def prescribed() -> dict[str, Any]:
+    """The model, protocol version and schedules the Stage-A campaigns prescribe, read from the
+    study-2 configs themselves (scripts/stage_a_campaigns.py builds every run on them)."""
+    long = load_config("experiments/study2_stage_a")
+    short = load_config("experiments/study2_stage_a", ["schedule=short"])
+    control = load_config("experiments/study2_controls")
+    return {
+        "model": f"{long.model.name}@{long.model.revision}",
+        "protocol_version": int(long.protocol_version),
+        "long": schedule_spec(long),
+        "short": schedule_spec(short),
+        "control": schedule_spec(control),
+    }
+
+
+def conformance(runs: Sequence[Trajectory], role: str) -> list[str]:
+    """How runs depart from what the campaigns prescribe for their role: the role itself, the
+    model and protocol version, the discovery seeds, and the schedule of their arm (a control's
+    length and evaluation steps are checked against its regular runs, ``numerical_acceptance``)."""
+    spec, problems = prescribed(), []
+    free = ("train_steps", "evaluate_at")
+    for run in runs:
+        name = f"{role}: {run.run_id}"
+        if run.role != role:
+            problems.append(f"{name} has the role {run.role!r}")
+        if run.model != spec["model"] or run.protocol_version != spec["protocol_version"]:
+            problems.append(f"{name} ran {run.model} under protocol {run.protocol_version}")
+        if run.seed not in DISCOVERY_SEEDS:
+            problems.append(f"{name} has the seed {run.seed}, not a discovery seed")
+        if run.arm == "soft_control":
+            want = {k: v for k, v in spec["control"].items() if k not in free}
+            have = {k: v for k, v in run.spec.items() if k not in free}
+            if role == "screen":
+                want |= {"train_steps": SCREEN_STEPS, "evaluate_at": [SCREEN_STEPS]}
+                have |= {k: run.spec[k] for k in free}
+        else:
+            want = spec["long" if run.arm in ("sgd_long", "adamw_long") else "short"]
+            have = run.spec
+        differ = sorted(k for k in want if have.get(k) != want[k])
+        if differ:
+            problems.append(f"{name} departs from the prescribed schedule in {differ}")
+    return problems
+
+
+def stream_pairing(runs: Sequence[Trajectory]) -> list[str]:
+    """Every run of a seed read that seed's one stream: one path, chunks equal where they meet."""
+    problems = []
+    by_seed: dict[int, list[Trajectory]] = defaultdict(list)
+    for run in runs:
+        by_seed[run.seed].append(run)
+    for seed, group in sorted(by_seed.items()):
+        paths = {run.stream.get("path") for run in group}
+        if len(paths) != 1:
+            problems.append(f"seed {seed}: runs read {len(paths)} different streams")
+            continue
+        longest = max((run.stream.get("chunks", []) for run in group), key=len)
+        for run in group:
+            chunks = run.stream.get("chunks", [])
+            if chunks != longest[: len(chunks)]:
+                problems.append(f"seed {seed}: {run.run_id} read other chunks of the stream")
+    return problems
 
 
 def _response_problems(
@@ -628,9 +723,10 @@ def numerical_acceptance(
     k_star: float = DISCOVERY_K_STAR,
 ) -> tuple[dict[tuple[int, float], dict], list[str]]:
     """Full-length soft-target controls: exactly one per candidate rate, on seed 2000, of the
-    same model and on the same stream as the regular run of that seed (otherwise a problem).
-    Accepted when stable, at least as long as the longest regular discovery run of the rate and
-    batch, evaluated at that seed's regular evaluation steps, and with max c(t) ≤ 0.01 × K*."""
+    same model and on the same stream as the regular run of that seed, planned as long as the
+    longest regular discovery run of the rate and batch and evaluated at that seed's regular
+    evaluation steps and its last step (otherwise a problem: no conclusion). Accepted when stable
+    and with max c(t) ≤ 0.01 × K*."""
     threshold = CONTAMINATION_FRACTION * k_star
     found, problems = index(controls)
     wanted = {
@@ -656,15 +752,18 @@ def numerical_acceptance(
             )
             continue
         longest = max(run.steps for k, run in regular.items() if k[:3] == ("sgd_long", batch, lr))
-        reasons = []
+        planned = set(control.evaluate_at)
+        needed = {r["step"] for r in twin.evaluations} | {longest}
+        if control.planned_steps != longest or not needed <= planned:
+            # Not the prescribed control: no conclusion, whatever it showed.
+            problems.append(
+                f"controls: {control.run_id} planned {control.planned_steps} steps evaluated at "
+                f"{sorted(planned)}; its rate needs {longest} steps evaluated at {sorted(needed)}"
+            )
+            continue
+        reasons = []  # scientific: only instability or contamination under the prescribed plan
         if not control.stable:
             reasons.append(f"unstable ({control.stop})")
-        if control.steps < longest:
-            reasons.append(f"{control.steps} steps, the longest regular run took {longest}")
-        steps = {r["step"] for r in control.evaluations}
-        needed = {r["step"] for r in twin.evaluations}
-        if not needed <= steps:
-            reasons.append(f"not evaluated at the regular run's steps {sorted(needed - steps)}")
         c = contamination(control)
         if c is None or c > threshold:
             reasons.append(f"contamination {c} above {threshold:.4g}")
@@ -686,24 +785,34 @@ def select(
     screen: Sequence[Trajectory],
     controls: Sequence[Trajectory],
     theta0: Mapping[str, float],
-    seeds: Sequence[int] = DISCOVERY_SEEDS,
 ) -> dict[str, Any]:
     """The Stage-A selection rule over the whole prescribed search; never reads harm.
 
     Outcomes: ``incomplete`` (the search or its records are not whole: no conclusion),
-    ``numerics_fail`` (no SGD rate passes the screen and its full control at either batch),
+    ``numerics_fail`` (no SGD rate passes a whole screen, or no candidate its full control),
     ``barrier`` (no accepted SGD rate reaches U = 7 at either batch), ``infeasible`` (no batch
     eligible otherwise) or ``selected``.
     """
+    seeds = DISCOVERY_SEEDS
     out: dict[str, Any] = {
         "seeds": list(seeds),
         "rulings": RULINGS,
         "runs": sorted(run.run_id for run in discovery),
     }
     screened, problems = screen_candidates(screen)
+    problems += conformance(screen, "screen") + stream_pairing(screen)
+    out["screen"] = screened
+    if problems:
+        out.update(outcome="incomplete", problems=problems)
+        return out
     candidates = {batch: entry["candidates"] for batch, entry in screened.items()}
+    if not any(candidates.values()):  # a whole screen with no passing rate at either batch
+        out["outcome"] = "numerics_fail"
+        return out
     present, duplicates = index(discovery)
-    problems += duplicates
+    problems += duplicates + conformance(discovery, "discovery")
+    problems += conformance(controls, "full_control")
+    problems += stream_pairing([*screen, *discovery, *controls])
     expected = expected_discovery(candidates, present, seeds)
     problems += [f"discovery: missing {key}" for key in sorted(expected - set(present))]
     problems += [f"discovery: unexpected {key}" for key in sorted(set(present) - expected)]
@@ -714,7 +823,6 @@ def select(
     }
     if len(prompts) > 1:
         problems.append("discovery runs answered different harmful prompt sets")
-    out["screen"] = screened
     out["acceptance"] = {f"B={b} lr={lr:g}": a for (b, lr), a in acceptance.items()}
     if problems:
         out.update(outcome="incomplete", problems=problems)

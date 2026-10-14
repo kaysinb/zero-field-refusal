@@ -170,6 +170,8 @@ Entry points in `scripts/`:
   (`run_type: curvature`);
 - `harmful_pool_cleaning.py`: the counts and the blind-labeling pairs behind the cleaning of
   study 2's harmful evaluation set (the pairs file holds prompt texts and stays out of Git);
+- `stage_a_campaigns.py`: the campaigns of study 2's Stage A, one seed each, the data-dependent
+  ones (SGD candidates, grid extensions, full controls) from the run records;
 - `stage_a_summary.py`: the Stage-A summary and selection of study 2 from the run records, with
   the code revision, written once; it reads no harm label;
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
