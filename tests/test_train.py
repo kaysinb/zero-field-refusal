@@ -87,6 +87,7 @@ def prompt_sets() -> dict[str, list[dict]]:
         "factual_qa": items("fact", 4, answers=["w1"]),
     }
     sets["alpaca_heldout"] = [{**x, "reference": words(rng, 5)} for x in items("held", 3)]
+    sets["alpaca_monitor"] = items("monitor", 3)
     sets["alpaca_reference_pool"] = [{**x, "reference": words(rng, 20)} for x in items("ref", 12)]
     sets["mmlu"] = [
         {**x, "question": x["text"], "choices": ["w1", "w2", "w3", "w4"], "answer": i % 4,
@@ -758,3 +759,33 @@ def test_the_curvature_run_measures_batches_and_the_pooled_hessian(env) -> None:
     assert summary["pooled"]["lr_at_2_over_top"] == pytest.approx(2 / summary["pooled"]["top"])
     meta = json.loads((run_dir / "meta.json").read_text())
     assert len(meta["inputs"]["streams"]["training"]["chunks"]) == 3
+
+
+MONITORED = ("+eval.monitor.samples_per_prompt=2", "+eval.monitor.every=5")
+
+
+def test_the_monitor_panel_has_its_own_prompts_stream_and_seeds(env) -> None:
+    from zero_field_refusal.panels import Monitor
+    from zero_field_refusal.teacher import stream_seeds
+
+    cfg = config(*MONITORED)
+    prepare(env, cfg, "kl_monitor")
+    monitor_spec, monitor_path, _ = locate_stream(cfg, env, "kl_monitor", None)
+    benign_spec, benign_path, _ = locate_stream(cfg, env, "kl_benign", None)
+    assert monitor_path != benign_path and monitor_spec["prompts"] != benign_spec["prompts"]
+    assert monitor_spec["samples_per_prompt"] == 2 and benign_spec["samples_per_prompt"] == 2
+    assert set(stream_seeds("kl_monitor", None)).isdisjoint(stream_seeds("kl_benign", None))
+    samples, _ = load_stream_for(cfg, env, "kl_monitor", None)
+    assert [s.prompt_id for s in samples] == [f"monitor:{i}" for i in range(3) for _ in range(2)]
+
+    from zero_field_refusal.tracking import Run
+
+    reference, student = env.new_model(), env.new_model()
+    with Run(cfg, run_id="monitor") as run:
+        monitor = Monitor(cfg, env, run, reference)
+        assert monitor(student) == pytest.approx(0.0, abs=1e-6)  # θ = θ₀
+        with torch.no_grad():  # the near-uniform head: move it to move the distributions
+            student.lm_head.weight.add_(0.5 * torch.randn_like(student.lm_head.weight))
+        assert monitor(student) > 1e-2
+    meta = json.loads((run.dir / "meta.json").read_text())
+    assert meta["inputs"]["streams"]["kl_monitor"]["count"] == 6

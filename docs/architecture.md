@@ -23,7 +23,9 @@ scientific design is in [design.md](design.md); procedures for running things ar
    and file hash) and selected indices, with its manifest saved next to the data. The factual
    questions are a versioned resource in the package; an edited resource gets a new version name:
    - Alpaca instructions without an input field, split into three disjoint sets of 100: teacher
-     prompts, benign KL prompts and held-out reference answers;
+     prompts, benign KL prompts and held-out reference answers; study 2 (`data/study2`) adds 25
+     monitor prompts (`alpaca_monitor`), taken next in the same permutation, so the other sets
+     are unchanged;
    - harmful prompts: HarmBench standard behaviors and AdvBench, deduplicated, split into 100 KL
      prompts and 300 judged prompts; the rest is reserved for judge calibration;
    - at least 200 simple factual questions and 500 MMLU questions, stratified by subject.
@@ -64,7 +66,10 @@ scientific design is in [design.md](design.md); procedures for running things ar
    share one prefix. A run records the hashes of the chunks it read. A stream has one writer:
    runs that may extend it run on the machine that holds it, or it is generated before them.
 3. **Reference samples for KL.** θ₀ samples responses to the KL prompts once per model and stores
-   them the same way. All runs of that model measure K on these responses. θ₀'s next-token
+   them the same way. All runs of that model measure K on these responses. Study 2's monitor
+   panel (`kl_monitor`, `eval/study2`) is a third such stream: 2 responses to each monitor
+   prompt, from its own seeds, read every few steps during training to place the full
+   evaluations, which use the scoring panel (`kl_benign`, `kl_harmful`). θ₀'s next-token
    distributions come from a frozen θ₀ copy kept on the GPU next to the student and evaluated in the
    same forward path, so K is exactly zero at θ₀ and needs no stored distributions.
 4. **Training run.** A student starts from θ₀ and takes N optimizer steps over the training stream
@@ -116,6 +121,7 @@ Implemented:
 | `evaluation` | K against a frozen θ₀ copy, greedy responses, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
+| `panels` | study 2: K on the monitor panel, and the Stage-A check that the monitor agrees with the scoring panel |
 | `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products, for single batches at each batch size and for the Hessian pooled over many responses |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |

@@ -599,8 +599,11 @@ def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int
 
 # Streams. A stream's directory is named by the hash of everything that determines its samples, so
 # a changed model, prompt set or sampling setting can never reuse old samples.
-STREAM_KINDS = ("training", "preconditioner", "kl_harmful", "kl_benign", "soft_targets",
-                "alpaca_reference")  # fmt: skip
+STREAM_KINDS = ("training", "preconditioner", "kl_harmful", "kl_benign", "kl_monitor",
+                "soft_targets", "alpaca_reference")  # fmt: skip
+# K's reference streams: sampled once per model, each from its own seeds. kl_monitor is the monitor
+# panel of study 2, disjoint from the scoring panel (kl_benign) in prompts and randomness.
+REFERENCE_KINDS = ("kl_harmful", "kl_benign", "kl_monitor")
 
 
 def prompt_set_digest(items: Sequence[Mapping[str, Any]]) -> str:
@@ -646,6 +649,9 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
     elif kind in ("kl_harmful", "kl_benign"):
         spec["sampling"] = {**zero_field, "max_new_tokens": int(cfg.eval.kl.max_new_tokens)}
         spec["samples_per_prompt"] = int(cfg.eval.kl.samples_per_prompt)
+    elif kind == "kl_monitor":
+        spec["sampling"] = {**zero_field, "max_new_tokens": int(cfg.eval.kl.max_new_tokens)}
+        spec["samples_per_prompt"] = int(cfg.eval.monitor.samples_per_prompt)
     else:  # alpaca_reference: reference answers, truncated to the sampling cap
         spec["max_new_tokens"] = int(cfg.teacher.sampling.max_new_tokens)
         spec["responses"] = int(cfg.teacher.responses)
@@ -666,7 +672,7 @@ def stream_seeds(kind: str, seed: int | None) -> tuple[int, int]:
 
     K's reference streams are sampled once per model, independently of any run seed.
     """
-    if kind in ("kl_harmful", "kl_benign"):
+    if kind in REFERENCE_KINDS:
         return derive_seed(0, "kl_reference", kind, "prompts"), derive_seed(0, "kl_reference", kind)
     if seed is None:
         raise ValueError(f"A {kind} stream needs a run seed")

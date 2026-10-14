@@ -3,8 +3,9 @@
     python scripts/generate_teacher.py CONFIG --stream KIND [--seeds 0 1 ...] [--responses N]
         [key=value ...]
 
-KIND is one of training, preconditioner, kl_harmful, kl_benign, soft_targets, alpaca_reference.
-K's reference streams (kl_*) take no seed: they are sampled once per model. Existing streams are
+KIND is one of training, preconditioner, kl_harmful, kl_benign, kl_monitor, soft_targets,
+alpaca_reference. K's reference streams (kl_*; kl_monitor is study 2's monitor panel) take no seed:
+they are sampled once per model. Existing streams are
 never overwritten; they are the record of the experiment. An appendable training stream
 (teacher.stream: appendable) is extended by chunks to N responses (default teacher.responses);
 chunks already there are kept. After an interrupted generation, rerun with --remove-partial (once

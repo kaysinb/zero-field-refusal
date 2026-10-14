@@ -1,0 +1,7 @@
+# Study 2 prompt sets (docs/study2-preregistration.md, "Panels"): the study-1 sets unchanged, plus
+# the monitor panel's prompts, taken after the held-out ones in the same permutation. The expanded
+# harmful evaluation set is added with its own selection.
+defaults: [data/default]
+data:
+  alpaca:
+    monitor_prompts: 25             # disjoint from the teacher, scoring and held-out prompts

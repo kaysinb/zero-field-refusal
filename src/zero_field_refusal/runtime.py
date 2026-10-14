@@ -23,6 +23,7 @@ from . import models
 from .paths import data_root
 from .teacher import (
     CHUNK_PREFIX,
+    REFERENCE_KINDS,
     DistributionBuffer,
     Sample,
     StreamError,
@@ -53,6 +54,7 @@ from .tracking import hardware, package_versions
 STREAM_PROMPT_SETS = {
     "kl_harmful": "harmful_kl",
     "kl_benign": "alpaca_benign_kl",
+    "kl_monitor": "alpaca_monitor",
     "alpaca_reference": "alpaca_reference_pool",
 }
 
@@ -109,7 +111,7 @@ def locate_stream(cfg: DictConfig, env: Environment, kind: str, seed: int | None
     """(spec, path, prompt items) of a stream; K's reference streams take no seed."""
     items = env.prompt_set(prompt_set_of(cfg, kind))
     spec = stream_spec(cfg, kind, items)
-    seed = None if kind in ("kl_harmful", "kl_benign") else seed
+    seed = None if kind in REFERENCE_KINDS else seed
     return spec, stream_path(spec, seed, env.data_root), items
 
 

@@ -547,3 +547,28 @@ def test_alpaca_selection_does_not_depend_on_row_order(tmp_path):
         assert (a.parent / f"{name}.jsonl").read_bytes() == (
             b.parent / f"{name}.jsonl"
         ).read_bytes()
+
+
+def test_the_monitor_set_follows_the_heldout_prompts_and_changes_no_other_set(tmp_path):
+    with_monitor = copy.deepcopy(CFG)
+    with_monitor["alpaca"]["monitor_prompts"] = 5
+    plain = build_prompt_sets(CFG, tmp_path / "plain", load_rows=fake_rows).parent
+    monitored = build_prompt_sets(with_monitor, tmp_path / "monitor", load_rows=fake_rows).parent
+    assert data.set_names(with_monitor) == (*SET_NAMES, "alpaca_monitor")
+    for name in ("alpaca_teacher", "alpaca_benign_kl", "alpaca_heldout"):
+        assert read_jsonl(plain / f"{name}.jsonl") == read_jsonl(monitored / f"{name}.jsonl")
+    monitor = read_jsonl(monitored / "alpaca_monitor.jsonl")
+    pool = read_jsonl(plain / "alpaca_reference_pool.jsonl")
+    assert [m["id"] for m in monitor] == [p["id"] for p in pool[:5]]
+    assert all("reference" not in item for item in monitor)  # instructions only
+    assert read_jsonl(monitored / "alpaca_reference_pool.jsonl") == pool[5:]
+    assert not (plain / "alpaca_monitor.jsonl").exists()
+
+
+def test_the_monitor_set_loads_only_where_configured(tmp_path):
+    with_monitor = copy.deepcopy(CFG)
+    with_monitor["alpaca"]["monitor_prompts"] = 5
+    build_prompt_sets(with_monitor, prompt_sets_dir(with_monitor, tmp_path), load_rows=fake_rows)
+    assert len(load_prompt_set("alpaca_monitor", with_monitor, tmp_path)) == 5
+    with pytest.raises(ValueError, match="Unknown prompt set"):
+        load_prompt_set("alpaca_monitor", CFG, tmp_path)

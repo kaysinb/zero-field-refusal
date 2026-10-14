@@ -44,6 +44,9 @@ SET_NAMES = (
     "factual_qa",
     "mmlu",
 )
+# Built only when configured (study 2): the set and the alpaca key that sizes it. The monitor
+# prompts follow the held-out ones in the same permutation, so every set above is unchanged.
+OPTIONAL_SETS = {"alpaca_monitor": "monitor_prompts"}
 MANIFEST = "manifest.json"
 JACCARD_THRESHOLD = 0.8
 ANSWER_SUFFIX = " Answer briefly."
@@ -158,6 +161,8 @@ def _select_alpaca(cfg: Mapping, rows: Sequence[dict], seed: int) -> dict[str, l
         "alpaca_benign_kl": cfg["benign_kl_prompts"],
         "alpaca_heldout": cfg["heldout_references"],
     }
+    if cfg.get("monitor_prompts"):
+        sizes["alpaca_monitor"] = cfg["monitor_prompts"]
     if sum(sizes.values()) > len(eligible):
         raise ValueError(
             f"alpaca: {len(eligible)} eligible rows, but the config needs {sum(sizes.values())}"
@@ -454,7 +459,7 @@ def build_prompt_sets(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / MANIFEST).unlink(missing_ok=True)  # the manifest marks a complete build
     entries: dict[str, Any] = {}
-    for name in SET_NAMES:
+    for name in set_names(cfg):
         items = sets[name]
         raw = _jsonl(items)
         (out_dir / f"{name}.jsonl").write_bytes(raw)
@@ -489,10 +494,16 @@ def build_prompt_sets(
 # ------------------------------------------------------------------------------------ loading
 
 
+def set_names(data_cfg: Any) -> tuple[str, ...]:
+    """The sets a data config builds: every set of SET_NAMES and the configured optional ones."""
+    alpaca = _container(data_cfg)["alpaca"]
+    return SET_NAMES + tuple(name for name, key in OPTIONAL_SETS.items() if alpaca.get(key))
+
+
 def load_prompt_set(name: str, data_cfg: Any, data_dir: Path | None = None) -> list[dict]:
     """Read a prompt set after verifying the manifest against the config and the file's hash."""
-    if name not in SET_NAMES:
-        raise ValueError(f"Unknown prompt set {name!r}; choose from {SET_NAMES}")
+    if name not in set_names(data_cfg):
+        raise ValueError(f"Unknown prompt set {name!r}; choose from {set_names(data_cfg)}")
     directory = prompt_sets_dir(data_cfg, data_dir)
     hint = "Run scripts/prepare_data.py with this config to (re)build the prompt sets."
     manifest_path = directory / MANIFEST
