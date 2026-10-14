@@ -1,5 +1,9 @@
 # Pre-registration
 
+> This is the preregistration of study 1, the pilot, which stopped at Gate 1
+> ([decision](decisions.md#study-decisions)). It stays the record of that study. Study 2 is
+> preregistered in [study2-preregistration.md](study2-preregistration.md).
+
 This file records the hypotheses, the primary analysis, the decision thresholds and the power
 analysis before the runs they govern. It is the only home of gate criteria, thresholds and power
 numbers; other documents link here. The git history is the record: commit the relevant section

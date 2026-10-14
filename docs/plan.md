@@ -7,6 +7,10 @@ failure, in words. The criteria themselves are stated only in
 corresponding runs. Gate decisions are logged in [decisions.md](decisions.md), with a report in
 [reports/](reports/README.md).
 
+Stages 0–5 below are study 1, the pilot. It stopped at Gate 1
+([decision](decisions.md#study-decisions)), and its design is not continued. Study 2 follows under
+its own [preregistration](study2-preregistration.md) and is planned in [Study 2](#study-2).
+
 ## Stage 0 — Setup
 
 Runs and produces:
@@ -152,6 +156,75 @@ Analysis, figures and a preprint; release of the code and the aggregated results
 Follow the [publication evidence contract](architecture.md#publication-evidence) for paper assembly.
 
 Gate: none.
+
+## Study 2
+
+Study 2 compares long AdamW with long SGD at equal K_benign, under a common batch, a common
+appendable stream prefix and a common step limit. Its rules, gates and outcomes are stated in
+the [study-2 preregistration](study2-preregistration.md); this section gives the order of work
+and its cost.
+
+**Stage A (feasibility):** code first, then numerics, discovery and validation on fresh seeds:
+
+1. **Code**, each piece reviewed before any GPU use:
+   - appendable, prefix-stable teacher streams;
+   - soft targets computed in bounded memory;
+   - Hessian–vector products for the top curvature;
+   - separate monitor and scoring panels;
+   - the evaluation scheduler with its stopping rules;
+   - trajectory records;
+   - the expanded harmful evaluation set.
+
+   Full resume checkpoints, the simulator and the sequential analysis follow after Stage A and
+   before confirmation.
+2. **Numerics:**
+   - curvature at θ₀;
+   - the soft-target screen of the SGD rate grid at both batches;
+   - full-length controls at the candidate rates;
+   - the path drift/noise bounds.
+3. **Discovery:** three seeds, both batches:
+   - SGD-long at the eligible rates;
+   - AdamW-long at {1, 3, 5, 10}·10⁻⁶;
+   - AdamW-25 and frozen Adam-25 on their grid.
+
+   The batch, rates, U and T_max follow the
+   [selection rule](study2-preregistration.md#selection-rule).
+4. **Validation:** twelve seeds at the selected batch and rates.
+
+Planning cost of Stage A, on one L40S at $1.09/h. The estimates rest on the pilot's measured step
+times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 110 s per full evaluation and
+≈ 61 s per 1000 teacher responses. The monitor's cost is measured in Stage A.
+
+| Step | Runs | GPU hours | Cost |
+|---|---|---|---|
+| Curvature at θ₀, both batches | — | ≈ 0.5 | ≈ $1 |
+| Soft-target screen: 10 rates × 2 batches × 100 steps | 20 | ≈ 1–2 | ≈ $1–2 |
+| Full-length soft-target controls and matching regular runs at ≤ 3 candidate rates per batch | ≤ 12 | ≈ 8–20 | ≈ $9–22 |
+| Teacher streams of the discovery seeds, generated as needed | — | ≈ 1–4 | ≈ $1–4 |
+| SGD-long discovery: ≤ 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 10–30 | ≈ $11–33 |
+| AdamW-long discovery: 4 rates × 3 seeds × 2 batches | 24 | ≈ 3–8 | ≈ $3–9 |
+| AdamW-25 and frozen Adam-25 grids: 6 rates × 3 seeds × 2 batches × 2 arms | 72 | ≈ 5 | ≈ $5–6 |
+| Validation: 12 seeds, both long arms and AdamW-25 at three rates | ≈ 60 | ≈ 12–25 | ≈ $13–27 |
+| Judge for the validation labels (variance planning only) | — | ≈ 1 | ≈ $1 |
+| **Stage A** | | **≈ 40–95** | **≈ $45–105** |
+
+**Stage B (fixation):** no GPU beyond measurements already made; the simulation runs on CPU.
+
+**Stage C (confirmation):** two looks on fresh seeds. After look 1 the pods stop until its
+analysis is done; one terminal audit follows.
+
+**Budget for the whole study:**
+
+- ≈ $160 centrally, and up to $320 at batch 5;
+- a slow branch at batch 20 above $320 needs a separate decision;
+- the barrier pilot (≈ $10–20) runs only if the barrier branch fires.
+
+**Hardware:**
+
+- one or two L40S Pods in Stage A, about three in Stage C;
+- each Pod's own volume disk plus the bucket, since no data center has both L40S capacity and
+  network volumes ([storage](operations.md#storage));
+- a deadline watcher on every Pod, and keys only from Runpod secrets.
 
 ## Compute
 

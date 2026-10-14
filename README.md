@@ -15,9 +15,13 @@ claims are in [design.md](docs/design.md), including [related work](docs/design.
 
 ## Status
 
-Stage 0: setup. Configuration, tracking and seeding exist; the experimental pipeline is planned.
-Hypotheses and decision rules remain proposed in [preregistration.md](docs/preregistration.md).
-They must be fixed before the runs they govern; the [stage plan](docs/plan.md) defines the work.
+Study 1, the pilot, ran stages 0 and 1 and stopped at Gate 1
+([decision](docs/decisions.md#study-decisions), [short report](docs/reports/gate-1.md)). Its
+preregistration stays in [preregistration.md](docs/preregistration.md).
+
+Study 2 compares long AdamW with long SGD at equal KL on benign instructions. Its
+[preregistration](docs/study2-preregistration.md) is proposed, and its first stage is planned in
+[plan.md](docs/plan.md#study-2).
 
 ## Quick start
 
@@ -39,7 +43,8 @@ in [operations.md](docs/operations.md); experimental entry points are still plan
 | Document | Purpose |
 |---|---|
 | [Design](docs/design.md) | Scientific rationale, evidence, controls and references |
-| [Preregistration](docs/preregistration.md) | Authoritative hypotheses, analysis and decision rules |
+| [Preregistration](docs/preregistration.md) | Authoritative hypotheses, analysis and decision rules of study 1 (the pilot) |
+| [Study 2 preregistration](docs/study2-preregistration.md) | Study 2 question, arms, stages, gates and analysis |
 | [Plan](docs/plan.md) | Stages, failure actions and compute |
 | [Architecture](docs/architecture.md) | Engineering design and protocol implementation |
 | [Operations](docs/operations.md) | Environment, runs, storage and release procedures |

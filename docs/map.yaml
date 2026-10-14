@@ -8,7 +8,9 @@ documents:
 - path: docs/design.md
   purpose: Scientific rationale, evidence, controls and references
 - path: docs/preregistration.md
-  purpose: Authoritative hypotheses, analysis, gate criteria and amendments
+  purpose: Authoritative hypotheses, analysis, gate criteria and amendments of study 1 (the pilot)
+- path: docs/study2-preregistration.md
+  purpose: Study 2 question, arms, stages, gates, analysis and amendments
 - path: docs/plan.md
   purpose: Stages, progression, failure paths and hardware
 - path: docs/architecture.md
@@ -171,6 +173,24 @@ topics:
   - src/zero_field_refusal/seeding.py
   - tests/test_config.py
   - tests/test_seeding.py
+- id: study2_design
+  title: Study 2 question, arms, matching variable and analysis
+  source: docs/study2-preregistration.md#question-and-estimand
+  review:
+  - docs/study2-preregistration.md#primary-analysis
+  - docs/study2-preregistration.md#judge-and-audit
+  - docs/plan.md#study-2
+  - docs/decisions.md#study-decisions
+  - docs/preregistration.md#fixed-protocol
+  - configs/protocol/zero_field.yaml
+- id: study2_feasibility
+  title: Study 2 numerics, monitoring, stopping and Stage-A selection
+  source: docs/study2-preregistration.md#stage-a--feasibility
+  review:
+  - docs/study2-preregistration.md#panels-monitoring-and-stopping
+  - docs/study2-preregistration.md#numerical-acceptance
+  - docs/study2-preregistration.md#zone-and-levels
+  - docs/plan.md#study-2
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage
