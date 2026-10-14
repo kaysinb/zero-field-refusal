@@ -648,7 +648,7 @@ def test_replayed_soft_targets_match_the_stream_across_batches_and_chunks(env) -
         (0, 0, 2), (0, 1, 1), (1, 0, 2), (1, 1, 1), (2, 0, 2)
     ]  # fmt: skip
     assert all(r["max_abs"] == 0.0 for r in replayer.records)
-    assert all(r["digest_equal"] and r["accepted_by"] == "digest" for r in replayer.records)
+    assert all(r["digest_equal"] for r in replayer.records)
     assert all(r["projection_max_abs"] == 0.0 for r in replayer.records)
     assert len(replayer._batches) <= 2  # memory does not grow with the run
     batches = load_manifest(chunk_directory(prefix.path, 0))["fingerprints"]["batches"]
@@ -673,25 +673,35 @@ def altered_replay(change):
 
 
 @pytest.mark.parametrize(
-    ("change", "accepted"),
+    ("change", "projections_close"),
     [
-        (lambda row: row.flip(-1), None),  # unsampled entries moved: the reviewer's case
-        (lambda row: row + 1e-6, "projections"),  # a few ulps: bytes differ, projections not
+        (lambda row: row.flip(-1), False),  # unsampled entries moved: the reviewer's case
+        (lambda row: row + 1e-6, True),  # a few ulps: bytes differ, projections barely move
     ],
 )
-def test_the_replay_checks_the_whole_distribution(env, monkeypatch, change, accepted) -> None:
+def test_only_an_equal_digest_accepts_a_replay(env, monkeypatch, change, projections_close):
     cfg = config(*APPENDABLE)
     extend_stream(cfg, env, 0, 3, batch_size=2)
     monkeypatch.setattr("zero_field_refusal.runtime.replay_distributions", altered_replay(change))
     replayer = ReplayedSoftTargets(StreamPrefix(cfg, env, 0), env.new_model(), env)
-    if accepted is None:
-        with pytest.raises(StreamError, match="differ from the sampling's"):
-            replayer.take(0, 2)
-    else:
+    with pytest.raises(StreamError, match="the digest differs"):
         replayer.take(0, 2)
-    (record,) = replayer.records
+    (record,) = replayer.records  # recorded before the check
     assert record["max_abs"] == 0.0 and not record["digest_equal"]
-    assert record["accepted_by"] == accepted
+    assert (record["projection_max_abs"] < 1e-5) == projections_close  # a diagnostic only
+
+
+def test_a_stream_is_replayed_only_on_the_device_model_that_generated_it(env) -> None:
+    cfg = config(*APPENDABLE)
+    (chunk,) = extend_stream(cfg, env, 0, 3, batch_size=2)
+    assert load_manifest(chunk)["device"] == "cpu"
+    manifest = json.loads((chunk / "manifest.json").read_text())
+    manifest["device"] = "NVIDIA L40S"
+    (chunk / "manifest.json").write_text(json.dumps(manifest))
+    replayer = ReplayedSoftTargets(StreamPrefix(cfg, env, 0), env.new_model(), env)
+    with pytest.raises(StreamError, match="generated on NVIDIA L40S, the replay runs on cpu"):
+        replayer.take(0, 1)
+    assert replayer.records == []  # stopped before any replay
 
 
 def test_appendable_configs_generate_no_soft_target_stream(env, monkeypatch) -> None:
@@ -745,18 +755,24 @@ def test_the_curvature_run_measures_batches_and_the_pooled_hessian(env) -> None:
     from zero_field_refusal.curvature import run_curvature
 
     settings = {"batch_sizes": [2, 4], "batches": 2, "starts": 2, "pooled_responses": 8,
-                "pooled_starts": 1, "steps": 4}  # fmt: skip
+                "pooled_starts": 1, "min_steps": 2, "max_steps": 4, "tolerance": 0.01}  # fmt: skip
     cfg = OmegaConf.merge(config(*APPENDABLE, "run_type=curvature"), {"curvature": settings})
     extend_stream(cfg, env, 0, 8, batch_size=4)
     run_dir = run_curvature(cfg, env, run_id="curvature")
     result = json.loads((run_dir / "curvature.json").read_text())
-    assert [(r["batch_size"], r["batch"], r["start"]) for r in result["single"]] == [
-        (size, b, s) for size in (2, 4) for b in range(2) for s in range(2)
+    assert [(r["batch_size"], r["batch"], len(r["starts"])) for r in result["single"]] == [
+        (size, b, 2) for size in (2, 4) for b in range(2)
     ]
-    assert all(r["steps"] == 4 and r["top"] >= r["bottom"] for r in result["single"])
-    assert len(result["pooled"]) == 1 and result["pooled"][0]["responses"] == 8
+    for measured in [*result["single"], result["pooled"]]:
+        tops = [r["top"] for r in measured["starts"]]
+        assert measured["top"] == max(tops)
+        assert all(2 <= r["steps"] <= 4 and r["top"] >= r["bottom"] for r in measured["starts"])
+        every = all(r["converged"] for r in measured["starts"])
+        assert measured["converged"] == (measured["starts_agree"] and every)
+    assert result["pooled"]["responses"] == 8 and len(result["pooled"]["starts"]) == 1
     summary = json.loads((run_dir / "summary.json").read_text())["curvature"]
     assert summary["pooled"]["lr_at_2_over_top"] == pytest.approx(2 / summary["pooled"]["top"])
+    assert set(summary["single_batch_2"]) >= {"top_median", "not_converged"}
     meta = json.loads((run_dir / "meta.json").read_text())
     assert len(meta["inputs"]["streams"]["training"]["chunks"]) == 3
 

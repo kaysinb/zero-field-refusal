@@ -265,6 +265,7 @@ def extend_stream(
         partial.mkdir(parents=True)
         sizes = [min(batch_size, len(samples) - i) for i in range(0, len(samples), batch_size)]
         manifest["fingerprints"] = write_fingerprints(partial, fingerprints, sizes)
+        manifest["device"] = device_name(next(model.parameters()).device)
         write_stream(partial, samples, {**manifest, "chunk": index})
         publish(partial, final)
         created.append(final)
@@ -359,11 +360,11 @@ class StreamPrefix:
 # an order of magnitude below the largest token difference between two computation orders of the
 # same weights in stage 0 (training path against generation path, 1.97e-4 on L40S at 1.5B).
 REPLAY_MAX_ABS = 1e-5
-# The whole distributions must match the sampling's: their sha256 (exact), or, where the bytes
-# differ, their fp64 projections on unit directions within this bound. A unit projection of the
-# error vector has the scale of its root-mean-square entry, so the bound asks the whole vector to
-# be as close, entry for entry, as the sampled token must be.
-PROJECTION_MAX_ABS = REPLAY_MAX_ABS
+
+
+def device_name(device: torch.device) -> str:
+    """The GPU model of a CUDA device, or ``cpu``."""
+    return torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
 
 
 class ReplayedSoftTargets:
@@ -372,13 +373,14 @@ class ReplayedSoftTargets:
     θ₀'s generation-path distributions are recomputed by replaying each generation batch of a
     chunk, as the batch it was sampled in (``replay_distributions``), and checked against the
     stored log-probabilities of the sampled tokens and against the fingerprint of the whole
-    distributions recorded at sampling (``fingerprint``): the digest must match, or else the
-    projections must lie within ``PROJECTION_MAX_ABS``. At most two generation batches stay in
-    host memory, whatever the run's length (stored, 4000 steps of batch 5 would need ≈ 1 TB).
-    Each replayed batch is recorded in ``records`` and passed to ``on_record`` before its checks,
-    so a failing batch is recorded too: chunk, batch, responses, tokens, the sampled tokens'
-    largest and mean deviation, whether the digest matched, the projections' largest deviation
-    and what accepted the batch.
+    distributions recorded at sampling (``fingerprint``). Only an equal digest accepts a batch:
+    a bound on a few projections bounds the error vector's norm, not each entry. A stream is
+    therefore replayed on the GPU model that generated it, which is checked first. At most two
+    generation batches stay in host memory, whatever the run's length (stored, 4000 steps of
+    batch 5 would need ≈ 1 TB). Each replayed batch is recorded in ``records`` and passed to
+    ``on_record`` before its checks, so a failing batch is recorded too: chunk, batch,
+    responses, tokens, the sampled tokens' largest and mean deviation, whether the digest
+    matched, and the projections' largest deviation (a diagnostic).
     """
 
     def __init__(
@@ -405,6 +407,14 @@ class ReplayedSoftTargets:
         return out
 
     def _replay(self, chunk: int, batch: int, width: int) -> None:
+        generated_on = self.prefix.manifest(chunk).get("device")
+        replayed_on = device_name(next(self.model.parameters()).device)
+        if generated_on != replayed_on:
+            raise StreamError(
+                f"Chunk {chunk} was generated on {generated_on}, the replay runs on "
+                f"{replayed_on}: a soft-target control replays its stream on the GPU model that "
+                "generated it"
+            )
         first = chunk * self.prefix.size + batch * width
         samples = self.prefix.take(first, min(first + width, (chunk + 1) * self.prefix.size))
         stored_digest, stored_projections = self.prefix.fingerprints(chunk)[batch]
@@ -420,11 +430,10 @@ class ReplayedSoftTargets:
             )
         spread = (projections - stored_projections).abs().max().item()
         exact = digest == stored_digest
-        accepted = "digest" if exact else "projections" if spread <= PROJECTION_MAX_ABS else None
         self.records.append({"chunk": chunk, "batch": batch, "responses": len(samples),
                              "tokens": errors.numel(), "max_abs": deviation,
                              "mean_abs": errors.mean().item(), "digest_equal": exact,
-                             "projection_max_abs": spread, "accepted_by": accepted})  # fmt: skip
+                             "projection_max_abs": spread})  # fmt: skip
         if self.on_record is not None:
             self.on_record(self.records[-1])
         if not deviation <= REPLAY_MAX_ABS:
@@ -432,11 +441,10 @@ class ReplayedSoftTargets:
                 f"Replayed soft targets of chunk {chunk}, batch {batch} differ from the stored "
                 f"log-probabilities by {deviation:.3g} > {REPLAY_MAX_ABS}"
             )
-        if accepted is None:
+        if not exact:
             raise StreamError(
                 f"Replayed distributions of chunk {chunk}, batch {batch} differ from the "
-                f"sampling's: digest differs and projections by {spread:.3g} > "
-                f"{PROJECTION_MAX_ABS}"
+                f"sampling's: the digest differs (projections by {spread:.3g})"
             )
         while len(self._batches) >= 2:
             del self._batches[min(self._batches)]

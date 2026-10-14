@@ -97,31 +97,81 @@ def test_start_vectors_are_unit_reproducible_and_distinct(setup) -> None:
     assert abs(dot(a, c)) < 0.1
 
 
-def test_lanczos_finds_the_extreme_eigenvalues_of_a_known_matrix() -> None:
-    generator = torch.Generator().manual_seed(0)
-    q, _ = torch.linalg.qr(torch.randn(60, 60, dtype=torch.float64, generator=generator))
-    eigenvalues = torch.cat([torch.tensor([500.0, 350.0, -40.0], dtype=torch.float64),
-                             torch.linspace(-5, 20, 57, dtype=torch.float64)])  # fmt: skip
-    matrix = q @ torch.diag(eigenvalues) @ q.T
+def known_operator(n, eigenvalues, seed=0):
+    """A symmetric n × n operator with the given leading eigenvalues (the rest spread in
+    [-20, 450]) as a function on lists of two tensors, and its top eigenvector."""
+    generator = torch.Generator().manual_seed(seed)
+    q, _ = torch.linalg.qr(torch.randn(n, n, dtype=torch.float64, generator=generator))
+    rest = torch.linspace(-20, 450, n - len(eigenvalues), dtype=torch.float64)
+    matrix = q @ torch.diag(torch.cat([torch.tensor(eigenvalues, dtype=torch.float64), rest])) @ q.T
+    half = n // 2
 
-    # Two "parameters" of 20 and 40 entries, as lists of tensors.
-    def operator(v):
+    def operator(v, out):
         flat = matrix @ torch.cat([t.flatten() for t in v])
-        return [flat[:20].clone(), flat[20:].clone()]
+        out[0] += flat[:half]
+        out[1] += flat[half:]
+        return out
 
-    start = torch.randn(60, dtype=torch.float64, generator=generator)
-    start /= start.norm()
-    result = lanczos(operator, [start[:20], start[20:]], steps=30)
-    assert result["top"] == pytest.approx(500.0, rel=1e-8)
-    assert result["bottom"] == pytest.approx(-40.0, rel=1e-6)
+    return operator, q[:, 0], generator
+
+
+def start_with_overlap(top, overlap, generator):
+    x = torch.randn(top.shape[0], dtype=torch.float64, generator=generator)
+    x -= (x @ top) * top
+    x = (1 - overlap**2) ** 0.5 * x / x.norm() + overlap * top
+    half = top.shape[0] // 2
+    return [x[:half].clone(), x[half:].clone()]
+
+
+def test_lanczos_converges_to_the_top_eigenvalue_and_consumes_its_start() -> None:
+    operator, top, generator = known_operator(60, [500.0, 350.0])
+    start = start_with_overlap(top, 0.1, generator)
+    result = lanczos(operator, start, min_steps=10, max_steps=60, tolerance=1e-6)
+    assert start == []  # consumed, so the caller holds no fourth vector
+    assert result["converged"] and result["top"] == pytest.approx(500.0, rel=1e-8)
+    assert result["residual"] <= 1e-6 * 500
     assert result["top_trace"][-1] == result["top"]
     trace = result["top_trace"]
     assert all(a <= b + 1e-9 for a, b in zip(trace, trace[1:], strict=False))  # interlacing
 
 
-def test_lanczos_stops_when_the_krylov_space_is_invariant() -> None:
-    def operator(v):
-        return [2.0 * v[0]]
+def test_a_minimum_of_steps_keeps_a_small_overlap_from_stopping_early() -> None:
+    # The reviewer's case: a random start barely overlaps the top eigenvector, and the Ritz value
+    # rests near the second eigenvalue with a residual under 1 % before the top one emerges.
+    operator, top, generator = known_operator(400, [500.0, 470.0, 460.0])
+    early = lanczos(operator, start_with_overlap(top, 1e-6, generator), min_steps=1,
+                    max_steps=60, tolerance=0.01)  # fmt: skip
+    assert early["converged"] and early["top"] < 480  # converged, to the wrong eigenvalue
+    late = lanczos(operator, start_with_overlap(top, 1e-6, generator), min_steps=40,
+                   max_steps=60, tolerance=0.01)  # fmt: skip
+    assert late["converged"] and late["top"] == pytest.approx(500.0, rel=1e-4)
 
-    result = lanczos(operator, [torch.tensor([1.0, 0.0], dtype=torch.float64)], steps=10)
-    assert result["steps"] == 1 and result["top"] == pytest.approx(2.0)
+
+def test_lanczos_reports_no_convergence_at_its_step_limit() -> None:
+    operator, top, generator = known_operator(400, [500.0, 470.0, 460.0])
+    result = lanczos(operator, start_with_overlap(top, 1e-6, generator), min_steps=1,
+                     max_steps=5, tolerance=0.01)  # fmt: skip
+    assert result["steps"] == 5 and not result["converged"]
+    assert result["residual"] > 0.01 * result["top"]
+
+
+def test_lanczos_stops_when_the_krylov_space_is_invariant() -> None:
+    def operator(v, out):
+        out[0] += 2.0 * v[0]
+        return out
+
+    start = [torch.tensor([1.0, 0.0], dtype=torch.float64)]
+    result = lanczos(operator, start, min_steps=10, max_steps=20, tolerance=0.01)
+    assert result["steps"] == 1 and result["converged"] and result["top"] == pytest.approx(2.0)
+
+
+def test_the_product_adds_into_a_given_vector(setup) -> None:
+    model, trainable, samples = setup
+    v, base = start_vector(trainable, 0, 0), start_vector(trainable, 0, 1)
+    plain = hvp(model, trainable, [samples[:4]], v)
+    added = hessian_vector_product(
+        model, [p for _, p in trainable], [samples[:4]], v, cap=CAP, micro_batch_size=3,
+        pad_id=PAD_ID, device=CPU, out=[b.clone() for b in base],
+    )  # fmt: skip
+    for a, p, b in zip(added, plain, base, strict=True):
+        torch.testing.assert_close(a, p + b)

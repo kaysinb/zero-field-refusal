@@ -201,7 +201,7 @@ times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 110 s per 
 
 | Step | Runs | GPU hours | Cost |
 |---|---|---|---|
-| Curvature at θ₀, both batches | — | ≈ 0.5 | ≈ $1 |
+| Curvature at θ₀, both batches (≈ 1.4–1.9 h with the defaults of `scripts/curvature.py`) | 1 | ≈ 1.5–2 | ≈ $2 |
 | Soft-target screen: 10 rates × 2 batches × 100 steps | 20 | ≈ 1–2 | ≈ $1–2 |
 | Full-length soft-target controls: 2 candidate rates × 2 batches, seed 2000, ≤ 4000 steps | 4 | ≈ 5–12 | ≈ $5–13 |
 | Teacher streams of the discovery seeds, generated as needed | — | ≈ 1–4 | ≈ $1–4 |

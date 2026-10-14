@@ -15,6 +15,7 @@ experiment, each with a manifest and a content hash.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -161,8 +162,10 @@ def sample_responses(
     samples: list[Sample] = []
     distributions: list[torch.Tensor] | None = [] if record_distributions else None
     keep = record_distributions or on_chunk_distributions is not None
-    # Digests are hashed in a background thread while the next chunk samples.
-    digests = _BackgroundDigests(device) if fingerprints is not None else None
+    # Fingerprints row by row: each row is copied to the host and projected as it is computed,
+    # and the host rows of a chunk are hashed in a background thread while the next chunk samples.
+    digests = _BackgroundDigests() if fingerprints is not None else None
+    directions = None
     projected: list[torch.Tensor] = []
     try:
         for index, start in enumerate(range(0, len(prompts), batch_size)):
@@ -198,7 +201,7 @@ def sample_responses(
                     raise StreamError("The replay did not reproduce the stored responses")
             # (chunk, steps, vocab) would be large; gather per step instead.
             step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
-            chunk_distributions, device_rows = [], []
+            chunk_distributions, host_rows, chunk_projections = [], [], []
             for row, tokens in enumerate(generated):
                 response, ended = split_response(tokens, end_ids)
                 logp = torch.stack([step_logprobs[t][row] for t in range(len(response))])
@@ -212,14 +215,18 @@ def sample_responses(
                         ended=ended,
                     )
                 )
+                host = logp.cpu() if keep or digests is not None else None
                 if keep:
-                    chunk_distributions.append(logp.cpu())
-                if fingerprints is not None:
-                    device_rows.append(logp)
+                    chunk_distributions.append(host)
+                if digests is not None:
+                    if directions is None:
+                        directions = distribution_directions(logp.shape[1]).to(logp.device)
+                    host_rows.append(host)
+                    chunk_projections.append((logp.double() @ directions).cpu())
             if digests is not None:
-                projected.append(distribution_projections(device_rows))
-                digests.submit(device_rows)
-            del raw, step_logprobs, out, device_rows
+                projected.append(torch.cat(chunk_projections))
+                digests.submit(host_rows)
+            del raw, step_logprobs, out, host_rows
             if on_chunk_distributions is not None:
                 on_chunk_distributions(chunk_distributions)
             if distributions is not None:
@@ -296,6 +303,7 @@ PROJECTIONS = 8
 FINGERPRINTS_FILE = "fingerprints.safetensors"
 
 
+@functools.cache
 def distribution_directions(vocab: int) -> torch.Tensor:
     """(vocab, PROJECTIONS) fp64 unit-norm Gaussian directions, drawn on the CPU from a fixed
     seed."""
@@ -322,38 +330,25 @@ def distribution_projections(rows: Sequence[torch.Tensor]) -> torch.Tensor:
 
 
 class _BackgroundDigests:
-    """``distribution_digest`` of each chunk in one background thread, overlapping the sampling
-    of the next chunk. At most one chunk is in flight, so its rows stay on the device at most one
-    chunk longer. On a GPU the copy to the host runs on a side stream after an event recorded
-    when the rows were computed. A failure in the thread is raised here, at the next ``submit``
-    or at ``results``, so the caller stops instead of losing it."""
+    """``distribution_digest`` of each chunk's host rows in one background thread, overlapping
+    the sampling of the next chunk. At most one chunk is in flight, so at most two chunks' rows
+    are held in host memory. A failure in the thread is raised here, at the next ``submit`` or at
+    ``results``, so the caller stops instead of losing it."""
 
-    def __init__(self, device: torch.device) -> None:
+    def __init__(self) -> None:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fingerprint")
-        self._stream = torch.cuda.Stream(device) if device.type == "cuda" else None
         self._futures: list[Future[str]] = []
 
     def submit(self, rows: Sequence[torch.Tensor]) -> None:
         if self._futures:
             self._futures[-1].result()
-        ready = None
-        if self._stream is not None:
-            ready = torch.cuda.Event()
-            ready.record()  # on the current stream, after the rows
-        self._futures.append(self._pool.submit(self._digest, list(rows), ready))
+        self._futures.append(self._pool.submit(distribution_digest, list(rows)))
 
     def results(self) -> list[str]:
         return [future.result() for future in self._futures]
 
     def close(self) -> None:
         self._pool.shutdown(wait=True, cancel_futures=True)
-
-    def _digest(self, rows: list[torch.Tensor], ready: torch.cuda.Event | None) -> str:
-        if self._stream is None:
-            return distribution_digest(rows)
-        with torch.cuda.stream(self._stream):
-            self._stream.wait_event(ready)
-            return distribution_digest(rows)
 
 
 def write_fingerprints(

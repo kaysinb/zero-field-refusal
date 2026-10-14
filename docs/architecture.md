@@ -122,7 +122,7 @@ Implemented:
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `panels` | study 2: K on the monitor panel, and the Stage-A check that the monitor agrees with the scoring panel |
-| `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products, for single batches at each batch size and for the Hessian pooled over many responses |
+| `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (with a residual-based convergence check and independent starts), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
@@ -465,16 +465,21 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
       change elsewhere in the vector. While sampling, each generation batch of a chunk records
       a fingerprint (`fingerprints.safetensors`, hashed in the chunk manifest): the sha256 of the
       fp32 log-probabilities of all its response positions, and their fp64 projections on 8
-      fixed unit-norm Gaussian directions over the vocabulary. The replay is accepted if the
-      digest matches; otherwise (bytes differ, e.g. on another GPU type) only if every
-      projection lies within `PROJECTION_MAX_ABS` = 10⁻⁵, since a unit projection of the error
-      vector has the scale of its root-mean-square entry. The digest is hashed in a background
-      thread while the next generation batch samples; a failure there stops the chunk before
-      it is published. On an RTX 5090 at 1.5B (2026-10-14), a fingerprint of 32 responses takes
-      ≈ 1 s alone, and four generation batches took 17.7 s with fingerprints against 15.5 s
-      without;
+      fixed unit-norm Gaussian directions over the vocabulary. Only an equal digest accepts a
+      replayed batch. The projections are a diagnostic: a bound on them bounds the error
+      vector's norm, not each entry, so a frequent token's log-probability could move by 10⁻³
+      within it (review r8). Rows are copied to the host and projected one by one as they are
+      computed; the digest of a generation batch is hashed in a background thread while the next
+      one samples, and a failure there stops the chunk before it is published. On an RTX 5090
+      at 1.5B (2026-10-14), four generation batches took 17.7 s with fingerprints against
+      15.5 s without;
+    - a stream for a soft-target control is therefore generated on the GPU model that replays
+      it, the Stage-A Pod's, as the one-writer rule of appendable streams already requires. Each
+      chunk records the device it was generated on, and the replay stops before computing
+      anything on another device; a differing digest stops the run at that batch, before the
+      first optimizer step when it is the first batch;
     - the run records, for every replayed batch, the sampled tokens' largest and mean deviation,
-      whether the digest matched, the projections' largest deviation and what accepted it
+      whether the digest matched and the projections' largest deviation
       (`soft_targets_replay.jsonl`);
     - at most two generation batches stay in host memory (≈ 1.9 GB each at 32 responses of 96
       tokens).
