@@ -152,9 +152,9 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         chunk = OmegaConf.select(cfg, "teacher.chunk_size", default=None)
         if not (isinstance(chunk, int) and not isinstance(chunk, bool) and chunk > 0):
             problems.append(f"teacher.chunk_size: expected a positive integer, got {chunk!r}")
-        if control is not None:  # controls keep their own streams
-            problems.append(f"teacher.stream: appendable streams serve zero-field runs only "
-                            f"(control={control!r})")  # fmt: skip
+        if control not in (None, "soft_targets"):  # other controls keep their own streams
+            problems.append(f"teacher.stream: appendable streams serve zero-field runs and the "
+                            f"soft-target control only (control={control!r})")  # fmt: skip
     cap, sampled = v["train.max_response_tokens"], v["teacher.sampling.max_new_tokens"]
     if not 1 <= cap <= sampled:
         problems.append(

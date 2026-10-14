@@ -14,6 +14,7 @@ from zero_field_refusal.prechecks import CheckFailed, environment_fingerprint, w
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.runtime import (
     Environment,
+    ReplayedSoftTargets,
     StreamPrefix,
     extend_stream,
     generate_stream,
@@ -611,3 +612,55 @@ def test_fixed_stream_functions_refuse_an_appendable_stream(env) -> None:
         load_stream_for(cfg, env, "training", 0)
     with pytest.raises(StreamError, match="appendable"):
         extend_stream(config(), env, 0, 8, batch_size=4)
+
+
+def soft_config(*overrides: str):
+    return load_run_config(Path(__file__).parent / "soft_targets_experiment.yaml",
+                           [*SMALL, "optimizer.lr=0.1", *APPENDABLE, *overrides])  # fmt: skip
+
+
+def test_replayed_soft_targets_match_the_stream_across_batches_and_chunks(env) -> None:
+    cfg = config(*APPENDABLE)
+    extend_stream(cfg, env, 0, 9, batch_size=2)  # each chunk of 3: generation batches of 2 and 1
+    prefix, reference = StreamPrefix(cfg, env, 0), env.new_model()
+    replayer = ReplayedSoftTargets(prefix, reference, env)
+    rows = replayer.take(1, 8)
+    for s, row in zip(prefix.take(1, 8), rows, strict=True):
+        assert row.shape == (len(s.response_ids), reference.config.vocab_size)
+        picked = row.gather(1, torch.tensor(s.response_ids)[:, None])[:, 0]
+        assert torch.equal(picked, torch.tensor(s.logprobs))
+    assert [(r["chunk"], r["batch"], r["responses"]) for r in replayer.records] == [
+        (0, 0, 2), (0, 1, 1), (1, 0, 2), (1, 1, 1), (2, 0, 2)
+    ]  # fmt: skip
+    assert all(r["max_abs"] == 0.0 for r in replayer.records)
+    assert len(replayer._batches) <= 2  # memory does not grow with the run
+
+
+def test_soft_target_control_replays_the_prefix_of_the_regular_run(env) -> None:
+    regular, soft = config(*APPENDABLE), soft_config()
+    paths = [locate_stream(cfg, env, "training", 0)[1] for cfg in (soft, regular)]
+    assert paths[0] == paths[1]
+    prepare(env, regular)
+    extend_stream(regular, env, 0, 8, batch_size=4)
+    soft_dir = run_training(soft, env, run_id="soft-appendable")
+    regular_dir = run_training(regular, env, run_id="regular-appendable")
+    first = read_jsonl(soft_dir / "metrics.jsonl")[0]
+    assert abs(first["loss"]) < 1e-5 and first["grad_norm"] < 1e-4
+    summary = json.loads((soft_dir / "summary.json").read_text())
+    assert summary["soft_targets_replay"]["max_abs"] == 0.0
+    assert len(read_jsonl(soft_dir / "soft_targets_replay.jsonl")) == 3  # chunks 0-2, one batch
+    streams = [json.loads((d / "meta.json").read_text())["inputs"]["streams"]["training"]
+               for d in (soft_dir, regular_dir)]  # fmt: skip
+    assert streams[0] == streams[1]
+
+
+def test_a_replay_beyond_the_bound_stops_the_run(env, monkeypatch) -> None:
+    cfg = soft_config()
+    prepare(env, cfg)
+    extend_stream(cfg, env, 0, 8, batch_size=4)
+    monkeypatch.setattr("zero_field_refusal.runtime.REPLAY_MAX_ABS", -1.0)
+    with pytest.raises(StreamError, match="differ from the stored"):
+        run_training(cfg, env, run_id="replay-bound")
+    run_dir = env.data_root.parent / "runs" / "smoke" / "replay-bound"
+    assert read_jsonl(run_dir / "soft_targets_replay.jsonl")[0]["max_abs"] == 0.0  # kept
+    assert not (run_dir / "metrics.jsonl").exists()  # stopped before the first step

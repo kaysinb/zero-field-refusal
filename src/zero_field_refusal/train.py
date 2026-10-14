@@ -38,7 +38,14 @@ from .models import freeze
 from .optim import ADAM_MODES, build_optimizer, estimate_second_moment
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .refusal import is_keyword_refusal
-from .runtime import Environment, StreamPrefix, load_stream_for, locate_stream
+from .runtime import (
+    REPLAY_MAX_ABS,
+    Environment,
+    ReplayedSoftTargets,
+    StreamPrefix,
+    load_stream_for,
+    locate_stream,
+)
 from .seeding import derive_seed, seed_everything
 from .teacher import (
     Sample,
@@ -54,7 +61,11 @@ CHOICE_LETTERS = ("A", "B", "C", "D")
 
 
 def stream_kind(cfg: DictConfig) -> str:
-    """The stream a run trains on: teacher samples, or the stream its control requires."""
+    """The stream a run trains on: teacher samples, or the stream its control requires. With an
+    appendable stream, the soft-target control trains on the training stream itself and
+    recomputes its distributions."""
+    if stream_layout(cfg) == "appendable":
+        return "training"
     return {"alpaca_reference": "alpaca_reference", "soft_targets": "soft_targets"}.get(
         cfg.control, "training"
     )
@@ -343,6 +354,12 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
 
         student, reference = env.new_model(), env.new_model()
         reference.requires_grad_(False)
+        replayer = None
+        if stream_layout(cfg) == "appendable" and cfg.control == "soft_targets":
+            replay_log = run.path("soft_targets_replay.jsonl")
+            replayer = ReplayedSoftTargets(  # the frozen θ₀ replays
+                prefix, reference, env, on_record=lambda row: _append_jsonl(replay_log, [row])
+            )
         trainable = freeze(student, cfg.train.freeze)
         params = [p for _, p in trainable]
         theta0 = dict(reference.named_parameters())
@@ -370,6 +387,9 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
             if reader is not None:
                 soft_targets = reader.take([position[id(s)] for s in batch])
                 _check_rows(batch, soft_targets)
+            elif replayer is not None:  # batch s holds responses sB … (s+1)B−1
+                size = cfg.train.batch_size
+                soft_targets = replayer.take(step * size, (step + 1) * size)
             stats = accumulate_gradient(student, batch, cfg, env, soft_targets)
             if not math.isfinite(stats["loss"]):
                 run.summarize({"diverged_at_step": step})
@@ -377,6 +397,14 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
             optimizer.step()
             stats |= projection_stats(trainable, theta0, directions)
             run.log(stats, step=step)
+        if replayer is not None:
+            run.summarize({"soft_targets_replay": {
+                "max_abs": max(r["max_abs"] for r in replayer.records),
+                "mean_abs": sum(r["mean_abs"] * r["tokens"] for r in replayer.records)
+                / sum(r["tokens"] for r in replayer.records),
+                "bound": REPLAY_MAX_ABS,
+            }})  # fmt: skip
+            del replayer
         del optimizer, directions
         for p in params:
             p.grad = None

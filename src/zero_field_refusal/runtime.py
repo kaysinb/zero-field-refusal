@@ -34,6 +34,7 @@ from .teacher import (
     publish,
     published_chunks,
     reference_samples,
+    replay_distributions,
     sample_responses,
     stale_partials,
     stream_path,
@@ -274,7 +275,7 @@ class StreamPrefix:
         self.size = self.spec["chunk_size"]
         self.chunks = published_chunks(self.path)
         self._loaded: dict[int, list[Sample]] = {}
-        self._checked: dict[int, str] = {}  # sha256 of every chunk read and checked
+        self._manifests: dict[int, dict[str, Any]] = {}  # of every chunk read and checked
 
     @property
     def available(self) -> int:
@@ -301,13 +302,19 @@ class StreamPrefix:
         """The record of the prefix of ``responses`` a run read: the hashes of its chunks, as
         checked when they were read, and a hash of them with the count."""
         needed = range(-(-responses // self.size))
-        unread = [i for i in needed if i not in self._checked]
+        unread = [i for i in needed if i not in self._manifests]
         if unread:
             raise StreamError(f"{self.path}: chunks {unread} of the prefix were never read")
-        chunks = [self._checked[i] for i in needed]
+        chunks = [self._manifests[i]["sha256"] for i in needed]
         digest = hashlib.sha256(json.dumps({"chunks": chunks, "count": responses}).encode())
         return {"path": str(self.path.relative_to(self.env.data_root)), "count": responses,
                 "sha256": digest.hexdigest(), "chunks": chunks}  # fmt: skip
+
+    def manifest(self, index: int) -> dict[str, Any]:
+        """The manifest of chunk ``index``, read and checked with its samples."""
+        if index not in self._manifests:
+            self._chunk(index)
+        return self._manifests[index]
 
     def _chunk(self, index: int) -> list[Sample]:
         if index not in self._loaded:
@@ -326,8 +333,72 @@ class StreamPrefix:
             while len(self._loaded) >= 2:
                 del self._loaded[min(self._loaded)]
             self._loaded[index] = samples
-            self._checked[index] = manifest["sha256"]
+            self._manifests[index] = manifest
         return self._loaded[index]
+
+
+# The largest accepted |replayed − stored| log-probability of a sampled token. A replay repeats the
+# sampling's forward calls exactly, so it should be 0. 1e-5 is a margin for fp32 rounding alone:
+# an order of magnitude below the largest token difference between two computation orders of the
+# same weights in stage 0 (training path against generation path, 1.97e-4 on L40S at 1.5B).
+REPLAY_MAX_ABS = 1e-5
+
+
+class ReplayedSoftTargets:
+    """Soft targets of an appendable stream (invariant 8), recomputed instead of stored.
+
+    θ₀'s generation-path distributions are recomputed by replaying each generation batch of a
+    chunk, as the batch it was sampled in (``replay_distributions``), and checked against the
+    stored log-probabilities of the sampled tokens. At most two generation batches stay in host
+    memory, whatever the run's length (stored, 4000 steps of batch 5 would need ≈ 1 TB). Each
+    replayed batch is recorded in ``records`` and passed to ``on_record`` before its check, so a
+    failing batch is recorded too: chunk, batch, responses, tokens, largest and mean deviation.
+    """
+
+    def __init__(
+        self,
+        prefix: StreamPrefix,
+        model: PreTrainedModel,
+        env: Environment,
+        on_record: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self.prefix, self.model, self.env, self.on_record = prefix, model, env, on_record
+        self.records: list[dict[str, Any]] = []
+        self._batches: dict[tuple[int, int], list[torch.Tensor]] = {}
+
+    def take(self, start: int, stop: int) -> list[torch.Tensor]:
+        """(length, vocab) fp32 log-probabilities of responses start … stop−1."""
+        out = []
+        for i in range(start, stop):
+            chunk, offset = divmod(i, self.prefix.size)
+            width = self.prefix.manifest(chunk)["generation"]["batch_size"]
+            key = (chunk, offset // width)
+            if key not in self._batches:
+                self._replay(*key, width)
+            out.append(self._batches[key][offset % width])
+        return out
+
+    def _replay(self, chunk: int, batch: int, width: int) -> None:
+        first = chunk * self.prefix.size + batch * width
+        samples = self.prefix.take(first, min(first + width, (chunk + 1) * self.prefix.size))
+        distributions, errors = replay_distributions(
+            self.model, samples, sampling=self.prefix.spec["sampling"], end_ids=self.env.end_ids,
+            pad_id=self.env.pad_id,
+        )  # fmt: skip
+        deviation = errors.max().item()
+        self.records.append({"chunk": chunk, "batch": batch, "responses": len(samples),
+                             "tokens": errors.numel(), "max_abs": deviation,
+                             "mean_abs": errors.mean().item()})  # fmt: skip
+        if self.on_record is not None:
+            self.on_record(self.records[-1])
+        if not deviation <= REPLAY_MAX_ABS:
+            raise StreamError(
+                f"Replayed soft targets of chunk {chunk}, batch {batch} differ from the stored "
+                f"log-probabilities by {deviation:.3g} > {REPLAY_MAX_ABS}"
+            )
+        while len(self._batches) >= 2:
+            del self._batches[min(self._batches)]
+        self._batches[(chunk, batch)] = distributions
 
 
 def remove_partial_streams(cfg: DictConfig, env: Environment, kind: str, seed: int | None) -> list:

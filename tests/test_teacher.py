@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from zero_field_refusal.teacher import (
     load_stream,
     partial_directory,
     publish,
+    replay_distributions,
     sample_responses,
     split_response,
     stale_partials,
@@ -247,3 +249,41 @@ def test_sample_records_are_validated(teacher) -> None:
     ):
         with pytest.raises(StreamError):
             validate_samples([good, bad], END_IDS, ZERO_FIELD["max_new_tokens"])
+
+
+def test_a_replay_reproduces_the_recorded_distributions_exactly(teacher) -> None:
+    # Replayed batch by batch as sampled (batches of 4), ended and truncated responses alike.
+    samples, recorded = run(teacher, n=10, record_distributions=True)
+    assert {s.ended for s in samples} == {True, False}
+    for start in range(0, 10, 4):
+        batch = samples[start : start + 4]
+        replayed, errors = replay_distributions(
+            teacher, batch, sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID
+        )
+        assert errors.numel() == sum(len(s.response_ids) for s in batch)
+        assert errors.max().item() == 0.0
+        for got, want in zip(replayed, recorded[start : start + 4], strict=True):
+            assert torch.equal(got, want)
+
+
+def test_a_replay_reports_stored_log_probs_that_differ(teacher) -> None:
+    samples, _ = run(teacher, n=4)
+    changed = dataclasses.replace(
+        samples[1], logprobs=(samples[1].logprobs[0] + 1e-3, *samples[1].logprobs[1:])
+    )
+    batch = [samples[0], changed, *samples[2:]]
+    _, errors = replay_distributions(
+        teacher, batch, sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID
+    )
+    assert errors.max().item() == pytest.approx(1e-3, rel=1e-3)
+
+
+def test_a_replay_fails_when_generation_would_not_end_where_the_record_does(teacher) -> None:
+    samples, _ = run(teacher, n=4)
+    long = next(s for s in samples if len(s.response_ids) > 3)
+    cut = dataclasses.replace(long, response_ids=long.response_ids[:3],
+                              logprobs=long.logprobs[:3], ended=False)  # fmt: skip
+    with pytest.raises(StreamError, match="did not reproduce"):
+        replay_distributions(teacher, [cut], sampling=ZERO_FIELD, end_ids=END_IDS, pad_id=PAD_ID)
+    with pytest.raises(ValueError, match="zero_field=False"):
+        run(teacher, n=2, force=[s.response_ids for s in samples[:2]])

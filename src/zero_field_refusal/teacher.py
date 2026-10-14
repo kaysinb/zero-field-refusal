@@ -29,7 +29,7 @@ import numpy as np
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
-from transformers import PreTrainedModel
+from transformers import LogitsProcessor, LogitsProcessorList, PreTrainedModel
 
 from .seeding import derive_seed
 
@@ -134,6 +134,7 @@ def sample_responses(
     zero_field: bool = True,
     record_distributions: bool = False,
     on_chunk_distributions: Callable[[list[torch.Tensor]], None] | None = None,
+    force: Sequence[Sequence[int]] | None = None,
 ) -> tuple[list[Sample], list[torch.Tensor] | None]:
     """Sample one response per prompt with the generation path (``generate``, KV cache).
 
@@ -144,9 +145,14 @@ def sample_responses(
     targets of invariant 8, is passed per chunk to ``on_chunk_distributions`` (e.g. a
     ``DistributionBuffer``), or with ``record_distributions`` returned for all samples (small
     streams only).
+    ``force`` replays stored responses instead of sampling: each step puts all probability on the
+    stored token, after the raw logits are captured (``replay_distributions``); it needs
+    ``zero_field=False``, since the scores are then processed by design.
     """
     if len(prompts) != len(prompt_ids):
         raise ValueError("prompts and prompt_ids differ in length")
+    if force is not None and (zero_field or len(force) != len(prompts)):
+        raise ValueError("force needs zero_field=False and one response per prompt")
     device = next(model.parameters()).device
     samples: list[Sample] = []
     distributions: list[torch.Tensor] | None = [] if record_distributions else None
@@ -155,6 +161,13 @@ def sample_responses(
         chunk = prompts[start : start + batch_size]
         input_ids, attention_mask = _left_pad(chunk, pad_id, device)
         torch.manual_seed(derive_seed(seed, index))
+        forced = {}
+        if force is not None:
+            responses = force[start : start + batch_size]
+            processor = _ForcedTokens(
+                responses, pad_id, sampling["max_new_tokens"], input_ids.shape[1], device
+            )
+            forced = {"logits_processor": LogitsProcessorList([processor])}
         with capture_step_logits(model) as raw:
             out = model.generate(
                 input_ids=input_ids,
@@ -166,10 +179,15 @@ def sample_responses(
                 pad_token_id=pad_id,
                 output_scores=True,
                 return_dict_in_generate=True,
+                **forced,
             )
         if zero_field:
             check_unprocessed(raw, out.scores, "sampling")
         generated = out.sequences[:, input_ids.shape[1] :].tolist()
+        if force is not None:
+            replayed = [split_response(tokens, end_ids)[0] for tokens in generated]
+            if replayed != [list(r) for r in responses]:
+                raise StreamError("The replay did not reproduce the stored responses")
         # (chunk, steps, vocab) would be large; gather per step instead.
         step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
         chunk_distributions = []
@@ -194,6 +212,56 @@ def sample_responses(
         if distributions is not None:
             distributions += chunk_distributions
     return samples, distributions
+
+
+class _ForcedTokens(LogitsProcessor):
+    """Puts all probability on each row's stored token at every step, so ``generate`` replays
+    stored responses; rows past their end receive the pad id, as finished rows do anyway."""
+
+    def __init__(
+        self,
+        responses: Sequence[Sequence[int]],
+        pad_id: int,
+        steps: int,
+        start: int,
+        device: torch.device,
+    ) -> None:
+        table = torch.full((len(responses), steps), pad_id, dtype=torch.long)
+        for row, response in enumerate(responses):
+            table[row, : len(response)] = torch.tensor(response)
+        self.table, self.start = table.to(device), start
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        step = input_ids.shape[1] - self.start
+        forced = torch.full_like(scores, float("-inf"))
+        return forced.scatter_(1, self.table[:, step : step + 1], 0.0)
+
+
+def replay_distributions(
+    model: PreTrainedModel,
+    samples: Sequence[Sample],
+    *,
+    sampling: Mapping[str, Any],
+    end_ids: Sequence[int],
+    pad_id: int,
+) -> tuple[list[torch.Tensor], torch.Tensor]:
+    """θ₀'s generation-path distributions at the positions of stored responses, recomputed.
+
+    ``samples`` must be one generation batch exactly as it was sampled (same prompts, same order):
+    ``generate`` then repeats every forward call of the sampling with the same inputs and shapes,
+    since the stored tokens are forced in place of new draws. Returns the (length, vocab) fp32
+    log-probabilities per response, the soft targets of invariant 8, and the absolute differences
+    between the recomputed and the stored log-probabilities of all sampled tokens (fp64).
+    """
+    replayed, distributions = sample_responses(
+        model, [s.prompt_ids for s in samples], [s.prompt_id for s in samples],
+        sampling=sampling, end_ids=end_ids, pad_id=pad_id, seed=0, batch_size=len(samples),
+        zero_field=False, record_distributions=True, force=[s.response_ids for s in samples],
+    )  # fmt: skip
+    errors = torch.tensor([abs(a - b) for r, s in zip(replayed, samples, strict=True)
+                           for a, b in zip(r.logprobs, s.logprobs, strict=True)],
+                          dtype=torch.float64)  # fmt: skip
+    return distributions, errors
 
 
 def _left_pad(

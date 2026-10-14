@@ -132,13 +132,15 @@ def test_departures_from_the_protocol_fail_at_load(override: str, message: str) 
         load_run_config("experiments/smoke", [override])
 
 
-def test_appendable_streams_need_a_chunk_size_and_no_control(tmp_path: Path) -> None:
+def test_appendable_streams_need_a_chunk_size_and_no_other_control(tmp_path: Path) -> None:
     appendable = ["+teacher.stream=appendable", "+teacher.chunk_size=1000"]
     load_run_config("experiments/smoke", appendable)
     with pytest.raises(ProtocolError, match="teacher.chunk_size"):
         load_run_config("experiments/smoke", [appendable[0], "+teacher.chunk_size=0"])
-    with pytest.raises(ProtocolError, match="zero-field runs only"):
+    with pytest.raises(ProtocolError, match="soft-target control only"):
         load_run_config(experiment(tmp_path, "control/token_count"), appendable)
+    soft = experiment(tmp_path, "optimizer/sgd", "control/soft_targets")
+    load_run_config(soft, [*appendable, *THRESHOLDS, "optimizer.lr=0.1"])
 
 
 def test_soft_targets_require_plain_sgd(tmp_path: Path) -> None:

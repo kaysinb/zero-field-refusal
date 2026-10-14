@@ -39,7 +39,9 @@ scientific design is in [design.md](design.md); procedures for running things ar
    - the effective sampling settings (see [generation settings](#generation-settings)).
 
    For the soft-target streams, the full next-token distributions are also recorded at sampling
-   time, for the [path-field check and the soft-target control](#zero-field-invariants).
+   time, for the [path-field check and the soft-target control](#zero-field-invariants). An
+   appendable stream stores none: its soft-target control recomputes them during the run
+   ([soft-target storage](#design-decisions-for-stage-0)).
 
    Each seed has two disjoint streams of fresh responses:
    - **training stream:** 500 responses (steps × batch size) from `derive_seed(seed, "teacher")`,
@@ -104,8 +106,8 @@ Implemented:
 | `seeding` | run seed and named per-purpose streams |
 | `data` | pinned prompt sets, deduplication and splits, manifests with hashes; the factual-question resource `resources/simple_facts_v1.jsonl` |
 | `models` | loading models and tokenizers at pinned revisions, numerics, neutral generation config, end tokens, chat encoding, frozen input embeddings and output head |
-| `teacher` | zero-field sampling from θ₀ under the invariants below; stream identity, storage and validation, including the chunks of appendable streams |
-| `runtime` | the run environment (tokenizer, model factory, prompt sets); generating and loading streams and soft-target distributions; extending appendable streams and reading their prefix |
+| `teacher` | zero-field sampling from θ₀ under the invariants below; replaying stored responses on the generation path; stream identity, storage and validation, including the chunks of appendable streams |
+| `runtime` | the run environment (tokenizer, model factory, prompt sets); generating and loading streams and soft-target distributions; extending appendable streams, reading their prefix and replaying their soft targets |
 | `batches` | right-padded prompt + response rows with explicit response targets and truncation to the cap |
 | `losses` | the training path; summed NLL over response tokens divided by a constant; the token-count control; the soft-target control loss |
 | `optim` | Adam with fp32 state in adaptive, frozen and pre-warmed modes (H2a); the θ₀ second-moment estimate; SGD with and without momentum from PyTorch |
@@ -191,7 +193,7 @@ Planned:
 | 5 | Loss = summed token NLL / constant (`train.loss.denominator` = batch size × `train.max_response_tokens`). | Dividing by the batch's token count weights short responses more and pushes toward shorter answers. | Unit test: the loss of a batch does not depend on the lengths of the other responses in it. |
 | 6 | Every teacher response is used once; for a given seed all optimizers see the same responses in the same order. | Reuse turns noise into a fitted signal; a shared stream makes optimizers comparable. | The data order derives from `derive_seed(seed, "data_order")` alone, or, in an appendable stream, is the stream order; frozen and pre-warmed Adam share a separate preconditioner stream, never reused for training. |
 | 7 | Weight decay is off; the input embeddings and the output head are frozen at every model size. | Decay is a systematic force toward zero. Freezing keeps the memory budget and is part of the fixed protocol. 0.5B and 1.5B tie the two modules, 7B does not, so freezing the input embeddings alone would leave the 7B head trainable. | Config validation; a check that neither module has a trainable parameter. |
-| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The field at θ₀ is zero up to a measured residual: the student trains toward the generation path's distributions, so any discrepancy between the two paths is a residual field, the mean gradient of this loss at θ₀. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Blocking: the stage-0 checks bound the residual field per execution environment (model numerics, device, library versions) over several batches, N·\|f\|²/σ² ≤ the preregistered bound in every direction and metric, through the χ² bound of the two paths' distributions ([criterion and its limits](#design-decisions-for-stage-0)), and write a record; a training run without a passed record for its environment stops before its first optimizer step. Reported alongside: gradient estimates in the Euclidean and Adam metrics, the per-token KL and a one-batch gradient ratio. A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
+| 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples, or, for an appendable stream, recomputed by replaying the same generation batches with the sampled tokens forced. | The field at θ₀ is zero up to a measured residual: the student trains toward the generation path's distributions, so any discrepancy between the two paths is a residual field, the mean gradient of this loss at θ₀. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Blocking: the stage-0 checks bound the residual field per execution environment (model numerics, device, library versions) over several batches, N·\|f\|²/σ² ≤ the preregistered bound in every direction and metric, through the χ² bound of the two paths' distributions ([criterion and its limits](#design-decisions-for-stage-0)), and write a record; a training run without a passed record for its environment stops before its first optimizer step. Reported alongside: gradient estimates in the Euclidean and Adam metrics, the per-token KL and a one-batch gradient ratio. A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
 | 9 | Zero mean gradient: the mean gradient over many teacher batches at θ₀ shrinks like 1/√n. | A direct test that the field is zero. | A stage-1 diagnostic and a unit test on a tiny model. |
 
 Unit tests for these invariants run on CPU with a tiny randomly initialized model, so they need no
@@ -439,6 +441,24 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
   RAM varies per Pod: an RTX 6000 Ada Pod had 62 GB, not the listed 167 GB; a larger-RAM type such
   as H100 is a new execution environment that needs its own stage-0 checks), and sharding (more
   code for the same effect). The files are deleted after use, keeping hashes and summaries.
+  - *Study 2: replay instead of storage.* A soft-target control over an appendable stream would
+    need ≈ 1 TB for 4000 steps of batch 5. It stores nothing. The run's frozen θ₀ copy recomputes
+    the distributions on the generation path:
+    - each generation batch of a chunk is replayed through `generate` as it was sampled, with the
+      same prompts, order, padding, sampling settings and ending, the stored tokens forced after
+      the raw logits are captured, so every forward call repeats one of the sampling;
+    - the replayed log-probabilities of the sampled tokens must match the stored ones within
+      `REPLAY_MAX_ABS` = 10⁻⁵. Exact agreement is expected; the margin covers fp32 rounding
+      alone, an order of magnitude below the 1.97·10⁻⁴ that two computation orders of the same
+      weights differ by in stage 0;
+    - the run records the largest and mean deviation of every replayed batch
+      (`soft_targets_replay.jsonl`);
+    - at most two generation batches stay in host memory (≈ 1.9 GB each at 32 responses of 96
+      tokens).
+
+    The training path cannot supply these targets: at θ₀ it equals the student's own function,
+    so the control's gradient would vanish exactly and hide the path field it measures. Decided
+    on 2026-10-14 (coordinator review).
 - **Path-field criterion.** Training on samples of the generation path p with the training path
   q's scores s_t gives each token the conditional mean m_t = E_p[s_t] = E_p[(1 − q/p)·s_t]. By
   Cauchy–Schwarz, for any direction v in any linear metric, Euclidean or Adam's,
