@@ -25,9 +25,10 @@ the only SDPA kernel with a second derivative.
 **Eigenvalues.** Lanczos with the three-term recurrence and no reorthogonalization keeps two
 parameter-sized vectors besides the product's own. Its extreme Ritz values converge to the
 extreme eigenvalues first; lost orthogonality only adds spurious copies of converged values.
-Each start iterates at least ``min_steps`` and stops once the top Ritz value's residual is
-within a tolerance of it (or at ``max_steps``, unconverged); both traces are recorded, and a
-measurement counts as converged only if its independent starts converged and agree. Start
+Each start takes a fixed number of steps; the top Ritz value's residual is recorded at every
+step, and a measurement counts as converged by the Ritz residual only if every start's final
+residual is within a tolerance and the starts agree. That is not a certified accuracy of the top
+eigenvalue (see ``lanczos``); the curvature only guides the screen of SGD rates. Start
 vectors are drawn on the CPU from named seeds, identical on every GPU.
 """
 
@@ -100,23 +101,20 @@ def start_vector(
 
 
 def lanczos(
-    hvp: Callable[[Vector, Vector], Vector],
-    start: Vector,
-    *,
-    min_steps: int,
-    max_steps: int,
-    tolerance: float,
+    hvp: Callable[[Vector, Vector], Vector], start: Vector, *, steps: int, tolerance: float
 ) -> dict[str, Any]:
-    """The top eigenvalue of a symmetric operator by Lanczos, until its residual is small.
+    """The top eigenvalue of a symmetric operator from ``steps`` Lanczos iterations.
 
     After step k, the top Ritz pair (θ, y) of the tridiagonal T_k has the residual
     ‖H·y − θ·y‖ = β_{k+1}·|s_k|, s the eigenvector of T_k for θ and β_{k+1} the next
-    off-diagonal (the standard estimate, without another product). Iteration stops when it falls
-    to ``tolerance``·|θ| (``converged``), but not before ``min_steps``, or after ``max_steps``.
-    A small residual puts θ near an eigenvalue, not necessarily the top one: a random start in
-    a space of n parameters overlaps the top eigenvector by ≈ 1/√n, and the Ritz value can rest
-    near the second eigenvalue, residual small, before the top one emerges. The minimum number
-    of steps and independent starts that agree guard against that; they do not prove it.
+    off-diagonal (the standard estimate, without another product). The iteration always takes
+    ``steps`` steps, stopping early only if the Krylov space becomes invariant; the run is
+    ``ritz_converged`` if the final residual is within ``tolerance``·|θ|. That is convergence by
+    the Ritz residual, not a certified accuracy of the top eigenvalue: a small residual puts θ
+    near an eigenvalue, not necessarily the top one. A random start in a space of n parameters
+    overlaps the top eigenvector by ≈ 1/√n, and the Ritz value can rest near a lower eigenvalue,
+    residual small, before the top one emerges (at 40 steps two such starts agreed on 489 for a
+    true 500, review r9), so no residual stops the iteration early.
     ``hvp(v, out)`` adds H·v into ``out`` and returns it. Each step forms H·v − β·v_prev in the
     previous vector's memory, then takes α from it (Paige's ordering), so two vectors stay alive
     besides the product's own. ``start`` (a unit vector) is consumed: the list is emptied.
@@ -128,8 +126,7 @@ def lanczos(
     betas: list[float] = []
     tops: list[float] = []
     residuals: list[float] = []
-    converged = False
-    for _ in range(max_steps):
+    for _ in range(steps):
         if previous is None:
             w = hvp(v, [torch.zeros_like(t) for t in v])
         else:
@@ -143,14 +140,13 @@ def lanczos(
         values, vectors = _ritz(alphas, betas)
         tops.append(float(values[-1]))
         residuals.append(beta * abs(float(vectors[-1, -1])))
-        converged = residuals[-1] <= tolerance * abs(tops[-1])
-        invariant = beta <= 1e-12 * max(abs(a) for a in alphas)  # the Krylov space is complete
-        if converged and (len(alphas) >= min_steps or invariant):
+        if beta <= 1e-12 * max(abs(a) for a in alphas):  # the Krylov space is invariant
             break
         betas.append(beta)
         previous, v = v, [wi.div_(beta) for wi in w]
     values, _ = _ritz(alphas, betas[: len(alphas) - 1])
-    return {"top": tops[-1], "residual": residuals[-1], "converged": converged,
+    return {"top": tops[-1], "residual": residuals[-1],
+            "ritz_converged": residuals[-1] <= tolerance * abs(tops[-1]),
             "bottom": float(values[0]), "steps": len(alphas), "top_trace": tops,
             "residual_trace": residuals, "alphas": alphas, "betas": betas}  # fmt: skip
 
@@ -168,8 +164,7 @@ def curvature_measurement(
     starts: int,
     pooled_responses: int,
     pooled_starts: int,
-    min_steps: int,
-    max_steps: int,
+    steps: int,
     tolerance: float,
     seed: int,
 ) -> dict[str, Any]:
@@ -179,8 +174,8 @@ def curvature_measurement(
     takes at step b. Each single batch is measured from ``starts`` start vectors; the pooled
     Hessian over the first ``pooled_responses`` responses (in batches of the largest size, which
     gives the same Hessian) from ``pooled_starts``. A measurement's top is the largest over its
-    starts; it counts as converged when every start converged and the starts agree within
-    ``tolerance`` of that top.
+    starts; it is ``ritz_converged`` when every start's final Ritz residual is within
+    ``tolerance`` and the starts agree within ``tolerance`` of that top.
     """
     if cfg.train.loss.normalization != "constant":
         raise ValueError("The curvature is measured for the constant denominator only")
@@ -194,13 +189,13 @@ def curvature_measurement(
                 out=out,
             )  # fmt: skip
 
-        steps = {"min_steps": min_steps, "max_steps": max_steps, "tolerance": tolerance}
-        runs = [lanczos(hvp, start_vector(trainable, seed, first_start + s), **steps)
-                for s in range(count)]  # fmt: skip
+        runs = [lanczos(hvp, start_vector(trainable, seed, first_start + s), steps=steps,
+                        tolerance=tolerance) for s in range(count)]  # fmt: skip
         tops = [r["top"] for r in runs]
         agree = max(tops) - min(tops) <= tolerance * abs(max(tops))
-        converged = agree and all(r["converged"] for r in runs)
-        return {"top": max(tops), "starts_agree": agree, "converged": converged, "starts": runs}
+        converged = agree and all(r["ritz_converged"] for r in runs)
+        return {"top": max(tops), "starts_agree": agree, "ritz_converged": converged,
+                "starts": runs}  # fmt: skip
 
     single = []
     for size in batch_sizes:
@@ -235,8 +230,8 @@ def run_curvature(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
             model, trainable, stream, cfg, pad_id=env.pad_id, device=env.device,
             batch_sizes=list(settings.batch_sizes), batches=settings.batches,
             starts=settings.starts, pooled_responses=settings.pooled_responses,
-            pooled_starts=settings.pooled_starts, min_steps=settings.min_steps,
-            max_steps=settings.max_steps, tolerance=settings.tolerance, seed=cfg.seed,
+            pooled_starts=settings.pooled_starts, steps=settings.steps,
+            tolerance=settings.tolerance, seed=cfg.seed,
         )  # fmt: skip
         run.path("curvature.json").write_text(json.dumps(result, indent=1) + "\n")
         run.summarize({"curvature": result["summary"]})
@@ -254,10 +249,10 @@ def _summary(
             "top_median": median,
             "top_max": max(r["top"] for r in measured),
             "lr_at_2_over_median": 2 / median,
-            "not_converged": sum(not r["converged"] for r in measured),
+            "not_ritz_converged": sum(not r["ritz_converged"] for r in measured),
         }
     out["pooled"] = {"top": pooled["top"], "lr_at_2_over_top": 2 / pooled["top"],
-                     "converged": pooled["converged"],
+                     "ritz_converged": pooled["ritz_converged"],
                      "bottom": min(r["bottom"] for r in pooled["starts"])}  # fmt: skip
     return out
 

@@ -1,8 +1,7 @@
 """Measure the top curvature of the training loss at θ₀ (study 2, Stage A); GPU required.
 
     python scripts/curvature.py CONFIG [--batch-sizes 5 20] [--batches 3] [--starts 2]
-        [--pooled-responses 100] [--pooled-starts 2] [--min-steps 40] [--max-steps 60]
-        [--tolerance 0.01]
+        [--pooled-responses 100] [--pooled-starts 2] [--steps 60] [--tolerance 0.01]
         [key=value ...]
 
 Reads the appendable training stream of the config's seed (extend it first with
@@ -13,7 +12,7 @@ are stored under ``curvature`` in the run's config.
 
 Cost of the defaults on one L40S at 1.5B, from an HVP of ≈ 3.2 training steps (measured at 0.5B
 on an RTX 5090, 2026-10-14) and the pilot's step times: ≈ 3 s per product at batch 5, ≈ 6 s at
-batch 20, ≈ 29 s pooled over 100 responses; 40–60 products per start, ≈ 1.4–1.9 h in all.
+batch 20, ≈ 29 s pooled over 100 responses; 60 products per start, ≈ 1.9 h in all.
 """
 
 import argparse
@@ -34,8 +33,7 @@ def main() -> None:
     parser.add_argument("--starts", type=int, default=2, help="start vectors per single batch")
     parser.add_argument("--pooled-responses", type=int, default=100)
     parser.add_argument("--pooled-starts", type=int, default=2)
-    parser.add_argument("--min-steps", type=int, default=40, help="Lanczos steps at least")
-    parser.add_argument("--max-steps", type=int, default=60, help="Lanczos steps at most")
+    parser.add_argument("--steps", type=int, default=60, help="Lanczos steps per start")
     parser.add_argument(
         "--tolerance", type=float, default=0.01, help="relative residual and agreement of starts"
     )

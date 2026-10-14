@@ -126,32 +126,32 @@ def start_with_overlap(top, overlap, generator):
 def test_lanczos_converges_to_the_top_eigenvalue_and_consumes_its_start() -> None:
     operator, top, generator = known_operator(60, [500.0, 350.0])
     start = start_with_overlap(top, 0.1, generator)
-    result = lanczos(operator, start, min_steps=10, max_steps=60, tolerance=1e-6)
+    result = lanczos(operator, start, steps=40, tolerance=1e-6)
     assert start == []  # consumed, so the caller holds no fourth vector
-    assert result["converged"] and result["top"] == pytest.approx(500.0, rel=1e-8)
+    assert result["ritz_converged"] and result["top"] == pytest.approx(500.0, rel=1e-8)
     assert result["residual"] <= 1e-6 * 500
     assert result["top_trace"][-1] == result["top"]
     trace = result["top_trace"]
     assert all(a <= b + 1e-9 for a, b in zip(trace, trace[1:], strict=False))  # interlacing
 
 
-def test_a_minimum_of_steps_keeps_a_small_overlap_from_stopping_early() -> None:
-    # The reviewer's case: a random start barely overlaps the top eigenvector, and the Ritz value
-    # rests near the second eigenvalue with a residual under 1 % before the top one emerges.
+def test_a_small_residual_early_is_no_reason_to_stop() -> None:
+    # The reviewers' cases (r8, r9): a random start barely overlaps the top eigenvector, and the
+    # Ritz value rests near a lower eigenvalue with a residual under 1 % before the top one
+    # emerges. A residual-based stop would end there; the fixed number of steps does not.
     operator, top, generator = known_operator(400, [500.0, 470.0, 460.0])
-    early = lanczos(operator, start_with_overlap(top, 1e-6, generator), min_steps=1,
-                    max_steps=60, tolerance=0.01)  # fmt: skip
-    assert early["converged"] and early["top"] < 480  # converged, to the wrong eigenvalue
-    late = lanczos(operator, start_with_overlap(top, 1e-6, generator), min_steps=40,
-                   max_steps=60, tolerance=0.01)  # fmt: skip
-    assert late["converged"] and late["top"] == pytest.approx(500.0, rel=1e-4)
+    start = start_with_overlap(top, 1e-6, generator)
+    early = lanczos(operator, [t.clone() for t in start], steps=16, tolerance=0.01)
+    assert early["ritz_converged"] and early["top"] < 480  # "converged", to the wrong value
+    full = lanczos(operator, start, steps=60, tolerance=0.01)
+    assert full["steps"] == 60 and full["top"] == pytest.approx(500.0, rel=1e-4)
+    assert full["top_trace"][15] == early["top"]  # the same iteration, continued
 
 
-def test_lanczos_reports_no_convergence_at_its_step_limit() -> None:
+def test_lanczos_reports_no_ritz_convergence_after_too_few_steps() -> None:
     operator, top, generator = known_operator(400, [500.0, 470.0, 460.0])
-    result = lanczos(operator, start_with_overlap(top, 1e-6, generator), min_steps=1,
-                     max_steps=5, tolerance=0.01)  # fmt: skip
-    assert result["steps"] == 5 and not result["converged"]
+    result = lanczos(operator, start_with_overlap(top, 1e-6, generator), steps=5, tolerance=0.01)
+    assert result["steps"] == 5 and not result["ritz_converged"]
     assert result["residual"] > 0.01 * result["top"]
 
 
@@ -161,8 +161,9 @@ def test_lanczos_stops_when_the_krylov_space_is_invariant() -> None:
         return out
 
     start = [torch.tensor([1.0, 0.0], dtype=torch.float64)]
-    result = lanczos(operator, start, min_steps=10, max_steps=20, tolerance=0.01)
-    assert result["steps"] == 1 and result["converged"] and result["top"] == pytest.approx(2.0)
+    result = lanczos(operator, start, steps=20, tolerance=0.01)
+    assert result["steps"] == 1 and result["ritz_converged"]
+    assert result["top"] == pytest.approx(2.0)
 
 
 def test_the_product_adds_into_a_given_vector(setup) -> None:

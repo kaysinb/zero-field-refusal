@@ -20,8 +20,21 @@ def test_agreement_fails_on_the_median_or_the_95th_percentile() -> None:
     result = monitor_agreement(tail, scoring)
     assert result["median"] == 0.0 and result["p95"] == pytest.approx(0.2)
     assert result["passes"] is False
-    assert monitor_agreement([1.0], [2.0]) == {"pairs": 0, "median": None, "p95": None,
-                                               "passes": None}  # fmt: skip
+    assert monitor_agreement([1.0], [2.0]) == {"pairs": 0, "invalid": 0, "median": None,
+                                               "p95": None, "passes": None}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("monitor", "scoring"),
+    [
+        ([5.0, 100.0], [5.0, float("nan")]),  # the reviewer's case: NaN dropped by the K filter
+        ([5.0] * 99 + [float("inf")], [5.0] * 100),  # one in 100, beyond the 95th percentile
+        ([float("nan"), 5.0], [1.0, 5.0]),  # even below the K at which agreement is read
+    ],
+)
+def test_any_non_finite_reading_fails_the_agreement(monitor, scoring) -> None:
+    result = monitor_agreement(monitor, scoring)
+    assert result["passes"] is False and result["invalid"] == 1
 
 
 def test_study2_configs_add_the_monitor_panel_to_the_study1_sets(tmp_path) -> None:

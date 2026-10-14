@@ -9,11 +9,12 @@ Two panels measure K_benign (docs/study2-preregistration.md, "Panels"):
 
 Stage A checks that the monitor tracks the scoring panel where it matters (``monitor_agreement``):
 for K_benign ≥ 4, the median relative discrepancy must be at most 5 % and the 95th percentile at
-most 15 %; otherwise the monitor is enlarged before fixation.
+most 15 %, and no reading may be non-finite; otherwise the monitor is enlarged before fixation.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -53,11 +54,28 @@ def monitor_agreement(
 ) -> dict[str, Any]:
     """Relative discrepancy |K_monitor − K_scoring| / K_scoring of paired readings of the same
     states, over those with K_scoring ≥ ``from_k``: its median and 95th percentile (linear
-    interpolation), and whether both meet the preregistered bounds."""
-    pairs = [(m, s) for m, s in zip(monitor, scoring, strict=True) if s >= from_k]
-    if not pairs:
-        return {"pairs": 0, "median": None, "p95": None, "passes": None}
-    relative = np.array([abs(m - s) / s for m, s in pairs])
-    median, p95 = float(np.median(relative)), float(np.percentile(relative, 95))
-    return {"pairs": len(pairs), "median": median, "p95": p95,
-            "passes": median <= AGREEMENT_MEDIAN and p95 <= AGREEMENT_P95}  # fmt: skip
+    interpolation), and whether both meet the preregistered bounds.
+
+    Every pair must be finite, whatever its K: a non-finite reading is a failed measurement,
+    and dropping it, or letting it fall beyond the 95th percentile, could pass a bad monitor.
+    Any invalid pair fails the check, with their number; no pair at or above ``from_k`` leaves
+    it undetermined (``passes`` None).
+    """
+    invalid = sum(
+        not (math.isfinite(m) and math.isfinite(s))
+        for m, s in zip(monitor, scoring, strict=True)
+    )  # fmt: skip
+    pairs = [(m, s) for m, s in zip(monitor, scoring, strict=True)
+             if math.isfinite(m) and math.isfinite(s) and s >= from_k]  # fmt: skip
+    out: dict[str, Any] = {"pairs": len(pairs), "invalid": invalid, "median": None, "p95": None}
+    if pairs:
+        relative = np.array([abs(m - s) / s for m, s in pairs])
+        out["median"] = float(np.median(relative))
+        out["p95"] = float(np.percentile(relative, 95))
+    if invalid:
+        out["passes"] = False
+    elif not pairs:
+        out["passes"] = None
+    else:
+        out["passes"] = out["median"] <= AGREEMENT_MEDIAN and out["p95"] <= AGREEMENT_P95
+    return out

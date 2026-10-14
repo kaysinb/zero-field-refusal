@@ -755,7 +755,7 @@ def test_the_curvature_run_measures_batches_and_the_pooled_hessian(env) -> None:
     from zero_field_refusal.curvature import run_curvature
 
     settings = {"batch_sizes": [2, 4], "batches": 2, "starts": 2, "pooled_responses": 8,
-                "pooled_starts": 1, "min_steps": 2, "max_steps": 4, "tolerance": 0.01}  # fmt: skip
+                "pooled_starts": 1, "steps": 4, "tolerance": 0.01}  # fmt: skip
     cfg = OmegaConf.merge(config(*APPENDABLE, "run_type=curvature"), {"curvature": settings})
     extend_stream(cfg, env, 0, 8, batch_size=4)
     run_dir = run_curvature(cfg, env, run_id="curvature")
@@ -766,13 +766,13 @@ def test_the_curvature_run_measures_batches_and_the_pooled_hessian(env) -> None:
     for measured in [*result["single"], result["pooled"]]:
         tops = [r["top"] for r in measured["starts"]]
         assert measured["top"] == max(tops)
-        assert all(2 <= r["steps"] <= 4 and r["top"] >= r["bottom"] for r in measured["starts"])
-        every = all(r["converged"] for r in measured["starts"])
-        assert measured["converged"] == (measured["starts_agree"] and every)
+        assert all(r["steps"] == 4 and r["top"] >= r["bottom"] for r in measured["starts"])
+        every = all(r["ritz_converged"] for r in measured["starts"])
+        assert measured["ritz_converged"] == (measured["starts_agree"] and every)
     assert result["pooled"]["responses"] == 8 and len(result["pooled"]["starts"]) == 1
     summary = json.loads((run_dir / "summary.json").read_text())["curvature"]
     assert summary["pooled"]["lr_at_2_over_top"] == pytest.approx(2 / summary["pooled"]["top"])
-    assert set(summary["single_batch_2"]) >= {"top_median", "not_converged"}
+    assert set(summary["single_batch_2"]) >= {"top_median", "not_ritz_converged"}
     meta = json.loads((run_dir / "meta.json").read_text())
     assert len(meta["inputs"]["streams"]["training"]["chunks"]) == 3
 
