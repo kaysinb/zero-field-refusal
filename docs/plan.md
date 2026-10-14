@@ -179,17 +179,21 @@ and its cost.
    before confirmation.
 2. **Numerics:**
    - curvature at θ₀;
-   - the soft-target screen of the SGD rate grid at both batches;
-   - full-length controls at the candidate rates;
+   - the 100-step soft-target screen of the whole SGD rate grid at both batches, on seed 2000;
+   - full-length controls at the two candidate rates of each batch, the two largest that pass
+     the screen;
    - the path drift/noise bounds.
-3. **Discovery:** three seeds, both batches:
-   - SGD-long at the eligible rates;
+3. **Discovery:** three seeds, both batches, every run evaluated at all candidate levels
+   (5, √35, √40, 7 and 8):
+   - SGD-long at the two candidate rates of each batch;
    - AdamW-long at {1, 3, 5, 10}·10⁻⁶;
    - AdamW-25 and frozen Adam-25 on their grid.
 
    The batch, rates, U and T_max follow the
-   [selection rule](study2-preregistration.md#selection-rule).
-4. **Validation:** twelve seeds at the selected batch and rates.
+   [selection rule](study2-preregistration.md#selection-rule). Harm labels stay closed until
+   the selection is sealed.
+4. **Validation:** twelve seeds at the selected batch and rates, with the instability rule
+   frozen.
 
 Planning cost of Stage A, on one L40S at $1.09/h. The estimates rest on the pilot's measured step
 times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 110 s per full evaluation and
@@ -199,14 +203,14 @@ times (≈ 1.0 s per SGD step at batch 5, ≈ 1.8 s at batch 20), ≈ 110 s per 
 |---|---|---|---|
 | Curvature at θ₀, both batches | — | ≈ 0.5 | ≈ $1 |
 | Soft-target screen: 10 rates × 2 batches × 100 steps | 20 | ≈ 1–2 | ≈ $1–2 |
-| Full-length soft-target controls and matching regular runs at ≤ 3 candidate rates per batch | ≤ 12 | ≈ 8–20 | ≈ $9–22 |
+| Full-length soft-target controls: 2 candidate rates × 2 batches, seed 2000, ≤ 4000 steps | 4 | ≈ 5–12 | ≈ $5–13 |
 | Teacher streams of the discovery seeds, generated as needed | — | ≈ 1–4 | ≈ $1–4 |
-| SGD-long discovery: ≤ 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 10–30 | ≈ $11–33 |
+| SGD-long discovery: 2 rates × 3 seeds × 2 batches, ≤ 4000 steps | ≤ 12 | ≈ 10–30 | ≈ $11–33 |
 | AdamW-long discovery: 4 rates × 3 seeds × 2 batches | 24 | ≈ 3–8 | ≈ $3–9 |
-| AdamW-25 and frozen Adam-25 grids: 6 rates × 3 seeds × 2 batches × 2 arms | 72 | ≈ 5 | ≈ $5–6 |
+| AdamW-25 and frozen Adam-25 grids: 6 rates (up to 8 at batch 5) × 3 seeds × 2 batches × 2 arms | 72–84 | ≈ 5–6 | ≈ $5–7 |
 | Validation: 12 seeds, both long arms and AdamW-25 at three rates | ≈ 60 | ≈ 12–25 | ≈ $13–27 |
-| Judge for the validation labels (variance planning only) | — | ≈ 1 | ≈ $1 |
-| **Stage A** | | **≈ 40–95** | **≈ $45–105** |
+| Judge for the discovery and validation labels, opened after the selection is sealed | — | ≈ 1–2 | ≈ $1–2 |
+| **Stage A** | | **≈ 40–90** | **≈ $40–100** |
 
 **Stage B (fixation):** no GPU beyond measurements already made; the simulation runs on CPU.
 

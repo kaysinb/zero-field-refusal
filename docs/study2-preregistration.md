@@ -12,17 +12,31 @@ either direction, or equivalence. Confirming H1 is not the aim.
 
 ## What the pilot taught
 
-The design of study 2 answers the reasons the pilot gave no result:
+The pilot did not yield a decisive, interpretable optimizer comparison. Study 2 answers its
+problems:
 
 | Pilot problem | Study-2 answer |
 |---|---|
 | One shared budget of 25 steps × batch 20 left SGD a single lever, its learning rate, which hit a stability cliff at K_harmful 2.41, below AdamW's effect zone | Each long arm has its own constant rate and its own number of steps, stopped by K; the arms share the batch, the stream prefix and T_max |
-| Gate 1 sat in a collapsed cell with 5 seeds; at the observed seed spread a real effect passed with probability ≈ 0.54 | No harm-based gate; feasibility gates use numerics, reachability and utility; the comparison zone is fixed from pilot data |
-| The SGD rates called stable lay above the linear stability threshold (the soft-target control grew ≈ 9–14× per step) | Curvature measured directly; SGD rates accepted only if a soft-target control shows negligible functional contamination at full length |
-| K\* = 2.26 put the comparison where no arm shows an effect | The zone is fixed now in K_benign units where the pilot's AdamW shows a 13–16 pp rise with intact utility |
-| Matching on K_harmful partly matches on the outcome | K_benign is the matching variable; K_harmful analyses are secondary |
+| Gate 1 sat in a collapsed cell with 5 seeds. Under stated distributional assumptions, a simulation gives a real effect of the observed size a pass probability of ≈ 0.54 at the observed seed spread | No harm-based gate; feasibility gates use numerics, reachability and utility; the comparison zone is fixed from pilot data |
+| The soft-target control at 0.028, the largest rate called stable, grew ≈ 9–14× per step: that rate was linearly unstable. The threshold was not measured, so whether every nominally stable rate exceeded it is unknown | Curvature measured directly; SGD rates accepted only if a soft-target control shows negligible functional contamination at full length |
+| K\* = 2.26 put the comparison where observed harm was low in every arm and discrimination weak | The zone is fixed now in K_benign units, where the pilot's Adam arms showed rises of 16–21 pp with MMLU losses under 5 pp |
+| Matching on K_harmful is outcome-adjacent, since θ₀'s responses there are refusals; that it attenuated the contrast is a hypothesis | K_benign is the matching variable; K_harmful analyses are secondary |
 | The judge check sampled uniformly at low harmful prevalence | The audit is stratified by the judge's own label, with inclusion probabilities |
-| Variance planned unpaired although the arms share streams | Paired planning and a paired seed-block analysis |
+| The paired bootstrap was specified, but the number of seeds and the gate were planned with unpaired variance, although the arms share streams | Paired planning and a paired seed-block analysis |
+
+## Relation to the approved design
+
+This document implements the study-2 design approved by the user on 2026-10-14. Two rules
+differ from it, both settled before any study-2 data:
+
+- **U also needs reachability.** The design chose U "by utility only", meaning "not by harm".
+  U here needs both utility and reachability on all discovery seeds of both long arms. Neither
+  condition looks at the outcome. This is the coordinator's clarification within the approved
+  design.
+- **Batch priority** (a prospective change before any data). Among eligible batches, the larger U
+  is preferred first and cost second, where the design ranked by cost alone. At a larger U the
+  comparison lies where the effect is larger.
 
 ## Question and estimand
 
@@ -40,8 +54,8 @@ The design of study 2 answers the reasons the pilot gave no result:
   change on held-out benign instructions, not all general capability.
 - **Secondary contrasts:**
   - AdamW-25 against each long arm;
-  - AdamW-25 against AdamW-long, which asks whether Adam's curve depends on the regime;
-  - frozen Adam-25 against AdamW-25, the clean mechanism contrast ([below](#frozen-adam-25));
+  - AdamW-25 against AdamW-long, which asks whether Adam's curve depends on its regime;
+  - frozen Adam-25 against AdamW-25, a mechanism diagnostic ([below](#frozen-adam-25));
   - every analysis repeated with K_harmful as the matching variable.
 - **Scope of inference.** Uncertainty is over training seeds, conditional on the fixed prompt
   sets. Generalization beyond them needs other prompts or a replication.
@@ -66,10 +80,13 @@ The design of study 2 answers the reasons the pilot gave no result:
 | Arm | Optimizer and regime | Role |
 |---|---|---|
 | SGD-long | SGD without momentum, one constant rate, stopped by K | primary |
-| AdamW-long | AdamW (β 0.9 / 0.999, ε 10⁻⁸), one small constant rate, stopped by K | primary |
+| AdamW-long | AdamW (β 0.9 / 0.999, ε 10⁻⁸) at one small constant rate, stopped by K | primary |
 | AdamW-25 | AdamW at three rates, exactly 25 steps each | secondary |
-| Frozen Adam-25 | Adam with second moment frozen at θ₀ (as in the pilot), three rates, 25 steps each | mechanism; [rules below](#frozen-adam-25) |
+| Frozen Adam-25 | Adam with second moment frozen at θ₀ (as in the pilot), up to three rates, 25 steps each | mechanism diagnostic; [rules below](#frozen-adam-25) |
 
+- **"Long" means stopped by K.** It names the arms stopped by K at a small rate. It does not
+  claim that AdamW reaches a settled long-run regime. Each run records its number of steps to
+  each level.
 - **Batch.** Every arm uses one common batch size B ∈ {5, 20}, chosen in Stage A by the
   [selection rule](#selection-rule). If B = 5 is chosen, AdamW-25 is recalibrated at B = 5, and
   the pilot's AdamW at B = 20 remains historical evidence only.
@@ -87,18 +104,23 @@ The design of study 2 answers the reasons the pilot gave no result:
 
 - **Fixed now from pilot data.** The comparison zone is fixed in K_benign units. A level that an
   arm cannot reach stays where it is; non-arrival is a result.
-- **Levels:** 5, K\* = √(5U) and U.
-- **The upper level U** is the larger of {7, 8} for which, at the selected batch, both long arms
-  meet two conditions:
-  - every discovery seed reaches U;
-  - the mean MMLU loss at their U evaluations on the discovery seeds is at most 5 pp.
+- **Candidate levels:** 5, √35 ≈ 5.92, √40 ≈ 6.32, 7 and 8. Discovery evaluates all of them, so
+  that U is chosen from points already recorded.
+- **Levels after selection:** 5, K\* = √(5U) and U.
+- **The upper level U** is the larger of {7, 8} for which, at the selected batch, both conditions
+  hold for both long arms on the discovery seeds:
+  - **utility:** the mean MMLU loss at the U evaluations is at most 5 pp;
+  - **reachability:** every discovery seed reaches U.
 
-  The rule uses utility and reachability only.
+  Neither condition looks at the outcome. If U is 7 because SGD or AdamW does not reach 8, that is
+  a reported limitation of feasibility.
 - **The reason for this rule.** In the pilot, no run lies between K_benign 9 and 19, so where
   MMLU begins to collapse in these units is unknown. At K_benign ≈ 8, frozen Adam already lost
   4.9 pp on average.
-- **What the pilot shows at these levels.** At K_benign 5 to 8, AdamW's harmful-compliance rise
-  was ≈ 13–16 pp, with MMLU losses of 3.6–4.9 pp.
+- **What the pilot shows near these levels:**
+  - AdamW 2·10⁻⁵ at K_benign ≈ 7.2 raised harmful compliance by 15.9 pp, with an MMLU loss of
+    3.6 pp;
+  - frozen Adam 2·10⁻⁵ at K_benign ≈ 8.2 raised it by 20.8 pp, with 4.9 pp.
 
 ## Panels, monitoring and stopping
 
@@ -110,14 +132,19 @@ The design of study 2 answers the reasons the pilot gave no result:
 | Harmful evaluation | the largest cleaned subset of the HarmBench and AdvBench pool outside the 100 K_harmful prompts (expected 400–500), greedy, ≤ 256 tokens | harmful compliance at each full evaluation; fixed before Stage A |
 | Monitor | 25 further benign prompts × 2 θ₀ responses, disjoint from the scoring panel, with their own data and RNG | K every 5 steps |
 
-### Rules during training
+### Outcome embargo
 
-- **No outcomes during training.** Only K and utility leave a run while it trains; refusal and
-  harm are never read before the run ends.
-- **A level crossing triggers a full evaluation.** When two consecutive monitor readings lie at
-  or above a level, the run is fully evaluated in place. The curve uses the scoring panel's
-  measured K, never the nominal level. One evaluation that crosses several levels counts as a
-  single observation.
+- **During training,** only K and utility leave a run.
+- **Discovery:** harm labels stay closed until the Stage-A selection is sealed.
+- **Validation:** harm labels are opened only to plan variance, after the selection is sealed.
+- **Confirmation:** outcomes stay closed until their scheduled look.
+
+### Level crossings
+
+- **A crossing triggers a full evaluation.** When two consecutive monitor readings lie at or
+  above a level, the run is fully evaluated in place. The curve uses the scoring panel's measured
+  K, never the nominal level. One evaluation that crosses several levels counts as a single
+  observation.
 - **Monitor agreement.** In Stage A, the monitor must agree with the scoring panel for
   K_benign ≥ 4: median relative discrepancy ≤ 5 %, 95th percentile ≤ 15 %. Otherwise the
   monitor is enlarged before fixation.
@@ -126,7 +153,8 @@ The design of study 2 answers the reasons the pilot gave no result:
 
 A long arm stops on K and stability only:
 
-1. **Target:** after the evaluation at U.
+1. **Target:** after the evaluation at the top level. That is U in validation and confirmation,
+   and 8 in discovery.
 2. **Plateau:**
    - never before step 1000;
    - taken over six consecutive windows of 100 steps;
@@ -135,14 +163,14 @@ A long arm stops on K and stability only:
      next level.
 3. **Instability**, checked before every update from the first gradient:
    - a non-finite loss, gradient, weight or K;
-   - or a monitor K above 2U;
+   - or a monitor K above 2U (16 in discovery);
    - or a gradient norm above 10 times the median of the preceding (up to 20) step norms, the
      reference starting at the step-0 norm; one step suffices.
 
    On the pilot's logs this fires at SGD 0.03 at step 6 (≈ 11×), while the stable runs at 0.028
-   peak at ≈ 2×. Stage A reports the rule's false-alarm rate on stable trajectories,
-   descriptively. Before fixation at Stage B the factor 10 may be revised only from that rate,
-   never from harm.
+   peak at ≈ 2×. Discovery reports the rule's false-alarm rate on stable trajectories. The
+   factor 10 may be revised only from that rate, never from harm, and it is frozen before
+   validation; a later change would require validation to be repeated.
 4. **Limit T_max:**
    - common to both long arms;
    - T_max = min(4000, 1.5 × the larger of the two arms' median step counts to U on the discovery
@@ -159,15 +187,22 @@ A long arm stops on K and stability only:
   Hessian–vector products, with several starting vectors and batches. It guides the SGD rate
   screen; it does not certify stability. The pilot's soft-target growth suggested λ_max ≈ 350–520,
   i.e. 2/λ_max ≈ 0.004–0.006.
-- **SGD soft-target control.**
-  - **Rate grid:** {0.0005, 0.001, 0.002, 0.003, 0.004, 0.006, 0.01, 0.015, 0.02, 0.028} at both
-    batches.
-  - **Screen:** every rate runs 100 steps.
-  - **Candidates:** each candidate rate runs a soft-target control to its full planned length.
-  - **Acceptance:** the functional contamination — the K_benign of the soft-target control against
-    the regular run of the same length — is at most 1 % of K\* (≈ 0.06 nat); the path drift/noise
-    bound holds for the maximum planned exposure; no instability fires.
-  - **A failed rate cannot become primary,** however it is labeled.
+- **SGD rate screen.** The grid is {0.0005, 0.001, 0.002, 0.003, 0.004, 0.006, 0.01, 0.015,
+  0.02, 0.028}, at both batches. Every rate runs a 100-step soft-target control on seed 2000.
+  A rate passes the screen when no instability fires and the contamination below stays within
+  its threshold.
+- **Candidate rates.** At each batch, the two largest rates that pass the screen are the
+  candidates. Each gets a full-length soft-target control on seed 2000 and runs in discovery.
+- **Contamination.**
+  - **Definition:** c(t) = K_benign(θ₀ ‖ θ_soft(t)), the scoring panel's K_benign of the
+    soft-target control after t steps, evaluated at the regular run's evaluation times.
+  - **Length:** the control runs as long as the longest regular discovery run of that rate and
+    batch, on the same seed.
+  - **Acceptance:** max over t of c(t) ≤ 0.01 × K\*. Until U is chosen, K\* is that of the lowest
+    candidate zone, √35 ≈ 5.92, so the threshold is ≈ 0.059 nat.
+- **Path bound.** The path drift/noise bound must also hold for the maximum planned exposure.
+  The KL threshold does not replace it.
+- **A failed rate cannot become primary,** however it is labeled.
 - **Adam.** A soft-target control is not meaningful for Adam, which normalizes the residual
   gradient. Adam rates need the path drift/noise bound for their maximum exposure.
 - **Descriptive comparison.** At the candidate SGD rates, Stage A compares the gradient growth of
@@ -180,48 +215,63 @@ Stage A uses fresh seeds that never enter the confirmation.
 
 ### Discovery
 
-Three seeds, run at both batches in parallel.
+Three seeds, run at both batches in parallel. Every run is evaluated at all
+[candidate levels](#zone-and-levels).
 
-- **SGD-long:** at the numerically eligible rates.
+- **SGD-long:** the two candidate rates of each batch.
 - **AdamW-long:** at {1, 3, 5, 10}·10⁻⁶.
-- **AdamW-25:** grid {0.5, 1, 1.5, 2, 3, 4}·10⁻⁵. If at B = 5 the smallest rate already passes
-  the lower level, the grid extends downward by halving.
+- **AdamW-25:**
+  - grid {0.5, 1, 1.5, 2, 3, 4}·10⁻⁵;
+  - if at B = 5 the smallest rate's median K_benign already exceeds 5, the grid extends downward
+    by halving, at most twice.
 - **Frozen Adam-25:** the same grid on the same seeds.
 
 ### Selection rule
 
 The rule uses numerics, K, reachability, utility and measured cost. It never uses harm.
 
+**Utility in bounds** means: over the three discovery seeds, the mean MMLU loss is at most 5 pp
+and the mean factual loss at most 10 pp, at the evaluations used.
+
 1. **Batch.**
-   - A batch is eligible when the numerical acceptance passes for its SGD-long rate and some
+   - A batch is eligible when an SGD-long candidate rate passes the numerical acceptance and some
      U ∈ {7, 8} qualifies for both long arms.
-   - Among eligible batches, the larger U wins; on a tie, the lower measured GPU time per seed
-     block.
-2. **SGD-long rate:** the largest numerically eligible rate that reaches U on all discovery seeds
-   within 4000 steps with utility in bounds.
-3. **AdamW-long rate:** the largest of {1, 3, 5, 10}·10⁻⁶ that reaches U on all discovery seeds,
-   passes the path bound, keeps utility in bounds, and evaluates the three levels at separate
-   evaluations.
-4. **AdamW-25 rates:** three rates whose median K_benign across the discovery seeds lies nearest
-   to the three levels, with utility in bounds; a tie goes to the smaller rate.
+   - Among eligible batches, the larger U wins. On a tie, the lower measured GPU time per seed
+     block wins.
+2. **SGD-long rate:** the larger accepted candidate rate that reaches U on all discovery seeds
+   within 4000 steps, with utility in bounds.
+3. **AdamW-long rate:** the largest of {1, 3, 5, 10}·10⁻⁶ that meets five conditions:
+   - it reaches U on all discovery seeds;
+   - it passes the path bound;
+   - it keeps utility in bounds;
+   - it evaluates 5, K\* and U at three separate evaluations — a coverage condition, not
+     evidence of a long-run regime;
+   - its step count to U is recorded.
+4. **AdamW-25 rates:**
+   - three distinct rates whose median K_benign across the discovery seeds lies nearest to 5, K\*
+     and U, with utility in bounds;
+   - a tie goes to the smaller rate;
+   - if fewer than three distinct rates qualify, the qualifying ones are taken and the shortfall
+     is flagged.
 5. **Frozen Adam-25 rates:**
    - chosen by the same rule on its own grid;
    - if they coincide with AdamW-25's, the mechanism contrast has equal rate, steps and stream;
    - otherwise they keep their own rates: curves are compared at equal K, and covering the levels
-     matters more than equal rates.
+     matters more than equal rates;
+   - a failure of frozen Adam's coverage never blocks H1.
 6. **T_max:** by the rule [above](#stops).
 
 ### Validation
 
-Twelve further fresh seeds at the selected batch and rates. It passes when:
+Twelve further fresh seeds run at the selected batch and rates, with the instability factor
+frozen. Validation passes when:
 
 - at least 10 seed blocks support both long arms around K\*;
 - the numerical and monitor checks hold;
 - simultaneous one-sided 95 % upper bounds on the mean utility loss, at the three levels and for
   both long arms, stay at most 5 pp on MMLU and at most 10 pp on the factual questions.
 
-Harm does not enter the gate. Validation harm labels are opened only to plan variance, after the
-Stage-A choices are sealed.
+Harm does not enter the gate.
 
 ### Outcomes of Stage A
 
@@ -250,6 +300,7 @@ Stage B freezes, in a committed record:
 - the panels and levels;
 - the stopping thresholds;
 - the maximum number of seed blocks;
+- the analysis choices listed [below](#to-be-fixed-at-stage-b);
 - the audit plan;
 - the versions of code, model and judge;
 - the namespaces.
@@ -263,13 +314,18 @@ Stage B freezes, in a committed record:
 
 Its requirements:
 
-- power ≥ 0.8 for the declared alternatives;
-- a false directional result ≤ 2.5 %;
-- false equivalence ≤ 5 %.
+- power ≥ 0.8 to conclude equivalence at a true Δ = 0, and to conclude the direction at
+  |Δ| = 5 pp;
+- a false directional result ≤ 2.5 % in each direction, ≤ 5 % in either;
+- false equivalence ≤ 5 % at |Δ| = 5 pp.
 
-If no maximum up to ≈ 80 blocks reaches 0.8, the study runs as an explicitly underpowered,
-capped study and reports its interval; what is reported under uncertainty (the interval and its
-±8 reading) is fixed then.
+The maximum, a cap of ≈ 80, counts started blocks. If no maximum within the cap reaches 0.8,
+the study runs as an explicitly underpowered, capped study. What is then reported under
+uncertainty (the interval and its ±8 reading) is fixed in the Stage-B record.
+
+**Model choice.** The curve model and its band are chosen by a criterion written now: among the
+candidates declared in the Stage-B record, the one with the highest simulated power that meets
+the error requirements. They are never chosen by how the validation data look.
 
 **Blind analysis.** Arm labels stay hidden until the frozen pipeline has run.
 
@@ -287,17 +343,40 @@ Stage B* from the frozen maximum:
 
 - There is no third look.
 - Information is counted in supported blocks, not started ones.
+- **Missing minimum.** If a look lacks its minimum of supported blocks, it is postponed until the
+  minimum is reached, within the cap on started blocks.
 - After look 1 the pods stop until its CPU analysis is done.
+- **Utility at both looks.** The utility bounds cover both looks.
+
+### Analysis population
+
+**Pairing.** The primary contrast uses the blocks supported in both long arms: the intersection,
+which keeps the pairing. Blocks supported in one arm only are reported.
+
+**Nothing is dropped silently:**
+
+- **Failed fit.** A failed curve fit is not dropped. The Stage-B record fixes three things: the
+  regularization of the fit, how failed bootstrap replicates count, and the fallback estimator. The
+  candidate fallback is the mean of within-seed interpolated differences. The number of failures
+  is reported.
+- **Missing utility at a level.** A block that has no utility evaluation at a level enters that
+  level's utility bound with the largest loss observed in its arm at that level. The bound is
+  also reported over the blocks actually evaluated, with the number missing. A utility claim
+  needs the first bound. The block stays in the harm analysis wherever it has K support.
+- **Unresolved judge labels.** A WildGuard output that does not parse is rerun until it parses,
+  as in the pilot's [judge rule](operations.md#judge-server). A label still missing after the
+  reruns counts as not harmful in the primary rate. Their number is reported per arm, with the
+  worst-case interval that counts them as harmful.
 
 ### Primary analysis
 
-**Curves.** Per arm, harmful compliance against x = ln(K_benign/K\*), fitted as a binomial
-logistic curve with a kink at K\*:
+**Curves.** Per arm, harmful compliance against x = ln(K_benign/K\*). The planning model is a
+binomial logistic curve with a kink at K\*:
 logit h = α + βx + γ·max(x, 0).
 
 - The fit uses the scoring observations in the band [0.8·5, 1.1U].
 - Each seed–arm carries equal total weight.
-- The model form and band are *to be fixed at Stage B*.
+- The model and band are *to be fixed at Stage B* by the criterion [above](#stage-b--fixation).
 
 **Interval.** A paired seed-block bootstrap-t: a resample keeps every arm, rate and evaluation of
 a drawn seed. It uses at least 100 000 resamples, or an approximation validated by simulation,
@@ -309,11 +388,13 @@ simulating the whole analysis.
 - **Equivalence:** the interval lies inside ±5 pp. This is the primary margin.
 - **Direction:** the interval excludes 0 (a positive or opposite-sign difference). Direction and
   equivalence can hold together for a small nonzero difference.
-- **±8 pp reading:** whether the interval lies inside ±8 pp, read from the same interval and
-  nested.
-- **Inconclusive:** otherwise.
+- **±8 pp reading:** whether the interval lies inside ±8 pp, read from the same interval. It is
+  nested and secondary.
+- **Inconclusive:** neither equivalence at ±5 nor direction.
 
-The primary conclusion never switches to ±8.
+**Stopping and the ±8 reading.** Confirmation stops early only on equivalence at ±5 pp or on a
+direction. Containment in ±8 pp alone neither ends confirmation nor resolves the primary result,
+and the primary conclusion never switches to ±8.
 
 **Support.** A seed whose trajectory does not bracket K\* in an arm is unsupported there. It is
 never extrapolated. Reachability per arm and level, and worst-case bounds for the unsupported
@@ -328,33 +409,36 @@ blocks, are reported beside the result.
 - utility, refusal, token exposure and run time.
 
 **Utility.** A claim that utility is preserved needs simultaneous one-sided 95 % upper bounds on
-the mean utility loss, at the three levels and for both long arms: at most 5 pp on MMLU and at
-most 10 pp on the factual questions. Seeds are never removed to meet it.
+the mean utility loss, at the three levels, for both long arms and at both looks: at most 5 pp
+on MMLU and at most 10 pp on the factual questions. Seeds are never removed to meet it.
 
 ## Frozen Adam-25
 
-- **Unconditional part.** Frozen Adam-25 runs on the first 20 confirmation blocks, whatever the
-  results, to avoid a winner's curse.
-- **Conditional extension.** It extends to the remaining blocks only if, at the terminal look
-  (an early stop included), Δ(AdamW-long − SGD-long) or Δ(AdamW-25 − SGD-long) excludes zero.
-  That part is exploratory.
-- **The mechanism contrast** — a shift of the mean against spreading along flat directions — is
-  AdamW-25 against frozen Adam-25.
-- **What it cannot identify.** Frozen Adam-25 against a long arm mixes optimizer and duration and
-  cannot identify a mechanism by itself.
-- **Inference.** Its inference must account for the selection and stopping of the seeds it
-  reuses; otherwise its contrasts are exploratory.
+- **Unconditional cohort.** Frozen Adam-25 runs on the first 20 preassigned started confirmation
+  blocks. It is reported whatever the results, which avoids a winner's curse.
+- **Interval.** Its contrasts use a two-sided 95 % interval without sequential control, labeled
+  diagnostic.
+- **Conditional extension.**
+  - It extends to the remaining blocks only if Δ(AdamW-long − SGD-long) excludes zero in the
+    primary sequential interval at the terminal look, an early stop included.
+  - The same applies if the interval for Δ(AdamW-25 − SGD-long) excludes zero; that interval is
+    computed by the same rule.
+  - The extension is exploratory and labeled separately.
+- **The contrast with AdamW-25** diagnoses the mechanism, a shift of the mean against spreading
+  along flat directions. It does not identify it, especially when the two arms run at different
+  rates.
+- **What it cannot identify.** Frozen Adam-25 against a long arm mixes optimizer and duration.
 
 ## Judge and audit
 
 - **Judge.** WildGuard as in the pilot (`configs/judge/wildguard.yaml`, label definitions v2,
-  two-class outcome harmful compliance against not). A failed labeler output is a missing label,
-  never a safe one.
+  two-class outcome harmful compliance against not). Unparsed outputs follow the
+  [rule above](#analysis-population).
 - **Audit.** One terminal audit of 400 items per primary arm.
   - **Sampling:** stratified by arm, K band and the judge's own label, with recorded inclusion
     probabilities, spread over seeds and prompts.
   - **Reference labels:** GPT and Grok label independently; the user checks every disagreement
-    and 10 % of the agreements.
+    and 10 % of the agreements. A failed reference output is a missing label, never a safe one.
   - **Fixed in advance:** the audit's size and sampling for both possible stopping looks are
     *to be fixed at Stage B*. Audit results never trigger further training.
 - **What the audit estimates.** The judge's differential net bias for the primary curve contrast,
@@ -378,11 +462,12 @@ most 10 pp on the factual questions. Seeds are never removed to meet it.
 
 | Item | Planning value now |
 |---|---|
-| Maximum seed blocks and the two look sizes | ≈ 30 / 63 started, ≥ 24 / 50 supported, cap ≈ 80 |
+| Maximum started blocks and the two look sizes | ≈ 30 / 63 started, ≥ 24 / 50 supported, cap ≈ 80 started |
 | Nominal look levels | ≈ 99.53 % and 95.19 % |
-| Curve model and band | logistic with a kink at K\*, band [0.8·5, 1.1U] |
+| Curve model and band, by the simulation criterion | logistic with a kink at K\*, band [0.8·5, 1.1U] |
+| Fit regularization, failed bootstrap replicates, fallback estimator | the mean of within-seed interpolated differences as the fallback |
 | Bootstrap resamples or approximation | ≥ 100 000 |
-| Instability factor | 10, revisable only from the Stage-A false-alarm rate |
+| Reporting of an underpowered, capped study | the interval and its ±8 reading |
 | Audit size and allocation per look | 400 items per primary arm |
 | Batch, rates, T_max, U, panels, versions | by the Stage-A rules above |
 
