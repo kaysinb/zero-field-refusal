@@ -28,14 +28,17 @@ from zero_field_refusal.teacher import StreamError
 RULE = PlateauRule(from_step=1000, window=100, windows=6, span=1.10, drift=1.02, below_next=0.9)
 
 
-def test_a_level_is_crossed_by_two_consecutive_readings_and_reached_once() -> None:
+def test_a_level_is_crossed_by_two_consecutive_readings_and_reached_once_evaluated() -> None:
     tracker = LevelTracker([5.0, 7.0, 8.0], readings=2)
     assert tracker.update(5.5) == []  # one reading is not enough
     assert tracker.update(4.9) == []
     assert tracker.update(5.2) == []
     assert tracker.update(7.5) == [5.0]  # 5.2 and 7.5: only 5 is under both
-    assert tracker.update(8.1) == [7.0]
-    assert tracker.update(9.0) == [8.0]
+    assert tracker.update(7.6) == [5.0, 7.0]  # not evaluated yet: crossed, not reached
+    tracker.reach([5.0, 7.0])
+    assert tracker.update(9.0) == []  # 7.6 and 9.0: 8 is not under both
+    assert tracker.update(9.2) == [8.0]
+    tracker.reach([8.0])
     assert tracker.next_level is None and tracker.update(9.5) == []
 
 
@@ -210,6 +213,8 @@ def test_a_gradient_spike_stops_before_its_update(env, tmp_path, scripted, monke
     terminal = json.loads((run_dir / "terminal.json").read_text())
     assert terminal["stop"]["reason"] == "gradient_spike" and terminal["steps"] == 3
     assert terminal["stop"]["detail"] == {"grad_norm": 50.0, "reference_median": 1.0}
+    rejected = terminal["stop"]["rejected"]  # the refused batch, not counted as a step
+    assert (rejected["step"], rejected["grad_norm"]) == (3, 50.0)
     assert len(read_jsonl(run_dir / "metrics.jsonl")) == 3
 
 
@@ -327,3 +332,56 @@ def test_the_records_of_real_runs_load_as_trajectories(env, tmp_path, scripted) 
     short = scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[5,10]", policy="short")
     run = load_trajectory(run_scheduled(short, env, run_id="short"))
     assert (run.arm, run.steps, [r["step"] for r in run.evaluations]) == ("adamw_25", 10, [5, 10])
+
+
+def test_an_update_that_breaks_the_weights_counts_and_is_recorded(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    import zero_field_refusal.schedule as schedule
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(0.1)
+    real, calls = schedule._norm, {"weights": 0}
+
+    def norm(tensors):
+        first = next(t for t in tensors if t is not None)
+        if first.requires_grad:  # the weights after an update
+            calls["weights"] += 1
+            if calls["weights"] == 5:
+                return float("nan")
+        return real(tensors)
+
+    monkeypatch.setattr(schedule, "_norm", norm)
+    run_dir = run_scheduled(cfg, env, run_id="weights")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"]["reason"] == "nonfinite_weight"
+    assert terminal["steps"] == 5 and terminal["responses"] == 20  # the applied update counts
+    assert terminal["stop"]["rejected"]["step"] == 4 and terminal["stop"]["rejected"]["applied"]
+    assert load_trajectory(run_dir).steps == 5  # no reading after the bad update
+
+
+def test_a_failed_evaluation_leaves_its_levels_missed(env, tmp_path, scripted, monkeypatch):
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+    from zero_field_refusal.tracking import Diverged
+    from zero_field_refusal.train import Evaluator
+
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(1.2, 1.3)  # both levels crossed at step 10
+
+    def broken(self, model, condition):
+        raise Diverged("K not finite")
+
+    monkeypatch.setattr(Evaluator, "__call__", broken)
+    run_dir = run_scheduled(cfg, env, run_id="failed-evaluation")
+    levels = json.loads((run_dir / "terminal.json").read_text())["levels"]
+    assert levels["reached"] == [] and levels["missed"] == [0.5, 1.0]
+    assert levels["failed_crossing"] == {"step": 10, "levels": [0.5, 1.0]}
+    assert load_trajectory(run_dir).stop == "nonfinite_k"
+
+
+def test_a_fixed_schedule_must_end_with_an_evaluation(tmp_path) -> None:
+    with pytest.raises(ProtocolError, match="must include the last step 10"):
+        scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[5]", policy="short")

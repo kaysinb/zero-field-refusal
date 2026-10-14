@@ -239,6 +239,8 @@ def _schedule_problems(cfg: DictConfig, layout: Any, steps: Any) -> list[str]:
         at = list(schedule.get("evaluate_at") or [])
         if not at or any(not (isinstance(t, int) and 1 <= t <= steps) for t in at):
             problems.append(f"schedule.evaluate_at: expected steps in [1, {steps}], got {at!r}")
+        elif max(at) != steps:  # a fixed run ends with its evaluation
+            problems.append(f"schedule.evaluate_at: must include the last step {steps}, got {at!r}")
     every = OmegaConf.select(cfg, "eval.monitor.every", default=None)
     if not (isinstance(every, int) and every > 0):
         problems.append(f"eval.monitor.every: a scheduled run reads the monitor, got {every!r}")

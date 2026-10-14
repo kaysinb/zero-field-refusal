@@ -281,19 +281,49 @@ def test_the_committed_campaigns_load_and_pass_the_protocol(path) -> None:
     assert name == path.stem and runs
 
 
-def test_a_scheduled_run_qualifies_by_its_terminal_record(tmp_path) -> None:
-    from omegaconf import OmegaConf
+def scheduled_run_dir(root: Path, run, name: str, *, status: str = "completed") -> Path:
+    """Whole records of a scheduled run (as test_stage_a builds them) standing for ``run``."""
+    from test_stage_a import FULL, write_run
 
+    run_dir = write_run(root / run.experiment, name, arm="sgd_long", batch=5, lr=0.004,
+                        seed=2000, reach=FULL)  # fmt: skip
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta.update(status=status, config_hash=run.config_hash, git={"commit": "abc", "dirty": False})
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    return run_dir
+
+
+def test_a_scheduled_run_qualifies_by_its_whole_records(tmp_path) -> None:
     name, runs = load_campaign(campaign(tmp_path))
     root = tmp_path / "runs"
-    run_dir = make_run_dir(root, runs[1], "scheduled", k=None, responses=False)
-    cfg = OmegaConf.load(run_dir / "config.yaml")
-    OmegaConf.update(cfg, "schedule", {"policy": "k_stopped"}, force_add=True)
-    OmegaConf.save(cfg, run_dir / "config.yaml")
-    terminal = {"stop": {"reason": "plateau", "kind": "plateau"}}
-    (run_dir / "summary.json").write_text(json.dumps({"terminal": terminal}))
-    with pytest.raises(CampaignError, match="terminal record"):  # no terminal.json yet
-        run_campaign(name, runs, root, execute=Executor(root, {}))
-    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    scheduled_run_dir(root, runs[1], "scheduled")
     result = run_campaign(name, runs, root, execute=Executor(root, {}))
     assert runs[1].label in result["skipped"]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda d: (d / "terminal.json").write_text("{"),
+        lambda d: (d / "evaluations.jsonl").unlink(),
+        lambda d: (d / "responses" / "harmful_judged.jsonl").unlink(),
+    ],
+)
+def test_incomplete_scheduled_records_stop_the_campaign(tmp_path, damage) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    damage(scheduled_run_dir(root, runs[1], "scheduled"))
+    with pytest.raises(CampaignError, match="records are incomplete|unreadable"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+
+
+@pytest.mark.parametrize("status", ["failed", "running"])
+def test_a_published_outcome_is_not_rerun_after_a_later_failure(tmp_path, status) -> None:
+    # W&B or finalization failed after the terminal record was published.
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    scheduled_run_dir(root, runs[1], "scheduled", status=status)
+    executor = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=executor)
+    assert runs[1].label in result["skipped"]
+    assert runs[1].label not in [label for label, _ in executor.calls]

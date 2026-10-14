@@ -72,6 +72,7 @@ def write_run(
                 evaluations.append(
                     {
                         "step": t,
+                        "condition": f"step-{t}",
                         "levels": [],
                         "K_monitor": final_k + monitor_bias,
                         "K_benign": final_k,
@@ -87,6 +88,7 @@ def write_run(
             evaluations.append(
                 {
                     "step": step,
+                    "condition": f"step-{step}",
                     "levels": levels,
                     "K_monitor": k + monitor_bias,
                     "K_benign": k,
@@ -123,7 +125,7 @@ def write_run(
         "optimizer": {"name": OPTIMIZER[arm], "lr": lr},
         "train": {"steps": steps if fixed else train_steps, "batch_size": batch},
         "teacher": {"chunk_size": 1000},
-        "eval": {"monitor": {"every": every}},
+        "eval": {"monitor": {"every": every}, "harmful": {"prompt_set": "harmful_judged"}},
         "schedule": {
             "policy": "fixed" if fixed else "k_stopped",
             "levels": LEVELS,
@@ -143,8 +145,21 @@ def write_run(
     OmegaConf.save(OmegaConf.create(cfg), run_dir / "config.yaml")
     (run_dir / "meta.json").write_text(json.dumps(meta))
     (run_dir / "terminal.json").write_text(json.dumps(terminal))
-    for file, rows in (("evaluations", evaluations), ("monitor", monitor), ("metrics", metrics)):
+    responses = [
+        {"condition": row["condition"], "item_id": f"judged:{i}"}
+        for row in evaluations
+        for i in range(2)
+    ]
+    files = (
+        ("evaluations", evaluations),
+        ("monitor", monitor),
+        ("metrics", metrics),
+        ("responses/harmful_judged", responses),
+    )
+    for file, rows in files:
+        (run_dir / f"{file}.jsonl").parent.mkdir(exist_ok=True)
         (run_dir / f"{file}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (run_dir / "summary.json").write_text(json.dumps({"terminal": terminal}))
     return run_dir
 
 
@@ -182,6 +197,13 @@ def test_consistent_records_load(tmp_path) -> None:
             "stream prefix",
         ),
         (lambda d: _drop_line(d / "metrics.jsonl", 0), "training metrics"),
+        (lambda d: _drop_line(d / "responses" / "harmful_judged.jsonl", 0), "harmful responses"),
+        (lambda d: (d / "evaluations.jsonl").write_text(""), "levels differ"),
+        (
+            lambda d: _edit(d / "summary.json", lambda m: m["terminal"].update(steps=1)),
+            "summary.json's terminal",
+        ),
+        (lambda d: (d / "terminal.json").write_text("{"), "unreadable"),
     ],
 )
 def test_inconsistent_records_are_refused(tmp_path, damage, message) -> None:
@@ -284,7 +306,7 @@ def test_screen_candidates_and_numerical_acceptance(tmp_path) -> None:
     assert "regular run's steps [150, 200, 300]" in acceptance[(5, 0.006)]["reasons"][0]
 
 
-def test_false_alarms_are_gradient_stops_in_cells_that_ran_stably(tmp_path) -> None:
+def test_possible_false_alarms_are_gradient_stops_in_cells_that_ran_stably(tmp_path) -> None:
     runs = [
         load_trajectory(
             write_run(tmp_path, "a0", arm="sgd_long", batch=5, lr=0.004, seed=2000, reach=FULL)
@@ -317,8 +339,10 @@ def test_false_alarms_are_gradient_stops_in_cells_that_ran_stably(tmp_path) -> N
         ),
     ]
     summary = instability_summary(runs)
-    assert summary["firings"] == ["a1", "b0"] and summary["false_alarms"] == ["a1"]
-    assert summary["false_alarm_rate"] == pytest.approx(0.5)  # one of the two runs at 0.004
+    assert summary["firings"] == ["a1", "b0"] and summary["possible_false_alarms"] == ["a1"]
+    assert summary["possible_false_alarm_rate"] == pytest.approx(0.5)  # one of two at 0.004
+    assert summary["margin_on_stable_runs"] == 1.0  # flat norms on the stable run
+    assert summary["factor"] == {"current": 10.0, "revise": True, "new": 10.0}
 
 
 def test_agreement_pairs_each_evaluation_with_its_reading(tmp_path) -> None:
@@ -461,12 +485,29 @@ def test_stage_a_outcomes_that_stop_the_design(tmp_path, acceptance, sgd, outcom
 
 
 def test_harm_is_never_read(tmp_path) -> None:
-    # The rule reads K, steps, utility and time: a responses file is not even needed.
+    # The rule reads K, steps, utility and time. Of the stored responses it reads only their
+    # conditions, to check that every evaluation has its responses; no judge label exists here.
     discovery(tmp_path, sgd={0.004: FULL}, adamw={3e-6: FULL}, short=SHORT)
-    assert not list(tmp_path.rglob("responses"))
-    assert select(load_trajectories(tmp_path), THETA0, accept((5, 0.004)), SEEDS)["outcome"] == (
-        "selected"
-    )
+    assert not list(tmp_path.rglob("judge"))
+    result = select(load_trajectories(tmp_path), THETA0, accept((5, 0.004)), SEEDS)
+    assert result["outcome"] == "selected"
+
+
+def test_a_control_is_as_long_as_the_longest_regular_run_and_evaluated_at_its_steps(tmp_path):
+    from zero_field_refusal.analysis.stage_a import control_schedule
+
+    runs = [
+        load_trajectory(
+            write_run(
+                tmp_path, f"r{i}", arm="sgd_long", batch=5, lr=0.004, seed=2000 + i, reach=reach
+            )
+        )
+        for i, reach in enumerate((FULL, {5.0: 100, 7.0: 300}))
+    ]
+    schedule = control_schedule(runs)
+    assert schedule["steps"] == 4000  # the second run went to T_max
+    assert schedule["seeds"][2000] == [100, 150, 200, 300, 400, 4000]
+    assert schedule["seeds"][2001] == [100, 300, 4000]
 
 
 def test_the_short_grid_extends_down_by_halving_at_most_twice(tmp_path) -> None:
@@ -524,3 +565,26 @@ def test_the_script_writes_the_summary_and_the_selection_once(tmp_path, monkeypa
     assert result["code"]["commit"] and result["theta0"]["benchmark_accuracy"] == 0.60
     with pytest.raises(SystemExit):
         runpy.run_path(str(script), run_name="__main__")  # never overwritten
+
+
+@pytest.mark.parametrize(
+    ("peak", "revise", "new"),
+    [(5.0, False, 10.0), (7.0, False, 10.0), (8.0, True, 12.0), (6.0, False, 10.0)],
+)
+def test_the_factor_rises_only_on_a_wide_margin_and_never_falls(tmp_path, peak, revise, new):
+    norms = [1.0] * 10 + [peak] + [1.0] * 389  # one spike of ``peak`` × the reference
+    run = load_trajectory(
+        write_run(
+            tmp_path,
+            "r",
+            arm="sgd_long",
+            batch=5,
+            lr=0.004,
+            seed=2000,
+            reach=FULL,
+            grad_norms=norms,
+        )
+    )
+    summary = instability_summary([run])
+    assert summary["margin_on_stable_runs"] == pytest.approx(peak)
+    assert summary["factor"] == {"current": 10.0, "revise": revise, "new": new}

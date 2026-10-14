@@ -52,6 +52,7 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+from .analysis.stage_a import TrajectoryError, load_trajectory
 from .config import config_hash
 from .paths import REPO_ROOT
 from .protocol import load_run_config
@@ -171,7 +172,7 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
         if meta.get("config_hash") != run.config_hash:
             continue
         status = meta.get("status")
-        if status == "completed":
+        if status == "completed" or _published(run_dir):
             completed.append(run_dir)
         elif status == "diverged":
             result.diverged = result.diverged or run_dir
@@ -213,15 +214,15 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
     git = meta.get("git") or {}
     if run.require_clean_git and (not git.get("commit") or git.get("dirty") is not False):
         return "not run from a clean checkout of a recorded commit"
-    summary = _read_json(run_dir / "summary.json")
     if OmegaConf.select(cfg, "schedule", default=None) is not None:
-        # A study-2 run is done once it has stopped and said why: its evaluations, if any, are
-        # in evaluations.jsonl, and a plateau or an instability stop is an outcome.
-        terminal = None if summary is None else summary.get("terminal")
-        reason = (terminal or {}).get("stop", {}).get("reason")
-        if not reason or not (run_dir / "terminal.json").is_file():
-            return "a scheduled run lacks its terminal record (terminal.json, stop reason)"
+        # A study-2 run is done once its whole records agree with its published terminal
+        # record; a plateau or an instability stop, with or without evaluations, is an outcome.
+        try:
+            load_trajectory(run_dir, require_completed=False)
+        except TrajectoryError as exc:
+            return f"a scheduled run's records are incomplete: {exc}"
         return None
+    summary = _read_json(run_dir / "summary.json")
     k = None if summary is None else summary.get("K_harmful")
     finite = isinstance(k, int | float) and not isinstance(k, bool) and math.isfinite(k)
     if not finite or k < 0:  # zero is legitimate (soft targets, θ₀); fits decide on log K
@@ -314,7 +315,7 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
     meta = _read_json(run_dir / "meta.json")
     status = None if meta is None else meta.get("status")
     problem = None
-    if status == "completed":
+    if status == "completed" or _published(run_dir):
         problem = _disqualification(run, run_dir, meta)
         outcome = "done" if problem is None else "conflict"
     elif status == "diverged":
@@ -327,6 +328,19 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
         raise CampaignError(f"{run.experiment}/{run_id} completed but cannot stand for "
                             f"{run.label}: {problem}; the campaign stops")  # fmt: skip
     return outcome
+
+
+def _published(run_dir: Path) -> bool:
+    """A scheduled run whose terminal outcome was published and whose records are whole,
+    whatever its status says: a failure of logging or finalization after the outcome must not
+    rerun an observed stop."""
+    if not (run_dir / "terminal.json").is_file():
+        return False
+    try:
+        load_trajectory(run_dir, require_completed=False)
+    except TrajectoryError:
+        return False
+    return True
 
 
 def _run_id(stamp: str, run: Run, attempt: int) -> str:

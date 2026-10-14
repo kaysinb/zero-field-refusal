@@ -9,8 +9,8 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
   per level, utility losses at the levels, time.
 - ``screen_candidates`` and ``numerical_acceptance``: soft-target controls, contamination and the
   accepted SGD rates.
-- ``instability_summary``: firings of the gradient rule and its false alarms; the factor 10 may be
-  revised only from this, before validation.
+- ``instability_summary``: the gradient rule's margin on stable runs, its firings and possible
+  false alarms, and the revision of its factor 10 by the rule below, before validation.
 - ``agreement``: the monitor against the scoring panel.
 - ``select``: the selection rule: batch, U, K*, rates and T_max, with the reasons for every
   batch and level, or the Stage-A outcome that stops the design.
@@ -27,8 +27,13 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
   extension, plus generating the block's stream at the measured time per chunk.
 - *AdamW-25 rates* are the injective assignment of qualifying rates to the targets (5, K*, U)
   with the least total |median K_benign − target|, ties to the smaller rates.
-- *A false alarm* is a gradient-rule stop in a cell (arm, batch, rate) where another seed ran
-  stably (stopped by target, plateau or limit).
+- *The gradient rule's factor* is judged by its margin, the largest ratio of a gradient norm to
+  its reference on runs that ended stably, and by possible false alarms: gradient-rule stops in
+  a cell (arm, batch, rate) where another seed ran stably. Such a stop is only possibly false,
+  since breakdowns near the edge vary by seed and a stopped run cannot show what it would have
+  done. The factor is raised only if the margin exceeds 7 or a possible false alarm occurred,
+  to max(10, 1.5 × the margin), fixed before validation; it is never lowered (coordinator,
+  2026-10-14).
 """
 
 from __future__ import annotations
@@ -56,6 +61,9 @@ MMLU_BOUND_PP = 5.0
 FACTUAL_BOUND_PP = 10.0
 CONTAMINATION_FRACTION = 0.01
 DISCOVERY_K_STAR = math.sqrt(35)  # K* of the lowest candidate zone, until U is chosen
+GRAD_FACTOR = 10.0  # the gradient rule's factor in discovery
+MARGIN_TRIGGER = 7.0  # a margin above this on stable runs raises the factor
+REVISION_FACTOR = 1.5  # the raised factor: max(current, 1.5 × the margin); never lowered
 INSTABILITY = (
     "nonfinite_loss",
     "nonfinite_gradient",
@@ -127,27 +135,37 @@ def arm_of(cfg: Any) -> str:
     return arms[(name, policy)]
 
 
-def load_trajectory(run_dir: Path) -> Trajectory:
-    """A completed scheduled run's records, after checking that they agree with each other."""
+def load_trajectory(run_dir: Path, *, require_completed: bool = True) -> Trajectory:
+    """A scheduled run's records, after checking that they agree with each other.
+
+    The terminal record is the run's outcome: with ``require_completed=False`` a run whose
+    status is not ``completed`` is accepted if its records are whole (a logging or finalization
+    failure after the outcome was published must not turn an observed stop into a rerun).
+    """
     run_dir = Path(run_dir)
     problems: list[str] = []
     try:
         cfg = OmegaConf.load(run_dir / "config.yaml")
         meta = _json(run_dir / "meta.json")
         terminal = _json(run_dir / "terminal.json")
-    except (OSError, ValueError) as exc:
-        raise TrajectoryError(f"{run_dir}: unreadable records ({exc})") from exc
+        summary = _json(run_dir / "summary.json") if (run_dir / "summary.json").is_file() else {}
+        stop, steps = terminal["stop"]["reason"], terminal["steps"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise TrajectoryError(f"{run_dir}: unreadable records ({exc!r})") from exc
     if OmegaConf.select(cfg, "schedule", default=None) is None:
         raise TrajectoryError(f"{run_dir}: not a scheduled run")
-    if meta.get("status") != "completed":
+    if require_completed and meta.get("status") != "completed":
         problems.append(f"status {meta.get('status')!r}")
+    if "terminal" in summary and summary["terminal"] != terminal:
+        problems.append("summary.json's terminal record differs from terminal.json")
     evaluations = _jsonl(run_dir / "evaluations.jsonl")
     monitor = [(row["step"], row["K_monitor"]) for row in _jsonl(run_dir / "monitor.jsonl")]
     training = [row for row in _jsonl(run_dir / "metrics.jsonl") if "loss" in row]
-    steps, every = terminal["steps"], int(cfg.eval.monitor.every)
+    every = int(cfg.eval.monitor.every)
     policy, planned = cfg.schedule.policy, tuple(float(x) for x in cfg.schedule.levels)
 
-    if [s for s, _ in monitor] != list(range(every, steps + 1, every)):
+    read_to = steps - 1 if stop == "nonfinite_weight" else steps  # no reading after a bad update
+    if [s for s, _ in monitor] != list(range(every, read_to + 1, every)):
         problems.append("monitor readings are not every reading up to the last step")
     if [row["step"] for row in training] != list(range(steps)):
         problems.append("training metrics are not one row per step taken")
@@ -156,8 +174,13 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         problems.append("evaluation steps are not increasing within the run")
     if any(not math.isfinite(row.get("K_benign", math.nan)) for row in evaluations):
         problems.append("an evaluation lacks a finite K_benign")
+    responses = _jsonl(run_dir / "responses" / f"{cfg.eval.harmful.prompt_set}.jsonl")
+    answered = Counter(row["condition"] for row in responses)
+    conditions = [row.get("condition") for row in evaluations]
+    if set(answered) != set(conditions) or len(set(answered.values())) > 1:
+        problems.append("the stored harmful responses do not match the evaluations one for one")
     evaluate_at = tuple(int(t) for t in cfg.schedule.get("evaluate_at") or ())
-    reason = terminal["stop"]["reason"]
+    reason = stop
     if policy == "k_stopped":
         monitor_steps = {s for s, _ in monitor}
         if not set(eval_steps) <= monitor_steps:
@@ -176,6 +199,11 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         missed = [lvl for lvl in planned if not any(math.isclose(lvl, r) for r in reached)]
         if levels.get("missed") != missed:
             problems.append("the terminal record's missed levels are wrong")
+        failed = levels.get("failed_crossing")
+        if failed is not None and (
+            reason not in INSTABILITY or not all(lvl in missed for lvl in failed["levels"])
+        ):
+            problems.append("a failed crossing that is not a missed level of an unstable run")
         if reason == "target" and (missed or not eval_steps or eval_steps[-1] != steps):
             problems.append("a target stop without the top level evaluated at the last step")
         if reason == "plateau" and steps < cfg.schedule.plateau.from_step:
@@ -323,10 +351,19 @@ def spike_ratio(run: Trajectory, window: int = 20) -> float | None:
     return max(ratios) if ratios else None
 
 
-def instability_summary(runs: Sequence[Trajectory]) -> dict[str, Any]:
-    """Stops by the gradient rule and false alarms: a firing in a cell where another seed ran
-    stably. Also the largest spike ratio on stable runs, the rule's margin."""
-    firings, false_alarms, exposed = [], [], 0
+def instability_summary(
+    runs: Sequence[Trajectory], *, current_factor: float = GRAD_FACTOR
+) -> dict[str, Any]:
+    """The gradient rule over the discovery runs and its revision, decided before validation.
+
+    The *margin* is the largest ratio of a gradient norm to its reference on runs that ended
+    stably: the main quantity. A gradient-rule stop in a cell (arm, batch, rate) where another
+    seed ran stably is a *possible* false alarm: breakdowns near the edge vary by seed, and a
+    stopped run cannot show whether it would have broken down. The factor is raised only if the
+    margin exceeds ``MARGIN_TRIGGER`` or a possible false alarm occurred, to
+    max(current, ``REVISION_FACTOR`` × margin); it is never lowered.
+    """
+    firings, possible, exposed = [], [], 0
     for cell in cells(runs).values():
         if cell[0].arm == "soft_control":
             continue
@@ -335,19 +372,23 @@ def instability_summary(runs: Sequence[Trajectory]) -> dict[str, Any]:
         firings += [run.run_id for run in fired]
         if stable:
             exposed += len(cell)
-            false_alarms += [run.run_id for run in fired]
+            possible += [run.run_id for run in fired]
     margins = [
         r
         for run in runs
         if run.stable and run.arm != "soft_control"
         if (r := spike_ratio(run)) is not None
     ]
+    margin = max(margins) if margins else None
+    revise = bool(possible) or (margin is not None and margin > MARGIN_TRIGGER)
+    new = max(current_factor, REVISION_FACTOR * (margin or 0.0)) if revise else current_factor
     return {
         "firings": firings,
-        "false_alarms": false_alarms,
+        "possible_false_alarms": possible,
         "runs_in_stable_cells": exposed,
-        "false_alarm_rate": len(false_alarms) / exposed if exposed else None,
-        "max_spike_ratio_on_stable_runs": max(margins) if margins else None,
+        "possible_false_alarm_rate": len(possible) / exposed if exposed else None,
+        "margin_on_stable_runs": margin,
+        "factor": {"current": current_factor, "revise": revise, "new": new},
     }
 
 
@@ -385,6 +426,21 @@ def short_grid_extension(
     if smallest / 2 < grid_minimum / 2**halvings * (1 - 1e-9):
         return None
     return smallest / 2
+
+
+def control_schedule(regular: Sequence[Trajectory]) -> dict[str, Any]:
+    """The schedule of a full-length soft-target control for one rate, batch and seed: as long
+    as the longest regular discovery run of that rate and batch, evaluated at the evaluation
+    steps of the regular run of the same seed and at its own last step."""
+    if not regular or len({(r.arm, r.batch_size, r.lr) for r in regular}) != 1:
+        raise ValueError("The regular runs of one arm, batch and rate are needed")
+    steps = max(run.steps for run in regular)
+    return {
+        "steps": steps,
+        "seeds": {
+            run.seed: sorted({row["step"] for row in run.evaluations} | {steps}) for run in regular
+        },
+    }
 
 
 # ------------------------------------------------------------------ numerics

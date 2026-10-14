@@ -168,8 +168,9 @@ A long arm stops on K and stability only:
      reference starting at the step-0 norm; one step suffices.
 
    On the pilot's logs this fires at SGD 0.03 at step 6 (≈ 11×), while the stable runs at 0.028
-   peak at ≈ 2×. Discovery reports the rule's false-alarm rate on stable trajectories. The
-   factor 10 may be revised only from that rate, never from harm, and it is frozen before
+   peak at ≈ 2×. Discovery reports the rule's margin on stable trajectories and its possible
+   false alarms. The factor 10 may be revised only from these, by the rule under
+   [Details fixed with the code](#selection-rule), never from harm, and it is frozen before
    validation; a later change would require validation to be repeated.
 4. **Limit T_max:**
    - common to both long arms;
@@ -275,8 +276,12 @@ data:
   only.
 - **AdamW-25 rates** are the assignment of distinct qualifying rates to the targets 5, K\* and U
   with the least total distance |median K_benign − target|; ties go to the smaller rates.
-- **A false alarm** of the gradient rule is a gradient-rule stop in an arm, batch and rate where
-  another seed ran stably (stopped by target, plateau or limit).
+- **The gradient rule's factor** is judged mainly by its margin: the largest ratio of a
+  gradient norm to its reference on runs that ended stably. A gradient-rule stop in an arm,
+  batch and rate where another seed ran stably is a *possible* false alarm: breakdowns near the
+  edge vary by seed, and a stopped run cannot show what it would have done. The factor is raised
+  only if the margin exceeds 7 or a possible false alarm occurred, to max(10, 1.5 × the margin),
+  and frozen before validation. It is never lowered.
 
 ### Validation
 

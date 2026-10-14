@@ -616,7 +616,8 @@ def test_a_chunk_whose_fingerprint_fails_is_not_published(env, monkeypatch) -> N
         extend_stream(cfg, env, 0, 3, batch_size=2)
     path = locate_stream(cfg, env, "training", 0)[1]
     assert StreamPrefix(cfg, env, 0).available == 0
-    assert not path.exists() or not list(path.iterdir())  # no chunk, no partial directory
+    left = [p.name for p in path.iterdir()] if path.exists() else []
+    assert left in ([], [".lock"])  # no chunk, no partial directory
 
 
 def test_fixed_stream_functions_refuse_an_appendable_stream(env) -> None:
@@ -805,3 +806,24 @@ def test_the_monitor_panel_has_its_own_prompts_stream_and_seeds(env) -> None:
         assert monitor(student) > 1e-2
     meta = json.loads((run.dir / "meta.json").read_text())
     assert meta["inputs"]["streams"]["kl_monitor"]["count"] == 6
+
+
+def test_writers_of_one_stream_take_turns_under_its_lock(env) -> None:
+    import threading
+    import time
+
+    from zero_field_refusal.runtime import _locked
+
+    cfg = config(*APPENDABLE)
+    path = locate_stream(cfg, env, "training", 0)[1]
+    created: list = []
+    with _locked(path):  # another writer holds the stream
+        writer = threading.Thread(
+            target=lambda: created.extend(extend_stream(cfg, env, 0, 6, batch_size=4))
+        )
+        writer.start()
+        time.sleep(0.5)
+        assert writer.is_alive() and StreamPrefix(cfg, env, 0).available == 0
+    writer.join(timeout=60)
+    assert [p.name for p in created] == ["chunk-00000", "chunk-00001"]
+    assert extend_stream(cfg, env, 0, 6, batch_size=4) == []  # counted after taking the lock

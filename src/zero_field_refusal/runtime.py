@@ -9,7 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -230,11 +231,31 @@ def extend_stream(
     Each chunk is sampled from θ₀ with the seeds of its own index and published atomically, so
     the chunks already there never change. A stream has one writer: every run that may extend a
     seed's stream runs on the machine that holds it, or the stream is generated before the runs.
-    Returns the new chunks' directories.
+    On that machine, writers take an exclusive lock on the stream's directory, and count the
+    published chunks only once they hold it. Returns the new chunks' directories.
     """
     spec, path, items = locate_stream(cfg, env, "training", seed)
     if spec.get("layout") != "appendable":
         raise StreamError("extend_stream needs teacher.stream: appendable")
+    with _locked(path):
+        return _extend_locked(cfg, env, seed, responses, spec, path, items, model, batch_size)
+
+
+@contextmanager
+def _locked(stream: Path) -> Iterator[None]:
+    """An exclusive lock on a stream's directory, held by one process at a time (flock)."""
+    import fcntl
+
+    stream.mkdir(parents=True, exist_ok=True)
+    with (stream / ".lock").open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _extend_locked(cfg, env, seed, responses, spec, path, items, model, batch_size) -> list[Path]:
     have, need = published_chunks(path), -(-responses // spec["chunk_size"])
     created = []
     for index in range(have, need):

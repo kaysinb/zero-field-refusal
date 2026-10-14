@@ -90,8 +90,10 @@ scientific design is in [design.md](design.md); procedures for running things ar
    steps and evaluates in full where K crosses its levels, or at fixed steps: the scoring panel's
    K, utility, and the greedy responses to the harmful prompts, stored for the judge but not
    scored. Refusal and harm are not computed during the run. It writes `monitor.jsonl`,
-   `evaluations.jsonl`, `chunk_checks.jsonl` and `terminal.json` (stop, its reason, levels
-   reached and missed).
+   `evaluations.jsonl`, `chunk_checks.jsonl` and, atomically, `terminal.json`: the stop, its
+   reason and what fired it, the batch refused before an update or the update that broke the
+   weights (an applied update counts as a step), the levels reached (only by a successful
+   evaluation) and missed, and a crossing whose evaluation failed.
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
    model and the rubric version are recorded with every label. A run's labels from the judge
    `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record

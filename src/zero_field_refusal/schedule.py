@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import statistics
 import time
 from collections.abc import Sequence
@@ -102,7 +103,7 @@ class PlateauRule:
 
 class LevelTracker:
     """Levels crossed by the monitor: a level is crossed when the last ``readings`` readings lie
-    at or above it, and reached once evaluated."""
+    at or above it, and reached only once an evaluation there succeeded (``reach``)."""
 
     def __init__(self, levels: Sequence[float], readings: int) -> None:
         self.levels, self.readings = list(levels), readings
@@ -110,16 +111,17 @@ class LevelTracker:
         self._recent: list[float] = []
 
     def update(self, k: float) -> list[float]:
-        """Record a reading; returns the levels it newly crosses (they count as reached)."""
+        """Record a reading; returns the levels not yet reached that the last readings cross."""
         self._recent = [*self._recent, k][-self.readings :]
         if len(self._recent) < self.readings:
             return []
-        crossed = [
+        return [
             level for level in self.levels
             if level not in self.reached and min(self._recent) >= level
         ]  # fmt: skip
-        self.reached += crossed
-        return crossed
+
+    def reach(self, levels: Sequence[float]) -> None:
+        self.reached += [level for level in levels if level not in self.reached]
 
     @property
     def next_level(self) -> float | None:
@@ -280,14 +282,18 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
             stats = accumulate_gradient(student, batch, cfg, env, soft)
             stats["grad_norm"] = _norm([p.grad for p in params])
             reason = loop.guard.gradient(stats["loss"], stats["grad_norm"])
-            if reason:
+            if reason:  # refused before the update: the batch is recorded, not counted
+                loop.rejected = {"step": step, "loss": stats["loss"],
+                                 "grad_norm": stats["grad_norm"]}  # fmt: skip
                 break
             optimizer.step()
+            loop.steps = step + 1  # the update is applied, whatever it did to the weights
+            run.log(stats, step=step)
             if not math.isfinite(_norm(params)):
                 reason = "nonfinite_weight"
+                loop.rejected = {"step": step, "loss": stats["loss"],
+                                 "grad_norm": stats["grad_norm"], "applied": True}  # fmt: skip
                 break
-            run.log(stats, step=step)
-            loop.steps = step + 1
             reason = loop.after_step(student, lambda: projection_stats(trainable, theta0,
                                                                        directions))  # fmt: skip
             if reason:
@@ -300,7 +306,7 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         terminal["stream_extension"] = {"seconds": feed.extension_seconds,
                                         "chunks": feed.extended_chunks}  # fmt: skip
         run.record_inputs({"streams": {"training": feed.identity(loop.steps * size)}})
-        run.path("terminal.json").write_text(json.dumps(terminal, indent=1) + "\n")
+        _publish(run.path("terminal.json"), terminal)  # the run's outcome, whatever follows
         run.summarize({"terminal": terminal})
         if replayer is not None and replayer.records:
             run.summarize({"soft_targets_replay": {
@@ -321,6 +327,8 @@ class _Loop:
         self.readings: list[tuple[int, float]] = []
         self.evaluations: list[dict[str, Any]] = []
         self.steps = 0
+        self.rejected: dict[str, Any] | None = None  # the batch or update that stopped the run
+        self.failed_crossing: dict[str, Any] | None = None  # levels whose evaluation failed
 
     def after_step(self, model: PreTrainedModel, geometry: Any) -> str | None:
         """Monitor, evaluate and decide after step ``self.steps``; returns a stop reason."""
@@ -338,8 +346,12 @@ class _Loop:
                 crossed = self.levels.update(k)
                 if crossed:
                     reason = self._evaluate(model, crossed, k)
-                    if reason or self.levels.next_level is None:
-                        return reason or "target"
+                    if reason:
+                        self.failed_crossing = {"step": done, "levels": crossed}
+                        return reason
+                    self.levels.reach(crossed)
+                    if self.levels.next_level is None:
+                        return "target"
                 next_level = self.levels.next_level
                 if schedule.plateau.plateaued(self.readings, done, next_level):
                     return "plateau"
@@ -366,9 +378,11 @@ class _Loop:
             {"level": level, "step": row["step"], "K_benign": row["K_benign"]}
             for row in self.evaluations for level in row["levels"]
         ]  # fmt: skip
-        stop = {"reason": reason, "kind": kind, **({"detail": self.guard.detail}
-                                                    if reason in INSTABILITY and self.guard.detail
-                                                    else {})}  # fmt: skip
+        stop: dict[str, Any] = {"reason": reason, "kind": kind}
+        if reason in INSTABILITY and self.guard.detail:
+            stop["detail"] = self.guard.detail
+        if self.rejected is not None:
+            stop["rejected"] = self.rejected
         out = {"stop": stop, "steps": self.steps,
                "responses": self.steps * batch_size, "policy": self.schedule.policy,
                "evaluations": [row["step"] for row in self.evaluations],
@@ -377,7 +391,19 @@ class _Loop:
             out["levels"] = {"planned": list(self.schedule.levels), "reached": reached,
                              "missed": [level for level in self.schedule.levels
                                         if level not in self.levels.reached]}  # fmt: skip
+            if self.failed_crossing is not None:
+                out["levels"]["failed_crossing"] = self.failed_crossing
         return out
+
+
+def _publish(path: Path, record: dict[str, Any]) -> None:
+    """Write a record atomically: a reader sees the whole record or none."""
+    partial = path.with_name(f".{path.name}.partial")
+    with partial.open("w") as f:
+        f.write(json.dumps(record, indent=1) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(partial, path)
 
 
 def _norm(tensors: Sequence[torch.Tensor | None]) -> float:
