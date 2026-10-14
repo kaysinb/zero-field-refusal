@@ -9,6 +9,7 @@ geometry and the weight-space controls; weights are not saved by default.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -228,6 +229,11 @@ class Evaluator:
             run.summarize({f"stream/{kind}": manifest["sha256"]})
             run.record_inputs({"streams": {kind: _identity(manifest)}})
         self.harmful = self._limited(cfg.eval.harmful.prompt_set, cfg.eval.harmful.limit)
+        ids = [item["id"] for item in self.harmful]  # what every evaluation must answer
+        run.record_inputs({"harmful_prompts": {
+            "set": cfg.eval.harmful.prompt_set, "count": len(ids),
+            "ids_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+        }})  # fmt: skip
         self.heldout = reference_samples(
             env.prompt_set("alpaca_heldout"), env.encode_prompt, env.encode_text,
             end_id=env.end_ids[0], cap=cfg.teacher.sampling.max_new_tokens,

@@ -246,6 +246,7 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         raise ValueError("run_scheduled needs run_type=train")
     schedule = Schedule.from_config(cfg)
     seed_everything(derive_seed(cfg.seed, "torch"))
+    started = time.perf_counter()
     with Run(cfg, run_id=run_id) as run:
         record = require_path_check(env.data_root, cfg, env.device)  # before anything costly
         run.record_inputs({"path_check": {"run_id": record["run_id"],
@@ -305,6 +306,7 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         terminal = loop.terminal(reason, size)
         terminal["stream_extension"] = {"seconds": feed.extension_seconds,
                                         "chunks": feed.extended_chunks}  # fmt: skip
+        terminal["seconds"] = time.perf_counter() - started  # the run's time, up to its outcome
         run.record_inputs({"streams": {"training": feed.identity(loop.steps * size)}})
         _publish(run.path("terminal.json"), terminal)  # the run's outcome, whatever follows
         run.summarize({"terminal": terminal})

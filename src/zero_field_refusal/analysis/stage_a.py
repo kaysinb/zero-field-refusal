@@ -13,7 +13,15 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
   false alarms, and the revision of its factor 10 by the rule below, before validation.
 - ``agreement``: the monitor against the scoring panel.
 - ``select``: the selection rule: batch, U, K*, rates and T_max, with the reasons for every
-  batch and level, or the Stage-A outcome that stops the design.
+  batch and level, or the Stage-A outcome that stops the design. It first checks that the
+  prescribed search is whole: the screen of every SGD rate at both batches; discovery runs of
+  exactly the two screen candidates per batch, the AdamW-long grid and the 25-step grids with
+  their prescribed extensions, one run per arm, batch, rate and seed 2000-2002, nothing else;
+  one full-length control per candidate on seed 2000, on the stream of the regular run of that
+  seed. Anything missing, duplicated, unexpected or of another provenance makes the outcome
+  ``incomplete``, never a scientific failure.
+- A run is accepted on whole records agreeing with its published terminal record, whatever its
+  status (the launcher's rule too): a failure of logging after the outcome does not undo it.
 
 **Rulings** where the preregistration leaves a detail open, fixed here before any data:
 - *Utility loss* is θ₀'s accuracy minus the run's at an evaluation, in percentage points;
@@ -38,6 +46,7 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
@@ -45,7 +54,6 @@ import statistics
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +69,16 @@ MMLU_BOUND_PP = 5.0
 FACTUAL_BOUND_PP = 10.0
 CONTAMINATION_FRACTION = 0.01
 DISCOVERY_K_STAR = math.sqrt(35)  # K* of the lowest candidate zone, until U is chosen
+# The prescribed search (docs/study2-preregistration.md, "Numerical acceptance", "Discovery").
+BATCHES = (5, 20)
+DISCOVERY_SEEDS = (2000, 2001, 2002)
+CONTROL_SEED = 2000
+SCREEN_STEPS = 100
+SGD_GRID = (0.0005, 0.001, 0.002, 0.003, 0.004, 0.006, 0.01, 0.015, 0.02, 0.028)
+CANDIDATES_PER_BATCH = 2
+ADAMW_LONG_GRID = (1e-6, 3e-6, 5e-6, 1e-5)
+SHORT_GRID = (0.5e-5, 1e-5, 1.5e-5, 2e-5, 3e-5, 4e-5)
+SHORT_ARMS = ("adamw_25", "frozen_adam_25")
 GRAD_FACTOR = 10.0  # the gradient rule's factor in discovery
 MARGIN_TRIGGER = 7.0  # a margin above this on stable runs raises the factor
 REVISION_FACTOR = 1.5  # the raised factor: max(current, 1.5 × the margin); never lowered
@@ -92,8 +110,13 @@ class Trajectory:
     evaluations: list[dict[str, Any]]
     monitor: list[tuple[int, float]]
     grad_norms: list[float]
-    seconds: float  # wall time of the run
+    seconds: float  # the run's time up to its published outcome
     chunk_size: int
+    planned_steps: int  # train.steps: T_max, or the fixed length
+    model: str  # name@revision
+    stream: dict[str, Any]  # the training stream prefix it read: path, count, chunk hashes
+    harmful_prompts: dict[str, Any]  # what every evaluation answered: set, count, ids hash
+    status: str
     evaluate_at: tuple[int, ...] = field(default=())
 
     @property
@@ -135,12 +158,12 @@ def arm_of(cfg: Any) -> str:
     return arms[(name, policy)]
 
 
-def load_trajectory(run_dir: Path, *, require_completed: bool = True) -> Trajectory:
+def load_trajectory(run_dir: Path) -> Trajectory:
     """A scheduled run's records, after checking that they agree with each other.
 
-    The terminal record is the run's outcome: with ``require_completed=False`` a run whose
-    status is not ``completed`` is accepted if its records are whole (a logging or finalization
-    failure after the outcome was published must not turn an observed stop into a rerun).
+    The terminal record is the run's outcome: a run is accepted on whole records whatever its
+    status says, since a failure of logging or finalization after the outcome was published
+    must not turn an observed stop into a rerun (the launcher applies the same rule).
     """
     run_dir = Path(run_dir)
     problems: list[str] = []
@@ -154,8 +177,6 @@ def load_trajectory(run_dir: Path, *, require_completed: bool = True) -> Traject
         raise TrajectoryError(f"{run_dir}: unreadable records ({exc!r})") from exc
     if OmegaConf.select(cfg, "schedule", default=None) is None:
         raise TrajectoryError(f"{run_dir}: not a scheduled run")
-    if require_completed and meta.get("status") != "completed":
-        problems.append(f"status {meta.get('status')!r}")
     if "terminal" in summary and summary["terminal"] != terminal:
         problems.append("summary.json's terminal record differs from terminal.json")
     evaluations = _jsonl(run_dir / "evaluations.jsonl")
@@ -174,11 +195,11 @@ def load_trajectory(run_dir: Path, *, require_completed: bool = True) -> Traject
         problems.append("evaluation steps are not increasing within the run")
     if any(not math.isfinite(row.get("K_benign", math.nan)) for row in evaluations):
         problems.append("an evaluation lacks a finite K_benign")
-    responses = _jsonl(run_dir / "responses" / f"{cfg.eval.harmful.prompt_set}.jsonl")
-    answered = Counter(row["condition"] for row in responses)
-    conditions = [row.get("condition") for row in evaluations]
-    if set(answered) != set(conditions) or len(set(answered.values())) > 1:
-        problems.append("the stored harmful responses do not match the evaluations one for one")
+    inputs = meta.get("inputs", {})
+    prompts = inputs.get("harmful_prompts", {})
+    problems += _response_problems(run_dir, cfg, evaluations, prompts)
+    if not isinstance(terminal.get("seconds"), int | float):
+        problems.append("the terminal record lacks the run's time")
     evaluate_at = tuple(int(t) for t in cfg.schedule.get("evaluate_at") or ())
     reason = stop
     if policy == "k_stopped":
@@ -219,7 +240,8 @@ def load_trajectory(run_dir: Path, *, require_completed: bool = True) -> Traject
         ]
         if eval_steps != expected and not unstable_at_last:
             problems.append("a fixed run's evaluations differ from evaluate_at")
-    used = meta.get("inputs", {}).get("streams", {}).get("training", {}).get("count")
+    stream = inputs.get("streams", {}).get("training", {})
+    used = stream.get("count")
     if used != steps * cfg.train.batch_size:
         problems.append(
             f"the recorded stream prefix holds {used} responses, the run used "
@@ -240,16 +262,80 @@ def load_trajectory(run_dir: Path, *, require_completed: bool = True) -> Traject
         evaluations=evaluations,
         monitor=monitor,
         grad_norms=[row["grad_norm"] for row in training],
-        seconds=_seconds(meta),
+        seconds=float(terminal["seconds"]),
         chunk_size=int(cfg.teacher.chunk_size),
+        planned_steps=int(cfg.train.steps),
+        model=f"{OmegaConf.select(cfg, 'model.name')}@{OmegaConf.select(cfg, 'model.revision')}",
+        stream=stream,
+        harmful_prompts=prompts,
+        status=str(meta.get("status")),
         evaluate_at=evaluate_at,
     )
 
 
-def load_trajectories(root: Path) -> list[Trajectory]:
-    """Every scheduled run directory under ``root`` (one level of experiments, or run dirs)."""
-    dirs = sorted(p.parent for p in Path(root).rglob("terminal.json"))
+def _response_problems(
+    run_dir: Path, cfg: Any, evaluations: Sequence[Mapping[str, Any]], prompts: Mapping[str, Any]
+) -> list[str]:
+    """Every evaluation answered exactly the recorded harmful prompts, once each, in order."""
+    if not evaluations:
+        return []
+    if not {"set", "count", "ids_sha256"} <= set(prompts):
+        return ["the run does not record its harmful prompts"]
+    if prompts["set"] != cfg.eval.harmful.prompt_set:
+        return [
+            f"responses to {prompts['set']}, the config evaluates {cfg.eval.harmful.prompt_set}"
+        ]
+    rows = _jsonl(run_dir / "responses" / f"{prompts['set']}.jsonl")
+    by_condition: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_condition[row.get("condition")].append(row)
+    problems = []
+    conditions = [row.get("condition") for row in evaluations]
+    if set(by_condition) != set(conditions):
+        problems.append("stored harmful responses for conditions other than the evaluations")
+    for condition in conditions:
+        answered = by_condition.get(condition, [])
+        ids = [row.get("item_id") for row in answered]
+        digest = hashlib.sha256(json.dumps(ids).encode()).hexdigest()
+        whole = all(
+            isinstance(row.get("response_ids"), list)
+            and row["response_ids"]
+            and isinstance(row.get("text"), str)
+            for row in answered
+        )
+        if len(ids) != prompts["count"] or digest != prompts["ids_sha256"] or not whole:
+            problems.append(
+                f"the harmful responses of {condition} are not the recorded "
+                f"{prompts['count']} prompts, once each, with responses"
+            )
+    return problems
+
+
+def load_trajectories(*roots: Path) -> list[Trajectory]:
+    """Every scheduled run directory under the ``roots``, each once even if they overlap."""
+    dirs = sorted({p.parent.resolve() for root in roots for p in Path(root).rglob("terminal.json")})
     return [load_trajectory(d) for d in dirs]
+
+
+Key = tuple[str, int, float, int]  # arm, batch size, rate, seed
+
+
+def rate(lr: float) -> float:
+    """A rate as written in a config, for exact matching against the grids."""
+    return float(f"{lr:.6g}")
+
+
+def index(runs: Iterable[Trajectory]) -> tuple[dict[Key, Trajectory], list[str]]:
+    """One run per arm, batch, rate and seed; a second run of a key is a problem."""
+    out: dict[Key, Trajectory] = {}
+    problems = []
+    for run in runs:
+        key = (run.arm, run.batch_size, rate(run.lr), run.seed)
+        if key in out and out[key].run_dir != run.run_dir:
+            problems.append(f"two runs of {key}: {out[key].run_id} and {run.run_id}")
+            continue
+        out[key] = run
+    return out, problems
 
 
 # ------------------------------------------------------------------ summaries
@@ -266,7 +352,7 @@ def utility_loss(row: Mapping[str, Any], theta0: Mapping[str, float]) -> tuple[f
 def cells(runs: Iterable[Trajectory]) -> dict[tuple[str, int, float], list[Trajectory]]:
     out: dict[tuple[str, int, float], list[Trajectory]] = defaultdict(list)
     for run in runs:
-        out[(run.arm, run.batch_size, run.lr)].append(run)
+        out[(run.arm, run.batch_size, rate(run.lr))].append(run)
     return {key: sorted(group, key=lambda r: r.seed) for key, group in sorted(out.items())}
 
 
@@ -330,8 +416,16 @@ def final_summary(
         and run.evaluations[-1]["step"] == max(run.evaluate_at)
     ]
     losses = [utility_loss(row, theta0) for row in rows]
+    evaluated = [
+        run.seed
+        for run in cell
+        if run.seed in seeds
+        and run.evaluations
+        and run.stable
+        and run.evaluations[-1]["step"] == max(run.evaluate_at)
+    ]
     return {
-        "complete": len(rows) == len(seeds),
+        "complete": sorted(evaluated) == sorted(set(seeds)),
         "median_K_benign": statistics.median(r["K_benign"] for r in rows) if rows else None,
         "mmlu_loss_pp": statistics.mean(m for m, _ in losses) if losses else None,
         "factual_loss_pp": statistics.mean(f for _, f in losses) if losses else None,
@@ -453,85 +547,186 @@ def contamination(control: Trajectory) -> float | None:
 
 
 def screen_candidates(
-    screen: Sequence[Trajectory], *, k_star: float = DISCOVERY_K_STAR, count: int = 2
-) -> dict[int, dict[str, Any]]:
-    """Per batch, the rates whose 100-step soft-target control ran stably within the
-    contamination threshold, and the ``count`` largest of them, the candidates."""
+    screen: Sequence[Trajectory], *, k_star: float = DISCOVERY_K_STAR
+) -> tuple[dict[int, dict[str, Any]], list[str]]:
+    """The screen: one 100-step soft-target control of every SGD rate at both batches on seed
+    2000. A rate passes when its control ran stably within the contamination threshold; the two
+    largest passing rates of a batch are its candidates. Returns them and the problems of an
+    incomplete screen."""
     threshold = CONTAMINATION_FRACTION * k_star
+    found, problems = index(screen)
+    expected = {("soft_control", b, rate(lr), CONTROL_SEED) for b in BATCHES for lr in SGD_GRID}
+    problems += [f"screen: missing {key}" for key in sorted(expected - set(found))]
+    problems += [f"screen: unexpected {key}" for key in sorted(set(found) - expected)]
+    problems += [
+        f"screen: {run.run_id} ran {run.planned_steps} steps, not {SCREEN_STEPS}"
+        for run in found.values()
+        if run.planned_steps != SCREEN_STEPS
+    ]
     out: dict[int, dict[str, Any]] = {}
-    for (_, batch, lr), cell in cells(screen).items():
-        entry = out.setdefault(batch, {"rates": {}, "threshold": threshold})
-        c = [contamination(run) for run in cell]
-        passed = all(run.stable for run in cell) and all(
-            x is not None and x <= threshold for x in c
-        )
-        entry["rates"][lr] = {
-            "contamination": c,
-            "stops": [run.stop for run in cell],
-            "passes": passed,
+    for batch in BATCHES:
+        rates = {}
+        for lr in SGD_GRID:
+            run = found.get(("soft_control", batch, rate(lr), CONTROL_SEED))
+            if run is None:
+                continue
+            c = contamination(run)
+            rates[rate(lr)] = {
+                "run": run.run_id,
+                "contamination": c,
+                "stop": run.stop,
+                "passes": run.stable and c is not None and c <= threshold,
+            }
+        passing = sorted((lr for lr, r in rates.items() if r["passes"]), reverse=True)
+        out[batch] = {
+            "rates": rates,
+            "threshold": threshold,
+            "candidates": passing[:CANDIDATES_PER_BATCH],
         }
-    for entry in out.values():
-        passing = sorted((lr for lr, r in entry["rates"].items() if r["passes"]), reverse=True)
-        entry["candidates"] = passing[:count]
-    return out
+    return out, problems
+
+
+def expected_discovery(
+    candidates: Mapping[int, Sequence[float]],
+    present: Mapping[Key, Trajectory],
+    seeds: Sequence[int] = DISCOVERY_SEEDS,
+) -> set[Key]:
+    """The discovery runs the preregistered search prescribes: SGD-long at the screen's
+    candidates, AdamW-long on its grid, the 25-step arms on their grid and, at batch 5, the
+    downward extensions the runs present call for."""
+    expected: set[Key] = set()
+    for batch in BATCHES:
+        rates = {
+            "sgd_long": candidates.get(batch, []),
+            "adamw_long": ADAMW_LONG_GRID,
+            **{arm: SHORT_GRID for arm in SHORT_ARMS},
+        }
+        for arm, grid in rates.items():
+            expected |= {(arm, batch, rate(lr), seed) for lr in grid for seed in seeds}
+    for arm in SHORT_ARMS:
+        grid = list(SHORT_GRID)
+        while True:  # each extension is prescribed by the runs of the smallest rate so far
+            runs = [
+                present[(arm, 5, rate(lr), s)]
+                for lr in grid
+                for s in seeds
+                if (arm, 5, rate(lr), s) in present
+            ]
+            nxt = short_grid_extension(runs, arm)
+            if nxt is None or rate(nxt) in map(rate, grid):
+                break
+            grid.append(nxt)
+            expected |= {(arm, 5, rate(nxt), seed) for seed in seeds}
+    return expected
 
 
 def numerical_acceptance(
     controls: Sequence[Trajectory],
-    regular: Sequence[Trajectory],
+    regular: Mapping[Key, Trajectory],
+    candidates: Mapping[int, Sequence[float]],
     *,
     k_star: float = DISCOVERY_K_STAR,
-) -> dict[tuple[int, float], dict]:
-    """Full-length soft-target controls of the candidate SGD rates: accepted when stable, at
-    least as long as the longest regular discovery run of the rate and batch, evaluated at that
-    run's evaluation steps of the same seed, and with max c(t) ≤ 0.01 × K*."""
+) -> tuple[dict[tuple[int, float], dict], list[str]]:
+    """Full-length soft-target controls: exactly one per candidate rate, on seed 2000, of the
+    same model and on the same stream as the regular run of that seed (otherwise a problem).
+    Accepted when stable, at least as long as the longest regular discovery run of the rate and
+    batch, evaluated at that seed's regular evaluation steps, and with max c(t) ≤ 0.01 × K*."""
     threshold = CONTAMINATION_FRACTION * k_star
-    longest = defaultdict(int)
-    evaluated: dict[tuple[int, float, int], set[int]] = {}
-    for run in regular:
-        if run.arm == "sgd_long":
-            longest[(run.batch_size, run.lr)] = max(longest[(run.batch_size, run.lr)], run.steps)
-            evaluated[(run.batch_size, run.lr, run.seed)] = {r["step"] for r in run.evaluations}
+    found, problems = index(controls)
+    wanted = {
+        ("soft_control", b, rate(lr), CONTROL_SEED) for b, lrs in candidates.items() for lr in lrs
+    }
+    problems += [f"controls: missing {key}" for key in sorted(wanted - set(found))]
+    problems += [f"controls: unexpected {key}" for key in sorted(set(found) - wanted)]
     out = {}
-    for control in controls:
-        key = (control.batch_size, control.lr)
+    for key in sorted(wanted & set(found)):
+        control, (_, batch, lr, seed) = found[key], key
+        twin = regular.get(("sgd_long", batch, lr, seed))
+        if twin is None:
+            problems.append(f"controls: no regular run of seed {seed} at {(batch, lr)}")
+            continue
+        common = min(len(control.stream.get("chunks", [])), len(twin.stream.get("chunks", [])))
+        if (
+            control.model != twin.model
+            or control.stream.get("path") != twin.stream.get("path")
+            or control.stream["chunks"][:common] != twin.stream["chunks"][:common]
+        ):
+            problems.append(
+                f"controls: {control.run_id} is not on the model and stream of {twin.run_id}"
+            )
+            continue
+        longest = max(run.steps for k, run in regular.items() if k[:3] == ("sgd_long", batch, lr))
         reasons = []
         if not control.stable:
             reasons.append(f"unstable ({control.stop})")
-        if control.steps < longest.get(key, 0):
-            reasons.append(f"{control.steps} steps, the longest regular run took {longest[key]}")
+        if control.steps < longest:
+            reasons.append(f"{control.steps} steps, the longest regular run took {longest}")
         steps = {r["step"] for r in control.evaluations}
-        wanted = evaluated.get((*key, control.seed), set())
-        if not wanted <= steps:
-            reasons.append(f"not evaluated at the regular run's steps {sorted(wanted - steps)}")
+        needed = {r["step"] for r in twin.evaluations}
+        if not needed <= steps:
+            reasons.append(f"not evaluated at the regular run's steps {sorted(needed - steps)}")
         c = contamination(control)
         if c is None or c > threshold:
             reasons.append(f"contamination {c} above {threshold:.4g}")
-        out[key] = {
+        out[(batch, lr)] = {
             "contamination": c,
             "threshold": threshold,
             "accepted": not reasons,
             "reasons": reasons,
             "run": control.run_id,
         }
-    return out
+    return out, problems
 
 
 # ------------------------------------------------------------------ selection
 
 
 def select(
-    runs: Sequence[Trajectory],
+    discovery: Sequence[Trajectory],
+    screen: Sequence[Trajectory],
+    controls: Sequence[Trajectory],
     theta0: Mapping[str, float],
-    acceptance: Mapping[tuple[int, float], Mapping[str, Any]],
-    seeds: Sequence[int],
+    seeds: Sequence[int] = DISCOVERY_SEEDS,
 ) -> dict[str, Any]:
-    """The Stage-A selection rule over the discovery runs; never reads harm."""
-    by_cell = cells(run for run in runs if run.seed in seeds)
-    batches = sorted({batch for _, batch, _ in by_cell})
-    chunk_seconds = _seconds_per_chunk(runs)
+    """The Stage-A selection rule over the whole prescribed search; never reads harm.
+
+    Outcomes: ``incomplete`` (the search or its records are not whole: no conclusion),
+    ``numerics_fail`` (no SGD rate passes the screen and its full control at either batch),
+    ``barrier`` (no accepted SGD rate reaches U = 7 at either batch), ``infeasible`` (no batch
+    eligible otherwise) or ``selected``.
+    """
+    out: dict[str, Any] = {
+        "seeds": list(seeds),
+        "rulings": RULINGS,
+        "runs": sorted(run.run_id for run in discovery),
+    }
+    screened, problems = screen_candidates(screen)
+    candidates = {batch: entry["candidates"] for batch, entry in screened.items()}
+    present, duplicates = index(discovery)
+    problems += duplicates
+    expected = expected_discovery(candidates, present, seeds)
+    problems += [f"discovery: missing {key}" for key in sorted(expected - set(present))]
+    problems += [f"discovery: unexpected {key}" for key in sorted(set(present) - expected)]
+    acceptance, control_problems = numerical_acceptance(controls, present, candidates)
+    problems += control_problems
+    prompts = {
+        json.dumps(run.harmful_prompts, sort_keys=True) for run in discovery if run.evaluations
+    }
+    if len(prompts) > 1:
+        problems.append("discovery runs answered different harmful prompt sets")
+    out["screen"] = screened
+    out["acceptance"] = {f"B={b} lr={lr:g}": a for (b, lr), a in acceptance.items()}
+    if problems:
+        out.update(outcome="incomplete", problems=problems)
+        return out
+    if not any(a["accepted"] for a in acceptance.values()):
+        out["outcome"] = "numerics_fail"
+        return out
+
+    by_cell = cells(present.values())
+    chunk_seconds = _seconds_per_chunk(discovery)
     report: dict[int, dict[str, Any]] = {}
-    for batch in batches:
+    for batch in BATCHES:
         entry: dict[str, Any] = {"levels": {}}
         for upper in UPPER:
             k_star = math.sqrt(LOWER * upper)
@@ -558,22 +753,20 @@ def select(
                 )
             )
         report[batch] = entry
-
-    out: dict[str, Any] = {
-        "batches": report,
-        "seeds": list(seeds),
-        "runs": sorted(run.run_id for run in runs),
-        "rulings": RULINGS,
-    }
-    eligible = [b for b in batches if report[b]["U"] is not None]
+    out["batches"] = report
+    eligible = [b for b in BATCHES if report[b]["U"] is not None]
     if not eligible:
-        out["outcome"] = _failure(by_cell, batches, theta0, seeds, acceptance)
+        out["outcome"] = _failure(by_cell, theta0, seeds, acceptance)
         return out
     best = max(report[b]["U"] for b in eligible)
     ties = [b for b in eligible if report[b]["U"] == best]
     batch = min(ties, key=lambda b: report[b]["seconds_per_block"])
     chosen = report[batch]
     eight = chosen["levels"][_name(8.0)]
+    limited = chosen["U"] == 7.0 and not all(
+        any(r["reaches"] for r in eight[arm].values()) for arm in ("sgd_long", "adamw_long")
+    )
+    keys = ("sgd_long", "adamw_long", "adamw_25", "frozen_adam_25", "t_max", "seconds_per_block")
     out.update(
         {
             "outcome": "selected",
@@ -581,21 +774,8 @@ def select(
             "U": chosen["U"],
             "K_star": math.sqrt(LOWER * chosen["U"]),
             "levels": [LOWER, math.sqrt(LOWER * chosen["U"]), chosen["U"]],
-            "u_limited_by_reachability": chosen["U"] == 7.0
-            and not all(
-                any(r["reaches"] for r in eight[arm].values()) for arm in ("sgd_long", "adamw_long")
-            ),
-            **{
-                key: chosen[key]
-                for key in (
-                    "sgd_long",
-                    "adamw_long",
-                    "adamw_25",
-                    "frozen_adam_25",
-                    "t_max",
-                    "seconds_per_block",
-                )
-            },
+            "u_limited_by_reachability": limited,
+            **{k: chosen[k] for k in keys},
         }
     )
     return out
@@ -706,13 +886,11 @@ def _seconds_per_chunk(runs: Sequence[Trajectory]) -> float | None:
     return seconds / chunks if chunks else None
 
 
-def _failure(by_cell, batches, theta0, seeds, acceptance) -> str:
-    """Which Stage-A outcome stops the design (the table "Outcomes of Stage A")."""
-    accepted = [key for key, a in acceptance.items() if a.get("accepted")]
-    if not accepted:
-        return "numerics_fail"
+def _failure(by_cell, theta0, seeds, acceptance) -> str:
+    """Which Stage-A outcome stops the design once some SGD rate is accepted (the table
+    "Outcomes of Stage A")."""
     reaches_seven = False
-    for batch in batches:
+    for batch in BATCHES:
         rates = _long_rates(
             by_cell, "sgd_long", batch, 7.0, math.sqrt(35), theta0, seeds, acceptance
         )
@@ -736,10 +914,3 @@ def _jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line]
-
-
-def _seconds(meta: Mapping[str, Any]) -> float:
-    started, finished = meta.get("started_at"), meta.get("finished_at")
-    if not started or not finished:
-        return math.nan
-    return (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds()

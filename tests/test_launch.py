@@ -306,7 +306,7 @@ def test_a_scheduled_run_qualifies_by_its_whole_records(tmp_path) -> None:
     [
         lambda d: (d / "terminal.json").write_text("{"),
         lambda d: (d / "evaluations.jsonl").unlink(),
-        lambda d: (d / "responses" / "harmful_judged.jsonl").unlink(),
+        lambda d: (d / "responses" / "harmful_evaluation.jsonl").unlink(),
     ],
 )
 def test_incomplete_scheduled_records_stop_the_campaign(tmp_path, damage) -> None:

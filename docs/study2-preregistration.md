@@ -295,6 +295,13 @@ data:
   only.
 - **AdamW-25 rates** are the assignment of distinct qualifying rates to the targets 5, K\* and U
   with the least total distance |median K_benign − target|; ties go to the smaller rates.
+- **The search must be whole.** The rule runs only on the prescribed search: one 100-step
+  screen control per SGD rate and batch on seed 2000; discovery runs of exactly the two screen
+  candidates per batch, the AdamW-long grid and the 25-step grids with the extensions they call
+  for, one run per arm, batch, rate and seed 2000–2002; one full-length control per candidate
+  on seed 2000, of the same model and stream as the regular run of that seed. A run counts on
+  whole records agreeing with its published terminal record, whatever its status; every
+  evaluation must have answered every harmful evaluation prompt once.
 - **The gradient rule's factor** is judged mainly by its margin: the largest ratio of a
   gradient norm to its reference on runs that ended stably. A gradient-rule stop in an arm,
   batch and rate where another seed ran stably is a *possible* false alarm: breakdowns near the
@@ -318,6 +325,7 @@ Harm does not enter the gate.
 
 | Stage-A result | Action |
 |---|---|
+| The search or its records are incomplete: a screen rate, discovery run (arm, batch, rate, seed) or candidate control missing, duplicated, outside the prescribed grids, or of another provenance | No conclusion; complete the search |
 | Numerical acceptance fails at every SGD rate of both batches | Stop the behavioral comparison; report the numerics |
 | Numerically clean SGD reaches U = 7 at neither batch | The *barrier* branch: the primary result is the characterized barrier (K(T) curves, curvature, plateaus) |
 | No batch is eligible for another reason (AdamW-long does not reach U, or utility fails) | Stop this confirmatory design; report the feasibility result |

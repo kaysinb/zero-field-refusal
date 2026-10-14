@@ -218,7 +218,7 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
         # A study-2 run is done once its whole records agree with its published terminal
         # record; a plateau or an instability stop, with or without evaluations, is an outcome.
         try:
-            load_trajectory(run_dir, require_completed=False)
+            load_trajectory(run_dir)
         except TrajectoryError as exc:
             return f"a scheduled run's records are incomplete: {exc}"
         return None
@@ -337,7 +337,7 @@ def _published(run_dir: Path) -> bool:
     if not (run_dir / "terminal.json").is_file():
         return False
     try:
-        load_trajectory(run_dir, require_completed=False)
+        load_trajectory(run_dir)
     except TrajectoryError:
         return False
     return True
