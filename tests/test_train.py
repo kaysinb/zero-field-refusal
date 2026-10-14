@@ -604,6 +604,20 @@ def test_an_interrupted_chunk_blocks_extension_until_removed(env) -> None:
     assert StreamPrefix(cfg, env, 0).available == 6
 
 
+def test_a_chunk_whose_fingerprint_fails_is_not_published(env, monkeypatch) -> None:
+    cfg = config(*APPENDABLE)
+
+    def broken(rows):
+        raise RuntimeError("hashing failed")
+
+    monkeypatch.setattr("zero_field_refusal.teacher.distribution_digest", broken)
+    with pytest.raises(RuntimeError, match="hashing failed"):
+        extend_stream(cfg, env, 0, 3, batch_size=2)
+    path = locate_stream(cfg, env, "training", 0)[1]
+    assert StreamPrefix(cfg, env, 0).available == 0
+    assert not path.exists() or not list(path.iterdir())  # no chunk, no partial directory
+
+
 def test_fixed_stream_functions_refuse_an_appendable_stream(env) -> None:
     cfg = config(*APPENDABLE)
     with pytest.raises(StreamError, match="extend_stream"):

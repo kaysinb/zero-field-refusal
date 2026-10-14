@@ -342,3 +342,22 @@ def test_fingerprints_round_trip_and_tamper_check(tmp_path: Path, teacher) -> No
     (tmp_path / FINGERPRINTS_FILE).write_bytes(b"x")
     with pytest.raises(StreamError, match="different from the chunk manifest"):
         load_fingerprints(tmp_path)
+
+
+def test_background_digests_equal_the_sequential_fingerprint(teacher) -> None:
+    recorded: list = []
+    _, distributions = run(teacher, n=10, record_distributions=True, fingerprints=recorded)
+    assert len(recorded) == 3  # generation batches of 4, 4 and 2
+    for k, (digest, projections) in enumerate(recorded):
+        sequential = fingerprint(distributions[4 * k : 4 * k + 4])
+        assert digest == sequential[0]
+        assert torch.equal(projections, sequential[1])
+
+
+def test_a_failure_in_the_background_thread_stops_sampling(teacher, monkeypatch) -> None:
+    def broken(rows):
+        raise RuntimeError("hashing failed")
+
+    monkeypatch.setattr("zero_field_refusal.teacher.distribution_digest", broken)
+    with pytest.raises(RuntimeError, match="hashing failed"):
+        run(teacher, n=10, fingerprints=[])

@@ -20,6 +20,7 @@ import json
 import os
 import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +150,8 @@ def sample_responses(
     ``force`` replays stored responses instead of sampling: each step puts all probability on the
     stored token, after the raw logits are captured (``replay_distributions``); it needs
     ``zero_field=False``, since the scores are then processed by design.
-    With ``fingerprints``, the ``fingerprint`` of each chunk's distributions is appended to it.
+    With ``fingerprints``, the ``fingerprint`` of each chunk's distributions is appended to it,
+    the same as ``fingerprint`` computes in sequence.
     """
     if len(prompts) != len(prompt_ids):
         raise ValueError("prompts and prompt_ids differ in length")
@@ -159,64 +161,74 @@ def sample_responses(
     samples: list[Sample] = []
     distributions: list[torch.Tensor] | None = [] if record_distributions else None
     keep = record_distributions or on_chunk_distributions is not None
-    for index, start in enumerate(range(0, len(prompts), batch_size)):
-        chunk = prompts[start : start + batch_size]
-        input_ids, attention_mask = _left_pad(chunk, pad_id, device)
-        torch.manual_seed(derive_seed(seed, index))
-        forced = {}
-        if force is not None:
-            responses = force[start : start + batch_size]
-            processor = _ForcedTokens(
-                responses, pad_id, sampling["max_new_tokens"], input_ids.shape[1], device
-            )
-            forced = {"logits_processor": LogitsProcessorList([processor])}
-        with capture_step_logits(model) as raw:
-            out = model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                do_sample=True,
-                num_beams=1,
-                **{key: sampling[key] for key in SAMPLING_KEYS},
-                eos_token_id=list(end_ids),
-                pad_token_id=pad_id,
-                output_scores=True,
-                return_dict_in_generate=True,
-                **forced,
-            )
-        if zero_field:
-            check_unprocessed(raw, out.scores, "sampling")
-        generated = out.sequences[:, input_ids.shape[1] :].tolist()
-        if force is not None:
-            replayed = [split_response(tokens, end_ids)[0] for tokens in generated]
-            if replayed != [list(r) for r in responses]:
-                raise StreamError("The replay did not reproduce the stored responses")
-        # (chunk, steps, vocab) would be large; gather per step instead.
-        step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
-        chunk_distributions, device_rows = [], []
-        for row, tokens in enumerate(generated):
-            response, ended = split_response(tokens, end_ids)
-            logp = torch.stack([step_logprobs[t][row] for t in range(len(response))])
-            picked = logp.gather(1, torch.tensor(response, device=logp.device)[:, None])[:, 0]
-            samples.append(
-                Sample(
-                    prompt_id=prompt_ids[start + row],
-                    prompt_ids=tuple(int(i) for i in chunk[row]),
-                    response_ids=tuple(response),
-                    logprobs=tuple(picked.tolist()),
-                    ended=ended,
+    # Digests are hashed in a background thread while the next chunk samples.
+    digests = _BackgroundDigests(device) if fingerprints is not None else None
+    projected: list[torch.Tensor] = []
+    try:
+        for index, start in enumerate(range(0, len(prompts), batch_size)):
+            chunk = prompts[start : start + batch_size]
+            input_ids, attention_mask = _left_pad(chunk, pad_id, device)
+            torch.manual_seed(derive_seed(seed, index))
+            forced = {}
+            if force is not None:
+                responses = force[start : start + batch_size]
+                processor = _ForcedTokens(
+                    responses, pad_id, sampling["max_new_tokens"], input_ids.shape[1], device
                 )
-            )
-            if keep:
-                chunk_distributions.append(logp.cpu())
-            if fingerprints is not None:
-                device_rows.append(logp)
-        if fingerprints is not None:
-            fingerprints.append(fingerprint(device_rows))
-        del raw, step_logprobs, out, device_rows
-        if on_chunk_distributions is not None:
-            on_chunk_distributions(chunk_distributions)
-        if distributions is not None:
-            distributions += chunk_distributions
+                forced = {"logits_processor": LogitsProcessorList([processor])}
+            with capture_step_logits(model) as raw:
+                out = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    do_sample=True,
+                    num_beams=1,
+                    **{key: sampling[key] for key in SAMPLING_KEYS},
+                    eos_token_id=list(end_ids),
+                    pad_token_id=pad_id,
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                    **forced,
+                )
+            if zero_field:
+                check_unprocessed(raw, out.scores, "sampling")
+            generated = out.sequences[:, input_ids.shape[1] :].tolist()
+            if force is not None:
+                replayed = [split_response(tokens, end_ids)[0] for tokens in generated]
+                if replayed != [list(r) for r in responses]:
+                    raise StreamError("The replay did not reproduce the stored responses")
+            # (chunk, steps, vocab) would be large; gather per step instead.
+            step_logprobs = [torch.log_softmax(r, dim=-1) for r in raw]
+            chunk_distributions, device_rows = [], []
+            for row, tokens in enumerate(generated):
+                response, ended = split_response(tokens, end_ids)
+                logp = torch.stack([step_logprobs[t][row] for t in range(len(response))])
+                picked = logp.gather(1, torch.tensor(response, device=logp.device)[:, None])[:, 0]
+                samples.append(
+                    Sample(
+                        prompt_id=prompt_ids[start + row],
+                        prompt_ids=tuple(int(i) for i in chunk[row]),
+                        response_ids=tuple(response),
+                        logprobs=tuple(picked.tolist()),
+                        ended=ended,
+                    )
+                )
+                if keep:
+                    chunk_distributions.append(logp.cpu())
+                if fingerprints is not None:
+                    device_rows.append(logp)
+            if digests is not None:
+                projected.append(distribution_projections(device_rows))
+                digests.submit(device_rows)
+            del raw, step_logprobs, out, device_rows
+            if on_chunk_distributions is not None:
+                on_chunk_distributions(chunk_distributions)
+            if distributions is not None:
+                distributions += chunk_distributions
+        if digests is not None:
+            fingerprints.extend(zip(digests.results(), projected, strict=True))
+    finally:
+        if digests is not None:
+            digests.close()
     return samples, distributions
 
 
@@ -294,13 +306,54 @@ def distribution_directions(vocab: int) -> torch.Tensor:
 
 def fingerprint(rows: Sequence[torch.Tensor]) -> tuple[str, torch.Tensor]:
     """sha256 of the rows' fp32 bytes and their (total length, PROJECTIONS) fp64 projections."""
+    return distribution_digest(rows), distribution_projections(rows)
+
+
+def distribution_digest(rows: Sequence[torch.Tensor]) -> str:
     digest = hashlib.sha256()
-    directions = distribution_directions(rows[0].shape[1]).to(rows[0].device)
-    projections = []
     for row in rows:
         digest.update(row.detach().float().contiguous().cpu().numpy())  # its buffer, no copy
-        projections.append((row.detach().double() @ directions).cpu())
-    return digest.hexdigest(), torch.cat(projections)
+    return digest.hexdigest()
+
+
+def distribution_projections(rows: Sequence[torch.Tensor]) -> torch.Tensor:
+    directions = distribution_directions(rows[0].shape[1]).to(rows[0].device)
+    return torch.cat([(row.detach().double() @ directions).cpu() for row in rows])
+
+
+class _BackgroundDigests:
+    """``distribution_digest`` of each chunk in one background thread, overlapping the sampling
+    of the next chunk. At most one chunk is in flight, so its rows stay on the device at most one
+    chunk longer. On a GPU the copy to the host runs on a side stream after an event recorded
+    when the rows were computed. A failure in the thread is raised here, at the next ``submit``
+    or at ``results``, so the caller stops instead of losing it."""
+
+    def __init__(self, device: torch.device) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fingerprint")
+        self._stream = torch.cuda.Stream(device) if device.type == "cuda" else None
+        self._futures: list[Future[str]] = []
+
+    def submit(self, rows: Sequence[torch.Tensor]) -> None:
+        if self._futures:
+            self._futures[-1].result()
+        ready = None
+        if self._stream is not None:
+            ready = torch.cuda.Event()
+            ready.record()  # on the current stream, after the rows
+        self._futures.append(self._pool.submit(self._digest, list(rows), ready))
+
+    def results(self) -> list[str]:
+        return [future.result() for future in self._futures]
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=True, cancel_futures=True)
+
+    def _digest(self, rows: list[torch.Tensor], ready: torch.cuda.Event | None) -> str:
+        if self._stream is None:
+            return distribution_digest(rows)
+        with torch.cuda.stream(self._stream):
+            self._stream.wait_event(ready)
+            return distribution_digest(rows)
 
 
 def write_fingerprints(

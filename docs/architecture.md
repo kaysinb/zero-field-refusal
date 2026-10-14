@@ -462,9 +462,11 @@ Settled in stage 0 with status `proposed`; the ones that are part of the binding
       fixed unit-norm Gaussian directions over the vocabulary. The replay is accepted if the
       digest matches; otherwise (bytes differ, e.g. on another GPU type) only if every
       projection lies within `PROJECTION_MAX_ABS` = 10⁻⁵, since a unit projection of the error
-      vector has the scale of its root-mean-square entry. A fingerprint of 32 responses took
-      ≈ 1 s on an RTX 5090 (2026-10-14), ≈ 30 s per 1000 responses, about half the generation
-      time;
+      vector has the scale of its root-mean-square entry. The digest is hashed in a background
+      thread while the next generation batch samples; a failure there stops the chunk before
+      it is published. On an RTX 5090 at 1.5B (2026-10-14), a fingerprint of 32 responses takes
+      ≈ 1 s alone, and four generation batches took 17.7 s with fingerprints against 15.5 s
+      without;
     - the run records, for every replayed batch, the sampled tokens' largest and mean deviation,
       whether the digest matched, the projections' largest deviation and what accepted it
       (`soft_targets_replay.jsonl`);
