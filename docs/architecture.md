@@ -130,6 +130,7 @@ Implemented:
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `panels` | study 2: K on the monitor panel, and the Stage-A check that the monitor agrees with the scoring panel |
+| `analysis.stage_a` | study 2, Stage A: run records checked for integrity, summaries per arm, batch and rate (reachability and steps per level, utility, time, stops), soft-target screen and numerical acceptance, false alarms of the gradient rule, monitor agreement, and the selection rule as one function |
 | `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record |
 | `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (a fixed number of steps, convergence by the Ritz residual and agreement of independent starts, not a certified accuracy of the top eigenvalue), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
@@ -162,6 +163,8 @@ Entry points in `scripts/`:
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `curvature.py`: the Stage-A curvature measurement of study 2 on a seed's appendable stream
   (`run_type: curvature`);
+- `stage_a_summary.py`: the Stage-A summary and selection of study 2 from the run records, with
+  the code revision, written once; it reads no harm label;
 - `calibration_pool.py`, `make_calibration_sample.py`, `label.py`, `judge.py`: the calibration
   pool from `experiments/judge_calibration` runs, the blind sample, manual labeling and judging;
 - `launch.py`: runs the missing runs of a campaign file (cells of config, overrides and seeds)

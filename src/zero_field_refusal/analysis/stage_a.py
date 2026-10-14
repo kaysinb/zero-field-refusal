@@ -1,0 +1,689 @@
+"""Stage A of study 2: run records, their summaries and the selection rule, as one function.
+
+docs/study2-preregistration.md ("Stage A — feasibility", "Selection rule", "Numerical
+acceptance"). Everything here reads run directories written by ``schedule.run_scheduled`` and
+never a harm label: the selection uses numerics, K, reachability, utility and measured time only.
+
+- ``load_trajectory``: one run's records, checked for integrity (``TrajectoryError``).
+- ``cell_summary``: one arm, batch and rate over its seeds: stops, reachability and median steps
+  per level, utility losses at the levels, time.
+- ``screen_candidates`` and ``numerical_acceptance``: soft-target controls, contamination and the
+  accepted SGD rates.
+- ``instability_summary``: firings of the gradient rule and its false alarms; the factor 10 may be
+  revised only from this, before validation.
+- ``agreement``: the monitor against the scoring panel.
+- ``select``: the selection rule: batch, U, K*, rates and T_max, with the reasons for every
+  batch and level, or the Stage-A outcome that stops the design.
+
+**Rulings** where the preregistration leaves a detail open, fixed here before any data:
+- *Utility loss* is θ₀'s accuracy minus the run's at an evaluation, in percentage points;
+  "in bounds" means the mean over the discovery seeds is at most 5 pp on MMLU and 10 pp on the
+  factual questions at every evaluation used: for a long arm the evaluations at 5, K* and U, for
+  a 25-step arm its evaluation at step 25.
+- *U qualifies at a batch* when each long arm has a rate that meets its own selection rule at
+  that U (rules 2 and 3), which includes reachability by every discovery seed and utility.
+- *Time per seed block* is the median over seeds of the summed run times of the selected
+  SGD-long, AdamW-long and AdamW-25 runs (frozen Adam-25 runs on 20 blocks only), excluding stream
+  extension, plus generating the block's stream at the measured time per chunk.
+- *AdamW-25 rates* are the injective assignment of qualifying rates to the targets (5, K*, U)
+  with the least total |median K_benign − target|, ties to the smaller rates.
+- *A false alarm* is a gradient-rule stop in a cell (arm, batch, rate) where another seed ran
+  stably (stopped by target, plateau or limit).
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+import math
+import statistics
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from omegaconf import OmegaConf
+
+from ..panels import monitor_agreement
+
+LOWER = 5.0
+UPPER = (8.0, 7.0)  # U, larger first
+T_MAX_CAP = 4000
+T_MAX_FACTOR = 1.5
+MMLU_BOUND_PP = 5.0
+FACTUAL_BOUND_PP = 10.0
+CONTAMINATION_FRACTION = 0.01
+DISCOVERY_K_STAR = math.sqrt(35)  # K* of the lowest candidate zone, until U is chosen
+INSTABILITY = (
+    "nonfinite_loss",
+    "nonfinite_gradient",
+    "nonfinite_weight",
+    "nonfinite_k",
+    "k_above_max",
+    "gradient_spike",
+)
+
+
+class TrajectoryError(ValueError):
+    """A run's records are missing or inconsistent."""
+
+
+@dataclass(frozen=True)
+class Trajectory:
+    run_dir: Path
+    run_id: str
+    arm: str  # sgd_long, adamw_long, adamw_25, frozen_adam_25, soft_control
+    batch_size: int
+    lr: float
+    seed: int
+    policy: str
+    levels: tuple[float, ...]
+    terminal: dict[str, Any]
+    evaluations: list[dict[str, Any]]
+    monitor: list[tuple[int, float]]
+    grad_norms: list[float]
+    seconds: float  # wall time of the run
+    chunk_size: int
+    evaluate_at: tuple[int, ...] = field(default=())
+
+    @property
+    def steps(self) -> int:
+        return self.terminal["steps"]
+
+    @property
+    def stop(self) -> str:
+        return self.terminal["stop"]["reason"]
+
+    @property
+    def stable(self) -> bool:
+        return self.stop not in INSTABILITY
+
+    @property
+    def training_seconds(self) -> float:
+        return self.seconds - self.terminal.get("stream_extension", {}).get("seconds", 0.0)
+
+    def evaluation_at(self, level: float) -> dict[str, Any] | None:
+        """The evaluation that reached ``level``, if any."""
+        for row in self.evaluations:
+            if any(math.isclose(level, reached) for reached in row["levels"]):
+                return row
+        return None
+
+
+def arm_of(cfg: Any) -> str:
+    if cfg.get("control") == "soft_targets":
+        return "soft_control"
+    name, policy = cfg.optimizer.name, cfg.schedule.policy
+    arms = {
+        ("sgd", "k_stopped"): "sgd_long",
+        ("adamw", "k_stopped"): "adamw_long",
+        ("adamw", "fixed"): "adamw_25",
+        ("adam_frozen", "fixed"): "frozen_adam_25",
+    }
+    if (name, policy) not in arms:
+        raise TrajectoryError(f"No study-2 arm for optimizer {name!r} under {policy!r}")
+    return arms[(name, policy)]
+
+
+def load_trajectory(run_dir: Path) -> Trajectory:
+    """A completed scheduled run's records, after checking that they agree with each other."""
+    run_dir = Path(run_dir)
+    problems: list[str] = []
+    try:
+        cfg = OmegaConf.load(run_dir / "config.yaml")
+        meta = _json(run_dir / "meta.json")
+        terminal = _json(run_dir / "terminal.json")
+    except (OSError, ValueError) as exc:
+        raise TrajectoryError(f"{run_dir}: unreadable records ({exc})") from exc
+    if OmegaConf.select(cfg, "schedule", default=None) is None:
+        raise TrajectoryError(f"{run_dir}: not a scheduled run")
+    if meta.get("status") != "completed":
+        problems.append(f"status {meta.get('status')!r}")
+    evaluations = _jsonl(run_dir / "evaluations.jsonl")
+    monitor = [(row["step"], row["K_monitor"]) for row in _jsonl(run_dir / "monitor.jsonl")]
+    training = [row for row in _jsonl(run_dir / "metrics.jsonl") if "loss" in row]
+    steps, every = terminal["steps"], int(cfg.eval.monitor.every)
+    policy, planned = cfg.schedule.policy, tuple(float(x) for x in cfg.schedule.levels)
+
+    if [s for s, _ in monitor] != list(range(every, steps + 1, every)):
+        problems.append("monitor readings are not every reading up to the last step")
+    if [row["step"] for row in training] != list(range(steps)):
+        problems.append("training metrics are not one row per step taken")
+    eval_steps = [row["step"] for row in evaluations]
+    if eval_steps != sorted(set(eval_steps)) or any(s > steps for s in eval_steps):
+        problems.append("evaluation steps are not increasing within the run")
+    if any(not math.isfinite(row.get("K_benign", math.nan)) for row in evaluations):
+        problems.append("an evaluation lacks a finite K_benign")
+    evaluate_at = tuple(int(t) for t in cfg.schedule.get("evaluate_at") or ())
+    reason = terminal["stop"]["reason"]
+    if policy == "k_stopped":
+        monitor_steps = {s for s, _ in monitor}
+        if not set(eval_steps) <= monitor_steps:
+            problems.append("an evaluation is not at a monitor reading")
+        levels = terminal.get("levels", {})
+        reached = [lvl for row in evaluations for lvl in row["levels"]]
+        if [r["level"] for r in levels.get("reached", [])] != reached:
+            problems.append("the terminal record's levels differ from the evaluations'")
+        for record in levels.get("reached", []):
+            row = next((r for r in evaluations if record["level"] in r["levels"]), None)
+            if row is None or (row["step"], row["K_benign"]) != (
+                record["step"],
+                record["K_benign"],
+            ):
+                problems.append(f"level {record['level']}: step or K differs from its evaluation")
+        missed = [lvl for lvl in planned if not any(math.isclose(lvl, r) for r in reached)]
+        if levels.get("missed") != missed:
+            problems.append("the terminal record's missed levels are wrong")
+        if reason == "target" and (missed or not eval_steps or eval_steps[-1] != steps):
+            problems.append("a target stop without the top level evaluated at the last step")
+        if reason == "plateau" and steps < cfg.schedule.plateau.from_step:
+            problems.append("a plateau stop before its first step")
+        if reason == "t_max" and steps != cfg.train.steps:
+            problems.append("a T_max stop before T_max")
+    else:
+        if reason == "steps" and steps != cfg.train.steps:
+            problems.append("a fixed run stopped by its steps before them")
+        expected = [t for t in evaluate_at if t <= steps]
+        unstable_at_last = reason in INSTABILITY and eval_steps == [
+            t for t in expected if t < steps
+        ]
+        if eval_steps != expected and not unstable_at_last:
+            problems.append("a fixed run's evaluations differ from evaluate_at")
+    used = meta.get("inputs", {}).get("streams", {}).get("training", {}).get("count")
+    if used != steps * cfg.train.batch_size:
+        problems.append(
+            f"the recorded stream prefix holds {used} responses, the run used "
+            f"{steps * cfg.train.batch_size}"
+        )
+    if problems:
+        raise TrajectoryError(f"{run_dir}: " + "; ".join(problems))
+    return Trajectory(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        arm=arm_of(cfg),
+        batch_size=int(cfg.train.batch_size),
+        lr=float(cfg.optimizer.lr),
+        seed=int(cfg.seed),
+        policy=policy,
+        levels=planned,
+        terminal=terminal,
+        evaluations=evaluations,
+        monitor=monitor,
+        grad_norms=[row["grad_norm"] for row in training],
+        seconds=_seconds(meta),
+        chunk_size=int(cfg.teacher.chunk_size),
+        evaluate_at=evaluate_at,
+    )
+
+
+def load_trajectories(root: Path) -> list[Trajectory]:
+    """Every scheduled run directory under ``root`` (one level of experiments, or run dirs)."""
+    dirs = sorted(p.parent for p in Path(root).rglob("terminal.json"))
+    return [load_trajectory(d) for d in dirs]
+
+
+# ------------------------------------------------------------------ summaries
+
+
+def utility_loss(row: Mapping[str, Any], theta0: Mapping[str, float]) -> tuple[float, float]:
+    """(MMLU, factual) losses of an evaluation against θ₀, in percentage points."""
+    return (
+        100 * (theta0["benchmark_accuracy"] - row["benchmark_accuracy"]),
+        100 * (theta0["factual_accuracy"] - row["factual_accuracy"]),
+    )
+
+
+def cells(runs: Iterable[Trajectory]) -> dict[tuple[str, int, float], list[Trajectory]]:
+    out: dict[tuple[str, int, float], list[Trajectory]] = defaultdict(list)
+    for run in runs:
+        out[(run.arm, run.batch_size, run.lr)].append(run)
+    return {key: sorted(group, key=lambda r: r.seed) for key, group in sorted(out.items())}
+
+
+def level_summary(
+    cell: Sequence[Trajectory], level: float, theta0: Mapping[str, float], seeds: Sequence[int]
+) -> dict[str, Any]:
+    """Reachability, median steps, scoring K and mean utility losses at one level."""
+    rows = [(run, run.evaluation_at(level)) for run in cell if run.seed in seeds]
+    reached = [(run, row) for run, row in rows if row is not None]
+    losses = [utility_loss(row, theta0) for _, row in reached]
+    return {
+        "reached": sorted(run.seed for run, _ in reached),
+        "all_seeds": {run.seed for run, _ in reached} == set(seeds),
+        "median_steps": statistics.median(row["step"] for _, row in reached) if reached else None,
+        "median_K_benign": (
+            statistics.median(row["K_benign"] for _, row in reached) if reached else None
+        ),
+        "mmlu_loss_pp": statistics.mean(m for m, _ in losses) if losses else None,
+        "factual_loss_pp": statistics.mean(f for _, f in losses) if losses else None,
+    }
+
+
+def in_bounds(summary: Mapping[str, Any]) -> bool:
+    mmlu, factual = summary["mmlu_loss_pp"], summary["factual_loss_pp"]
+    return mmlu is not None and mmlu <= MMLU_BOUND_PP and factual <= FACTUAL_BOUND_PP
+
+
+def cell_summary(
+    cell: Sequence[Trajectory], theta0: Mapping[str, float], seeds: Sequence[int]
+) -> dict[str, Any]:
+    first = cell[0]
+    out: dict[str, Any] = {
+        "arm": first.arm,
+        "batch_size": first.batch_size,
+        "lr": first.lr,
+        "seeds": [run.seed for run in cell],
+        "runs": [run.run_id for run in cell],
+        "stops": dict(Counter(run.stop for run in cell)),
+        "median_training_seconds": statistics.median(run.training_seconds for run in cell),
+        "max_spike_ratio": {run.seed: spike_ratio(run) for run in cell},
+    }
+    if first.policy == "k_stopped":
+        out["levels"] = {
+            _name(level): level_summary(cell, level, theta0, seeds) for level in first.levels
+        }
+    else:
+        out["final"] = final_summary(cell, theta0, seeds)
+    return out
+
+
+def final_summary(
+    cell: Sequence[Trajectory], theta0: Mapping[str, float], seeds: Sequence[int]
+) -> dict[str, Any]:
+    """A fixed arm at its last scheduled evaluation: every seed must have it."""
+    rows = [
+        run.evaluations[-1]
+        for run in cell
+        if run.seed in seeds
+        and run.evaluations
+        and run.stable
+        and run.evaluations[-1]["step"] == max(run.evaluate_at)
+    ]
+    losses = [utility_loss(row, theta0) for row in rows]
+    return {
+        "complete": len(rows) == len(seeds),
+        "median_K_benign": statistics.median(r["K_benign"] for r in rows) if rows else None,
+        "mmlu_loss_pp": statistics.mean(m for m, _ in losses) if losses else None,
+        "factual_loss_pp": statistics.mean(f for _, f in losses) if losses else None,
+    }
+
+
+def spike_ratio(run: Trajectory, window: int = 20) -> float | None:
+    """The largest gradient norm over the median of the preceding (up to ``window``) norms, the
+    statistic of the gradient rule, including a firing step (not in the metrics)."""
+    norms = list(run.grad_norms)
+    detail = run.terminal["stop"].get("detail", {})
+    if "grad_norm" in detail:
+        norms.append(detail["grad_norm"])
+    ratios = [
+        norms[s] / statistics.median(norms[max(0, s - window) : s]) for s in range(1, len(norms))
+    ]
+    return max(ratios) if ratios else None
+
+
+def instability_summary(runs: Sequence[Trajectory]) -> dict[str, Any]:
+    """Stops by the gradient rule and false alarms: a firing in a cell where another seed ran
+    stably. Also the largest spike ratio on stable runs, the rule's margin."""
+    firings, false_alarms, exposed = [], [], 0
+    for cell in cells(runs).values():
+        if cell[0].arm == "soft_control":
+            continue
+        stable = [run for run in cell if run.stable]
+        fired = [run for run in cell if run.stop == "gradient_spike"]
+        firings += [run.run_id for run in fired]
+        if stable:
+            exposed += len(cell)
+            false_alarms += [run.run_id for run in fired]
+    margins = [
+        r
+        for run in runs
+        if run.stable and run.arm != "soft_control"
+        if (r := spike_ratio(run)) is not None
+    ]
+    return {
+        "firings": firings,
+        "false_alarms": false_alarms,
+        "runs_in_stable_cells": exposed,
+        "false_alarm_rate": len(false_alarms) / exposed if exposed else None,
+        "max_spike_ratio_on_stable_runs": max(margins) if margins else None,
+    }
+
+
+def agreement(runs: Sequence[Trajectory]) -> dict[str, Any]:
+    """The monitor against the scoring panel at every evaluation that sits on a reading."""
+    monitor, scoring = [], []
+    for run in runs:
+        readings = dict(run.monitor)
+        for row in run.evaluations:
+            if row["step"] in readings:
+                monitor.append(readings[row["step"]])
+                scoring.append(row["K_benign"])
+    return monitor_agreement(monitor, scoring)
+
+
+def short_grid_extension(
+    runs: Sequence[Trajectory],
+    arm: str,
+    *,
+    batch: int = 5,
+    grid_minimum: float = 0.5e-5,
+    halvings: int = 2,
+) -> float | None:
+    """The next rate of a 25-step arm's grid at ``batch``: half the smallest rate run so far if
+    its median K_benign over its seeds already exceeds 5, at most ``halvings`` times below the
+    grid; None otherwise."""
+    rates = sorted(lr for a, b, lr in cells(runs) if (a, b) == (arm, batch))
+    if not rates:
+        return None
+    smallest = rates[0]
+    cell = cells(runs)[(arm, batch, smallest)]
+    ks = [run.evaluations[-1]["K_benign"] for run in cell if run.evaluations]
+    if not ks or statistics.median(ks) <= LOWER:
+        return None
+    if smallest / 2 < grid_minimum / 2**halvings * (1 - 1e-9):
+        return None
+    return smallest / 2
+
+
+# ------------------------------------------------------------------ numerics
+
+
+def contamination(control: Trajectory) -> float | None:
+    """max over the control's evaluations of its scoring K_benign: c(t) = K_b(θ₀ ‖ θ_soft(t))."""
+    values = [row["K_benign"] for row in control.evaluations]
+    return max(values) if values else None
+
+
+def screen_candidates(
+    screen: Sequence[Trajectory], *, k_star: float = DISCOVERY_K_STAR, count: int = 2
+) -> dict[int, dict[str, Any]]:
+    """Per batch, the rates whose 100-step soft-target control ran stably within the
+    contamination threshold, and the ``count`` largest of them, the candidates."""
+    threshold = CONTAMINATION_FRACTION * k_star
+    out: dict[int, dict[str, Any]] = {}
+    for (_, batch, lr), cell in cells(screen).items():
+        entry = out.setdefault(batch, {"rates": {}, "threshold": threshold})
+        c = [contamination(run) for run in cell]
+        passed = all(run.stable for run in cell) and all(
+            x is not None and x <= threshold for x in c
+        )
+        entry["rates"][lr] = {
+            "contamination": c,
+            "stops": [run.stop for run in cell],
+            "passes": passed,
+        }
+    for entry in out.values():
+        passing = sorted((lr for lr, r in entry["rates"].items() if r["passes"]), reverse=True)
+        entry["candidates"] = passing[:count]
+    return out
+
+
+def numerical_acceptance(
+    controls: Sequence[Trajectory],
+    regular: Sequence[Trajectory],
+    *,
+    k_star: float = DISCOVERY_K_STAR,
+) -> dict[tuple[int, float], dict]:
+    """Full-length soft-target controls of the candidate SGD rates: accepted when stable, at
+    least as long as the longest regular discovery run of the rate and batch, evaluated at that
+    run's evaluation steps of the same seed, and with max c(t) ≤ 0.01 × K*."""
+    threshold = CONTAMINATION_FRACTION * k_star
+    longest = defaultdict(int)
+    evaluated: dict[tuple[int, float, int], set[int]] = {}
+    for run in regular:
+        if run.arm == "sgd_long":
+            longest[(run.batch_size, run.lr)] = max(longest[(run.batch_size, run.lr)], run.steps)
+            evaluated[(run.batch_size, run.lr, run.seed)] = {r["step"] for r in run.evaluations}
+    out = {}
+    for control in controls:
+        key = (control.batch_size, control.lr)
+        reasons = []
+        if not control.stable:
+            reasons.append(f"unstable ({control.stop})")
+        if control.steps < longest.get(key, 0):
+            reasons.append(f"{control.steps} steps, the longest regular run took {longest[key]}")
+        steps = {r["step"] for r in control.evaluations}
+        wanted = evaluated.get((*key, control.seed), set())
+        if not wanted <= steps:
+            reasons.append(f"not evaluated at the regular run's steps {sorted(wanted - steps)}")
+        c = contamination(control)
+        if c is None or c > threshold:
+            reasons.append(f"contamination {c} above {threshold:.4g}")
+        out[key] = {
+            "contamination": c,
+            "threshold": threshold,
+            "accepted": not reasons,
+            "reasons": reasons,
+            "run": control.run_id,
+        }
+    return out
+
+
+# ------------------------------------------------------------------ selection
+
+
+def select(
+    runs: Sequence[Trajectory],
+    theta0: Mapping[str, float],
+    acceptance: Mapping[tuple[int, float], Mapping[str, Any]],
+    seeds: Sequence[int],
+) -> dict[str, Any]:
+    """The Stage-A selection rule over the discovery runs; never reads harm."""
+    by_cell = cells(run for run in runs if run.seed in seeds)
+    batches = sorted({batch for _, batch, _ in by_cell})
+    chunk_seconds = _seconds_per_chunk(runs)
+    report: dict[int, dict[str, Any]] = {}
+    for batch in batches:
+        entry: dict[str, Any] = {"levels": {}}
+        for upper in UPPER:
+            k_star = math.sqrt(LOWER * upper)
+            sgd = _long_rates(by_cell, "sgd_long", batch, upper, k_star, theta0, seeds, acceptance)
+            adamw = _long_rates(by_cell, "adamw_long", batch, upper, k_star, theta0, seeds, None)
+            entry["levels"][_name(upper)] = {
+                "K_star": k_star,
+                "sgd_long": sgd,
+                "adamw_long": adamw,
+                "qualifies": bool(_ok(sgd) and _ok(adamw)),
+            }
+        qualifying = [u for u in UPPER if entry["levels"][_name(u)]["qualifies"]]
+        entry["U"] = qualifying[0] if qualifying else None
+        if entry["U"] is not None:
+            entry.update(
+                _choose(
+                    by_cell,
+                    batch,
+                    entry["U"],
+                    entry["levels"][_name(entry["U"])],
+                    theta0,
+                    seeds,
+                    chunk_seconds,
+                )
+            )
+        report[batch] = entry
+
+    out: dict[str, Any] = {
+        "batches": report,
+        "seeds": list(seeds),
+        "runs": sorted(run.run_id for run in runs),
+        "rulings": RULINGS,
+    }
+    eligible = [b for b in batches if report[b]["U"] is not None]
+    if not eligible:
+        out["outcome"] = _failure(by_cell, batches, theta0, seeds, acceptance)
+        return out
+    best = max(report[b]["U"] for b in eligible)
+    ties = [b for b in eligible if report[b]["U"] == best]
+    batch = min(ties, key=lambda b: report[b]["seconds_per_block"])
+    chosen = report[batch]
+    eight = chosen["levels"][_name(8.0)]
+    out.update(
+        {
+            "outcome": "selected",
+            "batch_size": batch,
+            "U": chosen["U"],
+            "K_star": math.sqrt(LOWER * chosen["U"]),
+            "levels": [LOWER, math.sqrt(LOWER * chosen["U"]), chosen["U"]],
+            "u_limited_by_reachability": chosen["U"] == 7.0
+            and not all(
+                any(r["reaches"] for r in eight[arm].values()) for arm in ("sgd_long", "adamw_long")
+            ),
+            **{
+                key: chosen[key]
+                for key in (
+                    "sgd_long",
+                    "adamw_long",
+                    "adamw_25",
+                    "frozen_adam_25",
+                    "t_max",
+                    "seconds_per_block",
+                )
+            },
+        }
+    )
+    return out
+
+
+RULINGS = __doc__.split("**Rulings**")[1].strip() if __doc__ else ""
+
+
+def _long_rates(by_cell, arm, batch, upper, k_star, theta0, seeds, acceptance) -> dict:
+    """Each rate of a long arm at one batch and U: whether it meets its selection rule."""
+    out = {}
+    for (cell_arm, cell_batch, lr), cell in by_cell.items():
+        if (cell_arm, cell_batch) != (arm, batch):
+            continue
+        levels = [level_summary(cell, level, theta0, seeds) for level in (LOWER, k_star, upper)]
+        reasons = []
+        reaches = levels[2]["all_seeds"]
+        if not reaches:
+            reasons.append(f"U = {upper:g} reached by seeds {levels[2]['reached']} only")
+        if not all(in_bounds(level) for level in levels):
+            reasons.append("utility out of bounds at 5, K* or U")
+        if acceptance is not None and not acceptance.get((batch, lr), {}).get("accepted"):
+            reasons.append("numerical acceptance not passed")
+        if arm == "adamw_long":
+            for run in cell:
+                steps = [run.evaluation_at(level) for level in (LOWER, k_star, upper)]
+                if None not in steps and len({row["step"] for row in steps}) < 3:
+                    reasons.append(f"seed {run.seed}: 5, K* and U not three separate evaluations")
+        out[lr] = {
+            "ok": not reasons,
+            "reaches": reaches,
+            "reasons": reasons,
+            "median_steps_to_U": levels[2]["median_steps"],
+        }
+    return out
+
+
+def _ok(rates: Mapping[float, Mapping[str, Any]]) -> list[float]:
+    return sorted(lr for lr, r in rates.items() if r["ok"])
+
+
+def _choose(by_cell, batch, upper, level, theta0, seeds, chunk_seconds) -> dict[str, Any]:
+    k_star = level["K_star"]
+    sgd_lr, adamw_lr = max(_ok(level["sgd_long"])), max(_ok(level["adamw_long"]))
+    targets = (LOWER, k_star, upper)
+    short = {
+        arm: _short_rates(by_cell, arm, batch, targets, theta0, seeds)
+        for arm in ("adamw_25", "frozen_adam_25")
+    }
+    steps = [
+        level["sgd_long"][sgd_lr]["median_steps_to_U"],
+        level["adamw_long"][adamw_lr]["median_steps_to_U"],
+    ]
+    block = [
+        by_cell[("sgd_long", batch, sgd_lr)],
+        by_cell[("adamw_long", batch, adamw_lr)],
+        *(by_cell[("adamw_25", batch, lr)] for lr in short["adamw_25"]["rates"]),
+    ]
+    return {
+        "sgd_long": {"lr": sgd_lr, "median_steps_to_U": steps[0]},
+        "adamw_long": {"lr": adamw_lr, "median_steps_to_U": steps[1]},
+        **short,
+        "t_max": min(T_MAX_CAP, math.ceil(T_MAX_FACTOR * max(steps))),
+        "seconds_per_block": _block_seconds(block, seeds, chunk_seconds),
+    }
+
+
+def _short_rates(by_cell, arm, batch, targets, theta0, seeds) -> dict[str, Any]:
+    qualifying = {}
+    for (cell_arm, cell_batch, lr), cell in by_cell.items():
+        if (cell_arm, cell_batch) == (arm, batch):
+            final = final_summary(cell, theta0, seeds)
+            if final["complete"] and in_bounds(final):
+                qualifying[lr] = final["median_K_benign"]
+    n = min(len(qualifying), len(targets))
+    best: tuple[float, tuple[float, ...], tuple[tuple[int, float], ...]] | None = None
+    for rates in itertools.permutations(sorted(qualifying), n):
+        for slots in itertools.combinations(range(len(targets)), n):
+            pairs = tuple(zip(slots, rates, strict=True))  # (target index, rate)
+            cost = sum(abs(qualifying[lr] - targets[t]) for t, lr in pairs)
+            key = (cost, tuple(sorted(rates)), pairs)  # ties: the smaller rates
+            if best is None or key < best:
+                best = key
+    pairs = best[2] if best is not None else ()
+    return {
+        "rates": [lr for _, lr in pairs],
+        "targets": [targets[t] for t, _ in pairs],
+        "shortfall": len(targets) - n,
+        "median_K_benign": {lr: qualifying[lr] for _, lr in pairs},
+    }
+
+
+def _block_seconds(block: Sequence[Sequence[Trajectory]], seeds, chunk_seconds) -> float | None:
+    totals = []
+    for seed in seeds:
+        runs = [next((r for r in cell if r.seed == seed), None) for cell in block]
+        if any(run is None for run in runs):
+            continue
+        responses = max(run.terminal["responses"] for run in runs)
+        chunks = -(-responses // runs[0].chunk_size)
+        totals.append(sum(run.training_seconds for run in runs) + chunks * (chunk_seconds or 0))
+    return statistics.median(totals) if totals else None
+
+
+def _seconds_per_chunk(runs: Sequence[Trajectory]) -> float | None:
+    seconds = sum(run.terminal.get("stream_extension", {}).get("seconds", 0.0) for run in runs)
+    chunks = sum(run.terminal.get("stream_extension", {}).get("chunks", 0) for run in runs)
+    return seconds / chunks if chunks else None
+
+
+def _failure(by_cell, batches, theta0, seeds, acceptance) -> str:
+    """Which Stage-A outcome stops the design (the table "Outcomes of Stage A")."""
+    accepted = [key for key, a in acceptance.items() if a.get("accepted")]
+    if not accepted:
+        return "numerics_fail"
+    reaches_seven = False
+    for batch in batches:
+        rates = _long_rates(
+            by_cell, "sgd_long", batch, 7.0, math.sqrt(35), theta0, seeds, acceptance
+        )
+        reaches_seven |= any(
+            r["reaches"]
+            for lr, r in rates.items()
+            if acceptance.get((batch, lr), {}).get("accepted")
+        )
+    return "infeasible" if reaches_seven else "barrier"
+
+
+def _name(level: float) -> str:
+    return f"{level:.4f}"
+
+
+def _json(path: Path) -> dict[str, Any]:
+    return json.loads(Path(path).read_text())
+
+
+def _jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def _seconds(meta: Mapping[str, Any]) -> float:
+    started, finished = meta.get("started_at"), meta.get("finished_at")
+    if not started or not finished:
+        return math.nan
+    return (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds()

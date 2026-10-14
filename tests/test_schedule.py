@@ -183,7 +183,10 @@ def test_the_monitor_stops_an_unstable_run(env, tmp_path, scripted, value, reaso
     scripted(0.1, value)
     run_dir = run_scheduled(cfg, env, run_id=reason)
     terminal = json.loads((run_dir / "terminal.json").read_text())
-    assert terminal["stop"] == {"reason": reason, "kind": "instability"}
+    stop = terminal["stop"]
+    assert (stop["reason"], stop["kind"]) == (reason, "instability")
+    if reason == "k_above_max":
+        assert stop["detail"] == {"K_monitor": 2.5, "k_max": 2.0}
     assert terminal["steps"] == 10
     meta = json.loads((run_dir / "meta.json").read_text())
     assert meta["status"] == "completed"  # a result, not a failure
@@ -206,6 +209,7 @@ def test_a_gradient_spike_stops_before_its_update(env, tmp_path, scripted, monke
     run_dir = run_scheduled(cfg, env, run_id="spike")
     terminal = json.loads((run_dir / "terminal.json").read_text())
     assert terminal["stop"]["reason"] == "gradient_spike" and terminal["steps"] == 3
+    assert terminal["stop"]["detail"] == {"grad_norm": 50.0, "reference_median": 1.0}
     assert len(read_jsonl(run_dir / "metrics.jsonl")) == 3
 
 
@@ -230,6 +234,9 @@ def test_the_feed_extends_the_stream_and_checks_each_chunk_first(env, tmp_path, 
     assert [c["chunk"] for c in checks] == list(range(10))  # 120 / 12, each checked once
     assert all(c["teacher_gap"]["token_max_abs"] < 1e-4 and "path_field" in c for c in checks)
     assert StreamPrefix(cfg, env, 0).available == 120  # extended by the run, no further
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stream_extension"]["chunks"] == 10
+    assert terminal["stream_extension"]["seconds"] > 0
 
 
 def test_without_extension_a_run_needs_its_stream(env, tmp_path, scripted) -> None:
@@ -305,3 +312,18 @@ def test_a_schedule_needs_an_appendable_stream_and_valid_evaluation_steps(tmp_pa
         load_run_config(experiment, SMALL)
     with pytest.raises(ProtocolError, match="schedule.evaluate_at"):
         scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[11]", policy="short")
+
+
+def test_the_records_of_real_runs_load_as_trajectories(env, tmp_path, scripted) -> None:
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    scripted(0.1, 0.6, 0.7, 0.8, 1.2, 1.3)
+    run = load_trajectory(run_scheduled(cfg, env, run_id="k"))
+    assert (run.arm, run.steps, run.stop) == ("adamw_long", 30, "target")
+    assert run.evaluation_at(0.5)["step"] == 15 and run.evaluation_at(1.0)["step"] == 30
+    assert len(run.grad_norms) == 30 and run.seconds > 0
+    short = scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[5,10]", policy="short")
+    run = load_trajectory(run_scheduled(short, env, run_id="short"))
+    assert (run.arm, run.steps, [r["step"] for r in run.evaluations]) == ("adamw_25", 10, [5, 10])

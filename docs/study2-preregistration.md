@@ -261,6 +261,23 @@ and the mean factual loss at most 10 pp, at the evaluations used.
    - a failure of frozen Adam's coverage never blocks H1.
 6. **T_max:** by the rule [above](#stops).
 
+**Details fixed with the code** (`analysis/stage_a.py`, `scripts/stage_a_summary.py`), before any
+data:
+
+- **Utility loss** is θ₀'s accuracy minus the run's at an evaluation, in percentage points. The
+  evaluations used are those at 5, K\* and U for a long arm, and the one at step 25 for a 25-step
+  arm.
+- **U qualifies at a batch** when each long arm has a rate that meets its own rule (2 or 3) at
+  that U, reachability and utility included.
+- **Time per seed block** is the median over seeds of the summed run times of the selected
+  SGD-long, AdamW-long and AdamW-25 runs, without stream extension, plus generating the block's
+  stream at the measured time per chunk. Frozen Adam-25 is left out, since it runs on 20 blocks
+  only.
+- **AdamW-25 rates** are the assignment of distinct qualifying rates to the targets 5, K\* and U
+  with the least total distance |median K_benign − target|; ties go to the smaller rates.
+- **A false alarm** of the gradient rule is a gradient-rule stop in an arm, batch and rate where
+  another seed ran stably (stopped by target, plateau or limit).
+
 ### Validation
 
 Twelve further fresh seeds run at the selected batch and rates, with the instability factor

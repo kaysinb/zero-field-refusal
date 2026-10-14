@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +131,7 @@ class InstabilityGuard:
     def __init__(self, grad_factor: float, grad_window: int, k_max: float) -> None:
         self.grad_factor, self.grad_window, self.k_max = grad_factor, grad_window, k_max
         self.norms: list[float] = []
+        self.detail: dict[str, float] = {}  # what fired: the value and its bound
 
     def gradient(self, loss: float, grad_norm: float) -> str | None:
         """Checked before an update; the accepted step's norm joins the reference."""
@@ -139,6 +141,7 @@ class InstabilityGuard:
             return "nonfinite_gradient"
         reference = self.norms[-self.grad_window :]
         if reference and grad_norm > self.grad_factor * statistics.median(reference):
+            self.detail = {"grad_norm": grad_norm, "reference_median": statistics.median(reference)}
             return "gradient_spike"
         self.norms.append(grad_norm)
         return None
@@ -146,7 +149,10 @@ class InstabilityGuard:
     def monitor(self, k: float) -> str | None:
         if not math.isfinite(k):
             return "nonfinite_k"
-        return "k_above_max" if k > self.k_max else None
+        if k > self.k_max:
+            self.detail = {"K_monitor": k, "k_max": self.k_max}
+            return "k_above_max"
+        return None
 
 
 @dataclass(frozen=True)
@@ -191,6 +197,8 @@ class BatchFeed:
         self.cfg, self.env, self.run, self.reference, self.extend = cfg, env, run, reference, extend
         self.prefix = StreamPrefix(cfg, env, cfg.seed)
         self.size = cfg.train.batch_size
+        self.extension_seconds = 0.0  # spent extending the stream, not training
+        self.extended_chunks = 0
         self._checked: set[int] = set()
 
     def batch(self, step: int) -> list[Sample]:
@@ -207,9 +215,14 @@ class BatchFeed:
 
     def _extend(self, stop: int) -> None:
         device = next(self.reference.parameters()).device
+        started = time.perf_counter()
         with torch.random.fork_rng(devices=[device] if device.type == "cuda" else []):
-            extend_stream(self.cfg, self.env, self.cfg.seed, stop, model=self.reference,
-                          batch_size=self.cfg.execution.generation_batch_size)  # fmt: skip
+            created = extend_stream(
+                self.cfg, self.env, self.cfg.seed, stop, model=self.reference,
+                batch_size=self.cfg.execution.generation_batch_size,
+            )  # fmt: skip
+        self.extension_seconds += time.perf_counter() - started
+        self.extended_chunks += len(created)
 
     def _check(self, chunk: int) -> None:
         samples = self.prefix.take(chunk * self.prefix.size, (chunk + 1) * self.prefix.size)
@@ -284,6 +297,8 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         for p in params:
             p.grad = None
         terminal = loop.terminal(reason, size)
+        terminal["stream_extension"] = {"seconds": feed.extension_seconds,
+                                        "chunks": feed.extended_chunks}  # fmt: skip
         run.record_inputs({"streams": {"training": feed.identity(loop.steps * size)}})
         run.path("terminal.json").write_text(json.dumps(terminal, indent=1) + "\n")
         run.summarize({"terminal": terminal})
@@ -351,7 +366,10 @@ class _Loop:
             {"level": level, "step": row["step"], "K_benign": row["K_benign"]}
             for row in self.evaluations for level in row["levels"]
         ]  # fmt: skip
-        out = {"stop": {"reason": reason, "kind": kind}, "steps": self.steps,
+        stop = {"reason": reason, "kind": kind, **({"detail": self.guard.detail}
+                                                    if reason in INSTABILITY and self.guard.detail
+                                                    else {})}  # fmt: skip
+        out = {"stop": stop, "steps": self.steps,
                "responses": self.steps * batch_size, "policy": self.schedule.policy,
                "evaluations": [row["step"] for row in self.evaluations],
                "monitor_readings": len(self.readings)}  # fmt: skip
