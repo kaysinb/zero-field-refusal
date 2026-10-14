@@ -150,12 +150,15 @@ python scripts/generate_teacher.py experiments/<name> --stream training --seeds 
 python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-instruct
 ```
 
+For an appendable training stream (study 2), the same command with `--responses N` appends chunks
+until the stream holds N responses (default `teacher.responses`); existing chunks are kept.
+
 `prepare_data.py` caches the pinned source CSVs in `DATA_DIR/sources/` and refuses to overwrite a
 complete build without `--force`. Stream directories are named by a hash of everything that
 determines their samples; an existing stream is never regenerated. A stream is published by
 renaming a partial directory; after an interrupted generation, remove the leftover
-`.seed-*.partial-*` or `.reference.partial-*` directory with `generate_teacher.py ...
---remove-partial` once nothing is generating.
+`.seed-*.partial-*`, `.reference.partial-*` or `.chunk-*.partial-*` directory with
+`generate_teacher.py ... --remove-partial` once nothing is generating.
 
 The stage-0 checks write a path-field record per execution environment under `DATA_DIR/checks/`:
 model numerics, GPU model, library versions, execution batch sizes and the check's version; an

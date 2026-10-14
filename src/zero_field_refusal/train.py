@@ -1,8 +1,9 @@
 """One run: the stored teacher stream, N optimizer steps, then in-process evaluation.
 
-The student starts from θ₀ and takes one step per batch of the stream in the order given by
-``derive_seed(seed, "data_order")``, so every optimizer sees the same responses in the same order
-and each response once (invariant 6). A frozen θ₀ copy stays on the device for K, the weight
+The student starts from θ₀ and takes one step per batch of the stream, in the order given by
+``derive_seed(seed, "data_order")`` for a fixed stream and in stream order for an appendable one,
+so every optimizer sees the same responses in the same order and each response once
+(invariant 6). A frozen θ₀ copy stays on the device for K, the weight
 geometry and the weight-space controls; weights are not saved by default.
 """
 
@@ -37,9 +38,15 @@ from .models import freeze
 from .optim import ADAM_MODES, build_optimizer, estimate_second_moment
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .refusal import is_keyword_refusal
-from .runtime import Environment, load_stream_for, locate_stream
+from .runtime import Environment, StreamPrefix, load_stream_for, locate_stream
 from .seeding import derive_seed, seed_everything
-from .teacher import Sample, StreamError, load_distributions, reference_samples
+from .teacher import (
+    Sample,
+    StreamError,
+    load_distributions,
+    reference_samples,
+    stream_layout,
+)
 from .tracking import Diverged, Run
 
 FACTUAL_MAX_NEW_TOKENS = 32
@@ -54,9 +61,14 @@ def stream_kind(cfg: DictConfig) -> str:
 
 
 def training_batches(stream: Sequence[Sample], cfg: DictConfig) -> list[list[Sample]]:
+    """The run's batches: a permutation of a fixed stream, or an appendable stream's prefix in
+    order. The prefix is already an iid draw, and reading it in order lets runs of any length or
+    batch size share it: after t steps of batch B a run has used responses 0 … tB−1."""
     steps, size = cfg.train.steps, cfg.train.batch_size
     if len(stream) != steps * size:
         raise ValueError(f"The stream has {len(stream)} responses; the run needs {steps * size}")
+    if stream_layout(cfg) == "appendable":
+        return [list(stream[s * size : (s + 1) * size]) for s in range(steps)]
     order = np.random.default_rng(derive_seed(cfg.seed, "data_order")).permutation(len(stream))
     return [[stream[i] for i in order[s * size : (s + 1) * size]] for s in range(steps)]
 
@@ -312,10 +324,16 @@ def run_training(cfg: DictConfig, env: Environment, *, run_id: str | None = None
         record = require_path_check(env.data_root, cfg, env.device)  # before anything costly
         run.record_inputs({"path_check": {"run_id": record["run_id"],
                                           "fingerprint": record["fingerprint"]}})  # fmt: skip
-        stream, manifest = load_stream_for(cfg, env, kind, cfg.seed)
+        if stream_layout(cfg) == "appendable":
+            prefix, responses = StreamPrefix(cfg, env, cfg.seed), cfg.teacher.responses
+            stream, manifest = prefix.take(0, responses), prefix.identity(responses)
+        else:
+            stream, manifest = load_stream_for(cfg, env, kind, cfg.seed)
         run.summarize({"stream/training": manifest["sha256"], "stream/kind": kind})
+        identity = _identity(manifest) | ({"chunks": manifest["chunks"]} if "chunks" in manifest
+                                          else {})  # fmt: skip
         run.record_inputs({"prompt_manifest_sha256": env.prompt_manifest_sha256,
-                           "streams": {kind: _identity(manifest)}})  # fmt: skip
+                           "streams": {kind: identity}})  # fmt: skip
         batches = training_batches(stream, cfg)
         reader = None
         if kind == "soft_targets":  # read lazily, one batch at a time

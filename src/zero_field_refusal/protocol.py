@@ -30,6 +30,8 @@ CONTROLS = (
     "soft_targets",
 )
 FROZEN_MODULES = ("input_embeddings", "output_head")
+# fixed: one stream of a run's exact length (study 1); appendable: chunks read in order (study 2).
+STREAM_LAYOUTS = ("fixed", "appendable")
 # The preregistered bound on N·|f|²/σ² of the path field (docs/preregistration.md).
 PATH_FIELD_BOUND = 0.01
 # One-sided confidence of the upper bound on the path discrepancy's χ² checked against it.
@@ -143,6 +145,16 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
     # Training stream: each response once (invariant 6); truncation only, never selection.
     steps, batch = v["train.steps"], v["train.batch_size"]
     expect("teacher.responses", steps * batch, v["teacher.responses"])
+    layout = OmegaConf.select(cfg, "teacher.stream", default="fixed")
+    if layout not in STREAM_LAYOUTS:
+        problems.append(f"teacher.stream: expected one of {STREAM_LAYOUTS}, got {layout!r}")
+    elif layout == "appendable":
+        chunk = OmegaConf.select(cfg, "teacher.chunk_size", default=None)
+        if not (isinstance(chunk, int) and not isinstance(chunk, bool) and chunk > 0):
+            problems.append(f"teacher.chunk_size: expected a positive integer, got {chunk!r}")
+        if control is not None:  # controls keep their own streams
+            problems.append(f"teacher.stream: appendable streams serve zero-field runs only "
+                            f"(control={control!r})")  # fmt: skip
     cap, sampled = v["train.max_response_tokens"], v["teacher.sampling.max_new_tokens"]
     if not 1 <= cap <= sampled:
         problems.append(

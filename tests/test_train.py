@@ -1,6 +1,8 @@
 """End-to-end CPU runs on a tiny model: streams → training → evaluation → run directory."""
 
+import dataclasses
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,7 +12,21 @@ from conftest import tiny_model, tiny_tokenizer
 from zero_field_refusal.models import install_neutral_generation_config
 from zero_field_refusal.prechecks import CheckFailed, environment_fingerprint, write_check_record
 from zero_field_refusal.protocol import load_run_config
-from zero_field_refusal.runtime import Environment, generate_stream, load_stream_for
+from zero_field_refusal.runtime import (
+    Environment,
+    StreamPrefix,
+    extend_stream,
+    generate_stream,
+    load_stream_for,
+    locate_stream,
+    remove_partial_streams,
+)
+from zero_field_refusal.teacher import (
+    StreamError,
+    chunk_directory,
+    load_manifest,
+    partial_directory,
+)
 from zero_field_refusal.tracking import Diverged
 from zero_field_refusal.train import run_training, training_batches
 
@@ -478,3 +494,120 @@ def test_the_run_checks_its_own_stream_against_the_path_bound(env) -> None:
     env.new_model = student
     with pytest.raises(CheckFailed, match="path-field bound"):
         run_training(cfg, env, run_id="chi-square")
+
+
+# Appendable streams (study 2): chunks of 3 responses; runs of batch 4 read them in order.
+APPENDABLE = ("+teacher.stream=appendable", "+teacher.chunk_size=3")
+
+
+def chunk_hashes(paths) -> list[str]:
+    return [load_manifest(p)["sha256"] for p in paths]
+
+
+def test_an_appendable_stream_grows_without_changing_its_prefix(env) -> None:
+    cfg = config(*APPENDABLE)
+    first = extend_stream(cfg, env, 0, 4, batch_size=2)
+    assert [p.name for p in first] == ["chunk-00000", "chunk-00001"]
+    hashes, before = chunk_hashes(first), StreamPrefix(cfg, env, 0).take(0, 6)
+    assert extend_stream(cfg, env, 0, 6, batch_size=2) == []  # long enough already
+    more = extend_stream(cfg, env, 0, 11, batch_size=2)
+    assert [p.name for p in more] == ["chunk-00002", "chunk-00003"]
+    assert chunk_hashes(first) == hashes
+    prefix = StreamPrefix(cfg, env, 0)
+    assert prefix.available == 12
+    assert prefix.take(0, 6) == before
+    assert prefix.take(2, 8) == prefix.take(0, 12)[2:8]  # across chunk boundaries
+    assert prefix.take(5, 5) == []
+
+
+def test_a_chunk_depends_only_on_its_seed_and_index(env) -> None:
+    cfg = config(*APPENDABLE)
+    other = dataclasses.replace(env, data_root=env.data_root.parent / "other")
+    extend_stream(cfg, env, 0, 12, batch_size=2)  # in one go
+    extend_stream(cfg, other, 0, 3, batch_size=2)  # in three steps
+    extend_stream(cfg, other, 0, 6, batch_size=2)
+    extend_stream(cfg, other, 0, 12, batch_size=2)
+    assert StreamPrefix(cfg, env, 0).take(0, 12) == StreamPrefix(cfg, other, 0).take(0, 12)
+    assert StreamPrefix(cfg, env, 0).take(0, 3) != StreamPrefix(cfg, env, 0).take(3, 6)
+    extend_stream(cfg, env, 1, 3, batch_size=2)
+    assert StreamPrefix(cfg, env, 1).take(0, 3) != StreamPrefix(cfg, env, 0).take(0, 3)
+
+
+def test_runs_of_any_length_and_batch_size_share_the_prefix_in_order(env) -> None:
+    long_small = config(*APPENDABLE, "train.batch_size=2", "train.steps=4")
+    short_large = config(*APPENDABLE)  # 2 steps of batch 4
+    _, path, _ = locate_stream(short_large, env, "training", 0)
+    for cfg in (long_small, config(*APPENDABLE, "train.steps=7")):
+        assert locate_stream(cfg, env, "training", 0)[1] == path  # the length is not in the spec
+    extend_stream(short_large, env, 0, 8, batch_size=4)
+    stream = StreamPrefix(short_large, env, 0).take(0, 8)
+    flat = [[s for batch in training_batches(stream, cfg) for s in batch]
+            for cfg in (long_small, short_large)]  # fmt: skip
+    assert flat[0] == flat[1] == stream
+    assert training_batches(stream, short_large)[1] == stream[4:8]
+
+
+def test_a_run_trains_on_the_prefix_and_records_its_chunks(env) -> None:
+    cfg = config(*APPENDABLE)
+    prepare(env, cfg)
+    extend_stream(cfg, env, 0, 5, batch_size=4)  # 2 chunks, 6 < 8 responses
+    with pytest.raises(StreamError, match="extend the stream first"):
+        run_training(cfg, env, run_id="short")
+    extend_stream(cfg, env, 0, 8, batch_size=4)
+    run_dir = run_training(cfg, env, run_id="appendable")
+    prefix = StreamPrefix(cfg, env, 0)
+    with pytest.raises(StreamError, match="never read"):
+        prefix.identity(8)
+    prefix.take(0, 8)
+    identity = prefix.identity(8)
+    assert len(identity["chunks"]) == 3
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert summary["stream/training"] == identity["sha256"]
+    recorded = json.loads((run_dir / "meta.json").read_text())["inputs"]["streams"]["training"]
+    assert recorded == identity
+    assert [m["step"] for m in read_jsonl(run_dir / "metrics.jsonl")] == [0, 1]
+
+
+def test_chunks_are_checked_when_read(env) -> None:
+    cfg = config(*APPENDABLE)
+    zero, one = extend_stream(cfg, env, 0, 6, batch_size=4)
+    zero.rename(zero.with_name("swap"))
+    one.rename(zero)
+    zero.with_name("swap").rename(one)
+    with pytest.raises(StreamError, match="manifest names chunk 1"):
+        StreamPrefix(cfg, env, 0).take(0, 1)
+    shutil.rmtree(zero)  # a gap: chunk 1 without chunk 0
+    with pytest.raises(StreamError, match="not numbered"):
+        StreamPrefix(cfg, env, 0)
+
+
+def test_a_tampered_chunk_fails_its_hash(env) -> None:
+    cfg = config(*APPENDABLE)
+    (zero,) = extend_stream(cfg, env, 0, 3, batch_size=4)
+    samples = zero / "samples.jsonl"
+    samples.write_text(samples.read_text() + "\n")
+    with pytest.raises(StreamError, match="sha256"):
+        StreamPrefix(cfg, env, 0).take(0, 1)
+
+
+def test_an_interrupted_chunk_blocks_extension_until_removed(env) -> None:
+    cfg = config(*APPENDABLE)
+    (zero,) = extend_stream(cfg, env, 0, 3, batch_size=4)
+    partial = partial_directory(chunk_directory(zero.parent, 1))
+    partial.mkdir()
+    with pytest.raises(StreamError, match="Partial directories"):
+        extend_stream(cfg, env, 0, 6, batch_size=4)
+    assert StreamPrefix(cfg, env, 0).available == 3  # the partial chunk is not part of it
+    assert remove_partial_streams(cfg, env, "training", 0) == [partial]
+    extend_stream(cfg, env, 0, 6, batch_size=4)
+    assert StreamPrefix(cfg, env, 0).available == 6
+
+
+def test_fixed_stream_functions_refuse_an_appendable_stream(env) -> None:
+    cfg = config(*APPENDABLE)
+    with pytest.raises(StreamError, match="extend_stream"):
+        generate_stream(cfg, env, "training", 0, batch_size=4)
+    with pytest.raises(StreamError, match="StreamPrefix"):
+        load_stream_for(cfg, env, "training", 0)
+    with pytest.raises(StreamError, match="appendable"):
+        extend_stream(config(), env, 0, 8, batch_size=4)

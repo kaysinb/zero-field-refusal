@@ -49,6 +49,17 @@ scientific design is in [design.md](design.md); procedures for running things ar
      the same estimate at θ₀. A separate stream keeps the training stream identical across all
      optimizers. Their initialization and bias correction follow
      [H2a](preregistration.md#hypotheses).
+
+   **Appendable training streams** (study 2, `teacher.stream: appendable`) have no fixed length.
+   A seed's stream is a sequence of chunks of `teacher.chunk_size` responses in
+   `<stream>/chunk-00000/`, `chunk-00001/`, …, each published atomically like a whole stream.
+   Chunk j draws its instructions and samples from `derive_seed(seed, "teacher", "prompts",
+   "chunk", j)` and `derive_seed(seed, "teacher", "sampling", "chunk", j)` alone, so appending
+   never changes earlier chunks, and the stream's identity holds no length. Runs read the stream
+   in order, without a permutation (the instructions are already iid draws): after t steps of
+   batch B a run has used responses 0 … tB − 1, so runs of either batch size and of any length
+   share one prefix. A run records the hashes of the chunks it read. A stream has one writer:
+   runs that may extend it run on the machine that holds it, or it is generated before them.
 3. **Reference samples for KL.** θ₀ samples responses to the KL prompts once per model and stores
    them the same way. All runs of that model measure K on these responses. θ₀'s next-token
    distributions come from a frozen θ₀ copy kept on the GPU next to the student and evaluated in the
@@ -93,8 +104,8 @@ Implemented:
 | `seeding` | run seed and named per-purpose streams |
 | `data` | pinned prompt sets, deduplication and splits, manifests with hashes; the factual-question resource `resources/simple_facts_v1.jsonl` |
 | `models` | loading models and tokenizers at pinned revisions, numerics, neutral generation config, end tokens, chat encoding, frozen input embeddings and output head |
-| `teacher` | zero-field sampling from θ₀ under the invariants below; stream identity, storage and validation |
-| `runtime` | the run environment (tokenizer, model factory, prompt sets); generating and loading streams and soft-target distributions |
+| `teacher` | zero-field sampling from θ₀ under the invariants below; stream identity, storage and validation, including the chunks of appendable streams |
+| `runtime` | the run environment (tokenizer, model factory, prompt sets); generating and loading streams and soft-target distributions; extending appendable streams and reading their prefix |
 | `batches` | right-padded prompt + response rows with explicit response targets and truncation to the cap |
 | `losses` | the training path; summed NLL over response tokens divided by a constant; the token-count control; the soft-target control loss |
 | `optim` | Adam with fp32 state in adaptive, frozen and pre-warmed modes (H2a); the θ₀ second-moment estimate; SGD with and without momentum from PyTorch |
@@ -123,7 +134,8 @@ Entry points in `scripts/`:
 - `prepare_data.py`: builds the prompt sets into `DATA_DIR/prompts/<config hash>/`, caching the
   pinned source CSVs in `DATA_DIR/sources/`;
 - `generate_teacher.py`: samples a stream (training, preconditioner, K reference, soft targets,
-  Alpaca reference) into `DATA_DIR/teacher/`;
+  Alpaca reference) into `DATA_DIR/teacher/`, or extends an appendable training stream to
+  `--responses N`;
 - `train.py`: one run from existing streams;
 - `evaluate_theta0.py`: evaluates θ₀ itself with `run_type: theta0`, which keeps its config hash
   apart from the training runs of the same config; the baseline of every gate;
@@ -177,7 +189,7 @@ Planned:
 | 3 | Truncation at `max_new_tokens` is allowed; filtering or resampling by length or content is not. | Truncation keeps the expected gradient zero; selection on the outcome does not. | No code path drops or resamples teacher responses. |
 | 4 | Training uses the stored token ids, including the sampled end-of-sequence token; text is never decoded and re-tokenized. Sampling stops at either of the model's end tokens (`model.end_tokens`). | Re-tokenization can produce token sequences the teacher never sampled. | The loss reads token ids only. The response length comes from the first end-of-sequence token, never from a `!= pad` mask: Qwen2.5's pad id equals one of its end-of-sequence ids, so such a mask drops a sampled end token. |
 | 5 | Loss = summed token NLL / constant (`train.loss.denominator` = batch size × `train.max_response_tokens`). | Dividing by the batch's token count weights short responses more and pushes toward shorter answers. | Unit test: the loss of a batch does not depend on the lengths of the other responses in it. |
-| 6 | Every teacher response is used once; for a given seed all optimizers see the same responses in the same order. | Reuse turns noise into a fitted signal; a shared stream makes optimizers comparable. | The data order derives from `derive_seed(seed, "data_order")` alone; frozen and pre-warmed Adam share a separate preconditioner stream, never reused for training. |
+| 6 | Every teacher response is used once; for a given seed all optimizers see the same responses in the same order. | Reuse turns noise into a fitted signal; a shared stream makes optimizers comparable. | The data order derives from `derive_seed(seed, "data_order")` alone, or, in an appendable stream, is the stream order; frozen and pre-warmed Adam share a separate preconditioner stream, never reused for training. |
 | 7 | Weight decay is off; the input embeddings and the output head are frozen at every model size. | Decay is a systematic force toward zero. Freezing keeps the memory budget and is part of the fixed protocol. 0.5B and 1.5B tie the two modules, 7B does not, so freezing the input embeddings alone would leave the 7B head trainable. | Config validation; a check that neither module has a trainable parameter. |
 | 8 | Soft-target control: the student trains on KL to θ₀'s full next-token distributions, recorded on the generation path (`generate` with the KV cache) while the teacher samples. | The field at θ₀ is zero up to a measured residual: the student trains toward the generation path's distributions, so any discrepancy between the two paths is a residual field, the mean gradient of this loss at θ₀. Targets recomputed by the student's own function would match it bit for bit and measure nothing. | Blocking: the stage-0 checks bound the residual field per execution environment (model numerics, device, library versions) over several batches, N·\|f\|²/σ² ≤ the preregistered bound in every direction and metric, through the χ² bound of the two paths' distributions ([criterion and its limits](#design-decisions-for-stage-0)), and write a record; a training run without a passed record for its environment stops before its first optimizer step. Reported alongside: gradient estimates in the Euclidean and Adam metrics, the per-token KL and a one-batch gradient ratio. A training run of this control uses SGD: under Adam, tiny residual gradients become full-size sign steps, so the student moves however clean the pipeline is. |
 | 9 | Zero mean gradient: the mean gradient over many teacher batches at θ₀ shrinks like 1/√n. | A direct test that the field is zero. | A stage-1 diagnostic and a unit test on a tiny model. |

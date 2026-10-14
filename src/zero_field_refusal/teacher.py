@@ -437,7 +437,12 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
         "prompts": prompt_set_digest(items),
     }
     zero_field = {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "repetition_penalty": 1.0}
-    if kind in ("training", "soft_targets"):
+    if kind == "training" and stream_layout(cfg) == "appendable":
+        # No length: the stream grows by chunks, and every length shares its prefix.
+        spec["sampling"] = {key: cfg.teacher.sampling[key] for key in SAMPLING_KEYS}
+        spec["layout"] = "appendable"
+        spec["chunk_size"] = int(cfg.teacher.chunk_size)
+    elif kind in ("training", "soft_targets"):
         spec["sampling"] = {key: cfg.teacher.sampling[key] for key in SAMPLING_KEYS}
         spec["responses"] = int(cfg.teacher.responses)
     elif kind == "preconditioner":
@@ -474,10 +479,53 @@ def stream_seeds(kind: str, seed: int | None) -> tuple[int, int]:
     return derive_seed(seed, name, "prompts"), derive_seed(seed, name, "sampling")
 
 
+def stream_layout(cfg: Any) -> str:
+    """``fixed``: one stream of exactly the run's responses, permuted by the run (study 1).
+    ``appendable``: a training stream of chunks read in order (study 2); configs without the key
+    are fixed."""
+    return cfg.teacher.get("stream", "fixed")
+
+
+# Appendable streams. Chunk j holds ``chunk_size`` responses drawn from seeds of (seed, j) alone
+# and is published atomically on its own, so appending chunks never changes earlier ones, and
+# every run of a seed reads the same prefix whatever its length or batch size.
+CHUNK_PREFIX = "chunk-"
+
+
+def chunk_directory(stream: Path, index: int) -> Path:
+    return stream / f"{CHUNK_PREFIX}{index:05d}"
+
+
+def chunk_seeds(seed: int, index: int) -> tuple[int, int]:
+    """Seeds of the prompt draws and of sampling for chunk ``index`` of a seed's stream."""
+    return (derive_seed(seed, "teacher", "prompts", "chunk", index),
+            derive_seed(seed, "teacher", "sampling", "chunk", index))  # fmt: skip
+
+
+def published_chunks(stream: Path) -> int:
+    """How many chunks of an appendable stream are published; they must be 0, 1, … without gaps.
+
+    Partial directories of interrupted generations are hidden (``.chunk-….partial-…``) and do not
+    count.
+    """
+    if not stream.is_dir():
+        return 0
+    indices = sorted(
+        int(p.name.removeprefix(CHUNK_PREFIX))
+        for p in stream.iterdir()
+        if p.is_dir() and p.name.startswith(CHUNK_PREFIX)
+    )
+    if indices != list(range(len(indices))):
+        raise StreamError(f"{stream}: chunks {indices} are not numbered 0 … {len(indices) - 1}")
+    return len(indices)
+
+
 def stream_prompt_indices(spec: Mapping[str, Any], num_prompts: int, prompt_seed: int) -> list[int]:
     """Which prompt each response answers: each prompt k times for K, iid draws otherwise."""
     if "samples_per_prompt" in spec:
         return [i for i in range(num_prompts) for _ in range(spec["samples_per_prompt"])]
+    if spec.get("layout") == "appendable":  # one chunk
+        return draw_prompt_indices(spec["chunk_size"], num_prompts, prompt_seed)
     return draw_prompt_indices(spec["responses"], num_prompts, prompt_seed)
 
 

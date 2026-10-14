@@ -22,13 +22,17 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from . import models
 from .paths import data_root
 from .teacher import (
+    CHUNK_PREFIX,
     DistributionBuffer,
     Sample,
     StreamError,
+    chunk_directory,
+    chunk_seeds,
     load_manifest,
     load_stream,
     partial_directory,
     publish,
+    published_chunks,
     reference_samples,
     sample_responses,
     stale_partials,
@@ -120,6 +124,8 @@ def generate_stream(
     generation never leaves a stream that looks complete. Existing streams are never overwritten.
     """
     spec, path, items = locate_stream(cfg, env, kind, seed)
+    if spec.get("layout") == "appendable":
+        raise StreamError("An appendable stream grows by chunks (extend_stream)")
     if path.exists():
         raise StreamError(f"{path} exists; streams are the record and are never regenerated")
     stale = stale_partials(path)
@@ -151,7 +157,30 @@ def generate_stream(
             zero_field=cfg.control != "sharpened_sampling" or kind.startswith("kl_"),
             on_chunk_distributions=buffer.append if kind == "soft_targets" else None,
         )  # fmt: skip
-    manifest = {
+    manifest = _generation_manifest(
+        cfg, env, kind, spec, seed, (prompt_seed, sampling_seed), model, batch_size, started
+    )
+    if kind == "soft_targets":
+        manifest["distributions"] = buffer.save(partial)
+        del buffer
+    write_stream(partial, samples, manifest)
+    publish(partial, path)
+    return path
+
+
+def _generation_manifest(
+    cfg: DictConfig,
+    env: Environment,
+    kind: str,
+    spec: dict[str, Any],
+    seed: int | None,
+    seeds: tuple[int, int],
+    model: PreTrainedModel | None,
+    batch_size: int,
+    started: str,
+) -> dict[str, Any]:
+    prompt_seed, sampling_seed = seeds
+    return {
         "spec": spec,
         "seed": seed,
         "prompt_seed": prompt_seed,
@@ -176,20 +205,141 @@ def generate_stream(
         "packages": package_versions(),
         "hardware": hardware(),
     }
-    if kind == "soft_targets":
-        manifest["distributions"] = buffer.save(partial)
-        del buffer
-    write_stream(partial, samples, manifest)
-    publish(partial, path)
-    return path
+
+
+def extend_stream(
+    cfg: DictConfig,
+    env: Environment,
+    seed: int,
+    responses: int,
+    *,
+    model: PreTrainedModel | None = None,
+    batch_size: int,
+) -> list[Path]:
+    """Append chunks to a seed's appendable training stream until it holds ``responses``.
+
+    Each chunk is sampled from θ₀ with the seeds of its own index and published atomically, so
+    the chunks already there never change. A stream has one writer: every run that may extend a
+    seed's stream runs on the machine that holds it, or the stream is generated before the runs.
+    Returns the new chunks' directories.
+    """
+    spec, path, items = locate_stream(cfg, env, "training", seed)
+    if spec.get("layout") != "appendable":
+        raise StreamError("extend_stream needs teacher.stream: appendable")
+    have, need = published_chunks(path), -(-responses // spec["chunk_size"])
+    created = []
+    for index in range(have, need):
+        final = chunk_directory(path, index)
+        stale = stale_partials(final)
+        if stale:
+            raise StreamError(
+                f"Partial directories of an interrupted generation exist: "
+                f"{[str(s) for s in stale]}; remove them (remove_partial_streams) once no "
+                "generation of this stream is running"
+            )
+        model = model if model is not None else env.new_model()
+        prompt_seed, sampling_seed = chunk_seeds(seed, index)
+        started = datetime.now(UTC).isoformat(timespec="seconds")
+        indices = stream_prompt_indices(spec, len(items), prompt_seed)
+        samples, _ = sample_responses(
+            model, [env.encode_prompt(items[i]["text"]) for i in indices],
+            [items[i]["id"] for i in indices], sampling=spec["sampling"], end_ids=env.end_ids,
+            pad_id=env.pad_id, seed=sampling_seed, batch_size=batch_size,
+        )  # fmt: skip
+        manifest = _generation_manifest(
+            cfg, env, "training", spec, seed, (prompt_seed, sampling_seed), model, batch_size,
+            started,
+        )  # fmt: skip
+        partial = partial_directory(final)
+        partial.mkdir(parents=True)
+        write_stream(partial, samples, {**manifest, "chunk": index})
+        publish(partial, final)
+        created.append(final)
+    return created
+
+
+class StreamPrefix:
+    """Read access to the published chunks of a seed's appendable training stream.
+
+    ``take(a, b)`` returns responses a … b−1 in stream order. Chunks are loaded and checked on
+    first use (hash, spec, seed, index, count and the sample invariants), and only the two most
+    recent stay in memory.
+    """
+
+    def __init__(self, cfg: DictConfig, env: Environment, seed: int) -> None:
+        self.spec, self.path, _ = locate_stream(cfg, env, "training", seed)
+        if self.spec.get("layout") != "appendable":
+            raise StreamError("StreamPrefix needs teacher.stream: appendable")
+        self.cfg, self.env, self.seed = cfg, env, seed
+        self.size = self.spec["chunk_size"]
+        self.chunks = published_chunks(self.path)
+        self._loaded: dict[int, list[Sample]] = {}
+        self._checked: dict[int, str] = {}  # sha256 of every chunk read and checked
+
+    @property
+    def available(self) -> int:
+        return self.chunks * self.size
+
+    def take(self, start: int, stop: int) -> list[Sample]:
+        if not 0 <= start <= stop:
+            raise ValueError(f"Invalid range [{start}, {stop})")
+        if stop > self.available:  # chunks may have been appended since
+            self.chunks = published_chunks(self.path)
+        if stop > self.available:
+            raise StreamError(
+                f"{self.path}: responses up to {stop} needed, {self.available} published; "
+                "extend the stream first (extend_stream)"
+            )
+        out: list[Sample] = []
+        for index in range(start // self.size, -(-stop // self.size)):
+            samples = self._chunk(index)
+            base = index * self.size
+            out += samples[max(start - base, 0) : min(stop - base, self.size)]
+        return out
+
+    def identity(self, responses: int) -> dict[str, Any]:
+        """The record of the prefix of ``responses`` a run read: the hashes of its chunks, as
+        checked when they were read, and a hash of them with the count."""
+        needed = range(-(-responses // self.size))
+        unread = [i for i in needed if i not in self._checked]
+        if unread:
+            raise StreamError(f"{self.path}: chunks {unread} of the prefix were never read")
+        chunks = [self._checked[i] for i in needed]
+        digest = hashlib.sha256(json.dumps({"chunks": chunks, "count": responses}).encode())
+        return {"path": str(self.path.relative_to(self.env.data_root)), "count": responses,
+                "sha256": digest.hexdigest(), "chunks": chunks}  # fmt: skip
+
+    def _chunk(self, index: int) -> list[Sample]:
+        if index not in self._loaded:
+            directory = chunk_directory(self.path, index)
+            samples, manifest = load_stream(directory), load_manifest(directory)
+            _check_manifest(self.cfg, self.env, "training", self.spec, directory, samples,
+                            manifest)  # fmt: skip
+            if manifest.get("chunk") != index or manifest["seed"] != self.seed:
+                raise StreamError(f"{directory}: manifest names chunk {manifest.get('chunk')} "
+                                  f"of seed {manifest['seed']}")  # fmt: skip
+            seeds = manifest["prompt_seed"], manifest["sampling_seed"]
+            if seeds != chunk_seeds(self.seed, index):
+                raise StreamError(f"{directory}: seeds differ from the chunk's derived seeds")
+            if len(samples) != self.size:
+                raise StreamError(f"{directory}: {len(samples)} responses, chunks hold {self.size}")
+            while len(self._loaded) >= 2:
+                del self._loaded[min(self._loaded)]
+            self._loaded[index] = samples
+            self._checked[index] = manifest["sha256"]
+        return self._loaded[index]
 
 
 def remove_partial_streams(cfg: DictConfig, env: Environment, kind: str, seed: int | None) -> list:
-    """Delete partial directories of interrupted generations of one stream; returns them."""
+    """Delete partial directories of interrupted generations of one stream (of every chunk of an
+    appendable stream); returns them."""
     import shutil
 
-    _, path, _ = locate_stream(cfg, env, kind, seed)
-    stale = stale_partials(path)
+    spec, path, _ = locate_stream(cfg, env, kind, seed)
+    if spec.get("layout") == "appendable":
+        stale = sorted(path.glob(f".{CHUNK_PREFIX}*.partial-*")) if path.is_dir() else []
+    else:
+        stale = stale_partials(path)
     for directory in stale:
         shutil.rmtree(directory)
     return stale
@@ -200,8 +350,24 @@ def load_stream_for(
 ) -> tuple[list[Sample], dict[str, Any]]:
     """A stored stream and its manifest, checked against the spec the config implies."""
     spec, path, _ = locate_stream(cfg, env, kind, seed)
+    if spec.get("layout") == "appendable":
+        raise StreamError("An appendable stream is read through StreamPrefix")
     samples = load_stream(path)
     manifest = load_manifest(path)
+    _check_manifest(cfg, env, kind, spec, path, samples, manifest)
+    return samples, {**manifest, "path": str(path.relative_to(env.data_root))}
+
+
+def _check_manifest(
+    cfg: DictConfig,
+    env: Environment,
+    kind: str,
+    spec: dict[str, Any],
+    path: Path,
+    samples: Sequence[Sample],
+    manifest: dict[str, Any],
+) -> None:
+    """The stored stream (or chunk) matches the config's spec and was sampled at the zero field."""
     if manifest["spec"] != json.loads(json.dumps(spec)):
         raise StreamError(f"{path}: manifest spec differs from the config's spec")
     if kind != "alpaca_reference":
@@ -212,7 +378,6 @@ def load_stream_for(
         neutral = {"eos_token_id", "pad_token_id"}
         if set(manifest.get("model_generation_config") or {}) - neutral:
             raise StreamError(f"{path}: the model's generation config was not neutral")
-    return samples, {**manifest, "path": str(path.relative_to(env.data_root))}
 
 
 def _distinct(items: Sequence[dict], n: int, seed: int) -> list[dict]:

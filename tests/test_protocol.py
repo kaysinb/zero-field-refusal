@@ -123,11 +123,22 @@ def test_control_files_exist_for_every_named_control() -> None:
         ("model.end_tokens=[]", "model.end_tokens"),
         ("control=token_count_normalization", "train.loss.normalization"),
         ("control=unknown", "control"),
+        ("+teacher.stream=chunked", "teacher.stream"),
+        ("+teacher.stream=appendable", "teacher.chunk_size"),
     ],
 )
 def test_departures_from_the_protocol_fail_at_load(override: str, message: str) -> None:
     with pytest.raises(ProtocolError, match=message.replace(".", r"\.")):
         load_run_config("experiments/smoke", [override])
+
+
+def test_appendable_streams_need_a_chunk_size_and_no_control(tmp_path: Path) -> None:
+    appendable = ["+teacher.stream=appendable", "+teacher.chunk_size=1000"]
+    load_run_config("experiments/smoke", appendable)
+    with pytest.raises(ProtocolError, match="teacher.chunk_size"):
+        load_run_config("experiments/smoke", [appendable[0], "+teacher.chunk_size=0"])
+    with pytest.raises(ProtocolError, match="zero-field runs only"):
+        load_run_config(experiment(tmp_path, "control/token_count"), appendable)
 
 
 def test_soft_targets_require_plain_sgd(tmp_path: Path) -> None:
