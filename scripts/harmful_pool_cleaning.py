@@ -9,7 +9,7 @@ deduplication in source order at word-set Jaccard thresholds 0.8 to 0.4, without
 prompts near a K prompt. ``pairs`` writes, for a blind labeling of whether two prompts ask for the
 same thing, up to 40 pairs per Jaccard band in [0.4, 0.8) (fixed seed), within the pool and
 against the K prompts. PAIRS.jsonl holds harmful prompt texts: write it outside Git (scratchpad/
-or DATA_DIR) and do not print it. The labels of 2026-10-15 are in configs/data/study2.yaml
+or DATA_DIR) and do not print it. The labels of 2026-10-14 are in configs/data/study2.yaml
 (``harmful.evaluation.basis``) and docs/study2-preregistration.md ("Panels").
 """
 

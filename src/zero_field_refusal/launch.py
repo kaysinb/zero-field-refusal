@@ -214,7 +214,7 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
     git = meta.get("git") or {}
     if run.require_clean_git and (not git.get("commit") or git.get("dirty") is not False):
         return "not run from a clean checkout of a recorded commit"
-    if OmegaConf.select(cfg, "schedule", default=None) is not None:
+    if _scheduled_training(cfg):
         # A study-2 run is done once its whole records agree with its published terminal
         # record; a plateau or an instability stop, with or without evaluations, is an outcome.
         try:
@@ -330,11 +330,24 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
     return outcome
 
 
+def _scheduled_training(cfg: Any) -> bool:
+    """A training run under a study-2 schedule; a θ₀ evaluation of the same config is not."""
+    return (
+        OmegaConf.select(cfg, "schedule", default=None) is not None
+        and OmegaConf.select(cfg, "run_type", default="train") == "train"
+    )
+
+
 def _published(run_dir: Path) -> bool:
-    """A scheduled run whose terminal outcome was published and whose records are whole,
-    whatever its status says: a failure of logging or finalization after the outcome must not
-    rerun an observed stop."""
+    """A scheduled training run whose terminal outcome was published and whose records are
+    whole, whatever its status says: a failure of logging or finalization after the outcome must
+    not rerun an observed stop."""
     if not (run_dir / "terminal.json").is_file():
+        return False
+    try:
+        if not _scheduled_training(OmegaConf.load(run_dir / "config.yaml")):
+            return False
+    except (OSError, ValueError):
         return False
     try:
         load_trajectory(run_dir)

@@ -133,7 +133,7 @@ differ from it, both settled before any study-2 data:
 | Monitor | 25 further benign prompts × 2 θ₀ responses, disjoint from the scoring panel, with their own data and RNG | K every 5 steps |
 
 **The harmful evaluation set** (`harmful_evaluation` of `data/study2`, sha256
-`a2365f072eeab68de338babcc8e5c52c159f440efc566352dde6c46395c159ab`, built 2026-10-15):
+`a2365f072eeab68de338babcc8e5c52c159f440efc566352dde6c46395c159ab`, built 2026-10-14):
 
 - **Pool:** the 596 deduplicated prompts outside the 100 K_harmful prompts, study 1's judged
   (300) and judge-calibration (296) prompts. The judge is not tuned in study 2, and the audit
@@ -143,7 +143,7 @@ differ from it, both settled before any study-2 data:
   it is at least 0.6 (59 near-paraphrases). Then, of the prompts kept, those whose Jaccard with any
   K_harmful prompt is at least 0.6 are dropped (16). A prompt dropped in the second pass still
   removed its later paraphrases in the first; dropping prompts near K first would keep 522.
-- **Why 0.6.** In a blind labeling of prompt pairs by Jaccard band (2026-10-15,
+- **Why 0.6.** In a blind labeling of prompt pairs by Jaccard band (2026-10-14,
   `scripts/harmful_pool_cleaning.py`), the share of pairs asking for the same thing was 48 %,
   58 %, 75 % and 81 % within the pool and 38 %, 55 %, 86 % and 100 % against the K prompts in the
   bands 0.4–0.5, 0.5–0.6, 0.6–0.7 and 0.7–0.8. From 0.6 on it is at least 75 %; below, a lower

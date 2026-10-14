@@ -185,35 +185,56 @@ AdamW also need `--stream preconditioner` for the same seeds.
 One Pod per discovery seed (2000, 2001, 2002): a seed's stream has one writer, the Pod that holds
 it, and its runs extend it there. The Pod of seed 2000 also runs everything tied to that seed:
 the stage-0 checks, the curvature, the screen and the full-length controls. Campaigns hold one
-seed and are written by `scripts/stage_a_campaigns.py`; the data-dependent ones come from the run
-records, by the rules of [the preregistration](study2-preregistration.md#stage-a--feasibility).
+seed and are written by `scripts/stage_a_campaigns.py` into `$RUNS_DIR/campaigns/`, outside the
+checkout, so that runs from a clean checkout stay clean. The data-dependent campaigns are written
+from run records checked as the selection checks them, and refused on anything not whole, by
+the rules of [the preregistration](study2-preregistration.md#stage-a--feasibility).
 
 ```bash
-# Seed 2000, first: the record and streams the other Pods restore from the bucket
+C="$RUNS_DIR/campaigns"
+# Seed 2000, first: the record and the stream the other Pods restore from the bucket
 python scripts/stage0_checks.py experiments/stage0_checks model=qwen2.5-1.5b-instruct protocol_version=2
 python scripts/generate_teacher.py experiments/study2_stage_a --stream kl_monitor
-python scripts/stage_a_campaigns.py setup --out setup.yaml && python scripts/launch.py setup.yaml
+python scripts/stage_a_campaigns.py setup --out "$C/setup.yaml" && python scripts/launch.py "$C/setup.yaml"
 python scripts/generate_teacher.py experiments/study2_stage_a --stream training --seeds 2000 --responses 1000
 python scripts/curvature.py experiments/study2_stage_a seed=2000
-python scripts/stage_a_campaigns.py screen --out screen.yaml && python scripts/launch.py screen.yaml
-# Every seed S
+python scripts/stage_a_campaigns.py screen --out "$C/screen.yaml" && python scripts/launch.py "$C/screen.yaml"
+# Every seed S, on its Pod
 for B in 5 20; do  # frozen Adam's θ₀ second moment, from batches of the training size
   python scripts/generate_teacher.py experiments/study2_stage_a optimizer=adam_frozen \
     train.batch_size=$B --stream preconditioner --seeds S
 done
-python scripts/stage_a_campaigns.py grids --seed S --out grids.yaml && python scripts/launch.py grids.yaml
-python scripts/stage_a_campaigns.py sgd --runs SCREEN_RUNS --seed S --out sgd.yaml && python scripts/launch.py sgd.yaml
-python scripts/stage_a_campaigns.py extension --runs ALL_SHORT_RUNS --seed S --out ext.yaml  # if any
-# Seed 2000, after every seed's SGD runs
-python scripts/stage_a_campaigns.py controls --runs ALL_SGD_RUNS --out controls.yaml && python scripts/launch.py controls.yaml
-# This machine, once every run is archived and downloaded
+python scripts/stage_a_campaigns.py grids --seed S --out "$C/grids.yaml" && python scripts/launch.py "$C/grids.yaml"
+python scripts/stage_a_campaigns.py sgd --runs SCREEN_RUNS --seed S --out "$C/sgd.yaml"
+python scripts/launch.py "$C/sgd.yaml"
+```
+
+**Records between Pods** move only through the bucket. Every Pod archives each run directory
+when its campaign ends ([archive](#rented-machines)). The Pod of seed 2000 downloads what the
+data-dependent campaigns need from the other seeds, writes them, and archives the campaign
+files under `campaigns/` in the bucket; the Pods of seeds 2001 and 2002 download their own:
+
+- **SGD discovery** needs the screen's run directories (seed 2000's own; the other Pods download
+  them to write their `sgd` campaign, or receive the written files).
+- **Grid extensions** at batch 5 need the 25-step runs at batch 5 of all three seeds. Once every
+  Pod has finished its grids, seed 2000's Pod downloads them and writes
+  `stage_a_campaigns.py extension --runs ALL_SHORT_RUNS --seed S` for each seed; each Pod runs its
+  own. After those runs finish everywhere, write the extensions again: a second halving follows
+  if the first extension's median K over the seeds still exceeds 5 (two at most). "No extension
+  is called for" ends it.
+- **Full controls** need the screen and the SGD-long runs of all three seeds. Once every Pod has
+  finished its SGD campaign, seed 2000's Pod downloads the other seeds' SGD-long run directories
+  and writes and runs `stage_a_campaigns.py controls --runs SCREEN_RUNS ALL_SGD_RUNS`.
+
+Then, on this machine, once every run is archived and downloaded:
+
+```bash
 python scripts/stage_a_summary.py --runs runs/study2_stage_a runs/study2_controls --theta0 THETA0_RUN --out stage-a.json
 ```
 
-The summary's selection is sealed (committed) before any harm label of discovery is opened. Run
-directories go to the bucket after each campaign; the streams, with their chunks' fingerprints,
-after discovery. This machine keeps the run directories, whose stored responses stay out of Git
-and are never printed.
+The summary's selection is sealed (committed) before any harm label of discovery is opened. The
+streams, with their chunks' fingerprints, go to the bucket after discovery. This machine keeps
+the run directories, whose stored responses stay out of Git and are never printed.
 
 ## Judge server
 

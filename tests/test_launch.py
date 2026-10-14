@@ -327,3 +327,24 @@ def test_a_published_outcome_is_not_rerun_after_a_later_failure(tmp_path, status
     result = run_campaign(name, runs, root, execute=executor)
     assert runs[1].label in result["skipped"]
     assert runs[1].label not in [label for label, _ in executor.calls]
+
+
+STUDY2_THETA0 = """
+name: study2-setup
+cells:
+  - name: theta0
+    config: experiments/study2_stage_a
+    entry: theta0
+    seeds: [2000]
+"""
+
+
+def test_a_theta0_evaluation_of_a_scheduled_config_is_done_without_a_trajectory(tmp_path):
+    # The θ₀ run inherits the schedule but trains nothing: its K and responses make it done.
+    name, runs = load_campaign(campaign(tmp_path, STUDY2_THETA0))
+    root = tmp_path / "runs"
+    run_dir = make_run_dir(root, runs[0], "theta0-run", k=0.0)
+    assert (run_dir / "responses" / "harmful_evaluation.jsonl").is_file()
+    assert not (run_dir / "terminal.json").exists()
+    result = run_campaign(name, runs, root, execute=Executor(root, {}))
+    assert result["skipped"] == ["theta0/s2000"]

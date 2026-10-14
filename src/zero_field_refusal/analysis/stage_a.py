@@ -681,6 +681,28 @@ def screen_candidates(
     return out, problems
 
 
+def prescribed_short_rates(
+    present: Mapping[Key, Trajectory], arm: str, seeds: Sequence[int] = DISCOVERY_SEEDS
+) -> tuple[list[float], list[str]]:
+    """A 25-step arm's rates at batch 5: its grid and the downward extensions its runs call for.
+
+    Each extension is decided from the runs of every discovery seed at every rate so far. The
+    newest extension is prescribed as soon as it is decided, before its runs exist; runs missing
+    at any earlier rate leave the next extension undecided and are returned as problems."""
+    grid = [rate(lr) for lr in SHORT_GRID]
+    while True:
+        missing = [(arm, 5, lr, s) for lr in grid for s in seeds if (arm, 5, lr, s) not in present]
+        frontier = len(grid) > len(SHORT_GRID) and all(key[2] == grid[-1] for key in missing)
+        if missing and frontier:  # the newest extension is still to run
+            return grid, []
+        if missing:
+            return grid, [f"discovery: missing {key}" for key in missing]
+        nxt = short_grid_extension([present[(arm, 5, lr, s)] for lr in grid for s in seeds], arm)
+        if nxt is None or rate(nxt) in grid:
+            return grid, []
+        grid.append(rate(nxt))
+
+
 def expected_discovery(
     candidates: Mapping[int, Sequence[float]],
     present: Mapping[Key, Trajectory],
@@ -688,7 +710,7 @@ def expected_discovery(
 ) -> set[Key]:
     """The discovery runs the preregistered search prescribes: SGD-long at the screen's
     candidates, AdamW-long on its grid, the 25-step arms on their grid and, at batch 5, the
-    downward extensions the runs present call for."""
+    downward extensions their runs call for (``prescribed_short_rates``)."""
     expected: set[Key] = set()
     for batch in BATCHES:
         rates = {
@@ -699,20 +721,26 @@ def expected_discovery(
         for arm, grid in rates.items():
             expected |= {(arm, batch, rate(lr), seed) for lr in grid for seed in seeds}
     for arm in SHORT_ARMS:
-        grid = list(SHORT_GRID)
-        while True:  # each extension is prescribed by the runs of the smallest rate so far
-            runs = [
-                present[(arm, 5, rate(lr), s)]
-                for lr in grid
-                for s in seeds
-                if (arm, 5, rate(lr), s) in present
-            ]
-            nxt = short_grid_extension(runs, arm)
-            if nxt is None or rate(nxt) in map(rate, grid):
-                break
-            grid.append(nxt)
-            expected |= {(arm, 5, rate(nxt), seed) for seed in seeds}
+        grid, _ = prescribed_short_rates(present, arm, seeds)
+        expected |= {(arm, 5, lr, seed) for lr in grid for seed in seeds}
     return expected
+
+
+def checked_screen(screen: Sequence[Trajectory]) -> tuple[dict[int, dict[str, Any]], list[str]]:
+    """The screen's candidates and every problem of the screen: completeness, the prescribed
+    conditions, one stream."""
+    screened, problems = screen_candidates(screen)
+    return screened, problems + conformance(screen, "screen") + stream_pairing(screen)
+
+
+def checked_discovery(
+    discovery: Sequence[Trajectory], *, arms: Sequence[str] | None = None
+) -> tuple[dict[Key, Trajectory], list[str]]:
+    """Discovery runs (of ``arms``, if given) indexed once each, with every problem of their
+    conditions and streams."""
+    runs = [run for run in discovery if arms is None or run.arm in arms]
+    present, problems = index(runs)
+    return present, problems + conformance(runs, "discovery") + stream_pairing(runs)
 
 
 def numerical_acceptance(
@@ -799,8 +827,7 @@ def select(
         "rulings": RULINGS,
         "runs": sorted(run.run_id for run in discovery),
     }
-    screened, problems = screen_candidates(screen)
-    problems += conformance(screen, "screen") + stream_pairing(screen)
+    screened, problems = checked_screen(screen)
     out["screen"] = screened
     if problems:
         out.update(outcome="incomplete", problems=problems)

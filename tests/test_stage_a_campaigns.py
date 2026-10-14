@@ -6,9 +6,8 @@ import shutil
 from pathlib import Path
 
 import pytest
-from test_stage_a import SHORT, search
+from test_stage_a import FULL, SEEDS, SHORT, search, write_run
 
-from zero_field_refusal.analysis.stage_a import control_schedule, load_trajectories
 from zero_field_refusal.launch import load_campaign
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "stage_a_campaigns.py"
@@ -43,35 +42,85 @@ def test_sgd_discovery_takes_the_screen_candidates(monkeypatch, tmp_path) -> Non
         "sgd_long-b20-0.004/s2002",
         "sgd_long-b20-0.003/s2002",
     ]
-    shutil.rmtree(next((tmp_path / "runs").rglob("screen-20-0.01")))
-    with pytest.raises(SystemExit):  # an incomplete screen names no candidate
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda r: shutil.rmtree(next(r.rglob("screen-20-0.01"))),  # incomplete
+        lambda r: (
+            shutil.rmtree(next(r.rglob("screen-5-0.004"))),
+            write_run(
+                r / "screen",
+                "screen-5-0.004",
+                arm="soft_control",
+                batch=5,
+                lr=0.004,
+                seed=2000,
+                final_k=0.01,
+                evaluate_at=(100,),
+                role="screen",
+                model="Qwen/Qwen2.5-0.5B-Instruct@abc",
+            ),
+        ),
+    ],
+)
+def test_sgd_discovery_needs_a_whole_conforming_screen(monkeypatch, tmp_path, damage) -> None:
+    search(tmp_path / "runs")
+    damage(tmp_path / "runs")
+    with pytest.raises(SystemExit):
         write(monkeypatch, tmp_path, "sgd", "--runs", str(tmp_path / "runs"), "--seed", "2002")
 
 
-def test_extensions_are_the_rates_the_runs_call_for(monkeypatch, tmp_path) -> None:
-    search(tmp_path / "runs", short={5: SHORT | {0.5e-5: 5.5}, 20: SHORT})
-    runs = write(
-        monkeypatch, tmp_path, "extension", "--runs", str(tmp_path / "runs"), "--seed", "2000"
-    )
+def short_runs(root: Path, rates: dict[float, float], seeds=SEEDS) -> None:
+    for arm in ("adamw_25", "frozen_adam_25"):
+        for lr, k in rates.items():
+            for seed in seeds:
+                write_run(
+                    root, f"{arm}-5-{lr}-{seed}", arm=arm, batch=5, lr=lr, seed=seed, final_k=k
+                )
+
+
+def test_extensions_are_decided_from_every_seed_and_may_halve_twice(monkeypatch, tmp_path):
+    root = tmp_path / "runs"
+    short_runs(root, SHORT | {0.5e-5: 5.5}, seeds=SEEDS[:2])  # seed 2002 not done yet
+    with pytest.raises(SystemExit):
+        write(monkeypatch, tmp_path, "extension", "--runs", str(root), "--seed", "2000")
+    short_runs(root, SHORT | {0.5e-5: 5.5}, seeds=SEEDS[2:])
+    runs = write(monkeypatch, tmp_path, "extension", "--runs", str(root), "--seed", "2000")
     assert labels(runs) == ["adamw_25-b5-2.5e-06/s2000", "frozen_adam_25-b5-2.5e-06/s2000"]
+    short_runs(root, {0.25e-5: 5.2})  # still beyond 5 for every seed: the second halving
+    runs = write(monkeypatch, tmp_path, "extension", "--runs", str(root), "--seed", "2001")
+    assert labels(runs) == ["adamw_25-b5-1.25e-06/s2001", "frozen_adam_25-b5-1.25e-06/s2001"]
+    short_runs(root, {0.125e-5: 5.1})
+    with pytest.raises(SystemExit):  # two halvings at most: nothing more is called for
+        write(monkeypatch, tmp_path, "extension", "--runs", str(root), "--seed", "2001")
 
 
-def test_controls_follow_the_regular_runs(monkeypatch, tmp_path) -> None:
+def test_controls_need_every_seed_and_take_the_longest_run(monkeypatch, tmp_path) -> None:
     search(tmp_path / "runs")
     shutil.rmtree(tmp_path / "runs" / "controls")
-    runs = write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs" / "discovery"))
+    late = {**FULL, 8.0: 600}  # seed 2001 needs 600 steps where seed 2000 needed 400
+    slow = next((tmp_path / "runs").rglob("sgd_long-5-0.004-2001"))
+    shutil.rmtree(slow)
+    write_run(slow.parent, slow.name, arm="sgd_long", batch=5, lr=0.004, seed=2001, reach=late)
+    runs = write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))
     assert sorted(labels(runs)) == [
         "control-b20-0.003/s2000",
         "control-b20-0.004/s2000",
         "control-b5-0.003/s2000",
         "control-b5-0.004/s2000",
     ]
-    regular = [
-        r
-        for r in load_trajectories(tmp_path / "runs" / "discovery")
-        if (r.arm, r.batch_size, r.lr) == ("sgd_long", 20, 0.004)
-    ]
-    plan = control_schedule(regular)
-    control = next(run for run in runs if run.label == "control-b20-0.004/s2000")
-    assert f"train.steps={plan['steps']}" in control.overrides
-    assert f"schedule.evaluate_at=[{','.join(map(str, plan['seeds'][2000]))}]" in control.overrides
+    control = next(run for run in runs if run.label == "control-b5-0.004/s2000")
+    assert "train.steps=600" in control.overrides
+    assert "schedule.evaluate_at=[100,150,200,300,400,600]" in control.overrides
+    shutil.rmtree(next((tmp_path / "runs").rglob("sgd_long-5-0.003-2002")))
+    with pytest.raises(SystemExit):  # one seed's run missing: no control can be planned
+        write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))
+
+
+def test_campaigns_go_to_a_directory_made_for_them(monkeypatch, tmp_path) -> None:
+    out = tmp_path / "runs" / "campaigns" / "screen.yaml"
+    monkeypatch.setattr("sys.argv", [str(SCRIPT), "screen", "--out", str(out)])
+    runpy.run_path(str(SCRIPT), run_name="__main__")
+    assert out.is_file()

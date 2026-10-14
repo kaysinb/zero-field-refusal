@@ -7,13 +7,16 @@
     python scripts/stage_a_campaigns.py extension --runs DIR... --seed S --out FILE
     python scripts/stage_a_campaigns.py controls --runs DIR... --out FILE
 
-A campaign holds one seed, since each seed's stream has one writer, its Pod. ``sgd`` takes the two
-candidates per batch of the screen (analysis.stage_a.screen_candidates, refused on an incomplete
-screen); ``extension`` the next rates of the 25-step grids at batch 5 that the runs of all
-discovery seeds call for; ``controls`` one full-length control per candidate on seed 2000, as long
-as the longest regular run of its rate and batch and evaluated at that seed's evaluation steps.
-The rules are those of docs/study2-preregistration.md; nothing is chosen by hand. FILE must not
-exist.
+A campaign holds one seed, since each seed's stream has one writer, its Pod. The data-dependent
+ones check their inputs with the selection's own checks (analysis.stage_a) and refuse anything not
+whole: ``sgd`` takes the two candidates per batch of a whole, conforming screen; ``extension`` the
+rates of the 25-step grids at batch 5 that the runs of all three discovery seeds call for and this
+seed lacks (write it again once those runs are done: a second halving may follow); ``controls`` one
+full-length control per candidate on seed 2000, as long as the longest regular run of its rate and
+batch over the three seeds and evaluated at seed 2000's evaluation steps, from the screen and every
+seed's SGD-long runs. The rules are those of docs/study2-preregistration.md; nothing is chosen by
+hand. FILE must not exist; write it outside the checkout or under an ignored directory, such as
+$RUNS_DIR/campaigns/, so that runs from a clean checkout stay clean.
 """
 
 import argparse
@@ -31,10 +34,12 @@ from zero_field_refusal.analysis.stage_a import (
     SHORT_ARMS,
     SHORT_GRID,
     cells,
+    checked_discovery,
+    checked_screen,
     control_schedule,
     load_trajectories,
-    screen_candidates,
-    short_grid_extension,
+    prescribed_short_rates,
+    rate,
 )
 
 MAIN, CONTROLS = "experiments/study2_stage_a", "experiments/study2_controls"
@@ -116,39 +121,55 @@ def main() -> None:
             for b in BATCHES:
                 items += short_cells(arm, b, SHORT_GRID, args.seed)
     elif args.kind == "sgd":
-        screen = [r for r in runs if r.role == "screen"]
-        result, problems = screen_candidates(screen)
+        screened, problems = checked_screen([r for r in runs if r.role == "screen"])
         if problems:
-            parser.error("the screen is incomplete: " + "; ".join(problems))
+            parser.error("the screen is not whole: " + "; ".join(problems))
         name, items = f"study2-a-sgd-s{args.seed}", []
         for b in BATCHES:
             items += [
                 c
-                for c in long_cells("sgd_long", result[b]["candidates"], args.seed)
+                for c in long_cells("sgd_long", screened[b]["candidates"], args.seed)
                 if c["name"].startswith(f"sgd_long-b{b}-")
             ]
         if not items:
             parser.error("no SGD rate passes the screen at either batch: numerics fail")
     elif args.kind == "extension":
+        discovery = [r for r in runs if r.role == "discovery" and r.batch_size == 5]
+        present, problems = checked_discovery(discovery, arms=SHORT_ARMS)
         name, items = f"study2-a-extension-s{args.seed}", []
         for arm in SHORT_ARMS:
-            present = [
-                r for r in runs if r.role == "discovery" and r.arm == arm and r.batch_size == 5
-            ]
-            nxt = short_grid_extension(present, arm)
-            if nxt is not None:
-                items += short_cells(arm, 5, [nxt], args.seed)
+            grid, missing = prescribed_short_rates(present, arm)
+            problems += missing
+            new = [lr for lr in grid if (arm, 5, lr, args.seed) not in present]
+            items += short_cells(arm, 5, new, args.seed)
+        if problems:
+            parser.error(
+                "the 25-step runs at batch 5 of every seed are needed: " + "; ".join(problems)
+            )
         if not items:
             parser.error("no extension is called for")
     else:  # controls
+        screened, problems = checked_screen([r for r in runs if r.role == "screen"])
+        candidates = {b: screened[b]["candidates"] for b in screened} if not problems else {}
+        discovery = [r for r in runs if r.role == "discovery" and r.arm == "sgd_long"]
+        present, found = checked_discovery(discovery)
+        problems += found
+        wanted = {
+            ("sgd_long", b, rate(lr), seed)
+            for b, lrs in candidates.items()
+            for lr in lrs
+            for seed in DISCOVERY_SEEDS
+        }
+        problems += [f"discovery: missing {key}" for key in sorted(wanted - set(present))]
+        problems += [f"discovery: unexpected {key}" for key in sorted(set(present) - wanted)]
+        if problems:
+            parser.error(
+                "the screen and every seed's SGD-long runs are needed: " + "; ".join(problems)
+            )
         name, items = "study2-a-controls", []
-        for (arm, b, lr), group in cells(r for r in runs if r.role == "discovery").items():
-            if arm != "sgd_long":
-                continue
-            plan = control_schedule(group)
-            at = plan["seeds"].get(CONTROL_SEED)
-            if at is None:
-                parser.error(f"no regular run of seed {CONTROL_SEED} at batch {b}, rate {lr:g}")
+        for (_, b, lr), group in cells(present.values()).items():
+            plan = control_schedule(group)  # the longest over the three seeds
+            at = plan["seeds"][CONTROL_SEED]
             items.append(
                 cell(
                     f"control-b{b}-{lr:g}",
@@ -163,6 +184,7 @@ def main() -> None:
                 )
             )
     header = f"# Written by scripts/stage_a_campaigns.py {args.kind}; do not edit.\n"
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(header + yaml.safe_dump({"name": name, "cells": items}, sort_keys=False))
     print(args.out)
 
