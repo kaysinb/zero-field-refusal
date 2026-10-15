@@ -546,6 +546,9 @@ def test_a_non_finite_verdict_at_theta0_stops_before_any_update(env, tmp_path, m
     assert terminal["stop"] == {"reason": "nonfinite_k", "kind": "instability"}
     assert terminal["steps"] == 0 and terminal["responses"] == 0
     assert not (run_dir / "monitor.jsonl").exists()
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    assert load_trajectory(run_dir).stop == "nonfinite_k"  # the launcher's check
     metrics = run_dir / "metrics.jsonl"
     assert not metrics.exists() or not any("loss" in row for row in read_jsonl(metrics))
 
@@ -560,6 +563,9 @@ def test_a_non_finite_uncached_reading_at_an_evaluation_is_an_outcome(env, tmp_p
     assert [c["step"] for c in checks] == [0, 25]
     assert checks[1]["secondary"]["uncached_finite"] is False
     assert not (run_dir / "responses").exists()  # checked before the evaluation wrote anything
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    assert load_trajectory(run_dir).stop == "nonfinite_k"
 
 
 def test_a_late_non_finite_verdict_leaves_loadable_records(env, tmp_path, monkeypatch, scripted):

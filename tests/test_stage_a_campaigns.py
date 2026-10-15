@@ -1,13 +1,15 @@
 """The campaigns of Stage A: written from the rules and the run records, loadable by the launcher
 with every run's config checked against the protocol."""
 
+import json
 import runpy
 import shutil
 from pathlib import Path
 
 import pytest
-from test_stage_a import FULL, SEEDS, SHORT, search, write_run
+from test_stage_a import FULL, LEVELS, SEEDS, SHORT, THETA0, UP_TO_7, search, write_run
 
+from zero_field_refusal.analysis.stage_a import BATCHES
 from zero_field_refusal.launch import load_campaign
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "stage_a_campaigns.py"
@@ -33,15 +35,17 @@ def test_the_fixed_campaigns(monkeypatch, tmp_path) -> None:
     assert "frozen_adam_25-b5-5e-06/s2001" in labels(grids)
 
 
-def test_sgd_discovery_takes_the_screen_candidates(monkeypatch, tmp_path) -> None:
+def theta0_run(tmp_path: Path) -> Path:
+    run = tmp_path / "theta0"
+    run.mkdir(exist_ok=True)
+    (run / "summary.json").write_text(json.dumps(THETA0))
+    return run
+
+
+def test_sgd_is_written_by_the_search_now(monkeypatch, tmp_path) -> None:
     search(tmp_path / "runs")
-    runs = write(monkeypatch, tmp_path, "sgd", "--runs", str(tmp_path / "runs"), "--seed", "2002")
-    assert labels(runs) == [
-        "sgd_long-b5-0.004/s2002",
-        "sgd_long-b5-0.003/s2002",
-        "sgd_long-b20-0.004/s2002",
-        "sgd_long-b20-0.003/s2002",
-    ]
+    with pytest.raises(SystemExit):
+        write(monkeypatch, tmp_path, "sgd", "--runs", str(tmp_path / "runs"), "--seed", "2002")
 
 
 @pytest.mark.parametrize(
@@ -65,11 +69,12 @@ def test_sgd_discovery_takes_the_screen_candidates(monkeypatch, tmp_path) -> Non
         ),
     ],
 )
-def test_sgd_discovery_needs_a_whole_conforming_screen(monkeypatch, tmp_path, damage) -> None:
+def test_the_search_needs_a_whole_conforming_screen(monkeypatch, tmp_path, damage) -> None:
     search(tmp_path / "runs")
     damage(tmp_path / "runs")
     with pytest.raises(SystemExit):
-        write(monkeypatch, tmp_path, "sgd", "--runs", str(tmp_path / "runs"), "--seed", "2002")
+        write(monkeypatch, tmp_path, "search", "--runs", str(tmp_path / "runs" / "screen"),
+              "--seed", "2002")  # fmt: skip
 
 
 def short_runs(root: Path, rates: dict[float, float], seeds=SEEDS) -> None:
@@ -97,26 +102,26 @@ def test_extensions_are_decided_from_every_seed_and_may_halve_twice(monkeypatch,
         write(monkeypatch, tmp_path, "extension", "--runs", str(root), "--seed", "2001")
 
 
-def test_controls_need_every_seed_and_take_the_longest_run(monkeypatch, tmp_path) -> None:
-    search(tmp_path / "runs")
-    shutil.rmtree(tmp_path / "runs" / "controls")
+def test_controls_follow_the_search_and_take_the_longest_run(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "runs"
+    search(root, sgd={b: {0.004: FULL if b == 5 else UP_TO_7} for b in BATCHES})
+    shutil.rmtree(root / "controls")
     late = {**FULL, 8.0: 600}  # seed 2001 needs 600 steps where seed 2000 needed 400
-    slow = next((tmp_path / "runs").rglob("sgd_long-5-0.004-2001"))
+    slow = next(root.rglob("sgd_long-5-0.004-2001"))
     shutil.rmtree(slow)
-    write_run(slow.parent, slow.name, arm="sgd_long", batch=5, lr=0.004, seed=2001, reach=late)
-    runs = write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))
-    assert sorted(labels(runs)) == [
-        "control-b20-0.003/s2000",
-        "control-b20-0.004/s2000",
-        "control-b5-0.003/s2000",
-        "control-b5-0.004/s2000",
-    ]
+    write_run(slow.parent, slow.name, arm="sgd_long", batch=5, lr=0.004, seed=2001, reach=late,
+              monitor_version=2)  # fmt: skip
+    args = ("--runs", str(root), "--theta0", str(theta0_run(tmp_path)))
+    runs = write(monkeypatch, tmp_path, "controls", *args)
+    assert sorted(labels(runs)) == ["control-b20-0.004/s2000", "control-b5-0.004/s2000"]
     control = next(run for run in runs if run.label == "control-b5-0.004/s2000")
     assert "train.steps=600" in control.overrides
     assert "schedule.evaluate_at=[100,150,200,300,400,600]" in control.overrides
-    shutil.rmtree(next((tmp_path / "runs").rglob("sgd_long-5-0.003-2002")))
-    with pytest.raises(SystemExit):  # one seed's run missing: no control can be planned
-        write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))
+    shutil.rmtree(next(root.rglob("sgd_long-5-0.004-2002")))  # B = 5 waits for that seed
+    runs = write(monkeypatch, tmp_path, "controls", *args)
+    assert labels(runs) == ["control-b20-0.004/s2000"]
+    with pytest.raises(SystemExit):  # version-2 runs need θ₀ for the rule's utility
+        write(monkeypatch, tmp_path, "controls", "--runs", str(root))
 
 
 def test_campaigns_go_to_a_directory_made_for_them(monkeypatch, tmp_path) -> None:
@@ -146,7 +151,8 @@ def test_controls_need_the_screen_and_discovery_on_seed_2000s_one_stream(monkeyp
             stream_path="teacher/other/seed-2000",
         )
     with pytest.raises(SystemExit):
-        write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))
+        write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"), "--theta0",
+              str(theta0_run(tmp_path)))  # fmt: skip
 
 
 def test_the_search_starts_at_each_arms_largest_rate_per_batch(monkeypatch, tmp_path) -> None:
@@ -154,16 +160,28 @@ def test_the_search_starts_at_each_arms_largest_rate_per_batch(monkeypatch, tmp_
     runs = write(monkeypatch, tmp_path, "search", "--runs", str(tmp_path / "runs" / "screen"),
                  "--seed", "2001")  # fmt: skip
     assert labels(runs) == [
-        "adamw_long-b5-1e-05/s2001",
-        "sgd_long-b5-0.004/s2001",
         "adamw_long-b20-1e-05/s2001",
+        "adamw_long-b5-1e-05/s2001",
         "sgd_long-b20-0.004/s2001",
+        "sgd_long-b5-0.004/s2001",
     ]
 
 
-def test_the_search_writes_only_its_first_step(monkeypatch, tmp_path) -> None:
-    search(tmp_path / "runs")
-    write_run(tmp_path / "runs" / "v2", "adamw-v2", arm="adamw_long", batch=5, lr=1e-5,
-              seed=2001, reach={5.0: 100}, monitor_version=2)  # fmt: skip
-    with pytest.raises(SystemExit):
-        write(monkeypatch, tmp_path, "search", "--runs", str(tmp_path / "runs"), "--seed", "2001")
+def test_the_search_goes_down_where_a_rate_fails_its_rule(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "runs"
+    search(root, sgd={b: {0.004: FULL} for b in BATCHES},
+           adamw={5: {1e-5: UP_TO_7}, 20: {1e-5: FULL}})  # fmt: skip
+    args = ("--runs", str(root), "--theta0", str(theta0_run(tmp_path)), "--seed", "2001")
+    assert labels(write(monkeypatch, tmp_path, "search", *args)) == ["adamw_long-b5-5e-06/s2001"]
+    with pytest.raises(SystemExit):  # θ₀ is needed to judge the version-2 runs
+        write(monkeypatch, tmp_path, "search", "--runs", str(root), "--seed", "2001")
+
+
+def test_too_few_diagnostic_states_call_for_the_next_rate(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "runs"
+    quick = {5.0: 10, LEVELS[1]: 20, LEVELS[2]: 30, 7.0: 40, 8.0: 50}  # two states per run
+    search(root, sgd={b: {0.004: quick, 0.003: quick} for b in BATCHES})
+    args = ("--runs", str(root), "--theta0", str(theta0_run(tmp_path)), "--seed", "2000")
+    runs = write(monkeypatch, tmp_path, "diagnostic", *args)
+    assert labels(runs) == ["sgd_long-b5-0.003/s2000"]
+    assert "stage_a.role=diagnostic" in runs[0].overrides

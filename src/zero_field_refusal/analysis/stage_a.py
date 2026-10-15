@@ -11,15 +11,21 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
   accepted SGD rates.
 - ``instability_summary``: the gradient rule's margin on stable runs, its firings and possible
   false alarms, and the revision of its factor 10 by the rule below, before validation.
-- ``agreement``: the monitor against the scoring panel.
+- ``agreement``: the monitor against the scoring panel at evaluations; ``monitor_qualification``
+  and ``trigger_checks``: amendment 1's qualification of monitor version 2 on the scoring
+  diagnostics, per optimizer at a batch.
+- ``search_manifest`` and ``search_progress``: amendment 1's downward search of the long arms
+  under monitor version 2, as an auditable manifest (rates run with their outcomes, the step
+  pending, the rates not required).
 - ``select``: the selection rule: batch, U, K*, rates and T_max, with the reasons for every
   batch and level, or the Stage-A outcome that stops the design. It first checks that the
-  prescribed search is whole: the screen of every SGD rate at both batches; discovery runs of
-  exactly the two screen candidates per batch, the AdamW-long grid and the 25-step grids with
-  their prescribed extensions, one run per arm, batch, rate and seed 2000-2002, nothing else;
-  one full-length control per candidate on seed 2000, on the stream of the regular run of that
-  seed. Anything missing, duplicated, unexpected or of another provenance makes the outcome
-  ``incomplete``, never a scientific failure.
+  search is whole: the screen of every SGD rate at both batches; the long arms' version-2 runs
+  exactly as their search prescribes, with one full-length control on seed 2000 for every SGD
+  rate run, on the stream of the regular run of that seed; the 25-step grids with their
+  prescribed extensions; one run per arm, batch, rate and seed 2000-2002, nothing else.
+  Version-1 long runs are observations. Anything missing, duplicated, unexpected or of another
+  provenance makes the outcome ``incomplete``, never a scientific failure; so does a selected
+  batch with too few diagnostic states, until its diagnostic runs are done.
 - A run is accepted on whole records agreeing with its published terminal record, whatever its
   status (the launcher's rule too): a failure of logging after the outcome does not undo it.
 
@@ -32,7 +38,8 @@ never a harm label: the selection uses numerics, K, reachability, utility and me
   that U (rules 2 and 3), which includes reachability by every discovery seed and utility.
 - *Time per seed block* is the median over seeds of the summed run times of the selected
   SGD-long, AdamW-long and AdamW-25 runs (frozen Adam-25 runs on 20 blocks only), excluding stream
-  extension, plus generating the block's stream at the measured time per chunk.
+  extension, plus generating the block's stream at the time per chunk measured on the version-1
+  discovery runs (amendment 1: fixed, so that the search's pruning cannot change it).
 - *AdamW-25 rates* are the injective assignment of qualifying rates to the targets (5, K*, U)
   with the least total |median K_benign − target|, ties to the smaller rates.
 - *The gradient rule's factor* is judged by its margin, the largest ratio of a gradient norm to
@@ -82,7 +89,8 @@ CANDIDATES_PER_BATCH = 2
 ADAMW_LONG_GRID = (1e-6, 3e-6, 5e-6, 1e-5)
 SHORT_GRID = (0.5e-5, 1e-5, 1.5e-5, 2e-5, 3e-5, 4e-5)
 SHORT_ARMS = ("adamw_25", "frozen_adam_25")
-ROLES = ("discovery", "screen", "full_control")  # stage_a.role in a run's config
+ROLES = ("discovery", "screen", "full_control", "diagnostic")  # stage_a.role in a run's config
+LONG_ARMS = ("sgd_long", "adamw_long")
 GRAD_FACTOR = 10.0  # the gradient rule's factor in discovery
 MARGIN_TRIGGER = 7.0  # a margin above this on stable runs raises the factor
 REVISION_FACTOR = 1.5  # the raised factor: max(current, 1.5 × the margin); never lowered
@@ -126,6 +134,9 @@ class Trajectory:
     spec: dict[str, Any]  # the schedule it ran under (``schedule_spec``)
     evaluate_at: tuple[int, ...] = field(default=())
     monitor_version: int = 1  # eval.monitor.version: 2 after amendment 1
+    monitor_spec: dict[str, Any] = field(default_factory=dict)  # ``monitor_spec`` of its config
+    # version 2: the scoring diagnostics, {step, K_scoring, K_monitor (m = drive), K_monitor_full}
+    diagnostics: tuple[dict[str, float], ...] = field(default=())
 
     @property
     def steps(self) -> int:
@@ -248,6 +259,10 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         ]
         if eval_steps != expected and not unstable_at_last:
             problems.append("a fixed run's evaluations differ from evaluate_at")
+    diagnostics: list[dict[str, float]] = []
+    if monitor_version(cfg) > 1:
+        diagnostics, found = _version2_problems(run_dir, cfg, monitor, evaluations, read_to, stop)
+        problems += found
     stream = inputs.get("streams", {}).get("training", {})
     used = stream.get("count")
     if used != steps * cfg.train.batch_size:
@@ -282,7 +297,58 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         spec=schedule_spec(cfg),
         evaluate_at=evaluate_at,
         monitor_version=monitor_version(cfg),
+        monitor_spec=monitor_spec(cfg),
+        diagnostics=tuple(diagnostics),
     )
+
+
+def _version2_problems(
+    run_dir: Path,
+    cfg: Any,
+    monitor: Sequence[tuple[int, float]],
+    evaluations: Sequence[Mapping[str, Any]],
+    read_to: int,
+    stop: str,
+) -> tuple[list[dict[str, float]], list[str]]:
+    """Monitor version 2's records (amendment 1): a scoring diagnostic at every diagnostic step
+    that was read, each with the monitor's reading of that step; the full monitor panel at every
+    evaluation; a cache check at θ₀ and at every evaluation, each equal bit for bit."""
+    problems = []
+    keys = ("step", "K_scoring", "K_monitor", "K_monitor_full")
+    rows = [{k: row[k] for k in keys} for row in _jsonl(run_dir / "diagnostics.jsonl")]
+    every = int(cfg.eval.diagnostics.every)
+    if [row["step"] for row in rows] != list(range(every, read_to + 1, every)):
+        problems.append("scoring diagnostics are not every diagnostic step up to the last reading")
+    readings = dict(monitor)
+    if any(readings.get(row["step"]) != row["K_monitor"] for row in rows):
+        problems.append("a diagnostic's monitor K differs from the reading of its step")
+    if any(not all(math.isfinite(row[k]) for k in keys[1:]) for row in rows):
+        problems.append("a scoring diagnostic is not finite")
+    if any("K_monitor_full" not in row for row in evaluations):
+        problems.append("an evaluation lacks the full monitor panel")
+    checks = _jsonl(run_dir / "cache_checks.jsonl")
+    expected = [0, *(row["step"] for row in evaluations)]
+    steps = [row["step"] for row in checks]
+
+    def verdict(row: Mapping[str, Any]) -> bool:  # an uncached reading not finite: an outcome
+        return any(not v.get("uncached_finite", True) for k, v in row.items() if k != "step")
+
+    # A run stopped as nonfinite_k by its last check (at θ₀, or at a failed evaluation) keeps it.
+    final = bool(checks) and verdict(checks[-1])
+    if final and (stop != "nonfinite_k" or checks[-1]["step"] != read_to):
+        problems.append("a cache check found a non-finite reading but the run went on")
+    if steps != expected and not (
+        final and steps == [*expected, read_to] and read_to not in expected[1:]
+    ):
+        problems.append("cache checks are not at θ₀ and at every evaluation")
+    for i, row in enumerate(checks):  # the secondary part exists when the monitor has them
+        parts = {k: v for k, v in row.items() if k != "step"}
+        equal = all(v.get("bitwise_equal") for v in parts.values())
+        if not {"primary", "scoring"} <= set(parts) or not (
+            equal or (final and i == len(checks) - 1)
+        ):
+            problems.append(f"the cache check of step {row['step']} lacks a part or differs")
+    return rows, problems
 
 
 def schedule_spec(cfg: Any) -> dict[str, Any]:
@@ -307,6 +373,17 @@ def schedule_spec(cfg: Any) -> dict[str, Any]:
     }
 
 
+def monitor_spec(cfg: Any) -> dict[str, Any]:
+    """The monitor a run read (version 1: its version alone; version 2: panel and cadences)."""
+    version = monitor_version(cfg)
+    if version == 1:
+        return {"version": 1}
+    monitor, diagnostics = cfg.eval.monitor, cfg.eval.diagnostics
+    return {"version": version, "prompt_set": monitor.prompt_set,
+            "samples_per_prompt": int(monitor.samples_per_prompt), "drive": int(monitor.drive),
+            "every": int(monitor.every), "diagnostics_every": int(diagnostics.every)}  # fmt: skip
+
+
 @functools.cache
 def prescribed() -> dict[str, Any]:
     """The model, protocol version and schedules the Stage-A campaigns prescribe, read from the
@@ -320,6 +397,7 @@ def prescribed() -> dict[str, Any]:
         "long": schedule_spec(long),
         "short": schedule_spec(short),
         "control": schedule_spec(control),
+        "monitor": monitor_spec(long),
     }
 
 
@@ -349,6 +427,10 @@ def conformance(runs: Sequence[Trajectory], role: str) -> list[str]:
         differ = sorted(k for k in want if have.get(k) != want[k])
         if differ:
             problems.append(f"{name} departs from the prescribed schedule in {differ}")
+        if run.monitor_version > 1 and run.monitor_spec != spec["monitor"]:
+            problems.append(f"{name} read another monitor: {run.monitor_spec}")
+        if role == "diagnostic" and (run.arm not in LONG_ARMS or run.monitor_version == 1):
+            problems.append(f"{name}: a diagnostic run is a version-2 long run")
     return problems
 
 
@@ -596,6 +678,59 @@ def agreement(runs: Sequence[Trajectory]) -> dict[str, Any]:
     return monitor_agreement(monitor, scoring)
 
 
+QUALIFYING_ARMS = ("adamw_long", "sgd_long")
+QUALIFYING_STATES = 10  # distinct diagnostic states with K_scoring >= 4, per optimizer
+FIT_BAND_TOP = 1.1  # the fit band's top, a multiple of U
+
+
+def monitor_qualification(runs: Sequence[Trajectory]) -> dict[str, Any]:
+    """Amendment 1: monitor version 2 against the scoring panel on the scoring diagnostics of
+    every version-2 long run, separately per optimizer, for m = 1 (``K_monitor``) and m = 2
+    (``K_monitor_full``). Fewer than ``QUALIFYING_STATES`` states at K_scoring >= 4 leave a check
+    undetermined, which does not pass. The choice: m = 1 if it passes for both optimizers, else
+    m = 2 if it does, else a redesign. Reported alongside, never deciding m: the trigger checks
+    of each run (``trigger_checks``)."""
+    out: dict[str, Any] = {"arms": {}}
+    for arm in QUALIFYING_ARMS:
+        group = [run for run in runs if run.arm == arm and run.monitor_version > 1]
+        rows = [row for run in group for row in run.diagnostics]
+        entry: dict[str, Any] = {"runs": sorted(run.run_id for run in group)}
+        for m, key in (("m1", "K_monitor"), ("m2", "K_monitor_full")):
+            check = monitor_agreement([r[key] for r in rows], [r["K_scoring"] for r in rows])
+            if check["passes"] is not None and check["pairs"] < QUALIFYING_STATES:
+                check["passes"] = None  # undetermined: too few states in the zone
+            entry[m] = check
+        entry["triggers"] = {run.run_id: trigger_checks(run) for run in group}
+        out["arms"][arm] = entry
+    arms = out["arms"].values()
+    out["undetermined"] = [f"{arm}/{m}" for arm, entry in out["arms"].items()
+                           for m in ("m1", "m2") if entry[m]["passes"] is None]  # fmt: skip
+    out["choice"] = next(
+        (m for m in ("m1", "m2") if all(entry[m]["passes"] is True for entry in arms)), "redesign"
+    )
+    return out
+
+
+def trigger_checks(run: Trajectory) -> dict[str, Any]:
+    """At the run's actual crossings, for each U: whether 5, K* and U were separate evaluations,
+    whether the measured K brackets K* (one evaluation below it, one at or above it), and whether
+    the U evaluation lies inside the fit band (K_benign <= 1.1 U)."""
+    out = {}
+    measured = [row["K_benign"] for row in run.evaluations]
+    for upper in UPPER:
+        k_star = math.sqrt(LOWER * upper)
+        rows = [run.evaluation_at(level) for level in (LOWER, k_star, upper)]
+        reached = None not in rows
+        out[_name(upper)] = {
+            "reached": reached,
+            "separate": reached and len({row["step"] for row in rows}) == 3,
+            "k_star_bracketed": any(k < k_star for k in measured)
+            and any(k >= k_star for k in measured),
+            "upper_in_band": reached and rows[2]["K_benign"] <= FIT_BAND_TOP * upper,
+        }
+    return out
+
+
 def short_grid_extension(
     runs: Sequence[Trajectory],
     arm: str,
@@ -710,6 +845,8 @@ def expected_discovery(
     candidates: Mapping[int, Sequence[float]],
     present: Mapping[Key, Trajectory],
     seeds: Sequence[int] = DISCOVERY_SEEDS,
+    *,
+    arms: Sequence[str] | None = None,
 ) -> set[Key]:
     """The discovery runs the preregistered search prescribes: SGD-long at the screen's
     candidates, AdamW-long on its grid, the 25-step arms on their grid and, at batch 5, the
@@ -726,7 +863,7 @@ def expected_discovery(
     for arm in SHORT_ARMS:
         grid, _ = prescribed_short_rates(present, arm, seeds)
         expected |= {(arm, 5, lr, seed) for lr in grid for seed in seeds}
-    return expected
+    return {key for key in expected if arms is None or key[0] in arms}
 
 
 def checked_screen(screen: Sequence[Trajectory]) -> tuple[dict[int, dict[str, Any]], list[str]]:
@@ -808,6 +945,137 @@ def numerical_acceptance(
     return out, problems
 
 
+# ------------------------------------------------------------------ the search (amendment 1)
+
+
+def search_order(arm: str, batch: int, candidates: Mapping[int, Sequence[float]]) -> list[float]:
+    """A long arm's rates at a batch, largest first: SGD-long its screen candidates, AdamW-long
+    its grid."""
+    grid = candidates.get(batch, []) if arm == "sgd_long" else ADAMW_LONG_GRID
+    return sorted({rate(lr) for lr in grid}, reverse=True)
+
+
+def _rate_rule(arm, batch, lr, cell, upper, theta0, seeds, acceptance) -> dict[str, Any]:
+    k_star = math.sqrt(LOWER * upper)
+    found = _long_rates({(arm, batch, lr): cell}, arm, batch, upper, k_star, theta0, seeds,
+                        acceptance if arm == "sgd_long" else None)  # fmt: skip
+    return found[lr]
+
+
+def search_manifest(
+    long_runs: Sequence[Trajectory],
+    acceptance: Mapping[tuple[int, float], Mapping[str, Any]],
+    candidates: Mapping[int, Sequence[float]],
+    theta0: Mapping[str, float],
+    seeds: Sequence[int] = DISCOVERY_SEEDS,
+) -> dict[str, Any]:
+    """Amendment 1's downward search of each long arm and batch under monitor version 2, as an
+    auditable manifest ("Search under version 2").
+
+    A rate resolves once all ``seeds`` have their version-2 run and, for SGD-long, its full
+    control has a verdict in ``acceptance``. The descent stops at the first rate that meets its
+    arm's rule at U = 8; a rate that meets it only at U = 7 does not stop it. When no batch then
+    qualifies at U = 8 (both arms with a rate), U = 7 is settled from the rates run, and where an
+    arm has none meeting it there, the descent resumes below them (a rate meeting U = 8 need not
+    meet U = 7: its intermediate evaluations differ). ``pending`` names what each unresolved
+    search needs next; rates below its stopping rate are "not required".
+    """
+    present = {(r.arm, r.batch_size, rate(r.lr), r.seed): r for r in long_runs}
+    searches: dict[str, dict[str, Any]] = {}
+
+    def descend(arm: str, batch: int, entry: dict[str, Any], stop_at: float) -> None:
+        for lr in entry["order"]:
+            if lr in entry["tested"]:
+                continue
+            missing = [s for s in seeds if (arm, batch, lr, s) not in present]
+            if missing:
+                entry["pending"] = {"rate": lr, "seeds": missing}
+                return
+            if arm == "sgd_long" and (batch, lr) not in acceptance:
+                entry["pending"] = {"rate": lr, "control": CONTROL_SEED}
+                return
+            cell = [present[(arm, batch, lr, s)] for s in seeds]
+            entry["tested"][lr] = {
+                _name(u): _rate_rule(arm, batch, lr, cell, u, theta0, seeds, acceptance)
+                for u in UPPER
+            }
+            if entry["tested"][lr][_name(stop_at)]["ok"]:
+                return
+
+    for arm in LONG_ARMS:
+        for batch in BATCHES:
+            entry = {"arm": arm, "batch": batch, "order": search_order(arm, batch, candidates),
+                     "tested": {}, "pending": None}  # fmt: skip
+            descend(arm, batch, entry, 8.0)
+            searches[f"{arm}/B={batch}"] = entry
+
+    def best(entry: dict[str, Any], upper: float) -> float | None:
+        ok = [lr for lr, t in entry["tested"].items() if t[_name(upper)]["ok"]]
+        return max(ok) if ok else None
+
+    phase = "U=8"
+    if all(e["pending"] is None for e in searches.values()):
+
+        def qualifies(batch: int) -> bool:
+            return all(best(searches[f"{a}/B={batch}"], 8.0) is not None for a in LONG_ARMS)
+
+        if not any(
+            qualifies(b) for b in BATCHES
+        ):  # U = 7 is needed: resume where an arm has no rate meeting it yet
+            phase = "U=7"
+            for entry in searches.values():
+                if best(entry, 7.0) is None:
+                    descend(entry["arm"], entry["batch"], entry, 7.0)
+    for entry in searches.values():
+        entry["U=8"], entry["U=7"] = best(entry, 8.0), best(entry, 7.0)
+        # Settled only once its search ended: the rates it never needed to run.
+        entry["not_required"] = (
+            [] if entry["pending"] else [lr for lr in entry["order"] if lr not in entry["tested"]]
+        )
+    complete = all(e["pending"] is None for e in searches.values())
+    return {"phase": phase, "complete": complete, "searches": searches}
+
+
+def search_progress(
+    screen: Sequence[Trajectory],
+    discovery: Sequence[Trajectory],
+    controls: Sequence[Trajectory],
+    theta0: Mapping[str, float] | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """The search as it stands: its manifest from a whole screen, the version-2 long runs and
+    their controls, with every problem of those records (the 25-step grids are not needed).
+    ``theta0`` may be None only before any version-2 long run exists."""
+    screened, problems = checked_screen(screen)
+    if problems:
+        return {"screen": screened}, problems
+    candidates = {batch: entry["candidates"] for batch, entry in screened.items()}
+    long_v2 = [r for r in discovery if r.arm in LONG_ARMS and r.monitor_version > 1]
+    if long_v2 and theta0 is None:
+        raise ValueError("θ₀'s utility is needed to judge version-2 long runs")
+    present, problems = index(long_v2)
+    problems += conformance(long_v2, "discovery") + conformance(controls, "full_control")
+    problems += stream_pairing([*screen, *long_v2, *controls])
+    resolved = {
+        b: [lr for lr in search_order("sgd_long", b, candidates)
+            if all(("sgd_long", b, lr, s) in present for s in DISCOVERY_SEEDS)]
+        for b in BATCHES
+    }  # fmt: skip
+    acceptance, control_problems = numerical_acceptance(controls, present, resolved)
+    problems += [p for p in control_problems if not p.startswith("controls: missing")]
+    manifest = search_manifest(long_v2, acceptance, candidates, theta0 or {}, DISCOVERY_SEEDS)
+    searched = {
+        (e["arm"], e["batch"], lr, s)
+        for e in manifest["searches"].values()
+        for lr in [*e["tested"], *([e["pending"]["rate"]] if e["pending"] else [])]
+        for s in DISCOVERY_SEEDS
+    }
+    problems += [f"discovery: version-2 run outside the search {key}"
+                 for key in sorted(set(present) - searched)]  # fmt: skip
+    state = {"screen": screened, "candidates": candidates, "present": present,
+             "acceptance": acceptance, "manifest": manifest}  # fmt: skip
+    return state, problems
+
+
 # ------------------------------------------------------------------ selection
 
 
@@ -816,13 +1084,18 @@ def select(
     screen: Sequence[Trajectory],
     controls: Sequence[Trajectory],
     theta0: Mapping[str, float],
+    diagnostic: Sequence[Trajectory] = (),
 ) -> dict[str, Any]:
-    """The Stage-A selection rule over the whole prescribed search; never reads harm.
+    """The Stage-A selection rule over amendment 1's search; never reads harm.
 
-    Outcomes: ``incomplete`` (the search or its records are not whole: no conclusion),
-    ``numerics_fail`` (no SGD rate passes a whole screen, or no candidate its full control),
-    ``barrier`` (no accepted SGD rate reaches U = 7 at either batch), ``infeasible`` (no batch
-    eligible otherwise) or ``selected``.
+    The long arms come from their version-2 search (``search_manifest``); version-1 long runs
+    are observations. The 25-step arms come from their prescribed grids and extensions, as
+    before. Outcomes: ``incomplete`` (the search, a control, the qualification or the records
+    are not whole: no conclusion), ``numerics_fail`` (no SGD rate passes a whole screen, or none
+    its full control), ``barrier`` (no accepted SGD rate reaches U = 7 at either batch),
+    ``infeasible`` (no batch eligible otherwise), ``selected``, or, when the monitor does not
+    qualify at the selected batch, ``monitor_m2`` (the declared fallback, which redoes the search
+    under m = 2) or ``monitor_redesign``.
     """
     seeds = DISCOVERY_SEEDS
     out: dict[str, Any] = {
@@ -830,24 +1103,28 @@ def select(
         "rulings": RULINGS,
         "runs": sorted(run.run_id for run in discovery),
     }
-    screened, problems = checked_screen(screen)
-    out["screen"] = screened
-    if problems:
+    state, problems = search_progress(screen, discovery, controls, theta0)
+    out["screen"] = state["screen"]
+    if "manifest" not in state:  # the screen is not whole
         out.update(outcome="incomplete", problems=problems)
         return out
-    candidates = {batch: entry["candidates"] for batch, entry in screened.items()}
+    candidates = state["candidates"]
     if not any(candidates.values()):  # a whole screen with no passing rate at either batch
         out["outcome"] = "numerics_fail"
         return out
-    present, duplicates = index(discovery)
-    problems += duplicates + conformance(discovery, "discovery")
-    problems += conformance(controls, "full_control")
-    problems += stream_pairing([*screen, *discovery, *controls])
-    expected = expected_discovery(candidates, present, seeds)
-    problems += [f"discovery: missing {key}" for key in sorted(expected - set(present))]
-    problems += [f"discovery: unexpected {key}" for key in sorted(set(present) - expected)]
-    acceptance, control_problems = numerical_acceptance(controls, present, candidates)
-    problems += control_problems
+    long_v2 = [r for r in discovery if r.arm in LONG_ARMS and r.monitor_version > 1]
+    long_v1 = [r for r in discovery if r.arm in LONG_ARMS and r.monitor_version == 1]
+    short = [r for r in discovery if r.arm not in LONG_ARMS]
+    out["observations"] = sorted(run.run_id for run in long_v1)  # version 1: not selected on
+    present, manifest, acceptance = state["present"], state["manifest"], state["acceptance"]
+    present_short, short_duplicates = index(short)
+    problems += short_duplicates + conformance([*long_v1, *short], "discovery")
+    problems += conformance(diagnostic, "diagnostic")
+    problems += stream_pairing([*screen, *discovery, *controls, *diagnostic])
+    expected = expected_discovery(candidates, present_short, seeds, arms=SHORT_ARMS)
+    problems += [f"discovery: missing {key}" for key in sorted(expected - set(present_short))]
+    problems += [f"discovery: unexpected {key}" for key in sorted(set(present_short) - expected)]
+    out["search"] = manifest
     prompts = {
         json.dumps(run.harmful_prompts, sort_keys=True) for run in discovery if run.evaluations
     }
@@ -855,14 +1132,25 @@ def select(
         problems.append("discovery runs answered different harmful prompt sets")
     out["acceptance"] = {f"B={b} lr={lr:g}": a for (b, lr), a in acceptance.items()}
     if problems:
-        out.update(outcome="incomplete", problems=problems)
+        out.update(outcome="incomplete", problems=list(dict.fromkeys(problems)))
+        return out
+    if not manifest["complete"]:
+        out.update(outcome="incomplete", problems=[
+            f"search: {name} needs {entry['pending']}"
+            for name, entry in manifest["searches"].items() if entry["pending"]
+        ])  # fmt: skip
         return out
     if not any(a["accepted"] for a in acceptance.values()):
         out["outcome"] = "numerics_fail"
         return out
 
-    by_cell = cells(present.values())
-    chunk_seconds = _seconds_per_chunk(discovery)
+    searches = manifest["searches"].values()
+    tested = [present[(e["arm"], e["batch"], lr, s)] for e in searches for lr in e["tested"]
+              for s in seeds]  # fmt: skip
+    by_cell = cells([*tested, *present_short.values()])
+    # Fixed from the version-1 runs, so that the search's pruning cannot change it.
+    chunk_seconds = _seconds_per_chunk([run for run in discovery if run.monitor_version == 1])
+    out["seconds_per_chunk"] = chunk_seconds
     report: dict[int, dict[str, Any]] = {}
     for batch in BATCHES:
         entry: dict[str, Any] = {"levels": {}}
@@ -916,7 +1204,43 @@ def select(
             **{k: chosen[k] for k in keys},
         }
     )
+    _qualify(out, manifest, [*long_v2, *diagnostic], batch, seeds)
     return out
+
+
+def _qualify(
+    out: dict[str, Any],
+    manifest: Mapping[str, Any],
+    runs: Sequence[Trajectory],
+    batch: int,
+    seeds: Sequence[int],
+) -> None:
+    """Amendment 1: the monitor's qualification at the selected batch, which the outcome follows.
+    With too few states for an optimizer, the next rate of its search order below the rates run
+    is the diagnostic run to make (``diagnostic_next``): the outcome stays incomplete."""
+    qualification = monitor_qualification([run for run in runs if run.batch_size == batch])
+    out["monitor_qualification"] = qualification
+    short = [arm for arm in LONG_ARMS if qualification["arms"][arm]["m1"]["passes"] is None]
+    following = {}
+    for arm in short:
+        entry = manifest["searches"][f"{arm}/B={batch}"]
+        done = {
+            lr for lr in entry["order"]
+            if all(any(r.arm == arm and rate(r.lr) == lr and r.seed == s
+                       and r.batch_size == batch for r in runs) for s in seeds)
+        }  # fmt: skip
+        below = [lr for lr in entry["order"] if lr not in done and lr < min(entry["tested"])]
+        if below:
+            following[arm] = below[0]
+    if following:
+        out.update(outcome="incomplete", diagnostic_next={a: lr for a, lr in following.items()},
+                   problems=[f"qualification: fewer than {QUALIFYING_STATES} states for {arm} at "
+                             f"B={batch}; next diagnostic rate {lr:g}"
+                             for arm, lr in following.items()])  # fmt: skip
+        return
+    choice = qualification["choice"]
+    if choice != "m1":
+        out["outcome"] = "monitor_m2" if choice == "m2" else "monitor_redesign"
 
 
 RULINGS = __doc__.split("**Rulings**")[1].strip() if __doc__ else ""

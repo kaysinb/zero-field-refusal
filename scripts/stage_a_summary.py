@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from zero_field_refusal.analysis.stage_a import (
+    BATCHES,
     DISCOVERY_SEEDS,
     ROLES,
     agreement,
@@ -27,6 +28,7 @@ from zero_field_refusal.analysis.stage_a import (
     cells,
     instability_summary,
     load_trajectories,
+    monitor_qualification,
     select,
 )
 from zero_field_refusal.tracking import git_state
@@ -55,7 +57,13 @@ def main() -> None:
         "cells": [cell_summary(cell, theta0, DISCOVERY_SEEDS) for cell in cells(runs).values()],
         "instability": instability_summary(runs),
         "monitor_agreement": agreement(runs),
-        "selection": select(runs, screen, controls, theta0),
+        "monitor_qualification_by_batch": {  # the selection's is that of its batch
+            b: monitor_qualification(
+                [r for r in [*runs, *by_role["diagnostic"]] if r.batch_size == b]
+            )
+            for b in BATCHES
+        },
+        "selection": select(runs, screen, controls, theta0, by_role["diagnostic"]),
     }
     args.out.write_text(json.dumps(result, indent=1, default=str) + "\n")
     print(args.out)

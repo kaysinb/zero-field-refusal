@@ -581,8 +581,9 @@ monitor.
   candidates (B = 5: 5·10⁻⁴; B = 20: 2·10⁻³, then 10⁻³), AdamW-long its grid from 10⁻⁵
   downward. U = 8 comes first: the descent stops at the first rate that meets its arm's
   selection rule at U = 8 on all three seeds; a rate that meets it only at U = 7 does not stop
-  it, and U = 7 is settled from the rates the descent ran once the U = 8 search ends (a rate met,
-  or the grid exhausted). A rate fails only when all three seeds and the numerical controls it
+  it. If no batch then qualifies at U = 8, U = 7 is settled from the rates run; a rate that met
+  U = 8 need not meet U = 7, whose intermediate evaluation (K\* = √35) differs, so where an arm
+  has no run rate meeting U = 7 its descent resumes below them until one does or the grid ends. A rate fails only when all three seeds and the numerical controls it
   needs (SGD-long: its full control) have resolved; a missing run or a technical failure is not
   a failure. The rates below the stopping rate are recorded "not required". The search is
   audited by a conditional manifest — the rates run, the evidence of each outcome and the rates

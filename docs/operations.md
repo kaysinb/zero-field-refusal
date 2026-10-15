@@ -271,8 +271,21 @@ python scripts/stage_a_campaigns.py search --runs SCREEN_RUNS --seed S --out "$C
 python scripts/launch.py "$C/search1-sS.yaml"
 ```
 
-Its later steps, and the full controls of the SGD rates it runs, are written from the version-2
-runs of all three seeds once each step has resolved.
+Its later steps, the full controls of the SGD rates it runs, and the diagnostic runs that a
+selected batch short of ten diagnostic states calls for are written from the screen and the
+version-2 runs of all three seeds (with θ₀'s run for the rule's utility):
+
+```bash
+python scripts/stage_a_campaigns.py search --runs SCREEN_RUNS V2_RUNS CONTROLS --theta0 THETA0_RUN \
+  --seed S --out "$C/search-sS-N.yaml"
+python scripts/stage_a_campaigns.py controls --runs SCREEN_RUNS V2_RUNS CONTROLS --theta0 THETA0_RUN \
+  --out "$C/controls-N.yaml"                     # on seed 2000's Pod
+python scripts/stage_a_campaigns.py diagnostic --runs ALL_RUNS --theta0 THETA0_RUN --seed S \
+  --out "$C/diagnostic-sS.yaml"
+```
+
+Each refuses records that are not whole, and says what the search waits for when it needs no
+run of that seed.
 
 **Stage 0 under a new protocol** needs the soft-target distributions of its path-field check,
 which the retention policy deletes after each check: the bucket keeps only the stream's manifest

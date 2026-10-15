@@ -3,27 +3,30 @@
     python scripts/stage_a_campaigns.py setup --out FILE              # θ₀ evaluation, seed 2000
     python scripts/stage_a_campaigns.py screen --out FILE             # 10 SGD rates × 2 batches
     python scripts/stage_a_campaigns.py grids --seed S --out FILE     # AdamW-long, 25-step grids
-    python scripts/stage_a_campaigns.py sgd --runs DIR... --seed S --out FILE
     python scripts/stage_a_campaigns.py extension --runs DIR... --seed S --out FILE
-    python scripts/stage_a_campaigns.py controls --runs DIR... --out FILE
-    python scripts/stage_a_campaigns.py search --runs SCREEN_DIR --seed S --out FILE
+    python scripts/stage_a_campaigns.py search --runs DIR... [--theta0 RUN] --seed S --out FILE
+    python scripts/stage_a_campaigns.py controls --runs DIR... --theta0 RUN --out FILE
+    python scripts/stage_a_campaigns.py diagnostic --runs DIR... --theta0 RUN --seed S --out FILE
 
-A campaign holds one seed, since each seed's stream has one writer, its Pod. The data-dependent
-ones check their inputs with the selection's own checks (analysis.stage_a) and refuse anything not
-whole: ``sgd`` takes the two candidates per batch of a whole, conforming screen; ``extension`` the
-rates of the 25-step grids at batch 5 that the runs of all three discovery seeds call for and this
-seed lacks (write it again once those runs are done: a second halving may follow); ``controls`` one
-full-length control per candidate on seed 2000, as long as the longest regular run of its rate and
-batch over the three seeds and evaluated at seed 2000's evaluation steps, from the screen and every
-seed's SGD-long runs. ``search`` (amendment 1, monitor version 2) writes the first step of the
-downward search: per batch, AdamW-long's largest rate and SGD-long's largest screen candidate; its
-later steps follow the version-2 runs of all three seeds and are written by the selection's search
-rules. The rules are those of docs/study2-preregistration.md; nothing is chosen by hand. FILE
-must not exist; write it outside the checkout or under an ignored directory, such as
-$RUNS_DIR/campaigns/, so that runs from a clean checkout stay clean.
+A campaign holds one seed, since each seed's stream has one writer, its Pod (the full controls
+hold seed 2000's). The data-dependent ones check their inputs with the selection's own checks
+(analysis.stage_a) and refuse anything not whole. ``extension``: the rates of the 25-step grids
+at batch 5 that the runs of all three discovery seeds call for and this seed lacks (write it again
+once those runs are done: a second halving may follow). Under amendment 1 the long arms are
+searched downward under monitor version 2 (``analysis.stage_a.search_manifest``): ``search``
+writes this seed's runs of the rates the search needs next (its first step, the largest rate of
+each long arm at each batch, needs only the screen); ``controls`` one full-length control on seed
+2000 for each SGD rate whose three seeds have run and whose control is missing, as long as the
+longest of those runs and evaluated at seed 2000's evaluation steps; ``diagnostic`` this seed's
+diagnostic run of the rate the qualification needs, when the selected batch has fewer than ten
+diagnostic states for an optimizer. ``--theta0`` (the θ₀ run) is needed once version-2 runs exist,
+for the selection rule's utility. The rules are those of docs/study2-preregistration.md; nothing
+is chosen by hand. FILE must not exist; write it outside the checkout or under an ignored
+directory, such as $RUNS_DIR/campaigns/, so that runs from a clean checkout stay clean.
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import yaml
@@ -33,18 +36,18 @@ from zero_field_refusal.analysis.stage_a import (
     BATCHES,
     CONTROL_SEED,
     DISCOVERY_SEEDS,
+    ROLES,
     SCREEN_STEPS,
     SGD_GRID,
     SHORT_ARMS,
     SHORT_GRID,
-    cells,
     checked_discovery,
-    checked_screen,
     control_schedule,
     load_trajectories,
     prescribed_short_rates,
     rate,
-    stream_pairing,
+    search_progress,
+    select,
 )
 
 MAIN, CONTROLS = "experiments/study2_stage_a", "experiments/study2_controls"
@@ -86,18 +89,35 @@ def short_cells(arm: str, batch: int, rates, seed: int) -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "kind", choices=("setup", "screen", "grids", "sgd", "extension", "controls", "search")
-    )
+    kinds = ("setup", "screen", "grids", "sgd", "extension", "search", "controls", "diagnostic")
+    parser.add_argument("kind", choices=kinds)
     parser.add_argument("--runs", type=Path, nargs="*", default=[])
+    parser.add_argument("--theta0", type=Path, help="the θ₀ run directory (summary.json)")
     parser.add_argument("--seed", type=int, choices=DISCOVERY_SEEDS)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.out.exists():
         parser.error(f"{args.out} exists")
-    if args.kind in ("grids", "sgd", "extension", "search") and args.seed is None:
+    if args.kind in ("grids", "extension", "search", "diagnostic") and args.seed is None:
         parser.error(f"{args.kind} needs --seed")
+    if args.kind == "sgd":
+        parser.error("superseded by the downward search of amendment 1: use search")
     runs = load_trajectories(*args.runs) if args.runs else []
+    theta0 = None
+    if args.theta0 is not None:
+        summary = json.loads((args.theta0 / "summary.json").read_text())
+        theta0 = {key: summary[key] for key in ("benchmark_accuracy", "factual_accuracy")}
+    by_role = {role: [r for r in runs if r.role == role] for role in ROLES}
+
+    def progress() -> dict:
+        try:
+            state, problems = search_progress(by_role["screen"], by_role["discovery"],
+                                              by_role["full_control"], theta0)  # fmt: skip
+        except ValueError as exc:
+            parser.error(str(exc))
+        if problems:
+            parser.error("the search's records are not whole: " + "; ".join(problems))
+        return state
 
     if args.kind == "setup":
         name, items = "study2-a-setup", [cell("theta0", MAIN, [], [CONTROL_SEED], entry="theta0")]
@@ -125,34 +145,20 @@ def main() -> None:
         for arm in SHORT_ARMS:
             for b in BATCHES:
                 items += short_cells(arm, b, SHORT_GRID, args.seed)
-    elif args.kind == "sgd":
-        screened, problems = checked_screen([r for r in runs if r.role == "screen"])
-        if problems:
-            parser.error("the screen is not whole: " + "; ".join(problems))
-        name, items = f"study2-a-sgd-s{args.seed}", []
-        for b in BATCHES:
-            items += [
-                c
-                for c in long_cells("sgd_long", screened[b]["candidates"], args.seed)
-                if c["name"].startswith(f"sgd_long-b{b}-")
-            ]
-        if not items:
-            parser.error("no SGD rate passes the screen at either batch: numerics fail")
     elif args.kind == "search":
-        screened, problems = checked_screen([r for r in runs if r.role == "screen"])
-        if problems:
-            parser.error("the screen is not whole: " + "; ".join(problems))
-        if any(r.role == "discovery" and r.monitor_version > 1 for r in runs):
-            parser.error("the search's later steps are written from the version-2 runs by the "
-                         "selection's search rules, not by its first step")  # fmt: skip
-        name, items = f"study2-a-search1-s{args.seed}", []
-        for b in BATCHES:
-            first = {"adamw_long": max(ADAMW_LONG_GRID)}
-            if screened[b]["candidates"]:
-                first["sgd_long"] = max(screened[b]["candidates"])
-            for arm, lr in first.items():
+        manifest = progress()["manifest"]
+        name, items = f"study2-a-search-s{args.seed}", []
+        # AdamW-long at B = 20 first: the run that needs the most GPU memory shows it early.
+        order = [f"{arm}/B={b}" for arm in ("adamw_long", "sgd_long") for b in (20, 5)]
+        for entry in (manifest["searches"][key] for key in order):
+            pending = entry["pending"] or {}
+            if args.seed in pending.get("seeds", []):
+                arm, b, lr = entry["arm"], entry["batch"], pending["rate"]
                 items += [c for c in long_cells(arm, [lr], args.seed)
                           if c["name"].startswith(f"{arm}-b{b}-")]  # fmt: skip
+        if not items:
+            waiting = {k: e["pending"] for k, e in manifest["searches"].items() if e["pending"]}
+            parser.error(f"the search needs no run of seed {args.seed} now; waiting: {waiting}")
     elif args.kind == "extension":
         discovery = [r for r in runs if r.role == "discovery" and r.batch_size == 5]
         present, problems = checked_discovery(discovery, arms=SHORT_ARMS)
@@ -168,27 +174,14 @@ def main() -> None:
             )
         if not items:
             parser.error("no extension is called for")
-    else:  # controls
-        screen = [r for r in runs if r.role == "screen"]
-        screened, problems = checked_screen(screen)
-        candidates = {b: screened[b]["candidates"] for b in screened} if not problems else {}
-        discovery = [r for r in runs if r.role == "discovery" and r.arm == "sgd_long"]
-        present, found = checked_discovery(discovery)
-        problems += found + stream_pairing([*screen, *discovery])  # seed 2000's one stream
-        wanted = {
-            ("sgd_long", b, rate(lr), seed)
-            for b, lrs in candidates.items()
-            for lr in lrs
-            for seed in DISCOVERY_SEEDS
-        }
-        problems += [f"discovery: missing {key}" for key in sorted(wanted - set(present))]
-        problems += [f"discovery: unexpected {key}" for key in sorted(set(present) - wanted)]
-        if problems:
-            parser.error(
-                "the screen and every seed's SGD-long runs are needed: " + "; ".join(problems)
-            )
+    elif args.kind == "controls":
+        state = progress()
         name, items = "study2-a-controls", []
-        for (_, b, lr), group in cells(present.values()).items():
+        for entry in state["manifest"]["searches"].values():
+            if entry["arm"] != "sgd_long" or "control" not in (entry["pending"] or {}):
+                continue
+            b, lr = entry["batch"], entry["pending"]["rate"]
+            group = [state["present"][("sgd_long", b, lr, s)] for s in DISCOVERY_SEEDS]
             plan = control_schedule(group)  # the longest over the three seeds
             at = plan["seeds"][CONTROL_SEED]
             items.append(
@@ -204,6 +197,27 @@ def main() -> None:
                     [CONTROL_SEED],
                 )
             )
+        if not items:
+            parser.error("no SGD rate of the search waits for its full control")
+    else:  # diagnostic
+        if theta0 is None:
+            parser.error("diagnostic needs --theta0")
+        result = select(by_role["discovery"], by_role["screen"], by_role["full_control"],
+                        theta0, by_role["diagnostic"])  # fmt: skip
+        following = result.get("diagnostic_next")
+        if not following:
+            parser.error(f"no diagnostic run is called for (outcome {result['outcome']})")
+        name, items = f"study2-a-diagnostic-s{args.seed}", []
+        b = result["batch_size"]
+        for arm, lr in following.items():
+            if any(r.arm == arm and r.batch_size == b and rate(r.lr) == lr and r.seed == args.seed
+                   for r in by_role["diagnostic"]):  # fmt: skip
+                continue
+            items += [{**c, "overrides": [*c["overrides"], "stage_a.role=diagnostic"]}
+                      for c in long_cells(arm, [lr], args.seed)
+                      if c["name"].startswith(f"{arm}-b{b}-")]  # fmt: skip
+        if not items:
+            parser.error(f"seed {args.seed} has its diagnostic runs already")
     header = f"# Written by scripts/stage_a_campaigns.py {args.kind}; do not edit.\n"
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(header + yaml.safe_dump({"name": name, "cells": items}, sort_keys=False))
