@@ -38,7 +38,7 @@ import math
 import os
 import statistics
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -322,6 +322,14 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         return run.dir
 
 
+def _peak_memory() -> dict[str, float]:
+    """The GPU memory peak of the run so far (allocated, reserved), in GB; nothing on the CPU."""
+    if not torch.cuda.is_available():
+        return {}
+    return {"peak_allocated_gb": round(torch.cuda.max_memory_allocated() / 1e9, 3),
+            "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / 1e9, 3)}  # fmt: skip
+
+
 class _Loop:
     """The run's state after each step: monitor readings, evaluations, levels and stops."""
 
@@ -353,11 +361,18 @@ class _Loop:
             self.read_at = done
             self.readings.append((done, k))
             reading = {"step": done, "K_monitor": k, **geometry()}
-            if self.diagnostics is not None and done % self.diagnostics.every == 0:
-                reading |= self._diagnose(model, done)
+            cached = self.diagnostics is not None and self.monitor.last is not None
+            if not math.isfinite(k) and cached:  # the state's, or the cache's?
+                self._confirm(self.monitor.last, lambda: self.monitor.uncached(model, "primary"),
+                              "monitor")  # fmt: skip
+            reason = None
+            diagnostic = self.diagnostics is not None and done % self.diagnostics.every == 0
+            if diagnostic and math.isfinite(k):
+                out, reason = self._diagnose(model, done, k)
+                reading |= out
             _append_jsonl(self.run.path("monitor.jsonl"), [reading])
             self.run.log({"K_monitor": k}, step=done - 1)
-            reason = self.guard.monitor(k)
+            reason = reason or self.guard.monitor(k)
             if reason:
                 return reason
             if schedule.policy == "k_stopped":
@@ -382,30 +397,53 @@ class _Loop:
         last = self.monitor.last if self.read_at == self.steps else None
         return self.monitor.shadow(model, last)
 
-    def _diagnose(self, model: PreTrainedModel, step: int) -> dict[str, float]:
-        """The scoring panel's K alone and the monitor's full panel (amendment 1)."""
+    def _confirm(self, cached: Any, uncached: Callable[[], torch.Tensor], what: str) -> bool:
+        """A cached reading with a non-finite value, read again without the cache: True when
+        the state reproduces it (an outcome: ``nonfinite_k``); a value that only the cache made
+        non-finite stops the run as a technical failure. False when the reading is finite."""
+        if all(math.isfinite(v) for v in torch.as_tensor(cached).tolist()):
+            return False
+        if bool(torch.isfinite(uncached()).all()):
+            raise CacheMismatch(f"step {self.steps}: the cached {what} reading is not finite, "
+                                "the uncached one is")  # fmt: skip
+        return True
+
+    def _diagnose(
+        self, model: PreTrainedModel, step: int, k: float
+    ) -> tuple[dict[str, float], str | None]:
+        """The scoring panel's K alone and the monitor's full panel (amendment 1), recorded with
+        the step's operational reading ``k``; ``nonfinite_k`` when the state makes either one
+        non-finite."""
         scoring = self.diagnostics(model)
         shadow = self._shadow(model)
         row = {"step": step, "K_scoring": scoring.mean().item(),
-               "K_monitor": shadow["K_primary"], "K_monitor_full": shadow["K_full"],
+               "K_monitor": k, "K_monitor_full": shadow["K_full"], **_peak_memory(),
                "scoring": scoring.tolist(), "monitor_primary": shadow["primary"],
                "monitor_secondary": shadow["secondary"]}  # fmt: skip
         _append_jsonl(self.run.path("diagnostics.jsonl"), [row])
         self.diagnosed += 1
         out = {"K_scoring": row["K_scoring"], "K_monitor_full": row["K_monitor_full"]}
         self.run.log(out, step=step - 1)
-        return out
+        nonfinite = self._confirm(scoring, lambda: self.diagnostics(model, cached=False),
+                                  "scoring")  # fmt: skip
+        nonfinite |= self._confirm(shadow["secondary"],
+                                   lambda: self.monitor.uncached(model, "secondary"),
+                                   "second-response")  # fmt: skip
+        return out, "nonfinite_k" if nonfinite else None
 
-    def check_caches(self, model: PreTrainedModel, *, scoring: torch.Tensor) -> dict[str, Any]:
+    def check_caches(self, model: PreTrainedModel, *, scoring: torch.Tensor) -> str | None:
         """Every cached reading against an uncached one of this state (``scoring``: the scoring
-        panel's K per response, computed without the cache); any difference stops the run."""
+        panel's K per response, computed without the cache). A non-finite uncached reading is
+        the state's (``nonfinite_k``); any other difference stops the run as technical."""
         checks = self.monitor.check(model)
         checks["scoring"] = cache_check(self.diagnostics(model), scoring)
         _append_jsonl(self.run.path("cache_checks.jsonl"), [{"step": self.steps, **checks}])
+        if not all(check["uncached_finite"] for check in checks.values()):
+            return "nonfinite_k"
         unequal = sorted(part for part, check in checks.items() if not check["bitwise_equal"])
         if unequal:
             raise CacheMismatch(f"step {self.steps}: cached readings differ in {unequal}")
-        return checks
+        return None
 
     def _evaluate(self, model: PreTrainedModel, levels: list[float], k: float | None) -> str | None:
         condition = f"step-{self.steps}"
@@ -416,8 +454,9 @@ class _Loop:
         if self.diagnostics is not None:  # the full monitor panel and the caches, at this state
             shadow = self._shadow(model)
             out = {**out, "K_monitor_primary": shadow["K_primary"],
-                   "K_monitor_full": shadow["K_full"]}  # fmt: skip
-            self.check_caches(model, scoring=self.evaluate.last_kl["kl_benign"])
+                   "K_monitor_full": shadow["K_full"], **_peak_memory()}  # fmt: skip
+            if self.check_caches(model, scoring=self.evaluate.last_kl["kl_benign"]):
+                return "nonfinite_k"  # the checks read every part without its cache
         row = {"step": self.steps, "condition": condition, "levels": levels, "K_monitor": k, **out}
         self.evaluations.append(row)
         _append_jsonl(self.run.path("evaluations.jsonl"), [row])

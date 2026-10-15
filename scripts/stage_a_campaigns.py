@@ -6,6 +6,7 @@
     python scripts/stage_a_campaigns.py sgd --runs DIR... --seed S --out FILE
     python scripts/stage_a_campaigns.py extension --runs DIR... --seed S --out FILE
     python scripts/stage_a_campaigns.py controls --runs DIR... --out FILE
+    python scripts/stage_a_campaigns.py search --runs SCREEN_DIR --seed S --out FILE
 
 A campaign holds one seed, since each seed's stream has one writer, its Pod. The data-dependent
 ones check their inputs with the selection's own checks (analysis.stage_a) and refuse anything not
@@ -14,8 +15,11 @@ rates of the 25-step grids at batch 5 that the runs of all three discovery seeds
 seed lacks (write it again once those runs are done: a second halving may follow); ``controls`` one
 full-length control per candidate on seed 2000, as long as the longest regular run of its rate and
 batch over the three seeds and evaluated at seed 2000's evaluation steps, from the screen and every
-seed's SGD-long runs. The rules are those of docs/study2-preregistration.md; nothing is chosen by
-hand. FILE must not exist; write it outside the checkout or under an ignored directory, such as
+seed's SGD-long runs. ``search`` (amendment 1, monitor version 2) writes the first step of the
+downward search: per batch, AdamW-long's largest rate and SGD-long's largest screen candidate; its
+later steps follow the version-2 runs of all three seeds and are written by the selection's search
+rules. The rules are those of docs/study2-preregistration.md; nothing is chosen by hand. FILE
+must not exist; write it outside the checkout or under an ignored directory, such as
 $RUNS_DIR/campaigns/, so that runs from a clean checkout stay clean.
 """
 
@@ -83,7 +87,7 @@ def short_cells(arm: str, batch: int, rates, seed: int) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "kind", choices=("setup", "screen", "grids", "sgd", "extension", "controls")
+        "kind", choices=("setup", "screen", "grids", "sgd", "extension", "controls", "search")
     )
     parser.add_argument("--runs", type=Path, nargs="*", default=[])
     parser.add_argument("--seed", type=int, choices=DISCOVERY_SEEDS)
@@ -91,7 +95,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.out.exists():
         parser.error(f"{args.out} exists")
-    if args.kind in ("grids", "sgd", "extension") and args.seed is None:
+    if args.kind in ("grids", "sgd", "extension", "search") and args.seed is None:
         parser.error(f"{args.kind} needs --seed")
     runs = load_trajectories(*args.runs) if args.runs else []
 
@@ -134,6 +138,21 @@ def main() -> None:
             ]
         if not items:
             parser.error("no SGD rate passes the screen at either batch: numerics fail")
+    elif args.kind == "search":
+        screened, problems = checked_screen([r for r in runs if r.role == "screen"])
+        if problems:
+            parser.error("the screen is not whole: " + "; ".join(problems))
+        if any(r.role == "discovery" and r.monitor_version > 1 for r in runs):
+            parser.error("the search's later steps are written from the version-2 runs by the "
+                         "selection's search rules, not by its first step")  # fmt: skip
+        name, items = f"study2-a-search1-s{args.seed}", []
+        for b in BATCHES:
+            first = {"adamw_long": max(ADAMW_LONG_GRID)}
+            if screened[b]["candidates"]:
+                first["sgd_long"] = max(screened[b]["candidates"])
+            for arm, lr in first.items():
+                items += [c for c in long_cells(arm, [lr], args.seed)
+                          if c["name"].startswith(f"{arm}-b{b}-")]  # fmt: skip
     elif args.kind == "extension":
         discovery = [r for r in runs if r.role == "discovery" and r.batch_size == 5]
         present, problems = checked_discovery(discovery, arms=SHORT_ARMS)

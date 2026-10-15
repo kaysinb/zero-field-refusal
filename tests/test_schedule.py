@@ -450,3 +450,93 @@ def test_monitor_version_1_runs_without_diagnostics(env, tmp_path, scripted) -> 
     terminal = json.loads((run_dir / "terminal.json").read_text())
     assert "monitor" not in terminal and terminal["stop"]["reason"] == "target"
     assert all("K_monitor_full" not in e for e in read_jsonl(run_dir / "evaluations.jsonl"))
+
+
+def short_v2(env, tmp_path):
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]", policy="short")
+    ready(env, cfg)
+    return cfg
+
+
+def nan_like(values: torch.Tensor) -> torch.Tensor:
+    return torch.full_like(values, float("nan"))
+
+
+@pytest.mark.parametrize("where", ["scoring", "secondary"])
+def test_a_reproduced_non_finite_diagnostic_stops_the_run(env, tmp_path, monkeypatch, where):
+    from zero_field_refusal.panels import Monitor, ScoringDiagnostics
+
+    cfg = short_v2(env, tmp_path)
+    if where == "scoring":
+        call = ScoringDiagnostics.__call__
+
+        def scoring(self, m, cached=True):
+            return nan_like(call(self, m, cached=cached))
+
+        monkeypatch.setattr(ScoringDiagnostics, "__call__", scoring)
+    else:
+        values = Monitor._values
+        monkeypatch.setattr(Monitor, "_values", lambda self, m, part, cached=True: (
+            nan_like(values(self, m, part, cached=cached)) if part == "secondary"
+            else values(self, m, part, cached=cached)))  # fmt: skip
+    run_dir = run_scheduled(cfg, env, run_id=f"nan-{where}")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "nonfinite_k", "kind": "instability"}
+    assert terminal["steps"] == 25 and not (run_dir / "evaluations.jsonl").exists()
+
+
+@pytest.mark.parametrize("where", ["scoring", "primary"])
+def test_a_non_finite_value_only_the_cache_makes_is_technical(env, tmp_path, monkeypatch, where):
+    from zero_field_refusal.panels import CacheMismatch, Monitor, ScoringDiagnostics
+
+    cfg = short_v2(env, tmp_path)
+    state = {"steps": 0}
+    if where == "scoring":
+        call = ScoringDiagnostics.__call__
+
+        def scoring(self, m, cached=True):
+            out = call(self, m, cached=cached)
+            return nan_like(out) if cached and state["steps"] else out
+
+        monkeypatch.setattr(ScoringDiagnostics, "__call__", scoring)
+    else:
+        values = Monitor._values
+
+        def monitor(self, m, part, cached=True):
+            out = values(self, m, part, cached=cached)
+            return nan_like(out) if cached and part == "primary" and state["steps"] else out
+
+        monkeypatch.setattr(Monitor, "_values", monitor)
+    from zero_field_refusal import schedule
+
+    after = schedule._Loop.after_step
+
+    def counted(self, model, geometry):
+        state["steps"] = self.steps
+        return after(self, model, geometry)
+
+    monkeypatch.setattr(schedule._Loop, "after_step", counted)
+    with pytest.raises(CacheMismatch, match="not finite, the uncached one is"):
+        run_scheduled(cfg, env, run_id=f"cache-nan-{where}")
+
+
+def test_a_non_finite_uncached_reading_at_an_evaluation_is_an_outcome(env, tmp_path, monkeypatch):
+    from zero_field_refusal.panels import Monitor
+
+    cfg = short_v2(env, tmp_path)
+    check = Monitor.check
+
+    def failing(self, model):
+        out = check(self, model)
+        if any("bitwise_equal" in c for c in out.values()) and self.last is not None:
+            out["secondary"] |= {"bitwise_equal": False, "uncached_finite": False}
+        return out
+
+    monkeypatch.setattr(Monitor, "check", failing)
+    run_dir = run_scheduled(cfg, env, run_id="eval-nan")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"]["reason"] == "nonfinite_k" and terminal["steps"] == 25
+    checks = read_jsonl(run_dir / "cache_checks.jsonl")
+    assert [c["step"] for c in checks] == [0, 25] and checks[1]["secondary"][
+        "uncached_finite"
+    ] is False

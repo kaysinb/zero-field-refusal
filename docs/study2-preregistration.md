@@ -253,9 +253,9 @@ Three seeds, run at both batches in parallel. Every run is evaluated at all
   - if at B = 5 the smallest rate's median K_benign already exceeds 5, the grid extends downward
     by halving, at most twice.
 - **Frozen Adam-25:** the same grid on the same seeds.
-- **Monitor version 2** ([amendment 1](#amendment-1-the-monitor-panel)): SGD-long runs only
-  under it, and the decisive AdamW-long configurations run again under it on all three seeds.
-  The selection uses the version-2 records of the long arms; the version-1 long runs stay
+- **Monitor version 2** ([amendment 1](#amendment-1-the-monitor-panel)): the long arms are
+  searched again under it, rate by rate downward on all three seeds, SGD-long for the first
+  time. The selection uses the version-2 records of the long arms; the version-1 long runs stay
   observations with their measured K. The 25-step grids and the screen are unaffected.
 
 ### Selection rule
@@ -576,27 +576,43 @@ monitor.
   computation batches them, with the same float64 KL. At θ₀ before training and at every full
   evaluation, every cached reading (m = 1, the second responses, the scoring panel) is compared
   with an uncached one per response; any difference stops the run as a technical failure.
-- **Qualification.** On every version-2 discovery trajectory, each counted whatever the
-  selection later prefers: the refreshed AdamW-long configurations and all SGD-long discovery
-  runs, seeds 2000–2002. Separately for each optimizer, over the diagnostic states with
+- **Search under version 2.** The long arms' rates are searched downward, each arm (SGD-long,
+  AdamW-long) and batch on its own, on all three discovery seeds. SGD-long runs only its screen
+  candidates (B = 5: 5·10⁻⁴; B = 20: 2·10⁻³, then 10⁻³), AdamW-long its grid from 10⁻⁵
+  downward. U = 8 comes first: the descent stops at the first rate that meets its arm's
+  selection rule at U = 8 on all three seeds; a rate that meets it only at U = 7 does not stop
+  it, and U = 7 is settled from the rates the descent ran once the U = 8 search ends (a rate met,
+  or the grid exhausted). A rate fails only when all three seeds and the numerical controls it
+  needs (SGD-long: its full control) have resolved; a missing run or a technical failure is not
+  a failure. The rates below the stopping rate are recorded "not required". The search is
+  audited by a conditional manifest — the rates run, the evidence of each outcome and the rates
+  not required — which replaces the completeness of the full grid; the campaign generators and
+  the selection follow it together. Selected rates set T_max as before; the cost comparison
+  concerns the selected confirmation block, not the search's cost, and its stream-generation
+  time per chunk is fixed from the version-1 discovery runs (all three seeds' stream extensions,
+  when the version-1 grids end), so that the search's pruning cannot change it.
+- **Qualification.** On every version-2 trajectory the search prescribes, each counted whatever
+  the selection later prefers. Separately for each optimizer, at the batch the selection
+  chooses (a well-measured batch cannot hide the chosen one), over the diagnostic states with
   K_scoring ≥ 4: every reading finite, and median |K_monitor − K_scoring| / K_scoring ≤ 5 %,
-  95th percentile ≤ 15 %, over at least 10 distinct states (fewer: undetermined, which does not
-  pass). m = 1 is chosen if it passes for both optimizers; otherwise m = 2 if it passes; otherwise
-  the monitor is redesigned before validation, without drawing panels until one passes. The
-  choice uses K only. Reported alongside, not deciding m: at the actual trigger states, distinct
-  evaluations for 5, K\* and U, K\* bracketed by the measured K, and the upper evaluation inside
-  the fit band. If m = 2 is chosen, runs whose stops m = 1 decided are run again under m = 2,
-  never relabeled.
+  95th percentile ≤ 15 %, over at least 10 distinct states. With fewer states, the next rate in
+  the search's order of the same arm and batch runs as a diagnostic run, until 10 states are
+  reached; a check still short of them is undetermined and does not pass. m = 1 is chosen if it
+  passes for both optimizers; otherwise m = 2 if it passes; otherwise the monitor is redesigned
+  before validation, without drawing panels until one passes. The choice uses K only. Reported
+  alongside, not deciding m: at the actual trigger states, distinct evaluations for 5, K\* and
+  U, K\* bracketed by the measured K, and the upper evaluation inside the fit band. If m = 2 is
+  chosen, the search is redone under its stopping policy: runs whose stops m = 1 decided run
+  again under m = 2, never relabeled.
 - **Old discovery.** The version-1 runs stay observations with their measured K_benign, never
-  relabeled; their nominal crossings are not evidence about the version-2 policy. Before the
-  selection is sealed, the decisive AdamW-long configurations run again under version 2 on all
-  three seeds: at each batch, every rate that reached level 5 on at least one seed under
-  version 1, and the next smaller rate if any of its runs ended with a last-window monitor
-  median of at least 4. At B = 5 these are 5·10⁻⁶ and 10⁻⁵; at B = 20 they follow from the
-  version-1 runs when those end, by the same rule. U, T_max and the cost comparison are
-  computed from version-2 records; monitor-dependent instability decisions and the full
+  relabeled; their nominal crossings are not evidence about the version-2 policy, and the
+  selection uses the version-2 search. Monitor-dependent instability decisions and the full
   controls are redone if their length or evaluation steps change. The 25-step grids, their
   extensions and the screen stand. The fit band is not widened.
+- **Non-finite readings.** Every reading is checked for finiteness. A non-finite cached reading
+  (the monitor, its second responses, the scoring diagnostics) is read again without the cache:
+  reproduced, it stops the run as `nonfinite_k`; finite, the cache failed, and the run stops as a
+  technical failure.
 - **Code and versions.** Configs carry `eval.monitor.version: 2`; the protocol version stays 2
   (the cache changes no K, which the check above verifies). Stage A now runs from two commits:
   the version-1 discovery from `29e096a`, and everything after this amendment from the commit

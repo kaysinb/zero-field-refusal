@@ -61,11 +61,13 @@ def _cache(
 
 
 def cache_check(cached: torch.Tensor, uncached: torch.Tensor) -> dict[str, Any]:
-    """Per-response K of the same state with and without the cache: equal bit for bit?"""
+    """Per-response K of the same state with and without the cache: equal bit for bit? A
+    non-finite uncached value is the state's own (``uncached_finite`` False), not the cache's."""
     return {
         "responses": int(cached.numel()),
         "bitwise_equal": bool(torch.equal(cached, uncached)),
         "max_abs_diff": float((cached - uncached).abs().max()) if cached.numel() else 0.0,
+        "uncached_finite": bool(torch.isfinite(uncached).all()),
     }
 
 
@@ -114,6 +116,10 @@ class Monitor:
     def __call__(self, model: PreTrainedModel) -> float:
         self.last = self._values(model, "primary")
         return self.last.mean().item()
+
+    def uncached(self, model: PreTrainedModel, part: str) -> torch.Tensor:
+        """A part's per-response K at this state without its cache."""
+        return self._values(model, part, cached=False)
 
     def shadow(self, model: PreTrainedModel, primary: torch.Tensor | None) -> dict[str, Any]:
         """The full panel (every response of each prompt) at this state; ``primary`` is the

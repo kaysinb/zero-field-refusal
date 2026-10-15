@@ -257,7 +257,22 @@ python scripts/generate_teacher.py experiments/study2_stage_a --stream kl_monito
 Each version-2 run caches θ₀'s logits for the monitor (m = 1 on the GPU, the second responses in
 host memory) and for the scoring panel (host memory), about 4.4 GB, 4.4 GB and 18.6 GB at the
 1.5B model; it checks the caches against uncached readings at θ₀ and at every full evaluation
-(`cache_checks.jsonl`) and writes the scoring diagnostics to `diagnostics.jsonl`.
+(`cache_checks.jsonl`) and writes the scoring diagnostics to `diagnostics.jsonl`. Diagnostics and
+evaluations record the run's GPU memory peak so far (`peak_allocated_gb`, `peak_reserved_gb`):
+on the first version-2 run at B = 20, read them at the first diagnostic (step 25, after Adam's
+moments exist) and the first full evaluation, before the campaign goes on; a peak near the GPU's
+memory stops it.
+
+The search ([amendment 1](study2-preregistration.md#amendment-1-the-monitor-panel)) starts on
+each Pod with its first step, the largest rate of each long arm at each batch:
+
+```bash
+python scripts/stage_a_campaigns.py search --runs SCREEN_RUNS --seed S --out "$C/search1-sS.yaml"
+python scripts/launch.py "$C/search1-sS.yaml"
+```
+
+Its later steps, and the full controls of the SGD rates it runs, are written from the version-2
+runs of all three seeds once each step has resolved.
 
 **Stage 0 under a new protocol** needs the soft-target distributions of its path-field check,
 which the retention policy deletes after each check: the bucket keeps only the stream's manifest

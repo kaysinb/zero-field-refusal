@@ -73,6 +73,7 @@ def write_run(
     status: str = "completed",
     role: str = "discovery",
     model: str | None = None,
+    monitor_version: int = 1,
 ) -> Path:
     """One run directory. A long arm reaches each level of ``reach`` at its step; a fixed arm
     (25-step arms, soft-target controls) is evaluated at ``evaluate_at`` with K_benign
@@ -152,7 +153,7 @@ def write_run(
         "train": {"steps": steps if fixed else train_steps, "batch_size": batch},
         "teacher": {"chunk_size": spec["chunk_size"]},
         "eval": {
-            "monitor": {"every": spec["monitor_every"]},
+            "monitor": {"every": spec["monitor_every"], "version": monitor_version},
             "harmful": {"prompt_set": spec["harmful_set"]},
         },
         "schedule": {

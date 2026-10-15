@@ -147,3 +147,23 @@ def test_controls_need_the_screen_and_discovery_on_seed_2000s_one_stream(monkeyp
         )
     with pytest.raises(SystemExit):
         write(monkeypatch, tmp_path, "controls", "--runs", str(tmp_path / "runs"))
+
+
+def test_the_search_starts_at_each_arms_largest_rate_per_batch(monkeypatch, tmp_path) -> None:
+    search(tmp_path / "runs")  # a whole screen (candidates 0.004 and 0.003 at both batches)
+    runs = write(monkeypatch, tmp_path, "search", "--runs", str(tmp_path / "runs" / "screen"),
+                 "--seed", "2001")  # fmt: skip
+    assert labels(runs) == [
+        "adamw_long-b5-1e-05/s2001",
+        "sgd_long-b5-0.004/s2001",
+        "adamw_long-b20-1e-05/s2001",
+        "sgd_long-b20-0.004/s2001",
+    ]
+
+
+def test_the_search_writes_only_its_first_step(monkeypatch, tmp_path) -> None:
+    search(tmp_path / "runs")
+    write_run(tmp_path / "runs" / "v2", "adamw-v2", arm="adamw_long", batch=5, lr=1e-5,
+              seed=2001, reach={5.0: 100}, monitor_version=2)  # fmt: skip
+    with pytest.raises(SystemExit):
+        write(monkeypatch, tmp_path, "search", "--runs", str(tmp_path / "runs"), "--seed", "2001")
