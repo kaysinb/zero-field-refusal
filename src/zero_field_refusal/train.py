@@ -220,6 +220,7 @@ class Evaluator:
     ):
         self.cfg, self.env, self.run, self.reference = cfg, env, run, reference
         self.sealed = sealed
+        self.last_kl: dict[str, torch.Tensor] = {}  # the last condition's K per response
         kl_limit = cfg.eval.kl.limit
         per_prompt = cfg.eval.kl.samples_per_prompt
         self.kl_streams = {}
@@ -252,6 +253,7 @@ class Evaluator:
         for kind, samples in self.kl_streams.items():
             kl = sequence_kl(model, self.reference, samples, pad_id=env.pad_id,
                              micro_batch_size=execution.micro_batch_size)  # fmt: skip
+            self.last_kl[kind] = kl
             out[f"K_{kind.removeprefix('kl_')}"] = kl.mean().item()
             rows += [
                 {"condition": condition, "measure": kind, "item_id": s.prompt_id, "sample": i,

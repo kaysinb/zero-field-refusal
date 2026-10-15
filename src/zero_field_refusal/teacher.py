@@ -29,6 +29,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers import LogitsProcessor, LogitsProcessorList, PreTrainedModel
@@ -597,7 +598,9 @@ def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int
 STREAM_KINDS = ("training", "preconditioner", "kl_harmful", "kl_benign", "kl_monitor",
                 "soft_targets", "alpaca_reference")  # fmt: skip
 # K's reference streams: sampled once per model, each from its own seeds. kl_monitor is the monitor
-# panel of study 2, disjoint from the scoring panel (kl_benign) in prompts and randomness.
+# panel of study 2, independent of the scoring panel (kl_benign) in randomness: in version 1 also
+# disjoint in prompts; in version 2 (amendment 1) fresh θ₀ responses to the scoring panel's own
+# prompts, with seeds of their own.
 REFERENCE_KINDS = ("kl_harmful", "kl_benign", "kl_monitor")
 
 
@@ -647,6 +650,9 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
     elif kind == "kl_monitor":
         spec["sampling"] = {**zero_field, "max_new_tokens": int(cfg.eval.kl.max_new_tokens)}
         spec["samples_per_prompt"] = int(cfg.eval.monitor.samples_per_prompt)
+        version = monitor_version(cfg)
+        if version > 1:  # version 1's spec, and so its stream, stays as it was
+            spec["monitor_version"] = version
     else:  # alpaca_reference: reference answers, truncated to the sampling cap
         spec["max_new_tokens"] = int(cfg.teacher.sampling.max_new_tokens)
         spec["responses"] = int(cfg.teacher.responses)
@@ -662,13 +668,21 @@ def stream_path(spec: Mapping[str, Any], seed: int | None, root: Path) -> Path:
     return root / "teacher" / model / spec["kind"] / digest / name
 
 
-def stream_seeds(kind: str, seed: int | None) -> tuple[int, int]:
+def monitor_version(cfg: Any) -> int:
+    """The monitor panel's version (``eval.monitor.version``; 1 when absent)."""
+    return int(OmegaConf.select(cfg, "eval.monitor.version", default=None) or 1)
+
+
+def stream_seeds(kind: str, seed: int | None, *, version: int = 1) -> tuple[int, int]:
     """Seeds of the prompt draws and of sampling for a stream.
 
-    K's reference streams are sampled once per model, independently of any run seed.
+    K's reference streams are sampled once per model, independently of any run seed; a monitor
+    panel of a later ``version`` has seeds of its own.
     """
     if kind in REFERENCE_KINDS:
-        return derive_seed(0, "kl_reference", kind, "prompts"), derive_seed(0, "kl_reference", kind)
+        name = (kind,) if version == 1 else (kind, f"v{version}")
+        return (derive_seed(0, "kl_reference", *name, "prompts"),
+                derive_seed(0, "kl_reference", *name))  # fmt: skip
     if seed is None:
         raise ValueError(f"A {kind} stream needs a run seed")
     name = "teacher" if kind in ("training", "soft_targets") else kind

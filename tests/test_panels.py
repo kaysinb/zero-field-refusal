@@ -44,11 +44,14 @@ def test_study2_configs_add_the_monitor_panel_and_the_evaluation_set_to_study1s(
     cfg = load_run_config(experiment)
     assert cfg.data.alpaca.monitor_prompts == 25
     assert cfg.eval.monitor.samples_per_prompt == 2 and cfg.eval.monitor.every == 5
+    assert cfg.eval.monitor.version == 2 and cfg.eval.monitor.drive == 1  # amendment 1
+    assert cfg.eval.monitor.prompt_set == "alpaca_benign_kl" and cfg.eval.diagnostics.every == 25
     assert cfg.data.harmful.evaluation.jaccard == 0.6
     assert cfg.eval.harmful.prompt_set == "harmful_evaluation"
     cfg.data.alpaca.pop("monitor_prompts")
     cfg.data.harmful.pop("evaluation")
     assert cfg.data == plain.data  # nothing else changes in the data config
     cfg.eval.pop("monitor")
+    cfg.eval.pop("diagnostics")
     cfg.eval.harmful.prompt_set = plain.eval.harmful.prompt_set
     assert cfg.eval == plain.eval

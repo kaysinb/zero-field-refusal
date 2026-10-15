@@ -809,6 +809,68 @@ def test_the_monitor_panel_has_its_own_prompts_stream_and_seeds(env) -> None:
     assert meta["inputs"]["streams"]["kl_monitor"]["count"] == 6
 
 
+MONITOR_V2 = (*MONITORED, "+eval.monitor.version=2", "+eval.monitor.prompt_set=alpaca_benign_kl",
+              "+eval.monitor.drive=1", "+eval.monitor.cache.primary=device",
+              "+eval.monitor.cache.secondary=host")  # fmt: skip
+
+
+def test_monitor_version_2_answers_the_scoring_prompts_with_seeds_of_its_own(env) -> None:
+    from zero_field_refusal.panels import Monitor
+    from zero_field_refusal.teacher import stream_seeds
+    from zero_field_refusal.tracking import Run
+
+    v1, v2 = config(*MONITORED), config(*MONITOR_V2)
+    prepare(env, v2, "kl_monitor")
+    spec1, path1, _ = locate_stream(v1, env, "kl_monitor", None)
+    spec2, path2, _ = locate_stream(v2, env, "kl_monitor", None)
+    benign, benign_path, _ = locate_stream(v2, env, "kl_benign", None)
+    assert "monitor_version" not in spec1 and spec2["monitor_version"] == 2  # version 1 unchanged
+    assert spec2["prompts"] == benign["prompts"] and path2 not in (path1, benign_path)
+    seeds = [stream_seeds("kl_monitor", None), stream_seeds("kl_monitor", None, version=2),
+             stream_seeds("kl_benign", None)]  # fmt: skip
+    assert len({seed for pair in seeds for seed in pair}) == 6
+    manifest = load_manifest(path2)
+    assert (manifest["prompt_seed"], manifest["sampling_seed"]) == seeds[1]
+    samples, _ = load_stream_for(v2, env, "kl_monitor", None)
+    scoring, _ = load_stream_for(v2, env, "kl_benign", None)
+    assert [s.prompt_id for s in samples] == [s.prompt_id for s in scoring]  # 2 per prompt each
+
+    reference, student = env.new_model(), env.new_model()
+    with Run(v2, run_id="monitor-v2") as run:
+        monitor = Monitor(v2, env, run, reference)
+        assert monitor.primary == samples[0::2] and monitor.secondary == samples[1::2]
+        with torch.no_grad():
+            student.lm_head.weight.add_(0.5 * torch.randn_like(student.lm_head.weight))
+        k = monitor(student)
+        shadow = monitor.shadow(student, monitor.last)
+        assert shadow["K_primary"] == k and len(shadow["secondary"]) == len(samples) // 2
+        assert shadow == monitor.shadow(student, None)  # the same state, read again
+        checks = monitor.check(student)
+        assert set(checks) == {"primary", "secondary"}
+        assert all(c["bitwise_equal"] and c["max_abs_diff"] == 0.0 for c in checks.values())
+
+
+def test_cached_reference_logits_give_the_uncached_k_bit_for_bit(env) -> None:
+    from zero_field_refusal.evaluation import ReferenceLogits, sequence_kl
+
+    cfg = config()
+    prepare(env, cfg)
+    samples, _ = load_stream_for(cfg, env, "kl_benign", None)
+    reference, student = env.new_model(), env.new_model()
+    with torch.no_grad():
+        student.lm_head.weight.add_(0.5 * torch.randn_like(student.lm_head.weight))
+    common = dict(pad_id=env.pad_id, micro_batch_size=3)
+    plain = sequence_kl(student, reference, samples, **common)
+    assert plain.min() > 0
+    for device in ("cpu", torch.device("cpu")):
+        cache = ReferenceLogits(reference, samples, device=device, **common)
+        assert cache.bytes > 0
+        assert torch.equal(sequence_kl(student, reference, samples, cache=cache, **common), plain)
+    with pytest.raises(ValueError, match="other samples or micro-batches"):
+        sequence_kl(student, reference, samples, pad_id=env.pad_id, micro_batch_size=2,
+                    cache=cache)  # fmt: skip
+
+
 def test_writers_of_one_stream_take_turns_under_its_lock(env) -> None:
     import threading
     import time

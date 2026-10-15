@@ -244,6 +244,21 @@ python scripts/stage_a_campaigns.py sgd --runs SCREEN_RUNS --seed S --out "$C/sg
 python scripts/launch.py "$C/sgd.yaml"
 ```
 
+**Monitor version 2** ([amendment 1](study2-preregistration.md#amendment-1-the-monitor-panel)).
+Every run after the amendment uses the commit that implements it, delivered as a new bundle.
+On Pod A, once, before any run reads it: generate the new monitor stream, record its spec hash
+and sha256 here, and archive it with its own inventory, which the other Pods' `pod_setup.sh`
+adds.
+
+```bash
+python scripts/generate_teacher.py experiments/study2_stage_a --stream kl_monitor
+```
+
+Each version-2 run caches θ₀'s logits for the monitor (m = 1 on the GPU, the second responses in
+host memory) and for the scoring panel (host memory), about 4.4 GB, 4.4 GB and 18.6 GB at the
+1.5B model; it checks the caches against uncached readings at θ₀ and at every full evaluation
+(`cache_checks.jsonl`) and writes the scoring diagnostics to `diagnostics.jsonl`.
+
 **Stage 0 under a new protocol** needs the soft-target distributions of its path-field check,
 which the retention policy deletes after each check: the bucket keeps only the stream's manifest
 and samples, which `pod_setup.sh` restores. Before the checks, remove that restored copy
@@ -356,7 +371,12 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
   `SIGTERM` to the launcher alone (not its process group) stops the campaign at a run boundary:
   the running attempt finishes and is recorded, a `stop` record is logged, and the launcher exits
-  non-zero without starting another; the same command carries on later.
+  non-zero without starting another; the same command carries on later. Send it to the
+  launcher's PID only: Ctrl-C or a signal to the process group (`kill -TERM -PGID`) also reaches
+  the running attempt and ends it. The boundary is where an attempt is admitted, not where its
+  process starts: a signal that arrives while an admitted attempt is being logged does not keep
+  it from starting, so expect up to one more run after the signal. A signal during the last
+  attempt that then succeeds leaves no `stop` record and exit code 0: the campaign simply ended.
 - **Study-2 runs** (`scripts/train.py` with a config that has a `schedule`) stop by K, plateau,
   instability or T_max and may extend their seed's appendable stream with their frozen θ₀; all
   runs of a seed that may extend its stream run on one machine, where writers take turns under

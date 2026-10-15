@@ -24,6 +24,45 @@ from .teacher import Sample, capture_step_logits, check_unprocessed, split_respo
 NO_CAP = 10**9
 
 
+class ReferenceLogits:
+    """θ₀'s raw fp32 logits at the response positions of fixed samples, computed once, micro-batch
+    by micro-batch as ``sequence_kl`` batches them (same chunks, same padding, same positions).
+
+    ``sequence_kl(..., cache=...)`` then does its float64 arithmetic on these logits instead of a
+    new forward pass of θ₀: given a deterministic forward pass, its K is that of the uncached call,
+    bit for bit, which ``cache_check`` verifies on the states where both are computed. ``device``
+    keeps the logits on the GPU or in (pinned) host memory, copied per micro-batch.
+    """
+
+    @torch.no_grad()
+    def __init__(
+        self,
+        reference: PreTrainedModel,
+        samples: Sequence[Sample],
+        *,
+        pad_id: int,
+        micro_batch_size: int,
+        device: str | torch.device,
+    ):
+        model_device = next(reference.parameters()).device
+        self.count, self.micro_batch_size = len(samples), micro_batch_size
+        self.device = torch.device(device)
+        self.logits = []
+        for chunk in chunks(samples, micro_batch_size):
+            batch = collate(chunk, pad_id=pad_id, max_response_tokens=NO_CAP, device=model_device)
+            logits = response_logits(reference, batch).to(self.device, copy=True)
+            if self.device.type == "cpu" and torch.cuda.is_available():
+                logits = logits.pin_memory()
+            self.logits.append(logits)
+        self.bytes = sum(t.numel() * t.element_size() for t in self.logits)
+
+    def fits(self, samples: Sequence[Sample], micro_batch_size: int) -> bool:
+        return (self.count, self.micro_batch_size) == (len(samples), micro_batch_size)
+
+    def chunk(self, index: int, device: torch.device) -> torch.Tensor:
+        return self.logits[index].to(device, non_blocking=True)
+
+
 @torch.no_grad()
 def sequence_kl(
     student: PreTrainedModel,
@@ -32,13 +71,20 @@ def sequence_kl(
     *,
     pad_id: int,
     micro_batch_size: int,
+    cache: ReferenceLogits | None = None,
 ) -> torch.Tensor:
-    """(n,) float64: per sample, Σ over response positions of KL(p_reference ‖ p_student)."""
+    """(n,) float64: per sample, Σ over response positions of KL(p_reference ‖ p_student).
+
+    With ``cache`` (built on these samples and this micro-batch size) θ₀'s logits come from it
+    instead of a forward pass of ``reference``; the arithmetic is the same."""
     device = next(student.parameters()).device
+    if cache is not None and not cache.fits(samples, micro_batch_size):
+        raise ValueError("The reference cache was built on other samples or micro-batches")
     per_sample = []
-    for chunk in chunks(samples, micro_batch_size):
+    for i, chunk in enumerate(chunks(samples, micro_batch_size)):
         batch = collate(chunk, pad_id=pad_id, max_response_tokens=NO_CAP, device=device)
-        log_p0 = torch.log_softmax(response_logits(reference, batch).double(), dim=-1)
+        logits0 = response_logits(reference, batch) if cache is None else cache.chunk(i, device)
+        log_p0 = torch.log_softmax(logits0.double(), dim=-1)
         log_p = torch.log_softmax(response_logits(student, batch).double(), dim=-1)
         per_token = (log_p0.exp() * (log_p0 - log_p)).sum(-1)
         per_sample += [part.sum() for part in per_token.split(batch.lengths)]

@@ -244,4 +244,39 @@ def _schedule_problems(cfg: DictConfig, layout: Any, steps: Any) -> list[str]:
     every = OmegaConf.select(cfg, "eval.monitor.every", default=None)
     if not (isinstance(every, int) and every > 0):
         problems.append(f"eval.monitor.every: a scheduled run reads the monitor, got {every!r}")
+    return problems + _monitor_problems(cfg, every)
+
+
+MONITOR_CACHES = ("device", "host", "none")
+
+
+def _monitor_problems(cfg: DictConfig, every: Any) -> list[str]:
+    """Monitor version 2 (amendment 1): the scoring prompts, nested panels, caches and the
+    scoring panel's diagnostics at a fixed multiple of the reading interval."""
+    monitor = OmegaConf.select(cfg, "eval.monitor", default=None)
+    version = monitor.get("version", 1) if monitor is not None else 1
+    if version == 1:
+        return []
+    problems = []
+    if version != 2:
+        return [f"eval.monitor.version: expected 1 or 2, got {version!r}"]
+    if monitor.get("prompt_set") != "alpaca_benign_kl":
+        problems.append("eval.monitor.prompt_set: version 2 reads the scoring panel's prompts "
+                        f"(alpaca_benign_kl), got {monitor.get('prompt_set')!r}")  # fmt: skip
+    per_prompt, drive = monitor.get("samples_per_prompt"), monitor.get("drive")
+    if not (isinstance(drive, int) and isinstance(per_prompt, int) and 1 <= drive <= per_prompt):
+        problems.append(f"eval.monitor.drive: expected 1 <= drive <= samples_per_prompt, got "
+                        f"{drive!r} of {per_prompt!r}")  # fmt: skip
+    caches = monitor.get("cache") or {}
+    for part in ("primary", "secondary"):
+        if caches.get(part) not in MONITOR_CACHES:
+            problems.append(f"eval.monitor.cache.{part}: expected one of {MONITOR_CACHES}")
+    diagnostics = OmegaConf.select(cfg, "eval.diagnostics", default=None) or {}
+    step = diagnostics.get("every")
+    if not (isinstance(step, int) and isinstance(every, int) and every > 0 and step > 0
+            and step % every == 0):  # fmt: skip
+        problems.append(f"eval.diagnostics.every: a positive multiple of eval.monitor.every "
+                        f"({every!r}), got {step!r}")  # fmt: skip
+    if diagnostics.get("cache") not in MONITOR_CACHES:
+        problems.append(f"eval.diagnostics.cache: expected one of {MONITOR_CACHES}")
     return problems

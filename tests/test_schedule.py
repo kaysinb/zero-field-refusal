@@ -6,6 +6,7 @@ crossed; training, the scoring panel and the stored responses are real.
 
 import json
 import math
+import os
 from pathlib import Path
 
 import pytest
@@ -303,6 +304,12 @@ def test_the_soft_target_control_runs_under_a_fixed_schedule(env, tmp_path, scri
         ("schedule.policy=sometimes", "schedule.policy"),
         ("schedule.levels=[1.0,0.5]", "schedule.levels"),
         ("eval.monitor.every=0", "eval.monitor.every"),
+        ("eval.monitor.version=3", "eval.monitor.version"),
+        ("eval.monitor.prompt_set=alpaca_monitor", "eval.monitor.prompt_set"),
+        ("eval.monitor.drive=3", "eval.monitor.drive"),
+        ("eval.monitor.cache.primary=gpu", "eval.monitor.cache.primary"),
+        ("eval.diagnostics.every=7", "eval.diagnostics.every"),
+        ("eval.diagnostics.cache=disk", "eval.diagnostics.cache"),
     ],
 )
 def test_schedules_are_checked_at_load(tmp_path, override, message) -> None:
@@ -385,3 +392,61 @@ def test_a_failed_evaluation_leaves_its_levels_missed(env, tmp_path, scripted, m
 def test_a_fixed_schedule_must_end_with_an_evaluation(tmp_path) -> None:
     with pytest.raises(ProtocolError, match="must include the last step 10"):
         scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[5]", policy="short")
+
+
+def test_monitor_version_2_diagnoses_the_scoring_panel_and_checks_its_caches(env, tmp_path) -> None:
+    """A fixed 25-step run: the monitor reads its first response per prompt every 5 steps; at
+    step 25 the scoring panel's K alone and the full monitor panel are read (diagnostic), and the
+    full evaluation of that same state checks every cache against uncached readings."""
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]", policy="short")
+    ready(env, cfg)
+    run_dir = run_scheduled(cfg, env, run_id="v2")
+    monitor = read_jsonl(run_dir / "monitor.jsonl")
+    assert [m["step"] for m in monitor] == [5, 10, 15, 20, 25]
+    assert "K_scoring" not in monitor[0] and "K_scoring" in monitor[-1]
+    (diagnostic,) = read_jsonl(run_dir / "diagnostics.jsonl")
+    assert diagnostic["step"] == 25 and diagnostic["K_monitor"] == monitor[-1]["K_monitor"]
+    assert len(diagnostic["scoring"]) == 2 * len(diagnostic["monitor_primary"])
+    assert len(diagnostic["monitor_primary"]) == len(diagnostic["monitor_secondary"])
+    assert diagnostic["K_scoring"] == pytest.approx(
+        sum(diagnostic["scoring"]) / len(diagnostic["scoring"])
+    )
+    (evaluation,) = read_jsonl(run_dir / "evaluations.jsonl")
+    assert evaluation["K_benign"] == diagnostic["K_scoring"]  # cached and uncached, one state
+    assert evaluation["K_monitor_primary"] == evaluation["K_monitor"] == diagnostic["K_monitor"]
+    assert evaluation["K_monitor_full"] == diagnostic["K_monitor_full"]
+    checks = read_jsonl(run_dir / "cache_checks.jsonl")
+    assert [c["step"] for c in checks] == [0, 25]
+    for check in checks:
+        assert {k for k in check if k != "step"} == {"primary", "secondary", "scoring"}
+        assert all(check[k]["bitwise_equal"] for k in ("primary", "secondary", "scoring"))
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["monitor"] == {"version": 2, "drive": 1, "samples_per_prompt": 2}
+    assert terminal["diagnostics"] == 1
+
+
+def test_a_cache_that_changes_k_stops_the_run(env, tmp_path, monkeypatch) -> None:
+    from zero_field_refusal.evaluation import ReferenceLogits
+    from zero_field_refusal.panels import CacheMismatch
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]", policy="short")
+    ready(env, cfg)
+    chunk = ReferenceLogits.chunk
+    monkeypatch.setattr(ReferenceLogits, "chunk", lambda self, i, d: chunk(self, i, d) + 1e-3)
+    with pytest.raises(CacheMismatch, match="step 0"):
+        run_scheduled(cfg, env, run_id="bad-cache")
+    run_dir = Path(os.environ["RUNS_DIR"]) / cfg.experiment / "bad-cache"
+    assert json.loads((run_dir / "meta.json").read_text())["status"] == "failed"
+    assert not (run_dir / "terminal.json").exists()  # stopped before training
+
+
+def test_monitor_version_1_runs_without_diagnostics(env, tmp_path, scripted) -> None:
+    cfg = scheduled(tmp_path, *K_RUN, "eval.monitor.version=1")
+    ready(env, cfg)
+    scripted(0.1, 0.6, 0.7, 0.8, 1.2, 1.3)
+    run_dir = run_scheduled(cfg, env, run_id="v1")
+    assert not (run_dir / "diagnostics.jsonl").exists()
+    assert not (run_dir / "cache_checks.jsonl").exists()
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert "monitor" not in terminal and terminal["stop"]["reason"] == "target"
+    assert all("K_monitor_full" not in e for e in read_jsonl(run_dir / "evaluations.jsonl"))

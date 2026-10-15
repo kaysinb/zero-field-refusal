@@ -6,6 +6,15 @@ defaults: [eval/default]
 eval:
   harmful:
     prompt_set: harmful_evaluation  # data/study2: 521 prompts outside the K prompts
-  monitor:                          # K on the alpaca_monitor prompts (stream kl_monitor)
-    samples_per_prompt: 2
+  monitor:                          # version 2 (amendment 1): stream kl_monitor v2
+    version: 2                      # (version 1, the discovery grids': 25 alpaca_monitor prompts × 2)
+    prompt_set: alpaca_benign_kl    # the scoring panel's own 100 prompts
+    samples_per_prompt: 2           # fresh θ₀ responses per prompt, seeds of their own
+    drive: 1                        # m: the first m of each prompt are read every `every` steps
     every: 5                        # steps between readings
+    cache:                          # θ₀'s logits: device (GPU), host (CPU memory) or none
+      primary: device
+      secondary: host               # read only at diagnostic states and full evaluations
+  diagnostics:                      # the scoring panel's K alone, no harm, no utility
+    every: 25                       # steps; fixed
+    cache: host

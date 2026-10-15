@@ -62,6 +62,7 @@ from omegaconf import OmegaConf
 
 from ..config import load_config
 from ..panels import monitor_agreement
+from ..teacher import monitor_version
 
 LOWER = 5.0
 UPPER = (8.0, 7.0)  # U, larger first
@@ -124,6 +125,7 @@ class Trajectory:
     protocol_version: int
     spec: dict[str, Any]  # the schedule it ran under (``schedule_spec``)
     evaluate_at: tuple[int, ...] = field(default=())
+    monitor_version: int = 1  # eval.monitor.version: 2 after amendment 1
 
     @property
     def steps(self) -> int:
@@ -279,6 +281,7 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         protocol_version=int(cfg.get("protocol_version", 0)),
         spec=schedule_spec(cfg),
         evaluate_at=evaluate_at,
+        monitor_version=monitor_version(cfg),
     )
 
 

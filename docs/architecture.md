@@ -70,9 +70,13 @@ scientific design is in [design.md](design.md); procedures for running things ar
    runs that may extend it run on the machine that holds it, or it is generated before them.
 3. **Reference samples for KL.** θ₀ samples responses to the KL prompts once per model and stores
    them the same way. All runs of that model measure K on these responses. Study 2's monitor
-   panel (`kl_monitor`, `eval/study2`) is a third such stream: 2 responses to each monitor
-   prompt, from its own seeds, read every few steps during training to place the full
-   evaluations, which use the scoring panel (`kl_benign`, `kl_harmful`). θ₀'s next-token
+   panel (`kl_monitor`, `eval/study2`) is a third such stream, from its own seeds, read every few
+   steps during training to place the full evaluations, which use the scoring panel
+   (`kl_benign`, `kl_harmful`). Version 2 (amendment 1) answers the scoring panel's own prompts,
+   2 responses each: the first of each prompt is read every few steps, the second only with the
+   scoring panel's K alone at fixed diagnostic steps; θ₀'s logits for both panels are cached
+   (`evaluation.ReferenceLogits`) and checked against uncached readings. Version 1 answered 25
+   further prompts. θ₀'s next-token
    distributions come from a frozen θ₀ copy kept on the GPU next to the student and evaluated in the
    same forward path, so K is exactly zero at θ₀ and needs no stored distributions.
 4. **Training run.** A student starts from θ₀ and takes N optimizer steps over the training stream
@@ -93,7 +97,8 @@ scientific design is in [design.md](design.md); procedures for running things ar
    steps and evaluates in full where K crosses its levels, or at fixed steps: the scoring panel's
    K, utility, and the greedy responses to the harmful prompts, stored for the judge but not
    scored. Refusal and harm are not computed during the run. It writes `monitor.jsonl`,
-   `evaluations.jsonl`, `chunk_checks.jsonl` and, atomically, `terminal.json`: the stop, its
+   `evaluations.jsonl`, `chunk_checks.jsonl`, under monitor version 2 `diagnostics.jsonl` and
+   `cache_checks.jsonl`, and, atomically, `terminal.json`: the stop, its
    reason and what fired it, the batch refused before an update or the update that broke the
    weights (an applied update counts as a step), the levels reached (only by a successful
    evaluation) and missed, and a crossing whose evaluation failed.
@@ -134,7 +139,7 @@ Implemented:
 | `evaluation` | K against a frozen θ₀ copy, greedy responses, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
-| `panels` | study 2: K on the monitor panel, and the Stage-A check that the monitor agrees with the scoring panel |
+| `panels` | study 2: K on the monitor panel (version 2: nested panels on the scoring prompts, cached θ₀ logits), the scoring panel's K alone for diagnostics, the cache checks, and the Stage-A check that the monitor agrees with the scoring panel |
 | `analysis.stage_a` | study 2, Stage A: run records checked for integrity (including every evaluation's answers to the recorded harmful prompts), summaries per arm, batch and rate (reachability and steps per level, utility, time, stops), soft-target screen and numerical acceptance, the gradient rule's margin and possible false alarms, monitor agreement, and the selection rule as one function, which first requires the whole prescribed search and otherwise returns `incomplete` |
 | `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record |
 | `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (a fixed number of steps, convergence by the Ritz residual and agreement of independent starts, not a certified accuracy of the top eigenvalue), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates |

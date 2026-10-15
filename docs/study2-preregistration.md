@@ -132,7 +132,9 @@ differ from it, both settled before any study-2 data:
 |---|---|---|
 | Scoring | K_benign on 100 benign prompts × 4 θ₀ responses; K_harmful on 100 harmful prompts × 4; MMLU (500); factual questions (222) | every full evaluation |
 | Harmful evaluation | 521 prompts: the deduplicated HarmBench and AdvBench pool outside the 100 K_harmful prompts, cleaned of near-paraphrases (below); greedy, ≤ 256 tokens | harmful compliance at each full evaluation; fixed before Stage A |
-| Monitor | 25 further benign prompts × 2 θ₀ responses, disjoint from the scoring panel, with their own data and RNG | K every 5 steps |
+| Monitor, version 2 ([amendment 1](#amendment-1-the-monitor-panel)) | the scoring panel's 100 benign prompts × 2 fresh θ₀ responses with seeds of their own; the first response of each prompt (m = 1) is the operational panel, the second only completes the shadow panel m = 2 | m = 1: K every 5 steps; m = 2: at diagnostic states and full evaluations |
+| Monitor, version 1 (the discovery runs before amendment 1) | 25 further benign prompts × 2 θ₀ responses, disjoint from the scoring panel, with their own data and RNG | K every 5 steps |
+| Scoring diagnostics (monitor version 2) | the scoring panel's K_benign alone: no harm, no utility | every 25 steps |
 
 **The harmful evaluation set** (`harmful_evaluation` of `data/study2`, sha256
 `a2365f072eeab68de338babcc8e5c52c159f440efc566352dde6c46395c159ab`, built 2026-10-14):
@@ -170,7 +172,9 @@ differ from it, both settled before any study-2 data:
   observation.
 - **Monitor agreement.** In Stage A, the monitor must agree with the scoring panel for
   K_benign ≥ 4: median relative discrepancy ≤ 5 %, 95th percentile ≤ 15 %. Otherwise the
-  monitor is enlarged before fixation.
+  monitor is enlarged before fixation. Version 1 failed this check, and
+  [amendment 1](#amendment-1-the-monitor-panel) replaced it; version 2 qualifies by the rule
+  stated there, on the scoring diagnostics of the discovery runs that use it.
 
 ### Stops
 
@@ -249,6 +253,10 @@ Three seeds, run at both batches in parallel. Every run is evaluated at all
   - if at B = 5 the smallest rate's median K_benign already exceeds 5, the grid extends downward
     by halving, at most twice.
 - **Frozen Adam-25:** the same grid on the same seeds.
+- **Monitor version 2** ([amendment 1](#amendment-1-the-monitor-panel)): SGD-long runs only
+  under it, and the decisive AdamW-long configurations run again under it on all three seeds.
+  The selection uses the version-2 records of the long arms; the version-1 long runs stay
+  observations with their measured K. The 25-step grids and the screen are unaffected.
 
 ### Selection rule
 
@@ -319,7 +327,8 @@ Twelve further fresh seeds run at the selected batch and rates, with the instabi
 frozen. Validation passes when:
 
 - at least 10 seed blocks support both long arms around K\*;
-- the numerical and monitor checks hold;
+- the numerical and monitor checks hold (the selected monitor's agreement is checked again on
+  the validation runs' scoring diagnostics, by the thresholds of amendment 1);
 - simultaneous one-sided 95 % upper bounds on the mean utility loss, at the three levels and for
   both long arms, stay at most 5 pp on MMLU and at most 10 pp on the factual questions.
 
@@ -530,3 +539,65 @@ Format: date, item, old value → new value, reason, and which data had been see
 
 | Date | Item | Old → new | Reason | Data seen |
 |---|---|---|---|---|
+| 2026-10-15 | The monitor panel ([amendment 1](#amendment-1-the-monitor-panel)) | 25 further prompts × 2 responses, disjoint from the scoring panel → the scoring panel's 100 prompts × 1 fresh response each (m = 1), with a nested second response (m = 2) as the declared fallback; scoring diagnostics every 25 steps; θ₀'s logits cached | Version 1 failed the agreement check: it read 13.3 % below the scoring panel at the median (p95 17.5 %; bounds 5 % and 15 %), low at all 14 states, which put the evaluations of the upper level outside the fit band | K only: the 14 full evaluations of the discovery runs so far (K_benign, K_monitor, the scoring panel's K per response, response lengths) and step times; no harm label, no response text, no utility |
+
+### Amendment 1: the monitor panel
+
+Decided on 2026-10-15, during Stage A's discovery, with the harm labels closed, on the
+coordinator's decision after the second reviewer's review, before any data under the new
+monitor.
+
+- **What failed.** Over the 14 full evaluations of the discovery runs so far (AdamW-long at
+  B = 5, seeds 2001 and 2002, all with K_benign ≥ 4), version 1 read below the scoring panel at
+  every state: median relative discrepancy 13.3 %, 95th percentile 17.5 % (bounds 5 % and 15 %).
+  Its responses are shorter (71.1 against 76.5 tokens), which explains about 7 points; the rest
+  is the composition of its 25 prompts (a random 25 × 2 panel has a relative SD of about 8 %
+  against the scoring panel). Since the upper level was then evaluated at K ≈ 1.15 U, outside
+  the fit band [0.8·5, 1.1U], the monitor is replaced before fixation, not merely enlarged.
+- **Why the scoring panel's prompts.** The estimand is conditional on the fixed scoring prompts
+  ([Question and estimand](#question-and-estimand): K_benign on the 100 scoring prompts × 4 θ₀
+  responses). Sharing those prompts removes the composition mismatch; the monitor's responses
+  are fresh θ₀ samples with seeds of their own, so a crossing selects on the monitor's response
+  noise, independent of the 400 scoring responses. A separate panel would keep the scoring
+  panel's own composition offset (about 3.5 %) at any size. Identical continuations are kept.
+  First-passage selection remains: the visited states depend on the monitor, and the reporting
+  stays policy-conditional, with reachability.
+- **The panel.** Stream `kl_monitor`, monitor version 2: the 100 prompts of `alpaca_benign_kl`,
+  2 responses each, zero-field sampling with the scoring panel's cap, seeds
+  `derive_seed(0, "kl_reference", "kl_monitor", "v2", "prompts")` and
+  `derive_seed(0, "kl_reference", "kl_monitor", "v2")`. The first response of each prompt is
+  m = 1; both are m = 2. Its spec hash and sha256 are recorded in
+  [operations](operations.md#study-2-stage-a) when it is generated, before any run reads it.
+- **Readings.** m = 1 every 5 steps drives the levels, the plateau and the monitor's
+  instability rule. The scoring panel's K alone (no harm, no utility) every 25 steps, fixed, and
+  m = 2 at those states and at every full evaluation. Full evaluations at the actual crossings,
+  as before.
+- **Cache.** θ₀'s raw fp32 logits at the response positions, per micro-batch as the uncached
+  computation batches them, with the same float64 KL. At θ₀ before training and at every full
+  evaluation, every cached reading (m = 1, the second responses, the scoring panel) is compared
+  with an uncached one per response; any difference stops the run as a technical failure.
+- **Qualification.** On every version-2 discovery trajectory, each counted whatever the
+  selection later prefers: the refreshed AdamW-long configurations and all SGD-long discovery
+  runs, seeds 2000–2002. Separately for each optimizer, over the diagnostic states with
+  K_scoring ≥ 4: every reading finite, and median |K_monitor − K_scoring| / K_scoring ≤ 5 %,
+  95th percentile ≤ 15 %, over at least 10 distinct states (fewer: undetermined, which does not
+  pass). m = 1 is chosen if it passes for both optimizers; otherwise m = 2 if it passes; otherwise
+  the monitor is redesigned before validation, without drawing panels until one passes. The
+  choice uses K only. Reported alongside, not deciding m: at the actual trigger states, distinct
+  evaluations for 5, K\* and U, K\* bracketed by the measured K, and the upper evaluation inside
+  the fit band. If m = 2 is chosen, runs whose stops m = 1 decided are run again under m = 2,
+  never relabeled.
+- **Old discovery.** The version-1 runs stay observations with their measured K_benign, never
+  relabeled; their nominal crossings are not evidence about the version-2 policy. Before the
+  selection is sealed, the decisive AdamW-long configurations run again under version 2 on all
+  three seeds: at each batch, every rate that reached level 5 on at least one seed under
+  version 1, and the next smaller rate if any of its runs ended with a last-window monitor
+  median of at least 4. At B = 5 these are 5·10⁻⁶ and 10⁻⁵; at B = 20 they follow from the
+  version-1 runs when those end, by the same rule. U, T_max and the cost comparison are
+  computed from version-2 records; monitor-dependent instability decisions and the full
+  controls are redone if their length or evaluation steps change. The 25-step grids, their
+  extensions and the screen stand. The fit band is not widened.
+- **Code and versions.** Configs carry `eval.monitor.version: 2`; the protocol version stays 2
+  (the cache changes no K, which the check above verifies). Stage A now runs from two commits:
+  the version-1 discovery from `29e096a`, and everything after this amendment from the commit
+  that implements it.

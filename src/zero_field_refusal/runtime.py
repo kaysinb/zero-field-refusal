@@ -33,6 +33,7 @@ from .teacher import (
     load_fingerprints,
     load_manifest,
     load_stream,
+    monitor_version,
     partial_directory,
     publish,
     published_chunks,
@@ -105,6 +106,8 @@ def environment(cfg: DictConfig, device: str | torch.device) -> Environment:
 
 
 def prompt_set_of(cfg: DictConfig, kind: str) -> str:
+    if kind == "kl_monitor" and monitor_version(cfg) > 1:  # amendment 1: the scoring prompts
+        return str(cfg.eval.monitor.prompt_set)
     return STREAM_PROMPT_SETS.get(kind, cfg.teacher.prompts)
 
 
@@ -146,7 +149,7 @@ def generate_stream(
         )
     partial = partial_directory(path)
     partial.mkdir(parents=True)
-    prompt_seed, sampling_seed = stream_seeds(kind, seed)
+    prompt_seed, sampling_seed = stream_seeds(kind, seed, version=spec.get("monitor_version", 1))
     started = datetime.now(UTC).isoformat(timespec="seconds")
     if kind == "alpaca_reference":
         chosen = _distinct(items, spec["responses"], prompt_seed)

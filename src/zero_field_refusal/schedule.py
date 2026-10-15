@@ -49,7 +49,7 @@ from transformers import PreTrainedModel
 
 from .models import freeze
 from .optim import ADAM_MODES, build_optimizer
-from .panels import Monitor
+from .panels import CacheMismatch, Monitor, ScoringDiagnostics, cache_check
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .runtime import Environment, ReplayedSoftTargets, StreamPrefix, extend_stream
 from .seeding import derive_seed, seed_everything
@@ -259,6 +259,7 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         theta0 = dict(reference.named_parameters())
         evaluate = Evaluator(cfg, env, run, reference, sealed=True)  # fails early on inputs
         monitor = Monitor(cfg, env, run, reference)
+        diagnostics = ScoringDiagnostics(cfg, env, run, reference) if monitor.version > 1 else None
         feed = BatchFeed(cfg, env, run, reference, extend=schedule.extend_stream)
         replayer = None
         if cfg.control == "soft_targets":
@@ -273,7 +274,9 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         optimizer = build_optimizer(cfg.optimizer, params, second_moment=second_moment)
         del second_moment
 
-        loop = _Loop(schedule, run, evaluate, monitor)
+        loop = _Loop(schedule, run, evaluate, monitor, diagnostics)
+        if diagnostics is not None:  # the caches against uncached readings, at θ₀
+            loop.check_caches(student, scoring=diagnostics(student, cached=False))
         size = cfg.train.batch_size
         reason = None
         for step in range(schedule.steps):
@@ -322,8 +325,18 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
 class _Loop:
     """The run's state after each step: monitor readings, evaluations, levels and stops."""
 
-    def __init__(self, schedule: Schedule, run: Run, evaluate: Evaluator, monitor: Monitor):
+    def __init__(
+        self,
+        schedule: Schedule,
+        run: Run,
+        evaluate: Evaluator,
+        monitor: Monitor,
+        diagnostics: ScoringDiagnostics | None = None,
+    ):
         self.schedule, self.run, self.evaluate, self.monitor = schedule, run, evaluate, monitor
+        self.diagnostics = diagnostics
+        self.read_at: int | None = None  # the step of the last operational monitor reading
+        self.diagnosed = 0
         self.guard = InstabilityGuard(schedule.grad_factor, schedule.grad_window, schedule.k_max)
         self.levels = LevelTracker(schedule.levels, schedule.crossing_readings)
         self.readings: list[tuple[int, float]] = []
@@ -337,8 +350,11 @@ class _Loop:
         schedule, done = self.schedule, self.steps
         if done % schedule.monitor_every == 0:
             k = self.monitor(model)
+            self.read_at = done
             self.readings.append((done, k))
             reading = {"step": done, "K_monitor": k, **geometry()}
+            if self.diagnostics is not None and done % self.diagnostics.every == 0:
+                reading |= self._diagnose(model, done)
             _append_jsonl(self.run.path("monitor.jsonl"), [reading])
             self.run.log({"K_monitor": k}, step=done - 1)
             reason = self.guard.monitor(k)
@@ -361,12 +377,47 @@ class _Loop:
             return self._evaluate(model, [], self.readings[-1][1] if self.readings else None)
         return None
 
+    def _shadow(self, model: PreTrainedModel) -> dict[str, Any]:
+        """The monitor's full panel at this state, reusing its reading if one was just taken."""
+        last = self.monitor.last if self.read_at == self.steps else None
+        return self.monitor.shadow(model, last)
+
+    def _diagnose(self, model: PreTrainedModel, step: int) -> dict[str, float]:
+        """The scoring panel's K alone and the monitor's full panel (amendment 1)."""
+        scoring = self.diagnostics(model)
+        shadow = self._shadow(model)
+        row = {"step": step, "K_scoring": scoring.mean().item(),
+               "K_monitor": shadow["K_primary"], "K_monitor_full": shadow["K_full"],
+               "scoring": scoring.tolist(), "monitor_primary": shadow["primary"],
+               "monitor_secondary": shadow["secondary"]}  # fmt: skip
+        _append_jsonl(self.run.path("diagnostics.jsonl"), [row])
+        self.diagnosed += 1
+        out = {"K_scoring": row["K_scoring"], "K_monitor_full": row["K_monitor_full"]}
+        self.run.log(out, step=step - 1)
+        return out
+
+    def check_caches(self, model: PreTrainedModel, *, scoring: torch.Tensor) -> dict[str, Any]:
+        """Every cached reading against an uncached one of this state (``scoring``: the scoring
+        panel's K per response, computed without the cache); any difference stops the run."""
+        checks = self.monitor.check(model)
+        checks["scoring"] = cache_check(self.diagnostics(model), scoring)
+        _append_jsonl(self.run.path("cache_checks.jsonl"), [{"step": self.steps, **checks}])
+        unequal = sorted(part for part, check in checks.items() if not check["bitwise_equal"])
+        if unequal:
+            raise CacheMismatch(f"step {self.steps}: cached readings differ in {unequal}")
+        return checks
+
     def _evaluate(self, model: PreTrainedModel, levels: list[float], k: float | None) -> str | None:
         condition = f"step-{self.steps}"
         try:
             out = self.evaluate(model, condition)
         except Diverged:
             return "nonfinite_k"
+        if self.diagnostics is not None:  # the full monitor panel and the caches, at this state
+            shadow = self._shadow(model)
+            out = {**out, "K_monitor_primary": shadow["K_primary"],
+                   "K_monitor_full": shadow["K_full"]}  # fmt: skip
+            self.check_caches(model, scoring=self.evaluate.last_kl["kl_benign"])
         row = {"step": self.steps, "condition": condition, "levels": levels, "K_monitor": k, **out}
         self.evaluations.append(row)
         _append_jsonl(self.run.path("evaluations.jsonl"), [row])
@@ -389,6 +440,10 @@ class _Loop:
                "responses": self.steps * batch_size, "policy": self.schedule.policy,
                "evaluations": [row["step"] for row in self.evaluations],
                "monitor_readings": len(self.readings)}  # fmt: skip
+        if self.diagnostics is not None:
+            out["monitor"] = {"version": self.monitor.version, "drive": self.monitor.drive,
+                              "samples_per_prompt": self.monitor.per_prompt}  # fmt: skip
+            out["diagnostics"] = self.diagnosed
         if self.schedule.policy == "k_stopped":
             out["levels"] = {"planned": list(self.schedule.levels), "reached": reached,
                              "missed": [level for level in self.schedule.levels
