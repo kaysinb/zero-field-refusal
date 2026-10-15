@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import torch
 from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis.stage_a import (
@@ -1238,3 +1239,84 @@ def test_a_check_called_equal_must_show_no_difference(tmp_path) -> None:
     _edit_jsonl(run_dir / "cache_checks.jsonl", differ)
     with pytest.raises(TrajectoryError, match="called equal with a difference"):
         load_trajectory(run_dir)
+
+
+def _edit_json(path: Path, edit) -> None:
+    path.write_text(json.dumps(edit(json.loads(path.read_text()))))
+
+
+@pytest.mark.parametrize("field", ["seconds", "stream_extension"])
+def test_a_non_finite_time_in_the_terminal_record_is_refused(tmp_path, field) -> None:
+    run_dir = write_run(tmp_path, "r", arm="adamw_long", batch=5, lr=1e-5, seed=2000, reach=FULL)
+
+    def poison(record):
+        if field == "seconds":
+            record["seconds"] = float("nan")
+        else:
+            record["stream_extension"]["seconds"] = float("inf")
+        return record
+
+    _edit_json(run_dir / "terminal.json", poison)
+    _edit_json(run_dir / "summary.json", lambda s: {"terminal": poison(s["terminal"])})
+    with pytest.raises(TrajectoryError, match="terminal record: a non-finite number"):
+        load_trajectory(run_dir)
+
+
+def test_a_refused_batch_may_carry_its_non_finite_cause(tmp_path) -> None:
+    detail = {"step": 40, "loss": float("nan"), "grad_norm": float("inf")}
+    run_dir = write_run(tmp_path, "r", arm="sgd_long", batch=5, lr=5e-4, seed=2000, steps=40,
+                        stop="nonfinite_loss")  # fmt: skip
+
+    def refused(record):
+        record["stop"]["rejected"] = detail
+        return record
+
+    _edit_json(run_dir / "terminal.json", refused)
+    _edit_json(run_dir / "summary.json", lambda s: {"terminal": refused(s["terminal"])})
+    assert load_trajectory(run_dir).stop == "nonfinite_loss"
+
+
+def test_theta0s_accuracies_must_be_fractions(tmp_path) -> None:
+    search(tmp_path)
+    runs = load_trajectories(tmp_path)
+    role = {name: [r for r in runs if r.role == name] for name in ROLES}
+    bad = THETA0 | {"benchmark_accuracy": float("-inf")}
+    result = select(role["discovery"], role["screen"], role["full_control"], bad)
+    assert result["outcome"] == "incomplete"
+    assert any("benchmark_accuracy" in p for p in result["problems"])
+
+
+def test_an_infinite_terminal_check_is_the_runs_verdict(tmp_path) -> None:
+    from zero_field_refusal.panels import cache_check
+
+    inf = torch.tensor([math.inf], dtype=torch.float64)
+    check = cache_check(inf, inf)  # what the runtime records for an infinite reading
+    assert check["bitwise_equal"] and not check["uncached_finite"]
+    assert math.isnan(check["max_abs_diff"])
+    run_dir = write_run(tmp_path, "r", arm="sgd_long", batch=5, lr=5e-4, seed=2000, steps=100,
+                        stop="nonfinite_k", monitor_version=2)  # fmt: skip
+
+    def verdict(rows):
+        return [*rows, {"step": 100, "primary": check, "secondary": check, "scoring": check}]
+
+    _edit_jsonl(run_dir / "cache_checks.jsonl", verdict)
+    assert load_trajectory(run_dir).stop == "nonfinite_k"
+
+
+def test_logged_metrics_are_checked_before_they_are_filtered(tmp_path) -> None:
+    run_dir = write_run(tmp_path, "r", arm="adamw_long", batch=5, lr=1e-5, seed=2000, reach=FULL)
+    _edit_jsonl(run_dir / "metrics.jsonl",
+                lambda rows: [*rows, {"step": 4, "K_monitor": float("nan")}])  # fmt: skip
+    with pytest.raises(TrajectoryError, match="logged metrics: a non-finite number at step 4"):
+        load_trajectory(run_dir)
+    stopped = write_run(tmp_path, "s", arm="sgd_long", batch=5, lr=5e-4, seed=2000, steps=100,
+                        stop="nonfinite_k")  # fmt: skip
+
+    def nan_reading(rows):
+        rows[-1]["K_monitor"] = float("nan")
+        return rows
+
+    _edit_jsonl(stopped / "monitor.jsonl", nan_reading)
+    _edit_jsonl(stopped / "metrics.jsonl",
+                lambda rows: [*rows, {"step": 99, "K_monitor": float("nan")}])  # fmt: skip
+    assert load_trajectory(stopped).stop == "nonfinite_k"  # the terminal reading, logged at 99

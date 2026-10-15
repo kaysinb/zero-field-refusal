@@ -201,20 +201,33 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     evaluations = _jsonl(run_dir / "evaluations.jsonl")
     readings = _jsonl(run_dir / "monitor.jsonl")
     monitor = [(row["step"], row["K_monitor"]) for row in readings]
-    training = [row for row in _jsonl(run_dir / "metrics.jsonl") if "loss" in row]
+    metrics = _jsonl(run_dir / "metrics.jsonl")
+    training = [row for row in metrics if "loss" in row]
     every = int(cfg.eval.monitor.every)
     policy, planned = cfg.schedule.policy, tuple(float(x) for x in cfg.schedule.levels)
 
     read_to = steps - 1 if stop == "nonfinite_weight" else steps  # no reading after a bad update
     if [s for s, _ in monitor] != list(range(every, read_to + 1, every)):
         problems.append("monitor readings are not every reading up to the last step")
-    # One pass over every number before anything is summed: all finite, except in the rows of
-    # the last step of a run stopped as nonfinite_k (its reading, diagnostic or cache check);
-    # never in an evaluation, which is recorded only once its measurements were finite.
+    # One pass over the numbers of these tables (readings, metrics, evaluations, measurements;
+    # under monitor version 2 diagnostics and cache checks) and of the terminal record, before
+    # anything is summed: all finite, except in the rows of the last step of a run stopped as
+    # nonfinite_k (its reading, diagnostic or cache check), never in an evaluation, recorded
+    # only once its measurements were finite. The streams' chunk checks and fingerprints are
+    # not part of it: the run and the replay check those when they happen.
     terminal_step = steps if stop == "nonfinite_k" else None
     measurements = _jsonl(run_dir / "observations" / "measurements.jsonl")
     problems += _finiteness("monitor readings", readings, terminal_step)
     problems += _finiteness("training metrics", training, None)
+    # The other metric rows are logged one step back (a reading after step t at t - 1).
+    logged = [row for row in metrics if "loss" not in row]
+    problems += _finiteness("logged metrics", logged,
+                            None if terminal_step is None else terminal_step - 1)  # fmt: skip
+    # The terminal record's own numbers (times, counts, steps) feed the cost: all finite, except
+    # what describes a refused batch or update and the stop's detail, which may be the cause.
+    stop_record = {k: v for k, v in terminal["stop"].items() if k not in ("rejected", "detail")}
+    if _nonfinite({**terminal, "stop": stop_record}):
+        problems.append("terminal record: a non-finite number")
     problems += _finiteness("evaluations", evaluations, None)
     problems += _finiteness("measurements", measurements, None, key="condition")
     if [row["step"] for row in training] != list(range(steps)):
@@ -373,7 +386,9 @@ def _version2_problems(
             problems.append(f"the cache check of step {row['step']} found a non-finite reading "
                             "but the run went on")  # fmt: skip
         for part, check in row.items():
-            if part != "step" and check.get("bitwise_equal") and check.get("max_abs_diff") != 0:
+            finite = check.get("uncached_finite", True) if part != "step" else True
+            if (part != "step" and finite and check.get("bitwise_equal")
+                    and check.get("max_abs_diff") != 0):  # fmt: skip
                 problems.append(f"the cache check of step {row['step']}: {part} is called equal "
                                 f"with a difference {check.get('max_abs_diff')}")  # fmt: skip
     final = bool(checks) and verdict(checks[-1])
@@ -1120,6 +1135,15 @@ def search_manifest(
     return {"phase": phase, "complete": complete, "searches": searches}
 
 
+def theta0_problems(theta0: Mapping[str, Any] | None) -> list[str]:
+    """θ₀'s accuracies, the utility losses' baseline: each a finite fraction in [0, 1]."""
+    if theta0 is None:
+        return []
+    keys = ("benchmark_accuracy", "factual_accuracy")
+    return [f"θ₀: {key} is {theta0.get(key)!r}, not a fraction in [0, 1]" for key in keys
+            if not (_finite(theta0.get(key)) and 0.0 <= theta0[key] <= 1.0)]  # fmt: skip
+
+
 def search_progress(
     screen: Sequence[Trajectory],
     discovery: Sequence[Trajectory],
@@ -1136,6 +1160,8 @@ def search_progress(
     long_v2 = [r for r in discovery if r.arm in LONG_ARMS and r.monitor_version > 1]
     if long_v2 and theta0 is None:
         raise ValueError("θ₀'s utility is needed to judge version-2 long runs")
+    if theta0_problems(theta0):
+        return {"screen": screened}, theta0_problems(theta0)
     present, problems = index(long_v2)
     problems += conformance(long_v2, "discovery") + conformance(controls, "full_control")
     problems += stream_pairing([*screen, *long_v2, *controls])
