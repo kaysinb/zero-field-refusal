@@ -29,6 +29,7 @@ from zero_field_refusal.analysis.stage_a import (
     prescribed,
     screen_candidates,
     select,
+    spike_ratio,
     trigger_checks,
 )
 
@@ -1320,3 +1321,26 @@ def test_logged_metrics_are_checked_before_they_are_filtered(tmp_path) -> None:
     _edit_jsonl(stopped / "metrics.jsonl",
                 lambda rows: [*rows, {"step": 99, "K_monitor": float("nan")}])  # fmt: skip
     assert load_trajectory(stopped).stop == "nonfinite_k"  # the terminal reading, logged at 99
+
+
+@pytest.mark.parametrize(
+    ("stop", "detail", "loads"),
+    [
+        ("gradient_spike", {"grad_norm": 50.0, "reference_median": 2.0}, True),
+        ("gradient_spike", {"grad_norm": math.inf, "reference_median": 2.0}, False),
+        ("t_max", {"grad_norm": math.inf, "reference_median": 2.0}, False),  # a stable stop
+        ("t_max", {"grad_norm": 50.0, "reference_median": 2.0}, False),
+        ("k_above_max", {"K_monitor": 17.0, "k_max": 16.0}, True),
+        ("nonfinite_k", {"grad_norm": 50.0, "reference_median": 2.0}, False),
+    ],
+)
+def test_a_stops_detail_is_its_own_and_finite(tmp_path, stop, detail, loads) -> None:
+    steps = 4000 if stop == "t_max" else 300
+    run_dir = write_run(tmp_path, "r", arm="sgd_long", batch=5, lr=5e-4, seed=2000, steps=steps,
+                        stop=stop, detail=detail)  # fmt: skip
+    if loads:
+        run = load_trajectory(run_dir)
+        assert run.stop == stop and (spike_ratio(run) or 0) < math.inf
+    else:
+        with pytest.raises(TrajectoryError, match="terminal record"):
+            load_trajectory(run_dir)

@@ -223,11 +223,17 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     logged = [row for row in metrics if "loss" not in row]
     problems += _finiteness("logged metrics", logged,
                             None if terminal_step is None else terminal_step - 1)  # fmt: skip
-    # The terminal record's own numbers (times, counts, steps) feed the cost: all finite, except
-    # what describes a refused batch or update and the stop's detail, which may be the cause.
-    stop_record = {k: v for k, v in terminal["stop"].items() if k not in ("rejected", "detail")}
+    # The terminal record's own numbers (times, counts, steps, the stop's detail) feed the cost
+    # and the gradient rule: all finite, except what describes a refused batch or update, which
+    # may be its non-finite cause. A detail is that of its stop: the spike's norm and reference
+    # for gradient_spike, the reading and bound for k_above_max, none otherwise.
+    stop_record = {k: v for k, v in terminal["stop"].items() if k != "rejected"}
     if _nonfinite({**terminal, "stop": stop_record}):
         problems.append("terminal record: a non-finite number")
+    detail_keys = {"gradient_spike": {"grad_norm", "reference_median"},
+                   "k_above_max": {"K_monitor", "k_max"}}.get(stop, set())  # fmt: skip
+    if set(terminal["stop"].get("detail") or {}) != detail_keys:
+        problems.append(f"terminal record: a detail that is not that of a {stop} stop")
     problems += _finiteness("evaluations", evaluations, None)
     problems += _finiteness("measurements", measurements, None, key="condition")
     if [row["step"] for row in training] != list(range(steps)):
@@ -713,9 +719,8 @@ def spike_ratio(run: Trajectory, window: int = 20) -> float | None:
     """The largest gradient norm over the median of the preceding (up to ``window``) norms, the
     statistic of the gradient rule, including a firing step (not in the metrics)."""
     norms = list(run.grad_norms)
-    detail = run.terminal["stop"].get("detail", {})
-    if "grad_norm" in detail:
-        norms.append(detail["grad_norm"])
+    if run.stop == "gradient_spike":  # the firing norm, finite and checked when loaded
+        norms.append(run.terminal["stop"]["detail"]["grad_norm"])
     ratios = [
         norms[s] / statistics.median(norms[max(0, s - window) : s]) for s in range(1, len(norms))
     ]
