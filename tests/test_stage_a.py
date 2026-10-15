@@ -231,6 +231,11 @@ def write_run(
             for t in [0, *(row["step"] for row in evaluations)]
         ]
         files += [("diagnostics", diagnostics), ("cache_checks", checks)]
+        diagnosed = {row["step"]: row for row in diagnostics}
+        for row in monitor:  # a diagnostic step's reading carries its numbers, as in a run
+            if row["step"] in diagnosed:
+                d = diagnosed[row["step"]]
+                row |= {"K_scoring": d["K_scoring"], "K_monitor_full": d["K_monitor_full"]}
     for file, rows in files:
         (run_dir / f"{file}.jsonl").parent.mkdir(exist_ok=True)
         (run_dir / f"{file}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
@@ -1034,10 +1039,14 @@ def test_a_terminal_non_finite_verdict_loads_and_an_earlier_one_does_not(tmp_pat
 
     last = stopped("last")
     _edit_jsonl(last / "diagnostics.jsonl", nan_at(-1))  # the diagnostic that stopped it
+    _edit_jsonl(last / "monitor.jsonl", nan_at(-1))  # and its reading's row, as a run writes
     assert load_trajectory(last).stop == "nonfinite_k"
     earlier = stopped("earlier")
     _edit_jsonl(earlier / "diagnostics.jsonl", nan_at(1))
-    with pytest.raises(TrajectoryError, match="step 50 is not finite"):
+    _edit_jsonl(earlier / "monitor.jsonl", nan_at(9))  # the reading row of step 50
+    with pytest.raises(
+        TrajectoryError, match="scoring diagnostics: a non-finite number at step 50"
+    ):
         load_trajectory(earlier)
     reading = stopped("reading")  # a non-finite reading at step 100 takes no diagnostic
 
@@ -1156,7 +1165,7 @@ def test_a_non_finite_reading_or_verdict_is_accepted_only_where_the_run_stops(tm
         return rows
 
     _edit_jsonl(reading / "monitor.jsonl", nan_first)
-    with pytest.raises(TrajectoryError, match="before the run's nonfinite_k stop"):
+    with pytest.raises(TrajectoryError, match="monitor readings: a non-finite number at step 5"):
         load_trajectory(reading)
     verdict = run("verdict")  # an early check's uncached reading not finite, though bit-equal
 
@@ -1167,3 +1176,65 @@ def test_a_non_finite_reading_or_verdict_is_accepted_only_where_the_run_stops(tm
     _edit_jsonl(verdict / "cache_checks.jsonl", nan_check)
     with pytest.raises(TrajectoryError, match="found a non-finite reading but the run went on"):
         load_trajectory(verdict)
+
+
+def _poison(field: str, index: int = 0):
+    def edit(rows):
+        target = rows[index]
+        if isinstance(target.get(field), list):
+            target[field][0] = float("nan")
+        elif isinstance(target.get(field), dict):
+            target[field]["max_abs_diff"] = float("nan")
+        else:
+            target[field] = float("nan")
+        return rows
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    ("file", "field", "index", "table"),
+    [
+        ("monitor.jsonl", "displacement_norm", 3, "monitor readings"),
+        ("metrics.jsonl", "grad_norm", 7, "training metrics"),
+        ("evaluations.jsonl", "K_harmful", 0, "evaluations"),
+        ("evaluations.jsonl", "K_monitor_full", 1, "evaluations"),
+        ("diagnostics.jsonl", "scoring", 2, "scoring diagnostics"),
+        ("diagnostics.jsonl", "monitor_secondary", 2, "scoring diagnostics"),
+        ("cache_checks.jsonl", "primary", 0, "cache checks"),
+        ("observations/measurements.jsonl", "value", 0, "measurements"),
+    ],
+)
+def test_a_non_finite_number_anywhere_before_the_terminal_step_is_refused(
+    tmp_path, file, field, index, table
+) -> None:
+    run_dir = write_run(tmp_path, "v2", arm="adamw_long", batch=5, lr=1e-5, seed=2000,
+                        reach=FULL, monitor_version=2)  # fmt: skip
+    (run_dir / "observations").mkdir(exist_ok=True)
+    (run_dir / "observations" / "measurements.jsonl").write_text(
+        json.dumps({"condition": "step-100", "measure": "kl_benign", "value": 0.5}) + "\n"
+    )
+    for name in ("diagnostics.jsonl",):  # give the diagnostics their per-response arrays
+        _edit_jsonl(run_dir / name, lambda rows: [
+            r | {"scoring": [1.0, 2.0], "monitor_primary": [1.0], "monitor_secondary": [1.0]}
+            for r in rows
+        ])  # fmt: skip
+    _edit_jsonl(run_dir / "monitor.jsonl", lambda rows: [r | {"displacement_norm": 0.1}
+                                                         for r in rows])  # fmt: skip
+    assert load_trajectory(run_dir).monitor_version == 2
+    _edit_jsonl(run_dir / file, _poison(field, index))
+    with pytest.raises(TrajectoryError, match=f"{table}: a non-finite number"):
+        load_trajectory(run_dir)
+
+
+def test_a_check_called_equal_must_show_no_difference(tmp_path) -> None:
+    run_dir = write_run(tmp_path, "v2", arm="adamw_long", batch=5, lr=1e-5, seed=2000,
+                        reach=FULL, monitor_version=2)  # fmt: skip
+
+    def differ(rows):
+        rows[1]["scoring"]["max_abs_diff"] = 1e-9
+        return rows
+
+    _edit_jsonl(run_dir / "cache_checks.jsonl", differ)
+    with pytest.raises(TrajectoryError, match="called equal with a difference"):
+        load_trajectory(run_dir)

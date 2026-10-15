@@ -199,7 +199,8 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     if "terminal" in summary and summary["terminal"] != terminal:
         problems.append("summary.json's terminal record differs from terminal.json")
     evaluations = _jsonl(run_dir / "evaluations.jsonl")
-    monitor = [(row["step"], row["K_monitor"]) for row in _jsonl(run_dir / "monitor.jsonl")]
+    readings = _jsonl(run_dir / "monitor.jsonl")
+    monitor = [(row["step"], row["K_monitor"]) for row in readings]
     training = [row for row in _jsonl(run_dir / "metrics.jsonl") if "loss" in row]
     every = int(cfg.eval.monitor.every)
     policy, planned = cfg.schedule.policy, tuple(float(x) for x in cfg.schedule.levels)
@@ -207,16 +208,29 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     read_to = steps - 1 if stop == "nonfinite_weight" else steps  # no reading after a bad update
     if [s for s, _ in monitor] != list(range(every, read_to + 1, every)):
         problems.append("monitor readings are not every reading up to the last step")
-    nonfinite = [i for i, (_, k) in enumerate(monitor) if not _finite(k)]
-    if nonfinite and (nonfinite != [len(monitor) - 1] or stop != "nonfinite_k"):
-        problems.append("a monitor reading is not finite before the run's nonfinite_k stop")
+    # One pass over every number before anything is summed: all finite, except in the rows of
+    # the last step of a run stopped as nonfinite_k (its reading, diagnostic or cache check);
+    # never in an evaluation, which is recorded only once its measurements were finite.
+    terminal_step = steps if stop == "nonfinite_k" else None
+    measurements = _jsonl(run_dir / "observations" / "measurements.jsonl")
+    problems += _finiteness("monitor readings", readings, terminal_step)
+    problems += _finiteness("training metrics", training, None)
+    problems += _finiteness("evaluations", evaluations, None)
+    problems += _finiteness("measurements", measurements, None, key="condition")
     if [row["step"] for row in training] != list(range(steps)):
         problems.append("training metrics are not one row per step taken")
     eval_steps = [row["step"] for row in evaluations]
     if eval_steps != sorted(set(eval_steps)) or any(s > steps for s in eval_steps):
         problems.append("evaluation steps are not increasing within the run")
-    if any(not math.isfinite(row.get("K_benign", math.nan)) for row in evaluations):
+    if any(not _finite(row.get("K_benign")) for row in evaluations):
         problems.append("an evaluation lacks a finite K_benign")
+    known = dict(monitor)
+    for row in evaluations:  # the reading an evaluation carries is its step's reading
+        if row["step"] in known and row.get("K_monitor") != known[row["step"]]:
+            problems.append(f"the evaluation of step {row['step']} carries another reading")
+        primary = row.get("K_monitor_primary")
+        if row["step"] in known and primary is not None and primary != known[row["step"]]:
+            problems.append(f"the evaluation of step {row['step']}: m = 1 differs from its reading")
     inputs = meta.get("inputs", {})
     prompts = inputs.get("harmful_prompts", {})
     problems += _response_problems(run_dir, cfg, evaluations, prompts)
@@ -264,7 +278,9 @@ def load_trajectory(run_dir: Path) -> Trajectory:
             problems.append("a fixed run's evaluations differ from evaluate_at")
     diagnostics: list[dict[str, float]] = []
     if monitor_version(cfg) > 1:
-        diagnostics, found = _version2_problems(run_dir, cfg, monitor, evaluations, read_to, stop)
+        diagnostics, found = _version2_problems(
+            run_dir, cfg, readings, evaluations, read_to, stop, terminal_step
+        )
         problems += found
     stream = inputs.get("streams", {}).get("training", {})
     used = stream.get("count")
@@ -308,37 +324,41 @@ def load_trajectory(run_dir: Path) -> Trajectory:
 def _version2_problems(
     run_dir: Path,
     cfg: Any,
-    monitor: Sequence[tuple[int, float]],
+    readings: Sequence[Mapping[str, Any]],
     evaluations: Sequence[Mapping[str, Any]],
     read_to: int,
     stop: str,
+    terminal_step: int | None,
 ) -> tuple[list[dict[str, float]], list[str]]:
     """Monitor version 2's records (amendment 1): a scoring diagnostic at every diagnostic step
-    that was read, each with the monitor's reading of that step; the full monitor panel at every
-    evaluation; a cache check at θ₀ and at every evaluation, of every cached part, each equal bit
-    for bit. A run that stopped as ``nonfinite_k`` may end on its verdict: a non-finite last
-    diagnostic, a non-finite last reading (which takes no diagnostic) or a last cache check with
-    a non-finite uncached reading, all at its last step; nothing non-finite before it."""
+    that was read, each with the monitor's reading of that step and the same numbers as that
+    reading's row; the full monitor panel at every evaluation; a cache check at θ₀ and at every
+    evaluation, of every cached part, each equal bit for bit with no difference. A run that
+    stopped as ``nonfinite_k`` may end on its verdict, at its last step only: a non-finite
+    diagnostic, a non-finite reading (which takes no diagnostic) or a cache check with a
+    non-finite uncached reading."""
     problems = []
     terminal = stop == "nonfinite_k"
+    raw = _jsonl(run_dir / "diagnostics.jsonl")
+    problems += _finiteness("scoring diagnostics", raw, terminal_step)
     keys = ("step", "K_scoring", "K_monitor", "K_monitor_full")
-    rows = [{k: row[k] for k in keys} for row in _jsonl(run_dir / "diagnostics.jsonl")]
+    rows = [{k: row[k] for k in keys} for row in raw]
     every = int(cfg.eval.diagnostics.every)
-    readings = dict(monitor)
+    by_step = {row["step"]: row for row in readings}
     expected = list(range(every, read_to + 1, every))
-    if terminal and expected[-1:] == [read_to] and not _finite(readings.get(read_to)):
+    last = by_step.get(read_to, {}).get("K_monitor")
+    if terminal and expected[-1:] == [read_to] and not _finite(last):
         expected = expected[:-1]  # a non-finite operational reading skips its diagnostic
     if [row["step"] for row in rows] != expected:
         problems.append("scoring diagnostics are not every diagnostic step up to the last reading")
-    if any(readings.get(row["step"]) != row["K_monitor"] for row in rows):
-        problems.append("a diagnostic's monitor K differs from the reading of its step")
-    for i, row in enumerate(rows):
-        last = i == len(rows) - 1 and row["step"] == read_to and terminal
-        if not all(_finite(row[k]) for k in keys[1:]) and not last:
-            problems.append(f"the scoring diagnostic of step {row['step']} is not finite")
+    for row in rows:  # the same numbers in the reading's row, NaN for NaN
+        reading = by_step.get(row["step"], {})
+        if any(not _same(reading.get(k), row[k]) for k in keys[1:]):
+            problems.append(f"the diagnostic of step {row['step']} differs from its reading")
     if any("K_monitor_full" not in row for row in evaluations):
         problems.append("an evaluation lacks the full monitor panel")
     checks = _jsonl(run_dir / "cache_checks.jsonl")
+    problems += _finiteness("cache checks", checks, terminal_step)
     planned = [0, *(row["step"] for row in evaluations)]
     steps = [row["step"] for row in checks]
 
@@ -348,10 +368,14 @@ def _version2_problems(
     # Only a run stopped as nonfinite_k by its last check (at θ₀, or at a failed evaluation)
     # holds a non-finite uncached reading, there and nowhere else.
     for i, row in enumerate(checks):
-        last = i == len(checks) - 1 and terminal and row["step"] == read_to
-        if verdict(row) and not last:
+        last_row = i == len(checks) - 1 and terminal and row["step"] == read_to
+        if verdict(row) and not last_row:
             problems.append(f"the cache check of step {row['step']} found a non-finite reading "
                             "but the run went on")  # fmt: skip
+        for part, check in row.items():
+            if part != "step" and check.get("bitwise_equal") and check.get("max_abs_diff") != 0:
+                problems.append(f"the cache check of step {row['step']}: {part} is called equal "
+                                f"with a difference {check.get('max_abs_diff')}")  # fmt: skip
     final = bool(checks) and verdict(checks[-1])
     extra = final and steps == [*planned, read_to] and read_to not in planned[1:]
     if steps != planned and not extra:
@@ -363,6 +387,33 @@ def _version2_problems(
         if set(parts) != required or not (equal or (final and i == len(checks) - 1)):
             problems.append(f"the cache check of step {row['step']} lacks a part or differs")
     return rows, problems
+
+
+def _nonfinite(value: Any) -> bool:
+    """Whether a value holds a non-finite number anywhere (nested lists and mappings)."""
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, Mapping):
+        return any(_nonfinite(v) for v in value.values())
+    if isinstance(value, list | tuple):
+        return any(_nonfinite(v) for v in value)
+    return False
+
+
+def _finiteness(
+    table: str, rows: Sequence[Mapping[str, Any]], allowed: int | None, *, key: str = "step"
+) -> list[str]:
+    """Rows of ``table`` holding a non-finite number; ``allowed`` names the one step whose rows
+    may (the last step of a run stopped as nonfinite_k)."""
+    bad = sorted({str(row.get(key)) for row in rows
+                  if _nonfinite(row) and (allowed is None or row.get(key) != allowed)})  # fmt: skip
+    return [f"{table}: a non-finite number at {key} {b}" for b in bad]
+
+
+def _same(a: Any, b: Any) -> bool:
+    return a == b or (
+        isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b)
+    )
 
 
 def _checked_parts(cfg: Any) -> set[str]:

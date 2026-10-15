@@ -112,10 +112,18 @@ def scripted(monkeypatch):
     def script(*values: float) -> list[float]:
         queue = list(values)
 
-        def read(self, model):
-            return queue.pop(0) if len(queue) > 1 else queue[0]
+        def read(self, model):  # as the monitor does: its per-response reading too
+            value = queue.pop(0) if len(queue) > 1 else queue[0]
+            self.last = torch.full((len(self.primary),), value, dtype=torch.float64)
+            return self.last.mean().item()
+
+        uncached = Monitor.uncached
+
+        def again(self, model, part):  # the script is the state's own K, cached or not
+            return self.last if part == "primary" else uncached(self, model, part)
 
         monkeypatch.setattr(Monitor, "__call__", read)
+        monkeypatch.setattr(Monitor, "uncached", again)
         return queue
 
     return script
