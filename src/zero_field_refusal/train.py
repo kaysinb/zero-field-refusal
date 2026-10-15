@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -246,7 +246,15 @@ class Evaluator:
         items = self.env.prompt_set(name)
         return items[:limit] if limit else items
 
-    def __call__(self, model: PreTrainedModel, condition: str) -> dict[str, float]:
+    def __call__(
+        self,
+        model: PreTrainedModel,
+        condition: str,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> dict[str, float]:
+        """``check``, if given, runs once K is measured and before anything of the condition is
+        written; it raises (``Diverged`` for an outcome) to stop the evaluation unrecorded."""
         cfg, env, execution = self.cfg, self.env, self.cfg.execution
         out: dict[str, float] = {}
         rows = []
@@ -264,6 +272,8 @@ class Evaluator:
         if nonfinite:  # the weights went bad: an outcome, as a non-finite training loss is
             self.run.summarize({"diverged_in": condition})
             raise Diverged(f"{', '.join(nonfinite)} not finite under condition {condition}")
+        if check is not None:
+            check()
 
         responses = greedy_responses(
             model, [env.encode_prompt(item["text"]) for item in self.harmful],

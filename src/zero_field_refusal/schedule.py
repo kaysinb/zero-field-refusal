@@ -275,11 +275,11 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         del second_moment
 
         loop = _Loop(schedule, run, evaluate, monitor, diagnostics)
-        if diagnostics is not None:  # the caches against uncached readings, at θ₀
-            loop.check_caches(student, scoring=diagnostics(student, cached=False))
-        size = cfg.train.batch_size
         reason = None
-        for step in range(schedule.steps):
+        if diagnostics is not None:  # the caches against uncached readings, at θ₀
+            reason = loop.check_caches(student, scoring=diagnostics(student, cached=False))
+        size = cfg.train.batch_size
+        for step in range(schedule.steps if reason is None else 0):
             batch = feed.batch(step)
             optimizer.zero_grad(set_to_none=True)
             soft = None if replayer is None else replayer.take(step * size, (step + 1) * size)
@@ -303,7 +303,8 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
             if reason:
                 break
         else:
-            reason = "t_max" if schedule.policy == "k_stopped" else "steps"
+            if reason is None:  # every step taken (a θ₀ verdict takes none)
+                reason = "t_max" if schedule.policy == "k_stopped" else "steps"
         for p in params:
             p.grad = None
         terminal = loop.terminal(reason, size)
@@ -447,16 +448,23 @@ class _Loop:
 
     def _evaluate(self, model: PreTrainedModel, levels: list[float], k: float | None) -> str | None:
         condition = f"step-{self.steps}"
+        extra: dict[str, Any] = {}
+
+        def auxiliary() -> None:
+            """The full monitor panel and the caches at this state, before the evaluation writes
+            anything: a non-finite verdict leaves no record of the condition."""
+            shadow = self._shadow(model)
+            extra.update({"K_monitor_primary": shadow["K_primary"],
+                          "K_monitor_full": shadow["K_full"]})  # fmt: skip
+            if self.check_caches(model, scoring=self.evaluate.last_kl["kl_benign"]):
+                raise Diverged(f"a reading without its cache is not finite at {condition}")
+
+        check = auxiliary if self.diagnostics is not None else None
         try:
-            out = self.evaluate(model, condition)
+            out = self.evaluate(model, condition, check=check)
         except Diverged:
             return "nonfinite_k"
-        if self.diagnostics is not None:  # the full monitor panel and the caches, at this state
-            shadow = self._shadow(model)
-            out = {**out, "K_monitor_primary": shadow["K_primary"],
-                   "K_monitor_full": shadow["K_full"], **_peak_memory()}  # fmt: skip
-            if self.check_caches(model, scoring=self.evaluate.last_kl["kl_benign"]):
-                return "nonfinite_k"  # the checks read every part without its cache
+        out = {**out, **extra, **(_peak_memory() if check is not None else {})}
         row = {"step": self.steps, "condition": condition, "levels": levels, "K_monitor": k, **out}
         self.evaluations.append(row)
         _append_jsonl(self.run.path("evaluations.jsonl"), [row])
