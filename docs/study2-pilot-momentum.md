@@ -127,23 +127,32 @@ Recorded with this document, before any run of the pilot.
 - **The model.** For directions with ηλ ≪ 1, heavy-ball SGD with δ ← δ − η·m and
   m ← β·m + g reaches plain SGD's stationary covariance at the effective rate η_eff = η/(1 − β).
   So K(t) ≈ (η_eff/B)·g(η_eff·t), with plain SGD's g.
-- **The frozen g.** `analysis.zero_field_law.g_table` estimates g from every version-2 SGD-long
-  discovery run of Stage A:
-  - each scoring diagnostic after step 0 gives the point (ηt, K_scoring / (η/B));
+- **The frozen g.** `analysis.zero_field_law.g_table` estimates g from the SGD-long runs of Stage
+  A's resolved search: every rate it tested, on every discovery seed, taken from Stage A's records
+  as its selection checks and searches them:
+  - each finite scoring diagnostic after step 0 gives the point (ηt, K_scoring / (η/B)); a
+    non-finite one, which can only be a run's terminal diagnostic, is left out and listed;
   - the points fall into logarithmic bins of ηt, from 0.01 upward with ratio 1.25;
   - a run's value in a bin is the median of its points there, and g in the bin is the median over
     the runs, kept where at least two runs contribute;
   - between the bins' geometric centres g is interpolated linearly in log ηt, and it is undefined
     outside them.
 
-  `scripts/pilot_momentum_prediction.py` writes the table, with the runs it used, to
-  `docs/study2-pilot-momentum-g.json` once Stage A's search has resolved. The table is committed
-  before the pilot's first run and not changed afterwards.
+  `scripts/pilot_momentum_prediction.py` writes the table to `docs/study2-pilot-momentum-g.json`
+  once Stage A's search has resolved. With it go the source runs' IDs, the SHA-256 of the files
+  the table reads from each (`config.yaml`, `diagnostics.jsonl`, `terminal.json`), and the hash
+  of the table's content. The file is committed, and its table hash written here, before the
+  pilot's first run; neither changes afterwards. A table that is empty or not finite is refused.
 - **The test.**
+  - `scripts/pilot_momentum_summary.py` first recomputes the cohort, its files' hashes and the
+    table from Stage A's records and compares them, and the table hash, with the frozen ones. It
+    refuses to summarize on any difference.
   - For each regular run of the pilot, `analysis.zero_field_law.check` takes the ratio of
-    K_scoring to (η_eff/B)·g(η_eff·t) at every scoring diagnostic after step 0, up to the run's
-    stop, whose η_eff·t lies within the table.
-  - The run's value is the median of these ratios, given at least five of them.
+    K_scoring to (η_eff/B)·g(η_eff·t) at every finite scoring diagnostic after step 0, up to the
+    run's stop, whose η_eff·t lies within the table. A terminal non-finite diagnostic is left out
+    and reported.
+  - The run's value is the median of these finite ratios, given at least five of them; otherwise
+    it is undetermined.
   - The model is contradicted when the median over the pilot's regular runs that have a value lies
     outside 0.7–1.4.
   - `scripts/pilot_momentum_summary.py` reports every run's value and that median.

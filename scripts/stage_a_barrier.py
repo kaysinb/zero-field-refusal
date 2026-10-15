@@ -8,8 +8,9 @@ curvature run. OUT_DIR, which must not exist, receives barrier.json (unrounded n
 the command and the code revision) and barrier.png, drawn from that table.
 
 - **Zero-field scaling of SGD-long** (docs/study2-stage-a-analysis.md): K / (η/B) against ηt from
-  the scoring diagnostics of every version-2 SGD-long run, the table of g over them
-  (analysis.zero_field_law.g_table) and each run's median ratio to it (``check``).
+  the finite scoring diagnostics of every version-2 SGD-long run, the table of g over them
+  (analysis.zero_field_law.g_table) and each run's median ratio to it (``check``); a terminal
+  non-finite diagnostic is left out and listed.
 - **Its bound.** The Hutchinson estimate of tr(H) from the first Lanczos coefficient of every
   start (a unit vector with iid normal entries, so E[vᵀHv] = tr(H) / n over the n trainable
   parameters), and g(∞) = tr(H) / 4 with ρ = 1.
@@ -21,6 +22,7 @@ the command and the code revision) and barrier.png, drawn from that table.
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from collections import defaultdict
@@ -50,13 +52,16 @@ def sgd_scaling(runs) -> dict:
     out = {"g_table": table, "runs": []}
     for run in runs:
         scale = run.lr / run.batch_size
-        rows = [(run.lr * r["step"], r["K_scoring"] / scale) for r in run.diagnostics if r["step"]]
+        rows = [(run.lr * r["step"], r["K_scoring"] / scale) for r in run.diagnostics
+                if r["step"] and math.isfinite(r["K_scoring"])]  # fmt: skip
         out["runs"].append({
             "run_id": run.run_id, "seed": run.seed, "batch_size": run.batch_size, "lr": run.lr,
             "stop": run.stop, "steps": run.steps,
             "last_100_monitor_K": statistics.median(k for s, k in run.monitor
                                                     if s > run.steps - 100),
             "median_ratio_to_g": check(run, table)["median_ratio"],
+            "excluded_nonfinite_steps": [int(r["step"]) for r in run.diagnostics
+                                         if not math.isfinite(r["K_scoring"])],
             "eta_t_and_K_over_eta_by_B": rows,
         })  # fmt: skip
     return out

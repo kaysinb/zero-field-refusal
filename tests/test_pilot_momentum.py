@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
-from test_stage_a import FULL, SEEDS, THETA0, UP_TO_7, search, write_run
+from test_stage_a import FULL, SEEDS, THETA0, UP_TO_7, _edit_jsonl, search, write_run
 
 from zero_field_refusal.analysis.pilot_momentum import (
     ARM,
@@ -26,7 +26,14 @@ from zero_field_refusal.analysis.stage_a import (
     load_trajectories,
     load_trajectory,
 )
-from zero_field_refusal.analysis.zero_field_law import check, g_at, g_table
+from zero_field_refusal.analysis.zero_field_law import (
+    check,
+    freeze,
+    g_at,
+    g_table,
+    table_problems,
+    verify,
+)
 
 FLAT_SGD = {b: {0.004: {}, 0.003: {}} for b in BATCHES}  # Stage A's barrier
 # 5, √40 and 8 separate, but √35 and 7 at one evaluation: meets U = 8, not U = 7
@@ -215,3 +222,57 @@ def test_the_zero_field_law_table_and_its_check(tmp_path) -> None:
     momentum = load_trajectory(with_momentum(run("m", 20, 0.0002, 2001, effective=0.002)))
     assert momentum.lr / (1 - momentum.momentum) == pytest.approx(0.002)
     assert check(momentum, table)["median_ratio"] == pytest.approx(1.0, rel=0.05)
+
+
+def test_terminal_non_finite_diagnostics_are_left_out_and_reported(tmp_path) -> None:
+    def run(name, lr, seed, **extra):
+        steps = {k: round(t * 0.002 / lr) for k, t in FULL.items()}
+        return write_run(tmp_path, name, arm="sgd_long", batch=20, lr=lr, seed=seed,
+                         monitor_version=2, **({"reach": steps} | extra))  # fmt: skip
+
+    stopped = run("nan", 0.002, 2002, reach=None, steps=125, stop="nonfinite_k")
+
+    def nan_last(rows):
+        rows[-1]["K_scoring"] = float("nan")
+        return rows
+
+    _edit_jsonl(stopped / "diagnostics.jsonl", nan_last)  # four finite, then the terminal NaN
+    _edit_jsonl(stopped / "monitor.jsonl", nan_last)
+    nan = load_trajectory(stopped)
+    plain = [load_trajectory(run("a", 0.002, 2000)), load_trajectory(run("b", 0.002, 2001)), nan]
+    table = g_table(plain)
+    assert table["excluded_nonfinite"] == [{"run_id": "nan", "step": 125}]
+    assert table_problems(table) == []
+    found = check(nan, table)
+    assert found["excluded_nonfinite_steps"] == [125] and 125 not in found["eligible_steps"]
+    assert found["median_ratio"] is None  # at most four finite ratios: undetermined
+    broken = {**table, "bins": [*table["bins"][:-1], {**table["bins"][-1], "g": float("nan")}]}
+    assert table_problems(broken)
+    with pytest.raises(ValueError, match="not finite"):
+        check(nan, broken)
+
+
+def test_the_g_table_is_frozen_from_stage_a_resolved_search(tmp_path) -> None:
+    pilot(tmp_path)
+    stage_a = load_trajectories(tmp_path / "stage_a")
+    frozen = freeze(stage_a, THETA0)
+    cohort = [r for r in stage_a if r.arm == "sgd_long" and r.role == "discovery"]
+    assert [s["run_id"] for s in frozen["source"]] == sorted(r.run_id for r in cohort)
+    assert verify(frozen, stage_a, THETA0) == []
+    # A subset is not the cohort: Stage A's records are then not whole.
+    with pytest.raises(ValueError, match="Stage A"):
+        freeze([r for r in stage_a if r.run_id != cohort[0].run_id], THETA0)
+    # A changed file of the cohort, or a changed table, no longer matches the frozen identity.
+    tampered = {**frozen, "bins": [{**frozen["bins"][0], "g": 1.0}, *frozen["bins"][1:]]}
+    assert any("recorded hash" in p for p in verify(tampered, stage_a, THETA0))
+
+    def shift(rows):  # the diagnostic of step 25 and its reading's row, as a run writes them
+        for row in rows:
+            if row["step"] == 25 and "K_scoring" in row:
+                row["K_scoring"] *= 1.5
+        return rows
+
+    _edit_jsonl(cohort[0].run_dir / "diagnostics.jsonl", shift)
+    _edit_jsonl(cohort[0].run_dir / "monitor.jsonl", shift)
+    problems = verify(frozen, load_trajectories(tmp_path / "stage_a"), THETA0)
+    assert any("differ from the frozen source" in p for p in problems), problems
