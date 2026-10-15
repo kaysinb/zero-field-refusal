@@ -207,6 +207,9 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     read_to = steps - 1 if stop == "nonfinite_weight" else steps  # no reading after a bad update
     if [s for s, _ in monitor] != list(range(every, read_to + 1, every)):
         problems.append("monitor readings are not every reading up to the last step")
+    nonfinite = [i for i, (_, k) in enumerate(monitor) if not _finite(k)]
+    if nonfinite and (nonfinite != [len(monitor) - 1] or stop != "nonfinite_k"):
+        problems.append("a monitor reading is not finite before the run's nonfinite_k stop")
     if [row["step"] for row in training] != list(range(steps)):
         problems.append("training metrics are not one row per step taken")
     eval_steps = [row["step"] for row in evaluations]
@@ -342,10 +345,14 @@ def _version2_problems(
     def verdict(row: Mapping[str, Any]) -> bool:  # an uncached reading not finite: an outcome
         return any(not v.get("uncached_finite", True) for k, v in row.items() if k != "step")
 
-    # A run stopped as nonfinite_k by its last check (at θ₀, or at a failed evaluation) keeps it.
+    # Only a run stopped as nonfinite_k by its last check (at θ₀, or at a failed evaluation)
+    # holds a non-finite uncached reading, there and nowhere else.
+    for i, row in enumerate(checks):
+        last = i == len(checks) - 1 and terminal and row["step"] == read_to
+        if verdict(row) and not last:
+            problems.append(f"the cache check of step {row['step']} found a non-finite reading "
+                            "but the run went on")  # fmt: skip
     final = bool(checks) and verdict(checks[-1])
-    if final and (not terminal or checks[-1]["step"] != read_to):
-        problems.append("a cache check found a non-finite reading but the run went on")
     extra = final and steps == [*planned, read_to] and read_to not in planned[1:]
     if steps != planned and not extra:
         problems.append("cache checks are not at θ₀ and at every evaluation")

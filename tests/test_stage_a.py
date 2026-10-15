@@ -1140,3 +1140,30 @@ def chosen_with_diagnostics(root: Path) -> dict:
     role = {name: [r for r in runs if r.role == name] for name in ROLES}
     return select(role["discovery"], role["screen"], role["full_control"], THETA0,
                   role["diagnostic"])  # fmt: skip
+
+
+def test_a_non_finite_reading_or_verdict_is_accepted_only_where_the_run_stops(tmp_path) -> None:
+    reach = {5.0: 100, SQRT35: 150, SQRT40: 200, 7.0: 300, 8.0: 400}
+
+    def run(name):
+        return write_run(tmp_path, name, arm="adamw_long", batch=5, lr=1e-5, seed=2000,
+                         reach=reach, monitor_version=2)  # fmt: skip
+
+    reading = run("reading")  # a non-finite reading at step 5, then a target stop
+
+    def nan_first(rows):
+        rows[0]["K_monitor"] = float("nan")
+        return rows
+
+    _edit_jsonl(reading / "monitor.jsonl", nan_first)
+    with pytest.raises(TrajectoryError, match="before the run's nonfinite_k stop"):
+        load_trajectory(reading)
+    verdict = run("verdict")  # an early check's uncached reading not finite, though bit-equal
+
+    def nan_check(rows):
+        rows[0]["secondary"]["uncached_finite"] = False
+        return rows
+
+    _edit_jsonl(verdict / "cache_checks.jsonl", nan_check)
+    with pytest.raises(TrajectoryError, match="found a non-finite reading but the run went on"):
+        load_trajectory(verdict)
