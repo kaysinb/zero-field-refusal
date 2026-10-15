@@ -11,6 +11,8 @@ documents:
   purpose: Authoritative hypotheses, analysis, gate criteria and amendments of study 1 (the pilot)
 - path: docs/study2-preregistration.md
   purpose: Study 2 question, arms, stages, gates, analysis and amendments
+- path: docs/study2-stage-a-analysis.md
+  purpose: Study 2 Stage A's K-only analyses and recorded predictions, outside the selection rule
 - path: docs/plan.md
   purpose: Stages, progression, failure paths and hardware
 - path: docs/architecture.md
@@ -191,6 +193,7 @@ topics:
   - docs/study2-preregistration.md#numerical-acceptance
   - docs/study2-preregistration.md#zone-and-levels
   - docs/plan.md#study-2
+  - docs/study2-stage-a-analysis.md#recorded-predictions
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage
