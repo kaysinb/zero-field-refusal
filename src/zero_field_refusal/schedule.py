@@ -443,11 +443,11 @@ class _Loop:
         _append_jsonl(self.run.path("contamination_checks.jsonl"),
                       [{"step": step, "K_monitor": k, "K_scoring_cached": scoring_k,
                         "K_scoring": value, "bound": bound}])  # fmt: skip
+        if not math.isfinite(value):  # the state's own reading: an outcome, whatever the cache
+            return "nonfinite_k"
         if scoring_k is not None and value != scoring_k:  # the cache's, not the state's
             raise CacheMismatch(f"step {step}: the scoring diagnostic read {scoring_k} with the "
                                 f"cache and {value} without it")  # fmt: skip
-        if not math.isfinite(value):
-            return "nonfinite_k"
         if value > bound:
             self.guard.detail = {"K_scoring": value, "bound": bound}
             return "contamination"

@@ -496,8 +496,10 @@ def _pilot_control_problems(
     above = {row["step"] for row in readings if _finite(row["K_monitor"])
              and row["K_monitor"] > bound}  # fmt: skip
     above |= {s for s, k in scoring.items() if _finite(k) and k > bound}
-    if stop == "nonfinite_k" and terminal_step in scoring:
-        # the terminal diagnostic stopped the run (nonfinite_k) before any check could run
+    terminal_diagnostic = next((row for row in diagnostics if row["step"] == terminal_step), None)
+    if terminal_diagnostic is not None and not (
+        _finite(terminal_diagnostic["K_scoring"]) and _finite(terminal_diagnostic["K_monitor_full"])
+    ):  # the terminal diagnostic itself stopped the run (nonfinite_k), before any check
         above.discard(terminal_step)
     if above != set(by_step):
         problems.append("contamination checks: not exactly the readings above the bound")
@@ -507,7 +509,7 @@ def _pilot_control_problems(
         verified = _finite(row["K_scoring"]) and row["K_scoring"] > bound
         last = step == terminal["steps"]
         cached = row["K_scoring_cached"]
-        if cached is not None and cached != row["K_scoring"]:
+        if cached is not None and _finite(row["K_scoring"]) and cached != row["K_scoring"]:
             problems.append(f"contamination check of step {step}: the cached diagnostic is not "
                             "the uncached reading")  # fmt: skip
         if verified and not (last and stop == "contamination"):

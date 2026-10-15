@@ -85,6 +85,10 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
     and the path-field bound remain;
   - every prescribed evaluation and the final one are required. A control that stops before its
     planned last step for any reason is not accepted; there is no early success.
+  - cached and uncached scoring reads must agree bit for bit, with no tolerance; a finite
+    difference is a technical failure, while a non-finite uncached read is the state's
+    (`nonfinite_k`). Should last-bit differences appear on a GPU, their reproducibility is
+    diagnosed first; the tolerance is never widened silently.
 
   This holds for the pilot's screen and full controls alike; its regular runs keep the ×10 rule.
 - **Full controls.** As in Stage A:

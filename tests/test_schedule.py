@@ -345,6 +345,66 @@ def test_a_cached_diagnostic_the_uncached_check_does_not_reproduce_is_technical(
         run_scheduled(cfg, env, run_id="cache-only")
 
 
+def test_a_non_finite_uncached_check_is_the_states_not_the_caches(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+    from zero_field_refusal.panels import ScoringDiagnostics
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]",
+                    "+schedule.instability.grad_rule=log",
+                    "+schedule.instability.contamination_k=0.05", policy="short")  # fmt: skip
+    ready(env, cfg)
+    scripted(0.01)
+    state, call = trained(monkeypatch), ScoringDiagnostics.__call__
+
+    def scoring(self, m, cached=True):  # once training started: 0.1 cached, not finite uncached
+        out = call(self, m, cached=cached)
+        if not state["steps"]:
+            return out
+        return torch.full_like(out, 0.1) if cached else nan_like(out)
+
+    monkeypatch.setattr(ScoringDiagnostics, "__call__", scoring)
+    run_dir = run_scheduled(cfg, env, run_id="nan-uncached")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "nonfinite_k", "kind": "instability"}
+    (check,) = read_jsonl(run_dir / "contamination_checks.jsonl")
+    assert check["step"] == 25 and math.isnan(check["K_scoring"])
+    assert load_trajectory(run_dir).stop == "nonfinite_k"
+
+
+def test_a_passed_contamination_check_still_counts_when_the_evaluation_stops_the_run(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+    from zero_field_refusal.panels import Monitor, ScoringDiagnostics
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]",
+                    "+schedule.instability.grad_rule=log",
+                    "+schedule.instability.contamination_k=0.05", policy="short")  # fmt: skip
+    ready(env, cfg)
+    scripted(0.01, 0.01, 0.01, 0.01, 0.1)  # the monitor above the bound at step 25
+    state, call, values = trained(monkeypatch), ScoringDiagnostics.__call__, Monitor._values
+
+    def scoring(self, m, cached=True):  # a finite diagnostic, below the bound, cached or not
+        out = call(self, m, cached=cached)
+        return torch.full_like(out, 0.01) if state["steps"] else out
+
+    def monitor(self, m, part, cached=True):  # the evaluation's uncached second response: NaN
+        out = values(self, m, part, cached=cached)
+        return nan_like(out) if part == "secondary" and not cached and state["steps"] else out
+
+    monkeypatch.setattr(ScoringDiagnostics, "__call__", scoring)
+    monkeypatch.setattr(Monitor, "_values", monitor)
+    run_dir = run_scheduled(cfg, env, run_id="check-then-nan")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "nonfinite_k", "kind": "instability"}
+    (check,) = read_jsonl(run_dir / "contamination_checks.jsonl")  # it ran, and passed
+    assert check["step"] == 25 and check["K_scoring"] == pytest.approx(0.01)
+    run = load_trajectory(run_dir)
+    assert run.stop == "nonfinite_k" and len(run.contamination_checks) == 1
+
+
 def test_a_short_run_takes_its_steps_and_is_evaluated_where_scheduled(
     env, tmp_path, scripted
 ) -> None:
