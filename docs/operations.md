@@ -246,9 +246,13 @@ python scripts/launch.py "$C/sgd.yaml"
 
 **Monitor version 2** ([amendment 1](study2-preregistration.md#amendment-1-the-monitor-panel)).
 Every run after the amendment uses the commit that implements it, delivered as a new bundle.
-On Pod A, once, before any run reads it: generate the new monitor stream, record its spec hash
-and sha256 here, and archive it with its own inventory, which the other Pods' `pod_setup.sh`
-adds.
+Once, on a Pod with nothing else running, before any run reads it: generate the new monitor
+stream, record its spec hash and sha256 here, and archive it with its own inventory, which the
+other Pods' `pod_setup.sh` adds. Generated on Pod C on 2026-10-15 from `f0aacd6` (the first Pod
+free of its grids): `kl_monitor/cb98e156751c`, 100 prompts × 2 responses, seeds 1737873636 and
+325807756, `samples.jsonl` sha256 `d07e47df23a568377c766c1238b79e45af85f54ce1e7121fa716cb7410b9f3ad`,
+`manifest.json` sha256 `516d8fb58647781683f9a94f189966ac43f900e4c1e2c569931dd1ffe26df3fb`;
+inventory `runs/archive/inventory-2026-10-15-study2-monitor-v2.tsv`.
 
 ```bash
 python scripts/generate_teacher.py experiments/study2_stage_a --stream kl_monitor
