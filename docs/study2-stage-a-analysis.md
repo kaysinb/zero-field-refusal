@@ -56,3 +56,49 @@ to those readings.
 **What would contradict it.** On any seed, a median monitor K over the last 100 steps outside
 0.08–0.16 at the stop. Also, a median ratio K_0.001(t) / (½ K_0.002(t / 2)) outside 0.85–1.15
 over steps 1000 to the stop on the same seed.
+
+## The barrier of SGD-long
+
+The search's nine version-2 SGD-long runs: three seeds each at 0.0005 (B = 5), 0.002 (B = 20) and
+0.001 (B = 20). Every one stopped by plateau, with a median monitor K over its last 100 steps of
+0.11–0.26 against a lower level of 5. The numbers come from `scripts/stage_a_barrier.py` at commit
+`7624d7e` (`runs/analysis/stage-a-barrier-2026-10-15/barrier.json`, archived with the runs). It
+reads K, curvature and the screen's stops only.
+
+![SGD-long's K / (η/B) against ηt, and AdamW-long's plateaus](figures/study2-stage-a-barrier.png)
+
+- **The law holds.**
+  - K / (η/B) against ηt falls on one curve g for all nine runs. Each run's median ratio to the
+    common g is 0.97–1.02. This is a consistency check, since the runs also define g.
+  - The held-out test is the prediction recorded before the runs at 0.001 existed. At the stop,
+    the median K over the last 100 steps was 0.110, 0.112 and 0.122 on seeds 2000–2002, against
+    the predicted 0.10–0.13. The median ratio to ½ K_0.002(t / 2) on the same seed was 1.042,
+    0.965 and 1.031, against the band 0.85–1.15.
+- **g.**
+  - It rises slowly, roughly with log ηt: from ≈ 500–800 at ηt = 0.01–0.03 to ≈ 2400 at
+    ηt ≈ 3.
+  - Its bound for full equilibrium is tr(H)/4 ≈ 6200 (ρ = 1). tr(H) ≈ 2.5·10⁴ (1.7–3.0·10⁴) is
+    the Hutchinson estimate from the first Lanczos coefficient of all 14 starts of the curvature
+    run, over 1.31·10⁹ trainable parameters.
+  - The 60-step Lanczos runs resolve only the top of the spectrum: 691 pooled, 697–1067 for
+    single batches. The bulk that sets g at small ηt is not resolved, so the spectrum bounds g
+    but does not predict it.
+- **Stability caps η/B.**
+  - The screen passed 0.0005 at B = 5 (0.001 failed) and 0.002 at B = 20 (0.003 failed). That is
+    η/B ≈ 1–2·10⁻⁴ at both batches.
+  - Within T_max = 4000 steps this keeps K ≤ (η/B)·g(η·4000), a few tenths.
+  - A caveat on those edges: the screen's stops, like the full controls' stops, came from the
+    gradient rule on single batches of the soft-target noise floor, without growth. At B = 5,
+    0.002–0.004 all stopped at step 12; at B = 20, 0.003 and 0.004 both stopped at step 17. Only
+    0.006 at B = 20 grew geometrically, ×1.4 per step. The true edges are likely higher, so these
+    caps are lower bounds.
+  - Even η/B = 3·10⁻⁴ would give K ≈ 0.75 at ηt ≈ 3, still far below 5.
+- **AdamW-long, for contrast** (version-1 monitor, runs stopped by plateau or T_max).
+  - The final K grows faster than linearly with the rate: ×9.2–9.9 for ×5 in η, about η^1.4.
+  - It falls with the batch about as B^−0.45: the ratio of B = 5 to B = 20 is 1.6–1.9.
+  - Adam's normalization drives the flat, low-noise directions, which plain SGD barely moves.
+- **What it means.**
+  - At the rates the numerics allow, plain SGD-long settles at K of a few tenths and approaches
+    its bound only logarithmically.
+  - The barrier follows from the zero-field law and the stability cap, not from the monitor or
+    the plateau rule.
