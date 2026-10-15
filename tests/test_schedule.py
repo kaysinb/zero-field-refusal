@@ -597,3 +597,53 @@ def test_a_late_non_finite_verdict_leaves_loadable_records(env, tmp_path, monkey
     assert terminal["levels"]["failed_crossing"] == {"step": 30, "levels": [1.0]}
     run = load_trajectory(run_dir)  # the launcher's check: whole records
     assert run.stop == "nonfinite_k" and run.evaluation_at(1.0) is None
+
+
+def test_a_full_evaluation_runs_without_the_gradients(env, tmp_path, monkeypatch) -> None:
+    """The gradients are freed before a full evaluation (it needs none), which lowers its memory
+    peak; the next step makes them anew, so training is unchanged."""
+    from zero_field_refusal.train import Evaluator
+
+    cfg = short_v2(env, tmp_path)
+    seen = []
+    call = Evaluator.__call__
+
+    def evaluate(self, model, condition, check=None):
+        seen.append(all(p.grad is None for p in model.parameters()))
+        return call(self, model, condition, check=check)
+
+    monkeypatch.setattr(Evaluator, "__call__", evaluate)
+    run_dir = run_scheduled(cfg, env, run_id="no-grads")
+    assert seen == [True]
+    assert json.loads((run_dir / "terminal.json").read_text())["steps"] == 25
+
+
+def test_freeing_the_gradients_changes_no_step_after_an_evaluation(
+    env, tmp_path, monkeypatch, scripted
+):
+    """The same run with and without freeing the gradients before its evaluation at step 15:
+    every later step's loss and gradient norm, and the evaluation at step 30, agree bit for bit."""
+    from zero_field_refusal import schedule
+
+    cfg = scheduled(tmp_path, *K_RUN)
+    ready(env, cfg)
+    records = {}
+    init = schedule._Loop.__init__
+
+    def without(self, *args, **kwargs):  # the loop, keeping the gradients
+        init(self, *args, **kwargs)
+        self.release = None
+
+    for name, keep in (("freed", False), ("kept", True)):
+        scripted(0.1, 0.6, 0.7, 0.8, 1.2, 1.3)  # evaluations at steps 15 and 30
+        if keep:
+            monkeypatch.setattr(schedule._Loop, "__init__", without)
+        run_dir = run_scheduled(cfg, env, run_id=name)
+        metrics = [r for r in read_jsonl(run_dir / "metrics.jsonl") if "loss" in r]
+        evaluations = read_jsonl(run_dir / "evaluations.jsonl")
+        records[name] = (
+            [(r["step"], r["loss"], r["grad_norm"]) for r in metrics],
+            [(e["step"], e["K_benign"], e["K_harmful"], e["K_monitor_full"]) for e in evaluations],
+        )
+    assert records["freed"] == records["kept"]
+    assert [e[0] for e in records["freed"][1]] == [15, 30]

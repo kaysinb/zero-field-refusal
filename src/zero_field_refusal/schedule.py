@@ -274,7 +274,11 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         optimizer = build_optimizer(cfg.optimizer, params, second_moment=second_moment)
         del second_moment
 
-        loop = _Loop(schedule, run, evaluate, monitor, diagnostics)
+        def release() -> None:  # the next step's zero_grad(set_to_none) would free them anyway
+            for p in params:
+                p.grad = None
+
+        loop = _Loop(schedule, run, evaluate, monitor, diagnostics, release)
         reason = None
         if diagnostics is not None:  # the caches against uncached readings, at θ₀
             reason = loop.check_caches(student, scoring=diagnostics(student, cached=False))
@@ -341,9 +345,11 @@ class _Loop:
         evaluate: Evaluator,
         monitor: Monitor,
         diagnostics: ScoringDiagnostics | None = None,
+        release: Callable[[], None] | None = None,
     ):
         self.schedule, self.run, self.evaluate, self.monitor = schedule, run, evaluate, monitor
         self.diagnostics = diagnostics
+        self.release = release  # frees the gradients, which a full evaluation does not need
         self.read_at: int | None = None  # the step of the last operational monitor reading
         self.diagnosed = 0
         self.guard = InstabilityGuard(schedule.grad_factor, schedule.grad_window, schedule.k_max)
@@ -449,6 +455,8 @@ class _Loop:
     def _evaluate(self, model: PreTrainedModel, levels: list[float], k: float | None) -> str | None:
         condition = f"step-{self.steps}"
         extra: dict[str, Any] = {}
+        if self.release is not None:  # the step's reading took its geometry already
+            self.release()
 
         def auxiliary() -> None:
             """The full monitor panel and the caches at this state, before the evaluation writes
