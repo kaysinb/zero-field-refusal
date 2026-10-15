@@ -54,8 +54,8 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
 - **Screen.**
   - A 100-step soft-target control on seed 2000 with the same momentum, at both batches, for each
     rate of {0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 6}·10⁻³.
-  - A rate passes as in Stage A: no instability fires, and the contamination stays at most
-    0.01 × √35.
+  - A rate passes when no stopping condition fires, it reaches its final evaluation and the
+    contamination stays at most 0.01 × √35 (the gradient rule only logs; below).
   - The two largest passing rates of each batch are its candidates.
 - **Why this grid.** For a fixed Hessian, heavy-ball momentum is linearly stable for
   ηλ < 2(1 + β) = 3.8. The plain SGD screen placed the limit between 0.0005 and 0.001 at B = 5,
@@ -65,6 +65,21 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
   controls decide.
 - **Momentum in the control.** Momentum is linear in the gradient. Unlike Adam, it does not turn
   the control's tiny residual gradients into full-size steps.
+- **The gradient rule in a control only logs** (`grad_rule: log`). A soft-target control's
+  gradient is zero at θ₀ up to rounding. Stage A's full controls showed that the ×10 rule, built
+  for real gradients, fires on single batches on that noise floor without any growth: both
+  stopped on stream responses 11480–11484 of seed 2000, with their scoring K at
+  1.3–2.2·10⁻⁹. The pilot fixes this before any of its runs, as follows:
+  - the rule's firings are recorded in the terminal record, and the update is taken;
+  - a control is rejected when its scoring panel's K_benign exceeds 0.01 × √35 at any prescribed
+    evaluation or at the final one; the values are finite and uncached, or bit-equal to the
+    uncached reading by that evaluation's cache check;
+  - finiteness of loss, gradient, weights and K, the soft-target replay checks, the cache checks
+    and the path-field bound remain;
+  - every prescribed evaluation and the final one are required. A control that stops before its
+    planned last step for any reason is not accepted; there is no early success.
+
+  This holds for the pilot's screen and full controls alike; its regular runs keep the ×10 rule.
 - **Full controls.** As in Stage A:
   - one per candidate rate that runs on the three seeds, on seed 2000;
   - as long as the longest regular run of that rate and batch;

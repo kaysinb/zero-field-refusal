@@ -41,8 +41,12 @@ EIGHT_NOT_SEVEN = {5.0: 100, math.sqrt(35): 200, math.sqrt(40): 200, 7.0: 200, 8
 
 
 def with_momentum(run_dir: Path, momentum: float = MOMENTUM) -> Path:
+    """The run as the pilot's configs make it: momentum, and the gradient rule only logged in a
+    soft-target control."""
     cfg = OmegaConf.load(run_dir / "config.yaml")
     cfg.optimizer.momentum = momentum
+    if cfg.get("control") == "soft_targets":
+        cfg.schedule.instability.grad_rule = "log"
     OmegaConf.save(cfg, run_dir / "config.yaml")
     return run_dir
 
@@ -276,3 +280,16 @@ def test_the_g_table_is_frozen_from_stage_a_resolved_search(tmp_path) -> None:
     _edit_jsonl(cohort[0].run_dir / "monitor.jsonl", shift)
     problems = verify(frozen, load_trajectories(tmp_path / "stage_a"), THETA0)
     assert any("differ from the frozen source" in p for p in problems), problems
+
+
+def test_the_pilot_controls_only_log_the_gradient_rule(tmp_path) -> None:
+    screened = write_run(tmp_path, "c", arm="soft_control", batch=5, lr=0.001, seed=2000,
+                         final_k=0.01, evaluate_at=(100,), role="screen")  # fmt: skip
+    assert pilot_conformance([load_trajectory(with_momentum(screened))], "screen") == []
+    spike = write_run(tmp_path, "s", arm="soft_control", batch=5, lr=0.001, seed=2000,
+                      final_k=0.01, evaluate_at=(100,), role="screen")  # fmt: skip
+    cfg = OmegaConf.load(spike / "config.yaml")
+    cfg.optimizer.momentum = MOMENTUM
+    OmegaConf.save(cfg, spike / "config.yaml")
+    problems = pilot_conformance([load_trajectory(spike)], "screen")
+    assert any("instability" in p for p in problems), problems

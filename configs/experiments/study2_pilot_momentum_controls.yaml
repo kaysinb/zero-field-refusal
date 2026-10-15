@@ -7,3 +7,7 @@ defaults:
   - optimizer/sgd_momentum
 
 experiment: study2_pilot_momentum_controls
+schedule:
+  instability:
+    grad_rule: log                  # the gradient rule only recorded: a control is judged by its
+                                    # scoring K (docs/study2-pilot-momentum.md, "Numerical acceptance")

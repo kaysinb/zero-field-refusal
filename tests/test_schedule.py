@@ -81,6 +81,18 @@ def test_the_gradient_reference_starts_at_step_0_and_one_spike_suffices() -> Non
     assert guard.norms == [1.0, 10.0, 2.0]  # the spike does not join the reference
 
 
+def test_the_logged_rule_records_a_spike_and_takes_the_update() -> None:
+    # The SGD-momentum pilot's soft-target controls: the rule fires as before, but only records.
+    guard = InstabilityGuard(grad_factor=10, grad_window=20, k_max=16, grad_rule="log")
+    for norm in (1.0, 1.0, 1.0, 25.0, 1.0):
+        assert guard.gradient(1.0, norm) is None
+    assert guard.logged == [{"step": 3, "grad_norm": 25.0, "reference_median": 1.0}]
+    assert guard.norms == [1.0, 1.0, 1.0, 1.0]  # the firing norm stays out of the reference
+    assert guard.gradient(float("nan"), 1.0) == "nonfinite_loss"  # the other stops remain
+    with pytest.raises(ValueError, match="grad_rule"):
+        InstabilityGuard(grad_factor=10, grad_window=4, k_max=16, grad_rule="other")
+
+
 def test_instability_reasons() -> None:
     guard = InstabilityGuard(grad_factor=10, grad_window=2, k_max=16)
     assert guard.gradient(float("nan"), 1.0) == "nonfinite_loss"
@@ -225,6 +237,31 @@ def test_a_gradient_spike_stops_before_its_update(env, tmp_path, scripted, monke
     rejected = terminal["stop"]["rejected"]  # the refused batch, not counted as a step
     assert (rejected["step"], rejected["grad_norm"]) == (3, 50.0)
     assert len(read_jsonl(run_dir / "metrics.jsonl")) == 3
+
+
+def test_a_logged_gradient_rule_records_the_spike_and_runs_on(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    import zero_field_refusal.schedule as schedule
+
+    cfg = scheduled(tmp_path, "train.steps=6", "schedule.evaluate_at=[6]",
+                    "+schedule.instability.grad_rule=log", policy="short")  # fmt: skip
+    ready(env, cfg)
+    scripted(0.1)
+    norms = iter([1.0, 1.0, 1.0, 50.0, 1.0, 1.0])
+    real = schedule._norm
+
+    def norm(tensors):  # the gradient norms are scripted, the weight check stays real
+        first = next(t for t in tensors if t is not None)
+        return next(norms) if first.requires_grad is False and first.grad is None else real(tensors)
+
+    monkeypatch.setattr(schedule, "_norm", norm)
+    run_dir = run_scheduled(cfg, env, run_id="logged")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "steps", "kind": "limit"} and terminal["steps"] == 6
+    assert terminal["gradient_spikes"] == [{"step": 3, "grad_norm": 50.0, "reference_median": 1.0}]
+    steps = [row["step"] for row in read_jsonl(run_dir / "metrics.jsonl") if "loss" in row]
+    assert steps == list(range(6)) and terminal["evaluations"] == [6]  # the update was taken
 
 
 def test_a_short_run_takes_its_steps_and_is_evaluated_where_scheduled(

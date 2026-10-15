@@ -17,10 +17,14 @@ The rules are those of docs/study2-preregistration.md ("Panels, monitoring and s
   median of the last half's medians is at most ``drift`` times the first half's, and all lie
   below ``below_next`` times the next level: the run stops (``plateau``).
 - **Instability**, checked before every update from the first gradient: a non-finite loss,
-  gradient, weight or K; a monitor K above ``k_factor`` times the top level; a gradient norm
-  above ``grad_factor`` times the median of the preceding (up to ``grad_window``) step norms,
-  the reference starting at the step-0 norm. One step suffices. An unstable run stops without
-  that update; it is a result, recorded, not a failure.
+  gradient, weight or K; a monitor K above ``k_factor`` times the top level; and the gradient
+  rule ``grad_rule``: a gradient norm above ``grad_factor`` times the median of the preceding (up
+  to ``grad_window``) step norms, the reference starting at the step-0 norm. Under ``spike`` (the
+  default) it stops the run (``gradient_spike``); under ``log`` (the SGD-momentum pilot's
+  soft-target controls, docs/study2-pilot-momentum.md) it is only recorded, in the terminal
+  record's ``gradient_spikes``, and the update is taken: a soft-target control is judged by its
+  scoring K. Either way the firing norm stays out of the reference. One step suffices. An
+  unstable run stops without that update; it is a result, recorded, not a failure.
 - **Limit.** A ``k_stopped`` run stops at ``train.steps`` (T_max, ``t_max``); a ``fixed`` run
   takes exactly ``train.steps`` steps (``steps``), evaluated at the steps in ``evaluate_at``,
   and stops early only on instability.
@@ -68,6 +72,7 @@ from .train import (
 POLICIES = ("k_stopped", "fixed")
 INSTABILITY = ("nonfinite_loss", "nonfinite_gradient", "nonfinite_weight", "nonfinite_k",
                "k_above_max", "gradient_spike")  # fmt: skip
+GRAD_RULES = ("spike", "log")
 
 
 @dataclass(frozen=True)
@@ -130,9 +135,15 @@ class LevelTracker:
 
 
 class InstabilityGuard:
-    def __init__(self, grad_factor: float, grad_window: int, k_max: float) -> None:
+    def __init__(
+        self, grad_factor: float, grad_window: int, k_max: float, grad_rule: str = "spike"
+    ) -> None:
+        if grad_rule not in GRAD_RULES:
+            raise ValueError(f"grad_rule must be one of {GRAD_RULES}, got {grad_rule!r}")
         self.grad_factor, self.grad_window, self.k_max = grad_factor, grad_window, k_max
+        self.grad_rule = grad_rule
         self.norms: list[float] = []
+        self.logged: list[dict[str, float]] = []  # under "log": every firing, with its step
         self.detail: dict[str, float] = {}  # what fired: the value and its bound
 
     def gradient(self, loss: float, grad_norm: float) -> str | None:
@@ -143,7 +154,11 @@ class InstabilityGuard:
             return "nonfinite_gradient"
         reference = self.norms[-self.grad_window :]
         if reference and grad_norm > self.grad_factor * statistics.median(reference):
-            self.detail = {"grad_norm": grad_norm, "reference_median": statistics.median(reference)}
+            fired = {"grad_norm": grad_norm, "reference_median": statistics.median(reference)}
+            if self.grad_rule == "log":
+                self.logged.append({"step": len(self.norms) + len(self.logged), **fired})
+                return None
+            self.detail = fired
             return "gradient_spike"
         self.norms.append(grad_norm)
         return None
@@ -170,6 +185,7 @@ class Schedule:
     grad_window: int
     k_max: float
     extend_stream: bool
+    grad_rule: str = "spike"
 
     @classmethod
     def from_config(cls, cfg: DictConfig) -> Schedule:
@@ -184,6 +200,7 @@ class Schedule:
             grad_window=int(s.instability.grad_window),
             k_max=float(s.instability.k_factor) * levels[-1],
             extend_stream=bool(s.extend_stream),
+            grad_rule=str(s.instability.get("grad_rule", "spike")),
         )  # fmt: skip
 
 
@@ -352,7 +369,8 @@ class _Loop:
         self.release = release  # frees the gradients, which a full evaluation does not need
         self.read_at: int | None = None  # the step of the last operational monitor reading
         self.diagnosed = 0
-        self.guard = InstabilityGuard(schedule.grad_factor, schedule.grad_window, schedule.k_max)
+        self.guard = InstabilityGuard(schedule.grad_factor, schedule.grad_window, schedule.k_max,
+                                      schedule.grad_rule)  # fmt: skip
         self.levels = LevelTracker(schedule.levels, schedule.crossing_readings)
         self.readings: list[tuple[int, float]] = []
         self.evaluations: list[dict[str, Any]] = []
@@ -495,6 +513,8 @@ class _Loop:
                "responses": self.steps * batch_size, "policy": self.schedule.policy,
                "evaluations": [row["step"] for row in self.evaluations],
                "monitor_readings": len(self.readings)}  # fmt: skip
+        if self.schedule.grad_rule == "log":  # the gradient rule's firings, recorded only
+            out["gradient_spikes"] = self.guard.logged
         if self.diagnostics is not None:
             out["monitor"] = {"version": self.monitor.version, "drive": self.monitor.drive,
                               "samples_per_prompt": self.monitor.per_prompt}  # fmt: skip
