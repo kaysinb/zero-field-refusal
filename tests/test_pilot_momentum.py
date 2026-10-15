@@ -2,6 +2,7 @@
 the zero-field law it is predicted by, on synthetic run directories built as for Stage A
 (tests/test_stage_a.py)."""
 
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -18,12 +19,14 @@ from zero_field_refusal.analysis.pilot_momentum import (
     outcome,
     pilot_conformance,
     progress,
+    screen,
 )
 from zero_field_refusal.analysis.stage_a import (
     ADAMW_LONG_GRID,
     BATCHES,
     TrajectoryError,
     conformance,
+    contamination,
     control_schedule,
     load_trajectories,
     load_trajectory,
@@ -392,3 +395,53 @@ def test_a_reading_above_the_bound_needs_its_contamination_check(tmp_path) -> No
     (run_dir / "contamination_checks.jsonl").write_text(json.dumps(check) + "\n")
     run = load_trajectory(run_dir)
     assert run.contamination_checks[0]["K_scoring"] == 0.01
+
+
+def screened_control(root: Path, name: str = "c", **extra) -> Path:
+    settings = {"arm": "soft_control", "batch": 5, "lr": 0.001, "seed": 2000, "final_k": 0.01,
+                "evaluate_at": (100,), "role": "screen"} | extra  # fmt: skip
+    return with_momentum(write_run(root, name, **settings))
+
+
+def test_a_logged_spike_on_a_zero_reference_loads(tmp_path) -> None:
+    run_dir = screened_control(tmp_path)
+
+    def edit(terminal):  # the metrics' norm at step 50 is 1.0; a zero reference median fires
+        terminal["gradient_spikes"] = [{"step": 50, "grad_norm": 1.0, "reference_median": 0.0}]
+
+    _terminal_edit(run_dir, edit)
+    assert load_trajectory(run_dir).stable
+
+
+def test_a_contamination_stop_needs_a_real_exceedance(tmp_path) -> None:
+    run_dir = contaminated(screened_control(tmp_path, final_k=0.2))
+    assert not load_trajectory(run_dir).stable
+    check = json.loads((run_dir / "contamination_checks.jsonl").read_text())
+    check["K_scoring"] = 0.01  # below the bound
+    (run_dir / "contamination_checks.jsonl").write_text(json.dumps(check) + "\n")
+
+    def edit(terminal):
+        terminal["stop"]["detail"]["K_scoring"] = 0.01
+
+    _terminal_edit(run_dir, edit)
+    with pytest.raises(TrajectoryError, match="without its verified check"):
+        load_trajectory(run_dir)
+
+
+def test_every_read_counts_and_a_non_finite_one_rejects(tmp_path) -> None:
+    run = load_trajectory(screened_control(tmp_path, monitor_version=2))
+    assert contamination(run, every_read=True) == pytest.approx(0.01)
+    above = dataclasses.replace(
+        run, diagnostics=(*run.diagnostics[:-1], {**run.diagnostics[-1], "K_scoring": 0.1})
+    )
+    assert contamination(above) == pytest.approx(0.01)  # Stage A's reading: evaluations only
+    assert contamination(above, every_read=True) == 0.1
+    nan = dataclasses.replace(
+        run, diagnostics=(*run.diagnostics[:-1], {**run.diagnostics[-1], "K_scoring": math.nan})
+    )
+    assert math.isnan(contamination(nan, every_read=True))
+    # The pilot's screen reads every read, as its full controls do.
+    others = [load_trajectory(screened_control(tmp_path, f"s{b}-{lr}", batch=b, lr=lr))
+              for b in BATCHES for lr in GRID if (b, lr) != (5, 0.001)]  # fmt: skip
+    screened, problems = screen([above, *others])
+    assert 0.001 not in screened[5]["candidates"]

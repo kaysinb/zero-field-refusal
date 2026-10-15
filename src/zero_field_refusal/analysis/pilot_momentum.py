@@ -106,7 +106,7 @@ def pilot_conformance(runs: Sequence[Trajectory], role: str) -> list[str]:
 
 def screen(runs: Sequence[Trajectory]) -> tuple[dict[int, dict[str, Any]], list[str]]:
     """The pilot's screen and each batch's candidates, with the problems of its records."""
-    screened, problems = screen_candidates(runs, grid=GRID, arm=CONTROL_ARM)
+    screened, problems = screen_candidates(runs, grid=GRID, arm=CONTROL_ARM, every_read=True)
     return screened, problems + pilot_conformance(runs, "screen")
 
 

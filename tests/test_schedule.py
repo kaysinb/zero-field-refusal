@@ -306,6 +306,45 @@ def test_a_control_reading_above_the_contamination_bound_is_checked_without_the_
     assert run.stable is (stop == "steps") and len(run.contamination_checks) == 1
 
 
+def test_a_non_finite_diagnostic_stops_a_control_before_its_contamination_check(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]",
+                    "+schedule.instability.grad_rule=log",
+                    "+schedule.instability.contamination_k=0.05", policy="short")  # fmt: skip
+    ready(env, cfg)
+    scripted(0.01, 0.01, 0.01, 0.01, 0.1)  # above the bound only at step 25, a diagnostic step
+    patch_reading(monkeypatch, trained(monkeypatch), "scoring", cached_only=False)
+    run_dir = run_scheduled(cfg, env, run_id="nan-then-check")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    assert terminal["stop"] == {"reason": "nonfinite_k", "kind": "instability"}
+    assert not (run_dir / "contamination_checks.jsonl").exists()  # the verdict came first
+    assert load_trajectory(run_dir).stop == "nonfinite_k"
+
+
+def test_a_cached_diagnostic_the_uncached_check_does_not_reproduce_is_technical(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    from zero_field_refusal.panels import CacheMismatch, ScoringDiagnostics
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]",
+                    "+schedule.instability.grad_rule=log",
+                    "+schedule.instability.contamination_k=0.05", policy="short")  # fmt: skip
+    ready(env, cfg)
+    scripted(0.01)
+    state, call = trained(monkeypatch), ScoringDiagnostics.__call__
+
+    def scoring(self, m, cached=True):  # once training started: 0.1 cached, 0.01 uncached
+        out = call(self, m, cached=cached)
+        return torch.full_like(out, 0.1 if cached else 0.01) if state["steps"] else out
+
+    monkeypatch.setattr(ScoringDiagnostics, "__call__", scoring)
+    with pytest.raises(CacheMismatch, match="scoring diagnostic"):
+        run_scheduled(cfg, env, run_id="cache-only")
+
+
 def test_a_short_run_takes_its_steps_and_is_evaluated_where_scheduled(
     env, tmp_path, scripted
 ) -> None:

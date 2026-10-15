@@ -452,6 +452,7 @@ def _pilot_control_problems(
     norm the training metrics hold; every reading above the bound has its check, and only the
     terminal one may verify an exceedance, which must then be the run's stop."""
     problems: list[str] = []
+    stop = terminal["stop"]["reason"]
     rule = OmegaConf.select(cfg, "schedule.instability.grad_rule", default="spike")
     bound = OmegaConf.select(cfg, "schedule.instability.contamination_k", default=None)
     spikes = terminal.get("gradient_spikes")
@@ -473,7 +474,8 @@ def _pilot_control_problems(
         else:
             for row in spikes:
                 norm, ref = row["grad_norm"], row["reference_median"]
-                if not (_finite(norm) and _finite(ref) and ref > 0 and norm > factor * ref):
+                if not (_finite(norm) and _finite(ref) and ref >= 0 and norm > 0
+                        and norm > factor * ref):  # fmt: skip
                     problems.append(f"gradient_spikes: step {row['step']} is not a firing")
                 elif norms[row["step"]] != norm:
                     problems.append(f"gradient_spikes: step {row['step']} differs from its metrics")
@@ -494,14 +496,20 @@ def _pilot_control_problems(
     above = {row["step"] for row in readings if _finite(row["K_monitor"])
              and row["K_monitor"] > bound}  # fmt: skip
     above |= {s for s, k in scoring.items() if _finite(k) and k > bound}
+    if stop == "nonfinite_k" and terminal_step in scoring:
+        # the terminal diagnostic stopped the run (nonfinite_k) before any check could run
+        above.discard(terminal_step)
     if above != set(by_step):
         problems.append("contamination checks: not exactly the readings above the bound")
-    stop = terminal["stop"]["reason"]
     for step, row in sorted(by_step.items()):
         if row["K_monitor"] != dict((r["step"], r["K_monitor"]) for r in readings).get(step):
             problems.append(f"contamination check of step {step}: another monitor reading")
         verified = _finite(row["K_scoring"]) and row["K_scoring"] > bound
         last = step == terminal["steps"]
+        cached = row["K_scoring_cached"]
+        if cached is not None and cached != row["K_scoring"]:
+            problems.append(f"contamination check of step {step}: the cached diagnostic is not "
+                            "the uncached reading")  # fmt: skip
         if verified and not (last and stop == "contamination"):
             problems.append(f"contamination check of step {step}: a verified exceedance the run "
                             "went on from")  # fmt: skip
@@ -509,8 +517,9 @@ def _pilot_control_problems(
             problems.append(f"contamination check of step {step}: a non-finite scoring K")
     if stop == "contamination":
         row = by_step.get(terminal["steps"])
-        if row is None or terminal["stop"].get("detail") != {"K_scoring": row["K_scoring"],
-                                                             "bound": bound}:  # fmt: skip
+        if (row is None or not (_finite(row["K_scoring"]) and row["K_scoring"] > bound)
+                or terminal["stop"].get("detail") != {"K_scoring": row["K_scoring"],
+                                                      "bound": bound}):  # fmt: skip
             problems.append("a contamination stop without its verified check at the last step")
     return problems
 
@@ -994,6 +1003,8 @@ def contamination(control: Trajectory, *, every_read: bool = False) -> float | N
     if every_read:
         values += [row["K_scoring"] for row in control.diagnostics]
         values += [row["K_scoring"] for row in control.contamination_checks]
+    if not all(_finite(v) for v in values):  # max() would pass over a NaN
+        return math.nan
     return max(values)
 
 
@@ -1003,6 +1014,7 @@ def screen_candidates(
     k_star: float = DISCOVERY_K_STAR,
     grid: Sequence[float] = SGD_GRID,
     arm: str = "soft_control",
+    every_read: bool = False,
 ) -> tuple[dict[int, dict[str, Any]], list[str]]:
     """The screen: one 100-step soft-target control of every SGD rate at both batches on seed
     2000. A rate passes when its control ran stably within the contamination threshold; the two
@@ -1025,12 +1037,12 @@ def screen_candidates(
             run = found.get((arm, batch, rate(lr), CONTROL_SEED))
             if run is None:
                 continue
-            c = contamination(run)
+            c = contamination(run, every_read=every_read)
             rates[rate(lr)] = {
                 "run": run.run_id,
                 "contamination": c,
                 "stop": run.stop,
-                "passes": run.stable and c is not None and c <= threshold,
+                "passes": run.stable and c is not None and _finite(c) and c <= threshold,
             }
         passing = sorted((lr for lr, r in rates.items() if r["passes"]), reverse=True)
         out[batch] = {
