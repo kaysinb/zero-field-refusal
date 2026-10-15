@@ -814,12 +814,14 @@ MONITOR_V2 = (*MONITORED, "+eval.monitor.version=2", "+eval.monitor.prompt_set=a
               "+eval.monitor.cache.secondary=host")  # fmt: skip
 
 
-def test_monitor_version_2_answers_the_scoring_prompts_with_seeds_of_its_own(env) -> None:
+@pytest.mark.parametrize("primary", ["device", "host"])
+def test_monitor_version_2_answers_the_scoring_prompts_with_seeds_of_its_own(env, primary) -> None:
     from zero_field_refusal.panels import Monitor
     from zero_field_refusal.teacher import stream_seeds
     from zero_field_refusal.tracking import Run
 
-    v1, v2 = config(*MONITORED), config(*MONITOR_V2)
+    v1 = config(*MONITORED)
+    v2 = config(*MONITOR_V2, f"eval.monitor.cache.primary={primary}")  # m = 1's cache, both ways
     prepare(env, v2, "kl_monitor")
     spec1, path1, _ = locate_stream(v1, env, "kl_monitor", None)
     spec2, path2, _ = locate_stream(v2, env, "kl_monitor", None)
@@ -848,6 +850,8 @@ def test_monitor_version_2_answers_the_scoring_prompts_with_seeds_of_its_own(env
         checks = monitor.check(student)
         assert set(checks) == {"primary", "secondary"}
         assert all(c["bitwise_equal"] and c["max_abs_diff"] == 0.0 for c in checks.values())
+        assert monitor.caches["primary"].device.type == "cpu"  # host, or the CPU test device
+        assert torch.equal(monitor.last, monitor.uncached(student, "primary"))
 
 
 def test_cached_reference_logits_give_the_uncached_k_bit_for_bit(env) -> None:

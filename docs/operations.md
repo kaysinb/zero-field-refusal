@@ -254,9 +254,9 @@ adds.
 python scripts/generate_teacher.py experiments/study2_stage_a --stream kl_monitor
 ```
 
-Each version-2 run caches θ₀'s logits for the monitor (m = 1 on the GPU, the second responses in
-host memory) and for the scoring panel (host memory), about 4.4 GB, 4.4 GB and 18.6 GB at the
-1.5B model; it checks the caches against uncached readings at θ₀ and at every full evaluation
+Each version-2 run caches θ₀'s logits for the monitor (m = 1 and the second responses) and for
+the scoring panel, all in host memory, about 4.4 GB, 4.4 GB and 18.6 GB at the 1.5B model: not on
+the GPU, since a version-1 run at B = 20 already held about 37.6 of the L40S's 45 GB; it checks the caches against uncached readings at θ₀ and at every full evaluation
 (`cache_checks.jsonl`) and writes the scoring diagnostics to `diagnostics.jsonl`. Diagnostics and
 evaluations record the run's GPU memory peak so far (`peak_allocated_gb`, `peak_reserved_gb`):
 on the first version-2 run at B = 20, read them at the first diagnostic (step 25, after Adam's

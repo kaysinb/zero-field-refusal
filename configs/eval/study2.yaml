@@ -13,7 +13,7 @@ eval:
     drive: 1                        # m: the first m of each prompt are read every `every` steps
     every: 5                        # steps between readings
     cache:                          # θ₀'s logits: device (GPU), host (CPU memory) or none
-      primary: device
+      primary: host                 # not on the GPU: a B = 20 run already holds ≈ 37.6 of 45 GB
       secondary: host               # read only at diagnostic states and full evaluations
   diagnostics:                      # the scoring panel's K alone, no harm, no utility
     every: 25                       # steps; fixed
