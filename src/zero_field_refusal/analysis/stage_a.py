@@ -68,7 +68,7 @@ from typing import Any
 from omegaconf import OmegaConf
 
 from ..config import load_config
-from ..panels import monitor_agreement
+from ..panels import AGREEMENT_FROM_K, monitor_agreement
 from ..teacher import monitor_version
 
 LOWER = 5.0
@@ -312,22 +312,31 @@ def _version2_problems(
 ) -> tuple[list[dict[str, float]], list[str]]:
     """Monitor version 2's records (amendment 1): a scoring diagnostic at every diagnostic step
     that was read, each with the monitor's reading of that step; the full monitor panel at every
-    evaluation; a cache check at θ₀ and at every evaluation, each equal bit for bit."""
+    evaluation; a cache check at θ₀ and at every evaluation, of every cached part, each equal bit
+    for bit. A run that stopped as ``nonfinite_k`` may end on its verdict: a non-finite last
+    diagnostic, a non-finite last reading (which takes no diagnostic) or a last cache check with
+    a non-finite uncached reading, all at its last step; nothing non-finite before it."""
     problems = []
+    terminal = stop == "nonfinite_k"
     keys = ("step", "K_scoring", "K_monitor", "K_monitor_full")
     rows = [{k: row[k] for k in keys} for row in _jsonl(run_dir / "diagnostics.jsonl")]
     every = int(cfg.eval.diagnostics.every)
-    if [row["step"] for row in rows] != list(range(every, read_to + 1, every)):
-        problems.append("scoring diagnostics are not every diagnostic step up to the last reading")
     readings = dict(monitor)
+    expected = list(range(every, read_to + 1, every))
+    if terminal and expected[-1:] == [read_to] and not _finite(readings.get(read_to)):
+        expected = expected[:-1]  # a non-finite operational reading skips its diagnostic
+    if [row["step"] for row in rows] != expected:
+        problems.append("scoring diagnostics are not every diagnostic step up to the last reading")
     if any(readings.get(row["step"]) != row["K_monitor"] for row in rows):
         problems.append("a diagnostic's monitor K differs from the reading of its step")
-    if any(not all(math.isfinite(row[k]) for k in keys[1:]) for row in rows):
-        problems.append("a scoring diagnostic is not finite")
+    for i, row in enumerate(rows):
+        last = i == len(rows) - 1 and row["step"] == read_to and terminal
+        if not all(_finite(row[k]) for k in keys[1:]) and not last:
+            problems.append(f"the scoring diagnostic of step {row['step']} is not finite")
     if any("K_monitor_full" not in row for row in evaluations):
         problems.append("an evaluation lacks the full monitor panel")
     checks = _jsonl(run_dir / "cache_checks.jsonl")
-    expected = [0, *(row["step"] for row in evaluations)]
+    planned = [0, *(row["step"] for row in evaluations)]
     steps = [row["step"] for row in checks]
 
     def verdict(row: Mapping[str, Any]) -> bool:  # an uncached reading not finite: an outcome
@@ -335,20 +344,35 @@ def _version2_problems(
 
     # A run stopped as nonfinite_k by its last check (at θ₀, or at a failed evaluation) keeps it.
     final = bool(checks) and verdict(checks[-1])
-    if final and (stop != "nonfinite_k" or checks[-1]["step"] != read_to):
+    if final and (not terminal or checks[-1]["step"] != read_to):
         problems.append("a cache check found a non-finite reading but the run went on")
-    if steps != expected and not (
-        final and steps == [*expected, read_to] and read_to not in expected[1:]
-    ):
+    extra = final and steps == [*planned, read_to] and read_to not in planned[1:]
+    if steps != planned and not extra:
         problems.append("cache checks are not at θ₀ and at every evaluation")
-    for i, row in enumerate(checks):  # the secondary part exists when the monitor has them
+    required = _checked_parts(cfg)
+    for i, row in enumerate(checks):
         parts = {k: v for k, v in row.items() if k != "step"}
         equal = all(v.get("bitwise_equal") for v in parts.values())
-        if not {"primary", "scoring"} <= set(parts) or not (
-            equal or (final and i == len(checks) - 1)
-        ):
+        if set(parts) != required or not (equal or (final and i == len(checks) - 1)):
             problems.append(f"the cache check of step {row['step']} lacks a part or differs")
     return rows, problems
+
+
+def _checked_parts(cfg: Any) -> set[str]:
+    """The parts every cache check of a version-2 run holds, from its monitor and caches: each
+    monitor part with a cache (the second responses exist when a prompt has more than
+    ``drive``), and the scoring panel."""
+    monitor = cfg.eval.monitor
+    parts = {"scoring"}
+    if monitor.cache.primary != "none":
+        parts.add("primary")
+    if int(monitor.samples_per_prompt) > int(monitor.drive) and monitor.cache.secondary != "none":
+        parts.add("secondary")
+    return parts
+
+
+def _finite(value: Any) -> bool:
+    return isinstance(value, int | float) and math.isfinite(value)
 
 
 def schedule_spec(cfg: Any) -> dict[str, Any]:
@@ -1033,6 +1057,8 @@ def search_manifest(
             [] if entry["pending"] else [lr for lr in entry["order"] if lr not in entry["tested"]]
         )
     complete = all(e["pending"] is None for e in searches.values())
+    for entry in searches.values():  # until every search ends, U = 7 may still need them
+        entry["not_required_status"] = "final" if complete else "provisional"
     return {"phase": phase, "complete": complete, "searches": searches}
 
 
@@ -1148,9 +1174,12 @@ def select(
     tested = [present[(e["arm"], e["batch"], lr, s)] for e in searches for lr in e["tested"]
               for s in seeds]  # fmt: skip
     by_cell = cells([*tested, *present_short.values()])
-    # Fixed from the version-1 runs, so that the search's pruning cannot change it.
-    chunk_seconds = _seconds_per_chunk([run for run in discovery if run.monitor_version == 1])
-    out["seconds_per_chunk"] = chunk_seconds
+    reference, missing = stream_time_reference(discovery, seeds)
+    out["stream_time"] = reference
+    if missing:
+        out.update(outcome="incomplete", problems=missing)
+        return out
+    chunk_seconds = reference["seconds_per_chunk"]  # fixed: the search's pruning cannot change it
     report: dict[int, dict[str, Any]] = {}
     for batch in BATCHES:
         entry: dict[str, Any] = {"levels": {}}
@@ -1204,43 +1233,68 @@ def select(
             **{k: chosen[k] for k in keys},
         }
     )
-    _qualify(out, manifest, [*long_v2, *diagnostic], batch, seeds)
+    _qualify(out, manifest, long_v2, diagnostic, batch, seeds)
     return out
+
+
+def _states(runs: Iterable[Trajectory]) -> int:
+    """Distinct diagnostic states in the zone (K_scoring >= 4), one per run and step."""
+    return len({(run.run_id, row["step"]) for run in runs for row in run.diagnostics
+                if _finite(row["K_scoring"]) and row["K_scoring"] >= AGREEMENT_FROM_K})  # fmt: skip
 
 
 def _qualify(
     out: dict[str, Any],
     manifest: Mapping[str, Any],
-    runs: Sequence[Trajectory],
+    long_v2: Sequence[Trajectory],
+    diagnostic: Sequence[Trajectory],
     batch: int,
     seeds: Sequence[int],
 ) -> None:
     """Amendment 1: the monitor's qualification at the selected batch, which the outcome follows.
-    With too few states for an optimizer, the next rate of its search order below the rates run
-    is the diagnostic run to make (``diagnostic_next``): the outcome stays incomplete."""
-    qualification = monitor_qualification([run for run in runs if run.batch_size == batch])
-    out["monitor_qualification"] = qualification
-    short = [arm for arm in LONG_ARMS if qualification["arms"][arm]["m1"]["passes"] is None]
-    following = {}
-    for arm in short:
+
+    Each optimizer counts its search's runs at that batch. Short of ``QUALIFYING_STATES``
+    states, the rates below its search's, in its search order, run as diagnostic runs, one rate
+    at a time on every seed: a rate counts once all its seeds have run, the next is called for
+    only while the states are still short, and nothing else is accepted (another arm, batch or
+    rate, a gap, a second run of a key). Diagnostic runs still due leave the outcome
+    ``incomplete`` (``diagnostic_next``); an order exhausted short of the states leaves it
+    ``monitor_undetermined``; otherwise m = 1, m = 2 (``monitor_m2``) or ``monitor_redesign``.
+    """
+    present, problems = index(diagnostic)
+    used, following, exhausted, allowed = [], {}, [], set()
+    for arm in LONG_ARMS:
         entry = manifest["searches"][f"{arm}/B={batch}"]
-        done = {
-            lr for lr in entry["order"]
-            if all(any(r.arm == arm and rate(r.lr) == lr and r.seed == s
-                       and r.batch_size == batch for r in runs) for s in seeds)
-        }  # fmt: skip
-        below = [lr for lr in entry["order"] if lr not in done and lr < min(entry["tested"])]
-        if below:
-            following[arm] = below[0]
-    if following:
-        out.update(outcome="incomplete", diagnostic_next={a: lr for a, lr in following.items()},
+        runs = [r for r in long_v2 if r.arm == arm and r.batch_size == batch]
+        for lr in [lr for lr in entry["order"] if lr < min(entry["tested"])]:
+            if _states(runs) >= QUALIFYING_STATES:
+                break
+            keys = [(arm, batch, lr, s) for s in seeds]
+            allowed |= set(keys)
+            if not all(key in present for key in keys):
+                following[arm] = lr
+                break
+            runs += [present[key] for key in keys]
+        else:
+            if _states(runs) < QUALIFYING_STATES:
+                exhausted.append(arm)
+        used += runs
+    problems += [f"diagnostic: run not called for {key}" for key in sorted(set(present) - allowed)]
+    qualification = monitor_qualification(used)
+    qualification["states"] = {arm: _states(r for r in used if r.arm == arm) for arm in LONG_ARMS}
+    out["monitor_qualification"] = qualification
+    if problems:
+        out.update(outcome="incomplete", problems=problems)
+    elif following:
+        out.update(outcome="incomplete", diagnostic_next=following,
                    problems=[f"qualification: fewer than {QUALIFYING_STATES} states for {arm} at "
-                             f"B={batch}; next diagnostic rate {lr:g}"
+                             f"B={batch}; diagnostic rate {lr:g} on every seed"
                              for arm, lr in following.items()])  # fmt: skip
-        return
-    choice = qualification["choice"]
-    if choice != "m1":
-        out["outcome"] = "monitor_m2" if choice == "m2" else "monitor_redesign"
+    elif exhausted:
+        out["outcome"] = "monitor_undetermined"
+        out["monitor_undetermined"] = {arm: qualification["states"][arm] for arm in exhausted}
+    elif qualification["choice"] != "m1":
+        out["outcome"] = "monitor_m2" if qualification["choice"] == "m2" else "monitor_redesign"
 
 
 RULINGS = __doc__.split("**Rulings**")[1].strip() if __doc__ else ""
@@ -1340,6 +1394,31 @@ def _block_seconds(block: Sequence[Sequence[Trajectory]], seeds, chunk_seconds) 
         chunks = -(-responses // runs[0].chunk_size)
         totals.append(sum(run.training_seconds for run in runs) + chunks * (chunk_seconds or 0))
     return statistics.median(totals) if totals else None
+
+
+def stream_time_reference(
+    discovery: Sequence[Trajectory], seeds: Sequence[int] = DISCOVERY_SEEDS
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Amendment 1: the time per generated chunk of the cost comparison, fixed from the complete
+    prescribed version-1 discovery set (AdamW-long and both 25-step grids, at both batches and
+    every seed), with its provenance. Anything missing, duplicated or without a measured chunk
+    leaves it undefined, which blocks the selection."""
+    v1, problems = index(r for r in discovery if r.monitor_version == 1 and r.role == "discovery")
+    expected = {("adamw_long", b, rate(lr), s) for b in BATCHES for lr in ADAMW_LONG_GRID
+                for s in seeds}  # fmt: skip
+    expected |= {(arm, b, rate(lr), s) for arm in SHORT_ARMS for b in BATCHES
+                 for lr in SHORT_GRID for s in seeds}  # fmt: skip
+    problems += [f"stream time: version-1 run missing {key}" for key in sorted(expected - set(v1))]
+    runs = [v1[key] for key in sorted(expected & set(v1))]
+    seconds = sum(r.terminal.get("stream_extension", {}).get("seconds", 0.0) for r in runs)
+    chunks = sum(r.terminal.get("stream_extension", {}).get("chunks", 0) for r in runs)
+    if not chunks:
+        problems.append("stream time: no chunk generated in the version-1 runs")
+    if problems:
+        return None, [f"{p} (it blocks the selection)" for p in problems]
+    ids = hashlib.sha256(json.dumps(sorted(r.run_id for r in runs)).encode()).hexdigest()
+    return {"seconds_per_chunk": seconds / chunks, "chunks": chunks, "seconds": seconds,
+            "runs": len(runs), "run_ids_sha256": ids}, []  # fmt: skip
 
 
 def _seconds_per_chunk(runs: Sequence[Trajectory]) -> float | None:

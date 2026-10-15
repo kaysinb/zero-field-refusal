@@ -510,6 +510,9 @@ def test_a_reproduced_non_finite_diagnostic_stops_the_run(env, tmp_path, monkeyp
     terminal = json.loads((run_dir / "terminal.json").read_text())
     assert terminal["stop"] == {"reason": "nonfinite_k", "kind": "instability"}
     assert terminal["steps"] == 25 and not (run_dir / "evaluations.jsonl").exists()
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    assert load_trajectory(run_dir).stop == "nonfinite_k"  # the verdict is a whole record
 
 
 @pytest.mark.parametrize("where", ["scoring", "primary"])

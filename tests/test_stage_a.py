@@ -12,8 +12,10 @@ import pytest
 from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis.stage_a import (
+    ADAMW_LONG_GRID,
     BATCHES,
     DISCOVERY_SEEDS,
+    ROLES,
     SGD_GRID,
     TrajectoryError,
     agreement,
@@ -33,7 +35,9 @@ SPEC = prescribed()  # the schedules, model and protocol of the study-2 configs
 LEVELS = SPEC["long"]["levels"]
 THETA0 = {"benchmark_accuracy": 0.60, "factual_accuracy": 0.80}
 DIAGNOSTIC_EVERY = SPEC["monitor"]["diagnostics_every"]
-MONITOR = {k: SPEC["monitor"][k] for k in ("prompt_set", "samples_per_prompt", "drive")}
+MONITOR = {k: SPEC["monitor"][k] for k in ("prompt_set", "samples_per_prompt", "drive")} | {
+    "cache": {"primary": "host", "secondary": "host"}
+}
 SQRT35, SQRT40 = LEVELS[1], LEVELS[2]
 SEEDS = list(DISCOVERY_SEEDS)
 PROMPT_IDS = ["evaluation:0", "evaluation:1", "evaluation:2"]
@@ -171,7 +175,7 @@ def write_run(
         "eval": {
             "monitor": {"every": spec["monitor_every"], "version": monitor_version}
             | (MONITOR if monitor_version > 1 else {}),
-            "diagnostics": {"every": DIAGNOSTIC_EVERY},
+            "diagnostics": {"every": DIAGNOSTIC_EVERY, "cache": "host"},
             "harmful": {"prompt_set": spec["harmful_set"]},
         },
         "schedule": {
@@ -270,6 +274,12 @@ def search(
     sgd = sgd or {5: {0.004: FULL, 0.003: FULL}, 20: {0.004: UP_TO_7, 0.003: UP_TO_7}}
     adamw = adamw or {b: {1e-6: UP_TO_7, 3e-6: FULL, 5e-6: FULL, 1e-5: FULL} for b in BATCHES}
     seconds = seconds or {5: 100.0, 20: 100.0}
+    for batch in BATCHES:  # version 1's AdamW-long grid: observations, and the stream's time
+        for lr in ADAMW_LONG_GRID:
+            for seed in SEEDS:
+                write_run(root / "discovery", f"v1-adamw_long-{batch}-{lr}-{seed}",
+                          arm="adamw_long", batch=batch, lr=lr, seed=seed, reach=UP_TO_7,
+                          seconds=seconds[batch], extension=(60.0, 1))  # fmt: skip
     ran: dict[int, list[float]] = {b: [] for b in BATCHES}  # SGD rates run, for their controls
     for arm, rates in (("sgd_long", sgd), ("adamw_long", adamw)):
         for batch, by_rate in rates.items():
@@ -575,9 +585,10 @@ def test_a_tie_in_u_goes_to_the_cheaper_block(tmp_path) -> None:
     search(
         tmp_path,
         sgd={b: {0.004: FULL, 0.003: FULL} for b in BATCHES},
-        seconds={5: 300.0, 20: 200.0},
+        seconds={5: 900.0, 20: 200.0},  # B = 20 generates 4× the stream, at 60 s per chunk
     )
     result = chosen(tmp_path)
+    assert result["stream_time"]["seconds_per_chunk"] == 60.0
     assert result["batch_size"] == 20
     assert result["batches"][20]["seconds_per_block"] < result["batches"][5]["seconds_per_block"]
 
@@ -1001,3 +1012,131 @@ def test_a_rate_meeting_u8_ends_its_search_and_lower_rates_are_not_required(tmp_
     entry = result["search"]["searches"]["adamw_long/B=5"]
     assert list(entry["tested"]) == [1e-5] and entry["not_required"] == [5e-6, 3e-6, 1e-6]
     assert result["search"]["phase"] == "U=8" and result["search"]["complete"]
+
+
+def _edit_jsonl(path: Path, edit) -> None:
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows = edit(rows)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_a_terminal_non_finite_verdict_loads_and_an_earlier_one_does_not(tmp_path) -> None:
+    def stopped(name):
+        return write_run(tmp_path, name, arm="sgd_long", batch=5, lr=5e-4, seed=2000, steps=100,
+                         stop="nonfinite_k", monitor_version=2)  # fmt: skip
+
+    def nan_at(index):
+        def edit(rows):
+            rows[index]["K_scoring"] = float("nan")
+            return rows
+
+        return edit
+
+    last = stopped("last")
+    _edit_jsonl(last / "diagnostics.jsonl", nan_at(-1))  # the diagnostic that stopped it
+    assert load_trajectory(last).stop == "nonfinite_k"
+    earlier = stopped("earlier")
+    _edit_jsonl(earlier / "diagnostics.jsonl", nan_at(1))
+    with pytest.raises(TrajectoryError, match="step 50 is not finite"):
+        load_trajectory(earlier)
+    reading = stopped("reading")  # a non-finite reading at step 100 takes no diagnostic
+
+    def nan_reading(rows):
+        rows[-1]["K_monitor"] = float("nan")
+        return rows
+
+    _edit_jsonl(reading / "monitor.jsonl", nan_reading)
+    _edit_jsonl(reading / "diagnostics.jsonl", lambda rows: rows[:-1])
+    assert load_trajectory(reading).stop == "nonfinite_k"
+    unexplained = stopped("unexplained")
+    _edit_jsonl(unexplained / "diagnostics.jsonl", lambda rows: rows[:-1])
+    with pytest.raises(TrajectoryError, match="not every diagnostic step"):
+        load_trajectory(unexplained)
+
+
+def test_every_configured_cache_part_is_checked(tmp_path) -> None:
+    run_dir = write_run(tmp_path, "v2", arm="adamw_long", batch=5, lr=1e-5, seed=2000,
+                        reach=FULL, monitor_version=2)  # fmt: skip
+    assert load_trajectory(run_dir).monitor_version == 2
+
+    def drop_secondary(rows):
+        return [{k: v for k, v in row.items() if k != "secondary"} for row in rows]
+
+    _edit_jsonl(run_dir / "cache_checks.jsonl", drop_secondary)
+    with pytest.raises(TrajectoryError, match="lacks a part"):
+        load_trajectory(run_dir)
+
+
+QUICK = {5.0: 10, SQRT35: 20, SQRT40: 30, 7.0: 40, 8.0: 50}  # two diagnostic states per run
+
+
+def diagnostic_runs(root: Path, lr: float, seeds=SEEDS, *, name="diag", batch=5) -> None:
+    for seed in seeds:
+        write_run(root / "diagnostic", f"{name}-{lr}-{seed}", arm="sgd_long", batch=batch,
+                  lr=lr, seed=seed, reach=FULL, role="diagnostic", monitor_version=2)  # fmt: skip
+
+
+def test_diagnostic_runs_count_only_as_prescribed(tmp_path) -> None:
+    search(tmp_path, sgd={b: {0.004: QUICK} for b in BATCHES})
+    runs = load_trajectories(tmp_path)
+    result = chosen_with_diagnostics(tmp_path)
+    assert result["outcome"] == "incomplete" and result["diagnostic_next"] == {"sgd_long": 0.003}
+    diagnostic_runs(tmp_path, 0.003, seeds=SEEDS[:1])  # one seed: not counted yet
+    result = chosen_with_diagnostics(tmp_path)
+    assert result["outcome"] == "incomplete" and result["diagnostic_next"] == {"sgd_long": 0.003}
+    diagnostic_runs(tmp_path, 0.003, seeds=SEEDS[1:])
+    result = chosen_with_diagnostics(tmp_path)
+    assert result["outcome"] == "selected", result.get("problems")
+    assert result["monitor_qualification"]["states"]["sgd_long"] >= 10
+    assert runs  # the search itself was whole before the diagnostic runs
+    diagnostic_runs(tmp_path, 0.004, seeds=SEEDS[:1], name="off")  # a rate the search ran
+    result = chosen_with_diagnostics(tmp_path)
+    assert result["outcome"] == "incomplete"
+    assert any("not called for" in p for p in result["problems"])
+
+
+def test_a_duplicate_diagnostic_run_is_refused(tmp_path) -> None:
+    search(tmp_path, sgd={b: {0.004: QUICK} for b in BATCHES})
+    diagnostic_runs(tmp_path, 0.003)
+    _copy(tmp_path, "diag-0.003-2001", "diag-again")
+    result = chosen_with_diagnostics(tmp_path)
+    assert result["outcome"] == "incomplete" and any("two runs of" in p for p in result["problems"])
+
+
+def test_an_exhausted_diagnostic_order_leaves_the_monitor_undetermined(tmp_path) -> None:
+    one = {5.0: 5, SQRT35: 10, SQRT40: 15, 7.0: 20, 8.0: 25}  # one diagnostic state per run
+    rejected = {(b, 0.004): 0.5 for b in BATCHES} | {(b, 0.003): 0.04 for b in BATCHES}
+    search(
+        tmp_path,
+        sgd={b: {0.004: one, 0.003: one} for b in BATCHES},
+        controls=rejected,
+        prune=("adamw_long",),
+    )  # 0.004's control fails: the search runs both candidates
+    result = chosen_with_diagnostics(tmp_path)  # no rate left below them for diagnostics
+    assert result["outcome"] == "monitor_undetermined"
+    assert result["monitor_undetermined"]["sgd_long"] < 10
+
+
+def test_the_stream_time_needs_the_whole_version_1_set(tmp_path) -> None:
+    search(tmp_path)
+    assert chosen(tmp_path)["stream_time"]["runs"] == 2 * 4 * 3 + 2 * 2 * 6 * 3
+    shutil.rmtree(next(tmp_path.rglob("v1-adamw_long-20-1e-06-2002")))
+    result = chosen(tmp_path)
+    assert result["outcome"] == "incomplete" and result["stream_time"] is None
+    assert any("stream time: version-1 run missing" in p for p in result["problems"])
+
+
+def test_exclusions_stay_provisional_until_every_search_ends(tmp_path) -> None:
+    search(tmp_path)
+    shutil.rmtree(next(tmp_path.rglob("sgd_long-20-0.003-2002")))  # B = 20's SGD search waits
+    manifest = chosen(tmp_path)["search"]
+    entry = manifest["searches"]["adamw_long/B=5"]
+    assert entry["not_required"] == [5e-6, 3e-6, 1e-6]
+    assert entry["not_required_status"] == "provisional" and not manifest["complete"]
+
+
+def chosen_with_diagnostics(root: Path) -> dict:
+    runs = load_trajectories(root)
+    role = {name: [r for r in runs if r.role == name] for name in ROLES}
+    return select(role["discovery"], role["screen"], role["full_control"], THETA0,
+                  role["diagnostic"])  # fmt: skip
