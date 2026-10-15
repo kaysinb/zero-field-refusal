@@ -12,17 +12,22 @@ Recorded on 2026-10-15, after the first search step's SGD-long runs at 0.002 (B 
 (B = 5) and before any run at 0.001 exists.
 
 **The law.** In the zero field every training response is a fresh sample from θ₀. Near θ₀ the
-expected loss is then quadratic, ½ δᵀHδ, and the gradient noise of a batch of B examples has
-covariance H / B, since the Fisher information of θ₀'s own distribution equals its expected
-Hessian. SGD without momentum, δ ← δ − η(Hδ + ξ), then gives in each eigendirection i of H
+expected loss is then quadratic, ½ δᵀHδ. The loss divides a batch's summed NLL by B × 96, and
+the sequence-level Fisher information F_seq of θ₀'s own samples equals their expected Hessian.
+So H = F_seq / 96, and the gradient noise of a batch of B examples has covariance
+F_seq / (96² B) = H / (96 B). SGD without momentum, δ ← δ − η(Hδ + ξ), then gives in each
+eigendirection i of H
 
-    Var_i(t) = (η / 2B) · (1 − (1 − ηλ_i)^(2t)) / (1 − ηλ_i / 2).
+    Var_i(t) = (η / (192 B)) · (1 − (1 − ηλ_i)^(2t)) / (1 − ηλ_i / 2).
 
-If K_benign ≈ ½ δᵀFδ with F proportional to H in the directions that move, then for ηλ_i ≪ 1
+K_benign averages the summed per-token KL over the panel's sequences, so K ≈ ½ δᵀF_Kδ with F_K
+the panel's sequence-level Fisher information. If F_K ≈ ρ F_seq = 96 ρ H in the directions that
+move, then for ηλ_i ≪ 1
 
-    K(t; η, B) ≈ (η / B) · g(η t),    g(x) = ¼ Σ_i λ_i (1 − exp(−2 λ_i x)).
+    K(t; η, B) ≈ (η / B) · g(η t),    g(x) = (ρ / 4) Σ_i λ_i (1 − exp(−2 λ_i x)),
 
-g depends only on the spectrum, not on η or B. Two runs therefore map onto each other without a
+with ρ ≈ 1 when the panel's sequences carry the training sequences' Fisher information. g
+depends only on the spectrum, not on η or B. Two runs therefore map onto each other without a
 free parameter: K at (η, B, t) equals (η B′ / η′ B) times K at (η′, B′, t η / η′).
 
 **Already checked.** On seed 2002, SGD-long at 0.0005 and B = 5 against 0.002 and B = 20 at
