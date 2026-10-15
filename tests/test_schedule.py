@@ -264,6 +264,48 @@ def test_a_logged_gradient_rule_records_the_spike_and_runs_on(
     assert steps == list(range(6)) and terminal["evaluations"] == [6]  # the update was taken
 
 
+@pytest.mark.parametrize(("scoring_k", "stop"), [(0.2, "contamination"), (0.01, "steps")])
+def test_a_control_reading_above_the_contamination_bound_is_checked_without_the_cache(
+    env, tmp_path, scripted, monkeypatch, scoring_k, stop
+) -> None:
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+    from zero_field_refusal.panels import ScoringDiagnostics
+
+    cfg = scheduled(tmp_path, "train.steps=10", "schedule.evaluate_at=[10]",
+                    "+schedule.instability.grad_rule=log",
+                    "+schedule.instability.contamination_k=0.05", policy="short")  # fmt: skip
+    ready(env, cfg)
+    scripted(0.01, 0.1)  # the monitor: below the bound at step 5, above it at step 10
+    import zero_field_refusal.schedule as schedule
+
+    check, call = schedule._Loop._contamination, ScoringDiagnostics.__call__
+
+    def contamination(self, m, step, k, scoring):  # the state's scoring K, in the check only
+        def scripted_scoring(panel, model, cached=True):
+            return torch.full_like(call(panel, model, cached=cached), scoring_k)
+
+        monkeypatch.setattr(ScoringDiagnostics, "__call__", scripted_scoring)
+        try:
+            return check(self, m, step, k, scoring)
+        finally:
+            monkeypatch.setattr(ScoringDiagnostics, "__call__", call)
+
+    monkeypatch.setattr(schedule._Loop, "_contamination", contamination)
+    run_dir = run_scheduled(cfg, env, run_id=f"c-{stop}")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    checks = read_jsonl(run_dir / "contamination_checks.jsonl")
+    assert [(c["step"], c["K_monitor"]) for c in checks] == [(10, pytest.approx(0.1))]
+    assert checks[0]["K_scoring"] == pytest.approx(scoring_k) and checks[0]["bound"] == 0.05
+    assert terminal["stop"]["reason"] == stop and terminal["steps"] == 10
+    if stop == "contamination":  # verified: the control stops, before its evaluation
+        assert terminal["stop"]["detail"] == {"K_scoring": checks[0]["K_scoring"], "bound": 0.05}
+        assert not (run_dir / "evaluations.jsonl").exists()
+    else:  # the monitor alone does not stop it
+        assert terminal["evaluations"] == [10]
+    run = load_trajectory(run_dir)
+    assert run.stable is (stop == "steps") and len(run.contamination_checks) == 1
+
+
 def test_a_short_run_takes_its_steps_and_is_evaluated_where_scheduled(
     env, tmp_path, scripted
 ) -> None:

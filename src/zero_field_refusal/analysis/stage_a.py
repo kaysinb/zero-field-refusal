@@ -107,6 +107,7 @@ INSTABILITY = (
     "nonfinite_k",
     "k_above_max",
     "gradient_spike",
+    "contamination",  # the SGD-momentum pilot's soft-target controls
 )
 
 
@@ -145,6 +146,8 @@ class Trajectory:
     # version 2: the scoring diagnostics, {step, K_scoring, K_monitor (m = drive), K_monitor_full}
     diagnostics: tuple[dict[str, float], ...] = field(default=())
     momentum: float = 0.0  # SGD's heavy-ball momentum (optimizer.momentum); 0 for Adam
+    # The pilot's soft-target controls: {step, K_monitor, K_scoring_cached, K_scoring, bound}
+    contamination_checks: tuple[dict[str, float], ...] = field(default=())
 
     @property
     def steps(self) -> int:
@@ -243,11 +246,13 @@ def load_trajectory(run_dir: Path) -> Trajectory:
     # The terminal record's own numbers (times, counts, steps, the stop's detail) feed the cost
     # and the gradient rule: all finite, except what describes a refused batch or update, which
     # may be its non-finite cause. A detail is that of its stop: the spike's norm and reference
-    # for gradient_spike, the reading and bound for k_above_max, none otherwise.
+    # for gradient_spike, the reading and bound for k_above_max and for contamination, none
+    # otherwise.
     stop_record = {k: v for k, v in terminal["stop"].items() if k != "rejected"}
     if _nonfinite({**terminal, "stop": stop_record}):
         problems.append("terminal record: a non-finite number")
     detail_keys = {"gradient_spike": {"grad_norm", "reference_median"},
+                   "contamination": {"K_scoring", "bound"},
                    "k_above_max": {"K_monitor", "k_max"}}.get(stop, set())  # fmt: skip
     if set(terminal["stop"].get("detail") or {}) != detail_keys:
         problems.append(f"terminal record: a detail that is not that of a {stop} stop")
@@ -318,6 +323,9 @@ def load_trajectory(run_dir: Path) -> Trajectory:
             run_dir, cfg, readings, evaluations, read_to, stop, terminal_step
         )
         problems += found
+    checks = _jsonl(run_dir / "contamination_checks.jsonl")
+    problems += _pilot_control_problems(cfg, terminal, training, readings, diagnostics, checks,
+                                        terminal_step)  # fmt: skip
     stream = inputs.get("streams", {}).get("training", {})
     used = stream.get("count")
     if used != steps * cfg.train.batch_size:
@@ -355,6 +363,7 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         monitor_spec=monitor_spec(cfg),
         diagnostics=tuple(diagnostics),
         momentum=_momentum(cfg),
+        contamination_checks=tuple(checks),
     )
 
 
@@ -426,6 +435,84 @@ def _version2_problems(
         if set(parts) != required or not (equal or (final and i == len(checks) - 1)):
             problems.append(f"the cache check of step {row['step']} lacks a part or differs")
     return rows, problems
+
+
+def _pilot_control_problems(
+    cfg: Any,
+    terminal: Mapping[str, Any],
+    training: Sequence[Mapping[str, Any]],
+    readings: Sequence[Mapping[str, Any]],
+    diagnostics: Sequence[Mapping[str, Any]],
+    checks: Sequence[Mapping[str, Any]],
+    terminal_step: int | None,
+) -> list[str]:
+    """The records of the SGD-momentum pilot's soft-target controls (docs/study2-pilot-momentum.md),
+    and their absence elsewhere: the logged gradient rule's firings (``gradient_spikes``) and the
+    contamination checks. Every firing is one of the rule's, at a step taken, in order, with the
+    norm the training metrics hold; every reading above the bound has its check, and only the
+    terminal one may verify an exceedance, which must then be the run's stop."""
+    problems: list[str] = []
+    rule = OmegaConf.select(cfg, "schedule.instability.grad_rule", default="spike")
+    bound = OmegaConf.select(cfg, "schedule.instability.contamination_k", default=None)
+    spikes = terminal.get("gradient_spikes")
+    if rule != "log":
+        if spikes is not None:
+            problems.append("gradient_spikes in a run whose gradient rule stops")
+    elif not isinstance(spikes, list):
+        problems.append("a run whose gradient rule logs lacks gradient_spikes")
+    else:
+        factor = float(cfg.schedule.instability.grad_factor)
+        norms = {row["step"]: row.get("grad_norm") for row in training}
+        steps = [row.get("step") if isinstance(row, dict) else None for row in spikes]
+        if any(not isinstance(row, dict) or set(row) != {"step", "grad_norm", "reference_median"}
+               for row in spikes):  # fmt: skip
+            problems.append("gradient_spikes: an entry that is not {step, grad_norm, "
+                            "reference_median}")  # fmt: skip
+        elif steps != sorted(set(steps)) or any(s not in norms for s in steps):
+            problems.append("gradient_spikes: steps not increasing within the steps taken")
+        else:
+            for row in spikes:
+                norm, ref = row["grad_norm"], row["reference_median"]
+                if not (_finite(norm) and _finite(ref) and ref > 0 and norm > factor * ref):
+                    problems.append(f"gradient_spikes: step {row['step']} is not a firing")
+                elif norms[row["step"]] != norm:
+                    problems.append(f"gradient_spikes: step {row['step']} differs from its metrics")
+    if bound is None:
+        if checks:
+            problems.append("contamination checks in a run without a contamination bound")
+        return problems
+    bound = float(bound)
+    by_step = {row.get("step"): row for row in checks}
+    if len(by_step) != len(checks) or any(
+        set(row) != {"step", "K_monitor", "K_scoring_cached", "K_scoring", "bound"}
+        or row["bound"] != bound for row in checks
+    ):  # fmt: skip
+        problems.append("contamination checks: an entry out of schema, repeated or of another "
+                        "bound")  # fmt: skip
+        return problems
+    scoring = {row["step"]: row["K_scoring"] for row in diagnostics}
+    above = {row["step"] for row in readings if _finite(row["K_monitor"])
+             and row["K_monitor"] > bound}  # fmt: skip
+    above |= {s for s, k in scoring.items() if _finite(k) and k > bound}
+    if above != set(by_step):
+        problems.append("contamination checks: not exactly the readings above the bound")
+    stop = terminal["stop"]["reason"]
+    for step, row in sorted(by_step.items()):
+        if row["K_monitor"] != dict((r["step"], r["K_monitor"]) for r in readings).get(step):
+            problems.append(f"contamination check of step {step}: another monitor reading")
+        verified = _finite(row["K_scoring"]) and row["K_scoring"] > bound
+        last = step == terminal["steps"]
+        if verified and not (last and stop == "contamination"):
+            problems.append(f"contamination check of step {step}: a verified exceedance the run "
+                            "went on from")  # fmt: skip
+        if not _finite(row["K_scoring"]) and not (last and terminal_step == step):
+            problems.append(f"contamination check of step {step}: a non-finite scoring K")
+    if stop == "contamination":
+        row = by_step.get(terminal["steps"])
+        if row is None or terminal["stop"].get("detail") != {"K_scoring": row["K_scoring"],
+                                                             "bound": bound}:  # fmt: skip
+            problems.append("a contamination stop without its verified check at the last step")
+    return problems
 
 
 def _nonfinite(value: Any) -> bool:
@@ -897,10 +984,17 @@ def control_schedule(regular: Sequence[Trajectory]) -> dict[str, Any]:
 # ------------------------------------------------------------------ numerics
 
 
-def contamination(control: Trajectory) -> float | None:
-    """max over the control's evaluations of its scoring K_benign: c(t) = K_b(θ₀ ‖ θ_soft(t))."""
+def contamination(control: Trajectory, *, every_read: bool = False) -> float | None:
+    """max over the control's evaluations of its scoring K_benign: c(t) = K_b(θ₀ ‖ θ_soft(t)).
+    With ``every_read`` (the SGD-momentum pilot) also over its scoring diagnostics and its
+    uncached contamination checks; None without an evaluation."""
     values = [row["K_benign"] for row in control.evaluations]
-    return max(values) if values else None
+    if not values:
+        return None
+    if every_read:
+        values += [row["K_scoring"] for row in control.diagnostics]
+        values += [row["K_scoring"] for row in control.contamination_checks]
+    return max(values)
 
 
 def screen_candidates(
@@ -1019,6 +1113,7 @@ def numerical_acceptance(
     k_star: float = DISCOVERY_K_STAR,
     arm: str = "sgd_long",
     control_arm: str = "soft_control",
+    every_read: bool = False,
 ) -> tuple[dict[tuple[int, float], dict], list[str]]:
     """Full-length soft-target controls: exactly one per candidate rate, on seed 2000, of the
     same model and on the same stream as the regular run of that seed, planned as long as the
@@ -1062,8 +1157,8 @@ def numerical_acceptance(
         reasons = []  # scientific: only instability or contamination under the prescribed plan
         if not control.stable:
             reasons.append(f"unstable ({control.stop})")
-        c = contamination(control)
-        if c is None or c > threshold:
+        c = contamination(control, every_read=every_read)
+        if c is None or not c <= threshold:
             reasons.append(f"contamination {c} above {threshold:.4g}")
         out[(batch, lr)] = {
             "contamination": c,

@@ -70,10 +70,17 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
   for real gradients, fires on single batches on that noise floor without any growth: both
   stopped on stream responses 11480–11484 of seed 2000, with their scoring K at
   1.3–2.2·10⁻⁹. The pilot fixes this before any of its runs, as follows:
-  - the rule's firings are recorded in the terminal record, and the update is taken;
-  - a control is rejected when its scoring panel's K_benign exceeds 0.01 × √35 at any prescribed
-    evaluation or at the final one; the values are finite and uncached, or bit-equal to the
-    uncached reading by that evaluation's cache check;
+  - the rule's firings are recorded in the terminal record, and the update is taken. The rule's
+    reference is then the last 20 norms that did not fire, which may reach further back, so a
+    sustained rise can stay flagged at every step; while the rule only logs, that lengthens the
+    record and decides nothing;
+  - a monitor reading or a scoring diagnostic above 0.01 × √35 is checked at once on the scoring
+    panel without the cache, and recorded; a verified scoring K above the bound stops the control
+    (`contamination`), and the control is rejected;
+  - a control is also rejected when its scoring panel's K exceeds 0.01 × √35 at any prescribed
+    evaluation, at the final one, at a scoring diagnostic or at a contamination check; the values
+    are finite and uncached, or bit-equal to the uncached reading by that evaluation's cache
+    check;
   - finiteness of loss, gradient, weights and K, the soft-target replay checks, the cache checks
     and the path-field bound remain;
   - every prescribed evaluation and the final one are required. A control that stops before its

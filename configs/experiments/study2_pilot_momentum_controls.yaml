@@ -11,3 +11,5 @@ schedule:
   instability:
     grad_rule: log                  # the gradient rule only recorded: a control is judged by its
                                     # scoring K (docs/study2-pilot-momentum.md, "Numerical acceptance")
+    contamination_k: 0.05916079783099616  # 0.01 × √35: a monitor reading or scoring diagnostic
+                                    # above it is checked at once without the cache

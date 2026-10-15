@@ -2,6 +2,7 @@
 the zero-field law it is predicted by, on synthetic run directories built as for Stage A
 (tests/test_stage_a.py)."""
 
+import json
 import math
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from zero_field_refusal.analysis.pilot_momentum import (
 from zero_field_refusal.analysis.stage_a import (
     ADAMW_LONG_GRID,
     BATCHES,
+    TrajectoryError,
     conformance,
     control_schedule,
     load_trajectories,
@@ -36,6 +38,7 @@ from zero_field_refusal.analysis.zero_field_law import (
 )
 
 FLAT_SGD = {b: {0.004: {}, 0.003: {}} for b in BATCHES}  # Stage A's barrier
+BOUND = 0.01 * math.sqrt(35)  # the contamination bound
 # 5, √40 and 8 separate, but √35 and 7 at one evaluation: meets U = 8, not U = 7
 EIGHT_NOT_SEVEN = {5.0: 100, math.sqrt(35): 200, math.sqrt(40): 200, 7.0: 200, 8.0: 400}
 
@@ -47,7 +50,42 @@ def with_momentum(run_dir: Path, momentum: float = MOMENTUM) -> Path:
     cfg.optimizer.momentum = momentum
     if cfg.get("control") == "soft_targets":
         cfg.schedule.instability.grad_rule = "log"
+        cfg.schedule.instability.contamination_k = BOUND
+        terminal = json.loads((run_dir / "terminal.json").read_text())
+        terminal["gradient_spikes"] = []  # no firing
+        (run_dir / "terminal.json").write_text(json.dumps(terminal))
+        (run_dir / "summary.json").write_text(json.dumps({"terminal": terminal}))
+        rows = (run_dir / "evaluations.jsonl").read_text().splitlines()
+        evaluated = {json.loads(row)["step"] for row in rows}
+
+        def quiet(rows):  # a control's readings between evaluations stay on the noise floor
+            keys = ("K_monitor", "K_scoring", "K_monitor_full")
+            return [r if r["step"] in evaluated else r | {k: 1e-9 for k in keys if k in r}
+                    for r in rows]  # fmt: skip
+
+        _edit_jsonl(run_dir / "monitor.jsonl", quiet)
+        if (run_dir / "diagnostics.jsonl").exists():
+            _edit_jsonl(run_dir / "diagnostics.jsonl", quiet)
     OmegaConf.save(cfg, run_dir / "config.yaml")
+    return run_dir
+
+
+def contaminated(run_dir: Path) -> Path:
+    """A pilot control stopped at its last step by a verified contamination check, before its
+    evaluation, as the schedule writes it."""
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    step = terminal["steps"]
+    rows = map(json.loads, (run_dir / "monitor.jsonl").read_text().splitlines())
+    reading = {r["step"]: r["K_monitor"] for r in rows}
+    check = {"step": step, "K_monitor": reading[step], "K_scoring_cached": None,
+             "K_scoring": reading[step], "bound": BOUND}  # fmt: skip
+    (run_dir / "contamination_checks.jsonl").write_text(json.dumps(check) + "\n")
+    (run_dir / "evaluations.jsonl").write_text("")
+    (run_dir / "responses" / "harmful_evaluation.jsonl").write_text("")
+    terminal["stop"] = {"reason": "contamination", "kind": "instability",
+                        "detail": {"K_scoring": reading[step], "bound": BOUND}}  # fmt: skip
+    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    (run_dir / "summary.json").write_text(json.dumps({"terminal": terminal}))
     return run_dir
 
 
@@ -73,6 +111,8 @@ def pilot(
                             lr=lr, seed=2000, final_k=0.01 if lr <= passing else 0.2,
                             evaluate_at=(100,), role="screen")  # fmt: skip
             with_momentum(run)
+            if lr > passing:  # stopped by its verified contamination
+                contaminated(run)
     reach = reach or {b: {passing: FULL} for b in BATCHES}
     for b, by_rate in reach.items():
         for lr, got in by_rate.items():
@@ -92,6 +132,8 @@ def pilot(
                             lr=lr, seed=2000, final_k=c, evaluate_at=tuple(plan["seeds"][2000]),
                             role="full_control", stream_path=stream_path)  # fmt: skip
             with_momentum(run)
+            if c > BOUND:
+                contaminated(run)
 
 
 def roles(root: Path) -> dict:
@@ -293,3 +335,60 @@ def test_the_pilot_controls_only_log_the_gradient_rule(tmp_path) -> None:
     OmegaConf.save(cfg, spike / "config.yaml")
     problems = pilot_conformance([load_trajectory(spike)], "screen")
     assert any("instability" in p for p in problems), problems
+
+
+def _terminal_edit(run_dir: Path, edit) -> None:
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    edit(terminal)
+    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    (run_dir / "summary.json").write_text(json.dumps({"terminal": terminal}))
+
+
+@pytest.mark.parametrize(
+    "spikes",
+    [
+        [{"step": 999999, "grad_norm": 1.0, "reference_median": 0.01}],  # beyond the steps
+        [{"step": 50, "grad_norm": -1.0, "reference_median": 0.01}],  # a negative norm
+        [{"step": 50, "grad_norm": 0.05, "reference_median": 0.01}],  # not a firing (×5)
+        [{"step": 50, "grad_norm": 2.0, "reference_median": 0.01}],  # not the metrics' norm
+        [{"step": 50, "grad_norm": 1.0}],  # out of schema
+    ],
+)
+def test_malformed_gradient_spikes_are_refused(tmp_path, spikes) -> None:
+    run_dir = with_momentum(write_run(tmp_path, "c", arm="soft_control", batch=5, lr=0.001,
+                                      seed=2000, final_k=0.01, evaluate_at=(100,),
+                                      role="screen"))  # fmt: skip
+    assert load_trajectory(run_dir).momentum == MOMENTUM  # the whole record loads
+
+    def edit(terminal):
+        terminal["gradient_spikes"] = spikes
+
+    _terminal_edit(run_dir, edit)
+    with pytest.raises(TrajectoryError, match="gradient_spikes"):
+        load_trajectory(run_dir)
+
+
+def test_a_reading_above_the_bound_needs_its_contamination_check(tmp_path) -> None:
+    run_dir = with_momentum(write_run(tmp_path, "c", arm="soft_control", batch=5, lr=0.001,
+                                      seed=2000, final_k=0.01, evaluate_at=(100,),
+                                      role="screen", monitor_version=2))  # fmt: skip
+    assert load_trajectory(run_dir).contamination_checks == ()
+
+    def above(rows):  # the step-10 reading above the bound (not a diagnostic step)
+        for row in rows:
+            if row["step"] == 10:
+                row["K_monitor"] = 0.1
+        return rows
+
+    _edit_jsonl(run_dir / "monitor.jsonl", above)
+    with pytest.raises(TrajectoryError, match="not exactly the readings above the bound"):
+        load_trajectory(run_dir)
+    check = {"step": 10, "K_monitor": 0.1, "K_scoring_cached": None, "K_scoring": 0.2,
+             "bound": BOUND}  # fmt: skip
+    (run_dir / "contamination_checks.jsonl").write_text(json.dumps(check) + "\n")
+    with pytest.raises(TrajectoryError, match="a verified exceedance the run went on from"):
+        load_trajectory(run_dir)
+    check["K_scoring"] = 0.01  # not verified: the control goes on, and the check is counted
+    (run_dir / "contamination_checks.jsonl").write_text(json.dumps(check) + "\n")
+    run = load_trajectory(run_dir)
+    assert run.contamination_checks[0]["K_scoring"] == 0.01

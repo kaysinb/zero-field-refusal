@@ -23,8 +23,14 @@ The rules are those of docs/study2-preregistration.md ("Panels, monitoring and s
   default) it stops the run (``gradient_spike``); under ``log`` (the SGD-momentum pilot's
   soft-target controls, docs/study2-pilot-momentum.md) it is only recorded, in the terminal
   record's ``gradient_spikes``, and the update is taken: a soft-target control is judged by its
-  scoring K. Either way the firing norm stays out of the reference. One step suffices. An
-  unstable run stops without that update; it is a result, recorded, not a failure.
+  scoring K. Either way the firing norm stays out of the reference, which is therefore the last
+  ``grad_window`` norms that did not fire and may reach further back; under ``log`` a sustained
+  rise can stay flagged at every step, which only lengthens the record. With
+  ``contamination_k`` (the pilot's soft-target controls), a monitor reading or a scoring
+  diagnostic above it is checked at once on the scoring panel without the cache
+  (``contamination_checks.jsonl``), and a verified scoring K above it stops the control
+  (``contamination``). One step suffices. An unstable run stops without that update; it is a
+  result, recorded, not a failure.
 - **Limit.** A ``k_stopped`` run stops at ``train.steps`` (T_max, ``t_max``); a ``fixed`` run
   takes exactly ``train.steps`` steps (``steps``), evaluated at the steps in ``evaluate_at``,
   and stops early only on instability.
@@ -71,7 +77,7 @@ from .train import (
 
 POLICIES = ("k_stopped", "fixed")
 INSTABILITY = ("nonfinite_loss", "nonfinite_gradient", "nonfinite_weight", "nonfinite_k",
-               "k_above_max", "gradient_spike")  # fmt: skip
+               "k_above_max", "gradient_spike", "contamination")  # fmt: skip
 GRAD_RULES = ("spike", "log")
 
 
@@ -186,6 +192,7 @@ class Schedule:
     k_max: float
     extend_stream: bool
     grad_rule: str = "spike"
+    contamination_k: float | None = None  # the pilot's soft-target controls only
 
     @classmethod
     def from_config(cls, cfg: DictConfig) -> Schedule:
@@ -201,6 +208,8 @@ class Schedule:
             k_max=float(s.instability.k_factor) * levels[-1],
             extend_stream=bool(s.extend_stream),
             grad_rule=str(s.instability.get("grad_rule", "spike")),
+            contamination_k=(None if s.instability.get("contamination_k") is None
+                             else float(s.instability.contamination_k)),
         )  # fmt: skip
 
 
@@ -366,6 +375,8 @@ class _Loop:
     ):
         self.schedule, self.run, self.evaluate, self.monitor = schedule, run, evaluate, monitor
         self.diagnostics = diagnostics
+        if schedule.contamination_k is not None and diagnostics is None:
+            raise ValueError("contamination_k needs the scoring diagnostics of monitor version 2")
         self.release = release  # frees the gradients, which a full evaluation does not need
         self.read_at: int | None = None  # the step of the last operational monitor reading
         self.diagnosed = 0
@@ -395,6 +406,8 @@ class _Loop:
             if diagnostic and math.isfinite(k):
                 out, reason = self._diagnose(model, done, k)
                 reading |= out
+            if reason is None and schedule.contamination_k is not None and math.isfinite(k):
+                reason = self._contamination(model, done, k, reading.get("K_scoring"))
             _append_jsonl(self.run.path("monitor.jsonl"), [reading])
             self.run.log({"K_monitor": k}, step=done - 1)
             reason = reason or self.guard.monitor(k)
@@ -415,6 +428,26 @@ class _Loop:
                     return "plateau"
         if schedule.policy == "fixed" and done in schedule.evaluate_at:
             return self._evaluate(model, [], self.readings[-1][1] if self.readings else None)
+        return None
+
+    def _contamination(
+        self, model: PreTrainedModel, step: int, k: float, scoring_k: float | None
+    ) -> str | None:
+        """A pilot soft-target control's reading above the contamination bound (the monitor's,
+        or the scoring diagnostic's of this step), checked at once on the scoring panel without
+        the cache and recorded; a verified scoring K above the bound stops the control."""
+        bound = self.schedule.contamination_k
+        if k <= bound and (scoring_k is None or scoring_k <= bound):
+            return None
+        value = self.diagnostics(model, cached=False).mean().item()
+        _append_jsonl(self.run.path("contamination_checks.jsonl"),
+                      [{"step": step, "K_monitor": k, "K_scoring_cached": scoring_k,
+                        "K_scoring": value, "bound": bound}])  # fmt: skip
+        if not math.isfinite(value):
+            return "nonfinite_k"
+        if value > bound:
+            self.guard.detail = {"K_scoring": value, "bound": bound}
+            return "contamination"
         return None
 
     def _shadow(self, model: PreTrainedModel) -> dict[str, Any]:

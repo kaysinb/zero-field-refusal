@@ -227,7 +227,7 @@ def progress(
         for b in BATCHES
     }  # fmt: skip
     acceptance, control_problems = numerical_acceptance(
-        controls, present, resolved, arm=ARM, control_arm=CONTROL_ARM
+        controls, present, resolved, arm=ARM, control_arm=CONTROL_ARM, every_read=True
     )
     problems += [p for p in control_problems if not p.startswith("controls: missing")]
     manifest = search(present, acceptance, candidates, theta0, adamw)
