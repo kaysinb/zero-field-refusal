@@ -1,0 +1,9 @@
+# Study 2's SGD-momentum pilot (docs/study2-pilot-momentum.md): the soft-target controls of its
+# rates with the same momentum, on seed 2000's stream with replayed targets, as Stage A's
+# (experiments/study2_controls). The screen runs 100 steps evaluated at step 100; a full
+# control's length and evaluation steps come from the regular runs of its rate and batch.
+defaults:
+  - experiments/study2_controls
+  - optimizer/sgd_momentum
+
+experiment: study2_pilot_momentum_controls

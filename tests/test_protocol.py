@@ -152,6 +152,14 @@ def test_soft_targets_require_plain_sgd(tmp_path: Path) -> None:
         load_run_config(experiment(tmp_path, "optimizer/sgd_momentum", "control/soft_targets"))
 
 
+def test_soft_targets_allow_heavy_ball_momentum_from_protocol_version_2(tmp_path: Path) -> None:
+    soft = experiment(tmp_path, "optimizer/sgd_momentum", "control/soft_targets")
+    load_run_config(soft, [*THRESHOLDS, "optimizer.lr=0.1", "+protocol_version=2"])
+    with pytest.raises(ProtocolError, match="optimizer.momentum"):
+        load_run_config(soft, [*THRESHOLDS, "optimizer.lr=0.1", "+protocol_version=2",
+                               "optimizer.momentum=1.0"])  # fmt: skip
+
+
 def test_all_problems_are_reported_together() -> None:
     with pytest.raises(ProtocolError) as info:
         load_run_config("experiments/smoke", ["model.tf32=true", "optimizer.weight_decay=0.1"])

@@ -11,6 +11,8 @@ documents:
   purpose: Authoritative hypotheses, analysis, gate criteria and amendments of study 1 (the pilot)
 - path: docs/study2-preregistration.md
   purpose: Study 2 question, arms, stages, gates, analysis and amendments
+- path: docs/study2-pilot-momentum.md
+  purpose: Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch
 - path: docs/study2-stage-a-analysis.md
   purpose: Study 2 Stage A's K-only analyses and recorded predictions, outside the selection rule
 - path: docs/plan.md
@@ -194,6 +196,21 @@ topics:
   - docs/study2-preregistration.md#zone-and-levels
   - docs/plan.md#study-2
   - docs/study2-stage-a-analysis.md#recorded-predictions
+- id: study2_pilot_momentum
+  title: Study 2's SGD-momentum pilot for the barrier branch
+  source: docs/study2-pilot-momentum.md#question
+  review:
+  - docs/study2-preregistration.md#outcomes-of-stage-a
+  - docs/study2-stage-a-analysis.md#recorded-predictions
+  - configs/experiments/study2_pilot_momentum.yaml
+  - configs/experiments/study2_pilot_momentum_controls.yaml
+  - configs/optimizer/sgd_momentum.yaml
+  - configs/control/soft_targets.yaml
+  watch:
+  - src/zero_field_refusal/analysis/pilot_momentum.py
+  - scripts/pilot_momentum_campaigns.py
+  - configs/experiments/study2_pilot_momentum*.yaml
+  - tests/test_pilot_momentum.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage

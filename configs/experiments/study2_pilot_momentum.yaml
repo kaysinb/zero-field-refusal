@@ -1,0 +1,8 @@
+# Study 2's SGD-momentum pilot (docs/study2-pilot-momentum.md): Stage A's discovery with SGD and
+# heavy-ball momentum 0.9 as the long arm, on the discovery seeds' streams. The batch, rate and
+# seed of each run come from the campaigns that scripts/pilot_momentum_campaigns.py writes.
+defaults:
+  - experiments/study2_stage_a
+  - optimizer/sgd_momentum
+
+experiment: study2_pilot_momentum

@@ -192,9 +192,15 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         if value is not _ABSENT:
             expect(f"optimizer.{key}", "float32", value)
     if control == "soft_targets":
-        # Under Adam, tiny residual gradients would become full-size sign steps.
+        # Under Adam, tiny residual gradients would become full-size sign steps. Heavy-ball
+        # momentum is linear in the gradient and keeps them tiny: from protocol version 2 the
+        # SGD-momentum pilot's controls use it (docs/study2-pilot-momentum.md).
         expect("optimizer.name", "sgd", v["optimizer.name"])
-        expect("optimizer.momentum", 0, OmegaConf.select(cfg, "optimizer.momentum", default=0))
+        momentum = OmegaConf.select(cfg, "optimizer.momentum", default=0)
+        if OmegaConf.select(cfg, "protocol_version", default=1) < 2:
+            expect("optimizer.momentum", 0, momentum)
+        elif not (isinstance(momentum, int | float) and 0 <= momentum < 1):
+            problems.append(f"optimizer.momentum: expected a value in [0, 1), got {momentum!r}")
 
     # Model: pinned revision, the same fp32 numerics everywhere (invariant 1).
     if not (isinstance(v["model.revision"], str) and _COMMIT.fullmatch(v["model.revision"])):

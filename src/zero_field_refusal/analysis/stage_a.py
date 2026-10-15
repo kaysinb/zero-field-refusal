@@ -91,6 +91,12 @@ SHORT_GRID = (0.5e-5, 1e-5, 1.5e-5, 2e-5, 3e-5, 4e-5)
 SHORT_ARMS = ("adamw_25", "frozen_adam_25")
 ROLES = ("discovery", "screen", "full_control", "diagnostic")  # stage_a.role in a run's config
 LONG_ARMS = ("sgd_long", "adamw_long")
+# SGD arms: searched over their screen's candidates, each rate needing its full control. The
+# momentum arm is the pilot's (docs/study2-pilot-momentum.md); Stage A never selects on it.
+SGD_ARMS = ("sgd_long", "sgd_momentum_long")
+STAGE_A_ARMS = ("sgd_long", "adamw_long", "adamw_25", "frozen_adam_25", "soft_control")
+# Arms whose levels 5, K* and U must be three separate evaluations.
+SEPARATE_LEVEL_ARMS = ("adamw_long", "sgd_momentum_long")
 GRAD_FACTOR = 10.0  # the gradient rule's factor in discovery
 MARGIN_TRIGGER = 7.0  # a margin above this on stable runs raises the factor
 REVISION_FACTOR = 1.5  # the raised factor: max(current, 1.5 × the margin); never lowered
@@ -112,7 +118,8 @@ class TrajectoryError(ValueError):
 class Trajectory:
     run_dir: Path
     run_id: str
-    arm: str  # sgd_long, adamw_long, adamw_25, frozen_adam_25, soft_control
+    arm: str  # sgd_long, adamw_long, adamw_25, frozen_adam_25, soft_control; the pilot's
+    # sgd_momentum_long and soft_control_momentum
     batch_size: int
     lr: float
     seed: int
@@ -137,6 +144,7 @@ class Trajectory:
     monitor_spec: dict[str, Any] = field(default_factory=dict)  # ``monitor_spec`` of its config
     # version 2: the scoring diagnostics, {step, K_scoring, K_monitor (m = drive), K_monitor_full}
     diagnostics: tuple[dict[str, float], ...] = field(default=())
+    momentum: float = 0.0  # SGD's heavy-ball momentum (optimizer.momentum); 0 for Adam
 
     @property
     def steps(self) -> int:
@@ -163,9 +171,12 @@ class Trajectory:
 
 
 def arm_of(cfg: Any) -> str:
+    momentum = _momentum(cfg)
     if cfg.get("control") == "soft_targets":
-        return "soft_control"
+        return "soft_control_momentum" if momentum else "soft_control"
     name, policy = cfg.optimizer.name, cfg.schedule.policy
+    if (name, policy) == ("sgd", "k_stopped") and momentum:
+        return "sgd_momentum_long"
     arms = {
         ("sgd", "k_stopped"): "sgd_long",
         ("adamw", "k_stopped"): "adamw_long",
@@ -175,6 +186,12 @@ def arm_of(cfg: Any) -> str:
     if (name, policy) not in arms:
         raise TrajectoryError(f"No study-2 arm for optimizer {name!r} under {policy!r}")
     return arms[(name, policy)]
+
+
+def _momentum(cfg: Any) -> float:
+    if OmegaConf.select(cfg, "optimizer.name") != "sgd":
+        return 0.0
+    return float(OmegaConf.select(cfg, "optimizer.momentum", default=0.0) or 0.0)
 
 
 def load_trajectory(run_dir: Path) -> Trajectory:
@@ -337,6 +354,7 @@ def load_trajectory(run_dir: Path) -> Trajectory:
         monitor_version=monitor_version(cfg),
         monitor_spec=monitor_spec(cfg),
         diagnostics=tuple(diagnostics),
+        momentum=_momentum(cfg),
     )
 
 
@@ -512,6 +530,8 @@ def conformance(runs: Sequence[Trajectory], role: str) -> list[str]:
     free = ("train_steps", "evaluate_at")
     for run in runs:
         name = f"{role}: {run.run_id}"
+        if run.arm not in STAGE_A_ARMS:  # the pilot's arms never enter Stage A
+            problems.append(f"{name} is of the arm {run.arm!r}, not a Stage-A arm")
         if run.role != role:
             problems.append(f"{name} has the role {run.role!r}")
         if run.model != spec["model"] or run.protocol_version != spec["protocol_version"]:
@@ -785,7 +805,9 @@ QUALIFYING_STATES = 10  # distinct diagnostic states with K_scoring >= 4, per op
 FIT_BAND_TOP = 1.1  # the fit band's top, a multiple of U
 
 
-def monitor_qualification(runs: Sequence[Trajectory]) -> dict[str, Any]:
+def monitor_qualification(
+    runs: Sequence[Trajectory], arms: Sequence[str] = QUALIFYING_ARMS
+) -> dict[str, Any]:
     """Amendment 1: monitor version 2 against the scoring panel on the scoring diagnostics of
     every version-2 long run, separately per optimizer, for m = 1 (``K_monitor``) and m = 2
     (``K_monitor_full``). Fewer than ``QUALIFYING_STATES`` states at K_scoring >= 4 leave a check
@@ -793,7 +815,7 @@ def monitor_qualification(runs: Sequence[Trajectory]) -> dict[str, Any]:
     m = 2 if it does, else a redesign. Reported alongside, never deciding m: the trigger checks
     of each run (``trigger_checks``)."""
     out: dict[str, Any] = {"arms": {}}
-    for arm in QUALIFYING_ARMS:
+    for arm in arms:
         group = [run for run in runs if run.arm == arm and run.monitor_version > 1]
         rows = [row for run in group for row in run.diagnostics]
         entry: dict[str, Any] = {"runs": sorted(run.run_id for run in group)}
@@ -882,7 +904,11 @@ def contamination(control: Trajectory) -> float | None:
 
 
 def screen_candidates(
-    screen: Sequence[Trajectory], *, k_star: float = DISCOVERY_K_STAR
+    screen: Sequence[Trajectory],
+    *,
+    k_star: float = DISCOVERY_K_STAR,
+    grid: Sequence[float] = SGD_GRID,
+    arm: str = "soft_control",
 ) -> tuple[dict[int, dict[str, Any]], list[str]]:
     """The screen: one 100-step soft-target control of every SGD rate at both batches on seed
     2000. A rate passes when its control ran stably within the contamination threshold; the two
@@ -890,7 +916,7 @@ def screen_candidates(
     incomplete screen."""
     threshold = CONTAMINATION_FRACTION * k_star
     found, problems = index(screen)
-    expected = {("soft_control", b, rate(lr), CONTROL_SEED) for b in BATCHES for lr in SGD_GRID}
+    expected = {(arm, b, rate(lr), CONTROL_SEED) for b in BATCHES for lr in grid}
     problems += [f"screen: missing {key}" for key in sorted(expected - set(found))]
     problems += [f"screen: unexpected {key}" for key in sorted(set(found) - expected)]
     problems += [
@@ -901,8 +927,8 @@ def screen_candidates(
     out: dict[int, dict[str, Any]] = {}
     for batch in BATCHES:
         rates = {}
-        for lr in SGD_GRID:
-            run = found.get(("soft_control", batch, rate(lr), CONTROL_SEED))
+        for lr in grid:
+            run = found.get((arm, batch, rate(lr), CONTROL_SEED))
             if run is None:
                 continue
             c = contamination(run)
@@ -991,6 +1017,8 @@ def numerical_acceptance(
     candidates: Mapping[int, Sequence[float]],
     *,
     k_star: float = DISCOVERY_K_STAR,
+    arm: str = "sgd_long",
+    control_arm: str = "soft_control",
 ) -> tuple[dict[tuple[int, float], dict], list[str]]:
     """Full-length soft-target controls: exactly one per candidate rate, on seed 2000, of the
     same model and on the same stream as the regular run of that seed, planned as long as the
@@ -1000,14 +1028,14 @@ def numerical_acceptance(
     threshold = CONTAMINATION_FRACTION * k_star
     found, problems = index(controls)
     wanted = {
-        ("soft_control", b, rate(lr), CONTROL_SEED) for b, lrs in candidates.items() for lr in lrs
+        (control_arm, b, rate(lr), CONTROL_SEED) for b, lrs in candidates.items() for lr in lrs
     }
     problems += [f"controls: missing {key}" for key in sorted(wanted - set(found))]
     problems += [f"controls: unexpected {key}" for key in sorted(set(found) - wanted)]
     out = {}
     for key in sorted(wanted & set(found)):
         control, (_, batch, lr, seed) = found[key], key
-        twin = regular.get(("sgd_long", batch, lr, seed))
+        twin = regular.get((arm, batch, lr, seed))
         if twin is None:
             problems.append(f"controls: no regular run of seed {seed} at {(batch, lr)}")
             continue
@@ -1021,7 +1049,7 @@ def numerical_acceptance(
                 f"controls: {control.run_id} is not on the model and stream of {twin.run_id}"
             )
             continue
-        longest = max(run.steps for k, run in regular.items() if k[:3] == ("sgd_long", batch, lr))
+        longest = max(run.steps for k, run in regular.items() if k[:3] == (arm, batch, lr))
         planned = set(control.evaluate_at)
         needed = {r["step"] for r in twin.evaluations} | {longest}
         if control.planned_steps != longest or not needed <= planned:
@@ -1051,16 +1079,16 @@ def numerical_acceptance(
 
 
 def search_order(arm: str, batch: int, candidates: Mapping[int, Sequence[float]]) -> list[float]:
-    """A long arm's rates at a batch, largest first: SGD-long its screen candidates, AdamW-long
-    its grid."""
-    grid = candidates.get(batch, []) if arm == "sgd_long" else ADAMW_LONG_GRID
+    """A long arm's rates at a batch, largest first: an SGD arm its screen candidates,
+    AdamW-long its grid."""
+    grid = candidates.get(batch, []) if arm in SGD_ARMS else ADAMW_LONG_GRID
     return sorted({rate(lr) for lr in grid}, reverse=True)
 
 
 def _rate_rule(arm, batch, lr, cell, upper, theta0, seeds, acceptance) -> dict[str, Any]:
     k_star = math.sqrt(LOWER * upper)
     found = _long_rates({(arm, batch, lr): cell}, arm, batch, upper, k_star, theta0, seeds,
-                        acceptance if arm == "sgd_long" else None)  # fmt: skip
+                        acceptance if arm in SGD_ARMS else None)  # fmt: skip
     return found[lr]
 
 
@@ -1070,9 +1098,12 @@ def search_manifest(
     candidates: Mapping[int, Sequence[float]],
     theta0: Mapping[str, float],
     seeds: Sequence[int] = DISCOVERY_SEEDS,
+    arms: Sequence[str] = LONG_ARMS,
 ) -> dict[str, Any]:
     """Amendment 1's downward search of each long arm and batch under monitor version 2, as an
-    auditable manifest ("Search under version 2").
+    auditable manifest ("Search under version 2"). ``arms`` are the arms searched; a batch
+    qualifies at U when each has a rate meeting it (the SGD-momentum pilot searches its own arm
+    alone, docs/study2-pilot-momentum.md).
 
     A rate resolves once all ``seeds`` have their version-2 run and, for SGD-long, its full
     control has a verdict in ``acceptance``. The descent stops at the first rate that meets its
@@ -1093,7 +1124,7 @@ def search_manifest(
             if missing:
                 entry["pending"] = {"rate": lr, "seeds": missing}
                 return
-            if arm == "sgd_long" and (batch, lr) not in acceptance:
+            if arm in SGD_ARMS and (batch, lr) not in acceptance:
                 entry["pending"] = {"rate": lr, "control": CONTROL_SEED}
                 return
             cell = [present[(arm, batch, lr, s)] for s in seeds]
@@ -1104,7 +1135,7 @@ def search_manifest(
             if entry["tested"][lr][_name(stop_at)]["ok"]:
                 return
 
-    for arm in LONG_ARMS:
+    for arm in arms:
         for batch in BATCHES:
             entry = {"arm": arm, "batch": batch, "order": search_order(arm, batch, candidates),
                      "tested": {}, "pending": None}  # fmt: skip
@@ -1119,7 +1150,7 @@ def search_manifest(
     if all(e["pending"] is None for e in searches.values()):
 
         def qualifies(batch: int) -> bool:
-            return all(best(searches[f"{a}/B={batch}"], 8.0) is not None for a in LONG_ARMS)
+            return all(best(searches[f"{a}/B={batch}"], 8.0) is not None for a in arms)
 
         if not any(
             qualifies(b) for b in BATCHES
@@ -1404,7 +1435,7 @@ def _long_rates(by_cell, arm, batch, upper, k_star, theta0, seeds, acceptance) -
             reasons.append("utility out of bounds at 5, K* or U")
         if acceptance is not None and not acceptance.get((batch, lr), {}).get("accepted"):
             reasons.append("numerical acceptance not passed")
-        if arm == "adamw_long":
+        if arm in SEPARATE_LEVEL_ARMS:
             for run in cell:
                 steps = [run.evaluation_at(level) for level in (LOWER, k_star, upper)]
                 if None not in steps and len({row["step"] for row in steps}) < 3:
