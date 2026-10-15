@@ -342,6 +342,13 @@ The summary's selection is sealed (committed) before any harm label of discovery
 streams, with their chunks' fingerprints, go to the bucket after discovery. This machine keeps
 the run directories, whose stored responses stay out of Git and are never printed.
 
+Only Stage A's namespaces go into the summary: `runs/study2_stage_a` and `runs/study2_controls`,
+never `runs/` or another parent. The SGD-momentum pilot
+([proposed preregistration](study2-pilot-momentum.md)) writes to `study2_pilot_momentum` and
+`study2_pilot_momentum_controls`. Stage A's conformance refuses the pilot's arms, so a summary
+over mixed directories comes out incomplete and blocks sealing. The pilot's own summary reads
+both: `scripts/pilot_momentum_summary.py --runs PILOT_DIRS --stage-a STAGE_A_DIRS`.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

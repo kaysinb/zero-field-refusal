@@ -208,7 +208,9 @@ topics:
   - configs/control/soft_targets.yaml
   watch:
   - src/zero_field_refusal/analysis/pilot_momentum.py
-  - scripts/pilot_momentum_campaigns.py
+  - src/zero_field_refusal/analysis/zero_field_law.py
+  - scripts/pilot_momentum_*.py
+  - scripts/stage_a_barrier.py
   - configs/experiments/study2_pilot_momentum*.yaml
   - tests/test_pilot_momentum.py
 - id: provenance_and_delivery

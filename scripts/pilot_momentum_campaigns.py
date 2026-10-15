@@ -1,20 +1,22 @@
 """Write the campaigns of study 2's SGD-momentum pilot, the data-dependent ones from its records.
 
     python scripts/pilot_momentum_campaigns.py screen --out FILE
-    python scripts/pilot_momentum_campaigns.py search --runs DIR... [--theta0 RUN] --seed S \
-        --out FILE
-    python scripts/pilot_momentum_campaigns.py controls --runs DIR... --theta0 RUN --out FILE
+    python scripts/pilot_momentum_campaigns.py search --runs DIR... --stage-a DIR... \
+        --theta0 RUN --seed S --out FILE
+    python scripts/pilot_momentum_campaigns.py controls --runs DIR... --stage-a DIR... \
+        --theta0 RUN --out FILE
 
 The rules are docs/study2-pilot-momentum.md's; nothing is chosen by hand. ``screen``: the
 100-step soft-target controls with momentum 0.9 of every rate of the pilot's grid at both batches
 on seed 2000. ``search``: this seed's runs of the rates the pilot's downward search needs next
-(its first step, the largest candidate of each batch, needs only the screen); ``--theta0`` (the
-θ₀ run) once long runs exist. ``controls``: one full-length control on seed 2000 for each rate
-whose three seeds have run and whose control is missing, as long as the longest of those runs
-and evaluated at seed 2000's evaluation steps. A campaign holds one seed, since each seed's
-stream has one writer, its Pod. The inputs are checked with the pilot's own checks
-(analysis.pilot_momentum), and anything not whole is refused. FILE must not exist; write it under
-an ignored directory such as $RUNS_DIR/campaigns/.
+(its first step is the largest candidate of each batch). ``controls``: one full-length control on
+seed 2000 for each rate whose three seeds have run and whose control is missing, as long as the
+longest of those runs and evaluated at seed 2000's evaluation steps. Both data-dependent kinds
+read the θ₀ run (``--theta0``) and Stage A's records (``--stage-a``: its screen, discovery and
+full controls, whose search must have resolved), since U = 7 is settled jointly with Stage A's
+AdamW-long. A campaign holds one seed, since each seed's stream has one writer, its Pod. The
+inputs are checked with the pilot's own checks (analysis.pilot_momentum), and anything not whole
+is refused. FILE must not exist; write it under an ignored directory such as $RUNS_DIR/campaigns/.
 """
 
 import argparse
@@ -49,6 +51,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("kind", choices=("screen", "search", "controls"))
     parser.add_argument("--runs", type=Path, nargs="*", default=[])
+    parser.add_argument(
+        "--stage-a",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="Stage A's run directories (study2_stage_a, study2_controls)",
+    )
     parser.add_argument("--theta0", type=Path, help="the θ₀ run directory (summary.json)")
     parser.add_argument("--seed", type=int, choices=DISCOVERY_SEEDS)
     parser.add_argument("--out", type=Path, required=True)
@@ -57,6 +66,8 @@ def main() -> None:
         parser.error(f"{args.out} exists")
     if args.kind == "search" and args.seed is None:
         parser.error("search needs --seed")
+    if args.kind != "screen" and (args.theta0 is None or not args.stage_a):
+        parser.error(f"{args.kind} needs --theta0 and --stage-a")
     runs = load_trajectories(*args.runs) if args.runs else []
     theta0 = None
     if args.theta0 is not None:
@@ -67,7 +78,8 @@ def main() -> None:
     def state() -> dict:
         try:
             found, problems = progress(by_role["screen"], by_role["discovery"],
-                                       by_role["full_control"], theta0)  # fmt: skip
+                                       by_role["full_control"], theta0,
+                                       load_trajectories(*args.stage_a))  # fmt: skip
         except ValueError as exc:
             parser.error(str(exc))
         if problems:

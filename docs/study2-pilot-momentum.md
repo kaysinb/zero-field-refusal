@@ -13,13 +13,20 @@ after the coordinator's and the second reviewer's review. It does not change stu
 - **The law behind it.** In the zero field, plain SGD follows K(t) ≈ (η/B)·g(ηt), and g is set by
   the curvature spectrum. Stability caps η/B at about 1–1.5·10⁻⁴ at both batches. Even full
   equilibrium, g ≤ tr(H)/4 ≈ 6200, would then give at most K ≈ 0.9.
-- **What momentum changes.** Heavy-ball momentum β keeps SGD's noise isotropic. Its stationary
-  covariance, like plain SGD's, is proportional to the identity, not to a preconditioner.
+- **What momentum changes.** The gradient noise has the shape of the Fisher information, for every
+  optimizer. Heavy-ball momentum β applies no preconditioner to it:
+  - For small steps (ηλ ≪ 1), its stationary parameter covariance is approximately isotropic, as
+    plain SGD's is. At a finite step a curvature-dependent factor 1/(1 − ηλ/(2(1 + β))) remains,
+    that is 1/(1 − ηλ/3.8) at β = 0.9.
   - It raises the effective rate to η/(1 − β).
-  - Its linear stability edge rises from 2/λ to 2(1 + β)/λ.
-  - At β = 0.9 the equilibrium K that stability allows is (1 + β)/(1 − β) = 19 times higher.
-- **The question it isolates.** AdamW-long uses β₁ = 0.9 as well. SGD with momentum 0.9 against
-  AdamW-long therefore differs in Adam's per-coordinate adaptive preconditioner, not in momentum.
+  - Its linear stability edge for a fixed Hessian rises from 2/λ to 2(1 + β)/λ.
+  - At β = 0.9 the equilibrium K that this edge allows is therefore about (1 + β)/(1 − β) = 19
+    times higher.
+- **What the comparison narrows.** AdamW-long uses β₁ = 0.9 as well. Against it, SGD with momentum
+  0.9 is a momentum-matched comparison: it removes momentum as an explanation of a difference and
+  narrows the mechanism question toward Adam's per-coordinate adaptive preconditioning. It does
+  not isolate that preconditioning exactly. Adam also bias-corrects its first moment, which this
+  SGD arm does not, and its second moment changes the steps' scale as well as their shape.
 
 ## Question
 
@@ -50,10 +57,12 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
   - A rate passes as in Stage A: no instability fires, and the contamination stays at most
     0.01 × √35.
   - The two largest passing rates of each batch are its candidates.
-- **Why this grid.** Heavy-ball momentum is linearly stable for ηλ < 2(1 + β) = 3.8. The plain
-  SGD screen placed the limit between 0.0005 and 0.001 at B = 5, and between 0.002 and 0.003 at
-  B = 20. The edges are therefore expected about 1.9 times higher: 0.00095–0.0019 at B = 5 and
-  0.0038–0.0057 at B = 20. The grid brackets both.
+- **Why this grid.** For a fixed Hessian, heavy-ball momentum is linearly stable for
+  ηλ < 2(1 + β) = 3.8. The plain SGD screen placed the limit between 0.0005 and 0.001 at B = 5,
+  and between 0.002 and 0.003 at B = 20. The edges are therefore expected about 1.9 times higher:
+  0.00095–0.0019 at B = 5 and 0.0038–0.0057 at B = 20. The grid brackets both. The factor 1.9 is
+  a fixed-Hessian heuristic, not a guarantee of stochastic stability; the screen and the full
+  controls decide.
 - **Momentum in the control.** Momentum is linear in the gradient. Unlike Adam, it does not turn
   the control's tiny residual gradients into full-size steps.
 - **Full controls.** As in Stage A:
@@ -64,12 +73,20 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
 
 ## Search and rule
 
+- **The comparison arm.** Stage A's AdamW-long: its version-2 discovery runs, read from Stage A's
+  own records and checked and searched as Stage A's selection checks and searches them, once
+  Stage A's whole search has resolved. At each batch and U it either has a rate meeting its own
+  rule or not. The pilot's runs and these AdamW-long runs must read each seed's one stream.
+  Missing, unresolved or inconsistent comparison evidence leaves the pilot without a conclusion,
+  never with a scientific outcome.
 - **Search.** At each batch the candidates run in descending order on all three seeds, each with
-  its full control. The search follows
-  [amendment 1](study2-preregistration.md#amendment-1-the-monitor-panel)'s descent for SGD-long:
-  - The descent stops at the first rate that meets the rule at U = 8.
-  - If no batch has such a rate, U = 7 is settled from the rates run. Where no rate meets U = 7,
-    the descent resumes below them.
+  its full control, as in
+  [amendment 1](study2-preregistration.md#amendment-1-the-monitor-panel)'s descent:
+  - The descent at a batch stops at the first rate that meets the pilot's rule at U = 8.
+  - Once both batches have resolved, the comparison is feasible at U = 8 at a batch where such a
+    rate meets AdamW-long meeting its rule at 8.
+  - If no batch is, U = 7 is settled jointly. At every batch where AdamW-long meets its rule at 7
+    and no rate run meets the pilot's rule at 7, the descent resumes below the rates run.
   - A rate resolves once its three seeds and its control are there; missing or technical failures
     never count as a rejection.
 - **The rule.** A rate meets it at U when:
@@ -80,17 +97,19 @@ numerically clean and with utility in bounds, at B = 5 or B = 20.
     later comparison needs a point at each level;
   - its full control is accepted.
 - **Monitor.** Version 2's agreement is computed on the pilot's scoring diagnostics with
-  K_scoring ≥ 4, by amendment 1's thresholds: median ≤ 5 %, 95th percentile ≤ 15 %, at least 10
-  states. It is reported. A failure must be resolved before any confirmatory use.
+  K_scoring ≥ 4, at each batch separately, by amendment 1's thresholds: median ≤ 5 %, 95th
+  percentile ≤ 15 %, at least 10 states. It is reported. A failure must be resolved before any
+  confirmatory use at that batch.
 
 ## Outcomes
 
 | Pilot result | Action |
 |---|---|
-| The records are incomplete: a screen rate, regular run or candidate control missing, duplicated, outside the search or of another provenance | No conclusion; complete the search |
+| The records are incomplete: a screen rate, regular run or candidate control missing, duplicated, outside the search or of another provenance; or Stage A's AdamW-long evidence missing, unresolved or on other streams | No conclusion; complete the search |
 | No screen rate passes, or no candidate's control is accepted, at either batch | Numerics fail: momentum 0.9 has no clean rate; report it; the block-scaled SGD pilot of the [barrier branch](study2-preregistration.md#outcomes-of-stage-a) may be considered |
 | At some batch a rate meets the rule at U ∈ {8, 7}, and Stage A's AdamW-long meets its own rule there at the same U | Feasible: a confirmatory comparison of SGD-momentum-long against AdamW-long at that batch and U becomes possible. It needs its own preregistration and the user's decision |
-| An accepted rate reaches 5 on all seeds, but no batch reaches U = 7 | Partial: report it; a lower zone would need a separate decision |
+| No batch is feasible, but an accepted rate reaches 7 on all seeds at some batch: there its rule fails (utility or separate evaluations), or AdamW-long's does | Unmatched: report what fails where; a comparison would need a separate decision |
+| An accepted rate reaches 5 on all seeds, but none reaches 7 on all seeds at either batch | Partial: report it; a lower zone would need a separate decision |
 | At every accepted rate some seed stays below 5 | The barrier extends to heavy-ball momentum under this horizon; report it; the block-scaled SGD pilot may be considered |
 
 ## Harm
@@ -108,12 +127,34 @@ Recorded with this document, before any run of the pilot.
 - **The model.** For directions with ηλ ≪ 1, heavy-ball SGD with δ ← δ − η·m and
   m ← β·m + g reaches plain SGD's stationary covariance at the effective rate η_eff = η/(1 − β).
   So K(t) ≈ (η_eff/B)·g(η_eff·t), with plain SGD's g.
-- **What g is known to be.** From Stage A's plain SGD-long runs, g on the scoring panel rises from
-  ≈ 1300 at ηt = 0.05 to ≈ 2300–2500 at ηt ≈ 2–2.8. Beyond that range it lies between ≈ 2400 and
-  the bound tr(H)/4 ≈ 6200 (Hutchinson estimate from the curvature run, ρ = 1).
-- **Predicted K at T_max = 4000.** For every rate below, η_eff·4000 ≥ 20:
+- **The frozen g.** `analysis.zero_field_law.g_table` estimates g from every version-2 SGD-long
+  discovery run of Stage A:
+  - each scoring diagnostic after step 0 gives the point (ηt, K_scoring / (η/B));
+  - the points fall into logarithmic bins of ηt, from 0.01 upward with ratio 1.25;
+  - a run's value in a bin is the median of its points there, and g in the bin is the median over
+    the runs, kept where at least two runs contribute;
+  - between the bins' geometric centres g is interpolated linearly in log ηt, and it is undefined
+    outside them.
 
-| Batch | Rate | η_eff / B | Predicted K at 4000 steps |
+  `scripts/pilot_momentum_prediction.py` writes the table, with the runs it used, to
+  `docs/study2-pilot-momentum-g.json` once Stage A's search has resolved. The table is committed
+  before the pilot's first run and not changed afterwards.
+- **The test.**
+  - For each regular run of the pilot, `analysis.zero_field_law.check` takes the ratio of
+    K_scoring to (η_eff/B)·g(η_eff·t) at every scoring diagnostic after step 0, up to the run's
+    stop, whose η_eff·t lies within the table.
+  - The run's value is the median of these ratios, given at least five of them.
+  - The model is contradicted when the median over the pilot's regular runs that have a value lies
+    outside 0.7–1.4.
+  - `scripts/pilot_momentum_summary.py` reports every run's value and that median.
+- **What g is known to be now.** From Stage A's plain SGD-long runs so far, g on the scoring panel
+  rises from ≈ 1200–1300 at ηt = 0.05 to ≈ 2300–2500 at ηt ≈ 2–2.8. Beyond that range it lies
+  between ≈ 2400 and the bound tr(H)/4 ≈ 6200 (Hutchinson estimate from the curvature run, ρ = 1).
+- **Indicative K at T_max = 4000.** These ranges illustrate the prediction; they are not the test.
+  A run stopped earlier by its target or a plateau is censored for them, and its stop is reported.
+  For every rate below, η_eff·4000 ≥ 20:
+
+| Batch | Rate | η_eff / B | Indicative K at 4000 steps |
 |---|---|---|---|
 | 5 | 0.0005 | 1.0·10⁻³ | 2.4–6.2 |
 | 5 | 0.001 | 2.0·10⁻³ | 4.8–12 |
@@ -123,11 +164,9 @@ Recorded with this document, before any run of the pilot.
 | 20 | 0.005 | 2.5·10⁻³ | 6.0–16 |
 
 - **What follows from it.** If the screen's candidates reach the predicted edges (at least 0.001
-  at B = 5 and 0.004 at B = 20), the pilot is predicted to reach 5. Whether it reaches 7 or 8
+  at B = 5 and 0.004 at B = 20), the pilot is expected to reach 5. Whether it reaches 7 or 8
   depends on g beyond the measured range. Near the stability edge, stiff directions raise K above
-  this approximation.
-- **What would contradict the model.** On any pilot run, a median ratio of its scoring-diagnostic
-  K to (η_eff/B)·g(η_eff·t) outside 0.7–1.4, where η_eff·t lies within the measured range of g.
+  this approximation by the factor above.
 
 ## Budget
 
@@ -143,8 +182,14 @@ Recorded with this document, before any run of the pilot.
     momentum optimizer);
   - `configs/experiments/study2_pilot_momentum_controls.yaml` (Stage A's controls with the
     momentum optimizer).
-- **Analysis:** `analysis/pilot_momentum.py` applies the screen, the search, the rule, the
-  acceptance and the outcomes above to the pilot's own records, with Stage A's loader and
-  checks. The run's arm is `sgd_momentum_long`, and its controls' arm is `soft_control_momentum`,
-  so that no pilot run can enter Stage A's selection.
-- **Campaigns:** `scripts/pilot_momentum_campaigns.py`, with the kinds screen, search and controls.
+- **Analysis:** `analysis/pilot_momentum.py` applies the screen, the comparison evidence, the
+  search, the rule, the acceptance and the outcomes above to the pilot's own records, with Stage
+  A's loader and checks. The run's arm is `sgd_momentum_long`, and its controls' arm is
+  `soft_control_momentum`, so that no pilot run can enter Stage A's selection.
+  `analysis/zero_field_law.py` holds the law's g table and its check.
+- **Scripts:**
+  - `scripts/pilot_momentum_campaigns.py`, with the kinds screen, search and controls;
+  - `scripts/pilot_momentum_prediction.py`, which freezes the g table;
+  - `scripts/pilot_momentum_summary.py`, which writes the outcome and the prediction's check.
+- **Namespaces:** the pilot's runs never share a directory with Stage A's
+  ([operations](operations.md#study-2-stage-a)).
