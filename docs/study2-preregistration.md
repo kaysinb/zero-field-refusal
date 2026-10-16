@@ -540,6 +540,7 @@ Format: date, item, old value → new value, reason, and which data had been see
 | Date | Item | Old → new | Reason | Data seen |
 |---|---|---|---|---|
 | 2026-10-15 | The monitor panel ([amendment 1](#amendment-1-the-monitor-panel)) | 25 further prompts × 2 responses, disjoint from the scoring panel → the scoring panel's 100 prompts × 1 fresh response each (m = 1), with a nested second response (m = 2) as the declared fallback; scoring diagnostics every 25 steps; θ₀'s logits cached | Version 1 failed the agreement check: it read 13.3 % below the scoring panel at the median (p95 17.5 %; bounds 5 % and 15 %), low at all 14 states, which put the evaluations of the upper level outside the fit band | K only: the 14 full evaluations of the discovery runs so far (K_benign, K_monitor, the scoring panel's K per response, response lengths) and step times; no harm label, no response text, no utility |
+| 2026-10-16 | The full soft-target controls' gradient rule ([amendment 2](#amendment-2-the-full-controls-gradient-rule)) | A gradient norm above 10 × the median of the preceding norms stops a control → in the full controls it is only logged; a monitor reading or scoring diagnostic above 0.01 × √35 is checked at once without the cache, and a verified exceedance stops and rejects the control; the three full controls are rerun | All three full controls stopped on single batches of the soft-target noise floor, with their scoring K at 1.3–2.2·10⁻⁹ and no growth, which made the outcome `numerics_fail`. Adopted after that was seen, and disclosed: both outcomes are reported | K, gradient and displacement norms of the controls, the rejected batches' stream positions, response lengths and sampled log-probabilities there, the replay, teacher-gap and cache checks; the search's K and the selection's outcome; no harm label, no response text, no utility of a control |
 
 ### Amendment 1: the monitor panel
 
@@ -618,3 +619,63 @@ monitor.
   (the cache changes no K, which the check above verifies). Stage A now runs from two commits:
   the version-1 discovery from `29e096a`, and everything after this amendment from the commit
   that implements it.
+
+### Amendment 2: the full controls' gradient rule
+
+Decided on 2026-10-16 by the user, after Stage A's search had resolved, with the harm labels
+closed. It was adopted after the rule's firings had been seen, and is disclosed as such: the
+outcome under the preregistered rule and the outcome under this amendment are reported side by
+side.
+
+- **What happened.** The gradient rule stopped all three full soft-target controls on single
+  batches:
+  - 0.0005 (B = 5) at step 2296 of 2500;
+  - 0.002 (B = 20) at step 574 of 1700;
+  - 0.001 (B = 20) at step 574 of 1500.
+
+  All three rejected batches hold stream responses 11480–11484 of seed 2000. The firing norms
+  were 24–38 times the median of the preceding ones. Throughout, the controls' scoring K stayed
+  at 1.3–2.2·10⁻⁹, against a threshold of 0.059, and their displacement grew like a random walk.
+  No control reached its final evaluation, so no SGD rate passed the numerical acceptance, and
+  the selection's outcome is `numerics_fail` ([outcomes](#outcomes-of-stage-a)).
+- **What was seen before deciding:**
+  - the controls' K, gradient norms and displacement norms;
+  - the rejected batches' stream positions, with the lengths and sampled log-probabilities of
+    the responses there;
+  - the replay, teacher-gap and cache checks;
+  - the search's K and the selection's outcome.
+
+  No harm label, no response text and no utility of a control were seen.
+- **The rule, for the full soft-target controls.** It is the rule of the SGD-momentum pilot's
+  controls ([numerical acceptance](study2-pilot-momentum.md#numerical-acceptance)):
+  - the gradient rule's firings are recorded in the terminal record, and the update is taken;
+  - a monitor reading or a scoring diagnostic above 0.01 × √35 is checked at once on the scoring
+    panel without the cache; a verified exceedance stops the control (`contamination`), and the
+    control is rejected;
+  - a control is also rejected when its scoring K exceeds 0.01 × √35 at any prescribed
+    evaluation, at the final one, at a scoring diagnostic or at a contamination check;
+  - finiteness, the soft-target replay checks, the cache checks and the path-field bound remain.
+    Cached and uncached reads agree bit for bit; a non-finite uncached read is the state's
+    (`nonfinite_k`);
+  - every prescribed evaluation and the final one are required; a control that stops before its
+    planned last step is not accepted.
+
+  The regular runs keep the ×10 rule as a stop.
+- **The reruns.** The three full controls run again from θ₀ on seed 2000's stream, at the same
+  lengths and evaluation steps:
+  - 2500 steps at 0.0005 (B = 5), evaluated at 2500;
+  - 1700 steps at 0.002 (B = 20), evaluated at 1700;
+  - 1500 steps at 0.001 (B = 20), evaluated at 1500.
+
+  They go to the namespace `study2_controls_amended` (`configs/experiments/study2_controls_amended.yaml`);
+  the stopped controls stay in `study2_controls` as records.
+- **The screen stays as it was.** Its stops came from the same rule, on single batches without
+  growth: at B = 5, 0.002–0.004 all stopped at step 12; at B = 20, 0.003 and 0.004 both stopped
+  at step 17. Its edges, and so the candidates, are likely lower bounds. The user decided on
+  2026-10-16 to keep them, as SGD-long's part of the study becomes descriptive. The report states
+  this caveat.
+- **Reporting.**
+  - `scripts/stage_a_summary.py` reports the preregistered selection (`selection`, with the
+    stopped controls) and the amended one (`selection_amendment_2`, with the reruns).
+  - The report gives both outcomes, this amendment's trigger and what was seen.
+

@@ -1,0 +1,14 @@
+# Study 2, Stage A, amendment 2 (docs/study2-preregistration.md, "Amendment 2: the full controls'
+# gradient rule"): the full soft-target controls of the SGD rates searched, rerun from θ₀ on seed
+# 2000's stream at the same lengths and evaluation steps, with the gradient rule only logged and
+# the contamination check of the SGD-momentum pilot's controls. The stopped controls under the
+# original rule stay in study2_controls; both outcomes are reported.
+defaults:
+  - experiments/study2_controls
+
+experiment: study2_controls_amended
+schedule:
+  instability:
+    grad_rule: log                  # the gradient rule's firings are recorded, not stops
+    contamination_k: 0.05916079783099616  # 0.01 × √35: a reading above it is checked at once
+                                    # on the scoring panel without the cache

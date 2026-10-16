@@ -17,11 +17,14 @@ searched downward under monitor version 2 (``analysis.stage_a.search_manifest``)
 writes this seed's runs of the rates the search needs next (its first step, the largest rate of
 each long arm at each batch, needs only the screen); ``controls`` one full-length control on seed
 2000 for each SGD rate whose three seeds have run and whose control is missing, as long as the
-longest of those runs and evaluated at seed 2000's evaluation steps; ``diagnostic`` this seed's
+longest of those runs and evaluated at seed 2000's evaluation steps (``--control-rule 2``:
+amendment 2's rerun of every such control under the amended gradient rule, in
+study2_controls_amended, once each); ``diagnostic`` this seed's
 diagnostic run of the rate the qualification needs, when the selected batch has fewer than ten
 diagnostic states for an optimizer. ``--theta0`` (the θ₀ run) is needed once version-2 runs exist,
 for the selection rule's utility. The rules are those of docs/study2-preregistration.md; nothing
-is chosen by hand. FILE must not exist; write it outside the checkout or under an ignored
+is chosen by hand; ``--cells`` only splits a campaign over Pods. FILE must not exist; write it
+outside the checkout or under an ignored
 directory, such as $RUNS_DIR/campaigns/, so that runs from a clean checkout stay clean.
 """
 
@@ -42,6 +45,7 @@ from zero_field_refusal.analysis.stage_a import (
     SHORT_ARMS,
     SHORT_GRID,
     checked_discovery,
+    control_rule,
     control_schedule,
     load_trajectories,
     prescribed_short_rates,
@@ -51,6 +55,7 @@ from zero_field_refusal.analysis.stage_a import (
 )
 
 MAIN, CONTROLS = "experiments/study2_stage_a", "experiments/study2_controls"
+CONTROLS_AMENDED = "experiments/study2_controls_amended"  # amendment 2
 SHORT = {
     "adamw_25": ["schedule=short"],
     "frozen_adam_25": ["schedule=short", "optimizer=adam_frozen"],
@@ -94,6 +99,14 @@ def main() -> None:
     parser.add_argument("--runs", type=Path, nargs="*", default=[])
     parser.add_argument("--theta0", type=Path, help="the θ₀ run directory (summary.json)")
     parser.add_argument("--seed", type=int, choices=DISCOVERY_SEEDS)
+    parser.add_argument(
+        "--control-rule",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="controls: 2 reruns them under amendment 2's gradient rule",
+    )
+    parser.add_argument("--cells", nargs="+", help="keep only these cells (one Pod each)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.out.exists():
@@ -108,6 +121,9 @@ def main() -> None:
         summary = json.loads((args.theta0 / "summary.json").read_text())
         theta0 = {key: summary[key] for key in ("benchmark_accuracy", "factual_accuracy")}
     by_role = {role: [r for r in runs if r.role == role] for role in ROLES}
+    # The search follows the preregistered full controls; amendment 2's reruns stand beside them.
+    amended = [r for r in by_role["full_control"] if control_rule(r) == 2]
+    by_role["full_control"] = [r for r in by_role["full_control"] if control_rule(r) == 1]
 
     def progress() -> dict:
         try:
@@ -176,18 +192,26 @@ def main() -> None:
             parser.error("no extension is called for")
     elif args.kind == "controls":
         state = progress()
-        name, items = "study2-a-controls", []
-        for entry in state["manifest"]["searches"].values():
-            if entry["arm"] != "sgd_long" or "control" not in (entry["pending"] or {}):
-                continue
-            b, lr = entry["batch"], entry["pending"]["rate"]
+        if args.control_rule == 1:  # the controls the search waits for
+            name, config = "study2-a-controls", CONTROLS
+            searches = state["manifest"]["searches"].values()
+            due = [(e["batch"], e["pending"]["rate"]) for e in searches
+                   if e["arm"] == "sgd_long" and "control" in (e["pending"] or {})]  # fmt: skip
+        else:  # amendment 2: every SGD rate run on all three seeds, rerun once
+            name, config = "study2-a-controls-amended", CONTROLS_AMENDED
+            rerun = {(r.batch_size, rate(r.lr)) for r in amended}
+            due = [(b, lr) for b in BATCHES for lr in state["candidates"].get(b, [])
+                   if all(("sgd_long", b, lr, s) in state["present"] for s in DISCOVERY_SEEDS)
+                   and (b, lr) not in rerun]  # fmt: skip
+        items = []
+        for b, lr in due:
             group = [state["present"][("sgd_long", b, lr, s)] for s in DISCOVERY_SEEDS]
             plan = control_schedule(group)  # the longest over the three seeds
             at = plan["seeds"][CONTROL_SEED]
             items.append(
                 cell(
                     f"control-b{b}-{lr:g}",
-                    CONTROLS,
+                    config,
                     [
                         f"train.batch_size={b}",
                         f"optimizer.lr={lr:g}",
@@ -199,6 +223,7 @@ def main() -> None:
             )
         if not items:
             parser.error("no SGD rate of the search waits for its full control")
+
     else:  # diagnostic
         if theta0 is None:
             parser.error("diagnostic needs --theta0")
@@ -218,6 +243,11 @@ def main() -> None:
                       if c["name"].startswith(f"{arm}-b{b}-")]  # fmt: skip
         if not items:
             parser.error(f"seed {args.seed} has its diagnostic runs already")
+    if args.cells:  # a campaign split over Pods, cell by cell, without choosing anything
+        unknown = sorted(set(args.cells) - {c["name"] for c in items})
+        if unknown:
+            parser.error(f"no such cells in this campaign: {unknown}")
+        items = [c for c in items if c["name"] in args.cells]
     header = f"# Written by scripts/stage_a_campaigns.py {args.kind}; do not edit.\n"
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(header + yaml.safe_dump({"name": name, "cells": items}, sort_keys=False))

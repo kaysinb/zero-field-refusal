@@ -11,7 +11,9 @@ OUT.json, which must not exist, records the command and the code revision; one s
 batch and rate; the gradient rule's margin and possible false alarms; the monitor's agreement;
 and the selection with the screen, its candidates and the numerical acceptance
 (docs/study2-preregistration.md, "Selection rule"). The selection is ``incomplete`` unless the
-whole prescribed search is there.
+whole prescribed search is there. Under amendment 2 the full controls rerun under the amended
+gradient rule (study2_controls_amended) give a second selection, ``selection_amendment_2``,
+reported beside the preregistered one, which keeps the controls stopped under the original rule.
 """
 
 import argparse
@@ -26,6 +28,7 @@ from zero_field_refusal.analysis.stage_a import (
     agreement,
     cell_summary,
     cells,
+    control_rule,
     instability_summary,
     load_trajectories,
     monitor_qualification,
@@ -45,7 +48,11 @@ def main() -> None:
 
     every = load_trajectories(*args.runs)
     by_role = {role: [run for run in every if run.role == role] for role in ROLES}
-    runs, screen, controls = by_role["discovery"], by_role["screen"], by_role["full_control"]
+    runs, screen = by_role["discovery"], by_role["screen"]
+    # Amendment 2: the full controls under the preregistered gradient rule and their reruns under
+    # the amended one give two selections, reported side by side.
+    controls = {rule: [r for r in by_role["full_control"] if control_rule(r) == rule]
+                for rule in (1, 2)}  # fmt: skip
     if len(every) != sum(map(len, by_role.values())):
         parser.error("runs without a Stage-A role (stage_a.role) among the inputs")
     summary = json.loads((args.theta0 / "summary.json").read_text())
@@ -63,8 +70,11 @@ def main() -> None:
             )
             for b in BATCHES
         },
-        "selection": select(runs, screen, controls, theta0, by_role["diagnostic"]),
+        "selection": select(runs, screen, controls[1], theta0, by_role["diagnostic"]),
     }
+    if controls[2]:
+        result["selection_amendment_2"] = select(runs, screen, controls[2], theta0,
+                                                 by_role["diagnostic"], rule=2)  # fmt: skip
     args.out.write_text(json.dumps(result, indent=1, default=str) + "\n")
     print(args.out)
 

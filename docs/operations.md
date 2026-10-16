@@ -342,8 +342,22 @@ The summary's selection is sealed (committed) before any harm label of discovery
 streams, with their chunks' fingerprints, go to the bucket after discovery. This machine keeps
 the run directories, whose stored responses stay out of Git and are never printed.
 
+**Amendment 2** ([the full controls' gradient rule](study2-preregistration.md#amendment-2-the-full-controls-gradient-rule)):
+the reruns of the full controls are written from the same records and run on Pods holding seed
+2000's stream:
+
+```bash
+python scripts/stage_a_campaigns.py controls --control-rule 2 --runs SCREEN_RUNS ALL_V2_RUNS CONTROLS \
+  --theta0 THETA0_RUN [--cells control-b20-0.002] --out "$C/controls-amended.yaml"
+```
+
+`--cells` splits the campaign over Pods, one cell each. The controls read the stream without
+extending it: it holds 52 chunks, more than the 34 that the longest control needs. Several Pods
+may therefore hold copies. The reruns land in `study2_controls_amended`. The summary, given that
+directory as well, reports `selection_amendment_2` beside the preregistered `selection`.
+
 Only Stage A's namespaces go into the summary: `runs/study2_stage_a` and `runs/study2_controls`,
-never `runs/` or another parent. The SGD-momentum pilot
+never `runs/` or another parent (and, under amendment 2, `runs/study2_controls_amended`). The SGD-momentum pilot
 ([proposed preregistration](study2-pilot-momentum.md)) writes to `study2_pilot_momentum` and
 `study2_pilot_momentum_controls`. Stage A's conformance refuses the pilot's arms, so a summary
 over mixed directories comes out incomplete and blocks sealing. The pilot's own summary reads

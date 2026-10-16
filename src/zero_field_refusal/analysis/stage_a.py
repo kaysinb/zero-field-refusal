@@ -610,20 +610,29 @@ def prescribed() -> dict[str, Any]:
     long = load_config("experiments/study2_stage_a")
     short = load_config("experiments/study2_stage_a", ["schedule=short"])
     control = load_config("experiments/study2_controls")
+    amended = load_config("experiments/study2_controls_amended")
     return {
         "model": f"{long.model.name}@{long.model.revision}",
         "protocol_version": int(long.protocol_version),
         "long": schedule_spec(long),
         "short": schedule_spec(short),
         "control": schedule_spec(control),
+        "control_amended": schedule_spec(amended),  # amendment 2: the full controls' rule
         "monitor": monitor_spec(long),
     }
 
 
-def conformance(runs: Sequence[Trajectory], role: str) -> list[str]:
+def control_rule(run: Trajectory) -> int:
+    """The gradient rule a soft-target control ran under: 1 as preregistered (a firing stops
+    it), 2 under amendment 2 (firings only logged, the contamination check stops it)."""
+    return 2 if (run.spec.get("instability") or {}).get("grad_rule") == "log" else 1
+
+
+def conformance(runs: Sequence[Trajectory], role: str, *, rule: int = 1) -> list[str]:
     """How runs depart from what the campaigns prescribe for their role: the role itself, the
     model and protocol version, the discovery seeds, and the schedule of their arm (a control's
-    length and evaluation steps are checked against its regular runs, ``numerical_acceptance``)."""
+    length and evaluation steps are checked against its regular runs, ``numerical_acceptance``).
+    ``rule`` 2 prescribes amendment 2's schedule for the full controls; the screen keeps rule 1."""
     spec, problems = prescribed(), []
     free = ("train_steps", "evaluate_at")
     for run in runs:
@@ -637,7 +646,9 @@ def conformance(runs: Sequence[Trajectory], role: str) -> list[str]:
         if run.seed not in DISCOVERY_SEEDS:
             problems.append(f"{name} has the seed {run.seed}, not a discovery seed")
         if run.arm == "soft_control":
-            want = {k: v for k, v in spec["control"].items() if k not in free}
+            prescribed_control = spec["control_amended" if rule == 2 and role == "full_control"
+                                      else "control"]  # fmt: skip
+            want = {k: v for k, v in prescribed_control.items() if k not in free}
             have = {k: v for k, v in run.spec.items() if k not in free}
             if role == "screen":
                 want |= {"train_steps": SCREEN_STEPS, "evaluate_at": [SCREEN_STEPS]}
@@ -1294,10 +1305,14 @@ def search_progress(
     discovery: Sequence[Trajectory],
     controls: Sequence[Trajectory],
     theta0: Mapping[str, float] | None,
+    *,
+    rule: int = 1,
 ) -> tuple[dict[str, Any], list[str]]:
     """The search as it stands: its manifest from a whole screen, the version-2 long runs and
     their controls, with every problem of those records (the 25-step grids are not needed).
-    ``theta0`` may be None only before any version-2 long run exists."""
+    ``theta0`` may be None only before any version-2 long run exists. ``rule`` is the full
+    controls' gradient rule: 1 as preregistered, 2 under amendment 2, whose controls are judged
+    on every scoring read (``contamination(every_read=True)``)."""
     screened, problems = checked_screen(screen)
     if problems:
         return {"screen": screened}, problems
@@ -1308,14 +1323,16 @@ def search_progress(
     if theta0_problems(theta0):
         return {"screen": screened}, theta0_problems(theta0)
     present, problems = index(long_v2)
-    problems += conformance(long_v2, "discovery") + conformance(controls, "full_control")
+    problems += conformance(long_v2, "discovery")
+    problems += conformance(controls, "full_control", rule=rule)
     problems += stream_pairing([*screen, *long_v2, *controls])
     resolved = {
         b: [lr for lr in search_order("sgd_long", b, candidates)
             if all(("sgd_long", b, lr, s) in present for s in DISCOVERY_SEEDS)]
         for b in BATCHES
     }  # fmt: skip
-    acceptance, control_problems = numerical_acceptance(controls, present, resolved)
+    acceptance, control_problems = numerical_acceptance(controls, present, resolved,
+                                                        every_read=rule == 2)  # fmt: skip
     problems += [p for p in control_problems if not p.startswith("controls: missing")]
     manifest = search_manifest(long_v2, acceptance, candidates, theta0 or {}, DISCOVERY_SEEDS)
     searched = {
@@ -1340,8 +1357,11 @@ def select(
     controls: Sequence[Trajectory],
     theta0: Mapping[str, float],
     diagnostic: Sequence[Trajectory] = (),
+    *,
+    rule: int = 1,
 ) -> dict[str, Any]:
-    """The Stage-A selection rule over amendment 1's search; never reads harm.
+    """The Stage-A selection rule over amendment 1's search; never reads harm. ``rule`` is the
+    full controls' gradient rule (amendment 2: both outcomes are reported).
 
     The long arms come from their version-2 search (``search_manifest``); version-1 long runs
     are observations. The 25-step arms come from their prescribed grids and extensions, as
@@ -1358,7 +1378,9 @@ def select(
         "rulings": RULINGS,
         "runs": sorted(run.run_id for run in discovery),
     }
-    state, problems = search_progress(screen, discovery, controls, theta0)
+    if rule != 1:
+        out["control_rule"] = rule
+    state, problems = search_progress(screen, discovery, controls, theta0, rule=rule)
     out["screen"] = state["screen"]
     if "manifest" not in state:  # the screen is not whole
         out.update(outcome="incomplete", problems=problems)
