@@ -387,8 +387,8 @@ def test_frozen_adam_soft_control_estimates_v0_from_the_nll_loss(env, monkeypatc
     from zero_field_refusal.models import freeze
     from zero_field_refusal.tracking import Run
 
-    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=3",
-                 "control=soft_targets", "train.loss.kind=soft_kl", "protocol_version=3")
+    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=3")
+    cfg.control, cfg.train.loss.kind = "soft_targets", "soft_kl"  # the smoke config is unscheduled
     assert cfg.control == "soft_targets"
     prepare(env, cfg, "training", "preconditioner")
     model = env.new_model()

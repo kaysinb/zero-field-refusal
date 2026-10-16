@@ -203,19 +203,29 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         version = OmegaConf.select(cfg, "protocol_version", default=1)
         name = v["optimizer.name"]
         if name == "adam_frozen" and version >= 3:
-            # The control is judged by its scoring K against the bound, so a scheduled run
-            # (the contamination check lives in the schedule) needs the campaign to set it; the
-            # config's placeholder is missing.
-            if OmegaConf.select(cfg, "schedule", default=None) is not None:
-                instability = OmegaConf.select(cfg, "schedule.instability", default=None) or {}
+            # The control is judged by its scoring K against the bound, which lives in the
+            # schedule: the schedule, its fixed policy (the arm's name depends on it) and the
+            # campaign's positive bound are all required; the config's placeholder is missing.
+            if OmegaConf.select(cfg, "schedule", default=None) is None:
+                problems.append("schedule: a frozen-Adam soft control is a scheduled run")
+            else:
+                policy = OmegaConf.select(cfg, "schedule.policy", default=None)
+                if policy != "fixed":
+                    problems.append(
+                        f"schedule.policy: expected 'fixed' for a frozen-Adam soft control, "
+                        f"got {policy!r}"
+                    )
+                key = "schedule.instability.contamination_k"
                 bound = None
-                if not OmegaConf.is_missing(instability, "contamination_k"):
-                    bound = instability.get("contamination_k")
+                if not OmegaConf.is_missing(cfg.schedule, "instability") and (
+                    OmegaConf.select(cfg, "schedule.instability", default=None) is not None
+                ) and not OmegaConf.is_missing(cfg.schedule.instability, "contamination_k"):
+                    bound = OmegaConf.select(cfg, key, default=None)
                 if not (isinstance(bound, int | float) and not isinstance(bound, bool)
                         and bound > 0):  # fmt: skip
                     problems.append(
-                        "schedule.instability.contamination_k: a frozen-Adam soft control needs "
-                        f"the positive bound (0.01 x K*) from its campaign, got {bound!r}"
+                        f"{key}: a frozen-Adam soft control needs the positive bound "
+                        f"(0.01 x K*) from its campaign, got {bound!r}"
                     )
         else:
             expect("optimizer.name", "sgd", name)

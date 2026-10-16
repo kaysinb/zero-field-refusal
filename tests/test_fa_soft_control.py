@@ -29,7 +29,7 @@ def test_the_control_composes_and_follows_the_protocol() -> None:
 
 
 @pytest.mark.parametrize("bound", [None, 0, -0.01])
-def test_the_campaign_must_set_a_positive_contamination_bound(bound) -> None:
+def test_the_campaign_must_set_a_positive_contamination_bound(bound: float | None) -> None:
     overrides = [o for o in CAMPAIGN if "contamination_k" not in o]
     with pytest.raises(ProtocolError, match="contamination_k"):  # the placeholder stays missing
         load_run_config(EXPERIMENT, overrides)
@@ -39,7 +39,8 @@ def test_the_campaign_must_set_a_positive_contamination_bound(bound) -> None:
 
 @pytest.mark.parametrize("name", ["adamw", "adamw_prewarmed"])
 @pytest.mark.parametrize("version", [1, 2, 3])
-def test_other_adam_variants_stay_rejected_under_soft_targets(tmp_path: Path, name, version) -> None:
+def test_other_adam_variants_stay_rejected_under_soft_targets(tmp_path: Path, name: str, version: int
+) -> None:
     path = experiment(tmp_path, "control/soft_targets")
     overrides = [*THRESHOLDS, f"optimizer={name}", "optimizer.lr=1e-5",
                  f"+protocol_version={version}"]  # fmt: skip
@@ -48,18 +49,15 @@ def test_other_adam_variants_stay_rejected_under_soft_targets(tmp_path: Path, na
 
 
 @pytest.mark.parametrize("version", [1, 2])
-def test_frozen_adam_soft_control_needs_protocol_version_3(tmp_path: Path, version: int) -> None:
-    path = experiment(tmp_path, "optimizer/adam_frozen", "control/soft_targets")
+def test_frozen_adam_soft_control_needs_protocol_version_3(version: int) -> None:
     with pytest.raises(ProtocolError, match=r"optimizer\.name"):
-        load_run_config(path, [*THRESHOLDS, "optimizer.lr=1e-5", f"+protocol_version={version}"])
-    load_run_config(path, [*THRESHOLDS, "optimizer.lr=1e-5", "+protocol_version=3"])
+        load_run_config(EXPERIMENT, [*CAMPAIGN, f"protocol_version={version}"])
+    load_run_config(EXPERIMENT, CAMPAIGN)  # version 3
 
 
-def test_plain_adam_is_rejected_at_version_3(tmp_path: Path) -> None:
-    path = experiment(tmp_path, "optimizer/adam_frozen", "control/soft_targets")
+def test_plain_adam_is_rejected_at_version_3() -> None:
     with pytest.raises(ProtocolError, match=r"optimizer\.name"):
-        load_run_config(path, [*THRESHOLDS, "optimizer.lr=1e-5", "+protocol_version=3",
-                               "optimizer.name=adam"])  # fmt: skip
+        load_run_config(EXPERIMENT, [*CAMPAIGN, "optimizer.name=adam"])
 
 
 def test_arm_names() -> None:
@@ -89,3 +87,17 @@ def test_a_frozen_adam_soft_control_trajectory_loads_as_its_own_arm(tmp_path: Pa
     trajectory = load_trajectory(run)
     assert trajectory.arm == "soft_control_frozen_adam" and trajectory.policy == "fixed"
     assert [e["step"] for e in trajectory.evaluations] == [25]
+
+
+def test_the_schedule_policy_and_bound_are_required_unconditionally(tmp_path: Path) -> None:
+    from zero_field_refusal.protocol import protocol_problems
+
+    path = experiment(tmp_path, "optimizer/adam_frozen", "control/soft_targets")
+    base = [*THRESHOLDS, "optimizer.lr=1e-5", "+protocol_version=3"]
+    with pytest.raises(ProtocolError, match="scheduled run"):  # no schedule node
+        load_run_config(path, base)
+    with pytest.raises(ProtocolError, match="policy"):
+        load_run_config(EXPERIMENT, [*CAMPAIGN, "schedule.policy=k_stopped"])
+    cfg = load_run_config(EXPERIMENT, CAMPAIGN)
+    del cfg.schedule["instability"]  # a schedule without an instability block
+    assert any("contamination_k" in p for p in protocol_problems(cfg))
