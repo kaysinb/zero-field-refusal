@@ -441,7 +441,8 @@ bash "$C/prep.sh"
   - Archive them with their inventories before the runs read them.
   - Pass `--archived` for them on any later Pod.
 - **Running it again.** The driver stops at the first failure and can be run again: a completed
-  stage-0 run and existing streams are kept. A stage-0 run that did not complete needs a new id.
+  stage-0 run that passed under protocol version 3 and existing streams are kept. A stage-0 run
+  that did not complete, or completed without passing, stops the driver and needs a new id.
 
 **w_max and the fixation record.** The simulation fixes its values in a JSON record:
 

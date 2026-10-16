@@ -101,7 +101,16 @@ STAGE_A = "experiments/study2_stage_a"  # the streams' config, as Stage A genera
 TEACHER = 'project-run "$SRC" python scripts/generate_teacher.py'
 # generate_teacher.py's refusal of a stream that exists (runtime.generate_stream).
 EXISTS = "streams are the record and are never regenerated"
-COMPLETED = "import json, sys; sys.exit(json.load(open(sys.argv[1])).get('status') != 'completed')"
+# A stage-0 run counts only if it completed, ran under protocol version 3 and its path-field check
+# passed: a completed run can still have failed the check (review r34).
+PASSED = (
+    "import json, sys; from pathlib import Path; from omegaconf import OmegaConf; "
+    "d = Path(sys.argv[1]); m = json.loads((d / 'meta.json').read_text()); "
+    "s = json.loads((d / 'summary.json').read_text()); "
+    "c = OmegaConf.load(d / 'config.yaml'); "
+    "sys.exit(not (m.get('status') == 'completed' and c.get('protocol_version') == 3 "
+    "and s.get('path_field', {}).get('passed') is True))"
+)
 
 
 def cell(name: str, config: str, overrides: list[str], seeds: list[int]) -> dict:
@@ -207,17 +216,18 @@ def prep_driver(
     if once:
         lines += [
             f"STAGE0={stage0_run_id}",
-            f"COMPLETED=\"{COMPLETED}\"",
+            f"PASSED=\"{PASSED}\"",
             "stage0() {",
             '  local dir="${RUNS_DIR:?}/stage0_checks/$STAGE0"',
             '  if [ ! -e "$dir" ]; then',
             '    step env RUN_ID="$STAGE0" project-run "$SRC" python scripts/stage0_checks.py \\',
             "      experiments/stage0_checks model=qwen2.5-1.5b-instruct protocol_version=3",
-            '  elif project-run "$SRC" python -c "$COMPLETED" "$dir/meta.json"; then',
-            f'    echo "== {stamp} kept, stage-0 run $STAGE0 completed"',
+            "  fi",
+            '  if project-run "$SRC" python -c "$PASSED" "$dir"; then',
+            f'    echo "== {stamp} stage-0 run $STAGE0 passed under protocol version 3"',
             "  else",
-            f'    echo "== {stamp} stage-0 run $STAGE0 did not complete: read it," \\',
-            '      "then run again with a new --stage0-run-id" >&2',
+            f'    echo "== {stamp} stage-0 run $STAGE0 did not complete, or did not pass under" \\',
+            '      "protocol version 3: read it, then run again with a new --stage0-run-id" >&2',
             "    return 1",
             "  fi",
             "}",

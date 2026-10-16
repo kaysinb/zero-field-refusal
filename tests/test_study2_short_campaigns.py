@@ -712,32 +712,56 @@ echo after-broken
     assert found.returncode != 0
 
 
-@pytest.mark.parametrize("status", [None, "completed", "failed"])
-def test_the_driver_runs_stage_0_once_and_can_be_run_again(tmp_path, status) -> None:
+def _stage0_record(run_dir, status: str, version: int, passed: bool) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "meta.json").write_text(json.dumps({"status": status}))
+    (run_dir / "summary.json").write_text(json.dumps({"path_field": {"passed": passed}}))
+    (run_dir / "config.yaml").write_text(f"protocol_version: {version}\n")
+
+
+@pytest.mark.parametrize(
+    ("record", "fresh", "ok"),
+    [
+        (None, ("completed", 3, True), True),  # not run yet: run it, and it passed
+        (None, ("completed", 3, False), False),  # run now, completed, path field failed
+        (("completed", 3, True), None, True),  # run again after a later failure: kept
+        (("completed", 3, False), None, False),  # completed but not passed: stop
+        (("failed", 3, True), None, False),  # did not complete: stop
+        (("completed", 2, True), None, False),  # another protocol version: stop
+    ],
+)
+def test_the_driver_runs_stage_0_once_and_keeps_only_a_passed_record(
+    tmp_path: Path, record: tuple | None, fresh: tuple | None, ok: bool
+) -> None:
     module = campaigns_module()
     text = module.prep_driver([2000], 5, COMMIT, once=True, stage0_run_id="s0", archived=True,
                               written_at=COMMIT)  # fmt: skip
     run_dir = tmp_path / "stage0_checks" / "s0"
-    if status is not None:
-        run_dir.mkdir(parents=True)
-        (run_dir / "meta.json").write_text(json.dumps({"status": status}))
+    if record is not None:
+        _stage0_record(run_dir, *record)
+    write = ""
+    if fresh is not None:  # the stubbed stage-0 run writes its record
+        status, version, passed = fresh
+        write = (f"mkdir -p {run_dir}; echo '{{\"status\": \"{status}\"}}' > {run_dir}/meta.json; "
+                 f"echo '{{\"path_field\": {{\"passed\": {str(passed).lower()}}}}}' "
+                 f"> {run_dir}/summary.json; echo 'protocol_version: {version}' > "
+                 f"{run_dir}/config.yaml")  # fmt: skip
     body = f"""set -euo pipefail
 RUNS_DIR={tmp_path}
 SRC=/src
 {driver_functions(text)}
 project-run() {{ shift; shift; "{sys.executable}" "$@"; }}  # SRC, then python
-step() {{ echo "STEP $*"; }}
+step() {{ echo "STEP $*"; {write or ":"}; }}
 stage0
 echo after-stage0
 """
     found = subprocess.run(["bash", "-c", body], capture_output=True, text=True)
-    if status is None:  # not run yet: run it
-        assert "STEP env RUN_ID=s0" in found.stdout and "after-stage0" in found.stdout
-    elif status == "completed":  # run again after a later failure: kept
-        assert "kept, stage-0 run s0 completed" in found.stdout and "STEP" not in found.stdout
-        assert "after-stage0" in found.stdout
-    else:  # a stage-0 run that did not complete needs a new id
+    assert ("STEP env RUN_ID=s0" in found.stdout) == (record is None)
+    if ok:
+        assert "passed under protocol version 3" in found.stdout and "after-stage0" in found.stdout
+    else:
         assert found.returncode != 0 and "with a new --stage0-run-id" in found.stderr
+        assert "after-stage0" not in found.stdout
 
 
 def test_check_streams_locates_the_streams_and_names_the_missing(monkeypatch, tmp_path, capsys):
