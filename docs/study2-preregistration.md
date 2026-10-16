@@ -546,7 +546,7 @@ Format: date, item, old value → new value, reason, and which data had been see
 |---|---|---|---|---|
 | 2026-10-15 | The monitor panel ([amendment 1](#amendment-1-the-monitor-panel)) | 25 further prompts × 2 responses, disjoint from the scoring panel → the scoring panel's 100 prompts × 1 fresh response each (m = 1), with a nested second response (m = 2) as the declared fallback; scoring diagnostics every 25 steps; θ₀'s logits cached | Version 1 failed the agreement check: it read 13.3 % below the scoring panel at the median (p95 17.5 %; bounds 5 % and 15 %), low at all 14 states, which put the evaluations of the upper level outside the fit band | K only: the 14 full evaluations of the discovery runs so far (K_benign, K_monitor, the scoring panel's K per response, response lengths) and step times; no harm label, no response text, no utility |
 | 2026-10-16 | The full soft-target controls' gradient rule ([amendment 2](#amendment-2-the-full-controls-gradient-rule)) | A gradient norm above 10 × the median of the preceding norms stops a control → in the full controls it is only logged; a monitor reading or scoring diagnostic above 0.01 × √35 is checked at once without the cache, and a verified exceedance stops and rejects the control; the three full controls are rerun | All three full controls stopped on single batches of the soft-target noise floor, with their scoring K at 1.3–2.2·10⁻⁹ and no growth, which made the outcome `numerics_fail`. Adopted after that was seen, and disclosed: both outcomes are reported | K, gradient and displacement norms of the controls, the rejected batches' stream positions, response lengths and sampled log-probabilities there, the replay, teacher-gap and cache checks; the search's K and the selection's outcome; no harm label, no response text, no utility of a control |
-| 2026-10-16 | The primary question ([amendment 3](#amendment-3-redirection-to-the-short-regime)) | AdamW-long against SGD-long by a fitted curve → AdamW-25 against FA-25, exactly 25 steps, three targeted rates per arm, interpolation in ln K; two looks (36 / 60 supported, cap 80), paired bootstrap-t, α 0.040; w_max 0.47; equivalence only at a look with ≥ 36 supported; pre-warmed AdamW-25 secondary | SGD-long does not reach the zone on the tested policies; the rectification hypothesis concerns Adam's first steps | Stage A's K, utility, numerical records and step times; the short grids' K trajectories; amendment 2's control reruns and the momentum pilot (K and numerics); study 1's published data; no study-2 judge label, no response text |
+| 2026-10-16 | The primary question ([amendment 3](#amendment-3-redirection-to-the-short-regime)) | AdamW-long against SGD-long by a fitted curve → AdamW-25 against FA-25, exactly 25 steps, three targeted rates per arm, interpolation in ln K; two looks (36 / 60 supported, cap 80), paired bootstrap-t, α 0.040; w_max 0.47; equivalence only at a look with ≥ 36 supported, no reading below 10 supported; bias allowance b = 1.084 pp for the pointwise reading; pre-warmed AdamW-25 secondary | SGD-long does not reach the zone on the tested policies; the rectification hypothesis concerns Adam's first steps | Stage A's K, utility, numerical records and step times; the short grids' K trajectories; amendment 2's control reruns and the momentum pilot (K and numerics); study 1's published data; no study-2 judge label, no response text |
 
 ### Amendment 1: the monitor panel
 
@@ -690,7 +690,9 @@ side.
 Decided on 2026-10-16 by the user, after Stage A, following the second reviewer's reviews fa1, fa2
 and fa3. **It is a data-informed redirection with fresh confirmatory data**, not a prospective
 design. Status: the text, code and simulation are under the second reviewer's review; no run of
-the new stage starts before it passes.
+the new stage starts before it passes. Two outcome-free preparation runs ran on P0 on 2026-10-16,
+after review r34 approved them: stage 0 under protocol version 3 and the curvature panel
+([operations](operations.md#study-2-short-regime-amendment-3)).
 
 - The protocol as it stood before this amendment is archived: commit 937a90f, with a frozen copy
   at [archive/study2-preregistration-v1.md](archive/study2-preregistration-v1.md).
@@ -718,21 +720,29 @@ the new stage starts before it passes.
   2000–2002, which are this amendment's discovery evidence. Their K trajectories (the monitor
   every 5 steps) were also read to compare designs.
 - **Study 2, generated but not read as outcomes.**
-  - 68 251 greedy responses to the harmful evaluation prompts, at the evaluations of the
-    discovery runs and of θ₀.
+  - As of review fa1: 68 251 greedy responses to the harmful evaluation prompts (131 evaluations
+    × 521), at the evaluations of Stage A's runs (`study2_stage_a`, `study2_controls`) and of θ₀.
+  - Since then, amendment 2's control reruns (3 evaluations, `study2_controls_amended`) and the
+    SGD-momentum pilot (18 evaluations, `study2_pilot_momentum` and
+    `study2_pilot_momentum_controls`) generated 10 941 more greedy responses to the same prompts
+    (21 × 521, counted on 2026-10-17 from the run directories), with K_harmful. None was labeled
+    or read.
   - K_harmful at every full evaluation.
   - At θ₀'s setup evaluation, which used the unsealed evaluator, 521 keyword-refusal labels and
     their aggregate rate in its summary.
   - The stage-0 checks (version 2 in Stage A, version 3 for this stage) time a probe: it applies
     one Adam step temporarily, generates responses to harmful prompts and records only their
     maximum length. Those responses are neither stored nor labeled.
-  - No judge label exists for any study-2 run. No response text was read in this work.
+  - No judge label exists for any study-2 run. To our knowledge, no response text was read in
+    this work.
   - The files cannot establish who viewed them in the past, and remote artifacts cannot be
     excluded. The report claims no more than this.
-- **Running alongside, K and numerics only:** amendment 2's control reruns and the
-  [SGD-momentum pilot](study2-pilot-momentum.md)'s screen and first search step.
+- **Running alongside, read for K and numerics only** (their responses are counted above):
+  amendment 2's control reruns and the [SGD-momentum pilot](study2-pilot-momentum.md)'s screen
+  and first search step; the pilot ended afterwards ([below](#the-new-primary-question)).
 - **The SGD outcomes.**
-  - Under the preregistered rule: `numerics_fail`. Under amendment 2 the reruns decide.
+  - Under the preregistered rule: `numerics_fail`. Under amendment 2, with the reruns: `barrier`
+    (`runs/analysis/stage-a-summary-2026-10-16-amendment2.json`).
   - The zero-field law and the barrier of SGD-long hold on the tested policies
     ([K-only analyses](study2-stage-a-analysis.md)).
   - The screen's edges are lower bounds.
@@ -756,6 +766,10 @@ the new stage starts before it passes.
   - b is the largest paired interpolation bias over the simulated curve families (below). It is
     set by a kink at K\*.
   - Decisions do not depend on b.
+  - The summary prints, beside each look, the interval widened by b and the pointwise readings,
+    as the simulation reads them: equivalence when the interval lies inside ±(5 pp − b), only at
+    a look that may conclude equivalence (≥ 36 supported blocks); a direction when it excludes
+    [−b, b].
 - **What it can show** (fa1 (b)).
   - **Direction:** the two optimizer policies differ at matched K. That is consistent with
     several normalization or adaptation effects, and does not identify sign-step rectification.
@@ -764,6 +778,13 @@ the new stage starts before it passes.
   - Direction and practical equivalence can coexist.
 - **SGD leaves the primary comparison.** Its question and outcomes are reported descriptively:
   plain SGD-long did not reach the zone **on the tested policies**.
+- **No SGD-momentum arm.** Its condition, that the approved
+  [momentum pilot](study2-pilot-momentum.md) reach the zone, is not met: the pilot ended
+  `barrier`. No rate met its rule at U = 8 or U = 7; the controls at B = 5, 0.001 and B = 20,
+  0.004 were rejected for contamination; those at B = 5, 0.00075 and B = 20, 0.002 were
+  accepted, but no seed reached U. The recorded prediction was not contradicted (median ratio
+  0.854, band [0.7, 1.4]). Summary `runs/analysis/pilot-momentum-summary-2026-10-16-step2.json`,
+  inventory `runs/archive/inventory-2026-10-16-study2-pilot-momentum-summary.tsv`.
 - **The long regime** (AdamW-long against FA-long) is not part of this amendment. If it is run
   later, it is a separate, preassigned cohort, and the paired regime interaction Δ_25 − Δ_long is
   tested. A significant short result with a non-significant long one is not enough.
@@ -833,8 +854,8 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
 - A tie goes to the lower measured GPU time per block of the two primary arms plus the block's
   streams: the training stream and v₀'s preconditioner stream, at Stage A's measured
   91.7 s per 1000 responses.
-- Candidate order: (8, 5), (8, 20), (7, 5), (7, 20), since B = 5 is cheaper (≈ 1229 s against
-  1576 s per block).
+- Candidate order: (8, 5), (8, 20), (7, 5), (7, 20), since B = 5 is cheaper (≈ 1252 s against
+  1668 s per block, both streams included).
 - The pre-warmed arm's rates are discovered afterwards at the chosen batch by the same rule. The
   first round uses the union of the selected AdamW and FA rates. If the pre-warmed arm stays
   infeasible, it is dropped and the primary goes on.
@@ -855,8 +876,10 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
   residual gradients stay tiny. Cold Adam's denominator is not fixed. Protocol version 3
   therefore admits `adam_frozen` under soft targets. Plain Adam, AdamW and pre-warmed AdamW
   stay excluded.
-- **Stage 0 runs again under version 3** before the first FA control, because its path-field
-  record is keyed by the protocol version.
+- **Stage 0 ran again under version 3** on 2026-10-16, before any FA control, because its
+  path-field record is keyed by the protocol version: run
+  `stage0-v3-qwen1.5b-l40s-20261016-02` passed, with a byte-identical regeneration of its
+  soft-target stream ([operations](operations.md#study-2-short-regime-amendment-3)).
 - **A failed control** makes its rate unusable at that batch, also for the other U. The selection
   is re-solved once without it, with a new control for the replacement. If nothing feasible
   remains at that (B, U), the next candidate is taken. All of this is decided on K and numerics
@@ -889,14 +912,20 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
   - Cap: 80 started blocks. At the cap the terminal look happens with whatever is supported.
   - **Equivalence needs ≥ 36 supported blocks at its look.** At a terminal look reached at the cap
     with fewer, only a direction can be concluded.
-  - **No reading at a look with fewer than 10 supported blocks:** the bootstrap-t collapses there.
-    This rule is not in the simulation; it only removes readings, so it is conservative.
+  - **No reading at a look with fewer than 10 supported blocks:** the bootstrap-t collapses at 2
+    blocks and is unreliable from 3 to 9. This rule is not in the simulation; it only removes
+    readings, so it is conservative.
   - A postponed look and a look at the cap keep the planned levels; they are not recomputed at the
     realized information. The simulation shows this is conservative.
   - The interval is the paired seed-block bootstrap-t of the mean over supported blocks, as the
     original protocol planned, with 100 000 resamples and a fixed seed (the fixation record). The
-    simulation used 2 000 resamples per look; more resamples only remove resampling noise from
-    the quantiles.
+    simulation used 2 000 resamples per look, so α was calibrated with that resampling noise
+    included. A check at 20 000 resamples on the same 5 000 replicates (normal shape, Δ = 0, the
+    decided design, the `confirmation` stream) changed no error rate beyond MC error: false
+    direction +/− 1.94 / 2.52 → 1.88 / 2.50 % at SD 10 pp and 2.56 / 2.60 → 2.46 / 2.42 % at
+    SD 15 pp; equivalence power 89.2 → 89.3 % and 33.5 → 33.1 % (MC SE ≈ 0.2 pp for the
+    directions, 0.4–0.7 pp for the power). Look 1 stopped slightly less often (23.0 → 21.5 % at
+    SD 10).
   - O'Brien–Fleming-type levels from Lan–DeMets spending of α = 0.040: 99.20 % at look 1 and
     96.31 % at look 2, two-sided. They were calibrated by the simulation below on the normal shape
     at SD 3, 5 and 10, and validated on independent draws.
@@ -906,18 +935,23 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
     interval computed from them. In fa2's example (90 % of blocks at 0, 10 % at 50 pp; mean 5 pp,
     SD 15 pp), the procedure concludes equivalence falsely in 2.3 % of simulated
     studies.
-  - In the plausible range (normal or skewed shapes, SD 3–10 pp) every requirement holds. Stress
-    cases exceed the 2.5 % bound on a false direction at Δ = 0:
+  - In the plausible range (normal or skewed shapes, SD 3–10 pp) every requirement holds within
+    MC error (worst 2.58 %, a false direction for the skewed shape at SD 10 pp). Stress cases
+    exceed the 2.5 % bound on a false direction at Δ = 0:
     - right-skewed block differences at SD 15 pp: 3.6 %;
-    - heavy-tailed (symmetric) block differences: 3.2–3.5 %;
+    - heavy-tailed (symmetric) block differences: 3.2–3.5 % at SD 15 pp (2.65 / 2.92 % at
+      SD 10 pp);
     - rare-seed effects (centered): 2.6 %.
   - Read against the pointwise Δ(K\*), a kink at K\* gives a false direction of 8.2 % at Δ = 0
     and a false equivalence of 5.4 % at Δ = −5 (SD 5 pp); with the allowance b they are 0.4 % and
-    0.2 %. Against the interpolation contrast, the primary estimand, these are not errors.
+    0.2 %. The stress pair gives a false direction of 2.93 % at Δ = 0 (0.10 % with b). Against
+    the interpolation contrast, the primary estimand, these are not errors.
   - b covers interpolation bias only, not a bias from selection by support. When technical
     failures (20 % of runs, more often in high-harm streams) remove blocks, the supported
-    contrast shrinks toward 0. The rule above keeps false equivalence there at ≤ 4.9 %,
-    and the validation gate stops 96 % of such studies before confirmation.
+    contrast shrinks toward 0. With the rule above, false equivalence there reaches 4.88 %
+    (SE 0.22) over all simulated studies and 4.95 % (SE 0.28) among those that pass the
+    validation gate, the ones that would run; each lies within 1 SE of 5 %. The gate stops 96 %
+    (correlated failures) to 98 % (independent ones) of such studies before confirmation.
   - At a paired SD of 15 pp the power is 33.3 % for equivalence at Δ = 0 and
     61.5 % for direction at ±5 pp.
 - **Unsupported started blocks.** They are reported with the finite-cohort bounds
@@ -932,8 +966,9 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
   is reported beside ‖δ‖.
   - H₀ is the Hessian at θ₀ of the training loss (constant denominator) on a fixed panel: the
     stream `curvature_panel`, 100 zero-field θ₀ responses to the teacher prompts. No run trains
-    on it, and it is never a K panel. It is generated once on an L40S and archived before the
-    first measurement.
+    on it, and it is never a K panel. It was generated once, on an L40S (P0, 2026-10-16), and
+    archived before any measurement: spec `9fff8e13183a`, samples sha256 `c273e468…`
+    ([operations](operations.md#study-2-short-regime-amendment-3)).
   - It is measured at every endpoint of the three arms on the first 10 confirmation blocks
     (seeds 3000–3009).
   - One quadratic form per endpoint, with the optimizer state freed first. Zero displacement, or
@@ -974,7 +1009,7 @@ procedure.
     right-skewed, rare-seed centered, rare-seed only;
   - responses correlated across rates and arms;
   - endpoint K jitter from Stage A's grids (seed SD 0.07, rate SD 0.03; stress 0.12 / 0.06);
-  - selection misses, common and per arm;
+  - selection misses, common, per arm and per rate (the default);
   - technical failures at 0 / 10 / 20 %, also correlated with harm;
   - K–harm dependence.
 - **Calibration and targets.**
@@ -1000,14 +1035,17 @@ procedure.
     stress cases named above.
   - Expected started blocks at Δ = 0, normal shape: ≈ 36 at SD 5, ≈ 55 at SD 10. The cap was
     never exhausted.
-  - The validation gate (≥ 10 of 12) fails in at most 0.02 % of studies without failures. With
-    20 % technical failures it fails in 96–98 %.
-  - Against the t interval on the same looks, the bootstrap-t lowers the skewed false direction
-    from 7.9 to 3.6 % and rare_only's false equivalence from 9.5 to 2.3 %. At SD 10 it costs a
-    little power, ≈ 2.5 pp for equivalence and ≈ 1 pp for direction.
-  - Compared look designs: 24/50, 36/60, a single look at 50, and 24/50 with equivalence only at
-    the end. 36/60 was chosen for its robustness to rare and skewed shapes and its power at
-    SD 10, at ≈ 10 more blocks at SD 5 than 24/50.
+  - The validation gate (≥ 10 of 12) fails in ≤ 0.02 % of studies without failures under the
+    normal shape, ≤ 0.05 % over all shapes. With 20 % technical failures it fails in 96–98 %.
+  - Against the t interval on the same looks (revision 3, w_max 0.35, each interval at its
+    calibrated α: t 0.050, bootstrap-t 0.040), the bootstrap-t lowers the skewed false direction
+    from 7.93 to 3.57 % and rare_only's false equivalence from 9.50 to 2.54 %. At equal α 0.040
+    (revision 4) rare_only's falls from 7.95 to 2.42 %. At SD 10 it costs a little power
+    (revision 3), ≈ 2.5 pp for equivalence and ≈ 1 pp for direction.
+  - Compared look designs (revision 3): 24/50, 36/60, a single look at 50, and 24/50 with
+    equivalence only at the end. 36/60 was chosen for its robustness to rare and skewed shapes
+    and its power at SD 10, at ≈ 7 more started blocks at SD 5 than 24/50 with the bootstrap-t
+    (32.7 against 39.8; ≈ 10 with the t interval, 29.9 against 39.7).
 - **The bias allowance** at w_max 0.47, the largest paired bias |pp| over selection misses:
   - kink 1.084;
   - stress pair 0.536;
@@ -1015,8 +1053,12 @@ procedure.
   - study 1's curves 0.028.
 
   b = 1.084 pp. The width rule changes it little (1.079 at w_max 0.35).
-- The simulation's code and every result: `analysis/study2_short_sim.py`,
-  `scripts/study2_short_simulate.py` (revisions 1–5). The runs are reproducible from their seeds.
+- The simulation's code: `analysis/study2_short_sim.py` and `scripts/study2_short_simulate.py`.
+  Its results, revisions 1–5 (each run's `summary.json` and `results.md`, and the report), are
+  archived in `runs/analysis/study2_short_sim/2026-10-16/`, inventory
+  `runs/archive/inventory-2026-10-16-study2-short-sim.tsv`. The runs are reproducible from their
+  seeds; the modes `decided-bias`, `decided` and `decided-gate` run revision 5's decided design
+  without flags (the script's docstring gives the command lines).
 
 #### Machinery
 
@@ -1036,8 +1078,11 @@ procedure.
   - the audit arms.
 - **The fixation record** (`docs/study2-short-fixation.json`, committed with this amendment)
   holds w_max, the look sizes, cap and levels, the interval with its resamples and seed, the SE
-  floor, the bias allowance, and the two minima (36 for equivalence, 10 for any reading). The code, model and judge versions are added in a committed record
-  before the first confirmatory run.
+  floor, the bias allowance, and the two minima (36 for equivalence, 10 for any reading).
+- **The versions record** (`docs/study2-short-versions.json`) holds the code commit the
+  confirmation runs from, the model's revision and the judge's identity. It is written by
+  `scripts/study2_short_summary.py versions` and committed before the first confirmatory run
+  ([operations](operations.md#study-2-short-regime-amendment-3)).
 
 #### Budget
 

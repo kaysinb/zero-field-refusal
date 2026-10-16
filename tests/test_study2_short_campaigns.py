@@ -700,7 +700,14 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
     assert f"SRC=/workspace/code/zero-field-refusal/{COMMIT}/source" in text
     assert all(len(line) <= 100 for line in text.splitlines() if line.startswith("#"))
     header = " ".join(line[2:] for line in text.splitlines() if line.startswith("# "))
-    assert "preconditioner streams and the protocol-2 path-field record" in header
+    # The header names the inventories per campaign kind (docs/operations.md), each in full.
+    module = campaigns_module()
+    for name in (*module.INVENTORIES, module.V3_RECORD, module.CURVATURE_PANEL):
+        assert name in header
+    assert f"for the FA controls also the stage-0 v3 record {module.V3_RECORD}" in header
+    assert f"for confirmation blocks 1-10 also the curvature panel {module.CURVATURE_PANEL}" in (
+        header
+    )
     assert "can be run again" in header and re.search(r"prep at [0-9a-f]{40}", header)
     commands = joined(text)
     run = 'project-run "$SRC" python scripts/'
@@ -1201,3 +1208,59 @@ def test_the_summary_computes_the_looks_with_the_records_interval(monkeypatch) -
     found = module.compute_looks(state, [], {}, t_record, THETA0)
     assert found["interval"] == {"method": "t", "resamples": None, "seed": None}
     assert found["looks"]["looks"][0]["bootstrap"] is None and found["looks"]["looks"][0]["t"]
+
+
+def test_the_summary_gives_each_look_its_pointwise_reading(monkeypatch) -> None:
+    module = summary_module()
+    deltas = [0.008 + 0.002 * (-1) ** i for i in range(36)]  # a direction within b
+    entries = [{"block": i + 1, "complete": True, "supported": True, "delta": d,
+                "delta_missing_harmful": d, "h": {ADAMW: 0.2 + d, FA: 0.2}}
+               for i, d in enumerate(deltas)]  # fmt: skip
+    blocks = [{"seed": 3000 + i, "supports": {ADAMW: {}, FA: {}}} for i in range(80)]
+    state = {"next": {"campaign": "confirmation"}, "frozen": {"K_star": 6.3},
+             "confirmation": blocks}  # fmt: skip
+    monkeypatch.setattr(module, "look_blocks", lambda blocks, labels, kstar: entries)
+    monkeypatch.setattr(module, "utility_family", lambda *args, **kw: {"family": []})
+    (first,) = module.compute_looks(state, [], {}, FIXATION, THETA0)["looks"]["looks"]
+    b = FIXATION["bias_allowance"]
+    low, high = first["interval"]
+    assert first["readings"] == ["equivalence", "direction", "within_8"]
+    assert first["bias_allowance"] == b
+    assert first["pointwise"] == {"interval": [low - b, high + b], "readings": ["equivalence"]}
+
+
+def test_the_versions_record(monkeypatch, tmp_path, capsys) -> None:
+    from zero_field_refusal.judge import judge_identity
+
+    module = summary_module()
+    fixation = Path(fixation_file(tmp_path))
+    out = tmp_path / "docs" / "versions.json"
+    argv = [str(SUMMARY), "versions", "--judge", "wildguard", "--fixation", str(fixation),
+            "--out", str(out)]  # fmt: skip
+    monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setattr(module, "git_state", lambda: {"commit": COMMIT, "dirty": False})
+    module.main()
+    record = json.loads(out.read_text())
+    model = load_config("experiments/study2_short", ["study2_short.role=confirmation"]).model
+    assert record["code"] == {"commit": COMMIT}
+    assert record["model"] == {"name": model.name, "revision": model.revision}
+    assert record["model"]["revision"] == "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+    identity = judge_identity(load_config("judge/wildguard"))
+    assert record["judge"] == {"config": "judge/wildguard", **identity}
+    digest = hashlib.sha256(fixation.read_bytes()).hexdigest()
+    assert record["fixation"] == {"path": str(fixation), "sha256": digest}
+    with pytest.raises(SystemExit):  # written once
+        module.main()
+    assert "the versions record is written once" in capsys.readouterr().err
+    out.unlink()
+    for state in ({"commit": COMMIT, "dirty": True}, {"commit": None, "dirty": None}):
+        monkeypatch.setattr(module, "git_state", lambda state=state: state)
+        with pytest.raises(SystemExit):
+            module.main()
+        assert "clean checkout of a known commit" in capsys.readouterr().err
+        assert not out.exists()
+    monkeypatch.setattr(module, "git_state", lambda: {"commit": COMMIT, "dirty": False})
+    monkeypatch.setattr("sys.argv", [*argv[:5], fixation_file(tmp_path, cap=70), *argv[6:]])
+    with pytest.raises(SystemExit):  # the fixation record is checked whole
+        module.main()
+    assert "cap 70 is not the cap 80" in capsys.readouterr().err

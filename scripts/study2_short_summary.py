@@ -3,6 +3,7 @@ confirmation blocks are labeled, its looks.
 
     python scripts/study2_short_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR \
         (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--judge NAME] [--out OUT.json]
+    python scripts/study2_short_summary.py versions --judge NAME --fixation FILE [--out FILE]
 
 --runs holds every run so far, Stage A's included (as for scripts/study2_short_campaigns.py),
 --theta0 the θ₀ run, the utility baseline, and --runs-root RUNS_DIR, whose launch/ journal tells
@@ -22,15 +23,26 @@ the simulation's fixation record (--fixation: w_max, the look levels, the SE flo
 allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, and the
 equivalence and direction minima; analysis.study2_short.read_fixation) and are refused without
 one; none of its values is ever defaulted. The looks print the interval, resamples and seed they
-used, and each bootstrap look its stream's seed and dropped resamples. Only counts, K, rates and
-intervals are printed, never a prompt, a response or a judge output. OUT.json, which must not
-exist, gets the whole record with the command and the code revision.
+used, and each bootstrap look its stream's seed and dropped resamples. Beside each look they
+print the bias allowance b, the interval widened by b and the pointwise readings about Δ(K*)
+under the look's equivalence and direction minima (analysis.study2_short.pointwise, as the
+simulation's pointwise_readings); decisions never use them. Only counts, K, rates and intervals
+are printed, never a prompt, a response or a judge output. OUT.json, which must not exist, gets
+the whole record with the command and the code revision.
+
+``versions`` writes the versions record that amendment 3 requires before the first confirmatory
+run (default docs/study2-short-versions.json, which must not exist; it is then committed): the
+commit of this checkout, which must be clean (the commit the confirmation runs from), the model
+and its revision of experiments/study2_short, the identity that every label of judge NAME
+carries (judge.judge_identity), and the fixation record's path and sha256.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +76,8 @@ from zero_field_refusal.tracking import git_state
 # The fixation record's values that ``looks`` takes (its look sizes and cap equal the module's).
 LOOK_SETTINGS = ("interval", "se_floor", "bias_allowance", "equivalence_min_supported",
                  "direction_min_supported", "bootstrap_resamples", "bootstrap_seed")  # fmt: skip
+VERSIONS_RECORD = Path("docs/study2-short-versions.json")
+REGULAR_CONFIG = ("experiments/study2_short", ["study2_short.role=confirmation"])
 
 
 def status(state: dict[str, Any]) -> dict[str, Any]:
@@ -225,7 +239,51 @@ def compute_looks(state, runs, labels, fixation, theta0) -> dict[str, Any]:
     }
 
 
+def versions_record(judge: str, fixation: Path) -> dict[str, Any]:
+    """The versions record (see the module docstring); ``ValueError`` unless the checkout is a
+    clean one of a known commit."""
+    code = git_state()
+    if not code.get("commit") or code.get("dirty") is not False:
+        raise ValueError(f"the versions record needs a clean checkout of a known commit, not "
+                         f"{code}")  # fmt: skip
+    cfg = load_config(*REGULAR_CONFIG)
+    return {
+        "what": "The versions of study 2's short-regime confirmation (amendment 3), written "
+        "before its first confirmatory run.",
+        "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "code": {"commit": code["commit"]},
+        "model": {"name": str(cfg.model.name), "revision": str(cfg.model.revision)},
+        "judge": {"config": f"judge/{judge}", **judge_identity(load_config(f"judge/{judge}"))},
+        "fixation": {
+            "path": str(fixation),
+            "sha256": hashlib.sha256(fixation.read_bytes()).hexdigest(),
+        },
+    }
+
+
+def versions_main(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(prog="study2_short_summary.py versions",
+                                     description="Write the versions record.")  # fmt: skip
+    parser.add_argument("--judge", required=True, help="a judge config in configs/judge/")
+    parser.add_argument("--fixation", type=Path, required=True, help="the fixation record")
+    parser.add_argument("--out", type=Path, default=VERSIONS_RECORD, help="must not exist")
+    args = parser.parse_args(argv)
+    if args.out.exists():
+        parser.error(f"{args.out} exists: the versions record is written once")
+    try:
+        read_fixation(args.fixation)
+        record = versions_record(args.judge, args.fixation)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(record, indent=2) + "\n")
+    print(args.out)
+
+
 def main() -> None:
+    if sys.argv[1:2] == ["versions"]:
+        versions_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=Path, nargs="+", required=True)
     parser.add_argument("--theta0", type=Path, required=True)

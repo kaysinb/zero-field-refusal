@@ -11,6 +11,9 @@ Status: `approved` (2026-10-16).
   `f7888ca6e331c7ff81fe0d9846b639ac1db3aeb5f01c8e6fe76fb8f6b5f59b55`.
 - It does not change study 2's [preregistration](study2-preregistration.md) and does not
   rescue H1.
+- Outcome: `barrier` (2026-10-16), summary
+  `runs/analysis/pilot-momentum-summary-2026-10-16-step2.json`; recorded in
+  [amendment 3](study2-preregistration.md#the-new-primary-question).
 
 ## Why this pilot
 

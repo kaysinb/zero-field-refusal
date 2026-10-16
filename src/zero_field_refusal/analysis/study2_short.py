@@ -1062,6 +1062,27 @@ def _readings(interval: Sequence[float] | None, *, equivalence: bool = True) -> 
     return found or ["inconclusive"]
 
 
+def pointwise(
+    interval: Sequence[float] | None, allowance: float, *, equivalence: bool, direction: bool
+) -> dict[str, Any]:
+    """The reading about the pointwise Δ(K*) with the bias allowance b (the amendment's "the
+    pointwise Δ(K*) lies in the interval widened by b"), as the simulation's
+    ``pointwise_readings``: the interval widened by b on both sides; equivalence when the
+    interval lies inside ±(5 pp − b), bounds included, only where the look may conclude
+    equivalence (``equivalence``, its equivalence mask); a direction when it excludes [−b, b],
+    only where the look may conclude anything (``direction``). Decisions never use it."""
+    if interval is None:
+        return {"interval": None, "readings": ["inconclusive"]}
+    lo, hi = interval
+    margin = EQUIVALENCE - allowance
+    found = []
+    if equivalence and lo >= -margin and hi <= margin:
+        found.append("equivalence")
+    if direction and (lo > allowance or hi < -allowance):
+        found.append("direction")
+    return {"interval": [lo - allowance, hi + allowance], "readings": found or ["inconclusive"]}
+
+
 def finite_bounds(started: int, unsupported: int, total: float) -> tuple[float, float]:
     """The finite-cohort bounds [(S − m)/N, (S + m)/N] of the started cohort: N started, m
     unsupported, S the sum of the supported differences (descriptive)."""
@@ -1096,7 +1117,8 @@ def looks(
     blocks), direction, within ±8, else inconclusive; none below ``direction_min_supported``
     supported blocks (0 disables either minimum); look 1 stops on equivalence or direction only.
     A bootstrap look reports numpy's mean, sd and se, those of its interval. ``bias_allowance``
-    is reported beside every look."""
+    is reported beside every look, with the interval widened by it and the pointwise readings
+    under the look's minima (``pointwise``)."""
     if len(levels) != len(n) or not all(0.5 < level < 1 for level in levels):
         raise ValueError(f"looks: levels {tuple(levels)} must be {len(n)} confidence levels in "
                          "(0.5, 1), e.g. (0.9920, 0.9631)")  # fmt: skip
@@ -1175,6 +1197,7 @@ def _look(number, level, deltas, started, settings) -> dict[str, Any]:
     concluded = len(deltas) >= settings["direction_min_supported"]
     allowed = concluded and len(deltas) >= settings["equivalence_min_supported"]
     readings = _readings(found["interval"], equivalence=allowed) if concluded else ["inconclusive"]
+    masks = {"equivalence": allowed, "direction": concluded}
     return {
         "look": number,
         "level": level,
@@ -1188,6 +1211,7 @@ def _look(number, level, deltas, started, settings) -> dict[str, Any]:
         "readings": readings,
         "bounds": finite_bounds(started, started - len(deltas), sum(deltas)),
         "bias_allowance": settings["bias_allowance"],
+        "pointwise": pointwise(found["interval"], settings["bias_allowance"], **masks),
         "at_cap": False,
     }
 

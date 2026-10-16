@@ -49,8 +49,12 @@ Nothing here reads a judge label or K_harmful.
 ``prep`` writes a bash driver of the prerequisites of the runs of the given seeds at batch B, from
 the source checkout of commit SHA on a Pod, laid out as the Stage-A drivers. With ``--once``
 (and its ``--stage0-run-id``) it starts with the stage-0 checks under protocol version 3 and the
-curvature panel. Then, per seed, either it checks that the seed's streams exist (``--archived``:
-seeds whose streams are archived, nothing is generated, a missing stream stops it) or it
+curvature panel. That was done on P0 on 2026-10-16 (docs/operations.md records it) and must not
+be run again: later drivers leave out ``--once``, and their Pods restore the inventories of its
+stage-0 v3 record and of the curvature panel (``V3_RECORD``, ``CURVATURE_PANEL``; the header of
+every driver names the inventories it needs). Then, per seed, either it checks that the seed's
+streams exist (``--archived``: seeds whose streams are archived, nothing is generated, a missing
+stream stops it) or it
 generates them: the training stream to 25 × B responses (the stream is appendable; the default
 length, study2_stage_a's 4000 steps at its batch 20, is not needed) and v₀'s preconditioner
 stream at B. The driver can be run again after a failure. ``check-streams`` is that check, which
@@ -143,6 +147,27 @@ ASIDE_PREFIX = "soft-targets-aside-"  # + the UTC date
 SOFT_TARGET_KINDS = ("soft-targets-aside", "soft-targets-restore")
 REGENERATION_RECORD = "soft_targets_regeneration.json"  # in the stage-0 run's directory
 REGENERATED_MANIFEST = "soft_targets_manifest_regenerated.json"
+# The inventories under runs/archive/ from which pod_setup.sh restores DATA_DIR for this stage
+# (docs/operations.md, "Prerequisites on a Pod"). Every campaign kind reads the first group: K's
+# reference streams (kl_harmful, kl_benign), the prompt sets, the protocol-2 path-field record,
+# the monitor-v2 stream, v₀'s preconditioner streams and the latest training stream per seed.
+INVENTORIES = (
+    "inventory-2026-10-11.tsv",
+    "inventory-2026-10-14-study2-prompts.tsv",
+    "inventory-2026-10-14-study2-a-phase0.tsv",
+    "inventory-2026-10-15-study2-monitor-v2.tsv",
+    "inventory-2026-10-14-study2-a-preconditioner-s2000.tsv",
+    "inventory-2026-10-14-study2-a-preconditioner-s2001.tsv",
+    "inventory-2026-10-14-study2-a-preconditioner-s2002.tsv",
+    "inventory-2026-10-16-study2-a-stream-s2000-final.tsv",
+    "inventory-2026-10-15-study2-a-stream-s2001-search-s2001-2.tsv",
+    "inventory-2026-10-16-study2-a-stream-s2002-final.tsv",
+)
+# The prep of 2026-10-16 (prep --once on P0): the stage-0 record under protocol version 3, which
+# the FA controls need, and the curvature panel, which confirmation blocks 1-10 need. Every later
+# Pod restores both, whatever it runs: pod_setup.sh checks every file in DATA_DIR.
+V3_RECORD = "inventory-2026-10-16-study2-stage0-v3-record.tsv"
+CURVATURE_PANEL = "inventory-2026-10-16-study2-curvature-panel.tsv"
 
 
 def cell(name: str, config: str, overrides: list[str], seeds: list[int]) -> dict:
@@ -219,11 +244,15 @@ def prep_driver(
         *comment(f"Written by scripts/study2_short_campaigns.py prep at {written_at}; do not "
                  "edit."),
         *comment(f"Study 2's short-regime stage, from commit {commit}: it {steps}."),
-        *comment("Before it runs, DATA_DIR is restored with scripts/pod_setup.sh from the "
-                 "inventories of the prompt sets, the teacher streams (the training streams of "
-                 "the seeds already run, with their chunks), the monitor-v2 stream, the "
-                 "preconditioner streams and the protocol-2 path-field record (the stage-0 "
-                 "record), so that the runs read the streams that Stage A's runs read."),
+        *comment("Before it runs, DATA_DIR is restored with scripts/pod_setup.sh from these "
+                 "inventories under runs/archive/, so that the runs read the streams that Stage "
+                 f"A's runs read: for every campaign kind {', '.join(INVENTORIES)} (the prompt "
+                 "sets, K's reference streams, the protocol-2 path-field record, the monitor-v2 "
+                 "stream, the preconditioner streams and the training streams); for the FA "
+                 f"controls also the stage-0 v3 record {V3_RECORD}; for confirmation blocks 1-10 "
+                 f"also the curvature panel {CURVATURE_PANEL}. Every Pod after the prep of "
+                 "2026-10-16 restores these two as well, and the inventories of the fresh seeds' "
+                 "streams once they are archived."),
         *comment("It stops at the first failure and can be run again: a completed stage-0 run "
                  "is kept, a soft-target copy set aside or put back stays so, a stream that "
                  "exists is kept, and a training stream only grows to what the runs read."),
@@ -657,7 +686,8 @@ def main() -> None:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="prep: also the stage-0 checks and the curvature panel",
+        help="prep: also the stage-0 checks and the curvature panel (done on 2026-10-16: never "
+        "again)",
     )
     parser.add_argument("--stage0-run-id", help="prep with --once: RUN_ID of the stage-0 checks")
     parser.add_argument("--aside-root", type=Path, default=ASIDE_ROOT,

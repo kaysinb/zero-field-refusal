@@ -460,6 +460,61 @@ def test_decided_grids() -> None:
     assert all(abs(s.delta) == 0.05 for s in gates)
 
 
+FIXATION = Path(__file__).resolve().parents[1] / "docs" / "study2-short-fixation.json"
+
+
+def test_the_fixation_record_is_the_simulations_decided_design() -> None:
+    """The committed fixation record, the analysis's constants and the simulation's decided
+    design agree, so that the confirmation runs the procedure that was calibrated."""
+    from zero_field_refusal.analysis import study2_short
+
+    raw = json.loads(FIXATION.read_text())
+    record = study2_short.read_fixation(FIXATION)
+    decided = sim.DESIGNS_BY_NAME[sim.DECIDED_DESIGN]
+    assert record["w_max"] == sim.DECIDED_W_MAX
+    fraction = decided.sizes[0] / decided.sizes[1]
+    assert raw["levels"] == list(obf_levels(sim.DECIDED_ALPHA, fraction))  # bit for bit
+    assert record["se_floor"] == sim.DECIDED_SE_FLOOR
+    assert record["bias_allowance"] == sim.DECIDED_ALLOWANCE
+    assert record["interval"] == "bootstrap_t" and "bootstrap_t" in sim.INTERVALS
+    assert record["bootstrap_resamples"] >= sim.BOOTSTRAP_RESAMPLES
+    assert tuple(record["looks"]) == decided.sizes == study2_short.LOOK_SIZES
+    assert record["cap"] == CAP == study2_short.CAP
+    assert record["equivalence_min_supported"] == sim.RULE_MIN_BLOCKS[sim.DECIDED_RULE]
+    gate = (len(study2_short.VALIDATION_SEEDS), study2_short.VALIDATION_MINIMUM)
+    assert gate == (sim.GATE_BLOCKS, sim.GATE_MIN_SUPPORTED)
+    assert study2_short.SECONDARY_LEVEL == sim.SECONDARY_LEVEL
+    assert (study2_short.EQUIVALENCE, study2_short.NESTED) == (sim.MARGIN, sim.WIDE_MARGIN)
+    assert study2_short.ZERO_SE == sim.ZERO_SE
+
+
+def test_the_decided_modes_default_to_the_decided_design() -> None:
+    """Without flags the revision-5 modes run revision 5's settings (its summary.json files)."""
+    script = load_script()
+
+    def settings(*argv: str) -> sim.RunSettings:
+        return script.run_settings(script.build_parser().parse_args(list(argv)), {})
+
+    for mode in script.DECIDED_MODES:
+        found = settings(mode)
+        assert (found.stream, found.designs, found.intervals, found.resamples) == (
+            "confirmation", ("36_60",), ("bootstrap_t",), 2000
+        )  # fmt: skip
+        assert (found.alphas, found.floors, found.rules) == (
+            (0.04,), (0.0,), ("standard", "eq_min36")
+        )  # fmt: skip
+        assert found.allowance == (None if mode == "decided-bias" else sim.DECIDED_ALLOWANCE)
+        assert found.prescreen == (mode == "decided-gate")
+        assert found.chunk == (5000 if mode == "decided-gate" else 250)
+    # Flags still override, and the other modes keep their own defaults.
+    assert settings("decided", "--intervals", "t", "--allowance", "0.01").intervals == ("t",)
+    assert settings("decided", "--alphas", "0.05").alphas == (0.04, 0.05)
+    other = settings("validate")
+    assert other.designs == tuple(d.name for d in sim.LOOK_DESIGNS)
+    assert (other.intervals, other.rules, other.alphas) == (("t",), ("standard",), (0.05,))
+    assert other.floors == sim.SE_FLOORS and other.allowance is None and other.chunk == 250
+
+
 def test_validation_gate_counts_jointly_supported_blocks() -> None:
     params = solve_parameters(Scenario(), 0.3)
     data = simulate_replicates(Scenario(), params, range(20), base_seed=0, stream="test")

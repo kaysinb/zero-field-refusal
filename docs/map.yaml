@@ -222,8 +222,10 @@ topics:
   title: Study 2's short regime (amendment 3) — prerequisites, campaigns, confirmation loop and looks
   source: docs/operations.md#study-2-short-regime-amendment-3
   review:
-  - docs/study2-preregistration.md#numerical-acceptance
-  - docs/study2-preregistration.md#primary-analysis
+  - docs/study2-preregistration.md#amendment-3-redirection-to-the-short-regime
+  - docs/study2-preregistration.md#numerical-acceptance-1
+  - docs/study2-preregistration.md#analysis
+  - docs/study2-short-fixation.json
   - docs/operations.md#study-2-stage-a
   - docs/operations.md#launching-runs
   - configs/experiments/study2_short.yaml

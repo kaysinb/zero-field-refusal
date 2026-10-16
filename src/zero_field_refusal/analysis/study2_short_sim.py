@@ -324,6 +324,8 @@ DECIDED_DESIGN = "36_60"
 DECIDED_ALPHA = 0.04
 DECIDED_ALLOWANCE = 0.010841  # b at w_max 0.47 (revision 5: kink, the largest family)
 DECIDED_W_MAX = 0.47  # revision 5
+DECIDED_SE_FLOOR = 0.0  # revision 4: a floor of 1 or 2 pp never binds at the target SDs
+DECIDED_RULE = "eq_min36"  # revision 4: equivalence only at a look with ≥ 36 supported blocks
 HERMITE_NODES = 80
 LAGUERRE_NODES = 40
 

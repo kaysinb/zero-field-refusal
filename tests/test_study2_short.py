@@ -998,6 +998,60 @@ def test_a_bootstrap_look_reports_the_moments_of_its_interval() -> None:
     assert exact["mean"] == statistics.fmean([0.05] * 36)  # the t look: exact sums
 
 
+def test_each_look_gives_the_pointwise_reading_with_the_bias_allowance() -> None:
+    """The interval widened by b and its readings about the pointwise Δ(K*), with the look's
+    equivalence mask, as the simulation's ``pointwise_readings`` computes them."""
+    from types import SimpleNamespace
+
+    from zero_field_refusal.analysis import study2_short_sim as sim
+
+    b = 0.010841
+    # Direction within the allowance: the look concludes it, the pointwise reading does not.
+    near = [0.008 + 0.002 * (-1) ** i for i in range(80)]
+    (first,) = study2_short.looks(blocks_of(near), DECIDED, LOOK_SIZES, se_floor=0.0,
+                                  bias_allowance=b, equivalence_min_supported=36,
+                                  direction_min_supported=10, **BOOTSTRAP)["looks"]  # fmt: skip
+    lo, hi = first["interval"]
+    assert first["readings"] == ["equivalence", "direction", "within_8"]
+    assert first["pointwise"] == {"interval": [lo - b, hi + b], "readings": ["equivalence"]}
+    # Equivalence needs the interval inside ±(5 pp − b), bounds included; a direction excludes
+    # [−b, b] strictly; each only where the look may conclude it.
+    reading = study2_short.pointwise
+    margin = 0.05 - b
+    assert reading([-margin, margin], b, equivalence=True, direction=True)["readings"] == [
+        "equivalence"
+    ]
+    assert reading([b, 0.02], b, equivalence=True, direction=True)["readings"] == ["equivalence"]
+    assert reading([b + 1e-9, 0.045], b, equivalence=False, direction=True)["readings"] == [
+        "direction"
+    ]
+    assert reading([0.02, 0.03], b, equivalence=True, direction=False)["readings"] == [
+        "equivalence"
+    ]
+    assert reading(None, b, equivalence=True, direction=True) == {
+        "interval": None, "readings": ["inconclusive"]
+    }  # fmt: skip
+    # The same intervals through the simulation: the same readings.
+    intervals = [(-margin, margin), (b, 0.02), (b + 1e-9, 0.045), (-0.03, -0.012), (0.04, 0.05)]
+    allowed = np.array([True, True, False, True, False])
+    found = sim.pointwise_readings(
+        SimpleNamespace(low=np.array([i[0] for i in intervals]),
+                        high=np.array([i[1] for i in intervals]), equivalence_allowed=allowed),
+        b,
+    )  # fmt: skip
+    for k, (interval, mask) in enumerate(zip(intervals, allowed, strict=True)):
+        mine = reading(interval, b, equivalence=bool(mask), direction=True)["readings"]
+        assert ("equivalence" in mine) == bool(found["equivalence"][k])
+        assert ("direction" in mine) == bool(found["positive"][k] or found["negative"][k])
+    # A cap look below the equivalence minimum: no pointwise equivalence either.
+    unsupported = set(range(50))
+    (held,) = study2_short.looks(blocks_of(near, unsupported=unsupported), DECIDED, LOOK_SIZES,
+                                 se_floor=0.0, bias_allowance=b, equivalence_min_supported=36,
+                                 direction_min_supported=10, **BOOTSTRAP)["looks"]  # fmt: skip
+    assert held["supported"] == 30 and not held["equivalence_allowed"]
+    assert held["pointwise"]["readings"] == ["inconclusive"]
+
+
 def test_finite_cohort_bounds() -> None:
     assert finite_bounds(10, 2, 0.3) == pytest.approx((-0.17, 0.23))
     assert finite_bounds(4, 0, -0.2) == pytest.approx((-0.05, -0.05))

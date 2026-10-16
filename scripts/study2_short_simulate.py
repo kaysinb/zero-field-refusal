@@ -1,8 +1,8 @@
 """Simulation of study 2's short-regime confirmation (amendment 3): levels, validation and bias.
 
 Modes (the model and the procedure: src/zero_field_refusal/analysis/study2_short_sim.py). Every
-mode evaluates every look design (24/50, 36/60, one look at 50, 24/50 with equivalence only at
-the terminal look) and every SE floor on the same replicates:
+mode but the decided ones evaluates by default every look design (24/50, 36/60, one look at 50,
+24/50 with equivalence only at the terminal look) and every SE floor on the same replicates:
 
 - calibrate: the central model at every target SD × Δ, on the ``calibration`` stream, at every α
   of the grid; selects per look design and SE floor the largest α meeting the error constraints
@@ -24,15 +24,43 @@ the terminal look) and every SE floor on the same replicates:
 - decided-bias, decided, decided-gate: revision 5 at the decided w_max 0.47, on the
   ``confirmation`` stream: the bias allowance grid; kink and stress_slopes at SD 5, the shape grid
   and the cap scenarios; and the cap scenarios at Δ = ±5 prescreened on the validation gate
-  (``reps`` = gates drawn; only passing studies are simulated).
+  (``reps`` = gates drawn; only passing studies are simulated). Without flags they evaluate the
+  decided design: look design 36/60 (``DECIDED_DESIGN``), the bootstrap-t interval with 2 000
+  resamples, α 0.040 (``DECIDED_ALPHA``) only, SE floor 0 (``DECIDED_SE_FLOOR``), the rules
+  ``standard`` and ``eq_min36`` (the decided one, ``DECIDED_RULE``), w_max 0.47 (the grids'
+  ``DECIDED_W_MAX``), and for decided and decided-gate the pointwise readings with
+  b = ``DECIDED_ALLOWANCE``; decided-bias measures b and takes none, as revision 5 did.
+  decided-gate runs 5 000 replicates per worker task.
 - smoke: one reduced scenario per shape and per revision-1 addition.
 
---looks restricts the look designs evaluated (default: all four); --intervals picks t and/or
-bootstrap_t (the studentized bootstrap of the mean with --bootstrap resamples per look and
-replicate, computed in the workers). A calibrate run selects α per look design × interval ×
-SE floor. --rules adds ``eq_min36`` (equivalence only at a look with ≥ 36 supported blocks);
---floors restricts the SE floors; --exact-alphas evaluates exactly --alphas (otherwise α = 0.05
-and the selected α's are added). Every mode also simulates the 12-block validation gate.
+--looks restricts the look designs evaluated; --intervals picks t and/or bootstrap_t (the
+studentized bootstrap of the mean with --bootstrap resamples per look and replicate, computed in
+the workers). A calibrate run selects α per look design × interval × SE floor. --rules adds
+``eq_min36`` (equivalence only at a look with ≥ 36 supported blocks); --floors restricts the SE
+floors; --exact-alphas evaluates exactly --alphas (otherwise α = 0.05, or the decided α in the
+decided modes, and the selected α's are added). Every mode also simulates the 12-block
+validation gate.
+
+Revision 5, the decided design, ran on 2026-10-16 (archived under
+runs/analysis/study2_short_sim/2026-10-16/, inventory
+runs/archive/inventory-2026-10-16-study2-short-sim.tsv). Its four runs are reproduced, from the
+same seeds, by:
+
+    python scripts/study2_short_simulate.py decided-bias --workers 8 --out OUT/bias
+    python scripts/study2_short_simulate.py decided --workers 8 --out OUT/main
+    python scripts/study2_short_simulate.py decided --workers 8 \\
+        --scenarios 'interp_normal_kink_*' 'interp_normal_stress_slopes_*' --out OUT/families
+    python scripts/study2_short_simulate.py decided-gate --workers 8 --out OUT/gate
+
+bias and main ran from ec2c7c8 through a scratchpad driver with exactly these scenarios and
+settings, before the modes existed. families and gate ran from e900179 through these modes, with
+the flags that are now their defaults (gate with --chunk 5000). Every decision rate is
+reproduced bit for bit (checked on 2026-10-17 for one scenario of bias, families and gate). The
+pointwise readings can differ in two ways only: revision 5 used the bias run's unrounded b,
+0.010841274718211662, where the modes use the recorded DECIDED_ALLOWANCE 0.010841 (for kink at
+Δ = 0 one replicate of 20 000 then differs, pointwise equivalence 76.775 against 76.770 %;
+``--allowance 0.010841274718211662`` restores it exactly); and main's readings predate the
+equivalence mask (review N1), for which families reran kink and stress_slopes.
 
 Writes to --out (default: $RUNS_DIR/analysis/study2_short_sim/<mode>-<UTC timestamp>/):
 - summary.json: settings, versions, run time, the spread calibrations, every scenario (its
@@ -90,19 +118,35 @@ STREAMS = {
     "smoke": "smoke",
 }
 DESIGNS = ("interp", "interp_grid")
+DECIDED_MODES = ("decided-bias", "decided", "decided-gate")  # revision 5: the decided design
+ALLOWANCE_MODES = ("decided", "decided-gate")  # b = DECIDED_ALLOWANCE by default
+CHUNK = 250  # replicates per worker task
+GATE_CHUNK = 5000  # decided-gate: most replicates are a validation gate only
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("mode", choices=tuple(GRIDS))
     parser.add_argument("--designs", nargs="+", choices=DESIGNS, help="keep these designs only")
     parser.add_argument(
-        "--looks", nargs="+", choices=tuple(sim.DESIGNS_BY_NAME), help="look designs to evaluate"
+        "--looks",
+        nargs="+",
+        choices=tuple(sim.DESIGNS_BY_NAME),
+        help="look designs to evaluate (default: all; decided modes: the decided one)",
     )
-    parser.add_argument("--intervals", nargs="+", choices=sim.INTERVALS, default=["t"])
+    parser.add_argument(
+        "--intervals",
+        nargs="+",
+        choices=sim.INTERVALS,
+        help="default: t; decided modes: bootstrap_t",
+    )
     parser.add_argument("--bootstrap", type=int, default=sim.BOOTSTRAP_RESAMPLES, help="resamples")
-    parser.add_argument("--rules", nargs="+", choices=sim.RULES, default=["standard"])
-    parser.add_argument("--floors", type=float, nargs="+", help="SE floors (default: all)")
+    parser.add_argument(
+        "--rules", nargs="+", choices=sim.RULES, help="default: standard; decided modes: both"
+    )
+    parser.add_argument(
+        "--floors", type=float, nargs="+", help="SE floors (default: all; decided modes: 0)"
+    )
     parser.add_argument("--exact-alphas", action="store_true", help="evaluate exactly --alphas")
     parser.add_argument("--boundary-reps", type=int, help=f"{', '.join(SIZED)}: Δ = 0, ±5 pp")
     parser.add_argument("--other-reps", type=int, help=f"{', '.join(SIZED)}: other Δ")
@@ -114,12 +158,21 @@ def main(argv: list[str] | None = None) -> None:
     allowance.add_argument("--allowance-from", type=Path, help="a bias run's summary.json")
     allowance.add_argument("--allowance", type=float, help="the bias allowance b (fraction)")
     parser.add_argument("--workers", type=int, default=min(MAX_WORKERS, os.cpu_count() or 1))
-    parser.add_argument("--chunk", type=int, default=250, help="replicates per worker task")
+    parser.add_argument(
+        "--chunk",
+        type=int,
+        help=f"replicates per worker task (default: {CHUNK}; decided-gate: {GATE_CHUNK})",
+    )
     parser.add_argument("--spread-replicates", type=int, default=100)
     parser.add_argument("--spread-blocks", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0, help="base seed of all randomness")
     parser.add_argument("--out", type=Path, help="output directory")
     parser.add_argument("--list", action="store_true", help="print the scenario names and exit")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must lie in 1..{MAX_WORKERS}")
@@ -143,28 +196,7 @@ def main(argv: list[str] | None = None) -> None:
     selection = selected_levels(args.levels_from)
     if args.exact_alphas and not args.alphas:
         parser.error("--exact-alphas needs --alphas")
-    alphas = tuple(sorted(args.alphas)) if args.exact_alphas else None
-    alphas = alphas or alpha_choice(args.mode, selection, args.alphas)
-    b = args.allowance
-    if args.allowance_from is not None:
-        found = json.loads(args.allowance_from.read_text())["bias_allowance"]["allowance"]
-        b = None if found is None else found["value"]
-    settings = sim.RunSettings(
-        stream=STREAMS[args.mode],
-        alphas=alphas,
-        allowance=b,
-        base_seed=args.seed,
-        workers=args.workers,
-        chunk=args.chunk,
-        spread_replicates=args.spread_replicates,
-        spread_blocks=args.spread_blocks,
-        designs=tuple(args.looks) if args.looks else tuple(d.name for d in sim.LOOK_DESIGNS),
-        intervals=tuple(dict.fromkeys(args.intervals)),
-        resamples=args.bootstrap,
-        rules=tuple(dict.fromkeys(args.rules)),
-        floors=tuple(args.floors) if args.floors else sim.SE_FLOORS,
-        prescreen=args.mode == "decided-gate",
-    )
+    settings = run_settings(args, selection)
     # Recorded at launch: the source of a long run is the one it started with.
     versions = {
         "python": platform.python_version(),
@@ -215,6 +247,50 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Wrote {out}")
 
 
+def run_settings(
+    args: argparse.Namespace, selection: dict[tuple[str, str, float], float | None]
+) -> sim.RunSettings:
+    """The run's settings from the parsed arguments. The decided modes default to the decided
+    design (see the module docstring); every other mode to t, the standard rule, every look
+    design and SE floor, and α = 0.05 with the selected α's."""
+    decided = args.mode in DECIDED_MODES
+    alphas = tuple(sorted(args.alphas)) if args.exact_alphas else None
+    alphas = alphas or alpha_choice(args.mode, selection, args.alphas)
+    b = args.allowance
+    if args.allowance_from is not None:
+        found = json.loads(args.allowance_from.read_text())["bias_allowance"]["allowance"]
+        b = None if found is None else found["value"]
+    elif b is None and args.mode in ALLOWANCE_MODES:
+        b = sim.DECIDED_ALLOWANCE
+    if args.looks:
+        designs = tuple(args.looks)
+    else:
+        designs = (sim.DECIDED_DESIGN,) if decided else tuple(d.name for d in sim.LOOK_DESIGNS)
+    intervals = args.intervals or (["bootstrap_t"] if decided else ["t"])
+    rules = args.rules or (["standard", sim.DECIDED_RULE] if decided else ["standard"])
+    if args.floors:
+        floors = tuple(args.floors)
+    else:
+        floors = (sim.DECIDED_SE_FLOOR,) if decided else sim.SE_FLOORS
+    chunk = args.chunk or (GATE_CHUNK if args.mode == "decided-gate" else CHUNK)
+    return sim.RunSettings(
+        stream=STREAMS[args.mode],
+        alphas=alphas,
+        allowance=b,
+        base_seed=args.seed,
+        workers=args.workers,
+        chunk=chunk,
+        spread_replicates=args.spread_replicates,
+        spread_blocks=args.spread_blocks,
+        designs=designs,
+        intervals=tuple(dict.fromkeys(intervals)),
+        resamples=args.bootstrap,
+        rules=tuple(dict.fromkeys(rules)),
+        floors=floors,
+        prescreen=args.mode == "decided-gate",
+    )
+
+
 def select(
     scenarios: list[sim.Scenario],
     designs: list[str] | None,
@@ -242,10 +318,12 @@ def selected_levels(path: Path | None) -> dict[tuple[str, str, float], float | N
 def alpha_choice(
     mode: str, selection: dict[tuple[str, str, float], float | None], extra: list[float] | None
 ) -> tuple[float, ...]:
-    """calibrate: the whole α grid; otherwise α = 0.05, the selected α's and any extra ones."""
+    """calibrate: the whole α grid; otherwise α = 0.05 (the decided modes: the decided α), the
+    selected α's and any extra ones."""
     if mode == "calibrate":
         return sim.ALPHAS
-    alphas = {sim.PLANNING_ALPHA, *(extra or [])}
+    base = sim.DECIDED_ALPHA if mode in DECIDED_MODES else sim.PLANNING_ALPHA
+    alphas = {base, *(extra or [])}
     alphas |= {alpha for alpha in selection.values() if alpha is not None}
     return tuple(sorted(alphas))
 

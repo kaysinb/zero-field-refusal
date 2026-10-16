@@ -9,7 +9,11 @@
 defaults:
   - experiments/study2_stage_a
   - optimizer/adam_frozen          # β₁ 0.9 with bias correction, ε 1e-8, no weight decay,
-                                   # 50 preconditioner batches at the run's batch size
+                                   # 50 preconditioner batches at the run's batch size; the
+                                   # optimizer.betas [0.9, 0.999] merged in from Stage A's AdamW
+                                   # stays, as in Stage A's FA grids and the FA-25 runs, but
+                                   # frozen Adam reads only beta1 (optim.build_optimizer): its
+                                   # second moment is v₀, never updated
   - control/soft_targets
   - schedule/short
 

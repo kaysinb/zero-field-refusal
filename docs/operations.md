@@ -316,8 +316,8 @@ again. Compare the new samples' and distributions' sha256 with the archived mani
 comparison next to the run (on 2026-10-14 both were byte-identical, see
 `runs/runpod/evidence/soft-targets-regeneration-20261014.json` in the bucket). After the check,
 delete the distributions and put the archived manifest back, so that `DATA_DIR` matches its
-inventories again. For study 2's short regime the prerequisites' driver does all of this
-([`--once`](#study-2-short-regime-amendment-3)).
+inventories again. For study 2's short regime the prerequisites' driver did all of this once, on
+2026-10-16 ([its record](#study-2-short-regime-amendment-3)); it is not run again.
 
 **Deadlines between campaigns.** A Pod's deadline changes only through its environment
 (`ZFR_DEADLINE_EPOCH`, with `update-pod`), which restarts the container: the running run stops and
@@ -410,46 +410,86 @@ validation read K, numerics and utility only; only the looks read judge labels.
     grids) estimated v₀ from two preconditioner streams;
   - a run the state machine did not prescribe.
 
-**Prerequisites on a Pod.** First restore `DATA_DIR` with `pod_setup.sh` from the inventories of:
+**Prerequisites on a Pod.** First restore `DATA_DIR` with `pod_setup.sh` from the inventories
+under `runs/archive/`, named per campaign kind as for Stage A. New runs of an archived seed must
+read exactly the streams that its earlier runs read.
 
-- the prompt sets;
-- the teacher streams of the seeds already run, with their chunks (Stage A's for 2000–2002);
-- the monitor-v2 stream;
-- the preconditioner streams;
-- the protocol-2 path-field record.
+- **Every kind** (discovery rounds, controls, pre-warmed, validation, confirmation):
+  - `inventory-2026-10-11.tsv`: the stage-0 prompt sets and K's reference streams `kl_harmful`
+    and `kl_benign` (without them every run stops at the evaluator's setup);
+  - `inventory-2026-10-14-study2-prompts.tsv`: study 2's prompt sets;
+  - `inventory-2026-10-14-study2-a-phase0.tsv`: the protocol-2 path-field record;
+  - `inventory-2026-10-15-study2-monitor-v2.tsv`: the monitor-v2 stream;
+  - `inventory-2026-10-14-study2-a-preconditioner-s2000.tsv`, `…-s2001.tsv` and `…-s2002.tsv`:
+    v₀'s preconditioner streams;
+  - the latest training-stream inventory of each discovery seed:
+    `inventory-2026-10-16-study2-a-stream-s2000-final.tsv`,
+    `inventory-2026-10-15-study2-a-stream-s2001-search-s2001-2.tsv` and
+    `inventory-2026-10-16-study2-a-stream-s2002-final.tsv`;
+  - once archived, the inventories of the validation and confirmation seeds' streams.
+- **`controls`** also needs the stage-0 record under protocol version 3,
+  `inventory-2026-10-16-study2-stage0-v3-record.tsv`
+  (`checks/Qwen--Qwen2.5-1.5B-Instruct/path-field-057628165bd1.json`); without it
+  `prechecks.require_path_check` stops every FA control.
+- **Confirmation blocks 1–10** also need the curvature panel,
+  `inventory-2026-10-16-study2-curvature-panel.tsv`; without it the Rayleigh measurement stops
+  the run.
+- **Every Pod after the prep of 2026-10-16 restores both of these** as well, whatever it runs:
+  `pod_setup.sh` checks every file in `DATA_DIR` against the inventories it is given, and the
+  panel must never be generated twice.
 
-New runs of an archived seed must read exactly the streams that its earlier runs read. Then write
-and run the prep driver, from the reviewed commit:
+```bash
+A=runs/archive
+bash scripts/pod_setup.sh $A/inventory-2026-10-11.tsv $A/inventory-2026-10-14-study2-prompts.tsv \
+  $A/inventory-2026-10-14-study2-a-phase0.tsv $A/inventory-2026-10-15-study2-monitor-v2.tsv \
+  $A/inventory-2026-10-14-study2-a-preconditioner-s200{0,1,2}.tsv \
+  $A/inventory-2026-10-16-study2-a-stream-s2000-final.tsv \
+  $A/inventory-2026-10-15-study2-a-stream-s2001-search-s2001-2.tsv \
+  $A/inventory-2026-10-16-study2-a-stream-s2002-final.tsv \
+  $A/inventory-2026-10-16-study2-stage0-v3-record.tsv \
+  $A/inventory-2026-10-16-study2-curvature-panel.tsv
+```
+
+The prep driver's header names the same inventories. Then write and run the driver, from the
+reviewed commit:
 
 ```bash
 python scripts/study2_short_campaigns.py prep --seeds 2000 2001 2002 --batch 5 --commit SHA \
-  --archived --once --stage0-run-id stage0-v3-qwen1.5b-l40s-YYYYMMDD-01 --out "$C/prep.sh"
+  --archived --out "$C/prep.sh"
 bash "$C/prep.sh"
 ```
 
-- **`--once`** goes on the first Pod only, with the stage-0 run's id, which has no default.
-  - The driver runs the stage-0 checks under protocol version 3 (before the first FA control)
-    and generates the curvature panel.
-  - Around the checks it follows [stage 0 under a new protocol](#study-2-stage-a):
-    1. Before the checks, `soft-targets-aside` moves the restored soft-target copy (located as
-       stage 0 locates it) to `/workspace/tmp/soft-targets-aside-YYYYMMDD/`. Stage 0 then
-       generates the stream again.
-    2. Once the run has passed, `soft-targets-restore` compares the new samples' and
-       distributions' sha256 with the archived manifest. It writes
-       `soft_targets_regeneration.json` and the regenerated manifest into the run's directory.
-    3. It then deletes the regenerated distributions, keeps the rest of the regenerated stream
-       under the dated directory, and puts the archived copy back.
-  - **A regeneration that differs from the archive stops the driver.**
-    - The comparison is written and the archived copy is put back.
-    - The whole regenerated stream, distributions included, is kept for inspection under the
-      dated directory and the run's id (`<run id>/…/seed-0-regenerated`).
-    - The step fails, and it fails again on every later run of the driver with that run id.
-    - Only the lead's decision on the comparison resolves the stop. Then run the driver again
-      with a new `--stage0-run-id`: the copy is set aside again, stage 0 regenerates the stream,
-      and the new regeneration is compared afresh.
-  - Each step is skipped once done: a copy already set aside stays there, and a kept run is
-    neither set aside again nor rerun.
-  - Archive both with their own inventories; later Pods restore them and leave out `--once`.
+**The prep under protocol version 3 is done** (`--once`, on 2026-10-16, on P0 `xyiz2auas609lu`,
+from `df001af`). **It must not be run again:** it would rerun stage 0, and a `DATA_DIR` without
+the panel's inventory would generate the curvature panel a second time, which the amendment
+forbids; conformance does not compare panel hashes across runs.
+
+- Stage-0 run `stage0-v3-qwen1.5b-l40s-20261016-01` failed on the soft-target distributions that
+  the retention policy had deleted. `stage0-v3-qwen1.5b-l40s-20261016-02` passed under protocol
+  version 3, after the restored copy had been set aside and the stream regenerated, as
+  [stage 0 under a new protocol](#study-2-stage-a) prescribes.
+- The regeneration was byte-identical to the archive
+  (`runs/runpod/evidence/soft-targets-regeneration-20261016.json`): samples sha256
+  `bef8f491e7f670f46fc965381cacefea896a37b831dc9b468fce067f9d74719b`, distributions sha256
+  `ffbd05a723dc2f67965d8f6cdfb10503fb1ebdd361953160cd984046e64f1775`. The regenerated
+  distributions were deleted and the archived copy put back.
+- The curvature panel: `teacher/Qwen--Qwen2.5-1.5B-Instruct/curvature_panel/9fff8e13183a`,
+  `samples.jsonl` sha256 `c273e468d07ee0bae947c1887a752c345450f7026a892f6e144d3d2d5bf504a7`,
+  `manifest.json` sha256 `6f4ca6e001aebef2f3ea0df314055b3fa514248bd02de9f5ab9c3e5fc17543a3`;
+  inventory `runs/archive/inventory-2026-10-16-study2-curvature-panel.tsv`.
+- Inventories: `runs/archive/inventory-2026-10-16-study2-stage0-v3.tsv` (the two stage-0 runs,
+  the drivers, their logs and the evidence) and
+  `runs/archive/inventory-2026-10-16-study2-stage0-v3-record.tsv` (the path-field record).
+
+What `--once` does, for the record: the driver runs the stage-0 checks under protocol version 3
+and generates the curvature panel. Around the checks, `soft-targets-aside` moves the restored
+soft-target copy to `/workspace/tmp/soft-targets-aside-YYYYMMDD/`, and once the run has passed
+`soft-targets-restore` compares the regenerated samples' and distributions' sha256 with the
+archived manifest (`soft_targets_regeneration.json` in the run's directory), deletes the
+regenerated distributions and puts the archived copy back. A regeneration that differs stops the
+driver, keeps the whole regenerated stream for inspection and needs the lead's decision and a new
+`--stage0-run-id`.
+
 - **`--archived`** is for seeds whose streams are archived. The driver generates nothing; it
   runs `study2_short_campaigns.py check-streams`, which:
   - locates each seed's training and preconditioner streams as every run does
@@ -460,9 +500,8 @@ bash "$C/prep.sh"
   the training stream to 25 × B responses and v₀'s preconditioner stream at B.
   - Archive them with their inventories before the runs read them.
   - Pass `--archived` for them on any later Pod.
-- **Running it again.** The driver stops at the first failure and can be run again: a completed
-  stage-0 run that passed under protocol version 3 and existing streams are kept. A stage-0 run
-  that did not complete, or completed without passing, stops the driver and needs a new id.
+- **Running it again.** The driver stops at the first failure and can be run again: existing
+  streams are kept.
 
 **w_max and the fixation record.** The simulation fixes its values in a JSON record
 (`analysis.study2_short.read_fixation`):
@@ -486,13 +525,14 @@ bash "$C/prep.sh"
   blocks the bootstrap-t collapses, to [mean, mean] at two. 0 disables the rule.
 
 Each value is required and none is defaulted, the bootstrap's values also under `t`. The
-secondary contrasts keep their t intervals at 98.75 %. An example record (the resamples, seed and
-bias allowance here are placeholders; the committed record fixes them):
+secondary contrasts keep their t intervals at 98.75 %. The committed record is
+`docs/study2-short-fixation.json` (a test ties it to the simulation's decided design):
 
 ```json
-{"w_max": 0.47, "levels": [0.992, 0.9631], "se_floor": 0.0, "bias_allowance": 0.01079,
- "interval": "bootstrap_t", "bootstrap_resamples": 2000, "bootstrap_seed": 12345,
- "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36, "direction_min_supported": 10}
+{"w_max": 0.47, "levels": [0.991983603686668, 0.9630570834481011], "se_floor": 0.0,
+ "bias_allowance": 0.010841, "interval": "bootstrap_t", "bootstrap_resamples": 100000,
+ "bootstrap_seed": 20261016, "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36,
+ "direction_min_supported": 10}
 ```
 
 Every campaign except `targeted` needs the record (`--fixation`), which is checked whole.
@@ -511,15 +551,25 @@ incomplete.
 
 ```bash
 R="runs/study2_stage_a runs/study2_controls runs/study2_short runs/study2_short_fa_controls"
-python scripts/study2_short_campaigns.py targeted --runs $R --theta0 THETA0_RUN \
-  --fixation FIXATION --out "$C/targeted.yaml"
+THETA0=runs/study2_stage_a/20261014T192927Z-theta0-s2000-abb703a1-a1  # θ₀'s run (summary.json)
+F=docs/study2-short-fixation.json
+python scripts/study2_short_campaigns.py targeted --runs $R --theta0 $THETA0 --fixation $F \
+  --out "$C/targeted.yaml"
 python scripts/launch.py "$C/targeted.yaml"
-python scripts/study2_short_campaigns.py validation --runs $R --theta0 THETA0_RUN \
-  --fixation FIXATION --runs-root runs --out "$C/validation.yaml"
+python scripts/study2_short_campaigns.py validation --runs $R --theta0 $THETA0 --fixation $F \
+  --runs-root runs --out "$C/validation.yaml"
 ```
 
-- **Splitting.** `--seeds` and `--cells` only split a campaign over Pods; a seed's streams stay
-  on one Pod at a time.
+- **Splitting.** `--seeds` (discovery and validation) and `--cells` only split a campaign over
+  Pods; a confirmation campaign takes no `--seeds`, and each of its cells spans every seed of its
+  range.
+  - A discovery seed's training stream may still grow with its runs, so it stays on one Pod at
+    a time.
+  - Once the prep has archived a fresh seed's streams (25 × B training responses and v₀'s
+    preconditioner stream), its runs read them without extending them. As for amendment 2's
+    controls, several Pods may then hold copies, so a validation or confirmation campaign may be
+    split by cell. A confirmation may instead be split by issuing ranges (`--blocks`) to
+    different Pods.
 - **Recovery rounds.** Cell names never recur across campaigns, so each cell keeps its own
   recovery round.
 - **Given-up runs.** A validation or confirmation run is "given up" when the launcher's journal
@@ -527,8 +577,26 @@ python scripts/study2_short_campaigns.py validation --runs $R --theta0 THETA0_RU
   its block, so the stage does not wait for it forever.
 
 **The confirmation loop.** The looks fall at 36 and 60 supported blocks, and the cap is 80 started
-blocks. Blocks run in their preassigned order, block k on seed 2999 + k. Repeat these steps until
-a look stops:
+blocks. Blocks run in their preassigned order, block k on seed 2999 + k.
+
+**Before the first confirmatory run**, write and commit the versions record that amendment 3
+requires, from a clean checkout of the commit the confirmation runs from:
+
+```bash
+python scripts/study2_short_summary.py versions --judge wildguard --fixation $F
+```
+
+It writes `docs/study2-short-versions.json`, a JSON object written once (the script refuses an
+existing file and a dirty checkout), which is committed before the first confirmation campaign:
+
+- `code.commit`: the full commit hash of the checkout;
+- `model`: `name` and `revision` of `experiments/study2_short`'s model (the Hugging Face commit);
+- `judge`: the judge config (`judge/wildguard`) and the identity every label carries:
+  `backend`, `prompt_version`, `judge_model`, `judge_revision`, `rubric_version`;
+- `fixation`: the fixation record's path and sha256;
+- `what` and `written_at` (UTC).
+
+Then repeat these steps until a look stops:
 
 1. **Write** `confirmation --blocks FIRST LAST [--after-look K] --runs-root runs`, then launch
    it. The script enforces these rules:
@@ -542,14 +610,14 @@ a look stops:
 3. **Read the support counts** in the summary: `first_block_without_runs`, `supported_in_order`
    and `possibly_supported`.
 4. **Label** the new runs: `scripts/label_runs.py --judge wildguard RUN_DIRS`.
-5. **Run the summary** with `--judge wildguard --fixation FIXATION`.
+5. **Run the summary** with `--judge wildguard --fixation $F`.
 6. **Go on** only if the look did not stop (`stopped` false). Pass `--after-look K` for the look
    just read; without it the script refuses any block once look K is due.
 
 **The summary** prints the stage's status and, with `--judge`, the looks:
 
 ```bash
-python scripts/study2_short_summary.py --runs $R --theta0 THETA0_RUN --fixation FIXATION \
+python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F \
   --runs-root runs [--judge wildguard] [--out status.json]
 ```
 
@@ -562,6 +630,10 @@ python scripts/study2_short_summary.py --runs $R --theta0 THETA0_RUN --fixation 
   - the interval, resamples and seed used; each bootstrap look also gives its stream's seed and
     the resamples dropped for a zero SE;
   - the looks with their finite-cohort bounds;
+  - beside each look, the bias allowance b, the interval widened by b and the pointwise readings
+    about Δ(K\*) (equivalence inside ±(5 pp − b), direction excluding [−b, b], under the look's
+    equivalence and direction minima, as the simulation's `pointwise_readings`); decisions never
+    use them;
   - the same with every missing label counted as harmful;
   - the missing labels per arm;
   - the secondary contrasts at the stopping look;
