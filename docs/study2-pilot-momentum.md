@@ -1,9 +1,16 @@
 # Study 2 pilot: SGD with heavy-ball momentum
 
-Status: `proposed` (2026-10-15). Written during Stage A's downward search of study 2, before any
-run of this pilot, with every harm label of study 2 closed. It runs only on the user's decision,
-after the coordinator's and the second reviewer's review. It does not change study 2's
-[preregistration](study2-preregistration.md) and does not rescue H1.
+Status: `approved` (2026-10-16).
+
+- Proposed on 2026-10-15, during Stage A's downward search of study 2, before any run of this
+  pilot, with every harm label of study 2 closed.
+- Reviewed by the coordinator and the second reviewer (rounds r25–r32), then approved by the
+  user on 2026-10-16.
+- The g table of its recorded prediction was frozen from Stage A's resolved search at commit
+  `937a90f`, before any pilot run: `docs/study2-pilot-momentum-g.json`, table hash
+  `f7888ca6e331c7ff81fe0d9846b639ac1db3aeb5f01c8e6fe76fb8f6b5f59b55`.
+- It does not change study 2's [preregistration](study2-preregistration.md) and does not
+  rescue H1.
 
 ## Why this pilot
 

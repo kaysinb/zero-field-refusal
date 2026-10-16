@@ -1,0 +1,218 @@
+{
+ "command": [
+  "scripts/pilot_momentum_prediction.py",
+  "--stage-a",
+  "runs/study2_stage_a",
+  "runs/study2_controls",
+  "--theta0",
+  "runs/study2_stage_a/20261014T192927Z-theta0-s2000-abb703a1-a1",
+  "--out",
+  "docs/study2-pilot-momentum-g.json"
+ ],
+ "code": {
+  "commit": "937a90ffe04f4f77b1969cfb1814d0faad10dd8f",
+  "dirty": false
+ },
+ "runs": [
+  "20261015T082833Z-sgd_long-b20-0.002-s2002-2e64b4fd-a1",
+  "20261015T092725Z-sgd_long-b5-0.0005-s2002-053ebe6d-a1",
+  "20261015T094122Z-sgd_long-b20-0.002-s2001-68d32f62-a1",
+  "20261015T110048Z-sgd_long-b5-0.0005-s2001-076fd309-a1",
+  "20261015T113110Z-sgd_long-b20-0.002-s2000-6eabd3d7-a1",
+  "20261015T122735Z-sgd_long-b5-0.0005-s2000-32113e4e-a1",
+  "20261015T160852Z-sgd_long-b20-0.001-s2000-d54812b4-a1",
+  "20261015T164154Z-sgd_long-b20-0.001-s2001-b81802f3-a1",
+  "20261015T171535Z-sgd_long-b20-0.001-s2002-290ca5ca-a1"
+ ],
+ "bin_from": 0.01,
+ "bin_ratio": 1.25,
+ "min_runs": 2,
+ "bins": [
+  {
+   "x": 0.013975424859373687,
+   "g": 475.41368159446114,
+   "runs": 3
+  },
+  {
+   "x": 0.02729575167846423,
+   "g": 808.5842049481365,
+   "runs": 6
+  },
+  {
+   "x": 0.03411968959808029,
+   "g": 1087.7811515087535,
+   "runs": 3
+  },
+  {
+   "x": 0.05331201499700045,
+   "g": 1054.7493023973195,
+   "runs": 9
+  },
+  {
+   "x": 0.06664001874625057,
+   "g": 1008.386824478776,
+   "runs": 3
+  },
+  {
+   "x": 0.0833000234328132,
+   "g": 1193.3934393479199,
+   "runs": 6
+  },
+  {
+   "x": 0.10412502929101651,
+   "g": 1261.3982665055964,
+   "runs": 9
+  },
+  {
+   "x": 0.13015628661377063,
+   "g": 1363.2102625191806,
+   "runs": 6
+  },
+  {
+   "x": 0.1626953582672133,
+   "g": 1588.8328928905144,
+   "runs": 9
+  },
+  {
+   "x": 0.2033691978340166,
+   "g": 1582.6580120470185,
+   "runs": 9
+  },
+  {
+   "x": 0.2542114972925208,
+   "g": 1616.6641423279166,
+   "runs": 9
+  },
+  {
+   "x": 0.31776437161565096,
+   "g": 1680.852070304816,
+   "runs": 9
+  },
+  {
+   "x": 0.3972054645195637,
+   "g": 1813.5354267506696,
+   "runs": 9
+  },
+  {
+   "x": 0.4965068306494546,
+   "g": 1824.4604002432661,
+   "runs": 9
+  },
+  {
+   "x": 0.6206335383118183,
+   "g": 1901.0515673105158,
+   "runs": 9
+  },
+  {
+   "x": 0.7757919228897728,
+   "g": 1983.4446158682135,
+   "runs": 9
+  },
+  {
+   "x": 0.9697399036122161,
+   "g": 2105.0764231897188,
+   "runs": 9
+  },
+  {
+   "x": 1.21217487951527,
+   "g": 2128.3541476235546,
+   "runs": 7
+  },
+  {
+   "x": 1.5152185993940877,
+   "g": 2183.3752348768094,
+   "runs": 5
+  },
+  {
+   "x": 1.8940232492426097,
+   "g": 2379.9761363634075,
+   "runs": 3
+  },
+  {
+   "x": 2.367529061553262,
+   "g": 2338.1359712128606,
+   "runs": 3
+  },
+  {
+   "x": 2.9594113269415776,
+   "g": 2411.2018931485386,
+   "runs": 2
+  }
+ ],
+ "excluded_nonfinite": [],
+ "source": [
+  {
+   "run_id": "20261015T082833Z-sgd_long-b20-0.002-s2002-2e64b4fd-a1",
+   "files": {
+    "config.yaml": "18682db8cb5c5ce1b7756b445373cef8ebb9863ce058f787fa5ca57a7abeee62",
+    "diagnostics.jsonl": "b8d14b55da6c671601a2f5ad8b2a0607e6ad769486d479aa577745168ad7147d",
+    "terminal.json": "0d843127bdd5868006602c16b7cc71a27c1ed143ac188fd73d0753c28b0595aa"
+   }
+  },
+  {
+   "run_id": "20261015T092725Z-sgd_long-b5-0.0005-s2002-053ebe6d-a1",
+   "files": {
+    "config.yaml": "f04c7ebc73738c833f04d9563a7301a51d88b9bc091e6fc209ae5a3b772769ce",
+    "diagnostics.jsonl": "f031664d834bda301c13e8819841712e4846a09f581eceec48c991b407eb82d1",
+    "terminal.json": "d40cdc1d1c7581f30811f5860e84e9aa7e831f77335ad50ff5a696db4db9a5cc"
+   }
+  },
+  {
+   "run_id": "20261015T094122Z-sgd_long-b20-0.002-s2001-68d32f62-a1",
+   "files": {
+    "config.yaml": "af31d7f0b435cac8e0160097b8df09bf4e0427b950e78564c7f0494165d0a7b8",
+    "diagnostics.jsonl": "c2fdcecfd3d5703abb4cbfe61050e3a8905a6859e8bf697fcf5c1d2a810f46d6",
+    "terminal.json": "33d05b10a7bc4addc357fc043688a98f830053634e249023d2c43769fe1ca987"
+   }
+  },
+  {
+   "run_id": "20261015T110048Z-sgd_long-b5-0.0005-s2001-076fd309-a1",
+   "files": {
+    "config.yaml": "b41d6b4697f836684daaabca0f0314f5a922c50475322f437cd93da68922aae5",
+    "diagnostics.jsonl": "030323c307d207fdf25145b83cf2623f54cc29e7cf84470ed4e3f5d97972a8f8",
+    "terminal.json": "a80761747e708fce13159cc02e049edbb5999224492b806845f5d849286363d1"
+   }
+  },
+  {
+   "run_id": "20261015T113110Z-sgd_long-b20-0.002-s2000-6eabd3d7-a1",
+   "files": {
+    "config.yaml": "37a6c85922320f5258aa34ec21acac2872436a20014db9c99441cff5d0dbc3d1",
+    "diagnostics.jsonl": "7cc53937cdc1b37643d11f37247096e66b058aea658351e2cc9d92ca7d1d5a10",
+    "terminal.json": "d8db55338ebdcbe720047ebeacadb0f2ade6abaaa8bcdfce9bc9a11f198eefd8"
+   }
+  },
+  {
+   "run_id": "20261015T122735Z-sgd_long-b5-0.0005-s2000-32113e4e-a1",
+   "files": {
+    "config.yaml": "ad3cbbca84ee19039e061973d5186afefe0ad4866c5c14688fcb57cb63a7fce0",
+    "diagnostics.jsonl": "149753a8d02beb214e35cf690a44a225d8ec15b4d16aade6e49b33aad412d327",
+    "terminal.json": "3d32cbd925a68136c32683868a0ff77957c0560e26d440cea216592646ad1a96"
+   }
+  },
+  {
+   "run_id": "20261015T160852Z-sgd_long-b20-0.001-s2000-d54812b4-a1",
+   "files": {
+    "config.yaml": "03431e099e6085b0febfc216c6334d501721a362535b705e1a0f18e49c18ae94",
+    "diagnostics.jsonl": "5f2d4c86c18b3c7196b946efdd3251467dc07903affb7b2c4cc1b375f5fa25ec",
+    "terminal.json": "02f4ae47ef73778f815e8d84ab8b0ad2b40ca0c420519512b1f02b9ad2d89a7e"
+   }
+  },
+  {
+   "run_id": "20261015T164154Z-sgd_long-b20-0.001-s2001-b81802f3-a1",
+   "files": {
+    "config.yaml": "751fa6e0adac7df701382a82ed8c1a1d067479dd6c65d1d86859e1849aa91810",
+    "diagnostics.jsonl": "9404e559c3b89903d61961aed2eba4d643d51e6fb872ced18d507c9df6c1ebf6",
+    "terminal.json": "b6506a85a0e52a1285216157f4d8eff56c6ade145f7cdd6ca0887a7166a50b77"
+   }
+  },
+  {
+   "run_id": "20261015T171535Z-sgd_long-b20-0.001-s2002-290ca5ca-a1",
+   "files": {
+    "config.yaml": "8c0c454df910c7e019000c2549572970ce5ddfb527f620f0c56347c206afbaa5",
+    "diagnostics.jsonl": "7f2a802e9e37ef7919dc387af83536037a1658397a55f8bec94492ba8f643077",
+    "terminal.json": "b701c7b246614e3f17288e31f3c5d73f90014a945204380a11fb3a417c3f2788"
+   }
+  }
+ ],
+ "table_sha256": "f7888ca6e331c7ff81fe0d9846b639ac1db3aeb5f01c8e6fe76fb8f6b5f59b55"
+}
