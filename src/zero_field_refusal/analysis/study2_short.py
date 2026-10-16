@@ -33,10 +33,12 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   of the validation blocks.
 - ``progress``: the stage as a whole for scripts/study2_short_campaigns.py and
   scripts/study2_short_summary.py: the records checked against the campaigns (``conformance``,
-  one stream per seed), the selection's state machine, then the validation blocks and their
-  verdict, then the confirmation blocks with their support (K only); ``look_blocks`` turns those
-  into the blocks of ``looks`` once their labels exist. ``read_fixation`` reads the values the
-  simulation fixes.
+  one training stream per seed, one v₀ per seed and batch: ``preconditioner_pairing``), the
+  selection's state machine, then the validation blocks and their verdict, then the
+  confirmation blocks with their support (K only), the runs the launcher gave up on
+  (``exhausted_runs``) counted as technical failures; ``confirmation_guard`` decides whether a
+  range of blocks may start; ``look_blocks`` turns the blocks into those of ``looks`` once their
+  labels exist. ``read_fixation`` reads the values the simulation fixes.
 
 Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassigned order:
 ``{"block": id, "complete": bool, "supported": bool, "delta": float | None, "h": {arm: float}}``,
@@ -129,17 +131,32 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   (Stage A's own discovery runs read version 1), and measures the Rayleigh quotient exactly on
   the first 10 confirmation blocks (seeds 3000-3009); an FA control has the role full_control,
   protocol version 3 and the schedule of experiments/study2_short_fa_controls but its bound;
-  every run of a seed read that seed's one stream. Any departure, and any problem the selection
-  reports (a run it did not prescribe included), leaves the stage ``incomplete``: no campaign is
-  written on records that are not whole. Once the rates are frozen, every later run of the three
-  arms must be at the chosen batch and a frozen rate of an arm still in the stage.
+  every run of a seed read that seed's one training stream, and every run that estimates v₀
+  (FA-25, pre-warmed AdamW-25, the FA controls, Stage A's FA grids) read one preconditioner
+  stream per seed and batch, the same path with the same sha256 in its ``meta.json``. Any
+  departure, and any problem the selection reports (a run it did not prescribe included), leaves
+  the stage ``incomplete``: no campaign is written on records that are not whole. Once the rates
+  are frozen, every later run of the three arms must be at the chosen batch and a frozen rate of
+  an arm still in the stage.
 - *Validation and confirmation*: the validation blocks wait until every run of every arm at its
-  frozen rates on seeds 2100-2111 has its terminal record; a run that is not there yet is not a
-  failure. Then the verdict decides: ``confirmation`` when it passes, ``validation_failed``
-  otherwise. A confirmation block is complete once every run of every arm at its frozen rates
-  is there; for the looks also once the bracket runs of every arm supported in it are labeled
-  (``look_blocks``: a run without a label file is not labeled yet; a label file that does not
-  read is an error).
+  frozen rates on seeds 2100-2111 has its terminal record or was given up by the launcher; a run
+  that is not there yet is not a failure. Then the verdict decides: ``confirmation`` when it
+  passes, ``validation_failed`` otherwise. A confirmation block is complete once every run of
+  every arm at its frozen rates is there or given up; for the looks also once the bracket runs
+  of every arm supported in it are labeled (``look_blocks``: a run without a label file is not
+  labeled yet; a label file that does not read is an error).
+- *Given up* (``exhausted_runs``, coordinator, 2026-10-16): a validation or confirmation run
+  whose cell had its recovery round and whose 2 × MAX_ATTEMPTS attempts in the launcher's
+  journal all ended technical (or never ended) is a technical failure of its arm in its block,
+  as a frozen rate without a run (``block_support``). A run with a terminal record is never
+  given up, whatever the journal says. Discovery runs are not covered: the selection waits for
+  them.
+- *Confirmation blocks* (``confirmation_guard``, the review of Task 5): ranges start at the first
+  block without a run and never overlap one another (re-issuing an issued range completes it);
+  the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80). A new range
+  holds at most n_k − p blocks, p counting every block with runs except the complete unsupported
+  ones, so that no block is started past a look that could stop; once look k is due, no block
+  starts until the operator, having read it in the summary, passes ``after_look`` = k.
 - *The fixation record* (``read_fixation``): a JSON object with ``w_max``, ``levels`` (the
   looks' two-sided confidence levels), ``se_floor`` and ``bias_allowance``, the last two in the
   units of Δ (fractions, 1 pp = 0.01); each is required and none is defaulted.
@@ -151,9 +168,10 @@ import functools
 import itertools
 import json
 import math
+import re
 import statistics
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -174,6 +192,7 @@ from .stage_a import (
     UPPER,
     Trajectory,
     _finite,
+    arm_of,
     contamination,
     in_bounds,
     index,
@@ -194,7 +213,7 @@ EXTENSION = 1.21  # the outward extension of a repair round
 PRECONDITIONER_BATCHES = 50  # v₀'s teacher batches at the selected B, per seed
 VALIDATION_SEEDS = tuple(range(2100, 2112))
 CONFIRMATION_SEEDS = tuple(range(3000, 3080))
-LOOK_SIZES = (24, 50)  # supported blocks at looks 1 and 2
+LOOK_SIZES = (36, 60)  # supported blocks at looks 1 and 2 (decided 2026-10-16, coordinator)
 CAP = 80  # started blocks
 EQUIVALENCE = 0.05
 NESTED = 0.08
@@ -202,6 +221,7 @@ SECONDARY_LEVEL = 0.9875  # per contrast per look: Bonferroni over 2 contrasts x
 UTILITY_LEVEL = 0.95  # simultaneous, per metric
 VALIDATION_MINIMUM = 10  # blocks jointly supported for AdamW-25 and FA-25
 ARMS = (*PRIMARY_ARMS, PREWARMED)
+V0_ARMS = (FA, PREWARMED, FA_CONTROL_ARM)  # the runs that estimate v₀ from the preconditioner
 # The stage's configs (scripts/study2_short_campaigns.py builds every run on them).
 REGULAR = "experiments/study2_short"
 RAYLEIGH = "experiments/study2_short_rayleigh"  # REGULAR measuring the Rayleigh quotient
@@ -1188,14 +1208,97 @@ def read_fixation(path: str | Path) -> dict[str, float | list[float]]:
 
 
 def run_facts(run_dir: str | Path) -> dict[str, Any]:
-    """What a run's config records beyond its ``Trajectory``: its role (``study2_short.role``,
-    else Stage A's ``stage_a.role``) and whether it measures the Rayleigh quotient."""
-    cfg = OmegaConf.load(Path(run_dir) / "config.yaml")
+    """What a run's records hold beyond its ``Trajectory``: from ``config.yaml`` its role
+    (``study2_short.role``, else Stage A's ``stage_a.role``) and whether it measures the Rayleigh
+    quotient; from ``meta.json`` the preconditioner stream its v₀ was estimated from
+    (``inputs.streams.preconditioner``: path and sha256), None for a run without one."""
+    run_dir = Path(run_dir)
+    cfg = OmegaConf.load(run_dir / "config.yaml")
     role = OmegaConf.select(cfg, "study2_short.role", default=None)
     if role is None:
         role = OmegaConf.select(cfg, "stage_a.role", default=None)
     rayleigh = OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False)
-    return {"role": role, "rayleigh": bool(rayleigh)}
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+    stream = ((meta.get("inputs") or {}).get("streams") or {}).get("preconditioner")
+    preconditioner = None
+    if isinstance(stream, dict):
+        preconditioner = {"path": stream.get("path"), "sha256": stream.get("sha256")}
+    return {"role": role, "rayleigh": bool(rayleigh), "preconditioner": preconditioner}
+
+
+def preconditioner_pairing(
+    runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """One v₀ per seed and batch: every run that estimates it (FA-25, pre-warmed AdamW-25 and the
+    FA controls, Stage A's FA grids included) read one preconditioner stream, the same path with
+    the same sha256. A run of those arms that records none is a problem too."""
+    problems = []
+    streams: dict[tuple[int, int], dict[tuple[str, str], list[str]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for run in runs:
+        if run.arm not in V0_ARMS:
+            continue
+        stream = (facts.get(run.run_id) or {}).get("preconditioner") or {}
+        if not (stream.get("path") and stream.get("sha256")):
+            problems.append(f"{run.run_id} records no preconditioner stream (v₀)")
+            continue
+        streams[(run.seed, run.batch_size)][(stream["path"], stream["sha256"])].append(run.run_id)
+    for (seed, batch), found in sorted(streams.items()):
+        if len(found) > 1:
+            read = "; ".join(f"{path} sha256 {digest[:12]} by {len(ids)} runs ({ids[0]}, …)"
+                             for (path, digest), ids in sorted(found.items()))  # fmt: skip
+            problems.append(f"seed {seed}, B={batch}: v₀ from {len(found)} preconditioner "
+                            f"streams: {read}")  # fmt: skip
+    return problems
+
+
+def exhausted_runs(
+    records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
+) -> dict[tuple, str]:
+    """The regular runs that the launcher's journal (``launch.launch_records``) shows exhausted
+    after their recovery round: their cell's recovery round logged, at least 2 × MAX_ATTEMPTS
+    attempts, none of which ended other than technical (an attempt with no end record counts as
+    technical). By key (arm, batch, rate, seed), from the logged command composed as the launcher
+    composed it, with the run's label."""
+    from ..launch import MAX_ATTEMPTS  # the launcher imports this package's stage_a
+
+    recovered = {(r.get("experiment"), r.get("cell")) for r in records
+                 if r.get("event") == "recovery"}  # fmt: skip
+    ends = {r.get("run_id"): r.get("outcome") for r in records if r.get("event") == "end"}
+    attempts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for record in records:
+        if record.get("event") == "start" and record.get("experiment") == experiment:
+            attempts[record["config_hash"]].append(record)
+    out = {}
+    for group in attempts.values():
+        if any(ends.get(r["run_id"], "technical") != "technical" for r in group):
+            continue
+        label = group[-1]["run"]
+        if (experiment, label.rsplit("/s", 1)[0]) not in recovered:
+            continue
+        if len(group) < 2 * MAX_ATTEMPTS:
+            continue
+        command = group[-1]["command"]
+        cfg = load_config(command[1], command[2:])
+        key = (arm_of(cfg), int(cfg.train.batch_size), rate(float(cfg.optimizer.lr)),
+               int(cfg.seed))  # fmt: skip
+        out[key] = label
+    return out
+
+
+_ISSUED = re.compile(r"-blocks-(\d+)-(\d+)(?:-rayleigh)?/s\d+$")
+
+
+def issued_ranges(
+    records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
+) -> set[tuple[int, int]]:
+    """The confirmation block ranges whose campaigns the launcher started (their cells' names
+    end in ``-blocks-FIRST-LAST``)."""
+    return {(int(m[1]), int(m[2])) for r in records
+            if r.get("event") == "start" and r.get("experiment") == experiment
+            and (m := _ISSUED.search(str(r.get("run", ""))))}  # fmt: skip
 
 
 def _unbound(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -1272,16 +1375,21 @@ def progress(
     w_max: float,
     *,
     facts: Mapping[str, Mapping[str, Any]],
+    exhausted: Mapping[tuple, str] | None = None,
     seconds_per_chunk: float | None = None,
 ) -> dict[str, Any]:
     """The stage as it stands, on K, numerics and utility only. ``trajectories``: every run so
     far, Stage A's included (its grids are the first discovery runs, its version-1 discovery set
-    fixes the stream time); ``facts``: ``run_facts`` by run id. ``next["campaign"]`` is the
-    selection's (``targeted``, ``repair``, ``controls``, ``prewarmed``, ``infeasible``), then
-    ``validation`` (with the runs to make), ``validation_failed`` or ``confirmation`` (with the
-    frozen rates); ``incomplete`` whenever the records are not whole (``problems``)."""
+    fixes the stream time); ``facts``: ``run_facts`` by run id; ``exhausted``: the validation and
+    confirmation runs the launcher gave up on (``exhausted_runs``), each a technical failure of
+    its arm in its block. ``next["campaign"]`` is the selection's (``targeted``, ``repair``,
+    ``controls``, ``prewarmed``, ``infeasible``), then ``validation`` (with the runs to make),
+    ``validation_failed`` or ``confirmation`` (with the frozen rates); ``incomplete`` whenever the
+    records are not whole (``problems``)."""
+    exhausted = exhausted or {}
     stage = [run for run in trajectories if run.arm in (*ARMS, FA_CONTROL_ARM)]
     problems = conformance(stage, facts) + stream_pairing(stage)
+    problems += preconditioner_pairing(stage, facts)
     out: dict[str, Any] = {"w_max": w_max}
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
@@ -1305,12 +1413,16 @@ def progress(
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
-    missing = [key for key in _keys(rates, batch, VALIDATION_SEEDS) if key not in found]
-    out["confirmation"] = _confirmation(found, rates, batch, kstar, w_max)
+    gone = {key: label for key, label in exhausted.items() if key in expected and key not in found}
+    out["exhausted"] = {label: list(key) for key, label in sorted(gone.items())}
+    missing = [key for key in _keys(rates, batch, VALIDATION_SEEDS)
+               if key not in found and key not in gone]  # fmt: skip
+    out["confirmation"] = _confirmation(found, gone, rates, batch, kstar, w_max)
     if missing:
         out["next"] = {"campaign": "validation", **frozen, "runs": _wanted(missing)}
         return out
-    validation = [found[key] for key in _keys(rates, batch, VALIDATION_SEEDS)]
+    # An exhausted run is absent: validation_verdict counts its rate as a technical failure.
+    validation = [found[key] for key in _keys(rates, batch, VALIDATION_SEEDS) if key in found]
     verdict = validation_verdict(validation, {arm: rates[arm] for arm in PRIMARY_ARMS},
                                  step["fa_controls"], theta0, kstar, w_max)  # fmt: skip
     out["validation"] = verdict
@@ -1339,25 +1451,89 @@ def _utility_means(runs: Sequence[Trajectory], theta0: Mapping[str, float]) -> d
             for lr, losses in sorted(by_rate.items())}  # fmt: skip
 
 
-def _confirmation(found, rates, batch, kstar, w_max) -> list[dict[str, Any]]:
-    """Every confirmation block in its preassigned order: its runs, complete once each arm has
-    a run at each of its frozen rates, then each arm's support."""
+def _confirmation(found, gone, rates, batch, kstar, w_max) -> list[dict[str, Any]]:
+    """Every confirmation block in its preassigned order: its runs (an exhausted run counts as
+    one), complete once each arm has a run at each of its frozen rates, then each arm's support,
+    in which an exhausted run is a missing rate: a technical failure."""
     blocks = []
     for number, seed in enumerate(CONFIRMATION_SEEDS, 1):
         keys = _keys(rates, batch, (seed,))
         present = [key for key in keys if key in found]
-        entry: dict[str, Any] = {"block": number, "seed": seed, "runs": len(present),
-                                 "expected": len(keys), "complete": len(present) == len(keys),
-                                 "supported": False, "supports": {}}  # fmt: skip
+        lost = [gone[key] for key in keys if key in gone]
+        runs = len(present) + len(lost)
+        entry: dict[str, Any] = {"block": number, "seed": seed, "runs": runs,
+                                 "expected": len(keys), "complete": runs == len(keys),
+                                 "exhausted": lost, "supported": False,
+                                 "supports": {}}  # fmt: skip
         if entry["complete"]:
             entry["supports"] = {
-                arm: block_support([found[key] for key in keys if key[0] == arm], kstar, w_max,
-                                   rates=lrs)
+                arm: block_support([found[key] for key in present if key[0] == arm], kstar,
+                                   w_max, rates=lrs)
                 for arm, lrs in rates.items()
             }  # fmt: skip
             entry["supported"] = all(entry["supports"][arm]["supported"] for arm in PRIMARY_ARMS)
         blocks.append(entry)
     return blocks
+
+
+def confirmation_guard(
+    blocks: Sequence[Mapping[str, Any]],
+    first: int,
+    last: int,
+    *,
+    after_look: int = 0,
+    issued: Collection[tuple[int, int]] = (),
+    n: Sequence[int] = LOOK_SIZES,
+    cap: int = CAP,
+) -> dict[str, Any]:
+    """Whether the confirmation blocks ``first`` to ``last`` may be started now, on K and the
+    launcher's journal only (``progress``'s confirmation blocks; ``issued``: ``issued_ranges``).
+    The blocks run in their preassigned order: a new range starts at the first block without a
+    run (no gaps) and touches no block with runs (no overlaps), unless it re-issues exactly a
+    range issued before, to complete it. A new range must also end before the next look:
+    s = the supported blocks complete in order, p = every block with runs that may still be
+    supported (all but the complete unsupported ones), look k = ``after_look`` + 1; it holds at
+    most n_k − p blocks, and none once s ≥ n_k, until the summary has read look k and the operator
+    passes ``after_look`` = k because it did not stop. Returns the problems (none: allowed) and
+    those counts."""
+    started = {b["block"] for b in blocks if b["runs"]}
+    first_open = next((b["block"] for b in blocks if not b["runs"]), cap + 1)
+    in_order = list(itertools.takewhile(lambda b: b["complete"], blocks))
+    supported = sum(1 for b in in_order if b["supported"])
+    possible = sum(1 for b in blocks if b["runs"] and not (b["complete"] and not b["supported"]))
+    out: dict[str, Any] = {"first_open": first_open, "supported_in_order": supported,
+                           "possibly_supported": possible, "problems": []}  # fmt: skip
+    problems = out["problems"]
+    if not 1 <= first <= last <= cap:
+        problems.append(f"blocks {first}-{last}: 1 <= FIRST <= LAST <= {cap}")
+        return out
+    overlap = sorted(started & set(range(first, last + 1)))
+    if overlap:
+        if (first, last) not in set(issued):
+            problems.append(f"blocks {overlap[0]}-{overlap[-1]} have runs already, and "
+                            f"{first}-{last} is not a range issued before: ranges never "
+                            "overlap")  # fmt: skip
+        return out  # a range issued before is completed whatever the looks say now
+    if first != first_open:
+        problems.append(f"the next range starts at block {first_open}, the first without a run, "
+                        f"not {first}: the blocks run in their preassigned order")  # fmt: skip
+    if after_look and supported < n[after_look - 1]:
+        problems.append(f"--after-look {after_look}: look {after_look} needs {n[after_look - 1]} "
+                        f"supported blocks complete in order, there are {supported}")  # fmt: skip
+    k = after_look + 1
+    if k > len(n):
+        problems.append(f"look {len(n)} is the last and always stops: no block after it")
+        return out
+    out.update(next_look=k, look_size=n[k - 1], room=n[k - 1] - possible)
+    if supported >= n[k - 1]:
+        problems.append(f"look {k} is due ({supported} supported blocks complete in order, it "
+                        f"needs {n[k - 1]}): run the summary with --judge and --fixation, and "
+                        f"pass --after-look {k} only if look {k} did not stop")  # fmt: skip
+    elif last - first + 1 > out["room"]:
+        problems.append(f"{last - first + 1} blocks asked for, room for {max(out['room'], 0)} "
+                        f"before look {k}: {possible} blocks with runs may be supported, look "
+                        f"{k} needs {n[k - 1]}")  # fmt: skip
+    return out
 
 
 def look_blocks(

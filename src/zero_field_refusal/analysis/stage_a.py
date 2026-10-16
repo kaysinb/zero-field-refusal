@@ -120,8 +120,8 @@ class Trajectory:
     run_dir: Path
     run_id: str
     arm: str  # sgd_long, adamw_long, adamw_25, frozen_adam_25, soft_control; the pilot's
-    # sgd_momentum_long and soft_control_momentum, and soft_control_frozen_adam (the frozen-Adam
-    # soft-target control)
+    # sgd_momentum_long and soft_control_momentum; amendment 3's prewarmed_adamw_25 and
+    # soft_control_frozen_adam (the frozen-Adam soft-target control)
     batch_size: int
     lr: float
     seed: int
@@ -138,7 +138,8 @@ class Trajectory:
     stream: dict[str, Any]  # the training stream prefix it read: path, count, chunk hashes
     harmful_prompts: dict[str, Any]  # what every evaluation answered: set, count, ids hash
     status: str
-    role: str | None  # stage_a.role: discovery, screen or full_control
+    role: str | None  # stage_a.role: discovery, screen or full_control; None for amendment 3's
+    # regular runs, whose study2_short.role analysis.study2_short.run_facts reads
     protocol_version: int
     spec: dict[str, Any]  # the schedule it ran under (``schedule_spec``)
     evaluate_at: tuple[int, ...] = field(default=())

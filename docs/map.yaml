@@ -213,6 +213,24 @@ topics:
   - scripts/stage_a_barrier.py
   - configs/experiments/study2_pilot_momentum*.yaml
   - tests/test_pilot_momentum.py
+- id: study2_short
+  title: Study 2's short regime (amendment 3) — prerequisites, campaigns, confirmation loop and looks
+  source: docs/operations.md#study-2-short-regime-amendment-3
+  review:
+  - docs/study2-preregistration.md#numerical-acceptance
+  - docs/study2-preregistration.md#primary-analysis
+  - docs/operations.md#study-2-stage-a
+  - docs/operations.md#launching-runs
+  - configs/experiments/study2_short.yaml
+  - configs/experiments/study2_short_rayleigh.yaml
+  - configs/experiments/study2_short_fa_controls.yaml
+  - configs/eval/rayleigh.yaml
+  watch:
+  - src/zero_field_refusal/analysis/study2_short.py
+  - src/zero_field_refusal/analysis/study2_labels.py
+  - scripts/study2_short_*.py
+  - configs/experiments/study2_short*.yaml
+  - tests/test_study2_short*.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage
@@ -320,3 +338,20 @@ config_examples:
 - config: experiments/smoke
   overrides:
   - train.max_response_tokens=48
+- config: experiments/study2_short
+  overrides:
+  - optimizer=adam_frozen
+  - train.batch_size=5
+  - optimizer.lr=1.21e-05
+  - study2_short.role=discovery
+- config: experiments/study2_short_rayleigh
+  overrides:
+  - optimizer=adamw_prewarmed
+  - train.batch_size=5
+  - optimizer.lr=1.32e-05
+  - study2_short.role=confirmation
+- config: experiments/study2_short_fa_controls
+  overrides:
+  - train.batch_size=5
+  - optimizer.lr=1.21e-05
+  - schedule.instability.contamination_k=0.06324555320336758

@@ -12,11 +12,13 @@ from pathlib import Path
 import pytest
 from scipy import stats
 
+from zero_field_refusal.analysis import study2_short
 from zero_field_refusal.analysis.stage_a import ADAMW_LONG_GRID, SHORT_GRID, Trajectory
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
     FA,
     FA_CONTROL_ARM,
+    LOOK_SIZES,
     PREWARMED,
     block_difference,
     block_support,
@@ -26,7 +28,6 @@ from zero_field_refusal.analysis.study2_short import (
     finite_bounds,
     harm,
     interpolate,
-    looks,
     repair_rates,
     secondary_contrasts,
     select_rates,
@@ -645,6 +646,18 @@ def test_the_interpolation_with_hand_numbers() -> None:
 # ------------------------------------------------------------------ the looks
 
 LEVELS = (0.995, 0.952)  # two-sided confidence levels of looks 1 and 2
+
+
+def looks(blocks, levels, n=(24, 50), **kw):
+    """The looks' mechanics, tested at sizes (24, 50); the decided sizes are (36, 60)."""
+    return study2_short.looks(blocks, levels, n, **kw)
+
+
+def test_the_looks_fall_at_the_decided_sizes() -> None:
+    assert LOOK_SIZES == (36, 60) and study2_short.CAP == 80
+    deltas = [0.3 * (-1) ** i for i in range(80)]  # inconclusive at look 1
+    found = study2_short.looks(blocks_of(deltas), LEVELS, se_floor=0.0, bias_allowance=0.0)
+    assert [(look["look"], look["supported"]) for look in found["looks"]] == [(1, 36), (2, 60)]
 
 
 def blocks_of(deltas, unsupported=(), incomplete=()) -> list[dict]:

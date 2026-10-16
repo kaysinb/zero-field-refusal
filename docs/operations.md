@@ -380,6 +380,147 @@ never `runs/` or another parent (and, under amendment 2, `runs/study2_controls_a
 over mixed directories comes out incomplete and blocks sealing. The pilot's own summary reads
 both: `scripts/pilot_momentum_summary.py --runs PILOT_DIRS --stage-a STAGE_A_DIRS`.
 
+## Study 2, short regime (amendment 3)
+
+The redirected stage compares AdamW-25 with FA-25 (frozen Adam), each run exactly 25 steps at three
+targeted rates per arm, with pre-warmed AdamW-25 as the secondary arm; its rules are amendment 3
+of [the study-2 preregistration](study2-preregistration.md). The selection, the support and the
+validation read K, numerics and utility only; only the looks read judge labels.
+
+- **Configs.** `experiments/study2_short` holds the regular runs of the three arms
+  (`optimizer=adam_frozen`, `optimizer=adamw_prewarmed`). It equals Stage A's 25-step runs
+  (`experiments/study2_stage_a schedule=short`) except for the experiment name and the role,
+  `study2_short.role`: discovery (seeds 2000–2002), validation (2100–2111) or confirmation
+  (3000–3079). So the new discovery runs pool with Stage A's grids.
+  - `experiments/study2_short_rayleigh` is the same with `eval/rayleigh`, under the same
+    experiment name, for confirmation blocks 1–10.
+  - `experiments/study2_short_fa_controls` holds the FA soft-target controls under protocol
+    version 3.
+  - The campaigns set the arm, batch, rate, role, seed and the controls' bound; nothing is set
+    by hand.
+- **Records.** Every script reads every run so far: `runs/study2_stage_a`,
+  `runs/study2_controls`, `runs/study2_short` and `runs/study2_short_fa_controls`, together with
+  the launch journals under `RUNS_DIR/launch/` (`--runs-root RUNS_DIR`). Download each Pod's
+  run directories and launch logs before writing the next campaign.
+- **Refusals.** Anything not whole leaves the stage `incomplete`, and every campaign is refused:
+  - a run off its campaign: role, model, protocol, schedule, monitor, or the Rayleigh setting;
+  - a seed whose runs read two training streams;
+  - a seed and batch whose runs (FA-25, pre-warmed AdamW-25, the FA controls, Stage A's FA
+    grids) estimated v₀ from two preconditioner streams;
+  - a run the state machine did not prescribe.
+
+**Prerequisites on a Pod.** First restore `DATA_DIR` with `pod_setup.sh` from the inventories of:
+
+- the prompt sets;
+- the teacher streams of the seeds already run, with their chunks (Stage A's for 2000–2002);
+- the monitor-v2 stream;
+- the preconditioner streams;
+- the protocol-2 path-field record.
+
+New runs of an archived seed must read exactly the streams that its earlier runs read. Then write
+and run the prep driver, from the reviewed commit:
+
+```bash
+python scripts/study2_short_campaigns.py prep --seeds 2000 2001 2002 --batch 5 --commit SHA \
+  --archived --once --stage0-run-id stage0-v3-qwen1.5b-l40s-YYYYMMDD-01 --out "$C/prep.sh"
+bash "$C/prep.sh"
+```
+
+- **`--once`** goes on the first Pod only, with the stage-0 run's id, which has no default.
+  - The driver runs the stage-0 checks under protocol version 3 (before the first FA control)
+    and generates the curvature panel.
+  - Archive both with their own inventories; later Pods restore them and leave out `--once`.
+- **`--archived`** is for seeds whose streams are archived. The driver generates nothing; it
+  runs `study2_short_campaigns.py check-streams`, which:
+  - locates each seed's training and preconditioner streams as every run does
+    (`runtime.locate_stream`);
+  - prints their sha256;
+  - stops on a missing one.
+- **Fresh seeds** (validation, confirmation) leave out `--archived`. The driver then generates
+  the training stream to 25 × B responses and v₀'s preconditioner stream at B.
+  - Archive them with their inventories before the runs read them.
+  - Pass `--archived` for them on any later Pod.
+- **Running it again.** The driver stops at the first failure and can be run again: a completed
+  stage-0 run and existing streams are kept. A stage-0 run that did not complete needs a new id.
+
+**w_max and the fixation record.** The simulation fixes its values in a JSON record:
+
+- `w_max` (decided: 0.35);
+- `levels`: the two looks' two-sided confidence levels;
+- `se_floor` and `bias_allowance`, in units of Δ (1 pp = 0.01).
+
+Each value is required and none is defaulted. Every campaign except `targeted` needs the record
+(`--fixation`). `targeted` may take `--w-max` instead, because its rates do not depend on w_max.
+A `--w-max` given beside a record must equal it. Each campaign's header records w_max, its source
+and the code revision. Fix w_max before any repair round: rounds made under another w_max leave
+the stage incomplete.
+
+**Campaigns.** Each kind is written only when the stage's state machine names it, in this order:
+
+1. `targeted` and `repair` (discovery rounds, primary arms first);
+2. `controls`;
+3. `prewarmed`, then the pre-warmed arm's own rounds;
+4. `validation`;
+5. `confirmation`.
+
+```bash
+R="runs/study2_stage_a runs/study2_controls runs/study2_short runs/study2_short_fa_controls"
+python scripts/study2_short_campaigns.py targeted --runs $R --theta0 THETA0_RUN \
+  --fixation FIXATION --out "$C/targeted.yaml"
+python scripts/launch.py "$C/targeted.yaml"
+python scripts/study2_short_campaigns.py validation --runs $R --theta0 THETA0_RUN \
+  --fixation FIXATION --runs-root runs --out "$C/validation.yaml"
+```
+
+- **Splitting.** `--seeds` and `--cells` only split a campaign over Pods; a seed's streams stay
+  on one Pod at a time.
+- **Recovery rounds.** Cell names never recur across campaigns, so each cell keeps its own
+  recovery round.
+- **Given-up runs.** A validation or confirmation run is "given up" when the launcher's journal
+  shows it exhausted after its recovery round. It counts as a technical failure of its arm in
+  its block, so the stage does not wait for it forever.
+
+**The confirmation loop.** The looks fall at 36 and 60 supported blocks, and the cap is 80 started
+blocks. Blocks run in their preassigned order, block k on seed 2999 + k. Repeat these steps until
+a look stops:
+
+1. **Write** `confirmation --blocks FIRST LAST [--after-look K] --runs-root runs`, then launch
+   it. The script enforces these rules:
+   - FIRST is the first block without a run;
+   - a new range overlaps no block that has runs (re-issuing exactly an issued range completes
+     it);
+   - the range holds at most n_k − p blocks, where p is the number of blocks with runs that may
+     still be supported.
+2. **Let the blocks complete.** On blocks 1–10 the endpoints also measure R. Read the first run's
+   `rayleigh.json`, as for any campaign that measures R.
+3. **Read the support counts** in the summary: `first_block_without_runs`, `supported_in_order`
+   and `possibly_supported`.
+4. **Label** the new runs: `scripts/label_runs.py --judge wildguard RUN_DIRS`.
+5. **Run the summary** with `--judge wildguard --fixation FIXATION`.
+6. **Go on** only if the look did not stop (`stopped` false). Pass `--after-look K` for the look
+   just read; without it the script refuses any block once look K is due.
+
+**The summary** prints the stage's status and, with `--judge`, the looks:
+
+```bash
+python scripts/study2_short_summary.py --runs $R --theta0 THETA0_RUN --fixation FIXATION \
+  --runs-root runs [--judge wildguard] [--out status.json]
+```
+
+- **Status:**
+  - the candidates (B, U) with their costs, and every attempt and round;
+  - the frozen rates and the FA controls;
+  - the validation verdict;
+  - the confirmation counts, and the runs the launcher gave up.
+- **With `--judge`** (the looks need the fixation record, and are refused without it):
+  - the looks with their finite-cohort bounds;
+  - the same with every missing label counted as harmful;
+  - the missing labels per arm;
+  - the secondary contrasts at the stopping look;
+  - the utility family.
+- **Output.** Only counts, K, rates and intervals are printed: never a prompt, a response or a
+  judge output.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

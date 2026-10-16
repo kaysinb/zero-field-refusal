@@ -2,13 +2,16 @@
 confirmation blocks are labeled, its looks.
 
     python scripts/study2_short_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR \
-        (--w-max W | --fixation FILE) [--judge NAME] [--out OUT.json]
+        (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--judge NAME] [--out OUT.json]
 
 --runs holds every run so far, Stage A's included (as for scripts/study2_short_campaigns.py),
---theta0 the θ₀ run, the utility baseline. The status is the stage's state machine
-(analysis.study2_short.progress), on K, numerics and utility only: the candidates (B, U) with
-their costs, every attempt and round, the frozen rates and FA controls, the validation verdict,
-the support of the confirmation blocks, the problems of the records, and the next campaign.
+--theta0 the θ₀ run, the utility baseline, and --runs-root RUNS_DIR, whose launch/ journal tells
+which runs the launcher gave up on (technical failures of their blocks; without it such a block
+waits). The status is the stage's state machine (analysis.study2_short.progress), on K, numerics
+and utility only: the candidates (B, U) with their costs, every attempt and round, the frozen
+rates and FA controls, the validation verdict, the support of the confirmation blocks with the
+counts of the confirmation loop (the first block without runs, the supported blocks complete in
+order, those that may still be supported), the problems of the records, and the next campaign.
 
 --judge NAME (configs/judge/NAME.yaml) adds the looks, on the label counts of the bracket runs
 of every complete confirmation block (analysis.study2_labels.read_endpoint_labels; a run without
@@ -37,7 +40,10 @@ from zero_field_refusal.analysis.study2_short import (
     ARMS,
     CAP,
     FA_CONTROL_ARM,
+    LOOK_SIZES,
     PRIMARY_ARMS,
+    confirmation_guard,
+    exhausted_runs,
     look_blocks,
     looks,
     progress,
@@ -49,6 +55,7 @@ from zero_field_refusal.analysis.study2_short import (
 from zero_field_refusal.config import load_config
 from zero_field_refusal.data import load_prompt_set
 from zero_field_refusal.judge import judge_identity
+from zero_field_refusal.launch import launch_records
 from zero_field_refusal.tracking import git_state
 
 
@@ -100,13 +107,21 @@ def status(state: dict[str, Any]) -> dict[str, Any]:
         lost = {arm: [b["supports"][arm] for b in complete if arm in b["supports"]
                       and not b["supports"][arm]["supported"]] for arm in ARMS}  # fmt: skip
         causes = {arm: dict(Counter(s["cause"] for s in found)) for arm, found in lost.items()}
+        # The confirmation loop's counts (K only): where the next range starts, and how many
+        # supported blocks the next look may already have.
+        counts = confirmation_guard(blocks, 1, 1)
         out["confirmation"] = {
             "blocks_with_runs": sum(1 for b in blocks if b["runs"]),
+            "first_block_without_runs": counts["first_open"],
             "complete": len(complete),
             "complete_in_order": next((b["block"] - 1 for b in blocks if not b["complete"]),
                                       len(blocks)),
             "supported": sum(1 for b in complete if b["supported"]),
+            "supported_in_order": counts["supported_in_order"],
+            "possibly_supported": counts["possibly_supported"],
+            "look_sizes": list(LOOK_SIZES),
             "unsupported_by_cause": causes,
+            "given_up_by_the_launcher": state.get("exhausted", {}),
         }  # fmt: skip
     return out
 
@@ -204,6 +219,7 @@ def main() -> None:
     parser.add_argument("--w-max", type=float, help="the realized-width bound w_max")
     parser.add_argument("--fixation", type=Path, help="the simulation's fixation record (JSON)")
     parser.add_argument("--judge", help="a judge config in configs/judge/: adds the looks")
+    parser.add_argument("--runs-root", type=Path, help="RUNS_DIR, whose launch/ journal is read")
     parser.add_argument("--out", type=Path, help="the whole record (JSON); must not exist")
     args = parser.parse_args()
     if args.out is not None and args.out.exists():
@@ -228,8 +244,10 @@ def main() -> None:
         parser.error("; ".join(theta0_problems(theta0)))
     runs = load_trajectories(*args.runs)
     facts = {r.run_id: run_facts(r.run_dir) for r in runs if r.arm in (*ARMS, FA_CONTROL_ARM)}
-    state = progress(runs, theta0, w_max, facts=facts)
+    records = launch_records(args.runs_root) if args.runs_root is not None else []
+    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted_runs(records))
     shown = status(state)
+    shown["launch_journal"] = str(args.runs_root / "launch") if args.runs_root else None
     record: dict[str, Any] = {"command": sys.argv, "code": git_state(),
                               "theta0": {"run": args.theta0.name, **theta0}, "w_max": w_max,
                               "progress": state}  # fmt: skip
