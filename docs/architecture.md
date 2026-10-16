@@ -146,7 +146,8 @@ Implemented:
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
-| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`) |
+| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`); the conditions of a study-2 run are its recorded evaluations `step-<N>` |
+| `analysis.study2_labels` | per-evaluation judge-label counts of a study-2 run, with the bounds for missing labels; refuses stale, foreign-judge or conflicting labels |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 | `analysis` | h(K) fits, K\* and the decisive cells over eligible cells (`analysis.eligibility`), Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`, with `analysis.outputs`); the Gate 1 report from the stage-1 runs (`analysis.gate1`) |
