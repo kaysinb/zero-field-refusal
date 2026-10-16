@@ -73,36 +73,50 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``training_seconds`` (a rate nearest two targets counts twice: a block runs three per arm),
   plus the training stream, seconds per chunk × ⌈25 B / chunk size⌉, plus v₀'s preconditioner
   stream, seconds per chunk × 50 B / chunk size, counted once per block since FA, pre-warmed and
-  their controls share v₀ (coordinator, 2026-10-16). The seconds per chunk are
-  ``stage_a._seconds_per_chunk`` over Stage A's version-1 discovery runs among the inputs
-  (amendment 1's fixed reference, so later runs cannot reorder the candidates), unless given.
-  Equal costs go to the smaller batch; an unknown cost (an arm without a usable grid rate) comes
-  after a known one.
+  their controls share v₀ (coordinator, 2026-10-16). The seconds per chunk are amendment 1's
+  reference, ``stage_a.stream_time_reference`` over the inputs (the whole version-1 discovery
+  set, checked, with its provenance; anything missing leaves the selection ``incomplete``), so
+  later runs cannot reorder the candidates, unless given. Equal costs go to the smaller batch;
+  an unknown cost (an arm without a usable grid rate) comes after a known one.
 - *FA controls*: a control belongs to a candidate by its batch, rate, seed 2000 and configured
-  contamination bound (0.01 × K* of that U); it is accepted when it ran its 25 steps and every
-  scoring read (``stage_a.contamination(..., every_read=True)``) is finite and at most the bound.
-  The one re-solve drops the rejected rates and selects again from the same runs, with no new
-  round; a rejected control of the re-solved triple fails the candidate.
+  contamination bound (0.01 × K* of that U). It must be the prescribed one, as amendment 2's
+  ``stage_a.numerical_acceptance`` requires: the model and stream prefix of its regular twin
+  (the FA run of seed 2000 at its batch and rate), planned for 25 steps, evaluated at least at
+  the twin's steps and step 25; otherwise the selection is ``incomplete``, whatever it showed.
+  It is accepted when it ran its 25 steps and every scoring read
+  (``stage_a.contamination(..., every_read=True)``) is finite and at most the bound. The one
+  re-solve drops the rejected rates and selects again from the same runs, with no new round; a
+  rejected control of the re-solved triple fails the candidate. A rate whose control was
+  rejected at the same batch under a larger bound (an earlier U) is excluded up front, with its
+  reason, since its read above that bound, or non-finite, is above this one too; an accepted
+  control is not reused under a smaller bound.
 - *Pre-warmed AdamW-25*: its first runs are at the union of the frozen AdamW and FA rates, its
   rounds follow the primary rule, it has no controls, and it is dropped when still infeasible.
 - *Support*: the nearest bracketing pair is the largest K25 below K* and the smallest at or above
   it. An unsupported arm's cause is ``technical`` whenever one of its endpoints failed (the
-  failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``.
+  failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``. Beside
+  it, ``k_cause`` gives what the surviving endpoints alone show and ``failure_kinds`` whether
+  the failures were instability or technical, so that no count is lost. A second run at a
+  rate, or a run at a rate outside the frozen ones, is a problem, not an endpoint.
 - *Estimator*: the worst case counts missing labels as harmful in both arms.
-- *Looks*: blocks are read in order up to the first incomplete one. When the cap is reached
-  without a stop, the terminal look happens there with α₂ (also when look 1 fell on the cap and
-  did not stop). With fewer than two supported blocks a look has no interval and is
+- *Looks*: ``levels`` are the looks' two-sided confidence levels, like the module's other
+  levels; anything outside (0.5, 1), or a number of levels other than the number of looks, is
+  refused. Blocks are read in order up to the first incomplete one. When the cap is reached
+  without a stop, the terminal look happens there with the last level (also when look 1 fell on
+  the cap and did not stop). With fewer than two supported blocks a look has no interval and is
   inconclusive. Equivalence: the interval strictly inside ±5 pp; direction: 0 strictly outside
   it; ±8: strictly inside ±8 pp; inconclusive when none of the three holds.
 - *Secondary contrasts*: t intervals without the SE floor, over the first N blocks started at
   the stopping look that are supported in all three arms.
 - *Utility family*: blocks supported for the primary contrast; for each member the step-25
   losses of every completed run of that arm and rate among the given runs; one-sided t bounds at
-  1 − 0.05 / (2 × family size) per metric. A member with fewer than two completed runs has no
+  1 − 0.05 / (looks × family size) per metric: two looks in confirmation, one in validation, a
+  single reading (coordinator, 2026-10-16). A member with fewer than two completed runs has no
   bound and fails; an empty family does not pass.
 - *Validation*: each block's primary arm needs a run at every frozen rate (a missing one is a
   technical failure); the instability check covers every primary-arm validation run; the FA
-  controls pass when every frozen FA rate has an accepted verdict.
+  controls pass when every frozen FA rate has an accepted verdict. Ambiguous records (a second
+  run of an arm, rate and seed, a run at an unfrozen rate) give no verdict (``passes`` None).
 """
 
 from __future__ import annotations
@@ -121,17 +135,19 @@ from .stage_a import (
     CONTAMINATION_FRACTION,
     CONTROL_SEED,
     DISCOVERY_SEEDS,
+    FACTUAL_BOUND_PP,
     INSTABILITY,
     LOWER,
+    MMLU_BOUND_PP,
     SHORT_GRID,
     UPPER,
     Trajectory,
     _finite,
-    _seconds_per_chunk,
     contamination,
     in_bounds,
     index,
     rate,
+    stream_time_reference,
     utility_loss,
 )
 
@@ -150,7 +166,6 @@ EQUIVALENCE = 0.05
 NESTED = 0.08
 SECONDARY_LEVEL = 0.9875  # per contrast per look: Bonferroni over 2 contrasts x 2 looks
 UTILITY_LEVEL = 0.95  # simultaneous, per metric
-MMLU_BOUND_PP, FACTUAL_BOUND_PP = 5.0, 10.0
 VALIDATION_MINIMUM = 10  # blocks jointly supported for AdamW-25 and FA-25
 
 
@@ -470,13 +485,38 @@ def control_verdict(control: Trajectory, kstar: float) -> dict[str, Any]:
             "reasons": reasons}  # fmt: skip
 
 
+def control_conformance(control: Trajectory, twin: Trajectory | None) -> list[str]:
+    """How an FA control departs from the prescribed one (amendment 2, as
+    ``stage_a.numerical_acceptance`` checks it): the model and the stream prefix of its regular
+    twin (the FA run of seed 2000 at its batch and rate), planned for 25 steps and evaluated at
+    least at the twin's evaluation steps and step 25. A departure leaves no conclusion."""
+    name = control.run_id
+    if twin is None:
+        return [f"control {name}: no FA run of seed {CONTROL_SEED} at its batch and rate"]
+    problems = []
+    chunks, twin_chunks = control.stream.get("chunks", []), twin.stream.get("chunks", [])
+    common = min(len(chunks), len(twin_chunks))
+    if (control.model != twin.model or control.stream.get("path") != twin.stream.get("path")
+            or chunks[:common] != twin_chunks[:common]):  # fmt: skip
+        problems.append(f"control {name} is not on the model and stream of {twin.run_id}")
+    needed = {row["step"] for row in twin.evaluations} | {STEPS}
+    if control.planned_steps != STEPS or not needed <= set(control.evaluate_at):
+        problems.append(f"control {name} planned {control.planned_steps} steps evaluated at "
+                        f"{sorted(control.evaluate_at)}; it needs {STEPS} at "
+                        f"{sorted(needed)}")  # fmt: skip
+    return problems
+
+
+def _configured_bound(run: Trajectory) -> Any:
+    return (run.spec.get("instability") or {}).get("contamination_k")
+
+
 def _bound_key(bound: Any) -> float | None:
     return float(f"{float(bound):.6g}") if _finite(bound) else None
 
 
 def _control_key(run: Trajectory) -> tuple[int, float, float | None]:
-    bound = (run.spec.get("instability") or {}).get("contamination_k")
-    return (run.batch_size, rate(run.lr), _bound_key(bound))
+    return (run.batch_size, rate(run.lr), _bound_key(_configured_bound(run)))
 
 
 class _Replay:
@@ -528,6 +568,20 @@ class _Replay:
         else:
             record["new_rates"] = []
 
+    def rejected_controls(self, batch: int, bound: float | None) -> dict[float, str]:
+        """FA rates whose control, called for at this batch under a larger bound, was rejected
+        there, with the reason."""
+        out = {}
+        for key in sorted(self.called_controls, key=str):
+            control = self.controls.get(key)
+            if key[0] != batch or control is None or key[2] is None or not key[2] > bound:
+                continue
+            verdict = control_verdict(control, _configured_bound(control) / CONTAMINATION_FRACTION)
+            if not verdict["accepted"]:
+                why = "; ".join(verdict["reasons"])
+                out[key[1]] = f"control {control.run_id} rejected at bound {key[2]:g}: {why}"
+        return out
+
     def unexpected(self) -> list[str]:
         runs = [f"unexpected run {key}" for key in sorted(self.found)
                 if rate(key[2]) not in self.rates.get(key[:2], set())]  # fmt: skip
@@ -566,13 +620,13 @@ def selection(
             problems.append(f"two controls of {key}: {controls[key].run_id} and {run.run_id}")
         else:
             controls[key] = run
-    if seconds_per_chunk is None:
-        reference = [r for r in trajectories if r.role == "discovery" and r.monitor_version == 1]
-        seconds_per_chunk = _seconds_per_chunk(reference)
-        if seconds_per_chunk is None:
-            problems.append("no measured stream time among Stage A's version-1 discovery runs")
+    stream_time = None
+    if seconds_per_chunk is None:  # amendment 1's reference, with its provenance
+        stream_time, missing = stream_time_reference(trajectories)
+        problems += missing
+        seconds_per_chunk = stream_time["seconds_per_chunk"] if stream_time else None
     out: dict[str, Any] = {"w_max": w_max, "seconds_per_chunk": seconds_per_chunk,
-                           "rulings": RULINGS}  # fmt: skip
+                           "stream_time": stream_time, "rulings": RULINGS}  # fmt: skip
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
@@ -598,20 +652,26 @@ def selection(
     out["next"] = step or {"campaign": "infeasible"}
     out["rounds"] = {f"{arm}/B={batch}/U={upper:g}": kinds
                      for (arm, batch, upper), kinds in replay.rounds.items()}  # fmt: skip
-    out["problems"] = replay.unexpected()
+    out["problems"] = out["next"].get("problems", []) + replay.unexpected()
     return out
 
 
 def _primary(replay: _Replay, batch: int, upper: float) -> tuple[dict[str, Any], dict | None]:
     """One candidate's primary arms: rounds, then the FA controls. Returns the attempt and the
     pending campaign, if any."""
-    attempt: dict[str, Any] = {"batch": batch, "U": upper, "K_star": k_star(upper),
+    kstar, bound = k_star(upper), _bound_key(CONTAMINATION_FRACTION * k_star(upper))
+    # A rate whose FA control was rejected at this batch under a larger bound (an earlier U) is
+    # numerically unusable here too: its read above that bound, or non-finite, is above this one.
+    unusable = replay.rejected_controls(batch, bound)
+    attempt: dict[str, Any] = {"batch": batch, "U": upper, "K_star": kstar,
                                "arms": {arm: {"selections": [], "rounds": []}
                                         for arm in PRIMARY_ARMS},
-                               "controls": [], "outcome": None, "reasons": []}  # fmt: skip
+                               "fa_excluded": unusable, "controls": [], "outcome": None,
+                               "reasons": []}  # fmt: skip
+    excluded = {ADAMW: [], FA: sorted(unusable)}
 
-    def solve(arm: str, exclude: Sequence[float] = ()) -> dict[str, Any]:
-        selected = replay.solve(arm, batch, upper, exclude)
+    def solve(arm: str) -> dict[str, Any]:
+        selected = replay.solve(arm, batch, upper, excluded[arm])
         attempt["arms"][arm]["selections"].append(selected)
         return selected
 
@@ -639,8 +699,7 @@ def _primary(replay: _Replay, batch: int, upper: float) -> tuple[dict[str, Any],
     if infeasible:
         return fail(f"{infeasible} without a feasible triple after the rounds")
 
-    kstar, bound = k_star(upper), _bound_key(CONTAMINATION_FRACTION * k_star(upper))
-    excluded: list[float] = []
+    resolved = False
     while True:
         rates = selected[FA]["rates"]
         keys = {lr: (batch, lr, bound) for lr in rates}
@@ -651,15 +710,21 @@ def _primary(replay: _Replay, batch: int, upper: float) -> tuple[dict[str, Any],
             return attempt, {"campaign": "controls", "batch": batch, "U": upper, "runs": [
                 {"arm": FA_CONTROL_ARM, "batch": batch, "lr": lr, "seed": CONTROL_SEED,
                  "contamination_k": CONTAMINATION_FRACTION * kstar} for lr in absent]}  # fmt: skip
+        off = [p for lr, key in keys.items() for p in control_conformance(
+            replay.controls[key], replay.found.get((FA, batch, lr, CONTROL_SEED)))]  # fmt: skip
+        if off:  # not the prescribed control: no conclusion, whatever it showed
+            attempt["outcome"] = "incomplete"
+            return attempt, {"campaign": "incomplete", "problems": off}
         verdicts = {lr: control_verdict(replay.controls[key], kstar) for lr, key in keys.items()}
         attempt["controls"].append(verdicts)
         rejected = [lr for lr, v in verdicts.items() if not v["accepted"]]
         if not rejected:
             break
-        if excluded:
+        if resolved:
             return fail(f"FA controls rejected after the re-solve: {rejected}")
-        excluded = rejected
-        selected[FA] = solve(FA, excluded)
+        resolved = True
+        excluded[FA] = sorted({*excluded[FA], *rejected})
+        selected[FA] = solve(FA)
         if not selected[FA]["feasible"]:
             return fail(f"no feasible FA triple without the rejected rates {rejected}")
     attempt.update(outcome="decided", rates={arm: selected[arm]["rates"] for arm in PRIMARY_ARMS},
@@ -712,29 +777,36 @@ def block_support(
     """One arm in one block: supported when its non-failed endpoints bracket K* and the nearest
     bracketing pair's realized width ln K_hi − ln K_lo is at most w_max. Otherwise the cause:
     ``technical`` when an endpoint failed (by reason: an instability rule, another stop, no finite
-    K25, or a rate of ``rates`` without a run), else ``bracketing`` or ``width``."""
+    K25, or a rate of ``rates`` without a run), else ``bracketing`` or ``width``. Beside it,
+    ``k_cause`` is what the surviving endpoints alone show (``bracketing``, ``width`` or None)
+    and ``failure_kinds`` the kinds of the failures (instability, technical). A second run at a
+    rate, or a run at a rate outside ``rates``, is a problem and not used."""
     if len({(run.arm, run.seed) for run in runs}) > 1:
         raise ValueError("block_support takes one arm's runs in one block")
-    endpoints, failures = [], []
+    allowed = None if rates is None else {rate(lr) for lr in rates}
+    endpoints, failures, problems, used = [], [], [], set()
     for run in sorted(runs, key=lambda r: r.lr):
+        lr = rate(run.lr)
+        if lr in used or (allowed is not None and lr not in allowed):
+            what = "a second run at its rate" if lr in used else "a rate outside the frozen rates"
+            problems.append(f"{run.run_id}: {what}")
+            continue
+        used.add(lr)
         row, why = _endpoint(run)
         if row is None:
-            failures.append({"run": run.run_id, "rate": rate(run.lr), "reason": why,
+            failures.append({"run": run.run_id, "rate": lr, "reason": why,
                              "kind": _failure_kind(run)})  # fmt: skip
         else:
-            endpoints.append({"run": run.run_id, "rate": rate(run.lr), "K": row["K_benign"]})
-    present = {rate(run.lr) for run in runs}
-    failures += [{"run": None, "rate": rate(lr), "reason": "no run", "kind": "technical"}
-                 for lr in rates or () if rate(lr) not in present]  # fmt: skip
+            endpoints.append({"run": run.run_id, "rate": lr, "K": row["K_benign"]})
+    failures += [{"run": None, "rate": lr, "reason": "no run", "kind": "technical"}
+                 for lr in sorted(allowed or ()) if lr not in used]  # fmt: skip
     pair = _nearest_pair(endpoints, kstar)
-    if pair["width"] is not None and pair["width"] <= w_max:
-        cause = None
-    elif failures or not endpoints:
-        cause = "technical"
-    else:
-        cause = "bracketing" if pair["width"] is None else "width"
-    return {"supported": cause is None, "cause": cause, "bracket": pair,
-            "endpoints": endpoints, "failures": failures}  # fmt: skip
+    width = pair["width"]
+    k_cause = "bracketing" if width is None else ("width" if width > w_max else None)
+    cause = k_cause and ("technical" if failures or not endpoints else k_cause)
+    return {"supported": cause is None, "cause": cause, "k_cause": k_cause,
+            "failure_kinds": sorted({f["kind"] for f in failures}), "bracket": pair,
+            "endpoints": endpoints, "failures": failures, "problems": problems}  # fmt: skip
 
 
 def harm(row: Mapping[str, Any], *, missing_harmful: bool = False) -> float:
@@ -844,9 +916,13 @@ def looks(
     """The sequential looks over ``blocks`` in their preassigned order. Look k happens at the
     first started count where the supported count reaches n_k; when the cap of started blocks
     comes first, the terminal look happens there. Interval at look k: mean ± t_{n−1, 1−α_k/2} ×
-    max(sd, se_floor)/√n over the supported Δ (``levels`` = (α_1, α_2), two-sided). Readings:
-    equivalence, direction, within ±8, else inconclusive; look 1 stops on equivalence or
-    direction only. ``bias_allowance`` is reported beside every look."""
+    max(sd, se_floor)/√n over the supported Δ, where ``levels`` are the two-sided confidence
+    levels 1 − α_k of the looks, e.g. (0.9953, 0.9519), one per look. Readings: equivalence,
+    direction, within ±8, else inconclusive; look 1 stops on equivalence or direction only.
+    ``bias_allowance`` is reported beside every look."""
+    if len(levels) != len(n) or not all(0.5 < level < 1 for level in levels):
+        raise ValueError(f"looks: levels {tuple(levels)} must be {len(n)} confidence levels in "
+                         "(0.5, 1), e.g. (0.9953, 0.9519)")  # fmt: skip
     done, deltas, started, k = [], [], 0, 0
     stopped = False
     for block in blocks[:cap]:
@@ -879,11 +955,11 @@ def looks(
     return out
 
 
-def _look(number, alpha, deltas, started, se_floor, bias_allowance) -> dict[str, Any]:
-    interval = _t_interval(deltas, alpha, se_floor)
+def _look(number, level, deltas, started, se_floor, bias_allowance) -> dict[str, Any]:
+    interval = _t_interval(deltas, 1 - level, se_floor)
     return {
         "look": number,
-        "alpha": alpha,
+        "level": level,
         "started": started,
         "supported": len(deltas),
         **interval,
@@ -976,13 +1052,21 @@ def validation_verdict(
 ) -> dict[str, Any]:
     """The validation blocks' verdict, on numerics, K and utility only (harm is not an input):
     at least 10 blocks jointly supported for AdamW-25 and FA-25; no primary-arm run stopped by an
-    instability rule; every frozen FA rate's control accepted; the utility family passes."""
-    primary = [r for r in runs if r.arm in PRIMARY_ARMS and r.seed in seeds]
+    instability rule; every frozen FA rate's control accepted; the utility family passes, at a
+    single reading (Bonferroni over the family alone). Ambiguous records (a second run of an arm,
+    rate and seed, a run at a rate outside the frozen ones) leave no conclusion: ``passes`` None,
+    with the problems."""
+    found, problems = index(r for r in runs if r.arm in PRIMARY_ARMS and r.seed in seeds)
+    primary = list(found.values())
     supports = {
         seed: {arm: block_support([r for r in primary if r.arm == arm and r.seed == seed], kstar,
                                   w_max, rates=rates[arm]) for arm in PRIMARY_ARMS}
         for seed in seeds
     }  # fmt: skip
+    problems += [p for by_arm in supports.values() for s in by_arm.values() for p in s["problems"]]
+    if problems:
+        return {"passes": None, "reasons": ["incomplete records"], "problems": problems,
+                "supports": supports}  # fmt: skip
     joint = [s for s in seeds if all(supports[s][arm]["supported"] for arm in PRIMARY_ARMS)]
     reasons = []
     if len(joint) < VALIDATION_MINIMUM:
@@ -995,15 +1079,20 @@ def validation_verdict(
     rejected = [lr for lr in rates[FA] if not accepted.get(rate(lr), {}).get("accepted")]
     if rejected:
         reasons.append(f"FA controls not accepted at {rejected}")
-    family = utility_family(primary, supports, theta0)
+    family = utility_family(primary, supports, theta0, looks=1)
     if not family["passes"]:
         reasons.append("the utility family does not pass")
-    causes = {arm: dict(Counter(supports[s][arm]["cause"] for s in seeds
-                                if not supports[s][arm]["supported"]))
-              for arm in PRIMARY_ARMS}  # fmt: skip
-    return {"passes": not reasons, "reasons": reasons, "jointly_supported": joint,
-            "causes": causes, "supports": supports, "unstable": unstable,
-            "utility": family}  # fmt: skip
+    causes = {}
+    for arm in PRIMARY_ARMS:
+        lost = [supports[s][arm] for s in seeds if not supports[s][arm]["supported"]]
+        causes[arm] = {
+            "cause": dict(Counter(s["cause"] for s in lost)),
+            "k_cause": dict(Counter(str(s["k_cause"]) for s in lost)),  # None: K alone supports
+            "failure_kinds": dict(Counter(f["kind"] for s in lost for f in s["failures"])),
+        }
+    return {"passes": not reasons, "reasons": reasons, "problems": [],
+            "jointly_supported": joint, "causes": causes, "supports": supports,
+            "unstable": unstable, "utility": family}  # fmt: skip
 
 
 RULINGS = __doc__.split("**Rulings**")[1].strip() if __doc__ else ""

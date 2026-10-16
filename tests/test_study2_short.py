@@ -4,6 +4,7 @@ support, the estimator and the looks, on synthetic ``Trajectory`` objects and la
 The state machine is driven through its campaigns against an analytic world: K25 = c × (rate /
 1e-5)^1.5 × a seed factor, per arm and batch, utility losses growing with K."""
 
+import dataclasses
 import math
 import statistics
 from pathlib import Path
@@ -11,7 +12,7 @@ from pathlib import Path
 import pytest
 from scipy import stats
 
-from zero_field_refusal.analysis.stage_a import SHORT_GRID, Trajectory
+from zero_field_refusal.analysis.stage_a import ADAMW_LONG_GRID, SHORT_GRID, Trajectory
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
     FA,
@@ -20,8 +21,10 @@ from zero_field_refusal.analysis.study2_short import (
     block_difference,
     block_support,
     candidate_order,
+    control_conformance,
     control_verdict,
     finite_bounds,
+    harm,
     interpolate,
     looks,
     repair_rates,
@@ -177,13 +180,14 @@ def test_a_rate_is_usable_when_every_seed_finished_with_utility_in_bounds() -> N
 
 
 def test_targeted_rates_interpolate_log_log_and_round_to_three_digits() -> None:
-    records = {1e-5: rec({2000: 4.0}), 2e-5: rec({2000: 8.0}),
+    # K ∝ r^1.5 through (1e-5, 4): log–log gives r = 1e-5 × (K / 4)^(2/3); interpolating r
+    # linearly in K would give 1.14e-5, 1.32e-5 and 1.55e-5 instead.
+    records = {1e-5: rec({2000: 4.0}), 2e-5: rec({2000: 4.0 * 2**1.5}),
                3e-5: {**rec({2000: 20.0}), "usable": False}}  # fmt: skip
     found = targeted_rates(records, 8.0)["targets"]
-    # ln r is linear in ln K between (1e-5, 4) and (2e-5, 8): r = 1e-5 × K / 4.
-    assert [t["rate"] for t in found] == [1.25e-5, 1.58e-5, 2e-5]  # K* gives 1.5811e-5
+    assert [t["rate"] for t in found] == [1.16e-5, 1.36e-5, 1.59e-5]  # 1.1604, 1.3572, 1.5874
     assert found[1]["between"] == [1e-5, 2e-5]
-    assert targeted_rates(records, 7.0)["targets"][2]["rate"] == 1.75e-5
+    assert targeted_rates(records, 7.0)["targets"][2]["rate"] == 1.45e-5  # 1.4522
 
 
 def test_targets_outside_the_usable_range_get_no_rate() -> None:
@@ -408,6 +412,37 @@ def test_a_control_of_another_bound_is_not_this_candidates() -> None:
     assert sum(p.startswith("unexpected control") for p in result["problems"]) == 3
 
 
+def test_a_control_off_its_prescription_leaves_no_conclusion() -> None:
+    runs = grids()
+    drive(runs)
+    first = next(r for r in runs if r.arm == FA_CONTROL_ARM)
+    moved = [dataclasses.replace(r, model="other@rev") if r is first else r for r in runs]
+    result = selection(moved, THETA0, W_MAX, seconds_per_chunk=SPC)
+    assert result["next"]["campaign"] == "incomplete"
+    assert "is not on the model and stream" in result["problems"][0]
+    twin = next(r for r in runs if (r.arm, r.batch_size, r.lr, r.seed) == (FA, 5, first.lr, 2000))
+    assert control_conformance(first, twin) == []
+    assert "no FA run" in control_conformance(first, None)[0]
+    sparse = dataclasses.replace(first, evaluate_at=(20,))
+    assert "it needs 25 at [25]" in control_conformance(sparse, twin)[0]
+
+
+def test_a_rate_rejected_by_its_control_at_u8_is_excluded_at_u7() -> None:
+    runs = grids()
+    seen, result = drive(runs, contaminated=(1.27e-5, 1.59e-5, 1.5e-5))
+    attempts = result["attempts"]
+    assert [(a["batch"], a["U"], a["outcome"]) for a in attempts[:2]] == [
+        (5, 8.0, "failed"), (20, 8.0, "failed")]  # fmt: skip
+    at7 = attempts[2]
+    assert (at7["batch"], at7["U"]) == (5, 7.0)
+    assert list(at7["fa_excluded"]) == [1.27e-5]
+    assert "rejected at bound 0.0632456" in at7["fa_excluded"][1.27e-5]
+    assert at7["arms"][FA]["selections"][0]["excluded"] == [1.27e-5]
+    # No second control was asked for 1.27e-5 at U = 7's bound.
+    asked = [r for r in runs if r.arm == FA_CONTROL_ARM and (r.batch_size, r.lr) == (5, 1.27e-5)]
+    assert len(asked) == 1
+
+
 def test_a_failed_u8_leaves_u7_its_own_rounds_at_the_same_batch() -> None:
     wide = {ADAMW: {2000: 0.8, 2001: 1.0, 2002: 1.3}}  # wider than the targets' spacing
     runs = grids(spread=wide)
@@ -475,13 +510,27 @@ def test_unprescribed_runs_are_reported_and_duplicates_leave_no_conclusion() -> 
     assert result["next"] == {"campaign": "incomplete"} and "two runs" in result["problems"][0]
 
 
-def test_the_stream_time_comes_from_stage_as_version_1_discovery_runs() -> None:
-    reference = traj("adamw_long", 5, 1e-6, 2000, 5.0, chunks=4, role="discovery",
-                     monitor_version=1)  # fmt: skip
-    later = traj(ADAMW, 5, 1e-5, 2100, 5.0, chunks=4, seconds=50.0)  # 90 s per chunk too
-    result = selection([*grids(), reference, later], THETA0, W_MAX)
-    assert result["seconds_per_chunk"] == SPC
-    assert selection(grids(), THETA0, W_MAX)["next"] == {"campaign": "incomplete"}
+def stage_a_reference() -> list[Trajectory]:
+    """Stage A's version-1 discovery set: the 25-step grids and AdamW-long, which made the
+    chunks (``stage_a.stream_time_reference``)."""
+    short = [traj(r.arm, r.batch_size, r.lr, r.seed, k, mmlu=0.3 * k, factual=0.1 * k,
+                  seconds=r.training_seconds, role="discovery", monitor_version=1)
+             for r in grids() if (k := r.evaluations[0]["K_benign"])]  # fmt: skip
+    long = [traj("adamw_long", b, lr, s, 5.0, chunks=2, role="discovery", monitor_version=1)
+            for b in (5, 20) for lr in ADAMW_LONG_GRID for s in SEEDS]  # fmt: skip
+    return short + long
+
+
+def test_the_stream_time_is_stage_as_reference_with_its_provenance() -> None:
+    runs = stage_a_reference()
+    result = selection(runs, THETA0, W_MAX)
+    assert result["seconds_per_chunk"] == pytest.approx(SPC)
+    assert result["stream_time"]["runs"] == 96 and result["stream_time"]["chunks"] == 48
+    assert result["next"]["campaign"] == "targeted"
+    # A run missing from the set leaves the reference undefined: no conclusion.
+    partial = selection(runs[:-1], THETA0, W_MAX)
+    assert partial["next"] == {"campaign": "incomplete"}
+    assert "version-1 run missing" in partial["problems"][0]
 
 
 def test_the_selection_never_reads_k_harmful() -> None:
@@ -524,6 +573,8 @@ def test_support_brackets_k_star_within_the_realized_width() -> None:
     assert wide["cause"] == "width" and wide["bracket"]["width"] == pytest.approx(math.log(9 / 5))
     exact = block_support(block(ADAMW, (5.0, K8, 8.0)), K8, W_MAX)
     assert exact["bracket"]["hi"]["K"] == K8  # K* itself is at or above K*
+    edge = block_support(block(ADAMW, (5.0, 6.5, 8.0)), K8, math.log(6.5) - math.log(5.0))
+    assert edge["supported"]  # a width equal to w_max is within it
 
 
 def test_a_failed_endpoint_makes_an_unsupported_arm_technical() -> None:
@@ -534,13 +585,37 @@ def test_a_failed_endpoint_makes_an_unsupported_arm_technical() -> None:
     assert found["failures"] == [{"run": unstable[2].run_id, "rate": 1.4e-5,
                                   "reason": "stopped by k_above_max at step 20",
                                   "kind": "instability"}]  # fmt: skip
+    # Beside the conservative cause: what K alone shows, and the kinds of the failures.
+    assert found["k_cause"] == "bracketing" and found["failure_kinds"] == ["instability"]
     missing = block_support(runs[:2], K8, W_MAX, rates=(1e-5, 1.2e-5, 1.4e-5))
     assert missing["cause"] == "technical" and missing["failures"][0]["reason"] == "no run"
+    assert missing["failure_kinds"] == ["technical"]
+    wide = [*block(ADAMW, (4.0, 5.0, 9.0))[::2], traj(ADAMW, 5, 1.2e-5, 3000, None, steps=10,
+                                                       stop="nonfinite_loss")]  # fmt: skip
+    found = block_support(wide, K8, W_MAX)
+    assert (found["cause"], found["k_cause"]) == ("technical", "width")
     # A failure that leaves a bracket within w_max does not unsupport the arm.
     fourth = [*runs, traj(ADAMW, 5, 1.6e-5, 3000, None, stop="nonfinite_loss", steps=3)]
     assert block_support(fourth, K8, W_MAX)["supported"]
     with pytest.raises(ValueError, match="one arm"):
         block_support([*runs, *block(FA, (5.0, 6.0, 7.5))], K8, W_MAX)
+
+
+def test_a_second_run_or_an_unfrozen_rate_is_a_problem_not_an_endpoint() -> None:
+    runs = block(ADAMW, (5.0, 6.0, 7.5))
+    again = traj(ADAMW, 5, 1.2e-5, 3000, 9.0, name="again")
+    extra = traj(ADAMW, 5, 1.3e-5, 3000, 6.2)  # would narrow the bracket
+    found = block_support([*runs, again, extra], K8, W_MAX, rates=(1e-5, 1.2e-5, 1.4e-5))
+    assert [e["rate"] for e in found["endpoints"]] == [1e-5, 1.2e-5, 1.4e-5]
+    assert found["bracket"]["lo"]["K"] == 6.0 and len(found["problems"]) == 2
+
+
+def test_harm_refuses_counts_out_of_range() -> None:
+    for counts in ({"prompts": 10, "harmful": 8, "missing": 3}, {"prompts": 0, "harmful": 0,
+                                                                  "missing": 0},
+                   {"prompts": 10, "harmful": -1, "missing": 0}):  # fmt: skip
+        with pytest.raises(ValueError, match="out of range"):
+            harm(counts)
 
 
 def label_rows(harmful: int, missing: int = 0, prompts: int = 100) -> list[dict]:
@@ -569,12 +644,31 @@ def test_the_interpolation_with_hand_numbers() -> None:
 
 # ------------------------------------------------------------------ the looks
 
-LEVELS = (0.005, 0.048)
+LEVELS = (0.995, 0.952)  # two-sided confidence levels of looks 1 and 2
 
 
 def blocks_of(deltas, unsupported=(), incomplete=()) -> list[dict]:
     return [{"block": 3000 + i, "complete": i not in incomplete, "supported": i not in unsupported,
              "delta": None if i in unsupported else d} for i, d in enumerate(deltas)]  # fmt: skip
+
+
+@pytest.mark.parametrize("levels", [(0.005, 0.048), (99.53, 95.19), (0.995,), (0.4, 0.95)])
+def test_looks_refuse_levels_of_another_convention(levels) -> None:
+    with pytest.raises(ValueError, match="confidence levels"):
+        looks(blocks_of([0.0] * 30), levels, se_floor=0.0, bias_allowance=0.0)
+
+
+def test_look_1_on_the_cap_without_a_stop_is_followed_by_the_terminal_look() -> None:
+    # 56 unsupported blocks, then 24 supported: look 1 falls on block 80, the cap.
+    deltas = [0.3 * (-1) ** i for i in range(80)]
+    found = looks(blocks_of(deltas, unsupported=set(range(56))), LEVELS, se_floor=0.0,
+                  bias_allowance=0.0)  # fmt: skip
+    first, terminal = found["looks"]
+    assert (first["look"], first["started"], first["supported"], first["stops"]) == (
+        1, 80, 24, False)  # fmt: skip
+    assert (terminal["look"], terminal["started"], terminal["supported"]) == (2, 80, 24)
+    assert terminal["at_cap"] and terminal["level"] == LEVELS[1] and found["stopping_look"] == 2
+    assert terminal["mean"] == first["mean"] and terminal["t"] < first["t"]  # same data, α₂
 
 
 def test_look_1_is_postponed_to_its_24th_supported_block_and_stops_on_equivalence() -> None:
@@ -586,7 +680,7 @@ def test_look_1_is_postponed_to_its_24th_supported_block_and_stops_on_equivalenc
     supported = [d for i, d in enumerate(deltas[:29]) if i not in {4, 9, 14, 19, 24}]
     mean, half = (
         statistics.fmean(supported),
-        (stats.t.ppf(1 - LEVELS[0] / 2, 23) * statistics.stdev(supported) / math.sqrt(24)),
+        (stats.t.ppf(1 - (1 - LEVELS[0]) / 2, 23) * statistics.stdev(supported) / math.sqrt(24)),
     )
     assert first["interval"] == pytest.approx([mean - half, mean + half])
     assert "equivalence" in first["readings"] and first["stops"]
@@ -602,7 +696,7 @@ def test_an_inconclusive_look_1_goes_on_to_look_2() -> None:
         (2, 50, True),
     ]
     assert found["looks"][0]["readings"] == ["inconclusive"]
-    assert found["looks"][1]["alpha"] == LEVELS[1]
+    assert found["looks"][1]["level"] == LEVELS[1]
 
 
 def test_direction_and_equivalence_can_hold_together() -> None:
@@ -625,7 +719,7 @@ def test_the_cap_ends_the_looks_with_a_terminal_look() -> None:
     assert [
         (lk["look"], lk["started"], lk["supported"], lk["at_cap"]) for lk in found["looks"]
     ] == [(1, 47, 24, False), (2, 80, 40, True)]
-    assert found["looks"][1]["alpha"] == LEVELS[1] and found["stopping_look"] == 2
+    assert found["looks"][1]["level"] == LEVELS[1] and found["stopping_look"] == 2
     assert found["looks"][1]["bounds"] == pytest.approx(
         finite_bounds(80, 40, sum(d for i, d in enumerate(deltas[:80]) if i not in unsupported))
     )
@@ -652,7 +746,7 @@ def test_the_looks_wait_at_the_first_incomplete_block() -> None:
 def test_the_se_floor_bounds_the_interval_below() -> None:
     first = looks(blocks_of([0.01] * 24), LEVELS, se_floor=0.02, bias_allowance=0.0)["looks"][0]
     assert first["sd"] == 0.0 and first["se"] == pytest.approx(0.02 / math.sqrt(24))
-    t = stats.t.ppf(1 - LEVELS[0] / 2, 23)
+    t = stats.t.ppf(1 - (1 - LEVELS[0]) / 2, 23)
     assert first["interval"][1] - first["interval"][0] == pytest.approx(2 * t * 0.02 / 24**0.5)
 
 
@@ -736,12 +830,24 @@ def test_the_validation_verdict_on_numerics_k_and_utility() -> None:
     accepted = {lr: {"accepted": True} for lr in FROZEN[FA]}
     found = validation_verdict(runs, FROZEN, accepted, THETA0, K8, W_MAX)
     assert found["passes"] and len(found["jointly_supported"]) == 12
+    # Validation is a single reading: Bonferroni over the family alone (four members).
+    assert found["utility"]["looks"] == 1
+    assert found["utility"]["alpha_per_bound"] == pytest.approx(0.05 / 4)
 
     low = [traj(r.arm, 5, r.lr, r.seed, r.evaluations[0]["K_benign"] * 0.5, mmlu=1.0)
            if r.seed in (2100, 2101, 2102) and r.arm == ADAMW else r for r in runs]  # fmt: skip
     found = validation_verdict(low, FROZEN, accepted, THETA0, K8, W_MAX)
     assert found["reasons"] == ["9 of 12 blocks jointly supported, fewer than 10"]
-    assert found["causes"][ADAMW] == {"bracketing": 3}
+    assert found["causes"][ADAMW] == {"cause": {"bracketing": 3}, "k_cause": {"bracketing": 3},
+                                      "failure_kinds": {}}  # fmt: skip
+
+    unstable = [r for r in runs if not (r.seed in (2104, 2105) and r.arm == ADAMW
+                                        and r.lr == 1.4e-5)]  # fmt: skip
+    unstable += [traj(ADAMW, 5, 1.4e-5, s, None, stop="k_above_max", steps=20)
+                 for s in (2104, 2105)]  # fmt: skip
+    found = validation_verdict(unstable, FROZEN, accepted, THETA0, K8, W_MAX)
+    assert found["causes"][ADAMW] == {"cause": {"technical": 2}, "k_cause": {"bracketing": 2},
+                                      "failure_kinds": {"instability": 2}}  # fmt: skip
 
     broken = [r for r in runs if not (r.seed == 2103 and r.arm == FA and r.lr == 1e-5)]
     broken.append(traj(FA, 5, 1e-5, 2103, None, stop="gradient_spike", steps=4))
@@ -750,3 +856,20 @@ def test_the_validation_verdict_on_numerics_k_and_utility() -> None:
     assert not found["passes"] and len(found["jointly_supported"]) == 12  # 1e-5 is not needed
     assert found["unstable"] == ["frozen_adam_25-b5-1e-05-s2103"]
     assert found["reasons"][1] == "FA controls not accepted at [1.4e-05]"
+
+
+def test_ambiguous_validation_records_leave_no_conclusion() -> None:
+    runs = validation_runs()
+    accepted = {lr: {"accepted": True} for lr in FROZEN[FA]}
+    twice = [*runs, traj(ADAMW, 5, 1.2e-5, 2100, 6.0, name="again")]
+    found = validation_verdict(twice, FROZEN, accepted, THETA0, K8, W_MAX)
+    assert found["passes"] is None and "two runs" in found["problems"][0]
+    extra = [*runs, traj(FA, 5, 1.3e-5, 2101, 6.4)]
+    found = validation_verdict(extra, FROZEN, accepted, THETA0, K8, W_MAX)
+    assert found["passes"] is None and "outside the frozen rates" in found["problems"][0]
+
+
+def test_confirmation_keeps_bonferroni_over_the_family_and_two_looks() -> None:
+    runs = validation_runs()
+    found = utility_family(runs, supports_of(runs), THETA0)
+    assert found["looks"] == 2 and found["alpha_per_bound"] == pytest.approx(0.05 / (4 * 2))
