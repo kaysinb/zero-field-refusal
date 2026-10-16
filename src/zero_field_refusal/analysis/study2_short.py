@@ -55,21 +55,29 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   usable range.
 - *Repair*: its rates are rounded to 3 significant digits like the targeted ones; one midpoint
   per round, of the bracketing pair of the seed with the widest too-wide bracket (the first such
-  seed on a tie); no repair without a triple (fewer than three usable rates).
-- *Rounds* run only for an arm with no feasible triple. They count per arm and batch: the first
-  candidate that needs a round spends it, and a later U at the same batch selects from every run
-  made at that batch with no new round; a round proposing no new rate is spent all the same. The
-  primary arms go in step: the targeted round of every arm needing it, then the repair round. A
-  candidate fails as soon as an infeasible arm has no round left, before the other arm spends
-  any.
+  seed on a tie); no repair without a triple (fewer than three usable rates). A coverage miss
+  (|ln median K − ln t| > 0.1 in the best unconstrained triple) is repaired by re-targeting: the
+  log–log interpolation for that target recomputed over every usable rate of the arm at the
+  batch, the targeted round's included (coordinator, 2026-10-16). A target outside the usable
+  range takes the outward extension on its side (r_5 / 1.21 below, r_U × 1.21 above), the
+  brief's "the repair round handles it". When the repair rate is none or a rate already run,
+  there is no repair and the candidate fails (the pre-warmed arm is dropped), before any of the
+  round's rates is run.
+- *Rounds* run only for an arm with no feasible triple, at most one targeted and one repair round
+  per arm, batch and U (coordinator, 2026-10-16: U = 7's targets differ from U = 8's). Every run
+  made at the batch enters the selection at either U, so a U = 7 round builds on U = 8's runs and
+  proposes only rates not yet run. The primary arms go in step: the targeted round of every arm
+  needing it, then the repair round.
 - *Candidate cost*: per arm and target, the usable grid rate (``stage_a.SHORT_GRID``) nearest the
   target in ln median K25 (ties to the smaller rate); per seed the sum of those runs'
   ``training_seconds`` (a rate nearest two targets counts twice: a block runs three per arm),
-  plus the stream time: seconds per chunk × ⌈25 B / chunk size⌉ (the training stream). The
-  seconds per chunk are ``stage_a._seconds_per_chunk`` over Stage A's version-1 discovery runs
-  among the inputs (amendment 1's fixed reference, so later runs cannot reorder the candidates),
-  unless given. Equal costs go to the smaller batch; an unknown cost (an arm without a usable
-  grid rate) comes after a known one.
+  plus the training stream, seconds per chunk × ⌈25 B / chunk size⌉, plus v₀'s preconditioner
+  stream, seconds per chunk × 50 B / chunk size, counted once per block since FA, pre-warmed and
+  their controls share v₀ (coordinator, 2026-10-16). The seconds per chunk are
+  ``stage_a._seconds_per_chunk`` over Stage A's version-1 discovery runs among the inputs
+  (amendment 1's fixed reference, so later runs cannot reorder the candidates), unless given.
+  Equal costs go to the smaller batch; an unknown cost (an arm without a usable grid rate) comes
+  after a known one.
 - *FA controls*: a control belongs to a candidate by its batch, rate, seed 2000 and configured
   contamination bound (0.01 × K* of that U); it is accepted when it ran its 25 steps and every
   scoring read (``stage_a.contamination(..., every_read=True)``) is finite and at most the bound.
@@ -133,6 +141,7 @@ FA_CONTROL_ARM = "soft_control_frozen_adam"
 STEPS = 25
 COVERAGE = 0.1  # |ln median K - ln target| for each target
 EXTENSION = 1.21  # the outward extension of a repair round
+PRECONDITIONER_BATCHES = 50  # v₀'s teacher batches at the selected B, per seed
 VALIDATION_SEEDS = tuple(range(2100, 2112))
 CONFIRMATION_SEEDS = tuple(range(3000, 3080))
 LOOK_SIZES = (24, 50)  # supported blocks at looks 1 and 2
@@ -323,12 +332,22 @@ def select_rates(
     }
 
 
-def repair_rates(triple: Mapping[str, Any] | None, w_max: float) -> dict[str, Any]:
-    """The one repair round from the best unconstrained triple: a seed with no K below K* adds
-    r_5 / 1.21; a seed with no K at or above K* adds r_U × 1.21; a bracket wider than w_max adds
-    the geometric midpoint of the widest one's pair. Rates rounded to 3 significant digits."""
+def repair_rates(
+    triple: Mapping[str, Any] | None,
+    records: Mapping[float, Mapping[str, Any]],
+    upper: float,
+    w_max: float,
+) -> dict[str, Any]:
+    """The one repair round from the best unconstrained triple, over ``records`` (every rate of
+    the arm at the batch): a seed with no K below K* adds r_5 / 1.21; a seed with no K at or above
+    K* adds r_U × 1.21; a bracket wider than w_max adds the geometric midpoint of the widest one's
+    pair; a target missed by more than 0.1 in ln K is re-targeted, its rate interpolated again
+    over every usable rate (outside the usable range, the outward extension on its side). Rates
+    rounded to 3 significant digits. A coverage miss whose repair rate is none or a rate already
+    run is ``unrepairable``: the candidate fails."""
     if triple is None:
-        return {"from": None, "rates": [], "reasons": ["no triple to repair from"]}
+        return {"from": None, "rates": [], "reasons": ["no triple to repair from"],
+                "unrepairable": []}  # fmt: skip
     r5, _, r_upper = triple["rates"]
     per_seed = triple["per_seed"]
     proposals: list[dict[str, Any]] = []
@@ -350,11 +369,30 @@ def repair_rates(triple: Mapping[str, Any] | None, w_max: float) -> dict[str, An
         proposals.append({"rate": _three(math.sqrt(lo * hi)),
                           "reason": f"bracket {pair['width']:.3f} wider than {w_max} on seed "
                                     f"{seed}: midpoint of {lo:g} and {hi:g}"})  # fmt: skip
+    unrepairable = []
+    retargeted = targeted_rates(records, upper)["targets"]
+    existing = {rate(lr) for lr in records}
+    for target, deviation, entry in zip(targets(upper), triple["deviations"], retargeted,
+                                        strict=True):  # fmt: skip
+        if abs(deviation) <= COVERAGE:
+            continue
+        lr, how = entry["rate"], "re-targeted over every usable rate"
+        if entry.get("reason") == "below the usable range":
+            lr, how = _three(r5 / EXTENSION), f"below the usable range: r_5 / {EXTENSION}"
+        elif entry.get("reason") == "above the usable range":
+            lr, how = _three(r_upper * EXTENSION), f"above the usable range: r_U × {EXTENSION}"
+        missed = f"target {target:.4g} missed by {deviation:+.3f} in ln K"
+        if lr is None or rate(lr) in existing:
+            got = f"{entry['reason']}" if lr is None else f"{lr:g}, already run"
+            unrepairable.append(f"{missed}: {how} gives {got}")
+        else:
+            proposals.append({"rate": lr, "reason": f"{missed}: {how}"})
     return {
         "from": triple["rates"],
         "rates": list(dict.fromkeys(p["rate"] for p in proposals)),
-        "reasons": [p["reason"] for p in proposals] or ["nothing to repair"],
+        "reasons": [p["reason"] for p in proposals] + unrepairable or ["nothing to repair"],
         "proposals": proposals,
+        "unrepairable": unrepairable,
     }
 
 
@@ -368,7 +406,8 @@ def candidate_order(
 ) -> list[dict[str, Any]]:
     """The candidates (8, cheaper B), (8, other B), (7, cheaper B), (7, other B) with their
     costs: the median over seeds of the summed training seconds of both primary arms' runs at
-    the usable grid rates nearest each target, plus the block's stream time."""
+    the usable grid rates nearest each target, plus the block's training stream and v₀'s
+    preconditioner stream."""
     cells: dict[tuple[str, int, float], list[Trajectory]] = defaultdict(list)
     for run in runs:
         if run.arm in PRIMARY_ARMS and run.seed in seeds:
@@ -395,17 +434,22 @@ def candidate_order(
             entry: dict[str, Any] = {"batch": batch, "U": upper, "K_star": k_star(upper),
                                      "nearest": nearest, "reasons": reasons}  # fmt: skip
             if reasons:
-                entry.update(seconds=None, per_seed={}, stream_seconds=None)
+                entry.update(seconds=None, per_seed={}, stream_seconds=None,
+                             preconditioner_seconds=None)  # fmt: skip
             else:
                 chunk_size = cells[(used[0][0], batch, used[0][1])][0].chunk_size
                 stream = seconds_per_chunk * -(-STEPS * batch // chunk_size)
+                # v₀'s preconditioner stream, once per block (FA and pre-warmed share it).
+                preconditioner = seconds_per_chunk * PRECONDITIONER_BATCHES * batch / chunk_size
                 per_seed = {
-                    seed: stream + sum(next(r for r in cells[(arm, batch, lr)] if r.seed == seed)
-                                       .training_seconds for arm, lr in used)
+                    seed: stream + preconditioner + sum(
+                        next(r for r in cells[(arm, batch, lr)] if r.seed == seed)
+                        .training_seconds for arm, lr in used)
                     for seed in seeds
                 }  # fmt: skip
                 entry.update(seconds=statistics.median(per_seed.values()), per_seed=per_seed,
-                             stream_seconds=stream)  # fmt: skip
+                             stream_seconds=stream,
+                             preconditioner_seconds=preconditioner)  # fmt: skip
             entries.append(entry)
         entries.sort(key=lambda e: (e["seconds"] is None, e["seconds"] or 0.0, e["batch"]))
         order += entries
@@ -437,7 +481,7 @@ def _control_key(run: Trajectory) -> tuple[int, float, float | None]:
 
 class _Replay:
     """The bookkeeping of ``selection``'s replay: the rates prescribed per arm and batch, the
-    rounds spent, the controls called for."""
+    rounds spent per arm, batch and U, the controls called for."""
 
     def __init__(self, runs, controls, theta0, w_max):
         self.found, self.controls, self.theta0, self.w_max = runs, controls, theta0, w_max
@@ -445,7 +489,7 @@ class _Replay:
         for arm in PRIMARY_ARMS:
             for batch in BATCHES:
                 self.rates[(arm, batch)] = {rate(lr) for lr in SHORT_GRID}
-        self.rounds: dict[tuple[str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
+        self.rounds: dict[tuple[str, int, float], dict[str, dict[str, Any]]] = defaultdict(dict)
         self.called_controls: set[tuple[int, float, float | None]] = set()
 
     def records(self, arm: str, batch: int) -> dict[float, dict[str, Any]]:
@@ -462,20 +506,27 @@ class _Replay:
         return [{"arm": arm, "batch": batch, "lr": lr, "seed": s} for lr in rates
                 for s in DISCOVERY_SEEDS if (arm, batch, lr, s) not in self.found]  # fmt: skip
 
-    def round(self, kind, arm, batch, upper, selected) -> dict[str, Any]:
-        """Spend the arm's ``kind`` round at the batch: propose, record, prescribe."""
+    def propose(self, kind, arm, batch, upper, selected) -> dict[str, Any]:
+        """The arm's ``kind`` round at the batch and U, over every run made at that batch."""
+        records = self.records(arm, batch)
         if kind == "targeted":
-            proposal = targeted_rates(self.records(arm, batch), upper)
+            proposal = targeted_rates(records, upper)
             proposed = [t["rate"] for t in proposal["targets"] if t["rate"] is not None]
         else:
-            proposal = repair_rates(selected["best_unconstrained"], self.w_max)
+            proposal = repair_rates(selected["best_unconstrained"], records, upper, self.w_max)
             proposed = proposal["rates"]
         new = sorted(set(proposed) - self.rates[(arm, batch)])
-        record = {"kind": kind, "arm": arm, "batch": batch, "U": upper, "proposal": proposal,
-                  "new_rates": new}  # fmt: skip
-        self.rounds[(arm, batch)][kind] = record
-        self.rates[(arm, batch)] |= set(new)
-        return record
+        return {"kind": kind, "arm": arm, "batch": batch, "U": upper, "proposal": proposal,
+                "new_rates": new}  # fmt: skip
+
+    def spend(self, record: dict[str, Any], *, prescribe: bool = True) -> None:
+        """Record a round; prescribe its new rates unless the candidate fails on it."""
+        arm, batch = record["arm"], record["batch"]
+        self.rounds[(arm, batch, record["U"])][record["kind"]] = record
+        if prescribe:
+            self.rates[(arm, batch)] |= set(record["new_rates"])
+        else:
+            record["new_rates"] = []
 
     def unexpected(self) -> list[str]:
         runs = [f"unexpected run {key}" for key in sorted(self.found)
@@ -497,7 +548,7 @@ def selection(
     attempt recorded. Never reads a judge label or K_harmful.
 
     Per candidate: each primary arm's selection over its runs at B; for an arm with no feasible
-    triple its targeted round, then its repair round (per arm and batch, at most one each); then
+    triple its targeted round, then its repair round (at most one each per arm, batch and U); then
     one FA control per selected FA rate, a rejected rate dropped and the selection re-solved once.
     A candidate fails when a primary arm stays infeasible or the controls fail, and the next one
     is taken. Then the pre-warmed arm at the chosen B: first runs at the union of the selected
@@ -545,8 +596,8 @@ def selection(
                     "fa_controls": attempt["fa_controls"]}  # fmt: skip
         break
     out["next"] = step or {"campaign": "infeasible"}
-    out["rounds"] = {f"{arm}/B={batch}": kinds for (arm, batch), kinds in replay.rounds.items()
-                     if kinds}  # fmt: skip
+    out["rounds"] = {f"{arm}/B={batch}/U={upper:g}": kinds
+                     for (arm, batch, upper), kinds in replay.rounds.items()}  # fmt: skip
     out["problems"] = replay.unexpected()
     return out
 
@@ -569,19 +620,16 @@ def _primary(replay: _Replay, batch: int, upper: float) -> tuple[dict[str, Any],
         return attempt, None
 
     selected = {arm: solve(arm) for arm in PRIMARY_ARMS}
-    kinds = ("targeted", "repair")
-    for i, kind in enumerate(kinds):
-        needs = [arm for arm in PRIMARY_ARMS if not selected[arm]["feasible"]]
-        spent = [arm for arm in needs if all(k in replay.rounds[(arm, batch)] for k in kinds[i:])]
-        if spent:
-            return fail(f"{spent} without a feasible triple and without a round left at B={batch}")
-        going = [arm for arm in needs if kind not in replay.rounds[(arm, batch)]]
-        for arm in going:
-            attempt["arms"][arm]["rounds"].append(
-                replay.round(kind, arm, batch, upper, selected[arm])
-            )
-        new = {arm: replay.rounds[(arm, batch)][kind]["new_rates"] for arm in going}
-        missing = [m for arm in going for m in replay.missing(arm, batch, new[arm])]
+    for kind in ("targeted", "repair"):
+        going = [arm for arm in PRIMARY_ARMS if not selected[arm]["feasible"]]
+        rounds = [replay.propose(kind, arm, batch, upper, selected[arm]) for arm in going]
+        blocked = [r["arm"] for r in rounds if r["proposal"].get("unrepairable")]
+        for spent in rounds:
+            attempt["arms"][spent["arm"]]["rounds"].append(spent)
+            replay.spend(spent, prescribe=not blocked)
+        if blocked:
+            return fail(f"{blocked}: a coverage miss that re-targeting cannot repair")
+        missing = [m for r in rounds for m in replay.missing(r["arm"], batch, r["new_rates"])]
         if missing:
             attempt["outcome"] = "pending"
             return attempt, {"campaign": kind, "batch": batch, "U": upper, "runs": missing}
@@ -589,7 +637,7 @@ def _primary(replay: _Replay, batch: int, upper: float) -> tuple[dict[str, Any],
             selected[arm] = solve(arm)
     infeasible = [arm for arm in PRIMARY_ARMS if not selected[arm]["feasible"]]
     if infeasible:
-        return fail(f"{infeasible} without a feasible triple after the rounds at B={batch}")
+        return fail(f"{infeasible} without a feasible triple after the rounds")
 
     kstar, bound = k_star(upper), _bound_key(CONTAMINATION_FRACTION * k_star(upper))
     excluded: list[float] = []
@@ -635,8 +683,12 @@ def _prewarmed(
     for kind in ("targeted", "repair"):
         if selected["feasible"]:
             break
-        spent = replay.round(kind, PREWARMED, batch, upper, selected)
+        spent = replay.propose(kind, PREWARMED, batch, upper, selected)
         record["rounds"].append(spent)
+        blocked = bool(spent["proposal"].get("unrepairable"))
+        replay.spend(spent, prescribe=not blocked)
+        if blocked:
+            break
         missing = replay.missing(PREWARMED, batch, spent["new_rates"])
         if missing:
             return record, {"campaign": kind, "batch": batch, "U": upper, "runs": missing}

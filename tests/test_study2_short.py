@@ -106,23 +106,33 @@ SCALE = {
 SPREAD = {2000: 0.97, 2001: 1.0, 2002: 1.03}
 
 
-def world_k(arm, batch, lr, seed, scale=SCALE, spread=None) -> float:
+def kink(x: float) -> float:
+    """A curve bent in log–log: slope 1.5 up to x = 1, 3 up to 1.2, then 0.5."""
+    if x <= 1:
+        return x**1.5
+    if x <= 1.2:
+        return x**3
+    return 1.2**3 * (x / 1.2) ** 0.5
+
+
+def world_k(arm, batch, lr, seed, scale=SCALE, spread=None, kinked=()) -> float:
     factor = (spread or {}).get(arm, SPREAD)[seed]
-    return scale[(arm, batch)] * (lr / 1e-5) ** 1.5 * factor
+    x = lr / 1e-5
+    return scale[(arm, batch)] * (kink(x) if (arm, batch) in kinked else x**1.5) * factor
 
 
-def made(arm, batch, lr, seed, scale=SCALE, spread=None) -> Trajectory:
-    k = world_k(arm, batch, lr, seed, scale, spread)
+def made(arm, batch, lr, seed, scale=SCALE, spread=None, kinked=()) -> Trajectory:
+    k = world_k(arm, batch, lr, seed, scale, spread, kinked)
     return traj(arm, batch, lr, seed, k, mmlu=0.3 * k, factual=0.1 * k,
                 seconds=100.0 if batch == 5 else 150.0)  # fmt: skip
 
 
-def grids(scale=SCALE, spread=None) -> list[Trajectory]:
-    return [made(arm, b, lr, s, scale, spread) for arm in (ADAMW, FA) for b in (5, 20)
+def grids(scale=SCALE, spread=None, kinked=()) -> list[Trajectory]:
+    return [made(arm, b, lr, s, scale, spread, kinked) for arm in (ADAMW, FA) for b in (5, 20)
             for lr in SHORT_GRID for s in SEEDS]  # fmt: skip
 
 
-def drive(runs, *, scale=SCALE, spread=None, contaminated=(), limit=12):
+def drive(runs, *, scale=SCALE, spread=None, kinked=(), contaminated=(), limit=16):
     """Make each campaign the state machine asks for until it ends; FA controls at the rates in
     ``contaminated`` read 2 × their bound. Returns the campaigns and the last result."""
     seen = []
@@ -138,7 +148,7 @@ def drive(runs, *, scale=SCALE, spread=None, contaminated=(), limit=12):
                 c = 2 * bound if r["lr"] in contaminated else 0.1 * bound
                 runs.append(control(r["batch"], r["lr"], bound, c))
             else:
-                runs.append(made(r["arm"], r["batch"], r["lr"], r["seed"], scale, spread))
+                runs.append(made(r["arm"], r["batch"], r["lr"], r["seed"], scale, spread, kinked))
     raise AssertionError(f"no end after {seen}")
 
 
@@ -255,19 +265,41 @@ def test_an_infeasible_selection_names_its_unmet_constraints() -> None:
 def test_repair_rates_from_the_best_unconstrained_triple_with_reasons() -> None:
     # Seed 2002 never below K*, seed 2000 never at or above it, seed 2001 too wide.
     records = {
-        1e-5: rec({2000: 4.5, 2001: 4.5, 2002: 6.5}),
+        1e-5: rec({2000: 4.6, 2001: 4.6, 2002: 6.5}),  # median 4.6: target 5 covered
         1.2e-5: rec({2000: 5.5, 2001: 6.0, 2002: 7.0}),
         1.4e-5: rec({2000: 6.0, 2001: 8.0, 2002: 8.5}),
     }
     found = select_rates(records, 8.0, 0.2)
     triple = found["best_unconstrained"]
     assert triple["rates"] == [1e-5, 1.2e-5, 1.4e-5] and not found["feasible"]
-    repair = repair_rates(triple, 0.2)
+    repair = repair_rates(triple, records, 8.0, 0.2)
     assert repair["rates"] == [8.26e-6, 1.69e-5, 1.3e-5]  # 1e-5/1.21, 1.4e-5×1.21, √(1.2×1.4)
     assert "seeds [2002]" in repair["reasons"][0] and "seeds [2000]" in repair["reasons"][1]
-    assert "seed 2001" in repair["reasons"][2]
-    assert repair_rates(None, 0.2) == {"from": None, "rates": [],
-                                       "reasons": ["no triple to repair from"]}  # fmt: skip
+    assert "seed 2001" in repair["reasons"][2] and not repair["unrepairable"]
+    assert repair_rates(None, records, 8.0, 0.2)["reasons"] == ["no triple to repair from"]
+
+
+def test_a_coverage_miss_is_re_targeted_over_every_usable_rate() -> None:
+    # Medians 4.0, 6.3, 8.0: the triple misses 5 by ln(4/5) = −0.223 while K* is bracketed.
+    records = {
+        1e-5: rec({2000: 4.0, 2001: 4.0, 2002: 4.0}),
+        1.2e-5: rec({2000: 6.3, 2001: 6.3, 2002: 6.3}),
+        1.4e-5: rec({2000: 8.0, 2001: 8.0, 2002: 8.0}),
+    }
+    found = select_rates(records, 8.0, W_MAX)
+    assert found["unmet"] == ["coverage"]
+    repair = repair_rates(found["best_unconstrained"], records, 8.0, W_MAX)
+    # ln r = ln 1e-5 + ln(5/4)/ln(6.3/4) × ln 1.2: r = 1.0937e-5.
+    assert repair["rates"] == [1.09e-5] and not repair["unrepairable"]
+    assert "target 5 missed by -0.223" in repair["reasons"][0]
+    # The same rate already run (unusable): no repair, the candidate fails.
+    run = {**records, 1.09e-5: {**rec({2000: 4.4}), "usable": False}}
+    repair = repair_rates(found["best_unconstrained"], run, 8.0, W_MAX)
+    assert repair["rates"] == [] and "1.09e-05, already run" in repair["unrepairable"][0]
+    # A target above the usable range takes the outward extension r_U × 1.21.
+    low = {1e-5: rec({2000: 5.0}), 1.1e-5: rec({2000: 6.4}), 1.2e-5: rec({2000: 7.0})}
+    repair = repair_rates(select_rates(low, 8.0, W_MAX)["best_unconstrained"], low, 8.0, W_MAX)
+    assert repair["rates"] == [1.45e-5] and "above the usable range" in repair["reasons"][0]
 
 
 def test_the_midpoint_repairs_the_widest_bracket() -> None:
@@ -280,7 +312,7 @@ def test_the_midpoint_repairs_the_widest_bracket() -> None:
     # Every bracket is wider than 0.2: seed 2000's r_5 – r_K* (4.0 – 6.4) is the widest, the
     # others are r_K* – r_U (6.2 – 7.9 and 6.2 – 8.1).
     assert triple["per_seed"][2000]["width"] == pytest.approx(math.log(1.6))
-    repair = repair_rates(triple, 0.2)
+    repair = repair_rates(triple, records, 8.0, 0.2)
     assert repair["rates"] == [1.1e-5]  # √(1e-5 × 1.2e-5) = 1.095e-5
     assert "seed 2000" in repair["reasons"][0] and len(repair["reasons"]) == 1
 
@@ -292,8 +324,10 @@ def test_candidates_put_u8_first_and_the_cheaper_batch_first_with_costs() -> Non
     runs = grids()  # 100 s per run at B = 5, 150 s at B = 20
     order = candidate_order(runs, THETA0, SPC)
     assert [(e["batch"], e["U"]) for e in order] == [(5, 8.0), (20, 8.0), (5, 7.0), (20, 7.0)]
-    assert order[0]["seconds"] == 6 * 100.0 + SPC  # six runs and one chunk of 125 responses
-    assert order[1]["seconds"] == 6 * 150.0 + SPC
+    # Six runs, one chunk of 125 training responses, v₀'s 50 × 5 = 250 preconditioner responses.
+    assert order[0]["seconds"] == pytest.approx(6 * 100.0 + SPC + SPC * 250 / 1000)
+    assert order[0]["preconditioner_seconds"] == pytest.approx(22.5)
+    assert order[1]["seconds"] == pytest.approx(6 * 150.0 + SPC + SPC * 1000 / 1000)
     assert order[0]["nearest"][ADAMW] == [1e-5, 1e-5, 1.5e-5]  # medians 5.0, 5.0, 9.19
     cheap20 = [traj(r.arm, r.batch_size, r.lr, r.seed, r.evaluations[0]["K_benign"],
                     seconds=60.0 if r.batch_size == 20 else 100.0) for r in runs]  # fmt: skip
@@ -301,8 +335,9 @@ def test_candidates_put_u8_first_and_the_cheaper_batch_first_with_costs() -> Non
 
 
 def test_equal_costs_go_to_the_smaller_batch_and_unknown_costs_last() -> None:
-    runs = [traj(r.arm, r.batch_size, r.lr, r.seed, r.evaluations[0]["K_benign"])
-            for r in grids()]  # fmt: skip
+    # B = 20's preconditioner stream costs 67.5 s more per block: its runs are 11.25 s cheaper.
+    runs = [traj(r.arm, r.batch_size, r.lr, r.seed, r.evaluations[0]["K_benign"],
+                 seconds=100.0 if r.batch_size == 5 else 88.75) for r in grids()]  # fmt: skip
     order = candidate_order(runs, THETA0, SPC)
     assert order[0]["seconds"] == order[1]["seconds"] and order[0]["batch"] == 5
     without = [r for r in runs if (r.arm, r.batch_size) != (FA, 5)]
@@ -325,7 +360,7 @@ def test_the_state_machine_targets_controls_prewarms_and_freezes() -> None:
     assert not done["prewarmed_dropped"]
     assert all(v["accepted"] for v in done["fa_controls"].values())
     rounds = result["rounds"]
-    assert rounds[f"{ADAMW}/B=5"]["targeted"]["new_rates"] == [1.17e-5, 1.37e-5]  # 1e-5 exists
+    assert rounds[f"{ADAMW}/B=5/U=8"]["targeted"]["new_rates"] == [1.17e-5, 1.37e-5]  # 1e-5 run
     assert result["problems"] == [] and len(result["attempts"]) == 1
 
 
@@ -373,25 +408,46 @@ def test_a_control_of_another_bound_is_not_this_candidates() -> None:
     assert sum(p.startswith("unexpected control") for p in result["problems"]) == 3
 
 
-def test_an_arm_infeasible_after_its_rounds_fails_the_candidate_and_spends_its_rounds() -> None:
+def test_a_failed_u8_leaves_u7_its_own_rounds_at_the_same_batch() -> None:
     wide = {ADAMW: {2000: 0.8, 2001: 1.0, 2002: 1.3}}  # wider than the targets' spacing
     runs = grids(spread=wide)
     seen, result = drive(runs, spread=wide)
-    assert seen == ["targeted", "repair", "targeted", "repair", "infeasible"]
+    # Every candidate, U = 7 included, gets its own targeted and repair rounds.
+    assert seen == ["targeted", "repair"] * 4 + ["infeasible"]
     attempts = result["attempts"]
-    assert [(a["batch"], a["U"], a["outcome"]) for a in attempts] == [
-        (5, 8.0, "failed"),
-        (20, 8.0, "failed"),
-        (5, 7.0, "failed"),
-        (20, 7.0, "failed"),
-    ]
-    repair = result["rounds"][f"{ADAMW}/B=5"]["repair"]
-    assert repair["new_rates"] == [8.26e-6] and "seeds [2002]" in repair["proposal"]["reasons"][0]
-    assert f"{FA}/B=5" in result["rounds"] and "repair" not in result["rounds"][f"{FA}/B=5"]
-    # At U = 7 no round is left at either batch: no new run, the other arm spends nothing.
-    for attempt in attempts[2:]:
-        assert "without a round left" in attempt["reasons"][0]
-        assert all(not a["rounds"] for a in attempt["arms"].values())
+    assert [(a["batch"], a["U"]) for a in attempts] == [(5, 8.0), (20, 8.0), (5, 7.0), (20, 7.0)]
+    assert {a["outcome"] for a in attempts} == {"failed"}
+    rounds = result["rounds"]
+    repair8 = rounds[f"{ADAMW}/B=5/U=8"]["repair"]
+    assert repair8["new_rates"] == [8.26e-6] and "seeds [2002]" in repair8["proposal"]["reasons"][0]
+    # U = 7's targets differ: its targeted round asks for new rates; 1e-5 serves 5 at both U.
+    targeted7 = rounds[f"{ADAMW}/B=5/U=7"]["targeted"]
+    assert [t["rate"] for t in targeted7["proposal"]["targets"]] == [1e-5, 1.12e-5, 1.25e-5]
+    assert targeted7["new_rates"] == [1.12e-5, 1.25e-5]
+    # Its repair proposes r_5 / 1.21 again, already run at U = 8, and r_U × 1.21 (seed 2000 now
+    # stays below K* = √35): only the latter is run.
+    repair7 = rounds[f"{ADAMW}/B=5/U=7"]["repair"]
+    assert repair7["proposal"]["rates"] == [8.26e-6, 1.51e-5]
+    assert repair7["new_rates"] == [1.51e-5]
+    # Every run made at B = 5 enters U = 7's selections.
+    usable7 = attempts[2]["arms"][ADAMW]["selections"][0]["usable"]
+    assert {8.26e-6, 1.17e-5, 1.37e-5} <= set(usable7)
+    assert f"{FA}/B=5/U=7" not in rounds  # FA is feasible at U = 7 from what B = 5 ran
+
+
+def test_a_coverage_miss_after_the_targeted_round_is_repaired_in_the_state_machine() -> None:
+    # AdamW's K bends between the grid's 1e-5 and 1.5e-5: the targeted K* and U rates overshoot.
+    bent = {(ADAMW, 5)}
+    runs = grids(kinked=bent)
+    seen, result = drive(runs, kinked=bent)
+    assert seen == ["targeted", "repair", "controls", "prewarmed", "targeted", "done"]
+    first = result["attempts"][0]["arms"][ADAMW]["selections"]
+    assert "coverage" in first[1]["unmet"]  # after the targeted round
+    repair = result["rounds"][f"{ADAMW}/B=5/U=8"]["repair"]["proposal"]
+    # K* re-targeted to 1.08e-5 (also the too-wide bracket's midpoint) and U to 1.19e-5.
+    assert repair["rates"] == [1.08e-5, 1.19e-5]
+    assert sum("re-targeted" in reason for reason in repair["reasons"]) == 2
+    assert result["next"]["rates"][ADAMW] == [1e-5, 1.08e-5, 1.16e-5]
 
 
 def test_a_prewarmed_arm_still_infeasible_after_its_rounds_is_dropped() -> None:
