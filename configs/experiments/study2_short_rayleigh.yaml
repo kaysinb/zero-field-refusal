@@ -1,0 +1,9 @@
+# Study 2, amendment 3: the regular runs of the first 10 confirmation blocks (seeds 3000-3009),
+# which also measure the endpoint Rayleigh quotient (eval/rayleigh) once their outcome is
+# recorded. Otherwise experiments/study2_short, whose experiment name they keep, so that their
+# records stay with the stage's other runs; scripts/study2_short_campaigns.py confirmation uses
+# this file for those blocks only. The curvature panel it reads is generated once before them:
+#   python scripts/generate_teacher.py experiments/study2_short_rayleigh --stream curvature_panel
+defaults:
+  - experiments/study2_short
+  - eval/rayleigh

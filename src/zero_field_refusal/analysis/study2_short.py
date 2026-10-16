@@ -31,6 +31,12 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``secondary_contrasts``: A − P and P − F on the common three-arm supported cohort.
 - ``utility_family`` and ``validation_verdict``: the simultaneous utility bounds and the verdict
   of the validation blocks.
+- ``progress``: the stage as a whole for scripts/study2_short_campaigns.py and
+  scripts/study2_short_summary.py: the records checked against the campaigns (``conformance``,
+  one stream per seed), the selection's state machine, then the validation blocks and their
+  verdict, then the confirmation blocks with their support (K only); ``look_blocks`` turns those
+  into the blocks of ``looks`` once their labels exist. ``read_fixation`` reads the values the
+  simulation fixes.
 
 Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassigned order:
 ``{"block": id, "complete": bool, "supported": bool, "delta": float | None, "h": {arm: float}}``,
@@ -117,19 +123,44 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   technical failure); the instability check covers every primary-arm validation run; the FA
   controls pass when every frozen FA rate has an accepted verdict. Ambiguous records (a second
   run of an arm, rate and seed, a run at an unfrozen rate) give no verdict (``passes`` None).
+- *The stage's records* (``progress``): a regular run of the three arms has the role of its seed
+  (``study2_short.role``; Stage A's grids ``stage_a.role`` discovery), the model, protocol
+  version 2 and the 25-step schedule of experiments/study2_short (Stage A's), monitor version 2
+  (Stage A's own discovery runs read version 1), and measures the Rayleigh quotient exactly on
+  the first 10 confirmation blocks (seeds 3000-3009); an FA control has the role full_control,
+  protocol version 3 and the schedule of experiments/study2_short_fa_controls but its bound;
+  every run of a seed read that seed's one stream. Any departure, and any problem the selection
+  reports (a run it did not prescribe included), leaves the stage ``incomplete``: no campaign is
+  written on records that are not whole. Once the rates are frozen, every later run of the three
+  arms must be at the chosen batch and a frozen rate of an arm still in the stage.
+- *Validation and confirmation*: the validation blocks wait until every run of every arm at its
+  frozen rates on seeds 2100-2111 has its terminal record; a run that is not there yet is not a
+  failure. Then the verdict decides: ``confirmation`` when it passes, ``validation_failed``
+  otherwise. A confirmation block is complete once every run of every arm at its frozen rates
+  is there; for the looks also once the bracket runs of every arm supported in it are labeled
+  (``look_blocks``: a run without a label file is not labeled yet; a label file that does not
+  read is an error).
+- *The fixation record* (``read_fixation``): a JSON object with ``w_max``, ``levels`` (the
+  looks' two-sided confidence levels), ``se_floor`` and ``bias_allowance``, the last two in the
+  units of Δ (fractions, 1 pp = 0.01); each is required and none is defaulted.
 """
 
 from __future__ import annotations
 
+import functools
 import itertools
+import json
 import math
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
+from omegaconf import OmegaConf
 from scipy import stats
 
+from ..config import load_config
 from .stage_a import (
     BATCHES,
     CONTAMINATION_FRACTION,
@@ -146,7 +177,10 @@ from .stage_a import (
     contamination,
     in_bounds,
     index,
+    monitor_spec,
     rate,
+    schedule_spec,
+    stream_pairing,
     stream_time_reference,
     utility_loss,
 )
@@ -167,6 +201,14 @@ NESTED = 0.08
 SECONDARY_LEVEL = 0.9875  # per contrast per look: Bonferroni over 2 contrasts x 2 looks
 UTILITY_LEVEL = 0.95  # simultaneous, per metric
 VALIDATION_MINIMUM = 10  # blocks jointly supported for AdamW-25 and FA-25
+ARMS = (*PRIMARY_ARMS, PREWARMED)
+# The stage's configs (scripts/study2_short_campaigns.py builds every run on them).
+REGULAR = "experiments/study2_short"
+RAYLEIGH = "experiments/study2_short_rayleigh"  # REGULAR measuring the Rayleigh quotient
+FA_CONTROLS = "experiments/study2_short_fa_controls"
+ROLES = ("discovery", "validation", "confirmation")  # study2_short.role in a run's config
+RAYLEIGH_BLOCKS = 10  # the first confirmation blocks: every endpoint measures R
+FIXATION_KEYS = ("w_max", "levels", "se_floor", "bias_allowance")
 
 
 def k_star(upper: float) -> float:
@@ -1093,6 +1135,260 @@ def validation_verdict(
     return {"passes": not reasons, "reasons": reasons, "problems": [],
             "jointly_supported": joint, "causes": causes, "supports": supports,
             "unstable": unstable, "utility": family}  # fmt: skip
+
+
+# ------------------------------------------------------------------ the stage as a whole
+
+
+def seed_role(seed: int) -> str | None:
+    """The role of a regular run on ``seed``: discovery, validation or confirmation."""
+    for role, seeds in zip(ROLES, (DISCOVERY_SEEDS, VALIDATION_SEEDS, CONFIRMATION_SEEDS),
+                           strict=True):  # fmt: skip
+        if seed in seeds:
+            return role
+    return None
+
+
+def measures_rayleigh(seed: int) -> bool:
+    """Whether the regular runs of ``seed`` measure the endpoint Rayleigh quotient: those of the
+    first 10 confirmation blocks, in every arm."""
+    return seed in CONFIRMATION_SEEDS[:RAYLEIGH_BLOCKS]
+
+
+def _number(value: Any) -> bool:
+    return _finite(value) and not isinstance(value, bool)
+
+
+def read_fixation(path: str | Path) -> dict[str, float | list[float]]:
+    """The values the companion simulation fixes, from its fixation record (a JSON object):
+    ``w_max`` (> 0), ``levels`` (the looks' two-sided confidence levels, one per look, each in
+    (0.5, 1)), ``se_floor`` and ``bias_allowance`` (≥ 0, in the units of Δ). Each is required;
+    a missing or malformed one raises ``ValueError``, and none is ever defaulted."""
+    record = json.loads(Path(path).read_text())
+    if not isinstance(record, dict):
+        raise ValueError(f"{path}: a fixation record is a JSON object")
+    missing = [key for key in FIXATION_KEYS if key not in record]
+    if missing:
+        raise ValueError(f"{path}: the fixation record lacks {missing}")
+    w_max, levels, floor, allowance = (record[key] for key in FIXATION_KEYS)
+    problems = []
+    if not (_number(w_max) and w_max > 0):
+        problems.append(f"w_max {w_max!r} is not a positive number")
+    if not (isinstance(levels, list) and len(levels) == len(LOOK_SIZES)
+            and all(_number(level) and 0.5 < level < 1 for level in levels)):  # fmt: skip
+        problems.append(f"levels {levels!r} are not {len(LOOK_SIZES)} confidence levels in "
+                        "(0.5, 1)")  # fmt: skip
+    for key, value in (("se_floor", floor), ("bias_allowance", allowance)):
+        if not (_number(value) and value >= 0):
+            problems.append(f"{key} {value!r} is not a number ≥ 0")
+    if problems:
+        raise ValueError(f"{path}: " + "; ".join(problems))
+    return {"w_max": float(w_max), "levels": [float(level) for level in levels],
+            "se_floor": float(floor), "bias_allowance": float(allowance)}  # fmt: skip
+
+
+def run_facts(run_dir: str | Path) -> dict[str, Any]:
+    """What a run's config records beyond its ``Trajectory``: its role (``study2_short.role``,
+    else Stage A's ``stage_a.role``) and whether it measures the Rayleigh quotient."""
+    cfg = OmegaConf.load(Path(run_dir) / "config.yaml")
+    role = OmegaConf.select(cfg, "study2_short.role", default=None)
+    if role is None:
+        role = OmegaConf.select(cfg, "stage_a.role", default=None)
+    rayleigh = OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False)
+    return {"role": role, "rayleigh": bool(rayleigh)}
+
+
+def _unbound(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """A control's schedule without its contamination bound, which its campaign sets."""
+    instability = dict(spec.get("instability") or {})
+    instability.pop("contamination_k", None)
+    return {**spec, "instability": instability}
+
+
+@functools.cache
+def prescribed() -> dict[str, Any]:
+    """The model, protocol versions, schedules and monitor the stage's campaigns prescribe, read
+    from its configs."""
+    regular = load_config(REGULAR, ["study2_short.role=discovery"])
+    control = load_config(FA_CONTROLS)
+    return {
+        "model": f"{regular.model.name}@{regular.model.revision}",
+        "protocol_version": int(regular.protocol_version),
+        "control_protocol_version": int(control.protocol_version),
+        "short": schedule_spec(regular),
+        "control": _unbound(schedule_spec(control)),
+        "monitor": monitor_spec(regular),
+    }
+
+
+def conformance(runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """How the stage's runs (the three arms and the FA controls; others are ignored) depart from
+    its campaigns, ``facts`` giving each run's ``run_facts`` by run id: role, model, protocol
+    version, schedule, monitor and the Rayleigh quotient (see the rulings)."""
+    spec, problems = prescribed(), []
+    for run in runs:
+        if run.arm not in (*ARMS, FA_CONTROL_ARM):
+            continue
+        name, fact = run.run_id, facts.get(run.run_id)
+        if fact is None:
+            problems.append(f"{name}: its config's role and Rayleigh setting were not read")
+            continue
+        control = run.arm == FA_CONTROL_ARM
+        role = "full_control" if control else seed_role(run.seed)
+        if role is None:
+            problems.append(f"{name} has the seed {run.seed}, none of the stage's")
+        elif fact["role"] != role:
+            problems.append(f"{name} has the role {fact['role']!r}; its seed {run.seed} calls "
+                            f"for {role!r}")  # fmt: skip
+        version = spec["control_protocol_version" if control else "protocol_version"]
+        if run.model != spec["model"] or run.protocol_version != version:
+            problems.append(f"{name} ran {run.model} under protocol {run.protocol_version}")
+        want, have = (spec["control"], _unbound(run.spec)) if control else (spec["short"], run.spec)
+        differ = sorted(k for k in set(want) | set(have) if have.get(k) != want.get(k))
+        if differ:
+            problems.append(f"{name} departs from the prescribed schedule in {differ}")
+        stage_a_grid = run.monitor_version == 1 and run.role == "discovery" and not control
+        if not stage_a_grid and run.monitor_spec != spec["monitor"]:
+            problems.append(f"{name} read another monitor: {run.monitor_spec}")
+        if fact["rayleigh"] != (not control and measures_rayleigh(run.seed)):
+            problems.append(f"{name} {'measures' if fact['rayleigh'] else 'does not measure'} "
+                            f"the Rayleigh quotient on seed {run.seed}")  # fmt: skip
+    return problems
+
+
+def _keys(rates: Mapping[str, Sequence[float]], batch: int, seeds: Sequence[int]) -> list[tuple]:
+    return [(arm, batch, rate(lr), seed) for seed in seeds for arm in ARMS
+            for lr in rates.get(arm) or ()]  # fmt: skip
+
+
+def _wanted(keys: Sequence[tuple]) -> list[dict[str, Any]]:
+    return [{"arm": arm, "batch": batch, "lr": lr, "seed": seed}
+            for arm, batch, lr, seed in keys]  # fmt: skip
+
+
+def progress(
+    trajectories: Sequence[Trajectory],
+    theta0: Mapping[str, float],
+    w_max: float,
+    *,
+    facts: Mapping[str, Mapping[str, Any]],
+    seconds_per_chunk: float | None = None,
+) -> dict[str, Any]:
+    """The stage as it stands, on K, numerics and utility only. ``trajectories``: every run so
+    far, Stage A's included (its grids are the first discovery runs, its version-1 discovery set
+    fixes the stream time); ``facts``: ``run_facts`` by run id. ``next["campaign"]`` is the
+    selection's (``targeted``, ``repair``, ``controls``, ``prewarmed``, ``infeasible``), then
+    ``validation`` (with the runs to make), ``validation_failed`` or ``confirmation`` (with the
+    frozen rates); ``incomplete`` whenever the records are not whole (``problems``)."""
+    stage = [run for run in trajectories if run.arm in (*ARMS, FA_CONTROL_ARM)]
+    problems = conformance(stage, facts) + stream_pairing(stage)
+    out: dict[str, Any] = {"w_max": w_max}
+    if problems:
+        out.update(next={"campaign": "incomplete"}, problems=problems)
+        return out
+    chosen = selection(trajectories, theta0, w_max, seconds_per_chunk=seconds_per_chunk)
+    out.update(selection=chosen, problems=list(chosen["problems"]))
+    step = chosen["next"]
+    if out["problems"] or step["campaign"] != "done":
+        out["next"] = {"campaign": "incomplete"} if out["problems"] else step
+        return out
+    rates = {arm: list(lrs) for arm, lrs in step["rates"].items() if lrs}
+    batch, kstar = step["batch"], step["K_star"]
+    frozen = {"batch": batch, "U": step["U"], "K_star": kstar, "rates": rates,
+              "prewarmed_dropped": step["prewarmed_dropped"]}  # fmt: skip
+    out["frozen"] = {**frozen, "fa_controls": step["fa_controls"]}
+    later = [run for run in stage if run.arm in ARMS and run.seed not in DISCOVERY_SEEDS]
+    found, problems = index(later)
+    expected = set(_keys(rates, batch, (*VALIDATION_SEEDS, *CONFIRMATION_SEEDS)))
+    problems += [f"run outside the frozen rates {key}" for key in sorted(found)
+                 if key not in expected]  # fmt: skip
+    if problems:
+        out.update(next={"campaign": "incomplete"}, problems=problems)
+        return out
+    missing = [key for key in _keys(rates, batch, VALIDATION_SEEDS) if key not in found]
+    out["confirmation"] = _confirmation(found, rates, batch, kstar, w_max)
+    if missing:
+        out["next"] = {"campaign": "validation", **frozen, "runs": _wanted(missing)}
+        return out
+    validation = [found[key] for key in _keys(rates, batch, VALIDATION_SEEDS)]
+    verdict = validation_verdict(validation, {arm: rates[arm] for arm in PRIMARY_ARMS},
+                                 step["fa_controls"], theta0, kstar, w_max)  # fmt: skip
+    out["validation"] = verdict
+    out["validation_prewarmed_utility"] = _utility_means(
+        [run for run in validation if run.arm == PREWARMED], theta0
+    )
+    if verdict["passes"] is None:
+        out.update(next={"campaign": "incomplete"}, problems=verdict["problems"])
+    elif not verdict["passes"]:
+        out["next"] = {"campaign": "validation_failed", "reasons": verdict["reasons"]}
+    else:
+        out["next"] = {"campaign": "confirmation", **frozen}
+    return out
+
+
+def _utility_means(runs: Sequence[Trajectory], theta0: Mapping[str, float]) -> dict[float, Any]:
+    """Mean utility losses per rate over the runs that completed (the pre-warmed arm's, reported
+    beside the validation verdict without gating it)."""
+    by_rate: dict[float, list[tuple[float, float]]] = defaultdict(list)
+    for run in runs:
+        row = _endpoint(run)[0]
+        if row is not None:
+            by_rate[rate(run.lr)].append(utility_loss(row, theta0))
+    return {lr: {"runs": len(losses), "mmlu_loss_pp": statistics.fmean(m for m, _ in losses),
+                 "factual_loss_pp": statistics.fmean(f for _, f in losses)}
+            for lr, losses in sorted(by_rate.items())}  # fmt: skip
+
+
+def _confirmation(found, rates, batch, kstar, w_max) -> list[dict[str, Any]]:
+    """Every confirmation block in its preassigned order: its runs, complete once each arm has
+    a run at each of its frozen rates, then each arm's support."""
+    blocks = []
+    for number, seed in enumerate(CONFIRMATION_SEEDS, 1):
+        keys = _keys(rates, batch, (seed,))
+        present = [key for key in keys if key in found]
+        entry: dict[str, Any] = {"block": number, "seed": seed, "runs": len(present),
+                                 "expected": len(keys), "complete": len(present) == len(keys),
+                                 "supported": False, "supports": {}}  # fmt: skip
+        if entry["complete"]:
+            entry["supports"] = {
+                arm: block_support([found[key] for key in keys if key[0] == arm], kstar, w_max,
+                                   rates=lrs)
+                for arm, lrs in rates.items()
+            }  # fmt: skip
+            entry["supported"] = all(entry["supports"][arm]["supported"] for arm in PRIMARY_ARMS)
+        blocks.append(entry)
+    return blocks
+
+
+def look_blocks(
+    blocks: Sequence[Mapping[str, Any]],
+    labels: Mapping[str, Sequence[Mapping[str, Any]]],
+    kstar: float,
+) -> list[dict[str, Any]]:
+    """``progress``'s confirmation blocks as ``looks`` and ``secondary_contrasts`` read them,
+    given the label rows of every labeled run (``labels``: run id → rows; a run absent from it
+    is not labeled yet). A block is complete once its runs are and the bracket runs of every arm
+    supported in it are labeled; Δ, the worst case and every supported arm's h come from
+    ``block_difference``, with the missing labels it read per arm."""
+    out = []
+    for block in blocks:
+        entry: dict[str, Any] = {"block": block["block"], "seed": block["seed"],
+                                 "complete": False, "supported": False, "delta": None,
+                                 "h": {}}  # fmt: skip
+        if block["complete"]:
+            brackets = [s["bracket"] for s in block["supports"].values() if s["supported"]]
+            unlabeled = sorted({b[side]["run"] for b in brackets for side in ("lo", "hi")
+                                if b[side]["run"] not in labels})  # fmt: skip
+            if unlabeled:
+                entry["unlabeled"] = unlabeled
+            else:
+                found = block_difference(block["supports"], labels, kstar)
+                missing = {arm: a["missing"] for arm, a in found["arms"].items()}
+                entry.update(complete=True, supported=found["supported"], delta=found["delta"],
+                             delta_missing_harmful=found["delta_missing_harmful"], h=found["h"],
+                             missing=missing)  # fmt: skip
+        out.append(entry)
+    return out
 
 
 RULINGS = __doc__.split("**Rulings**")[1].strip() if __doc__ else ""

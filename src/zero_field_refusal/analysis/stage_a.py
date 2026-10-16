@@ -188,6 +188,7 @@ def arm_of(cfg: Any) -> str:
         ("adamw", "k_stopped"): "adamw_long",
         ("adamw", "fixed"): "adamw_25",
         ("adam_frozen", "fixed"): "frozen_adam_25",
+        ("adamw_prewarmed", "fixed"): "prewarmed_adamw_25",  # amendment 3's secondary arm
     }
     if (name, policy) not in arms:
         raise TrajectoryError(f"No study-2 arm for optimizer {name!r} under {policy!r}")
