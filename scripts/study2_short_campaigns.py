@@ -70,8 +70,10 @@ manifest and samples. Around the stage-0 checks the driver runs:
   regenerated manifest into the stage-0 run's directory (soft_targets_regeneration.json, laid
   out as the record of 2026-10-14); then the regenerated distributions are deleted, the rest of
   the regenerated stream moves into the dated directory (under the run's id), and the archived
-  copy goes back, so that DATA_DIR matches its inventories. Each step is skipped once done, so
-  the driver can be run again at any point.
+  copy goes back, so that DATA_DIR matches its inventories. A regeneration that differs from the
+  archive is kept whole in the dated directory with a ``-regenerated`` suffix, for inspection;
+  the archived copy goes back and the step stops the driver with an error, on every later run
+  too. Each step is skipped once done, so the driver can be run again at any point.
 """
 
 import argparse
@@ -375,8 +377,15 @@ def _leaves(value: object, prefix: str = "") -> dict[str, object]:
     return out
 
 
+def regenerated_place(dated: Path, stream: Path, run_id: str, *, equal: bool) -> Path:
+    """Where the regenerated stream goes in the dated aside directory: its manifest and samples
+    under the run's id when it equals the archive; otherwise the whole stream, distributions
+    included, beside the archived copy's place with a ``-regenerated`` suffix, for inspection."""
+    return dated / run_id / stream if equal else dated / f"{stream}-regenerated"
+
+
 def regeneration_record(
-    archived: Path, regenerated: Path, run_dir: Path, *, stream: Path, kept: Path
+    archived: Path, regenerated: Path, run_dir: Path, *, stream: Path, dated: Path
 ) -> dict:
     """The comparison of the regenerated stream with the archived copy's manifest, laid out as
     runs/runpod/evidence/soft-targets-regeneration-20261014.json (``archived`` for its ``pilot``:
@@ -396,6 +405,23 @@ def regeneration_record(
     old_leaves, new_leaves = _leaves(old), _leaves(new)
     differing = sorted(key for key in old_leaves.keys() | new_leaves.keys()
                        if old_leaves.get(key) != new_leaves.get(key))  # fmt: skip
+    comparison = {
+        "samples_equal": samples == old.get("sha256"),
+        "distributions_equal": distributions == (old.get("distributions") or {}).get("sha256"),
+        "manifest_fields_differing": differing,
+    }
+    equal = comparison["samples_equal"] and comparison["distributions_equal"]
+    kept = regenerated_place(dated, stream, run_dir.name, equal=equal)
+    if equal:
+        after = (f"{DISTRIBUTIONS_FILE} deleted after the check (retention policy); the archived "
+                 "copy put back in DATA_DIR, so DATA_DIR matches the existing inventories; the "
+                 f"rest of the regenerated stream (manifest and samples) kept at "
+                 f"{kept}.")  # fmt: skip
+    else:
+        after = ("The regeneration differs from the archive: the archived copy put back in "
+                 "DATA_DIR, so DATA_DIR matches the existing inventories; the regenerated stream, "
+                 f"{DISTRIBUTIONS_FILE} included, kept at {kept} for inspection; the driver "
+                 "stopped.")  # fmt: skip
 
     def facts(manifest: dict) -> dict:
         return {"driver": (manifest.get("hardware") or {}).get("driver"),
@@ -425,14 +451,8 @@ def regeneration_record(
             "distributions_sha256_measured_by": "teacher.file_sha256 of the file on the Pod",
             "distributions_sha256_in_manifest": (new.get("distributions") or {}).get("sha256"),
         },
-        "comparison": {
-            "samples_equal": samples == old.get("sha256"),
-            "distributions_equal": distributions == (old.get("distributions") or {}).get("sha256"),
-            "manifest_fields_differing": differing,
-        },
-        "after": f"{DISTRIBUTIONS_FILE} deleted after the check (retention policy); the archived "
-        "copy put back in DATA_DIR, so DATA_DIR matches the existing inventories; the rest of "
-        f"the regenerated stream (manifest and samples) kept at {kept}.",
+        "comparison": comparison,
+        "after": after,
     }
 
 
@@ -443,10 +463,25 @@ def _write_new(path: Path, text: str) -> None:
     partial.replace(path)
 
 
+def _equal(record: Path) -> bool:
+    compared = json.loads(record.read_text())["comparison"]
+    return bool(compared["samples_equal"] and compared["distributions_equal"])
+
+
+def _differs(record: Path, done: list[str]) -> None:
+    """Stop: the regeneration differs from the archive."""
+    sys.exit("\n".join([*done, f"the regeneration differs from the archive ({record}): the "
+                        "archived copy is back in DATA_DIR and the regenerated stream is kept "
+                        "for inspection; read the comparison before going on"]))  # fmt: skip
+
+
 def restore(path: Path, data_root: Path, aside_root: Path, run_dir: Path) -> str:
-    """After a passed stage-0 run: the comparison into ``run_dir``, then the regenerated
-    distributions deleted, the rest of the regenerated stream moved beside the set-aside copy and
-    that copy put back at ``path``. Each step done before is skipped."""
+    """After a passed stage-0 run: the comparison into ``run_dir``; then, when the regenerated
+    samples and distributions equal the archive's, the regenerated distributions deleted and the
+    rest of the regenerated stream moved into the dated aside directory, otherwise the whole
+    regenerated stream kept there for inspection (``regenerated_place``); then the archived copy
+    put back at ``path``. A regeneration that differs stops with an error, also when run again.
+    Each step done before is skipped."""
     from zero_field_refusal.teacher import DISTRIBUTIONS_FILE, MANIFEST_FILE
 
     found = set_aside_copies(path, data_root, aside_root)
@@ -454,6 +489,8 @@ def restore(path: Path, data_root: Path, aside_root: Path, run_dir: Path) -> str
     distributions = path / DISTRIBUTIONS_FILE
     if not found:
         if record.is_file():
+            if not _equal(record):
+                _differs(record, [])
             return f"kept: the archived copy is back at {path}; the comparison is {record}"
         if distributions.exists():
             sys.exit(f"{path} holds distributions and no copy is set aside under {aside_root}: "
@@ -463,29 +500,33 @@ def restore(path: Path, data_root: Path, aside_root: Path, run_dir: Path) -> str
                 f"{path}: nothing to compare or restore")  # fmt: skip
     archived = found[0]
     relative = path.relative_to(data_root)
-    kept = aside_root / archived.relative_to(aside_root).parts[0] / run_dir.name / relative
+    dated = aside_root / archived.relative_to(aside_root).parts[0]
     done = []
     if not record.is_file():
         if not distributions.is_file():
             sys.exit(f"no regenerated distributions at {path} to compare with {archived}")
-        found_record = regeneration_record(archived, path, run_dir, stream=relative, kept=kept)
+        found_record = regeneration_record(archived, path, run_dir, stream=relative, dated=dated)
         _write_new(run_dir / REGENERATED_MANIFEST, (path / MANIFEST_FILE).read_text())
         _write_new(record, json.dumps(found_record, indent=2) + "\n")
         compared = found_record["comparison"]
         done.append(f"compared: samples equal {compared['samples_equal']}, distributions equal "
                     f"{compared['distributions_equal']} ({record})")  # fmt: skip
-    if distributions.exists():
+    equal = _equal(record)
+    if equal and distributions.exists():
         distributions.unlink()
         done.append(f"deleted {distributions}")
     if path.exists():
+        kept = regenerated_place(dated, relative, run_dir.name, equal=equal)
         if kept.exists():
             sys.exit(f"{kept} exists: the regenerated stream at {path} has nowhere to go")
         kept.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(path, kept)
-        done.append(f"kept the rest of the regenerated stream at {kept}")
+        done.append(f"kept the {'rest of the ' if equal else ''}regenerated stream at {kept}")
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(archived, path)
     done.append(f"put back: {archived} -> {path}")
+    if not equal:
+        _differs(record, done)
     return "\n".join(done)
 
 

@@ -113,8 +113,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   refused. Blocks are read in order up to the first incomplete one. When the cap is reached
   without a stop, the terminal look happens there with the last level (also when look 1 fell on
   the cap and did not stop). With fewer than two supported blocks a look has no interval and is
-  inconclusive. Equivalence: the interval strictly inside ±5 pp; direction: 0 strictly outside
-  it; ±8: strictly inside ±8 pp; inconclusive when none of the three holds.
+  inconclusive. Equivalence: the interval within [−5, 5] pp, bounds included; direction: 0
+  strictly outside it; ±8: within [−8, 8] pp, bounds included; inconclusive when none of the
+  three holds. These are the simulation's conventions, on which the levels' calibration rests
+  (coordinator, 2026-10-16; the bounds were strict before).
 - *The looks' interval* (coordinator, 2026-10-16: looks 36 and 60, cap 80, α 0.040, levels
   0.9920 / 0.9631, SE floor 0, w_max 0.35, bias allowance 0.01079): the paired seed-block
   bootstrap-t, the studentized bootstrap of the mean over the look's supported blocks exactly as
@@ -1027,16 +1029,18 @@ def bootstrap_t_interval(
 
 
 def _readings(interval: Sequence[float] | None, *, equivalence: bool = True) -> list[str]:
-    """The interval's readings; ``equivalence`` False when the look may not conclude it."""
+    """The interval's readings, with the simulation's conventions (its ``_inside`` and
+    ``sequential_decisions``): equivalence and ±8 within the margin, bounds included; direction
+    0 strictly outside. ``equivalence`` False when the look may not conclude it."""
     if interval is None:
         return ["inconclusive"]
     lo, hi = interval
     found = []
-    if equivalence and lo > -EQUIVALENCE and hi < EQUIVALENCE:
+    if equivalence and lo >= -EQUIVALENCE and hi <= EQUIVALENCE:
         found.append("equivalence")
     if lo > 0 or hi < 0:
         found.append("direction")
-    if lo > -NESTED and hi < NESTED:
+    if lo >= -NESTED and hi <= NESTED:
         found.append("within_8")
     return found or ["inconclusive"]
 

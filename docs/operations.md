@@ -439,6 +439,11 @@ bash "$C/prep.sh"
        `soft_targets_regeneration.json` and the regenerated manifest into the run's directory.
     3. It then deletes the regenerated distributions, keeps the rest of the regenerated stream
        under the dated directory, and puts the archived copy back.
+  - **A regeneration that differs from the archive stops the driver.** The comparison is
+    written, and the archived copy is put back. The whole regenerated stream, distributions
+    included, is kept for inspection under the dated directory (`seed-0-regenerated`). The step
+    fails, and it fails again on every later run of the driver until the difference is
+    resolved.
   - Each step is skipped once done: a copy already set aside stays there, and a kept run is
     neither set aside again nor rerun.
   - Archive both with their own inventories; later Pods restore them and leave out `--once`.

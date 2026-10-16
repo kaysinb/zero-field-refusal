@@ -733,6 +733,29 @@ def test_direction_and_equivalence_can_hold_together() -> None:
     assert first["readings"] == ["within_8"] and not first["stops"]
 
 
+def test_the_margins_include_their_bounds_and_direction_excludes_0_strictly() -> None:
+    # The simulation's conventions: _inside(low, high, m) = low ≥ −m and high ≤ m; a direction
+    # needs low > 0 or high < 0.
+    readings = study2_short._readings
+    assert readings([-0.05, 0.05]) == ["equivalence", "within_8"]
+    assert readings([-0.05000001, 0.05]) == ["within_8"]
+    assert readings([-0.08, 0.08]) == ["within_8"]
+    assert readings([-0.08, 0.08000001]) == ["inconclusive"]
+    assert readings([0.0, 0.03]) == ["equivalence", "within_8"]  # 0 on the bound: no direction
+    assert readings([-0.03, 0.0]) == ["equivalence", "within_8"]
+    assert readings([1e-9, 0.03]) == ["equivalence", "direction", "within_8"]
+    # Through the looks: two blocks at exactly 5 pp give the interval [0.05, 0.05] under either
+    # interval, which concludes equivalence and stops look 1.
+    for kind in (T, BOOTSTRAP):
+        first = looks(blocks_of([0.05, 0.05]), LEVELS, (2, 4), se_floor=0.0, bias_allowance=0.0,
+                      **kind)["looks"][0]  # fmt: skip
+        assert first["interval"] == [0.05, 0.05] and first["stops"]
+        assert first["readings"] == ["equivalence", "direction", "within_8"]
+        edge = looks(blocks_of([-0.08, -0.08]), LEVELS, (2, 4), se_floor=0.0,
+                     bias_allowance=0.0, **kind)["looks"][0]  # fmt: skip
+        assert edge["readings"] == ["direction", "within_8"]
+
+
 def test_the_cap_ends_the_looks_with_a_terminal_look() -> None:
     deltas = [0.3 * (-1) ** (i // 2) for i in range(90)]
     unsupported = {i for i in range(90) if i % 2}  # half the blocks unsupported

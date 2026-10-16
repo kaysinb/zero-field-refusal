@@ -947,30 +947,62 @@ def test_stage_0_sets_the_copy_aside_compares_and_puts_it_back(pod, capsys) -> N
     assert (pod.path / "manifest.json").read_bytes() == archived
 
 
-def test_put_back_resumes_where_it_stopped_and_records_a_difference(pod) -> None:
+def test_put_back_resumes_where_it_stopped(pod) -> None:
     module = pod.module
     stream_copy(pod.path, driver="595", day="2026-10-09")
     module.set_aside(pod.path, pod.data, pod.aside, "20261016")
     # A failed attempt regenerated the stream already: setting aside again keeps both in place.
-    stream_copy(pod.path, driver="580", day="2026-10-16", samples='{"id": "other"}\n',
-                distributions=b"other")  # fmt: skip
+    stream_copy(pod.path, driver="580", day="2026-10-16", distributions=DISTRIBUTIONS)
     assert "already set aside" in module.set_aside(pod.path, pod.data, pod.aside, "20261017")
-    assert (pod.path / "distributions.safetensors").read_bytes() == b"other"
+    assert (pod.path / "distributions.safetensors").read_bytes() == DISTRIBUTIONS
     pod.run_dir.mkdir(parents=True)
     (pod.run_dir / "meta.json").write_text("{}")
     # Interrupted right after the comparison was written: the rest is done, the record kept.
-    relative = pod.path.relative_to(pod.data)
-    found = module.regeneration_record(pod.aside / "soft-targets-aside-20261016" / relative,
-                                       pod.path, pod.run_dir, stream=relative,
-                                       kept=Path("k"))  # fmt: skip
-    assert found["comparison"]["samples_equal"] is False
-    assert found["comparison"]["distributions_equal"] is False
+    relative, dated = pod.path.relative_to(pod.data), pod.aside / "soft-targets-aside-20261016"
+    found = module.regeneration_record(dated / relative, pod.path, pod.run_dir, stream=relative,
+                                       dated=dated)  # fmt: skip
+    assert found["comparison"]["samples_equal"] and found["comparison"]["distributions_equal"]
     (pod.run_dir / "soft_targets_regeneration.json").write_text(json.dumps(found))
     done = module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
     assert "compared" not in done and "put back" in done
     assert json.loads((pod.run_dir / "soft_targets_regeneration.json").read_text()) == found
     assert not (pod.path / "distributions.safetensors").exists()
     assert json.loads((pod.path / "manifest.json").read_text())["hardware"]["driver"] == "595"
+    assert (dated / "s0" / relative / "manifest.json").is_file()
+
+
+def test_a_regeneration_that_differs_from_the_archive_stops_the_driver(pod, capsys) -> None:
+    stream_copy(pod.path, driver="595", day="2026-10-09")
+    archived = (pod.path / "manifest.json").read_bytes()
+    pod.cli("soft-targets-aside")
+    # The samples are the same, the distributions are not: any difference stops.
+    stream_copy(pod.path, driver="580", day="2026-10-16", distributions=b"other")
+    pod.run_dir.mkdir(parents=True)
+    (pod.run_dir / "meta.json").write_text("{}")
+    with pytest.raises(SystemExit, match="the regeneration differs from the archive") as stop:
+        pod.cli("soft-targets-restore")
+    assert isinstance(stop.value.code, str)  # a message: exit status 1
+    record = json.loads((pod.run_dir / "soft_targets_regeneration.json").read_text())
+    assert record["comparison"]["samples_equal"] and not record["comparison"]["distributions_equal"]
+    assert record["after"].startswith("The regeneration differs from the archive")
+    # DATA_DIR matches its inventories again; the whole regenerated stream waits for inspection.
+    assert (pod.path / "manifest.json").read_bytes() == archived
+    assert sorted(p.name for p in pod.path.iterdir()) == ["manifest.json", "samples.jsonl"]
+    (dated,) = pod.aside.iterdir()
+    relative = pod.path.relative_to(pod.data)
+    regenerated = dated / f"{relative}-regenerated"
+    assert regenerated.name == "seed-0-regenerated"
+    assert regenerated.parent == dated / relative.parent
+    assert (regenerated / "distributions.safetensors").read_bytes() == b"other"
+    assert (pod.run_dir / "soft_targets_manifest_regenerated.json").is_file()
+    assert pod.module.set_aside_copies(pod.path, pod.data, pod.aside) == []
+    written = (pod.run_dir / "soft_targets_regeneration.json").read_text()
+    capsys.readouterr()
+    with pytest.raises(SystemExit, match="the regeneration differs from the archive"):
+        pod.cli("soft-targets-restore")  # run again: it still stops, and nothing moves
+    assert (pod.run_dir / "soft_targets_regeneration.json").read_text() == written
+    assert (pod.path / "manifest.json").read_bytes() == archived
+    assert (regenerated / "distributions.safetensors").read_bytes() == b"other"
 
 
 def test_the_soft_target_steps_refuse_what_they_cannot_resolve(pod) -> None:
