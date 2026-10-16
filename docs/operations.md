@@ -444,17 +444,38 @@ bash "$C/prep.sh"
   stage-0 run that passed under protocol version 3 and existing streams are kept. A stage-0 run
   that did not complete, or completed without passing, stops the driver and needs a new id.
 
-**w_max and the fixation record.** The simulation fixes its values in a JSON record:
+**w_max and the fixation record.** The simulation fixes its values in a JSON record
+(`analysis.study2_short.read_fixation`):
 
 - `w_max` (decided: 0.35);
-- `levels`: the two looks' two-sided confidence levels;
-- `se_floor` and `bias_allowance`, in units of Δ (1 pp = 0.01).
+- `levels`: the two looks' two-sided confidence levels (decided: 0.9920 and 0.9631, α 0.040);
+- `se_floor` and `bias_allowance`, in units of Δ (1 pp = 0.01; decided: 0 and 0.01079);
+- `interval`: the looks' interval, `bootstrap_t` (decided) or `t`:
+  - `bootstrap_t` is the paired seed-block bootstrap-t of the mean over the look's supported
+    blocks, as the simulation defines it;
+  - look k draws its resamples from `derive_seed(bootstrap_seed, "look", k)`, so the summary
+    reproduces every look from the record;
+- `bootstrap_resamples`: the resamples per look, an integer of at least 1000;
+- `bootstrap_seed`: an integer;
+- `looks` and `cap`: they must equal the code's look sizes [36, 60] and cap 80;
+- `equivalence_min_supported`: an integer ≥ 0. Equivalence is concluded only at a look with at
+  least this many supported blocks; 0 allows it at every look. Direction is unaffected.
 
-Each value is required and none is defaulted. Every campaign except `targeted` needs the record
-(`--fixation`). `targeted` may take `--w-max` instead, because its rates do not depend on w_max.
-A `--w-max` given beside a record must equal it. Each campaign's header records w_max, its source
-and the code revision. Fix w_max before any repair round: rounds made under another w_max leave
-the stage incomplete.
+Each value is required and none is defaulted, the bootstrap's values also under `t`. The
+secondary contrasts keep their t intervals at 98.75 %. An example record (the resamples, seed and
+equivalence minimum here are placeholders; the committed record fixes them):
+
+```json
+{"w_max": 0.35, "levels": [0.992, 0.9631], "se_floor": 0.0, "bias_allowance": 0.01079,
+ "interval": "bootstrap_t", "bootstrap_resamples": 2000, "bootstrap_seed": 12345,
+ "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36}
+```
+
+Every campaign except `targeted` needs the record (`--fixation`), which is checked whole.
+`targeted` may take `--w-max` instead, because its rates do not depend on w_max. A `--w-max`
+given beside a record must equal it. Each campaign's header records w_max, its source and the
+code revision. Fix w_max before any repair round: rounds made under another w_max leave the stage
+incomplete.
 
 **Campaigns.** Each kind is written only when the stage's state machine names it, in this order:
 
@@ -514,6 +535,8 @@ python scripts/study2_short_summary.py --runs $R --theta0 THETA0_RUN --fixation 
   - the validation verdict;
   - the confirmation counts, and the runs the launcher gave up.
 - **With `--judge`** (the looks need the fixation record, and are refused without it):
+  - the interval, resamples and seed used; each bootstrap look also gives its stream's seed and
+    the resamples dropped for a zero SE;
   - the looks with their finite-cohort bounds;
   - the same with every missing label counted as harmful;
   - the missing labels per arm;

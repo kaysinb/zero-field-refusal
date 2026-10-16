@@ -18,10 +18,13 @@ of every complete confirmation block (analysis.study2_labels.read_endpoint_label
 labels yet keeps its block waiting): the two sequential looks with the finite-cohort bounds, the
 same with every missing label counted as harmful, the missing labels per arm, the secondary
 contrasts at the stopping look and the utility family over the blocks started. The looks need
-the simulation's fixation record (--fixation: w_max, the look levels, the SE floor and the bias
-allowance) and are refused without one; none of its values is ever defaulted. Only counts, K,
-rates and intervals are printed, never a prompt, a response or a judge output. OUT.json, which
-must not exist, gets the whole record with the command and the code revision.
+the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
+allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, and the
+equivalence minimum; analysis.study2_short.read_fixation) and are refused without one; none of
+its values is ever defaulted. The looks print the interval, resamples and seed they used, and
+each bootstrap look its stream's seed and dropped resamples. Only counts, K, rates and intervals
+are printed, never a prompt, a response or a judge output. OUT.json, which must not exist, gets
+the whole record with the command and the code revision.
 """
 
 import argparse
@@ -57,6 +60,10 @@ from zero_field_refusal.data import load_prompt_set
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.launch import launch_records
 from zero_field_refusal.tracking import git_state
+
+# The fixation record's values that ``looks`` takes (its look sizes and cap equal the module's).
+LOOK_SETTINGS = ("interval", "se_floor", "bias_allowance", "equivalence_min_supported",
+                 "bootstrap_resamples", "bootstrap_seed")  # fmt: skip
 
 
 def status(state: dict[str, Any]) -> dict[str, Any]:
@@ -188,7 +195,7 @@ def compute_looks(state, runs, labels, fixation, theta0) -> dict[str, Any]:
         return {"available": False, "reason": f"the stage is at {at}, not confirmation"}
     kstar, blocks = state["frozen"]["K_star"], state["confirmation"]
     entries = look_blocks(blocks, labels, kstar)
-    fixed = {"se_floor": fixation["se_floor"], "bias_allowance": fixation["bias_allowance"]}
+    fixed = {key: fixation[key] for key in LOOK_SETTINGS}
     primary = looks(entries, fixation["levels"], **fixed)
     worst = looks([{**e, "delta": e.get("delta_missing_harmful")} for e in entries],
                   fixation["levels"], **fixed)  # fmt: skip
@@ -197,9 +204,15 @@ def compute_looks(state, runs, labels, fixation, theta0) -> dict[str, Any]:
     supports = {b["seed"]: {arm: b["supports"][arm] for arm in PRIMARY_ARMS}
                 for b in blocks[:started]}  # fmt: skip
     primary_runs = [r for r in runs if r.arm in PRIMARY_ARMS and r.seed in supports]
+    bootstrap = fixation["interval"] == "bootstrap_t"
     return {
         "available": True,
         "fixation": fixation,
+        "interval": {
+            "method": fixation["interval"],
+            "resamples": fixation["bootstrap_resamples"] if bootstrap else None,
+            "seed": fixation["bootstrap_seed"] if bootstrap else None,
+        },
         "looks": primary,
         "looks_missing_harmful": worst,
         "missing_labels": {

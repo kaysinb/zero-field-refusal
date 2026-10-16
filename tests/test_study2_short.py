@@ -9,6 +9,7 @@ import math
 import statistics
 from pathlib import Path
 
+import numpy as np
 import pytest
 from scipy import stats
 
@@ -22,6 +23,7 @@ from zero_field_refusal.analysis.study2_short import (
     PREWARMED,
     block_difference,
     block_support,
+    bootstrap_t_interval,
     candidate_order,
     control_conformance,
     control_verdict,
@@ -37,6 +39,7 @@ from zero_field_refusal.analysis.study2_short import (
     utility_family,
     validation_verdict,
 )
+from zero_field_refusal.seeding import derive_seed
 
 THETA0 = {"benchmark_accuracy": 0.60, "factual_accuracy": 0.80}
 SEEDS = (2000, 2001, 2002)
@@ -646,18 +649,24 @@ def test_the_interpolation_with_hand_numbers() -> None:
 # ------------------------------------------------------------------ the looks
 
 LEVELS = (0.995, 0.952)  # two-sided confidence levels of looks 1 and 2
+DECIDED = (0.9920, 0.9631)  # the decided levels (α 0.040 at 36/60)
+T = {"interval": "t", "equivalence_min_supported": 0}  # the t interval's mechanics
+BOOTSTRAP = {"interval": "bootstrap_t", "bootstrap_resamples": 2000, "bootstrap_seed": 11}
 
 
 def looks(blocks, levels, n=(24, 50), **kw):
-    """The looks' mechanics, tested at sizes (24, 50); the decided sizes are (36, 60)."""
-    return study2_short.looks(blocks, levels, n, **kw)
+    """The looks' mechanics, tested at sizes (24, 50) with the t interval unless ``kw`` says
+    otherwise; the decided sizes are (36, 60)."""
+    return study2_short.looks(blocks, levels, n, **{**T, **kw})
 
 
 def test_the_looks_fall_at_the_decided_sizes() -> None:
     assert LOOK_SIZES == (36, 60) and study2_short.CAP == 80
     deltas = [0.3 * (-1) ** i for i in range(80)]  # inconclusive at look 1
-    found = study2_short.looks(blocks_of(deltas), LEVELS, se_floor=0.0, bias_allowance=0.0)
+    found = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.0,
+                               equivalence_min_supported=36, **BOOTSTRAP)  # fmt: skip
     assert [(look["look"], look["supported"]) for look in found["looks"]] == [(1, 36), (2, 60)]
+    assert [look["method"] for look in found["looks"]] == ["bootstrap_t"] * 2
 
 
 def blocks_of(deltas, unsupported=(), incomplete=()) -> list[dict]:
@@ -761,6 +770,139 @@ def test_the_se_floor_bounds_the_interval_below() -> None:
     assert first["sd"] == 0.0 and first["se"] == pytest.approx(0.02 / math.sqrt(24))
     t = stats.t.ppf(1 - (1 - LEVELS[0]) / 2, 23)
     assert first["interval"][1] - first["interval"][0] == pytest.approx(2 * t * 0.02 / 24**0.5)
+
+
+# The bootstrap-t (decided 2026-10-16), as analysis/study2_short_sim.py (revision 3) defines it.
+
+SKEWED = [0.0] * 20 + [0.01] * 6 + [0.03, 0.05, 0.08, 0.12, 0.2, 0.3]  # right-skewed Δ
+
+
+def reference_bootstrap_t(values, level, resamples, seed):
+    """The bootstrap-t written out directly, with np.quantile."""
+    x = np.asarray(values, dtype=float)
+    n = x.size
+    samples = x[np.random.default_rng(seed).integers(0, n, (resamples, n))]
+    se_star = samples.std(axis=1, ddof=1) / math.sqrt(n)
+    kept = se_star > 0
+    t_star = (samples.mean(axis=1)[kept] - x.mean()) / se_star[kept]
+    q_lo, q_hi = np.quantile(t_star, [(1 - level) / 2, (1 + level) / 2])
+    se = x.std(ddof=1) / math.sqrt(n)
+    return x.mean() - q_hi * se, x.mean() - q_lo * se, int(resamples - kept.sum())
+
+
+def test_the_bootstrap_t_interval_is_the_direct_computation() -> None:
+    values = [0.02, -0.01, 0.05, 0.0, 0.03, -0.02, 0.04, 0.01, 0.06, -0.03, 0.02, 0.0]
+    low, high, dropped = bootstrap_t_interval(values, 0.95, 2000, np.random.default_rng(5))
+    ref_low, ref_high, ref_dropped = reference_bootstrap_t(values, 0.95, 2000, 5)
+    assert (low, high) == pytest.approx((ref_low, ref_high), rel=1e-12, abs=1e-15)
+    assert dropped == ref_dropped
+    # Reproducible from the seed; the resamples drive it.
+    assert bootstrap_t_interval(values, 0.95, 2000, np.random.default_rng(5)) == (
+        low, high, dropped)  # fmt: skip
+    assert bootstrap_t_interval(values, 0.95, 2000, np.random.default_rng(6))[:2] != (low, high)
+
+
+def test_resamples_with_a_zero_se_are_dropped_and_counted() -> None:
+    values = [0.0, 0.0, 0.0, 0.1]  # a resample of zeros only has se* = 0
+    low, high, dropped = bootstrap_t_interval(values, 0.9, 4000, np.random.default_rng(2))
+    ref_low, ref_high, ref_dropped = reference_bootstrap_t(values, 0.9, 4000, 2)
+    assert dropped == ref_dropped and 4000 * 0.25 < dropped < 4000 * 0.4  # (3/4)^4 ≈ 0.32
+    assert (low, high) == pytest.approx((ref_low, ref_high), rel=1e-12, abs=1e-15)
+
+
+def test_the_bootstrap_t_interval_is_asymmetric_for_skewed_data() -> None:
+    mean = statistics.fmean(SKEWED)
+    low, high, _ = bootstrap_t_interval(SKEWED, 0.95, 2000, np.random.default_rng(3))
+    assert high - mean > 2 * (mean - low) > 0  # the long right tail widens the upper side
+    mirrored = bootstrap_t_interval([-v for v in SKEWED], 0.95, 2000, np.random.default_rng(3))
+    assert mirrored[:2] == pytest.approx((-high, -low))
+    t_half = stats.t.ppf(0.975, len(SKEWED) - 1) * statistics.stdev(SKEWED) / len(SKEWED) ** 0.5
+    assert low > mean - t_half  # the t interval is symmetric, the bootstrap-t is not
+
+
+def test_a_zero_se_gives_the_mean_and_too_few_blocks_no_interval() -> None:
+    low, high, dropped = bootstrap_t_interval([0.01] * 24, 0.99, 2000, np.random.default_rng(1))
+    assert low == high == pytest.approx(0.01) and dropped == 2000
+    # With a floor every resample is kept, and T* ≡ 0 collapses the interval just the same.
+    floored = bootstrap_t_interval([0.01] * 24, 0.99, 2000, np.random.default_rng(1), floor=0.02)
+    assert floored == pytest.approx((0.01, 0.01, 0))
+    rng = np.random.default_rng(1)
+    state = rng.bit_generator.state
+    assert bootstrap_t_interval([0.3], 0.99, 2000, rng) == (-math.inf, math.inf, 0)
+    assert rng.bit_generator.state == state  # nothing is drawn below two blocks
+
+    class SameDraw:  # every resample repeats block 1: all dropped, fewer than 2 kept
+        def integers(self, low, high, size):
+            return np.zeros(size, dtype=int)
+
+    assert bootstrap_t_interval([0.0, 0.1], 0.99, 50, SameDraw()) == (-math.inf, math.inf, 50)
+
+
+def test_the_looks_draw_each_bootstrap_from_its_own_seeded_stream() -> None:
+    deltas = [SKEWED[i % len(SKEWED)] - 0.02 for i in range(60)]
+    found = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.01079,
+                               equivalence_min_supported=0, **BOOTSTRAP)  # fmt: skip
+    for look, n in zip(found["looks"], LOOK_SIZES, strict=True):
+        seed = derive_seed(11, "look", look["look"])
+        level = DECIDED[look["look"] - 1]
+        low, high, dropped = bootstrap_t_interval(deltas[:n], level, 2000,
+                                                  np.random.default_rng(seed))  # fmt: skip
+        assert look["interval"] == [low, high] and look["t"] is None
+        assert look["bootstrap"] == {"resamples": 2000, "seed": 11, "stream_seed": seed,
+                                     "dropped": dropped}  # fmt: skip
+        assert look["mean"] == pytest.approx(statistics.fmean(deltas[:n]))
+    again = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.01079,
+                               equivalence_min_supported=0, **BOOTSTRAP)  # fmt: skip
+    assert again == found
+    other = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.01079,
+                               equivalence_min_supported=0,
+                               **{**BOOTSTRAP, "bootstrap_seed": 12})  # fmt: skip
+    assert other["looks"][0]["interval"] != found["looks"][0]["interval"]
+
+
+def test_a_bootstrap_look_with_one_block_has_no_interval() -> None:
+    found = looks(blocks_of([0.0] * 80, unsupported=set(range(79))), LEVELS, se_floor=0.0,
+                  bias_allowance=0.0, **BOOTSTRAP)  # fmt: skip
+    (terminal,) = found["looks"]
+    assert terminal["at_cap"] and terminal["interval"] is None
+    assert terminal["readings"] == ["inconclusive"] and terminal["bootstrap"]["dropped"] == 0
+    flat = looks(blocks_of([0.01] * 24), LEVELS, se_floor=0.0, bias_allowance=0.0, **BOOTSTRAP)
+    first = flat["looks"][0]
+    assert first["interval"] == pytest.approx([0.01, 0.01]) and first["stops"]
+    assert first["bootstrap"]["dropped"] == 2000
+
+
+@pytest.mark.parametrize("bad", [{"interval": "percentile"}, {"bootstrap_resamples": None},
+                                 {"bootstrap_resamples": 1}, {"bootstrap_seed": 1.5},
+                                 {"equivalence_min_supported": -1},
+                                 {"equivalence_min_supported": None}])  # fmt: skip
+def test_looks_refuse_a_malformed_interval_setting(bad) -> None:
+    with pytest.raises(ValueError, match="looks:"):
+        looks(blocks_of([0.0] * 30), LEVELS, se_floor=0.0, bias_allowance=0.0,
+              **{**BOOTSTRAP, **bad})  # fmt: skip
+
+
+@pytest.mark.parametrize("kind", [T, BOOTSTRAP], ids=["t", "bootstrap_t"])
+def test_the_equivalence_minimum_withholds_equivalence_at_a_smaller_cap_look(kind) -> None:
+    def run(deltas, minimum, unsupported=()):
+        return looks(blocks_of(deltas, unsupported=unsupported), DECIDED, LOOK_SIZES,
+                     **{**kind, "equivalence_min_supported": minimum}, se_floor=0.0,
+                     bias_allowance=0.0)["looks"]  # fmt: skip
+
+    unsupported = set(range(50))  # 30 supported by the cap: a terminal look below 36
+    near = [0.01 + 0.004 * (-1) ** i for i in range(80)]  # inside ±5 pp and above 0
+    centred = [0.004 * (-1) ** i for i in range(80)]  # inside ±5 pp, around 0
+    free, held = run(near, 0, unsupported), run(near, 36, unsupported)
+    assert [(lk["look"], lk["supported"], lk["at_cap"]) for lk in held] == [(2, 30, True)]
+    assert free[0]["readings"] == ["equivalence", "direction", "within_8"]
+    assert free[0]["equivalence_allowed"] and not held[0]["equivalence_allowed"]
+    assert held[0]["readings"] == ["direction", "within_8"]  # direction is unaffected
+    assert held[0]["interval"] == free[0]["interval"]
+    assert run(centred, 36, unsupported)[0]["readings"] == ["within_8"]
+    # At a look with enough supported blocks equivalence stands and stops the looks.
+    first = run(centred, 36)
+    assert len(first) == 1 and first[0]["supported"] == 36 and first[0]["stops"]
+    assert first[0]["equivalence_allowed"] and "equivalence" in first[0]["readings"]
 
 
 def test_finite_cohort_bounds() -> None:

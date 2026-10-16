@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from omegaconf import OmegaConf
 from test_study2_short import SCALE, THETA0, W_MAX, control, made, stage_a_reference, traj
@@ -27,9 +28,11 @@ from zero_field_refusal.analysis.study2_short import (
     CONFIRMATION_SEEDS,
     FA,
     FA_CONTROL_ARM,
+    FIXATION_KEYS,
     PREWARMED,
     V0_ARMS,
     VALIDATION_SEEDS,
+    bootstrap_t_interval,
     confirmation_guard,
     conformance,
     exhausted_runs,
@@ -47,12 +50,25 @@ from zero_field_refusal.analysis.study2_short import (
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import MAX_ATTEMPTS, load_campaign
 from zero_field_refusal.protocol import load_run_config
+from zero_field_refusal.seeding import derive_seed
 
 SCRIPTS = Path(__file__).parents[1] / "scripts"
 CAMPAIGNS, SUMMARY = SCRIPTS / "study2_short_campaigns.py", SCRIPTS / "study2_short_summary.py"
 OPTIMIZERS = {ADAMW: [], FA: ["optimizer=adam_frozen"], PREWARMED: ["optimizer=adamw_prewarmed"]}
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
-FIXATION = {"w_max": W_MAX, "levels": [0.995, 0.952], "se_floor": 0.01, "bias_allowance": 0.005}
+FIXATION = {
+    "w_max": W_MAX,
+    "levels": [0.992, 0.9631],
+    "se_floor": 0.0,
+    "bias_allowance": 0.01079,
+    "interval": "bootstrap_t",
+    "bootstrap_resamples": 2000,
+    "bootstrap_seed": 20261016,
+    "looks": [36, 60],
+    "cap": 80,
+    "equivalence_min_supported": 36,
+}
+LOOK_SETTINGS = {k: v for k, v in FIXATION.items() if k not in ("w_max", "levels", "looks", "cap")}
 
 
 # ------------------------------------------------------------------ configs and arms
@@ -353,7 +369,7 @@ def test_a_run_given_up_is_a_technical_failure_of_its_block_and_the_looks_go_pas
     entries = look_blocks(state["confirmation"], labels, state["frozen"]["K_star"])
     assert [(e["complete"], e["supported"]) for e in entries[:3]] == [
         (True, False), (True, True), (False, False)]  # fmt: skip
-    found = looks(entries, FIXATION["levels"], se_floor=0.0, bias_allowance=0.0)
+    found = looks(entries, FIXATION["levels"], **LOOK_SETTINGS)
     assert (found["waiting"]["started"], found["waiting"]["supported"]) == (2, 1)
     assert state["exhausted"] == {"adamw_25-…/s3000": list(given_up)}
 
@@ -422,6 +438,7 @@ def test_the_fixation_record_needs_every_value(tmp_path) -> None:
     path = tmp_path / "fixation.json"
     path.write_text(json.dumps(FIXATION))
     assert read_fixation(path) == FIXATION
+    assert set(FIXATION) == set(FIXATION_KEYS)
     for key in FIXATION:
         path.write_text(json.dumps({k: v for k, v in FIXATION.items() if k != key}))
         with pytest.raises(ValueError, match=key):
@@ -431,6 +448,28 @@ def test_the_fixation_record_needs_every_value(tmp_path) -> None:
         path.write_text(json.dumps({**FIXATION, **bad}))
         with pytest.raises(ValueError):
             read_fixation(path)
+    path.write_text(json.dumps({**FIXATION, "interval": "t"}))  # the t interval is admitted
+    assert read_fixation(path)["interval"] == "t"
+    path.write_text(json.dumps({**FIXATION, "equivalence_min_supported": 0}))  # 0: no minimum
+    assert read_fixation(path)["equivalence_min_supported"] == 0
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [("interval", "percentile"), ("interval", None), ("interval", ["bootstrap_t"]),
+     ("bootstrap_resamples", 999), ("bootstrap_resamples", 2000.0),
+     ("bootstrap_resamples", "2000"), ("bootstrap_resamples", True), ("bootstrap_resamples", None),
+     ("bootstrap_seed", 1.5), ("bootstrap_seed", "7"), ("bootstrap_seed", None),
+     ("bootstrap_seed", False), ("looks", [24, 50]), ("looks", [36]), ("looks", [36.0, 60.0]),
+     ("looks", "36,60"), ("looks", None), ("cap", 79), ("cap", 80.0), ("cap", None),
+     ("equivalence_min_supported", -1), ("equivalence_min_supported", 36.5),
+     ("equivalence_min_supported", True), ("equivalence_min_supported", None)],
+)  # fmt: skip
+def test_the_fixation_record_refuses_a_malformed_new_key(tmp_path, key, value) -> None:
+    path = tmp_path / "fixation.json"
+    path.write_text(json.dumps({**FIXATION, key: value}))
+    with pytest.raises(ValueError, match=f"{key} "):
+        read_fixation(path)
 
 
 # ------------------------------------------------------------------ the looks' blocks
@@ -843,6 +882,7 @@ def test_the_summary_prints_the_looks_end_to_end(monkeypatch, tmp_path, capsys) 
     assert (confirmation["first_block_without_runs"], confirmation["supported_in_order"]) == (3, 2)
     looked = shown["looks"]
     assert looked["available"] and looked["fixation"] == FIXATION
+    assert looked["interval"] == {"method": "bootstrap_t", "resamples": 2000, "seed": 20261016}
     assert (looked["looks"]["waiting"]["started"], looked["looks"]["waiting"]["needs"]) == (2, 36)
     assert looked["missing_labels"] == {ADAMW: 0, FA: 0, PREWARMED: 0}
 
@@ -899,3 +939,30 @@ def test_the_summary_looks_on_labels() -> None:
     assert found["utility"]["family"] and found["secondary"] is None
     early = until(base(), "validation")
     assert not module.compute_looks(early, runs, labels, FIXATION, THETA0)["available"]
+
+
+def test_the_summary_computes_the_looks_with_the_records_interval(monkeypatch) -> None:
+    module = summary_module()
+    deltas = [0.02 * (-1) ** i + 0.004 * (i % 5) for i in range(36)]
+    entries = [{"block": i + 1, "complete": True, "supported": True, "delta": d,
+                "delta_missing_harmful": d + 0.01, "h": {ADAMW: 0.2 + d, FA: 0.2}}
+               for i, d in enumerate(deltas)]  # fmt: skip
+    blocks = [{"seed": 3000 + i, "supports": {ADAMW: {}, FA: {}}} for i in range(80)]
+    state = {"next": {"campaign": "confirmation"}, "frozen": {"K_star": 6.3},
+             "confirmation": blocks}  # fmt: skip
+    monkeypatch.setattr(module, "look_blocks", lambda blocks, labels, kstar: entries)
+    monkeypatch.setattr(module, "utility_family", lambda *args, **kw: {"family": []})
+    found = module.compute_looks(state, [], {}, FIXATION, THETA0)
+    seed = derive_seed(20261016, "look", 1)
+    for key, shift in (("looks", 0.0), ("looks_missing_harmful", 0.01)):
+        first = found[key]["looks"][0]
+        low, high, dropped = bootstrap_t_interval([d + shift for d in deltas], 0.992, 2000,
+                                                  np.random.default_rng(seed))  # fmt: skip
+        assert first["method"] == "bootstrap_t" and first["interval"] == [low, high]
+        assert first["bootstrap"] == {"resamples": 2000, "seed": 20261016, "stream_seed": seed,
+                                      "dropped": dropped}  # fmt: skip
+    assert found["interval"] == {"method": "bootstrap_t", "resamples": 2000, "seed": 20261016}
+    t_record = {**FIXATION, "interval": "t"}
+    found = module.compute_looks(state, [], {}, t_record, THETA0)
+    assert found["interval"] == {"method": "t", "resamples": None, "seed": None}
+    assert found["looks"]["looks"][0]["bootstrap"] is None and found["looks"]["looks"][0]["t"]

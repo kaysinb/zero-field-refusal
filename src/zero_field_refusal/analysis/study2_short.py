@@ -27,7 +27,8 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``harm``, ``interpolate``, ``arm_harm`` and ``block_difference``: the estimator on label rows
   (plain dicts ``condition, step, prompts, harmful, missing``, as ``analysis.study2_labels``
   reads them), given per run id.
-- ``looks`` and ``finite_bounds``: the two sequential looks and the finite-cohort bounds.
+- ``looks`` and ``finite_bounds``: the two sequential looks and the finite-cohort bounds;
+  ``bootstrap_t_interval``: the looks' interval as decided (the bootstrap-t).
 - ``secondary_contrasts``: A − P and P − F on the common three-arm supported cohort.
 - ``utility_family`` and ``validation_verdict``: the simultaneous utility bounds and the verdict
   of the validation blocks.
@@ -114,6 +115,22 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   the cap and did not stop). With fewer than two supported blocks a look has no interval and is
   inconclusive. Equivalence: the interval strictly inside ±5 pp; direction: 0 strictly outside
   it; ±8: strictly inside ±8 pp; inconclusive when none of the three holds.
+- *The looks' interval* (coordinator, 2026-10-16: looks 36 and 60, cap 80, α 0.040, levels
+  0.9920 / 0.9631, SE floor 0, w_max 0.35, bias allowance 0.01079): the paired seed-block
+  bootstrap-t, the studentized bootstrap of the mean over the look's supported blocks exactly as
+  analysis/study2_short_sim.py (revision 3) defines it. B resamples of the blocks with
+  replacement, drawn at once; T* = (mean* − mean)/se*, se* = max(sd*, se_floor)/√n with the
+  sample sd (ddof 1), the floor applying to se and se* alike; at level ℓ the interval
+  [mean − q_{(1+ℓ)/2}·se, mean − q_{(1−ℓ)/2}·se], q np.quantile's default (linear) quantiles of
+  T*. A resample with se* = 0 (at most ``ZERO_SE``) is dropped and counted; a zero se gives
+  [mean, mean]; fewer than 2 blocks or 2 kept resamples give no interval. Look k's resamples come
+  from ``numpy.random.default_rng(derive_seed(bootstrap_seed, "look", k))`` (k = 2 for a
+  terminal look at the cap without look 1), the same streams for the worst case, so a look is
+  reproducible from the fixation record alone. The t interval stays available (``interval``
+  ``t``); the secondary contrasts keep t intervals at 98.75 %, as simulated. Equivalence is
+  concluded only at a look with at least ``equivalence_min_supported`` supported blocks (0: at
+  every look), so not at a cap look below it; direction and ±8 are unaffected, and a look
+  records whether equivalence was allowed.
 - *Secondary contrasts*: t intervals without the SE floor, over the first N blocks started at
   the stopping look that are supported in all three arms.
 - *Utility family*: blocks supported for the primary contrast; for each member the step-25
@@ -159,7 +176,12 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   starts until the operator, having read it in the summary, passes ``after_look`` = k.
 - *The fixation record* (``read_fixation``): a JSON object with ``w_max``, ``levels`` (the
   looks' two-sided confidence levels), ``se_floor`` and ``bias_allowance``, the last two in the
-  units of Δ (fractions, 1 pp = 0.01); each is required and none is defaulted.
+  units of Δ (fractions, 1 pp = 0.01), ``interval`` (``bootstrap_t`` or ``t``),
+  ``bootstrap_resamples`` (an integer ≥ 1000) and ``bootstrap_seed`` (an integer), ``looks`` and
+  ``cap`` (equal to ``LOOK_SIZES`` and ``CAP``, which the looks and the confirmation guard use: a
+  record made for other looks is refused) and ``equivalence_min_supported`` (an integer ≥ 0);
+  each is required and none is defaulted, also when ``interval`` is ``t`` and the bootstrap's
+  values go unused.
 """
 
 from __future__ import annotations
@@ -175,10 +197,12 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from omegaconf import OmegaConf
 from scipy import stats
 
 from ..config import load_config
+from ..seeding import derive_seed
 from .stage_a import (
     BATCHES,
     CONTAMINATION_FRACTION,
@@ -228,7 +252,21 @@ RAYLEIGH = "experiments/study2_short_rayleigh"  # REGULAR measuring the Rayleigh
 FA_CONTROLS = "experiments/study2_short_fa_controls"
 ROLES = ("discovery", "validation", "confirmation")  # study2_short.role in a run's config
 RAYLEIGH_BLOCKS = 10  # the first confirmation blocks: every endpoint measures R
-FIXATION_KEYS = ("w_max", "levels", "se_floor", "bias_allowance")
+INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look
+MIN_RESAMPLES = 1000  # the fixation record's bootstrap resamples, at least
+ZERO_SE = 1e-12  # an SE at or below this is zero (identical values up to rounding), as simulated
+FIXATION_KEYS = (
+    "w_max",
+    "levels",
+    "se_floor",
+    "bias_allowance",
+    "interval",
+    "bootstrap_resamples",
+    "bootstrap_seed",
+    "looks",
+    "cap",
+    "equivalence_min_supported",
+)
 
 
 def k_star(upper: float) -> float:
@@ -946,12 +984,55 @@ def _t_interval(values: Sequence[float], alpha: float, floor: float = 0.0) -> di
             "interval": [mean - t * se, mean + t * se]}  # fmt: skip
 
 
-def _readings(interval: Sequence[float] | None) -> list[str]:
+def bootstrap_t_interval(
+    values: Sequence[float],
+    level: float,
+    resamples: int,
+    rng: np.random.Generator,
+    *,
+    floor: float = 0.0,
+) -> tuple[float, float, int]:
+    """The studentized bootstrap (bootstrap-t) interval of the mean of ``values`` at the
+    two-sided confidence level ``level``, as analysis/study2_short_sim.py (revision 3) defines
+    it: ``resamples`` resamples of the values with replacement, drawn at once as
+    ``rng.integers(0, n, (resamples, n))``; T* = (mean* − mean)/se*, se* = max(sd*, floor)/√n
+    with the sample sd (ddof 1); the interval [mean − q_{(1+ℓ)/2}·se, mean − q_{(1−ℓ)/2}·se],
+    se = max(sd, floor)/√n, q np.quantile's default (linear) quantiles of T*. A resample with
+    se* ≤ ``ZERO_SE`` is dropped and counted. Returns (low, high, dropped): [mean, mean] when se
+    is zero; (−∞, ∞), no interval, with fewer than 2 values (nothing is drawn then) or fewer
+    than 2 kept resamples."""
+    values = np.asarray(values, dtype=float)
+    n = values.size
+    if n < 2:
+        return -math.inf, math.inf, 0
+    samples = values[rng.integers(0, n, (resamples, n))]
+    means = samples.mean(axis=1)
+    se_star = np.maximum(samples.std(axis=1, ddof=1), floor) / math.sqrt(n)
+    kept = se_star > ZERO_SE
+    dropped = int(resamples - kept.sum())
+    mean = float(values.mean())
+    se = max(float(values.std(ddof=1)), floor) / math.sqrt(n)
+    if se <= ZERO_SE:
+        return mean, mean, dropped
+    if kept.sum() < 2:
+        return -math.inf, math.inf, dropped
+    ordered = np.sort((means[kept] - mean) / se_star[kept])
+    # np.quantile's linear rule, written as the simulation's _sorted_quantiles so that the two
+    # agree to the last bit.
+    position = np.array([(1 - level) / 2, (1 + level) / 2]) * (ordered.size - 1)
+    below = np.floor(position).astype(int)
+    above = np.minimum(below + 1, ordered.size - 1)
+    lower, upper = ordered[below] + (position - below) * (ordered[above] - ordered[below])
+    return float(mean - upper * se), float(mean - lower * se), dropped
+
+
+def _readings(interval: Sequence[float] | None, *, equivalence: bool = True) -> list[str]:
+    """The interval's readings; ``equivalence`` False when the look may not conclude it."""
     if interval is None:
         return ["inconclusive"]
     lo, hi = interval
     found = []
-    if lo > -EQUIVALENCE and hi < EQUIVALENCE:
+    if equivalence and lo > -EQUIVALENCE and hi < EQUIVALENCE:
         found.append("equivalence")
     if lo > 0 or hi < 0:
         found.append("direction")
@@ -972,19 +1053,49 @@ def looks(
     n: Sequence[int] = LOOK_SIZES,
     cap: int = CAP,
     *,
+    interval: str,
     se_floor: float,
     bias_allowance: float,
+    equivalence_min_supported: int,
+    bootstrap_resamples: int | None = None,
+    bootstrap_seed: int | None = None,
 ) -> dict[str, Any]:
     """The sequential looks over ``blocks`` in their preassigned order. Look k happens at the
     first started count where the supported count reaches n_k; when the cap of started blocks
-    comes first, the terminal look happens there. Interval at look k: mean ± t_{n−1, 1−α_k/2} ×
-    max(sd, se_floor)/√n over the supported Δ, where ``levels`` are the two-sided confidence
-    levels 1 − α_k of the looks, e.g. (0.9953, 0.9519), one per look. Readings: equivalence,
-    direction, within ±8, else inconclusive; look 1 stops on equivalence or direction only.
-    ``bias_allowance`` is reported beside every look."""
+    comes first, the terminal look happens there. ``levels`` are the two-sided confidence levels
+    1 − α_k of the looks, e.g. (0.9920, 0.9631), one per look. The interval at look k over the
+    supported Δ is, by ``interval``:
+
+    - ``bootstrap_t``: ``bootstrap_t_interval`` with ``bootstrap_resamples`` resamples from
+      ``numpy.random.default_rng(derive_seed(bootstrap_seed, "look", k))``, floor ``se_floor``;
+    - ``t``: mean ± t_{n−1, 1−α_k/2}·max(sd, se_floor)/√n.
+
+    Readings: equivalence (only at a look with at least ``equivalence_min_supported`` supported
+    blocks; 0 for every look), direction, within ±8, else inconclusive; look 1 stops on
+    equivalence or direction only. ``bias_allowance`` is reported beside every look."""
     if len(levels) != len(n) or not all(0.5 < level < 1 for level in levels):
         raise ValueError(f"looks: levels {tuple(levels)} must be {len(n)} confidence levels in "
-                         "(0.5, 1), e.g. (0.9953, 0.9519)")  # fmt: skip
+                         "(0.5, 1), e.g. (0.9920, 0.9631)")  # fmt: skip
+    if interval not in INTERVALS:
+        raise ValueError(f"looks: interval {interval!r} is not one of {INTERVALS}")
+    if interval == "bootstrap_t" and not (
+        _integer(bootstrap_resamples) and bootstrap_resamples >= 2 and _integer(bootstrap_seed)
+    ):
+        raise ValueError(
+            "looks: the bootstrap needs an integer number of resamples ≥ 2 and an integer seed, "
+            f"not {bootstrap_resamples!r} and {bootstrap_seed!r}"
+        )
+    if not (_integer(equivalence_min_supported) and equivalence_min_supported >= 0):
+        raise ValueError(f"looks: equivalence_min_supported {equivalence_min_supported!r} is not "
+                         "an integer ≥ 0")  # fmt: skip
+    settings = {
+        "interval": interval,
+        "se_floor": se_floor,
+        "bias_allowance": bias_allowance,
+        "equivalence_min_supported": equivalence_min_supported,
+        "bootstrap_resamples": bootstrap_resamples,
+        "bootstrap_seed": bootstrap_seed,
+    }
     done, deltas, started, k = [], [], 0, 0
     stopped = False
     for block in blocks[:cap]:
@@ -997,13 +1108,13 @@ def looks(
             deltas.append(block["delta"])
         terminal = started == cap
         if len(deltas) == n[k]:
-            done.append(_look(k + 1, levels[k], deltas, started, se_floor, bias_allowance))
+            done.append(_look(k + 1, levels[k], deltas, started, settings))
             last = k == len(n) - 1
             stopped = last or bool({"equivalence", "direction"} & set(done[-1]["readings"]))
             done[-1]["stops"] = stopped
             k += 1
         if not stopped and terminal:
-            done.append(_look(len(n), levels[-1], deltas, started, se_floor, bias_allowance))
+            done.append(_look(len(n), levels[-1], deltas, started, settings))
             done[-1].update(stops=True, at_cap=True)
             stopped = True
         if stopped:
@@ -1017,17 +1128,33 @@ def looks(
     return out
 
 
-def _look(number, level, deltas, started, se_floor, bias_allowance) -> dict[str, Any]:
-    interval = _t_interval(deltas, 1 - level, se_floor)
+def _look(number, level, deltas, started, settings) -> dict[str, Any]:
+    found = _t_interval(deltas, 1 - level, settings["se_floor"])
+    bootstrap = None
+    if settings["interval"] == "bootstrap_t":
+        seed = derive_seed(settings["bootstrap_seed"], "look", number)
+        low, high, dropped = bootstrap_t_interval(
+            deltas, level, settings["bootstrap_resamples"], np.random.default_rng(seed),
+            floor=settings["se_floor"],
+        )  # fmt: skip
+        bootstrap = {"resamples": settings["bootstrap_resamples"],
+                     "seed": settings["bootstrap_seed"], "stream_seed": seed,
+                     "dropped": dropped}  # fmt: skip
+        bounded = math.isfinite(low) and math.isfinite(high)
+        found.update(t=None, interval=[low, high] if bounded else None)
+    allowed = len(deltas) >= settings["equivalence_min_supported"]
     return {
         "look": number,
         "level": level,
         "started": started,
         "supported": len(deltas),
-        **interval,
-        "readings": _readings(interval["interval"]),
+        "method": settings["interval"],
+        **found,
+        "bootstrap": bootstrap,
+        "equivalence_allowed": allowed,
+        "readings": _readings(found["interval"], equivalence=allowed),
         "bounds": finite_bounds(started, started - len(deltas), sum(deltas)),
-        "bias_allowance": bias_allowance,
+        "bias_allowance": settings["bias_allowance"],
         "at_cap": False,
     }
 
@@ -1179,18 +1306,33 @@ def _number(value: Any) -> bool:
     return _finite(value) and not isinstance(value, bool)
 
 
-def read_fixation(path: str | Path) -> dict[str, float | list[float]]:
+def _integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def read_fixation(path: str | Path) -> dict[str, Any]:
     """The values the companion simulation fixes, from its fixation record (a JSON object):
-    ``w_max`` (> 0), ``levels`` (the looks' two-sided confidence levels, one per look, each in
-    (0.5, 1)), ``se_floor`` and ``bias_allowance`` (≥ 0, in the units of Δ). Each is required;
-    a missing or malformed one raises ``ValueError``, and none is ever defaulted."""
+
+    - ``w_max`` (> 0);
+    - ``levels``: the looks' two-sided confidence levels, one per look, each in (0.5, 1);
+    - ``se_floor`` and ``bias_allowance`` (≥ 0, in the units of Δ);
+    - ``interval``: the primary interval, one of ``INTERVALS``;
+    - ``bootstrap_resamples`` (an integer ≥ ``MIN_RESAMPLES``) and ``bootstrap_seed`` (an
+      integer): the bootstrap's resamples per look and the seed of its streams;
+    - ``looks`` and ``cap``: the look sizes and the cap, which must be ``LOOK_SIZES`` and
+      ``CAP``;
+    - ``equivalence_min_supported`` (an integer ≥ 0): equivalence is concluded only at a look
+      with at least that many supported blocks, 0 at every look.
+
+    Each is required, the integers as JSON integers; a missing or malformed one raises
+    ``ValueError``, and none is ever defaulted."""
     record = json.loads(Path(path).read_text())
     if not isinstance(record, dict):
         raise ValueError(f"{path}: a fixation record is a JSON object")
     missing = [key for key in FIXATION_KEYS if key not in record]
     if missing:
         raise ValueError(f"{path}: the fixation record lacks {missing}")
-    w_max, levels, floor, allowance = (record[key] for key in FIXATION_KEYS)
+    w_max, levels, floor, allowance = (record[key] for key in FIXATION_KEYS[:4])
     problems = []
     if not (_number(w_max) and w_max > 0):
         problems.append(f"w_max {w_max!r} is not a positive number")
@@ -1201,10 +1343,29 @@ def read_fixation(path: str | Path) -> dict[str, float | list[float]]:
     for key, value in (("se_floor", floor), ("bias_allowance", allowance)):
         if not (_number(value) and value >= 0):
             problems.append(f"{key} {value!r} is not a number ≥ 0")
+    if record["interval"] not in INTERVALS:
+        problems.append(f"interval {record['interval']!r} is not one of {list(INTERVALS)}")
+    resamples = record["bootstrap_resamples"]
+    if not (_integer(resamples) and resamples >= MIN_RESAMPLES):
+        problems.append(f"bootstrap_resamples {resamples!r} is not an integer ≥ {MIN_RESAMPLES}")
+    if not _integer(record["bootstrap_seed"]):
+        problems.append(f"bootstrap_seed {record['bootstrap_seed']!r} is not an integer")
+    sizes = record["looks"]
+    if not (isinstance(sizes, list) and all(_integer(size) for size in sizes)
+            and tuple(sizes) == LOOK_SIZES):  # fmt: skip
+        problems.append(f"looks {sizes!r} are not the look sizes {list(LOOK_SIZES)}")
+    if not (_integer(record["cap"]) and record["cap"] == CAP):
+        problems.append(f"cap {record['cap']!r} is not the cap {CAP}")
+    minimum = record["equivalence_min_supported"]
+    if not (_integer(minimum) and minimum >= 0):
+        problems.append(f"equivalence_min_supported {minimum!r} is not an integer ≥ 0")
     if problems:
         raise ValueError(f"{path}: " + "; ".join(problems))
     return {"w_max": float(w_max), "levels": [float(level) for level in levels],
-            "se_floor": float(floor), "bias_allowance": float(allowance)}  # fmt: skip
+            "se_floor": float(floor), "bias_allowance": float(allowance),
+            "interval": record["interval"], "bootstrap_resamples": resamples,
+            "bootstrap_seed": record["bootstrap_seed"], "looks": list(sizes), "cap": record["cap"],
+            "equivalence_min_supported": minimum}  # fmt: skip
 
 
 def run_facts(run_dir: str | Path) -> dict[str, Any]:
