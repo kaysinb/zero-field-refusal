@@ -1,20 +1,24 @@
 """Simulation of study 2's short-regime confirmation (amendment 3): levels, validation and bias.
 
-Modes (the model and the procedure: src/zero_field_refusal/analysis/study2_short_sim.py):
+Modes (the model and the procedure: src/zero_field_refusal/analysis/study2_short_sim.py). Every
+mode evaluates every look design (24/50, 36/60, one look at 50, 24/50 with equivalence only at
+the terminal look) and every SE floor on the same replicates:
 
-- calibrate: the central model at every target SD × Δ, on the ``calibration`` stream; evaluates
-  the planning levels and the O'Brien–Fleming pair of every α on the grid, and selects, per SE
-  floor, the largest α meeting the error constraints over the binding SDs (3, 5, 10 pp).
-- validate: the validation grid on the independent ``validation`` stream, at the planning levels
-  and at the α's given by --levels-from (a calibrate run's summary.json) or --alphas.
+- calibrate: the central model at every target SD × Δ, on the ``calibration`` stream, at every α
+  of the grid; selects per look design and SE floor the largest α meeting the error constraints
+  over the binding SDs (3, 5, 10 pp).
 - bias: paired interpolation bias over curve family × selection miss × w_max (``bias`` stream),
-  and the bias allowance per w_max.
-- smoke: one reduced scenario per shape and per revision-1 addition, at the planning levels.
+  and the allowance b over w_max 0.35 and 0.47.
+- validate: the validation grid on the independent ``validation`` stream, at α = 0.05 and at the
+  α's selected by --levels-from (a calibrate run's summary.json) or given by --alphas; with
+  --allowance-from (a bias run's summary.json) or --allowance it adds the pointwise readings
+  with b.
+- smoke: one reduced scenario per shape and per revision-1 addition.
 
 Writes to --out (default: $RUNS_DIR/analysis/study2_short_sim/<mode>-<UTC timestamp>/):
 - summary.json: settings, versions, run time, the spread calibrations, every scenario (its
-  settings, parameters, block diagnostics, compute time and one result row per level set × SE
-  floor) and the mode's verdicts (selection, checks, bias allowance);
+  settings, parameters with the population curves, block diagnostics, compute time and one result
+  row per look design × α × SE floor) and the mode's verdicts (selection, checks, allowance);
 - results.md: the same as markdown tables.
 
 summary.json is standard JSON: non-finite numbers are written as null (a w_max of null: no width
@@ -57,8 +61,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--designs", nargs="+", choices=DESIGNS, help="keep these designs only")
     parser.add_argument("--scenarios", nargs="+", metavar="PATTERN", help="fnmatch on names")
     parser.add_argument("--reps", type=int, help="replicates per scenario (overrides the grid)")
-    parser.add_argument("--levels-from", type=Path, help="validate: a calibrate summary.json")
-    parser.add_argument("--alphas", type=float, nargs="+", help="validate: OBF α's to evaluate")
+    parser.add_argument("--levels-from", type=Path, help="a calibrate run's summary.json")
+    parser.add_argument("--alphas", type=float, nargs="+", help="extra α's to evaluate")
+    allowance = parser.add_mutually_exclusive_group()
+    allowance.add_argument("--allowance-from", type=Path, help="a bias run's summary.json")
+    allowance.add_argument("--allowance", type=float, help="the bias allowance b (fraction)")
     parser.add_argument("--workers", type=int, default=min(MAX_WORKERS, os.cpu_count() or 1))
     parser.add_argument("--chunk", type=int, default=250, help="replicates per worker task")
     parser.add_argument("--spread-replicates", type=int, default=100)
@@ -78,11 +85,16 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{scenario.name}  reps={scenario.reps}  group={scenario.group}")
         return
 
-    level_sets, alphas = level_choice(args.mode, args.levels_from, args.alphas)
+    selection = selected_levels(args.levels_from)
+    alphas = alpha_choice(args.mode, selection, args.alphas)
+    b = args.allowance
+    if args.allowance_from is not None:
+        found = json.loads(args.allowance_from.read_text())["bias_allowance"]["allowance"]
+        b = None if found is None else found["value"]
     settings = sim.RunSettings(
         stream=STREAMS[args.mode],
-        level_sets=level_sets,
         alphas=alphas,
+        allowance=b,
         base_seed=args.seed,
         workers=args.workers,
         chunk=args.chunk,
@@ -119,14 +131,15 @@ def main(argv: list[str] | None = None) -> None:
             "spread_replicates": settings.spread_replicates,
             "spread_blocks": settings.spread_blocks,
             "floors": list(settings.floors),
-            "level_sets": {name: list(levels) for name, levels in level_sets.items()},
-            "alphas": alphas,
+            "alphas": list(settings.alphas),
+            "allowance": settings.allowance,
             "levels_from": None if args.levels_from is None else str(args.levels_from),
+            "allowance_from": None if args.allowance_from is None else str(args.allowance_from),
             "constants": constants(),
         },
         "versions": versions,
         **result,
-        **verdicts(args.mode, result["scenarios"]),
+        **verdicts(args.mode, result["scenarios"], selection),
     }
     (out / "summary.json").write_text(json_text(summary))
     (out / "results.md").write_text(markdown(summary))
@@ -148,34 +161,37 @@ def select(
     return scenarios
 
 
-def level_choice(
-    mode: str, levels_from: Path | None, alphas: list[float] | None
-) -> tuple[dict[str, tuple[float, float]], dict[str, float | None]]:
-    """calibrate: the whole α grid; otherwise the planning levels plus the requested α's."""
+def selected_levels(path: Path | None) -> dict[tuple[str, float], float | None]:
+    """(look design, floor) -> the α a calibrate run selected (None if none passed)."""
+    if path is None:
+        return {}
+    selection = json.loads(path.read_text())["selection"]
+    return {(s["looks"], s["floor"]): s["alpha"] for s in selection}
+
+
+def alpha_choice(
+    mode: str, selection: dict[tuple[str, float], float | None], extra: list[float] | None
+) -> tuple[float, ...]:
+    """calibrate: the whole α grid; otherwise α = 0.05, the selected α's and any extra ones."""
     if mode == "calibrate":
-        return sim.calibration_level_sets()
-    requested = set(alphas or [])
-    if levels_from is not None:
-        selection = json.loads(levels_from.read_text())["selection"]
-        requested |= {s["alpha"] for s in selection if s["alpha"] is not None}
-    level_sets: dict[str, tuple[float, float]] = {"planning": sim.PLANNING_LEVELS}
-    names: dict[str, float | None] = {"planning": None}
-    for alpha in sorted(requested):
-        name = f"obf_{alpha:.4f}"
-        level_sets[name], names[name] = sim.obf_levels(alpha), alpha
-    return level_sets, names
+        return sim.ALPHAS
+    alphas = {sim.PLANNING_ALPHA, *(extra or [])}
+    alphas |= {alpha for alpha in selection.values() if alpha is not None}
+    return tuple(sorted(alphas))
 
 
 def constants() -> dict:
     return {
         "prompts": sim.PROMPTS,
         "cap": sim.CAP,
-        "looks": list(sim.LOOKS),
+        "look_designs": [asdict(d) for d in sim.LOOK_DESIGNS],
+        "generate_until": sim.GENERATE_UNTIL,
         "margin": sim.MARGIN,
         "wide_margin": sim.WIDE_MARGIN,
         "secondary_level": sim.SECONDARY_LEVEL,
         "positions": {k: [list(p) for p in v] for k, v in sim.POSITIONS.items()},
         "families": {k: asdict(v) for k, v in sim.FAMILIES.items()},
+        "fit_grid": [float(x) for x in sim.FIT_GRID],
         "rare": sim.RARE,
         "gamma_shape": sim.GAMMA_SHAPE,
         "failure_slope": sim.FAILURE_SLOPE,
@@ -183,12 +199,12 @@ def constants() -> dict:
     }
 
 
-def verdicts(mode: str, scenarios: list[dict]) -> dict:
+def verdicts(mode: str, scenarios: list[dict], selection: dict) -> dict:
     found = {"bias_allowance": sim.bias_allowance(scenarios)}
     if mode == "calibrate":
         found["selection"] = sim.select_levels(scenarios)
     else:
-        found["checks"] = sim.validation_checks(scenarios)
+        found["checks"] = sim.validation_checks(scenarios, selection)
     return found
 
 
@@ -201,76 +217,78 @@ def pp(value: float | None, digits: int = 2) -> str:
     return f"{100 * value:.{digits}f}"
 
 
-def share(value: float | None) -> str:
-    if value is None or (isinstance(value, float) and not math.isfinite(value)):
-        return "–"
-    return f"{value:.4f}"
-
-
 def table(header: list[str], rows: list[list[str]]) -> str:
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     lines += ["| " + " | ".join(row) + " |" for row in rows]
     return "\n".join(lines)
 
 
-def headline_sets(summary: dict) -> set[tuple[str, float]]:
-    """The (level set, floor) pairs shown in the result table."""
+def shown_alpha(summary: dict) -> dict[tuple[str, float], float]:
+    """(look design, floor) -> the α whose results the tables show: the selected α (from this
+    calibrate run or from --levels-from), else α = 0.05."""
+    if "selection" in summary:
+        chosen = {(s["looks"], s["floor"]): s["alpha"] for s in summary["selection"]}
+    else:
+        path = summary["settings"]["levels_from"]
+        chosen = selected_levels(Path(path)) if path else {}
     floors = summary["settings"]["floors"]
-    pairs = {("planning", floor) for floor in floors}
-    for s in summary.get("selection", []):
-        if s["level_set"] is not None:
-            pairs.add((s["level_set"], s["floor"]))
-    if summary["mode"] != "calibrate":
-        pairs |= {(name, floor) for name in summary["settings"]["level_sets"] for floor in floors}
-    return pairs
+    return {
+        (d.name, floor): chosen.get((d.name, floor)) or sim.PLANNING_ALPHA
+        for d in sim.LOOK_DESIGNS
+        for floor in floors
+    }
 
 
 def markdown(summary: dict) -> str:
+    settings = summary["settings"]
+    allowance = settings["allowance"]
     parts = [
         f"# Study 2 short-regime simulation: {summary['mode']}",
         "",
         f"Started {summary['started']}, {summary['runtime_s'] / 60:.1f} min with "
-        f"{summary['settings']['workers']} workers, stream `{summary['settings']['stream']}`, "
-        f"base seed {summary['settings']['base_seed']}. Rates in %, MC SE in brackets; SDs, "
-        "biases and bounds in pp.",
+        f"{settings['workers']} workers, stream `{settings['stream']}`, base seed "
+        f"{settings['base_seed']}. Rates in %, MC SE in brackets; SDs, biases and bounds in pp. "
+        "Tables show each look design at its selected α (else α = 0.05) and floor 0"
+        + (
+            f"; pointwise readings use b = {pp(allowance, 3)} pp." if allowance is not None else "."
+        ),
     ]
     if "selection" in summary:
         parts += ["", "## Selected levels", "", selection_table(summary["selection"])]
     if "checks" in summary:
         parts += ["", "## Constraint checks", "", checks_table(summary["checks"])]
-    if summary["bias_allowance"]:
+    if summary["bias_allowance"]["per_w_max"]:
         parts += ["", "## Bias allowance", "", allowance_table(summary["bias_allowance"])]
     parts += ["", "## Results", "", results_table(summary)]
     parts += ["", "## Block diagnostics", "", diagnostics_table(summary["scenarios"])]
     return "\n".join(parts) + "\n"
 
 
+def _value(summary: dict | None, key: str) -> str:
+    item = (summary or {}).get(key) or {}
+    return pp(item.get("value"))
+
+
 def selection_table(selection: list[dict]) -> str:
     rows = []
     for s in selection:
-        c = s["constraints"] or {}
-        planning = s["planning"] or {}
-
-        def value(summary: dict, key: str) -> str:
-            item = summary.get(key) or {}
-            return pp(item.get("value"))
-
+        c = s["constraints"]
         rows.append(
             [
-                s["design"],
+                s["looks"],
                 pp(s["floor"], 0),
                 "–" if s["alpha"] is None else f"{s['alpha']:.4f}",
                 "–" if s["levels"] is None else " / ".join(f"{100 * v:.2f}" for v in s["levels"]),
-                value(c, "max_false_positive"),
-                value(c, "max_false_negative"),
-                value(c, "max_false_equivalence_5pp"),
-                value(c, "min_power_equivalence_at_0"),
-                value(c, "min_power_direction_at_5pp"),
-                "yes" if planning.get("meets") else "no",
+                _value(c, "max_false_positive"),
+                _value(c, "max_false_negative"),
+                _value(c, "max_false_equivalence_5pp"),
+                _value(c, "min_power_equivalence_at_0"),
+                _value(c, "min_power_direction_at_5pp"),
+                "yes" if (s["at_alpha_0.05"] or {}).get("meets") else "no",
             ]
         )
-    header = ["design", "floor", "α", "levels %", "max dir+ @0", "max dir− @0", "max eq @5",
-              "min pow eq @0", "min pow dir @5", "planning meets"]  # fmt: skip
+    header = ["looks", "floor", "α", "levels %", "max dir+ @0", "max dir− @0", "max eq @5",
+              "min pow eq @0", "min pow dir @5", "α 0.05 meets"]  # fmt: skip
     return table(header, rows)
 
 
@@ -280,51 +298,63 @@ def checks_table(checks: list[dict]) -> str:
         for group, c in check["groups"].items():
             rows.append(
                 [
-                    check["level_set"],
+                    check["looks"],
                     pp(check["floor"], 0),
+                    f"{check['which']} ({check['alpha']:.4f})",
                     group,
-                    pp(c["max_false_positive"]["value"]),
-                    pp(c["max_false_negative"]["value"]),
-                    pp(c["max_false_equivalence_5pp"]["value"]),
-                    pp(c["min_power_equivalence_at_0"]["value"]),
-                    pp(c["min_power_direction_at_5pp"]["value"]),
+                    _value(c, "max_false_positive"),
+                    _value(c, "max_false_negative"),
+                    _value(c, "max_false_equivalence_5pp"),
+                    _value(c, "min_power_equivalence_at_0"),
+                    _value(c, "min_power_direction_at_5pp"),
+                    _value(c, "max_cap_exhausted"),
+                    "–" if c["max_mean_started"] is None else f"{c['max_mean_started']:.1f}",
                     "yes" if c["meets"] else "no",
                 ]
             )
-    header = ["level set", "floor", "group", "max dir+ @0", "max dir− @0", "max eq @5",
-              "min pow eq @0", "min pow dir @5", "meets"]  # fmt: skip
+    header = ["looks", "floor", "α", "group", "max dir+ @0", "max dir− @0", "max eq @5",
+              "min pow eq @0", "min pow dir @5", "max cap", "max E started",
+              "meets"]  # fmt: skip
     return table(header, rows)
 
 
-def allowance_table(allowance: list[dict]) -> str:
+def allowance_table(allowance: dict) -> str:
     rows = []
-    for a in allowance:
-        for family, f in a["per_family"].items():
+    for entry in allowance["per_w_max"]:
+        for family, f in entry["per_family"].items():
             rows.append(
                 [
-                    "∞" if not math.isfinite(a["w_max"]) else f"{a['w_max']:.2f}",
+                    "∞" if not math.isfinite(entry["w_max"]) else f"{entry['w_max']:.2f}",
                     family,
                     f"{pp(f['bias'], 3)} ({pp(f['se'], 3)})",
                     f["scenario"],
-                    "**max**" if family == a["family"] else "",
+                    "**max**" if family == entry["family"] else "",
                 ]
             )
-    return table(["w_max", "family", "largest |bias| (SE)", "at scenario", "allowance"], rows)
+    text = table(["w_max", "family", "largest |bias| (SE)", "at scenario", "largest"], rows)
+    b = allowance["allowance"]
+    if b is not None:
+        text += (
+            f"\n\nAllowance b = {pp(b['value'], 3)} pp ({b['family']}, w_max {b['w_max']:.2f}, "
+            f"{b['scenario']}; over w_max {b['over_w_max']} and all families)."
+        )
+    return text
 
 
 def results_table(summary: dict) -> str:
-    shown = headline_sets(summary)
+    shown = shown_alpha(summary)
     rows = []
     for s in summary["scenarios"]:
         for r in s["results"]:
-            if (r["level_set"], r["floor"]) not in shown:
+            if r["floor"] != 0 or shown.get((r["looks"], r["floor"])) != r["alpha"]:
                 continue
             cover = r["secondary_coverage"]
+            point = r.get("pointwise") or {}
             rows.append(
                 [
                     s["name"],
-                    r["level_set"],
-                    pp(r["floor"], 0),
+                    r["looks"],
+                    f"{r['alpha']:.4f}",
                     f"{pp(r['p_equivalence'])} ({pp(r['se_equivalence'])})",
                     f"{pp(r['p_positive'])} ({pp(r['se_positive'])})",
                     f"{pp(r['p_negative'])} ({pp(r['se_negative'])})",
@@ -337,17 +367,19 @@ def results_table(summary: dict) -> str:
                     pp(r["p_look1_stop"]),
                     pp(r["bias"], 3),
                     pp(r["bias_vs_block_mean"], 3),
+                    " / ".join(
+                        pp(point.get(f"p_{k}")) for k in ("equivalence", "positive", "negative")
+                    ),
                     pp(r["cohort_bound_width"], 1),
                     pp(r["p_cohort_bounds_straddle_5pp"]),
                     pp(cover["P-F"]["truth"], 1),
                     pp(cover["A-P"]["truth"], 1),
-                    pp(r["three_arm_attrition"], 1),
                     str(s["reps"]),
                 ]
             )
-    header = ["scenario", "levels", "floor", "eq", "dir+", "dir−", "inc", "±8 in", "power",
-              "E started", "E supp", "cap", "look-1 stop", "bias", "bias vs block mean",
-              "cohort width", "straddle ±5", "cov P−F", "cov A−P", "3-arm attr",
+    header = ["scenario", "looks", "α", "eq", "dir+", "dir−", "inc", "±8 in", "power",
+              "E started", "E supp", "cap", "look-1 stop", "bias vs Δ", "bias vs interp",
+              "pointwise eq/dir+/dir−", "cohort width", "straddle ±5", "cov P−F", "cov A−P",
               "reps"]  # fmt: skip
     return table(header, rows)
 
@@ -358,30 +390,38 @@ def diagnostics_table(scenarios: list[dict]) -> str:
         d, p = s["diagnostics"], s["parameters"]
         block = d["unsupported_per_block"]
         arms = d["unsupported_per_arm"]
+        curve = p["population_curve"]
         calibration = s["calibration"] or {}
+
         rows.append(
             [
                 s["name"],
                 f"{p['spread']:.4f}",
-                pp(calibration.get("attained_sd")),
                 pp(calibration.get("noise_sd")),
                 pp(d["attained_sd"]),
                 f"{pp(d['block_bias'], 3)} ({pp(d['block_bias_se'], 3)})",
+                attained(curve["A"]),
+                attained(curve["F"]),
                 " / ".join(pp(block[c], 1) for c in sim.CAUSES),
                 " / ".join(pp(arms["A"][c], 1) for c in sim.CAUSES),
                 " / ".join(pp(arms["F"][c], 1) for c in sim.CAUSES),
-                " / ".join(pp(arms["P"][c], 1) for c in sim.CAUSES),
                 pp(d["three_arm_attrition"], 1),
                 f"{calibration['cpu_seconds']:.0f}" if calibration else "–",
                 f"{s['cpu_seconds']:.0f}",
-                f"{s['seconds']:.0f}",
                 f"{1000 * s['cpu_seconds'] / s['reps']:.1f}",
             ]
         )
-    header = ["scenario", "spread", "cal SD", "noise SD", "run SD", "block bias (SE)",
-              "unsupp/block b/t/w", "A b/t/w", "F b/t/w", "P b/t/w", "3-arm attr",
-              "cal CPU s", "CPU s", "wall s", "CPU ms/rep"]  # fmt: skip
+    header = ["scenario", "spread", "noise SD", "run SD", "block bias vs Δ (SE)",
+              "A h̄′, h̄″ attained/target", "F h̄′, h̄″ attained/target", "unsupp/block b/t/w",
+              "A b/t/w", "F b/t/w", "3-arm attr", "cal CPU s", "CPU s",
+              "CPU ms/rep"]  # fmt: skip
     return table(header, rows)
+
+
+def attained(curve: dict) -> str:
+    """Population slope and curvature at K*, attained/target."""
+    a, t = curve["attained"], curve["target"]
+    return f"{a['slope']:.3f}/{t['slope']:.3f}, {a['curvature']:+.3f}/{t['curvature']:+.3f}"
 
 
 def json_text(data: dict) -> str:

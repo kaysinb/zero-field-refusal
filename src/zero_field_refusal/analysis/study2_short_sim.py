@@ -1,15 +1,22 @@
 """Simulation of study 2's short-regime confirmation, as redirected by amendment 3.
 
-Recalibrates and validates the sequential procedure of the primary contrast
-Δ(K\\*) = h_A(K\\*) − h_F(K\\*) and measures the bias of interpolating harm to K\\*. Pure numpy on
-the CPU; it reads no run directory and no harm data. Spec: the amendment-3 simulation spec of
-2026-10-16 with its revision 1 (after review fa3), which adopts the interpolation design and
-drops the K-target-stop design.
+Recalibrates and validates the sequential procedure of the primary contrast between AdamW-25 and
+frozen Adam-25 at K\\*, and measures the bias of interpolating harm to K\\*. Pure numpy on the CPU;
+it reads no run directory and no harm data. Spec: the amendment-3 simulation spec of 2026-10-16
+with its revision 1 (after review fa3: the interpolation design only) and revision 2 (curves on
+the population scale, look designs, the interpolation estimand and the bias allowance).
 
 Notation. Arms: A = AdamW-25 and F = frozen Adam-25 (the primary contrast), P = pre-warmed
 AdamW-25 (secondary). x = ln(K_benign/K\\*), K\\* = √40. Probabilities are fractions (1 pp =
-0.01). Δ(K\\*) is the population contrast: the mean over prompts and block effects of h_A − h_F at
-x = 0.
+0.01). h̄_a(x) is arm a's population curve: the mean of h over prompts and block effects.
+
+Estimands. The primary estimand is the interpolation-based contrast: the expected interpolated
+contrast E[Δ̂_b] through the fixed rates (estimated by the mean of Δ̂_b over every supported
+block of a scenario). The pointwise contrast Δ(K\\*) = h̄_A(0) − h̄_F(0) is the scenario's Δ. Their
+difference is the paired interpolation bias; the allowance b is its largest absolute value over
+the curve families × selection misses at w_max 0.35 and 0.47 (``bias_allowance``). Pointwise
+readings of an interval use b: a direction needs the interval to exclude [−b, b], equivalence
+needs it inside ±(5 pp − b).
 
 Design (``interp``). Each arm runs three fixed rates for exactly 25 steps. Their endpoints sit at
 the nominal positions x_r = (−w, 0, +w), w = ln √(U/5) = 0.235 for U = 8, or, for
@@ -38,13 +45,18 @@ One replicate is one confirmation study:
   - endpoint positions x_{b,a,r} = x_r + τ_{a,r} + u_{b,a} + e_{b,a,r}, e ~ N(0, σ_e²);
   - technical failures, per run, with probability f, or (``failure_correlated``) with probability
     logistic(c_f + β_b/σ_s), so that high-harm streams fail more, c_f giving the marginal f.
-- Curves: logit h_a(x) = c_a + f_a(x) + α_i + β_b + d_{b,a}, f_a from a family (``FAMILIES``):
-  ``study1`` (recalibrated on K_benign: A s = 1.20, q = −0.13; F s = 1.39, q = −0.24),
-  ``stress_slopes`` (A 4·x, F 2·x), ``kink`` (1.6·x + 1.5·max(x, 0) in A, 1.6·x in F) and
-  ``high`` (``study1`` around h ≈ 0.4). P follows F's curve: f_P = f_F, c_P = c_F and d_P has the
-  distribution of d_F. c_F makes the population h_F(K\\*) the family's baseline, F's arm effect
-  included; c_A then makes the population Δ(K\\*) equal Δ. Under ``rare_only`` c_A = c_F = c_P make
-  the unshifted population rate the baseline.
+- Curves: logit h_a(x) = c_a + s_a·x + q_a·x² + γ_a·max(x, 0) + α_i + β_b + d_{b,a}. A family
+  (``FAMILIES``) gives each arm's target population curve, a logistic
+  σ(logit(baseline) + s·x + q·x² + γ·max(x, 0)): ``study1`` (A s = 1.20, q = −0.13; F s = 1.39,
+  q = −0.24: h̄′ 0.153 / 0.177 and h̄″ 0.096 / 0.112 at h̄(0) = 0.15), ``stress_slopes`` (A 4·x,
+  F 2·x), ``kink`` (1.6·x + 1.5·max(x, 0) in A, 1.6·x in F) and ``high`` (``study1``'s logit
+  coefficients around h̄(0) = 0.4). The per-prompt coefficients (c, s, q, γ) are fitted so that
+  h̄_a, averaged over prompts and block effects (the arm's own effect distribution included),
+  matches the target on x ∈ [−0.6, 0.6] by least squares on a grid (γ is free only where the
+  target has a kink; ``rare_only`` fits without its rare shift). P follows F: same target, same
+  effect distribution. On top, c_F makes h̄_F(0) the baseline exactly and c_A makes
+  h̄_A(0) − h̄_F(0) = Δ; c_P = c_F. Under ``rare_only`` c_A = c_F = c_P make the unshifted
+  population rate the baseline.
 - Labels: y = 1[Z < Φ⁻¹(h)], Z = √ρ_b·Z_{b,i} + √(ρ_a − ρ_b)·Z_{b,a,i} + √(1 − ρ_a)·Z_{b,a,r,i}:
   a prompt tends to come out alike across an arm's rates (ρ_a) and across arms (ρ_b). An
   endpoint's harm is the mean of y over the prompts.
@@ -63,28 +75,33 @@ blocks averaged over replicates, equals the scenario's target. Response noise is
 the noise alone exceeds the target, σ_d = 0 and the attained SD is reported. ``rare_only`` has no
 spread to calibrate: its SD follows from Δ.
 
-Sequential procedure. Blocks start in order. Look k happens when the number of supported blocks
-reaches n_k (n₁ = 24, n₂ = 50): a look that lacks its minimum is postponed, within the cap of 80
-started blocks. At the cap the terminal look happens with whatever is supported (cap exhaustion);
-if even n₁ was not reached, that is the only look. The interval at a look is mean ±
-t_{n−1, 1−α_k/2}·max(sd, s_min)/√n, and none (inconclusive) with fewer than 2 blocks. It gives
-equivalence (inside ±5 pp, bounds included, as in Gate 2), a direction (excluding 0 strictly),
-both, or neither; the ±8 pp reading is reported and never stops. The study stops at look 1 on
-equivalence or a direction; otherwise look 2 is terminal. If look 1 is reached only at the cap,
-looks 1 and 2 use the same blocks. The secondary contrasts are read at the look where the primary
-stopped, with two-sided 98.75 % intervals on the three-arm cohort and the same floor. At the
-stopping look, the finite-cohort bounds of the started cohort are [(S − m)/N, (S + m)/N]: N
-started blocks, m of them unsupported, S the sum of the supported Δ̂_b.
+Sequential procedure, per look design (``LOOK_DESIGNS``): ``24_50`` (the planning one),
+``36_60``, ``50`` (one terminal look) and ``24_50_eq_terminal`` (24/50 with equivalence
+allowed only at the terminal look; a direction may still stop at look 1). Blocks start in order.
+A look happens when the number of supported blocks reaches its size (look 1 of a two-look design
+later by the scenario's ``postpone``); a look that lacks its minimum is postponed, within the cap
+of 80 started blocks. At the cap the terminal look happens with whatever is supported (cap
+exhaustion); if even look 1's size was not reached, that is the only look. The interval at a look
+is mean ± t_{n−1, 1−α_k/2}·max(sd, s_min)/√n, and none (inconclusive) with fewer than 2 blocks.
+It gives equivalence (inside ±5 pp, bounds included, as in Gate 2), a direction (excluding 0
+strictly), both, or neither; the ±8 pp reading is reported and never stops. The study stops at
+look 1 on equivalence (where the design allows it) or a direction; otherwise the terminal look
+decides. Equivalence is not reported at a look-1 stop of ``24_50_eq_terminal``. If look 1 is
+reached only at the cap, looks 1 and 2 use the same blocks. The secondary contrasts are read at
+the look where the primary stopped, with two-sided 98.75 % intervals on the three-arm cohort and
+the same floor. At the stopping look, the finite-cohort bounds of the started cohort are
+[(S − m)/N, (S + m)/N]: N started blocks, m of them unsupported, S the sum of the supported Δ̂_b.
 
-Levels. O'Brien–Fleming-shaped pairs come from Lan–DeMets spending of an overall two-sided α at
-the planned information fraction n₁/n₂ (``obf_levels``); α = 0.05 gives the planning levels
-99.53 % and 95.19 %.
+Levels. A two-look design uses the O'Brien–Fleming-shaped pair from Lan–DeMets spending of an
+overall two-sided α at its information fraction n₁/n₂ (``obf_levels``); α = 0.05 at 24/50 gives
+the planning levels 99.53 % and 95.19 %. A one-look design uses 1 − α.
 
 Randomness. Replicate ``rep`` of a scenario draws from ``derive_seed(base_seed, stream, scenario
 name, rep)``; the stream names the run (``calibration``, ``validation``, …), so a validation run
-uses draws independent of the calibration's. The spread calibration uses ``derive_seed(base_seed,
-"spread", key name)`` in every run, so a scenario's σ_d does not depend on the stream. Every level
-pair and floor is evaluated on the same replicates.
+uses draws independent of the calibration's. Blocks are generated until 60 are supported (the
+largest look) or 80 have started, so every look design, α and floor is evaluated on the same
+replicates. The spread calibration uses ``derive_seed(base_seed, "spread", key name)`` in every
+run, so a scenario's σ_d does not depend on the stream.
 """
 
 from __future__ import annotations
@@ -101,8 +118,8 @@ from typing import Any
 
 import numpy as np
 from scipy.integrate import quad
-from scipy.optimize import brentq
-from scipy.special import expit, gammaincinv, ndtr, ndtri, roots_genlaguerre
+from scipy.optimize import brentq, least_squares
+from scipy.special import expit, gammaincinv, logit, ndtr, ndtri, roots_genlaguerre
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
@@ -125,25 +142,28 @@ RARE = 0.1  # π
 RARE_THRESHOLD = float(ndtri(1 - RARE))
 GAMMA_SHAPE = 2.0  # k of the skewed shape
 FAILURE_SLOPE = 1.0  # logit units per SD of β_b (technical failures)
+FIT_GRID = np.linspace(-0.6, 0.6, 25)  # x where population curves are fitted to their targets
+
+
+def _shape(x: np.ndarray, s: float, q: float, g: float) -> np.ndarray:
+    return s * x + q * x**2 + g * np.maximum(x, 0.0)
 
 
 @dataclass(frozen=True)
 class Family:
-    """f_a(x) = s_a·x + q_a·x² + γ_a·max(x, 0) per arm (A, F, P), and the population h_F(K*)."""
+    """Target population curves: h̄_a(x) = σ(logit(baseline) + s_a·x + q_a·x² + γ_a·max(x, 0)) per
+    arm (A, F, P), with h̄_F(0) = baseline."""
 
     slope: tuple[float, float, float]
     curvature: tuple[float, float, float]
     kink: tuple[float, float, float]
     baseline: float
 
-    def offset(self, x: np.ndarray, arms: Sequence[int]) -> np.ndarray:
-        """f_a(x), with arm ``arms[j]`` on axis -2 of ``x`` (endpoints on the last axis)."""
-        s, q, g = (np.array([v[a] for a in arms])[:, None] for v in self.coefficients)
-        return s * x + q * x**2 + g * np.maximum(x, 0.0)
+    def coefficients(self, arm: int) -> tuple[float, float, float]:
+        return self.slope[arm], self.curvature[arm], self.kink[arm]
 
-    @property
-    def coefficients(self) -> tuple[tuple[float, float, float], ...]:
-        return self.slope, self.curvature, self.kink
+    def target(self, arm: int, x: np.ndarray) -> np.ndarray:
+        return expit(logit(self.baseline) + _shape(np.asarray(x), *self.coefficients(arm)))
 
 
 STUDY1 = dict(slope=(1.20, 1.39, 1.39), curvature=(-0.13, -0.24, -0.24), kink=(0.0, 0.0, 0.0))
@@ -154,9 +174,69 @@ FAMILIES = {
     "high": Family(**STUDY1, baseline=0.40),
 }
 
+
+def obf_levels_uncached(alpha: float, fraction: float) -> tuple[float, float]:
+    """Two-sided levels of two looks: Lan–DeMets O'Brien–Fleming spending of ``alpha``.
+
+    Look 1 spends 2 − 2Φ(z_{1−α/2}/√t) at information fraction t; the look-2 bound then gives an
+    overall two-sided crossing probability α for the canonical joint normal statistics
+    (correlation √t).
+    """
+    spent = 2 * norm.sf(norm.isf(alpha / 2) / math.sqrt(fraction))
+    c1 = norm.isf(spent / 2)
+    rho = math.sqrt(fraction)
+    scale = math.sqrt(1 - rho**2)
+
+    def inside(c2: float) -> float:
+        def density(z: float) -> float:
+            return norm.pdf(z) * (
+                norm.cdf((c2 - rho * z) / scale) - norm.cdf((-c2 - rho * z) / scale)
+            )
+
+        return quad(density, -c1, c1, epsabs=1e-13, epsrel=1e-12)[0]
+
+    c2 = brentq(lambda c: inside(c) - (1 - alpha), 0.5, 10.0, xtol=1e-12)
+    return float(1 - spent), float(1 - 2 * norm.sf(c2))
+
+
+@functools.cache
+def obf_levels(alpha: float, fraction: float = 24 / 50) -> tuple[float, float]:
+    return obf_levels_uncached(alpha, fraction)
+
+
+@dataclass(frozen=True)
+class LookDesign:
+    name: str
+    sizes: tuple[int, ...]  # supported blocks at each look; the last look is terminal
+    equivalence_at_first: bool = True  # a two-look design may stop on equivalence at look 1
+
+    def levels(self, alpha: float) -> tuple[float, ...]:
+        """OBF spending of α over two looks, 1 − α for one."""
+        if len(self.sizes) == 1:
+            return (1 - alpha,)
+        return obf_levels(alpha, self.sizes[0] / self.sizes[1])
+
+    def realized(self, postpone: int) -> tuple[int, ...]:
+        """Look sizes with look 1 postponed by ``postpone`` supported blocks."""
+        if len(self.sizes) == 1:
+            return self.sizes
+        return (self.sizes[0] + postpone, self.sizes[1])
+
+
+LOOK_DESIGNS = (
+    LookDesign("24_50", (24, 50)),
+    LookDesign("36_60", (36, 60)),
+    LookDesign("50", (50,)),
+    LookDesign("24_50_eq_terminal", (24, 50), equivalence_at_first=False),
+)
+DESIGNS_BY_NAME = {d.name: d for d in LOOK_DESIGNS}
+PLANNING_DESIGN = "24_50"
+GENERATE_UNTIL = max(max(d.sizes) for d in LOOK_DESIGNS)  # supported blocks
+
 CAP = 80
-LOOKS = (24, 50)
+LOOKS = DESIGNS_BY_NAME[PLANNING_DESIGN].sizes
 PLANNING_LEVELS = (0.9953, 0.9519)
+PLANNING_ALPHA = 0.05
 MARGIN = 0.05  # ±5 pp, the primary margin
 WIDE_MARGIN = 0.08  # the ±8 pp reading
 SECONDARY_LEVEL = 0.9875  # Bonferroni over 2 contrasts × 2 looks
@@ -166,6 +246,7 @@ TARGET_SDS = (0.03, 0.05, 0.10, 0.15)
 BINDING_SDS = (0.03, 0.05, 0.10)
 DELTAS = (0.0, 0.025, -0.025, 0.05, -0.05, 0.055, -0.055, 0.08, -0.08)
 W_MAXES = (0.30, 0.35, 0.47)
+ALLOWANCE_W_MAXES = (0.35, 0.47)
 K_SPREADS = ((0.07, 0.03), (0.10, 0.05), (0.12, 0.06))  # (σ_u, σ_e)
 MAX_FALSE_DIRECTION = 0.025  # per side, Δ = 0
 MAX_FALSE_EQUIVALENCE = 0.05  # |Δ| = 5 pp
@@ -196,14 +277,14 @@ TAGS = {
     "failure": "f",
     "failure_correlated": "fcorr",
     "w_max": "w",
-    "first_look": "first",
+    "postpone": "postpone",
 }
 
 
 @dataclass(frozen=True)
 class Scenario:
     positions: str = "nominal"  # "nominal" | "grid"
-    delta: float = 0.0  # population Δ(K*)
+    delta: float = 0.0  # pointwise population Δ(K*)
     sd: float = 0.05  # target paired SD (unused by rare_only)
     shape: str = "normal"
     family: str = "study1"
@@ -220,18 +301,19 @@ class Scenario:
     failure: float = 0.0
     failure_correlated: bool = False
     w_max: float = 0.35
-    first_look: int = LOOKS[0]
+    postpone: int = 0  # look 1 of two-look designs happens this many supported blocks later
     reps: int = OTHER_REPS
     group: str = field(default="", compare=False)  # report grouping only
 
     def __post_init__(self) -> None:
+        gaps = [d.sizes[1] - d.sizes[0] for d in LOOK_DESIGNS if len(d.sizes) == 2]
         checks = {
             "positions": self.positions in POSITIONS,
             "shape": self.shape in SHAPES,
             "family": self.family in FAMILIES,
             "miss": self.miss in MISSES,
             "rho_b, rho_a": 0 <= self.rho_b <= self.rho_a <= 1,
-            "first_look": 2 <= self.first_look < LOOKS[1],
+            "postpone": 0 <= self.postpone < min(gaps),
             "failure": 0 <= self.failure < 1,
         }
         bad = [name for name, ok in checks.items() if not ok]
@@ -269,10 +351,20 @@ class Parameters:
     """What a scenario's draws need besides the scenario itself."""
 
     offsets: tuple[float, float, float]  # c_A, c_F, c_P (logit)
+    coefficients: tuple[tuple[float, float, float], ...]  # per-prompt (s, q, γ) per arm
+    fit_rmse: tuple[float, float, float]  # of each arm's population curve against its target
     spread: float  # σ_d (normal, skewed), M (rare_centered) or m (rare_only)
     shifted: tuple[bool, bool, bool]  # the arms that carry the arm effect
     failure: tuple[float, float]  # intercept and slope of the failure logit in β_b/σ_s
-    truth: dict[str, float]  # population contrasts at K*: "A-F", "P-F", "A-P"
+    truth: dict[str, float]  # pointwise population contrasts at K*: "A-F", "P-F", "A-P"
+
+
+def curve_offset(
+    coefficients: Sequence[tuple[float, float, float]], x: np.ndarray, arms: Sequence[int]
+) -> np.ndarray:
+    """s·x + q·x² + γ·max(x, 0), with arm ``arms[j]`` on axis -2 of ``x`` (endpoints last)."""
+    s, q, g = (np.array([coefficients[a][k] for a in arms])[:, None] for k in range(3))
+    return _shape(x, s, q, g)
 
 
 # Population quantities (quadrature)
@@ -291,6 +383,9 @@ def _laguerre() -> tuple[np.ndarray, np.ndarray]:
     return nodes, weights / weights.sum()
 
 
+NO_EFFECT = (np.zeros(1), np.ones(1))
+
+
 def effect_distribution(shape: str, spread: float) -> tuple[np.ndarray, np.ndarray]:
     """Nodes and weights of a shifted arm's effect d (logit scale)."""
     if shape == "normal":
@@ -306,14 +401,59 @@ def effect_distribution(shape: str, spread: float) -> tuple[np.ndarray, np.ndarr
     raise ValueError(f"Unknown shape {shape!r}; expected one of {SHAPES}")
 
 
+def population_values(
+    sigma_v: float,
+    offset: float,
+    coefficients: tuple[float, float, float],
+    effect: tuple[np.ndarray, np.ndarray],
+    x: np.ndarray,
+) -> np.ndarray:
+    """h̄(x) = E[σ(c + f(x) + v + d)], v ~ N(0, σ_v²) (prompt + stream), d ~ ``effect``."""
+    nodes, weights = _hermite()
+    values, probabilities = effect
+    eta = offset + _shape(np.asarray(x, dtype=float), *coefficients)
+    inner = expit(eta[:, None, None] + sigma_v * nodes[None, :, None] + values[None, None, :])
+    return inner @ probabilities @ weights
+
+
+def _sigma_v(scenario: Scenario) -> float:
+    return math.hypot(scenario.sigma_alpha, scenario.sigma_s)
+
+
 def population_rate(
     scenario: Scenario, offset: float, effect: tuple[np.ndarray, np.ndarray]
 ) -> float:
-    """E[h(K*)] over prompts, the stream effect and the arm effect, for logit offset c."""
-    nodes, weights = _hermite()
-    v = math.hypot(scenario.sigma_alpha, scenario.sigma_s) * nodes  # α_i + β_b
-    values, probabilities = effect
-    return float(weights @ expit(offset + v[:, None] + values[None, :]) @ probabilities)
+    """h̄(0) for logit offset c."""
+    return float(population_values(_sigma_v(scenario), offset, (0.0, 0.0, 0.0), effect, [0.0])[0])
+
+
+@functools.cache
+def fit_coefficients(
+    family: str, arm: int, sigma_v: float, effect: tuple[str, float] | None
+) -> tuple[tuple[float, float, float], float]:
+    """Per-prompt (s, q, γ) whose population curve best matches the arm's target on
+    ``FIT_GRID`` (least squares; the offset is fitted too), and the fit's RMSE.
+
+    ``effect`` is the arm's effect (shape, spread), or None. γ is free only where the target has
+    a kink.
+    """
+    target = FAMILIES[family]
+    goal = target.target(arm, FIT_GRID)
+    distribution = NO_EFFECT if effect is None else effect_distribution(*effect)
+    kinked = target.kink[arm] != 0
+
+    def unpack(p: np.ndarray) -> tuple[float, tuple[float, float, float]]:
+        return p[0], (p[1], p[2], p[3] if kinked else 0.0)
+
+    def residual(p: np.ndarray) -> np.ndarray:
+        offset, coefficients = unpack(p)
+        return population_values(sigma_v, offset, coefficients, distribution, FIT_GRID) - goal
+
+    s, q, g = target.coefficients(arm)
+    start = [logit(target.baseline), s, q] + ([g] if kinked else [])
+    fit = least_squares(residual, start, method="lm", xtol=1e-12, ftol=1e-12, gtol=1e-12)
+    _, coefficients = unpack(fit.x)
+    return tuple(float(v) for v in coefficients), float(np.sqrt(np.mean(fit.fun**2)))
 
 
 def _solve_offset(rate: Callable[[float], float], target: float) -> float:
@@ -332,47 +472,33 @@ def _logistic_intercept(marginal: float, slope: float) -> float:
     )
 
 
-def population_curve(
-    scenario: Scenario, params: Parameters, step: float = 1e-3
-) -> dict[str, dict[str, float]]:
-    """Per arm, the population curve h_a(x) = E[h] over prompts and block effects at K*: its
-    value, slope and curvature in x on the probability scale (central differences).
-
-    The family's coefficients act per prompt and block on the logit scale, so this curve, the
-    one the estimand and the interpolation bias depend on, is flatter than a single logistic
-    with the same coefficients. At a kink the "curvature" is the second difference over ±step,
-    not a derivative.
-    """
-    family = FAMILIES[scenario.family]
-    zero = (np.zeros(1), np.ones(1))
-    curve = {}
-    for a, arm in enumerate(ARMS):
-        effect = effect_distribution(scenario.shape, params.spread) if params.shifted[a] else zero
-        x = np.array([[-step, 0.0, step]])
-        shifts = family.offset(x, [a])[0]
-        h = [population_rate(scenario, params.offsets[a] + shift, effect) for shift in shifts]
-        curve[arm] = {
-            "h": h[1],
-            "slope": (h[2] - h[0]) / (2 * step),
-            "curvature": (h[2] - 2 * h[1] + h[0]) / step**2,
-        }
-    return curve
+def _effects(scenario: Scenario, spread: float, shifted: Sequence[bool]) -> list:
+    return [effect_distribution(scenario.shape, spread) if on else NO_EFFECT for on in shifted]
 
 
 def solve_parameters(scenario: Scenario, spread: float | None = None) -> Parameters:
-    """Offsets, the arm effect and the failure law of a scenario.
+    """Curve coefficients, offsets, the arm effect and the failure law of a scenario.
 
     ``spread`` is the calibrated σ_d or M; ``rare_only`` ignores it and solves m from Δ.
     """
     s = scenario
     baseline = FAMILIES[s.family].baseline
-    zero = (np.zeros(1), np.ones(1))
+    sigma_v = _sigma_v(s)
     if s.shape == "rare_only":
-        c = _solve_offset(lambda c: population_rate(s, c, zero), baseline)
+        keys = (None, None, None)  # the curves are those of the unshifted population
+    else:
+        if spread is None:
+            raise ValueError(f"Shape {s.shape!r} needs a calibrated spread")
+        shifted = (True, True, True) if s.shape == "normal" else (True, False, False)
+        keys = tuple((s.shape, float(spread)) if on else None for on in shifted)
+    fits = [fit_coefficients(s.family, a, sigma_v, keys[a]) for a in (0, 1)]
+    fits.append(fits[1])  # P follows F: same target, same effect distribution
+    if s.shape == "rare_only":
+        c = _solve_offset(lambda c: population_rate(s, c, NO_EFFECT), baseline)
         if s.delta == 0:
             m = 0.0
         else:
-            base = population_rate(s, c, zero)
+            base = population_rate(s, c, NO_EFFECT)
 
             def gap(m: float) -> float:
                 return population_rate(s, c, effect_distribution("rare_only", m)) - base
@@ -384,26 +510,56 @@ def solve_parameters(scenario: Scenario, spread: float | None = None) -> Paramet
         shifted = (True, False, False) if s.delta >= 0 else (False, True, True)
         spread = m
     else:
-        if spread is None:
-            raise ValueError(f"Shape {s.shape!r} needs a calibrated spread")
-        shifted = (True, True, True) if s.shape == "normal" else (True, False, False)
-        effects = [effect_distribution(s.shape, spread) if on else zero for on in shifted]
+        effects = _effects(s, spread, shifted)
         c_f = _solve_offset(lambda c: population_rate(s, c, effects[1]), baseline)
         h_f = population_rate(s, c_f, effects[1])
         c_a = _solve_offset(lambda c: population_rate(s, c, effects[0]), h_f + s.delta)
         offsets = (c_a, c_f, c_f)
-    effects = [
-        effect_distribution(s.shape, spread) if on else (np.zeros(1), np.ones(1)) for on in shifted
-    ]
+    effects = _effects(s, spread, shifted)
     h = [population_rate(s, offsets[a], effects[a]) for a in range(len(ARMS))]
     slope = FAILURE_SLOPE if s.failure_correlated else 0.0
     return Parameters(
         offsets=offsets,
+        coefficients=tuple(fit[0] for fit in fits),
+        fit_rmse=tuple(fit[1] for fit in fits),
         spread=float(spread),
         shifted=shifted,
         failure=(_logistic_intercept(s.failure, slope), slope),
         truth={"A-F": h[0] - h[1], "P-F": h[2] - h[1], "A-P": h[0] - h[2]},
     )
+
+
+def population_curve(
+    scenario: Scenario, params: Parameters, step: float = 1e-3
+) -> dict[str, dict[str, float]]:
+    """Per arm, the attained population curve h̄_a at K* (value, slope and curvature in x, by
+    central differences) beside its target (the family's curve at its baseline).
+
+    At a kink the "curvature" is the second difference over ±step, not a derivative.
+    """
+    family = FAMILIES[scenario.family]
+    effects = _effects(scenario, params.spread, params.shifted)
+    x = np.array([-step, 0.0, step])
+
+    def summary(h: np.ndarray) -> dict[str, float]:
+        return {
+            "h": float(h[1]),
+            "slope": float((h[2] - h[0]) / (2 * step)),
+            "curvature": float((h[2] - 2 * h[1] + h[0]) / step**2),
+        }
+
+    curve = {}
+    for a, arm in enumerate(ARMS):
+        h = population_values(
+            _sigma_v(scenario), params.offsets[a], params.coefficients[a], effects[a], x
+        )
+        curve[arm] = {
+            "attained": summary(h),
+            "target": summary(family.target(a, x)),
+            "per_prompt": dict(zip(("s", "q", "gamma"), params.coefficients[a], strict=True)),
+            "fit_rmse": params.fit_rmse[a],
+        }
+    return curve
 
 
 # Data
@@ -505,7 +661,7 @@ def simulate_blocks(
     failed = rng.random((n, len(arms), 3)) < expit(intercept + slope * stream)[:, None, None]
     eta = (
         np.array(params.offsets)[arms][:, None]
-        + FAMILIES[s.family].offset(x, arms)
+        + curve_offset(params.coefficients, x, arms)
         + s.sigma_s * stream[:, None, None]
         + effect[..., None]
     )
@@ -539,13 +695,13 @@ class Replicates:
 def simulate_replicate(
     scenario: Scenario, params: Parameters, rep: int, *, base_seed: int, stream: str
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    """One study: blocks start until n₂ are supported or the cap is reached."""
+    """One study: blocks start until ``GENERATE_UNTIL`` are supported or the cap is reached."""
     rng = np.random.default_rng(derive_seed(base_seed, stream, scenario.name, rep))
     alpha, misses = draw_constants(scenario, rng)
     estimates = np.full((CAP, len(ARMS)), np.nan)
     causes = np.full((CAP, len(ARMS)), NOT_STARTED, dtype=np.int8)
     started = supported = 0
-    while started < CAP and supported < LOOKS[-1]:
+    while started < CAP and supported < GENERATE_UNTIL:
         n = min(CHUNK_BLOCKS, CAP - started)
         estimate, cause = simulate_blocks(scenario, params, alpha, misses, rng, n)
         estimates[started : started + n], causes[started : started + n] = estimate, cause
@@ -594,8 +750,8 @@ class SpreadCalibration:
 
 
 def calibration_key(scenario: Scenario) -> Scenario:
-    """The Δ = 0 scenario whose paired SD sets the spread (look sizes and reps do not matter)."""
-    return replace(scenario, delta=0.0, first_look=LOOKS[0], reps=0, group="")
+    """The Δ = 0 scenario whose paired SD sets the spread (look timing and reps do not matter)."""
+    return replace(scenario, delta=0.0, postpone=0, reps=0, group="")
 
 
 def paired_sd(
@@ -652,7 +808,8 @@ def calibrate_spread(
 
 @dataclass(frozen=True)
 class LookStatistics:
-    """Per replicate (axis 0) and look (axis 1); look 2 is the terminal look."""
+    """Per replicate (axis 0) and look (axis 1); look 2 is the terminal look. A one-look design
+    has a look 1 that is never reached."""
 
     reached: np.ndarray  # (R, 2) bool; the terminal look always happens
     at_cap: np.ndarray  # (R,) the terminal look was taken at the cap below its minimum
@@ -677,22 +834,29 @@ def _moments(values: np.ndarray, include: np.ndarray) -> tuple[np.ndarray, ...]:
 def look_statistics(
     primary: np.ndarray,
     secondary: np.ndarray | None = None,
-    sizes: tuple[int, int] = LOOKS,
+    sizes: tuple[int, ...] = LOOKS,
     cap: int = CAP,
 ) -> LookStatistics:
-    """Statistics of both looks from Δ̂_b in started order, NaN where unsupported.
+    """Statistics of the looks from Δ̂_b in started order, NaN where unsupported.
 
-    ``primary`` is (R, blocks) and ``secondary`` (R, blocks, 2), NaN where the three arms are
-    not all supported. Blocks past the cap are ignored.
+    ``sizes`` holds one look (terminal) or two. ``primary`` is (R, blocks) and ``secondary``
+    (R, blocks, 2), NaN where the three arms are not all supported. Blocks past the cap are
+    ignored.
     """
-    if not 0 < sizes[0] < sizes[1]:
+    if len(sizes) == 2 and not 0 < sizes[0] < sizes[1]:
         raise ValueError(f"Look sizes must increase: {sizes}")
+    if len(sizes) not in (1, 2):
+        raise ValueError(f"One or two looks, not {sizes}")
     primary = np.asarray(primary, dtype=float)[:, :cap]
     reps, blocks = primary.shape
     supported = np.isfinite(primary)
     count = np.cumsum(supported, axis=1)
     reached, index = [], []
-    for size in sizes:
+    for size in (None, *sizes) if len(sizes) == 1 else sizes:
+        if size is None:  # a one-look design has no look 1
+            reached.append(np.zeros(reps, dtype=bool))
+            index.append(np.full(reps, blocks - 1))
+            continue
         hit = count >= size
         reached.append(hit.any(axis=1))
         index.append(np.where(reached[-1], hit.argmax(axis=1), blocks - 1))
@@ -742,7 +906,7 @@ def t_interval(
 class Decisions:
     """The procedure's outcome per replicate, read at the stopping look."""
 
-    look: np.ndarray  # 1 or 2
+    look: np.ndarray  # 1 or 2 (2: the terminal look)
     low: np.ndarray
     high: np.ndarray
     estimate: np.ndarray
@@ -769,25 +933,30 @@ def _inside(low: np.ndarray, high: np.ndarray, margin: float) -> np.ndarray:
 
 def sequential_decisions(
     stats: LookStatistics,
-    levels: tuple[float, float],
+    levels: Sequence[float],
     floor: float = 0.0,
     *,
+    equivalence_at_first: bool = True,
     margin: float = MARGIN,
     wide: float = WIDE_MARGIN,
     secondary_level: float = SECONDARY_LEVEL,
 ) -> Decisions:
-    """Stop at look 1 on equivalence or a direction; otherwise look 2 decides."""
-    bounds = [
-        t_interval(stats.mean[:, k], stats.sd[:, k], stats.n[:, k], levels[k], floor)
-        for k in range(2)
-    ]
-    low1, high1 = bounds[0]
-    decided = _inside(low1, high1, margin) | (low1 > 0) | (high1 < 0)
-    stop1 = stats.reached[:, 0] & decided
+    """Stop at look 1 on equivalence (if allowed there) or a direction; otherwise the terminal
+    look decides. ``levels`` has one level per look of the design (one for a one-look design)."""
+    reps = stats.n.shape[0]
+    if len(levels) == 1:
+        low1, high1 = np.full(reps, -np.inf), np.full(reps, np.inf)
+        terminal = levels[0]
+    else:
+        low1, high1 = t_interval(stats.mean[:, 0], stats.sd[:, 0], stats.n[:, 0], levels[0], floor)
+        terminal = levels[1]
+    low2, high2 = t_interval(stats.mean[:, 1], stats.sd[:, 1], stats.n[:, 1], terminal, floor)
+    equivalent1 = _inside(low1, high1, margin) if equivalence_at_first else np.zeros(reps, bool)
+    stop1 = stats.reached[:, 0] & (equivalent1 | (low1 > 0) | (high1 < 0))
     k = np.where(stop1, 0, 1)
-    rows = np.arange(len(k))
-    low = np.where(stop1, low1, bounds[1][0])
-    high = np.where(stop1, high1, bounds[1][1])
+    rows = np.arange(reps)
+    low = np.where(stop1, low1, low2)
+    high = np.where(stop1, high1, high2)
     secondary_n = stats.secondary_n[rows, k]
     secondary_low, secondary_high = t_interval(
         stats.secondary_mean[rows, k],
@@ -804,7 +973,7 @@ def sequential_decisions(
         n=stats.n[rows, k],
         started=stats.started[rows, k],
         at_cap=~stop1 & stats.at_cap,
-        equivalence=_inside(low, high, margin),
+        equivalence=_inside(low, high, margin) & (~stop1 | equivalence_at_first),
         positive=low > 0,
         negative=high < 0,
         inside_wide=_inside(low, high, wide),
@@ -815,28 +984,15 @@ def sequential_decisions(
     )
 
 
-def obf_levels(alpha: float, fraction: float = LOOKS[0] / LOOKS[1]) -> tuple[float, float]:
-    """Two-sided levels of the two looks: Lan–DeMets O'Brien–Fleming spending of ``alpha``.
-
-    Look 1 spends 2 − 2Φ(z_{1−α/2}/√t) at information fraction t; the look-2 bound then gives an
-    overall two-sided crossing probability α for the canonical joint normal statistics
-    (correlation √t).
-    """
-    spent = 2 * norm.sf(norm.isf(alpha / 2) / math.sqrt(fraction))
-    c1 = norm.isf(spent / 2)
-    rho = math.sqrt(fraction)
-    scale = math.sqrt(1 - rho**2)
-
-    def inside(c2: float) -> float:
-        def density(z: float) -> float:
-            return norm.pdf(z) * (
-                norm.cdf((c2 - rho * z) / scale) - norm.cdf((-c2 - rho * z) / scale)
-            )
-
-        return quad(density, -c1, c1, epsabs=1e-13, epsrel=1e-12)[0]
-
-    c2 = brentq(lambda c: inside(c) - (1 - alpha), 0.5, 10.0, xtol=1e-12)
-    return float(1 - spent), float(1 - 2 * norm.sf(c2))
+def pointwise_readings(decisions: Decisions, allowance: float) -> dict[str, np.ndarray]:
+    """Readings about the pointwise Δ(K*) from the final interval with the bias allowance b:
+    a direction excludes [−b, b], equivalence lies inside ±(5 pp − b)."""
+    d = decisions
+    return {
+        "equivalence": _inside(d.low, d.high, MARGIN - allowance),
+        "positive": d.low > allowance,
+        "negative": d.high < -allowance,
+    }
 
 
 # Summaries
@@ -848,10 +1004,11 @@ def _rate(flags: np.ndarray) -> tuple[float, float]:
 
 
 def block_diagnostics(params: Parameters, data: Replicates) -> dict[str, Any]:
-    """Block-level quantities over every started block, independent of the procedure's levels.
+    """Block-level quantities over every started block, independent of the procedure.
 
-    ``block_bias`` is the paired interpolation bias: the mean of Δ̂_b over the blocks supported
-    in both primary arms minus the population Δ(K*); its SE treats replicates as the units.
+    ``block_mean`` estimates the interpolation estimand E[Δ̂_b] (over supported blocks);
+    ``block_bias`` is the paired interpolation bias, ``block_mean`` minus the pointwise Δ(K*); its
+    SE treats replicates as the units.
     """
     primary, secondary, causes = data.primary, data.secondary, data.causes
     finite = np.isfinite(primary)
@@ -896,9 +1053,14 @@ def block_diagnostics(params: Parameters, data: Replicates) -> dict[str, Any]:
 
 
 def outcome_rates(
-    decisions: Decisions, delta: float, truth: Mapping[str, float], targets: Mapping[str, float]
+    decisions: Decisions,
+    delta: float,
+    truth: Mapping[str, float],
+    targets: Mapping[str, float],
+    allowance: float | None = None,
 ) -> dict[str, Any]:
-    """Decision rates, their Monte Carlo SEs and the stopping-time summaries of one level pair."""
+    """Decision rates, their Monte Carlo SEs and the stopping-time summaries of one design,
+    level pair and floor; with an allowance, the pointwise readings too."""
     d = decisions
     rates: dict[str, Any] = {}
     flags = {
@@ -914,6 +1076,18 @@ def outcome_rates(
         rates[f"p_{name}"], rates[f"se_{name}"] = _rate(flag)
     power = d.equivalence if delta == 0 else d.positive if delta > 0 else d.negative
     rates["power"], rates["se_power"] = _rate(power)
+    if allowance is not None:
+        readings = pointwise_readings(d, allowance)
+        pointwise: dict[str, float] = {"allowance": allowance}
+        for name, flag in readings.items():
+            pointwise[f"p_{name}"], pointwise[f"se_{name}"] = _rate(flag)
+        right = (
+            readings["equivalence"]
+            if delta == 0
+            else readings["positive" if delta > 0 else "negative"]
+        )
+        pointwise["power"], pointwise["se_power"] = _rate(right)
+        rates["pointwise"] = pointwise
     total = d.n * d.estimate
     unsupported = d.started - d.n
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -924,7 +1098,7 @@ def outcome_rates(
         (cohort_low < MARGIN) & (cohort_high > MARGIN)
     )
     rates["p_cohort_bounds_straddle_5pp"], rates["se_cohort_bounds_straddle_5pp"] = _rate(straddles)
-    coverage = {}
+    coverage: dict[str, dict[str, float]] = {}
     for k, name in enumerate(SECONDARY_CONTRASTS):
         low, high = d.secondary_low[:, k], d.secondary_high[:, k]
         coverage[name] = {}
@@ -954,31 +1128,37 @@ def summarize_scenario(
     scenario: Scenario,
     params: Parameters,
     data: Replicates,
-    level_sets: Mapping[str, tuple[float, float]],
+    alphas: Sequence[float],
     floors: Sequence[float] = SE_FLOORS,
-    alphas: Mapping[str, float | None] | None = None,
+    allowance: float | None = None,
+    designs: Sequence[LookDesign] = LOOK_DESIGNS,
 ) -> dict[str, Any]:
-    """The scenario's block diagnostics and one result row per level set × SE floor."""
+    """The scenario's block diagnostics and one result row per look design × α × SE floor."""
     diagnostics = block_diagnostics(params, data)
-    stats = look_statistics(data.primary, data.secondary, sizes=(scenario.first_look, LOOKS[1]))
+    primary, secondary = data.primary, data.secondary
     targets = diagnostics["secondary_block_mean"]
     results = []
-    for name, levels in level_sets.items():
-        for floor in floors:
-            decisions = sequential_decisions(stats, levels, floor)
-            # The scenario's Δ, not the solved truth: that is Δ only to ~1e-12, and the power at
-            # Δ = 0 is the equivalence rate.
-            rates = outcome_rates(decisions, scenario.delta, params.truth, targets)
-            rates["bias_vs_block_mean"] = rates["mean_estimate"] - diagnostics["block_mean"]
-            results.append(
-                {
-                    "level_set": name,
-                    "alpha": None if alphas is None else alphas.get(name),
-                    "levels": list(levels),
-                    "floor": floor,
-                    **rates,
-                }
-            )
+    for design in designs:
+        stats = look_statistics(primary, secondary, sizes=design.realized(scenario.postpone))
+        for alpha in alphas:
+            levels = design.levels(alpha)
+            for floor in floors:
+                decisions = sequential_decisions(
+                    stats, levels, floor, equivalence_at_first=design.equivalence_at_first
+                )
+                # The scenario's Δ, not the solved truth: that is Δ only to ~1e-12, and the
+                # power at Δ = 0 is the equivalence rate.
+                rates = outcome_rates(decisions, scenario.delta, params.truth, targets, allowance)
+                rates["bias_vs_block_mean"] = rates["mean_estimate"] - diagnostics["block_mean"]
+                results.append(
+                    {
+                        "looks": design.name,
+                        "alpha": alpha,
+                        "levels": list(levels),
+                        "floor": floor,
+                        **rates,
+                    }
+                )
     return {
         "name": scenario.name,
         "design": scenario.design,
@@ -1019,20 +1199,20 @@ def _scenarios(
 
 
 def calibration_grid() -> list[Scenario]:
-    """The central model: every target SD × every Δ."""
+    """The central model (normal shape, w_max 0.35): every target SD × every Δ."""
     return _scenarios("central", TARGET_SDS, DELTAS)
 
 
 def validation_grid() -> list[Scenario]:
-    """Independent checks of the chosen levels: the central boundaries, postponed looks, cap
-    exhaustion, shapes, bracket widths, K spread, selection misses, curve families and stress."""
+    """Independent checks of the chosen levels: every shape × target SD × Δ, then postponed looks,
+    cap exhaustion, bracket widths, K spread, selection misses, curve families and stress."""
     boundary, short = (0.0, MARGIN, -MARGIN), (0.0, MARGIN)
-    grid = _scenarios("central", TARGET_SDS, boundary)
-    grid += _scenarios("postponed", (0.05, 0.10), boundary, first_look=30)
-    grid += _scenarios("cap", (0.05, 0.10), boundary, failure=0.2, failure_correlated=True)
+    grid = _scenarios("central", TARGET_SDS, DELTAS)
     for shape in ("skewed", "rare_centered"):
-        grid += _scenarios("shapes", (0.05, 0.10, 0.15), boundary, shape=shape)
-    grid += _scenarios("shapes", (0.0,), (0.0, 0.025, -0.025, MARGIN, -MARGIN), shape="rare_only")
+        grid += _scenarios("shapes", TARGET_SDS, DELTAS, shape=shape)
+    grid += _scenarios("shapes", (0.0,), DELTAS, shape="rare_only")
+    grid += _scenarios("postponed", (0.05, 0.10), boundary, postpone=6)
+    grid += _scenarios("cap", (0.05, 0.10), boundary, failure=0.2, failure_correlated=True)
     for w_max in (0.30, 0.47):
         grid += _scenarios("width", (0.05, 0.10), boundary, w_max=w_max)
     for sigma_u, sigma_e in K_SPREADS[1:]:
@@ -1088,23 +1268,13 @@ def smoke_grid(reps: int = SMOKE_REPS) -> list[Scenario]:
     for family in ("kink", "high", "stress_slopes"):
         grid += _scenarios("families", (0.05,), short, reps, family=family)
     grid += _scenarios("cap", (0.05,), (0.0,), reps, failure=0.2, failure_correlated=True)
-    grid += _scenarios("postponed", (0.05,), (0.0,), reps, first_look=30)
+    grid += _scenarios("postponed", (0.05,), (0.0,), reps, postpone=6)
     grid.append(
         Scenario(
             positions="grid", family="stress_slopes", w_max=math.inf, reps=reps, group="bias_grid"
         )
     )
     return grid
-
-
-def calibration_level_sets() -> tuple[dict[str, tuple[float, float]], dict[str, float | None]]:
-    """The planning levels and the OBF pair of every α on the grid."""
-    level_sets: dict[str, tuple[float, float]] = {"planning": PLANNING_LEVELS}
-    alphas: dict[str, float | None] = {"planning": None}
-    for alpha in ALPHAS:
-        name = f"obf_{alpha:.4f}"
-        level_sets[name], alphas[name] = obf_levels(alpha), alpha
-    return level_sets, alphas
 
 
 # Verdicts
@@ -1123,7 +1293,8 @@ def _worst(rows: Sequence[Mapping], key: str, pick: Callable = max) -> dict[str,
 
 
 def constraint_summary(rows: Sequence[Mapping]) -> dict[str, Any]:
-    """Worst error rates and lowest powers over result rows of one level set and floor."""
+    """Worst error rates, lowest powers and the largest E started and cap exhaustion over result
+    rows of one design, α and floor."""
     null = [r for r in rows if r["delta"] == 0]
     near = [r for r in rows if math.isclose(abs(r["delta"]), MARGIN)]
     beyond = [r for r in rows if math.isclose(abs(r["delta"]), 0.055)]
@@ -1134,6 +1305,8 @@ def constraint_summary(rows: Sequence[Mapping]) -> dict[str, Any]:
         "max_false_equivalence_5.5pp": _worst(beyond, "p_equivalence"),
         "min_power_equivalence_at_0": _worst(null, "power", min),
         "min_power_direction_at_5pp": _worst(near, "power", min),
+        "max_cap_exhausted": _worst(rows, "p_cap_exhausted"),
+        "max_mean_started": max((r["mean_started"] for r in rows), default=None),
     }
     checks = [
         summary["max_false_positive"]["value"],
@@ -1146,7 +1319,7 @@ def constraint_summary(rows: Sequence[Mapping]) -> dict[str, Any]:
 
 
 def result_rows(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
-    """One flat row per scenario × level set × floor."""
+    """One flat row per scenario × look design × α × floor."""
     rows = []
     for s in scenarios:
         settings = s["settings"]
@@ -1156,6 +1329,7 @@ def result_rows(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
                     "scenario": s["name"],
                     "group": settings["group"],
                     "design": s["design"],
+                    "shape": settings["shape"],
                     "sd": settings["sd"],
                     "delta": settings["delta"],
                     "reps": s["reps"],
@@ -1166,76 +1340,87 @@ def result_rows(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
 
 
 def select_levels(scenarios: Sequence[Mapping], floors: Sequence[float] = SE_FLOORS) -> list[dict]:
-    """Per design and SE floor, the largest α on the grid meeting every error constraint over the
-    central scenarios at the binding SDs (3, 5, 10 pp); 15 pp is reported, not binding."""
+    """Per look design and SE floor, the largest α on the grid meeting every error constraint
+    over the central scenarios at the binding SDs (3, 5, 10 pp); 15 pp is reported, not
+    binding."""
     rows = [r for r in result_rows(scenarios) if r["group"] == "central"]
     selections = []
-    for design in sorted({r["design"] for r in rows}):
+    for looks in dict.fromkeys(r["looks"] for r in rows):
         for floor in floors:
-            mine = [r for r in rows if r["design"] == design and r["floor"] == floor]
+            mine = [r for r in rows if r["looks"] == looks and r["floor"] == floor]
             binding = [r for r in mine if any(math.isclose(r["sd"], b) for b in BINDING_SDS)]
-            by_set = {}
-            for name in dict.fromkeys(r["level_set"] for r in mine):
-                by_set[name] = constraint_summary([r for r in binding if r["level_set"] == name])
-            passing = [
-                r["alpha"]
-                for r in mine
-                if r["alpha"] is not None and by_set[r["level_set"]]["meets"]
-            ]
+            by_alpha = {
+                alpha: constraint_summary([r for r in binding if r["alpha"] == alpha])
+                for alpha in sorted({r["alpha"] for r in mine})
+            }
+            passing = [alpha for alpha, summary in by_alpha.items() if summary["meets"]]
             alpha = max(passing, default=None)
-            chosen = None if alpha is None else next(r for r in mine if r["alpha"] == alpha)
-            power = [
-                {
-                    "sd": r["sd"],
-                    "delta": r["delta"],
-                    "power": r["power"],
-                    "se": r["se_power"],
-                }
-                for r in mine
-                if chosen and r["level_set"] == chosen["level_set"]
-            ]
+            chosen = [r for r in mine if r["alpha"] == alpha]
             selections.append(
                 {
-                    "design": design,
+                    "looks": looks,
                     "floor": floor,
                     "alpha": alpha,
-                    "level_set": chosen["level_set"] if chosen else None,
-                    "levels": chosen["levels"] if chosen else None,
-                    "constraints": by_set[chosen["level_set"]] if chosen else None,
-                    "planning": by_set.get("planning"),
-                    "power": power,
+                    "levels": chosen[0]["levels"] if chosen else None,
+                    "constraints": by_alpha.get(alpha),
+                    "at_alpha_0.05": by_alpha.get(PLANNING_ALPHA),
+                    "power": [
+                        {
+                            "sd": r["sd"],
+                            "delta": r["delta"],
+                            "power": r["power"],
+                            "se": r["se_power"],
+                        }
+                        for r in chosen
+                    ],
                     "per_alpha": {
-                        name: {"meets": v["meets"]} | {k: v[k]["value"] for k in v if k != "meets"}
-                        for name, v in by_set.items()
+                        f"{a:.4f}": {"meets": v["meets"]}
+                        | {k: v[k]["value"] for k in v if isinstance(v[k], dict)}
+                        for a, v in by_alpha.items()
                     },
                 }
             )
     return selections
 
 
-def validation_checks(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
-    """Worst error rates and lowest powers per level set × floor, per group and over all."""
+def validation_checks(
+    scenarios: Sequence[Mapping], chosen: Mapping[tuple[str, float], float] | None = None
+) -> list[dict[str, Any]]:
+    """Worst rates and lowest powers per look design × floor, per group and over all, at the
+    chosen α of that design and floor (``chosen``) and at α = 0.05."""
     rows = result_rows(scenarios)
     checks = []
-    for name in dict.fromkeys(r["level_set"] for r in rows):
+    for looks in dict.fromkeys(r["looks"] for r in rows):
         for floor in sorted({r["floor"] for r in rows}):
-            mine = [r for r in rows if r["level_set"] == name and r["floor"] == floor]
-            groups = {"all": mine} | {
-                g: [r for r in mine if r["group"] == g]
-                for g in dict.fromkeys(r["group"] for r in mine)
-            }
-            checks.append(
-                {
-                    "level_set": name,
-                    "levels": mine[0]["levels"],
-                    "floor": floor,
-                    "groups": {g: constraint_summary(group) for g, group in groups.items()},
+            alphas = {"alpha_0.05": PLANNING_ALPHA}
+            if chosen and chosen.get((looks, floor)) is not None:
+                alphas["selected"] = chosen[(looks, floor)]
+            for label, alpha in alphas.items():
+                mine = [
+                    r
+                    for r in rows
+                    if r["looks"] == looks and r["floor"] == floor and r["alpha"] == alpha
+                ]
+                if not mine:
+                    continue
+                groups = {"all": mine} | {
+                    g: [r for r in mine if r["group"] == g]
+                    for g in dict.fromkeys(r["group"] for r in mine)
                 }
-            )
+                checks.append(
+                    {
+                        "looks": looks,
+                        "floor": floor,
+                        "which": label,
+                        "alpha": alpha,
+                        "levels": mine[0]["levels"],
+                        "groups": {g: constraint_summary(group) for g, group in groups.items()},
+                    }
+                )
     return checks
 
 
-BIAS_FIELDS = {"family", "miss", "w_max", "delta", "sd", "reps", "first_look", "group"}
+BIAS_FIELDS = {"family", "miss", "w_max", "delta", "sd", "reps", "postpone", "group"}
 
 
 def _bias_scenario(settings: Mapping[str, Any]) -> bool:
@@ -1247,11 +1432,11 @@ def _bias_scenario(settings: Mapping[str, Any]) -> bool:
     )
 
 
-def bias_allowance(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
-    """Per w_max, the largest |paired block bias| per family over selection misses and Δ, and the
-    allowance: the largest over the families."""
+def bias_allowance(scenarios: Sequence[Mapping]) -> dict[str, Any]:
+    """The paired pointwise bias per w_max and family (largest |bias| over selection misses and
+    Δ), and the allowance b: the largest over the families at w_max 0.35 and 0.47."""
     eligible = [s for s in scenarios if _bias_scenario(s["settings"])]
-    allowance = []
+    per_w_max = []
     for w_max in sorted({s["settings"]["w_max"] for s in eligible}):
         per_family = {}
         for family in FAMILIES:
@@ -1271,15 +1456,33 @@ def bias_allowance(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
                 "scenarios": len(mine),
             }
         driver = max(per_family, key=lambda f: per_family[f]["abs_bias"])
-        allowance.append(
+        per_w_max.append(
             {
                 "w_max": w_max,
-                "allowance": per_family[driver]["abs_bias"],
+                "largest": per_family[driver]["abs_bias"],
                 "family": driver,
                 "per_family": per_family,
             }
         )
-    return allowance
+    counted = [
+        (entry["w_max"], family, item)
+        for entry in per_w_max
+        if any(math.isclose(entry["w_max"], w) for w in ALLOWANCE_W_MAXES)
+        for family, item in entry["per_family"].items()
+    ]
+    allowance = None
+    if counted:
+        w_max, family, item = max(counted, key=lambda c: c[2]["abs_bias"])
+        allowance = {
+            "value": item["abs_bias"],
+            "family": family,
+            "w_max": w_max,
+            "scenario": item["scenario"],
+            "se": item["se"],
+            "over_w_max": list(ALLOWANCE_W_MAXES),
+            "over_families": list(FAMILIES),
+        }
+    return {"per_w_max": per_w_max, "allowance": allowance}
 
 
 # Running
@@ -1288,9 +1491,9 @@ def bias_allowance(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
 @dataclass(frozen=True)
 class RunSettings:
     stream: str
-    level_sets: dict[str, tuple[float, float]]
-    alphas: dict[str, float | None]
+    alphas: tuple[float, ...]
     floors: tuple[float, ...] = SE_FLOORS
+    allowance: float | None = None  # b for the pointwise readings
     base_seed: int = 0
     workers: int = 1
     chunk: int = 250  # replicates per worker task
@@ -1391,9 +1594,9 @@ def run_scenarios(
                     scenario,
                     params[name],
                     merged,
-                    settings.level_sets,
-                    settings.floors,
                     settings.alphas,
+                    settings.floors,
+                    settings.allowance,
                 )
                 key = calibration_key(scenario).name
                 summary["calibration"] = asdict(calibrations[key]) if key in calibrations else None

@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 import json
 import math
@@ -94,7 +95,10 @@ def test_a_block_supports_the_primary_contrast_when_a_and_f_are_supported() -> N
     assert np.isfinite(data.secondary[0, :5, 0]).tolist() == [True, False, False, False, False]
     assert np.isfinite(data.secondary[0, :5, 1]).tolist() == [True, False, False, False, False]
     truth = {"A-F": 0.0, "P-F": 0.0, "A-P": 0.0}
-    params = Parameters((0.0, 0.0, 0.0), 0.0, (True, True, True), (-math.inf, 0.0), truth)
+    flat = ((0.0, 0.0, 0.0),) * 3
+    params = Parameters(
+        (0.0, 0.0, 0.0), flat, (0.0, 0.0, 0.0), 0.0, (True, True, True), (-math.inf, 0.0), truth
+    )
     diagnostics = sim.block_diagnostics(params, data)
     per_block = diagnostics["unsupported_per_block"]
     # Per block the first cause in order counts: block 3 is technical, not width.
@@ -189,6 +193,72 @@ def test_secondary_intervals_are_read_at_the_stopping_look() -> None:
     assert d.secondary_high[0].tolist() == pytest.approx(high.tolist())
 
 
+def decide(rows: list[np.ndarray], design: str, alpha: float = 0.05, postpone: int = 0):
+    d = sim.DESIGNS_BY_NAME[design]
+    stats = look_statistics(np.concatenate(rows), sizes=d.realized(postpone))
+    return sequential_decisions(stats, d.levels(alpha), equivalence_at_first=d.equivalence_at_first)
+
+
+def test_look_designs_one_look_later_looks_and_equivalence_only_at_the_end() -> None:
+    clear = sequence([0.01, -0.01] * 40)  # equivalence at any look
+    shifted = sequence([0.03 + 0.002 * (-1) ** b for b in range(80)])  # inside ±5 and positive
+    # One look at 50: no look 1.
+    one = decide([clear, shifted], "50")
+    assert one.look.tolist() == [2, 2] and one.n.tolist() == [50, 50]
+    assert one.equivalence.tolist() == [True, True] and one.positive.tolist() == [False, True]
+    # 36/60: look 1 at the 36th supported block.
+    later = decide([clear], "36_60")
+    assert later.look.tolist() == [1] and later.n.tolist() == [36]
+    # 24/50 stops at look 1 on either reading; with equivalence only at the terminal look, the
+    # equivalent study goes on to look 2, and a direction stop at look 1 reports no equivalence.
+    planning = decide([clear, shifted], "24_50")
+    assert planning.look.tolist() == [1, 1]
+    assert planning.equivalence.tolist() == [True, True]
+    terminal = decide([clear, shifted], "24_50_eq_terminal")
+    assert terminal.look.tolist() == [2, 1] and terminal.n.tolist() == [50, 24]
+    assert terminal.equivalence.tolist() == [True, False]
+    assert terminal.positive.tolist() == [False, True]
+    # A postponed look 1 happens later; the one-look design ignores it.
+    assert decide([clear], "24_50", postpone=6).n.tolist() == [30]
+    assert decide([clear], "50", postpone=6).n.tolist() == [50]
+    assert sim.DESIGNS_BY_NAME["50"].levels(0.05) == (0.95,)
+
+
+def test_pointwise_readings_use_the_bias_allowance() -> None:
+    # Final intervals [0.4, 1.0] pp and [−4.7, −0.2] pp, with b = 0.5 pp.
+    stats = look_statistics(np.concatenate([sequence([0.007] * 80), sequence([-0.0245] * 80)]))
+    d = sequential_decisions(stats, sim.PLANNING_LEVELS)
+    d = sim.Decisions(
+        **{**vars(d), "low": np.array([0.004, -0.047]), "high": np.array([0.01, -0.002])}
+    )
+    readings = sim.pointwise_readings(d, 0.005)
+    assert readings["positive"].tolist() == [False, False]  # 0.4 pp does not clear b
+    assert readings["negative"].tolist() == [False, False]  # −0.2 pp does not clear −b
+    assert readings["equivalence"].tolist() == [True, False]  # −4.7 pp lies outside ±4.5 pp
+
+
+def test_bias_allowance_is_the_largest_pointwise_bias_at_w_max_035_and_047() -> None:
+    def summary(family: str, w_max: float, bias: float, **changes) -> dict:
+        scenario = Scenario(family=family, w_max=w_max, **changes)
+        return {
+            "name": scenario.name,
+            "settings": dataclasses.asdict(scenario),
+            "diagnostics": {"block_bias": bias, "block_bias_se": 0.0001},
+        }
+
+    scenarios = [
+        summary("study1", 0.35, 0.0002),
+        summary("kink", 0.35, 0.006, miss="common"),
+        summary("kink", 0.47, -0.007, delta=0.05),
+        summary("stress_slopes", 0.30, 0.02),  # w_max 0.30 is reported, not counted
+        summary("high", 0.35, 0.05, failure=0.2),  # not a bias scenario: other settings differ
+    ]
+    found = sim.bias_allowance(scenarios)
+    assert [entry["w_max"] for entry in found["per_w_max"]] == [0.30, 0.35, 0.47]
+    b = found["allowance"]
+    assert b["value"] == pytest.approx(0.007) and b["family"] == "kink" and b["w_max"] == 0.47
+
+
 def test_obf_spending_at_alpha_5_percent_gives_the_planning_levels() -> None:
     level1, level2 = obf_levels(0.05)
     assert level1 == pytest.approx(sim.PLANNING_LEVELS[0], abs=5e-5)
@@ -232,29 +302,38 @@ def test_rare_only_puts_the_whole_difference_in_rare_blocks() -> None:
         solve_parameters(Scenario(shape="rare_only", family="high", sd=0.0, delta=0.08))
 
 
-def test_study1_family_is_arm_specific() -> None:
+def test_study1_targets_are_arm_specific_population_curves() -> None:
     study1 = FAMILIES["study1"]
-    x = np.array([[0.3], [0.3], [0.3]])
-    np.testing.assert_allclose(
-        study1.offset(x, (0, 1, 2))[:, 0],
-        [1.20 * 0.3 - 0.13 * 0.09, 1.39 * 0.3 - 0.24 * 0.09, 1.39 * 0.3 - 0.24 * 0.09],
-    )
-    # Planning slopes on the probability scale at h = 0.15: h' = h(1 − h)·s.
-    assert 0.15 * 0.85 * study1.slope[0] == pytest.approx(0.153, abs=5e-4)
-    assert 0.15 * 0.85 * study1.slope[1] == pytest.approx(0.177, abs=5e-4)
+    x = np.array([-0.3, 0.0, 0.3])
+    np.testing.assert_allclose(study1.target(0, x), expit(logit(0.15) + 1.20 * x - 0.13 * x**2))
+    np.testing.assert_allclose(study1.target(1, x), expit(logit(0.15) + 1.39 * x - 0.24 * x**2))
     assert FAMILIES["high"].slope == study1.slope and FAMILIES["high"].baseline == 0.40
-    # Without prompt and block heterogeneity the population curve is that single logistic:
-    # h' = h(1 − h)·s and h'' = h(1 − h)·((1 − 2h)·s² + 2q), the planning values.
+    # Without prompt and block heterogeneity the fit returns the target's own coefficients.
     single = Scenario(sigma_alpha=0.0, sigma_s=0.0)
-    curve = sim.population_curve(single, solve_parameters(single, 0.0))
-    assert curve["A"]["slope"] == pytest.approx(0.153, abs=5e-4)
-    assert curve["F"]["slope"] == pytest.approx(0.177, abs=5e-4)
-    assert curve["A"]["curvature"] == pytest.approx(0.096, abs=2e-3)
-    assert curve["F"]["curvature"] == pytest.approx(0.112, abs=2e-3)
-    # Heterogeneity flattens it.
-    central = Scenario()
-    flattened = sim.population_curve(central, solve_parameters(central, 0.3))
-    assert flattened["A"]["slope"] < 0.8 * curve["A"]["slope"]
+    params = solve_parameters(single, 0.0)
+    np.testing.assert_allclose(params.coefficients[0], (1.20, -0.13, 0.0), atol=1e-6)
+    np.testing.assert_allclose(params.coefficients[1], (1.39, -0.24, 0.0), atol=1e-6)
+
+
+@pytest.mark.parametrize("shape", ["normal", "rare_centered"])
+def test_population_curves_match_the_planning_values(shape: str) -> None:
+    # Heterogeneity flattens the population curve, so the per-prompt coefficients are steeper;
+    # the population curve has the planning h̄′ 0.153 / 0.177 and h̄″ 0.096 / 0.112 at h̄ = 0.15.
+    scenario = Scenario(shape=shape)
+    params = solve_parameters(scenario, 0.34 if shape == "normal" else 1.3)
+    curve = sim.population_curve(scenario, params)
+    for arm, slope, curvature in (("A", 0.153, 0.095), ("F", 0.177, 0.111)):
+        attained = curve[arm]["attained"]
+        assert attained["h"] == pytest.approx(0.15, abs=1e-9)
+        assert attained["slope"] == pytest.approx(slope, abs=2e-3)
+        assert attained["curvature"] == pytest.approx(curvature, abs=5e-3)
+        assert curve[arm]["fit_rmse"] < 1e-3
+    assert params.coefficients[0][0] > 1.20 * 1.2  # steeper per prompt than in the population
+    # The stress pair: population logistics with slopes 4 and 2.
+    stress = Scenario(family="stress_slopes")
+    curve = sim.population_curve(stress, solve_parameters(stress, 0.34))
+    assert curve["A"]["attained"]["slope"] == pytest.approx(0.15 * 0.85 * 4, abs=3e-3)
+    assert curve["F"]["attained"]["slope"] == pytest.approx(0.15 * 0.85 * 2, abs=3e-3)
 
 
 def test_selection_miss_modes() -> None:
@@ -306,9 +385,10 @@ def test_replicates_are_reproducible_and_independent_of_chunking() -> None:
     np.testing.assert_array_equal(whole.estimates, np.concatenate([p.estimates for p in parts]))
     other = simulate_replicates(scenario, params, range(3), base_seed=7, stream="other")
     assert not np.array_equal(whole.estimates, other.estimates, equal_nan=True)
-    # Blocks start until 50 are supported or the cap is reached, in chunks of 10.
+    # Blocks start until 60 (the largest look) are supported or the cap is reached, in chunks.
     supported = np.isfinite(whole.primary).sum(axis=1)
-    assert ((supported >= 50) | (whole.started == CAP)).all()
+    assert sim.GENERATE_UNTIL == 60
+    assert ((supported >= 60) | (whole.started == CAP)).all()
     assert (whole.started % sim.CHUNK_BLOCKS == 0).all()
     assert ((whole.causes[..., 0] != NOT_STARTED).sum(axis=1) == whole.started).all()
 
@@ -322,8 +402,9 @@ def test_scenario_names_carry_the_non_default_settings() -> None:
     assert Scenario(shape="rare_only", sd=0.0).name == "interp_rare_only_study1_sdna_d+0"
     assert Scenario(positions="grid", w_max=math.inf).name.startswith("interp_grid_normal")
     assert Scenario(group="a") == Scenario(group="b")
-    with pytest.raises(ValueError, match="first_look"):
-        Scenario(first_look=50)
+    assert Scenario(postpone=6).name == "interp_normal_study1_sd5_d+0_postpone6"
+    with pytest.raises(ValueError, match="postpone"):
+        Scenario(postpone=24)  # look 1 would reach look 2 in 36/60 and 24/50
 
 
 def test_grids_have_unique_names_and_the_required_replicates() -> None:
@@ -359,25 +440,38 @@ def test_script_calibrates_then_validates_on_a_tiny_grid(tmp_path: Path) -> None
         "interp_normal_study1_sd5_d+5",
         "interp_normal_study1_sd5_d-5",
     ]
-    assert len(summary["scenarios"][0]["results"]) == (1 + len(sim.ALPHAS)) * len(sim.SE_FLOORS)
+    designs = [d.name for d in sim.LOOK_DESIGNS]
+    rows = summary["scenarios"][0]["results"]
+    assert len(rows) == len(designs) * len(sim.ALPHAS) * len(sim.SE_FLOORS)
+    # The one-look design uses 1 − α; the two-look ones OBF spending at their own fraction.
+    one = next(r for r in rows if r["looks"] == "50" and r["alpha"] == 0.05)
+    assert one["levels"] == pytest.approx([0.95])
+    later = next(r for r in rows if r["looks"] == "36_60" and r["alpha"] == 0.05)
+    assert later["levels"] == pytest.approx(list(obf_levels(0.05, 0.6)))
     # Power is the equivalence rate at Δ = 0 and the rate of the right direction otherwise.
     null, positive, negative = (s["results"] for s in summary["scenarios"])
     assert all(r["power"] == r["p_equivalence"] for r in null)
     assert all(r["power"] == r["p_positive"] for r in positive)
     assert all(r["power"] == r["p_negative"] for r in negative)
-    assert [s["floor"] for s in summary["selection"]] == list(sim.SE_FLOORS)
+    selection = summary["selection"]
+    assert [(s["looks"], s["floor"]) for s in selection] == [
+        (d, f) for d in designs for f in sim.SE_FLOORS
+    ]
     assert "## Selected levels" in (calibrate / "results.md").read_text()
 
     validate = tmp_path / "validate"
     script.main(
-        ["validate", "--scenarios", "*rare_only*_d+5", "--alphas", "0.05",
+        ["validate", "--scenarios", "*rare_only*_d+5", "--alphas", "0.04", "--allowance", "0.005",
          "--levels-from", str(calibrate / "summary.json"), *small, "--out", str(validate)]
     )  # fmt: skip
     summary = json.loads((validate / "summary.json").read_text())
     (scenario,) = summary["scenarios"]
     assert scenario["calibration"] is None and scenario["parameters"]["spread"] > 0
-    assert {r["level_set"] for r in scenario["results"]} >= {"planning", "obf_0.0500"}
-    assert summary["checks"][0]["groups"]["all"]["max_false_positive"]["value"] is None
+    assert {r["alpha"] for r in scenario["results"]} >= {0.04, 0.05}
+    assert all(r["pointwise"]["allowance"] == 0.005 for r in scenario["results"])
+    check = summary["checks"][0]
+    assert check["groups"]["all"]["max_false_positive"]["value"] is None
+    assert "## Constraint checks" in (validate / "results.md").read_text()
 
 
 def test_script_lists_and_filters_scenarios(capsys) -> None:
