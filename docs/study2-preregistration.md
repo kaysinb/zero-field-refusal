@@ -925,7 +925,8 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
     direction +/− 1.94 / 2.52 → 1.88 / 2.50 % at SD 10 pp and 2.56 / 2.60 → 2.46 / 2.42 % at
     SD 15 pp; equivalence power 89.2 → 89.3 % and 33.5 → 33.1 % (MC SE ≈ 0.2 pp for the
     directions, 0.4–0.7 pp for the power). Look 1 stopped slightly less often (23.0 → 21.5 % at
-    SD 10).
+    SD 10). The check is archived in `runs/analysis/study2_short_sim/2026-10-17/` (inventory
+    `runs/archive/inventory-2026-10-17-study2-short-sim-checks.tsv`).
   - O'Brien–Fleming-type levels from Lan–DeMets spending of α = 0.040: 99.20 % at look 1 and
     96.31 % at look 2, two-sided. They were calibrated by the simulation below on the normal shape
     at SD 3, 5 and 10, and validated on independent draws.
@@ -935,8 +936,10 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
     interval computed from them. In fa2's example (90 % of blocks at 0, 10 % at 50 pp; mean 5 pp,
     SD 15 pp), the procedure concludes equivalence falsely in 2.3 % of simulated
     studies.
-  - In the plausible range (normal or skewed shapes, SD 3–10 pp) every requirement holds within
-    MC error (worst 2.58 %, a false direction for the skewed shape at SD 10 pp). Stress cases
+  - In the plausible range (normal or skewed shapes, SD 3–10 pp) every error requirement holds
+    within MC error (worst 2.58 %, a false direction for the skewed shape at SD 10 pp). The power
+    requirement does not hold everywhere there: equivalence power at Δ = 0 is 76.3 % for the
+    skewed shape at SD 10 pp. Stress cases
     exceed the 2.5 % bound on a false direction at Δ = 0:
     - right-skewed block differences at SD 15 pp: 3.6 %;
     - heavy-tailed (symmetric) block differences: 3.2–3.5 % at SD 15 pp (2.65 / 2.92 % at
@@ -1035,8 +1038,8 @@ procedure.
     stress cases named above.
   - Expected started blocks at Δ = 0, normal shape: ≈ 36 at SD 5, ≈ 55 at SD 10. The cap was
     never exhausted.
-  - The validation gate (≥ 10 of 12) fails in ≤ 0.02 % of studies without failures under the
-    normal shape, ≤ 0.05 % over all shapes. With 20 % technical failures it fails in 96–98 %.
+  - The validation gate (≥ 10 of 12) fails in ≈ 0.02 % of studies without failures under the
+    normal shape (central scenarios; 0.025 % in the stress-pair family), ≤ 0.05 % over all shapes. With 20 % technical failures it fails in 96–98 %.
   - Against the t interval on the same looks (revision 3, w_max 0.35, each interval at its
     calibrated α: t 0.050, bootstrap-t 0.040), the bootstrap-t lowers the skewed false direction
     from 7.93 to 3.57 % and rare_only's false equivalence from 9.50 to 2.54 %. At equal α 0.040

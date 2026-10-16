@@ -55,7 +55,8 @@ same seeds, by:
 bias and main ran from ec2c7c8 through a scratchpad driver with exactly these scenarios and
 settings, before the modes existed. families and gate ran from e900179 through these modes, with
 the flags that are now their defaults (gate with --chunk 5000). Every decision rate is
-reproduced bit for bit (checked on 2026-10-17 for one scenario of bias, families and gate). The
+reproduced bit for bit (checked on 2026-10-17 for one scenario of bias, families and gate;
+archived in runs/analysis/study2_short_sim/2026-10-17/). The
 pointwise readings can differ in two ways only: revision 5 used the bias run's unrounded b,
 0.010841274718211662, where the modes use the recorded DECIDED_ALLOWANCE 0.010841 (for kink at
 Δ = 0 one replicate of 20 000 then differs, pointwise equivalence 76.775 against 76.770 %;

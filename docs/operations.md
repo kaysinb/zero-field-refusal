@@ -376,7 +376,7 @@ directory as well, reports `selection_amendment_2` beside the preregistered `sel
 
 Only Stage A's namespaces go into the summary: `runs/study2_stage_a` and `runs/study2_controls`,
 never `runs/` or another parent (and, under amendment 2, `runs/study2_controls_amended`). The SGD-momentum pilot
-([proposed preregistration](study2-pilot-momentum.md)) writes to `study2_pilot_momentum` and
+([preregistration](study2-pilot-momentum.md); approved, ended `barrier` on 2026-10-16) writes to `study2_pilot_momentum` and
 `study2_pilot_momentum_controls`. Stage A's conformance refuses the pilot's arms, so a summary
 over mixed directories comes out incomplete and blocks sealing. The pilot's own summary reads
 both: `scripts/pilot_momentum_summary.py --runs PILOT_DIRS --stage-a STAGE_A_DIRS`.
