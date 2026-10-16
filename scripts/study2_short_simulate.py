@@ -13,7 +13,15 @@ the terminal look) and every SE floor on the same replicates:
   α's selected by --levels-from (a calibrate run's summary.json) or given by --alphas; with
   --allowance-from (a bias run's summary.json) or --allowance it adds the pointwise readings
   with b.
+- validate-bootstrap: revision 3's grid (every shape × SD × Δ ∈ {0, ±2.5, ±5, ±5.5}) on the
+  ``validation`` stream, sized by --boundary-reps (Δ = 0, ±5 pp) and --other-reps; meant with
+  --looks 24_50 36_60 --intervals t bootstrap_t.
 - smoke: one reduced scenario per shape and per revision-1 addition.
+
+--looks restricts the look designs evaluated (default: all four); --intervals picks t and/or
+bootstrap_t (the studentized bootstrap of the mean with --bootstrap resamples per look and
+replicate, computed in the workers). A calibrate run selects α per look design × interval ×
+SE floor.
 
 Writes to --out (default: $RUNS_DIR/analysis/study2_short_sim/<mode>-<UTC timestamp>/):
 - summary.json: settings, versions, run time, the spread calibrations, every scenario (its
@@ -48,10 +56,17 @@ MAX_WORKERS = 8
 GRIDS = {
     "calibrate": sim.calibration_grid,
     "validate": sim.validation_grid,
+    "validate-bootstrap": sim.bootstrap_validation_grid,
     "bias": sim.bias_grid,
     "smoke": sim.smoke_grid,
 }
-STREAMS = {"calibrate": "calibration", "validate": "validation", "bias": "bias", "smoke": "smoke"}
+STREAMS = {
+    "calibrate": "calibration",
+    "validate": "validation",
+    "validate-bootstrap": "validation",
+    "bias": "bias",
+    "smoke": "smoke",
+}
 DESIGNS = ("interp", "interp_grid")
 
 
@@ -59,6 +74,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("mode", choices=tuple(GRIDS))
     parser.add_argument("--designs", nargs="+", choices=DESIGNS, help="keep these designs only")
+    parser.add_argument(
+        "--looks", nargs="+", choices=tuple(sim.DESIGNS_BY_NAME), help="look designs to evaluate"
+    )
+    parser.add_argument("--intervals", nargs="+", choices=sim.INTERVALS, default=["t"])
+    parser.add_argument("--bootstrap", type=int, default=sim.BOOTSTRAP_RESAMPLES, help="resamples")
+    parser.add_argument("--boundary-reps", type=int, help="validate-bootstrap: Δ = 0, ±5 pp")
+    parser.add_argument("--other-reps", type=int, help="validate-bootstrap: other Δ")
     parser.add_argument("--scenarios", nargs="+", metavar="PATTERN", help="fnmatch on names")
     parser.add_argument("--reps", type=int, help="replicates per scenario (overrides the grid)")
     parser.add_argument("--levels-from", type=Path, help="a calibrate run's summary.json")
@@ -77,7 +99,15 @@ def main(argv: list[str] | None = None) -> None:
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must lie in 1..{MAX_WORKERS}")
 
-    scenarios = select(GRIDS[args.mode](), args.designs, args.scenarios, args.reps)
+    grid = GRIDS[args.mode]
+    if args.mode == "validate-bootstrap":
+        sizes = {"boundary_reps": args.boundary_reps, "other_reps": args.other_reps}
+        scenarios = grid(**{k: v for k, v in sizes.items() if v is not None})
+    elif args.boundary_reps is not None or args.other_reps is not None:
+        parser.error("--boundary-reps and --other-reps apply to validate-bootstrap only")
+    else:
+        scenarios = grid()
+    scenarios = select(scenarios, args.designs, args.scenarios, args.reps)
     if not scenarios:
         parser.error("No scenario selected")
     if args.list:
@@ -100,6 +130,9 @@ def main(argv: list[str] | None = None) -> None:
         chunk=args.chunk,
         spread_replicates=args.spread_replicates,
         spread_blocks=args.spread_blocks,
+        designs=tuple(args.looks) if args.looks else tuple(d.name for d in sim.LOOK_DESIGNS),
+        intervals=tuple(dict.fromkeys(args.intervals)),
+        resamples=args.bootstrap,
     )
     # Recorded at launch: the source of a long run is the one it started with.
     versions = {
@@ -131,6 +164,9 @@ def main(argv: list[str] | None = None) -> None:
             "spread_replicates": settings.spread_replicates,
             "spread_blocks": settings.spread_blocks,
             "floors": list(settings.floors),
+            "looks": list(settings.designs),
+            "intervals": list(settings.intervals),
+            "resamples": settings.resamples,
             "alphas": list(settings.alphas),
             "allowance": settings.allowance,
             "levels_from": None if args.levels_from is None else str(args.levels_from),
@@ -161,16 +197,17 @@ def select(
     return scenarios
 
 
-def selected_levels(path: Path | None) -> dict[tuple[str, float], float | None]:
-    """(look design, floor) -> the α a calibrate run selected (None if none passed)."""
+def selected_levels(path: Path | None) -> dict[tuple[str, str, float], float | None]:
+    """(look design, interval, floor) -> the α a calibrate run selected (None if none passed).
+    Runs before revision 3 selected for the t interval only."""
     if path is None:
         return {}
     selection = json.loads(path.read_text())["selection"]
-    return {(s["looks"], s["floor"]): s["alpha"] for s in selection}
+    return {(s["looks"], s.get("interval", "t"), s["floor"]): s["alpha"] for s in selection}
 
 
 def alpha_choice(
-    mode: str, selection: dict[tuple[str, float], float | None], extra: list[float] | None
+    mode: str, selection: dict[tuple[str, str, float], float | None], extra: list[float] | None
 ) -> tuple[float, ...]:
     """calibrate: the whole α grid; otherwise α = 0.05, the selected α's and any extra ones."""
     if mode == "calibrate":
@@ -223,18 +260,22 @@ def table(header: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def shown_alpha(summary: dict) -> dict[tuple[str, float], float]:
-    """(look design, floor) -> the α whose results the tables show: the selected α (from this
-    calibrate run or from --levels-from), else α = 0.05."""
+def shown_alpha(summary: dict) -> dict[tuple[str, str, float], float]:
+    """(look design, interval, floor) -> the α whose results the tables show: the selected α
+    (from this calibrate run or from --levels-from), else α = 0.05."""
     if "selection" in summary:
-        chosen = {(s["looks"], s["floor"]): s["alpha"] for s in summary["selection"]}
+        chosen = {
+            (s["looks"], s.get("interval", "t"), s["floor"]): s["alpha"]
+            for s in summary["selection"]
+        }
     else:
         path = summary["settings"]["levels_from"]
         chosen = selected_levels(Path(path)) if path else {}
     floors = summary["settings"]["floors"]
     return {
-        (d.name, floor): chosen.get((d.name, floor)) or sim.PLANNING_ALPHA
+        (d.name, interval, floor): chosen.get((d.name, interval, floor)) or sim.PLANNING_ALPHA
         for d in sim.LOOK_DESIGNS
+        for interval in sim.INTERVALS
         for floor in floors
     }
 
@@ -276,6 +317,7 @@ def selection_table(selection: list[dict]) -> str:
         rows.append(
             [
                 s["looks"],
+                s.get("interval", "t"),
                 pp(s["floor"], 0),
                 "–" if s["alpha"] is None else f"{s['alpha']:.4f}",
                 "–" if s["levels"] is None else " / ".join(f"{100 * v:.2f}" for v in s["levels"]),
@@ -287,8 +329,8 @@ def selection_table(selection: list[dict]) -> str:
                 "yes" if (s["at_alpha_0.05"] or {}).get("meets") else "no",
             ]
         )
-    header = ["looks", "floor", "α", "levels %", "max dir+ @0", "max dir− @0", "max eq @5",
-              "min pow eq @0", "min pow dir @5", "α 0.05 meets"]  # fmt: skip
+    header = ["looks", "interval", "floor", "α", "levels %", "max dir+ @0", "max dir− @0",
+              "max eq @5", "min pow eq @0", "min pow dir @5", "α 0.05 meets"]  # fmt: skip
     return table(header, rows)
 
 
@@ -299,6 +341,7 @@ def checks_table(checks: list[dict]) -> str:
             rows.append(
                 [
                     check["looks"],
+                    check.get("interval", "t"),
                     pp(check["floor"], 0),
                     f"{check['which']} ({check['alpha']:.4f})",
                     group,
@@ -312,8 +355,8 @@ def checks_table(checks: list[dict]) -> str:
                     "yes" if c["meets"] else "no",
                 ]
             )
-    header = ["looks", "floor", "α", "group", "max dir+ @0", "max dir− @0", "max eq @5",
-              "min pow eq @0", "min pow dir @5", "max cap", "max E started",
+    header = ["looks", "interval", "floor", "α", "group", "max dir+ @0", "max dir− @0",
+              "max eq @5", "min pow eq @0", "min pow dir @5", "max cap", "max E started",
               "meets"]  # fmt: skip
     return table(header, rows)
 
@@ -346,7 +389,8 @@ def results_table(summary: dict) -> str:
     rows = []
     for s in summary["scenarios"]:
         for r in s["results"]:
-            if r["floor"] != 0 or shown.get((r["looks"], r["floor"])) != r["alpha"]:
+            interval = r.get("interval", "t")
+            if r["floor"] != 0 or shown.get((r["looks"], interval, r["floor"])) != r["alpha"]:
                 continue
             cover = r["secondary_coverage"]
             point = r.get("pointwise") or {}
@@ -354,6 +398,7 @@ def results_table(summary: dict) -> str:
                 [
                     s["name"],
                     r["looks"],
+                    interval,
                     f"{r['alpha']:.4f}",
                     f"{pp(r['p_equivalence'])} ({pp(r['se_equivalence'])})",
                     f"{pp(r['p_positive'])} ({pp(r['se_positive'])})",
@@ -377,7 +422,7 @@ def results_table(summary: dict) -> str:
                     str(s["reps"]),
                 ]
             )
-    header = ["scenario", "looks", "α", "eq", "dir+", "dir−", "inc", "±8 in", "power",
+    header = ["scenario", "looks", "interval", "α", "eq", "dir+", "dir−", "inc", "±8 in", "power",
               "E started", "E supp", "cap", "look-1 stop", "bias vs Δ", "bias vs interp",
               "pointwise eq/dir+/dir−", "cohort width", "straddle ±5", "cov P−F", "cov A−P",
               "reps"]  # fmt: skip

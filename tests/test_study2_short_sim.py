@@ -259,6 +259,84 @@ def test_bias_allowance_is_the_largest_pointwise_bias_at_w_max_035_and_047() -> 
     assert b["value"] == pytest.approx(0.007) and b["family"] == "kink" and b["w_max"] == 0.47
 
 
+PROBABILITIES_95 = np.array([0.025, 0.975])
+
+
+def misses(draw, n: int, samples: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Share of 95 % intervals below (high < 0) and above (low > 0) a true mean of 0: t, then
+    bootstrap-t."""
+    rng = np.random.default_rng(seed)
+    t_miss, boot_miss = np.zeros(2), np.zeros(2)
+    for _ in range(samples):
+        x = draw(rng, n)
+        mean, sd = x.mean(), x.std(ddof=1)
+        low, high = t_interval(np.array([mean]), np.array([sd]), np.array([n]), 0.95)
+        t_miss += [high[0] < 0, low[0] > 0]
+        q, _ = sim.bootstrap_t_quantiles(x, PROBABILITIES_95, (0.0,), 999, rng)
+        se = sd / math.sqrt(n)
+        boot_miss += [mean - q[0, 0] * se < 0, mean - q[0, 1] * se > 0]
+    return t_miss / samples, boot_miss / samples
+
+
+def test_bootstrap_t_matches_t_coverage_on_normal_data() -> None:
+    t_miss, boot_miss = misses(lambda rng, n: rng.standard_normal(n), 30, 2000, seed=1)
+    se = math.sqrt(2 * 0.05 * 0.95 / 2000)  # MC SE of a coverage difference, at most
+    assert 1 - boot_miss.sum() == pytest.approx(1 - t_miss.sum(), abs=3 * se)
+    assert 1 - boot_miss.sum() == pytest.approx(0.95, abs=3 * se)
+
+
+def test_bootstrap_t_corrects_the_left_tail_of_right_skewed_differences() -> None:
+    # Exp(1) − 1: mean 0, skewness 2. The t interval's upper end falls below the mean too often
+    # (a false negative direction); the bootstrap-t brings that side back towards 2.5 %.
+    t_miss, boot_miss = misses(lambda rng, n: rng.exponential(1.0, n) - 1.0, 24, 4000, seed=2)
+    assert t_miss[0] > 0.05
+    assert boot_miss[0] < t_miss[0] - 0.02 and boot_miss[0] < 0.045
+    assert abs(boot_miss[0] - boot_miss[1]) < abs(t_miss[0] - t_miss[1])
+
+
+def test_bootstrap_t_floor_drops_and_collapsed_intervals() -> None:
+    rng = np.random.default_rng(0)
+    equal = np.full(24, 0.04)
+    q, dropped = sim.bootstrap_t_quantiles(equal, PROBABILITIES_95, (0.0, 0.01), 500, rng)
+    assert dropped.tolist() == [500, 0]  # se* = 0: dropped without a floor, floored otherwise
+    assert np.isnan(q[0]).all() and np.isfinite(q[1]).all()
+    # The look's interval is [mean, mean] without a floor (zero se), and also with one: every
+    # resample has mean* = mean, so T* ≡ 0. The floor widens the t interval of such a sample, not
+    # the bootstrap-t (it cannot recover variation the sample does not show).
+    design = sim.DESIGNS_BY_NAME["50"]
+    stats = look_statistics(sequence([0.04] * 80), sizes=design.sizes)
+    quantiles = {"50:1": np.stack([q])}  # (1 replicate, 2 floors, 2 probabilities)
+    probabilities = {"50:1": PROBABILITIES_95}
+    flat = sim.bootstrap_bounds(stats, design, (0.95,), 0, 0.0, quantiles, probabilities)
+    assert flat[0] is None and flat[1][0][0] == pytest.approx(0.04) == flat[1][1][0]
+    floored = sim.bootstrap_bounds(stats, design, (0.95,), 1, 0.01, quantiles, probabilities)
+    assert floored[1][0][0] == pytest.approx(0.04) == floored[1][1][0]
+    low, high = t_interval(stats.mean[:, 1], stats.sd[:, 1], stats.n[:, 1], 0.95, 0.01)
+    assert low[0] < 0.04 < high[0]
+    # Two distinct values: the floor raises se* where a resample happens to be constant.
+    two = np.array([0.0] * 23 + [0.1])
+    q, dropped = sim.bootstrap_t_quantiles(two, PROBABILITIES_95, (0.0, 0.05), 2000, rng)
+    assert dropped[0] > 0 and dropped[1] == 0 and np.isfinite(q).all()
+    # Sorted-array quantiles agree with numpy's.
+    values = np.sort(rng.standard_normal(301))
+    probs = np.array([0.0, 0.0012, 0.025, 0.5, 0.975, 1.0])
+    np.testing.assert_allclose(sim._sorted_quantiles(values, probs), np.quantile(values, probs))
+
+
+def test_bootstrap_tables_are_reproducible_per_replicate() -> None:
+    scenario = Scenario(delta=0.05)
+    params = solve_parameters(scenario, 0.3)
+    data = simulate_replicates(scenario, params, range(3), base_seed=0, stream="test")
+    designs = (sim.DESIGNS_BY_NAME["24_50"],)
+    kwargs = dict(
+        designs=designs, alphas=(0.05,), floors=(0.0,), resamples=200, base_seed=0, stream="test"
+    )
+    whole, _ = sim.bootstrap_tables(scenario, data.primary, range(3), **kwargs)
+    last, _ = sim.bootstrap_tables(scenario, data.primary[2:], range(2, 3), **kwargs)
+    np.testing.assert_array_equal(whole["24_50:1"][2:], last["24_50:1"])
+    assert set(whole) == {"24_50:0", "24_50:1"}
+
+
 def test_obf_spending_at_alpha_5_percent_gives_the_planning_levels() -> None:
     level1, level2 = obf_levels(0.05)
     assert level1 == pytest.approx(sim.PLANNING_LEVELS[0], abs=5e-5)
@@ -472,6 +550,42 @@ def test_script_calibrates_then_validates_on_a_tiny_grid(tmp_path: Path) -> None
     check = summary["checks"][0]
     assert check["groups"]["all"]["max_false_positive"]["value"] is None
     assert "## Constraint checks" in (validate / "results.md").read_text()
+
+
+def test_script_runs_bootstrap_t_beside_t(tmp_path: Path) -> None:
+    script = load_script()
+    small = ["--workers", "1", "--spread-replicates", "3", "--spread-blocks", "30"]
+    boot = ["--looks", "24_50", "36_60", "--intervals", "t", "bootstrap_t", "--bootstrap", "200"]
+    calibrate = tmp_path / "calibrate"
+    script.main(
+        ["calibrate", "--scenarios", "*_sd5_d+0", "*_sd5_d?5", "--reps", "6", *small, *boot,
+         "--out", str(calibrate)]
+    )  # fmt: skip
+    summary = json.loads((calibrate / "summary.json").read_text())
+    rows = summary["scenarios"][0]["results"]
+    assert len(rows) == 2 * 2 * len(sim.ALPHAS) * len(sim.SE_FLOORS)
+    assert {(r["looks"], r["interval"]) for r in rows} == {
+        (d, i) for d in ("24_50", "36_60") for i in ("t", "bootstrap_t")
+    }
+    assert [(s["looks"], s["interval"]) for s in summary["selection"][::3]] == [
+        ("24_50", "t"), ("24_50", "bootstrap_t"), ("36_60", "t"), ("36_60", "bootstrap_t")
+    ]  # fmt: skip
+    dropped = summary["scenarios"][0]["diagnostics"]["bootstrap_dropped"]
+    assert set(dropped) == {"24_50:0", "24_50:1", "36_60:0", "36_60:1"}
+
+    validate = tmp_path / "validate"
+    script.main(
+        ["validate-bootstrap", "--scenarios", "*skewed*_sd5_d+0", "--boundary-reps", "5",
+         "--levels-from", str(calibrate / "summary.json"), *small, *boot, "--out", str(validate)]
+    )  # fmt: skip
+    summary = json.loads((validate / "summary.json").read_text())
+    (scenario,) = summary["scenarios"]
+    assert scenario["reps"] == 5 and scenario["settings"]["shape"] == "skewed"
+    assert {r["interval"] for r in scenario["results"]} == {"t", "bootstrap_t"}
+    assert {(c["looks"], c["interval"]) for c in summary["checks"]} == {
+        (d, i) for d in ("24_50", "36_60") for i in ("t", "bootstrap_t")
+    }
+    assert len(sim.bootstrap_validation_grid()) == 3 * 4 * 7 + 7
 
 
 def test_script_lists_and_filters_scenarios(capsys) -> None:
