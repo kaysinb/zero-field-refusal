@@ -1,0 +1,23 @@
+# Study 2, amendment 3: the soft-target control of frozen Adam (the FA-25 arm), on seed 2000's
+# stream with replayed targets as the SGD controls (experiments/study2_controls). Frozen Adam's
+# update is linear in the gradient (its second moment v₀ is fixed and estimated from NLL
+# gradients on the preconditioner stream), so tiny residual gradients stay tiny and K must stay
+# near zero; protocol version 3 admits it under soft targets. 25 steps evaluated at step 25,
+# with the gradient rule only logged and the contamination check of the pilot's controls.
+# The campaign sets optimizer.lr and schedule.instability.contamination_k (0.01 × K*, once U is
+# chosen): both are `???`, so a run without them fails at load.
+defaults:
+  - experiments/study2_stage_a
+  - optimizer/adam_frozen          # β₁ 0.9 with bias correction, ε 1e-8, no weight decay,
+                                   # 50 preconditioner batches at the run's batch size
+  - control/soft_targets
+  - schedule/short
+
+experiment: study2_short_fa_controls
+protocol_version: 3                 # decisions.md, "Protocol versions"
+stage_a:
+  role: full_control
+schedule:
+  instability:
+    grad_rule: log                  # firings are recorded, not stops
+    contamination_k: ???            # 0.01 × K*: a reading above it is checked at once, uncached

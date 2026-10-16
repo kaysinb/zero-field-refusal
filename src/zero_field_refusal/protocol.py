@@ -194,13 +194,36 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
     if control == "soft_targets":
         # Under Adam, tiny residual gradients would become full-size sign steps. Heavy-ball
         # momentum is linear in the gradient and keeps them tiny: from protocol version 2 the
-        # SGD-momentum pilot's controls use it (docs/study2-pilot-momentum.md).
-        expect("optimizer.name", "sgd", v["optimizer.name"])
-        momentum = OmegaConf.select(cfg, "optimizer.momentum", default=0)
-        if OmegaConf.select(cfg, "protocol_version", default=1) < 2:
-            expect("optimizer.momentum", 0, momentum)
-        elif not (isinstance(momentum, int | float) and 0 <= momentum < 1):
-            problems.append(f"optimizer.momentum: expected a value in [0, 1), got {momentum!r}")
+        # SGD-momentum pilot's controls use it (docs/study2-pilot-momentum.md). Frozen Adam
+        # qualifies from protocol version 3 for the same reason: its denominator is the fixed
+        # v₀ estimated from NLL gradients (never from the soft loss), and its first moment is
+        # linear in the gradient with a bias correction, so the update is linear in the gradient
+        # and tiny residual gradients stay tiny. Plain Adam, AdamW and the prewarmed AdamW
+        # renormalize by the running gradient scale and stay rejected at every version.
+        version = OmegaConf.select(cfg, "protocol_version", default=1)
+        name = v["optimizer.name"]
+        if name == "adam_frozen" and version >= 3:
+            # The control is judged by its scoring K against the bound, so a scheduled run
+            # (the contamination check lives in the schedule) needs the campaign to set it; the
+            # config's placeholder is missing.
+            if OmegaConf.select(cfg, "schedule", default=None) is not None:
+                instability = OmegaConf.select(cfg, "schedule.instability", default=None) or {}
+                bound = None
+                if not OmegaConf.is_missing(instability, "contamination_k"):
+                    bound = instability.get("contamination_k")
+                if not (isinstance(bound, int | float) and not isinstance(bound, bool)
+                        and bound > 0):  # fmt: skip
+                    problems.append(
+                        "schedule.instability.contamination_k: a frozen-Adam soft control needs "
+                        f"the positive bound (0.01 x K*) from its campaign, got {bound!r}"
+                    )
+        else:
+            expect("optimizer.name", "sgd", name)
+            momentum = OmegaConf.select(cfg, "optimizer.momentum", default=0)
+            if version < 2:
+                expect("optimizer.momentum", 0, momentum)
+            elif not (isinstance(momentum, int | float) and 0 <= momentum < 1):
+                problems.append(f"optimizer.momentum: expected a value in [0, 1), got {momentum!r}")
 
     # Model: pinned revision, the same fp32 numerics everywhere (invariant 1).
     if not (isinstance(v["model.revision"], str) and _COMMIT.fullmatch(v["model.revision"])):

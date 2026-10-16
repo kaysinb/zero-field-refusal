@@ -120,7 +120,8 @@ class Trajectory:
     run_dir: Path
     run_id: str
     arm: str  # sgd_long, adamw_long, adamw_25, frozen_adam_25, soft_control; the pilot's
-    # sgd_momentum_long and soft_control_momentum
+    # sgd_momentum_long and soft_control_momentum, and soft_control_frozen_adam (the frozen-Adam
+    # soft-target control)
     batch_size: int
     lr: float
     seed: int
@@ -176,6 +177,8 @@ class Trajectory:
 def arm_of(cfg: Any) -> str:
     momentum = _momentum(cfg)
     if cfg.get("control") == "soft_targets":
+        if (cfg.optimizer.name, cfg.schedule.policy) == ("adam_frozen", "fixed"):
+            return "soft_control_frozen_adam"
         return "soft_control_momentum" if momentum else "soft_control"
     name, policy = cfg.optimizer.name, cfg.schedule.policy
     if (name, policy) == ("sgd", "k_stopped") and momentum:

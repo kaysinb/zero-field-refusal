@@ -379,6 +379,44 @@ def test_second_moment_estimate_uses_the_preconditioner_batches(env) -> None:
         torch.testing.assert_close(v, e, rtol=1e-5, atol=1e-12)
 
 
+def test_frozen_adam_soft_control_estimates_v0_from_the_nll_loss(env, monkeypatch) -> None:
+    # Under soft targets the loss is zero in expectation at θ₀: v₀ must still come from the NLL
+    # gradients of the preconditioner stream, never from the soft loss (amendment 3).
+    from zero_field_refusal import train
+    from zero_field_refusal.batches import chunks
+    from zero_field_refusal.models import freeze
+    from zero_field_refusal.tracking import Run
+
+    cfg = config("optimizer=adam_frozen", "optimizer.lr=1e-3", "optimizer.preconditioner.batches=3",
+                 "control=soft_targets", "train.loss.kind=soft_kl", "protocol_version=3")
+    assert cfg.control == "soft_targets"
+    prepare(env, cfg, "training", "preconditioner")
+    model = env.new_model()
+    params = [p for _, p in freeze(model, cfg.train.freeze)]
+    seen = []
+    accumulate = train.accumulate_gradient
+
+    def spy(model, samples, cfg, env, soft_targets=None):
+        seen.append(soft_targets)
+        return accumulate(model, samples, cfg, env, soft_targets)
+
+    monkeypatch.setattr(train, "accumulate_gradient", spy)
+    with Run(cfg, run_id="estimate") as run:
+        estimate = train._theta0_second_moment(cfg, env, model, params, run)
+    assert seen == [None, None, None]  # no soft targets: the NLL loss on each of the 3 batches
+    stream, _ = load_stream_for(cfg, env, "preconditioner", 0)
+    expected = [torch.zeros_like(p) for p in params]
+    for batch in chunks(stream, 4):
+        for p in params:
+            p.grad = None
+        accumulate(model, batch, cfg, env)
+        for e, p in zip(expected, params, strict=True):
+            e += p.grad**2 / 3
+    assert any(v.abs().max() > 0 for v in estimate)  # not the zero a soft loss would give at θ₀
+    for v, e in zip(estimate, expected, strict=True):
+        torch.testing.assert_close(v, e, rtol=1e-5, atol=1e-12)
+
+
 def test_training_stops_without_a_passed_path_check(env) -> None:
     cfg = config()
     prepare(env, cfg, "training")
