@@ -1,7 +1,9 @@
 import copy
+import gc
 import json
 import math
 import os
+import weakref
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from zero_field_refusal.batches import collate
 from zero_field_refusal.curvature import (
     displacement_in_place,
     endpoint_rayleigh,
+    hessian_quadratic_form,
     hessian_vector_product,
     lanczos,
     start_vector,
@@ -280,6 +283,19 @@ def test_the_rayleigh_quotient_is_signed(rayleigh_setup) -> None:
     assert high["R"] == pytest.approx(values[-1].item(), rel=1e-4)
 
 
+def test_the_quadratic_form_is_the_products_dot(setup) -> None:
+    # The same loop, reduced to vᵀ(H_mb·v) per micro-batch instead of a sum of products.
+    model, trainable, samples = setup
+    v, batches = start_vector(trainable, 0, 0), [samples[:4], samples[4:]]
+    form = hessian_quadratic_form(model, [p for _, p in trainable], batches, v, cap=CAP,
+                                  micro_batch_size=3, pad_id=PAD_ID, device=CPU)  # fmt: skip
+    assert form == pytest.approx(dot(v, hvp(model, trainable, batches, v)), rel=1e-6)
+
+
+def no_product(*args, **kwargs):
+    raise AssertionError("a null displacement takes no product")
+
+
 @pytest.mark.parametrize(
     ("fill", "reason", "norm"),
     [(0.0, "zero displacement", 0.0), (float("nan"), "non-finite displacement", None),
@@ -290,10 +306,7 @@ def test_a_null_displacement_gives_a_null_quotient_without_a_product(
 ) -> None:
     import zero_field_refusal.curvature as curvature
 
-    def no_product(*args, **kwargs):
-        raise AssertionError("no product for a null displacement")
-
-    monkeypatch.setattr(curvature, "hessian_vector_product", no_product)
+    monkeypatch.setattr(curvature, "_micro_batch_products", no_product)
     model, trainable, samples = rayleigh_setup
     delta = [(name, torch.zeros_like(p)) for name, p in trainable]
     delta[-1][1].view(-1)[0] = fill  # one entry: zero, or a broken weight
@@ -304,10 +317,10 @@ def test_a_null_displacement_gives_a_null_quotient_without_a_product(
 def test_a_non_finite_product_gives_a_null_quotient(rayleigh_setup, monkeypatch) -> None:
     import zero_field_refusal.curvature as curvature
 
-    def nan_product(model, params, batches, vector, **kwargs):
-        return [torch.full_like(v, float("nan")) for v in vector]
+    def nan_products(model, params, batches, vector, consume, **kwargs):
+        consume([torch.full_like(v, float("nan")) for v in vector])
 
-    monkeypatch.setattr(curvature, "hessian_vector_product", nan_product)
+    monkeypatch.setattr(curvature, "_micro_batch_products", nan_products)
     model, trainable, samples = rayleigh_setup
     delta = [(name, torch.ones_like(p)) for name, p in trainable]
     out = rayleigh(model, trainable, delta, samples)
@@ -466,8 +479,69 @@ def test_with_the_measurement_off_a_run_is_unchanged(env, tmp_path, scripted, mo
         assert "curvature_panel" not in meta["inputs"]["streams"]
 
 
-def no_product(*args, **kwargs):
-    raise AssertionError("a null displacement takes no product")
+def test_the_run_releases_its_training_state_before_the_product(
+    env, tmp_path, scripted, monkeypatch
+) -> None:
+    # The fit under the GPU's memory rests on it: no optimizer state (AdamW's moments), no
+    # student and no panel caches may outlive the run into the product.
+    import zero_field_refusal.curvature as curvature
+    import zero_field_refusal.schedule as schedule
+
+    cfg = rayleigh_config(tmp_path)
+    with_panel(env, cfg)
+    scripted(9.0)
+    made: dict[str, list] = {"models": [], "optimizers": [], "panels": []}
+
+    def tracking(factory, kind):
+        def make(*args, **kwargs):
+            made[kind].append(weakref.ref(thing := factory(*args, **kwargs)))
+            return thing
+
+        return make
+
+    monkeypatch.setattr(env, "new_model", tracking(env.new_model, "models"))
+    monkeypatch.setattr(schedule, "build_optimizer", tracking(schedule.build_optimizer,
+                                                              "optimizers"))  # fmt: skip
+    for name in ("Monitor", "ScoringDiagnostics"):
+        monkeypatch.setattr(schedule, name, tracking(getattr(schedule, name), "panels"))
+    real, alive = curvature.endpoint_rayleigh, {}
+
+    def probe(model, *args, **kwargs):
+        gc.collect()
+        alive.update({kind: [ref() for ref in refs if ref() is not None]
+                      for kind, refs in made.items()})  # fmt: skip
+        alive["product_on"] = model
+        return real(model, *args, **kwargs)
+
+    monkeypatch.setattr(curvature, "endpoint_rayleigh", probe)
+    run_scheduled(cfg, env, run_id="released")
+    assert [len(made[kind]) for kind in ("models", "optimizers", "panels")] == [2, 1, 2]
+    assert alive["optimizers"] == [] and alive["panels"] == []
+    assert alive["models"] == [alive["product_on"]]  # the student is gone; the θ₀ copy remains
+    assert alive["product_on"] is made["models"][1]()  # made second: the run's reference
+
+
+def test_a_failed_measurement_is_recorded_and_raised(env, tmp_path, scripted, monkeypatch):
+    import zero_field_refusal.curvature as curvature
+
+    cfg = rayleigh_config(tmp_path)
+    with_panel(env, cfg)
+    scripted(9.0)
+
+    def out_of_memory(*args, **kwargs):
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB\nmore detail")
+
+    monkeypatch.setattr(curvature, "hessian_quadratic_form", out_of_memory)
+    with pytest.raises(torch.OutOfMemoryError):
+        run_scheduled(cfg, env, run_id="oom")
+    run_dir = Path(os.environ["RUNS_DIR"]) / cfg.experiment / "oom"
+    record = json.loads((run_dir / "rayleigh.json").read_text())
+    reason = "failed: OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB"
+    assert (record["R"], record["reason"]) == (None, reason)
+    assert record["panel"]["count"] == 6 and record["seconds"] >= 0
+    assert json.loads((run_dir / "summary.json").read_text())["rayleigh"]["reason"] == reason
+    assert json.loads((run_dir / "meta.json").read_text())["status"] == "failed"
+    assert (run_dir / "terminal.json").is_file()  # the outcome, published before
 
 
 def test_a_run_stopped_before_its_first_update_records_a_null_quotient(
@@ -485,7 +559,7 @@ def test_a_run_stopped_before_its_first_update_records_a_null_quotient(
         return real(*args, **kwargs) | {"loss": float("nan")}
 
     monkeypatch.setattr(schedule, "accumulate_gradient", nan_loss)
-    monkeypatch.setattr(curvature, "hessian_vector_product", no_product)
+    monkeypatch.setattr(curvature, "_micro_batch_products", no_product)
     run_dir = run_scheduled(cfg, env, run_id="no-step")
     terminal = json.loads((run_dir / "terminal.json").read_text())
     assert (terminal["stop"]["reason"], terminal["steps"]) == ("nonfinite_loss", 0)
@@ -516,7 +590,7 @@ def test_a_run_whose_update_broke_the_weights_records_a_null_quotient(
         return real(tensors)
 
     monkeypatch.setattr(schedule, "_norm", norm)
-    monkeypatch.setattr(curvature, "hessian_vector_product", no_product)
+    monkeypatch.setattr(curvature, "_micro_batch_products", no_product)
     run_dir = run_scheduled(cfg, env, run_id="broken")
     terminal = json.loads((run_dir / "terminal.json").read_text())
     assert (terminal["stop"]["reason"], terminal["steps"]) == ("nonfinite_weight", 5)

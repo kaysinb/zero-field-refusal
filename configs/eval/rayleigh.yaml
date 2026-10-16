@@ -1,9 +1,9 @@
 # The endpoint Rayleigh quotient of a study-2 run (curvature.endpoint_rayleigh, amendment 3): a
 # descriptive diagnostic, R = δᵀH₀δ/‖δ‖² with δ = θ_end − θ₀ over the trainable parameters and H₀
 # the Hessian at θ₀ of the training loss (summed response-token NLL over n × cap) on the curvature
-# panel, one Hessian–vector product after the run's terminal record. An experiment adds it by
-# listing this file under `defaults` after eval/study2. Without it `eval.rayleigh` is absent and the
-# measurement off, so the configs written before it keep their config hash.
+# panel, one pass of Hessian–vector products after the run's terminal record. An experiment adds
+# it by listing this file under `defaults` after eval/study2. Without it `eval.rayleigh` is absent
+# and the measurement off, so the configs written before it keep their config hash.
 eval:
   rayleigh:
     enabled: true

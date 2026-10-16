@@ -334,25 +334,49 @@ def test_a_published_outcome_is_not_rerun_after_a_later_failure(tmp_path, status
     assert runs[1].label not in [label for label, _ in executor.calls]
 
 
-def test_a_run_without_its_rayleigh_record_stops_the_campaign(tmp_path) -> None:
-    # The measurement follows the published outcome: if it failed, the run holds its outcome
-    # but not what its config asked for, and the campaign stops rather than skip or rerun it.
+def rayleigh_run_dir(root: Path, run) -> Path:
+    """A scheduled run of a config that measures the endpoint Rayleigh quotient; its status is
+    ``failed``, as after a measurement that failed once the outcome was published."""
     from omegaconf import OmegaConf
 
-    name, runs = load_campaign(campaign(tmp_path))
-    root = tmp_path / "runs"
-    run_dir = scheduled_run_dir(root, runs[1], "scheduled", status="failed")
+    run_dir = scheduled_run_dir(root, run, "scheduled", status="failed")
     cfg = OmegaConf.load(run_dir / "config.yaml")
     OmegaConf.update(cfg, "eval.rayleigh", {"enabled": True, "responses": 100}, force_add=True)
     OmegaConf.save(cfg, run_dir / "config.yaml")
-    with pytest.raises(CampaignError, match="rayleigh.json is missing"):
-        run_campaign(name, runs, root, execute=Executor(root, {}))
-    (run_dir / "rayleigh.json").write_text("{")  # cut short
-    with pytest.raises(CampaignError, match="rayleigh.json is missing or unreadable"):
-        run_campaign(name, runs, root, execute=Executor(root, {}))
-    (run_dir / "rayleigh.json").write_text(json.dumps({"R": None, "reason": "zero displacement"}))
+    return run_dir
+
+
+@pytest.mark.parametrize(
+    "record",
+    [{"R": 12.5, "reason": None}, {"R": None, "reason": "zero displacement"},
+     {"R": None, "reason": "failed: OutOfMemoryError: CUDA out of memory."}],
+)  # fmt: skip
+def test_a_rayleigh_record_with_r_or_its_reason_counts_as_done(tmp_path, record) -> None:
+    # R is descriptive: a recorded failure is done, as a null R for a zero displacement is.
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    (rayleigh_run_dir(root, runs[1]) / "rayleigh.json").write_text(json.dumps(record))
     result = run_campaign(name, runs, root, execute=Executor(root, {}))
     assert runs[1].label in result["skipped"]
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [(None, "rayleigh.json is missing or unreadable"),
+     ("{", "rayleigh.json is missing or unreadable"),
+     (json.dumps({"R": None, "reason": None}), "neither a finite R nor the reason"),
+     (json.dumps({"R": float("nan"), "reason": None}), "neither a finite R nor the reason")],
+)  # fmt: skip
+def test_a_rayleigh_record_without_r_or_its_reason_stops_the_campaign(
+    tmp_path, text, problem
+) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = rayleigh_run_dir(root, runs[1])
+    if text is not None:
+        (run_dir / "rayleigh.json").write_text(text)
+    with pytest.raises(CampaignError, match=problem):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
 
 
 STUDY2_THETA0 = """

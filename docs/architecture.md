@@ -76,12 +76,13 @@ scientific design is in [design.md](design.md); procedures for running things ar
    2 responses each: the first of each prompt is read every few steps, the second only with the
    scoring panel's K alone at fixed diagnostic steps; θ₀'s logits for both panels are cached
    (`evaluation.ReferenceLogits`) and checked against uncached readings. Version 1 answered 25
-   further prompts. The curvature panel of the endpoint Rayleigh quotient (`curvature_panel`,
-   `eval/rayleigh`) is stored the same way: zero-field θ₀ responses to the teacher prompts,
-   drawn iid from `derive_seed(0, "curvature_panel", "prompts" | "sampling")`, one panel per
-   model that no run trains on. θ₀'s next-token
+   further prompts. θ₀'s next-token
    distributions come from a frozen θ₀ copy kept on the GPU next to the student and evaluated in the
-   same forward path, so K is exactly zero at θ₀ and needs no stored distributions.
+   same forward path, so K is exactly zero at θ₀ and needs no stored distributions. The curvature
+   panel of the endpoint Rayleigh quotient (`curvature_panel`, `eval/rayleigh`) is stored the
+   same way: zero-field θ₀ responses to the teacher prompts, drawn iid from
+   `derive_seed(0, "curvature_panel", "prompts" | "sampling")`, one panel per model that no run
+   trains on.
 4. **Training run.** A student starts from θ₀ and takes N optimizer steps over the training stream
    in a fixed order. The bridge cell truncates the same stream to 48 tokens, which is identical in
    distribution to sampling with a 48-token cap and keeps it paired with the main cell. The
@@ -107,8 +108,9 @@ scientific design is in [design.md](design.md); procedures for running things ar
    evaluation) and missed, and a crossing whose evaluation failed. With `eval/rayleigh` (off
    unless an experiment adds it), the run then frees its optimizer state and panels and measures
    the endpoint Rayleigh quotient δᵀH₀δ/‖δ‖² of its displacement on the curvature panel, one
-   Hessian–vector product at θ₀ on the frozen copy (`curvature.endpoint_rayleigh`), into
-   `rayleigh.json` and the summary; the student's weights become δ, since the run is over.
+   pass of Hessian–vector products at θ₀ on the frozen copy (`curvature.endpoint_rayleigh`),
+   into `rayleigh.json` and the summary; the student's weights become δ, since the run is over.
+   A failed measurement is recorded there too (R null, `failed: …`) before the error goes on.
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
    model and the rubric version are recorded with every label. A run's labels from the judge
    `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record
@@ -149,7 +151,7 @@ Implemented:
 | `panels` | study 2: K on the monitor panel (version 2: nested panels on the scoring prompts, cached θ₀ logits), the scoring panel's K alone for diagnostics, the cache checks, and the Stage-A check that the monitor agrees with the scoring panel |
 | `analysis.stage_a` | study 2, Stage A: run records checked for integrity (including every evaluation's answers to the recorded harmful prompts), summaries per arm, batch and rate (reachability and steps per level, utility, time, stops), soft-target screen and numerical acceptance, the gradient rule's margin and possible false alarms, monitor agreement, and the selection rule as one function, which first requires the whole prescribed search and otherwise returns `incomplete` |
 | `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record |
-| `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (a fixed number of steps, convergence by the Ritz residual and agreement of independent starts, not a certified accuracy of the top eigenvalue), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates. Amendment 3: the endpoint Rayleigh quotient R = δᵀH₀δ/‖δ‖² of a study-2 run's displacement, H₀ the training loss's Hessian at θ₀ on the curvature panel, recorded signed (null with its reason for a zero or non-finite ‖δ‖), one product after the run's terminal record |
+| `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (a fixed number of steps, convergence by the Ritz residual and agreement of independent starts, not a certified accuracy of the top eigenvalue), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates. Amendment 3: the endpoint Rayleigh quotient R = δᵀH₀δ/‖δ‖² of a study-2 run's displacement, H₀ the training loss's Hessian at θ₀ on the curvature panel, recorded signed (null with its reason for a zero or non-finite ‖δ‖ or a failed measurement), from one pass of products over the panel (δᵀH₀δ without a sum of products) after the run's terminal record |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
@@ -297,11 +299,13 @@ for SGD their learning rate is η_config / L. Adam's update does not depend on t
   of 4 take ≈ 10 GB); `tests/test_gpu.py` checks the buffer count.
 - The endpoint Rayleigh quotient of a study-2 run takes its product after the run, with the
   optimizer state, the panels and their caches and the student released and the student's
-  trainable weights turned into δ in place. It holds the frozen θ₀ copy (≈ 6.2 GB at 1.5B) and
-  four trainable-sized fp32 vectors (≈ 5.2 GB each: δ, the product's sum, the gradients with
-  their graph and the second backward's result), ≈ 27 GB, plus the double-backward graph of one
-  micro-batch of `execution.micro_batch_size`. That is the footprint of the Stage-A curvature
-  run's Lanczos steps, which ran on an L40S at micro-batch 4; `rayleigh.json` records the peak.
+  trainable weights turned into δ in place. It takes δᵀH₀δ micro-batch by micro-batch without a
+  sum of products, and releases the first-order gradients before each second backward, so it
+  holds the frozen θ₀ copy (≈ 6.2 GB at 1.5B) and two trainable-sized fp32 vectors at a time
+  (≈ 5.2 GB each: δ, and the gradients or the second backward's result), ≈ 16.7 GB, plus the
+  double-backward graph of one micro-batch of `execution.micro_batch_size` (≈ 13–17 GB by count
+  at 4): ≈ 30–34 GB. The Stage-A curvature run's Lanczos steps held two vectors more and ran on
+  an L40S at micro-batch 4; `rayleigh.json` records the product's peak.
 - Pure bf16 training is ruled out: at typical weight magnitudes the bf16 grid spacing exceeds
   Adam's update, so the update rounds to zero.
 - 8-bit Adam would change the optimizer under study. For the same reason the optimizers stay plain

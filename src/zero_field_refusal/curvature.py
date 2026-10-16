@@ -20,7 +20,9 @@ H_b = Σ_{i∈b} H_i / (B·cap), and the mean of H_b over batches that partition
 
 **Products.** H·v is the gradient of ∇L·v (double backward), accumulated over micro-batches;
 it is exact, since the loss is a sum over micro-batches. Attention runs on PyTorch's math kernel,
-the only SDPA kernel with a second derivative.
+the only SDPA kernel with a second derivative. The first-order gradients are released before
+the second backward, which needs only v from them. vᵀHv alone (``hessian_quadratic_form``)
+takes vᵀ(H_mb·v) of each micro-batch's product at once and keeps no sum of products.
 
 **Eigenvalues.** Lanczos with the three-term recurrence and no reorthogonalization keeps two
 parameter-sized vectors besides the product's own. Its extreme Ritz values converge to the
@@ -37,15 +39,17 @@ measured after the run (``eval.rayleigh``):
 
 - δ = θ_end − θ₀ over the trainable parameters (``models.freeze`` with ``train.freeze``, as here);
 - H₀ is the Hessian at θ₀ of the training loss with the constant denominator on a fixed panel of
-  n responses: their summed response-token NLL over n × cap (cap ``train.max_response_tokens``),
-  one product H₀δ by ``hessian_vector_product`` in micro-batches of
-  ``execution.micro_batch_size``;
+  n responses: their summed response-token NLL over n × cap (cap ``train.max_response_tokens``);
+  δᵀH₀δ is one pass of products over the panel in micro-batches of
+  ``execution.micro_batch_size`` (``hessian_quadratic_form``: Σ_mb δᵀ(H_mb·δ), the products'
+  loop of ``hessian_vector_product`` without its parameter-sized sum);
 - R = δᵀH₀δ / ‖δ‖², recorded signed: the NLL Hessian of a finite sample need not be positive
   semi-definite. ‖δ‖ and δᵀH₀δ are recorded with it, and the panel's identity (stream path,
   manifest sha256, count);
 - ‖δ‖ = 0 (a run that took no step) or a non-finite ‖δ‖ (an update that broke the weights) gives
-  R = null with the reason, and no product is computed; a non-finite product gives null too.
-  Nothing is ever divided by zero.
+  R = null with the reason, and no product is computed; a non-finite δᵀH₀δ gives null too, and
+  so does a product that fails (``failed: <type>: <message>``, recorded before the error goes
+  on). Nothing is ever divided by zero.
 
 The panel is the stream ``curvature_panel``: zero-field θ₀ responses to the teacher prompts,
 drawn iid as a training stream's, from the seeds of ``derive_seed(0, "curvature_panel", …)``, so
@@ -98,6 +102,58 @@ def hessian_vector_product(
     its summed NLL over the constant B × cap of a run with that batch's size B. Added into
     ``out`` if given (saving a parameter-sized vector), else into zeros."""
     out = [torch.zeros_like(p) for p in params] if out is None else out
+
+    def add(part: Sequence[torch.Tensor]) -> None:
+        for total, piece in zip(out, part, strict=True):
+            total.add_(piece)
+
+    _micro_batch_products(model, params, batches, vector, add, cap=cap,
+                          micro_batch_size=micro_batch_size, pad_id=pad_id,
+                          device=device)  # fmt: skip
+    return out
+
+
+def hessian_quadratic_form(
+    model: PreTrainedModel,
+    params: Sequence[torch.nn.Parameter],
+    batches: Sequence[Sequence[Sample]],
+    vector: Sequence[torch.Tensor],
+    *,
+    cap: int,
+    micro_batch_size: int,
+    pad_id: int,
+    device: torch.device,
+) -> float:
+    """vᵀHv in float64, H as for ``hessian_vector_product``: the sum over micro-batches of
+    vᵀ(H_mb·v), each taken as soon as its micro-batch's product exists, so that no
+    parameter-sized sum of the products is kept."""
+    total = 0.0
+
+    def add(part: Sequence[torch.Tensor]) -> None:
+        nonlocal total
+        total += _dot(vector, part)
+
+    _micro_batch_products(model, params, batches, vector, add, cap=cap,
+                          micro_batch_size=micro_batch_size, pad_id=pad_id,
+                          device=device)  # fmt: skip
+    return total
+
+
+def _micro_batch_products(
+    model: PreTrainedModel,
+    params: Sequence[torch.nn.Parameter],
+    batches: Sequence[Sequence[Sample]],
+    vector: Sequence[torch.Tensor],
+    consume: Callable[[Sequence[torch.Tensor]], None],
+    *,
+    cap: int,
+    micro_batch_size: int,
+    pad_id: int,
+    device: torch.device,
+) -> None:
+    """Pass H_mb·v of each micro-batch in turn to ``consume``; H·v is their sum (each
+    micro-batch's loss is its summed NLL over its batch's B × cap × len(batches)). The first-order
+    gradients are released before the second backward: ∇L·v keeps only v for it."""
     with sdpa_kernel(SDPBackend.MATH):
         for batch in batches:
             denominator = len(batch) * cap * len(batches)
@@ -106,10 +162,9 @@ def hessian_vector_product(
                 loss = summed_nll(model, rows) / denominator
                 grads = torch.autograd.grad(loss, params, create_graph=True)
                 dot = sum((g * v).sum() for g, v in zip(grads, vector, strict=True))
-                for total, part in zip(out, torch.autograd.grad(dot, params), strict=True):
-                    total.add_(part)
-                del grads, dot
-    return out
+                del grads
+                consume(torch.autograd.grad(dot, params))
+                del dot, loss  # before the next micro-batch's graph is built
 
 
 def start_vector(
@@ -291,13 +346,11 @@ def endpoint_rayleigh(
     out["delta_norm"] = squared**0.5
     if squared == 0:
         return out | {"reason": "zero displacement"}
-    product = hessian_vector_product(
+    curvature = hessian_quadratic_form(
         model, [p for _, p in trainable], [list(panel)], vector,
         cap=cfg.train.max_response_tokens, micro_batch_size=cfg.execution.micro_batch_size,
         pad_id=pad_id, device=device,
     )  # fmt: skip
-    curvature = _dot(vector, product)
-    del product
     if not math.isfinite(curvature):
         return out | {"reason": "non-finite product"}
     return out | {"R": curvature / squared, "delta_H_delta": curvature}
@@ -349,6 +402,11 @@ def record_endpoint_rayleigh(
     Nothing is restored afterwards: this runs only once the run is over, after its terminal
     record and every evaluation, and the caller has freed the optimizer state and the panels'
     caches. The GPU memory peak recorded is the product's own.
+
+    A failure of the measurement (out of memory, say) is recorded too, as R = null with the
+    reason ``failed: <exception type>: <first line of its message>`` and the peaks so far, and
+    the exception goes on: the run's outcome is already published, and R is descriptive, so the
+    launcher counts such a run as done (``launch``).
     """
     started = time.perf_counter()
     cuda = env.device.type == "cuda"
@@ -356,21 +414,31 @@ def record_endpoint_rayleigh(
     if cuda:
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(env.device)
-    result = endpoint_rayleigh(
-        reference, freeze(reference, cfg.train.freeze), delta, panel, cfg, pad_id=env.pad_id,
-        device=env.device,
-    )  # fmt: skip
-    record = {**result, "panel": identity, "cap": int(cfg.train.max_response_tokens),
-              "micro_batch_size": int(cfg.execution.micro_batch_size),
-              "seconds": time.perf_counter() - started}  # fmt: skip
-    if cuda:
-        allocated, reserved = (torch.cuda.max_memory_allocated(env.device),
-                               torch.cuda.max_memory_reserved(env.device))  # fmt: skip
-        record |= {"peak_allocated_gb": round(allocated / 1e9, 3),
-                   "peak_reserved_gb": round(reserved / 1e9, 3)}  # fmt: skip
-    run.path("rayleigh.json").write_text(json.dumps(record, indent=1) + "\n")
-    run.summarize({"rayleigh": result})
-    return record
+
+    def record(result: dict[str, Any]) -> dict[str, Any]:
+        out = {**result, "panel": identity, "cap": int(cfg.train.max_response_tokens),
+               "micro_batch_size": int(cfg.execution.micro_batch_size),
+               "seconds": time.perf_counter() - started}  # fmt: skip
+        if cuda:
+            allocated, reserved = (torch.cuda.max_memory_allocated(env.device),
+                                   torch.cuda.max_memory_reserved(env.device))  # fmt: skip
+            out |= {"peak_allocated_gb": round(allocated / 1e9, 3),
+                    "peak_reserved_gb": round(reserved / 1e9, 3)}  # fmt: skip
+        run.path("rayleigh.json").write_text(json.dumps(out, indent=1) + "\n")
+        run.summarize({"rayleigh": result})
+        return out
+
+    try:
+        result = endpoint_rayleigh(
+            reference, freeze(reference, cfg.train.freeze), delta, panel, cfg,
+            pad_id=env.pad_id, device=env.device,
+        )  # fmt: skip
+    except Exception as exc:
+        message = str(exc).splitlines()[0] if str(exc) else ""
+        record({"R": None, "reason": f"failed: {type(exc).__name__}: {message}",
+                "delta_norm": None, "delta_H_delta": None})  # fmt: skip
+        raise
+    return record(result)
 
 
 def _summary(

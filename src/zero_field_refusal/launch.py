@@ -19,7 +19,8 @@ and attempts recorded in the launch logs ``RUNS_DIR/launch/*.jsonl`` — decides
 - one *qualifying* completed run — its ``tracking.gate`` as the campaign's config says, a recorded
   commit and a clean tree when ``tracking.require_clean_git`` is set, a ``summary.json`` with a
   finite, non-negative K, and its responses file; for a study-2 schedule, its terminal record (and,
-  with ``eval.rayleigh`` enabled, its ``rayleigh.json``) — makes the run done: skipped;
+  with ``eval.rayleigh`` enabled, a ``rayleigh.json`` with R or the reason it is null, a failed
+  measurement included) — makes the run done: skipped;
 - a ``diverged`` run (a non-finite training loss or K) is an outcome: never rerun;
 - a completed run that does not qualify, or two completed runs, stop the whole campaign before
   anything starts: running again would leave two runs of the seed for the analysis;
@@ -245,11 +246,8 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
             load_trajectory(run_dir)
         except TrajectoryError as exc:
             return f"a scheduled run's records are incomplete: {exc}"
-        # The endpoint Rayleigh quotient follows the published outcome: a run whose measurement
-        # failed holds its outcome but not what its config asked for.
-        rayleigh = OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False)
-        if rayleigh and _read_json(run_dir / "rayleigh.json") is None:
-            return "eval.rayleigh is enabled, but rayleigh.json is missing or unreadable"
+        if OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False):
+            return _rayleigh_problem(_read_json(run_dir / "rayleigh.json"))
         return None
     summary = _read_json(run_dir / "summary.json")
     k = None if summary is None else summary.get("K_harmful")
@@ -365,6 +363,23 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
         raise CampaignError(f"{run.experiment}/{run_id} completed but cannot stand for "
                             f"{run.label}: {problem}; the campaign stops")  # fmt: skip
     return outcome
+
+
+def _rayleigh_problem(record: Mapping[str, Any] | None) -> str | None:
+    """Why a run's endpoint Rayleigh record cannot stand (None: it can). R is descriptive and
+    follows the published outcome: a null R with its reason (a zero or non-finite displacement,
+    a non-finite product, a failed measurement) counts as done, as a measured R does. Only a
+    missing or unreadable record, or one with neither a finite R nor a reason, does not."""
+    if record is None:
+        return "eval.rayleigh is enabled, but rayleigh.json is missing or unreadable"
+    r, reason = record.get("R"), record.get("reason")
+    measured = (isinstance(r, int | float) and not isinstance(r, bool) and math.isfinite(r)
+                and reason is None)  # fmt: skip
+    explained = r is None and isinstance(reason, str) and bool(reason)
+    if not (measured or explained):
+        return (f"rayleigh.json holds neither a finite R nor the reason for its absence "
+                f"(R={r!r}, reason={reason!r})")  # fmt: skip
+    return None
 
 
 def _scheduled_training(cfg: Any) -> bool:

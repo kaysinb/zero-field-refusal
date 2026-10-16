@@ -676,7 +676,7 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
 
 def stream_path(spec: Mapping[str, Any], seed: int | None, root: Path) -> Path:
     """The stream's directory ``<root>/teacher/<model>/<kind>/<spec hash>/seed-<seed>``
-    (K's reference streams: ``.../reference``)."""
+    (seedless instrument streams, ``INSTRUMENT_KINDS``: ``.../reference``)."""
     digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:12]
     model = spec["model"].replace("/", "--")
     name = "reference" if seed is None else f"seed-{seed}"

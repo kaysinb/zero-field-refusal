@@ -166,6 +166,12 @@ At 1.5B with 100 responses its directory is
 python scripts/generate_teacher.py experiments/<name> --stream curvature_panel
 ```
 
+On the first run of a campaign that measures R, read its `rayleigh.json` before the campaign
+goes on: `peak_reserved_gb` (the product's own peak, ≈ 30–34 GB expected at 1.5B with
+micro-batches of 4) must stay clear of the GPU's memory, and `reason` must not start with
+`failed:`. A failed measurement does not stop the campaign (below), so every later run would
+fail the same way unnoticed.
+
 `prepare_data.py` caches the pinned source CSVs in `DATA_DIR/sources/` and refuses to overwrite a
 complete build without `--force`. Stream directories are named by a hash of everything that
 determines their samples; an existing stream is never regenerated. A stream is published by
@@ -454,9 +460,11 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   `analysis.stage_a.load_trajectory`: readings, steps, evaluations and their stored responses,
   levels, the stream prefix), with or without evaluations, and whatever its status says if
   logging or finalization failed after the record was published. With `eval.rayleigh` enabled
-  it also needs a readable `rayleigh.json`: the measurement follows the published outcome, so a
-  run whose measurement failed (out of memory, say) stops the campaign as a conflict, neither
-  skipped nor rerun.
+  it also needs a readable `rayleigh.json` holding a finite R or the reason R is null. R is
+  descriptive and follows the published outcome, so a recorded failure (`failed: …`, out of
+  memory, say; the run's status is then `failed`) counts as done, like a zero displacement, and
+  never blocks the campaign; only a missing or unreadable record is a conflict. Hence the check
+  of the first run's record ([data, streams and checks](#data-streams-and-checks)).
 - **Gate runs:** commit and push all changes first, then run from a clone or bundle of that
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.
