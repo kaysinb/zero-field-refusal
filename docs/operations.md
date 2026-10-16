@@ -316,7 +316,8 @@ again. Compare the new samples' and distributions' sha256 with the archived mani
 comparison next to the run (on 2026-10-14 both were byte-identical, see
 `runs/runpod/evidence/soft-targets-regeneration-20261014.json` in the bucket). After the check,
 delete the distributions and put the archived manifest back, so that `DATA_DIR` matches its
-inventories again.
+inventories again. For study 2's short regime the prerequisites' driver does all of this
+([`--once`](#study-2-short-regime-amendment-3)).
 
 **Deadlines between campaigns.** A Pod's deadline changes only through its environment
 (`ZFR_DEADLINE_EPOCH`, with `update-pod`), which restarts the container: the running run stops and
@@ -429,6 +430,17 @@ bash "$C/prep.sh"
 - **`--once`** goes on the first Pod only, with the stage-0 run's id, which has no default.
   - The driver runs the stage-0 checks under protocol version 3 (before the first FA control)
     and generates the curvature panel.
+  - Around the checks it follows [stage 0 under a new protocol](#study-2-stage-a):
+    1. Before the checks, `soft-targets-aside` moves the restored soft-target copy (located as
+       stage 0 locates it) to `/workspace/tmp/soft-targets-aside-YYYYMMDD/`. Stage 0 then
+       generates the stream again.
+    2. Once the run has passed, `soft-targets-restore` compares the new samples' and
+       distributions' sha256 with the archived manifest. It writes
+       `soft_targets_regeneration.json` and the regenerated manifest into the run's directory.
+    3. It then deletes the regenerated distributions, keeps the rest of the regenerated stream
+       under the dated directory, and puts the archived copy back.
+  - Each step is skipped once done: a copy already set aside stays there, and a kept run is
+    neither set aside again nor rerun.
   - Archive both with their own inventories; later Pods restore them and leave out `--once`.
 - **`--archived`** is for seeds whose streams are archived. The driver generates nothing; it
   runs `study2_short_campaigns.py check-streams`, which:

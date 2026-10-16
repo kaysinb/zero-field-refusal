@@ -135,15 +135,19 @@ def run_stage0_checks(
         return run
 
 
-def _ensure_streams(cfg: DictConfig, env: Environment, log) -> dict[str, DictConfig]:
-    """Generate the streams the checks need, unless they exist."""
+def path_field_config(cfg: DictConfig) -> DictConfig:
+    """The config of the path-field check's soft-target stream (seed 0): the run's, with the
+    check's batches as its steps and their responses."""
     # The loaded config is resolved: set the response count with the steps, or it stays at the
     # training stream's 500 (≈ 29 GB of distributions).
     batches = cfg.checks.path_field.batches
     responses = batches * cfg.train.batch_size
-    path_cfg = OmegaConf.merge(
-        cfg, {"train": {"steps": batches}, "teacher": {"responses": responses}}
-    )
+    return OmegaConf.merge(cfg, {"train": {"steps": batches}, "teacher": {"responses": responses}})
+
+
+def _ensure_streams(cfg: DictConfig, env: Environment, log) -> dict[str, DictConfig]:
+    """Generate the streams the checks need, unless they exist."""
+    path_cfg = path_field_config(cfg)
     needed = [*((cfg, "training", seed) for seed in GAP_SEEDS),
               (cfg, "preconditioner", FIELD_SEED), (path_cfg, "soft_targets", 0)]  # fmt: skip
     model = None

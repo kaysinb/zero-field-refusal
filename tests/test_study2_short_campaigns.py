@@ -8,6 +8,7 @@ Synthetic runs follow tests/test_study2_short.py's analytic world, made to confo
 campaigns; the scripts read them through a patched ``load_trajectories``."""
 
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import math
@@ -698,8 +699,12 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
     commands = joined(text)
     run = 'project-run "$SRC" python scripts/'
     assert "STAGE0=stage0-v3-test-01" in commands and "stage0" in commands
-    assert (f'step env RUN_ID="$STAGE0" {run}stage0_checks.py experiments/stage0_checks '
-            "model=qwen2.5-1.5b-instruct protocol_version=3") in commands  # fmt: skip
+    stage0 = (f'step env RUN_ID="$STAGE0" {run}stage0_checks.py experiments/stage0_checks '
+              "model=qwen2.5-1.5b-instruct protocol_version=3")  # fmt: skip
+    # The restored soft-target copy is set aside before stage 0 and put back after it passed.
+    aside = f'step {run}study2_short_campaigns.py soft-targets-aside --stage0-run-id "$STAGE0"'
+    back = f'step {run}study2_short_campaigns.py soft-targets-restore --stage0-run-id "$STAGE0"'
+    assert commands.index(aside) < commands.index(stage0) < commands.index(back)
     assert (f"kept {run}generate_teacher.py experiments/study2_short_rayleigh --stream "
             "curvature_panel") in commands  # fmt: skip
     # Archived seeds: their streams are checked where every run locates them, never generated.
@@ -710,6 +715,7 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
     text = prep("--seeds", "2100", "--batch", "20")  # fresh seeds: generated, no stage 0
     commands = joined(text)
     assert "stage0_checks" not in text and "curvature_panel" not in text
+    assert "soft-targets" not in text
     assert (f"step {run}generate_teacher.py experiments/study2_stage_a --stream training "
             "--seeds 2100 --responses 500") in commands  # fmt: skip
     assert (f"kept {run}generate_teacher.py experiments/study2_stage_a optimizer=adam_frozen "
@@ -796,6 +802,9 @@ echo after-stage0
 """
     found = subprocess.run(["bash", "-c", body], capture_output=True, text=True)
     assert ("STEP env RUN_ID=s0" in found.stdout) == (record is None)
+    # A kept run's copy is not set aside again; only a passed run's stream is put back.
+    assert ("soft-targets-aside --stage0-run-id s0" in found.stdout) == (record is None)
+    assert ("soft-targets-restore --stage0-run-id s0" in found.stdout) == ok
     if ok:
         assert "passed under protocol version 3" in found.stdout and "after-stage0" in found.stdout
     else:
@@ -826,6 +835,162 @@ def test_check_streams_locates_the_streams_and_names_the_missing(monkeypatch, tm
                                      "--batch", "5"])  # fmt: skip
     with pytest.raises(SystemExit, match="seed 2001: no preconditioner stream"):
         runpy.run_path(str(CAMPAIGNS), run_name="__main__")
+
+
+# ------------------------------------------------------------------ stage 0's soft-target copy
+
+SAMPLES = '{"id": "p1"}\n{"id": "p2"}\n'  # synthetic samples.jsonl
+DISTRIBUTIONS = b"synthetic distributions"
+
+
+def sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def stream_copy(path: Path, *, driver: str, day: str, samples: str = SAMPLES,
+                distributions: bytes | None = None) -> None:  # fmt: skip
+    """A soft-target stream directory: its manifest records the archived hashes."""
+    path.mkdir(parents=True)
+    manifest = {"sha256": sha256_of(SAMPLES.encode()), "count": 2, "started_at": f"{day}T10:00:00",
+                "hardware": {"driver": driver, "gpus": ["NVIDIA L40S"]},
+                "distributions": {"file": "distributions.safetensors", "samples": 2,
+                                  "sha256": sha256_of(DISTRIBUTIONS)}}  # fmt: skip
+    (path / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (path / "samples.jsonl").write_text(samples)
+    if distributions is not None:
+        (path / "distributions.safetensors").write_bytes(distributions)
+
+
+@pytest.fixture
+def pod(monkeypatch, tmp_path):
+    """A fake Pod: DATA_DIR and RUNS_DIR under tmp_path, the stage-0 config's soft-target stream
+    located by the real locator (the environment's prompt set is synthetic), and the CLI."""
+    import types
+
+    data, runs, aside = tmp_path / "data", tmp_path / "runs", tmp_path / "workspace-tmp"
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("RUNS_DIR", str(runs))
+    prompts = [{"id": "t1", "text": "a teacher prompt"}]
+    monkeypatch.setattr("zero_field_refusal.runtime.environment",
+                        lambda cfg, device: types.SimpleNamespace(prompt_set=lambda name: prompts,
+                                                                  data_root=data))  # fmt: skip
+    module = campaigns_module()
+    path, root = module.stage0_soft_targets()
+
+    def cli(kind: str) -> None:
+        monkeypatch.setattr("sys.argv", [str(CAMPAIGNS), kind, "--stage0-run-id", "s0",
+                                         "--aside-root", str(aside)])  # fmt: skip
+        runpy.run_path(str(CAMPAIGNS), run_name="__main__")
+
+    return types.SimpleNamespace(module=module, path=path, data=root, runs=runs, aside=aside,
+                                 cli=cli, run_dir=runs / "stage0_checks" / "s0")  # fmt: skip
+
+
+def test_the_soft_target_copy_is_located_as_stage_0_locates_it(pod) -> None:
+    from zero_field_refusal import runtime
+    from zero_field_refusal.checks import path_field_config
+
+    relative = pod.path.relative_to(pod.data)
+    assert relative.parts[:3] == ("teacher", "Qwen--Qwen2.5-1.5B-Instruct", "soft_targets")
+    assert re.fullmatch(r"[0-9a-f]{12}", relative.parts[3]) and relative.parts[4] == "seed-0"
+    cfg = load_run_config("experiments/stage0_checks",
+                          ["model=qwen2.5-1.5b-instruct", "protocol_version=3"])  # fmt: skip
+    env = runtime.environment(cfg, "cpu")  # the fake Pod's
+    spec, path, _ = runtime.locate_stream(path_field_config(cfg), env, "soft_targets", 0)
+    assert path == pod.path and spec["responses"] == cfg.checks.path_field.batches * 20
+
+
+def test_stage_0_sets_the_copy_aside_compares_and_puts_it_back(pod, capsys) -> None:
+    stream_copy(pod.path, driver="595.91.07", day="2026-10-09")
+    archived = (pod.path / "manifest.json").read_bytes()
+    pod.cli("soft-targets-aside")
+    assert "set aside" in capsys.readouterr().out and not pod.path.exists()
+    (dated,) = pod.aside.iterdir()
+    assert re.fullmatch(r"soft-targets-aside-\d{8}", dated.name)
+    away = dated / pod.path.relative_to(pod.data)
+    assert (away / "manifest.json").read_bytes() == archived
+    pod.cli("soft-targets-aside")  # run again: the copy stays where it is
+    assert "already set aside" in capsys.readouterr().out and not pod.path.exists()
+
+    # Stage 0 regenerates the stream, distributions included, and passes.
+    stream_copy(pod.path, driver="580.159.03", day="2026-10-16", distributions=DISTRIBUTIONS)
+    regenerated = (pod.path / "manifest.json").read_text()
+    pod.run_dir.mkdir(parents=True)
+    (pod.run_dir / "meta.json").write_text(json.dumps({"git": {"commit": COMMIT}}))
+    pod.cli("soft-targets-restore")
+    assert "samples equal True, distributions equal True" in capsys.readouterr().out
+    record = json.loads((pod.run_dir / "soft_targets_regeneration.json").read_text())
+    assert set(record) == {"what", "pod", "archived", "regenerated", "comparison", "after"}
+    assert record["archived"] == {
+        "driver": "595.91.07", "generated": "2026-10-09",
+        "manifest_file_sha256": sha256_of(archived), "samples_sha256": sha256_of(SAMPLES.encode()),
+        "distributions_sha256": sha256_of(DISTRIBUTIONS)}  # fmt: skip
+    assert record["regenerated"]["samples_sha256"] == sha256_of(SAMPLES.encode())
+    assert record["regenerated"]["distributions_sha256"] == sha256_of(DISTRIBUTIONS)
+    assert record["regenerated"]["distributions_bytes"] == len(DISTRIBUTIONS)
+    assert record["regenerated"]["manifest_file"] == "soft_targets_manifest_regenerated.json"
+    assert record["comparison"] == {"samples_equal": True, "distributions_equal": True,
+                                    "manifest_fields_differing": ["hardware.driver",
+                                                                  "started_at"]}  # fmt: skip
+    assert "s0" in record["what"] and COMMIT in record["what"]
+    assert (pod.run_dir / "soft_targets_manifest_regenerated.json").read_text() == regenerated
+    # DATA_DIR holds the archived copy again, without distributions; nothing was deleted but them.
+    assert (pod.path / "manifest.json").read_bytes() == archived
+    assert sorted(p.name for p in pod.path.iterdir()) == ["manifest.json", "samples.jsonl"]
+    rest = dated / "s0" / pod.path.relative_to(pod.data)
+    assert (rest / "manifest.json").read_text() == regenerated
+    assert not (rest / "distributions.safetensors").exists()
+    written = (pod.run_dir / "soft_targets_regeneration.json").read_text()
+    pod.cli("soft-targets-restore")  # run again: nothing changes
+    assert "kept: the archived copy is back" in capsys.readouterr().out
+    assert (pod.run_dir / "soft_targets_regeneration.json").read_text() == written
+    assert (pod.path / "manifest.json").read_bytes() == archived
+
+
+def test_put_back_resumes_where_it_stopped_and_records_a_difference(pod) -> None:
+    module = pod.module
+    stream_copy(pod.path, driver="595", day="2026-10-09")
+    module.set_aside(pod.path, pod.data, pod.aside, "20261016")
+    # A failed attempt regenerated the stream already: setting aside again keeps both in place.
+    stream_copy(pod.path, driver="580", day="2026-10-16", samples='{"id": "other"}\n',
+                distributions=b"other")  # fmt: skip
+    assert "already set aside" in module.set_aside(pod.path, pod.data, pod.aside, "20261017")
+    assert (pod.path / "distributions.safetensors").read_bytes() == b"other"
+    pod.run_dir.mkdir(parents=True)
+    (pod.run_dir / "meta.json").write_text("{}")
+    # Interrupted right after the comparison was written: the rest is done, the record kept.
+    relative = pod.path.relative_to(pod.data)
+    found = module.regeneration_record(pod.aside / "soft-targets-aside-20261016" / relative,
+                                       pod.path, pod.run_dir, stream=relative,
+                                       kept=Path("k"))  # fmt: skip
+    assert found["comparison"]["samples_equal"] is False
+    assert found["comparison"]["distributions_equal"] is False
+    (pod.run_dir / "soft_targets_regeneration.json").write_text(json.dumps(found))
+    done = module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
+    assert "compared" not in done and "put back" in done
+    assert json.loads((pod.run_dir / "soft_targets_regeneration.json").read_text()) == found
+    assert not (pod.path / "distributions.safetensors").exists()
+    assert json.loads((pod.path / "manifest.json").read_text())["hardware"]["driver"] == "595"
+
+
+def test_the_soft_target_steps_refuse_what_they_cannot_resolve(pod) -> None:
+    module = pod.module
+    with pytest.raises(SystemExit, match="no restored soft-target copy"):
+        module.set_aside(pod.path, pod.data, pod.aside, "20261016")
+    pod.run_dir.mkdir(parents=True)
+    assert "nothing to compare" in module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
+    stream_copy(pod.path, driver="580", day="2026-10-16", distributions=DISTRIBUTIONS)
+    with pytest.raises(SystemExit, match="clean up by hand"):  # regenerated, nothing set aside
+        module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
+    module.set_aside(pod.path, pod.data, pod.aside, "20261016")
+    with pytest.raises(SystemExit, match="no regenerated distributions"):  # stage 0 made none
+        module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
+    stream_copy(pod.path, driver="580", day="2026-10-16", distributions=DISTRIBUTIONS)
+    module.set_aside(pod.path, pod.data, pod.aside, "20261016")  # kept: already set aside
+    second = pod.aside / "soft-targets-aside-20261017" / pod.path.relative_to(pod.data)
+    second.mkdir(parents=True)
+    with pytest.raises(SystemExit, match="several copies"):
+        module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
 
 
 # ------------------------------------------------------------------ the summary script
