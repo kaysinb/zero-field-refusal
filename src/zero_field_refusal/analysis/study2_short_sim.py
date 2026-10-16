@@ -42,6 +42,9 @@ One replicate is one confirmation study:
     - ``rare_only``: d = m·B, in A when Δ ≥ 0 and in F and P when Δ < 0 (from h ≈ 0.15 only a
       positive shift can carry a rare 5 pp difference); m solves the population Δ, so the mean
       difference sits in the rare blocks only.
+    - ``heavy`` (revision 4): d = σ_d·S_b·w in every arm, S_b a block scale shared by the arms,
+      3 with probability 0.1 and 1 otherwise, rescaled to E[S²] = 1: a symmetric normal scale
+      mixture (excess kurtosis 5.3), which the paired difference keeps.
   - endpoint positions x_{b,a,r} = x_r + τ_{a,r} + u_{b,a} + e_{b,a,r}, e ~ N(0, σ_e²);
   - technical failures, per run, with probability f, or (``failure_correlated``) with probability
     logistic(c_f + β_b/σ_s), so that high-harm streams fail more, c_f giving the marginal f.
@@ -73,7 +76,9 @@ Spread calibration. σ_d (M for ``rare_centered``) is set per scenario at Δ = 0
 observed paired SD, the square root of the within-replicate variance of Δ̂_b over supported
 blocks averaged over replicates, equals the scenario's target. Response noise is part of it. If
 the noise alone exceeds the target, σ_d = 0 and the attained SD is reported. ``rare_only`` has no
-spread to calibrate: its SD follows from Δ.
+spread to calibrate: its SD follows from Δ. The target SD is therefore the paired SD at Δ = 0; at
+Δ ≠ 0 the same σ_d gives another SD (e.g. "SD 10" is ≈ 11 pp at +5 and ≈ 9 at −5), which every
+result row reports as ``attained_sd``.
 
 Sequential procedure, per look design (``LOOK_DESIGNS``): ``24_50`` (the planning one),
 ``36_60``, ``50`` (one terminal look) and ``24_50_eq_terminal`` (24/50 with equivalence
@@ -86,8 +91,10 @@ is mean ± t_{n−1, 1−α_k/2}·max(sd, s_min)/√n, and none (inconclusive) w
 It gives equivalence (inside ±5 pp, bounds included, as in Gate 2), a direction (excluding 0
 strictly), both, or neither; the ±8 pp reading is reported and never stops. The study stops at
 look 1 on equivalence (where the design allows it) or a direction; otherwise the terminal look
-decides. Equivalence is not reported at a look-1 stop of ``24_50_eq_terminal``. If look 1 is
-reached only at the cap, looks 1 and 2 use the same blocks. The secondary contrasts are read at
+decides. Equivalence is not reported at a look-1 stop of ``24_50_eq_terminal``. Rule
+``eq_min36`` (revision 4) concludes equivalence only at a look with ≥ 36 supported blocks, so not
+at a cap look below that; a direction may still be concluded there. If look 1 is reached only at
+the cap, looks 1 and 2 use the same blocks. The secondary contrasts are read at
 the look where the primary stopped, with two-sided 98.75 % intervals on the three-arm cohort and
 the same floor. At the stopping look, the finite-cohort bounds of the started cohort are
 [(S − m)/N, (S + m)/N]: N started blocks, m of them unsupported, S the sum of the supported Δ̂_b.
@@ -98,25 +105,39 @@ preregistered: B = 2000 resamples of the blocks with replacement per look and re
 (mean* − mean)/se*, and at level 1 − α_k the interval [mean − q*_{1−α_k/2}·se, mean −
 q*_{α_k/2}·se]. The SE floor applies to se and se* alike (se* = max(sd*, s_min)/√n). A resample
 with se* = 0 (floor 0) is dropped and counted; a zero se gives [mean, mean]; fewer than 2 blocks
-or kept resamples give no interval. Each replicate's resamples come from its own stream
-``derive_seed(base_seed, stream, scenario name, rep, "bootstrap")``, drawn in the workers; both
-intervals are evaluated on the same replicates. The secondary contrasts keep t intervals.
+or kept resamples give no interval. If every block difference is equal, T* ≡ 0 and the interval
+collapses to [mean, mean] even with a floor. Each replicate, design and look has its own resample
+stream, drawn in the workers; both intervals are evaluated on the same replicates. The secondary
+contrasts keep t intervals.
 
 Levels. A two-look design uses the O'Brien–Fleming-shaped pair from Lan–DeMets spending of an
 overall two-sided α at its information fraction n₁/n₂ (``obf_levels``); α = 0.05 at 24/50 gives
-the planning levels 99.53 % and 95.19 %. A one-look design uses 1 − α.
+the planning levels 99.53 % and 95.19 %. A one-look design uses 1 − α. The levels are those of
+the planned fraction at every look actually taken: a postponed look 1 and a look at the cap keep
+them (no spending is recomputed at the realized fraction), and a cap look without a look 1 uses
+the terminal level, not 1 − α.
 
-Randomness. Replicate ``rep`` of a scenario draws from ``derive_seed(base_seed, stream, scenario
-name, rep)``; the stream names the run (``calibration``, ``validation``, …), so a validation run
-uses draws independent of the calibration's. Blocks are generated until 60 are supported (the
-largest look) or 80 have started, so every look design, α and floor is evaluated on the same
-replicates. The spread calibration uses ``derive_seed(base_seed, "spread", key name)`` in every
-run, so a scenario's σ_d does not depend on the stream.
+Validation gate (revision 4). Before confirmation, 12 fresh blocks of the same study (same
+prompts, rates and failure model) are drawn; the gate passes with ≥ 10 jointly supported in A and
+F. Its failure rate and the decision rates among the studies that pass are reported beside the
+unconditional ones.
+
+Randomness. Every stream is seeded by the full SHA-256 digest of its key list (``generator``):
+replicate ``rep`` of a scenario draws from (base_seed, stream, scenario name, rep), its
+validation gate from (…, rep, "validation_gate") and its bootstrap resamples from (…, rep,
+"bootstrap", design, look). The stream names the run (``calibration``, ``validation``,
+``confirmation``, …), so runs on different streams are independent. Blocks are generated until 60
+are supported (the largest look) or 80 have started, so every look design, α, floor and rule is
+evaluated on the same replicates. The spread calibration uses (base_seed, "spread", key name) in
+every run, so a scenario's σ_d does not depend on the stream. Runs before revision 4 used 31-bit
+``derive_seed`` seeds; their draws differ from this code's.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import math
 import multiprocessing as mp
 import os
@@ -133,7 +154,17 @@ from scipy.special import expit, gammaincinv, logit, ndtr, ndtri, roots_genlague
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
-from ..seeding import derive_seed
+
+def seed_sequence(base_seed: int, *keys: object) -> np.random.SeedSequence:
+    """The seed of the stream named by ``keys``: the full SHA-256 digest of the key list (as JSON,
+    like ``derive_seed``, which keeps only 31 bits), so streams do not collide in practice."""
+    blob = json.dumps([base_seed, *keys]).encode()
+    return np.random.SeedSequence(np.frombuffer(hashlib.sha256(blob).digest(), dtype=np.uint32))
+
+
+def generator(base_seed: int, *keys: object) -> np.random.Generator:
+    return np.random.default_rng(seed_sequence(base_seed, *keys))
+
 
 ARMS = ("A", "F", "P")  # AdamW-25, frozen Adam-25, pre-warmed AdamW-25
 SECONDARY_CONTRASTS = ("P-F", "A-P")
@@ -147,8 +178,15 @@ POSITIONS = {
     "grid": ((-0.39, 0.17, 0.57), (-0.23, 0.27, 0.73), NOMINAL),  # B = 5 discovery medians
 }
 MISSES = ("common", "arm", "rate")
-SHAPES = ("normal", "skewed", "rare_centered", "rare_only")
+SHAPES = ("normal", "skewed", "rare_centered", "rare_only", "heavy")
 RARE = 0.1  # π
+# heavy: a block's arm effects are σ_d·S·w, S = 3 or 1 (P(S = 3) = 0.1) rescaled to E[S²] = 1, one
+# S per block shared by the arms (a normal scale mixture; excess kurtosis 5.3).
+HEAVY_SHARE = 0.1
+HEAVY_RATIO = 3.0
+HEAVY_SCALES = tuple(
+    s / math.sqrt(HEAVY_SHARE * HEAVY_RATIO**2 + (1 - HEAVY_SHARE)) for s in (HEAVY_RATIO, 1.0)
+)
 RARE_THRESHOLD = float(ndtri(1 - RARE))
 GAMMA_SHAPE = 2.0  # k of the skewed shape
 FAILURE_SLOPE = 1.0  # logit units per SD of β_b (technical failures)
@@ -272,6 +310,16 @@ BOOTSTRAP_DESIGNS = ("24_50", "36_60")
 BOOTSTRAP_DELTAS = (0.0, 0.025, -0.025, 0.05, -0.05, 0.055, -0.055)
 BOOTSTRAP_BOUNDARY_REPS = 8_000  # sized to the revision-3 time budget
 BOOTSTRAP_OTHER_REPS = 2_000
+# Decision rules: ``eq_min36`` concludes equivalence only at a look with ≥ 36 supported blocks
+# (so not at a cap look below that); a direction is unaffected.
+RULES = ("standard", "eq_min36")
+RULE_MIN_BLOCKS = {"standard": 0, "eq_min36": 36}
+# The validation gate before confirmation: 12 fresh blocks, passed with ≥ 10 jointly supported.
+GATE_BLOCKS = 12
+GATE_MIN_SUPPORTED = 10
+DECIDED_DESIGN = "36_60"
+DECIDED_ALPHA = 0.04
+DECIDED_ALLOWANCE = 0.01079
 HERMITE_NODES = 80
 LAGUERRE_NODES = 40
 
@@ -408,6 +456,11 @@ def effect_distribution(shape: str, spread: float) -> tuple[np.ndarray, np.ndarr
     if shape == "normal":
         nodes, weights = _hermite()
         return spread * nodes, weights
+    if shape == "heavy":
+        nodes, weights = _hermite()
+        high, low = HEAVY_SCALES
+        values = spread * np.concatenate([high * nodes, low * nodes])
+        return values, np.concatenate([HEAVY_SHARE * weights, (1 - HEAVY_SHARE) * weights])
     if shape == "skewed":
         nodes, weights = _laguerre()
         return spread * (nodes - GAMMA_SHAPE) / math.sqrt(GAMMA_SHAPE), weights
@@ -506,7 +559,8 @@ def solve_parameters(scenario: Scenario, spread: float | None = None) -> Paramet
     else:
         if spread is None:
             raise ValueError(f"Shape {s.shape!r} needs a calibrated spread")
-        shifted = (True, True, True) if s.shape == "normal" else (True, False, False)
+        both = s.shape in ("normal", "heavy")
+        shifted = (True, True, True) if both else (True, False, False)
         keys = tuple((s.shape, float(spread)) if on else None for on in shifted)
     fits = [fit_coefficients(s.family, a, sigma_v, keys[a]) for a in (0, 1)]
     fits.append(fits[1])  # P follows F: same target, same effect distribution
@@ -630,9 +684,14 @@ def endpoint_harm(
 
 
 def block_effects(
-    scenario: Scenario, params: Parameters, latent: np.ndarray, arms: Sequence[int]
+    scenario: Scenario,
+    params: Parameters,
+    latent: np.ndarray,
+    arms: Sequence[int],
+    tail: np.ndarray | None = None,
 ) -> np.ndarray:
-    """d_{b,a} (blocks, arms) from the standard normal driving variable ``latent``."""
+    """d_{b,a} (blocks, arms) from the standard normal driving variable ``latent``; ``tail``
+    (uniform, one per block) picks the block's scale for the ``heavy`` shape."""
     effect = np.zeros_like(latent)
     for j, arm in enumerate(arms):
         if not params.shifted[arm]:
@@ -640,6 +699,11 @@ def block_effects(
         w = latent[:, j]
         if scenario.shape == "normal":
             effect[:, j] = params.spread * w
+        elif scenario.shape == "heavy":
+            if tail is None:
+                raise ValueError("The heavy shape needs a block scale draw")
+            scale = np.where(tail < HEAVY_SHARE, *HEAVY_SCALES)
+            effect[:, j] = params.spread * scale * w
         elif scenario.shape == "skewed":
             gamma = gammaincinv(GAMMA_SHAPE, ndtr(w))
             effect[:, j] = params.spread * (gamma - GAMMA_SHAPE) / math.sqrt(GAMMA_SHAPE)
@@ -671,7 +735,8 @@ def simulate_blocks(
         (n, len(arms))
     )  # u/σ_u
     latent = s.rho_uh * speed + math.sqrt(1 - s.rho_uh**2) * rng.standard_normal((n, len(arms)))
-    effect = block_effects(s, params, latent, arms)
+    tail = rng.random(n)  # the heavy shape's block scale
+    effect = block_effects(s, params, latent, arms, tail)
     nominal = np.array(POSITIONS[s.positions])[arms] + misses[arms]
     x = nominal + s.sigma_u * speed[..., None] + s.sigma_e * rng.standard_normal((n, len(arms), 3))
     intercept, slope = params.failure
@@ -701,6 +766,12 @@ class Replicates:
     bootstrap: dict[str, np.ndarray] = field(default_factory=dict)
     dropped: dict[str, np.ndarray] = field(default_factory=dict)
     bootstrap_cpu_seconds: float = 0.0
+    # Blocks of the validation gate (12 fresh blocks) jointly supported in A and F, (reps,).
+    gate_supported: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+
+    @property
+    def gate_passed(self) -> np.ndarray:
+        return self.gate_supported >= GATE_MIN_SUPPORTED
 
     @property
     def primary(self) -> np.ndarray:
@@ -716,9 +787,14 @@ class Replicates:
 
 def simulate_replicate(
     scenario: Scenario, params: Parameters, rep: int, *, base_seed: int, stream: str
-) -> tuple[np.ndarray, np.ndarray, int]:
-    """One study: blocks start until ``GENERATE_UNTIL`` are supported or the cap is reached."""
-    rng = np.random.default_rng(derive_seed(base_seed, stream, scenario.name, rep))
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """One study: blocks start until ``GENERATE_UNTIL`` are supported or the cap is reached.
+
+    Also the validation gate before it: 12 fresh blocks of the same study (same prompts, rates
+    and failure model) from the stream (…, rep, "validation_gate"); returns how many of them are
+    jointly supported in A and F.
+    """
+    rng = generator(base_seed, stream, scenario.name, rep)
     alpha, misses = draw_constants(scenario, rng)
     estimates = np.full((CAP, len(ARMS)), np.nan)
     causes = np.full((CAP, len(ARMS)), NOT_STARTED, dtype=np.int8)
@@ -729,7 +805,9 @@ def simulate_replicate(
         estimates[started : started + n], causes[started : started + n] = estimate, cause
         supported += int(np.count_nonzero((cause[:, :2] == SUPPORTED).all(axis=1)))
         started += n
-    return estimates, causes, started
+    gate_rng = generator(base_seed, stream, scenario.name, rep, "validation_gate")
+    _, gate = simulate_blocks(scenario, params, alpha, misses, gate_rng, GATE_BLOCKS, arms=(0, 1))
+    return estimates, causes, started, int(np.count_nonzero((gate == SUPPORTED).all(axis=1)))
 
 
 def simulate_replicates(
@@ -741,7 +819,7 @@ def simulate_replicates(
     stream: str,
 ) -> Replicates:
     clock, cpu = time.perf_counter(), time.process_time()
-    estimates, causes, started = zip(
+    estimates, causes, started, gate = zip(
         *(
             simulate_replicate(scenario, params, r, base_seed=base_seed, stream=stream)
             for r in reps
@@ -754,6 +832,7 @@ def simulate_replicates(
         np.array(started),
         time.perf_counter() - clock,
         time.process_time() - cpu,
+        gate_supported=np.array(gate),
     )
 
 
@@ -777,7 +856,12 @@ def calibration_key(scenario: Scenario) -> Scenario:
 
 
 def paired_sd(
-    scenario: Scenario, spread: float, *, seed: int, replicates: int, blocks: int
+    scenario: Scenario,
+    spread: float,
+    *,
+    seed: int | np.random.SeedSequence,
+    replicates: int,
+    blocks: int,
 ) -> float:
     """√(mean within-replicate variance of Δ̂_b over supported blocks) at the given spread."""
     params = solve_parameters(scenario, spread)
@@ -802,7 +886,7 @@ def calibrate_spread(
     random numbers."""
     cpu = time.process_time()
     key = calibration_key(scenario)
-    seed = derive_seed(base_seed, "spread", key.name)
+    seed = seed_sequence(base_seed, "spread", key.name)
     cache: dict[float, float] = {}
 
     def attained(spread: float) -> float:
@@ -1021,8 +1105,9 @@ def bootstrap_tables(
     stream: str,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """T* quantiles and dropped resamples per look key for replicates ``reps`` (rows of
-    ``primary``), each from its own stream ``derive_seed(base_seed, stream, name, rep,
-    "bootstrap")``. A look 1 that is never reached is left NaN."""
+    ``primary``). Each replicate, design and look has its own stream (base_seed, stream, name,
+    rep, "bootstrap", design, look), so the resamples of a design do not depend on which other
+    designs are evaluated. A look 1 that is never reached is left NaN."""
     probabilities = bootstrap_probabilities(designs, alphas)
     quantiles = {
         key: np.full((len(reps), len(floors), p.size), np.nan) for key, p in probabilities.items()
@@ -1031,7 +1116,6 @@ def bootstrap_tables(
     supported = np.isfinite(primary)
     where = {d.name: look_indices(primary, d.realized(scenario.postpone)) for d in designs}
     for i, rep in enumerate(reps):
-        rng = np.random.default_rng(derive_seed(base_seed, stream, scenario.name, rep, "bootstrap"))
         for design in designs:
             reached, index, _ = where[design.name]
             for look in _design_looks(design):
@@ -1040,6 +1124,9 @@ def bootstrap_tables(
                 key = look_key(design, look)
                 stop = index[i, look] + 1
                 values = primary[i, :stop][supported[i, :stop]]
+                rng = generator(
+                    base_seed, stream, scenario.name, rep, "bootstrap", design.name, look
+                )
                 quantiles[key][i], dropped[key][i] = bootstrap_t_quantiles(
                     values, probabilities[key], floors, resamples, rng
                 )
@@ -1120,6 +1207,7 @@ def sequential_decisions(
     floor: float = 0.0,
     *,
     equivalence_at_first: bool = True,
+    equivalence_min_blocks: int = 0,
     bounds: Sequence[tuple[np.ndarray, np.ndarray] | None] | None = None,
     margin: float = MARGIN,
     wide: float = WIDE_MARGIN,
@@ -1127,6 +1215,8 @@ def sequential_decisions(
 ) -> Decisions:
     """Stop at look 1 on equivalence (if allowed there) or a direction; otherwise the terminal
     look decides. ``levels`` has one level per look of the design (one for a one-look design).
+    Equivalence is concluded only at a look with at least ``equivalence_min_blocks`` supported
+    blocks (rule ``eq_min36``: not at a cap look below 36); a direction is unaffected.
     The primary intervals are t intervals unless ``bounds`` gives them per look (None for a
     missing look 1), e.g. from ``bootstrap_bounds``."""
     reps = stats.n.shape[0]
@@ -1141,12 +1231,16 @@ def sequential_decisions(
     unbounded = (np.full(reps, -np.inf), np.full(reps, np.inf))
     low1, high1 = bounds[0] if bounds[0] is not None else unbounded
     low2, high2 = bounds[1]
-    equivalent1 = _inside(low1, high1, margin) if equivalence_at_first else np.zeros(reps, bool)
+    allowed = stats.n >= equivalence_min_blocks  # (R, 2): equivalence may be concluded at the look
+    equivalent1 = _inside(low1, high1, margin) & allowed[:, 0]
+    if not equivalence_at_first:
+        equivalent1 = np.zeros(reps, bool)
     stop1 = stats.reached[:, 0] & (equivalent1 | (low1 > 0) | (high1 < 0))
     k = np.where(stop1, 0, 1)
     rows = np.arange(reps)
     low = np.where(stop1, low1, low2)
     high = np.where(stop1, high1, high2)
+    equivalence = _inside(low, high, margin) & (~stop1 | equivalence_at_first) & allowed[rows, k]
     secondary_n = stats.secondary_n[rows, k]
     secondary_low, secondary_high = t_interval(
         stats.secondary_mean[rows, k],
@@ -1163,7 +1257,7 @@ def sequential_decisions(
         n=stats.n[rows, k],
         started=stats.started[rows, k],
         at_cap=~stop1 & stats.at_cap,
-        equivalence=_inside(low, high, margin) & (~stop1 | equivalence_at_first),
+        equivalence=equivalence,
         positive=low > 0,
         negative=high < 0,
         inside_wide=_inside(low, high, wide),
@@ -1239,6 +1333,19 @@ def block_diagnostics(params: Parameters, data: Replicates) -> dict[str, Any]:
         "unsupported_per_arm": arm_rates,
         "unsupported_per_block": block_rates,
         "three_arm_attrition": float(1 - three_arm.sum() / finite.sum()),
+        **_gate_failure(data),
+    }
+
+
+def _gate_failure(data: Replicates) -> dict[str, float]:
+    """P(the 12-block validation gate fails) and its MC SE, when the gate was simulated."""
+    if not data.gate_supported.size:
+        return {}
+    p, se = _rate(~data.gate_passed)
+    return {
+        "p_gate_fail": p,
+        "se_gate_fail": se,
+        "mean_gate_supported": float(data.gate_supported.mean()),
     }
 
 
@@ -1248,11 +1355,26 @@ def outcome_rates(
     truth: Mapping[str, float],
     targets: Mapping[str, float],
     allowance: float | None = None,
+    gate_passed: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Decision rates, their Monte Carlo SEs and the stopping-time summaries of one design,
-    level pair and floor; with an allowance, the pointwise readings too."""
+    level pair and floor; with an allowance, the pointwise readings too; with the validation
+    gate, the decision rates among the studies that pass it (``gated``)."""
     d = decisions
     rates: dict[str, Any] = {}
+    if gate_passed is not None and gate_passed.size:
+        gated: dict[str, float] = {"passed": int(gate_passed.sum())}
+        if gate_passed.any():
+            power_flags = d.equivalence if delta == 0 else d.positive if delta > 0 else d.negative
+            for name, flag in (
+                ("equivalence", d.equivalence),
+                ("positive", d.positive),
+                ("negative", d.negative),
+                ("power", power_flags),
+            ):
+                key = "power" if name == "power" else f"p_{name}"
+                gated[key], gated[f"se_{name}"] = _rate(flag[gate_passed])
+        rates["gated"] = gated
     flags = {
         "equivalence": d.equivalence,
         "positive": d.positive,
@@ -1323,10 +1445,11 @@ def summarize_scenario(
     allowance: float | None = None,
     designs: Sequence[LookDesign] = LOOK_DESIGNS,
     intervals: Sequence[str] = ("t",),
+    rules: Sequence[str] = ("standard",),
 ) -> dict[str, Any]:
-    """The scenario's block diagnostics and one result row per look design × interval × α × SE
-    floor. ``bootstrap_t`` needs the replicates' bootstrap tables for the same designs, α's and
-    floors."""
+    """The scenario's block diagnostics and one result row per look design × interval × rule ×
+    α × SE floor. ``bootstrap_t`` needs the replicates' bootstrap tables for the same designs,
+    α's and floors. Every row carries the scenario's attained paired SD (at its Δ)."""
     diagnostics = block_diagnostics(params, data)
     primary, secondary = data.primary, data.secondary
     targets = diagnostics["secondary_block_mean"]
@@ -1348,29 +1471,40 @@ def summarize_scenario(
                         bounds = bootstrap_bounds(
                             stats, design, levels, f, floor, data.bootstrap, probabilities
                         )
-                    decisions = sequential_decisions(
-                        stats,
-                        levels,
-                        floor,
-                        equivalence_at_first=design.equivalence_at_first,
-                        bounds=bounds,
-                    )
-                    # The scenario's Δ, not the solved truth: that is Δ only to ~1e-12, and the
-                    # power at Δ = 0 is the equivalence rate.
-                    rates = outcome_rates(
-                        decisions, scenario.delta, params.truth, targets, allowance
-                    )
-                    rates["bias_vs_block_mean"] = rates["mean_estimate"] - diagnostics["block_mean"]
-                    results.append(
-                        {
-                            "looks": design.name,
-                            "interval": interval,
-                            "alpha": alpha,
-                            "levels": list(levels),
-                            "floor": floor,
-                            **rates,
-                        }
-                    )
+                    for rule in rules:
+                        decisions = sequential_decisions(
+                            stats,
+                            levels,
+                            floor,
+                            equivalence_at_first=design.equivalence_at_first,
+                            equivalence_min_blocks=RULE_MIN_BLOCKS[rule],
+                            bounds=bounds,
+                        )
+                        # The scenario's Δ, not the solved truth: that is Δ only to ~1e-12, and
+                        # the power at Δ = 0 is the equivalence rate.
+                        rates = outcome_rates(
+                            decisions,
+                            scenario.delta,
+                            params.truth,
+                            targets,
+                            allowance,
+                            data.gate_passed,
+                        )
+                        rates["bias_vs_block_mean"] = (
+                            rates["mean_estimate"] - diagnostics["block_mean"]
+                        )
+                        results.append(
+                            {
+                                "looks": design.name,
+                                "interval": interval,
+                                "rule": rule,
+                                "alpha": alpha,
+                                "levels": list(levels),
+                                "floor": floor,
+                                "attained_sd": diagnostics["attained_sd"],
+                                **rates,
+                            }
+                        )
     return {
         "name": scenario.name,
         "design": scenario.design,
@@ -1472,6 +1606,48 @@ def bootstrap_validation_grid(
     return grid
 
 
+def stress_validation_grid(
+    boundary_reps: int = BOUNDARY_REPS, other_reps: int = OTHER_REPS
+) -> list[Scenario]:
+    """Revision 4: every non-shape group of ``validation_grid`` (postponed, cap, width, K spread,
+    miss, families, stress), the cap group with independent failures as well, and the heavy
+    shape over every target SD × Δ ∈ {0, ±2.5, ±5, ±5.5}."""
+
+    def reps(delta: float) -> int:
+        return boundary_reps if _reps(delta) == BOUNDARY_REPS else other_reps
+
+    boundary = (0.0, MARGIN, -MARGIN)
+    independent = [
+        replace(s, reps=reps(s.delta))
+        for s in _scenarios("cap", (0.05, 0.10), boundary, failure=0.2)
+    ]
+    taken = {s.name for s in independent}  # the stress group's f 0.2 scenarios join the cap group
+    grid = [
+        replace(s, reps=reps(s.delta))
+        for s in validation_grid()
+        if s.group not in ("central", "shapes") and s.name not in taken
+    ]
+    grid += independent
+    grid += [
+        Scenario(delta=d, sd=sd, shape="heavy", reps=reps(d), group="shapes")
+        for sd in TARGET_SDS
+        for d in BOOTSTRAP_DELTAS
+    ]
+    return grid
+
+
+def confirmation_grid(reps: int = BOUNDARY_REPS) -> list[Scenario]:
+    """Revision 4: the decided design's headline shape × SD grid at Δ ∈ {0, ±5}, meant for a
+    fresh stream (``confirmation``)."""
+    boundary = (0.0, MARGIN, -MARGIN)
+    grid = []
+    for shape in ("normal", "skewed", "rare_centered", "heavy"):
+        group = "central" if shape == "normal" else "shapes"
+        grid += _scenarios(group, TARGET_SDS, boundary, reps, shape=shape)
+    grid += _scenarios("shapes", (0.0,), boundary, reps, shape="rare_only")
+    return grid
+
+
 def bias_grid() -> list[Scenario]:
     """Paired interpolation bias: family × selection miss × w_max at Δ ∈ {0, 5 pp}, and the
     coarse discovery brackets without a width rule."""
@@ -1570,24 +1746,28 @@ def result_rows(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
                     "sd": settings["sd"],
                     "delta": settings["delta"],
                     "reps": s["reps"],
-                    "interval": "t",  # rows written before revision 3 carry no interval
+                    # Rows written before revisions 3 and 4 carry no interval or rule.
+                    "interval": "t",
+                    "rule": "standard",
                     **r,
                 }
             )
     return rows
 
 
-def _design_intervals(rows: Sequence[Mapping]) -> list[tuple[str, str]]:
-    return list(dict.fromkeys((r["looks"], r["interval"]) for r in rows))
+def _design_intervals(rows: Sequence[Mapping]) -> list[tuple[str, str, str]]:
+    return list(dict.fromkeys((r["looks"], r["interval"], r["rule"]) for r in rows))
 
 
 def select_levels(scenarios: Sequence[Mapping], floors: Sequence[float] = SE_FLOORS) -> list[dict]:
     """Per look design, interval and SE floor, the largest α on the grid meeting every error
     constraint over the central scenarios at the binding SDs (3, 5, 10 pp); 15 pp is reported,
-    not binding."""
-    rows = [r for r in result_rows(scenarios) if r["group"] == "central"]
+    not binding. Only the standard decision rule is calibrated."""
+    rows = [
+        r for r in result_rows(scenarios) if r["group"] == "central" and r["rule"] == "standard"
+    ]
     selections = []
-    for looks, interval in _design_intervals(rows):
+    for looks, interval, _ in _design_intervals(rows):
         for floor in floors:
             mine = [
                 r
@@ -1633,21 +1813,23 @@ def select_levels(scenarios: Sequence[Mapping], floors: Sequence[float] = SE_FLO
 def validation_checks(
     scenarios: Sequence[Mapping], chosen: Mapping[tuple[str, str, float], float] | None = None
 ) -> list[dict[str, Any]]:
-    """Worst rates and lowest powers per look design × interval × floor, per group and over
-    all, at the chosen α of that design, interval and floor (``chosen``) and at α = 0.05."""
+    """Worst rates and lowest powers per look design × interval × rule × floor × α, per group
+    and over all. An α is labelled ``selected`` when ``chosen`` maps the design, interval and
+    floor to it."""
     rows = result_rows(scenarios)
     checks = []
-    for looks, interval in _design_intervals(rows):
+    for looks, interval, rule in _design_intervals(rows):
         for floor in sorted({r["floor"] for r in rows}):
-            alphas = {"alpha_0.05": PLANNING_ALPHA}
-            if chosen and chosen.get((looks, interval, floor)) is not None:
-                alphas["selected"] = chosen[(looks, interval, floor)]
-            for label, alpha in alphas.items():
+            for alpha in sorted({r["alpha"] for r in rows}):
+                label = f"alpha_{alpha:.4f}"
+                if chosen and chosen.get((looks, interval, floor)) == alpha:
+                    label = "selected"
                 mine = [
                     r
                     for r in rows
                     if r["looks"] == looks
                     and r["interval"] == interval
+                    and r["rule"] == rule
                     and r["floor"] == floor
                     and r["alpha"] == alpha
                 ]
@@ -1661,6 +1843,7 @@ def validation_checks(
                     {
                         "looks": looks,
                         "interval": interval,
+                        "rule": rule,
                         "floor": floor,
                         "which": label,
                         "alpha": alpha,
@@ -1753,11 +1936,16 @@ class RunSettings:
     designs: tuple[str, ...] = tuple(d.name for d in LOOK_DESIGNS)
     intervals: tuple[str, ...] = ("t",)
     resamples: int = BOOTSTRAP_RESAMPLES  # bootstrap-t, per look and replicate
+    rules: tuple[str, ...] = ("standard",)
 
     def __post_init__(self) -> None:
-        unknown = set(self.intervals) - set(INTERVALS) | set(self.designs) - set(DESIGNS_BY_NAME)
+        unknown = (
+            set(self.intervals) - set(INTERVALS)
+            | set(self.designs) - set(DESIGNS_BY_NAME)
+            | set(self.rules) - set(RULES)
+        )
         if unknown:
-            raise ValueError(f"Unknown intervals or look designs: {sorted(unknown)}")
+            raise ValueError(f"Unknown intervals, look designs or rules: {sorted(unknown)}")
 
     @property
     def look_designs(self) -> tuple[LookDesign, ...]:
@@ -1876,6 +2064,7 @@ def run_scenarios(
                     },
                     {k: np.concatenate([c.dropped[k] for c in chunks]) for k in chunks[0].dropped},
                     sum(c.bootstrap_cpu_seconds for c in chunks),
+                    np.concatenate([c.gate_supported for c in chunks]),
                 )
                 scenario = by_name[name]
                 summary = summarize_scenario(
@@ -1887,6 +2076,7 @@ def run_scenarios(
                     settings.allowance,
                     settings.look_designs,
                     settings.intervals,
+                    settings.rules,
                 )
                 key = calibration_key(scenario).name
                 summary["calibration"] = asdict(calibrations[key]) if key in calibrations else None

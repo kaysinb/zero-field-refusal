@@ -16,12 +16,19 @@ the terminal look) and every SE floor on the same replicates:
 - validate-bootstrap: revision 3's grid (every shape × SD × Δ ∈ {0, ±2.5, ±5, ±5.5}) on the
   ``validation`` stream, sized by --boundary-reps (Δ = 0, ±5 pp) and --other-reps; meant with
   --looks 24_50 36_60 --intervals t bootstrap_t.
+- validate-stress: revision 4's grid on the ``validation`` stream: every non-shape group of the
+  validation grid (cap with correlated and independent failures), and the heavy shape over every
+  SD × Δ ∈ {0, ±2.5, ±5, ±5.5}; sized by --boundary-reps and --other-reps.
+- confirm: revision 4's fresh confirmation of the decided design: every shape × SD at
+  Δ ∈ {0, ±5} on the new ``confirmation`` stream (--reps per scenario, default 20 000).
 - smoke: one reduced scenario per shape and per revision-1 addition.
 
 --looks restricts the look designs evaluated (default: all four); --intervals picks t and/or
 bootstrap_t (the studentized bootstrap of the mean with --bootstrap resamples per look and
 replicate, computed in the workers). A calibrate run selects α per look design × interval ×
-SE floor.
+SE floor. --rules adds ``eq_min36`` (equivalence only at a look with ≥ 36 supported blocks);
+--floors restricts the SE floors; --exact-alphas evaluates exactly --alphas (otherwise α = 0.05
+and the selected α's are added). Every mode also simulates the 12-block validation gate.
 
 Writes to --out (default: $RUNS_DIR/analysis/study2_short_sim/<mode>-<UTC timestamp>/):
 - summary.json: settings, versions, run time, the spread calibrations, every scenario (its
@@ -57,13 +64,18 @@ GRIDS = {
     "calibrate": sim.calibration_grid,
     "validate": sim.validation_grid,
     "validate-bootstrap": sim.bootstrap_validation_grid,
+    "validate-stress": sim.stress_validation_grid,
+    "confirm": sim.confirmation_grid,
     "bias": sim.bias_grid,
     "smoke": sim.smoke_grid,
 }
+SIZED = ("validate-bootstrap", "validate-stress")  # modes taking --boundary-reps, --other-reps
 STREAMS = {
     "calibrate": "calibration",
     "validate": "validation",
     "validate-bootstrap": "validation",
+    "validate-stress": "validation",
+    "confirm": "confirmation",
     "bias": "bias",
     "smoke": "smoke",
 }
@@ -79,8 +91,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--intervals", nargs="+", choices=sim.INTERVALS, default=["t"])
     parser.add_argument("--bootstrap", type=int, default=sim.BOOTSTRAP_RESAMPLES, help="resamples")
-    parser.add_argument("--boundary-reps", type=int, help="validate-bootstrap: Δ = 0, ±5 pp")
-    parser.add_argument("--other-reps", type=int, help="validate-bootstrap: other Δ")
+    parser.add_argument("--rules", nargs="+", choices=sim.RULES, default=["standard"])
+    parser.add_argument("--floors", type=float, nargs="+", help="SE floors (default: all)")
+    parser.add_argument("--exact-alphas", action="store_true", help="evaluate exactly --alphas")
+    parser.add_argument("--boundary-reps", type=int, help=f"{', '.join(SIZED)}: Δ = 0, ±5 pp")
+    parser.add_argument("--other-reps", type=int, help=f"{', '.join(SIZED)}: other Δ")
     parser.add_argument("--scenarios", nargs="+", metavar="PATTERN", help="fnmatch on names")
     parser.add_argument("--reps", type=int, help="replicates per scenario (overrides the grid)")
     parser.add_argument("--levels-from", type=Path, help="a calibrate run's summary.json")
@@ -100,11 +115,11 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(f"--workers must lie in 1..{MAX_WORKERS}")
 
     grid = GRIDS[args.mode]
-    if args.mode == "validate-bootstrap":
+    if args.mode in SIZED:
         sizes = {"boundary_reps": args.boundary_reps, "other_reps": args.other_reps}
         scenarios = grid(**{k: v for k, v in sizes.items() if v is not None})
     elif args.boundary_reps is not None or args.other_reps is not None:
-        parser.error("--boundary-reps and --other-reps apply to validate-bootstrap only")
+        parser.error(f"--boundary-reps and --other-reps apply to {', '.join(SIZED)} only")
     else:
         scenarios = grid()
     scenarios = select(scenarios, args.designs, args.scenarios, args.reps)
@@ -116,7 +131,10 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     selection = selected_levels(args.levels_from)
-    alphas = alpha_choice(args.mode, selection, args.alphas)
+    if args.exact_alphas and not args.alphas:
+        parser.error("--exact-alphas needs --alphas")
+    alphas = tuple(sorted(args.alphas)) if args.exact_alphas else None
+    alphas = alphas or alpha_choice(args.mode, selection, args.alphas)
     b = args.allowance
     if args.allowance_from is not None:
         found = json.loads(args.allowance_from.read_text())["bias_allowance"]["allowance"]
@@ -133,6 +151,8 @@ def main(argv: list[str] | None = None) -> None:
         designs=tuple(args.looks) if args.looks else tuple(d.name for d in sim.LOOK_DESIGNS),
         intervals=tuple(dict.fromkeys(args.intervals)),
         resamples=args.bootstrap,
+        rules=tuple(dict.fromkeys(args.rules)),
+        floors=tuple(args.floors) if args.floors else sim.SE_FLOORS,
     )
     # Recorded at launch: the source of a long run is the one it started with.
     versions = {
@@ -166,6 +186,7 @@ def main(argv: list[str] | None = None) -> None:
             "floors": list(settings.floors),
             "looks": list(settings.designs),
             "intervals": list(settings.intervals),
+            "rules": list(settings.rules),
             "resamples": settings.resamples,
             "alphas": list(settings.alphas),
             "allowance": settings.allowance,
@@ -262,7 +283,8 @@ def table(header: list[str], rows: list[list[str]]) -> str:
 
 def shown_alpha(summary: dict) -> dict[tuple[str, str, float], float]:
     """(look design, interval, floor) -> the α whose results the tables show: the selected α
-    (from this calibrate run or from --levels-from), else α = 0.05."""
+    (from this calibrate run or from --levels-from), else α = 0.05 if it was evaluated, else the
+    smallest α evaluated."""
     if "selection" in summary:
         chosen = {
             (s["looks"], s.get("interval", "t"), s["floor"]): s["alpha"]
@@ -272,8 +294,10 @@ def shown_alpha(summary: dict) -> dict[tuple[str, str, float], float]:
         path = summary["settings"]["levels_from"]
         chosen = selected_levels(Path(path)) if path else {}
     floors = summary["settings"]["floors"]
+    evaluated = summary["settings"]["alphas"]
+    default = sim.PLANNING_ALPHA if sim.PLANNING_ALPHA in evaluated else min(evaluated)
     return {
-        (d.name, interval, floor): chosen.get((d.name, interval, floor)) or sim.PLANNING_ALPHA
+        (d.name, interval, floor): chosen.get((d.name, interval, floor)) or default
         for d in sim.LOOK_DESIGNS
         for interval in sim.INTERVALS
         for floor in floors
@@ -342,6 +366,7 @@ def checks_table(checks: list[dict]) -> str:
                 [
                     check["looks"],
                     check.get("interval", "t"),
+                    check.get("rule", "standard"),
                     pp(check["floor"], 0),
                     f"{check['which']} ({check['alpha']:.4f})",
                     group,
@@ -355,7 +380,7 @@ def checks_table(checks: list[dict]) -> str:
                     "yes" if c["meets"] else "no",
                 ]
             )
-    header = ["looks", "interval", "floor", "α", "group", "max dir+ @0", "max dir− @0",
+    header = ["looks", "interval", "rule", "floor", "α", "group", "max dir+ @0", "max dir− @0",
               "max eq @5", "min pow eq @0", "min pow dir @5", "max cap", "max E started",
               "meets"]  # fmt: skip
     return table(header, rows)
@@ -390,8 +415,10 @@ def results_table(summary: dict) -> str:
     for s in summary["scenarios"]:
         for r in s["results"]:
             interval = r.get("interval", "t")
-            if r["floor"] != 0 or shown.get((r["looks"], interval, r["floor"])) != r["alpha"]:
+            floor = min(summary["settings"]["floors"])
+            if r["floor"] != floor or shown.get((r["looks"], interval, floor)) != r["alpha"]:
                 continue
+            gated = r.get("gated") or {}
             cover = r["secondary_coverage"]
             point = r.get("pointwise") or {}
             rows.append(
@@ -399,7 +426,9 @@ def results_table(summary: dict) -> str:
                     s["name"],
                     r["looks"],
                     interval,
+                    r.get("rule", "standard"),
                     f"{r['alpha']:.4f}",
+                    pp(r.get("attained_sd"), 1),
                     f"{pp(r['p_equivalence'])} ({pp(r['se_equivalence'])})",
                     f"{pp(r['p_positive'])} ({pp(r['se_positive'])})",
                     f"{pp(r['p_negative'])} ({pp(r['se_negative'])})",
@@ -409,6 +438,7 @@ def results_table(summary: dict) -> str:
                     f"{r['mean_started']:.1f}",
                     f"{r['mean_supported']:.1f}",
                     pp(r["p_cap_exhausted"]),
+                    pp(gated.get("p_equivalence")),
                     pp(r["p_look1_stop"]),
                     pp(r["bias"], 3),
                     pp(r["bias_vs_block_mean"], 3),
@@ -422,8 +452,10 @@ def results_table(summary: dict) -> str:
                     str(s["reps"]),
                 ]
             )
-    header = ["scenario", "looks", "interval", "α", "eq", "dir+", "dir−", "inc", "±8 in", "power",
-              "E started", "E supp", "cap", "look-1 stop", "bias vs Δ", "bias vs interp",
+    header = ["scenario", "looks", "interval", "rule", "α", "SD", "eq", "dir+", "dir−", "inc",
+              "±8 in", "power",
+              "E started", "E supp", "cap", "eq (gate passed)", "look-1 stop", "bias vs Δ",
+              "bias vs interp",
               "pointwise eq/dir+/dir−", "cohort width", "straddle ±5", "cov P−F", "cov A−P",
               "reps"]  # fmt: skip
     return table(header, rows)
@@ -451,6 +483,7 @@ def diagnostics_table(scenarios: list[dict]) -> str:
                 " / ".join(pp(arms["A"][c], 1) for c in sim.CAUSES),
                 " / ".join(pp(arms["F"][c], 1) for c in sim.CAUSES),
                 pp(d["three_arm_attrition"], 1),
+                pp(d.get("p_gate_fail")),
                 f"{calibration['cpu_seconds']:.0f}" if calibration else "–",
                 f"{s['cpu_seconds']:.0f}",
                 f"{1000 * s['cpu_seconds'] / s['reps']:.1f}",
@@ -458,7 +491,7 @@ def diagnostics_table(scenarios: list[dict]) -> str:
         )
     header = ["scenario", "spread", "noise SD", "run SD", "block bias vs Δ (SE)",
               "A h̄′, h̄″ attained/target", "F h̄′, h̄″ attained/target", "unsupp/block b/t/w",
-              "A b/t/w", "F b/t/w", "3-arm attr", "cal CPU s", "CPU s",
+              "A b/t/w", "F b/t/w", "3-arm attr", "gate fail", "cal CPU s", "CPU s",
               "CPU ms/rep"]  # fmt: skip
     return table(header, rows)
 

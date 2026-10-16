@@ -337,6 +337,115 @@ def test_bootstrap_tables_are_reproducible_per_replicate() -> None:
     assert set(whole) == {"24_50:0", "24_50:1"}
 
 
+def test_bootstrap_resamples_do_not_depend_on_the_other_designs() -> None:
+    scenario = Scenario(delta=0.05)
+    params = solve_parameters(scenario, 0.3)
+    data = simulate_replicates(scenario, params, range(2), base_seed=0, stream="test")
+    kwargs = dict(alphas=(0.04,), floors=(0.0,), resamples=200, base_seed=0, stream="test")
+    both, _ = sim.bootstrap_tables(
+        scenario,
+        data.primary,
+        range(2),
+        designs=(sim.DESIGNS_BY_NAME["24_50"], sim.DESIGNS_BY_NAME["36_60"]),
+        **kwargs,
+    )
+    alone, _ = sim.bootstrap_tables(
+        scenario, data.primary, range(2), designs=(sim.DESIGNS_BY_NAME["36_60"],), **kwargs
+    )
+    for key in ("36_60:0", "36_60:1"):
+        np.testing.assert_array_equal(both[key], alone[key])
+
+
+def test_streams_are_seeded_from_the_full_digest() -> None:
+    a, b = sim.seed_sequence(0, "validation", "x", 1), sim.seed_sequence(0, "validation", "x", 1)
+    assert np.array_equal(a.entropy, b.entropy) and a.entropy.size == 8  # 256 bits
+    assert not np.array_equal(sim.seed_sequence(0, "validation", "x", 2).entropy, a.entropy)
+    first = sim.generator(0, "s", 1).random(3)
+    np.testing.assert_array_equal(first, sim.generator(0, "s", 1).random(3))
+
+
+def test_heavy_shape_is_a_symmetric_scale_mixture_calibrated_to_the_target_sd() -> None:
+    values, weights = sim.effect_distribution("heavy", 0.4)
+    assert weights.sum() == pytest.approx(1.0)
+    assert weights @ values == pytest.approx(0.0, abs=1e-12)
+    assert weights @ values**2 == pytest.approx(0.16)  # E[S²] = 1
+    assert (weights @ values**4) / 0.16**2 - 3 == pytest.approx(5.33, abs=0.01)
+    # Both arms carry it, with one scale per block.
+    params = solve_parameters(Scenario(shape="heavy"), 0.4)
+    assert params.shifted == (True, True, True) and params.truth["A-F"] == pytest.approx(0.0)
+    latent = np.ones((4, 2))
+    tail = np.array([0.05, 0.5, 0.05, 0.9])
+    effect = sim.block_effects(Scenario(shape="heavy"), params, latent, (0, 1), tail)
+    np.testing.assert_allclose(effect[:, 0], effect[:, 1])
+    np.testing.assert_allclose(effect[[0, 2], 0] / effect[1, 0], sim.HEAVY_RATIO)
+    # Its spread hits the target paired SD on fresh draws.
+    scenario = Scenario(shape="heavy", sd=0.05)
+    calibration = calibrate_spread(scenario, base_seed=0, replicates=20, blocks=100)
+    assert calibration.attained_sd == pytest.approx(0.05, abs=5e-4)
+    fresh = paired_sd(
+        calibration_key(scenario), calibration.spread, seed=999, replicates=40, blocks=100
+    )
+    assert fresh == pytest.approx(0.05, abs=4e-3)
+
+
+def test_equivalence_rule_at_a_cap_look() -> None:
+    # 30 supported blocks by the cap: one look at the cap, below 36.
+    gaps = tuple(range(30, 80))
+    calm = sequence([0.01, -0.01] * 40, gaps=gaps)  # equivalence, no direction
+    clear = sequence([0.03 + 0.002 * (-1) ** b for b in range(80)], gaps=gaps)  # both readings
+    design = sim.DESIGNS_BY_NAME["36_60"]
+    stats = look_statistics(np.concatenate([calm, clear]), sizes=design.sizes)
+    assert stats.reached[:, 0].tolist() == [False, False] and stats.n[:, 1].tolist() == [30, 30]
+    levels = design.levels(0.04)
+    standard = sequential_decisions(stats, levels)
+    assert standard.equivalence.tolist() == [True, True] and standard.at_cap.tolist() == [True] * 2
+    ruled = sequential_decisions(stats, levels, equivalence_min_blocks=36)
+    assert ruled.equivalence.tolist() == [False, False]  # not concluded below 36 blocks
+    assert ruled.positive.tolist() == [False, True]  # a direction still is
+    assert ruled.inconclusive.tolist() == [True, False]
+    # At a full look 1 (36 blocks) the rule changes nothing.
+    full = look_statistics(sequence([0.01, -0.01] * 40), sizes=design.sizes)
+    assert sequential_decisions(full, levels, equivalence_min_blocks=36).look.tolist() == [1]
+    assert sequential_decisions(full, levels, equivalence_min_blocks=36).equivalence.tolist() == [
+        True
+    ]
+
+
+def test_validation_gate_counts_jointly_supported_blocks() -> None:
+    params = solve_parameters(Scenario(), 0.3)
+    data = simulate_replicates(Scenario(), params, range(20), base_seed=0, stream="test")
+    assert ((data.gate_supported >= 0) & (data.gate_supported <= sim.GATE_BLOCKS)).all()
+    # No technical failures, but width failures cluster within a replicate (fixed misses).
+    assert data.gate_passed.mean() > 0.6
+    failing = Scenario(failure=0.2, failure_correlated=True)
+    params = solve_parameters(failing, 0.3)
+    poor = simulate_replicates(failing, params, range(20), base_seed=0, stream="test")
+    assert poor.gate_supported.mean() < data.gate_supported.mean()
+    # The gate has its own stream: the study's blocks are those of a run without it.
+    rows = sim.summarize_scenario(
+        failing, params, poor, (0.04,), (0.0,), designs=(sim.DESIGNS_BY_NAME["36_60"],)
+    )
+    assert rows["diagnostics"]["p_gate_fail"] == pytest.approx(1 - poor.gate_passed.mean())
+    assert rows["results"][0]["gated"]["passed"] == int(poor.gate_passed.sum())
+
+
+def test_revision_4_grids() -> None:
+    stress = sim.stress_validation_grid()
+    names = [s.name for s in stress]
+    assert len(set(names)) == len(names)
+    assert {s.group for s in stress} == {
+        "postponed", "cap", "width", "k_spread", "miss", "families", "stress", "shapes"
+    }  # fmt: skip
+    cap = [s for s in stress if s.group == "cap"]
+    assert {(s.failure_correlated, s.sd, s.delta) for s in cap} == {
+        (c, sd, d) for c in (True, False) for sd in (0.05, 0.10) for d in (0.0, 0.05, -0.05)
+    }
+    assert {s.shape for s in stress if s.group == "shapes"} == {"heavy"}
+    assert all(s.reps == 20_000 for s in stress if s.delta == 0 or abs(s.delta) == 0.05)
+    confirm = sim.confirmation_grid()
+    assert len(confirm) == (4 * 4 + 1) * 3 and all(s.reps == 20_000 for s in confirm)
+
+
 def test_obf_spending_at_alpha_5_percent_gives_the_planning_levels() -> None:
     level1, level2 = obf_levels(0.05)
     assert level1 == pytest.approx(sim.PLANNING_LEVELS[0], abs=5e-5)
