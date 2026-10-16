@@ -71,9 +71,10 @@ manifest and samples. Around the stage-0 checks the driver runs:
   out as the record of 2026-10-14); then the regenerated distributions are deleted, the rest of
   the regenerated stream moves into the dated directory (under the run's id), and the archived
   copy goes back, so that DATA_DIR matches its inventories. A regeneration that differs from the
-  archive is kept whole in the dated directory with a ``-regenerated`` suffix, for inspection;
-  the archived copy goes back and the step stops the driver with an error, on every later run
-  too. Each step is skipped once done, so the driver can be run again at any point.
+  archive is kept whole in the dated directory, under the run's id with a ``-regenerated``
+  suffix, for inspection; the archived copy goes back and the step stops the driver with an
+  error, on every later run with that run id too. Each step is skipped once done, so the driver
+  can be run again at any point.
 """
 
 import argparse
@@ -378,10 +379,10 @@ def _leaves(value: object, prefix: str = "") -> dict[str, object]:
 
 
 def regenerated_place(dated: Path, stream: Path, run_id: str, *, equal: bool) -> Path:
-    """Where the regenerated stream goes in the dated aside directory: its manifest and samples
-    under the run's id when it equals the archive; otherwise the whole stream, distributions
-    included, beside the archived copy's place with a ``-regenerated`` suffix, for inspection."""
-    return dated / run_id / stream if equal else dated / f"{stream}-regenerated"
+    """Where the regenerated stream goes in the dated aside directory, under the run's id (two
+    runs on one day never meet): its manifest and samples when it equals the archive; otherwise
+    the whole stream, distributions included, with a ``-regenerated`` suffix, for inspection."""
+    return dated / run_id / (stream if equal else f"{stream}-regenerated")
 
 
 def regeneration_record(
@@ -472,7 +473,8 @@ def _differs(record: Path, done: list[str]) -> None:
     """Stop: the regeneration differs from the archive."""
     sys.exit("\n".join([*done, f"the regeneration differs from the archive ({record}): the "
                         "archived copy is back in DATA_DIR and the regenerated stream is kept "
-                        "for inspection; read the comparison before going on"]))  # fmt: skip
+                        "for inspection; the lead decides on the comparison, and only then may "
+                        "the driver run again, with a new --stage0-run-id"]))  # fmt: skip
 
 
 def restore(path: Path, data_root: Path, aside_root: Path, run_dir: Path) -> str:
@@ -496,6 +498,9 @@ def restore(path: Path, data_root: Path, aside_root: Path, run_dir: Path) -> str
             sys.exit(f"{path} holds distributions and no copy is set aside under {aside_root}: "
                      "compare and clean up by hand (docs/operations.md, Stage 0 under a new "
                      "protocol)")  # fmt: skip
+        if not (path / MANIFEST_FILE).is_file():
+            sys.exit(f"no soft-target stream at {path}, and none set aside under {aside_root}: "
+                     "restore DATA_DIR with scripts/pod_setup.sh first")  # fmt: skip
         return (f"nothing set aside for run {run_dir.name} and no regenerated distributions at "
                 f"{path}: nothing to compare or restore")  # fmt: skip
     archived = found[0]

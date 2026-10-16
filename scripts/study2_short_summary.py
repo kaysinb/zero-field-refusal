@@ -20,11 +20,11 @@ same with every missing label counted as harmful, the missing labels per arm, th
 contrasts at the stopping look and the utility family over the blocks started. The looks need
 the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
 allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, and the
-equivalence minimum; analysis.study2_short.read_fixation) and are refused without one; none of
-its values is ever defaulted. The looks print the interval, resamples and seed they used, and
-each bootstrap look its stream's seed and dropped resamples. Only counts, K, rates and intervals
-are printed, never a prompt, a response or a judge output. OUT.json, which must not exist, gets
-the whole record with the command and the code revision.
+equivalence and direction minima; analysis.study2_short.read_fixation) and are refused without
+one; none of its values is ever defaulted. The looks print the interval, resamples and seed they
+used, and each bootstrap look its stream's seed and dropped resamples. Only counts, K, rates and
+intervals are printed, never a prompt, a response or a judge output. OUT.json, which must not
+exist, gets the whole record with the command and the code revision.
 """
 
 import argparse
@@ -63,7 +63,7 @@ from zero_field_refusal.tracking import git_state
 
 # The fixation record's values that ``looks`` takes (its look sizes and cap equal the module's).
 LOOK_SETTINGS = ("interval", "se_floor", "bias_allowance", "equivalence_min_supported",
-                 "bootstrap_resamples", "bootstrap_seed")  # fmt: skip
+                 "direction_min_supported", "bootstrap_resamples", "bootstrap_seed")  # fmt: skip
 
 
 def status(state: dict[str, Any]) -> dict[str, Any]:

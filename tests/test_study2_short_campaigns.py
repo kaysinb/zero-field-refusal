@@ -14,6 +14,7 @@ import json
 import math
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -57,8 +58,8 @@ SCRIPTS = Path(__file__).parents[1] / "scripts"
 CAMPAIGNS, SUMMARY = SCRIPTS / "study2_short_campaigns.py", SCRIPTS / "study2_short_summary.py"
 OPTIMIZERS = {ADAMW: [], FA: ["optimizer=adam_frozen"], PREWARMED: ["optimizer=adamw_prewarmed"]}
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
-FIXATION = {
-    "w_max": W_MAX,
+FIXATION = {  # the decided values; the resamples, seed and bias allowance are placeholders
+    "w_max": 0.47,
     "levels": [0.992, 0.9631],
     "se_floor": 0.0,
     "bias_allowance": 0.01079,
@@ -68,6 +69,7 @@ FIXATION = {
     "looks": [36, 60],
     "cap": 80,
     "equivalence_min_supported": 36,
+    "direction_min_supported": 10,
 }
 LOOK_SETTINGS = {k: v for k, v in FIXATION.items() if k not in ("w_max", "levels", "looks", "cap")}
 
@@ -453,6 +455,8 @@ def test_the_fixation_record_needs_every_value(tmp_path) -> None:
     assert read_fixation(path)["interval"] == "t"
     path.write_text(json.dumps({**FIXATION, "equivalence_min_supported": 0}))  # 0: no minimum
     assert read_fixation(path)["equivalence_min_supported"] == 0
+    path.write_text(json.dumps({**FIXATION, "direction_min_supported": 0}))
+    assert read_fixation(path)["direction_min_supported"] == 0
 
 
 @pytest.mark.parametrize(
@@ -464,7 +468,9 @@ def test_the_fixation_record_needs_every_value(tmp_path) -> None:
      ("bootstrap_seed", False), ("looks", [24, 50]), ("looks", [36]), ("looks", [36.0, 60.0]),
      ("looks", "36,60"), ("looks", None), ("cap", 79), ("cap", 80.0), ("cap", None),
      ("equivalence_min_supported", -1), ("equivalence_min_supported", 36.5),
-     ("equivalence_min_supported", True), ("equivalence_min_supported", None)],
+     ("equivalence_min_supported", True), ("equivalence_min_supported", None),
+     ("direction_min_supported", -1), ("direction_min_supported", 10.0),
+     ("direction_min_supported", "10"), ("direction_min_supported", None)],
 )  # fmt: skip
 def test_the_fixation_record_refuses_a_malformed_new_key(tmp_path, key, value) -> None:
     path = tmp_path / "fixation.json"
@@ -592,7 +598,7 @@ def test_the_campaigns_refuse_another_step_a_missing_w_max_and_incomplete_record
     assert "w_max is needed: --w-max or --fixation" in err
     err = refusal(monkeypatch, tmp_path, capsys, runs, "targeted", "--w-max", "0.3",
                   "--fixation", record)  # fmt: skip
-    assert "--w-max 0.3 differs from the fixation record's 0.35" in err
+    assert "--w-max 0.3 differs from the fixation record's 0.47" in err
     err = refusal(monkeypatch, tmp_path, capsys, runs, "targeted",
                   "--fixation", fixation_file(tmp_path, se_floor=None))  # fmt: skip
     assert "se_floor None is not a number" in err
@@ -990,9 +996,10 @@ def test_a_regeneration_that_differs_from_the_archive_stops_the_driver(pod, caps
     assert sorted(p.name for p in pod.path.iterdir()) == ["manifest.json", "samples.jsonl"]
     (dated,) = pod.aside.iterdir()
     relative = pod.path.relative_to(pod.data)
-    regenerated = dated / f"{relative}-regenerated"
+    regenerated = dated / "s0" / f"{relative}-regenerated"  # under the run's id
     assert regenerated.name == "seed-0-regenerated"
-    assert regenerated.parent == dated / relative.parent
+    assert regenerated.parent == dated / "s0" / relative.parent
+    assert str(regenerated) in record["after"]
     assert (regenerated / "distributions.safetensors").read_bytes() == b"other"
     assert (pod.run_dir / "soft_targets_manifest_regenerated.json").is_file()
     assert pod.module.set_aside_copies(pod.path, pod.data, pod.aside) == []
@@ -1005,12 +1012,43 @@ def test_a_regeneration_that_differs_from_the_archive_stops_the_driver(pod, caps
     assert (regenerated / "distributions.safetensors").read_bytes() == b"other"
 
 
+def test_two_differing_regenerations_on_one_day_keep_their_own_places(pod) -> None:
+    # After a stop, the lead's decision, then a new --stage0-run-id on the same UTC day.
+    module = pod.module
+    stream_copy(pod.path, driver="595", day="2026-10-09")
+    archived = (pod.path / "manifest.json").read_bytes()
+    relative = pod.path.relative_to(pod.data)
+    places = []
+    for run_id, other in (("s0", b"first"), ("s1", b"second")):
+        run_dir = pod.runs / "stage0_checks" / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "meta.json").write_text("{}")
+        assert "set aside" in module.set_aside(pod.path, pod.data, pod.aside, "20261017")
+        stream_copy(pod.path, driver="580", day="2026-10-17", distributions=other)
+        with pytest.raises(SystemExit, match="differs from the archive.*new --stage0-run-id"):
+            module.restore(pod.path, pod.data, pod.aside, run_dir)
+        # Each stop leaves DATA_DIR as its inventories say, and its own regeneration aside.
+        assert (pod.path / "manifest.json").read_bytes() == archived
+        assert not (pod.path / "distributions.safetensors").exists()
+        place = pod.aside / "soft-targets-aside-20261017" / run_id / f"{relative}-regenerated"
+        assert (place / "distributions.safetensors").read_bytes() == other
+        record = json.loads((run_dir / "soft_targets_regeneration.json").read_text())
+        assert str(place) in record["after"]
+        places.append(place)
+    assert (places[0] / "distributions.safetensors").read_bytes() == b"first"
+    assert module.set_aside_copies(pod.path, pod.data, pod.aside) == []
+
+
 def test_the_soft_target_steps_refuse_what_they_cannot_resolve(pod) -> None:
     module = pod.module
     with pytest.raises(SystemExit, match="no restored soft-target copy"):
         module.set_aside(pod.path, pod.data, pod.aside, "20261016")
     pod.run_dir.mkdir(parents=True)
+    with pytest.raises(SystemExit, match="no soft-target stream at .*pod_setup"):  # lost
+        module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
+    stream_copy(pod.path, driver="595", day="2026-10-09")  # the archived copy, in place
     assert "nothing to compare" in module.restore(pod.path, pod.data, pod.aside, pod.run_dir)
+    shutil.rmtree(pod.path)
     stream_copy(pod.path, driver="580", day="2026-10-16", distributions=DISTRIBUTIONS)
     with pytest.raises(SystemExit, match="clean up by hand"):  # regenerated, nothing set aside
         module.restore(pod.path, pod.data, pod.aside, pod.run_dir)

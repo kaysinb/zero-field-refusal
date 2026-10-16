@@ -439,11 +439,14 @@ bash "$C/prep.sh"
        `soft_targets_regeneration.json` and the regenerated manifest into the run's directory.
     3. It then deletes the regenerated distributions, keeps the rest of the regenerated stream
        under the dated directory, and puts the archived copy back.
-  - **A regeneration that differs from the archive stops the driver.** The comparison is
-    written, and the archived copy is put back. The whole regenerated stream, distributions
-    included, is kept for inspection under the dated directory (`seed-0-regenerated`). The step
-    fails, and it fails again on every later run of the driver until the difference is
-    resolved.
+  - **A regeneration that differs from the archive stops the driver.**
+    - The comparison is written and the archived copy is put back.
+    - The whole regenerated stream, distributions included, is kept for inspection under the
+      dated directory and the run's id (`<run id>/…/seed-0-regenerated`).
+    - The step fails, and it fails again on every later run of the driver with that run id.
+    - Only the lead's decision on the comparison resolves the stop. Then run the driver again
+      with a new `--stage0-run-id`: the copy is set aside again, stage 0 regenerates the stream,
+      and the new regeneration is compared afresh.
   - Each step is skipped once done: a copy already set aside stays there, and a kept run is
     neither set aside again nor rerun.
   - Archive both with their own inventories; later Pods restore them and leave out `--once`.
@@ -464,9 +467,9 @@ bash "$C/prep.sh"
 **w_max and the fixation record.** The simulation fixes its values in a JSON record
 (`analysis.study2_short.read_fixation`):
 
-- `w_max` (decided: 0.35);
+- `w_max` (decided: 0.47);
 - `levels`: the two looks' two-sided confidence levels (decided: 0.9920 and 0.9631, α 0.040);
-- `se_floor` and `bias_allowance`, in units of Δ (1 pp = 0.01; decided: 0 and 0.01079);
+- `se_floor` and `bias_allowance`, in units of Δ (1 pp = 0.01). The SE floor is decided at 0.
 - `interval`: the looks' interval, `bootstrap_t` (decided) or `t`:
   - `bootstrap_t` is the paired seed-block bootstrap-t of the mean over the look's supported
     blocks, as the simulation defines it;
@@ -475,17 +478,21 @@ bash "$C/prep.sh"
 - `bootstrap_resamples`: the resamples per look, an integer of at least 1000;
 - `bootstrap_seed`: an integer;
 - `looks` and `cap`: they must equal the code's look sizes [36, 60] and cap 80;
-- `equivalence_min_supported`: an integer ≥ 0. Equivalence is concluded only at a look with at
-  least this many supported blocks; 0 allows it at every look. Direction is unaffected.
+- `equivalence_min_supported`: an integer ≥ 0 (decided: 36). Equivalence is concluded only at
+  a look with at least this many supported blocks; 0 allows it at every look. Direction is
+  unaffected.
+- `direction_min_supported`: an integer ≥ 0 (decided: 10). Below this many supported blocks a
+  look concludes nothing, neither direction nor equivalence: it is inconclusive. With very few
+  blocks the bootstrap-t collapses, to [mean, mean] at two. 0 disables the rule.
 
 Each value is required and none is defaulted, the bootstrap's values also under `t`. The
 secondary contrasts keep their t intervals at 98.75 %. An example record (the resamples, seed and
-equivalence minimum here are placeholders; the committed record fixes them):
+bias allowance here are placeholders; the committed record fixes them):
 
 ```json
-{"w_max": 0.35, "levels": [0.992, 0.9631], "se_floor": 0.0, "bias_allowance": 0.01079,
+{"w_max": 0.47, "levels": [0.992, 0.9631], "se_floor": 0.0, "bias_allowance": 0.01079,
  "interval": "bootstrap_t", "bootstrap_resamples": 2000, "bootstrap_seed": 12345,
- "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36}
+ "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36, "direction_min_supported": 10}
 ```
 
 Every campaign except `targeted` needs the record (`--fixation`), which is checked whole.

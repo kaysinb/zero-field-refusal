@@ -650,7 +650,7 @@ def test_the_interpolation_with_hand_numbers() -> None:
 
 LEVELS = (0.995, 0.952)  # two-sided confidence levels of looks 1 and 2
 DECIDED = (0.9920, 0.9631)  # the decided levels (α 0.040 at 36/60)
-T = {"interval": "t", "equivalence_min_supported": 0}  # the t interval's mechanics
+T = {"interval": "t", "equivalence_min_supported": 0, "direction_min_supported": 0}
 BOOTSTRAP = {"interval": "bootstrap_t", "bootstrap_resamples": 2000, "bootstrap_seed": 11}
 
 
@@ -664,7 +664,8 @@ def test_the_looks_fall_at_the_decided_sizes() -> None:
     assert LOOK_SIZES == (36, 60) and study2_short.CAP == 80
     deltas = [0.3 * (-1) ** i for i in range(80)]  # inconclusive at look 1
     found = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.0,
-                               equivalence_min_supported=36, **BOOTSTRAP)  # fmt: skip
+                               equivalence_min_supported=36, direction_min_supported=10,
+                               **BOOTSTRAP)  # fmt: skip
     assert [(look["look"], look["supported"]) for look in found["looks"]] == [(1, 36), (2, 60)]
     assert [look["method"] for look in found["looks"]] == ["bootstrap_t"] * 2
 
@@ -863,8 +864,8 @@ def test_a_zero_se_gives_the_mean_and_too_few_blocks_no_interval() -> None:
 
 def test_the_looks_draw_each_bootstrap_from_its_own_seeded_stream() -> None:
     deltas = [SKEWED[i % len(SKEWED)] - 0.02 for i in range(60)]
-    found = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.01079,
-                               equivalence_min_supported=0, **BOOTSTRAP)  # fmt: skip
+    found = looks(blocks_of(deltas), DECIDED, LOOK_SIZES, se_floor=0.0, bias_allowance=0.01079,
+                  **BOOTSTRAP)  # fmt: skip
     for look, n in zip(found["looks"], LOOK_SIZES, strict=True):
         seed = derive_seed(11, "look", look["look"])
         level = DECIDED[look["look"] - 1]
@@ -873,13 +874,12 @@ def test_the_looks_draw_each_bootstrap_from_its_own_seeded_stream() -> None:
         assert look["interval"] == [low, high] and look["t"] is None
         assert look["bootstrap"] == {"resamples": 2000, "seed": 11, "stream_seed": seed,
                                      "dropped": dropped}  # fmt: skip
-        assert look["mean"] == pytest.approx(statistics.fmean(deltas[:n]))
-    again = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.01079,
-                               equivalence_min_supported=0, **BOOTSTRAP)  # fmt: skip
+        assert look["mean"] == float(np.mean(deltas[:n]))  # the interval's own centre
+    again = looks(blocks_of(deltas), DECIDED, LOOK_SIZES, se_floor=0.0, bias_allowance=0.01079,
+                  **BOOTSTRAP)  # fmt: skip
     assert again == found
-    other = study2_short.looks(blocks_of(deltas), DECIDED, se_floor=0.0, bias_allowance=0.01079,
-                               equivalence_min_supported=0,
-                               **{**BOOTSTRAP, "bootstrap_seed": 12})  # fmt: skip
+    other = looks(blocks_of(deltas), DECIDED, LOOK_SIZES, se_floor=0.0, bias_allowance=0.01079,
+                  **{**BOOTSTRAP, "bootstrap_seed": 12})  # fmt: skip
     assert other["looks"][0]["interval"] != found["looks"][0]["interval"]
 
 
@@ -898,7 +898,9 @@ def test_a_bootstrap_look_with_one_block_has_no_interval() -> None:
 @pytest.mark.parametrize("bad", [{"interval": "percentile"}, {"bootstrap_resamples": None},
                                  {"bootstrap_resamples": 1}, {"bootstrap_seed": 1.5},
                                  {"equivalence_min_supported": -1},
-                                 {"equivalence_min_supported": None}])  # fmt: skip
+                                 {"equivalence_min_supported": None},
+                                 {"direction_min_supported": -1},
+                                 {"direction_min_supported": 2.0}])  # fmt: skip
 def test_looks_refuse_a_malformed_interval_setting(bad) -> None:
     with pytest.raises(ValueError, match="looks:"):
         looks(blocks_of([0.0] * 30), LEVELS, se_floor=0.0, bias_allowance=0.0,
@@ -926,6 +928,74 @@ def test_the_equivalence_minimum_withholds_equivalence_at_a_smaller_cap_look(kin
     first = run(centred, 36)
     assert len(first) == 1 and first[0]["supported"] == 36 and first[0]["stops"]
     assert first[0]["equivalence_allowed"] and "equivalence" in first[0]["readings"]
+
+
+@pytest.mark.parametrize("kind", [T, BOOTSTRAP], ids=["t", "bootstrap_t"])
+def test_the_equivalence_minimum_holds_at_an_ordinary_look_below_it(kind) -> None:
+    def run(deltas):
+        return looks(blocks_of(deltas), DECIDED, LOOK_SIZES, se_floor=0.0, bias_allowance=0.0,
+                     **{**kind, "equivalence_min_supported": 50})["looks"]  # fmt: skip
+
+    # Inside ±5 pp around 0: look 1 (36 < 50) withholds equivalence and goes on; look 2 (60)
+    # concludes it.
+    first, second = run([0.004 * (-1) ** i for i in range(80)])
+    assert (first["supported"], first["at_cap"], first["equivalence_allowed"]) == (36, False, False)
+    assert first["readings"] == ["within_8"] and not first["stops"]
+    assert second["supported"] == 60 and second["equivalence_allowed"]
+    assert "equivalence" in second["readings"] and second["stops"]
+    # A direction still stops look 1.
+    (only,) = run([0.02 + 0.004 * (-1) ** i for i in range(80)])
+    assert only["supported"] == 36 and not only["equivalence_allowed"]
+    assert only["readings"] == ["direction", "within_8"] and only["stops"]
+
+
+@pytest.mark.parametrize("kind", [T, BOOTSTRAP], ids=["t", "bootstrap_t"])
+@pytest.mark.parametrize("supported", [2, 9])
+def test_below_the_direction_minimum_a_cap_look_concludes_nothing(kind, supported) -> None:
+    # The supported blocks come last, so the terminal look falls on the cap with only them.
+    deltas = [0.02 + 0.004 * (-1) ** i for i in range(80)]  # well above 0, inside ±5 pp
+    unsupported = set(range(80 - supported))
+
+    def run(minimum):
+        return looks(blocks_of(deltas, unsupported=unsupported), DECIDED, LOOK_SIZES,
+                     **{**kind, "equivalence_min_supported": 0,
+                        "direction_min_supported": minimum},
+                     se_floor=0.0, bias_allowance=0.0)["looks"]  # fmt: skip
+
+    (held,) = run(10)
+    assert (held["supported"], held["at_cap"], held["stops"]) == (supported, True, True)
+    assert held["readings"] == ["inconclusive"] and held["interval"] is not None
+    assert not held["direction_allowed"] and not held["equivalence_allowed"]
+    (free,) = run(0)  # the same look without the rule
+    assert free["direction_allowed"] and free["interval"] == held["interval"]
+    if kind is BOOTSTRAP or supported == 9:  # the t interval on 2 blocks is too wide anyway
+        assert free["readings"] == ["equivalence", "direction", "within_8"]
+    (enough,) = run(supported)  # at the minimum itself the readings stand
+    assert enough["readings"] == free["readings"]
+
+
+def test_two_blocks_collapse_the_bootstrap_t_and_the_direction_minimum_holds_it() -> None:
+    # Two distinct blocks: every kept resample has T* = 0, so the interval is [mean, mean].
+    blocks = blocks_of([0.0] * 78 + [0.0, 0.1], unsupported=set(range(78)))
+    kw = {**BOOTSTRAP, "equivalence_min_supported": 36, "se_floor": 0.0, "bias_allowance": 0.0}
+    (free,) = looks(blocks, DECIDED, LOOK_SIZES, **kw, direction_min_supported=0)["looks"]
+    assert free["interval"] == pytest.approx([0.05, 0.05])
+    assert free["readings"] == ["direction", "within_8"]
+    (held,) = looks(blocks, DECIDED, LOOK_SIZES, **kw, direction_min_supported=10)["looks"]
+    assert held["readings"] == ["inconclusive"]
+
+
+def test_a_bootstrap_look_reports_the_moments_of_its_interval() -> None:
+    # 36 blocks at exactly 5 pp: numpy's mean is 0.05000000000000001, the exact one 0.05. The
+    # bootstrap look reports numpy's, so that its record agrees with its interval.
+    found = looks(blocks_of([0.05] * 36), DECIDED, LOOK_SIZES, se_floor=0.0, bias_allowance=0.0,
+                  **BOOTSTRAP)["looks"][0]  # fmt: skip
+    centre = float(np.mean([0.05] * 36))
+    assert found["mean"] == centre and found["interval"] == [centre, centre]
+    assert found["sd"] == float(np.std([0.05] * 36, ddof=1)) and found["se"] <= 1e-12
+    exact = looks(blocks_of([0.05] * 36), DECIDED, LOOK_SIZES, se_floor=0.0,
+                  bias_allowance=0.0)["looks"][0]  # fmt: skip
+    assert exact["mean"] == statistics.fmean([0.05] * 36)  # the t look: exact sums
 
 
 def test_finite_cohort_bounds() -> None:
