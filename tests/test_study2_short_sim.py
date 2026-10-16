@@ -411,6 +411,55 @@ def test_equivalence_rule_at_a_cap_look() -> None:
     ]
 
 
+def test_pointwise_equivalence_respects_the_equivalence_rule() -> None:
+    # 30 supported blocks by the cap, tightly around 0: the interval lies inside ±(5 − b).
+    design = sim.DESIGNS_BY_NAME["36_60"]
+    calm = sequence([0.004, -0.004] * 40, gaps=tuple(range(30, 80)))
+    clear = sequence([0.03 + 0.002 * (-1) ** b for b in range(80)], gaps=tuple(range(30, 80)))
+    stats = look_statistics(np.concatenate([calm, clear]), sizes=design.sizes)
+    levels = design.levels(0.04)
+    standard = sim.pointwise_readings(sequential_decisions(stats, levels), 0.01)
+    ruled_decisions = sequential_decisions(stats, levels, equivalence_min_blocks=36)
+    ruled = sim.pointwise_readings(ruled_decisions, 0.01)
+    assert standard["equivalence"].tolist() == [True, True]
+    assert ruled["equivalence"].tolist() == [False, False]  # not at a cap look below 36 blocks
+    assert ruled["positive"].tolist() == [False, True] == standard["positive"].tolist()
+    assert ruled_decisions.equivalence_allowed.tolist() == [False, False]
+    # A full look keeps equivalence allowed, so the readings agree with the standard rule.
+    full = look_statistics(sequence([0.004, -0.004] * 40), sizes=design.sizes)
+    decisions = sequential_decisions(full, levels, equivalence_min_blocks=36)
+    assert sim.pointwise_readings(decisions, 0.01)["equivalence"].tolist() == [True]
+
+
+def test_gate_prescreen_keeps_the_passing_studies_unchanged() -> None:
+    scenario = Scenario(failure=0.1, failure_correlated=True)
+    params = solve_parameters(scenario, 0.3)
+    kwargs = dict(base_seed=0, stream="test")
+    everything = simulate_replicates(scenario, params, range(12), **kwargs)
+    screened = simulate_replicates(scenario, params, range(12), prescreen=True, **kwargs)
+    passed = np.flatnonzero(everything.gate_passed)
+    assert screened.rep_ids.tolist() == passed.tolist() and screened.screened == 12
+    np.testing.assert_array_equal(screened.estimates, everything.estimates[passed])
+    np.testing.assert_array_equal(screened.gate_supported, everything.gate_supported[passed])
+    gate = sim._gate_failure(screened)
+    assert gate["p_gate_fail"] == pytest.approx(1 - passed.size / 12)
+    assert gate["gates_drawn"] == 12 and gate["gates_passed"] == passed.size
+
+
+def test_decided_grids() -> None:
+    for grid in (sim.decided_bias_grid(), sim.decided_grid(), sim.decided_gate_grid()):
+        names = [s.name for s in grid]
+        assert len(set(names)) == len(names)
+        assert all(s.w_max == 0.47 for s in grid)
+    assert len(sim.decided_bias_grid()) == 4 * 3 * 2
+    decided = sim.decided_grid()
+    assert len(decided) == 2 * 3 + (4 * 4 + 1) * 3 + 2 * 2 * 3
+    assert {s.reps for s in decided if s.group == "cap"} == {10_000}
+    gates = sim.decided_gate_grid()
+    assert {(s.failure_correlated, s.reps) for s in gates} == {(True, 150_000), (False, 400_000)}
+    assert all(abs(s.delta) == 0.05 for s in gates)
+
+
 def test_validation_gate_counts_jointly_supported_blocks() -> None:
     params = solve_parameters(Scenario(), 0.3)
     data = simulate_replicates(Scenario(), params, range(20), base_seed=0, stream="test")

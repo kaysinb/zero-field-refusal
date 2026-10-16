@@ -21,6 +21,10 @@ the terminal look) and every SE floor on the same replicates:
   SD × Δ ∈ {0, ±2.5, ±5, ±5.5}; sized by --boundary-reps and --other-reps.
 - confirm: revision 4's fresh confirmation of the decided design: every shape × SD at
   Δ ∈ {0, ±5} on the new ``confirmation`` stream (--reps per scenario, default 20 000).
+- decided-bias, decided, decided-gate: revision 5 at the decided w_max 0.47, on the
+  ``confirmation`` stream: the bias allowance grid; kink and stress_slopes at SD 5, the shape grid
+  and the cap scenarios; and the cap scenarios at Δ = ±5 prescreened on the validation gate
+  (``reps`` = gates drawn; only passing studies are simulated).
 - smoke: one reduced scenario per shape and per revision-1 addition.
 
 --looks restricts the look designs evaluated (default: all four); --intervals picks t and/or
@@ -66,6 +70,9 @@ GRIDS = {
     "validate-bootstrap": sim.bootstrap_validation_grid,
     "validate-stress": sim.stress_validation_grid,
     "confirm": sim.confirmation_grid,
+    "decided-bias": sim.decided_bias_grid,
+    "decided": sim.decided_grid,
+    "decided-gate": sim.decided_gate_grid,
     "bias": sim.bias_grid,
     "smoke": sim.smoke_grid,
 }
@@ -76,6 +83,9 @@ STREAMS = {
     "validate-bootstrap": "validation",
     "validate-stress": "validation",
     "confirm": "confirmation",
+    "decided-bias": "confirmation",
+    "decided": "confirmation",
+    "decided-gate": "confirmation",
     "bias": "bias",
     "smoke": "smoke",
 }
@@ -153,6 +163,7 @@ def main(argv: list[str] | None = None) -> None:
         resamples=args.bootstrap,
         rules=tuple(dict.fromkeys(args.rules)),
         floors=tuple(args.floors) if args.floors else sim.SE_FLOORS,
+        prescreen=args.mode == "decided-gate",
     )
     # Recorded at launch: the source of a long run is the one it started with.
     versions = {
@@ -187,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
             "looks": list(settings.designs),
             "intervals": list(settings.intervals),
             "rules": list(settings.rules),
+            "prescreen": settings.prescreen,
             "resamples": settings.resamples,
             "alphas": list(settings.alphas),
             "allowance": settings.allowance,

@@ -120,7 +120,10 @@ the terminal level, not 1 − α.
 Validation gate (revision 4). Before confirmation, 12 fresh blocks of the same study (same
 prompts, rates and failure model) are drawn; the gate passes with ≥ 10 jointly supported in A and
 F. Its failure rate and the decision rates among the studies that pass are reported beside the
-unconditional ones.
+unconditional ones. A prescreened run (``RunSettings.prescreen``, revision 5) draws the gate
+first and simulates only the studies that pass, which sizes the rates among them where the gate
+rarely passes; P(gate fails) then comes from all the gates drawn. The gate has its own stream, so
+a passing study is the same with or without the prescreen.
 
 Randomness. Every stream is seeded by the full SHA-256 digest of its key list (``generator``):
 replicate ``rep`` of a scenario draws from (base_seed, stream, scenario name, rep), its
@@ -320,6 +323,7 @@ GATE_MIN_SUPPORTED = 10
 DECIDED_DESIGN = "36_60"
 DECIDED_ALPHA = 0.04
 DECIDED_ALLOWANCE = 0.01079
+DECIDED_W_MAX = 0.47  # revision 5
 HERMITE_NODES = 80
 LAGUERRE_NODES = 40
 
@@ -768,6 +772,10 @@ class Replicates:
     bootstrap_cpu_seconds: float = 0.0
     # Blocks of the validation gate (12 fresh blocks) jointly supported in A and F, (reps,).
     gate_supported: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+    # Prescreened runs keep only the studies that pass the gate: their replicate indices, and
+    # how many gates were drawn in all (0: no prescreen, every replicate kept).
+    rep_ids: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+    screened: int = 0
 
     @property
     def gate_passed(self) -> np.ndarray:
@@ -786,16 +794,28 @@ class Replicates:
 
 
 def simulate_replicate(
-    scenario: Scenario, params: Parameters, rep: int, *, base_seed: int, stream: str
-) -> tuple[np.ndarray, np.ndarray, int, int]:
+    scenario: Scenario,
+    params: Parameters,
+    rep: int,
+    *,
+    base_seed: int,
+    stream: str,
+    prescreen: bool = False,
+) -> tuple[np.ndarray, np.ndarray, int, int] | None:
     """One study: blocks start until ``GENERATE_UNTIL`` are supported or the cap is reached.
 
     Also the validation gate before it: 12 fresh blocks of the same study (same prompts, rates
     and failure model) from the stream (…, rep, "validation_gate"); returns how many of them are
-    jointly supported in A and F.
+    jointly supported in A and F. With ``prescreen``, a study whose gate fails is not simulated
+    (None). The gate has its own stream, so a kept study is the same as without the prescreen.
     """
     rng = generator(base_seed, stream, scenario.name, rep)
     alpha, misses = draw_constants(scenario, rng)
+    gate_rng = generator(base_seed, stream, scenario.name, rep, "validation_gate")
+    _, gate = simulate_blocks(scenario, params, alpha, misses, gate_rng, GATE_BLOCKS, arms=(0, 1))
+    gate_supported = int(np.count_nonzero((gate == SUPPORTED).all(axis=1)))
+    if prescreen and gate_supported < GATE_MIN_SUPPORTED:
+        return None
     estimates = np.full((CAP, len(ARMS)), np.nan)
     causes = np.full((CAP, len(ARMS)), NOT_STARTED, dtype=np.int8)
     started = supported = 0
@@ -805,9 +825,7 @@ def simulate_replicate(
         estimates[started : started + n], causes[started : started + n] = estimate, cause
         supported += int(np.count_nonzero((cause[:, :2] == SUPPORTED).all(axis=1)))
         started += n
-    gate_rng = generator(base_seed, stream, scenario.name, rep, "validation_gate")
-    _, gate = simulate_blocks(scenario, params, alpha, misses, gate_rng, GATE_BLOCKS, arms=(0, 1))
-    return estimates, causes, started, int(np.count_nonzero((gate == SUPPORTED).all(axis=1)))
+    return estimates, causes, started, gate_supported
 
 
 def simulate_replicates(
@@ -817,22 +835,33 @@ def simulate_replicates(
     *,
     base_seed: int,
     stream: str,
+    prescreen: bool = False,
 ) -> Replicates:
+    """Replicates ``reps``; with ``prescreen`` only those that pass the validation gate."""
     clock, cpu = time.perf_counter(), time.process_time()
-    estimates, causes, started, gate = zip(
-        *(
-            simulate_replicate(scenario, params, r, base_seed=base_seed, stream=stream)
-            for r in reps
-        ),
-        strict=True,
-    )
+    kept, studies = [], []
+    for r in reps:
+        study = simulate_replicate(
+            scenario, params, r, base_seed=base_seed, stream=stream, prescreen=prescreen
+        )
+        if study is not None:
+            kept.append(r)
+            studies.append(study)
+    estimates = np.full((0, CAP, len(ARMS)), np.nan)
+    causes = np.full((0, CAP, len(ARMS)), NOT_STARTED, dtype=np.int8)
+    started, gate = np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+    if studies:
+        estimates, causes = np.stack([s[0] for s in studies]), np.stack([s[1] for s in studies])
+        started, gate = np.array([s[2] for s in studies]), np.array([s[3] for s in studies])
     return Replicates(
-        np.stack(estimates),
-        np.stack(causes),
-        np.array(started),
+        estimates,
+        causes,
+        started,
         time.perf_counter() - clock,
         time.process_time() - cpu,
-        gate_supported=np.array(gate),
+        gate_supported=gate,
+        rep_ids=np.array(kept, dtype=int),
+        screened=len(reps) if prescreen else 0,
     )
 
 
@@ -1115,7 +1144,7 @@ def bootstrap_tables(
     dropped = {key: np.zeros((len(reps), len(floors))) for key in probabilities}
     supported = np.isfinite(primary)
     where = {d.name: look_indices(primary, d.realized(scenario.postpone)) for d in designs}
-    for i, rep in enumerate(reps):
+    for i, rep in enumerate(map(int, reps)):  # plain ints: the stream key is JSON
         for design in designs:
             reached, index, _ = where[design.name]
             for look in _design_looks(design):
@@ -1191,6 +1220,8 @@ class Decisions:
     secondary_estimate: np.ndarray  # (R, 2)
     secondary_low: np.ndarray  # (R, 2)
     secondary_high: np.ndarray  # (R, 2)
+    # The stopping look may conclude equivalence (look-1 rule of the design, eq_min36).
+    equivalence_allowed: np.ndarray | None = None
 
     @property
     def inconclusive(self) -> np.ndarray:
@@ -1240,7 +1271,8 @@ def sequential_decisions(
     rows = np.arange(reps)
     low = np.where(stop1, low1, low2)
     high = np.where(stop1, high1, high2)
-    equivalence = _inside(low, high, margin) & (~stop1 | equivalence_at_first) & allowed[rows, k]
+    equivalence_allowed = (~stop1 | equivalence_at_first) & allowed[rows, k]
+    equivalence = _inside(low, high, margin) & equivalence_allowed
     secondary_n = stats.secondary_n[rows, k]
     secondary_low, secondary_high = t_interval(
         stats.secondary_mean[rows, k],
@@ -1258,6 +1290,7 @@ def sequential_decisions(
         started=stats.started[rows, k],
         at_cap=~stop1 & stats.at_cap,
         equivalence=equivalence,
+        equivalence_allowed=equivalence_allowed,
         positive=low > 0,
         negative=high < 0,
         inside_wide=_inside(low, high, wide),
@@ -1270,10 +1303,14 @@ def sequential_decisions(
 
 def pointwise_readings(decisions: Decisions, allowance: float) -> dict[str, np.ndarray]:
     """Readings about the pointwise Δ(K*) from the final interval with the bias allowance b:
-    a direction excludes [−b, b], equivalence lies inside ±(5 pp − b)."""
+    a direction excludes [−b, b], equivalence lies inside ±(5 pp − b), and only where the
+    stopping look may conclude equivalence at all (the design's look-1 rule, eq_min36)."""
     d = decisions
+    allowed = (
+        np.ones(d.low.shape, dtype=bool) if d.equivalence_allowed is None else d.equivalence_allowed
+    )
     return {
-        "equivalence": _inside(d.low, d.high, MARGIN - allowance),
+        "equivalence": _inside(d.low, d.high, MARGIN - allowance) & allowed,
         "positive": d.low > allowance,
         "negative": d.high < -allowance,
     }
@@ -1338,7 +1375,16 @@ def block_diagnostics(params: Parameters, data: Replicates) -> dict[str, Any]:
 
 
 def _gate_failure(data: Replicates) -> dict[str, float]:
-    """P(the 12-block validation gate fails) and its MC SE, when the gate was simulated."""
+    """P(the 12-block validation gate fails) and its MC SE, when the gate was simulated; for a
+    prescreened run, from all the gates drawn (the kept studies all passed)."""
+    if data.screened:
+        p = 1 - data.started.size / data.screened
+        return {
+            "p_gate_fail": p,
+            "se_gate_fail": math.sqrt(p * (1 - p) / data.screened),
+            "gates_drawn": data.screened,
+            "gates_passed": int(data.started.size),
+        }
     if not data.gate_supported.size:
         return {}
     p, se = _rate(~data.gate_passed)
@@ -1510,6 +1556,7 @@ def summarize_scenario(
         "design": scenario.design,
         "settings": asdict(scenario),
         "reps": int(data.started.size),
+        "screened": data.screened,
         "seconds": data.seconds,
         "cpu_seconds": data.cpu_seconds,
         "bootstrap_cpu_seconds": data.bootstrap_cpu_seconds,
@@ -1646,6 +1693,64 @@ def confirmation_grid(reps: int = BOUNDARY_REPS) -> list[Scenario]:
         grid += _scenarios(group, TARGET_SDS, boundary, reps, shape=shape)
     grid += _scenarios("shapes", (0.0,), boundary, reps, shape="rare_only")
     return grid
+
+
+def decided_bias_grid(w_max: float = DECIDED_W_MAX) -> list[Scenario]:
+    """Revision 5: the bias allowance at the decided w_max (families × miss modes × Δ ∈ {0, 5})."""
+    return [
+        Scenario(family=f, miss=m, w_max=w_max, delta=d, group="bias")
+        for f in ("study1", "high", "stress_slopes", "kink")
+        for m in MISSES
+        for d in (0.0, MARGIN)
+    ]
+
+
+def decided_grid(w_max: float = DECIDED_W_MAX, cap_reps: int = 10_000) -> list[Scenario]:
+    """Revision 5 at the decided w_max: kink and stress_slopes at SD 5, every shape × target SD,
+    and the cap scenarios (f 0.2, correlated and independent), at Δ ∈ {0, ±5}."""
+    boundary = (0.0, MARGIN, -MARGIN)
+    grid = [
+        Scenario(family=f, w_max=w_max, delta=d, reps=BOUNDARY_REPS, group="families")
+        for f in ("kink", "stress_slopes")
+        for d in boundary
+    ]
+    for shape in ("normal", "skewed", "rare_centered", "heavy"):
+        group = "central" if shape == "normal" else "shapes"
+        grid += _scenarios(group, TARGET_SDS, boundary, BOUNDARY_REPS, shape=shape, w_max=w_max)
+    grid += _scenarios("shapes", (0.0,), boundary, BOUNDARY_REPS, shape="rare_only", w_max=w_max)
+    for correlated in (True, False):
+        grid += _scenarios(
+            "cap",
+            (0.05, 0.10),
+            boundary,
+            cap_reps,
+            failure=0.2,
+            failure_correlated=correlated,
+            w_max=w_max,
+        )
+    return grid
+
+
+def decided_gate_grid(
+    w_max: float = DECIDED_W_MAX, correlated_gates: int = 150_000, independent_gates: int = 400_000
+) -> list[Scenario]:
+    """Revision 5: the cap scenarios at Δ = ±5 for a prescreened run (``RunSettings.prescreen``):
+    ``reps`` is the number of validation gates drawn; only the studies that pass are simulated,
+    which sizes the false equivalence among them (finding N2)."""
+    return [
+        Scenario(
+            sd=sd,
+            delta=d,
+            failure=0.2,
+            failure_correlated=correlated,
+            w_max=w_max,
+            reps=correlated_gates if correlated else independent_gates,
+            group="cap",
+        )
+        for correlated in (True, False)
+        for sd in (0.05, 0.10)
+        for d in (MARGIN, -MARGIN)
+    ]
 
 
 def bias_grid() -> list[Scenario]:
@@ -1937,6 +2042,7 @@ class RunSettings:
     intervals: tuple[str, ...] = ("t",)
     resamples: int = BOOTSTRAP_RESAMPLES  # bootstrap-t, per look and replicate
     rules: tuple[str, ...] = ("standard",)
+    prescreen: bool = False  # simulate only the studies that pass the validation gate
 
     def __post_init__(self) -> None:
         unknown = (
@@ -1966,14 +2072,19 @@ def _replicate_task(task: tuple[Scenario, Parameters, int, int, RunSettings]):
     scenario, params, start, stop, settings = task
     reps = range(start, stop)
     data = simulate_replicates(
-        scenario, params, reps, base_seed=settings.base_seed, stream=settings.stream
+        scenario,
+        params,
+        reps,
+        base_seed=settings.base_seed,
+        stream=settings.stream,
+        prescreen=settings.prescreen,
     )
     if "bootstrap_t" in settings.intervals:
         clock, cpu = time.perf_counter(), time.process_time()
         quantiles, dropped = bootstrap_tables(
             scenario,
             data.primary,
-            reps,
+            data.rep_ids,
             designs=settings.look_designs,
             alphas=settings.alphas,
             floors=settings.floors,
@@ -2065,19 +2176,31 @@ def run_scenarios(
                     {k: np.concatenate([c.dropped[k] for c in chunks]) for k in chunks[0].dropped},
                     sum(c.bootstrap_cpu_seconds for c in chunks),
                     np.concatenate([c.gate_supported for c in chunks]),
+                    np.concatenate([c.rep_ids for c in chunks]),
+                    sum(c.screened for c in chunks),
                 )
                 scenario = by_name[name]
-                summary = summarize_scenario(
-                    scenario,
-                    params[name],
-                    merged,
-                    settings.alphas,
-                    settings.floors,
-                    settings.allowance,
-                    settings.look_designs,
-                    settings.intervals,
-                    settings.rules,
-                )
+                if merged.started.size:
+                    summary = summarize_scenario(
+                        scenario,
+                        params[name],
+                        merged,
+                        settings.alphas,
+                        settings.floors,
+                        settings.allowance,
+                        settings.look_designs,
+                        settings.intervals,
+                        settings.rules,
+                    )
+                else:  # a prescreen that kept no study
+                    summary = {
+                        "name": name,
+                        "design": scenario.design,
+                        "settings": asdict(scenario),
+                        "reps": 0,
+                        "diagnostics": _gate_failure(merged),
+                        "results": [],
+                    }
                 key = calibration_key(scenario).name
                 summary["calibration"] = asdict(calibrations[key]) if key in calibrations else None
                 summaries[name] = summary
