@@ -386,8 +386,9 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
 - **Run directories:** `python scripts/label_runs.py --judge wildguard RUN_DIR ...` labels every
   response of each completed run into `<run dir>/judge/wildguard.jsonl` (the same token check
   first); an output that does not parse is retried, in at most `--rounds` (3) rounds in all, and
-  the run's remaining `unparseable` count is printed. A study-2 run (a `schedule` in its config)
-  is labeled at every evaluation it recorded, `step-<N>`, whatever its stop reason;
+  the run's remaining `unparseable` count is printed. A study-2 run (a training run with a `schedule` in
+  its config) is labeled at every evaluation it recorded, `step-<N>`, whatever its stop reason (a
+  run that stopped before its first evaluation is skipped);
   `analysis.study2_labels.read_endpoint_labels` then counts the labels per evaluation, strictly.
 - The Pod has no SSH and no persistent storage: stop it as soon as the labels are written; the
   labels and their raw outputs stay local next to the sample or in the run directories.

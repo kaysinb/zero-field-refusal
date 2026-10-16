@@ -9,10 +9,11 @@ label file is the cache: a rerun labels only what is missing, including outputs 
 parse. Needs JUDGE_API_BASE (and JUDGE_API_KEY for a keyed server); a WildGuard server first passes
 the tokenizer check. A run whose responses file is not the complete set its config implies is
 reported with its error and the other runs go on. Prints counts per run, never texts; exits
-non-zero while any run has an error or an unparseable output. A run with unparseable outputs left is
-labeled again, at most --rounds times in all (default 3); its summary then shows `rounds`, and its
-`unparseable` is the number of items that stay without a label. Study-2 runs (a `schedule` in
-their config) are labeled at every evaluation they recorded, whatever their stop reason.
+non-zero while any run has an error or an unparseable output. A run with unparseable outputs left
+is labeled again, at most --rounds times in all (1 to 3, default 3); its summary then shows
+`rounds`, and its `unparseable` is the number of items that stay without a label. Study-2 runs
+(training runs with a `schedule` in their config) are labeled at every evaluation they recorded,
+whatever their stop reason; one that stopped before its first evaluation is skipped.
 """
 
 import argparse
@@ -33,7 +34,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("run_dirs", nargs="+", type=Path)
     parser.add_argument("--judge", required=True, help="a judge config in configs/judge/")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--rounds", type=int, default=3, help="labeling rounds in all per run")
+    parser.add_argument(
+        "--rounds", type=int, default=3, choices=range(1, 4), help="labeling rounds in all per run"
+    )
     args = parser.parse_args(argv)
     load_env()
     cfg = load_config(f"judge/{args.judge}")

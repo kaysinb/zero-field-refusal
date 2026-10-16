@@ -2,8 +2,9 @@
 
     read_endpoint_labels(run_dir, judge, identity, prompts) -> list[dict]
 
-``run_dir`` is a study-2 run directory (a ``schedule`` in its config), ``judge`` the name of the
-judge (its labels are ``<run dir>/judge/<judge>.jsonl``, written by ``scripts/label_runs.py``),
+``run_dir`` is a study-2 run directory (a training run with a ``schedule`` in its config),
+``judge`` the name of the judge (its labels are ``<run dir>/judge/<judge>.jsonl``, written by
+``scripts/label_runs.py``),
 ``identity`` the judge's identity (``judge.judge_identity``), and ``prompts`` the texts of the
 whole harmful prompt set by prompt id, in the set's order (``data.load_prompt_set``, as
 ``scripts/label_runs.py`` loads them; tests inject them). The first ``eval.harmful.limit`` ids are
@@ -17,7 +18,8 @@ labeled prompts by label), ``harmful_rate`` (``harmful / labeled``, null when no
 ``harmful_high`` (``(harmful + missing) / prompts``: every missing label counts as harmful), and
 ``files``: the sha256 of every file read, by name relative to the run directory. A null label
 (unparseable judge output) labels nothing; an item without a non-null label is missing. Missing
-labels are reported through these bounds, never imputed. A run with no evaluation has no rows.
+labels are reported through these bounds, never imputed. A run that stopped before its first
+evaluation (no ``evaluations.jsonl``, none in ``terminal.json``) has no rows.
 
 Each check raises ``ValueError`` naming the run directory and the first offending item:
 - the run recorded its harmful prompts (``meta.json`` ``inputs.harmful_prompts``: set, count, ids
@@ -35,17 +37,17 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 
 from ..judge import IDENTITY_FIELDS, LABELS, _content_hash
-from ..run_judging import response_conditions
-from .evidence import label_item_id, label_path
+from ..run_judging import check_responses, is_scheduled, scheduled_conditions
+from .evidence import HARMFUL, label_item_id, label_path
 
-HARMFUL = "harmful_compliance"
+Reader = Callable[[Path], bytes]
 
 
 def read_endpoint_labels(
@@ -62,14 +64,11 @@ def read_endpoint_labels(
 
     cfg = OmegaConf.create(read(run_dir / "config.yaml").decode())
     assert isinstance(cfg, DictConfig)
-    if cfg.get("run_type", "train") != "train" or cfg.get("schedule") is None:
+    if not is_scheduled(cfg):
         raise ValueError(f"{run_dir}: not a study-2 training run")
-    conditions = response_conditions(cfg, run_dir)
+    conditions = scheduled_conditions(run_dir, read)
     if not conditions:
         return []
-    read(run_dir / "evaluations.jsonl")
-    if (run_dir / "terminal.json").is_file():
-        read(run_dir / "terminal.json")
     limit = cfg.eval.harmful.get("limit")
     ids = list(prompts)[:limit] if limit else list(prompts)
     _check_recorded_prompts(run_dir, cfg, ids, read(run_dir / "meta.json"))
@@ -110,28 +109,17 @@ def _check_recorded_prompts(run_dir: Path, cfg: DictConfig, ids: list[str], meta
 
 
 def _responses(
-    run_dir: Path, cfg: DictConfig, conditions: list[str], ids: list[str], read: Any
+    run_dir: Path, cfg: DictConfig, conditions: list[str], ids: list[str], read: Reader
 ) -> dict[tuple[str, str], str]:
     """The text of each response by (condition, prompt id); exactly the expected ones, once."""
     path = run_dir / "responses" / f"{cfg.eval.harmful.prompt_set}.jsonl"
     rows = [json.loads(line) for line in read(path).decode().splitlines() if line.strip()]
-    found = Counter((r["condition"], r["item_id"]) for r in rows)
-    twice = sorted(label_item_id(*key) for key, n in found.items() if n > 1)
-    if twice:
-        raise ValueError(f"{path} answers {twice[0]} twice ({len(twice)} such responses)")
-    expected = {(c, pid) for c in conditions for pid in ids}
-    missing, extra = expected - set(found), set(found) - expected
-    if missing or extra:
-        raise ValueError(
-            f"{path} does not hold the expected {len(expected)} responses: {len(missing)} "
-            f"missing (first: {label_item_id(*min(missing)) if missing else None}), "
-            f"{len(extra)} unexpected (first: {label_item_id(*min(extra)) if extra else None})"
-        )
+    check_responses(path, rows, conditions, ids)
     return {(r["condition"], r["item_id"]): r["text"] for r in rows}
 
 
 def _labels(
-    path: Path, identity: Mapping[str, Any], items: dict[str, tuple[str, str]], read: Any
+    path: Path, identity: Mapping[str, Any], items: dict[str, tuple[str, str]], read: Reader
 ) -> dict[str, str]:
     """The label of each labeled item. Null labels are left out; every record is checked."""
     if not path.is_file():
@@ -152,7 +140,9 @@ def _labels(
             raise ValueError(f"{path}: {item} names no response of the run")
         if record.get("content_sha256") != _content_hash(*items[item]):
             raise ValueError(f"{path}: the label of {item} is not of the response stored now")
-        label = record.get("label")
+        if "label" not in record:
+            raise ValueError(f"{path}: the record of {item} has no label field")
+        label = record["label"]
         if label is None:
             continue
         if label not in LABELS:

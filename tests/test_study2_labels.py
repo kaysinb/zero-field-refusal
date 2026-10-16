@@ -46,11 +46,12 @@ def make_run(root: Path, steps=(25,), name="run", stop="plateau") -> Path:
     (run / "meta.json").write_text(json.dumps(meta))
     terminal = {"stop": {"reason": stop}, "evaluations": list(steps)}
     (run / "terminal.json").write_text(json.dumps(terminal))
-    write_jsonl(run / "evaluations.jsonl",
-                [{"step": s, "condition": f"step-{s}"} for s in steps])  # fmt: skip
-    write_jsonl(run / "responses" / "harmful_evaluation.jsonl",
-                [{"condition": f"step-{s}", "item_id": pid, "text": text(f"step-{s}", pid)}
-                 for s in steps for pid in IDS])  # fmt: skip
+    if steps:  # both files are created at the first evaluation; a run stopped before has neither
+        write_jsonl(run / "evaluations.jsonl",
+                    [{"step": s, "condition": f"step-{s}"} for s in steps])  # fmt: skip
+        write_jsonl(run / "responses" / "harmful_evaluation.jsonl",
+                    [{"condition": f"step-{s}", "item_id": pid, "text": text(f"step-{s}", pid)}
+                     for s in steps for pid in IDS])  # fmt: skip
     return run
 
 
@@ -136,6 +137,42 @@ def test_a_repeated_or_unlisted_evaluation_stops_the_run(tmp_path) -> None:
         conditions(run)
 
 
+def test_evaluations_missing_while_terminal_lists_steps_stops_the_run(tmp_path) -> None:
+    run = make_run(tmp_path, (25,))
+    (run / "evaluations.jsonl").unlink()
+    with pytest.raises(ValueError, match="record different evaluations"):
+        conditions(run)
+
+
+def test_a_run_without_terminal_json_stops(tmp_path) -> None:
+    run = make_run(tmp_path, (25,))
+    (run / "terminal.json").unlink()
+    with pytest.raises(ValueError, match="terminal.json is missing"):
+        conditions(run)
+    with pytest.raises(ValueError, match="terminal.json is missing"):
+        judge_items(run, PROMPTS)
+
+
+def test_responses_stored_for_a_run_without_evaluation_are_not_ignored(tmp_path) -> None:
+    run = make_run(tmp_path, ())
+    write_jsonl(run / "responses" / "harmful_evaluation.jsonl",
+                [{"condition": "step-25", "item_id": "judged:0", "text": "x"}])  # fmt: skip
+    with pytest.raises(ValueError, match="1 unexpected .first: step-25/judged:0"):
+        judge_items(run, PROMPTS)
+
+
+def test_the_discriminator_is_a_training_run_with_a_schedule(tmp_path) -> None:
+    run = make_run(tmp_path, (25,))
+    cfg = OmegaConf.load(run / "config.yaml")
+    cfg.run_type = "curvature"  # keeps the schedule section, but is not a study-2 training run
+    cfg.eval.controls = {"line_scan": {"enabled": False}, "random_direction": {"enabled": False}}
+    assert response_conditions(cfg) == ["trained"]
+    write_labels(run, [])
+    OmegaConf.save(cfg, run / "config.yaml")
+    with pytest.raises(ValueError, match="not a study-2 training run"):
+        read(run)
+
+
 def test_judge_items_cover_every_evaluation(tmp_path) -> None:
     items = judge_items(make_run(tmp_path, (25, 50)), PROMPTS)
     assert [i["item_id"] for i in items][:2] == ["step-25/judged:0", "step-25/judged:1"]
@@ -168,7 +205,8 @@ def test_rounds_stop_at_the_limit_and_report_what_stays_missing(tmp_path) -> Non
 
 def test_a_run_without_an_evaluation_is_skipped_not_failed(tmp_path) -> None:
     run = make_run(tmp_path, ())
-    (run / "responses" / "harmful_evaluation.jsonl").unlink()
+    assert not (run / "evaluations.jsonl").exists()
+    assert conditions(run) == []
     summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard([REFUSAL])))
     assert summaries == [{"run_id": "run", "skipped": "no evaluation recorded"}]
     assert read(run) == []
@@ -254,7 +292,9 @@ def test_a_stale_null_record_fails_too(tmp_path) -> None:
         read(run)
 
 
-@pytest.mark.parametrize("field", ["backend", "prompt_version", "judge_model", "judge_revision"])
+@pytest.mark.parametrize(
+    "field", ["backend", "prompt_version", "judge_model", "judge_revision", "rubric_version"]
+)
 def test_a_label_of_another_judge_fails(tmp_path, field) -> None:
     run = make_run(tmp_path)
     write_labels(run, [record("step-25", "judged:0", "refusal"),
@@ -271,6 +311,23 @@ def test_conflicting_labels_fail_and_so_does_a_label_outside_the_set(tmp_path) -
         read(run)
     write_labels(run, [record("step-25", "judged:1", "unsure")])
     with pytest.raises(ValueError, match="step-25/judged:1 has the label 'unsure'"):
+        read(run)
+
+
+def test_malformed_label_lines_fail(tmp_path) -> None:
+    run = make_run(tmp_path)
+    path = label_path(run, JUDGE)
+    write_labels(run, [])
+    path.write_text("{not json\n")
+    with pytest.raises(ValueError, match="line 1, is not valid JSON"):
+        read(run)
+    path.write_text(json.dumps({"label": "refusal"}) + "\n")
+    with pytest.raises(ValueError, match="line 1, names no item"):
+        read(run)
+    no_label = record("step-25", "judged:1", "refusal")
+    del no_label["label"]
+    write_labels(run, [no_label])
+    with pytest.raises(ValueError, match="record of step-25/judged:1 has no label field"):
         read(run)
 
 

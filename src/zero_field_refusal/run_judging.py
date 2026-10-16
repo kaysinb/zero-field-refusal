@@ -10,15 +10,17 @@ truncated or mixed file stops that run. ``label_runs`` labels each completed run
 not yet labeled, including the ones whose output did not parse. A run that cannot be labeled is
 reported with its error and the next run goes on.
 
-Study-2 runs. A run whose config has a ``schedule`` section (``schedule.Schedule``; a θ₀ run keeps
-its own ``run_type`` and is not one) answers its harmful prompts at every evaluation it recorded,
-under the condition ``step-<N>`` of that evaluation's step N. ``response_conditions(cfg,
+Study-2 runs. A training run (``run_type`` train) whose config has a ``schedule`` section
+(``schedule.Schedule``; θ₀ and curvature runs may carry one and are not study-2 runs) answers
+its harmful prompts at every evaluation it recorded, under the condition ``step-<N>`` of that
+evaluation's step N. ``response_conditions(cfg,
 run_dir)`` reads them, in order, from ``<run dir>/evaluations.jsonl`` (the rows
 ``schedule.Schedule._evaluate`` writes; ``terminal.json`` lists only their steps, which must
 agree) and raises for a condition that is not ``step-<its step>``, a repeated step or a record
 that disagrees with ``terminal.json``. Which evaluations a run recorded does not depend on its stop
 reason, so every one is labeled; which of them enter an analysis is decided elsewhere, never from
-labels. A completed run with no evaluation has nothing to label and is skipped.
+labels. A completed run that stopped before its first evaluation has no ``evaluations.jsonl`` (its
+``terminal.json`` lists no step), nothing to label, and is skipped.
 """
 
 from __future__ import annotations
@@ -38,13 +40,27 @@ from .judge import JudgeClient, count_unparseable
 THETA0 = "theta0"  # the condition of a θ₀ evaluation (train.evaluate_theta0)
 
 
-def scheduled_conditions(run_dir: Path) -> list[str]:
-    """The conditions of the evaluations a study-2 run recorded, in order: ``step-<step>`` each."""
+def is_scheduled(cfg: DictConfig) -> bool:
+    """Whether a run config is a study-2 training run: ``run_type`` train (the default) with a
+    ``schedule`` section. A θ₀ run and a curvature run may carry one too, and are not."""
+    return cfg.get("run_type", "train") == "train" and cfg.get("schedule") is not None
+
+
+def scheduled_conditions(
+    run_dir: Path, read: Callable[[Path], bytes] = Path.read_bytes
+) -> list[str]:
+    """The conditions of the evaluations a study-2 run recorded, in order: ``step-<step>`` each.
+
+    From ``evaluations.jsonl``, which a run creates at its first evaluation: a run that stopped
+    before it has no such file and records ``[]`` in ``terminal.json``, which every completed run
+    has and which must list the same steps. ``read`` gives the bytes of a file (the reader hashes
+    what it parses)."""
     run_dir = Path(run_dir)
-    path = run_dir / "evaluations.jsonl"
-    if not path.is_file():
-        raise ValueError(f"{path} is missing: the evaluations of the run are unknown")
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    path, terminal = run_dir / "evaluations.jsonl", run_dir / "terminal.json"
+    if not terminal.is_file():
+        raise ValueError(f"{terminal} is missing: the evaluations of the run are unknown")
+    lines = read(path).decode().splitlines() if path.is_file() else []
+    rows = [json.loads(line) for line in lines if line.strip()]
     conditions = []
     for number, row in enumerate(rows, 1):
         step = row.get("step") if isinstance(row, dict) else None
@@ -58,21 +74,19 @@ def scheduled_conditions(run_dir: Path) -> list[str]:
     if len(set(conditions)) != len(conditions):
         repeated = sorted(c for c, n in Counter(conditions).items() if n > 1)
         raise ValueError(f"{path} records the evaluation {repeated[0]} twice")
-    terminal = run_dir / "terminal.json"
-    if terminal.is_file():
-        steps = json.loads(terminal.read_text()).get("evaluations")
-        if steps != [int(c.removeprefix("step-")) for c in conditions]:
-            raise ValueError(f"{path} and {terminal} record different evaluations")
+    steps = json.loads(read(terminal).decode()).get("evaluations")
+    if steps != [int(c.removeprefix("step-")) for c in conditions]:
+        raise ValueError(f"{path} and {terminal} record different evaluations")
     return conditions
 
 
 def response_conditions(cfg: DictConfig, run_dir: Path | None = None) -> list[str]:
-    """The conditions under which a run answers its harmful prompt set. A study-2 run (a
-    ``schedule`` section, and not a θ₀ run) needs ``run_dir``: its conditions are its recorded
-    evaluations (``scheduled_conditions``)."""
+    """The conditions under which a run answers its harmful prompt set. A study-2 run
+    (``is_scheduled``) needs ``run_dir``: its conditions are its recorded evaluations
+    (``scheduled_conditions``), none for a run that stopped before the first."""
     if cfg.get("run_type", "train") == THETA0:
         return [THETA0]
-    if cfg.get("schedule") is not None:
+    if is_scheduled(cfg):
         if run_dir is None:
             raise ValueError("the conditions of a scheduled (study 2) run need its run directory")
         return scheduled_conditions(run_dir)
@@ -86,22 +100,15 @@ def response_conditions(cfg: DictConfig, run_dir: Path | None = None) -> list[st
     return conditions
 
 
-def judge_items(run_dir: Path, prompts: Mapping[str, str]) -> list[dict[str, str]]:
-    """Items for every response of the run's harmful prompt set; ``prompts``: the whole set's texts
-    by prompt id, in the set's order."""
-    cfg = OmegaConf.load(Path(run_dir) / "config.yaml")
-    assert isinstance(cfg, DictConfig)
-    prompt_set, limit = cfg.eval.harmful.prompt_set, cfg.eval.harmful.get("limit")
-    path = Path(run_dir) / "responses" / f"{prompt_set}.jsonl"
-    conditions = response_conditions(cfg, run_dir)
-    if not conditions:  # a scheduled run that recorded no evaluation answered nothing
-        return []
-    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+def check_responses(
+    path: Path, records: list[dict[str, Any]], conditions: list[str], ids: list[str]
+) -> None:
+    """Raise unless ``records`` (the rows of the responses file ``path``) hold exactly one
+    response to each of ``ids`` under each of ``conditions``, and no other."""
     found = Counter((r["condition"], r["item_id"]) for r in records)
     twice = sorted(label_item_id(*key) for key, n in found.items() if n > 1)
     if twice:
         raise ValueError(f"{path} answers {twice[0]} twice ({len(twice)} such responses)")
-    ids = list(prompts)[:limit] if limit else list(prompts)
     expected = {(c, pid) for c in conditions for pid in ids}
     missing, extra = expected - set(found), set(found) - expected
     if missing or extra:
@@ -110,6 +117,22 @@ def judge_items(run_dir: Path, prompts: Mapping[str, str]) -> list[dict[str, str
             f"(first: {label_item_id(*min(missing)) if missing else None}), {len(extra)} "
             f"unexpected (first: {label_item_id(*min(extra)) if extra else None})"
         )
+
+
+def judge_items(run_dir: Path, prompts: Mapping[str, str]) -> list[dict[str, str]]:
+    """Items for every response of the run's harmful prompt set; ``prompts``: the whole set's texts
+    by prompt id, in the set's order. A scheduled run that stopped before its first evaluation has
+    none (its responses file is absent; one that exists is checked and fails)."""
+    cfg = OmegaConf.load(Path(run_dir) / "config.yaml")
+    assert isinstance(cfg, DictConfig)
+    prompt_set, limit = cfg.eval.harmful.prompt_set, cfg.eval.harmful.get("limit")
+    path = Path(run_dir) / "responses" / f"{prompt_set}.jsonl"
+    conditions = response_conditions(cfg, run_dir)
+    if not conditions and not path.is_file():
+        return []
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    ids = list(prompts)[:limit] if limit else list(prompts)
+    check_responses(path, records, conditions, ids)
     return [{"item_id": label_item_id(r["condition"], r["item_id"]),
              "prompt": prompts[r["item_id"]], "response": r["text"]} for r in records]  # fmt: skip
 
