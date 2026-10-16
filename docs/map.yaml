@@ -187,6 +187,10 @@ topics:
   - docs/decisions.md#study-decisions
   - docs/preregistration.md#fixed-protocol
   - configs/protocol/zero_field.yaml
+  watch:
+  - src/zero_field_refusal/analysis/study2_short_sim.py
+  - scripts/study2_short_simulate.py
+  - tests/test_study2_short_sim.py
 - id: study2_feasibility
   title: Study 2 numerics, monitoring, stopping and Stage-A selection
   source: docs/study2-preregistration.md#stage-a--feasibility
