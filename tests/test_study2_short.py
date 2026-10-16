@@ -1121,3 +1121,34 @@ def test_confirmation_keeps_bonferroni_over_the_family_and_two_looks() -> None:
     runs = validation_runs()
     found = utility_family(runs, supports_of(runs), THETA0)
     assert found["looks"] == 2 and found["alpha_per_bound"] == pytest.approx(0.05 / (4 * 2))
+
+
+def test_the_analysis_bootstrap_interval_equals_the_simulation_s() -> None:
+    """The decided interval is the one the simulation calibrated: same resamples, same quantiles,
+    same bounds (analysis.study2_short_sim's bootstrap_t_quantiles with its bound formula)."""
+    from zero_field_refusal.analysis import study2_short_sim as sim
+
+    rng_data = np.random.default_rng(20261016)
+    for n in (2, 3, 36, 60):
+        for shape in ("normal", "skewed"):
+            values = rng_data.normal(0.0, 0.05, n)
+            if shape == "skewed":
+                values = rng_data.gamma(2.0, 0.03, n) - 0.06
+            for level in (0.9920, 0.9631):
+                low, high, dropped = study2_short.bootstrap_t_interval(
+                    values, level, 2000, np.random.default_rng(7)
+                )
+                probabilities = np.array([(1 - level) / 2, (1 + level) / 2])
+                quantiles, sim_dropped = sim.bootstrap_t_quantiles(
+                    values, probabilities, [0.0], 2000, np.random.default_rng(7)
+                )
+                assert dropped == int(sim_dropped[0])
+                mean, se = values.mean(), values.std(ddof=1) / math.sqrt(n)
+                if se <= sim.ZERO_SE:
+                    assert (low, high) == (mean, mean)
+                    continue
+                q_low, q_high = quantiles[0]
+                if not (np.isfinite(q_low) and np.isfinite(q_high)):
+                    assert (low, high) == (-math.inf, math.inf)
+                    continue
+                assert (low, high) == (mean - q_high * se, mean - q_low * se)
