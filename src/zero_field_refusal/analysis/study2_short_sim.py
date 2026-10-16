@@ -107,8 +107,15 @@ q*_{α_k/2}·se]. The SE floor applies to se and se* alike (se* = max(sd*, s_min
 with se* = 0 (floor 0) is dropped and counted; a zero se gives [mean, mean]; fewer than 2 blocks
 or kept resamples give no interval. If every block difference is equal, T* ≡ 0 and the interval
 collapses to [mean, mean] even with a floor. Each replicate, design and look has its own resample
-stream, drawn in the workers; both intervals are evaluated on the same replicates. The secondary
-contrasts keep t intervals.
+stream, drawn in the workers; both intervals are evaluated on the same replicates.
+
+Secondary intervals (the 2026-10-17 secondary check). The secondary contrasts use t intervals by
+default (every run of revisions 1–5). ``RunSettings.secondary_intervals`` adds ``bootstrap_t``:
+the same studentized bootstrap (``bootstrap_t_quantiles``, the same bounds formula), per contrast
+on the look's three-arm cohort at 98.75 % per look, with B resamples per replicate, contrast,
+design and look. Each secondary interval is read at the look where the primary stopped, on the
+same replicates; a run with more than t reports the coverage per secondary interval, the joint
+coverage of both contrasts included.
 
 Levels. A two-look design uses the O'Brien–Fleming-shaped pair from Lan–DeMets spending of an
 overall two-sided α at its information fraction n₁/n₂ (``obf_levels``); α = 0.05 at 24/50 gives
@@ -127,8 +134,9 @@ a passing study is the same with or without the prescreen.
 
 Randomness. Every stream is seeded by the full SHA-256 digest of its key list (``generator``):
 replicate ``rep`` of a scenario draws from (base_seed, stream, scenario name, rep), its
-validation gate from (…, rep, "validation_gate") and its bootstrap resamples from (…, rep,
-"bootstrap", design, look). The stream names the run (``calibration``, ``validation``,
+validation gate from (…, rep, "validation_gate"), its bootstrap resamples from (…, rep,
+"bootstrap", design, look) and those of a secondary contrast from (…, rep, "bootstrap-secondary",
+contrast, design, look). The stream names the run (``calibration``, ``validation``,
 ``confirmation``, …), so runs on different streams are independent. Blocks are generated until 60
 are supported (the largest look) or 80 have started, so every look design, α, floor and rule is
 evaluated on the same replicates. The spread calibration uses (base_seed, "spread", key name) in
@@ -291,6 +299,10 @@ PLANNING_ALPHA = 0.05
 MARGIN = 0.05  # ±5 pp, the primary margin
 WIDE_MARGIN = 0.08  # the ±8 pp reading
 SECONDARY_LEVEL = 0.9875  # Bonferroni over 2 contrasts × 2 looks
+# Targets at the stopping look: per contrast 97.5 % (over the two looks), jointly 95 %.
+SECONDARY_MARGINAL_TARGET = 0.975
+SECONDARY_JOINT_TARGET = 0.95
+SECONDARY_REPS = 10_000  # replicates per scenario of the secondary check
 SE_FLOORS = (0.0, 0.01, 0.02)
 ALPHAS = tuple(round(0.02 + 0.0025 * i, 4) for i in range(25))  # 0.02 … 0.08
 TARGET_SDS = (0.03, 0.05, 0.10, 0.15)
@@ -397,8 +409,8 @@ class Scenario:
 
     @property
     def name(self) -> str:
-        sd = "na" if self.shape == "rare_only" else f"{round(100 * self.sd, 6):g}"
-        parts = [self.design, self.shape, self.family, f"sd{sd}", f"d{_pp(self.delta)}"]
+        parts = [self.design, self.shape, self.family, sd_label(self.shape, self.sd)]
+        parts.append(f"d{_pp(self.delta)}")
         for f in fields(self):
             value = getattr(self, f.name)
             if f.name not in TAGS or value == f.default:
@@ -415,6 +427,11 @@ class Scenario:
 
 def _pp(value: float) -> str:
     return f"{round(100 * value, 6):+g}"
+
+
+def sd_label(shape: str, sd: float) -> str:
+    """The target SD as scenario names show it: "sd5", or "sdna" for rare_only (no target)."""
+    return "sdna" if shape == "rare_only" else f"sd{round(100 * sd, 6):g}"
 
 
 @dataclass(frozen=True)
@@ -778,6 +795,11 @@ class Replicates:
     # how many gates were drawn in all (0: no prescreen, every replicate kept).
     rep_ids: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
     screened: int = 0
+    # Bootstrap-t of the secondary contrasts, per look key: T* quantiles (reps, contrasts,
+    # floors, 2) at (1 ∓ SECONDARY_LEVEL)/2 and the dropped resamples (reps, contrasts, floors).
+    secondary_bootstrap: dict[str, np.ndarray] = field(default_factory=dict)
+    secondary_dropped: dict[str, np.ndarray] = field(default_factory=dict)
+    secondary_bootstrap_cpu_seconds: float = 0.0
 
     @property
     def gate_passed(self) -> np.ndarray:
@@ -1164,6 +1186,64 @@ def bootstrap_tables(
     return quantiles, dropped
 
 
+def secondary_probabilities(level: float = SECONDARY_LEVEL) -> np.ndarray:
+    """The T* quantile probabilities of a secondary interval: (1 ∓ level)/2."""
+    return np.array([(1 - level) / 2, (1 + level) / 2])
+
+
+def secondary_bootstrap_tables(
+    scenario: Scenario,
+    primary: np.ndarray,
+    secondary: np.ndarray,
+    reps: Sequence[int],
+    *,
+    designs: Sequence[LookDesign],
+    floors: Sequence[float],
+    resamples: int,
+    base_seed: int,
+    stream: str,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Per look key, the secondary contrasts' T* quantiles (reps, contrasts, floors, 2) at
+    ``secondary_probabilities()`` and the dropped resamples (reps, contrasts, floors), for
+    replicates ``reps`` (rows of ``primary`` and ``secondary``, as ``Replicates`` holds them).
+
+    The values of a look are its three-arm cohort, as in ``look_statistics``: the blocks up to
+    the look's last one where all three arms are supported. Each replicate, contrast, design and
+    look has its own stream (base_seed, stream, name, rep, "bootstrap-secondary", contrast,
+    design, look). A look 1 that is never reached is left NaN."""
+    probabilities = secondary_probabilities()
+    contrasts = len(SECONDARY_CONTRASTS)
+    keys = [look_key(d, look) for d in designs for look in _design_looks(d)]
+    quantiles = {key: np.full((len(reps), contrasts, len(floors), 2), np.nan) for key in keys}
+    dropped = {key: np.zeros((len(reps), contrasts, len(floors))) for key in keys}
+    cohort = np.isfinite(secondary[..., 0])  # all three arms supported
+    where = {d.name: look_indices(primary, d.realized(scenario.postpone)) for d in designs}
+    for i, rep in enumerate(map(int, reps)):  # plain ints: the stream key is JSON
+        for design in designs:
+            reached, index, _ = where[design.name]
+            for look in _design_looks(design):
+                if not reached[i, look]:
+                    continue
+                key = look_key(design, look)
+                stop = index[i, look] + 1
+                for k, contrast in enumerate(SECONDARY_CONTRASTS):
+                    values = secondary[i, :stop, k][cohort[i, :stop]]
+                    rng = generator(
+                        base_seed,
+                        stream,
+                        scenario.name,
+                        rep,
+                        "bootstrap-secondary",
+                        contrast,
+                        design.name,
+                        look,
+                    )
+                    quantiles[key][i, k], dropped[key][i, k] = bootstrap_t_quantiles(
+                        values, probabilities, floors, resamples, rng
+                    )
+    return quantiles, dropped
+
+
 def _probability_index(probabilities: np.ndarray, p: float) -> int:
     i = int(np.argmin(np.abs(probabilities - p)))
     if not math.isclose(probabilities[i], p, abs_tol=1e-12):
@@ -1192,15 +1272,90 @@ def bootstrap_bounds(
         q = quantiles[key][:, floor_index]
         lower = q[:, _probability_index(probabilities[key], (1 - level) / 2)]
         upper = q[:, _probability_index(probabilities[key], (1 + level) / 2)]
-        mean, n = stats.mean[:, look], stats.n[:, look]
-        with np.errstate(invalid="ignore", divide="ignore"):
-            se = np.maximum(stats.sd[:, look], floor) / np.sqrt(n)
-            low, high = mean - upper * se, mean - lower * se
-        flat = (n >= 2) & (se <= ZERO_SE)
-        low, high = np.where(flat, mean, low), np.where(flat, mean, high)
-        bad = ~flat & ((n < 2) | ~np.isfinite(low) | ~np.isfinite(high))
-        bounds.append((np.where(bad, -np.inf, low), np.where(bad, np.inf, high)))
+        bounds.append(
+            studentized_bounds(
+                stats.mean[:, look], stats.sd[:, look], stats.n[:, look], lower, upper, floor
+            )
+        )
     return bounds
+
+
+def studentized_bounds(
+    mean: np.ndarray,
+    sd: np.ndarray,
+    n: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    floor: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The bootstrap-t interval from the T* quantiles ``lower`` and ``upper``: [mean −
+    upper·se, mean − lower·se], se = max(sd, floor)/√n. A zero se gives [mean, mean]; fewer than
+    2 values or a missing quantile (NaN) an unbounded interval."""
+    with np.errstate(invalid="ignore", divide="ignore"):
+        se = np.maximum(sd, floor) / np.sqrt(n)
+        low, high = mean - upper * se, mean - lower * se
+    flat = (n >= 2) & (se <= ZERO_SE)
+    low, high = np.where(flat, mean, low), np.where(flat, mean, high)
+    bad = ~flat & ((n < 2) | ~np.isfinite(low) | ~np.isfinite(high))
+    return np.where(bad, -np.inf, low), np.where(bad, np.inf, high)
+
+
+def secondary_t_bounds(
+    stats: LookStatistics, floor: float = 0.0, level: float = SECONDARY_LEVEL
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """The secondary contrasts' t intervals per look, each (R, contrasts)."""
+    return [
+        t_interval(
+            stats.secondary_mean[:, look],
+            stats.secondary_sd[:, look],
+            stats.secondary_n[:, look, None],
+            level,
+            floor,
+        )
+        for look in (0, 1)
+    ]
+
+
+def secondary_bootstrap_bounds(
+    stats: LookStatistics,
+    design: LookDesign,
+    floor_index: int,
+    floor: float,
+    quantiles: Mapping[str, np.ndarray],
+) -> list[tuple[np.ndarray, np.ndarray] | None]:
+    """The secondary contrasts' bootstrap-t intervals per look, each (R, contrasts), from
+    ``secondary_bootstrap_tables``; None for a design's missing look 1."""
+    bounds: list[tuple[np.ndarray, np.ndarray] | None] = []
+    for look in (0, 1):
+        if look not in _design_looks(design):
+            bounds.append(None)
+            continue
+        q = quantiles[look_key(design, look)][:, :, floor_index]  # (R, contrasts, 2)
+        bounds.append(
+            studentized_bounds(
+                stats.secondary_mean[:, look],
+                stats.secondary_sd[:, look],
+                stats.secondary_n[:, look, None],
+                q[..., 0],
+                q[..., 1],
+                floor,
+            )
+        )
+    return bounds
+
+
+def at_stopping_look(
+    bounds: Sequence[tuple[np.ndarray, np.ndarray] | None], look: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per replicate, the (R, contrasts) bounds of the look where the primary stopped (``look``
+    1 or 2); a missing look 1 is never the stopping look."""
+    later_low, later_high = bounds[1]
+    if bounds[0] is None:
+        if np.any(look == 1):
+            raise ValueError("A design without look 1 stopped at look 1")
+        return later_low, later_high
+    first = (np.asarray(look) == 1)[:, None]
+    return np.where(first, bounds[0][0], later_low), np.where(first, bounds[0][1], later_high)
 
 
 @dataclass(frozen=True)
@@ -1245,13 +1400,16 @@ def sequential_decisions(
     margin: float = MARGIN,
     wide: float = WIDE_MARGIN,
     secondary_level: float = SECONDARY_LEVEL,
+    secondary_bounds: Sequence[tuple[np.ndarray, np.ndarray] | None] | None = None,
 ) -> Decisions:
     """Stop at look 1 on equivalence (if allowed there) or a direction; otherwise the terminal
     look decides. ``levels`` has one level per look of the design (one for a one-look design).
     Equivalence is concluded only at a look with at least ``equivalence_min_blocks`` supported
     blocks (rule ``eq_min36``: not at a cap look below 36); a direction is unaffected.
     The primary intervals are t intervals unless ``bounds`` gives them per look (None for a
-    missing look 1), e.g. from ``bootstrap_bounds``."""
+    missing look 1), e.g. from ``bootstrap_bounds``; the secondary ones t intervals at
+    ``secondary_level`` unless ``secondary_bounds`` gives them per look, e.g. from
+    ``secondary_bootstrap_bounds``."""
     reps = stats.n.shape[0]
     first, terminal = _full_levels(levels)
     if bounds is None:
@@ -1276,13 +1434,16 @@ def sequential_decisions(
     equivalence_allowed = (~stop1 | equivalence_at_first) & allowed[rows, k]
     equivalence = _inside(low, high, margin) & equivalence_allowed
     secondary_n = stats.secondary_n[rows, k]
-    secondary_low, secondary_high = t_interval(
-        stats.secondary_mean[rows, k],
-        stats.secondary_sd[rows, k],
-        secondary_n[:, None],
-        secondary_level,
-        floor,
-    )
+    if secondary_bounds is None:
+        secondary_low, secondary_high = t_interval(
+            stats.secondary_mean[rows, k],
+            stats.secondary_sd[rows, k],
+            secondary_n[:, None],
+            secondary_level,
+            floor,
+        )
+    else:
+        secondary_low, secondary_high = at_stopping_look(secondary_bounds, k + 1)
     return Decisions(
         look=k + 1,
         low=low,
@@ -1397,6 +1558,30 @@ def _gate_failure(data: Replicates) -> dict[str, float]:
     }
 
 
+def secondary_coverage(
+    low: np.ndarray,
+    high: np.ndarray,
+    truth: Mapping[str, float],
+    targets: Mapping[str, float],
+    joint: bool = False,
+) -> dict[str, dict[str, float]]:
+    """Per secondary contrast, the share of the (R, contrasts) intervals covering its pointwise
+    truth and its block mean (the interpolation estimand), with MC SEs; with ``joint``, also
+    the share covering both contrasts at once (``"joint"``)."""
+    coverage: dict[str, dict[str, float]] = {}
+    both = {}
+    for target, source in (("truth", truth), ("block_mean", targets)):
+        values = np.array([source[name] for name in SECONDARY_CONTRASTS])
+        covered = (low <= values) & (values <= high)
+        for k, name in enumerate(SECONDARY_CONTRASTS):
+            entry = coverage.setdefault(name, {})
+            entry[target], entry[f"{target}_se"] = _rate(covered[:, k])
+        both[target], both[f"{target}_se"] = _rate(covered.all(axis=1))
+    if joint:
+        coverage["joint"] = both
+    return coverage
+
+
 def outcome_rates(
     decisions: Decisions,
     delta: float,
@@ -1458,13 +1643,7 @@ def outcome_rates(
         (cohort_low < MARGIN) & (cohort_high > MARGIN)
     )
     rates["p_cohort_bounds_straddle_5pp"], rates["se_cohort_bounds_straddle_5pp"] = _rate(straddles)
-    coverage: dict[str, dict[str, float]] = {}
-    for k, name in enumerate(SECONDARY_CONTRASTS):
-        low, high = d.secondary_low[:, k], d.secondary_high[:, k]
-        coverage[name] = {}
-        for target, value in (("truth", truth[name]), ("block_mean", targets[name])):
-            covered = (low <= value) & (value <= high)
-            coverage[name][target], coverage[name][f"{target}_se"] = _rate(covered)
+    coverage = secondary_coverage(d.secondary_low, d.secondary_high, truth, targets)
     estimates = d.estimate[np.isfinite(d.estimate)]
     rates |= {
         "mean_started": float(d.started.mean()),
@@ -1494,10 +1673,14 @@ def summarize_scenario(
     designs: Sequence[LookDesign] = LOOK_DESIGNS,
     intervals: Sequence[str] = ("t",),
     rules: Sequence[str] = ("standard",),
+    secondary_intervals: Sequence[str] = ("t",),
 ) -> dict[str, Any]:
     """The scenario's block diagnostics and one result row per look design × interval × rule ×
     α × SE floor. ``bootstrap_t`` needs the replicates' bootstrap tables for the same designs,
-    α's and floors. Every row carries the scenario's attained paired SD (at its Δ)."""
+    α's and floors, and as a secondary interval their secondary tables. Every row carries the
+    scenario's attained paired SD (at its Δ). A row's ``secondary_coverage`` is that of the
+    first secondary interval; with secondary intervals other than t alone, the row adds
+    ``secondary_coverage_by_interval`` (each interval's coverage, the joint one included)."""
     diagnostics = block_diagnostics(params, data)
     primary, secondary = data.primary, data.secondary
     targets = diagnostics["secondary_block_mean"]
@@ -1506,6 +1689,15 @@ def summarize_scenario(
         diagnostics["bootstrap_dropped"] = {
             key: dict(zip(map(str, floors), data.dropped[key].mean(axis=0).tolist(), strict=True))
             for key in probabilities
+        }
+    by_interval = tuple(secondary_intervals) != ("t",)
+    if "bootstrap_t" in secondary_intervals:
+        diagnostics["secondary_bootstrap_dropped"] = {
+            key: {
+                contrast: dict(zip(map(str, floors), mean.tolist(), strict=True))
+                for contrast, mean in zip(SECONDARY_CONTRASTS, dropped.mean(axis=0), strict=True)
+            }
+            for key, dropped in data.secondary_dropped.items()
         }
     results = []
     for design in designs:
@@ -1519,6 +1711,15 @@ def summarize_scenario(
                         bounds = bootstrap_bounds(
                             stats, design, levels, f, floor, data.bootstrap, probabilities
                         )
+                    # Per secondary interval, its bounds per look. The decisions read the first
+                    # one; t is sequential_decisions' own (as in revisions 1–5).
+                    per_look: dict[str, Any] = {}
+                    if by_interval:
+                        per_look["t"] = secondary_t_bounds(stats, floor)
+                    if "bootstrap_t" in secondary_intervals:
+                        per_look["bootstrap_t"] = secondary_bootstrap_bounds(
+                            stats, design, f, floor, data.secondary_bootstrap
+                        )
                     for rule in rules:
                         decisions = sequential_decisions(
                             stats,
@@ -1527,6 +1728,9 @@ def summarize_scenario(
                             equivalence_at_first=design.equivalence_at_first,
                             equivalence_min_blocks=RULE_MIN_BLOCKS[rule],
                             bounds=bounds,
+                            secondary_bounds=None
+                            if secondary_intervals[0] == "t"
+                            else per_look[secondary_intervals[0]],
                         )
                         # The scenario's Δ, not the solved truth: that is Δ only to ~1e-12, and
                         # the power at Δ = 0 is the equivalence rate.
@@ -1541,6 +1745,16 @@ def summarize_scenario(
                         rates["bias_vs_block_mean"] = (
                             rates["mean_estimate"] - diagnostics["block_mean"]
                         )
+                        if by_interval:
+                            rates["secondary_coverage_by_interval"] = {
+                                name: secondary_coverage(
+                                    *at_stopping_look(per_look[name], decisions.look),
+                                    params.truth,
+                                    targets,
+                                    joint=True,
+                                )
+                                for name in secondary_intervals
+                            }
                         results.append(
                             {
                                 "looks": design.name,
@@ -1562,6 +1776,11 @@ def summarize_scenario(
         "seconds": data.seconds,
         "cpu_seconds": data.cpu_seconds,
         "bootstrap_cpu_seconds": data.bootstrap_cpu_seconds,
+        **(
+            {"secondary_bootstrap_cpu_seconds": data.secondary_bootstrap_cpu_seconds}
+            if "bootstrap_t" in secondary_intervals
+            else {}
+        ),
         "parameters": {
             "offsets": dict(zip(ARMS, params.offsets, strict=True)),
             "spread": params.spread,
@@ -1730,6 +1949,20 @@ def decided_grid(w_max: float = DECIDED_W_MAX, cap_reps: int = 10_000) -> list[S
             failure_correlated=correlated,
             w_max=w_max,
         )
+    return grid
+
+
+def decided_secondary_grid(
+    w_max: float = DECIDED_W_MAX, reps: int = SECONDARY_REPS
+) -> list[Scenario]:
+    """The secondary check (2026-10-17): the decided design's shape grid, every shape × target SD
+    at Δ ∈ {0, ±5}, ``reps`` replicates each; meant for a fresh stream (``secondary``)."""
+    boundary = (0.0, MARGIN, -MARGIN)
+    grid = []
+    for shape in ("normal", "skewed", "rare_centered", "heavy"):
+        group = "central" if shape == "normal" else "shapes"
+        grid += _scenarios(group, TARGET_SDS, boundary, reps, shape=shape, w_max=w_max)
+    grid += _scenarios("shapes", (0.0,), boundary, reps, shape="rare_only", w_max=w_max)
     return grid
 
 
@@ -1961,6 +2194,66 @@ def validation_checks(
     return checks
 
 
+def secondary_checks(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
+    """Coverage of the secondary contrasts' pointwise truths at the stopping look, per look
+    design × interval × rule × α × floor × secondary interval and per shape × target SD: the
+    worst over Δ of each contrast and of both jointly, against 97.5 % per contrast and 95 %
+    jointly. ``meets`` compares the estimates with the targets; ``short_2se`` flags an estimate
+    more than 2 MC SEs below its target. Rows without ``secondary_coverage_by_interval`` are
+    skipped."""
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for s in scenarios:
+        settings = s["settings"]
+        for r in s["results"]:
+            for name, coverage in (r.get("secondary_coverage_by_interval") or {}).items():
+                key = (r["looks"], r["interval"], r["rule"], r["alpha"], r["floor"], name)
+                groups.setdefault(key, []).append(
+                    {"scenario": s["name"], "shape": settings["shape"], "sd": settings["sd"],
+                     "delta": settings["delta"], "reps": s["reps"], "coverage": coverage}
+                )  # fmt: skip
+    targets = {name: SECONDARY_MARGINAL_TARGET for name in SECONDARY_CONTRASTS}
+    targets["joint"] = SECONDARY_JOINT_TARGET
+    checks = []
+    for (looks, interval, rule, alpha, floor, name), rows in groups.items():
+        cells = []
+        for shape, sd in dict.fromkeys((r["shape"], r["sd"]) for r in rows):
+            mine = [r for r in rows if r["shape"] == shape and r["sd"] == sd]
+            cell: dict[str, Any] = {"shape": shape, "sd": sd, "deltas": [r["delta"] for r in mine]}
+            for which, target in targets.items():
+                worst = min(mine, key=lambda r: r["coverage"][which]["truth"])
+                value = worst["coverage"][which]["truth"]
+                se = worst["coverage"][which]["truth_se"]
+                cell[which] = {
+                    "value": value,
+                    "mc_se": se,
+                    "delta": worst["delta"],
+                    "scenario": worst["scenario"],
+                    "per_delta": {_pp(r["delta"]): r["coverage"][which]["truth"] for r in mine},
+                    "target": target,
+                    "meets": value >= target,
+                    "short_2se": value < target - 2 * se,
+                }
+            cell["meets"] = all(cell[which]["meets"] for which in targets)
+            cells.append(cell)
+        checks.append(
+            {
+                "looks": looks,
+                "interval": interval,
+                "rule": rule,
+                "alpha": alpha,
+                "floor": floor,
+                "secondary_interval": name,
+                "level": SECONDARY_LEVEL,
+                "cells": cells,
+                "meets": all(c["meets"] for c in cells),
+                "failing": [
+                    f"{c['shape']} {sd_label(c['shape'], c['sd'])}" for c in cells if not c["meets"]
+                ],  # fmt: skip
+            }
+        )
+    return checks
+
+
 BIAS_FIELDS = {"family", "miss", "w_max", "delta", "sd", "reps", "postpone", "group"}
 
 
@@ -2045,15 +2338,20 @@ class RunSettings:
     resamples: int = BOOTSTRAP_RESAMPLES  # bootstrap-t, per look and replicate
     rules: tuple[str, ...] = ("standard",)
     prescreen: bool = False  # simulate only the studies that pass the validation gate
+    # The secondary contrasts' intervals; the first is the one the rows' secondary_coverage reads.
+    secondary_intervals: tuple[str, ...] = ("t",)
 
     def __post_init__(self) -> None:
         unknown = (
             set(self.intervals) - set(INTERVALS)
+            | set(self.secondary_intervals) - set(INTERVALS)
             | set(self.designs) - set(DESIGNS_BY_NAME)
             | set(self.rules) - set(RULES)
         )
         if unknown:
             raise ValueError(f"Unknown intervals, look designs or rules: {sorted(unknown)}")
+        if not self.secondary_intervals:
+            raise ValueError("At least one secondary interval is needed")
 
     @property
     def look_designs(self) -> tuple[LookDesign, ...]:
@@ -2102,6 +2400,28 @@ def _replicate_task(task: tuple[Scenario, Parameters, int, int, RunSettings]):
             seconds=data.seconds + time.perf_counter() - clock,
             cpu_seconds=data.cpu_seconds + cpu,
             bootstrap_cpu_seconds=cpu,
+        )
+    if "bootstrap_t" in settings.secondary_intervals:
+        clock, cpu = time.perf_counter(), time.process_time()
+        quantiles, dropped = secondary_bootstrap_tables(
+            scenario,
+            data.primary,
+            data.secondary,
+            data.rep_ids,
+            designs=settings.look_designs,
+            floors=settings.floors,
+            resamples=settings.resamples,
+            base_seed=settings.base_seed,
+            stream=settings.stream,
+        )
+        cpu = time.process_time() - cpu
+        data = replace(
+            data,
+            secondary_bootstrap=quantiles,
+            secondary_dropped=dropped,
+            seconds=data.seconds + time.perf_counter() - clock,
+            cpu_seconds=data.cpu_seconds + cpu,
+            secondary_bootstrap_cpu_seconds=cpu,
         )
     return scenario.name, start, data
 
@@ -2180,6 +2500,17 @@ def run_scenarios(
                     np.concatenate([c.gate_supported for c in chunks]),
                     np.concatenate([c.rep_ids for c in chunks]),
                     sum(c.screened for c in chunks),
+                    secondary_bootstrap={
+                        k: np.concatenate([c.secondary_bootstrap[k] for c in chunks])
+                        for k in chunks[0].secondary_bootstrap
+                    },
+                    secondary_dropped={
+                        k: np.concatenate([c.secondary_dropped[k] for c in chunks])
+                        for k in chunks[0].secondary_dropped
+                    },
+                    secondary_bootstrap_cpu_seconds=sum(
+                        c.secondary_bootstrap_cpu_seconds for c in chunks
+                    ),
                 )
                 scenario = by_name[name]
                 if merged.started.size:
@@ -2193,6 +2524,7 @@ def run_scenarios(
                         settings.look_designs,
                         settings.intervals,
                         settings.rules,
+                        settings.secondary_intervals,
                     )
                 else:  # a prescreen that kept no study
                     summary = {

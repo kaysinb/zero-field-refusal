@@ -31,15 +31,21 @@ mode but the decided ones evaluates by default every look design (24/50, 36/60, 
   ``DECIDED_W_MAX``), and for decided and decided-gate the pointwise readings with
   b = ``DECIDED_ALLOWANCE``; decided-bias measures b and takes none, as revision 5 did.
   decided-gate runs 5 000 replicates per worker task.
+- decided-secondary: the secondary check of 2026-10-17, on the new ``secondary`` stream: the
+  decided design over every shape × SD at Δ ∈ {0, ±5} (10 000 replicates each), with the
+  secondary contrasts' t and bootstrap-t intervals side by side (--secondary-intervals); the
+  verdict ``secondary_checks`` gives per shape × SD the worst coverage over Δ of each contrast
+  and of both jointly, against 97.5 % and 95 %.
 - smoke: one reduced scenario per shape and per revision-1 addition.
 
 --looks restricts the look designs evaluated; --intervals picks t and/or bootstrap_t (the
 studentized bootstrap of the mean with --bootstrap resamples per look and replicate, computed in
-the workers). A calibrate run selects α per look design × interval × SE floor. --rules adds
-``eq_min36`` (equivalence only at a look with ≥ 36 supported blocks); --floors restricts the SE
-floors; --exact-alphas evaluates exactly --alphas (otherwise α = 0.05, or the decided α in the
-decided modes, and the selected α's are added). Every mode also simulates the 12-block
-validation gate.
+the workers); --secondary-intervals does the same for the secondary contrasts (default t;
+decided-secondary: t and bootstrap_t, with --bootstrap resamples per contrast). A calibrate run
+selects α per look design × interval × SE floor. --rules adds ``eq_min36`` (equivalence only at
+a look with ≥ 36 supported blocks); --floors restricts the SE floors; --exact-alphas evaluates
+exactly --alphas (otherwise α = 0.05, or the decided α in the decided modes, and the selected
+α's are added). Every mode also simulates the 12-block validation gate.
 
 Revision 5, the decided design, ran on 2026-10-16 (archived under
 runs/analysis/study2_short_sim/2026-10-16/, inventory
@@ -102,6 +108,7 @@ GRIDS = {
     "decided-bias": sim.decided_bias_grid,
     "decided": sim.decided_grid,
     "decided-gate": sim.decided_gate_grid,
+    "decided-secondary": sim.decided_secondary_grid,
     "bias": sim.bias_grid,
     "smoke": sim.smoke_grid,
 }
@@ -115,12 +122,15 @@ STREAMS = {
     "decided-bias": "confirmation",
     "decided": "confirmation",
     "decided-gate": "confirmation",
+    "decided-secondary": "secondary",
     "bias": "bias",
     "smoke": "smoke",
 }
 DESIGNS = ("interp", "interp_grid")
-DECIDED_MODES = ("decided-bias", "decided", "decided-gate")  # revision 5: the decided design
-ALLOWANCE_MODES = ("decided", "decided-gate")  # b = DECIDED_ALLOWANCE by default
+# The decided design (revision 5's modes and the secondary check).
+DECIDED_MODES = ("decided-bias", "decided", "decided-gate", "decided-secondary")
+ALLOWANCE_MODES = ("decided", "decided-gate", "decided-secondary")  # b = DECIDED_ALLOWANCE
+SECONDARY_MODES = ("decided-secondary",)  # t and bootstrap-t secondaries by default
 CHUNK = 250  # replicates per worker task
 GATE_CHUNK = 5000  # decided-gate: most replicates are a validation gate only
 
@@ -140,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         choices=sim.INTERVALS,
         help="default: t; decided modes: bootstrap_t",
+    )
+    parser.add_argument(
+        "--secondary-intervals",
+        nargs="+",
+        choices=sim.INTERVALS,
+        help="secondary contrasts' intervals (default: t; decided-secondary: t bootstrap_t)",
     )
     parser.add_argument("--bootstrap", type=int, default=sim.BOOTSTRAP_RESAMPLES, help="resamples")
     parser.add_argument(
@@ -232,6 +248,11 @@ def main(argv: list[str] | None = None) -> None:
             "intervals": list(settings.intervals),
             "rules": list(settings.rules),
             "prescreen": settings.prescreen,
+            **(
+                {"secondary_intervals": list(settings.secondary_intervals)}
+                if settings.secondary_intervals != ("t",)
+                else {}
+            ),
             "resamples": settings.resamples,
             "alphas": list(settings.alphas),
             "allowance": settings.allowance,
@@ -274,6 +295,9 @@ def run_settings(
     else:
         floors = (sim.DECIDED_SE_FLOOR,) if decided else sim.SE_FLOORS
     chunk = args.chunk or (GATE_CHUNK if args.mode == "decided-gate" else CHUNK)
+    secondary = args.secondary_intervals or (
+        ["t", "bootstrap_t"] if args.mode in SECONDARY_MODES else ["t"]
+    )
     return sim.RunSettings(
         stream=STREAMS[args.mode],
         alphas=alphas,
@@ -289,6 +313,7 @@ def run_settings(
         rules=tuple(dict.fromkeys(rules)),
         floors=floors,
         prescreen=args.mode == "decided-gate",
+        secondary_intervals=tuple(dict.fromkeys(secondary)),
     )
 
 
@@ -354,6 +379,9 @@ def verdicts(mode: str, scenarios: list[dict], selection: dict) -> dict:
         found["selection"] = sim.select_levels(scenarios)
     else:
         found["checks"] = sim.validation_checks(scenarios, selection)
+    secondary = sim.secondary_checks(scenarios)
+    if secondary:  # runs with secondary intervals other than t alone
+        found["secondary_checks"] = secondary
     return found
 
 
@@ -415,6 +443,24 @@ def markdown(summary: dict) -> str:
         parts += ["", "## Constraint checks", "", checks_table(summary["checks"])]
     if summary["bias_allowance"]["per_w_max"]:
         parts += ["", "## Bias allowance", "", allowance_table(summary["bias_allowance"])]
+    if "secondary_checks" in summary:
+        parts += [
+            "",
+            "## Secondary coverage",
+            "",
+            "Coverage of the secondary contrasts' pointwise truths at the look where the primary "
+            f"stopped, {100 * sim.SECONDARY_LEVEL:.2f} % intervals per contrast and look; the "
+            f"worst over Δ per shape × SD (Δ of the worst in brackets). Targets "
+            f"{100 * sim.SECONDARY_MARGINAL_TARGET:.1f} % per contrast and "
+            f"{100 * sim.SECONDARY_JOINT_TARGET:.1f} % jointly; * marks a value below its "
+            "target, ** one more than 2 MC SE below it.",
+            "",
+            secondary_checks_table(summary["secondary_checks"]),
+            "",
+            "Per scenario (coverage of the truth; A−P also of its block mean):",
+            "",
+            secondary_results_table(summary),
+        ]
     parts += ["", "## Results", "", results_table(summary)]
     parts += ["", "## Block diagnostics", "", diagnostics_table(summary["scenarios"])]
     return "\n".join(parts) + "\n"
@@ -549,6 +595,63 @@ def results_table(summary: dict) -> str:
               "bias vs interp",
               "pointwise eq/dir+/dir−", "cohort width", "straddle ±5", "cov P−F", "cov A−P",
               "reps"]  # fmt: skip
+    return table(header, rows)
+
+
+def _worst_cell(item: dict) -> str:
+    mark = "**" if item["short_2se"] else "*" if not item["meets"] else ""
+    return f"{pp(item['value'])}{mark} ({pp(item['delta'], 0)})"
+
+
+def secondary_checks_table(checks: list[dict]) -> str:
+    """Per primary design × rule and shape × SD, the worst coverage over Δ of each secondary
+    interval side by side."""
+    names = list(dict.fromkeys(c["secondary_interval"] for c in checks))
+    primary = list(dict.fromkeys(
+        (c["looks"], c["interval"], c["rule"], c["alpha"], c["floor"]) for c in checks
+    ))  # fmt: skip
+    rows = []
+    for key in primary:
+        mine = {
+            c["secondary_interval"]: c
+            for c in checks
+            if (c["looks"], c["interval"], c["rule"], c["alpha"], c["floor"]) == key
+        }
+        cells = {name: {(c["shape"], c["sd"]): c for c in mine[name]["cells"]} for name in mine}
+        for shape, sd in cells[names[0]]:
+            row = [key[0], key[1], key[2], f"{key[3]:.4f}", shape, "–" if shape == "rare_only"
+                   else pp(sd, 0)]  # fmt: skip
+            for name in names:
+                cell = cells[name][(shape, sd)]
+                row += [_worst_cell(cell[which]) for which in (*sim.SECONDARY_CONTRASTS, "joint")]
+            rows.append(row)
+    header = ["looks", "interval", "rule", "α", "shape", "SD"]
+    for name in names:
+        header += [f"{name} P−F", f"{name} A−P", f"{name} joint"]
+    return table(header, rows)
+
+
+def secondary_results_table(summary: dict) -> str:
+    rows = []
+    for s in summary["scenarios"]:
+        for r in s["results"]:
+            for name, c in (r.get("secondary_coverage_by_interval") or {}).items():
+                rows.append(
+                    [
+                        s["name"],
+                        r["rule"],
+                        name,
+                        f"{pp(c['P-F']['truth'])} ({pp(c['P-F']['truth_se'])})",
+                        f"{pp(c['A-P']['truth'])} ({pp(c['A-P']['truth_se'])})",
+                        f"{pp(c['joint']['truth'])} ({pp(c['joint']['truth_se'])})",
+                        pp(c["A-P"]["block_mean"]),
+                        pp(r["p_look1_stop"]),
+                        f"{r['mean_three_arm_blocks']:.1f}",
+                        str(s["reps"]),
+                    ]
+                )
+    header = ["scenario", "rule", "secondary", "P−F", "A−P", "joint", "A−P (block mean)",
+              "look-1 stop", "E 3-arm blocks", "reps"]  # fmt: skip
     return table(header, rows)
 
 

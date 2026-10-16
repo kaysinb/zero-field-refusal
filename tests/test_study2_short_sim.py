@@ -356,6 +356,142 @@ def test_bootstrap_resamples_do_not_depend_on_the_other_designs() -> None:
         np.testing.assert_array_equal(both[key], alone[key])
 
 
+def normal_secondaries(reps: int, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Primary (R, CAP) and secondary (R, CAP, 2) block differences, normal with SD 5 pp; P is
+    unsupported in 10 % of the blocks. Returns them and the secondary truths."""
+    rng = np.random.default_rng(seed)
+    truth = np.array([0.01, -0.02])
+    primary = 0.05 * rng.standard_normal((reps, CAP))
+    secondary = truth + 0.05 * rng.standard_normal((reps, CAP, 2))
+    secondary[rng.random((reps, CAP)) < 0.1] = np.nan
+    return primary, secondary, truth
+
+
+def test_bootstrap_t_secondary_coverage_is_near_nominal_on_normal_data() -> None:
+    reps = 500
+    primary, secondary, truth = normal_secondaries(reps, seed=4)
+    design = sim.DESIGNS_BY_NAME["36_60"]
+    quantiles, dropped = sim.secondary_bootstrap_tables(
+        Scenario(), primary, secondary, range(reps), designs=(design,), floors=(0.0,),
+        resamples=1000, base_seed=0, stream="test",
+    )  # fmt: skip
+    assert set(quantiles) == {"36_60:0", "36_60:1"} and not any(d.any() for d in dropped.values())
+    stats = look_statistics(primary, secondary, sizes=design.sizes)
+    boot = sim.secondary_bootstrap_bounds(stats, design, 0, 0.0, quantiles)
+    t = sim.secondary_t_bounds(stats)
+    covered = {
+        name: np.stack([(low <= truth) & (truth <= high) for low, high in bounds])
+        for name, bounds in (("bootstrap_t", boot), ("t", t))
+    }  # (looks, R, contrasts)
+    se = math.sqrt(sim.SECONDARY_LEVEL * (1 - sim.SECONDARY_LEVEL) / covered["t"].size)
+    assert covered["bootstrap_t"].mean() == pytest.approx(sim.SECONDARY_LEVEL, abs=3 * se)
+    assert covered["bootstrap_t"].mean() == pytest.approx(covered["t"].mean(), abs=3 * se)
+    # Each contrast is read on the look's three-arm cohort: the t bounds equal t_interval there.
+    low, high = t_interval(stats.secondary_mean[:, 1, 0], stats.secondary_sd[:, 1, 0],
+                           stats.secondary_n[:, 1], sim.SECONDARY_LEVEL)  # fmt: skip
+    np.testing.assert_array_equal(t[1][0][:, 0], low)
+    np.testing.assert_array_equal(t[1][1][:, 0], high)
+    # The decisions read the bounds of the look where the primary stopped.
+    d = sequential_decisions(stats, design.levels(0.04), secondary_bounds=boot)
+    first = d.look == 1
+    assert first.any() and (~first).any()
+    np.testing.assert_array_equal(d.secondary_low[first], boot[0][0][first])
+    np.testing.assert_array_equal(d.secondary_high[~first], boot[1][1][~first])
+
+
+def test_secondary_bootstrap_streams_are_per_replicate_and_contrast() -> None:
+    primary, secondary, _ = normal_secondaries(3, seed=5)
+    secondary[..., 1] = secondary[..., 0]  # equal values: only the stream tells them apart
+    kwargs = dict(
+        designs=(sim.DESIGNS_BY_NAME["36_60"],), floors=(0.0,), resamples=200, base_seed=0,
+        stream="test",
+    )  # fmt: skip
+    whole, _ = sim.secondary_bootstrap_tables(Scenario(), primary, secondary, range(3), **kwargs)
+    last, _ = sim.secondary_bootstrap_tables(
+        Scenario(), primary[2:], secondary[2:], range(2, 3), **kwargs
+    )
+    np.testing.assert_array_equal(whole["36_60:1"][2:], last["36_60:1"])
+    assert not np.array_equal(whole["36_60:1"][:, 0], whole["36_60:1"][:, 1])
+
+
+def test_t_secondary_results_are_unchanged_by_the_bootstrap_option() -> None:
+    """The default (t) secondaries give the rows of revisions 1–5; adding bootstrap-t only adds
+    the per-interval coverage, whose t part is the default's."""
+    scenario = Scenario(delta=0.05, shape="rare_centered", sd=0.10, w_max=0.47)
+    params = solve_parameters(scenario, 2.0)
+    data = simulate_replicates(scenario, params, range(12), base_seed=0, stream="test")
+    design = sim.DESIGNS_BY_NAME["36_60"]
+    tables = dict(designs=(design,), floors=(0.0,), resamples=300, base_seed=0, stream="test")
+    primary, dropped = sim.bootstrap_tables(
+        scenario, data.primary, range(12), alphas=(0.04,), **tables
+    )
+    secondary, secondary_dropped = sim.secondary_bootstrap_tables(
+        scenario, data.primary, data.secondary, range(12), **tables
+    )
+    data = dataclasses.replace(
+        data,
+        bootstrap=primary,
+        dropped=dropped,
+        secondary_bootstrap=secondary,
+        secondary_dropped=secondary_dropped,
+    )
+
+    def rows(secondary_intervals: tuple[str, ...]) -> list[dict]:
+        summary = sim.summarize_scenario(
+            scenario, params, data, (0.04,), (0.0,), designs=(design,),
+            intervals=("t", "bootstrap_t"), rules=sim.RULES,
+            secondary_intervals=secondary_intervals,
+        )  # fmt: skip
+        return summary["results"]
+
+    default, both, boot_first = rows(("t",)), rows(("t", "bootstrap_t")), rows(("bootstrap_t",))
+    assert all("secondary_coverage_by_interval" not in r for r in default)
+    for plain, extended, other in zip(default, both, boot_first, strict=True):
+        by_interval = extended.pop("secondary_coverage_by_interval")
+        assert extended == plain
+        assert {k: v for k, v in by_interval["t"].items() if k != "joint"} == plain[
+            "secondary_coverage"
+        ]
+        assert set(by_interval["bootstrap_t"]) == {"P-F", "A-P", "joint"}
+        assert other["secondary_coverage"] == {
+            k: v for k, v in other["secondary_coverage_by_interval"]["bootstrap_t"].items()
+            if k != "joint"
+        }  # fmt: skip
+        assert other["p_equivalence"] == plain["p_equivalence"]
+    # The t intervals per look, read at the stopping look, are the default's bit for bit.
+    stats = look_statistics(data.primary, data.secondary, sizes=design.sizes)
+    plain = sequential_decisions(stats, design.levels(0.04))
+    per_look = sequential_decisions(
+        stats, design.levels(0.04), secondary_bounds=sim.secondary_t_bounds(stats)
+    )
+    np.testing.assert_array_equal(plain.secondary_low, per_look.secondary_low)
+    np.testing.assert_array_equal(plain.secondary_high, per_look.secondary_high)
+
+
+def test_secondary_checks_take_the_worst_coverage_over_delta() -> None:
+    def scenario(delta: float, a_p: float, joint: float) -> dict:
+        coverage = {"P-F": 0.99, "A-P": a_p, "joint": joint}
+        return {
+            "name": f"s{delta}",
+            "settings": {"shape": "skewed", "sd": 0.15, "delta": delta},
+            "reps": 10_000,
+            "results": [{
+                "looks": "36_60", "interval": "bootstrap_t", "rule": "eq_min36", "alpha": 0.04,
+                "floor": 0.0, "secondary_coverage_by_interval": {"bootstrap_t": {
+                    k: {"truth": v, "truth_se": math.sqrt(v * (1 - v) / 10_000)}
+                    for k, v in coverage.items()
+                }},
+            }],
+        }  # fmt: skip
+
+    (check,) = sim.secondary_checks([scenario(0.0, 0.98, 0.97), scenario(-0.05, 0.972, 0.962)])
+    (cell,) = check["cells"]
+    assert cell["A-P"]["value"] == 0.972 and cell["A-P"]["delta"] == -0.05
+    assert not cell["A-P"]["meets"] and not cell["A-P"]["short_2se"]  # 0.3 pp ≈ 1.9 SE below
+    assert cell["joint"]["meets"] and cell["P-F"]["meets"]
+    assert not check["meets"] and check["failing"] == ["skewed sd15"]
+
+
 def test_streams_are_seeded_from_the_full_digest() -> None:
     a, b = sim.seed_sequence(0, "validation", "x", 1), sim.seed_sequence(0, "validation", "x", 1)
     assert np.array_equal(a.entropy, b.entropy) and a.entropy.size == 8  # 256 bits
@@ -497,8 +633,9 @@ def test_the_decided_modes_default_to_the_decided_design() -> None:
 
     for mode in script.DECIDED_MODES:
         found = settings(mode)
+        stream = "secondary" if mode == "decided-secondary" else "confirmation"
         assert (found.stream, found.designs, found.intervals, found.resamples) == (
-            "confirmation", ("36_60",), ("bootstrap_t",), 2000
+            stream, ("36_60",), ("bootstrap_t",), 2000
         )  # fmt: skip
         assert (found.alphas, found.floors, found.rules) == (
             (0.04,), (0.0,), ("standard", "eq_min36")
@@ -506,6 +643,8 @@ def test_the_decided_modes_default_to_the_decided_design() -> None:
         assert found.allowance == (None if mode == "decided-bias" else sim.DECIDED_ALLOWANCE)
         assert found.prescreen == (mode == "decided-gate")
         assert found.chunk == (5000 if mode == "decided-gate" else 250)
+        secondary = ("t", "bootstrap_t") if mode == "decided-secondary" else ("t",)
+        assert found.secondary_intervals == secondary
     # Flags still override, and the other modes keep their own defaults.
     assert settings("decided", "--intervals", "t", "--allowance", "0.01").intervals == ("t",)
     assert settings("decided", "--alphas", "0.05").alphas == (0.04, 0.05)
@@ -513,6 +652,34 @@ def test_the_decided_modes_default_to_the_decided_design() -> None:
     assert other.designs == tuple(d.name for d in sim.LOOK_DESIGNS)
     assert (other.intervals, other.rules, other.alphas) == (("t",), ("standard",), (0.05,))
     assert other.floors == sim.SE_FLOORS and other.allowance is None and other.chunk == 250
+    assert other.secondary_intervals == ("t",)
+    assert settings("decided", "--secondary-intervals", "bootstrap_t").secondary_intervals == (
+        "bootstrap_t",
+    )
+
+
+def test_the_secondary_check_runs_on_its_own_stream(tmp_path: Path) -> None:
+    script = load_script()
+    assert "secondary" not in {"calibration", "validation", "confirmation"}
+    grid = sim.decided_secondary_grid()
+    assert len(grid) == (4 * 4 + 1) * 3 and {s.reps for s in grid} == {10_000}
+    assert {s.name for s in grid} <= {s.name for s in sim.decided_grid()}
+    out = tmp_path / "secondary"
+    script.main(
+        ["decided-secondary", "--scenarios", "*_skewed_*_sd5_d+0*", "--reps", "4", "--workers",
+         "1", "--spread-replicates", "3", "--spread-blocks", "30", "--bootstrap", "100",
+         "--out", str(out)]
+    )  # fmt: skip
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["settings"]["stream"] == "secondary"
+    assert summary["settings"]["secondary_intervals"] == ["t", "bootstrap_t"]
+    (scenario,) = summary["scenarios"]
+    assert set(scenario["diagnostics"]["secondary_bootstrap_dropped"]) == {"36_60:0", "36_60:1"}
+    checks = summary["secondary_checks"]
+    assert {(c["rule"], c["secondary_interval"]) for c in checks} == {
+        (r, i) for r in sim.RULES for i in ("t", "bootstrap_t")
+    }
+    assert "## Secondary coverage" in (out / "results.md").read_text()
 
 
 def test_validation_gate_counts_jointly_supported_blocks() -> None:
