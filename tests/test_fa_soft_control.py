@@ -39,7 +39,8 @@ def test_the_campaign_must_set_a_positive_contamination_bound(bound: float | Non
 
 @pytest.mark.parametrize("name", ["adamw", "adamw_prewarmed"])
 @pytest.mark.parametrize("version", [1, 2, 3])
-def test_other_adam_variants_stay_rejected_under_soft_targets(tmp_path: Path, name: str, version: int
+def test_other_adam_variants_stay_rejected_under_soft_targets(
+    tmp_path: Path, name: str, version: int
 ) -> None:
     path = experiment(tmp_path, "control/soft_targets")
     overrides = [*THRESHOLDS, f"optimizer={name}", "optimizer.lr=1e-5",
