@@ -596,12 +596,19 @@ def validate_samples(samples: Sequence[Sample], end_ids: Sequence[int], cap: int
 # Streams. A stream's directory is named by the hash of everything that determines its samples, so
 # a changed model, prompt set or sampling setting can never reuse old samples.
 STREAM_KINDS = ("training", "preconditioner", "kl_harmful", "kl_benign", "kl_monitor",
-                "soft_targets", "alpaca_reference")  # fmt: skip
+                "soft_targets", "alpaca_reference", "curvature_panel")  # fmt: skip
 # K's reference streams: sampled once per model, each from its own seeds. kl_monitor is the monitor
 # panel of study 2, independent of the scoring panel (kl_benign) in randomness: in version 1 also
 # disjoint in prompts; in version 2 (amendment 1) fresh θ₀ responses to the scoring panel's own
 # prompts, with seeds of their own.
 REFERENCE_KINDS = ("kl_harmful", "kl_benign", "kl_monitor")
+# The panel of the endpoint Rayleigh quotient (curvature.endpoint_rayleigh): zero-field θ₀
+# responses to the teacher prompts, iid as a training stream's, from the seeds of
+# derive_seed(0, "curvature_panel", …), so that no run trains on them; one panel per model.
+PANEL_KINDS = ("curvature_panel",)
+# Streams that measure rather than train: sampled once per model, at the zero field whatever
+# control a run declares, from seeds of their own; their directory takes no run seed.
+INSTRUMENT_KINDS = (*REFERENCE_KINDS, *PANEL_KINDS)
 
 
 def prompt_set_digest(items: Sequence[Mapping[str, Any]]) -> str:
@@ -616,8 +623,8 @@ def prompt_set_digest(items: Sequence[Mapping[str, Any]]) -> str:
 def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Everything that determines a stream's samples, given its prompt set ``items``.
 
-    K's reference streams always use zero-field sampling, whatever control a run declares: they are
-    the measuring instrument shared by all runs of a model.
+    K's reference streams and the curvature panel always use zero-field sampling, whatever control
+    a run declares: they are measuring instruments shared by all runs of a model.
     """
     if kind not in STREAM_KINDS:
         raise ValueError(f"Unknown stream kind {kind!r}; known: {STREAM_KINDS}")
@@ -653,6 +660,14 @@ def stream_spec(cfg: Any, kind: str, items: Sequence[Mapping[str, Any]]) -> dict
         version = monitor_version(cfg)
         if version > 1:  # version 1's spec, and so its stream, stays as it was
             spec["monitor_version"] = version
+    elif kind == "curvature_panel":  # the teacher's cap: the training loss truncates it alike
+        responses = OmegaConf.select(cfg, "eval.rayleigh.responses", default=None)
+        if not (isinstance(responses, int) and not isinstance(responses, bool) and responses > 0):
+            raise ValueError("A curvature_panel stream needs eval.rayleigh.responses, a positive "
+                             f"integer (eval/rayleigh), got {responses!r}")  # fmt: skip
+        cap = int(cfg.teacher.sampling.max_new_tokens)
+        spec["sampling"] = {**zero_field, "max_new_tokens": cap}
+        spec["responses"] = responses
     else:  # alpaca_reference: reference answers, truncated to the sampling cap
         spec["max_new_tokens"] = int(cfg.teacher.sampling.max_new_tokens)
         spec["responses"] = int(cfg.teacher.responses)
@@ -677,12 +692,15 @@ def stream_seeds(kind: str, seed: int | None, *, version: int = 1) -> tuple[int,
     """Seeds of the prompt draws and of sampling for a stream.
 
     K's reference streams are sampled once per model, independently of any run seed; a monitor
-    panel of a later ``version`` has seeds of its own.
+    panel of a later ``version`` has seeds of its own. So is the curvature panel, under its own
+    name: ``derive_seed(0, "curvature_panel", "prompts" | "sampling")``.
     """
     if kind in REFERENCE_KINDS:
         name = (kind,) if version == 1 else (kind, f"v{version}")
         return (derive_seed(0, "kl_reference", *name, "prompts"),
                 derive_seed(0, "kl_reference", *name))  # fmt: skip
+    if kind in PANEL_KINDS:
+        return derive_seed(0, kind, "prompts"), derive_seed(0, kind, "sampling")
     if seed is None:
         raise ValueError(f"A {kind} stream needs a run seed")
     name = "teacher" if kind in ("training", "soft_targets") else kind

@@ -57,6 +57,7 @@ import torch
 from omegaconf import DictConfig
 from transformers import PreTrainedModel
 
+from .curvature import displacement_in_place, rayleigh_panel, record_endpoint_rayleigh
 from .models import freeze
 from .optim import ADAM_MODES, build_optimizer
 from .panels import CacheMismatch, Monitor, ScoringDiagnostics, cache_check
@@ -284,6 +285,7 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         params = [p for _, p in trainable]
         theta0 = dict(reference.named_parameters())
         evaluate = Evaluator(cfg, env, run, reference, sealed=True)  # fails early on inputs
+        panel = rayleigh_panel(cfg, env, run)  # None unless eval.rayleigh.enabled
         monitor = Monitor(cfg, env, run, reference)
         diagnostics = ScoringDiagnostics(cfg, env, run, reference) if monitor.version > 1 else None
         feed = BatchFeed(cfg, env, run, reference, extend=schedule.extend_stream)
@@ -350,6 +352,13 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
                 "max_abs": max(r["max_abs"] for r in replayer.records),
                 "digest_equal": sum(r["digest_equal"] for r in replayer.records),
             }})  # fmt: skip
+        if panel is not None:  # the endpoint Rayleigh quotient, once the run is over
+            delta = displacement_in_place(trainable, theta0)  # the student now holds θ_end − θ₀
+            # The optimizer state, the panels and their caches, and the student's other tensors
+            # are not needed for the product: free them before it.
+            del optimizer, loop, release, evaluate, monitor, diagnostics, feed, replayer
+            del directions, student, trainable, params
+            record_endpoint_rayleigh(cfg, env, run, reference, delta, *panel)
         return run.dir
 
 

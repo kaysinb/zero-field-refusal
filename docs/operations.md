@@ -155,6 +155,17 @@ until the stream holds N responses (default `teacher.responses`); existing chunk
 Stage-A curvature measurement reads such a stream:
 `python scripts/curvature.py experiments/<name> seed=<seed>` (settings in `--help`).
 
+The endpoint Rayleigh quotient of study-2 runs (`eval/rayleigh`, off unless an experiment lists
+it under `defaults`) reads the curvature panel, one stream per model and no run seed. Generate it
+once on a GPU, before any run that measures R, from such an experiment, and archive it with its
+own inventory like the monitor stream; a run that measures R without it stops before it trains.
+At 1.5B with 100 responses its directory is
+`teacher/Qwen--Qwen2.5-1.5B-Instruct/curvature_panel/9fff8e13183a/reference`.
+
+```bash
+python scripts/generate_teacher.py experiments/<name> --stream curvature_panel
+```
+
 `prepare_data.py` caches the pinned source CSVs in `DATA_DIR/sources/` and refuses to overwrite a
 complete build without `--force`. Stream directories are named by a hash of everything that
 determines their samples; an existing stream is never regenerated. A stream is published by
@@ -442,7 +453,10 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   a run as done once its whole records agree with that terminal record (the checks of
   `analysis.stage_a.load_trajectory`: readings, steps, evaluations and their stored responses,
   levels, the stream prefix), with or without evaluations, and whatever its status says if
-  logging or finalization failed after the record was published.
+  logging or finalization failed after the record was published. With `eval.rayleigh` enabled
+  it also needs a readable `rayleigh.json`: the measurement follows the published outcome, so a
+  run whose measurement failed (out of memory, say) stops the campaign as a conflict, neither
+  skipped nor rerun.
 - **Gate runs:** commit and push all changes first, then run from a clone or bundle of that
   commit. Gate runs set `tracking.require_clean_git: true` and do not start from a dirty working
   tree. Model revisions are pinned to commit hashes in `configs/model/`.

@@ -18,8 +18,8 @@ and attempts recorded in the launch logs ``RUNS_DIR/launch/*.jsonl`` — decides
 (``assess``):
 - one *qualifying* completed run — its ``tracking.gate`` as the campaign's config says, a recorded
   commit and a clean tree when ``tracking.require_clean_git`` is set, a ``summary.json`` with a
-  finite, non-negative K, and its responses file; for a study-2 schedule, its terminal record —
-  makes the run done: skipped;
+  finite, non-negative K, and its responses file; for a study-2 schedule, its terminal record (and,
+  with ``eval.rayleigh`` enabled, its ``rayleigh.json``) — makes the run done: skipped;
 - a ``diverged`` run (a non-finite training loss or K) is an outcome: never rerun;
 - a completed run that does not qualify, or two completed runs, stop the whole campaign before
   anything starts: running again would leave two runs of the seed for the analysis;
@@ -245,6 +245,11 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
             load_trajectory(run_dir)
         except TrajectoryError as exc:
             return f"a scheduled run's records are incomplete: {exc}"
+        # The endpoint Rayleigh quotient follows the published outcome: a run whose measurement
+        # failed holds its outcome but not what its config asked for.
+        rayleigh = OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False)
+        if rayleigh and _read_json(run_dir / "rayleigh.json") is None:
+            return "eval.rayleigh is enabled, but rayleigh.json is missing or unreadable"
         return None
     summary = _read_json(run_dir / "summary.json")
     k = None if summary is None else summary.get("K_harmful")

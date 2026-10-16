@@ -167,6 +167,7 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         )
 
     problems += _schedule_problems(cfg, layout, steps)
+    problems += _rayleigh_problems(cfg)
 
     # Loss: summed NLL over a constant (invariant 5), including the sampled end token.
     expect(
@@ -284,6 +285,30 @@ def _schedule_problems(cfg: DictConfig, layout: Any, steps: Any) -> list[str]:
     if not (isinstance(every, int) and every > 0):
         problems.append(f"eval.monitor.every: a scheduled run reads the monitor, got {every!r}")
     return problems + _monitor_problems(cfg, every)
+
+
+def _rayleigh_problems(cfg: DictConfig) -> list[str]:
+    """The endpoint Rayleigh quotient (``eval.rayleigh``, curvature.endpoint_rayleigh): measured
+    by study-2 runs on a curvature panel of a positive size, for the constant denominator."""
+    rayleigh = OmegaConf.select(cfg, "eval.rayleigh", default=None)
+    if rayleigh is None:
+        return []
+    if not isinstance(rayleigh, DictConfig):
+        return [f"eval.rayleigh: expected a mapping, got {rayleigh!r}"]
+    enabled = rayleigh.get("enabled")
+    if not isinstance(enabled, bool):
+        return [f"eval.rayleigh.enabled: expected true or false, got {enabled!r}"]
+    if not enabled:
+        return []
+    problems = []
+    if OmegaConf.select(cfg, "schedule", default=None) is None:
+        problems.append("eval.rayleigh: measured by scheduled (study-2) runs only")
+    responses = rayleigh.get("responses")
+    if not (isinstance(responses, int) and not isinstance(responses, bool) and responses > 0):
+        problems.append(f"eval.rayleigh.responses: expected a positive integer, got {responses!r}")
+    if OmegaConf.select(cfg, "train.loss.normalization") != "constant":
+        problems.append("eval.rayleigh: the Hessian is that of the constant denominator")
+    return problems
 
 
 MONITOR_CACHES = ("device", "host", "none")

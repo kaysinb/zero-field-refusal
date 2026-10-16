@@ -24,7 +24,7 @@ from . import models
 from .paths import data_root
 from .teacher import (
     CHUNK_PREFIX,
-    REFERENCE_KINDS,
+    INSTRUMENT_KINDS,
     DistributionBuffer,
     Sample,
     StreamError,
@@ -112,10 +112,11 @@ def prompt_set_of(cfg: DictConfig, kind: str) -> str:
 
 
 def locate_stream(cfg: DictConfig, env: Environment, kind: str, seed: int | None):
-    """(spec, path, prompt items) of a stream; K's reference streams take no seed."""
+    """(spec, path, prompt items) of a stream; K's reference streams and the curvature panel
+    take no seed."""
     items = env.prompt_set(prompt_set_of(cfg, kind))
     spec = stream_spec(cfg, kind, items)
-    seed = None if kind in REFERENCE_KINDS else seed
+    seed = None if kind in INSTRUMENT_KINDS else seed
     return spec, stream_path(spec, seed, env.data_root), items
 
 
@@ -167,7 +168,7 @@ def generate_stream(
         samples, _ = sample_responses(
             model, prompts, [items[i]["id"] for i in indices], sampling=spec["sampling"],
             end_ids=env.end_ids, pad_id=env.pad_id, seed=sampling_seed, batch_size=batch_size,
-            zero_field=cfg.control != "sharpened_sampling" or kind.startswith("kl_"),
+            zero_field=cfg.control != "sharpened_sampling" or kind in INSTRUMENT_KINDS,
             on_chunk_distributions=buffer.append if kind == "soft_targets" else None,
         )  # fmt: skip
     manifest = _generation_manifest(
@@ -211,7 +212,7 @@ def _generation_manifest(
             None if model is None else _diff_dict(model.generation_config.to_diff_dict())
         ),
         "zero_field_checked": kind != "alpaca_reference"
-        and (cfg.control != "sharpened_sampling" or kind.startswith("kl_")),
+        and (cfg.control != "sharpened_sampling" or kind in INSTRUMENT_KINDS),
         "started_at": started,
         "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "python": platform.python_version(),
@@ -517,7 +518,7 @@ def _check_manifest(
         raise StreamError(f"{path}: manifest spec differs from the config's spec")
     if kind != "alpaca_reference":
         validate_samples(samples, env.end_ids, spec["sampling"]["max_new_tokens"])
-        zero_field = cfg.control != "sharpened_sampling" or kind.startswith("kl_")
+        zero_field = cfg.control != "sharpened_sampling" or kind in INSTRUMENT_KINDS
         if zero_field and not manifest.get("zero_field_checked"):
             raise StreamError(f"{path}: not checked as a zero-field stream")
         neutral = {"eos_token_id", "pad_token_id"}

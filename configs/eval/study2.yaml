@@ -18,3 +18,5 @@ eval:
   diagnostics:                      # the scoring panel's K alone, no harm, no utility
     every: 25                       # steps; fixed
     cache: host
+  # rayleigh: the endpoint Rayleigh quotient, off by default: absent here, so that these configs
+  # keep their hash; an experiment turns it on by adding eval/rayleigh to its defaults.

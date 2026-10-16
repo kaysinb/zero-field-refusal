@@ -30,25 +30,51 @@ step, and a measurement counts as converged by the Ritz residual only if every s
 residual is within a tolerance and the starts agree. That is not a certified accuracy of the top
 eigenvalue (see ``lanczos``); the curvature only guides the screen of SGD rates. Start
 vectors are drawn on the CPU from named seeds, identical on every GPU.
+
+**Endpoint Rayleigh quotient** (study 2, amendment 3; ``endpoint_rayleigh``): whether a run's
+displacement lies along sharp or flat directions of the loss at θ₀, from one product per run,
+measured after the run (``eval.rayleigh``):
+
+- δ = θ_end − θ₀ over the trainable parameters (``models.freeze`` with ``train.freeze``, as here);
+- H₀ is the Hessian at θ₀ of the training loss with the constant denominator on a fixed panel of
+  n responses: their summed response-token NLL over n × cap (cap ``train.max_response_tokens``),
+  one product H₀δ by ``hessian_vector_product`` in micro-batches of
+  ``execution.micro_batch_size``;
+- R = δᵀH₀δ / ‖δ‖², recorded signed: the NLL Hessian of a finite sample need not be positive
+  semi-definite. ‖δ‖ and δᵀH₀δ are recorded with it, and the panel's identity (stream path,
+  manifest sha256, count);
+- ‖δ‖ = 0 (a run that took no step) or a non-finite ‖δ‖ (an update that broke the weights) gives
+  R = null with the reason, and no product is computed; a non-finite product gives null too.
+  Nothing is ever divided by zero.
+
+The panel is the stream ``curvature_panel``: zero-field θ₀ responses to the teacher prompts,
+drawn iid as a training stream's, from the seeds of ``derive_seed(0, "curvature_panel", …)``, so
+no run trains on them; one panel per model, the same for every run. It is not a K panel: on θ₀'s
+responses to the K prompts, cap · δᵀH₀δ estimates δᵀFδ ≈ 2K (F the Fisher information of a
+response), and R would only restate K as ≈ 2K / (cap · ‖δ‖²). On the teacher prompts it
+describes the training loss itself along the run's displacement.
 """
 
 from __future__ import annotations
 
+import gc
 import json
+import math
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PreTrainedModel
 
 from .batches import chunks, collate
 from .losses import summed_nll
 from .models import freeze
-from .runtime import Environment, StreamPrefix
+from .runtime import Environment, StreamPrefix, load_stream_for
 from .seeding import derive_seed
 from .teacher import Sample
 from .tracking import Run
@@ -236,6 +262,115 @@ def run_curvature(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         run.path("curvature.json").write_text(json.dumps(result, indent=1) + "\n")
         run.summarize({"curvature": result["summary"]})
         return run.dir
+
+
+def endpoint_rayleigh(
+    model: PreTrainedModel,
+    trainable: Sequence[tuple[str, torch.nn.Parameter]],
+    delta: Sequence[tuple[str, torch.Tensor]],
+    panel: Sequence[Sample],
+    cfg: DictConfig,
+    *,
+    pad_id: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    """R = δᵀH₀δ / ‖δ‖² (module docstring): ``model`` at θ₀ with its ``trainable`` parameters,
+    ``delta`` = θ_end − θ₀ over the same names, H₀ the Hessian of the panel's summed NLL over
+    len(panel) × cap. Returns R (signed, or None with the ``reason``), ‖δ‖ and δᵀH₀δ, all
+    computed in float64 from the fp32 tensors."""
+    if cfg.train.loss.normalization != "constant":
+        raise ValueError("The Rayleigh quotient is measured for the constant denominator only")
+    names = [name for name, _ in trainable]
+    if [name for name, _ in delta] != names:
+        raise ValueError("The displacement and the model's trainable parameters differ in names")
+    vector = [d for _, d in delta]
+    out: dict[str, Any] = {"R": None, "reason": None, "delta_norm": None, "delta_H_delta": None}
+    squared = _dot(vector, vector)
+    if not math.isfinite(squared):
+        return out | {"reason": "non-finite displacement"}
+    out["delta_norm"] = squared**0.5
+    if squared == 0:
+        return out | {"reason": "zero displacement"}
+    product = hessian_vector_product(
+        model, [p for _, p in trainable], [list(panel)], vector,
+        cap=cfg.train.max_response_tokens, micro_batch_size=cfg.execution.micro_batch_size,
+        pad_id=pad_id, device=device,
+    )  # fmt: skip
+    curvature = _dot(vector, product)
+    del product
+    if not math.isfinite(curvature):
+        return out | {"reason": "non-finite product"}
+    return out | {"R": curvature / squared, "delta_H_delta": curvature}
+
+
+def rayleigh_enabled(cfg: DictConfig) -> bool:
+    """``eval.rayleigh.enabled``; off when the block is absent (configs/eval/rayleigh.yaml adds
+    it), so the configs written before it keep their hash."""
+    return bool(OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False))
+
+
+def rayleigh_panel(
+    cfg: DictConfig, env: Environment, run: Run
+) -> tuple[list[Sample], dict[str, Any]] | None:
+    """The curvature panel and its identity, read and checked against the config's spec when a
+    run that measures R starts, so that a missing panel stops it before it trains; the identity
+    goes to the run's inputs. None when the measurement is off."""
+    if not rayleigh_enabled(cfg):
+        return None
+    samples, manifest = load_stream_for(cfg, env, "curvature_panel", None)
+    identity = {key: manifest[key] for key in ("path", "sha256", "count")}
+    run.record_inputs({"streams": {"curvature_panel": identity}})
+    return samples, identity
+
+
+@torch.no_grad()
+def displacement_in_place(
+    trainable: Sequence[tuple[str, torch.nn.Parameter]], theta0: dict[str, torch.Tensor]
+) -> list[tuple[str, torch.Tensor]]:
+    """θ − θ₀ of each trainable parameter, formed in the parameter's own memory: no
+    parameter-sized copy, and the model no longer holds θ. Only for a run that is over."""
+    return [(name, param.detach().sub_(theta0[name])) for name, param in trainable]
+
+
+def record_endpoint_rayleigh(
+    cfg: DictConfig,
+    env: Environment,
+    run: Run,
+    reference: PreTrainedModel,
+    delta: Sequence[tuple[str, torch.Tensor]],
+    panel: Sequence[Sample],
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    """Measure R at the end of a run and record it: ``rayleigh.json`` and the summary's
+    ``rayleigh``.
+
+    The product runs on ``reference``, the run's frozen θ₀ copy, whose trainable parameters it
+    switches to ``requires_grad``; ``delta`` comes from ``displacement_in_place`` on the student.
+    Nothing is restored afterwards: this runs only once the run is over, after its terminal
+    record and every evaluation, and the caller has freed the optimizer state and the panels'
+    caches. The GPU memory peak recorded is the product's own.
+    """
+    started = time.perf_counter()
+    cuda = env.device.type == "cuda"
+    gc.collect()  # what the caller released, before the peak is measured
+    if cuda:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(env.device)
+    result = endpoint_rayleigh(
+        reference, freeze(reference, cfg.train.freeze), delta, panel, cfg, pad_id=env.pad_id,
+        device=env.device,
+    )  # fmt: skip
+    record = {**result, "panel": identity, "cap": int(cfg.train.max_response_tokens),
+              "micro_batch_size": int(cfg.execution.micro_batch_size),
+              "seconds": time.perf_counter() - started}  # fmt: skip
+    if cuda:
+        allocated, reserved = (torch.cuda.max_memory_allocated(env.device),
+                               torch.cuda.max_memory_reserved(env.device))  # fmt: skip
+        record |= {"peak_allocated_gb": round(allocated / 1e9, 3),
+                   "peak_reserved_gb": round(reserved / 1e9, 3)}  # fmt: skip
+    run.path("rayleigh.json").write_text(json.dumps(record, indent=1) + "\n")
+    run.summarize({"rayleigh": result})
+    return record
 
 
 def _summary(

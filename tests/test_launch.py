@@ -334,6 +334,27 @@ def test_a_published_outcome_is_not_rerun_after_a_later_failure(tmp_path, status
     assert runs[1].label not in [label for label, _ in executor.calls]
 
 
+def test_a_run_without_its_rayleigh_record_stops_the_campaign(tmp_path) -> None:
+    # The measurement follows the published outcome: if it failed, the run holds its outcome
+    # but not what its config asked for, and the campaign stops rather than skip or rerun it.
+    from omegaconf import OmegaConf
+
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = scheduled_run_dir(root, runs[1], "scheduled", status="failed")
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    OmegaConf.update(cfg, "eval.rayleigh", {"enabled": True, "responses": 100}, force_add=True)
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+    with pytest.raises(CampaignError, match="rayleigh.json is missing"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    (run_dir / "rayleigh.json").write_text("{")  # cut short
+    with pytest.raises(CampaignError, match="rayleigh.json is missing or unreadable"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    (run_dir / "rayleigh.json").write_text(json.dumps({"R": None, "reason": "zero displacement"}))
+    result = run_campaign(name, runs, root, execute=Executor(root, {}))
+    assert runs[1].label in result["skipped"]
+
+
 STUDY2_THETA0 = """
 name: study2-setup
 cells:

@@ -4,8 +4,9 @@
         [key=value ...]
 
 KIND is one of training, preconditioner, kl_harmful, kl_benign, kl_monitor, soft_targets,
-alpaca_reference. K's reference streams (kl_*; kl_monitor is study 2's monitor panel) take no seed:
-they are sampled once per model. Existing streams are
+alpaca_reference, curvature_panel. K's reference streams (kl_*; kl_monitor is study 2's monitor
+panel) and the curvature panel of the endpoint Rayleigh quotient (its size from
+eval.rayleigh.responses) take no seed: they are sampled once per model. Existing streams are
 never overwritten; they are the record of the experiment. An appendable training stream
 (teacher.stream: appendable) is extended by chunks to N responses (default teacher.responses);
 chunks already there are kept. After an interrupted generation, rerun with --remove-partial (once
@@ -21,7 +22,7 @@ from zero_field_refusal.runtime import (
     generate_stream,
     remove_partial_streams,
 )
-from zero_field_refusal.teacher import STREAM_KINDS, stream_layout
+from zero_field_refusal.teacher import INSTRUMENT_KINDS, STREAM_KINDS, stream_layout
 
 
 def main() -> None:
@@ -41,7 +42,7 @@ def main() -> None:
         parser.error("with appendable streams the soft-target control replays its targets from the "
                      "training stream; no soft-target stream is generated")  # fmt: skip
     env = environment(cfg, cfg.execution.device)
-    seeds = [None] if args.stream.startswith("kl_") else args.seeds
+    seeds = [None] if args.stream in INSTRUMENT_KINDS else args.seeds
     if not seeds:
         parser.error(f"--seeds is required for {args.stream} streams")
     if args.remove_partial:
