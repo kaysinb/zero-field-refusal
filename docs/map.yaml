@@ -27,6 +27,7 @@ documents:
   purpose: Conventions for historical reports and their evidence
 historical_docs:
 - docs/reports/*.md
+- docs/archive/*.md
 topics:
 - id: research_question
   title: Research question and prior-work positioning

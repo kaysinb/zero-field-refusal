@@ -164,6 +164,14 @@ appendable stream prefix and a common step limit. Its rules, gates and outcomes 
 the [study-2 preregistration](study2-preregistration.md); this section gives the order of work
 and its cost.
 
+**Redirected on 2026-10-16** ([amendment 3](study2-preregistration.md#amendment-3-redirection-to-the-short-regime)):
+the primary contrast is now AdamW-25 against frozen Adam-25, exactly 25 steps, at three targeted
+rates per arm. The order of work for the new stage is discovery completion (the targeted round
+and its FA controls), the pre-warmed arm's discovery, validation on 12 fresh blocks, and
+confirmation in two looks; its procedure is in
+[operations](operations.md#study-2-short-regime-amendment-3). The text below describes Stage A
+as it ran.
+
 **Stage A (feasibility):** code first, then numerics, discovery and validation on fresh seeds:
 
 1. **Code**, each piece reviewed before any GPU use:

@@ -1,0 +1,13 @@
+{
+  "w_max": 0.47,
+  "levels": [0.991983603686668, 0.9630570834481011],
+  "se_floor": 0.0,
+  "bias_allowance": 0.010841,
+  "interval": "bootstrap_t",
+  "bootstrap_resamples": 100000,
+  "bootstrap_seed": 20261016,
+  "looks": [36, 60],
+  "cap": 80,
+  "equivalence_min_supported": 36,
+  "direction_min_supported": 10
+}
