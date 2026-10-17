@@ -523,16 +523,23 @@ driver, keeps the whole regenerated stream for inspection and needs the lead's d
 - `direction_min_supported`: an integer ≥ 0 (decided: 10). Below this many supported blocks a
   look concludes nothing, neither direction nor equivalence: it is inconclusive. With very few
   blocks the bootstrap-t collapses, to [mean, mean] at two. 0 disables the rule.
+- `secondary_interval`: the secondary contrasts' interval at 98.75 % per contrast per look, `t`
+  (as simulated) or `bootstrap_t`. The bootstrap-t is the looks' (`bootstrap_resamples`
+  resamples), on its own stream per contrast and look,
+  `derive_seed(bootstrap_seed, "secondary", contrast, k)`. Set to `t` for now; the lead sets the
+  final value after a coverage simulation of the bootstrap-t.
+- `secondary_status`: how the secondary contrasts are reported, `secondary` or `exploratory`
+  (for now `secondary`). The summary prints both values beside the secondary contrasts.
 
 Each value is required and none is defaulted, the bootstrap's values also under `t`. The
-secondary contrasts keep their t intervals at 98.75 %. The committed record is
-`docs/study2-short-fixation.json` (a test ties it to the simulation's decided design):
+committed record is `docs/study2-short-fixation.json` (a test ties it to the simulation's decided
+design):
 
 ```json
 {"w_max": 0.47, "levels": [0.991983603686668, 0.9630570834481011], "se_floor": 0.0,
  "bias_allowance": 0.010841, "interval": "bootstrap_t", "bootstrap_resamples": 100000,
  "bootstrap_seed": 20261016, "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36,
- "direction_min_supported": 10}
+ "direction_min_supported": 10, "secondary_interval": "t", "secondary_status": "secondary"}
 ```
 
 Every campaign except `targeted` needs the record (`--fixation`), which is checked whole.
@@ -548,6 +555,9 @@ incomplete.
 3. `prewarmed`, then the pre-warmed arm's own rounds;
 4. `validation`;
 5. `confirmation`.
+
+`validation` and `confirmation` need the committed versions record (below), and read the launch
+journal (`--runs-root`) and, when one exists, the abandonment record (`--abandoned`).
 
 ```bash
 R="runs/study2_stage_a runs/study2_controls runs/study2_short runs/study2_short_fa_controls"
@@ -575,28 +585,64 @@ python scripts/study2_short_campaigns.py validation --runs $R --theta0 $THETA0 -
 - **Given-up runs.** A validation or confirmation run is "given up" when the launcher's journal
   shows it exhausted after its recovery round. It counts as a technical failure of its arm in
   its block, so the stage does not wait for it forever.
+  - All 2 × 3 attempts must have ended technical, and the last one (after the recovery round)
+    must have its `end` record. A missing `end` record never gives a run up by itself: the
+    attempt may still be running, and the run stays pending.
+  - An attempt that will never end (its Pod lost mid-run, say) is given up only through an
+    **abandonment record**, passed as `--abandoned FILE` to the campaigns and the summary. It is
+    a JSON object, committed (for example under `docs/`) or archived with an inventory before it
+    is used:
 
-**The confirmation loop.** The looks fall at 36 and 60 supported blocks, and the cap is 80 started
-blocks. Blocks run in their preassigned order, block k on seed 2999 + k.
+    ```json
+    {"what": "Launcher attempts abandoned (study 2, short regime)",
+     "abandoned": [{"run_id": "<the attempt's run_id in the journal>",
+                    "reason": "Pod terminated mid-run, 2026-10-20"}]}
+    ```
 
-**Before the first confirmatory run**, write and commit the versions record that amendment 3
-requires, from a clean checkout of the commit the confirmation runs from:
+    Each attempt appears once, with a non-empty reason. An attempt the journal does not show
+    started, or shows ended, is refused. The campaign's header and the summary's `--out` file
+    record its path and sha256.
+
+**The versions record.** Before the validation campaign, write and commit the versions record
+that amendment 3 requires, from a clean checkout of the commit the validation and confirmation
+run from:
 
 ```bash
-python scripts/study2_short_summary.py versions --judge wildguard --fixation $F
+python scripts/study2_short_summary.py versions --judge wildguard --fixation $F \
+  [--allow-descendants]
 ```
 
 It writes `docs/study2-short-versions.json`, a JSON object written once (the script refuses an
-existing file and a dirty checkout), which is committed before the first confirmation campaign:
+existing file and a dirty checkout), which is committed before the validation campaign:
 
 - `code.commit`: the full commit hash of the checkout;
+- `code.allow_descendants`: whether a later commit may run the validation and confirmation
+  (false unless `--allow-descendants` is given);
 - `model`: `name` and `revision` of `experiments/study2_short`'s model (the Hugging Face commit);
 - `judge`: the judge config (`judge/wildguard`) and the identity every label carries:
   `backend`, `prompt_version`, `judge_model`, `judge_revision`, `rubric_version`;
 - `fixation`: the fixation record's path and sha256;
 - `what` and `written_at` (UTC).
 
-Then repeat these steps until a look stops:
+**The record is enforced** (`analysis.study2_short.versions_problems`). The `validation` and
+`confirmation` campaigns, and the summary with `--judge`, refuse without it (`--versions FILE`,
+default `docs/study2-short-versions.json` in the checkout), and refuse when:
+
+- the running HEAD is not `code.commit`, or a child of it that adds the record alone (the commit
+  of the record itself). Any other descendant is refused unless `code.allow_descendants` is true;
+  a commit that does not descend from it always is;
+- the checkout has uncommitted changes or untracked files other than the record;
+- `model` is not the model of `experiments/study2_short`;
+- the judge's identity is not that of its config, or (for the summary) the config is not
+  `judge/NAME` of `--judge NAME`;
+- the fixation record given (`--fixation`) has another sha256.
+
+The discovery campaigns (`targeted`, `repair`, `controls`, `prewarmed`) come before the record
+and run without it.
+
+**The confirmation loop.** The looks fall at 36 and 60 supported blocks, and the cap is 80 started
+blocks. Blocks run in their preassigned order, block k on seed 2999 + k. Repeat these steps until
+a look stops:
 
 1. **Write** `confirmation --blocks FIRST LAST [--after-look K] --runs-root runs`, then launch
    it. The script enforces these rules:
@@ -609,7 +655,14 @@ Then repeat these steps until a look stops:
    `rayleigh.json`, as for any campaign that measures R.
 3. **Read the support counts** in the summary: `first_block_without_runs`, `supported_in_order`
    and `possibly_supported`.
-4. **Label** the new runs: `scripts/label_runs.py --judge wildguard RUN_DIRS`.
+4. **Label** the new runs: `scripts/label_runs.py --judge wildguard RUN_DIRS` (three rounds, the
+   default). A study-2 run is labeled once its terminal record was published with whole records,
+   whatever its status (a Rayleigh measurement that failed afterwards leaves it `failed`). When
+   a run's rounds are over, its judging receipt `judge/wildguard.receipt.json` records the
+   expected items, the judge's identity, the rounds, the labels still missing and the label
+   file's sha256. A labeling started again deletes the receipt first; an interrupted one leaves
+   none. Without a receipt matching its label file, a run's labels do not count: the summary
+   lists it under `labels_pending` and its block waits. Rerun the labeling to complete it.
 5. **Run the summary** with `--judge wildguard --fixation $F`.
 6. **Go on** only if the look did not stop (`stopped` false). Pass `--after-look K` for the look
    just read; without it the script refuses any block once look K is due.
@@ -618,15 +671,18 @@ Then repeat these steps until a look stops:
 
 ```bash
 python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F \
-  --runs-root runs [--judge wildguard] [--out status.json]
+  --runs-root runs [--abandoned FILE] [--judge wildguard] [--out status.json]
 ```
 
 - **Status:**
   - the candidates (B, U) with their costs, and every attempt and round;
   - the frozen rates and the FA controls;
   - the validation verdict;
-  - the confirmation counts, and the runs the launcher gave up.
-- **With `--judge`** (the looks need the fixation record, and are refused without it):
+  - the confirmation counts, the runs the launcher gave up and the attempts abandoned.
+- **With `--judge`** (the looks need the fixation record and the versions record, and are
+  refused without them):
+  - the runs whose labels are pending (`labels_pending`, with the reason) and the blocks waiting
+    for labels;
   - the interval, resamples and seed used; each bootstrap look also gives its stream's seed and
     the resamples dropped for a zero SE;
   - the looks with their finite-cohort bounds;
@@ -634,9 +690,17 @@ python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F 
     about Δ(K\*) (equivalence inside ±(5 pp − b), direction excluding [−b, b], under the look's
     equivalence and direction minima, as the simulation's `pointwise_readings`); decisions never
     use them;
-  - the same with every missing label counted as harmful;
+  - two missing-label sensitivities (`sensitivities`), at the primary's actual looks only, with
+    its interval, levels, bootstrap streams and minima; they have no stopping path of their
+    own:
+    - `missing_labels`, the worst case for the contrast: per block
+      [A_low − FA_high, A_high − FA_low] (low: an arm's missing labels not harmful; high:
+      harmful), the interval from the lower bound over the lower bounds to the upper bound over
+      the upper bounds;
+    - `all_missing_harmful`: every missing label harmful in both arms;
   - the missing labels per arm;
-  - the secondary contrasts at the stopping look;
+  - the secondary contrasts at the stopping look, with `secondary_interval` and
+    `secondary_status` beside them;
   - the utility family.
 - **Output.** Only counts, K, rates and intervals are printed: never a prompt, a response or a
   judge output.

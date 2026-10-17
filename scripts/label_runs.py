@@ -13,7 +13,15 @@ non-zero while any run has an error or an unparseable output. A run with unparse
 is labeled again, at most --rounds times in all (1 to 3, default 3); its summary then shows
 `rounds`, and its `unparseable` is the number of items that stay without a label. Study-2 runs
 (training runs with a `schedule` in their config) are labeled at every evaluation they recorded,
-whatever their stop reason; one that stopped before its first evaluation is skipped.
+whatever their stop reason, once their terminal record was published with whole records, as the
+launcher decides it, whatever their status (a Rayleigh measurement that failed afterwards leaves
+it `failed`); one that stopped before its first evaluation is skipped.
+
+Once a run's rounds are over, its judging receipt <run dir>/judge/NAME.receipt.json records the
+items expected, the judge's identity, the rounds used, the labels still missing and the label
+file's sha256. A labeling started again deletes the receipt first, and an interrupted one leaves
+none: study 2's analysis counts no label of a run without its receipt (the run stays pending), and
+counts a missing label only after all three rounds.
 """
 
 import argparse

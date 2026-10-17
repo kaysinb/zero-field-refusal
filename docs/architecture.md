@@ -155,8 +155,8 @@ Implemented:
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
-| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`); the conditions of a study-2 run are its recorded evaluations `step-<N>` |
-| `analysis.study2_labels` | per-evaluation judge-label counts of a study-2 run, with the bounds for missing labels; refuses stale, foreign-judge or conflicting labels |
+| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`), with a judging receipt once the labeling completed (`<judge>.receipt.json`: expected items, judge identity, rounds, labels still missing, label file sha256); the conditions of a study-2 run are its recorded evaluations `step-<N>`, and it is labelable once its terminal record was published with whole records, whatever its status |
+| `analysis.study2_labels` | per-evaluation judge-label counts of a study-2 run, with the bounds for missing labels; counts no label without a completed receipt matching the label file (the run stays pending); refuses stale, foreign-judge or conflicting labels |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 | `analysis` | h(K) fits, K\* and the decisive cells over eligible cells (`analysis.eligibility`), Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`, with `analysis.outputs`); the Gate 1 report from the stage-1 runs (`analysis.gate1`) |
@@ -201,8 +201,9 @@ Entry points in `scripts/`:
   collapse alone, or names the extension rates to pilot first (`analysis.sweeps`);
 - `make_judge_check_sample.py`: draws the blind sample of the judge check across optimizers from
   the 1.5B stage-1 runs (strata, sample, key, selection record);
-- `label_runs.py`: labels every response of completed run directories with one judge into their
-  label files, the input of the analysis build; the label file is the cache;
+- `label_runs.py`: labels every response of completed run directories (study-2 runs: published
+  terminal records) with one judge into their label files, the input of the analysis build; the
+  label file is the cache, and a judging receipt marks a completed labeling;
 - `import_labels.py`: imports reference labels made outside the project (the ensemble) next to
   the sample, with their provenance folder and hashes;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones

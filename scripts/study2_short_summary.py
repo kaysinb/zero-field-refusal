@@ -2,23 +2,36 @@
 confirmation blocks are labeled, its looks.
 
     python scripts/study2_short_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR \
-        (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--judge NAME] [--out OUT.json]
-    python scripts/study2_short_summary.py versions --judge NAME --fixation FILE [--out FILE]
+        (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--abandoned FILE] \
+        [--judge NAME [--versions FILE]] [--out OUT.json]
+    python scripts/study2_short_summary.py versions --judge NAME --fixation FILE \
+        [--allow-descendants] [--out FILE]
 
 --runs holds every run so far, Stage A's included (as for scripts/study2_short_campaigns.py),
 --theta0 the θ₀ run, the utility baseline, and --runs-root RUNS_DIR, whose launch/ journal tells
 which runs the launcher gave up on (technical failures of their blocks; without it such a block
-waits). The status is the stage's state machine (analysis.study2_short.progress), on K, numerics
+waits). A run is given up only once the last attempt of its recovery round has ended, or that
+attempt is in the abandonment record --abandoned FILE (analysis.study2_short.read_abandonment: a
+committed or archived JSON object ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``,
+ATTEMPT the journal's run_id); an attempt that may still be running keeps its run pending. The
+status is the stage's state machine (analysis.study2_short.progress), on K, numerics
 and utility only: the candidates (B, U) with their costs, every attempt and round, the frozen
 rates and FA controls, the validation verdict, the support of the confirmation blocks with the
 counts of the confirmation loop (the first block without runs, the supported blocks complete in
 order, those that may still be supported), the problems of the records, and the next campaign.
 
 --judge NAME (configs/judge/NAME.yaml) adds the looks, on the label counts of the bracket runs
-of every complete confirmation block (analysis.study2_labels.read_endpoint_labels; a run without
-labels yet keeps its block waiting): the two sequential looks with the finite-cohort bounds, the
-same with every missing label counted as harmful, the missing labels per arm, the secondary
-contrasts at the stopping look and the utility family over the blocks started. The looks need
+of every complete confirmation block (analysis.study2_labels.read_endpoint_labels). A run without
+labels yet, or whose labels have no completed judging receipt matching its label file
+(``labels_pending``, with the reason), keeps its block waiting: its endpoints are not yet
+labeled, never "not harmful". It prints the two sequential looks with the finite-cohort bounds,
+the missing-label sensitivities at the primary's looks (``missing_labels``, the worst case for
+the contrast, and ``all_missing_harmful``; analysis.study2_short.sensitivity_looks), the missing
+labels per arm, the secondary contrasts at the stopping look with the fixation record's
+``secondary_interval`` and ``secondary_status`` beside them, and the utility family over the
+blocks started. --judge refuses without the versions record (--versions FILE, default
+docs/study2-short-versions.json), or when the running commit, the model, the judge's identity or
+the fixation record departs from it (analysis.study2_short.versions_problems). The looks need
 the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
 allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, and the
 equivalence and direction minima; analysis.study2_short.read_fixation) and are refused without
@@ -30,11 +43,13 @@ simulation's pointwise_readings); decisions never use them. Only counts, K, rate
 are printed, never a prompt, a response or a judge output. OUT.json, which must not exist, gets
 the whole record with the command and the code revision.
 
-``versions`` writes the versions record that amendment 3 requires before the first confirmatory
-run (default docs/study2-short-versions.json, which must not exist; it is then committed): the
-commit of this checkout, which must be clean (the commit the confirmation runs from), the model
-and its revision of experiments/study2_short, the identity that every label of judge NAME
-carries (judge.judge_identity), and the fixation record's path and sha256.
+``versions`` writes the versions record that amendment 3 requires before the validation campaign
+(default docs/study2-short-versions.json, which must not exist; it is then committed): the
+commit of this checkout, which must be clean (the commit the validation and confirmation run
+from), whether a later commit may run them (``allow_descendants``, false unless
+--allow-descendants is given; committing the record itself is always allowed), the model and its
+revision of experiments/study2_short, the identity that every label of judge NAME carries
+(judge.judge_identity), and the fixation record's path and sha256.
 """
 
 import argparse
@@ -50,34 +65,41 @@ from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis.evidence import label_path
 from zero_field_refusal.analysis.stage_a import load_trajectories, theta0_problems
-from zero_field_refusal.analysis.study2_labels import read_endpoint_labels
+from zero_field_refusal.analysis.study2_labels import LabelsPending, read_endpoint_labels
 from zero_field_refusal.analysis.study2_short import (
     ARMS,
     CAP,
     FA_CONTROL_ARM,
     LOOK_SIZES,
     PRIMARY_ARMS,
+    SENSITIVITIES,
+    VERSIONS_CONFIG,
+    VERSIONS_RECORD,
     confirmation_guard,
     exhausted_runs,
     look_blocks,
     looks,
     progress,
+    read_abandonment,
     read_fixation,
     run_facts,
     secondary_contrasts,
+    sensitivity_looks,
     utility_family,
+    versions_problems,
 )
 from zero_field_refusal.config import load_config
 from zero_field_refusal.data import load_prompt_set
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.launch import launch_records
+from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.tracking import git_state
 
 # The fixation record's values that ``looks`` takes (its look sizes and cap equal the module's).
 LOOK_SETTINGS = ("interval", "se_floor", "bias_allowance", "equivalence_min_supported",
                  "direction_min_supported", "bootstrap_resamples", "bootstrap_seed")  # fmt: skip
-VERSIONS_RECORD = Path("docs/study2-short-versions.json")
-REGULAR_CONFIG = ("experiments/study2_short", ["study2_short.role=confirmation"])
+# The interval settings a sensitivity takes from the fixation record: the primary's.
+SENSITIVITY_SETTINGS = ("interval", "se_floor", "bootstrap_resamples", "bootstrap_seed")
 
 
 def status(state: dict[str, Any]) -> dict[str, Any]:
@@ -177,33 +199,43 @@ def _utility(family: dict[str, Any] | None) -> dict[str, Any] | None:
             "family": [{k: e[k] for k in keys} for e in family["family"]]}  # fmt: skip
 
 
-def read_labels(state, runs, judge: str) -> dict[str, list[dict[str, Any]]]:
+def read_labels(state, runs, judge: str) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
     """The label rows of the bracket runs of every arm supported in a complete confirmation
-    block, by run id; a run without a label file is not labeled yet and left out."""
+    block, by run id, and the runs whose labels are pending, by run id with the reason. A run
+    without a label file is not labeled yet and left out; one whose labels have no completed
+    judging receipt matching them (``LabelsPending``) is pending and left out too. Any other
+    problem of a label file raises."""
     by_id = {run.run_id: run for run in runs}
     identity = judge_identity(load_config(f"judge/{judge}"))
     prompts: dict[str, dict[str, str]] = {}
     labels: dict[str, list[dict[str, Any]]] = {}
+    pending: dict[str, str] = {}
     for block in state.get("confirmation", []):
         for support in block["supports"].values():
             if not support["supported"]:
                 continue
             for side in ("lo", "hi"):
                 run = by_id[support["bracket"][side]["run"]]
-                if run.run_id in labels or not label_path(run.run_dir, judge).is_file():
+                if run.run_id in labels or run.run_id in pending:
+                    continue
+                if not label_path(run.run_dir, judge).is_file():
                     continue
                 cfg = OmegaConf.load(run.run_dir / "config.yaml")
                 name = str(cfg.eval.harmful.prompt_set)
                 if name not in prompts:
                     prompts[name] = {item["id"]: item["text"]
                                      for item in load_prompt_set(name, cfg.data)}  # fmt: skip
-                labels[run.run_id] = read_endpoint_labels(run.run_dir, judge, identity,
-                                                          prompts[name])  # fmt: skip
-    return labels
+                try:
+                    labels[run.run_id] = read_endpoint_labels(run.run_dir, judge, identity,
+                                                              prompts[name])  # fmt: skip
+                except LabelsPending as exc:
+                    pending[run.run_id] = str(exc)
+    return labels, pending
 
 
-def compute_looks(state, runs, labels, fixation, theta0) -> dict[str, Any]:
-    """The looks on the labels of the complete confirmation blocks (see the module docstring)."""
+def compute_looks(state, runs, labels, fixation, theta0, pending=None) -> dict[str, Any]:
+    """The looks on the labels of the complete confirmation blocks (see the module docstring);
+    ``pending``: the runs whose labels are pending, with the reason (``read_labels``)."""
     if state["next"]["campaign"] != "confirmation":
         at = state["next"]["campaign"]
         return {"available": False, "reason": f"the stage is at {at}, not confirmation"}
@@ -211,8 +243,11 @@ def compute_looks(state, runs, labels, fixation, theta0) -> dict[str, Any]:
     entries = look_blocks(blocks, labels, kstar)
     fixed = {key: fixation[key] for key in LOOK_SETTINGS}
     primary = looks(entries, fixation["levels"], **fixed)
-    worst = looks([{**e, "delta": e.get("delta_missing_harmful")} for e in entries],
-                  fixation["levels"], **fixed)  # fmt: skip
+    # The sensitivities at the primary's actual looks, with its interval and levels: no stopping
+    # path of their own.
+    same = {key: fixation[key] for key in SENSITIVITY_SETTINGS}
+    sensitivities = {name: sensitivity_looks(primary, entries, name, **same)
+                     for name in SENSITIVITIES}  # fmt: skip
     started = (primary["looks"][-1] if primary["stopped"] else primary["waiting"])["started"]
     read = entries[:started]
     supports = {b["seed"]: {arm: b["supports"][arm] for arm in PRIMARY_ARMS}
@@ -228,30 +263,46 @@ def compute_looks(state, runs, labels, fixation, theta0) -> dict[str, Any]:
             "seed": fixation["bootstrap_seed"] if bootstrap else None,
         },
         "looks": primary,
-        "looks_missing_harmful": worst,
+        "sensitivities": sensitivities,
         "missing_labels": {
             arm: sum(e.get("missing", {}).get(arm, 0) for e in read) for arm in ARMS
         },
         "waiting_for_labels": [e["block"] for e in entries[:CAP] if e.get("unlabeled")],
-        "secondary": secondary_contrasts(entries, started) if primary["stopped"] else None,
+        "labels_pending": dict(pending or {}),
+        "secondary": _secondary(entries, started, primary, fixation),
         "utility": utility_family(primary_runs, supports, theta0),
         "blocks": entries,
     }
 
 
-def versions_record(judge: str, fixation: Path) -> dict[str, Any]:
+def _secondary(entries, started, primary, fixation) -> dict[str, Any] | None:
+    """The secondary contrasts at the stopping look, by the fixation record's secondary interval
+    and status (None before the primary stops)."""
+    if not primary["stopped"]:
+        return None
+    return secondary_contrasts(
+        entries, started, look=primary["stopping_look"],
+        interval=fixation["secondary_interval"], status=fixation["secondary_status"],
+        bootstrap_resamples=fixation["bootstrap_resamples"],
+        bootstrap_seed=fixation["bootstrap_seed"],
+    )  # fmt: skip
+
+
+def versions_record(
+    judge: str, fixation: Path, *, allow_descendants: bool = False
+) -> dict[str, Any]:
     """The versions record (see the module docstring); ``ValueError`` unless the checkout is a
     clean one of a known commit."""
     code = git_state()
     if not code.get("commit") or code.get("dirty") is not False:
         raise ValueError(f"the versions record needs a clean checkout of a known commit, not "
                          f"{code}")  # fmt: skip
-    cfg = load_config(*REGULAR_CONFIG)
+    cfg = load_config(*VERSIONS_CONFIG)
     return {
-        "what": "The versions of study 2's short-regime confirmation (amendment 3), written "
-        "before its first confirmatory run.",
+        "what": "The versions of study 2's short-regime validation and confirmation (amendment "
+        "3), written before the validation campaign.",
         "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "code": {"commit": code["commit"]},
+        "code": {"commit": code["commit"], "allow_descendants": allow_descendants},
         "model": {"name": str(cfg.model.name), "revision": str(cfg.model.revision)},
         "judge": {"config": f"judge/{judge}", **judge_identity(load_config(f"judge/{judge}"))},
         "fixation": {
@@ -266,13 +317,17 @@ def versions_main(argv: list[str]) -> None:
                                      description="Write the versions record.")  # fmt: skip
     parser.add_argument("--judge", required=True, help="a judge config in configs/judge/")
     parser.add_argument("--fixation", type=Path, required=True, help="the fixation record")
-    parser.add_argument("--out", type=Path, default=VERSIONS_RECORD, help="must not exist")
+    parser.add_argument("--allow-descendants", action="store_true",
+                        help="a later commit may run the validation and confirmation")  # fmt: skip
+    parser.add_argument("--out", type=Path, default=Path(VERSIONS_RECORD),
+                        help="must not exist")  # fmt: skip
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error(f"{args.out} exists: the versions record is written once")
     try:
         read_fixation(args.fixation)
-        record = versions_record(args.judge, args.fixation)
+        record = versions_record(args.judge, args.fixation,
+                                 allow_descendants=args.allow_descendants)  # fmt: skip
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -291,6 +346,10 @@ def main() -> None:
     parser.add_argument("--fixation", type=Path, help="the simulation's fixation record (JSON)")
     parser.add_argument("--judge", help="a judge config in configs/judge/: adds the looks")
     parser.add_argument("--runs-root", type=Path, help="RUNS_DIR, whose launch/ journal is read")
+    parser.add_argument("--abandoned", type=Path,
+                        help="the abandonment record of launcher attempts (JSON)")  # fmt: skip
+    parser.add_argument("--versions", type=Path, default=REPO_ROOT / VERSIONS_RECORD,
+                        help="with --judge: the versions record")  # fmt: skip
     parser.add_argument("--out", type=Path, help="the whole record (JSON); must not exist")
     args = parser.parse_args()
     if args.out is not None and args.out.exists():
@@ -309,6 +368,16 @@ def main() -> None:
         w_max = fixation["w_max"]
     if w_max is None or not w_max > 0:
         parser.error("w_max is needed: --w-max or --fixation")
+    if args.judge:  # the looks read labels: the versions record must hold
+        problems = versions_problems(args.versions, fixation=args.fixation, judge=args.judge)
+        if problems:
+            parser.error("the versions record does not hold: " + "; ".join(problems))
+    abandoned = {}
+    if args.abandoned is not None:
+        try:
+            abandoned = read_abandonment(args.abandoned)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     summary = json.loads((args.theta0 / "summary.json").read_text())
     theta0 = {key: summary.get(key) for key in ("benchmark_accuracy", "factual_accuracy")}
     if theta0_problems(theta0):
@@ -316,15 +385,23 @@ def main() -> None:
     runs = load_trajectories(*args.runs)
     facts = {r.run_id: run_facts(r.run_dir) for r in runs if r.arm in (*ARMS, FA_CONTROL_ARM)}
     records = launch_records(args.runs_root) if args.runs_root is not None else []
-    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted_runs(records))
+    try:
+        exhausted = exhausted_runs(records, abandoned=abandoned)
+    except ValueError as exc:
+        parser.error(str(exc))
+    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted)
     shown = status(state)
     shown["launch_journal"] = str(args.runs_root / "launch") if args.runs_root else None
+    shown["abandoned"] = abandoned
     record: dict[str, Any] = {"command": sys.argv, "code": git_state(),
                               "theta0": {"run": args.theta0.name, **theta0}, "w_max": w_max,
-                              "progress": state}  # fmt: skip
+                              "abandoned": abandoned, "progress": state}  # fmt: skip
+    if args.abandoned is not None:
+        digest = hashlib.sha256(args.abandoned.read_bytes()).hexdigest()
+        record["abandonment_record"] = {"path": str(args.abandoned), "sha256": digest}
     if args.judge:
-        labels = read_labels(state, runs, args.judge)
-        found = compute_looks(state, runs, labels, fixation, theta0)
+        labels, pending = read_labels(state, runs, args.judge)
+        found = compute_looks(state, runs, labels, fixation, theta0, pending)
         record["looks"] = found
         shown["looks"] = {k: v for k, v in found.items() if k != "blocks"}
     print(json.dumps(shown, indent=1, default=str))

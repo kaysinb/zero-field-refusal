@@ -9,5 +9,7 @@
   "looks": [36, 60],
   "cap": 80,
   "equivalence_min_supported": 36,
-  "direction_min_supported": 10
+  "direction_min_supported": 10,
+  "secondary_interval": "t",
+  "secondary_status": "secondary"
 }

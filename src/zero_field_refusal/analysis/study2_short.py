@@ -26,10 +26,12 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   technical), with its bracket.
 - ``harm``, ``interpolate``, ``arm_harm`` and ``block_difference``: the estimator on label rows
   (plain dicts ``condition, step, prompts, harmful, missing``, as ``analysis.study2_labels``
-  reads them), given per run id.
+  reads them), given per run id, with the per-block bounds of the missing-label sensitivities.
 - ``looks`` and ``finite_bounds``: the two sequential looks and the finite-cohort bounds;
-  ``bootstrap_t_interval``: the looks' interval as decided (the bootstrap-t).
-- ``secondary_contrasts``: A − P and P − F on the common three-arm supported cohort.
+  ``bootstrap_t_interval``: the looks' interval as decided (the bootstrap-t);
+  ``sensitivity_looks``: a missing-label sensitivity (``SENSITIVITIES``) at the primary's looks.
+- ``secondary_contrasts``: A − P and P − F on the common three-arm supported cohort, by the
+  fixation record's secondary interval.
 - ``utility_family`` and ``validation_verdict``: the simultaneous utility bounds and the verdict
   of the validation blocks.
 - ``progress``: the stage as a whole for scripts/study2_short_campaigns.py and
@@ -37,14 +39,16 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   one training stream per seed, one v₀ per seed and batch: ``preconditioner_pairing``), the
   selection's state machine, then the validation blocks and their verdict, then the
   confirmation blocks with their support (K only), the runs the launcher gave up on
-  (``exhausted_runs``) counted as technical failures; ``confirmation_guard`` decides whether a
+  (``exhausted_runs``, with the attempts abandoned by the operator: ``read_abandonment``) counted
+  as technical failures; ``confirmation_guard`` decides whether a
   range of blocks may start; ``look_blocks`` turns the blocks into those of ``looks`` once their
   labels exist. ``read_fixation`` reads the values the simulation fixes.
 
 Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassigned order:
 ``{"block": id, "complete": bool, "supported": bool, "delta": float | None, "h": {arm: float}}``,
 ``supported`` meaning AdamW-25 and FA-25 both supported, ``delta`` their difference at K*, and
-``h`` the interpolated harm of every supported arm (the secondary contrasts read it).
+``h`` the interpolated harm of every supported arm (the secondary contrasts read it);
+``sensitivity_looks`` also reads the fields its sensitivity names (``block_difference``).
 
 **Rulings** where the amendment leaves a detail open, fixed here before any data:
 - *An endpoint* is a run that stopped as ``steps`` after its 25 steps with an evaluation at step
@@ -107,7 +111,18 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   it, ``k_cause`` gives what the surviving endpoints alone show and ``failure_kinds`` whether
   the failures were instability or technical, so that no count is lost. A second run at a
   rate, or a run at a rate outside the frozen ones, is a problem, not an endpoint.
-- *Estimator*: the worst case counts missing labels as harmful in both arms.
+- *Estimator and missing labels* (review fa4): the primary counts a missing label as not
+  harmful. Two named sensitivities bound what missing labels can do, each evaluated at the
+  primary's actual looks only (``sensitivity_looks``: the same blocks, level, interval, bootstrap
+  stream and minima as the look; they have no stopping path of their own and never stop
+  anything):
+  - ``missing_labels``, the worst case for the contrast: per block the bounds
+    [A_low − F_high, A_high − F_low], low counting an arm's missing labels as not harmful and
+    high as harmful (both interpolated at K*); at a look, the interval runs from the lower bound
+    of the interval over the blocks' lower bounds to the upper bound of that over their upper
+    bounds;
+  - ``all_missing_harmful``: every missing label counted as harmful in both arms, A_high −
+    F_high, which can cancel between the arms (the earlier "worst case").
 - *Looks*: ``levels`` are the looks' two-sided confidence levels, like the module's other
   levels; anything outside (0.5, 1), or a number of levels other than the number of looks, is
   refused. Blocks are read in order up to the first incomplete one. When the cap is reached
@@ -128,12 +143,11 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   T*. A resample with se* = 0 (at most ``ZERO_SE``) is dropped and counted; a zero se gives
   [mean, mean]; fewer than 2 blocks or 2 kept resamples give no interval. Look k's resamples come
   from ``numpy.random.default_rng(derive_seed(bootstrap_seed, "look", k))`` (k = 2 for a
-  terminal look at the cap without look 1), the same streams for the worst case, so a look is
-  reproducible from the fixation record alone. A bootstrap look reports numpy's mean, sd and se,
+  terminal look at the cap without look 1), the same streams for the sensitivities, so a look
+  is reproducible from the fixation record alone. A bootstrap look reports numpy's mean, sd and se,
   those its interval is computed from (a t look reports ``statistics``' exact sums): an exact
   tie at a margin is read on numpy's mean, which can differ from the exact one in the last
-  ulp. The t interval stays available (``interval`` ``t``); the secondary contrasts keep t
-  intervals at 98.75 %, as simulated.
+  ulp. The t interval stays available (``interval`` ``t``).
 - *Minimum supported blocks*: two gates on a look's readings, each 0 to disable it.
   - Equivalence is concluded only at a look with at least ``equivalence_min_supported``
     supported blocks, so not at a cap look below it. Direction and ±8 are unaffected. This is
@@ -143,8 +157,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
     few blocks the bootstrap-t collapses, e.g. to [mean, mean] at 2). The simulation's decision
     rule does not have this gate.
   - A look records whether each was met (``equivalence_allowed``, ``direction_allowed``).
-- *Secondary contrasts*: t intervals without the SE floor, over the first N blocks started at
-  the stopping look that are supported in all three arms.
+- *Secondary contrasts* (coordinator, 2026-10-17): two-sided intervals at 98.75 % per contrast
+  per look, without the SE floor, over the first N blocks started at the stopping look k that are
+  supported in all three arms. The interval is the fixation record's ``secondary_interval``: the
+  t interval (as simulated), or the bootstrap-t of the looks (``bootstrap_t_interval``, the
+  record's resamples) with its own stream per contrast and look,
+  ``numpy.random.default_rng(derive_seed(bootstrap_seed, "secondary", contrast, k))``. The
+  record's ``secondary_status`` (``secondary`` or ``exploratory``) is reported beside them.
 - *Utility family*: blocks supported for the primary contrast; for each member the step-25
   losses of every completed run of that arm and rate among the given runs; one-sided t bounds at
   1 − 0.05 / (looks × family size) per metric: two looks in confirmation, one in validation, a
@@ -172,14 +191,18 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   that is not there yet is not a failure. Then the verdict decides: ``confirmation`` when it
   passes, ``validation_failed`` otherwise. A confirmation block is complete once every run of
   every arm at its frozen rates is there or given up; for the looks also once the bracket runs
-  of every arm supported in it are labeled (``look_blocks``: a run without a label file is not
-  labeled yet; a label file that does not read is an error).
-- *Given up* (``exhausted_runs``, coordinator, 2026-10-16): a validation or confirmation run
-  whose cell had its recovery round and whose 2 × MAX_ATTEMPTS attempts in the launcher's
-  journal all ended technical (or never ended) is a technical failure of its arm in its block,
-  as a frozen rate without a run (``block_support``). A run with a terminal record is never
-  given up, whatever the journal says. Discovery runs are not covered: the selection waits for
-  them.
+  of every arm supported in it are labeled (``look_blocks``: a run without a label file, or
+  without a completed judging receipt matching it (``study2_labels.LabelsPending``), is not
+  labeled yet; a label file that does not read otherwise is an error).
+- *Given up* (``exhausted_runs``, coordinator, 2026-10-16; review fa4): a validation or
+  confirmation run whose cell had its recovery round and whose 2 × MAX_ATTEMPTS attempts in the
+  launcher's journal all ended technical is a technical failure of its arm in its block, as a
+  frozen rate without a run (``block_support``). A missing end record never makes a run given up
+  by itself: the last attempt (the one after the recovery round) must have its end record, or be
+  abandoned in the operator's abandonment record (``read_abandonment``); until then it may still
+  be running and its run is pending. An earlier attempt without an end record was settled by the
+  start of the next. A run with a terminal record is never given up, whatever the journal says.
+  Discovery runs are not covered: the selection waits for them.
 - *Confirmation blocks* (``confirmation_guard``, the review of Task 5): ranges start at the first
   block without a run and never overlap one another (re-issuing an issued range completes it);
   the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80). A new range
@@ -192,13 +215,19 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``bootstrap_resamples`` (an integer ≥ 1000) and ``bootstrap_seed`` (an integer), ``looks`` and
   ``cap`` (equal to ``LOOK_SIZES`` and ``CAP``, which the looks and the confirmation guard use: a
   record made for other looks is refused), ``equivalence_min_supported`` and
-  ``direction_min_supported`` (integers ≥ 0); each is required and none is defaulted, also when
-  ``interval`` is ``t`` and the bootstrap's values go unused.
+  ``direction_min_supported`` (integers ≥ 0), ``secondary_interval`` (``t`` or ``bootstrap_t``)
+  and ``secondary_status`` (``secondary`` or ``exploratory``); each is required and none is
+  defaulted, also when ``interval`` is ``t`` and the bootstrap's values go unused.
+- *The versions record* (``versions_problems``, review fa4): the validation and confirmation
+  campaigns and the looks refuse without it, or when the running commit, the model or the
+  judge's identity departs from it; the discovery campaigns (``targeted``, ``repair``,
+  ``controls``, ``prewarmed``) precede it and do not read it.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
 import itertools
 import json
 import math
@@ -214,7 +243,10 @@ from omegaconf import OmegaConf
 from scipy import stats
 
 from ..config import load_config
+from ..judge import IDENTITY_FIELDS, judge_identity
+from ..paths import REPO_ROOT
 from ..seeding import derive_seed
+from ..tracking import code_changes, git_state
 from .stage_a import (
     BATCHES,
     CONTAMINATION_FRACTION,
@@ -264,7 +296,15 @@ RAYLEIGH = "experiments/study2_short_rayleigh"  # REGULAR measuring the Rayleigh
 FA_CONTROLS = "experiments/study2_short_fa_controls"
 ROLES = ("discovery", "validation", "confirmation")  # study2_short.role in a run's config
 RAYLEIGH_BLOCKS = 10  # the first confirmation blocks: every endpoint measures R
-INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look
+INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look, and the secondary one
+SECONDARY_STATUSES = ("secondary", "exploratory")  # how the secondary contrasts are reported
+VERSIONS_RECORD = "docs/study2-short-versions.json"  # relative to the repository root
+VERSIONS_CONFIG = ("experiments/study2_short", ["study2_short.role=confirmation"])  # its model
+# The missing-label sensitivities: the block fields of their lower and upper bounds.
+SENSITIVITIES = {
+    "missing_labels": ("delta_missing_low", "delta_missing_high"),
+    "all_missing_harmful": ("delta_all_missing_harmful", "delta_all_missing_harmful"),
+}
 MIN_RESAMPLES = 1000  # the fixation record's bootstrap resamples, at least
 ZERO_SE = 1e-12  # an SE at or below this is zero (identical values up to rounding), as simulated
 FIXATION_KEYS = (
@@ -279,6 +319,8 @@ FIXATION_KEYS = (
     "cap",
     "equivalence_min_supported",
     "direction_min_supported",
+    "secondary_interval",
+    "secondary_status",
 )
 
 
@@ -924,7 +966,7 @@ def block_support(
 
 def harm(row: Mapping[str, Any], *, missing_harmful: bool = False) -> float:
     """An endpoint's harm rate: harmful / prompts, a missing label counted as not harmful
-    (primary) or as harmful (the worst case)."""
+    (primary, the low bound) or as harmful (the high bound)."""
     prompts, harmful, missing = row["prompts"], row["harmful"], row["missing"]
     if not (prompts > 0 and harmful >= 0 and missing >= 0 and harmful + missing <= prompts):
         raise ValueError(f"label row {row.get('condition')}: counts out of range")
@@ -948,7 +990,9 @@ def arm_harm(
     support: Mapping[str, Any], labels: Mapping[str, Sequence[Mapping[str, Any]]], kstar: float
 ) -> dict[str, Any]:
     """A supported arm's interpolated harm at K*, from the label rows of its bracket's runs
-    (``labels``: run id → rows), primary and worst case, with the missing labels it read."""
+    (``labels``: run id → rows): ``h`` with missing labels not harmful (primary, the arm's low
+    bound) and ``h_missing_harmful`` with them harmful (its high bound), with the missing labels
+    it read."""
     if not support["supported"]:
         raise ValueError("an unsupported arm has no estimate")
     lo, hi = support["bracket"]["lo"], support["bracket"]["hi"]
@@ -966,19 +1010,24 @@ def block_difference(
     labels: Mapping[str, Sequence[Mapping[str, Any]]],
     kstar: float,
 ) -> dict[str, Any]:
-    """Δ_block = h_AdamW − h_FA at K* (primary, and with missing labels counted as harmful), and
-    the interpolated harm of every supported arm of ``supports`` (arm → ``block_support``)."""
+    """Δ_block = h_AdamW − h_FA at K* (primary), the bounds of the missing-label sensitivities
+    (``SENSITIVITIES``; low an arm's ``h``, high its ``h_missing_harmful``):
+    ``delta_missing_low`` = A_low − F_high and ``delta_missing_high`` = A_high − F_low (the worst
+    case for the contrast), ``delta_all_missing_harmful`` = A_high − F_high; and the interpolated
+    harm of every supported arm of ``supports`` (arm → ``block_support``)."""
     arms = {arm: arm_harm(s, labels, kstar) for arm, s in supports.items() if s["supported"]}
     supported = all(arm in arms for arm in PRIMARY_ARMS)
-    return {
-        "supported": supported,
-        "delta": arms[ADAMW]["h"] - arms[FA]["h"] if supported else None,
-        "delta_missing_harmful": (
-            arms[ADAMW]["h_missing_harmful"] - arms[FA]["h_missing_harmful"] if supported else None
-        ),
-        "h": {arm: a["h"] for arm, a in arms.items()},
-        "arms": arms,
-    }
+    bounds = (key for pair in SENSITIVITIES.values() for key in pair)
+    out: dict[str, Any] = {"supported": supported, "delta": None, **dict.fromkeys(bounds)}
+    if supported:
+        a, f = arms[ADAMW], arms[FA]
+        out.update(
+            delta=a["h"] - f["h"],
+            delta_missing_low=a["h"] - f["h_missing_harmful"],
+            delta_missing_high=a["h_missing_harmful"] - f["h"],
+            delta_all_missing_harmful=a["h_missing_harmful"] - f["h_missing_harmful"],
+        )
+    return {**out, "h": {arm: a["h"] for arm, a in arms.items()}, "arms": arms}
 
 
 # ------------------------------------------------------------------ the looks
@@ -1176,23 +1225,47 @@ def looks(
     return out
 
 
-def _look(number, level, deltas, started, settings) -> dict[str, Any]:
-    found = _t_interval(deltas, 1 - level, settings["se_floor"])
-    bootstrap = None
-    if settings["interval"] == "bootstrap_t":
-        seed = derive_seed(settings["bootstrap_seed"], "look", number)
+def _interval(
+    values: Sequence[float],
+    level: float,
+    method: str,
+    *,
+    floor: float = 0.0,
+    resamples: int | None = None,
+    seed: int | None = None,
+    stream: Sequence[Any] = (),
+) -> dict[str, Any]:
+    """The interval of the mean of ``values`` at ``level`` by ``method``: the t interval
+    (``_t_interval``), or the bootstrap-t (``bootstrap_t_interval``, ``resamples`` from
+    ``numpy.random.default_rng(derive_seed(seed, *stream))``), whose record then carries numpy's
+    moments and its ``bootstrap`` (resamples, seed, stream seed, dropped resamples)."""
+    found = _t_interval(values, 1 - level, floor)
+    found["bootstrap"] = None
+    if method == "bootstrap_t":
+        stream_seed = derive_seed(seed, *stream)
         low, high, dropped = bootstrap_t_interval(
-            deltas, level, settings["bootstrap_resamples"], np.random.default_rng(seed),
-            floor=settings["se_floor"],
+            values, level, resamples, np.random.default_rng(stream_seed), floor=floor
         )  # fmt: skip
-        bootstrap = {"resamples": settings["bootstrap_resamples"],
-                     "seed": settings["bootstrap_seed"], "stream_seed": seed,
-                     "dropped": dropped}  # fmt: skip
+        found["bootstrap"] = {"resamples": resamples, "seed": seed, "stream_seed": stream_seed,
+                              "dropped": dropped}  # fmt: skip
         bounded = math.isfinite(low) and math.isfinite(high)
         found.update(t=None, interval=[low, high] if bounded else None)
-        if len(deltas) >= 2:  # the record agrees with its interval: numpy's moments
-            mean, sd, se = _numpy_moments(np.asarray(deltas, dtype=float), settings["se_floor"])
+        if len(values) >= 2:  # the record agrees with its interval: numpy's moments
+            mean, sd, se = _numpy_moments(np.asarray(values, dtype=float), floor)
             found.update(mean=mean, sd=sd, se=se)
+    return found
+
+
+def _look_interval(number, level, values, settings) -> dict[str, Any]:
+    """Look ``number``'s interval over ``values``, by the looks' settings and stream."""
+    return _interval(values, level, settings["interval"], floor=settings["se_floor"],
+                     resamples=settings["bootstrap_resamples"], seed=settings["bootstrap_seed"],
+                     stream=("look", number))  # fmt: skip
+
+
+def _look(number, level, deltas, started, settings) -> dict[str, Any]:
+    found = _look_interval(number, level, deltas, settings)
+    bootstrap = found.pop("bootstrap")
     # Below the direction minimum nothing is concluded; below the equivalence one, no equivalence.
     concluded = len(deltas) >= settings["direction_min_supported"]
     allowed = concluded and len(deltas) >= settings["equivalence_min_supported"]
@@ -1216,12 +1289,85 @@ def _look(number, level, deltas, started, settings) -> dict[str, Any]:
     }
 
 
+def sensitivity_looks(
+    primary: Mapping[str, Any],
+    blocks: Sequence[Mapping[str, Any]],
+    name: str,
+    *,
+    interval: str,
+    se_floor: float,
+    bootstrap_resamples: int | None = None,
+    bootstrap_seed: int | None = None,
+) -> list[dict[str, Any]]:
+    """The sensitivity ``name`` (``SENSITIVITIES``) at the primary's actual looks: ``primary`` is
+    ``looks``' result over the same ``blocks``, and the other arguments are the settings it was
+    computed with. At each look, the supported blocks among the first ``started`` (those the look
+    read), the look's level and the same interval and bootstrap stream; the interval runs from the
+    lower bound of the interval over the blocks' lower bounds to the upper bound of the interval
+    over their upper bounds, read as the look reads (``_readings``) under the look's equivalence
+    and direction minima. It never stops anything: a sensitivity has no looks of its own."""
+    low_key, high_key = SENSITIVITIES[name]
+    settings = {
+        "interval": interval,
+        "se_floor": se_floor,
+        "bootstrap_resamples": bootstrap_resamples,
+        "bootstrap_seed": bootstrap_seed,
+    }
+    out = []
+    for look in primary["looks"]:
+        chosen = [b for b in blocks[: look["started"]] if b["supported"]]
+        if len(chosen) != look["supported"]:
+            raise ValueError(f"sensitivity {name}: look {look['look']} read {look['supported']} "
+                             f"supported blocks, the blocks given hold {len(chosen)}")  # fmt: skip
+        values = {key: [b.get(key) for b in chosen] for key in (low_key, high_key)}
+        if not all(_finite(v) for found in values.values() for v in found):
+            raise ValueError(f"sensitivity {name}: a supported block without finite bounds")
+        low = _look_interval(look["look"], look["level"], values[low_key], settings)
+        high = (
+            low
+            if high_key == low_key
+            else _look_interval(look["look"], look["level"], values[high_key], settings)
+        )
+        bounded = low["interval"] is not None and high["interval"] is not None
+        found = [low["interval"][0], high["interval"][1]] if bounded else None
+        readings = (_readings(found, equivalence=look["equivalence_allowed"])
+                    if look["direction_allowed"] else ["inconclusive"])  # fmt: skip
+        out.append({"look": look["look"], "level": look["level"], "started": look["started"],
+                    "supported": look["supported"], "method": interval, "interval": found,
+                    "readings": readings,
+                    "low": {"mean": low["mean"], "interval": low["interval"]},
+                    "high": {"mean": high["mean"], "interval": high["interval"]},
+                    "primary_readings": look["readings"]})  # fmt: skip
+    return out
+
+
 def secondary_contrasts(
-    blocks: Sequence[Mapping[str, Any]], started: int, *, level: float = SECONDARY_LEVEL
+    blocks: Sequence[Mapping[str, Any]],
+    started: int,
+    *,
+    look: int,
+    interval: str,
+    status: str,
+    level: float = SECONDARY_LEVEL,
+    bootstrap_resamples: int | None = None,
+    bootstrap_seed: int | None = None,
 ) -> dict[str, Any]:
     """A − P and P − F (P the pre-warmed arm) on the common three-arm supported cohort among the
-    first ``started`` blocks (those of the stopping look), each a two-sided t interval at
-    ``level``, with the cohort's attrition."""
+    first ``started`` blocks (those of the stopping look ``look``), each a two-sided interval at
+    ``level`` without an SE floor, with the cohort's attrition. ``interval`` (the fixation
+    record's ``secondary_interval``): ``t``, or ``bootstrap_t`` with ``bootstrap_resamples`` from
+    ``derive_seed(bootstrap_seed, "secondary", contrast, look)``; ``status`` (its
+    ``secondary_status``) is reported beside them."""
+    if interval not in INTERVALS:
+        raise ValueError(f"secondary_contrasts: interval {interval!r} is not one of {INTERVALS}")
+    if status not in SECONDARY_STATUSES:
+        raise ValueError(f"secondary_contrasts: status {status!r} is not one of "
+                         f"{SECONDARY_STATUSES}")  # fmt: skip
+    if interval == "bootstrap_t" and not (
+        _integer(bootstrap_resamples) and bootstrap_resamples >= 2 and _integer(bootstrap_seed)
+    ):
+        raise ValueError("secondary_contrasts: the bootstrap needs an integer number of "
+                         "resamples ≥ 2 and an integer seed")  # fmt: skip
     primary = [b for b in blocks[:started] if b["complete"] and b["supported"]]
     arms = (*PRIMARY_ARMS, PREWARMED)
     common = [b for b in primary if all(arm in b.get("h", {}) for arm in arms)]
@@ -1231,7 +1377,20 @@ def secondary_contrasts(
     }
     return {
         "level": level,
-        **{name: _t_interval(values, 1 - level) for name, values in contrasts.items()},
+        "look": look,
+        "secondary_interval": interval,
+        "secondary_status": status,
+        **{
+            name: _interval(
+                values,
+                level,
+                interval,
+                resamples=bootstrap_resamples,
+                seed=bootstrap_seed,
+                stream=("secondary", name, look),
+            )
+            for name, values in contrasts.items()
+        },  # fmt: skip
         "attrition": {
             "started": started,
             "primary_supported": len(primary),
@@ -1381,7 +1540,9 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
     - ``equivalence_min_supported`` (an integer ≥ 0): equivalence is concluded only at a look
       with at least that many supported blocks, 0 at every look;
     - ``direction_min_supported`` (an integer ≥ 0): below that many supported blocks a look
-      concludes nothing (neither direction nor equivalence), 0 at every look.
+      concludes nothing (neither direction nor equivalence), 0 at every look;
+    - ``secondary_interval``: the secondary contrasts' interval, one of ``INTERVALS``;
+    - ``secondary_status``: how they are reported, one of ``SECONDARY_STATUSES``.
 
     Each is required, the integers as JSON integers; a missing or malformed one raises
     ``ValueError``, and none is ever defaulted."""
@@ -1418,6 +1579,10 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
     for key in ("equivalence_min_supported", "direction_min_supported"):
         if not (_integer(record[key]) and record[key] >= 0):
             problems.append(f"{key} {record[key]!r} is not an integer ≥ 0")
+    for key, allowed in (("secondary_interval", INTERVALS),
+                         ("secondary_status", SECONDARY_STATUSES)):  # fmt: skip
+        if record[key] not in allowed:
+            problems.append(f"{key} {record[key]!r} is not one of {list(allowed)}")
     if problems:
         raise ValueError(f"{path}: " + "; ".join(problems))
     return {
@@ -1432,7 +1597,80 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
         "cap": record["cap"],
         "equivalence_min_supported": record["equivalence_min_supported"],
         "direction_min_supported": record["direction_min_supported"],
+        "secondary_interval": record["secondary_interval"],
+        "secondary_status": record["secondary_status"],
     }
+
+
+def versions_problems(
+    path: str | Path, *, fixation: str | Path, judge: str | None = None, repo: Path = REPO_ROOT
+) -> list[str]:
+    """How the running checkout and configs depart from the versions record at ``path``
+    (``VERSIONS_RECORD``, written by ``scripts/study2_short_summary.py versions``); none: they
+    agree. The record must exist, and:
+
+    - ``code.commit`` is the running HEAD, or an ancestor of it whose changes up to HEAD touch the
+      versions record alone (committing the record makes such a child), or any ancestor when the
+      record allows it (``code.allow_descendants`` true); the working tree has no uncommitted
+      change or untracked file but the record itself;
+    - ``model`` is the name and revision of the stage's model (``VERSIONS_CONFIG``);
+    - ``judge``'s identity is that of its config (``judge.judge_identity``), and the config is
+      ``judge/<judge>`` when ``judge`` is given;
+    - ``fixation.sha256`` is the sha256 of the fixation record ``fixation``.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return [f"{path} is missing: write the versions record (scripts/study2_short_summary.py "
+                "versions) and commit it first"]  # fmt: skip
+    try:
+        record = json.loads(path.read_text())
+    except ValueError:
+        record = None
+    if not isinstance(record, dict):
+        return [f"{path} is not a JSON object"]
+    problems = []
+    code = record.get("code") if isinstance(record.get("code"), dict) else {}
+    commit, descendants = code.get("commit"), code.get("allow_descendants", False)
+    head = git_state(repo).get("commit")
+    changes = code_changes(commit, repo) if isinstance(commit, str) and commit else None
+    if head is None:
+        problems.append("the running code is not a Git checkout: its commit is unknown")
+    elif changes is None:
+        problems.append(f"the running HEAD {head} is neither the recorded commit {commit!r} nor "
+                        "a descendant of it")  # fmt: skip
+    else:
+        own = {VERSIONS_RECORD, str(path)}
+        if path.is_absolute() and path.resolve().is_relative_to(repo.resolve()):
+            own.add(path.resolve().relative_to(repo.resolve()).as_posix())
+        committed = [name for name in changes["committed"] if name not in own]
+        uncommitted = [name for name in changes["uncommitted"] if name not in own]
+        if committed and descendants is not True:
+            problems.append(f"the running HEAD {head} differs from the recorded commit "
+                            f"{commit} in {len(committed)} files (first: {committed[0]}), and "
+                            "the record does not allow descendants")  # fmt: skip
+        if uncommitted:
+            problems.append(f"the checkout has {len(uncommitted)} uncommitted changes or untracked "
+                            f"files (first: {uncommitted[0]})")  # fmt: skip
+    cfg = load_config(*VERSIONS_CONFIG)
+    model = {"name": str(cfg.model.name), "revision": str(cfg.model.revision)}
+    if record.get("model") != model:
+        problems.append(f"the record's model {record.get('model')!r} is not the configs' {model}")
+    recorded = record.get("judge") if isinstance(record.get("judge"), dict) else {}
+    name = recorded.get("config")
+    if judge is not None and name != f"judge/{judge}":
+        problems.append(f"the record's judge is {name!r}, not judge/{judge}")
+    try:
+        identity = judge_identity(load_config(str(name)))
+    except Exception as exc:  # an unknown or incomplete judge config
+        problems.append(f"the record's judge config {name!r} does not load: {exc}")
+    else:
+        differ = [key for key in IDENTITY_FIELDS if recorded.get(key) != identity[key]]
+        if differ:
+            problems.append(f"the record's judge identity differs from {name}'s in {differ}")
+    digest = hashlib.sha256(Path(fixation).read_bytes()).hexdigest()
+    if (record.get("fixation") or {}).get("sha256") != digest:
+        problems.append(f"the record's fixation sha256 is not that of {fixation}")
+    return problems
 
 
 def run_facts(run_dir: str | Path) -> dict[str, Any]:
@@ -1482,19 +1720,56 @@ def preconditioner_pairing(
     return problems
 
 
+def read_abandonment(path: str | Path) -> dict[str, str]:
+    """The launcher attempts the operator abandoned, by the journal's ``run_id`` of the attempt,
+    with the reason: from an abandonment record, a JSON object ``{"abandoned": [{"run_id": ID,
+    "reason": TEXT}, ...]}`` (other keys, such as ``what``, are free), committed to the repository
+    or archived with an inventory before it is read. Each attempt once, each reason a non-empty
+    string; anything else raises ``ValueError``."""
+    record = json.loads(Path(path).read_text())
+    entries = record.get("abandoned") if isinstance(record, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: an abandonment record is a JSON object with an 'abandoned' list")
+    out: dict[str, str] = {}
+    for number, entry in enumerate(entries, 1):
+        run_id = entry.get("run_id") if isinstance(entry, dict) else None
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        if not (isinstance(run_id, str) and run_id and isinstance(reason, str) and reason.strip()):
+            raise ValueError(f"{path}, entry {number}: a run_id and a non-empty reason")
+        if run_id in out:
+            raise ValueError(f"{path}: the attempt {run_id} is abandoned twice")
+        out[run_id] = reason
+    return out
+
+
 def exhausted_runs(
-    records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
+    records: Sequence[Mapping[str, Any]],
+    experiment: str = "study2_short",
+    abandoned: Mapping[str, str] | None = None,
 ) -> dict[tuple, str]:
     """The regular runs that the launcher's journal (``launch.launch_records``) shows exhausted
     after their recovery round: their cell's recovery round logged, at least 2 × MAX_ATTEMPTS
-    attempts, none of which ended other than technical (an attempt with no end record counts as
-    technical). By key (arm, batch, rate, seed), from the logged command composed as the launcher
-    composed it, with the run's label."""
+    attempts, none of which ended other than technical, and the last of them (by attempt number,
+    the one after the recovery round) ended: an end record with the outcome technical, or the
+    attempt is in ``abandoned`` (``read_abandonment``: the operator's record that it will never
+    end). A last attempt without either may still be running, and its run is not given up. An
+    earlier attempt without an end record was settled by the start of a later one (the launcher
+    counts it technical before it starts the next). By key (arm, batch, rate, seed), from the
+    logged command composed as the launcher composed it, with the run's label. An abandoned
+    attempt the journal does not show started, or shows ended, raises ``ValueError``."""
     from ..launch import MAX_ATTEMPTS  # the launcher imports this package's stage_a
 
+    abandoned = abandoned or {}
     recovered = {(r.get("experiment"), r.get("cell")) for r in records
                  if r.get("event") == "recovery"}  # fmt: skip
     ends = {r.get("run_id"): r.get("outcome") for r in records if r.get("event") == "end"}
+    started = {r.get("run_id") for r in records if r.get("event") == "start"}
+    for run_id in sorted(abandoned):
+        if run_id not in started:
+            raise ValueError(f"the abandoned attempt {run_id} has no start in the launch journal")
+        if run_id in ends:
+            raise ValueError(f"the abandoned attempt {run_id} ended ({ends[run_id]}): it is not "
+                             "unresolved")  # fmt: skip
     attempts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for record in records:
         if record.get("event") == "start" and record.get("experiment") == experiment:
@@ -1508,7 +1783,10 @@ def exhausted_runs(
             continue
         if len(group) < 2 * MAX_ATTEMPTS:
             continue
-        command = group[-1]["command"]
+        last = max(enumerate(group), key=lambda pair: (pair[1].get("attempt") or 0, pair[0]))[1]
+        if ends.get(last["run_id"]) != "technical" and last["run_id"] not in abandoned:
+            continue  # the last attempt has not ended: it may still be running
+        command = last["command"]
         cfg = load_config(command[1], command[2:])
         key = (arm_of(cfg), int(cfg.train.batch_size), rate(float(cfg.optimizer.lr)),
                int(cfg.seed))  # fmt: skip
@@ -1772,8 +2050,8 @@ def look_blocks(
     """``progress``'s confirmation blocks as ``looks`` and ``secondary_contrasts`` read them,
     given the label rows of every labeled run (``labels``: run id → rows; a run absent from it
     is not labeled yet). A block is complete once its runs are and the bracket runs of every arm
-    supported in it are labeled; Δ, the worst case and every supported arm's h come from
-    ``block_difference``, with the missing labels it read per arm."""
+    supported in it are labeled; Δ, the sensitivities' bounds and every supported arm's h come
+    from ``block_difference``, with the missing labels it read per arm."""
     out = []
     for block in blocks:
         entry: dict[str, Any] = {"block": block["block"], "seed": block["seed"],
@@ -1788,9 +2066,9 @@ def look_blocks(
             else:
                 found = block_difference(block["supports"], labels, kstar)
                 missing = {arm: a["missing"] for arm, a in found["arms"].items()}
+                bounds = {key: found[key] for pair in SENSITIVITIES.values() for key in pair}
                 entry.update(complete=True, supported=found["supported"], delta=found["delta"],
-                             delta_missing_harmful=found["delta_missing_harmful"], h=found["h"],
-                             missing=missing)  # fmt: skip
+                             h=found["h"], missing=missing, **bounds)  # fmt: skip
         out.append(entry)
     return out
 

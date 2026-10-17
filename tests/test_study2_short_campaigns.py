@@ -45,6 +45,7 @@ from zero_field_refusal.analysis.study2_short import (
     preconditioner_pairing,
     prescribed,
     progress,
+    read_abandonment,
     read_fixation,
     run_facts,
     seed_role,
@@ -70,8 +71,12 @@ FIXATION = {  # the decided values; the resamples, seed and bias allowance are p
     "cap": 80,
     "equivalence_min_supported": 36,
     "direction_min_supported": 10,
+    "secondary_interval": "t",
+    "secondary_status": "secondary",
 }
-LOOK_SETTINGS = {k: v for k, v in FIXATION.items() if k not in ("w_max", "levels", "looks", "cap")}
+LOOK_SETTINGS = {k: v for k, v in FIXATION.items()
+                 if k not in ("w_max", "levels", "looks", "cap", "secondary_interval",
+                              "secondary_status")}  # fmt: skip
 
 
 # ------------------------------------------------------------------ configs and arms
@@ -311,9 +316,11 @@ def journal(
     attempts: int,
     recovered: bool,
     last_outcome: str = "technical",
+    last_ended: bool = True,
     config: str = "experiments/study2_short",
 ) -> list:
-    """The launcher's records of one run's attempts (the last one never ends when technical)."""
+    """The launcher's records of one run's attempts; with ``last_ended`` False the last one has
+    no end record (still running, or lost with its Pod)."""
     records = []
     if recovered:
         records.append({"event": "recovery", "experiment": "study2_short", "cell": key_cell,
@@ -324,7 +331,7 @@ def journal(
                         "run_id": run_id, "experiment": "study2_short", "config_hash": "h",
                         "command": ["/src/scripts/train.py", config, *overrides,
                                     f"seed={seed}"]})  # fmt: skip
-        if attempt < attempts or last_outcome != "technical":
+        if attempt < attempts or last_ended:
             outcome = last_outcome if attempt == attempts else "technical"
             records.append({"event": "end", "run": f"{key_cell}/s{seed}", "attempt": attempt,
                             "run_id": run_id, "outcome": outcome})  # fmt: skip
@@ -349,6 +356,60 @@ def test_the_journal_tells_which_runs_were_given_up_after_their_recovery_round()
                    {"attempts": 2 * MAX_ATTEMPTS, "recovered": True,
                     "last_outcome": "done"}):  # fmt: skip
         assert exhausted_runs(journal(cell, 3000, overrides, config=config, **kwargs)) == {}
+
+
+def test_a_sixth_attempt_still_running_is_not_given_up_until_it_ends_or_is_abandoned(
+    tmp_path,
+) -> None:
+    cell, overrides = GIVEN_UP
+    config = "experiments/study2_short_rayleigh"
+    running = journal(cell, 3000, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
+                      last_ended=False, config=config)  # fmt: skip
+    sixth = running[-1]["run_id"]
+    assert running[-1]["attempt"] == 6 and running[-1]["event"] == "start"
+    assert exhausted_runs(running) == {}  # pending: it may still be running
+    # An earlier attempt without its end record was settled by the next start.
+    earlier = [
+        r
+        for r in journal(
+            cell, 3000, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True, config=config
+        )  # fmt: skip
+        if not (r["event"] == "end" and r["attempt"] == 2)
+    ]
+    assert exhausted_runs(earlier) == {(ADAMW, 5, 1.37e-5, 3000): f"{cell}/s3000"}
+    # The operator's abandonment record gives the sixth attempt up.
+    path = tmp_path / "abandoned.json"
+    path.write_text(
+        json.dumps(
+            {
+                "what": "attempts lost with their Pod",
+                "abandoned": [{"run_id": sixth, "reason": "Pod terminated"}],
+            }
+        )
+    )
+    abandoned = read_abandonment(path)
+    assert abandoned == {sixth: "Pod terminated"}
+    found = exhausted_runs(running, abandoned=abandoned)
+    assert found == {(ADAMW, 5, 1.37e-5, 3000): f"{cell}/s3000"}
+    with pytest.raises(ValueError, match="no start in the launch journal"):
+        exhausted_runs(running, abandoned={"another-run": "typo"})
+    ended = journal(cell, 3000, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
+                    config=config)  # fmt: skip
+    with pytest.raises(ValueError, match="ended .technical.: it is not unresolved"):
+        exhausted_runs(ended, abandoned={ended[-1]["run_id"]: "already ended"})
+
+
+@pytest.mark.parametrize(
+    "record",
+    [[], {"abandoned": {}}, {"abandoned": [{"run_id": "a"}]},
+     {"abandoned": [{"run_id": "a", "reason": " "}]}, {"abandoned": [{"reason": "x"}]},
+     {"abandoned": [{"run_id": "a", "reason": "x"}, {"run_id": "a", "reason": "y"}]}],
+)  # fmt: skip
+def test_a_malformed_abandonment_record_is_refused(tmp_path, record) -> None:
+    path = tmp_path / "abandoned.json"
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="abandon|run_id"):
+        read_abandonment(path)
 
 
 def test_a_run_given_up_is_a_technical_failure_of_its_block_and_the_looks_go_past_it() -> None:
@@ -457,6 +518,11 @@ def test_the_fixation_record_needs_every_value(tmp_path) -> None:
     assert read_fixation(path)["equivalence_min_supported"] == 0
     path.write_text(json.dumps({**FIXATION, "direction_min_supported": 0}))
     assert read_fixation(path)["direction_min_supported"] == 0
+    path.write_text(json.dumps({**FIXATION, "secondary_interval": "bootstrap_t",
+                                "secondary_status": "exploratory"}))  # fmt: skip
+    found = read_fixation(path)
+    assert (found["secondary_interval"], found["secondary_status"]) == ("bootstrap_t",
+                                                                        "exploratory")  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -470,7 +536,10 @@ def test_the_fixation_record_needs_every_value(tmp_path) -> None:
      ("equivalence_min_supported", -1), ("equivalence_min_supported", 36.5),
      ("equivalence_min_supported", True), ("equivalence_min_supported", None),
      ("direction_min_supported", -1), ("direction_min_supported", 10.0),
-     ("direction_min_supported", "10"), ("direction_min_supported", None)],
+     ("direction_min_supported", "10"), ("direction_min_supported", None),
+     ("secondary_interval", "percentile"), ("secondary_interval", None),
+     ("secondary_interval", ["t"]), ("secondary_status", "primary"),
+     ("secondary_status", None), ("secondary_status", "Secondary")],
 )  # fmt: skip
 def test_the_fixation_record_refuses_a_malformed_new_key(tmp_path, key, value) -> None:
     path = tmp_path / "fixation.json"
@@ -504,7 +573,10 @@ def test_look_blocks_wait_for_labels_and_take_delta_from_the_brackets() -> None:
     first = look_blocks(blocks, labels, kstar)[0]
     assert first["complete"] and first["supported"]
     assert first["delta"] == pytest.approx(0.1)  # 0.2 against 0.1 at both ends
-    assert first["delta_missing_harmful"] == pytest.approx(0.1)
+    # 5 of 500 missing at each end of either arm: the worst case moves by 1 pp either way.
+    assert first["delta_missing_low"] == pytest.approx(0.09)
+    assert first["delta_missing_high"] == pytest.approx(0.11)
+    assert first["delta_all_missing_harmful"] == pytest.approx(0.1)
     assert first["missing"] == {ADAMW: 10, FA: 10, PREWARMED: 10}
     assert set(first["h"]) == {ADAMW, FA, PREWARMED}
     # Without the pre-warmed arm's labels the block still waits: its three arms are labeled
@@ -538,10 +610,20 @@ def runs_root(tmp_path: Path, records: list | None = None) -> str:
     return str(root)
 
 
-def script(monkeypatch, tmp_path, path: Path, runs: list, *args: str) -> Path:
-    """Run a script on ``runs`` (patched in for the run directories); returns its --out."""
+def script(
+    monkeypatch, tmp_path, path: Path, runs: list, *args: str, versions: bool = True
+) -> Path:
+    """Run a script on ``runs`` (patched in for the run directories); returns its --out. With
+    ``versions``, the versions record holds (``versions_problems`` has its own tests)."""
     monkeypatch.setattr("zero_field_refusal.analysis.stage_a.load_trajectories",
                         lambda *roots: list(runs))  # fmt: skip
+    if versions:
+        monkeypatch.setattr("zero_field_refusal.analysis.study2_short.versions_problems",
+                            lambda path, **kwargs: [])  # fmt: skip
+        if "--versions" not in args:
+            record = tmp_path / "versions-holding.json"
+            record.write_text("{}")
+            args = (*args, "--versions", str(record))
     by_dir = {run.run_dir: run for run in runs}
     monkeypatch.setattr("zero_field_refusal.analysis.study2_short.run_facts",
                         lambda run_dir: fact(by_dir[run_dir]))  # fmt: skip
@@ -556,9 +638,9 @@ def campaign(monkeypatch, tmp_path, runs, *args: str) -> list:
     return load_campaign(script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args))[1]
 
 
-def refusal(monkeypatch, tmp_path, capsys, runs, *args: str) -> str:
+def refusal(monkeypatch, tmp_path, capsys, runs, *args: str, versions: bool = True) -> str:
     with pytest.raises(SystemExit):
-        script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args)
+        script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args, versions=versions)
     return capsys.readouterr().err
 
 
@@ -657,6 +739,69 @@ def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
                   "--after-look", "1", *journal_args)  # fmt: skip
     assert "--after-look 1: look 1 needs 36" in err
+
+
+def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_path, capsys):
+    runs = base()
+    until(runs, "validation")
+    missing = str(tmp_path / "no-versions.json")
+    args = ("--fixation", fixation_file(tmp_path), "--runs-root", runs_root(tmp_path),
+            "--versions", missing)  # fmt: skip
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "validation", *args, versions=False)
+    assert f"the versions record does not hold: {missing} is missing" in err
+    until(runs, "confirmation")
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
+                  *args, versions=False)  # fmt: skip
+    assert "is missing: write the versions record" in err
+    # Discovery precedes the record: its campaigns do not read it.
+    early = base()
+    found = campaign(monkeypatch, tmp_path, early, "targeted", "--w-max", str(W_MAX),
+                     "--versions", missing)  # fmt: skip
+    assert len(found) == 15
+    # With the record holding, the header names it.
+    record = tmp_path / "versions.json"
+    record.write_text("{}")
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "confirmation", "--blocks", "1", "2",
+                 *args[:4], "--versions", str(record))  # fmt: skip
+    header = " ".join(line[2:] for line in out.read_text().splitlines() if line.startswith("#"))
+    digest = hashlib.sha256(record.read_bytes()).hexdigest()
+    assert f"under the versions record {record}, sha256 {digest}" in header
+
+
+def test_the_abandonment_record_lets_a_lost_attempt_be_given_up(monkeypatch, tmp_path, capsys):
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    block_runs = blocks_of(rates, 5, CONFIRMATION_SEEDS[:2])
+    lost = next(r for r in block_runs if (r.arm, r.seed) == (ADAMW, 3000))
+    runs += [r for r in block_runs if r is not lost]
+    cell = f"{ADAMW}-b5-{lost.lr:g}-blocks-1-2-rayleigh"
+    overrides = ["train.batch_size=5", f"optimizer.lr={lost.lr:g}",
+                 "study2_short.role=confirmation"]  # fmt: skip
+    records = journal(cell, 3000, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
+                      last_ended=False, config="experiments/study2_short_rayleigh")  # fmt: skip
+    root = runs_root(tmp_path, records)
+    path = tmp_path / "abandoned.json"
+    path.write_text(
+        json.dumps(
+            {"abandoned": [{"run_id": records[-1]["run_id"], "reason": "Pod terminated mid-run"}]}
+        )
+    )
+    common = ("--fixation", fixation_file(tmp_path), "--runs-root", root)
+    script(monkeypatch, tmp_path, SUMMARY, runs, *common)
+    waiting = json.loads(capsys.readouterr().out)
+    assert waiting["confirmation"]["given_up_by_the_launcher"] == {}  # the sixth may still run
+    out = script(monkeypatch, tmp_path, SUMMARY, runs, *common, "--abandoned", str(path))
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["confirmation"]["given_up_by_the_launcher"] == {
+        f"{cell}/s3000": [ADAMW, 5, lost.lr, 3000]}  # fmt: skip
+    assert shown["abandoned"] == {records[-1]["run_id"]: "Pod terminated mid-run"}
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert json.loads(out.read_text())["abandonment_record"] == {"path": str(path),
+                                                                 "sha256": digest}  # fmt: skip
+    path.write_text(json.dumps({"abandoned": [{"run_id": "unknown", "reason": "typo"}]}))
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
+                  *common, "--abandoned", str(path))  # fmt: skip
+    assert "the abandoned attempt unknown has no start in the launch journal" in err
 
 
 def test_a_range_issued_before_is_completed_and_then_refused(monkeypatch, tmp_path, capsys):
@@ -1159,11 +1304,47 @@ def test_the_summary_reads_the_labels_of_the_brackets_once(monkeypatch, tmp_path
 
     monkeypatch.setattr(module, "load_prompt_set", prompt_set)
     monkeypatch.setattr(module, "read_endpoint_labels", endpoint_labels)
-    labels = module.read_labels(state, runs, "wildguard")
-    assert set(labels) == labeled and sorted(read) == sorted(labeled)
+    labels, pending = module.read_labels(state, runs, "wildguard")
+    assert set(labels) == labeled and sorted(read) == sorted(labeled) and pending == {}
     assert loaded == ["harmful_evaluation"]  # the prompt set is read once
     found = look_blocks(state["confirmation"], labels, state["frozen"]["K_star"])
     assert not found[0]["complete"] and found[0]["unlabeled"]  # the pre-warmed bracket waits
+
+
+def test_the_summary_keeps_runs_without_a_completed_receipt_pending(monkeypatch, tmp_path):
+    from zero_field_refusal.analysis.study2_labels import LabelsPending
+
+    runs = base()
+    state = confirmed(runs)
+    module = summary_module()
+    runs = on_disk(runs, tmp_path)
+    brackets = [s["bracket"][side]["run"] for s in state["confirmation"][0]["supports"].values()
+                for side in ("lo", "hi")]  # fmt: skip
+    monkeypatch.setattr(module, "label_path", lambda run_dir, judge: run_dir / f"{judge}.jsonl")
+    for run_id in brackets:
+        (tmp_path / "runs" / run_id / "wildguard.jsonl").write_text("")
+    interrupted = brackets[0]
+
+    def endpoint_labels(run_dir, judge, identity, prompts):
+        if run_dir.name == interrupted:
+            raise LabelsPending("no judging receipt")
+        return rows(1)
+
+    monkeypatch.setattr(module, "load_prompt_set", lambda name, data: [{"id": "p", "text": "t"}])
+    monkeypatch.setattr(module, "read_endpoint_labels", endpoint_labels)
+    labels, pending = module.read_labels(state, runs, "wildguard")
+    assert pending == {interrupted: "no judging receipt"} and interrupted not in labels
+    found = module.compute_looks(state, runs, labels, FIXATION, THETA0, pending)
+    assert found["labels_pending"] == {interrupted: "no judging receipt"}
+    assert found["blocks"][0]["unlabeled"] == [interrupted] and 1 in found["waiting_for_labels"]
+    assert not found["blocks"][0]["complete"]  # pending, never "not harmful"
+
+    def broken(run_dir, judge, identity, prompts):
+        raise ValueError("a label of another response")
+
+    monkeypatch.setattr(module, "read_endpoint_labels", broken)
+    with pytest.raises(ValueError, match="another response"):  # an error is not pending
+        module.read_labels(state, runs, "wildguard")
 
 
 def test_the_summary_looks_on_labels() -> None:
@@ -1187,7 +1368,8 @@ def test_the_summary_computes_the_looks_with_the_records_interval(monkeypatch) -
     module = summary_module()
     deltas = [0.02 * (-1) ** i + 0.004 * (i % 5) for i in range(36)]
     entries = [{"block": i + 1, "complete": True, "supported": True, "delta": d,
-                "delta_missing_harmful": d + 0.01, "h": {ADAMW: 0.2 + d, FA: 0.2}}
+                "delta_missing_low": d - 0.02, "delta_missing_high": d + 0.03,
+                "delta_all_missing_harmful": d + 0.01, "h": {ADAMW: 0.2 + d, FA: 0.2}}
                for i, d in enumerate(deltas)]  # fmt: skip
     blocks = [{"seed": 3000 + i, "supports": {ADAMW: {}, FA: {}}} for i in range(80)]
     state = {"next": {"campaign": "confirmation"}, "frozen": {"K_star": 6.3},
@@ -1196,13 +1378,24 @@ def test_the_summary_computes_the_looks_with_the_records_interval(monkeypatch) -
     monkeypatch.setattr(module, "utility_family", lambda *args, **kw: {"family": []})
     found = module.compute_looks(state, [], {}, FIXATION, THETA0)
     seed = derive_seed(20261016, "look", 1)
-    for key, shift in (("looks", 0.0), ("looks_missing_harmful", 0.01)):
-        first = found[key]["looks"][0]
-        low, high, dropped = bootstrap_t_interval([d + shift for d in deltas], 0.992, 2000,
-                                                  np.random.default_rng(seed))  # fmt: skip
-        assert first["method"] == "bootstrap_t" and first["interval"] == [low, high]
-        assert first["bootstrap"] == {"resamples": 2000, "seed": 20261016, "stream_seed": seed,
-                                      "dropped": dropped}  # fmt: skip
+
+    def interval(shift):
+        return bootstrap_t_interval([d + shift for d in deltas], 0.992, 2000,
+                                    np.random.default_rng(seed))  # fmt: skip
+
+    first = found["looks"]["looks"][0]
+    low, high, dropped = interval(0.0)
+    assert first["method"] == "bootstrap_t" and first["interval"] == [low, high]
+    assert first["bootstrap"] == {"resamples": 2000, "seed": 20261016, "stream_seed": seed,
+                                  "dropped": dropped}  # fmt: skip
+    # The sensitivities at the primary's look 1, on its stream: one look each, no stops.
+    assert found["looks"]["stopped"] and len(found["looks"]["looks"]) == 1
+    (worst,) = found["sensitivities"]["missing_labels"]
+    assert worst["interval"] == [interval(-0.02)[0], interval(0.03)[1]]
+    (both,) = found["sensitivities"]["all_missing_harmful"]
+    assert both["interval"] == list(interval(0.01)[:2])
+    assert (worst["look"], worst["started"]) == (1, first["started"]) and "stops" not in worst
+    assert "looks_missing_harmful" not in found
     assert found["interval"] == {"method": "bootstrap_t", "resamples": 2000, "seed": 20261016}
     t_record = {**FIXATION, "interval": "t"}
     found = module.compute_looks(state, [], {}, t_record, THETA0)
@@ -1210,11 +1403,41 @@ def test_the_summary_computes_the_looks_with_the_records_interval(monkeypatch) -
     assert found["looks"]["looks"][0]["bootstrap"] is None and found["looks"]["looks"][0]["t"]
 
 
+def test_the_summary_reports_the_secondary_contrasts_with_their_keys(monkeypatch) -> None:
+    module = summary_module()
+    deltas = [0.02 * (-1) ** i + 0.004 * (i % 5) for i in range(36)]
+    entries = [{"block": i + 1, "complete": True, "supported": True, "delta": d,
+                "delta_missing_low": d, "delta_missing_high": d, "delta_all_missing_harmful": d,
+                "h": {ADAMW: 0.2 + d, FA: 0.2, PREWARMED: 0.21 + 0.003 * (i % 4)}}
+               for i, d in enumerate(deltas)]  # fmt: skip
+    blocks = [{"seed": 3000 + i, "supports": {ADAMW: {}, FA: {}}} for i in range(80)]
+    state = {"next": {"campaign": "confirmation"}, "frozen": {"K_star": 6.3},
+             "confirmation": blocks}  # fmt: skip
+    monkeypatch.setattr(module, "look_blocks", lambda blocks, labels, kstar: entries)
+    monkeypatch.setattr(module, "utility_family", lambda *args, **kw: {"family": []})
+    for interval, status in (("t", "secondary"), ("bootstrap_t", "exploratory")):
+        record = {**FIXATION, "secondary_interval": interval, "secondary_status": status}
+        secondary = module.compute_looks(state, [], {}, record, THETA0)["secondary"]
+        assert (secondary["secondary_interval"], secondary["secondary_status"]) == (
+            interval,
+            status,
+        )
+        assert secondary["look"] == 1 and secondary["level"] == 0.9875
+        contrast = secondary["adamw_minus_prewarmed"]
+        assert (contrast["bootstrap"] is None) == (interval == "t")
+        if interval == "bootstrap_t":
+            seed = derive_seed(20261016, "secondary", "adamw_minus_prewarmed", 1)
+            values = [e["h"][ADAMW] - e["h"][PREWARMED] for e in entries]
+            low, high, _ = bootstrap_t_interval(values, 0.9875, 2000, np.random.default_rng(seed))
+            assert contrast["interval"] == [low, high]
+
+
 def test_the_summary_gives_each_look_its_pointwise_reading(monkeypatch) -> None:
     module = summary_module()
     deltas = [0.008 + 0.002 * (-1) ** i for i in range(36)]  # a direction within b
     entries = [{"block": i + 1, "complete": True, "supported": True, "delta": d,
-                "delta_missing_harmful": d, "h": {ADAMW: 0.2 + d, FA: 0.2}}
+                "delta_missing_low": d, "delta_missing_high": d, "delta_all_missing_harmful": d,
+                "h": {ADAMW: 0.2 + d, FA: 0.2}}
                for i, d in enumerate(deltas)]  # fmt: skip
     blocks = [{"seed": 3000 + i, "supports": {ADAMW: {}, FA: {}}} for i in range(80)]
     state = {"next": {"campaign": "confirmation"}, "frozen": {"K_star": 6.3},
@@ -1242,7 +1465,7 @@ def test_the_versions_record(monkeypatch, tmp_path, capsys) -> None:
     module.main()
     record = json.loads(out.read_text())
     model = load_config("experiments/study2_short", ["study2_short.role=confirmation"]).model
-    assert record["code"] == {"commit": COMMIT}
+    assert record["code"] == {"commit": COMMIT, "allow_descendants": False}
     assert record["model"] == {"name": model.name, "revision": model.revision}
     assert record["model"]["revision"] == "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
     identity = judge_identity(load_config("judge/wildguard"))
@@ -1264,3 +1487,76 @@ def test_the_versions_record(monkeypatch, tmp_path, capsys) -> None:
     with pytest.raises(SystemExit):  # the fixation record is checked whole
         module.main()
     assert "cap 70 is not the cap 80" in capsys.readouterr().err
+
+
+def git(repo: Path, *args: str) -> str:
+    command = ["git", "-c", "user.name=test", "-c", "user.email=test@example.org",
+               "-c", "commit.gpgsign=false", *args]  # fmt: skip
+    return subprocess.run(command, cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
+
+
+def test_the_versions_record_is_enforced_against_the_checkout(tmp_path) -> None:
+    from zero_field_refusal.analysis.study2_short import VERSIONS_RECORD, versions_problems
+    from zero_field_refusal.judge import judge_identity
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / "code.py").write_text("x = 1\n")
+    git(repo, "add", "code.py")
+    git(repo, "commit", "-qm", "code")
+    recorded = git(repo, "rev-parse", "HEAD")
+    fixation = Path(fixation_file(tmp_path))
+    model = load_config("experiments/study2_short", ["study2_short.role=confirmation"]).model
+    digest = hashlib.sha256(fixation.read_bytes()).hexdigest()
+    record = {"code": {"commit": recorded, "allow_descendants": False},
+              "model": {"name": model.name, "revision": model.revision},
+              "judge": {"config": "judge/wildguard",
+                        **judge_identity(load_config("judge/wildguard"))},
+              "fixation": {"path": str(fixation), "sha256": digest}}  # fmt: skip
+    path = repo / VERSIONS_RECORD
+
+    def problems(change=None, **kwargs):
+        if change is not None:
+            path.write_text(json.dumps({**record, **change}))
+        return versions_problems(path, fixation=fixation, repo=repo, **kwargs)
+
+    assert problems() == [
+        f"{path} is missing: write the versions record "
+        "(scripts/study2_short_summary.py versions) and commit it first"
+    ]
+    path.parent.mkdir()
+    assert problems({}) == []  # written, not yet committed: the record alone
+    assert problems({}, judge="wildguard") == []
+    git(repo, "add", VERSIONS_RECORD)
+    git(repo, "commit", "-qm", "the versions record")
+    assert problems() == []  # committed: a child that adds the record alone
+    (repo / "code.py").write_text("x = 2\n")
+    assert "1 uncommitted changes or untracked files (first: code.py)" in problems()[0]
+    git(repo, "commit", "-qam", "a code change")
+    (found,) = problems()
+    assert f"differs from the recorded commit {recorded} in 1 files (first: code.py)" in found
+    assert "does not allow descendants" in found
+    # A record that allows descendants admits it (its own uncommitted change is not counted).
+    assert problems({"code": {"commit": recorded, "allow_descendants": True}}) == []
+    (found,) = problems({"code": {"commit": "0" * 40}})
+    assert "is neither the recorded commit" in found
+    for change, message in (
+        ({"model": {"name": model.name, "revision": "main"}}, "the record's model"),
+        ({"judge": {**record["judge"], "judge_revision": "other"}},
+         "judge identity differs from judge/wildguard's in ['judge_revision']"),
+        ({"judge": {**record["judge"], "config": "judge/missing"}}, "does not load"),
+        ({"fixation": {"sha256": "0" * 64}}, "fixation sha256 is not that of"),
+    ):  # fmt: skip
+        found = problems(change)
+        assert any(message in problem for problem in found), (message, found)
+    assert any("not judge/rubric" in problem for problem in problems({}, judge="rubric"))
+
+
+def test_the_summary_looks_need_the_versions_record(monkeypatch, tmp_path, capsys) -> None:
+    missing = str(tmp_path / "no-versions.json")
+    with pytest.raises(SystemExit):
+        script(monkeypatch, tmp_path, SUMMARY, base(), "--fixation", fixation_file(tmp_path),
+               "--judge", "wildguard", "--versions", missing, versions=False)  # fmt: skip
+    assert f"the versions record does not hold: {missing} is missing" in capsys.readouterr().err

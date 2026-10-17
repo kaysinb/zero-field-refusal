@@ -279,6 +279,20 @@ def git_diff(repo: Path = REPO_ROOT) -> str:
     return f"{diff}# Untracked files:\n{untracked}"
 
 
+def code_changes(commit: str, repo: Path = REPO_ROOT) -> dict[str, list[str]] | None:
+    """How the checkout differs from ``commit``: ``committed``, the paths changed between it and
+    HEAD, and ``uncommitted``, the paths of uncommitted changes and untracked files. None when
+    ``commit`` is neither HEAD nor an ancestor of it (or ``repo`` is no checkout)."""
+    try:
+        _git(repo, "merge-base", "--is-ancestor", commit, "HEAD")
+        committed = _git(repo, "diff", "--name-only", commit, "HEAD").splitlines()
+        uncommitted = _git(repo, "diff", "--name-only", "HEAD").splitlines()
+        uncommitted += _git(repo, "ls-files", "--others", "--exclude-standard").splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {"committed": sorted(set(committed)), "uncommitted": sorted(set(uncommitted))}
+
+
 def package_versions() -> dict[str, str]:
     versions = {}
     for name in TRACKED_PACKAGES:

@@ -34,6 +34,7 @@ from zero_field_refusal.analysis.study2_short import (
     secondary_contrasts,
     select_rates,
     selection,
+    sensitivity_looks,
     targeted_rates,
     usable_rate,
     utility_family,
@@ -637,10 +638,15 @@ def test_the_interpolation_with_hand_numbers() -> None:
     labels = {"adamw_25-b5-1e-05-s3000": label_rows(10),
               "adamw_25-b5-1.4e-05-s3000": label_rows(20, missing=2),
               "frozen_adam_25-b5-1e-05-s3000": label_rows(8),
-              "frozen_adam_25-b5-1.4e-05-s3000": label_rows(14)}  # fmt: skip
+              "frozen_adam_25-b5-1.4e-05-s3000": label_rows(14, missing=4)}  # fmt: skip
     found = block_difference({ADAMW: a, FA: f}, labels, K8)
+    # A: 0.15 with missing labels not harmful, 0.16 harmful; FA: 0.11 and 0.13.
     assert found["delta"] == pytest.approx(0.15 - 0.11)
-    assert found["delta_missing_harmful"] == pytest.approx(0.16 - 0.11)
+    # The worst case for the contrast, [A_low − F_high, A_high − F_low] …
+    assert found["delta_missing_low"] == pytest.approx(0.15 - 0.13)
+    assert found["delta_missing_high"] == pytest.approx(0.16 - 0.11)
+    # … holds both arms harmful, which partly cancels.
+    assert found["delta_all_missing_harmful"] == pytest.approx(0.16 - 0.13)
     assert found["arms"][ADAMW]["missing"] == 2 and found["h"][FA] == pytest.approx(0.11)
     with pytest.raises(ValueError, match="label rows"):
         block_difference({ADAMW: a, FA: f}, {**labels, "frozen_adam_25-b5-1e-05-s3000": []}, K8)
@@ -1057,14 +1063,22 @@ def test_finite_cohort_bounds() -> None:
     assert finite_bounds(4, 0, -0.2) == pytest.approx((-0.05, -0.05))
 
 
-def test_secondary_contrasts_use_the_common_three_arm_cohort() -> None:
+def secondary_blocks() -> list[dict]:
     blocks = []
     for i in range(30):
-        h = {ADAMW: 0.20 + 0.01 * (i % 3), FA: 0.15}
+        h = {ADAMW: 0.20 + 0.01 * (i % 3), FA: 0.15 - 0.002 * (i % 4)}
         if i % 5:
             h[PREWARMED] = 0.18
         blocks.append({"block": i, "complete": True, "supported": i != 7, "delta": 0.05, "h": h})
-    found = secondary_contrasts(blocks, 25)
+    return blocks
+
+
+def test_secondary_contrasts_use_the_common_three_arm_cohort() -> None:
+    blocks = secondary_blocks()
+    found = secondary_contrasts(blocks, 25, look=1, interval="t", status="secondary")
+    assert (found["secondary_interval"], found["secondary_status"], found["look"]) == (
+        "t", "secondary", 1)  # fmt: skip
+    assert found["level"] == 0.9875 and found["adamw_minus_prewarmed"]["bootstrap"] is None
     assert found["attrition"] == {
         "started": 25, "primary_supported": 24, "three_arm_supported": 19,
         "prewarmed_unsupported": 5,
@@ -1076,7 +1090,116 @@ def test_secondary_contrasts_use_the_common_three_arm_cohort() -> None:
     assert found["adamw_minus_prewarmed"]["interval"] == pytest.approx(
         [statistics.fmean(a_p) - half, statistics.fmean(a_p) + half]
     )
-    assert found["prewarmed_minus_fa"]["mean"] == pytest.approx(0.03)
+    p_f = [0.18 - b["h"][FA] for b in cohort]
+    assert found["prewarmed_minus_fa"]["mean"] == pytest.approx(statistics.fmean(p_f))
+
+
+def test_secondary_contrasts_by_the_bootstrap_t_with_their_own_streams() -> None:
+    blocks = secondary_blocks()
+    found = secondary_contrasts(blocks, 25, look=2, interval="bootstrap_t", status="exploratory",
+                                bootstrap_resamples=2000, bootstrap_seed=11)  # fmt: skip
+    assert (found["secondary_interval"], found["secondary_status"]) == ("bootstrap_t",
+                                                                        "exploratory")  # fmt: skip
+    cohort = [b for b in blocks[:25] if b["supported"] and PREWARMED in b["h"]]
+    values = {"adamw_minus_prewarmed": [b["h"][ADAMW] - 0.18 for b in cohort],
+              "prewarmed_minus_fa": [0.18 - b["h"][FA] for b in cohort]}  # fmt: skip
+    seeds = set()
+    for name, contrast in values.items():
+        seed = derive_seed(11, "secondary", name, 2)
+        low, high, dropped = bootstrap_t_interval(contrast, 0.9875, 2000,
+                                                  np.random.default_rng(seed))  # fmt: skip
+        assert found[name]["interval"] == [low, high]
+        assert found[name]["bootstrap"] == {"resamples": 2000, "seed": 11, "stream_seed": seed,
+                                            "dropped": dropped}  # fmt: skip
+        assert found[name]["t"] is None and found[name]["n"] == 19
+        seeds.add(seed)
+    assert len(seeds) == 2 and derive_seed(11, "look", 2) not in seeds  # not the looks' streams
+    t = secondary_contrasts(blocks, 25, look=2, interval="t", status="secondary")
+    assert t["adamw_minus_prewarmed"]["interval"] != found["adamw_minus_prewarmed"]["interval"]
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [({"interval": "percentile", "status": "secondary"}, "interval 'percentile'"),
+     ({"interval": "t", "status": "confirmatory"}, "status 'confirmatory'"),
+     ({"interval": "bootstrap_t", "status": "secondary"}, "the bootstrap needs"),
+     ({"interval": "bootstrap_t", "status": "secondary", "bootstrap_resamples": 2000,
+       "bootstrap_seed": 1.5}, "the bootstrap needs")],
+)  # fmt: skip
+def test_secondary_contrasts_refuse_an_unknown_interval_or_status(kwargs, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        secondary_contrasts(secondary_blocks(), 25, look=1, **kwargs)
+
+
+# ------------------------------------------------------------------ missing-label sensitivities
+
+
+def sensitivity_blocks(n: int, *, a_missing: float, f_missing: float) -> list[dict]:
+    """Blocks whose Δ alternates around 1 pp; AdamW's harm rises by ``a_missing`` and FA's by
+    ``f_missing`` when their missing labels count as harmful."""
+    blocks = []
+    for i, d in enumerate([0.01 + 0.01 * (-1) ** i + 0.002 * (i % 5) for i in range(n)]):
+        blocks.append({"block": 3000 + i, "complete": True, "supported": True, "delta": d,
+                       "delta_missing_low": d - f_missing, "delta_missing_high": d + a_missing,
+                       "delta_all_missing_harmful": d + a_missing - f_missing})  # fmt: skip
+    return blocks
+
+
+def test_the_missing_label_sensitivities_are_read_at_the_primarys_looks() -> None:
+    settings = {**T, "se_floor": 0.0, "bias_allowance": 0.0}
+    blocks = sensitivity_blocks(80, a_missing=0.04, f_missing=0.04)
+    primary = looks(blocks, LEVELS, **settings)
+    assert primary["stopping_look"] == 1 and primary["looks"][0]["readings"][0] == "equivalence"
+    args = {"interval": "t", "se_floor": 0.0}
+    (worst,) = sensitivity_looks(primary, blocks, "missing_labels", **args)
+    first = primary["looks"][0]
+    assert (worst["look"], worst["level"], worst["started"], worst["supported"]) == (
+        1, LEVELS[0], first["started"], 24)  # fmt: skip
+    t = stats.t.ppf(1 - (1 - LEVELS[0]) / 2, 23)
+    lows = [b["delta_missing_low"] for b in blocks[:24]]
+    highs = [b["delta_missing_high"] for b in blocks[:24]]
+    expect = [
+        statistics.fmean(lows) - t * statistics.stdev(lows) / math.sqrt(24),
+        statistics.fmean(highs) + t * statistics.stdev(highs) / math.sqrt(24),
+    ]
+    assert worst["interval"] == pytest.approx(expect)
+    # The worst case for the contrast spans ±4 pp more: no equivalence, no stop of its own …
+    assert worst["readings"] == ["within_8"] and "stops" not in worst
+    assert worst["primary_readings"] == first["readings"]
+    # … while counting every missing label harmful in both arms cancels exactly here.
+    (both,) = sensitivity_looks(primary, blocks, "all_missing_harmful", **args)
+    assert both["interval"] == pytest.approx(first["interval"])
+    assert both["readings"] == first["readings"]
+
+
+def test_a_sensitivity_follows_the_primary_to_its_last_look_with_its_streams() -> None:
+    settings = {**BOOTSTRAP, "se_floor": 0.0, "bias_allowance": 0.0,
+                "equivalence_min_supported": 0, "direction_min_supported": 0}  # fmt: skip
+    deltas = [0.15 * (-1) ** i for i in range(80)]  # wide: look 1 does not stop
+    blocks = [{**b, "delta_missing_low": b["delta"] and b["delta"] - 0.01,
+               "delta_missing_high": b["delta"], "delta_all_missing_harmful": b["delta"]}
+              for b in blocks_of(deltas, unsupported={3, 9})]  # fmt: skip
+    primary = study2_short.looks(blocks, LEVELS, (24, 50), **settings)
+    assert [look["look"] for look in primary["looks"]] == [1, 2]
+    found = sensitivity_looks(primary, blocks, "missing_labels", interval="bootstrap_t",
+                              se_floor=0.0, bootstrap_resamples=2000,
+                              bootstrap_seed=11)  # fmt: skip
+    assert [(f["look"], f["started"], f["supported"]) for f in found] == [
+        (look["look"], look["started"], look["supported"]) for look in primary["looks"]
+    ]
+    for look, sensitivity in zip(primary["looks"], found, strict=True):
+        chosen = [b for b in blocks[: look["started"]] if b["supported"]]
+        stream = derive_seed(11, "look", look["look"])
+        low = bootstrap_t_interval([b["delta_missing_low"] for b in chosen], look["level"], 2000,
+                                   np.random.default_rng(stream))  # fmt: skip
+        high = bootstrap_t_interval([b["delta_missing_high"] for b in chosen], look["level"],
+                                    2000, np.random.default_rng(stream))  # fmt: skip
+        assert sensitivity["interval"] == [low[0], high[1]]
+        assert sensitivity["high"]["interval"] == look["interval"]  # Δ itself: the same stream
+    with pytest.raises(ValueError, match="look 1 read 24 supported blocks"):
+        other = [{**blocks[0], "supported": False}, *blocks[1:]]  # not the primary's blocks
+        sensitivity_looks(primary, other, "missing_labels", interval="bootstrap_t",
+                          se_floor=0.0, bootstrap_resamples=2000, bootstrap_seed=11)  # fmt: skip
 
 
 # ------------------------------------------------------------------ utility and validation
