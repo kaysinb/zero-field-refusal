@@ -976,8 +976,20 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
   differences. These bounds describe the started cohort, not the population.
 - **Secondary contrasts.** Pre-warmed − FA probes updating an initially shared denominator.
   AdamW − pre-warmed probes initialization and early normalization.
-  - Each gets a two-sided t interval at 98.75 % per contrast per look (Bonferroni over two
-    contrasts × two looks), as simulated, read at the look where the primary stops.
+  - Each gets the paired seed-block bootstrap-t at 98.75 % per contrast per look, read at the
+    look where the primary stops, on the common three-arm supported cohort. It has its own
+    resample stream per contrast and look (the fixation record's resamples and seed).
+  - The familywise target is 95 % coverage for both intervals jointly. Bonferroni over two
+    contrasts × two looks is how the level is set, not a separate requirement.
+  - The simulation of the decided design checked it (a new `secondary` stream, 10 000
+    replicates per scenario, every shape × SD at Δ ∈ {0, ±5} pp, MC SE 0.09–0.27 pp). The joint
+    coverage holds within MC error on every shape: the worst values are 94.84 % (heavy-tailed,
+    SD 15) and 94.90 % (right-skewed, SD 15). On the stress shapes, the single-contrast coverage
+    falls to 96.2–97.1 %, below its nominal 97.5 %.
+  - The t interval is not used: its joint coverage falls as low as 92.24 % (rare-seed effects,
+    centered, SD 10).
+  - Results in `runs/analysis/study2_short_sim/2026-10-17-secondary/` (inventory
+    `runs/archive/inventory-2026-10-17-study2-short-sim-secondary.tsv`).
   - Neither alone proves sign-step rectification, and neither stops the study.
 - **Curvature (descriptive).** The signed Rayleigh quotient δᵀH₀δ / ‖δ‖², with δ = θ_end − θ₀,
   is reported beside ‖δ‖.
@@ -1095,12 +1107,14 @@ procedure.
   - the audit arms.
 - **The fixation record** (`docs/study2-short-fixation.json`, committed with this amendment)
   holds w_max, the look sizes, cap and levels, the interval with its resamples and seed, the SE
-  floor, the bias allowance, and the two minima (36 for equivalence, 10 for any reading).
+  floor, the bias allowance, the two minima (36 for equivalence, 10 for any reading), and the
+  secondary contrasts' interval (`bootstrap_t`) and status (`secondary`).
 - **The versions record** (`docs/study2-short-versions.json`) holds the code commit the
   validation and confirmation run from, the model's revision and the judge's identity. It is
   written by `scripts/study2_short_summary.py versions` and committed before the validation
-  campaign. The validation and confirmation campaigns and the looks refuse without it, or when
-  the running commit, the model or the judge's identity departs from it
+  campaign. The validation and confirmation campaigns and the looks refuse without it
+  committed, or when the running commit, the model, the judge's identity or the fixation record
+  departs from it
   ([operations](operations.md#study-2-short-regime-amendment-3)).
 
 #### Budget

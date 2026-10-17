@@ -160,10 +160,11 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 - *Secondary contrasts* (coordinator, 2026-10-17): two-sided intervals at 98.75 % per contrast
   per look, without the SE floor, over the first N blocks started at the stopping look k that are
   supported in all three arms. The interval is the fixation record's ``secondary_interval``: the
-  t interval (as simulated), or the bootstrap-t of the looks (``bootstrap_t_interval``, the
-  record's resamples) with its own stream per contrast and look,
-  ``numpy.random.default_rng(derive_seed(bootstrap_seed, "secondary", contrast, k))``. The
-  record's ``secondary_status`` (``secondary`` or ``exploratory``) is reported beside them.
+  bootstrap-t of the looks (decided after the secondary simulation of 2026-10-17;
+  ``bootstrap_t_interval``, the record's resamples) with its own stream per contrast and look,
+  ``numpy.random.default_rng(derive_seed(bootstrap_seed, "secondary", contrast, k))``, or the t
+  interval. The record's ``secondary_status`` (``secondary`` or ``exploratory``) is reported
+  beside them.
 - *Utility family*: blocks supported for the primary contrast; for each member the step-25
   losses of every completed run of that arm and rate among the given runs; one-sided t bounds at
   1 − 0.05 / (looks × family size) per metric: two looks in confirmation, one in validation, a
@@ -218,10 +219,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``direction_min_supported`` (integers ≥ 0), ``secondary_interval`` (``t`` or ``bootstrap_t``)
   and ``secondary_status`` (``secondary`` or ``exploratory``); each is required and none is
   defaulted, also when ``interval`` is ``t`` and the bootstrap's values go unused.
-- *The versions record* (``versions_problems``, review fa4): the validation and confirmation
-  campaigns and the looks refuse without it, or when the running commit, the model or the
-  judge's identity departs from it; the discovery campaigns (``targeted``, ``repair``,
-  ``controls``, ``prewarmed``) precede it and do not read it.
+- *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
+  and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
+  HEAD), or when the running commit, the model, the judge's identity or the fixation record
+  departs from it; the discovery campaigns (``targeted``, ``repair``, ``controls``,
+  ``prewarmed``) precede it and do not read it. Abandonment records and summary outputs live
+  under ``$RUNS_DIR`` (ignored by Git), archived with an inventory, never committed: a commit
+  after the record's own makes HEAD a descendant that the record does not allow.
 """
 
 from __future__ import annotations
@@ -246,7 +250,7 @@ from ..config import load_config
 from ..judge import IDENTITY_FIELDS, judge_identity
 from ..paths import REPO_ROOT
 from ..seeding import derive_seed
-from ..tracking import code_changes, git_state
+from ..tracking import code_changes, git_state, tracked
 from .stage_a import (
     BATCHES,
     CONTAMINATION_FRACTION,
@@ -300,6 +304,7 @@ INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look, and the seco
 SECONDARY_STATUSES = ("secondary", "exploratory")  # how the secondary contrasts are reported
 VERSIONS_RECORD = "docs/study2-short-versions.json"  # relative to the repository root
 VERSIONS_CONFIG = ("experiments/study2_short", ["study2_short.role=confirmation"])  # its model
+CODE_PATHS = ("src/", "scripts/", "configs/")  # where an untracked file could change what runs
 # The missing-label sensitivities: the block fields of their lower and upper bounds.
 SENSITIVITIES = {
     "missing_labels": ("delta_missing_low", "delta_missing_high"),
@@ -1607,12 +1612,14 @@ def versions_problems(
 ) -> list[str]:
     """How the running checkout and configs depart from the versions record at ``path``
     (``VERSIONS_RECORD``, written by ``scripts/study2_short_summary.py versions``); none: they
-    agree. The record must exist, and:
+    agree. The record must exist and be committed: a file of the checkout ``repo`` that Git
+    tracks, unchanged at HEAD. And:
 
     - ``code.commit`` is the running HEAD, or an ancestor of it whose changes up to HEAD touch the
       versions record alone (committing the record makes such a child), or any ancestor when the
-      record allows it (``code.allow_descendants`` true); the working tree has no uncommitted
-      change or untracked file but the record itself;
+      record allows it (``code.allow_descendants`` true); no tracked file has uncommitted changes
+      (the record included), and no untracked file lies where code or configs are read from
+      (``CODE_PATHS``; other untracked files, such as local notes, are not read by the code);
     - ``model`` is the name and revision of the stage's model (``VERSIONS_CONFIG``);
     - ``judge``'s identity is that of its config (``judge.judge_identity``), and the config is
       ``judge/<judge>`` when ``judge`` is given;
@@ -1629,6 +1636,12 @@ def versions_problems(
     if not isinstance(record, dict):
         return [f"{path} is not a JSON object"]
     problems = []
+    inside = path.resolve().is_relative_to(repo.resolve())
+    own = path.resolve().relative_to(repo.resolve()).as_posix() if inside else None
+    if own is None:
+        problems.append(f"{path} is not in the checkout {repo}: the record must be committed")
+    elif not tracked(own, repo):
+        problems.append(f"{path} is not committed: commit the versions record first")
     code = record.get("code") if isinstance(record.get("code"), dict) else {}
     commit, descendants = code.get("commit"), code.get("allow_descendants", False)
     head = git_state(repo).get("commit")
@@ -1639,18 +1652,22 @@ def versions_problems(
         problems.append(f"the running HEAD {head} is neither the recorded commit {commit!r} nor "
                         "a descendant of it")  # fmt: skip
     else:
-        own = {VERSIONS_RECORD, str(path)}
-        if path.is_absolute() and path.resolve().is_relative_to(repo.resolve()):
-            own.add(path.resolve().relative_to(repo.resolve()).as_posix())
-        committed = [name for name in changes["committed"] if name not in own]
-        uncommitted = [name for name in changes["uncommitted"] if name not in own]
+        committed = [name for name in changes["committed"] if name != own]
+        uncommitted = changes["uncommitted"]
+        if own in uncommitted:
+            problems.append(f"{path} differs from its committed version at HEAD")
+            uncommitted = [name for name in uncommitted if name != own]
+        untracked = [name for name in changes["untracked"] if name.startswith(CODE_PATHS)]
         if committed and descendants is not True:
             problems.append(f"the running HEAD {head} differs from the recorded commit "
                             f"{commit} in {len(committed)} files (first: {committed[0]}), and "
                             "the record does not allow descendants")  # fmt: skip
         if uncommitted:
-            problems.append(f"the checkout has {len(uncommitted)} uncommitted changes or untracked "
-                            f"files (first: {uncommitted[0]})")  # fmt: skip
+            problems.append(f"the checkout has {len(uncommitted)} uncommitted changes (first: "
+                            f"{uncommitted[0]})")  # fmt: skip
+        if untracked:
+            problems.append(f"the checkout has {len(untracked)} untracked files where code is "
+                            f"read from (first: {untracked[0]})")  # fmt: skip
     cfg = load_config(*VERSIONS_CONFIG)
     model = {"name": str(cfg.model.name), "revision": str(cfg.model.revision)}
     if record.get("model") != model:
@@ -1723,9 +1740,10 @@ def preconditioner_pairing(
 def read_abandonment(path: str | Path) -> dict[str, str]:
     """The launcher attempts the operator abandoned, by the journal's ``run_id`` of the attempt,
     with the reason: from an abandonment record, a JSON object ``{"abandoned": [{"run_id": ID,
-    "reason": TEXT}, ...]}`` (other keys, such as ``what``, are free), committed to the repository
-    or archived with an inventory before it is read. Each attempt once, each reason a non-empty
-    string; anything else raises ``ValueError``."""
+    "reason": TEXT}, ...]}`` (other keys, such as ``what``, are free), kept outside the checkout
+    under ``$RUNS_DIR`` and archived with an inventory before it is read (committed, it would
+    make HEAD a descendant that ``versions_problems`` refuses). Each attempt once, each reason a
+    non-empty string; anything else raises ``ValueError``."""
     record = json.loads(Path(path).read_text())
     entries = record.get("abandoned") if isinstance(record, dict) else None
     if not isinstance(entries, list):

@@ -620,6 +620,14 @@ def test_the_fixation_record_is_the_simulations_decided_design() -> None:
     gate = (len(study2_short.VALIDATION_SEEDS), study2_short.VALIDATION_MINIMUM)
     assert gate == (sim.GATE_BLOCKS, sim.GATE_MIN_SUPPORTED)
     assert study2_short.SECONDARY_LEVEL == sim.SECONDARY_LEVEL
+    # The secondary contrasts: the bootstrap-t that the secondary check simulated beside t
+    # (decided-secondary, 2026-10-17), reported as secondary.
+    assert record["secondary_interval"] == "bootstrap_t" and "bootstrap_t" in sim.INTERVALS
+    script = load_script()
+    checked = script.run_settings(script.build_parser().parse_args(["decided-secondary"]), {})
+    assert checked.stream == "secondary" and checked.secondary_intervals == ("t", "bootstrap_t")
+    assert (sim.SECONDARY_MARGINAL_TARGET, sim.SECONDARY_JOINT_TARGET) == (0.975, 0.95)
+    assert record["secondary_status"] == "secondary"
     assert (study2_short.EQUIVALENCE, study2_short.NESTED) == (sim.MARGIN, sim.WIDE_MARGIN)
     assert study2_short.ZERO_SE == sim.ZERO_SE
 

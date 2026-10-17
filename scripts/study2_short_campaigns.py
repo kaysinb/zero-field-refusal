@@ -39,16 +39,18 @@ holds the runs still missing; ``--seeds`` and ``--cells`` only split it over Pod
   launcher gave up on after their recovery round (``exhausted_runs``: technical failures of
   their blocks) and which confirmation ranges were issued; validation and confirmation need it.
   A run is given up only once the last attempt of its recovery round ended, or that attempt is
-  in the abandonment record --abandoned FILE (``read_abandonment``: a committed or archived JSON
-  object ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``, ATTEMPT the journal's
-  run_id); an attempt without either may still be running, and its run stays pending. The
-  campaign's header records the abandonment record's path and sha256.
+  in the abandonment record --abandoned FILE (``read_abandonment``: a JSON object
+  ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``, ATTEMPT the journal's run_id, kept
+  under $RUNS_DIR outside the checkout and archived with an inventory); an attempt without either
+  may still be running, and its run stays pending. The campaign's header records the abandonment
+  record's path and sha256.
 - **The versions record** (--versions FILE, default docs/study2-short-versions.json, written by
   ``scripts/study2_short_summary.py versions`` and committed): ``validation`` and
   ``confirmation`` refuse without it, or when the running commit, the model, the judge's
-  identity or the fixation record departs from it (``versions_problems``: HEAD is the recorded
-  commit or a child that adds the record alone, or any descendant when the record allows it; no
-  uncommitted change). The discovery kinds (``targeted``, ``repair``, ``controls``,
+  identity or the fixation record departs from it (``versions_problems``: the record tracked
+  and unchanged at HEAD; HEAD is the recorded commit or a child that adds the record alone, or
+  any descendant when the record allows it; no uncommitted change or untracked file, so campaign
+  files go under $RUNS_DIR). The discovery kinds (``targeted``, ``repair``, ``controls``,
   ``prewarmed``) precede the record and do not read it.
 - **The confirmation loop** (``confirmation_guard``; the looks at 36 and 60 supported blocks, cap
   80): (1) write and launch at most the blocks the guard allows: the next range starts at the

@@ -523,13 +523,14 @@ driver, keeps the whole regenerated stream for inspection and needs the lead's d
 - `direction_min_supported`: an integer ≥ 0 (decided: 10). Below this many supported blocks a
   look concludes nothing, neither direction nor equivalence: it is inconclusive. With very few
   blocks the bootstrap-t collapses, to [mean, mean] at two. 0 disables the rule.
-- `secondary_interval`: the secondary contrasts' interval at 98.75 % per contrast per look, `t`
-  (as simulated) or `bootstrap_t`. The bootstrap-t is the looks' (`bootstrap_resamples`
+- `secondary_interval`: the secondary contrasts' interval at 98.75 % per contrast per look,
+  `bootstrap_t` (decided) or `t`. The bootstrap-t is the looks' (`bootstrap_resamples`
   resamples), on its own stream per contrast and look,
-  `derive_seed(bootstrap_seed, "secondary", contrast, k)`. Set to `t` for now; the lead sets the
-  final value after a coverage simulation of the bootstrap-t.
-- `secondary_status`: how the secondary contrasts are reported, `secondary` or `exploratory`
-  (for now `secondary`). The summary prints both values beside the secondary contrasts.
+  `derive_seed(bootstrap_seed, "secondary", contrast, k)`. The secondary check of 2026-10-17
+  (`runs/analysis/study2_short_sim/2026-10-17-secondary/`) chose it: see the amendment's
+  secondary contrasts.
+- `secondary_status`: how the secondary contrasts are reported, `secondary` (decided) or
+  `exploratory`. The summary prints both values beside the secondary contrasts.
 
 Each value is required and none is defaulted, the bootstrap's values also under `t`. The
 committed record is `docs/study2-short-fixation.json` (a test ties it to the simulation's decided
@@ -539,7 +540,8 @@ design):
 {"w_max": 0.47, "levels": [0.991983603686668, 0.9630570834481011], "se_floor": 0.0,
  "bias_allowance": 0.010841, "interval": "bootstrap_t", "bootstrap_resamples": 100000,
  "bootstrap_seed": 20261016, "looks": [36, 60], "cap": 80, "equivalence_min_supported": 36,
- "direction_min_supported": 10, "secondary_interval": "t", "secondary_status": "secondary"}
+ "direction_min_supported": 10, "secondary_interval": "bootstrap_t",
+ "secondary_status": "secondary"}
 ```
 
 Every campaign except `targeted` needs the record (`--fixation`), which is checked whole.
@@ -590,8 +592,11 @@ python scripts/study2_short_campaigns.py validation --runs $R --theta0 $THETA0 -
     attempt may still be running, and the run stays pending.
   - An attempt that will never end (its Pod lost mid-run, say) is given up only through an
     **abandonment record**, passed as `--abandoned FILE` to the campaigns and the summary. It is
-    a JSON object, committed (for example under `docs/`) or archived with an inventory before it
-    is used:
+    a JSON object kept **outside the checkout's tracked tree, under `$RUNS_DIR`** (for example
+    `$RUNS_DIR/launch/abandoned-YYYYMMDD.json`), and archived with an inventory under
+    `runs/archive/` before it is used. Never commit it, nor any other file once the versions
+    record is committed: a later commit makes HEAD a descendant that the versions record refuses
+    (below).
 
     ```json
     {"what": "Launcher attempts abandoned (study 2, short regime)",
@@ -613,7 +618,7 @@ python scripts/study2_short_summary.py versions --judge wildguard --fixation $F 
 ```
 
 It writes `docs/study2-short-versions.json`, a JSON object written once (the script refuses an
-existing file and a dirty checkout), which is committed before the validation campaign:
+existing file and a dirty checkout). Commit it, alone, before the validation campaign:
 
 - `code.commit`: the full commit hash of the checkout;
 - `code.allow_descendants`: whether a later commit may run the validation and confirmation
@@ -628,17 +633,22 @@ existing file and a dirty checkout), which is committed before the validation ca
 `confirmation` campaigns, and the summary with `--judge`, refuse without it (`--versions FILE`,
 default `docs/study2-short-versions.json` in the checkout), and refuse when:
 
+- the record is not committed: outside the checkout, not tracked by Git, or changed since HEAD;
 - the running HEAD is not `code.commit`, or a child of it that adds the record alone (the commit
   of the record itself). Any other descendant is refused unless `code.allow_descendants` is true;
   a commit that does not descend from it always is;
-- the checkout has uncommitted changes or untracked files other than the record;
+- a tracked file has uncommitted changes, or an untracked file lies under `src/`, `scripts/` or
+  `configs/`, where the code and configs are read from;
 - `model` is not the model of `experiments/study2_short`;
 - the judge's identity is not that of its config, or (for the summary) the config is not
   `judge/NAME` of `--judge NAME`;
 - the fixation record given (`--fixation`) has another sha256.
 
 The discovery campaigns (`targeted`, `repair`, `controls`, `prewarmed`) come before the record
-and run without it.
+and run without it. The campaigns' headers and the summary's `--out` file (with `--judge`) record
+the versions record's path and sha256. Write campaigns, summaries and abandonment records under
+`$RUNS_DIR` (ignored by Git), never into the checkout's tracked tree, and archive them with an
+inventory.
 
 **The confirmation loop.** The looks fall at 36 and 60 supported blocks, and the cap is 80 started
 blocks. Blocks run in their preassigned order, block k on seed 2999 + k. Repeat these steps until
@@ -671,8 +681,11 @@ a look stops:
 
 ```bash
 python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F \
-  --runs-root runs [--abandoned FILE] [--judge wildguard] [--out status.json]
+  --runs-root runs [--abandoned FILE] [--judge wildguard] \
+  [--out "$RUNS_DIR/analysis/study2-short-summary-YYYYMMDD.json"]
 ```
+
+`--out` goes under `$RUNS_DIR` (see above); archive it with an inventory once read.
 
 - **Status:**
   - the candidates (B, U) with their costs, and every attempt and round;

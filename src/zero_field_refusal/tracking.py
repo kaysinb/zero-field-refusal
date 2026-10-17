@@ -281,16 +281,27 @@ def git_diff(repo: Path = REPO_ROOT) -> str:
 
 def code_changes(commit: str, repo: Path = REPO_ROOT) -> dict[str, list[str]] | None:
     """How the checkout differs from ``commit``: ``committed``, the paths changed between it and
-    HEAD, and ``uncommitted``, the paths of uncommitted changes and untracked files. None when
-    ``commit`` is neither HEAD nor an ancestor of it (or ``repo`` is no checkout)."""
+    HEAD; ``uncommitted``, the tracked paths with uncommitted changes; ``untracked``, the files
+    Git does not track and does not ignore. None when ``commit`` is neither HEAD nor an ancestor
+    of it (or ``repo`` is no checkout)."""
     try:
         _git(repo, "merge-base", "--is-ancestor", commit, "HEAD")
         committed = _git(repo, "diff", "--name-only", commit, "HEAD").splitlines()
         uncommitted = _git(repo, "diff", "--name-only", "HEAD").splitlines()
-        uncommitted += _git(repo, "ls-files", "--others", "--exclude-standard").splitlines()
+        untracked = _git(repo, "ls-files", "--others", "--exclude-standard").splitlines()
     except (OSError, subprocess.CalledProcessError):
         return None
-    return {"committed": sorted(set(committed)), "uncommitted": sorted(set(uncommitted))}
+    return {"committed": sorted(set(committed)), "uncommitted": sorted(set(uncommitted)),
+            "untracked": sorted(set(untracked))}  # fmt: skip
+
+
+def tracked(path: str, repo: Path = REPO_ROOT) -> bool:
+    """Whether ``path`` (relative to ``repo``) is a file Git tracks."""
+    try:
+        _git(repo, "ls-files", "--error-unmatch", "--", path)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
 
 
 def package_versions() -> dict[str, str]:

@@ -10,6 +10,6 @@
   "cap": 80,
   "equivalence_min_supported": 36,
   "direction_min_supported": 10,
-  "secondary_interval": "t",
+  "secondary_interval": "bootstrap_t",
   "secondary_status": "secondary"
 }

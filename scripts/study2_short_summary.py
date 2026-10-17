@@ -12,13 +12,14 @@ confirmation blocks are labeled, its looks.
 which runs the launcher gave up on (technical failures of their blocks; without it such a block
 waits). A run is given up only once the last attempt of its recovery round has ended, or that
 attempt is in the abandonment record --abandoned FILE (analysis.study2_short.read_abandonment: a
-committed or archived JSON object ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``,
-ATTEMPT the journal's run_id); an attempt that may still be running keeps its run pending. The
-status is the stage's state machine (analysis.study2_short.progress), on K, numerics
-and utility only: the candidates (B, U) with their costs, every attempt and round, the frozen
-rates and FA controls, the validation verdict, the support of the confirmation blocks with the
-counts of the confirmation loop (the first block without runs, the supported blocks complete in
-order, those that may still be supported), the problems of the records, and the next campaign.
+JSON object ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``, ATTEMPT the journal's
+run_id, kept under $RUNS_DIR outside the checkout's tracked tree and archived with an inventory);
+an attempt that may still be running keeps its run pending. The status is the stage's state
+machine (analysis.study2_short.progress), on K, numerics and utility only: the candidates (B, U)
+with their costs, every attempt and round, the frozen rates and FA controls, the validation
+verdict, the support of the confirmation blocks with the counts of the confirmation loop (the
+first block without runs, the supported blocks complete in order, those that may still be
+supported), the problems of the records, and the next campaign.
 
 --judge NAME (configs/judge/NAME.yaml) adds the looks, on the label counts of the bracket runs
 of every complete confirmation block (analysis.study2_labels.read_endpoint_labels). A run without
@@ -29,9 +30,10 @@ the missing-label sensitivities at the primary's looks (``missing_labels``, the 
 the contrast, and ``all_missing_harmful``; analysis.study2_short.sensitivity_looks), the missing
 labels per arm, the secondary contrasts at the stopping look with the fixation record's
 ``secondary_interval`` and ``secondary_status`` beside them, and the utility family over the
-blocks started. --judge refuses without the versions record (--versions FILE, default
-docs/study2-short-versions.json), or when the running commit, the model, the judge's identity or
-the fixation record departs from it (analysis.study2_short.versions_problems). The looks need
+blocks started. --judge refuses without the committed versions record (--versions FILE,
+default docs/study2-short-versions.json), or when the running commit, the model, the judge's
+identity or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json
+then records the versions record's path and sha256. The looks need
 the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
 allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, and the
 equivalence and direction minima; analysis.study2_short.read_fixation) and are refused without
@@ -41,7 +43,9 @@ print the bias allowance b, the interval widened by b and the pointwise readings
 under the look's equivalence and direction minima (analysis.study2_short.pointwise, as the
 simulation's pointwise_readings); decisions never use them. Only counts, K, rates and intervals
 are printed, never a prompt, a response or a judge output. OUT.json, which must not exist, gets
-the whole record with the command and the code revision.
+the whole record with the command and the code revision; write it under $RUNS_DIR (ignored by
+Git) and archive it with an inventory, never commit it (a later commit would make HEAD a
+descendant of the versions record's commit).
 
 ``versions`` writes the versions record that amendment 3 requires before the validation campaign
 (default docs/study2-short-versions.json, which must not exist; it is then committed): the
@@ -400,6 +404,8 @@ def main() -> None:
         digest = hashlib.sha256(args.abandoned.read_bytes()).hexdigest()
         record["abandonment_record"] = {"path": str(args.abandoned), "sha256": digest}
     if args.judge:
+        digest = hashlib.sha256(args.versions.read_bytes()).hexdigest()
+        record["versions_record"] = {"path": str(args.versions), "sha256": digest}
         labels, pending = read_labels(state, runs, args.judge)
         found = compute_looks(state, runs, labels, fixation, theta0, pending)
         record["looks"] = found

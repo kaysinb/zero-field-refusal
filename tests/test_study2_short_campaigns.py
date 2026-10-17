@@ -1261,9 +1261,14 @@ def test_the_summary_prints_the_looks_end_to_end(monkeypatch, tmp_path, capsys) 
     monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels",
                         lambda run_dir, judge, identity, prompts:
                         rows(100 if by_name[run_dir.name].arm == ADAMW else 50))  # fmt: skip
-    script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
-           "--runs-root", runs_root(tmp_path), "--judge", "wildguard")  # fmt: skip
+    out = script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
+                 "--runs-root", runs_root(tmp_path), "--judge", "wildguard")  # fmt: skip
     shown = json.loads(capsys.readouterr().out)
+    versions = tmp_path / "versions-holding.json"  # the record the script helper passes
+    assert json.loads(out.read_text())["versions_record"] == {
+        "path": str(versions),
+        "sha256": hashlib.sha256(versions.read_bytes()).hexdigest(),
+    }
     assert shown["next"]["campaign"] == "confirmation"
     confirmation = shown["confirmation"]
     assert (confirmation["first_block_without_runs"], confirmation["supported_in_order"]) == (3, 2)
@@ -1527,20 +1532,37 @@ def test_the_versions_record_is_enforced_against_the_checkout(tmp_path) -> None:
         "(scripts/study2_short_summary.py versions) and commit it first"
     ]
     path.parent.mkdir()
-    assert problems({}) == []  # written, not yet committed: the record alone
-    assert problems({}, judge="wildguard") == []
+    # Written but not committed: refused.
+    assert problems({}) == [f"{path} is not committed: commit the versions record first"]
+    # Outside the checkout: refused, whatever it holds.
+    outside = tmp_path / "versions-outside.json"
+    outside.write_text(path.read_text())
+    (found,) = [p for p in versions_problems(outside, fixation=fixation, repo=repo)
+                if "not in the checkout" in p]  # fmt: skip
     git(repo, "add", VERSIONS_RECORD)
     git(repo, "commit", "-qm", "the versions record")
     assert problems() == []  # committed: a child that adds the record alone
+    assert problems(judge="wildguard") == []
+    # Untracked notes are not read by the code; an untracked module is.
+    (repo / "notes.md").write_text("local notes\n")
+    assert problems() == []
+    (repo / "src").mkdir()
+    (repo / "src" / "extra.py").write_text("y = 1\n")
+    assert problems() == ["the checkout has 1 untracked files where code is read from (first: "
+                          "src/extra.py)"]  # fmt: skip
+    (repo / "src" / "extra.py").unlink()
     (repo / "code.py").write_text("x = 2\n")
-    assert "1 uncommitted changes or untracked files (first: code.py)" in problems()[0]
+    assert problems() == ["the checkout has 1 uncommitted changes (first: code.py)"]
     git(repo, "commit", "-qam", "a code change")
     (found,) = problems()
     assert f"differs from the recorded commit {recorded} in 1 files (first: code.py)" in found
     assert "does not allow descendants" in found
-    # A record that allows descendants admits it (its own uncommitted change is not counted).
-    assert problems({"code": {"commit": recorded, "allow_descendants": True}}) == []
-    (found,) = problems({"code": {"commit": "0" * 40}})
+    # A record changed since its commit is refused; committed, allowing descendants admits HEAD.
+    allowing = {"code": {"commit": recorded, "allow_descendants": True}}
+    assert f"{path} differs from its committed version at HEAD" in problems(allowing)
+    git(repo, "commit", "-qam", "allow descendants")
+    assert problems() == []
+    (found, *_) = problems({"code": {"commit": "0" * 40}})
     assert "is neither the recorded commit" in found
     for change, message in (
         ({"model": {"name": model.name, "revision": "main"}}, "the record's model"),
