@@ -142,7 +142,7 @@ from zero_field_refusal.analysis.study2_short import (
 )
 from zero_field_refusal.launch import launch_records
 from zero_field_refusal.paths import REPO_ROOT
-from zero_field_refusal.tracking import git_state
+from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 KINDS = ("targeted", "repair", "controls", "prewarmed", "validation", "confirmation")
 JOURNAL_KINDS = ("validation", "confirmation")  # past the selection: the journal is read
@@ -165,12 +165,8 @@ PASSED = (
 )
 # The source checkout is clean as the runs read it (tracking.git_state: no uncommitted change, no
 # untracked file that its .gitignore does not ignore, whatever status.showUntrackedFiles,
-# .git/info/exclude and core.excludesFile say).
-CLEAN = (
-    "import sys; from zero_field_refusal.tracking import git_state; "
-    "sys.exit(None if git_state()['dirty'] is False else 'the source checkout is not clean "
-    "(tracking.git_state): an uncommitted change or an untracked file')"
-)
+# .git/info/exclude and core.excludesFile say); the check is shared with the other Pod drivers.
+CLEAN = CLEAN_CHECKOUT
 # The stage-0 checks the driver runs, and where the restored soft-target copy waits meanwhile.
 STAGE0_CONFIG = "experiments/stage0_checks"
 STAGE0_OVERRIDES = ("model=qwen2.5-1.5b-instruct", "protocol_version=3")

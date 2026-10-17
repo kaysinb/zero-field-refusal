@@ -82,7 +82,7 @@ from zero_field_refusal.fa_control_diagnostic import (
     write_json,
 )
 from zero_field_refusal.paths import runs_root
-from zero_field_refusal.tracking import git_state
+from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 CONFIG = "experiments/fa_control_diagnostic"
 SCRIPT = 'project-run "$SRC" python scripts/fa_control_diagnostic.py'
@@ -158,7 +158,7 @@ def driver_script(commit: str, written_at: str) -> str:
         f"SRC=/workspace/code/zero-field-refusal/{commit}/source",
         'cd "$SRC"',
         f'test "$(git rev-parse HEAD)" = {commit}',
-        'test -z "$(git status --porcelain)"',
+        f'project-run "$SRC" python -c "{CLEAN_CHECKOUT}"',
         'OUT="${RUNS_DIR:?}/diagnostics/fa_control"',
         'mkdir -p "$OUT"',
         'exec > >(tee -a "$OUT/driver-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1',

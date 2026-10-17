@@ -272,6 +272,17 @@ def git_state(repo: Path = REPO_ROOT) -> dict[str, Any]:
     return {"commit": commit, "dirty": bool(changes["uncommitted"] or changes["untracked"])}
 
 
+# A Pod driver's check, as a ``python -c`` program run through ``project-run``, that its source
+# checkout is clean as the runs read it (``git_state``: no uncommitted change, no untracked file
+# that its .gitignore does not ignore, whatever the Git configuration says). Shared by the drivers
+# of scripts/study2_short_campaigns.py and scripts/fa_control_diagnostic.py.
+CLEAN_CHECKOUT = (
+    "import sys; from zero_field_refusal.tracking import git_state; "
+    "sys.exit(None if git_state()['dirty'] is False else 'the source checkout is not clean "
+    "(tracking.git_state): an uncommitted change or an untracked file')"
+)
+
+
 def worktree_changes(repo: Path = REPO_ROOT) -> dict[str, list[str]]:
     """How the checkout at ``repo`` (its top level) departs from its HEAD: ``uncommitted``, the
     tracked paths whose staged or working-tree content differs from HEAD (every tracked path

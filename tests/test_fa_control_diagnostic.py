@@ -28,6 +28,7 @@ from zero_field_refusal.optim import Adam
 from zero_field_refusal.runtime import Environment
 from zero_field_refusal.schedule import run_scheduled
 from zero_field_refusal.teacher import sample_responses
+from zero_field_refusal.tracking import CLEAN_CHECKOUT
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fa_control_diagnostic.py"
@@ -701,6 +702,17 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     assert log < gpu < disk < positions[0]
     assert 'OUT="${RUNS_DIR:?}/diagnostics/fa_control"' in text
     assert "harmful_" not in text
+    # The checkout is clean as tracking.git_state reads it, whatever the Git configuration (the
+    # check the Pod prep driver uses, shared), not as `git status` shows it.
+    head = lines.index(f'test "$(git rev-parse HEAD)" = {commit}')
+    assert lines[head + 1] == f'project-run "$SRC" python -c "{CLEAN_CHECKOUT}"'
+    assert head + 1 < log and "git status" not in text
+    for dirty in (False, True, None):  # None: no checkout
+        monkeypatch.setattr("zero_field_refusal.tracking.git_state",
+                            lambda dirty=dirty: {"commit": commit, "dirty": dirty})  # fmt: skip
+        with pytest.raises(SystemExit) as stopped:
+            exec(CLEAN_CHECKOUT, {})
+        assert (stopped.value.code is None) == (dirty is False)
 
 
 # ----------------------------------------------------------------- the whole diagnostic, tiny
