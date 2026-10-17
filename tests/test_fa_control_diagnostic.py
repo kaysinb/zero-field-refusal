@@ -52,6 +52,8 @@ def test_the_settings_are_k_only_without_harmful_generation() -> None:
     assert list(d.d3.order) == ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"]
     assert d.d3.expansion == "fa-1.46e-05" and d.d3.expansion not in d.d3.order
     assert d.branches.failing == "fa-1.21e-05"
+    assert list(d.branches.regular_cases) == list(d.d3.order)  # Revision 2, 3: AdamW included
+    assert (d.d3.survival_share, d.d3.rounding_scale, d.d1.path_share_max) == (0.5, 10, 0.1)
     assert list(d.d3.eval_at) == [1, 5, 10, 15, 20, 25] and d.d2.batches == 4
 
 
@@ -209,14 +211,42 @@ def test_the_per_step_growth_and_the_observed_controls() -> None:
     assert observed["delta_per_step_from_displacement"][0]["per_step"] == pytest.approx(4**0.2)
 
 
-def test_perturbations_report_what_survives_fp32_rounding() -> None:
+def ones(name, shape):
+    return torch.ones(shape)
+
+
+def test_perturbations_survive_rounding_by_their_realized_norm() -> None:
+    """Revision 2, 4: survival is ‖fp32(θ₀ + p) − θ₀‖ ≥ ½‖p‖, not a changed coordinate."""
     p = torch.nn.Parameter(torch.ones(1000))
     theta0 = {"w": torch.ones(1000)}
-    lost = fcd.perturb([("w", p)], theta0, lambda name, shape: torch.ones(shape), 1e-12)
+    lost = fcd.perturb([("w", p)], theta0, ones, 1e-12)
     assert lost["changed"] == 0 and not lost["survived"] and lost["realized_norm"] == 0
-    kept = fcd.perturb([("w", p)], theta0, lambda name, shape: torch.ones(shape), 1e-6)
+    kept = fcd.perturb([("w", p)], theta0, ones, 1e-6)
     assert kept["changed"] == 1000 and kept["survived"]
     assert kept["realized_norm"] == pytest.approx(kept["intended_norm"], rel=0.1)
+    # One small coordinate of θ₀ takes the perturbation, the 999 others round it away: some
+    # coordinates change, but the realized norm is far under half the intended one.
+    small = torch.ones(1000)
+    small[7] = 1e-6
+    partial = fcd.perturb([("w", p)], {"w": small}, ones, 1e-12)
+    assert partial["changed"] == 1 and not partial["survived"]
+    assert partial["realized_norm"] < 0.5 * partial["intended_norm"]
+    assert partial["intended_norm"] == pytest.approx(1e-12 * 1000**0.5)
+
+
+def test_a_perturbation_lost_to_rounding_is_scaled_once_and_the_second_attempt_kept() -> None:
+    p = torch.nn.Parameter(torch.ones(1000))
+    small = torch.ones(1000)
+    small[7] = 1e-6
+    attempts = fcd.apply_perturbation([("w", p)], {"w": small}, ones, 1e-12,
+                                      survival_share=0.5, rounding_scale=10)  # fmt: skip
+    assert [a["scale"] for a in attempts] == [1e-12, 1e-11]
+    assert not attempts[0]["survived"] and not attempts[1]["survived"]  # kept all the same
+    assert all({"intended_norm", "realized_norm", "changed"} <= set(a) for a in attempts)
+    torch.testing.assert_close(p.data, small + torch.ones(1000) * 1e-11, rtol=0, atol=0)
+    survives = fcd.apply_perturbation([("w", p)], {"w": torch.ones(1000)}, ones, 1e-6,
+                                      survival_share=0.5, rounding_scale=10)  # fmt: skip
+    assert len(survives) == 1 and survives[0]["survived"]
 
 
 # --------------------------------------------------------------- products, Lanczos and the map
@@ -430,8 +460,24 @@ def test_branch_f_needs_the_path_the_same_path_control_and_the_regular_runs() ->
     assert (out["branch"], out["expand"]) == ("ambiguous", "fa-1.46e-05")
     out = decide(*outputs(path=False))
     assert (out["branch"], out["expand"]) == ("ambiguous", "fa-1.46e-05")
-    # AdamW is a comparison: its pairs do not enter Branch F.
-    assert decide(*outputs(pairs={"adamw-1.32e-05": {"p1": 0.5}}))["branch"] == "F"
+    assert decide(*outputs(same_path=BOUND))["branch"] == "B"  # strictly below, at every step
+
+
+@pytest.mark.parametrize("key", ["p1", "p2", "p3", "p4", "reference"])
+def test_an_adamw_pair_above_the_bound_excludes_f(key) -> None:
+    """Revision 2, 3: Branch F's regular runs are every D3 case, AdamW 1.32e-5 included; with
+    every other F condition met, the outcome is ambiguous (A and B read FA 1.21e-5 only)."""
+    out = decide(*outputs(pairs={"adamw-1.32e-05": {key: BOUND * 1.01}}))
+    assert (out["branch"], out["expand"]) == ("ambiguous", "fa-1.46e-05")
+    facts = out["facts"]
+    assert facts["path_dominates"] and facts["same_path_control_below"]
+    assert all(facts["failing_pairs_within"].values())
+    assert facts["regular_cases_within"]["adamw-1.32e-05"] is False
+    assert facts["pairs_within"]["adamw-1.32e-05"][key] is False  # reported
+    # The same AdamW pair under Branch B's conditions leaves B, and under A's leaves A.
+    assert decide(*outputs(same_path=0.2, pairs={"adamw-1.32e-05": {key: 1.0}}))["branch"] == "B"
+    a = decide(*outputs(pairs={"adamw-1.32e-05": {key: 1.0}, "fa-1.21e-05": {"p1": 1.0}}))
+    assert a["branch"] == "A" and a["facts"]["pairs_within"]["adamw-1.32e-05"][key] is False
 
 
 def test_branch_b_and_a() -> None:
@@ -639,6 +685,11 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
             assert [r["step"] for r in pair["D_twin"]] == [1, 3, 6], key
             assert pair["complete"] and math.isfinite(pair["max_D_twin"])
         assert case["pairs"]["p1"]["rounding"][0]["survived"]
+        for key in ("p1", "p2", "p3", "p4"):
+            attempts = case["pairs"][key]["rounding"]
+            assert len(attempts) == (1 if attempts[0]["survived"] else 2), key
+            for a in attempts:
+                assert a["survived"] == (a["realized_norm"] >= 0.5 * a["intended_norm"])
         assert case["pairs"]["reference"]["mode"].startswith("float64 loss, accumulation and")
         assert not list((out / "d3" / "checkpoints" / name).glob("*.pt"))  # deleted
         p1 = case["pairs"]["p1"]["rounding"][0]  # θ₀ + δ₁ is the control's θ₁ exactly

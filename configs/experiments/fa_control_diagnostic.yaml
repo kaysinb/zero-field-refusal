@@ -1,10 +1,11 @@
 # Study 2: the diagnostic of the FA soft-control failure (docs/study2-fa-control-diagnostic.md,
-# frozen; Revision 1 supersedes its base text). Not a run config: scripts/fa_control_diagnostic.py
-# reads these settings beside the archived configs of the runs it re-examines, and every
-# computation uses the archived run's own config. Outside the confirmation and blind to outcomes:
-# every evaluation is K-only, on the scoring panel's benign responses (kl_benign) and the monitor
-# panel; no harmful prompt set, stream or generation, and no refusal, harm or judge quantity
-# (tests/test_fa_control_diagnostic.py asserts both). Outputs: RUNS_DIR/diagnostics/fa_control/.
+# frozen; Revisions 1 and 2 supersede its base text, and Revision 2 fixes the operationalizations
+# below). Not a run config: scripts/fa_control_diagnostic.py reads these settings beside the
+# archived configs of the runs it re-examines, and every computation uses the archived run's own
+# config. Outside the confirmation and blind to outcomes: every evaluation is K-only, on the
+# scoring panel's benign responses (kl_benign) and the monitor panel; no harmful prompt set,
+# stream or generation, and no refusal, harm or judge quantity (tests/test_fa_control_diagnostic.py
+# asserts both). Outputs: RUNS_DIR/diagnostics/fa_control/.
 experiment: fa_control_diagnostic
 diagnostic:
   evaluation: k_only                # asserted by a test, with the absence of harmful generation
@@ -19,12 +20,11 @@ diagnostic:
   controls: [1.0e-05, 1.21e-05, 1.46e-05]  # the FA soft controls' rates, as recorded
   d1:
     pair: fa-1.21e-05               # the regular run and the control checked for shared state
-    same_path_control:              # Branch F's same-path float64 soft control
-      rate: 1.21e-05
+    same_path_control:              # Branch F's same-path float64 soft control (Revision 2, 2):
+      rate: 1.21e-05                # K strictly below the bound at every step of k_at
       k_at: [1, 5, 10, 15, 20, 25]  # K on the scoring panel (D3's measurement steps)
-    # The residual "comes from the path discrepancy" when the fp32 same-path residual (i) is at
-    # most this share of the recorded one (iii), in norm. The specification names the condition
-    # without a number: this operationalization awaits the coordinator's confirmation.
+    # Revision 2, 1: the residual "comes from the path discrepancy" when the fp32 same-path
+    # residual (i) is at most this share of the recorded one (iii), in norm.
     path_share_max: 0.1
   d2:
     batches: 4                      # the control's first 4 batches, cycled over the run's steps
@@ -32,7 +32,8 @@ diagnostic:
     lanczos:
       steps: 60                     # as the Stage-A curvature measurement (review r9)
       tolerance: 0.01
-    fisher_at: [1, 5, 10, 15, 20, 25]  # where δᵀFδ is read (F: the 4 batches' soft Hessian)
+    fisher_at: [1, 5, 10, 15, 20, 25]  # where δᵀFδ is read (Revision 2, 7: F is the 4 batches'
+                                       # soft Hessian)
   d3:
     eval_at: [1, 5, 10, 15, 20, 25]
     determinism: fa-1e-05           # the targeted round's FA run of seed 2000 at the low rate
@@ -40,7 +41,7 @@ diagnostic:
     expansion: fa-1.46e-05          # only if the three cases give the ambiguous branch
     cases:                          # lr: the archived regular run's rate; control_lr: the FA
                                     # soft control's, whose first-step displacement norm scales
-                                    # the perturbations
+                                    # the perturbations (Revision 2, 5 and 6)
       fa-1.21e-05: {optimizer: adam_frozen, lr: 1.21e-05, control_lr: 1.21e-05}
       fa-1e-05: {optimizer: adam_frozen, lr: 9.98e-06, control_lr: 1.0e-05}
       adamw-1.32e-05: {optimizer: adamw, lr: 1.32e-05, control_lr: 1.32e-05}
@@ -48,7 +49,12 @@ diagnostic:
     gaussian:                       # seeds of the fixed directions p3 and p4
       p3: 3
       p4: 4
-    rounding_scale: 10              # a perturbation lost to fp32 rounding is scaled once
+    # Revision 2, 4: a perturbation survives fp32 rounding when its realized norm is at least
+    # this share of its intended norm; otherwise it is scaled by rounding_scale once, and that
+    # second attempt is used whatever it realizes.
+    survival_share: 0.5
+    rounding_scale: 10
   branches:
-    failing: fa-1.21e-05
-    regular_cases: [fa-1.21e-05, fa-1e-05]  # Branch F's "regular runs stay within the bound"
+    failing: fa-1.21e-05            # Branches A and B read this case's pairs only
+    # Revision 2, 3: Branch F's "D3's regular runs stay within the bound" covers every D3 case.
+    regular_cases: [fa-1.21e-05, fa-1e-05, adamw-1.32e-05]

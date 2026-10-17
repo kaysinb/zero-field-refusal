@@ -1,7 +1,9 @@
 """Study 2: the diagnostic of the FA soft-control failure, outside the confirmation.
 
 The specification is docs/study2-fa-control-diagnostic.md, frozen before any run; its Revision 1
-supersedes the base text where they differ. The settings are
+supersedes the base text where they differ, and its Revision 2 fixes the operationalizations
+(the path criterion, the same-path control, the cases of Branch F, survival of fp32 rounding,
+the AdamW and FA 1e-5 scales, D2's map, the float64 reference, "incomplete"). The settings are
 configs/experiments/fa_control_diagnostic.yaml. Nothing here changes the protocol, the
 selection, the analysis or a run record.
 
@@ -1013,9 +1015,13 @@ def perturb(
     theta0: Mapping[str, torch.Tensor],
     direction: Callable[[str, Sequence[int]], torch.Tensor],
     scale: float,
+    *,
+    survival_share: float = 0.5,
 ) -> dict[str, Any]:
-    """Set the trainable parameters to θ₀ + scale·direction in fp32 and count what survived the
-    rounding: the coordinates that differ from θ₀, and the realized norm against the intended."""
+    """Set the trainable parameters to θ₀ + scale·direction in fp32 and record what survived
+    the rounding: the intended norm, the realized norm ‖fp32(θ₀ + p) − θ₀‖ and the coordinates
+    that differ from θ₀. The perturbation survives when the realized norm is at least
+    ``survival_share`` of the intended one (Revision 2, 4)."""
     changed = 0
     realized = intended = 0.0
     numel = 0
@@ -1027,9 +1033,29 @@ def perturb(
         numel += p.numel()
         realized += (p.double() - start.double()).pow(2).sum().item()
         intended += d.double().pow(2).sum().item()
+    realized, intended = realized**0.5, intended**0.5
     return {"scale": scale, "changed": changed, "fraction_changed": changed / numel,
-            "intended_norm": intended**0.5, "realized_norm": realized**0.5,
-            "survived": changed > 0}  # fmt: skip
+            "intended_norm": intended, "realized_norm": realized,
+            "survived": realized >= survival_share * intended}  # fmt: skip
+
+
+def apply_perturbation(
+    trainable: Sequence[tuple[str, torch.nn.Parameter]],
+    theta0: Mapping[str, torch.Tensor],
+    direction: Callable[[str, Sequence[int]], torch.Tensor],
+    scale: float,
+    *,
+    survival_share: float,
+    rounding_scale: float,
+) -> list[dict[str, Any]]:
+    """Revision 2, 4: perturb θ₀; if the perturbation does not survive fp32 rounding, scale it by
+    ``rounding_scale`` once, and keep that second attempt whatever it realizes. Returns every
+    attempt's record; the parameters hold the last attempt."""
+    attempts = [perturb(trainable, theta0, direction, scale, survival_share=survival_share)]
+    if not attempts[-1]["survived"]:
+        attempts.append(perturb(trainable, theta0, direction, scale * rounding_scale,
+                                survival_share=survival_share))  # fmt: skip
+    return attempts
 
 
 def compare_archive(
@@ -1694,11 +1720,11 @@ def run_case(
     pairs: dict[str, Any] = {}
     for key in PERTURBATIONS:
         twins.reset()
-        scale = delta_norm / norms[key]
-        rounding = [perturb(twins.trainable, twins.theta0, directions[key], scale)]
-        if not rounding[-1]["survived"]:
-            rounding.append(perturb(twins.trainable, twins.theta0, directions[key],
-                                    scale * float(d.d3.rounding_scale)))  # fmt: skip
+        rounding = apply_perturbation(
+            twins.trainable, twins.theta0, directions[key], delta_norm / norms[key],
+            survival_share=float(d.d3.survival_share),
+            rounding_scale=float(d.d3.rounding_scale),
+        )  # fmt: skip
         twin = run_twin(cfg, twins, eval_at=eval_at, compare_dir=checkpoints)
         twin["rounding"] = rounding
         twin["within_bound"] = twin["max_D_twin"] <= bound
@@ -1766,21 +1792,24 @@ def decide_branch(
     cases: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     """The frozen decision branches (docs/study2-fa-control-diagnostic.md, "Decision
-    branches"), read from the diagnostic's outputs:
+    branches" and Revision 2), read from the diagnostic's outputs:
 
     - **A** when any D3 pair at the failing case (FA 1.21e-5) exceeds the bound (a pair that
       stopped on a non-finite value counts as exceeding);
     - **F** when D1 shows that the residual comes from the path discrepancy (``path_dominates``:
       the fp32 same-path residual (i) is at most ``path_share_max`` of the recorded one (iii)),
-      the same-path float64 soft control keeps K_scoring below the bound through its steps, and
-      every pair of every case in ``branches.regular_cases`` stays within the bound;
+      the same-path float64 soft control keeps K_scoring strictly below the bound at every
+      measured step, and every pair of every case in ``branches.regular_cases`` (every D3 case,
+      AdamW 1.32e-5 included) stays within the bound;
     - **B** when the same-path control exceeds the bound but every pair at the failing case
       stays within it;
-    - **ambiguous** otherwise: the expansion case (FA 1.46e-5) is added to D3 once
-      (``expand``), then the outcome is reported without choosing.
+    - **ambiguous** otherwise (an AdamW pair above the bound with F's other conditions met,
+      say): the expansion case (FA 1.46e-5) is added to D3 once (``expand``), then the outcome
+      is reported without choosing.
 
     The branch is decided on the three prescribed cases only; the expansion never changes it.
-    Missing inputs (D3 stopped by its determinism check, say) give ``incomplete``."""
+    The AdamW pairs are reported under every branch (``facts``). Missing inputs (D3 stopped by
+    its determinism check, say) give ``incomplete``."""
     d = settings.diagnostic
     bound = float(d.bound)
     failing = str(d.branches.failing)
@@ -1801,6 +1830,8 @@ def decide_branch(
         return {key: bool(p["max_D_twin"] <= bound) for key, p in cases[name]["pairs"].items()}
 
     out: dict[str, Any] = {"facts": facts, "missing": missing}
+    # Every prescribed case's pairs, AdamW's included, reported under every branch
+    facts["pairs_within"] = {name: pairs_within(name) for name in prescribed if name in cases}
     if failing in cases:
         facts["failing_pairs_within"] = pairs_within(failing)
         if not all(facts["failing_pairs_within"].values()):
