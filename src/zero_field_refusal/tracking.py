@@ -252,7 +252,8 @@ class Run:
 
 def git_state(repo: Path = REPO_ROOT) -> dict[str, Any]:
     """Current commit and whether the working tree is dirty: any uncommitted change or untracked
-    file (``worktree_changes``, whatever the Git configuration says).
+    file (``worktree_changes``, whatever ``status.showUntrackedFiles``, ``.git/info/exclude`` and
+    ``core.excludesFile`` say).
 
     Both are None unless ``repo`` is the top level of a git checkout (not a folder inside another
     repository).
@@ -278,11 +279,13 @@ def worktree_changes(repo: Path = REPO_ROOT) -> dict[str, list[str]]:
     of the checkout ignores. The one reading of a dirty tree, for the runs (``git_state``) and the
     versions record (``code_changes``).
 
-    It does not depend on the user's or the repository's Git configuration:
-    ``git ls-files`` lists untracked files whatever ``status.showUntrackedFiles`` says (``git
-    status`` hides them all under ``no``), only the checkout's ``.gitignore`` files ignore (not
-    ``.git/info/exclude`` or the user's ``core.excludesFile``), and paths are read unquoted,
-    renames as both paths. Raises ``subprocess.CalledProcessError`` for no checkout."""
+    What does not change it: ``status.showUntrackedFiles`` (``git ls-files`` lists untracked
+    files, which ``git status`` hides under ``no``), ``.git/info/exclude`` and the user's
+    ``core.excludesFile`` (only the checkout's ``.gitignore`` files ignore), ``core.quotePath``
+    (paths are read unquoted) and ``diff.renames`` (a rename is both paths). What still hides a
+    change, as from ``git status``: index flags set on purpose (``--assume-unchanged``,
+    ``--skip-worktree``, a sparse checkout) and a mode change under ``core.fileMode`` false.
+    Raises ``subprocess.CalledProcessError`` for no checkout."""
     try:
         _git(repo, "rev-parse", "--verify", "--quiet", "HEAD")
     except subprocess.CalledProcessError:  # no commit yet: everything tracked is new

@@ -640,8 +640,8 @@ default `docs/study2-short-versions.json` in the checkout), and refuse when:
 - a tracked file has uncommitted changes, staged or not, or a file anywhere in the checkout is
   untracked and not ignored by the checkout's `.gitignore` files (keep local work directories,
   such as `.superpowers/`, in `.gitignore`: `.git/info/exclude` and a user's excludes file do not
-  count). The runs read a dirty tree the same way (`tracking.worktree_changes`), whatever the Git
-  configuration says, `status.showUntrackedFiles` included;
+  count). The runs read a dirty tree the same way (`tracking.worktree_changes`), whatever
+  `status.showUntrackedFiles`, `.git/info/exclude` and `core.excludesFile` say;
 - `model` is not the model of `experiments/study2_short`;
 - the judge's identity is not that of its config, or (for the summary) the config is not
   `judge/NAME` of `--judge NAME`;
@@ -680,9 +680,21 @@ a look stops:
    receipt before it starts; an interrupted one leaves none. Without a receipt matching its label
    file, a run's labels do not count: the summary lists it under `labels_pending` and its block
    waits. Rerun the labeling to complete it. A run with a completed receipt (no label missing,
-   or its three rounds used) is left as it is, nothing sent. A label file without its rounds
-   record (labeled before the record existed) is refused, its rounds unknown: decide such a run
-   by hand.
+   or its three rounds used) is left as it is, nothing sent. A round that fails (the judge gone)
+   stops the invocation: the runs after it are "not attempted" and keep their rounds, so bring
+   the judge back and rerun. A run another `label_runs.py` is labeling is `busy`, nothing sent.
+   These are refused, with nothing sent and nothing written:
+   - **The labels changed outside a round.** Either the receipt no longer matches its label file,
+     judge, items or counts, or the label file changed after its receipt was deleted. Restore the
+     label file the receipt names from the archive, or exclude the run by a recorded decision.
+     Never delete the receipt: a deleted receipt whose label file is unchanged is written again,
+     and one whose label file changed stays refused.
+   - **A label file without its rounds record** (labeled before the record existed): its rounds
+     are unknown.
+   - **A label file the analysis would refuse**, such as expected items without any record once
+     the three rounds are used.
+
+   Decide such runs by hand.
 5. **Run the summary** with `--judge wildguard --fixation $F`.
 6. **Go on** only if the look did not stop (`stopped` false). Pass `--after-look K` for the look
    just read; without it the script refuses any block once look K is due.
@@ -751,7 +763,10 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
 - **Run directories:** `python scripts/label_runs.py --judge wildguard RUN_DIR ...` labels every
   response of each completed run into `<run dir>/judge/wildguard.jsonl` (the same token check
   first); an output that does not parse is retried, in at most `--rounds` (3) rounds in all, and
-  the run's remaining `unparseable` count is printed. A study-2 run (a training run with a `schedule` in
+  the run's remaining `unparseable` count is printed. The rounds are counted across reruns in
+  `<run dir>/judge/wildguard.rounds.json`; an existing label file without that record (every
+  stage-1 run) is refused, nothing sent, unless its receipt is complete: relabel under a new
+  judge config name. A study-2 run (a training run with a `schedule` in
   its config) is labeled at every evaluation it recorded, `step-<N>`, whatever its stop reason (a
   run that stopped before its first evaluation is skipped);
   `analysis.study2_labels.read_endpoint_labels` then counts the labels per evaluation, strictly.

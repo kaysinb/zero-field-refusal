@@ -7,9 +7,12 @@ trained model, θ₀, line scans, random directions) with the judge configs/judg
 <run dir>/judge/NAME.jsonl, keyed <condition>/<prompt id> (zero_field_refusal.run_judging). The
 label file is the cache: a rerun labels only what is missing, including outputs that did not
 parse. Needs JUDGE_API_BASE (and JUDGE_API_KEY for a keyed server); a WildGuard server first passes
-the tokenizer check. A run whose responses file is not the complete set its config implies is
-reported with its error and the other runs go on. Prints counts per run, never texts; exits
-non-zero while any run has an error or an unparseable output. A run with unparseable outputs left
+the tokenizer check. A run whose responses file is not the complete set its config implies, or
+that is refused (below), is reported with its error and the other runs go on; a round that fails
+(the judge gone) stops the invocation, and the runs after it are "not attempted", untouched. A run
+that another process is labeling is `busy`, nothing sent. Prints counts per run, never texts;
+exits non-zero while any run has an error, is busy or has an unparseable output. A run with
+unparseable outputs left
 is labeled again, at most --rounds rounds in all (1 to 3, default 3) counted across every
 invocation: <run dir>/judge/NAME.rounds.json counts each round before its requests are sent, so
 an interrupted round counts too, and a rerun resumes with the rounds left (none once they are
@@ -26,8 +29,16 @@ items expected, the judge's identity, the rounds used in all, the labels still m
 label file's sha256. A round deletes the receipt before it starts, and an interrupted one leaves
 none: study 2's analysis counts no label of a run without its receipt (the run stays pending), and
 counts a missing label only after all three rounds. A run with a completed receipt (no label
-missing, or its rounds used) is left as it is, nothing sent (`kept` in its summary). A label file
-without its rounds record (labeled before the record existed) is refused: its rounds are unknown.
+missing, or its rounds used) is left as it is, nothing sent (`kept` in its summary). Refused, with
+nothing sent and nothing written:
+- a receipt that no longer matches its label file, judge, items or counts, and a label file that
+  changed after its receipt was deleted: the labels changed outside a round. Restore the label
+  file the receipt names from the archive, or exclude the run by a recorded decision; never delete
+  the receipt. A deleted receipt whose label file is unchanged is written again (`restored`);
+- a label file without its rounds record (labeled before the record existed): its rounds are
+  unknown;
+- a label file the analysis would refuse, such as one with expected items that have no record
+  once the rounds are used: decide the run by hand.
 """
 
 import argparse
@@ -81,6 +92,8 @@ def main(argv: list[str] | None = None) -> None:
     print(json.dumps({"runs": len(summaries), "token_check": tokens}))
     if any(s.get("error") for s in summaries):
         sys.exit("Some runs could not be labeled; see their errors above")
+    if any(s.get("busy") for s in summaries):
+        sys.exit("Some runs are being labeled by another process; nothing was sent for them")
     if any(s.get("unparseable") for s in summaries):
         sys.exit(
             "Some outputs did not parse. A rerun resumes each such run within the rounds it "

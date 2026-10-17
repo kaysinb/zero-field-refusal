@@ -987,8 +987,8 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
   - The simulation of the decided design checked it (a new `secondary` stream, 10 000
     replicates per scenario, every shape × SD at Δ ∈ {0, ±5} pp, MC SE 0.09–0.27 pp). The joint
     coverage of the two secondary contrasts holds within MC error on every shape tested. Its
-    minimum is 94.84 % (heavy-tailed, SD 15, Δ = −5 pp; MC SE 0.22); the only other value below
-    95 % is 94.90 % (right-skewed, SD 15, Δ = −5 pp). A side check of four scenarios with
+    minimum is 94.84 % (heavy-tailed, SD 15, Δ = −5 pp; MC SE 0.22 pp); the only other value
+    below 95 % is 94.90 % (right-skewed, SD 15, Δ = −5 pp). A side check of four scenarios with
     20 000 resamples (`b20000-check/`) gives a minimum of 94.89 % (heavy-tailed, SD 15,
     Δ = −5 pp), the right-skewed one 95.15 %. These are coverages in the tested scenarios, not a
     universal guarantee. On the stress shapes, the single-contrast coverage falls to 96.2–97.1 %,

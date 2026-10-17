@@ -64,8 +64,9 @@ Nothing here reads a judge label or K_harmful.
 ``prep`` writes a bash driver of the prerequisites of the runs of the given seeds at batch B, from
 the source checkout of commit SHA on a Pod, laid out as the Stage-A drivers. It first checks that
 the checkout is at SHA and clean as the runs read it (``tracking.git_state``: no uncommitted
-change and no untracked file its .gitignore does not ignore, whatever the Git configuration
-says). With ``--once`` (and its ``--stage0-run-id``) it starts with the stage-0 checks under
+change and no untracked file its .gitignore does not ignore, whatever status.showUntrackedFiles,
+.git/info/exclude and core.excludesFile say). With ``--once`` (and its ``--stage0-run-id``) it
+starts with the stage-0 checks under
 protocol version 3 and the curvature panel. That was done on P0 on 2026-10-16
 (docs/operations.md records it) and must not be run again: later drivers leave out ``--once``,
 and their Pods restore the inventories of its stage-0 v3 record and of the curvature panel
@@ -163,7 +164,8 @@ PASSED = (
     "and s.get('path_field', {}).get('passed') is True))"
 )
 # The source checkout is clean as the runs read it (tracking.git_state: no uncommitted change, no
-# untracked file that its .gitignore does not ignore, whatever the Git configuration says).
+# untracked file that its .gitignore does not ignore, whatever status.showUntrackedFiles,
+# .git/info/exclude and core.excludesFile say).
 CLEAN = (
     "import sys; from zero_field_refusal.tracking import git_state; "
     "sys.exit(None if git_state()['dirty'] is False else 'the source checkout is not clean "

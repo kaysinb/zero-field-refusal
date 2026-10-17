@@ -1,6 +1,7 @@
 """Study-2 judge path: conditions of scheduled runs, labeling them with their judging receipts, and
 the strict endpoint reader. Synthetic text only."""
 
+import fcntl
 import hashlib
 import json
 import shutil
@@ -17,8 +18,10 @@ from zero_field_refusal.config import load_config
 from zero_field_refusal.judge import JudgeClient, _content_hash, judge_identity
 from zero_field_refusal.run_judging import (
     LABEL_ROUNDS,
+    NOT_ATTEMPTED,
     judge_items,
     label_runs,
+    lock_path,
     receipt_path,
     response_conditions,
     rounds_path,
@@ -408,7 +411,10 @@ def test_a_rerun_after_a_completed_receipt_sends_nothing_and_changes_nothing(
     receipt = json.loads(receipt_path(run, JUDGE).read_text())
     assert (receipt["rounds"], receipt["missing"]) == (rounds, missing)
     before = judge_files(run)
-    assert set(before) == {"wildguard.jsonl", "wildguard.receipt.json", "wildguard.rounds.json"}
+    assert set(before) == {"wildguard.jsonl", "wildguard.receipt.json", "wildguard.rounds.json",
+                           "wildguard.lock"}  # fmt: skip
+    assert json.loads(rounds_path(run, JUDGE).read_text())["certified_sha256"] == (
+        receipt["labels_sha256"])  # fmt: skip
     for allowed in (1, 2, 3):
         again = FakeWildGuard([HARMFUL])
         (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(again), rounds=allowed)
@@ -416,37 +422,172 @@ def test_a_rerun_after_a_completed_receipt_sends_nothing_and_changes_nothing(
         assert again.attempts == 0 and judge_files(run) == before
 
 
+def state(run: Path) -> dict[str, bytes | None]:
+    """The bytes of the run's label file and rounds record (None: absent)."""
+    return {path.name: path.read_bytes() if path.exists() else None
+            for path in (label_path(run, JUDGE), rounds_path(run, JUDGE))}  # fmt: skip
+
+
 @pytest.mark.usefixtures("published")
-def test_a_deleted_or_invalidated_receipt_does_not_reset_the_rounds(tmp_path) -> None:
+def test_a_deleted_receipt_is_restored_and_does_not_reset_the_rounds(tmp_path) -> None:
     run = make_run(tmp_path)
     broken = FakeWildGuard(["cannot classify"])
     label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(broken), rounds=2)
     assert broken.attempts == 12 and rounds_used(run) == 2
+    first = json.loads(receipt_path(run, JUDGE).read_text())
+    # Deleted after its labeling completed, the label file unchanged: written again, nothing sent.
     receipt_path(run, JUDGE).unlink()
-    # One round is left of three, and only it is sent.
+    before = state(run)
     again = FakeWildGuard(["cannot classify"])
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(again), rounds=3)
+    assert summary["restored"] and (summary["rounds"], summary["unparseable"]) == (2, 6)
+    assert again.attempts == 0 and state(run) == before
+    restored = json.loads(receipt_path(run, JUDGE).read_text())
+    assert {k: v for k, v in restored.items() if k not in ("what", "completed_at",
+            "rounds_allowed")} == {k: v for k, v in first.items() if k not in (
+            "what", "completed_at", "rounds_allowed")}  # fmt: skip
+    # Resumed with the one round left of three, and only it is sent.
     summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(again), rounds=3)
     assert summaries == [{"run_id": "run", "items": 6, "unparseable": 6, "rounds": 3}]
     assert again.attempts == 6 and rounds_used(run) == 3
-    # Deleted once the rounds are used: nothing is sent, and the receipt of the labels as they
-    # stand is written again.
-    labels = label_path(run, JUDGE).read_bytes()
+    # Deleted once the rounds are used: restored, nothing sent.
     receipt_path(run, JUDGE).unlink()
+    before = state(run)
     last = FakeWildGuard([REFUSAL])
-    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(last), rounds=3)
-    assert summaries == [{"run_id": "run", "items": 6, "unparseable": 6, "rounds": 3}]
-    assert last.attempts == 0 and label_path(run, JUDGE).read_bytes() == labels
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(last), rounds=3)
+    assert summary["restored"] and summary["rounds"] == 3 and last.attempts == 0
+    assert state(run) == before
     (row,) = read(run)
     assert row["missing"] == 6
-    # Invalidated (the label file changed since): nothing is sent either.
+
+
+@pytest.mark.usefixtures("published")
+def test_labels_changed_outside_a_round_are_refused_and_left_as_they_are(tmp_path) -> None:
+    """A receipt that no longer validates, whatever the rounds left, and a label file changed
+    after its receipt was deleted: refused, nothing sent, label file and rounds record intact."""
+    fake = FakeWildGuard([HARMFUL])
+
+    def refused(run: Path, match: str, receipt: bool = True) -> None:
+        before = state(run), receipt_path(run, JUDGE).read_bytes() if receipt else None
+        (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+        assert match in summary["error"] and "never delete the receipt" in summary["error"]
+        assert fake.attempts == 0
+        after = state(run), receipt_path(run, JUDGE).read_bytes() if receipt else None
+        assert after == before and receipt_path(run, JUDGE).exists() == receipt
+
+    def labeled(name: str, reply: str, rounds: int) -> Path:
+        run = make_run(tmp_path, name=name)
+        label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard([reply])),
+                   rounds=rounds)  # fmt: skip
+        return run
+
+    mismatch = "does not match the run's label file, judge, items or counts"
+    # A label appended outside a round, one round of three used: not resumed.
+    run = labeled("appended", "cannot classify", 1)
     with label_path(run, JUDGE).open("a") as handle:
-        handle.write(json.dumps(record("step-25", "judged:0", None)) + "\n")
-    with pytest.raises(LabelsPending, match="not the label file its judging receipt"):
+        handle.write(json.dumps(record("step-25", "judged:0", "harmful_compliance")) + "\n")
+    refused(run, mismatch)
+    # The label file of a complete labeling lost: its endpoints are not judged again.
+    run = labeled("lost", REFUSAL, 1)
+    label_path(run, JUDGE).unlink()
+    refused(run, mismatch)
+    # The label file and the rounds record lost, the receipt there: no fresh start.
+    run = labeled("both-lost", REFUSAL, 1)
+    label_path(run, JUDGE).unlink()
+    rounds_path(run, JUDGE).unlink()
+    refused(run, mismatch)
+    assert not label_path(run, JUDGE).exists() and not rounds_path(run, JUDGE).exists()
+    # A receipt of another judge revision, of other items, or with bad counts.
+    for name, change in (("identity", {"identity": {**IDENTITY, "judge_revision": "other"}}),
+                         ("items", {"expected_items": [], "items": 0}),
+                         ("counts", {"missing": None})):  # fmt: skip
+        run = labeled(name, REFUSAL, 1)
+        path = receipt_path(run, JUDGE)
+        path.write_text(json.dumps({**json.loads(path.read_text()), **change}))
+        refused(run, mismatch)
+    # A label changed and a receipt written for it by hand: not the receipt the record certifies.
+    run = labeled("handmade", REFUSAL, 3)
+    lines = label_path(run, JUDGE).read_text().splitlines()
+    edited = {**json.loads(lines[0]), "label": "harmful_compliance"}
+    label_path(run, JUDGE).write_text("\n".join([json.dumps(edited), *lines[1:]]) + "\n")
+    write_receipt(run, rounds=1)
+    assert read(run)[0]["harmful"] == 1  # the analysis alone would count it
+    refused(run, "is not the receipt its rounds record")
+    # The receipt deleted, then a label changed: the rounds record names the certified file.
+    run = labeled("edited", REFUSAL, 3)
+    receipt_path(run, JUDGE).unlink()
+    lines = label_path(run, JUDGE).read_text().splitlines()
+    edited = {**json.loads(lines[0]), "label": "harmful_compliance"}
+    label_path(run, JUDGE).write_text("\n".join([json.dumps(edited), *lines[1:]]) + "\n")
+    refused(run, "changed since its labeling completed", receipt=False)
+    assert not receipt_path(run, JUDGE).exists()
+    with pytest.raises(LabelsPending, match="receipt.json is missing"):
         read(run)
-    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(last), rounds=3)
-    assert summaries[0]["rounds"] == 3 and last.attempts == 0 and rounds_used(run) == 3
-    (row,) = read(run)
-    assert row["missing"] == 6
+
+
+@pytest.mark.usefixtures("published")
+def test_no_receipt_counts_a_file_the_analysis_would_refuse(tmp_path) -> None:
+    # Three rounds, each failing after one reply: expected items without any record.
+    run = make_run(tmp_path)
+    for used in (1, 2, 3):
+        failing = FakeWildGuard([REFUSAL], fail_after=1)
+        (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(failing, workers=1),
+                                rounds=3)  # fmt: skip
+        assert "RoundFailed" in summary["error"] and rounds_used(run) == used
+    before = state(run)
+    healthy = FakeWildGuard([REFUSAL])
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(healthy), rounds=3)
+    assert "has no record of 3 expected items" in summary["error"]
+    assert "decide the run by hand" in summary["error"]
+    assert healthy.attempts == 0 and state(run) == before and not receipt_path(run, JUDGE).exists()
+    # A valid receipt of a partial file is not reported as kept either.
+    partial = make_run(tmp_path, name="partial")
+    write_labels(partial, [record("step-25", pid, "refusal") for pid in IDS[:4]])
+    with pytest.raises(LabelsPending, match="no record of 2 expected items"):
+        read(partial)
+    before = judge_files(partial)
+    (summary,) = label_runs([partial], JUDGE, lambda cfg: PROMPTS, factory(healthy), rounds=3)
+    assert "has no record of 2 expected items" in summary["error"] and "kept" not in summary
+    assert healthy.attempts == 0
+    assert judge_files(partial) == {**before, "wildguard.lock": hashlib.sha256(b"").hexdigest()}
+
+
+@pytest.mark.usefixtures("published")
+def test_a_failed_round_stops_the_invocation(tmp_path) -> None:
+    runs = [make_run(tmp_path, name=f"r{i}") for i in range(3)]
+
+    def records() -> list[bool]:  # which runs have a rounds record as a request goes out
+        return [rounds_path(run, JUDGE).exists() for run in runs]
+
+    gone = FakeWildGuard([REFUSAL], fail_after=2, watch=records)
+    summaries = label_runs(runs, JUDGE, lambda cfg: PROMPTS, factory(gone, workers=1), rounds=3)
+    assert "RoundFailed: labeling round 1 of 3 failed" in summaries[0]["error"]
+    assert summaries[1:] == [{"run_id": "r1", "skipped": NOT_ATTEMPTED},
+                             {"run_id": "r2", "skipped": NOT_ATTEMPTED}]  # fmt: skip
+    assert gone.calls == 2 and all(seen == [True, False, False] for seen in gone.seen)
+    assert rounds_used(runs[0]) == 1
+    for run in runs[1:]:
+        assert not (run / "judge").exists()
+    # Back with a healthy judge: run 0 resumes with its rounds left, the others start at 1.
+    summaries = label_runs(runs, JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard([REFUSAL])),
+                           rounds=3)  # fmt: skip
+    assert [s.get("rounds", 1) for s in summaries] == [2, 1, 1]
+    assert all(s["unparseable"] == 0 for s in summaries)
+
+
+@pytest.mark.usefixtures("published")
+def test_a_run_another_process_is_labeling_is_busy(tmp_path) -> None:
+    run = make_run(tmp_path)
+    (run / "judge").mkdir()
+    fake = FakeWildGuard([REFUSAL])
+    with lock_path(run, JUDGE).open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    assert "in progress" in summary["busy"] and fake.attempts == 0
+    assert state(run) == {"wildguard.jsonl": None, "wildguard.rounds.json": None}
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert (summary["unparseable"], fake.attempts) == (0, 6)
 
 
 @pytest.mark.usefixtures("published")
@@ -469,6 +610,10 @@ def test_a_label_file_without_a_valid_rounds_record_is_refused(tmp_path) -> None
     record_path.write_text(json.dumps(other))
     (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
     assert "counts the rounds of another judge" in summary["error"]
+    older = {k: v for k, v in json.loads(kept).items() if k != "certified_sha256"}
+    record_path.write_text(json.dumps(older))  # as the record of 7dc9c7e, without it
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert "is not a rounds record" in summary["error"]
     assert fake.attempts == 0
     # A complete receipt is kept even so: nothing is sent, nothing is written.
     record_path.unlink()

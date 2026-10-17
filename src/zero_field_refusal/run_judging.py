@@ -24,12 +24,17 @@ and is no new round; a pass that finds every item labeled sends nothing and coun
 rounds of a run and judge are limited in all, across every invocation, to ``label_runs``'
 ``rounds`` (at most ``LABEL_ROUNDS``). The rounds record (``rounds_path``:
 ``<run dir>/judge/<judge>.rounds.json``: ``run_id``, ``judge``, ``identity``, ``used``,
-``limit``, ``updated_at``) counts each round before any of its requests is sent, written whole
-(a rename) and synced to disk, so an interrupted round counts as used. A rerun resumes with the
-rounds left, and sends nothing once they are used. Nothing lowers or deletes the record; deleting
-or invalidating a receipt leaves it as it is. A label file without a rounds record (labeled before
-the record existed) has unknown rounds behind it: its run is refused and nothing is sent, unless
-its receipt is complete (below). So is a record that does not read or names another judge.
+``limit``, ``certified_sha256``, ``updated_at``) counts each round before any of its requests is
+sent, written whole (a rename) and synced to disk, so an interrupted round counts as used. A
+rerun resumes with the rounds left, and sends nothing once they are used. Nothing lowers or
+deletes the record; deleting or invalidating a receipt leaves it as it is. A label file without a
+rounds record (labeled before the record existed) has unknown rounds behind it: its run is
+refused and nothing is sent, unless its receipt is complete (below). So is a record that does not
+read, names another judge or lacks ``certified_sha256``. A round that fails (the judge gone, past
+the client's retries) raises ``RoundFailed``: ``label_runs`` stops there, and the runs after it
+are not touched, so one outage spends a round of one run only. A labeling holds the run's lock
+(``lock_path``, a non-blocking flock) throughout: a run another process is labeling is ``busy``,
+nothing sent.
 
 **The judging receipt** (``receipt_path``: ``<run dir>/judge/<judge>.receipt.json``). When the
 labeling of a run is over (every item labeled, or the rounds used), ``label_runs`` writes a JSON
@@ -39,17 +44,30 @@ expected, in order: each recorded condition × each prompt id of the set), ``ite
 number), ``rounds`` (the rounds used in all: the rounds record's count, earlier invocations and
 interrupted rounds included), ``rounds_allowed`` (this invocation's ``rounds``), ``missing`` (the
 expected items still without a non-null label), ``labels_sha256`` (the sha256 of the label file
-at completion) and ``completed_at``. It is written whole (a rename), and the receipt of an earlier
-labeling is deleted before a round starts, so an interrupted round leaves no receipt: the analysis
-(``analysis.study2_labels``) counts no label of a run without a valid receipt. A run whose rounds
-are used but has no valid receipt (its last round interrupted, its receipt deleted) gets the
-receipt of its label file as it stands, nothing sent.
+at completion) and ``completed_at``. The rounds record's ``certified_sha256`` is set to that
+sha256 first, and set to null again, in the same synced write, when a round is counted. The
+receipt is written whole (a rename), and deleted before a round starts, so an interrupted round
+leaves no receipt: the analysis (``analysis.study2_labels``) counts no label of a run without a
+valid receipt. No receipt is written (the run is refused, for a decision by hand) when the
+analysis would refuse the label file: a record it rejects, or an expected item without any record
+once the rounds are used.
 
-**A completed receipt is kept.** A receipt that the analysis would read (this judge and identity,
-exactly the expected items, its counts: ``study2_labels`` checks the same) and that matches the
-label file's sha256 is left alone, nothing sent and nothing written, when it records no missing
-label or the rounds used reach ``rounds`` (so always after ``LABEL_ROUNDS``). One with missing
-labels and rounds left (labeled with ``rounds`` below ``LABEL_ROUNDS``) is resumed with them.
+**Receipts and changes outside a round.** In order, before anything reads or writes the label file:
+- **a receipt that is there but does not validate** (another judge, identity or items, bad counts,
+  the label file missing, unreadable or of another sha256) means the labels changed outside a
+  round. The run is refused, its label file and rounds record left byte-identical (``REMEDY``:
+  restore the label file the receipt names from the archive, or exclude the run by a recorded
+  decision; never delete the receipt);
+- **a valid receipt is kept**, nothing sent and nothing written, when it records no missing label
+  or the rounds used reach ``rounds`` (so always after ``LABEL_ROUNDS``), and the analysis would
+  read the file. One with missing labels and rounds left (labeled with ``rounds`` below
+  ``LABEL_ROUNDS``) is resumed with them;
+- **no receipt, ``certified_sha256`` set**: the receipt was deleted after its labeling completed.
+  It is written again, nothing sent, if the label file still has that sha256; otherwise the run is
+  refused (``REMEDY``);
+- **no receipt, ``certified_sha256`` null**: a round was interrupted. The labeling resumes with the
+  rounds left, and once they are used the receipt of the label file as it stands is written,
+  nothing sent.
 
 Study-2 runs. A training run (``run_type`` train) whose config has a ``schedule`` section
 (``schedule.Schedule``; θ₀ and curvature runs may carry one and are not study-2 runs) answers
@@ -66,11 +84,13 @@ labels. A completed run that stopped before its first evaluation has no ``evalua
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -86,6 +106,16 @@ THETA0 = "theta0"  # the condition of a θ₀ evaluation (train.evaluate_theta0)
 # The labeling rounds study 2 allows in all, per run and judge across every invocation (an output
 # that does not parse is rerun, up to three rounds); scripts/label_runs.py's default and maximum.
 LABEL_ROUNDS = 3
+# The summary of the runs after a round failed (``RoundFailed``): none of them is touched.
+NOT_ATTEMPTED = "not attempted: the judge failed on an earlier run"
+# The manual remedy for a label file changed outside a labeling round (never deleting a receipt).
+REMEDY = ("Nothing is sent. Restore the label file the receipt names from the archive, or exclude "
+          "the run by a recorded decision; never delete the receipt")  # fmt: skip
+
+
+class RoundFailed(RuntimeError):
+    """A labeling round failed once counted (the judge did not answer): ``label_runs`` stops, so
+    that no other run spends a round on a judge that is gone."""
 
 
 def receipt_path(run_dir: Path, judge: str) -> Path:
@@ -96,6 +126,11 @@ def receipt_path(run_dir: Path, judge: str) -> Path:
 def rounds_path(run_dir: Path, judge: str) -> Path:
     """Where the rounds the judge named ``judge`` used on a run are counted (the rounds record)."""
     return Path(run_dir) / JUDGE_DIR / f"{judge}.rounds.json"
+
+
+def lock_path(run_dir: Path, judge: str) -> Path:
+    """The file a labeling of a run by the judge named ``judge`` holds locked (flock)."""
+    return Path(run_dir) / JUDGE_DIR / f"{judge}.lock"
 
 
 def is_scheduled(cfg: DictConfig) -> bool:
@@ -246,17 +281,25 @@ def label_runs(
     ``load_prompts(cfg)`` gives the run's harmful prompt texts by id; ``make_client(cache_path)``
     the judge client writing to that label file. Returns one summary per run, counts only:
     ``items``, ``unparseable`` (the items left without a label) and, when not 1, ``rounds`` (the
-    rounds used in all); ``kept`` when a completed receipt was left alone. A run that cannot be
-    labeled is skipped with the reason, and a run whose labeling fails gets an ``error`` and no
-    receipt.
+    rounds used in all); ``kept`` when a completed receipt was left alone, ``restored`` when a
+    deleted receipt was written again for its unchanged label file. A run that cannot be labeled
+    is skipped with the reason; one that another process is labeling is ``busy``; a run refused or
+    whose labeling fails gets an ``error`` and no receipt. A round that fails (``RoundFailed``)
+    stops the invocation: the runs after it are ``skipped`` (``NOT_ATTEMPTED``), untouched.
     """
     if not 1 <= rounds <= LABEL_ROUNDS:
         raise ValueError(f"rounds must be 1 to {LABEL_ROUNDS}, not {rounds!r}")
-    summaries = []
-    for run_dir in map(Path, run_dirs):
+    summaries: list[dict[str, Any]] = []
+    run_dirs = list(map(Path, run_dirs))
+    for index, run_dir in enumerate(run_dirs):
         try:
             summaries.append(_label_run(run_dir, judge, load_prompts, make_client, rounds))
-        except Exception as exc:  # reported per run; the other runs go on
+        except RoundFailed as exc:  # the judge is gone: no other run spends a round on it
+            summaries.append({"run_id": run_dir.name, "error": f"RoundFailed: {exc}"})
+            summaries += [{"run_id": rest.name, "skipped": NOT_ATTEMPTED}
+                          for rest in run_dirs[index + 1:]]  # fmt: skip
+            break
+        except Exception as exc:  # a refusal or a bad file: reported per run, the others go on
             summaries.append({"run_id": run_dir.name, "error": f"{type(exc).__name__}: {exc}"})
     return summaries
 
@@ -278,16 +321,50 @@ def _label_run(
         return {"run_id": run_dir.name, "skipped": "no evaluation recorded"}
     path = label_path(run_dir, judge)
     path.parent.mkdir(exist_ok=True)
+    with _locked(lock_path(run_dir, judge)) as held:
+        if not held:
+            return {"run_id": run_dir.name, "busy": "another labeling of this run by this judge "
+                    "is in progress: nothing is sent"}  # fmt: skip
+        return _label_locked(run_dir, judge, items, expected, path, make_client(path), rounds)
+
+
+def _label_locked(
+    run_dir: Path,
+    judge: str,
+    items: list[dict[str, str]],
+    expected: list[str],
+    path: Path,
+    client: JudgeClient,
+    rounds: int,
+) -> dict[str, Any]:
+    """``_label_run`` once it holds the run's lock (see the module docstring for the order)."""
     receipt, record = receipt_path(run_dir, judge), rounds_path(run_dir, judge)
-    client = make_client(path)
-    used = _rounds_used(record, judge, client.identity)
+    state = _rounds_record(record, judge, client.identity)
     done = _completed_receipt(run_dir, judge, client.identity, expected, path)
+    if done is None and receipt.is_file():  # before anything reads or writes the label file
+        raise ValueError(f"{receipt} does not match the run's label file, judge, items or counts: "
+                         f"the labels changed outside a labeling round. {REMEDY}")  # fmt: skip
+    certified = state["certified_sha256"] if state is not None else None
+    if done is not None and state is not None and certified != done["labels_sha256"]:
+        raise ValueError(f"{receipt} is not the receipt its rounds record ({record.name}) "
+                         f"certifies: it was written outside a labeling. {REMEDY}")  # fmt: skip
+    used = state["used"] if state is not None else None
     spent = max(used or 0, done["rounds"] if done else 0)
     summary: dict[str, Any] = {"run_id": run_dir.name, "items": len(items)}
     if done is not None and (done["missing"] == 0 or spent >= rounds):
         # The labeling is over: nothing is sent, the receipt and the labels stay as they are.
+        _counted(path, client.identity, items, expected, spent, claimed=done["missing"])
         summary.update(unparseable=done["missing"], kept="its completed judging receipt")
         return summary if done["rounds"] == 1 else {**summary, "rounds": done["rounds"]}
+    if done is None and certified is not None:  # its receipt deleted after the labeling completed
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != certified:
+            raise ValueError(f"{path} changed since its labeling completed (sha256 {certified}) "
+                             f"and its receipt is gone. {REMEDY}")  # fmt: skip
+        missing = _counted(path, client.identity, items, expected, spent)
+        _write_receipt(receipt, run_dir, judge, client, expected, spent, rounds, missing, path,
+                       restored=True)  # fmt: skip
+        summary.update(unparseable=missing, restored="its receipt, for the unchanged label file")
+        return summary if spent == 1 else {**summary, "rounds": spent}
     if used is None and path.exists():
         raise ValueError(f"{path} has no rounds record ({record.name}): the rounds already used "
                          "on it are unknown, so none is sent")  # fmt: skip
@@ -295,23 +372,88 @@ def _label_run(
     while count_unparseable(records) and spent < rounds:
         receipt.unlink(missing_ok=True)  # a round starts: no label of the run counts meanwhile
         spent += 1
-        _write_json(record, {  # the round counts as used before any of its requests is sent
-            "what": "The labeling rounds of this run by this judge, each counted before its "
-                    "requests are sent (run_judging.label_runs); never reset.",
-            "run_id": run_dir.name,
-            "judge": judge,
-            "identity": client.identity,
-            "used": spent,
-            "limit": LABEL_ROUNDS,
-            "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        })  # fmt: skip
-        records = client.label_items(items)
+        # The round counts as used before any of its requests is sent, and nothing is certified.
+        _write_rounds(record, run_dir, judge, client, spent, certified=None)
+        try:
+            records = client.label_items(items)
+        except Exception as exc:
+            raise RoundFailed(f"labeling round {spent} of {rounds} failed and counts as used: "
+                              f"{type(exc).__name__}: {exc}") from exc  # fmt: skip
     if not path.exists():  # no round could run, and nothing was labeled before
         raise ValueError(f"{path} is missing and the run's {spent} labeling rounds of {rounds} "
                          "are used: nothing is sent")  # fmt: skip
-    missing = count_unparseable(records)
-    _write_json(receipt, {
-        "what": "The judging receipt: the labeling of this run by this judge completed.",
+    missing = _counted(path, client.identity, items, expected, spent)
+    _write_rounds(record, run_dir, judge, client, spent,
+                  certified=hashlib.sha256(path.read_bytes()).hexdigest())  # fmt: skip
+    _write_receipt(receipt, run_dir, judge, client, expected, spent, rounds, missing, path)
+    summary["unparseable"] = missing
+    return summary if spent == 1 else {**summary, "rounds": spent}
+
+
+def _counted(
+    path: Path,
+    identity: Mapping[str, Any],
+    items: list[dict[str, str]],
+    expected: list[str],
+    spent: int,
+    claimed: int | None = None,
+) -> int:
+    """The expected items without a label in the label file, as the analysis counts them
+    (``study2_labels._labels``: every record checked). Raises ``ValueError`` where the analysis
+    would refuse the file: a bad record, an expected item without any record, or ``claimed`` (a
+    receipt's ``missing``) not the count. No receipt is kept or written for such a file."""
+    from .analysis.study2_labels import _labels  # it imports this module
+
+    texts = {item["item_id"]: (item["prompt"], item["response"]) for item in items}
+    labels, recorded = _labels(path, path.read_bytes(), identity, texts)
+    unrecorded = [item for item in expected if item not in recorded]
+    if unrecorded:
+        more = (f"rerun with --rounds up to {LABEL_ROUNDS}" if spent < LABEL_ROUNDS
+                else "decide the run by hand")  # fmt: skip
+        raise ValueError(f"{path} has no record of {len(unrecorded)} expected items (first: "
+                         f"{unrecorded[0]}) after {spent} labeling rounds: the analysis refuses "
+                         f"it, so no receipt counts it; {more}")  # fmt: skip
+    missing = sum(1 for item in expected if item not in labels)
+    if claimed is not None and claimed != missing:
+        raise ValueError(f"{path}: its judging receipt records {claimed} items without a label, "
+                         f"the file {missing}: the analysis refuses it; {REMEDY}")  # fmt: skip
+    return missing
+
+
+def _write_rounds(
+    path: Path, run_dir: Path, judge: str, client: JudgeClient, used: int, certified: str | None
+) -> None:
+    _write_json(path, {
+        "what": "The labeling rounds of this run by this judge, each counted before its requests "
+                "are sent, and the sha256 of the label file its receipt certifies (null while a "
+                "round is in progress) (run_judging.label_runs); never reset.",
+        "run_id": run_dir.name,
+        "judge": judge,
+        "identity": client.identity,
+        "used": used,
+        "limit": LABEL_ROUNDS,
+        "certified_sha256": certified,
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    })  # fmt: skip
+
+
+def _write_receipt(
+    path: Path,
+    run_dir: Path,
+    judge: str,
+    client: JudgeClient,
+    expected: list[str],
+    spent: int,
+    rounds: int,
+    missing: int,
+    labels: Path,
+    restored: bool = False,
+) -> None:
+    what = "The judging receipt: the labeling of this run by this judge completed."
+    if restored:
+        what += " Written again for the label file it certified, its receipt having been deleted."
+    _write_json(path, {
+        "what": what,
         "run_id": run_dir.name,
         "judge": judge,
         "identity": client.identity,
@@ -320,16 +462,14 @@ def _label_run(
         "rounds": spent,
         "rounds_allowed": rounds,
         "missing": missing,
-        "labels_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "labels_sha256": hashlib.sha256(labels.read_bytes()).hexdigest(),
         "completed_at": datetime.now(UTC).isoformat(timespec="seconds"),
     })  # fmt: skip
-    summary["unparseable"] = missing
-    return summary if spent == 1 else {**summary, "rounds": spent}
 
 
-def _rounds_used(path: Path, judge: str, identity: Mapping[str, Any]) -> int | None:
-    """The rounds the rounds record at ``path`` counts; None without a record. Raises
-    ``ValueError`` for a record that does not read or counts another judge's rounds."""
+def _rounds_record(path: Path, judge: str, identity: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The rounds record at ``path`` (``used``, ``certified_sha256``); None without a record.
+    Raises ``ValueError`` for a record that does not read or counts another judge's rounds."""
     if not path.exists():
         return None
     try:
@@ -337,13 +477,15 @@ def _rounds_used(path: Path, judge: str, identity: Mapping[str, Any]) -> int | N
     except ValueError as exc:
         raise ValueError(f"{path} is not a rounds record: nothing is sent") from exc
     used = found.get("used") if isinstance(found, dict) else None
-    if not isinstance(used, int) or isinstance(used, bool) or used < 0:
+    certified = found.get("certified_sha256", ...) if isinstance(found, dict) else ...
+    if (not isinstance(used, int) or isinstance(used, bool) or used < 0
+            or not (certified is None or isinstance(certified, str))):  # fmt: skip
         raise ValueError(f"{path} is not a rounds record: nothing is sent")
     recorded = found.get("identity")
     if (found.get("judge") != judge or not isinstance(recorded, dict)
             or any(recorded.get(key) != identity.get(key) for key in IDENTITY_FIELDS)):  # fmt: skip
         raise ValueError(f"{path} counts the rounds of another judge: nothing is sent")
-    return used
+    return {"used": used, "certified_sha256": certified}
 
 
 def _completed_receipt(
@@ -361,6 +503,22 @@ def _completed_receipt(
         return None
     digest = hashlib.sha256(labels.read_bytes()).hexdigest()
     return receipt if receipt["labels_sha256"] == digest else None
+
+
+@contextmanager
+def _locked(path: Path) -> Iterator[bool]:
+    """An exclusive lock on ``path`` (flock), without waiting: True while held, False when another
+    process holds it."""
+    with path.open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _write_json(path: Path, data: Mapping[str, Any]) -> None:
