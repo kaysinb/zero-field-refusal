@@ -226,6 +226,13 @@ topics:
   review:
   - docs/study2-preregistration.md#numerical-acceptance-1
   - configs/control/soft_targets.yaml
+  - docs/operations.md#study-2-fa-soft-control-diagnostic
+  - configs/experiments/fa_control_diagnostic.yaml
+  watch:
+  - src/zero_field_refusal/fa_control_diagnostic.py
+  - scripts/fa_control_diagnostic.py
+  - configs/experiments/fa_control_diagnostic.yaml
+  - tests/test_fa_control_diagnostic.py
 - id: study2_short
   title: Study 2's short regime (amendment 3) — prerequisites, campaigns, confirmation loop and looks
   source: docs/operations.md#study-2-short-regime-amendment-3

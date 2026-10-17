@@ -152,6 +152,7 @@ Implemented:
 | `analysis.stage_a` | study 2, Stage A: run records checked for integrity (including every evaluation's answers to the recorded harmful prompts), summaries per arm, batch and rate (reachability and steps per level, utility, time, stops), soft-target screen and numerical acceptance, the gradient rule's margin and possible false alarms, monitor agreement, and the selection rule as one function, which first requires the whole prescribed search and otherwise returns `incomplete` |
 | `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record |
 | `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (a fixed number of steps, convergence by the Ritz residual and agreement of independent starts, not a certified accuracy of the top eigenvalue), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates. Amendment 3: the endpoint Rayleigh quotient R = δᵀH₀δ/‖δ‖² of a study-2 run's displacement, H₀ the training loss's Hessian at θ₀ on the curvature panel, recorded signed (null with its reason for a zero or non-finite ‖δ‖ or a failed measurement), from one pass of products over the panel (δᵀH₀δ without a sum of products) after the run's terminal record |
+| `fa_control_diagnostic` | study 2: the outcome-blind diagnostic of the FA soft-control failure ([specification](study2-fa-control-diagnostic.md)), K-only on benign panels: shared-state checks, the v₀ census and the residual's sources (D4, D1), preconditioned Lanczos and the linearized bias-corrected recurrence (D2), twin runs against perturbations and a float64 reference (D3), and the frozen decision branches |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
@@ -183,6 +184,9 @@ Entry points in `scripts/`:
 - `stage0_checks.py`: the stage-0 checks of the real pipeline on one model;
 - `curvature.py`: the Stage-A curvature measurement of study 2 on a seed's appendable stream
   (`run_type: curvature`);
+- `fa_control_diagnostic.py`: the parts of the FA soft-control diagnostic, its plan and its
+  Pod driver, into `RUNS_DIR/diagnostics/fa_control/`
+  ([operations](operations.md#study-2-fa-soft-control-diagnostic));
 - `harmful_pool_cleaning.py`: the counts and the blind-labeling pairs behind the cleaning of
   study 2's harmful evaluation set (the pairs file holds prompt texts and stays out of Git);
 - `stage_a_campaigns.py`: the campaigns of study 2's Stage A, one seed each, the data-dependent

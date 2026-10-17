@@ -740,6 +740,38 @@ python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F 
 - **Output.** Only counts, K, rates and intervals are printed: never a prompt, a response or a
   judge output.
 
+## Study 2, FA soft-control diagnostic
+
+An outcome-free diagnostic outside the confirmation, of why two FA soft-target controls failed.
+Its frozen specification is [study2-fa-control-diagnostic.md](study2-fa-control-diagnostic.md).
+It changes no protocol, selection or run record, and this round's controls stay failed.
+
+- **Blind to outcomes.** Only K, the KL between twin runs, norms, eigenvalues and v₀ statistics
+  are computed. Every evaluation reads benign panels only: the scoring panel's responses and the
+  monitor panel. No harmful prompt set, stream or generation is touched, and no refusal, harm or
+  judge quantity is computed (`tests/test_fa_control_diagnostic.py` checks both).
+- **Code and settings.** `scripts/fa_control_diagnostic.py` runs the parts in the specification's
+  order: `d1` (with D4's shared-state checks), `d2`, `d3` and `branch`. The settings are
+  `experiments/fa_control_diagnostic` (not a run config). The runs re-examined are found under
+  `RUNS_DIR/study2_short` and `RUNS_DIR/study2_short_fa_controls` by their archived configs.
+- **Prerequisites on a Pod.** The P1 records of the targeted round and of the FA controls, and
+  `DATA_DIR` restored as for the controls (the driver's header lists the inventories).
+- **Outputs** go to `RUNS_DIR/diagnostics/fa_control/`, which the stage's analysis never reads:
+  `d1/result.json`, `d2/result.json`, `d3/determinism.json`, `d3/<case>.json` and
+  `branch/branch.json`. D3 keeps twin A's parameters under `d3/checkpoints/<case>/` (≈ 31 GB at
+  1.5B) until its case is done. A part already written is kept when the driver runs again.
+- **Stops.** A re-run that differs from its archived run stops D3 (exit 2), and the branch is
+  then `incomplete`.
+- **Cost.** About 2 GPU hours on one L40S, at most ≈ 43 GB allocated (an AdamW float64
+  reference that does not fit falls back to float64 loss and accumulation, recorded); FA 1.46e-5
+  adds ≈ 20 minutes when the three cases are ambiguous.
+
+```bash
+python scripts/fa_control_diagnostic.py plan --runs-root runs   # finds the runs; loads nothing
+python scripts/fa_control_diagnostic.py driver --commit SHA --out "$C/fa-control-diagnostic.sh"
+bash "$C/fa-control-diagnostic.sh"                               # on the Pod
+```
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
