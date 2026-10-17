@@ -283,34 +283,51 @@ class Recorder:
 _MEMORY_RULE: dict[str, Any] = {}
 
 
+def cuda_index(device: torch.device | str) -> int:
+    """The index of a CUDA device: its own, or the current device's when it has none (as
+    ``runtime.environment`` gives it, ``torch.device("cuda")``). Every per-device CUDA call here
+    takes this index, since some (``set_per_process_memory_fraction``) refuse an unindexed
+    device."""
+    device = torch.device(device)
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
 def apply_memory_rule(device: torch.device, limit_gb: float) -> dict[str, Any]:
     """Cap this process's CUDA memory at ``limit_gb`` (1e9 bytes) reserved, so that the rule
     itself raises the out-of-memory error: the float64 reference then falls back (recorded) and
-    every other part fails. Nothing on the CPU."""
+    every other part fails. Nothing on the CPU. A limit above the device's memory caps nothing
+    (the fraction is clamped to 1)."""
+    device = torch.device(device)
     _MEMORY_RULE.clear()
     _MEMORY_RULE.update({"limit_gb": float(limit_gb), "fraction": None, "total_gb": None})
     if device.type == "cuda":
-        total = torch.cuda.get_device_properties(device).total_memory
+        index = cuda_index(device)
+        total = torch.cuda.get_device_properties(index).total_memory
         fraction = min(1.0, float(limit_gb) * 1e9 / total)
-        torch.cuda.set_per_process_memory_fraction(fraction, device)
-        _MEMORY_RULE.update({"fraction": fraction, "total_gb": round(total / 1e9, 3)})
+        torch.cuda.set_per_process_memory_fraction(fraction, index)
+        _MEMORY_RULE.update({"fraction": fraction, "total_gb": round(total / 1e9, 3),
+                             "device_index": index})  # fmt: skip
     return dict(_MEMORY_RULE)
 
 
 def memory_limit_bytes(device: torch.device) -> float | None:
     """The bytes the rule allows this process, or None without a rule or a GPU."""
+    device = torch.device(device)
     if device.type != "cuda" or not _MEMORY_RULE.get("fraction"):
         return None
-    return _MEMORY_RULE["fraction"] * torch.cuda.get_device_properties(device).total_memory
+    total = torch.cuda.get_device_properties(cuda_index(device)).total_memory
+    return _MEMORY_RULE["fraction"] * total
 
 
 def peak_memory(device: torch.device) -> dict[str, Any]:
     """The GPU peaks since the last reset (allocated, reserved; GB of 1e9 bytes), with
     ``within_memory_rule``: the reserved peak against the rule's limit."""
+    device = torch.device(device)
     if device.type != "cuda":
         return {}
-    reserved = round(torch.cuda.max_memory_reserved(device) / 1e9, 3)
-    out = {"peak_allocated_gb": round(torch.cuda.max_memory_allocated(device) / 1e9, 3),
+    index = cuda_index(device)
+    reserved = round(torch.cuda.max_memory_reserved(index) / 1e9, 3)
+    out = {"peak_allocated_gb": round(torch.cuda.max_memory_allocated(index) / 1e9, 3),
            "peak_reserved_gb": reserved}  # fmt: skip
     if _MEMORY_RULE.get("limit_gb") is not None:
         out["memory_rule_gb"] = _MEMORY_RULE["limit_gb"]
@@ -320,9 +337,10 @@ def peak_memory(device: torch.device) -> dict[str, Any]:
 
 def reset_peak(device: torch.device) -> None:
     gc.collect()
+    device = torch.device(device)
     if device.type == "cuda":
         torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.reset_peak_memory_stats(cuda_index(device))
 
 
 def numerics(device: torch.device) -> dict[str, Any]:
@@ -1837,7 +1855,8 @@ def run_d2(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
             # for it under the memory rule (1 GB margin), else in host memory, staged
             limit = memory_limit_bytes(device)
             needed = vector_bytes + 1e9
-            on_gpu = limit is not None and torch.cuda.max_memory_reserved(device) + needed <= limit
+            reserved = 0 if limit is None else torch.cuda.max_memory_reserved(cuda_index(device))
+            on_gpu = limit is not None and reserved + needed <= limit
             y = ritz_vector(hvp, start_vector(trainable, int(d.seed), index), result,
                             host=not on_gpu)  # fmt: skip
             check = check_vector(hvp, y, device)

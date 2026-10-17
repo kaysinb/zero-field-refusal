@@ -1,6 +1,8 @@
 """The diagnostic of the FA soft-control failure (docs/study2-fa-control-diagnostic.md) on tiny
 CPU models: its products, Lanczos, recurrence, twin KL and branches, and the whole diagnostic on
-tiny archived runs with harmful generation forbidden."""
+tiny archived runs with harmful generation forbidden. On a GPU (skipped without one), the whole
+diagnostic again through the script on tiny runs archived on that GPU, under the memory rule,
+and the float64 reference's fallback when the rule's cap is met."""
 
 import ast
 import dataclasses
@@ -15,18 +17,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from conftest import END_IDS, PAD_ID, prompts, tiny_model, tiny_tokenizer
+from conftest import END_IDS, PAD_ID, VOCAB, prompts, tiny_model, tiny_tokenizer
 from omegaconf import OmegaConf
 from test_train import APPENDABLE, SMALL, pass_path_check, prepare, prompt_sets
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from transformers import Qwen2Config, Qwen2ForCausalLM
 
 from zero_field_refusal import fa_control_diagnostic as fcd
 from zero_field_refusal.config import load_config
 from zero_field_refusal.curvature import hessian_vector_product, lanczos, start_vector
 from zero_field_refusal.evaluation import sequence_kl
-from zero_field_refusal.models import freeze, install_neutral_generation_config
+from zero_field_refusal.models import freeze, install_neutral_generation_config, set_numerics
 from zero_field_refusal.optim import Adam
-from zero_field_refusal.runtime import Environment
+from zero_field_refusal.runtime import Environment, StreamPrefix
 from zero_field_refusal.schedule import run_scheduled
 from zero_field_refusal.teacher import sample_responses
 from zero_field_refusal.tracking import CLEAN_CHECKOUT
@@ -37,6 +40,8 @@ MODULE = ROOT / "src" / "zero_field_refusal" / "fa_control_diagnostic.py"
 CAP = 12
 SAMPLING = dict(temperature=1.0, top_p=1.0, top_k=0, repetition_penalty=1.0, max_new_tokens=CAP)
 CPU = torch.device("cpu")
+CUDA = torch.device("cuda")  # unindexed, as runtime.environment gives it on a Pod
+needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 SUBSET = ("model.layers.1.self_attn.v_proj.bias", "model.norm.weight")  # 48 parameters
 
 
@@ -1051,7 +1056,7 @@ def tiny_settings():
     })  # fmt: skip
 
 
-def tiny_run_config(tmp_path, *, optimizer, lr, control):
+def tiny_run_config(tmp_path, *, optimizer, lr, control, device=CPU):
     experiment = tmp_path / f"{optimizer}-{control}.yaml"
     defaults = ["experiments/smoke", "eval/study2", "schedule/short"]
     if control:
@@ -1061,16 +1066,17 @@ def tiny_run_config(tmp_path, *, optimizer, lr, control):
     overrides = [*SMALL, *APPENDABLE, "teacher.chunk_size=12", f"train.steps={STEPS}",
                  f"schedule.evaluate_at=[{STEPS}]", "+schedule.instability.grad_rule=log",
                  f"experiment={name}"]  # fmt: skip
+    if device.type != "cpu":
+        overrides.append(f"execution.device={device.type}")
     if optimizer == "adam_frozen":
         overrides += ["optimizer=adam_frozen", "optimizer.preconditioner.batches=2"]
     return load_config(experiment, [*overrides, f"optimizer.lr={lr}"])
 
 
-@pytest.fixture(scope="module")
-def archive(tmp_path_factory):
+def build_archive(base: Path, device: torch.device):
     """Tiny regular runs of every case and FA soft controls, archived as the stage's are, with
-    the environment of tests/test_train.py's ``env`` fixture; built once for the module."""
-    base = tmp_path_factory.mktemp("fa-diagnostic")
+    the environment of tests/test_train.py's ``env`` fixture (tests/test_gpu.py's on a GPU) on
+    ``device``: the streams and runs are generated where the diagnostic re-examines them."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("RUNS_DIR", str(base / "runs"))
         tokenizer = tiny_tokenizer()
@@ -1078,34 +1084,62 @@ def archive(tmp_path_factory):
         sets = prompt_sets()
 
         def new_model():
-            model = tiny_model(tied=False, head_std=0.02)
+            model = tiny_model(tied=False, head_std=0.02).to(device)
             install_neutral_generation_config(model, end_ids, tokenizer.pad_token_id)
             return model
 
         env = Environment(tokenizer=tokenizer, end_ids=end_ids, pad_id=tokenizer.pad_token_id,
-                          device=CPU, new_model=new_model, prompt_set=lambda name: sets[name],
+                          device=device, new_model=new_model, prompt_set=lambda name: sets[name],
                           data_root=base / "data")  # fmt: skip
         pass_path_check(env)
-        first = tiny_run_config(base, optimizer="adam_frozen", lr=1e-3, control=False)
+        first = tiny_run_config(base, optimizer="adam_frozen", lr=1e-3, control=False,
+                                device=device)  # fmt: skip
+        if device.type == "cuda":
+            set_numerics(first.model)  # TF32 off, as in every run
         prepare(env, first, "kl_monitor", "preconditioner")
         for name, lr in RATES.items():
             optimizer = "adamw" if name.startswith("adamw") else "adam_frozen"
-            run_scheduled(tiny_run_config(base, optimizer=optimizer, lr=lr, control=False), env,
-                          run_id=f"regular-{name}")  # fmt: skip
+            cfg = tiny_run_config(base, optimizer=optimizer, lr=lr, control=False, device=device)
+            run_scheduled(cfg, env, run_id=f"regular-{name}")
         for lr in CONTROLS:
-            run_scheduled(tiny_run_config(base, optimizer="adam_frozen", lr=lr, control=True),
-                          env, run_id=f"control-{lr:g}")  # fmt: skip
+            cfg = tiny_run_config(base, optimizer="adam_frozen", lr=lr, control=True, device=device)
+            run_scheduled(cfg, env, run_id=f"control-{lr:g}")
     return env, base / "runs"
 
 
-@pytest.fixture
-def world(archive, tmp_path, monkeypatch):
-    """A copy of the archived runs for one test, which may write or alter it."""
+@pytest.fixture(scope="module")
+def archive(tmp_path_factory):
+    """The tiny archive on the CPU, built once for the module."""
+    return build_archive(tmp_path_factory.mktemp("fa-diagnostic"), CPU)
+
+
+@pytest.fixture(scope="module")
+def cuda_archive(tmp_path_factory):
+    """The tiny archive on the GPU (``torch.device("cuda")``, unindexed as on a Pod), so that
+    the replays, the recorded first gradients and the twins compare bit for bit there."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA GPU")
+    return build_archive(tmp_path_factory.mktemp("fa-diagnostic-cuda"), CUDA)
+
+
+def copy_world(archive, tmp_path, monkeypatch):
     env, source = archive
     root = tmp_path / "runs"
     shutil.copytree(source, root)
     monkeypatch.setenv("RUNS_DIR", str(root))
     return env, root
+
+
+@pytest.fixture
+def world(archive, tmp_path, monkeypatch):
+    """A copy of the archived runs for one test, which may write or alter it."""
+    return copy_world(archive, tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def cuda_world(cuda_archive, tmp_path, monkeypatch):
+    """A copy of the GPU archive for one test."""
+    return copy_world(cuda_archive, tmp_path, monkeypatch)
 
 
 def forbid_outcomes(monkeypatch, env):
@@ -1369,3 +1403,244 @@ def test_runs_are_found_by_their_archived_configs(world) -> None:
         (copy / name).write_text((source / name).read_text())
     with pytest.raises(fcd.DiagnosticError, match="2 finished runs"):
         fcd.locate_runs(s, root)
+
+
+# ------------------------------------------------------------- the whole diagnostic on a GPU
+
+
+@pytest.fixture
+def cuda_rule():
+    """Lifts the memory rule after a test: its CUDA fraction holds for the whole process."""
+    yield
+    torch.cuda.set_per_process_memory_fraction(1.0, fcd.cuda_index(CUDA))
+    fcd._MEMORY_RULE.clear()
+
+
+@needs_cuda
+def test_the_memory_rule_on_an_unindexed_cuda_device(cuda_rule) -> None:
+    """The Pod's crash at 8d6f012: ``set_per_process_memory_fraction`` refuses
+    ``torch.device("cuda")``; every per-device call takes the resolved index."""
+    index = torch.cuda.current_device()
+    total = torch.cuda.get_device_properties(index).total_memory
+    for device, limit in ((CUDA, 46), ("cuda", 2), (torch.device("cuda", index), 1.5)):
+        rule = fcd.apply_memory_rule(device, limit)
+        fraction = min(1.0, limit * 1e9 / total)
+        assert rule == {"limit_gb": float(limit), "fraction": fraction,
+                        "total_gb": round(total / 1e9, 3), "device_index": index}  # fmt: skip
+        assert fcd.memory_limit_bytes(device) == pytest.approx(fraction * total)
+        fcd.reset_peak(device)
+        peaks = fcd.peak_memory(device)
+        assert set(peaks) == {"peak_allocated_gb", "peak_reserved_gb", "memory_rule_gb",
+                              "within_memory_rule"}  # fmt: skip
+        assert peaks["memory_rule_gb"] == limit and peaks["within_memory_rule"]
+        assert fcd.numerics(device)["memory_rule"]["fraction"] == fraction
+    assert fcd.cuda_index(CUDA) == fcd.cuda_index("cuda") == index
+
+
+@needs_cuda
+def test_the_ritz_vector_through_pinned_host_memory_is_the_gpu_one(tiny) -> None:
+    """D2's two places for the Ritz vector on a GPU: beside the Lanczos vectors, or in host
+    memory through the pinned staging buffer (device-to-host copies); the same vector."""
+    model, trainable, cfg, env, batches, targets = tiny
+    model.to(CUDA)
+    env = dataclasses.replace(env, device=CUDA)
+    terms = fcd.batch_terms(model, batches, cfg, env, kind="soft", soft_targets=targets)
+    names, params = [n for n, _ in trainable], [p for _, p in trainable]
+    g = torch.Generator().manual_seed(2)
+    v0 = [(torch.rand(p.shape, generator=g) * 1e-4).to(CUDA) for p in params]
+    eps = 1e-8
+    hvp = fcd.preconditioned_hvp(model, params, terms, v0, eps)
+    result = lanczos(hvp, start_vector(trainable, 0, 0), steps=8, tolerance=1e-3)
+    host = fcd.ritz_vector(hvp, start_vector(trainable, 0, 0), result, host=True)
+    gpu = fcd.ritz_vector(hvp, start_vector(trainable, 0, 0), result, host=False)
+    assert {t.device.type for t in host} == {"cpu"} and {t.device.type for t in gpu} == {"cuda"}
+    for a, b in zip(host, gpu, strict=True):
+        torch.testing.assert_close(a, b.cpu(), rtol=1e-6, atol=1e-9)
+    checks = [fcd.check_vector(hvp, y, CUDA) for y in (host, gpu)]
+    assert checks[0]["rayleigh"] == pytest.approx(checks[1]["rayleigh"], rel=1e-6)
+    assert checks[0]["rayleigh"] == pytest.approx(result["top"], rel=1e-3)
+    shares = [fcd.vector_shares(names, y, v0, eps, in_theta=True) for y in (host, gpu)]
+    assert shares[0]["total"] == pytest.approx(shares[1]["total"], rel=1e-6)
+
+
+@needs_cuda
+@pytest.mark.parametrize("limit_gb", [1, 46])
+def test_the_whole_diagnostic_on_cuda_through_the_script(
+    cuda_world, cuda_rule, limit_gb, tmp_path, monkeypatch, capsys
+) -> None:
+    """The Pod's path on a GPU: plan, D1, D2, D3, the branch (and the expansion when due), each
+    through the script on ``torch.device("cuda")`` without an index, under the memory rule: at
+    1 GB the Ritz vectors go through pinned host memory, at the real 46 GB (clamped to the
+    device) they stay beside the Lanczos vectors. The tiny runs were archived on this GPU, so
+    the replays, the recomputed (iii) and twin A compare with their records bit for bit."""
+    env, root = cuda_world
+    s = tiny_settings()
+    s.diagnostic.memory_rule_gb = limit_gb
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(s, config)
+    guarded, requested = forbid_outcomes(monkeypatch, env)
+    devices = []
+
+    def environment(cfg, device):  # runtime.environment's device, as the script passes it
+        devices.append(device)
+        return dataclasses.replace(guarded, device=torch.device(device))
+
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", environment)
+    out = fcd.output_root(root)
+
+    def script(*argv):
+        monkeypatch.setattr("sys.argv", [str(SCRIPT), *argv, "--config", str(config),
+                                         "--runs-root", str(root)])  # fmt: skip
+        try:
+            runpy.run_path(str(SCRIPT), run_name="__main__")
+        except SystemExit as exc:
+            return exc.code
+        return 0
+
+    for part in ("plan", "d1", "d2", "d3"):
+        assert script(part) in (0, None), part
+    assert devices == ["cpu", "cuda", "cuda", "cuda"]  # the plan's stream check, then the parts
+    index = torch.cuda.current_device()
+    total = torch.cuda.get_device_properties(index).total_memory
+    fraction = min(1.0, limit_gb * 1e9 / total)
+    printed = capsys.readouterr().out
+    rules = [json.loads(line)["memory_rule"] for line in printed.splitlines()
+             if line.startswith('{"memory_rule"')]  # fmt: skip
+    assert rules == [{"limit_gb": float(limit_gb), "fraction": fraction,
+                      "total_gb": round(total / 1e9, 3), "device_index": index}] * 3  # fmt: skip
+
+    def within(record):
+        assert record["memory_rule_gb"] == limit_gb and record["within_memory_rule"] is True
+        assert 0 < record["peak_allocated_gb"] <= record["peak_reserved_gb"] <= limit_gb
+
+    d1 = json.loads((out / "d1" / "result.json").read_text())
+    assert d1["status"] == "complete" and "reasons" not in d1
+    assert d1["numerics"]["device"] == "cuda"
+    assert d1["numerics"]["memory_rule"]["fraction"] == fraction
+    shared = d1["shared_state"]
+    assert shared["v0"]["equal"] and shared["trainable_parameters"]["equal"]
+    assert shared["loss_normalization"]["equal"]
+    assert shared["initial_optimizer_state"]["equal_except_lr"]
+    residual = d1["residual"]
+    assert residual["iii_equals_record"] == dict.fromkeys(["0.0009", "0.001", "0.0012"], True)
+    assert residual["path_criterion"]["state"] in ("holds", "false")
+    assert residual["norms"]["ii_training_path_float64"] < residual["norms"]["iii_control_recorded"]
+    control = d1["same_path_control"]
+    assert control["steps"] == STEPS and [r["step"] for r in control["scoring"]] == [1, 3, 6]
+    assert control["state"] in ("below", "exceeding", "at_bound") and control["complete"]
+    assert control["diverged"] is False and control["stop"] is None
+    within(control)
+    assert d1["memory"]["before_same_path_control"]["within_memory_rule"] is True
+
+    d2 = json.loads((out / "d2" / "result.json").read_text())
+    assert not (out / "d2" / "failed.json").exists()
+    assert d2["v0_sha256"] == shared["v0"]["regular_sha256"]
+    place = {r["ritz_vector_on"] for k in ("soft", "nll") for r in d2["spectra"][k]}
+    assert place == ({"host"} if limit_gb == 1 else {"gpu"})
+    for row in (r for k in ("soft", "nll") for r in d2["spectra"][k]):
+        assert math.isfinite(row["top"]) and math.isfinite(row["top_vector_check"]["rayleigh"])
+    assert set(d2["linearized"]) == {"soft|0.0009", "soft|0.001", "nll|0.0009", "nll|0.001"}
+    assert len(d2["linearized"]["soft|0.001"]["delta_norm"]) == STEPS
+    within(d2)
+
+    determinism = json.loads((out / "d3" / "determinism.json").read_text())
+    assert determinism["equal"] and determinism["steps_compared"] == STEPS
+    within(determinism["rerun"])
+    order = list(s.diagnostic.d3.order)
+    for name in order:
+        case = json.loads((out / "d3" / f"{name}.json").read_text())
+        assert case["status"] == "complete" and case["twin_A"]["archive"]["equal"], name
+        within(case["twin_A"])
+        assert set(case["pairs"]) == {"p1", "p2", "p3", "p4", "reference"}
+        for key, pair in case["pairs"].items():
+            assert [r["step"] for r in pair["D_twin"]] == [1, 3, 6], key
+            assert pair["complete"] and math.isfinite(pair["max_D_twin"]), key
+            assert pair["diverged"] is False and pair["state"] != "incomplete", key
+            within(pair)
+        for key in fcd.PERTURBATIONS:
+            assert case["pairs"][key]["survived"] is True, key
+        reference = case["pairs"]["reference"]
+        assert reference["mode"] == fcd.FLOAT64_FULL and "failed_attempt" not in reference
+        assert not list((out / "d3" / "checkpoints" / name).glob("*.pt"))
+        p1 = case["pairs"]["p1"]["rounding"][0]
+        assert p1["realized_norm"] == pytest.approx(case["first_step_displacement_norm"], rel=1e-6)
+
+    due = script("branch", "--expansion-needed")
+    assert due in (0, 3)
+    if due == 0:
+        assert script("d3", "--expansion") in (0, None)
+    assert script("branch") in (0, None)
+    decision = json.loads((out / "branch" / "branch.json").read_text())
+    assert decision["branch"] in fcd.BRANCHES and decision["branch"] != "incomplete"
+    assert not decision["missing"] and not decision["facts"]["incomplete"]
+    assert decision["facts"]["shared_state"] == dict.fromkeys(fcd.SHARED_STATE_CHECKS, True)
+    assert decision["expand"] is None
+    assert requested and not [name for name in requested if "harmful" in name]
+    # Run again: every part is kept at this commit
+    capsys.readouterr()
+    for part in ("d1", "d2", "d3"):
+        assert script(part) in (0, None)
+    assert capsys.readouterr().out.count("kept:") == 3
+
+
+def wide_model() -> Qwen2ForCausalLM:
+    """A Qwen2 of the tiny vocabulary wide enough (≈ 14M trainable parameters, 56 MB a vector)
+    that the float64 reference's state stands far above the allocator's granularity."""
+    torch.manual_seed(1)
+    config = Qwen2Config(vocab_size=VOCAB, hidden_size=512, intermediate_size=4096,
+                         num_hidden_layers=2, num_attention_heads=8, num_key_value_heads=2,
+                         max_position_embeddings=256, tie_word_embeddings=False)  # fmt: skip
+    config._attn_implementation = "sdpa"
+    return Qwen2ForCausalLM(config).to(torch.float32).eval()
+
+
+@needs_cuda
+def test_the_float64_reference_falls_back_under_the_memory_rule_on_cuda(
+    cuda_world, cuda_rule, tmp_path
+) -> None:
+    """A real out-of-memory error of the rule's cap on the GPU: AdamW's float64 reference
+    (float64 moments and gradients) cannot fit under a cap set between its live peak and the
+    float64-accumulation run's reserved peak; the fallback runs under the same cap, recorded,
+    and is the uncapped float64-accumulation run bit for bit (the failed attempt left nothing
+    behind)."""
+    env, root = cuda_world
+    s = tiny_settings()
+    runs = fcd.locate_runs(s, root)
+    cfg = fcd.run_config(runs.regular["adamw-1.32e-05"])
+    wide = dataclasses.replace(env, new_model=lambda: wide_model().to(CUDA))
+    student, trainable = fcd._model(wide, cfg)
+    other = wide_model().requires_grad_(False)  # host memory, as D3's second model
+    scoring, _ = fcd.scoring_samples(cfg, wide)
+    twins = fcd.Twins(env=wide, student=student, other=other, trainable=trainable,
+                      theta0={n: p.detach().cpu().clone() for n, p in trainable}, v0=[],
+                      prefix=StreamPrefix(cfg, wide, int(cfg.seed)), scoring=scoring,
+                      k_star=float(s.diagnostic.k_star))  # fmt: skip
+    eval_at, checkpoints = [1, 3, 6], tmp_path / "checkpoints"
+    fcd.apply_memory_rule(CUDA, 1e6)  # no cap: fraction 1
+    twins.reset()
+    assert fcd.run_twin(cfg, twins, eval_at=eval_at, save_dir=checkpoints)["stop"] is None
+    uncapped = {}
+    for precision in ("float64", "float64_accumulation"):
+        twins.reset()
+        uncapped[precision] = fcd.run_twin(cfg, twins, eval_at=eval_at, precision=precision,
+                                           compare_dir=checkpoints)  # fmt: skip
+    full, accumulation = uncapped["float64"], uncapped["float64_accumulation"]
+    assert full["stop"] is None and accumulation["stop"] is None
+    low, high = accumulation["peak_reserved_gb"], full["peak_allocated_gb"]
+    # ≈ 0.11 GB apart on an RTX 5090: the cap stands > 20 MB (a large segment) from either
+    assert high - low >= 0.04, (low, high)
+    cap = round((low + high) / 2, 3)
+    rule = fcd.apply_memory_rule(CUDA, cap)
+    assert 0 < rule["fraction"] < 1
+    twins.reset()
+    out = fcd.reference_twin(cfg, twins, eval_at, checkpoints)
+    assert out["mode"] == fcd.FLOAT64_ACCUMULATION
+    assert out["fallback_reason"].startswith("OutOfMemoryError: ")
+    assert "out of memory" in out["fallback_reason"].lower()
+    failed = out["failed_attempt"]
+    assert failed["precision"] == "float64" and failed["peak_reserved_gb"] <= cap
+    assert out["within_memory_rule"] is True and out["peak_reserved_gb"] <= cap
+    assert out["rows"] == accumulation["rows"]
+    assert [r["D_twin"] for r in out["D_twin"]] == [r["D_twin"] for r in accumulation["D_twin"]]
+    assert next(student.parameters()).device.type == "cuda"
+    assert next(other.parameters()).device.type == "cpu"  # moved back after each reading
