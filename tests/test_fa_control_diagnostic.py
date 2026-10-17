@@ -672,6 +672,43 @@ def test_the_script_refuses_every_harmful_prompt_set() -> None:
 # ----------------------------------------------------------------------- the driver and plan
 
 
+def namespace_of_script() -> dict:
+    return runpy.run_path(str(SCRIPT))
+
+
+def test_the_driver_programs(tmp_path, monkeypatch, capsys) -> None:
+    """The driver's python -c programs: the branch read back, and D2's fallback failure record."""
+    namespace = namespace_of_script()
+    for program in (namespace["READ_BRANCH"], namespace["D2_FAILURE_RECORD"]):
+        assert not {"$", "`", "\\", '"'} & set(program)  # safe inside the driver's double quotes
+    (tmp_path / "branch.json").write_text(json.dumps({"branch": "incomplete"}))
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path / "branch.json")])
+    exec(namespace["READ_BRANCH"], {})
+    assert capsys.readouterr().out == "incomplete\n"
+    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path / "failed.json"), "137"])
+    exec(namespace["D2_FAILURE_RECORD"], {})
+    record = json.loads((tmp_path / "failed.json").read_text())
+    assert record["part"] == "d2" and record["error"].startswith("exit 137")
+    assert set(record["provenance"]["code"]) == {"commit", "dirty"}
+
+
+def test_a_failed_expansion_is_recorded_beside_the_three_case_outcome(tmp_path, monkeypatch):
+    from zero_field_refusal.tracking import git_state
+
+    head = git_state()["commit"]
+    d1, determinism, cases = outputs(path=False)  # ambiguous: the expansion is due
+    records = {"d1/result.json": d1, "d3/determinism.json": determinism,
+               **{f"d3/{name}.json": record for name, record in cases.items()}}  # fmt: skip
+    for path, record in records.items():
+        fcd.write_json(tmp_path / path, written(record, head))
+    monkeypatch.setattr("sys.argv", [str(SCRIPT), "branch", "--out", str(tmp_path),
+                                     "--expansion-failed", "4"])  # fmt: skip
+    runpy.run_path(str(SCRIPT), run_name="__main__")
+    decision = json.loads((tmp_path / "branch" / "branch.json").read_text())
+    assert (decision["branch"], decision["expand"]) == ("ambiguous", "fa-1.46e-05")
+    assert decision["facts"]["expansion_failure"]["exit_code"] == 4
+
+
 def test_the_driver(tmp_path, monkeypatch) -> None:
     commit = "a" * 40
     out = tmp_path / "driver.sh"
@@ -683,23 +720,54 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     assert all(len(line) <= 100 for line in text.splitlines() if line.startswith("#"))
     run = 'project-run "$SRC" python scripts/fa_control_diagnostic.py'
     lines = text.splitlines()
-    order = [*(f"step {run} {part}" for part in ("plan", "d1", "d2")), f"{run} d3",
-             f"{run} branch --expansion-needed", f"  0) step {run} d3 --expansion ;;",
+    order = [f"step {run} plan", f"step {run} d1", f"{run} d2", f"{run} d3",
+             f"{run} branch --expansion-needed", f"    {run} d3 --expansion",
              f"step {run} branch"]  # fmt: skip
     positions = [lines.index(line) for line in order]
     assert positions == sorted(positions)
-    assert lines[-2] == f"step {run} branch"
     # Review M1: a failed determinism check (exit 2) still records the branch, then stops.
     d3 = lines.index(f"{run} d3")
     assert lines[d3 + 1 : d3 + 6] == ["rc=$?", "set -e", 'if [ "$rc" -ne 0 ]; then',
                                       f'  if [ "$rc" -eq 2 ]; then step {run} branch; fi',
                                       '  exit "$rc"']  # fmt: skip
-    # Review M8: a free GPU, the disk for D3's checkpoints, and a log in the output directory.
+    # Re-review N2: a D2 failure is recorded (by D2, else here) and D3 goes on.
+    d2 = lines.index(f"{run} d2")
+    assert lines[d2 + 1 : d2 + 4] == ["d2=$?", "set -e", 'if [ "$d2" -ne 0 ]; then']
+    record = namespace_of_script()["D2_FAILURE_RECORD"]
+    assert lines[d2 + 7] == (f'    project-run "$SRC" python -c "{record}" '
+                             '"$OUT/d2/failed.json" "$d2"')  # fmt: skip
+    stops = [line for line in lines[d2 + 1 : d3]
+             if line.strip().startswith("exit") or "; exit" in line]  # fmt: skip
+    assert not stops  # nothing stops between D2 and D3
+    # Re-review N1: a failed expansion records the branch (the three cases'), then stops; the
+    # final branch is printed, and an incomplete one, or a D2 failure, ends non-zero.
+    expansion = lines.index(f"    {run} d3 --expansion")
+    assert lines[expansion + 1 : expansion + 6] == [
+        "    rc=$?", "    set -e", '    if [ "$rc" -ne 0 ]; then',
+        f'      step {run} branch --expansion-failed "$rc"', '      exit "$rc"']  # fmt: skip
+    final = positions[-1]
+    read = namespace_of_script()["READ_BRANCH"]
+    assert lines[final + 1 : final + 4] == [
+        f'outcome=$(project-run "$SRC" python -c "{read}" "$OUT/branch/branch.json")',
+        'echo "== $(date -u +%FT%TZ) the branch: $outcome"',
+        'if [ "$outcome" = incomplete ]; then exit 5; fi']  # fmt: skip
+    assert lines[final + 4].startswith('if [ "$d2" -ne 0 ]; then') and "exit 6" in lines[final + 4]
+    assert lines[-1].endswith('the diagnostic is complete: $OUT"')
+    # Review M8 and re-review N3: a free GPU (no compute process, under 1000 MiB in use), the
+    # disk for D3's checkpoints, and a log in the output directory.
     gpu = lines.index('if [ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ]; '
                       "then")  # fmt: skip
+    used = lines.index("used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)")
+    assert lines[used + 1] == ("if echo \"$used\" | awk '$1 + 0 >= 1000 {busy = 1} END "
+                               "{exit !busy}'; then")  # fmt: skip
+    assert lines[used + 3] == "  exit 1"
     disk = next(i for i, line in enumerate(lines) if line.startswith('if [ "$free_kb" -lt 40'))
     log = lines.index('exec > >(tee -a "$OUT/driver-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1')
-    assert log < gpu < disk < positions[0]
+    assert log < gpu < used < disk < positions[0]
+    for gpu_memory, busy in (("0", False), ("999", False), ("1000", True), ("12\n46000", True)):
+        check = subprocess.run(["awk", "$1 + 0 >= 1000 {busy = 1} END {exit !busy}"],
+                               input=gpu_memory, text=True, check=False)  # fmt: skip
+        assert (check.returncode == 0) == busy
     assert 'OUT="${RUNS_DIR:?}/diagnostics/fa_control"' in text
     assert "harmful_" not in text
     # The checkout is clean as tracking.git_state reads it, whatever the Git configuration (the
@@ -962,6 +1030,31 @@ def test_a_doctored_archive_or_record_makes_the_outcome_incomplete(world, monkey
     assert decision["branch"] == "incomplete"
     reasons = " ".join(decision["facts"]["incomplete"])
     assert "fa-1.21e-05" in reasons and "(iii)" in reasons
+
+
+def test_a_d2_failure_is_recorded_and_kept(world, tmp_path, monkeypatch) -> None:
+    """Re-review N2: the script records D2's failure before it exits; a later success keeps
+    that record under another name."""
+    env, root = world
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(tiny_settings(), config)
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", lambda cfg, device: env)
+    argv = [str(SCRIPT), "d2", "--config", str(config), "--runs-root", str(root)]
+    monkeypatch.setattr("sys.argv", argv)
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("the products failed")
+
+    monkeypatch.setattr(fcd, "run_d2", failing)
+    with pytest.raises(RuntimeError, match="the products failed"):
+        runpy.run_path(str(SCRIPT), run_name="__main__")
+    d2 = fcd.output_root(root) / "d2"
+    record = json.loads((d2 / "failed.json").read_text())
+    assert record["part"] == "d2" and record["error"] == "RuntimeError: the products failed"
+    assert "Traceback" in record["traceback"] and record["provenance"]["code"]["commit"]
+    monkeypatch.setattr(fcd, "run_d2", lambda *args, **kwargs: {"spectra": {}})
+    runpy.run_path(str(SCRIPT), run_name="__main__")
+    assert not (d2 / "failed.json").exists() and len(list(d2.glob("failed-before-*.json"))) == 1
 
 
 def test_the_plan_checks_the_streams(world) -> None:

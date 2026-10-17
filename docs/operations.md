@@ -770,6 +770,13 @@ It changes no protocol, selection or run record, and this round's controls stay 
   - the float64 reference falls back to float64 loss and accumulation, and the failed attempt
     is kept in its record;
   - any other part fails (exit 4).
+- **Driver exits.** A failure of D1 or D3 stops the driver.
+  - A D2 failure is recorded in `d2/failed.json` (the error, the peaks, the commit). The driver
+    goes on to D3 and the branch, since no branch reads D2, and exits 6 at the end.
+  - A failed expansion case records the three cases' branch, with the failure in its facts,
+    before the driver stops.
+  - The driver prints the branch. An incomplete one ends it with exit 5.
+  - Before it starts, the GPU must show no compute process and under 1000 MiB in use.
 - **Outputs** go to `RUNS_DIR/diagnostics/fa_control/`, which the stage's analysis never reads.
   - The parts write `d1/result.json`, `d2/result.json`, `d3/determinism.json`, `d3/<case>.json`
     and `branch/branch.json`, and the driver adds its log.

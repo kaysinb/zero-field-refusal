@@ -29,8 +29,11 @@ The settings are configs/experiments/fa_control_diagnostic.yaml (``--config``).
 - ``d3`` runs the determinism check, then the cases in the settings' order; with
   ``--expansion`` only the expansion case (FA 1.46e-5), which the specification adds once when
   the three cases give the ambiguous branch. A failed determinism check stops D3 (exit 2).
+- ``d2`` records any failure in ``d2/failed.json`` (the error, the peaks, the commit) before it
+  exits; a later success renames that record, which is kept. No branch reads D2.
 - ``branch`` reads the outputs and writes the branch; ``--expansion-needed`` exits 0 when the
-  expansion case is due, 3 when it is not.
+  expansion case is due, 3 when it is not; ``--expansion-failed CODE`` records in the facts that
+  the expansion case failed, the outcome staying the three cases'.
 - ``--dry-run`` (and ``plan`` for every part) finds the runs and their records and prints what
   would run, with the cost estimate, without loading a model. ``plan`` also checks the DATA_DIR
   streams D1–D3 read, unless ``--no-stream-check``, and exits 1 when one is missing.
@@ -59,6 +62,7 @@ import json
 import math
 import sys
 import textwrap
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,6 +79,8 @@ from zero_field_refusal.fa_control_diagnostic import (
     load_outputs,
     locate_runs,
     output_root,
+    peak_memory,
+    provenance,
     run_config,
     run_d1,
     run_d2,
@@ -89,6 +95,19 @@ SCRIPT = 'project-run "$SRC" python scripts/fa_control_diagnostic.py'
 NOT_DUE = 3  # ``branch --expansion-needed``: the expansion case is not due
 DETERMINISM_FAILED = 2  # ``d3``: the re-run differs from its archive
 OUT_OF_MEMORY = 4  # a part met the memory rule's cap
+INCOMPLETE = 5  # the driver: the branch is incomplete
+D2_FAILED = 6  # the driver: D2 failed (recorded), the rest ran
+GPU_USED_MIB = 1000  # the driver starts only below this much GPU memory in use
+# The driver's programs (python -c, through project-run): the branch written, and a D2 failure
+# record when the D2 process left none (killed, say). No $, backtick or backslash inside.
+READ_BRANCH = "import json, sys; print(json.load(open(sys.argv[1]))['branch'])"
+D2_FAILURE_RECORD = (
+    "import json, sys; from datetime import UTC, datetime; "
+    "from zero_field_refusal.tracking import git_state; "
+    "json.dump({'part': 'd2', 'error': 'exit ' + sys.argv[2] + ', no failure record of its own', "
+    "'written_at': datetime.now(UTC).isoformat(timespec='seconds'), "
+    "'provenance': {'code': git_state()}}, open(sys.argv[1], 'w'), indent=1)"
+)
 COSTS = {  # GPU minutes and peak allocated GB on one L40S (module docstring)
     "d1": (12, 38), "d2": (50, 45), "d3-setup": (8, 31), "d3-expansion-setup": (5, 31),
     "d3-case": (25, 44),
@@ -149,9 +168,12 @@ def driver_script(commit: str, written_at: str) -> str:
                  "(study2_short_fa_controls), as on P1. The GPU must be free (no other compute "
                  f"process), and the volume must hold {DISK_GB} GB for D3's checkpoints."),
         *comment("Outputs: $RUNS_DIR/diagnostics/fa_control/ (d1, d2, d3, branch), with this "
-                 "driver's log. It stops at the first failure and can be run again: every part "
-                 "already written at this commit is kept. A failed determinism check still "
-                 "records the branch (incomplete) before the driver stops."),
+                 "driver's log. It can be run again: every part already written at this commit "
+                 "is kept. It stops at the first failure of D1 or D3, except that a failed "
+                 "determinism check or expansion case still records the branch first. A D2 "
+                 "failure is recorded (d2/failed.json) and the driver goes on, since no branch "
+                 f"reads D2, then exits {D2_FAILED} at the end. An incomplete branch ends the "
+                 f"driver with exit {INCOMPLETE}."),
         "set -euo pipefail",
         ". /etc/rp_environment",
         ". /root/zfr-env.sh",
@@ -163,9 +185,15 @@ def driver_script(commit: str, written_at: str) -> str:
         'mkdir -p "$OUT"',
         'exec > >(tee -a "$OUT/driver-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1',
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
-        "# No GPU job beside the diagnostic",
+        "# No GPU job beside the diagnostic: no compute process, and (as a container may not see",
+        "# other processes) no GPU memory in use",
         'if [ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ]; then',
         f'  echo "== {stamp} a process holds the GPU; the diagnostic does not start" >&2',
+        "  exit 1",
+        "fi",
+        "used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)",
+        f"if echo \"$used\" | awk '$1 + 0 >= {GPU_USED_MIB} {{busy = 1}} END {{exit !busy}}'; then",
+        f'  echo "== {stamp} GPU memory in use ($used MiB); the diagnostic does not start" >&2',
         "  exit 1",
         "fi",
         "# D3 keeps one case's checkpoints at a time",
@@ -177,7 +205,21 @@ def driver_script(commit: str, written_at: str) -> str:
         "# The steps, in the specification's order",
         f"step {SCRIPT} plan",
         f"step {SCRIPT} d1",
-        f"step {SCRIPT} d2",
+        "# D2: a failure is recorded and the driver goes on; no branch reads D2",
+        f'echo "== {stamp} start: d2"',
+        "set +e",
+        f"{SCRIPT} d2",
+        "d2=$?",
+        "set -e",
+        'if [ "$d2" -ne 0 ]; then',
+        f'  echo "== {stamp} d2 failed with code $d2; recorded, D3 goes on" >&2',
+        '  if [ ! -f "$OUT/d2/failed.json" ]; then',
+        '    mkdir -p "$OUT/d2"',
+        f'    project-run "$SRC" python -c "{D2_FAILURE_RECORD}" "$OUT/d2/failed.json" "$d2"',
+        "  fi",
+        "else",
+        f'  echo "== {stamp} done: d2"',
+        "fi",
         f'echo "== {stamp} start: d3"',
         "set +e",
         f"{SCRIPT} d3",
@@ -193,11 +235,27 @@ def driver_script(commit: str, written_at: str) -> str:
         "due=$?",
         "set -e",
         'case "$due" in',
-        f"  0) step {SCRIPT} d3 --expansion ;;",
+        "  0)",
+        f'    echo "== {stamp} start: d3 --expansion"',
+        "    set +e",
+        f"    {SCRIPT} d3 --expansion",
+        "    rc=$?",
+        "    set -e",
+        '    if [ "$rc" -ne 0 ]; then',
+        f'      step {SCRIPT} branch --expansion-failed "$rc"',
+        '      exit "$rc"',
+        "    fi",
+        f'    echo "== {stamp} done: d3 --expansion"',
+        "    ;;",
         f'  {NOT_DUE}) echo "== {stamp} the expansion case is not due" ;;',
         '  *) exit "$due" ;;',
         "esac",
         f"step {SCRIPT} branch",
+        f'outcome=$(project-run "$SRC" python -c "{READ_BRANCH}" "$OUT/branch/branch.json")',
+        f'echo "== {stamp} the branch: $outcome"',
+        f'if [ "$outcome" = incomplete ]; then exit {INCOMPLETE}; fi',
+        f'if [ "$d2" -ne 0 ]; then echo "== {stamp} d2 failed: $OUT/d2/failed.json" >&2; '
+        f"exit {D2_FAILED}; fi",
         f'echo "== {stamp} the diagnostic is complete: $OUT"',
     ]  # fmt: skip
     return "\n".join(lines) + "\n"
@@ -261,6 +319,8 @@ def main() -> None:
     parser.add_argument("--expansion", action="store_true", help="d3: the expansion case only")
     parser.add_argument("--keep-checkpoints", action="store_true")
     parser.add_argument("--expansion-needed", action="store_true")
+    parser.add_argument("--expansion-failed", type=int, default=None, metavar="EXIT_CODE",
+                        help="branch: the expansion case failed with this exit code")  # fmt: skip
     parser.add_argument("--commit")
     args = parser.parse_args()
 
@@ -280,6 +340,11 @@ def main() -> None:
     if args.part == "branch":
         d1, determinism, cases = load_outputs(out)
         decision = decide_branch(settings, d1, determinism, cases, commit=commit)
+        if args.expansion_failed is not None:  # the outcome stays the three cases'
+            decision["facts"]["expansion_failure"] = {
+                "case": str(d.d3.expansion), "exit_code": args.expansion_failed,
+                "note": "the expansion case did not complete; the outcome is the three cases'",
+            }  # fmt: skip
         print(json.dumps({k: decision[k] for k in ("branch", "expand", "missing")}))
         if args.expansion_needed:
             sys.exit(0 if decision["expand"] else NOT_DUE)
@@ -331,7 +396,19 @@ def main() -> None:
                                   result["same_path_control"]["max_K_scoring"],
                               "v0_equal": result["shared_state"]["v0"]["equal"]}))  # fmt: skip
         elif args.part == "d2":
-            result = run_d2(settings, env, runs, out)
+            failed = out / "d2" / "failed.json"
+            try:
+                result = run_d2(settings, env, runs, out)
+            except BaseException as exc:  # recorded whatever it is, then raised as it was
+                write_json(failed, {
+                    "part": "d2", "error": f"{type(exc).__name__}: {str(exc)[:4000]}",
+                    "traceback": traceback.format_exc()[-8000:], **peak_memory(env.device),
+                    "provenance": provenance(settings, runs),
+                })  # fmt: skip
+                raise
+            if failed.exists():  # an earlier attempt's failure, kept under another name
+                failed.rename(failed.with_name(f"failed-before-{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
+                                               ".json"))  # fmt: skip
             print(json.dumps({kind: [round(r["top"], 6) for r in rows]
                               for kind, rows in result["spectra"].items()}))  # fmt: skip
         else:
