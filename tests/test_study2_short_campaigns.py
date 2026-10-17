@@ -1543,14 +1543,14 @@ def test_the_versions_record_is_enforced_against_the_checkout(tmp_path) -> None:
     git(repo, "commit", "-qm", "the versions record")
     assert problems() == []  # committed: a child that adds the record alone
     assert problems(judge="wildguard") == []
-    # Untracked notes are not read by the code; an untracked module is.
-    (repo / "notes.md").write_text("local notes\n")
+    # Any untracked file is refused, outside src/, scripts/ and configs/ too; an ignored one is not.
+    (repo / "docs" / "x.md").write_text("local notes\n")
+    assert problems() == ["the checkout has 1 untracked files (first: docs/x.md)"]
+    (repo / "docs" / "x.md").unlink()
+    (repo / ".git" / "info" / "exclude").write_text(".superpowers/\n")
+    (repo / ".superpowers").mkdir()
+    (repo / ".superpowers" / "notes.md").write_text("an ignored local workflow file\n")
     assert problems() == []
-    (repo / "src").mkdir()
-    (repo / "src" / "extra.py").write_text("y = 1\n")
-    assert problems() == ["the checkout has 1 untracked files where code is read from (first: "
-                          "src/extra.py)"]  # fmt: skip
-    (repo / "src" / "extra.py").unlink()
     (repo / "code.py").write_text("x = 2\n")
     assert problems() == ["the checkout has 1 uncommitted changes (first: code.py)"]
     git(repo, "commit", "-qam", "a code change")

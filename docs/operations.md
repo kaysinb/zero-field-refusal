@@ -637,8 +637,8 @@ default `docs/study2-short-versions.json` in the checkout), and refuse when:
 - the running HEAD is not `code.commit`, or a child of it that adds the record alone (the commit
   of the record itself). Any other descendant is refused unless `code.allow_descendants` is true;
   a commit that does not descend from it always is;
-- a tracked file has uncommitted changes, or an untracked file lies under `src/`, `scripts/` or
-  `configs/`, where the code and configs are read from;
+- a tracked file has uncommitted changes, or a file anywhere in the checkout is untracked and
+  not ignored by Git (keep local work directories, such as `.superpowers/`, in `.gitignore`);
 - `model` is not the model of `experiments/study2_short`;
 - the judge's identity is not that of its config, or (for the summary) the config is not
   `judge/NAME` of `--judge NAME`;

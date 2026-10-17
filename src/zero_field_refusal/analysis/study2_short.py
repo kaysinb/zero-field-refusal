@@ -304,7 +304,6 @@ INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look, and the seco
 SECONDARY_STATUSES = ("secondary", "exploratory")  # how the secondary contrasts are reported
 VERSIONS_RECORD = "docs/study2-short-versions.json"  # relative to the repository root
 VERSIONS_CONFIG = ("experiments/study2_short", ["study2_short.role=confirmation"])  # its model
-CODE_PATHS = ("src/", "scripts/", "configs/")  # where an untracked file could change what runs
 # The missing-label sensitivities: the block fields of their lower and upper bounds.
 SENSITIVITIES = {
     "missing_labels": ("delta_missing_low", "delta_missing_high"),
@@ -1618,8 +1617,8 @@ def versions_problems(
     - ``code.commit`` is the running HEAD, or an ancestor of it whose changes up to HEAD touch the
       versions record alone (committing the record makes such a child), or any ancestor when the
       record allows it (``code.allow_descendants`` true); no tracked file has uncommitted changes
-      (the record included), and no untracked file lies where code or configs are read from
-      (``CODE_PATHS``; other untracked files, such as local notes, are not read by the code);
+      (the record included), and no file is untracked unless Git ignores it (the checkout must
+      equal the recorded commit: local work directories belong in ``.gitignore``);
     - ``model`` is the name and revision of the stage's model (``VERSIONS_CONFIG``);
     - ``judge``'s identity is that of its config (``judge.judge_identity``), and the config is
       ``judge/<judge>`` when ``judge`` is given;
@@ -1657,7 +1656,8 @@ def versions_problems(
         if own in uncommitted:
             problems.append(f"{path} differs from its committed version at HEAD")
             uncommitted = [name for name in uncommitted if name != own]
-        untracked = [name for name in changes["untracked"] if name.startswith(CODE_PATHS)]
+        # An untracked record is refused above, as not committed.
+        untracked = [name for name in changes["untracked"] if name != own]
         if committed and descendants is not True:
             problems.append(f"the running HEAD {head} differs from the recorded commit "
                             f"{commit} in {len(committed)} files (first: {committed[0]}), and "
@@ -1666,8 +1666,8 @@ def versions_problems(
             problems.append(f"the checkout has {len(uncommitted)} uncommitted changes (first: "
                             f"{uncommitted[0]})")  # fmt: skip
         if untracked:
-            problems.append(f"the checkout has {len(untracked)} untracked files where code is "
-                            f"read from (first: {untracked[0]})")  # fmt: skip
+            problems.append(f"the checkout has {len(untracked)} untracked files (first: "
+                            f"{untracked[0]})")  # fmt: skip
     cfg = load_config(*VERSIONS_CONFIG)
     model = {"name": str(cfg.model.name), "revision": str(cfg.model.revision)}
     if record.get("model") != model:
