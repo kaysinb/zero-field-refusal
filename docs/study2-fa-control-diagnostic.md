@@ -280,3 +280,57 @@ bind the code. Nothing else changes.
      states this limit.
 9. **A failed determinism check** gives the outcome "incomplete": D3 stops as the base text says,
    and no branch is chosen.
+
+## Revision 3 (frozen)
+
+After review fa8, before any run; no diagnostic output exists. It corrects Revision 2 where a test
+without evidence could support a branch. Nothing else changes. **The principle:** a branch is
+chosen, or excluded, only on complete evidence. When the choice depends on a missing or invalid
+measurement, the outcome is "incomplete", and no branch and no expansion follow.
+
+1. **Shared state gates every branch.** Each D1 check must pass:
+   - the v₀ hash, equal under both configs;
+   - the loss normalization;
+   - the trainable parameter set;
+   - the initial optimizer state, each built from its own config's v₀;
+   - the recomputed (iii), equal to every control's recorded first gradient.
+
+   If any check fails, the outcome is incomplete. The same holds when ‖(i)‖ or ‖(iii)‖ is
+   non-finite, or ‖(iii)‖ is zero: the path criterion of Revision 2, item 1, is then undecided,
+   not false.
+2. **Survival is required.** This corrects Revision 2, item 4.
+   - Each attempt is judged against its own intended norm: the realized norm after fp32 rounding
+     must be at least half of it.
+   - A perturbation that fails is scaled ×10 once.
+   - If the second attempt also fails, that pair's sensitivity test is incomplete. It can never
+     count as within the bound.
+3. **Three states per measurement,** instead of "below" or "not below".
+   - **Divergence** means a non-finite loss, gradient, weight or K/D_twin value in the run.
+   - **A D3 pair** is:
+     - **within** when its perturbation survived, D_twin was measured at every prescribed step, and
+       every value is ≤ 0.06325;
+     - **exceeding** when a measured D_twin is above 0.06325, or the twin diverged. A
+       smaller-than-intended perturbation that still exceeds shows at least that sensitivity, so
+       survival is not required for this state;
+     - **incomplete** otherwise.
+   - **The same-path float64 control** is:
+     - **below** when K_scoring was measured at every prescribed step and every value is strictly
+       below 0.06325;
+     - **exceeding** when a K_scoring measured on the complete series is above 0.06325, or the run
+       diverged;
+     - **at the bound** when it is neither below nor exceeding, on a complete series;
+     - **incomplete** otherwise.
+4. **The branches,** in this order, after the validity checks: the base text's, items 1 and 2
+   above, and Revision 2, item 9.
+   1. **A:** any FA 1.21e-5 pair is exceeding.
+   2. **Incomplete:** any FA 1.21e-5 pair is incomplete.
+   3. From here on every FA 1.21e-5 pair is within. **Incomplete** if the same-path control is
+      incomplete.
+   4. **B:** the same-path control is exceeding.
+   5. **F:** the same-path control is below, the path criterion holds, and every pair of every D3
+      case is within.
+   6. **Incomplete:** the same-path control is below, the path criterion holds, no pair of any case
+      is exceeding, and some pair of FA 1e-5 or AdamW is incomplete.
+   7. **Ambiguous** otherwise. This covers a path criterion that is false on finite norms, a pair
+      of FA 1e-5 or AdamW that is exceeding, and a control at the bound. FA 1.46e-5 is then added
+      once, and the outcome is reported without choosing.
