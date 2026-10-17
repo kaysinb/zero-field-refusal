@@ -263,6 +263,20 @@ def test_cache_skips_finished_items(tmp_path: Path) -> None:
     assert len(cache.read_text().splitlines()) == 3
 
 
+def test_without_sending_only_the_cache_answers(tmp_path: Path) -> None:
+    cache = tmp_path / "labels.jsonl"
+    fake = FakeOpenAI(lambda kw: WG_OK)
+    assert make_client(fake, cache_path=cache).label_items(ITEMS, send=False) == [
+        {"item_id": "a", "label": None}, {"item_id": "b", "label": None}]  # fmt: skip
+    assert not fake.calls and not cache.exists()
+    (first,) = make_client(fake, cache_path=cache).label_items(ITEMS[:1])
+    renamed = {**ITEMS[0], "item_id": "z"}
+    records = make_client(fake, cache_path=cache).label_items([*ITEMS, renamed], send=False)
+    assert records == [first, {"item_id": "b", "label": None}, {**first, "item_id": "z"}]
+    assert len(fake.calls) == 1  # nothing sent; the reuse under another id is written
+    assert [r["item_id"] for r in judge.read_jsonl(cache)] == ["a", "z"]
+
+
 def test_cache_is_keyed_by_judge_identity_and_content(tmp_path: Path) -> None:
     cache = tmp_path / "labels.jsonl"
     fake = FakeOpenAI(lambda kw: WG_OK)

@@ -132,5 +132,9 @@ def test_unparseable_outputs_are_counted_and_retried(tmp_path) -> None:
     summaries = label_runs([run_dir(root)], JUDGE, lambda cfg: PROMPTS, factory(broken))
     assert summaries[0]["unparseable"] == 10
     fixed = FakeWildGuard()
+    # Its one round is used: a rerun allowing one round in all sends nothing.
     summaries = label_runs([run_dir(root)], JUDGE, lambda cfg: PROMPTS, factory(fixed))
-    assert (summaries[0]["unparseable"], fixed.calls) == (0, 10)
+    assert (summaries[0]["unparseable"], fixed.calls) == (10, 0)
+    # Two rounds in all: the second retries what did not parse.
+    summaries = label_runs([run_dir(root)], JUDGE, lambda cfg: PROMPTS, factory(fixed), rounds=2)
+    assert (summaries[0]["unparseable"], summaries[0]["rounds"], fixed.calls) == (0, 2, 10)

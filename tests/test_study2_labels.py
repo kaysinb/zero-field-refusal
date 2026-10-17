@@ -21,6 +21,7 @@ from zero_field_refusal.run_judging import (
     label_runs,
     receipt_path,
     response_conditions,
+    rounds_path,
 )
 
 JUDGE = "wildguard"
@@ -121,15 +122,20 @@ def conditions(run: Path) -> list[str]:
 
 class FakeWildGuard:
     """The parts of ``openai.OpenAI`` the WildGuard backend uses; the replies repeat the last.
-    With ``fail_after``, every request after that many fails (a judge server gone)."""
+    With ``fail_after``, every request after that many fails (a judge server gone). ``calls``
+    counts the requests answered, ``attempts`` every request; ``watch()``, when given, is called
+    at each request and its value kept in ``seen``."""
 
-    def __init__(self, replies, fail_after: int | None = None) -> None:
+    def __init__(self, replies, fail_after: int | None = None, watch=None) -> None:
         self.replies, self.calls, self.lock = list(replies), 0, threading.Lock()
-        self.fail_after = fail_after
+        self.fail_after, self.attempts, self.watch, self.seen = fail_after, 0, watch, []
         self.completions = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
         with self.lock:
+            self.attempts += 1
+            if self.watch is not None:
+                self.seen.append(self.watch())
             if self.fail_after is not None and self.calls >= self.fail_after:
                 raise RuntimeError("the judge server is gone")
             reply = self.replies[min(self.calls, len(self.replies) - 1)]
@@ -137,11 +143,23 @@ class FakeWildGuard:
         return SimpleNamespace(choices=[SimpleNamespace(text=reply, finish_reason="stop")])
 
 
-def factory(fake):
+def factory(fake, workers: int = 8):
     cfg = load_config(f"judge/{JUDGE}")
     env = {"JUDGE_API_BASE": "http://judge/v1"}
-    return lambda path: JudgeClient.from_config(cfg, env, client=fake, cache_path=path,
-                                                sleep=lambda s: None)  # fmt: skip
+    return lambda path: JudgeClient.from_config(
+        cfg, env, client=fake, cache_path=path, max_workers=workers, sleep=lambda s: None
+    )
+
+
+def rounds_used(run: Path) -> int:
+    """The rounds the run's rounds record counts."""
+    return json.loads(rounds_path(run, JUDGE).read_text())["used"]
+
+
+def judge_files(run: Path) -> dict[str, str]:
+    """The sha256 of every file in the run's judge directory, by name."""
+    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((run / "judge").iterdir())}  # fmt: skip
 
 
 # --- conditions --------------------------------------------------------------------------------
@@ -264,10 +282,18 @@ def test_rounds_stop_at_the_limit_and_report_what_stays_missing(tmp_path) -> Non
     (row,) = read(run)
     assert (row["labeled"], row["missing"], row["harmful_rate"]) == (0, 6, None)
     # Fewer rounds than study 2 allows leave the missing labels pending, never "not harmful".
-    label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=1)
-    assert json.loads(receipt_path(run, JUDGE).read_text())["rounds"] == 1
+    short = make_run(tmp_path, name="short")
+    label_runs([short], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=1)
+    assert json.loads(receipt_path(short, JUDGE).read_text())["rounds"] == 1
     with pytest.raises(LabelsPending, match="6 items without a label after 1 labeling rounds"):
-        read(run)
+        read(short)
+    # Resumed with the rounds left: two more, three in all.
+    calls = fake.calls
+    summaries = label_runs([short], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert summaries == [{"run_id": "short", "items": 6, "unparseable": 6, "rounds": 3}]
+    assert fake.calls - calls == 12 and rounds_used(short) == 3
+    (row,) = read(short)
+    assert row["missing"] == 6
 
 
 @pytest.mark.usefixtures("published")
@@ -326,17 +352,135 @@ def test_an_interrupted_labeling_stays_pending(tmp_path) -> None:
     assert not receipt_path(run, JUDGE).exists()
     with pytest.raises(LabelsPending, match="receipt.json is missing"):
         read(run)
-    # Finished on a rerun: the labels count.
-    label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard(["cannot classify"])),
-               rounds=3)  # fmt: skip
+    # Finished on a rerun, with the two rounds left (the interrupted one counts): the labels count.
+    rest = FakeWildGuard(["cannot classify"])
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(rest), rounds=3)
+    assert summaries == [{"run_id": "run", "items": 6, "unparseable": 3, "rounds": 3}]
+    assert rest.attempts == 6  # the three items without a label, in rounds 2 and 3
     (row,) = read(run)
     assert (row["labeled"], row["missing"]) == (3, 3)
-    # A labeling started again deletes the receipt first: interrupted, the run is pending again.
-    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS,
-                           factory(FakeWildGuard([REFUSAL], fail_after=1)), rounds=3)  # fmt: skip
-    assert "error" in summaries[0] and not receipt_path(run, JUDGE).exists()
-    with pytest.raises(LabelsPending):
+    # Labeling it again sends nothing: its receipt is complete, and it stays.
+    again = FakeWildGuard([REFUSAL], fail_after=1)
+    before = judge_files(run)
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(again), rounds=3)
+    assert summaries[0]["kept"] and again.attempts == 0 and judge_files(run) == before
+    (row,) = read(run)
+    assert (row["labeled"], row["missing"]) == (3, 3)
+
+
+@pytest.mark.usefixtures("published")
+def test_the_rounds_hold_across_an_interrupted_labeling_and_its_rerun(tmp_path) -> None:
+    run = make_run(tmp_path)
+
+    def used() -> int | None:  # what the rounds record says as a request goes out
+        path = rounds_path(run, JUDGE)
+        return json.loads(path.read_text())["used"] if path.exists() else None
+
+    # Round 1 does not parse; round 2 labels two items, then the judge server goes, mid-round.
+    first = FakeWildGuard(["cannot classify"] * 6 + [REFUSAL] * 2, fail_after=8, watch=used)
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(first, workers=1),
+                           rounds=3)  # fmt: skip
+    assert "the judge server is gone" in summaries[0]["error"]
+    assert first.calls == 8 and 9 <= first.attempts <= 12  # the workers stop on the failure
+    assert first.seen[:6] == [1] * 6 and set(first.seen[6:]) == {2}  # counted before sending
+    assert rounds_used(run) == 2 and not receipt_path(run, JUDGE).exists()
+    # The rerun has one round left: it sends the four items still without a label, once.
+    second = FakeWildGuard(["cannot classify"], watch=used)
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(second), rounds=3)
+    assert summaries == [{"run_id": "run", "items": 6, "unparseable": 4, "rounds": 3}]
+    assert second.attempts == 4 and second.seen == [3] * 4
+    receipt = json.loads(receipt_path(run, JUDGE).read_text())
+    assert (receipt["rounds"], receipt["rounds_allowed"], receipt["missing"]) == (3, 3, 4)
+    assert rounds_used(run) == 3
+    (row,) = read(run)
+    assert (row["labeled"], row["refusal"], row["missing"]) == (2, 2, 4)
+
+
+@pytest.mark.usefixtures("published")
+@pytest.mark.parametrize(("reply", "rounds", "missing"),
+                         [(REFUSAL, 1, 0), ("cannot classify", 3, 12)])  # fmt: skip
+def test_a_rerun_after_a_completed_receipt_sends_nothing_and_changes_nothing(
+    tmp_path, reply: str, rounds: int, missing: int
+) -> None:
+    """Every label there, or labels still missing once the three rounds are used."""
+    run = make_run(tmp_path, (25, 50))
+    label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard([reply])), rounds=3)
+    receipt = json.loads(receipt_path(run, JUDGE).read_text())
+    assert (receipt["rounds"], receipt["missing"]) == (rounds, missing)
+    before = judge_files(run)
+    assert set(before) == {"wildguard.jsonl", "wildguard.receipt.json", "wildguard.rounds.json"}
+    for allowed in (1, 2, 3):
+        again = FakeWildGuard([HARMFUL])
+        (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(again), rounds=allowed)
+        assert summary["kept"] and summary["unparseable"] == missing
+        assert again.attempts == 0 and judge_files(run) == before
+
+
+@pytest.mark.usefixtures("published")
+def test_a_deleted_or_invalidated_receipt_does_not_reset_the_rounds(tmp_path) -> None:
+    run = make_run(tmp_path)
+    broken = FakeWildGuard(["cannot classify"])
+    label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(broken), rounds=2)
+    assert broken.attempts == 12 and rounds_used(run) == 2
+    receipt_path(run, JUDGE).unlink()
+    # One round is left of three, and only it is sent.
+    again = FakeWildGuard(["cannot classify"])
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(again), rounds=3)
+    assert summaries == [{"run_id": "run", "items": 6, "unparseable": 6, "rounds": 3}]
+    assert again.attempts == 6 and rounds_used(run) == 3
+    # Deleted once the rounds are used: nothing is sent, and the receipt of the labels as they
+    # stand is written again.
+    labels = label_path(run, JUDGE).read_bytes()
+    receipt_path(run, JUDGE).unlink()
+    last = FakeWildGuard([REFUSAL])
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(last), rounds=3)
+    assert summaries == [{"run_id": "run", "items": 6, "unparseable": 6, "rounds": 3}]
+    assert last.attempts == 0 and label_path(run, JUDGE).read_bytes() == labels
+    (row,) = read(run)
+    assert row["missing"] == 6
+    # Invalidated (the label file changed since): nothing is sent either.
+    with label_path(run, JUDGE).open("a") as handle:
+        handle.write(json.dumps(record("step-25", "judged:0", None)) + "\n")
+    with pytest.raises(LabelsPending, match="not the label file its judging receipt"):
         read(run)
+    summaries = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(last), rounds=3)
+    assert summaries[0]["rounds"] == 3 and last.attempts == 0 and rounds_used(run) == 3
+    (row,) = read(run)
+    assert row["missing"] == 6
+
+
+@pytest.mark.usefixtures("published")
+def test_a_label_file_without_a_valid_rounds_record_is_refused(tmp_path) -> None:
+    run = make_run(tmp_path)
+    label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard(["cannot classify"])),
+               rounds=1)  # fmt: skip
+    record_path = rounds_path(run, JUDGE)
+    kept = record_path.read_text()
+    fake = FakeWildGuard([REFUSAL])
+    # As a label file written before the record existed: the rounds behind it are unknown.
+    record_path.unlink()
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert "has no rounds record" in summary["error"] and "none is sent" in summary["error"]
+    record_path.write_text("{")
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert "is not a rounds record" in summary["error"]
+    other = json.loads(kept)
+    other["identity"] = {**other["identity"], "judge_revision": "other"}
+    record_path.write_text(json.dumps(other))
+    (summary,) = label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert "counts the rounds of another judge" in summary["error"]
+    assert fake.attempts == 0
+    # A complete receipt is kept even so: nothing is sent, nothing is written.
+    record_path.unlink()
+    done = make_run(tmp_path, name="done")
+    label_runs([done], JUDGE, lambda cfg: PROMPTS, factory(FakeWildGuard([REFUSAL])), rounds=3)
+    rounds_path(done, JUDGE).unlink()
+    before = judge_files(done)
+    (summary,) = label_runs([done], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=3)
+    assert summary["kept"] and fake.attempts == 0 and judge_files(done) == before
+    for rounds in (0, LABEL_ROUNDS + 1):
+        with pytest.raises(ValueError, match="rounds must be 1 to 3"):
+            label_runs([run], JUDGE, lambda cfg: PROMPTS, factory(fake), rounds=rounds)
 
 
 # --- reader ------------------------------------------------------------------------------------

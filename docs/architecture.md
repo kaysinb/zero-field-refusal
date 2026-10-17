@@ -155,7 +155,7 @@ Implemented:
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
-| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`), with a judging receipt once the labeling completed (`<judge>.receipt.json`: expected items, judge identity, rounds, labels still missing, label file sha256); the conditions of a study-2 run are its recorded evaluations `step-<N>`, and it is labelable once its terminal record was published with whole records, whatever its status |
+| `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`), in at most three rounds per run and judge across reruns, each counted before its requests in `<judge>.rounds.json`, with a judging receipt once the labeling completed (`<judge>.receipt.json`: expected items, judge identity, rounds used in all, labels still missing, label file sha256), kept as it is on a rerun; the conditions of a study-2 run are its recorded evaluations `step-<N>`, and it is labelable once its terminal record was published with whole records, whatever its status |
 | `analysis.study2_labels` | per-evaluation judge-label counts of a study-2 run, with the bounds for missing labels; counts no label without a completed receipt matching the label file (the run stays pending); refuses stale, foreign-judge or conflicting labels |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
@@ -388,9 +388,13 @@ paths are defined in [operations](operations.md#containers).
     [Publication evidence](#publication-evidence). The history of `protocol_version` is logged in
     [decisions.md](decisions.md#protocol-versions).
 - **Gate runs** set `tracking.require_clean_git: true` and run from a real checkout of the commit
-  (a clone or a Git bundle), so every result maps to a commit. They also set `tracking.gate` to
-  their gate (1 or 2; null otherwise), which the analysis build reads. Development runs may use source
-  snapshots without Git metadata; their snapshot ID identifies the executed source.
+  (a clone or a Git bundle), so every result maps to a commit. A checkout is clean without
+  uncommitted changes, staged or not, and without untracked files that its `.gitignore` files do
+  not ignore (`tracking.worktree_changes`, which the study-2 versions record reads too). Git
+  configuration does not change this: `status.showUntrackedFiles`, `.git/info/exclude` and a
+  user's excludes file. Gate runs also set `tracking.gate` to their gate (1 or 2; null
+  otherwise), which the analysis build reads. Development runs may use source snapshots without
+  Git metadata; their snapshot ID identifies the executed source.
 
 ## Experiment tracking and storage
 

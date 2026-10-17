@@ -251,7 +251,8 @@ class Run:
 
 
 def git_state(repo: Path = REPO_ROOT) -> dict[str, Any]:
-    """Current commit and whether the working tree has uncommitted changes.
+    """Current commit and whether the working tree is dirty: any uncommitted change or untracked
+    file (``worktree_changes``, whatever the Git configuration says).
 
     Both are None unless ``repo`` is the top level of a git checkout (not a folder inside another
     repository).
@@ -266,33 +267,58 @@ def git_state(repo: Path = REPO_ROOT) -> dict[str, Any]:
         commit: str | None = _git(repo, "rev-parse", "HEAD").strip()
     except subprocess.CalledProcessError:
         commit = None
-    return {"commit": commit, "dirty": bool(_git(repo, "status", "--porcelain").strip())}
+    changes = worktree_changes(repo)
+    return {"commit": commit, "dirty": bool(changes["uncommitted"] or changes["untracked"])}
+
+
+def worktree_changes(repo: Path = REPO_ROOT) -> dict[str, list[str]]:
+    """How the checkout at ``repo`` (its top level) departs from its HEAD: ``uncommitted``, the
+    tracked paths whose staged or working-tree content differs from HEAD (every tracked path
+    before the first commit); ``untracked``, the files Git does not track and no ``.gitignore``
+    of the checkout ignores. The one reading of a dirty tree, for the runs (``git_state``) and the
+    versions record (``code_changes``).
+
+    It does not depend on the user's or the repository's Git configuration:
+    ``git ls-files`` lists untracked files whatever ``status.showUntrackedFiles`` says (``git
+    status`` hides them all under ``no``), only the checkout's ``.gitignore`` files ignore (not
+    ``.git/info/exclude`` or the user's ``core.excludesFile``), and paths are read unquoted,
+    renames as both paths. Raises ``subprocess.CalledProcessError`` for no checkout."""
+    try:
+        _git(repo, "rev-parse", "--verify", "--quiet", "HEAD")
+    except subprocess.CalledProcessError:  # no commit yet: everything tracked is new
+        changed = _git(repo, "ls-files", "-z", "--cached").split("\0")
+    else:
+        changed = [*_git(repo, "diff", "--name-only", "-z", "--no-renames", "HEAD").split("\0"),
+                   *_git(repo, "diff", "--name-only", "-z", "--no-renames", "--cached",
+                         "HEAD").split("\0")]  # fmt: skip
+    untracked = _git(repo, "ls-files", "-z", "--others",
+                     "--exclude-per-directory=.gitignore").split("\0")  # fmt: skip
+    return {"uncommitted": sorted(set(changed) - {""}), "untracked": sorted(set(untracked) - {""})}
 
 
 def git_diff(repo: Path = REPO_ROOT) -> str:
-    """``git diff HEAD`` (a patch ``git apply`` accepts) followed by the list of untracked files."""
+    """``git diff HEAD`` (a patch ``git apply`` accepts) followed by the list of untracked files
+    (``worktree_changes``)."""
     try:
         diff = _git(repo, "diff", "HEAD")
     except subprocess.CalledProcessError:  # no commit yet
         diff = ""
-    untracked = _git(repo, "ls-files", "--others", "--exclude-standard")
+    untracked = "".join(f"{name}\n" for name in worktree_changes(repo)["untracked"])
     return f"{diff}# Untracked files:\n{untracked}"
 
 
 def code_changes(commit: str, repo: Path = REPO_ROOT) -> dict[str, list[str]] | None:
     """How the checkout differs from ``commit``: ``committed``, the paths changed between it and
-    HEAD; ``uncommitted``, the tracked paths with uncommitted changes; ``untracked``, the files
-    Git does not track and does not ignore. None when ``commit`` is neither HEAD nor an ancestor
-    of it (or ``repo`` is no checkout)."""
+    HEAD; ``uncommitted`` and ``untracked`` as ``worktree_changes`` reads them (the tracked paths
+    with uncommitted changes, the files Git does not track and no ``.gitignore`` ignores). None
+    when ``commit`` is neither HEAD nor an ancestor of it (or ``repo`` is no checkout)."""
     try:
         _git(repo, "merge-base", "--is-ancestor", commit, "HEAD")
-        committed = _git(repo, "diff", "--name-only", commit, "HEAD").splitlines()
-        uncommitted = _git(repo, "diff", "--name-only", "HEAD").splitlines()
-        untracked = _git(repo, "ls-files", "--others", "--exclude-standard").splitlines()
+        committed = _git(repo, "diff", "--name-only", "-z", "--no-renames", commit, "HEAD")
+        changes = worktree_changes(repo)
     except (OSError, subprocess.CalledProcessError):
         return None
-    return {"committed": sorted(set(committed)), "uncommitted": sorted(set(uncommitted)),
-            "untracked": sorted(set(untracked))}  # fmt: skip
+    return {"committed": sorted(set(committed.split("\0")) - {""}), **changes}
 
 
 def tracked(path: str, repo: Path = REPO_ROOT) -> bool:

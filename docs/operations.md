@@ -637,8 +637,11 @@ default `docs/study2-short-versions.json` in the checkout), and refuse when:
 - the running HEAD is not `code.commit`, or a child of it that adds the record alone (the commit
   of the record itself). Any other descendant is refused unless `code.allow_descendants` is true;
   a commit that does not descend from it always is;
-- a tracked file has uncommitted changes, or a file anywhere in the checkout is untracked and
-  not ignored by Git (keep local work directories, such as `.superpowers/`, in `.gitignore`);
+- a tracked file has uncommitted changes, staged or not, or a file anywhere in the checkout is
+  untracked and not ignored by the checkout's `.gitignore` files (keep local work directories,
+  such as `.superpowers/`, in `.gitignore`: `.git/info/exclude` and a user's excludes file do not
+  count). The runs read a dirty tree the same way (`tracking.worktree_changes`), whatever the Git
+  configuration says, `status.showUntrackedFiles` included;
 - `model` is not the model of `experiments/study2_short`;
 - the judge's identity is not that of its config, or (for the summary) the config is not
   `judge/NAME` of `--judge NAME`;
@@ -667,12 +670,19 @@ a look stops:
    and `possibly_supported`.
 4. **Label** the new runs: `scripts/label_runs.py --judge wildguard RUN_DIRS` (three rounds, the
    default). A study-2 run is labeled once its terminal record was published with whole records,
-   whatever its status (a Rayleigh measurement that failed afterwards leaves it `failed`). When
-   a run's rounds are over, its judging receipt `judge/wildguard.receipt.json` records the
-   expected items, the judge's identity, the rounds, the labels still missing and the label
-   file's sha256. A labeling started again deletes the receipt first; an interrupted one leaves
-   none. Without a receipt matching its label file, a run's labels do not count: the summary
-   lists it under `labels_pending` and its block waits. Rerun the labeling to complete it.
+   whatever its status (a Rayleigh measurement that failed afterwards leaves it `failed`). The
+   three rounds are a run's in all, across reruns: `judge/wildguard.rounds.json` counts each
+   round before its requests are sent, so an interrupted round counts as used, and a rerun
+   resumes with the rounds left, sending nothing once they are used. A reply already in the
+   label file is reused and is no round. When a run's rounds are over, its judging receipt
+   `judge/wildguard.receipt.json` records the expected items, the judge's identity, the rounds
+   used in all, the labels still missing and the label file's sha256. A round deletes the
+   receipt before it starts; an interrupted one leaves none. Without a receipt matching its label
+   file, a run's labels do not count: the summary lists it under `labels_pending` and its block
+   waits. Rerun the labeling to complete it. A run with a completed receipt (no label missing,
+   or its three rounds used) is left as it is, nothing sent. A label file without its rounds
+   record (labeled before the record existed) is refused, its rounds unknown: decide such a run
+   by hand.
 5. **Run the summary** with `--judge wildguard --fixation $F`.
 6. **Go on** only if the look did not stop (`stopped` false). Pass `--after-look K` for the look
    just read; without it the script refuses any block once look K is due.

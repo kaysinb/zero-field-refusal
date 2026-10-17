@@ -32,7 +32,8 @@ No label counts without a completed judging receipt (``run_judging.receipt_path`
 - an expected item has no record in the label file (an empty or partial file), or the receipt's
   ``missing`` is not the count of items without a non-null label;
 - labels are still missing and the receipt records fewer rounds than ``run_judging.LABEL_ROUNDS``
-  (the retry rounds were not all made).
+  (the retry rounds were not all used; the receipt counts the rounds of every invocation, an
+  interrupted round included, from the run's rounds record).
 
 Each check raises ``ValueError`` naming the run directory and the first offending item:
 - the run recorded its harmful prompts (``meta.json`` ``inputs.harmful_prompts``: set, count, ids

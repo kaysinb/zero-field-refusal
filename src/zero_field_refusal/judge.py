@@ -470,18 +470,23 @@ class JudgeClient:
         with self._write_lock, self.cache_path.open("a") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def label_items(self, items: Sequence[Mapping[str, str]]) -> list[dict[str, Any]]:
+    def label_items(
+        self, items: Sequence[Mapping[str, str]], *, send: bool = True
+    ) -> list[dict[str, Any]]:
         """One record per item, in input order, and each one is also in the cache file.
 
         Items with identical prompt and response are judged once. New records are appended as they
         finish, so an interrupted run keeps its progress. Unparseable records are written but not
         reused, so the next run retries them.
+
+        With ``send`` false no request is made: the records are the cache's, and an item without a
+        finished record there gets ``{"item_id": ..., "label": None}``, which is not written.
         """
         cache, present = self._load_cache()
         keys = [self._key(_content_hash(i["prompt"], i["response"])) for i in items]
         first_index: dict[tuple[str, ...], int] = {}
         for index, key in enumerate(keys):
-            if key not in cache:
+            if key not in cache and send:
                 first_index.setdefault(key, index)
         judged: dict[tuple[str, ...], dict[str, Any]] = {}
 
@@ -501,7 +506,10 @@ class JudgeClient:
 
         results: list[dict[str, Any]] = []
         for item, key in zip(items, keys, strict=True):
-            source = cache.get(key) or judged[key]
+            source = cache.get(key) or judged.get(key)
+            if source is None:  # not sent (``send`` false): no label, nothing written
+                results.append({"item_id": item["item_id"], "label": None})
+                continue
             record = {**source, "item_id": item["item_id"]}
             if (*key, item["item_id"]) not in present and source["item_id"] != item["item_id"]:
                 self._append(record)  # reuse under another id: the file keeps one per id

@@ -264,6 +264,54 @@ def test_git_state_against_temporary_repository(tmp_path: Path) -> None:
     assert git_state(repo / "sub") == {"commit": None, "dirty": None}  # not the top level
 
 
+def test_a_dirty_tree_whatever_the_git_configuration(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        identity = ["-c", "user.name=test", "-c", "user.email=test@example.com"]
+        subprocess.run(["git", *identity, "-c", "commit.gpgsign=false", *args], cwd=repo,
+                       check=True)  # fmt: skip
+
+    git("init", "-q")
+    (repo / ".gitignore").write_text("/runs/\n/scratchpad/\n.superpowers/\n")
+    (repo / "a.txt").write_text("one\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "init")
+    git("config", "status.showUntrackedFiles", "no")  # git status then lists no untracked file
+    excludes = tmp_path / "excludes"
+    excludes.write_text("hidden.py\n")
+    git("config", "core.excludesFile", str(excludes))
+    (repo / ".git" / "info" / "exclude").write_text("local.py\n")
+    # Ignored paths stay allowed.
+    for ignored in ("runs/x/meta.json", "scratchpad/notes.md", ".superpowers/sdd/brief.md"):
+        (repo / ignored).parent.mkdir(parents=True, exist_ok=True)
+        (repo / ignored).write_text("ignored\n")
+    assert git_state(repo)["dirty"] is False
+    assert tracking.worktree_changes(repo) == {"uncommitted": [], "untracked": []}
+    # A file no .gitignore ignores is dirty, whatever status.showUntrackedFiles, the user's
+    # excludes file or the checkout's info/exclude says.
+    for name in ("new.py", "hidden.py", "local.py"):
+        (repo / name).write_text("x = 1\n")
+        assert git_state(repo)["dirty"] is True, name
+        assert tracking.worktree_changes(repo)["untracked"] == [name]
+        assert git_diff(repo).endswith(f"# Untracked files:\n{name}\n")
+        (repo / name).unlink()
+    # A change staged and then undone in the working tree is still a change.
+    (repo / "a.txt").write_text("two\n")
+    git("add", "a.txt")
+    (repo / "a.txt").write_text("one\n")
+    assert git_state(repo)["dirty"] is True
+    assert tracking.worktree_changes(repo)["uncommitted"] == ["a.txt"]
+    # Before the first commit, everything is a change.
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=fresh, check=True)
+    (fresh / "b.txt").write_text("b\n")
+    assert git_state(fresh) == {"commit": None, "dirty": True}
+    assert tracking.worktree_changes(fresh) == {"uncommitted": [], "untracked": ["b.txt"]}
+
+
 def wandb_cfg(**options: object) -> DictConfig:
     cfg = make_cfg()
     cfg.tracking.wandb = {"enabled": True, "project": "unit", **options}

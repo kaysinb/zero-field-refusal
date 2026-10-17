@@ -62,12 +62,15 @@ holds the runs still missing; ``--seeds`` and ``--cells`` only split it over Pod
 Nothing here reads a judge label or K_harmful.
 
 ``prep`` writes a bash driver of the prerequisites of the runs of the given seeds at batch B, from
-the source checkout of commit SHA on a Pod, laid out as the Stage-A drivers. With ``--once``
-(and its ``--stage0-run-id``) it starts with the stage-0 checks under protocol version 3 and the
-curvature panel. That was done on P0 on 2026-10-16 (docs/operations.md records it) and must not
-be run again: later drivers leave out ``--once``, and their Pods restore the inventories of its
-stage-0 v3 record and of the curvature panel (``V3_RECORD``, ``CURVATURE_PANEL``; the header of
-every driver names the inventories it needs). Then, per seed, either it checks that the seed's
+the source checkout of commit SHA on a Pod, laid out as the Stage-A drivers. It first checks that
+the checkout is at SHA and clean as the runs read it (``tracking.git_state``: no uncommitted
+change and no untracked file its .gitignore does not ignore, whatever the Git configuration
+says). With ``--once`` (and its ``--stage0-run-id``) it starts with the stage-0 checks under
+protocol version 3 and the curvature panel. That was done on P0 on 2026-10-16
+(docs/operations.md records it) and must not be run again: later drivers leave out ``--once``,
+and their Pods restore the inventories of its stage-0 v3 record and of the curvature panel
+(``V3_RECORD``, ``CURVATURE_PANEL``; the header of every driver names the inventories it needs).
+Then, per seed, either it checks that the seed's
 streams exist (``--archived``: seeds whose streams are archived, nothing is generated, a missing
 stream stops it) or it
 generates them: the training stream to 25 × B responses (the stream is appendable; the default
@@ -158,6 +161,13 @@ PASSED = (
     "c = OmegaConf.load(d / 'config.yaml'); "
     "sys.exit(not (m.get('status') == 'completed' and c.get('protocol_version') == 3 "
     "and s.get('path_field', {}).get('passed') is True))"
+)
+# The source checkout is clean as the runs read it (tracking.git_state: no uncommitted change, no
+# untracked file that its .gitignore does not ignore, whatever the Git configuration says).
+CLEAN = (
+    "import sys; from zero_field_refusal.tracking import git_state; "
+    "sys.exit(None if git_state()['dirty'] is False else 'the source checkout is not clean "
+    "(tracking.git_state): an uncommitted change or an untracked file')"
 )
 # The stage-0 checks the driver runs, and where the restored soft-target copy waits meanwhile.
 STAGE0_CONFIG = "experiments/stage0_checks"
@@ -282,7 +292,7 @@ def prep_driver(
         f"SRC=/workspace/code/zero-field-refusal/{commit}/source",
         'cd "$SRC"',
         f'test "$(git rev-parse HEAD)" = {commit}',
-        'test -z "$(git status --porcelain)"',
+        f'project-run "$SRC" python -c "{CLEAN}"',
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
         "kept() {",
         "  local log",

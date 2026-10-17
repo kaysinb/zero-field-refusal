@@ -856,6 +856,11 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
     assert "can be run again" in header and re.search(r"prep at [0-9a-f]{40}", header)
     commands = joined(text)
     run = 'project-run "$SRC" python scripts/'
+    # The checkout is at the commit and clean as the runs read it, not as git status says.
+    first_step = next(i for i, line in enumerate(commands) if line.startswith("step() {"))
+    assert commands.index(f'test "$(git rev-parse HEAD)" = {COMMIT}') < commands.index(
+        f'project-run "$SRC" python -c "{module.CLEAN}"') < first_step  # fmt: skip
+    assert "git status" not in text
     assert "STAGE0=stage0-v3-test-01" in commands and "stage0" in commands
     stage0 = (f'step env RUN_ID="$STAGE0" {run}stage0_checks.py experiments/stage0_checks '
               "model=qwen2.5-1.5b-instruct protocol_version=3")  # fmt: skip
@@ -895,6 +900,19 @@ def campaigns_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize(("dirty", "stops"), [(False, False), (True, True), (None, True)])
+def test_the_driver_stops_unless_the_checkout_is_clean(monkeypatch, dirty, stops) -> None:
+    """The driver's check, as tracking.git_state reads the checkout (None: no checkout)."""
+    module = campaigns_module()
+    monkeypatch.setattr("zero_field_refusal.tracking.git_state",
+                        lambda: {"commit": COMMIT, "dirty": dirty})  # fmt: skip
+    with pytest.raises(SystemExit) as found:
+        exec(module.CLEAN, {})
+    assert (found.value.code is not None) == stops
+    if stops:
+        assert "the source checkout is not clean" in found.value.code
 
 
 def test_the_driver_keeps_a_stream_that_exists_and_stops_on_other_failures() -> None:
@@ -1509,7 +1527,8 @@ def test_the_versions_record_is_enforced_against_the_checkout(tmp_path) -> None:
     repo.mkdir()
     git(repo, "init", "-q")
     (repo / "code.py").write_text("x = 1\n")
-    git(repo, "add", "code.py")
+    (repo / ".gitignore").write_text(".superpowers/\n")
+    git(repo, "add", "code.py", ".gitignore")
     git(repo, "commit", "-qm", "code")
     recorded = git(repo, "rev-parse", "HEAD")
     fixation = Path(fixation_file(tmp_path))
@@ -1547,10 +1566,15 @@ def test_the_versions_record_is_enforced_against_the_checkout(tmp_path) -> None:
     (repo / "docs" / "x.md").write_text("local notes\n")
     assert problems() == ["the checkout has 1 untracked files (first: docs/x.md)"]
     (repo / "docs" / "x.md").unlink()
-    (repo / ".git" / "info" / "exclude").write_text(".superpowers/\n")
     (repo / ".superpowers").mkdir()
     (repo / ".superpowers" / "notes.md").write_text("an ignored local workflow file\n")
     assert problems() == []
+    # Only the checkout's .gitignore ignores: not its info/exclude.
+    (repo / ".git" / "info" / "exclude").write_text("local/\n")
+    (repo / "local").mkdir()
+    (repo / "local" / "notes.md").write_text("a local file\n")
+    assert problems() == ["the checkout has 1 untracked files (first: local/notes.md)"]
+    shutil.rmtree(repo / "local")
     (repo / "code.py").write_text("x = 2\n")
     assert problems() == ["the checkout has 1 uncommitted changes (first: code.py)"]
     git(repo, "commit", "-qam", "a code change")
@@ -1574,6 +1598,54 @@ def test_the_versions_record_is_enforced_against_the_checkout(tmp_path) -> None:
         found = problems(change)
         assert any(message in problem for problem in found), (message, found)
     assert any("not judge/rubric" in problem for problem in problems({}, judge="rubric"))
+
+
+def test_the_versions_record_and_the_runs_read_a_dirty_tree_alike(tmp_path) -> None:
+    """``versions_problems`` and the runs' ``git_state`` (``tracking.worktree_changes``) on the
+    same trees, with ``status.showUntrackedFiles`` set to ``no``."""
+    from zero_field_refusal.analysis.study2_short import VERSIONS_RECORD, versions_problems
+    from zero_field_refusal.judge import judge_identity
+    from zero_field_refusal.tracking import git_state
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "status.showUntrackedFiles", "no")
+    (repo / ".gitignore").write_text("/runs/\n/scratchpad/\n.superpowers/\n")
+    (repo / "code.py").write_text("x = 1\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "code")
+    fixation = Path(fixation_file(tmp_path))
+    model = load_config("experiments/study2_short", ["study2_short.role=confirmation"]).model
+    record = {"code": {"commit": git(repo, "rev-parse", "HEAD"), "allow_descendants": False},
+              "model": {"name": model.name, "revision": model.revision},
+              "judge": {"config": "judge/wildguard",
+                        **judge_identity(load_config("judge/wildguard"))},
+              "fixation": {"sha256": hashlib.sha256(fixation.read_bytes()).hexdigest()},
+              }  # fmt: skip
+    path = repo / VERSIONS_RECORD
+    path.parent.mkdir()
+    path.write_text(json.dumps(record))
+    git(repo, "add", VERSIONS_RECORD)
+    git(repo, "commit", "-qm", "the versions record")
+
+    def both() -> tuple[bool, bool]:
+        problems = versions_problems(path, fixation=fixation, repo=repo)
+        return bool(problems), git_state(repo)["dirty"]
+
+    assert both() == (False, False)
+    for ignored in ("runs/x/meta.json", "scratchpad/notes.md", ".superpowers/sdd/brief.md"):
+        (repo / ignored).parent.mkdir(parents=True, exist_ok=True)
+        (repo / ignored).write_text("ignored\n")
+    assert both() == (False, False)
+    (repo / "notes.md").write_text("not ignored\n")
+    assert git(repo, "status", "--porcelain") == ""  # git status sees nothing
+    assert both() == (True, True)
+    (repo / "notes.md").unlink()
+    (repo / "code.py").write_text("x = 2\n")
+    assert both() == (True, True)
+    (repo / "code.py").write_text("x = 1\n")
+    assert both() == (False, False)
 
 
 def test_the_summary_looks_need_the_versions_record(monkeypatch, tmp_path, capsys) -> None:

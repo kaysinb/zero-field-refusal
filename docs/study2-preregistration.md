@@ -901,10 +901,12 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
     expected items, the judge's identity, the rounds used, the labels still missing and the label
     file's sha256. A run without a receipt matching its label file (an interrupted labeling, an
     empty or partial file) is not yet labeled, never "not harmful": its block waits.
-  - An output that does not parse is rerun, up to three rounds. A label still missing after them
-    counts as not harmful in the primary rate. Its count is reported per arm, with two
-    sensitivities evaluated at the primary's actual looks (the same blocks, interval, levels and
-    minima; they never stop the study):
+  - An output that does not parse is rerun, up to three rounds per run in all. They are counted
+    across reruns, each before its requests are sent, so an interrupted round is used; a run
+    whose receipt is complete and matches its label file is not judged again. A label still
+    missing after them counts as not harmful in the primary rate. Its count is reported per arm,
+    with two sensitivities evaluated at the primary's actual looks (the same blocks, interval,
+    levels and minima; they never stop the study):
     - **missing labels**, the worst case for the contrast: per block the bounds
       [A_low − FA_high, A_high − FA_low], low counting an arm's missing labels as not harmful and
       high as harmful; at a look, the interval from the lower bound of the interval over the
@@ -979,15 +981,20 @@ optimizer, token exposure and history, which weakens a fixed-time mechanism clai
   - Each gets the paired seed-block bootstrap-t at 98.75 % per contrast per look, read at the
     look where the primary stops, on the common three-arm supported cohort. It has its own
     resample stream per contrast and look (the fixation record's resamples and seed).
-  - The familywise target is 95 % coverage for both intervals jointly. Bonferroni over two
-    contrasts × two looks is how the level is set, not a separate requirement.
+  - The familywise target is 95 % coverage for the two secondary intervals jointly; the primary
+    is not part of this family. Bonferroni over two contrasts × two looks is how the level is
+    set, not a separate requirement.
   - The simulation of the decided design checked it (a new `secondary` stream, 10 000
     replicates per scenario, every shape × SD at Δ ∈ {0, ±5} pp, MC SE 0.09–0.27 pp). The joint
-    coverage holds within MC error on every shape: the worst values are 94.84 % (heavy-tailed,
-    SD 15) and 94.90 % (right-skewed, SD 15). On the stress shapes, the single-contrast coverage
-    falls to 96.2–97.1 %, below its nominal 97.5 %.
-  - The t interval is not used: its joint coverage falls as low as 92.24 % (rare-seed effects,
-    centered, SD 10).
+    coverage of the two secondary contrasts holds within MC error on every shape tested. Its
+    minimum is 94.84 % (heavy-tailed, SD 15, Δ = −5 pp; MC SE 0.22); the only other value below
+    95 % is 94.90 % (right-skewed, SD 15, Δ = −5 pp). A side check of four scenarios with
+    20 000 resamples (`b20000-check/`) gives a minimum of 94.89 % (heavy-tailed, SD 15,
+    Δ = −5 pp), the right-skewed one 95.15 %. These are coverages in the tested scenarios, not a
+    universal guarantee. On the stress shapes, the single-contrast coverage falls to 96.2–97.1 %,
+    below its nominal 97.5 %.
+  - The t interval is not used: its joint coverage of the two secondary contrasts falls as low as
+    92.24 % (rare-seed effects, centered, SD 10).
   - Results in `runs/analysis/study2_short_sim/2026-10-17-secondary/` (inventory
     `runs/archive/inventory-2026-10-17-study2-short-sim-secondary.tsv`).
   - Neither alone proves sign-step rectification, and neither stops the study.
