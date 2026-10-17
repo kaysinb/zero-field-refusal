@@ -771,6 +771,9 @@ It changes no protocol, selection or run record, and this round's controls stay 
     is kept in its record;
   - any other part fails (exit 4).
 - **Driver exits.** A failure of D1 or D3 stops the driver.
+  - An incomplete D1 also stops it, with exit 5, before D2 and D3: a shared-state check failed,
+    or the path criterion is undecided. The outcome is then incomplete whatever D2 and D3
+    measure, so the driver records the branch, with the reasons, before it stops.
   - A D2 failure is recorded in `d2/failed.json` (the error, the peaks, the commit). The driver
     goes on to D3 and the branch, since no branch reads D2, and exits 6 at the end.
   - A failed expansion case records the three cases' branch, with the failure in its facts,

@@ -97,9 +97,10 @@ OUT_OF_MEMORY = 4  # a part met the memory rule's cap
 INCOMPLETE = 5  # the driver: the branch is incomplete
 D2_FAILED = 6  # the driver: D2 failed (recorded), the rest ran
 GPU_USED_MIB = 1000  # the driver starts only below this much GPU memory in use
-# The driver's programs (python -c, through project-run): the branch written, and a D2 failure
-# record when the D2 process left none (killed, say). No $, backtick or backslash inside.
-READ_BRANCH = "import json, sys; print(json.load(open(sys.argv[1]))['branch'])"
+# The driver's programs (python -c, through project-run): a field of a JSON output (D1's status,
+# the branch written), and a D2 failure record when the D2 process left none (killed, say). No $,
+# backtick or backslash inside.
+READ_FIELD = "import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])"
 D2_FAILURE_RECORD = (
     "import json, sys; from datetime import UTC, datetime; "
     "from zero_field_refusal.tracking import git_state; "
@@ -169,10 +170,13 @@ def driver_script(commit: str, written_at: str) -> str:
         *comment("Outputs: $RUNS_DIR/diagnostics/fa_control/ (d1, d2, d3, branch), with this "
                  "driver's log. It can be run again: every part already written at this commit "
                  "is kept. It stops at the first failure of D1 or D3, except that a failed "
-                 "determinism check or expansion case still records the branch first. A D2 "
-                 "failure is recorded (d2/failed.json) and the driver goes on, since no branch "
-                 f"reads D2, then exits {D2_FAILED} at the end. An incomplete branch ends the "
-                 f"driver with exit {INCOMPLETE}."),
+                 "determinism check or expansion case still records the branch first. An "
+                 "incomplete D1 (a failed shared-state check, or an undecided path criterion: "
+                 "Revision 3, 1) records the branch, incomplete, and ends the driver with exit "
+                 f"{INCOMPLETE} before D2 and D3. A D2 failure is recorded (d2/failed.json) and "
+                 "the driver goes on, since no branch reads D2, then exits "
+                 f"{D2_FAILED} at the end. An incomplete branch ends the driver with exit "
+                 f"{INCOMPLETE}."),
         "set -euo pipefail",
         ". /etc/rp_environment",
         ". /root/zfr-env.sh",
@@ -204,6 +208,14 @@ def driver_script(commit: str, written_at: str) -> str:
         "# The steps, in the specification's order",
         f"step {SCRIPT} plan",
         f"step {SCRIPT} d1",
+        "# An incomplete D1 makes the outcome incomplete whatever D2 and D3 measure (Revision 3,",
+        "# 1): the branch is recorded, with why, and the driver stops",
+        f'd1_status=$(project-run "$SRC" python -c "{READ_FIELD}" "$OUT/d1/result.json" status)',
+        'if [ "$d1_status" != complete ]; then',
+        f'  echo "== {stamp} D1 is $d1_status: D2 and D3 do not run" >&2',
+        f"  step {SCRIPT} branch",
+        f"  exit {INCOMPLETE}",
+        "fi",
         "# D2: a failure is recorded and the driver goes on; no branch reads D2",
         f'echo "== {stamp} start: d2"',
         "set +e",
@@ -250,7 +262,8 @@ def driver_script(commit: str, written_at: str) -> str:
         '  *) exit "$due" ;;',
         "esac",
         f"step {SCRIPT} branch",
-        f'outcome=$(project-run "$SRC" python -c "{READ_BRANCH}" "$OUT/branch/branch.json")',
+        f'outcome=$(project-run "$SRC" python -c "{READ_FIELD}" "$OUT/branch/branch.json" '
+        "branch)",
         f'echo "== {stamp} the branch: $outcome"',
         f'if [ "$outcome" = incomplete ]; then exit {INCOMPLETE}; fi',
         f'if [ "$d2" -ne 0 ]; then echo "== {stamp} d2 failed: $OUT/d2/failed.json" >&2; '

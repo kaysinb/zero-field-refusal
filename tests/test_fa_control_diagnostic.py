@@ -9,6 +9,7 @@ import math
 import runpy
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -895,14 +896,18 @@ def namespace_of_script() -> dict:
 
 
 def test_the_driver_programs(tmp_path, monkeypatch, capsys) -> None:
-    """The driver's python -c programs: the branch read back, and D2's fallback failure record."""
+    """The driver's python -c programs: a field read back (the branch, D1's status), and D2's
+    fallback failure record."""
     namespace = namespace_of_script()
-    for program in (namespace["READ_BRANCH"], namespace["D2_FAILURE_RECORD"]):
+    for program in (namespace["READ_FIELD"], namespace["D2_FAILURE_RECORD"]):
         assert not {"$", "`", "\\", '"'} & set(program)  # safe inside the driver's double quotes
     (tmp_path / "branch.json").write_text(json.dumps({"branch": "incomplete"}))
-    monkeypatch.setattr("sys.argv", ["-c", str(tmp_path / "branch.json")])
-    exec(namespace["READ_BRANCH"], {})
-    assert capsys.readouterr().out == "incomplete\n"
+    (tmp_path / "result.json").write_text(json.dumps({"status": "complete", "reasons": []}))
+    for name, key, value in (("branch.json", "branch", "incomplete"),
+                             ("result.json", "status", "complete")):  # fmt: skip
+        monkeypatch.setattr("sys.argv", ["-c", str(tmp_path / name), key])
+        exec(namespace["READ_FIELD"], {})
+        assert capsys.readouterr().out == f"{value}\n"
     monkeypatch.setattr("sys.argv", ["-c", str(tmp_path / "failed.json"), "137"])
     exec(namespace["D2_FAILURE_RECORD"], {})
     record = json.loads((tmp_path / "failed.json").read_text())
@@ -948,6 +953,28 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     assert lines[d3 + 1 : d3 + 6] == ["rc=$?", "set -e", 'if [ "$rc" -ne 0 ]; then',
                                       f'  if [ "$rc" -eq 2 ]; then step {run} branch; fi',
                                       '  exit "$rc"']  # fmt: skip
+    # Review r3 m1: an incomplete D1 records the branch (incomplete, with why) and stops with
+    # exit 5 before D2; a complete one goes on.
+    d1 = lines.index(f"step {run} d1")
+    read = namespace_of_script()["READ_FIELD"]
+    block = lines[d1 + 1 : lines.index("# D2: a failure is recorded and the driver goes on; no "
+                                       "branch reads D2")]  # fmt: skip
+    assert [line for line in block if not line.startswith("#")] == [
+        f'd1_status=$(project-run "$SRC" python -c "{read}" "$OUT/d1/result.json" status)',
+        'if [ "$d1_status" != complete ]; then',
+        '  echo "== $(date -u +%FT%TZ) D1 is $d1_status: D2 and D3 do not run" >&2',
+        f"  step {run} branch", "  exit 5", "fi"]  # fmt: skip
+    stand_ins = ['project-run() { shift 2; "$PYTHON" "$@"; }', 'step() { echo "step: $*"; }']
+    for status, code in (("incomplete", 5), ("complete", 0)):
+        (tmp_path / "d1").mkdir(exist_ok=True)
+        (tmp_path / "d1" / "result.json").write_text(json.dumps({"status": status}))
+        program = "\n".join(["set -euo pipefail", *stand_ins, *block, "echo 'on to D2'"])
+        done = subprocess.run(["bash", "-c", program], capture_output=True, text=True,
+                              env={"PYTHON": sys.executable, "OUT": str(tmp_path), "SRC": "."},
+                              check=False)  # fmt: skip
+        assert done.returncode == code, done.stderr
+        assert ("step: " in done.stdout and "branch" in done.stdout) == (status == "incomplete")
+        assert ("on to D2" in done.stdout) == (status == "complete")
     # Re-review N2: a D2 failure is recorded (by D2, else here) and D3 goes on.
     d2 = lines.index(f"{run} d2")
     assert lines[d2 + 1 : d2 + 4] == ["d2=$?", "set -e", 'if [ "$d2" -ne 0 ]; then']
@@ -964,9 +991,9 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
         "    rc=$?", "    set -e", '    if [ "$rc" -ne 0 ]; then',
         f'      step {run} branch --expansion-failed "$rc"', '      exit "$rc"']  # fmt: skip
     final = positions[-1]
-    read = namespace_of_script()["READ_BRANCH"]
+    read = namespace_of_script()["READ_FIELD"]
     assert lines[final + 1 : final + 4] == [
-        f'outcome=$(project-run "$SRC" python -c "{read}" "$OUT/branch/branch.json")',
+        f'outcome=$(project-run "$SRC" python -c "{read}" "$OUT/branch/branch.json" branch)',
         'echo "== $(date -u +%FT%TZ) the branch: $outcome"',
         'if [ "$outcome" = incomplete ]; then exit 5; fi']  # fmt: skip
     assert lines[final + 4].startswith('if [ "$d2" -ne 0 ]; then') and "exit 6" in lines[final + 4]
