@@ -237,3 +237,46 @@ Frozen. All failures are kept and reported.
 - B = 20 is untested.
 - This round's controls remain failed. The diagnostic can only justify a new protocol, tested on
   fresh seeds.
+
+## Revision 2 (frozen)
+
+Operationalizations fixed before any run, where the implementation found the text above open. They
+bind the code. Nothing else changes.
+
+1. **"The residual comes from the path discrepancy"** (Branch F) holds when ‖(i)‖ ≤ 0.1·‖(iii)‖:
+   the fp32 same-path residual is at most a tenth of the recorded one.
+2. **The same-path float64 soft control** (Branch F) is part of D1, at FA 1.21e-5:
+   - targets from θ₀'s training path, on the frozen copy;
+   - loss and gradient accumulation in float64, FA as implemented, 25 steps;
+   - K on the scoring panel at steps 1, 5, 10, 15, 20 and 25, and the monitor every 5 steps.
+
+   "Keeps K below 0.06325" means strictly below the bound at each of those steps.
+3. **"D3's regular runs stay within the bound"** (Branch F) covers every D3 case: FA 1.21e-5,
+   FA 1e-5 and AdamW 1.32e-5. An AdamW pair above the bound therefore excludes F. The conditions
+   of Branches B and A stay as written, on FA 1.21e-5. The AdamW result is reported under every
+   branch.
+4. **Survival of fp32 rounding.**
+   - A perturbation survives when its realized norm after rounding, ‖fp32(θ₀ + p) − θ₀‖, is at
+     least half its intended norm.
+   - Otherwise it is scaled ×10 once. D_twin uses the second attempt, whatever it realizes.
+   - For each attempt, the intended norm, the realized norm and the count of changed coordinates
+     are recorded.
+5. **The AdamW case.** No AdamW soft control exists. Its perturbations are scaled to the FA soft
+   control's first-step displacement recomputed at 1.32e-5, on the same residual, and p1 takes its
+   direction.
+6. **The FA 1e-5 case.** The archived regular run's rate is 9.98e-06; its control ran at the
+   selected 1e-05. D3 re-runs the archived 9.98e-06 run, as the determinism check requires, and
+   scales the perturbations by the 1e-05 control's first step.
+7. **D2.**
+   - Per-batch Ritz values replace the base text's pooled λ_max.
+   - F in δᵀFδ is the soft Hessian of the 4 batches.
+   - The linearized map is homogeneous after the measured first step: it has no per-batch
+     residual forcing.
+8. **The float64 reference.**
+   - The parameters stay fp32, as the forward pass is fp32.
+   - The first moment, and AdamW's second moment, are float64. The update is formed in float64
+     and rounded once per step.
+   - A float64 master copy of the parameters does not fit the 46 GB memory rule. The report
+     states this limit.
+9. **A failed determinism check** gives the outcome "incomplete": D3 stops as the base text says,
+   and no branch is chosen.
