@@ -436,30 +436,66 @@ def test_twin_divergence_is_k_in_both_directions(tiny) -> None:
 # ------------------------------------------------------------------------------- branches
 
 BOUND = 0.0632455532033676
-
-
+EVAL_AT = [1, 5, 10, 15, 20, 25]  # D3's steps and the same-path control's (the settings)
 COMMIT = "c" * 40
+SURVIVED = [{"scale": 1.0, "intended_norm": 1e-3, "realized_norm": 1e-3, "changed": 9,
+             "survived": True}]  # fmt: skip
+SHARED = {"trainable_parameters": "equal", "v0": "equal", "loss_normalization": "equal",
+          "initial_optimizer_state": "equal_except_lr"}  # fmt: skip
 
 
 def written(record, commit=COMMIT):
     return {**record, "provenance": {"code": {"commit": commit}}}
 
 
+def series(last, steps=EVAL_AT):
+    """A measured series: 0.001 at every step but the last, which is ``last``."""
+    return [0.001] * (len(steps) - 1) + [last]
+
+
+def pair(last=0.001, *, steps=EVAL_AT, values=None, rounding=SURVIVED, stop=None,
+         diverged=False, rows=()):  # fmt: skip
+    """A D3 pair's record as ``run_case`` writes it (D_twin readings, rounding, stop)."""
+    values = series(last, steps) if values is None else values
+    return {"D_twin": [{"step": s, "D_twin": v} for s, v in zip(steps, values, strict=True)],
+            "rows": list(rows), "stop": stop, "diverged": diverged, "rounding": rounding,
+            "max_D_twin": fcd._largest(values)}  # fmt: skip
+
+
+def control(last=0.01, *, steps=EVAL_AT, stop=None, diverged=False, monitor=()):
+    """The same-path control's record as ``same_path_control`` writes it."""
+    return {"scoring": [{"step": s, "K_scoring": v}
+                        for s, v in zip(steps, series(last, steps), strict=True)],
+            "monitor": list(monitor), "rows": [], "stop": stop, "diverged": diverged}  # fmt: skip
+
+
 def outputs(*, path=True, same_path=0.01, pairs=None, determinism=True, expansion=False):
-    """Synthetic D1 and D3 outputs at one commit: ``pairs`` maps a case to its pairs' max
-    D_twin; every twin A equals its archive, and (iii) every control's record."""
-    within = {k: 0.001 for k in ("p1", "p2", "p3", "p4", "reference")}
+    """Synthetic D1 and D3 outputs at one commit, every validity check passed: ``pairs`` maps a
+    case to its pairs, each a number (its D_twin at the last step, 0.001 at the others) or a
+    record; ``same_path`` is the control's K_scoring at its last step, or its record; ``path``
+    puts ‖(i)‖ at about 1 % or 88 % of ‖(iii)‖."""
     pairs = pairs or {}
     names = ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"] + (["fa-1.46e-05"] if expansion else [])
+
+    def record(key, spec):
+        out = pair(spec) if isinstance(spec, int | float) else dict(spec)
+        if key == "reference":  # no perturbation, a mode
+            out.pop("rounding", None)
+            out["mode"] = fcd.FLOAT64_FULL
+        return out
+
     cases = {name: written({
         "status": "complete", "twin_A": {"archive": {"equal": True}},
-        "pairs": {k: {"max_D_twin": v, **({"mode": fcd.FLOAT64_FULL} if k == "reference" else {})}
-                  for k, v in {**within, **pairs.get(name, {})}.items()},
+        "pairs": {key: record(key, pairs.get(name, {}).get(key, 0.001)) for key in fcd.PAIRS},
     }) for name in names}  # fmt: skip
     d1 = written({
-        "residual": {"path_dominates": path,
+        "status": "complete",
+        "shared_state": {check: {key: True} for check, key in SHARED.items()},
+        "residual": {"norms": {"i_training_path_fp32": 1e-6 if path else 1e-4,
+                               "iii_control_recorded": 1.1356e-4},
                      "iii_equals_record": {"1e-05": True, "1.21e-05": True, "1.46e-05": True}},
-        "same_path_control": {"below_bound": same_path < BOUND, "max_K_scoring": same_path},
+        "same_path_control": (control(same_path) if isinstance(same_path, int | float)
+                              else same_path),
     })  # fmt: skip
     return d1, written({"equal": determinism}), cases
 
@@ -468,13 +504,21 @@ def decide(d1, determinism, cases, **kwargs):
     return fcd.decide_branch(settings(), d1, determinism, cases, **kwargs)
 
 
+def branch(**changes):
+    out = decide(*outputs(**changes))
+    return out["branch"], out["expand"]
+
+
 def test_branch_f_needs_the_path_the_same_path_control_and_the_regular_runs() -> None:
-    assert decide(*outputs())["branch"] == "F"
-    out = decide(*outputs(pairs={"fa-1e-05": {"p3": 0.2}}))  # a passing-rate pair exceeds
-    assert (out["branch"], out["expand"]) == ("ambiguous", "fa-1.46e-05")
-    out = decide(*outputs(path=False))
-    assert (out["branch"], out["expand"]) == ("ambiguous", "fa-1.46e-05")
-    assert decide(*outputs(same_path=BOUND))["branch"] == "B"  # strictly below, at every step
+    out = decide(*outputs())
+    assert (out["branch"], out["facts"]["step"]) == ("F", 5)
+    facts = out["facts"]
+    assert facts["path_criterion"]["state"] == "holds"
+    assert facts["same_path_control_state"] == "below"
+    assert facts["pair_states"]["adamw-1.32e-05"] == dict.fromkeys(fcd.PAIRS, "within")
+    assert facts["shared_state"] == dict.fromkeys(fcd.SHARED_STATE_CHECKS, True)
+    assert branch(pairs={"fa-1e-05": {"p3": 0.2}}) == ("ambiguous", "fa-1.46e-05")
+    assert branch(path=False) == ("ambiguous", "fa-1.46e-05")  # false on finite norms
 
 
 @pytest.mark.parametrize("key", ["p1", "p2", "p3", "p4", "reference"])
@@ -482,35 +526,200 @@ def test_an_adamw_pair_above_the_bound_excludes_f(key) -> None:
     """Revision 2, 3: Branch F's regular runs are every D3 case, AdamW 1.32e-5 included; with
     every other F condition met, the outcome is ambiguous (A and B read FA 1.21e-5 only)."""
     out = decide(*outputs(pairs={"adamw-1.32e-05": {key: BOUND * 1.01}}))
-    assert (out["branch"], out["expand"]) == ("ambiguous", "fa-1.46e-05")
-    facts = out["facts"]
-    assert facts["path_dominates"] and facts["same_path_control_below"]
-    assert all(facts["failing_pairs_within"].values())
-    assert facts["regular_cases_within"]["adamw-1.32e-05"] is False
-    assert facts["pairs_within"]["adamw-1.32e-05"][key] is False  # reported
+    assert (out["branch"], out["expand"], out["facts"]["step"]) == ("ambiguous", "fa-1.46e-05", 7)
+    states = out["facts"]["pair_states"]
+    assert set(states["fa-1.21e-05"].values()) == {"within"}
+    assert states["adamw-1.32e-05"][key] == "exceeding"  # reported
     # The same AdamW pair under Branch B's conditions leaves B, and under A's leaves A.
-    assert decide(*outputs(same_path=0.2, pairs={"adamw-1.32e-05": {key: 1.0}}))["branch"] == "B"
+    assert branch(same_path=0.2, pairs={"adamw-1.32e-05": {key: 1.0}}) == ("B", None)
     a = decide(*outputs(pairs={"adamw-1.32e-05": {key: 1.0}, "fa-1.21e-05": {"p1": 1.0}}))
-    assert a["branch"] == "A" and a["facts"]["pairs_within"]["adamw-1.32e-05"][key] is False
+    assert a["branch"] == "A" and a["facts"]["pair_states"]["adamw-1.32e-05"][key] == "exceeding"
 
 
 def test_branch_b_and_a() -> None:
-    assert decide(*outputs(same_path=0.2))["branch"] == "B"
-    assert decide(*outputs(same_path=0.2, path=False))["branch"] == "B"
+    assert branch(same_path=0.2) == ("B", None)
+    assert branch(same_path=0.2, path=False) == ("B", None)
     for key in ("p1", "p2", "p3", "p4", "reference"):
         out = decide(*outputs(pairs={"fa-1.21e-05": {key: BOUND * 1.01}}))
-        assert out["branch"] == "A" and out["facts"]["failing_pairs_within"][key] is False
-    # A twin stopped on a non-finite value counts as exceeding.
-    assert decide(*outputs(pairs={"fa-1.21e-05": {"p2": math.inf}}))["branch"] == "A"
-    assert decide(*outputs(pairs={"fa-1.21e-05": {"p1": BOUND}}))["branch"] == "F"  # ≤ bound
+        assert out["branch"] == "A"
+        assert out["facts"]["pair_states"]["fa-1.21e-05"][key] == "exceeding"
+    assert branch(pairs={"fa-1.21e-05": {"p1": BOUND}}) == ("F", None)  # ≤ the bound is within
+
+
+def test_a_diverged_pair_is_exceeding() -> None:
+    """Revision 3, 3: a non-finite loss, gradient, weight or D_twin is a divergence, which counts
+    as exceeding, without survival and on an incomplete series."""
+    stopped = pair(values=[0.001, 0.002], steps=[1, 5], stop="non-finite weights after step 6",
+                   diverged=True)  # fmt: skip
+    nan = pair(values=[0.001, math.nan, *[0.001] * 4])
+    infinite_loss = pair(rows=[{"step": 0, "loss": 1.0, "grad_norm": 2.0},
+                               {"step": 1, "loss": math.inf, "grad_norm": 2.0}])  # fmt: skip
+    lost = [{"scale": 1.0, "intended_norm": 1e-3, "realized_norm": 0.0, "changed": 0,
+             "survived": False}] * 2  # fmt: skip
+    for record in (stopped, nan, infinite_loss, {**stopped, "rounding": lost}):
+        out = decide(*outputs(pairs={"fa-1.21e-05": {"p3": record}}))
+        assert (out["branch"], out["facts"]["step"]) == ("A", 1)
+        assert out["facts"]["pair_states"]["fa-1.21e-05"]["p3"] == "exceeding"
+    assert decide(*outputs(pairs={"fa-1.21e-05": {"reference": stopped}}))["branch"] == "A"
+    assert branch(pairs={"fa-1.21e-05": {"p2": math.inf}}) == ("A", None)
+    # A diverged pair of FA 1e-5 is a regular-run pair exceeding: ambiguous, not F
+    assert branch(pairs={"fa-1e-05": {"p1": stopped}}) == ("ambiguous", "fa-1.46e-05")
 
 
 def test_an_ambiguous_branch_expands_once_then_reports_without_choosing() -> None:
     out = decide(*outputs(path=False, expansion=True, pairs={"fa-1.46e-05": {"p1": 1.0}}))
     assert (out["branch"], out["expand"]) == ("ambiguous", None)
-    assert out["facts"]["expansion"]["pairs_within"]["p1"] is False
+    assert out["facts"]["expansion"]["pair_states"]["p1"] == "exceeding"
     # The expansion never changes a decided branch.
-    assert decide(*outputs(expansion=True, pairs={"fa-1.46e-05": {"p1": 1.0}}))["branch"] == "F"
+    assert branch(expansion=True, pairs={"fa-1.46e-05": {"p1": 1.0}}) == ("F", None)
+
+
+@pytest.mark.parametrize("check", [*SHARED, "iii_equals_record", "iii_without_a_control"])
+def test_each_failed_shared_state_check_makes_the_outcome_incomplete(check) -> None:
+    """Revision 3, 1 (review fa8 reached F with each of these checks false): every D1
+    shared-state check gates every branch, A, B and F alike."""
+    for changes, valid in (({}, "F"), ({"same_path": 0.2}, "B"),
+                           ({"pairs": {"fa-1.21e-05": {"p1": 1.0}}}, "A")):  # fmt: skip
+        d1, determinism, cases = outputs(**changes)
+        assert decide(d1, determinism, cases)["branch"] == valid
+        if check == "iii_equals_record":
+            d1["residual"]["iii_equals_record"]["1.46e-05"] = False
+        elif check == "iii_without_a_control":  # (iii) checked against two controls of three
+            del d1["residual"]["iii_equals_record"]["1e-05"]
+        else:
+            d1["shared_state"][check][SHARED[check]] = False
+        out = decide(d1, determinism, cases)
+        assert (out["branch"], out["expand"]) == ("incomplete", None)
+        name = "iii_equals_record" if check.startswith("iii") else check
+        assert out["facts"]["shared_state"][name] is False
+        assert out["facts"]["incomplete"] == [f"d1/result.json: {fcd.SHARED_STATE_CHECKS[name]}"]
+    d1, determinism, cases = outputs()
+    d1["status"] = "incomplete"  # D1's own verdict is read too
+    assert decide(d1, determinism, cases)["branch"] == "incomplete"
+
+
+UNDECIDED = [(math.nan, 1e-4), (math.inf, 1e-4), (1e-6, math.nan), (1e-6, math.inf), (1e-6, 0.0),
+             (0.0, 0.0), (None, 1e-4)]  # fmt: skip
+
+
+@pytest.mark.parametrize("norms", UNDECIDED)
+def test_an_undecided_path_criterion_makes_the_outcome_incomplete(norms) -> None:
+    """Revision 3, 1: a non-finite ‖(i)‖ or ‖(iii)‖, or a zero ‖(iii)‖, leaves the path
+    criterion undecided, never false; the outcome is incomplete, whatever else holds."""
+    residual = {"norms": {"i_training_path_fp32": norms[0], "iii_control_recorded": norms[1]}}
+    criterion = fcd.path_criterion(residual, 0.1)
+    assert criterion["state"] == "undecided" and criterion["ratio_i_to_iii"] is None
+    for changes in ({}, {"same_path": 0.2}, {"pairs": {"fa-1.21e-05": {"p1": 1.0}}},
+                    {"pairs": {"fa-1e-05": {"p1": 1.0}}}):  # fmt: skip
+        d1, determinism, cases = outputs(**changes)
+        d1["residual"]["norms"].update(residual["norms"])
+        out = decide(d1, determinism, cases)
+        assert (out["branch"], out["expand"]) == ("incomplete", None)
+        assert out["facts"]["path_criterion"]["state"] == "undecided"
+    finite = {"norms": {"i_training_path_fp32": 2e-5, "iii_control_recorded": 1e-4}}
+    assert fcd.path_criterion(finite, 0.1)["state"] == "false"
+    assert fcd.path_criterion(finite, 0.2)["state"] == "holds"  # ≤: the bound itself holds
+
+
+def lost_to_rounding():
+    """Review fa8's reproduction: both attempts of a perturbation realize no displacement."""
+    p = torch.nn.Parameter(torch.ones(1000))
+    attempts = fcd.apply_perturbation([("w", p)], {"w": torch.ones(1000)}, ones, 1e-12,
+                                      survival_share=0.5, rounding_scale=10)  # fmt: skip
+    assert [a["realized_norm"] for a in attempts] == [0.0, 0.0]
+    assert all(a["intended_norm"] > 0 for a in attempts)
+    return attempts
+
+
+@pytest.mark.parametrize("key", ["p1", "p2", "p3", "p4"])
+def test_a_perturbation_lost_to_rounding_is_never_within(key) -> None:
+    """Revision 3, 2 (review fa8 reached F with two attempts of zero realized displacement):
+    after its single ×10 retry, a perturbation that does not survive leaves its pair
+    incomplete, never within; it can still be exceeding."""
+    attempts = lost_to_rounding()
+    lost = pair(0.0, values=[0.0] * 6, rounding=attempts)
+    state = fcd.pair_state(lost, perturbed=True, eval_at=EVAL_AT, bound=BOUND, survival_share=0.5)
+    assert (state["state"], state["survived"]) == ("incomplete", False)
+    out = decide(*outputs(pairs={"fa-1.21e-05": {key: lost}}))
+    assert (out["branch"], out["expand"], out["facts"]["step"]) == ("incomplete", None, 2)
+    assert out["facts"]["pairs_survived"]["fa-1.21e-05"][key] is False
+    assert branch(same_path=0.2, pairs={"fa-1.21e-05": {key: lost}}) == ("incomplete", None)
+    assert branch(pairs={"fa-1e-05": {key: lost}}) == ("incomplete", None)  # step 6
+    # A lost perturbation that still exceeds shows at least that sensitivity
+    assert branch(pairs={"fa-1.21e-05": {key: pair(0.2, rounding=attempts)}}) == ("A", None)
+    # Each attempt is judged against its own intended norm: a lost first attempt, then a retry
+    # realizing 0.6, or 0.4, of its own norm (6 and 4 times the first attempt's)
+    retry = {"scale": 10.0, "intended_norm": 1e-2, "realized_norm": 0.6e-2, "changed": 9,
+             "survived": True}  # fmt: skip
+    kept = pair(rounding=[attempts[0], retry])
+    assert branch(pairs={"fa-1.21e-05": {key: kept}}) == ("F", None)
+    short = pair(rounding=[attempts[0], {**retry, "realized_norm": 0.4e-2}])
+    assert branch(pairs={"fa-1.21e-05": {key: short}}) == ("incomplete", None)
+    assert branch(pairs={"fa-1.21e-05": {key: pair(rounding=[])}}) == ("incomplete", None)
+
+
+def test_an_incomplete_pair_at_the_failing_rate_is_not_a() -> None:
+    """Revision 3, 3: an incomplete series is not an unbounded one (``_pair_summary`` mapped it
+    to ∞, which gave A); the outcome is incomplete."""
+    summary = fcd._pair_summary([{"step": 1, "D_twin": 1.21e-5}, {"step": 5, "D_twin": 1.21e-5}],
+                                EVAL_AT, None)  # fmt: skip
+    assert summary == {"max_D_twin": 1.21e-5, "complete": False}
+    short = pair(values=[1.21e-5] * 5, steps=EVAL_AT[:5])  # step 25 never measured
+    stopped = pair(1.21e-5, stop="interrupted")  # a stop that is not a divergence
+    for key, record in (("p1", short), ("reference", short), ("p1", stopped)):
+        out = decide(*outputs(pairs={"fa-1.21e-05": {key: record}}))
+        assert (out["branch"], out["expand"], out["facts"]["step"]) == ("incomplete", None, 2)
+        assert out["facts"]["pair_states"]["fa-1.21e-05"][key] == "incomplete"
+        assert out["facts"]["incomplete"] == [
+            f"step 2: the pairs {[key]} of fa-1.21e-05 are incomplete"
+        ]
+
+
+def test_a_one_point_control_series_is_incomplete_not_b() -> None:
+    """Review fa8 reproduced B from a one-point scoring series: "not below" is no evidence.
+    Revision 3, 3: the control is exceeding only on its complete series, or when it diverged."""
+    out = decide(*outputs(same_path=control(0.2, steps=[1])))
+    assert (out["branch"], out["expand"], out["facts"]["step"]) == ("incomplete", None, 3)
+    assert out["facts"]["same_path_control_state"] == "incomplete"
+    assert out["facts"]["incomplete"] == ["step 3: the same-path control is incomplete"]
+    stopped = control(0.01, steps=[1, 5], stop="interrupted")  # not a divergence
+    assert branch(same_path=stopped) == ("incomplete", None)
+    # A run that diverged is exceeding, whatever it measured; so is a complete series above
+    diverged = control(0.01, steps=[1], stop="non-finite loss or gradient at step 3",
+                       diverged=True)  # fmt: skip
+    assert branch(same_path=diverged) == ("B", None)
+    assert branch(same_path=control(math.nan)) == ("B", None)
+    monitor = [{"step": 5, "K_monitor": math.inf, "displacement_norm": 1.0}]
+    assert branch(same_path=control(0.01, monitor=monitor)) == ("B", None)  # a non-finite K
+    assert branch(same_path=control(BOUND * 1.0001)) == ("B", None)
+
+
+def test_the_control_exactly_at_the_bound_is_ambiguous() -> None:
+    """Revision 3, 3 and 4: neither below nor exceeding on a complete series is at the bound,
+    and the outcome is ambiguous (step 7), no longer B."""
+    out = decide(*outputs(same_path=BOUND))
+    assert (out["branch"], out["expand"], out["facts"]["step"]) == ("ambiguous", "fa-1.46e-05", 7)
+    assert out["facts"]["same_path_control_state"] == "at_bound"
+    assert out["facts"]["same_path_control"]["max_K_scoring"] == BOUND
+
+
+@pytest.mark.parametrize("case", ["fa-1e-05", "adamw-1.32e-05"])
+def test_step_6_is_incomplete(case) -> None:
+    """Revision 3, 4, step 6: the control below, the path criterion holding, no pair exceeding,
+    and a pair of FA 1e-5 or AdamW incomplete: no branch, and no expansion."""
+    short = pair(values=[0.001] * 5, steps=EVAL_AT[:5])
+    out = decide(*outputs(pairs={case: {"p2": short}}))
+    assert (out["branch"], out["expand"], out["facts"]["step"]) == ("incomplete", None, 6)
+    assert out["facts"]["pair_states"][case]["p2"] == "incomplete"
+    unread = {case: ["p2"]}
+    assert out["facts"]["incomplete"] == [f"step 6: the pairs {unread} are incomplete"]
+    # Step 7 instead when a pair exceeds, the path criterion is false or the control is at the
+    # bound; step 4 when the control exceeds
+    other = "adamw-1.32e-05" if case == "fa-1e-05" else "fa-1e-05"
+    assert branch(pairs={case: {"p2": short}, other: {"p4": 0.2}}) == ("ambiguous", "fa-1.46e-05")
+    assert branch(path=False, pairs={case: {"p2": short}}) == ("ambiguous", "fa-1.46e-05")
+    assert branch(same_path=BOUND, pairs={case: {"p2": short}}) == ("ambiguous", "fa-1.46e-05")
+    assert branch(same_path=0.2, pairs={case: {"p2": short}}) == ("B", None)
 
 
 def test_missing_outputs_leave_the_branch_incomplete() -> None:
@@ -597,22 +806,31 @@ def test_kept_outputs_must_come_from_this_commit(tmp_path) -> None:
     assert fcd.kept(tmp_path, "d3/fa-1e-05.json", "b" * 40) is None  # nothing left to read
 
 
-def test_a_k_series_with_a_non_finite_value_is_never_below_the_bound() -> None:
-    """Review I2: Python's max skips a NaN that is not first."""
+def test_the_control_s_state_and_a_pair_s_series() -> None:
+    """Review I2 and Revision 3, 3: a NaN never hides under ``max`` (it is a divergence); a
+    missing step is incomplete, not unbounded."""
+    steps = [1, 5, 10]
+
+    def state(values, measured=steps, **record):
+        scoring = [{"step": s, "K_scoring": v} for s, v in zip(measured, values, strict=True)]
+        return fcd.control_state({"scoring": scoring, **record}, k_at=steps, bound=BOUND)
+
     for values in ([0.01, math.nan, 0.02], [math.nan, 0.01, 0.02], [0.01, 0.02, math.inf]):
-        series = fcd.series_summary(values, [1, 5, 10], [1, 5, 10], None, BOUND)
-        assert not series["complete"] and not series["below_bound"]
-        assert series["max"] == math.inf and series["nonfinite_steps"]
-    good = fcd.series_summary([0.01, 0.02, 0.03], [1, 5, 10], [1, 5, 10], None, BOUND)
-    assert good["below_bound"] and good["max"] == 0.03
-    assert not fcd.series_summary([0.01, 0.02], [1, 5], [1, 5, 10], None, BOUND)["complete"]
-    assert not fcd.series_summary([BOUND] * 3, [1, 5, 10], [1, 5, 10], None, BOUND)["below_bound"]
-    pair = fcd._pair_summary([{"step": 1, "D_twin": 0.01}, {"step": 5, "D_twin": math.nan},
-                              {"step": 10, "D_twin": 0.02}], [1, 5, 10], None)  # fmt: skip
-    assert pair == {"max_D_twin": math.inf, "complete": False}
-    pair = fcd._pair_summary([{"step": 1, "D_twin": 0.01}, {"step": 10, "D_twin": 0.02}],
-                             [1, 5, 10], None)  # fmt: skip
-    assert not pair["complete"]
+        out = state(values)
+        assert (out["state"], out["diverged"], out["complete"]) == ("exceeding", True, False)
+        assert out["max_K_scoring"] == math.inf and out["nonfinite_steps"]
+    good = state([0.01, 0.02, 0.03])
+    assert (good["state"], good["max_K_scoring"], good["complete"]) == ("below", 0.03, True)
+    assert state([0.01, 0.02], [1, 5])["state"] == "incomplete"
+    assert state([0.01, 0.2], [1, 5])["state"] == "incomplete"  # above, on an incomplete series
+    assert state([BOUND] * 3)["state"] == "at_bound"
+    assert state([0.01, BOUND, 0.2])["state"] == "exceeding"
+    assert state([0.01, 0.02, 0.03], stop="interrupted")["state"] == "incomplete"
+    summary = fcd._pair_summary([{"step": 1, "D_twin": 0.01}, {"step": 5, "D_twin": math.nan},
+                                 {"step": 10, "D_twin": 0.02}], steps, None)  # fmt: skip
+    assert summary == {"max_D_twin": math.inf, "complete": False}
+    assert fcd._pair_summary([], steps, "non-finite loss or gradient at step 0") == {
+        "max_D_twin": None, "complete": False}  # fmt: skip
 
 
 def test_a_failed_float64_reference_is_kept(monkeypatch) -> None:
@@ -904,6 +1122,7 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
 
     d1 = fcd.run_d1(s, guarded, runs, out)
     assert d1["status"] == "complete" and d1["numerics"]["memory_rule"] is not None
+    assert "reasons" not in d1
     shared = d1["shared_state"]
     assert shared["v0"]["equal"] and shared["trainable_parameters"]["equal"]
     assert shared["loss_normalization"]["equal"]
@@ -911,6 +1130,8 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     assert shared["initial_optimizer_state"]["regular"]["state_keys"] == ["exp_avg_sq"]
     residual = d1["residual"]
     assert all(residual["iii_equals_record"].values())  # the recorded first gradient, bit for bit
+    assert residual["path_criterion"]["state"] in ("holds", "false")  # decided: finite norms
+    assert residual["ratio_i_to_iii"] == residual["path_criterion"]["ratio_i_to_iii"]
     assert residual["norms"]["ii_training_path_float64"] < residual["norms"]["iii_control_recorded"]
     assert set(residual["cosines"]) == {
         "i_training_path_fp32|ii_training_path_float64",
@@ -921,6 +1142,8 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     assert control["steps"] == STEPS and [r["step"] for r in control["scoring"]] == [1, 3, 6]
     assert [r["step"] for r in control["monitor"]] == [5]
     assert control["K_star"] == pytest.approx(math.sqrt(40)) and not control["nonfinite_steps"]
+    assert control["state"] in ("below", "exceeding", "at_bound") and control["complete"]
+    assert control["diverged"] is False and control["stop"] is None
     assert "all" in d1["v0_census"]["groups"] and "attn_q" in d1["v0_census"]["groups"]
 
     d2 = fcd.run_d2(s, guarded, runs, out)
@@ -946,6 +1169,8 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
         for key, pair in case["pairs"].items():
             assert [r["step"] for r in pair["D_twin"]] == [1, 3, 6], key
             assert pair["complete"] and math.isfinite(pair["max_D_twin"])
+            assert pair["diverged"] is False and pair["measured_every_step"]
+            assert pair["state"] == case["pair_states"][key] != "incomplete", key
             reading = pair["D_twin"][-1]
             assert reading["D_twin_over_K_star"] == pytest.approx(reading["D_twin"] / math.sqrt(40))
         assert case["pairs"]["p1"]["rounding"][0]["survived"]
@@ -954,6 +1179,8 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
             assert len(attempts) == (1 if attempts[0]["survived"] else 2), key
             for a in attempts:
                 assert a["survived"] == (a["realized_norm"] >= 0.5 * a["intended_norm"])
+            assert case["pairs"][key]["survived"] is attempts[-1]["survived"] is True, key
+        assert case["pairs"]["reference"]["survived"] is None  # no perturbation
         assert case["pairs"]["reference"]["mode"].startswith("float64 loss, accumulation and")
         assert not list((out / "d3" / "checkpoints" / name).glob("*.pt"))  # deleted
         p1 = case["pairs"]["p1"]["rounding"][0]  # θ₀ + δ₁ is the control's θ₁ exactly
@@ -966,6 +1193,10 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     assert decision["branch"] in fcd.BRANCHES and not decision["missing"]
     assert decision["branch"] != "incomplete" and not decision["facts"]["incomplete"]
     assert set(decision["facts"]["references"]) == set(order)
+    facts = decision["facts"]
+    assert facts["shared_state"] == dict.fromkeys(fcd.SHARED_STATE_CHECKS, True)
+    assert facts["pair_states"] == {name: done[name]["pair_states"] for name in order}
+    assert facts["same_path_control_state"] == control["state"]
     if decision["expand"]:
         fcd.run_d3(s, guarded, runs, out, cases=[decision["expand"]])
         again = fcd.decide_branch(s, *fcd.load_outputs(out))
@@ -1026,10 +1257,37 @@ def test_a_doctored_archive_or_record_makes_the_outcome_incomplete(world, monkey
         "0.001": True,
         "0.0012": False,
     }
+    assert d1["reasons"] == [f"{fcd.SHARED_STATE_CHECKS['iii_equals_record']} (the controls "
+                             "['0.0012'])"]  # fmt: skip
     decision = fcd.decide_branch(s, *fcd.load_outputs(out))
     assert decision["branch"] == "incomplete"
     reasons = " ".join(decision["facts"]["incomplete"])
     assert "fa-1.21e-05" in reasons and "(iii)" in reasons
+
+
+def test_d1_is_incomplete_when_a_shared_state_check_fails(world, monkeypatch) -> None:
+    """Revision 3, 1, end to end: D1 with unequal initial optimizer states (as when the two
+    configs' v₀ estimates differ) records itself incomplete, and so is the outcome."""
+    env, root = world
+    s = tiny_settings()
+    runs = fcd.locate_runs(s, root)
+    initial_state = fcd._initial_state
+
+    def unequal(*args, **kwargs):
+        return {**initial_state(*args, **kwargs), "equal_except_lr": False}
+
+    monkeypatch.setattr(fcd, "_initial_state", unequal)
+    monkeypatch.setattr(fcd, "same_path_control", lambda *args: fcd.control_state(
+        {"scoring": [{"step": t, "K_scoring": 0.0} for t in (1, 3, 6)]}, k_at=[1, 3, 6],
+        bound=BOUND))  # fmt: skip
+    out = fcd.output_root(root)
+    d1 = fcd.run_d1(s, env, runs, out)
+    assert d1["status"] == "incomplete" and all(d1["residual"]["iii_equals_record"].values())
+    assert d1["reasons"] == [fcd.SHARED_STATE_CHECKS["initial_optimizer_state"]]
+    assert d1["residual"]["path_criterion"]["state"] in ("holds", "false")
+    decision = fcd.decide_branch(s, d1, {"equal": True, "provenance": d1["provenance"]}, {})
+    assert decision["branch"] == "incomplete"
+    assert decision["facts"]["shared_state"]["initial_optimizer_state"] is False
 
 
 def test_a_d2_failure_is_recorded_and_kept(world, tmp_path, monkeypatch) -> None:

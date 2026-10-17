@@ -1,9 +1,11 @@
 """Study 2: the diagnostic of the FA soft-control failure, outside the confirmation.
 
 The specification is docs/study2-fa-control-diagnostic.md, frozen before any run; its Revision 1
-supersedes the base text where they differ, and its Revision 2 fixes the operationalizations
-(the path criterion, the same-path control, the cases of Branch F, survival of fp32 rounding,
-the AdamW and FA 1e-5 scales, D2's map, the float64 reference, "incomplete"). The settings are
+supersedes the base text where they differ, its Revision 2 fixes the operationalizations (the
+path criterion, the same-path control, the cases of Branch F, survival of fp32 rounding, the
+AdamW and FA 1e-5 scales, D2's map, the float64 reference, "incomplete"), and its Revision 3
+chooses or excludes a branch only on complete evidence (shared state gates every branch,
+survival is required, three states per measurement, the branch order). The settings are
 configs/experiments/fa_control_diagnostic.yaml. Nothing here changes the protocol, the
 selection, the analysis or a run record.
 
@@ -38,7 +40,10 @@ Parts, in the specification's order (Revision 1, "Order"):
 - **D3** (``run_d3``): determinism first, then per case the twins: the unperturbed regular run
   (twin A, its trainable parameters saved at the evaluation steps), the perturbed runs p1–p4 and
   the float64 reference, with D_twin(t) = max(KL(A_t‖B_t), KL(B_t‖A_t)) on the scoring panel.
-- **Branches** (``decide_branch``): F, B, A or ambiguous, from the parts' outputs.
+- **Branches** (``decide_branch``): F, B, A, ambiguous or incomplete, from the parts' outputs,
+  in Revision 3's order, on each measurement's state: a D3 pair within, exceeding or
+  incomplete (``pair_state``), the same-path control below, exceeding, at the bound or
+  incomplete (``control_state``); divergence counts as exceeding.
 
 **Memory** (1.5B, fp32): a trainable-sized vector is ≈ 5.2 GB. The base D3's rule, "46 GB
 reserved", is enforced as a cap on the process's CUDA memory (``apply_memory_rule``, in the GB of
@@ -49,9 +54,11 @@ coexists with them; D2's Ritz vector stays beside the Lanczos vectors only if it
 cap, and otherwise goes to host memory through one pinned buffer.
 
 **Validity.** Outputs written at another commit are moved aside and redone (``kept``); a twin A
-or a recomputed first gradient that differs from its record makes the outcome ``incomplete``
-(``decide_branch``), as does a failed determinism check, a missing output or a case without
-its five pairs.
+that differs from its record, or a failed D1 shared-state check (the trainable set, v₀'s hash,
+the loss normalization, the initial optimizer state, the recomputed first gradient against
+every control's record) makes the outcome ``incomplete`` (``decide_branch``), as does an
+undecided path criterion, a failed determinism check, a missing output or a case without its
+five pairs.
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1124,7 +1131,7 @@ def perturb(
     """Set the trainable parameters to θ₀ + scale·direction in fp32 and record what survived
     the rounding: the intended norm, the realized norm ‖fp32(θ₀ + p) − θ₀‖ and the coordinates
     that differ from θ₀. The perturbation survives when the realized norm is at least
-    ``survival_share`` of the intended one (Revision 2, 4)."""
+    ``survival_share`` of the intended one (Revision 2, 4; Revision 3, 2)."""
     changed = 0
     realized = intended = 0.0
     numel = 0
@@ -1151,9 +1158,10 @@ def apply_perturbation(
     survival_share: float,
     rounding_scale: float,
 ) -> list[dict[str, Any]]:
-    """Revision 2, 4: perturb θ₀; if the perturbation does not survive fp32 rounding, scale it by
-    ``rounding_scale`` once, and keep that second attempt whatever it realizes. Returns every
-    attempt's record; the parameters hold the last attempt."""
+    """Revision 3, 2 (correcting Revision 2, 4): perturb θ₀; if the perturbation does not survive
+    fp32 rounding, scale it by ``rounding_scale`` once. Each attempt is judged against its own
+    intended norm. Returns every attempt's record; the parameters hold the last attempt. If that
+    one did not survive either, the pair can never be within the bound (``pair_state``)."""
     attempts = [perturb(trainable, theta0, direction, scale, survival_share=survival_share)]
     if not attempts[-1]["survived"]:
         attempts.append(perturb(trainable, theta0, direction, scale * rounding_scale,
@@ -1268,7 +1276,7 @@ def run_twin(
     rows, readings, divergence = [], [], []
     if progress is not None:
         progress.update({"rows": rows, "monitor": readings, "D_twin": divergence})
-    stop, taken = None, 0
+    stop, taken, diverged = None, 0, False
     every = int(cfg.eval.monitor.every)
     for step in range(steps):
         batch = twins.prefix.take(step * size, (step + 1) * size)
@@ -1288,7 +1296,7 @@ def run_twin(
                 stats["grad_norm"] = grad_norm([p.grad for p in params])
         rows.append({"step": step, **stats})
         if not _finite(stats["loss"], stats["grad_norm"]):
-            stop = f"non-finite loss or gradient at step {step}"
+            stop, diverged = f"non-finite loss or gradient at step {step}", True
             break
         if precision == "float64":
             optimizer.step(grads)
@@ -1297,7 +1305,7 @@ def run_twin(
             optimizer.step()
         taken = t = step + 1
         if not math.isfinite(grad_norm(params)):
-            stop = f"non-finite weights after step {step}"
+            stop, diverged = f"non-finite weights after step {step}", True
             break
         if monitor is not None and t % every == 0:
             readings.append({"step": t, "K_monitor": monitor(twins.student)})
@@ -1312,42 +1320,186 @@ def run_twin(
     for p in params:
         p.grad = None
     del optimizer
-    out = {"steps": taken, "stop": stop, "rows": rows, "seconds": time.perf_counter() - started,
-           **peak_memory(device)}  # fmt: skip
+    # Both stops above are a divergence (Revision 3, 3): a non-finite loss, gradient or weight.
+    out = {"steps": taken, "stop": stop, "diverged": diverged, "rows": rows,
+           "seconds": time.perf_counter() - started, **peak_memory(device)}  # fmt: skip
     if monitor is not None:
         out["monitor"] = readings
     if compare_dir is not None:
         out["D_twin"] = divergence
         out.update(_pair_summary(divergence, eval_at, stop))
-        out["max_D_twin_over_K_star"] = out["max_D_twin"] / twins.k_star
+        out["max_D_twin_over_K_star"] = _over(out["max_D_twin"], twins.k_star)
     return out
+
+
+# ----------------------------------------------- the states of the measurements (Revision 3)
+
+EXCEEDING, WITHIN, INCOMPLETE = "exceeding", "within", "incomplete"  # a D3 pair
+BELOW, AT_BOUND = "below", "at_bound"  # the same-path control: also exceeding or incomplete
+HOLDS, FALSE, UNDECIDED = "holds", "false", "undecided"  # the path criterion
+# Revision 3, 1: the D1 checks that gate every branch, and what a failed one means
+SHARED_STATE_CHECKS = {
+    "trainable_parameters": "the trainable parameter sets differ",
+    "v0": "the v₀ hashes under the two configs differ",
+    "loss_normalization": "the loss normalizations differ",
+    "initial_optimizer_state": "the initial optimizer states differ",
+    "iii_equals_record": "the recomputed (iii) differs from a control's recorded first gradient",
+}
+
+
+def _number(value: Any) -> bool:
+    """A finite real number: not None, not a bool, not ±∞ or NaN."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _diverging(values: Iterable[Any]) -> bool:
+    """A non-finite number among ``values`` (a divergence, Revision 3, 3). A missing value is
+    no evidence of divergence."""
+    return any(isinstance(v, int | float) and not isinstance(v, bool) and not math.isfinite(v)
+               for v in values)  # fmt: skip
+
+
+def _largest(values: Sequence[Any]) -> float | None:
+    """The largest measured value: ∞ when one is non-finite (a NaN never hides under ``max``),
+    None when nothing was measured."""
+    if not values:
+        return None
+    return max(values) if all(_number(v) for v in values) else math.inf
+
+
+def _over(value: float | None, k_star: float) -> float | None:
+    return None if value is None else value / k_star
+
+
+def _row_values(rows: Sequence[Mapping[str, Any]]) -> Iterator[Any]:
+    """The losses and gradient norms of a run's per-step rows."""
+    for row in rows:
+        yield row.get("loss")
+        yield row.get("grad_norm")
 
 
 def _pair_summary(
     divergence: Sequence[Mapping[str, Any]], eval_at: Sequence[int], stop: str | None
 ) -> dict[str, Any]:
-    """The pair's largest D_twin, taken only over a complete series: every measurement step
-    present and finite, the twin not stopped. Otherwise (a non-finite loss, gradient, weight or
-    D_twin) the pair counts as unbounded."""
+    """The pair's D_twin series: ``complete`` when every measurement step is present and
+    finite and the twin did not stop; ``max_D_twin``, the largest measured value (``_largest``).
+    An incomplete series is not read as an unbounded one: the pair's state (``pair_state``)
+    tells exceeding from incomplete (Revision 3, 3)."""
     values = [d["D_twin"] for d in divergence]
     complete = (stop is None and [d["step"] for d in divergence] == list(eval_at)
                 and all(math.isfinite(v) for v in values))  # fmt: skip
-    return {"max_D_twin": max(values) if complete and values else math.inf, "complete": complete}
+    return {"max_D_twin": _largest(values), "complete": complete}
 
 
-def series_summary(
-    values: Sequence[float], steps: Sequence[int], expected: Sequence[int], stop: str | None,
+def survived(attempts: Sequence[Mapping[str, Any]] | None, survival_share: float) -> bool:
+    """Revision 3, 2: the attempt the twin ran with (the last one: the first, or its single ×10
+    retry) realized at least ``survival_share`` of its own intended norm after fp32 rounding."""
+    if not attempts or len(attempts) > 2:
+        return False
+    realized, intended = attempts[-1].get("realized_norm"), attempts[-1].get("intended_norm")
+    return _number(realized) and _number(intended) and realized >= survival_share * intended
+
+
+def pair_state(
+    pair: Mapping[str, Any],
+    *,
+    perturbed: bool,
+    eval_at: Sequence[int],
     bound: float,
-) -> dict[str, Any]:  # fmt: skip
-    """A K series against the bound: complete only when every expected step was measured, every
-    value is finite and the run did not stop; its maximum is taken only then (a NaN never hides
-    under ``max``), and "below" means strictly below at every step (Revision 2, 2)."""
-    complete = (stop is None and list(steps) == list(expected)
-                and all(math.isfinite(v) for v in values))  # fmt: skip
-    largest = max(values) if complete and values else math.inf
-    return {"complete": complete, "max": largest, "below_bound": complete and largest < bound,
+    survival_share: float,
+) -> dict[str, Any]:
+    """A D3 pair's state, Revision 3, 3, from its record:
+    - **exceeding** when a measured D_twin is above the bound, or the twin diverged (a non-finite
+      loss, gradient, weight or D_twin); survival is not required for this state;
+    - **within** when its perturbation survived fp32 rounding (``survived``; the reference has no
+      perturbation), D_twin was measured at every step of ``eval_at`` and every value is ≤ the
+      bound;
+    - **incomplete** otherwise: a perturbation lost to rounding after its ×10 retry, a missing
+      step, or a stop that is not a divergence."""
+    readings = list(pair.get("D_twin") or [])
+    values = [r.get("D_twin") for r in readings]
+    diverged = (pair.get("diverged") is True or _diverging(values)
+                or _diverging(_row_values(pair.get("rows") or [])))  # fmt: skip
+    kept_norm = survived(pair.get("rounding"), survival_share) if perturbed else None
+    measured = [r.get("step") for r in readings] == list(eval_at)
+    if diverged or any(_number(v) and v > bound for v in values):
+        state = EXCEEDING
+    elif (kept_norm is not False and measured and pair.get("stop") is None
+          and all(_number(v) and v <= bound for v in values)):  # fmt: skip
+        state = WITHIN
+    else:
+        state = INCOMPLETE
+    return {"state": state, "survived": kept_norm, "diverged": diverged,
+            "measured_every_step": measured}  # fmt: skip
+
+
+def control_state(control: Mapping[str, Any], *, k_at: Sequence[int], bound: float) -> dict:
+    """The same-path float64 control's state, Revision 3, 3, from its record:
+    - **exceeding** when the run diverged (a non-finite loss, gradient, weight, K_scoring or
+      K_monitor), or a K_scoring of the complete series is above the bound;
+    - **below** when K_scoring was measured at every step of ``k_at`` and every value is strictly
+      below the bound;
+    - **at the bound** when it is neither, on a complete series;
+    - **incomplete** otherwise: a missing step, or a stop that is not a divergence."""
+    scoring = list(control.get("scoring") or [])
+    values = [r.get("K_scoring") for r in scoring]
+    steps = [r.get("step") for r in scoring]
+    diverged = (control.get("diverged") is True or _diverging(values)
+                or _diverging(r.get("K_monitor") for r in control.get("monitor") or [])
+                or _diverging(_row_values(control.get("rows") or [])))  # fmt: skip
+    stopped = control.get("stop") is not None and not diverged
+    complete = steps == list(k_at) and all(_number(v) for v in values) and not stopped
+    if diverged or (complete and any(v > bound for v in values)):
+        state = EXCEEDING
+    elif complete and all(v < bound for v in values):
+        state = BELOW
+    elif complete:
+        state = AT_BOUND
+    else:
+        state = INCOMPLETE
+    return {"state": state, "complete": complete, "diverged": diverged,
+            "max_K_scoring": _largest(values),
             "nonfinite_steps": [s for s, v in zip(steps, values, strict=True)
-                                if not math.isfinite(v)]}  # fmt: skip
+                                if not _number(v)]}  # fmt: skip
+
+
+def path_criterion(residual: Mapping[str, Any], share_max: float) -> dict[str, Any]:
+    """Revision 2, 1: the residual comes from the path discrepancy when ‖(i)‖ ≤ share_max·‖(iii)‖.
+    Revision 3, 1: when ‖(i)‖ or ‖(iii)‖ is non-finite, or ‖(iii)‖ is zero, it is undecided,
+    never false."""
+    norms = residual.get("norms") or {}
+    norm_i, norm_iii = norms.get("i_training_path_fp32"), norms.get("iii_control_recorded")
+    out: dict[str, Any] = {"norm_i": norm_i, "norm_iii": norm_iii, "share_max": share_max}
+    if not (_number(norm_i) and _number(norm_iii)) or norm_iii == 0:
+        return {**out, "state": UNDECIDED, "ratio_i_to_iii": None}
+    ratio = norm_i / norm_iii
+    return {**out, "state": HOLDS if ratio <= share_max else FALSE, "ratio_i_to_iii": ratio}
+
+
+def shared_state_checks(d1: Mapping[str, Any], controls: Sequence[str]) -> dict[str, bool]:
+    """Revision 3, 1: each D1 check that gates every branch, True only when it passed: the
+    trainable set, v₀'s hash under both configs, the loss normalization, the initial optimizer
+    state (each built from its own config's v₀) and the recomputed (iii), equal to the recorded
+    first gradient of every control in ``controls`` (their rates, as D1 keys them)."""
+    shared = d1.get("shared_state") or {}
+    equals = (d1.get("residual") or {}).get("iii_equals_record") or {}
+
+    def passed(check: str, key: str = "equal") -> bool:
+        return (shared.get(check) or {}).get(key) is True
+
+    return {
+        "trainable_parameters": passed("trainable_parameters"),
+        "v0": passed("v0"),
+        "loss_normalization": passed("loss_normalization"),
+        "initial_optimizer_state": passed("initial_optimizer_state", "equal_except_lr"),
+        "iii_equals_record": (set(equals) == set(controls)
+                              and all(v is True for v in equals.values())),
+    }  # fmt: skip
+
+
+def control_keys(settings: DictConfig) -> list[str]:
+    """The FA soft controls' rates as D1 keys their records."""
+    return [f"{float(rate):g}" for rate in settings.diagnostic.controls]
 
 
 def first_control_step(
@@ -1411,7 +1563,9 @@ def first_recorded(run_dir: Path) -> dict[str, Any]:
 
 
 def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dict[str, Any]:
-    """D4's shared-state checks and D1 (module docstring); writes ``d1/result.json``."""
+    """D4's shared-state checks and D1 (module docstring); writes ``d1/result.json``. Its
+    ``status`` is ``incomplete``, with its ``reasons``, when a shared-state check fails or the
+    path criterion is undecided (Revision 3, 1)."""
     d = settings.diagnostic
     eps = float(d.epsilon)
     case = cases_of(settings)[d.d1.pair]
@@ -1498,11 +1652,12 @@ def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
         "nll_first_gradient_norm": _norm(g_nll),
         "path_share_max": float(d.d1.path_share_max),
     }  # fmt: skip
-    recorded_norm = norms["iii_control_recorded"]
-    ratio = norms["i_training_path_fp32"] / recorded_norm if recorded_norm else math.inf
-    residual["ratio_i_to_iii"] = ratio
-    residual["ratio_ii_to_iii"] = norm_ii / recorded_norm if recorded_norm else math.inf
-    residual["path_dominates"] = ratio <= float(d.d1.path_share_max)
+    # The path criterion (Revision 2, 1): holds, false, or undecided on a non-finite or zero
+    # norm (Revision 3, 1); no ratio is taken over an undecided pair of norms.
+    residual["path_criterion"] = path_criterion(residual, float(d.d1.path_share_max))
+    residual["ratio_i_to_iii"] = residual["path_criterion"]["ratio_i_to_iii"]
+    decided = residual["path_criterion"]["state"] != UNDECIDED
+    residual["ratio_ii_to_iii"] = norm_ii / norms["iii_control_recorded"] if decided else None
     shares = {"iii_control_recorded": preconditioned_shares(names, v0, g_iii, eps),
               "i_training_path_fp32": preconditioned_shares(names, v0, g_i, eps),
               "nll_first_step": preconditioned_shares(names, v0, g_nll, eps)}  # fmt: skip
@@ -1515,11 +1670,18 @@ def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
     # The same-path float64 soft control at the failing rate (Branch F's condition)
     same_path_cfg = with_lr(control_cfg, float(d.d1.same_path_control.rate))
     control = same_path_control(settings, env, same_path_cfg, student, trainable, v0_host)
-    # (iii) must be the recorded control's first gradient, bit for bit, for every control
+    # Revision 3, 1: every shared-state check gates every branch, (iii) equal to every control's
+    # recorded first gradient bit for bit among them, and an undecided path criterion too
+    gates = shared_state_checks({"shared_state": checks, "residual": residual},
+                                control_keys(settings))  # fmt: skip
     unequal = sorted(lr for lr, equal in residual["iii_equals_record"].items() if not equal)
-    status = {"status": "incomplete",
-              "reason": f"the recomputed (iii) differs from the record of the controls {unequal}"
-              } if unequal else {"status": "complete"}  # fmt: skip
+    detail = {"iii_equals_record": f" (the controls {unequal})"}
+    reasons = [SHARED_STATE_CHECKS[name] + detail.get(name, "")
+               for name, passed in gates.items() if not passed]  # fmt: skip
+    if not decided:
+        reasons.append(f"the path criterion is undecided: ‖(i)‖ {norms['i_training_path_fp32']}, "
+                       f"‖(iii)‖ {norms['iii_control_recorded']}")  # fmt: skip
+    status = {"status": "incomplete", "reasons": reasons} if reasons else {"status": "complete"}
     result = {
         "part": "d1", **status, "shared_state": checks, "v0_census": census, "residual": residual,
         "preconditioned_first_step": shares, "same_path_control": control,
@@ -1571,7 +1733,8 @@ def same_path_control(
     θ₀ copy, recomputed per micro-batch), the loss and the gradient accumulation in float64,
     the forward and backward in fp32, frozen Adam as the control runs it, for the run's steps.
     K on the scoring panel at ``k_at`` (uncached, against the θ₀ copy) and on the monitor panel
-    every ``eval.monitor.every`` steps, with ‖δ‖. ``student`` must be at θ₀."""
+    every ``eval.monitor.every`` steps, with ‖δ‖. ``student`` must be at θ₀. The record carries
+    the control's state (``control_state``: below, exceeding, at the bound or incomplete)."""
     d = settings.diagnostic
     device = env.device
     params = [p for _, p in trainable]
@@ -1587,7 +1750,7 @@ def same_path_control(
     k_at = [int(t) for t in d.d1.same_path_control.k_at]
     every, size = int(cfg.eval.monitor.every), int(cfg.train.batch_size)
     rows, readings, scoring_k = [], [], []
-    stop, taken = None, 0
+    stop, taken, diverged = None, 0, False
     for step in range(int(cfg.train.steps)):
         batch = prefix.take(step * size, (step + 1) * size)
         for p in params:
@@ -1598,7 +1761,7 @@ def same_path_control(
         stats["grad_norm"] = grad_norm([p.grad for p in params])
         rows.append({"step": step, **stats})
         if not _finite(stats["loss"], stats["grad_norm"]):
-            stop = f"non-finite loss or gradient at step {step}"
+            stop, diverged = f"non-finite loss or gradient at step {step}", True
             break
         optimizer.step()
         taken = t = step + 1
@@ -1606,7 +1769,7 @@ def same_path_control(
             displacement = math.sqrt(sum((p.double() - theta0[n].double()).pow(2).sum().item()
                                          for n, p in trainable))  # fmt: skip
         if not math.isfinite(displacement):
-            stop = f"non-finite weights after step {step}"
+            stop, diverged = f"non-finite weights after step {step}", True
             break
         if t % every == 0:
             readings.append({"step": t, "K_monitor": monitor(student),
@@ -1621,15 +1784,13 @@ def same_path_control(
     for p in params:
         p.grad = None
     bound = float(d.bound)
-    series = series_summary([r["K_scoring"] for r in scoring_k], [r["step"] for r in scoring_k],
-                            k_at, stop, bound)  # fmt: skip
-    out = {"rate": float(cfg.optimizer.lr), "steps": taken, "stop": stop, "rows": rows,
-           "monitor": readings, "scoring": scoring_k, "scoring_panel": identity,
-           "max_K_scoring": series["max"], "bound": bound, "K_star": float(d.k_star),
-           "max_K_scoring_over_K_star": series["max"] / float(d.k_star),
-           "complete": series["complete"],
-           "below_bound": series["below_bound"], "nonfinite_steps": series["nonfinite_steps"],
+    # Both stops above are a divergence (Revision 3, 3): a non-finite loss, gradient or weight.
+    out = {"rate": float(cfg.optimizer.lr), "steps": taken, "stop": stop, "diverged": diverged,
+           "rows": rows, "monitor": readings, "scoring": scoring_k, "scoring_panel": identity,
+           "bound": bound, "K_star": float(d.k_star), "k_at": k_at,
            "seconds": time.perf_counter() - started, **peak_memory(device)}  # fmt: skip
+    out.update(control_state(out, k_at=k_at, bound=bound))  # its state, Revision 3, 3
+    out["max_K_scoring_over_K_star"] = _over(out["max_K_scoring"], float(d.k_star))
     del optimizer, monitor, reference, theta0
     gc.collect()
     return out
@@ -1836,9 +1997,9 @@ def run_case(
     keep_checkpoints: bool,
 ) -> dict[str, Any]:
     """One D3 case: twin A (checked against its archive), p1–p4 and the reference, each against
-    twin A by D_twin at ``eval_at``. A twin A that differs from its archived run, bit for bit,
-    makes the case ``incomplete``: no pair is run against a twin that is not the archived run
-    (review I1)."""
+    twin A by D_twin at ``eval_at``, each with its state (``pair_state``: within, exceeding or
+    incomplete). A twin A that differs from its archived run, bit for bit, makes the case
+    ``incomplete``: no pair is run against a twin that is not the archived run (review I1)."""
     d = settings.diagnostic
     bound = float(d.bound)
     env = twins.env
@@ -1882,31 +2043,38 @@ def run_case(
                            gaussian(name, shape, s, k))  # fmt: skip
         norms[key] = math.sqrt(sum(directions[key](n, p.shape).double().pow(2).sum().item()
                                    for n, p in twins.trainable))  # fmt: skip
+    survival_share = float(d.d3.survival_share)
     pairs: dict[str, Any] = {}
     for key in PERTURBATIONS:
         twins.reset()
         rounding = apply_perturbation(
             twins.trainable, twins.theta0, directions[key], delta_norm / norms[key],
-            survival_share=float(d.d3.survival_share),
-            rounding_scale=float(d.d3.rounding_scale),
+            survival_share=survival_share, rounding_scale=float(d.d3.rounding_scale),
         )  # fmt: skip
+        # A perturbation lost to rounding after its retry still runs: it can be exceeding, never
+        # within (Revision 3, 2 and 3)
         twin = run_twin(cfg, twins, eval_at=eval_at, compare_dir=checkpoints)
         twin["rounding"] = rounding
-        twin["within_bound"] = twin["max_D_twin"] <= bound
+        twin.update(pair_state(twin, perturbed=True, eval_at=eval_at, bound=bound,
+                               survival_share=survival_share))  # fmt: skip
         pairs[key] = twin
     twins.reset()
     pairs[REFERENCE] = reference_twin(cfg, twins, eval_at, checkpoints)
-    pairs[REFERENCE]["within_bound"] = pairs[REFERENCE]["max_D_twin"] <= bound
+    pairs[REFERENCE].update(pair_state(pairs[REFERENCE], perturbed=False, eval_at=eval_at,
+                                       bound=bound, survival_share=survival_share))  # fmt: skip
     if not keep_checkpoints:
         _remove_checkpoints(checkpoints)
     twins.reset()
-    largest = max(p["max_D_twin"] for p in pairs.values())
+    measured = [p["max_D_twin"] for p in pairs.values() if p["max_D_twin"] is not None]
+    largest = max(measured) if measured else None
+    # "complete": every pair ran against the archived twin A; each pair's own state says
+    # whether it is within, exceeding or incomplete
     return {**record, "status": "complete", "first_step_displacement_norm": delta_norm,
             "first_step_update_norm": intended,
             "first_step_changed": sum(int((t != 0).sum()) for t in delta),
             "twin_A": twin_a, "pairs": pairs, "max_D_twin": largest,
-            "max_D_twin_over_K_star": largest / twins.k_star,
-            "within_bound": all(p["within_bound"] for p in pairs.values()),
+            "max_D_twin_over_K_star": _over(largest, twins.k_star),
+            "pair_states": {key: pair["state"] for key, pair in pairs.items()},
             "shared": {k: v for k, v in shared.items() if k not in ("residual", "monitor")},
             "numerics": numerics(env.device), "seconds": time.perf_counter() - started,
             "provenance": provenance(settings, runs)}  # fmt: skip
@@ -1987,9 +2155,10 @@ def decide_branch(
     commit: str | None = None,
 ) -> dict[str, Any]:
     """The frozen decision branches (docs/study2-fa-control-diagnostic.md, "Decision
-    branches" and Revision 2), read from the diagnostic's outputs.
+    branches", Revisions 2 and 3), read from the diagnostic's outputs. A branch is chosen, or
+    excluded, only on complete evidence (Revision 3).
 
-    **Validity first.** The outcome is ``incomplete``, listing why under ``missing`` and in
+    **Validity first.** The outcome is ``incomplete``, listing why under ``missing`` or in
     ``facts.incomplete``, when:
     - an output is missing: D1, the determinism record, or a prescribed case;
     - an output was written at another commit than ``commit`` (HEAD; without it, D1's), or at
@@ -1998,23 +2167,35 @@ def decide_branch(
       before Branch A);
     - a prescribed case does not hold exactly the pairs p1–p4 and the reference;
     - a prescribed case is itself ``incomplete``: its twin A differs from its archived run;
-    - D1's recomputed (iii) differs from any control's recorded first gradient (review I1).
+    - a D1 shared-state check failed (Revision 3, 1; ``shared_state_checks``): the trainable
+      set, v₀'s hash, the loss normalization, the initial optimizer state, or the recomputed
+      (iii) against every control's recorded first gradient;
+    - the path criterion is undecided: ‖(i)‖ or ‖(iii)‖ non-finite, or ‖(iii)‖ zero
+      (``path_criterion``);
+    - D1 is not ``complete``.
 
-    **Then the branches**, on the three prescribed cases:
-    - **A** when any pair at the failing case (FA 1.21e-5) exceeds the bound (a pair that
-      stopped or went non-finite counts as exceeding);
-    - **F** when D1 shows that the residual comes from the path discrepancy (``path_dominates``:
-      the fp32 same-path residual (i) is at most ``path_share_max`` of the recorded one (iii)),
-      the same-path float64 soft control keeps K_scoring strictly below the bound at every
-      measured step, and every pair of every case in ``branches.regular_cases`` (every D3 case,
-      AdamW 1.32e-5 included) stays within the bound;
-    - **B** when the same-path control is not below the bound but every pair at the failing
-      case stays within it;
-    - **ambiguous** otherwise (an AdamW pair above the bound with F's other conditions met,
-      say): the expansion case (FA 1.46e-5) is added to D3 once (``expand``), then the outcome
-      is reported without choosing.
+    **The states** (Revision 3, 3), recomputed here from the records: each D3 pair is within,
+    exceeding or incomplete (``pair_state``; survival of fp32 rounding is required for within,
+    Revision 3, 2), and the same-path float64 control is below, exceeding, at the bound or
+    incomplete (``control_state``). Divergence counts as exceeding.
 
-    The expansion never changes the branch. Every prescribed case's pairs (AdamW's included),
+    **Then the branches,** in Revision 3, 4's order, with FA 1.21e-5 the failing case:
+    1. **A** when any failing-case pair is exceeding;
+    2. **incomplete** when any failing-case pair is incomplete;
+    3. **incomplete** when the same-path control is incomplete (every failing-case pair is
+       within from here on);
+    4. **B** when the same-path control is exceeding;
+    5. **F** when the same-path control is below, the path criterion holds, and every pair of
+       every case in ``branches.regular_cases`` (every D3 case, AdamW 1.32e-5 included) is
+       within;
+    6. **incomplete** when the same-path control is below, the path criterion holds, no pair of
+       those cases is exceeding, and some pair of FA 1e-5 or AdamW is incomplete;
+    7. **ambiguous** otherwise (the path criterion false on finite norms, a pair of FA 1e-5 or
+       AdamW exceeding, or the control at the bound): the expansion case (FA 1.46e-5) is added
+       to D3 once (``expand``), then the outcome is reported without choosing.
+
+    An incomplete outcome has no branch and no expansion. The expansion never changes the
+    branch. The per-pair and control states, the shared-state checks, the path criterion,
     D_twin/K*, and each reference's mode and fallback reason are reported in ``facts``."""
     d = settings.diagnostic
     bound, k_star = float(d.bound), float(d.k_star)
@@ -2022,6 +2203,9 @@ def decide_branch(
     regular_cases = [str(c) for c in d.branches.regular_cases]
     prescribed = [str(c) for c in d.d3.order]
     expansion = str(d.d3.expansion)
+    eval_at = [int(t) for t in d.d3.eval_at]
+    k_at = [int(t) for t in d.d1.same_path_control.k_at]
+    survival_share = float(d.d3.survival_share)
     facts: dict[str, Any] = {"bound": bound, "K_star": k_star, "failing_case": failing}
     missing: list[str] = []
     incomplete: list[str] = []
@@ -2059,12 +2243,22 @@ def decide_branch(
             incomplete.append(f"d3/{name}.json: twin A differs from its archived run")
     if expansion in usable:
         facts["expansion_status"] = usable[expansion].get("status")
-    if d1 is not None and "d1/result.json" not in stale:
-        equals = (d1.get("residual") or {}).get("iii_equals_record") or {}
-        facts["iii_equals_record"] = equals
-        if not equals or not all(equals.values()):
-            incomplete.append("d1/result.json: the recomputed (iii) differs from a control's "
-                              "recorded first gradient")  # fmt: skip
+    if d1 is not None and "d1/result.json" not in stale:  # Revision 3, 1
+        residual = d1.get("residual") or {}
+        facts["iii_equals_record"] = residual.get("iii_equals_record") or {}
+        facts["shared_state"] = shared_state_checks(d1, control_keys(settings))
+        reasons = [f"d1/result.json: {SHARED_STATE_CHECKS[name]}"
+                   for name, passed in facts["shared_state"].items() if not passed]  # fmt: skip
+        path = facts["path_criterion"] = path_criterion(residual, float(d.d1.path_share_max))
+        if path["state"] == UNDECIDED:
+            reasons.append(f"d1/result.json: the path criterion is undecided (‖(i)‖ "
+                           f"{path['norm_i']}, ‖(iii)‖ {path['norm_iii']})")  # fmt: skip
+        if not reasons and d1.get("status") != "complete":
+            reasons.append(f"d1/result.json: status {d1.get('status')!r}")
+        incomplete += reasons
+        control = control_state(d1.get("same_path_control") or {}, k_at=k_at, bound=bound)
+        facts["same_path_control"] = control
+        facts["same_path_control_state"] = control["state"]
     facts["twin_A_equal"] = {name: ((record.get("twin_A") or {}).get("archive") or {})
                              .get("equal") for name, record in usable.items()}  # fmt: skip
     facts["incomplete"] = incomplete
@@ -2075,41 +2269,58 @@ def decide_branch(
         return bool(complete and twin_a and set(record.get("pairs") or {}) == set(PAIRS))
 
     valid = {name for name, record in usable.items() if readable(record)}
-
-    def pairs_within(name: str) -> dict[str, bool]:
-        return {key: bool(p["max_D_twin"] <= bound) for key, p in usable[name]["pairs"].items()}
-
-    facts["pairs_within"] = {name: pairs_within(name) for name in [*prescribed, expansion]
-                             if name in valid}  # fmt: skip
+    reported = [name for name in [*prescribed, expansion] if name in valid]
+    details = {name: {key: pair_state(pair, perturbed=key != REFERENCE, eval_at=eval_at,
+                                      bound=bound, survival_share=survival_share)
+                      for key, pair in usable[name]["pairs"].items()}
+               for name in reported}  # fmt: skip
+    facts["pair_states"] = {name: {key: s["state"] for key, s in pairs.items()}
+                            for name, pairs in details.items()}  # fmt: skip
+    facts["pairs_survived"] = {name: {key: pairs[key]["survived"] for key in PERTURBATIONS}
+                               for name, pairs in details.items()}  # fmt: skip
     facts["max_D_twin_over_K_star"] = {
-        name: {key: p["max_D_twin"] / k_star for key, p in usable[name]["pairs"].items()}
-        for name in [*prescribed, expansion] if name in valid
+        name: {key: _over(p.get("max_D_twin"), k_star) for key, p in usable[name]["pairs"].items()}
+        for name in reported
     }  # fmt: skip
     facts["references"] = {
         name: {key: usable[name]["pairs"][REFERENCE].get(key)
                for key in ("mode", "fallback_reason")}
-        for name in [*prescribed, expansion] if name in valid
+        for name in reported
     }  # fmt: skip
     out: dict[str, Any] = {"facts": facts, "missing": missing}
     if missing or incomplete:
         return {**out, "branch": "incomplete", "expand": None}
 
-    facts["failing_pairs_within"] = pairs_within(failing)
-    if not all(facts["failing_pairs_within"].values()):
-        return {**out, "branch": "A", "expand": None}
-    facts["path_dominates"] = bool(d1["residual"]["path_dominates"])
-    facts["same_path_control_below"] = bool(d1["same_path_control"]["below_bound"])
-    facts["regular_cases_within"] = {name: all(pairs_within(name).values())
-                                     for name in regular_cases}  # fmt: skip
-    if (facts["path_dominates"] and facts["same_path_control_below"]
-            and all(facts["regular_cases_within"].values())):  # fmt: skip
-        branch = "F"
-    elif not facts["same_path_control_below"]:
-        branch = "B"  # every failing-case pair is within the bound here
-    else:
-        branch = "ambiguous"
-    expand = expansion if branch == "ambiguous" and expansion not in usable else None
-    if branch == "ambiguous" and expansion in valid:
-        facts["expansion"] = {"case": expansion, "pairs_within": pairs_within(expansion),
-                              "note": "reported without choosing"}  # fmt: skip
-    return {**out, "branch": branch, "expand": expand}
+    # Revision 3, 4: the branches in order; facts.step names the step that decided
+    states, control = facts["pair_states"], facts["same_path_control_state"]
+
+    def outcome(step: int, branch: str, reason: str | None = None) -> dict[str, Any]:
+        facts["step"] = step
+        if reason is not None:
+            incomplete.append(f"step {step}: {reason}")
+        expand = expansion if branch == "ambiguous" and expansion not in usable else None
+        if branch == "ambiguous" and expansion in valid:
+            facts["expansion"] = {"case": expansion, "pair_states": states[expansion],
+                                  "note": "reported without choosing"}  # fmt: skip
+        return {**out, "branch": branch, "expand": expand}
+
+    failing_states = states[failing]
+    if EXCEEDING in failing_states.values():
+        return outcome(1, "A")
+    if INCOMPLETE in failing_states.values():
+        unread = sorted(key for key, state in failing_states.items() if state == INCOMPLETE)
+        return outcome(2, "incomplete", f"the pairs {unread} of {failing} are incomplete")
+    if control == INCOMPLETE:
+        return outcome(3, "incomplete", "the same-path control is incomplete")
+    if control == EXCEEDING:
+        return outcome(4, "B")
+    every = [state for name in regular_cases for state in states[name].values()]
+    if control == BELOW and facts["path_criterion"]["state"] == HOLDS:
+        if all(state == WITHIN for state in every):
+            return outcome(5, "F")
+        if EXCEEDING not in every:  # some pair of FA 1e-5 or AdamW is incomplete
+            unread = {name: sorted(key for key, state in states[name].items()
+                                   if state == INCOMPLETE)
+                      for name in regular_cases if INCOMPLETE in states[name].values()}  # fmt: skip
+            return outcome(6, "incomplete", f"the pairs {unread} are incomplete")
+    return outcome(7, "ambiguous")

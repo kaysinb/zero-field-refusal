@@ -785,11 +785,26 @@ It changes no protocol, selection or run record, and this round's controls stay 
   - When the driver runs again, a part written at the same commit is kept.
   - A part written at another commit is moved to `stale/<its commit>/` and redone. `branch`
     never reads one.
-- **Incomplete outcomes.** The branch is `incomplete` when:
+- **Measurement states.** A branch is chosen, or excluded, only on complete evidence
+  ([Revision 3](study2-fa-control-diagnostic.md#revision-3-frozen)).
+  - Each D3 pair is within, exceeding or incomplete. It is within only when its perturbation
+    survived fp32 rounding, after the single ×10 retry.
+  - The same-path control is below, exceeding, at the bound or incomplete.
+  - A divergence counts as exceeding: a non-finite loss, gradient, weight, K or D_twin.
+  - `branch/branch.json` records these states in its facts, with the shared-state checks, the
+    path criterion and the step of Revision 3's order that decided.
+- **Incomplete outcomes.** The branch is `incomplete`, with no expansion, when:
   - the determinism re-run differs from its archived run. That stops D3 (exit 2), and the driver
     records the branch before it stops;
   - a case's twin A differs from its archived run;
-  - the recomputed first gradient of the control differs from a control's record;
+  - a D1 shared-state check fails: the trainable set, v₀'s hash under both configs, the loss
+    normalization, the initial optimizer state, or the recomputed first gradient against every
+    control's record;
+  - the path criterion is undecided: ‖(i)‖ or ‖(iii)‖ is non-finite, or ‖(iii)‖ is zero;
+  - no FA 1.21e-5 pair exceeds, and one is incomplete, or else the same-path control is
+    incomplete;
+  - the control is below and the path criterion holds, no pair exceeds, and a pair of FA 1e-5 or
+    AdamW is incomplete;
   - an output is missing, partial or of another commit.
 - **Cost.**
   - About 2.4 GPU hours on one L40S: D1 ≈ 12 min, D2 ≈ 50 min, D3 ≈ 83 min.

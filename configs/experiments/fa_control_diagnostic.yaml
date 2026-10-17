@@ -1,6 +1,9 @@
 # Study 2: the diagnostic of the FA soft-control failure (docs/study2-fa-control-diagnostic.md,
-# frozen; Revisions 1 and 2 supersede its base text, and Revision 2 fixes the operationalizations
-# below). Not a run config: scripts/fa_control_diagnostic.py reads these settings beside the
+# frozen; Revisions 1 and 2 supersede its base text, Revision 2 fixes the operationalizations
+# below, and Revision 3 chooses or excludes a branch only on complete evidence: every D1
+# shared-state check gates every branch, survival of fp32 rounding is required, each measurement
+# is within/below, exceeding or incomplete, divergence counts as exceeding, and the branch order
+# is explicit). Not a run config: scripts/fa_control_diagnostic.py reads these settings beside the
 # archived configs of the runs it re-examines, and every computation uses the archived run's own
 # config. Outside the confirmation and blind to outcomes: every evaluation is K-only, on the
 # scoring panel's benign responses (kl_benign) and the monitor panel; no harmful prompt set,
@@ -23,11 +26,16 @@ diagnostic:
   controls: [1.0e-05, 1.21e-05, 1.46e-05]  # the FA soft controls' rates, as recorded
   d1:
     pair: fa-1.21e-05               # the regular run and the control checked for shared state
-    same_path_control:              # Branch F's same-path float64 soft control (Revision 2, 2):
-      rate: 1.21e-05                # K strictly below the bound at every step of k_at
-      k_at: [1, 5, 10, 15, 20, 25]  # K on the scoring panel (D3's measurement steps)
+    same_path_control:              # Branches F and B's same-path float64 soft control
+      rate: 1.21e-05                # (Revision 2, 2). Revision 3, 3: below when K is strictly
+      k_at: [1, 5, 10, 15, 20, 25]  # below the bound at every step of k_at (the scoring panel,
+                                    # D3's steps); exceeding when it diverged or a K of the
+                                    # complete series is above; at the bound when neither, on a
+                                    # complete series; incomplete otherwise
     # Revision 2, 1: the residual "comes from the path discrepancy" when the fp32 same-path
-    # residual (i) is at most this share of the recorded one (iii), in norm.
+    # residual (i) is at most this share of the recorded one (iii), in norm. Revision 3, 1: the
+    # criterion is undecided, and the outcome incomplete, when ‖(i)‖ or ‖(iii)‖ is non-finite
+    # or ‖(iii)‖ is zero.
     path_share_max: 0.1
   d2:
     batches: 4                      # the control's first 4 batches, cycled over the run's steps
@@ -52,12 +60,16 @@ diagnostic:
     gaussian:                       # seeds of the fixed directions p3 and p4
       p3: 3
       p4: 4
-    # Revision 2, 4: a perturbation survives fp32 rounding when its realized norm is at least
-    # this share of its intended norm; otherwise it is scaled by rounding_scale once, and that
-    # second attempt is used whatever it realizes.
+    # Revision 2, 4 as Revision 3, 2 corrects it: a perturbation survives fp32 rounding when its
+    # realized norm is at least this share of its own intended norm; otherwise it is scaled by
+    # rounding_scale once. If that second attempt fails too, the pair is incomplete, never within
+    # the bound (it can still be exceeding: Revision 3, 3).
     survival_share: 0.5
     rounding_scale: 10
   branches:
-    failing: fa-1.21e-05            # Branches A and B read this case's pairs only
+    failing: fa-1.21e-05            # Revision 3, 4: A (step 1) and step 2 read this case's
+                                    # pairs only; from step 3 on (B included) all are within
     # Revision 2, 3: Branch F's "D3's regular runs stay within the bound" covers every D3 case.
+    # Revision 3, 4: F needs every pair of these cases within (step 5); with none exceeding, an
+    # incomplete pair of the others gives incomplete (step 6), and an exceeding one ambiguous.
     regular_cases: [fa-1.21e-05, fa-1e-05, adamw-1.32e-05]

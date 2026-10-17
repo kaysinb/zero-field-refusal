@@ -59,7 +59,6 @@ per Hessian–vector product at B 5). Peaks are allocated GB; reserved memory is
 import argparse
 import dataclasses
 import json
-import math
 import sys
 import textwrap
 import traceback
@@ -345,7 +344,8 @@ def main() -> None:
                 "case": str(d.d3.expansion), "exit_code": args.expansion_failed,
                 "note": "the expansion case did not complete; the outcome is the three cases'",
             }  # fmt: skip
-        print(json.dumps({k: decision[k] for k in ("branch", "expand", "missing")}))
+        print(json.dumps({**{k: decision[k] for k in ("branch", "expand", "missing")},
+                          "incomplete": decision["facts"]["incomplete"]}))  # fmt: skip
         if args.expansion_needed:
             sys.exit(0 if decision["expand"] else NOT_DUE)
         write_json(out / "branch" / "branch.json", decision)
@@ -389,9 +389,10 @@ def main() -> None:
     try:
         if args.part == "d1":
             result = run_d1(settings, env, runs, out)
-            print(json.dumps({"status": result["status"],
+            print(json.dumps({"status": result["status"], "reasons": result.get("reasons", []),
                               "residual_norms": result["residual"]["norms"],
-                              "path_dominates": result["residual"]["path_dominates"],
+                              "path_criterion": result["residual"]["path_criterion"]["state"],
+                              "same_path_control": result["same_path_control"]["state"],
                               "same_path_control_max_K":
                                   result["same_path_control"]["max_K_scoring"],
                               "v0_equal": result["shared_state"]["v0"]["equal"]}))  # fmt: skip
@@ -419,9 +420,8 @@ def main() -> None:
                 print(f"D3 stopped: {exc}", file=sys.stderr)
                 sys.exit(DETERMINISM_FAILED)
             print(json.dumps({name: {"status": r.get("status"),
-                                     "max_D_twin": (r["max_D_twin"]
-                                                    if math.isfinite(r.get("max_D_twin", math.inf))
-                                                    else "inf")}
+                                     "pair_states": r.get("pair_states"),
+                                     "max_D_twin": r.get("max_D_twin")}
                               for name, r in done.items()}))  # fmt: skip
     except torch.OutOfMemoryError as exc:
         first = str(exc).splitlines()[0] if str(exc) else ""
