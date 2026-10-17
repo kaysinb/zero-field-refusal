@@ -15,6 +15,8 @@ documents:
   purpose: Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch
 - path: docs/study2-stage-a-analysis.md
   purpose: Study 2 Stage A's K-only analyses and recorded predictions, outside the selection rule
+- path: docs/study2-fa-control-diagnostic.md
+  purpose: Frozen specification of the outcome-blind diagnostic of the FA soft-control failure
 - path: docs/plan.md
   purpose: Stages, progression, failure paths and hardware
 - path: docs/architecture.md
@@ -218,6 +220,12 @@ topics:
   - scripts/stage_a_barrier.py
   - configs/experiments/study2_pilot_momentum*.yaml
   - tests/test_pilot_momentum.py
+- id: study2_fa_control_diagnostic
+  title: Study 2's diagnostic of the FA soft-control failure (outside the confirmation)
+  source: docs/study2-fa-control-diagnostic.md#decision-branches
+  review:
+  - docs/study2-preregistration.md#numerical-acceptance-1
+  - configs/control/soft_targets.yaml
 - id: study2_short
   title: Study 2's short regime (amendment 3) — prerequisites, campaigns, confirmation loop and looks
   source: docs/operations.md#study-2-short-regime-amendment-3
