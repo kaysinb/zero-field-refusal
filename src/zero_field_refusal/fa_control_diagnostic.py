@@ -40,9 +40,18 @@ Parts, in the specification's order (Revision 1, "Order"):
   the float64 reference, with D_twin(t) = max(KL(A_t‖B_t), KL(B_t‖A_t)) on the scoring panel.
 - **Branches** (``decide_branch``): F, B, A or ambiguous, from the parts' outputs.
 
-**Memory** (1.5B, fp32, 46 GB): a trainable-sized vector is ≈ 5.2 GB. The second model of D3
-stays in host memory except while D_twin is measured; float64 gradients are summed as each
-parameter's gradient arrives (``Float64Gradients``), so no fp32 gradient set coexists with them.
+**Memory** (1.5B, fp32): a trainable-sized vector is ≈ 5.2 GB. The base D3's rule, "46 GB
+reserved", is enforced as a cap on the process's CUDA memory (``apply_memory_rule``, in the GB of
+the run records' peaks, 1e9 bytes); every peak is recorded with ``within_memory_rule``. The
+second model of D3 stays in host memory except while D_twin is measured; float64 gradients are
+summed as each parameter's gradient arrives (``Float64Gradients``), so no fp32 gradient set
+coexists with them; D2's Ritz vector stays beside the Lanczos vectors only if it fits under the
+cap, and otherwise goes to host memory through one pinned buffer.
+
+**Validity.** Outputs written at another commit are moved aside and redone (``kept``); a twin A
+or a recomputed first gradient that differs from its record makes the outcome ``incomplete``
+(``decide_branch``), as does a failed determinism check, a missing output or a case without
+its five pairs.
 """
 
 from __future__ import annotations
@@ -78,10 +87,16 @@ from .models import freeze
 from .optim import ADAM_MODES, build_optimizer
 from .panels import Monitor
 from .paths import runs_root
-from .runtime import Environment, ReplayedSoftTargets, StreamPrefix, load_stream_for
+from .runtime import (
+    Environment,
+    ReplayedSoftTargets,
+    StreamPrefix,
+    load_stream_for,
+    locate_stream,
+)
 from .schedule import _norm as grad_norm
 from .seeding import derive_seed, seed_everything
-from .teacher import Sample
+from .teacher import MANIFEST_FILE, Sample, published_chunks
 from .tracking import git_state, hardware, package_versions
 from .train import _theta0_second_moment, accumulate_gradient
 
@@ -90,7 +105,14 @@ Term = Callable[[], torch.Tensor]
 QUANTILES = (0.0, 1e-6, 1e-4, 1e-3, 0.01, 0.1, 0.5, 0.9, 0.99, 1.0)
 PERTURBATIONS = ("p1", "p2", "p3", "p4")
 REFERENCE = "reference"
+PAIRS = (*PERTURBATIONS, REFERENCE)  # every D3 case holds exactly these pairs
 BRANCHES = ("F", "B", "A", "ambiguous", "incomplete")
+HESSIANS = {  # D2's two Hessians, as their labels say (review M9)
+    "soft": "(a) exact soft-loss Hessian, with the control's replayed targets (≈ Gauss–Newton at "
+            "θ₀: the two differ by the residual term)",
+    "nll": "(b) exact Hessian of the sampled NLL (may be indefinite)",
+    "F": "the 4 batches' exact soft-loss Hessian, pooled (≈ Gauss–Newton at θ₀)",
+}  # fmt: skip
 
 
 class DiagnosticError(RuntimeError):
@@ -249,11 +271,44 @@ class Recorder:
                 self.inputs[key] = value
 
 
-def peak_memory(device: torch.device) -> dict[str, float]:
+# The memory rule in force (``apply_memory_rule``): the base D3's "46 GB reserved", in the GB of
+# the study-2 run records (1e9 bytes, as ``schedule._peak_memory`` writes their peaks).
+_MEMORY_RULE: dict[str, Any] = {}
+
+
+def apply_memory_rule(device: torch.device, limit_gb: float) -> dict[str, Any]:
+    """Cap this process's CUDA memory at ``limit_gb`` (1e9 bytes) reserved, so that the rule
+    itself raises the out-of-memory error: the float64 reference then falls back (recorded) and
+    every other part fails. Nothing on the CPU."""
+    _MEMORY_RULE.clear()
+    _MEMORY_RULE.update({"limit_gb": float(limit_gb), "fraction": None, "total_gb": None})
+    if device.type == "cuda":
+        total = torch.cuda.get_device_properties(device).total_memory
+        fraction = min(1.0, float(limit_gb) * 1e9 / total)
+        torch.cuda.set_per_process_memory_fraction(fraction, device)
+        _MEMORY_RULE.update({"fraction": fraction, "total_gb": round(total / 1e9, 3)})
+    return dict(_MEMORY_RULE)
+
+
+def memory_limit_bytes(device: torch.device) -> float | None:
+    """The bytes the rule allows this process, or None without a rule or a GPU."""
+    if device.type != "cuda" or not _MEMORY_RULE.get("fraction"):
+        return None
+    return _MEMORY_RULE["fraction"] * torch.cuda.get_device_properties(device).total_memory
+
+
+def peak_memory(device: torch.device) -> dict[str, Any]:
+    """The GPU peaks since the last reset (allocated, reserved; GB of 1e9 bytes), with
+    ``within_memory_rule``: the reserved peak against the rule's limit."""
     if device.type != "cuda":
         return {}
-    return {"peak_allocated_gb": round(torch.cuda.max_memory_allocated(device) / 1e9, 3),
-            "peak_reserved_gb": round(torch.cuda.max_memory_reserved(device) / 1e9, 3)}  # fmt: skip
+    reserved = round(torch.cuda.max_memory_reserved(device) / 1e9, 3)
+    out = {"peak_allocated_gb": round(torch.cuda.max_memory_allocated(device) / 1e9, 3),
+           "peak_reserved_gb": reserved}  # fmt: skip
+    if _MEMORY_RULE.get("limit_gb") is not None:
+        out["memory_rule_gb"] = _MEMORY_RULE["limit_gb"]
+        out["within_memory_rule"] = reserved <= _MEMORY_RULE["limit_gb"]
+    return out
 
 
 def reset_peak(device: torch.device) -> None:
@@ -266,7 +321,30 @@ def reset_peak(device: torch.device) -> None:
 def numerics(device: torch.device) -> dict[str, Any]:
     return {"device": str(device), "tf32_matmul": torch.backends.cuda.matmul.allow_tf32,
             "tf32_cudnn": torch.backends.cudnn.allow_tf32,
-            "float32_matmul_precision": torch.get_float32_matmul_precision()}  # fmt: skip
+            "float32_matmul_precision": torch.get_float32_matmul_precision(),
+            "memory_rule": dict(_MEMORY_RULE) or None}  # fmt: skip
+
+
+def kept(out: Path, relative: str, commit: str | None) -> dict[str, Any] | None:
+    """An output already written under ``out``, if it was written at ``commit``; one written at
+    another commit is moved aside to ``stale/<its commit>/`` (kept, never read) and None is
+    returned, so the part runs again at this commit."""
+    path = out / relative
+    if not path.exists():
+        return None
+    record = json.loads(path.read_text())
+    written = output_commit(record)
+    if written == commit:
+        return record
+    target = out / "stale" / str(written) / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(path, target)
+    return None
+
+
+def output_commit(record: Mapping[str, Any] | None) -> str | None:
+    """The code commit that wrote an output (``provenance.code.commit``)."""
+    return (((record or {}).get("provenance") or {}).get("code") or {}).get("commit")
 
 
 # ------------------------------------------------------------------------- tensors and groups
@@ -469,15 +547,23 @@ def preconditioned_shares(
 
 
 def vector_shares(
-    names: Sequence[str], x: Sequence[torch.Tensor], v0: Sequence[torch.Tensor], eps: float
+    names: Sequence[str],
+    x: Sequence[torch.Tensor],
+    v0: Sequence[torch.Tensor],
+    eps: float,
+    *,
+    in_theta: bool = False,
 ) -> dict[str, Any]:
-    """The share of ‖x‖² per module kind, per layer group and on ε-dominated coordinates."""
+    """The share of ‖x‖² per module kind, per layer group and on ε-dominated coordinates; with
+    ``in_theta``, of ‖P^½x‖² (a vector of P^½-coordinates taken back to θ's), tensor by tensor."""
     kinds: dict[str, float] = {}
     layers: dict[str, float] = {}
     eps_class = {"below_eps": 0.0, "below_10eps": 0.0}
     total = 0.0
     for name, xi, v in zip(names, x, v0, strict=True):
         xi = xi.to(v.device).double()
+        if in_theta:
+            xi = xi * sqrt_preconditioner(v, eps).double()
         sq = xi.pow(2)
         value = sq.sum().item()
         total += value
@@ -777,18 +863,28 @@ def ritz_vector(
 ) -> Vector:
     """The top Ritz vector of a ``lanczos`` result, by a second pass of the same recurrence from
     the same start with the first pass's coefficients: y = Σ_j s_j v_j, s the top eigenvector of
-    T_k. ``start`` is consumed. y is accumulated in host memory with ``host``."""
+    T_k. ``start`` is consumed. y is accumulated beside the vectors, or with ``host`` (on a GPU)
+    in host memory through one pinned staging buffer the size of the largest tensor."""
     alphas, betas = list(result["alphas"]), list(result["betas"])
     k = len(alphas)
     _, vectors = _ritz(alphas, betas[: k - 1])
     s = vectors[:, -1]
-    device = torch.device("cpu") if host else start[0].device
-    y = [torch.zeros(t.shape, dtype=torch.float32, device=device) for t in start]
+    device = start[0].device
+    staging = None
+    if host and device.type == "cuda":
+        staging = torch.empty(max(t.numel() for t in start), dtype=torch.float32, pin_memory=True)
+    where = torch.device("cpu") if staging is not None else device
+    y = [torch.zeros(t.shape, dtype=torch.float32, device=where) for t in start]
     v, previous = list(start), None
     start.clear()
     for j in range(k):
         for yi, vi in zip(y, v, strict=True):
-            yi.add_(vi.to(device), alpha=float(s[j]))
+            if staging is None:
+                yi.add_(vi, alpha=float(s[j]))
+            else:
+                buffer = staging[: vi.numel()].view(vi.shape)
+                buffer.copy_(vi)  # device to pinned host memory, synchronous
+                yi.add_(buffer, alpha=float(s[j]))
         if j == k - 1:
             break
         if previous is None:
@@ -964,10 +1060,17 @@ def twin_divergence(
 
 def operational_monitor(cfg: DictConfig) -> DictConfig:
     """The run's config with the monitor's second responses uncached: only the operational
-    reading (the first response of each prompt, cached as the runs cached it) is taken."""
+    reading (the first response of each prompt, cached as the runs cached it) is taken. The
+    primary reading must be cached: the monitor's reference model is later given other states
+    (D3 loads twin A's checkpoints into it), so an uncached reading would read against them."""
     out = copy.deepcopy(cfg)
-    if "cache" in out.eval.monitor:
-        out.eval.monitor.cache.secondary = "none"
+    caches = out.eval.monitor.get("cache") or {}
+    if caches.get("primary", "none") == "none":
+        raise DiagnosticError(
+            "The monitor's primary reading must be cached (eval.monitor.cache.primary is "
+            "none): its reference model does not stay at θ₀"
+        )
+    out.eval.monitor.cache.secondary = "none"
     return out
 
 
@@ -1100,6 +1203,7 @@ class Twins:
     v0: list[torch.Tensor]
     prefix: StreamPrefix
     scoring: list[Sample]
+    k_star: float
 
     @property
     def names(self) -> list[str]:
@@ -1115,14 +1219,15 @@ class Twins:
         set_trainable(self.student, self.theta0, self.names)
 
     def divergence(self, checkpoint: Path, cfg: DictConfig) -> dict[str, Any]:
-        """D_twin between the checkpoint (A_t) and the student (B_t)."""
+        """D_twin between the checkpoint (A_t) and the student (B_t), and D_twin/K*."""
         load_trainable(self.other, checkpoint, self.names)
         self.other.to(self.env.device)
         try:
-            return twin_divergence(self.other, self.student, self.scoring, pad_id=self.env.pad_id,
-                                   micro_batch_size=cfg.execution.micro_batch_size)  # fmt: skip
+            out = twin_divergence(self.other, self.student, self.scoring, pad_id=self.env.pad_id,
+                                  micro_batch_size=cfg.execution.micro_batch_size)  # fmt: skip
         finally:
             self.other.to("cpu")
+        return {**out, "D_twin_over_K_star": out["D_twin"] / self.k_star}
 
 
 def _finite(*values: float) -> bool:
@@ -1138,6 +1243,7 @@ def run_twin(
     monitor: Monitor | None = None,
     save_dir: Path | None = None,
     compare_dir: Path | None = None,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One twin: the regular run of ``cfg`` from the student's current parameters, step for
     step as ``schedule.run_scheduled`` trains (no evaluation, no stop rule), for the archived
@@ -1145,7 +1251,9 @@ def run_twin(
     ``float64_accumulation`` are the reference (loss and gradient accumulation in float64, and
     the optimizer arithmetic too in ``float64``). At the steps of ``eval_at`` the trainable
     parameters go to ``save_dir`` (twin A) and/or D_twin is measured against ``compare_dir``'s
-    checkpoints; the monitor is read every ``eval.monitor.every`` steps if given."""
+    checkpoints; the monitor is read every ``eval.monitor.every`` steps if given. ``progress``,
+    if given, holds the rows and readings as they are taken, so that a failed attempt's record
+    survives its exception."""
     env, params, device = twins.env, twins.params, twins.env.device
     steps, size = int(cfg.train.steps), int(cfg.train.batch_size)
     seed_everything(derive_seed(cfg.seed, "torch"))
@@ -1158,6 +1266,8 @@ def run_twin(
         optimizer = build_optimizer(cfg.optimizer, params,
                                     second_moment=twins.v0 if frozen else None)  # fmt: skip
     rows, readings, divergence = [], [], []
+    if progress is not None:
+        progress.update({"rows": rows, "monitor": readings, "D_twin": divergence})
     stop, taken = None, 0
     every = int(cfg.eval.monitor.every)
     for step in range(steps):
@@ -1209,20 +1319,35 @@ def run_twin(
     if compare_dir is not None:
         out["D_twin"] = divergence
         out.update(_pair_summary(divergence, eval_at, stop))
+        out["max_D_twin_over_K_star"] = out["max_D_twin"] / twins.k_star
     return out
 
 
 def _pair_summary(
     divergence: Sequence[Mapping[str, Any]], eval_at: Sequence[int], stop: str | None
 ) -> dict[str, Any]:
-    """The pair's largest D_twin; a twin that stopped before the last measurement (a non-finite
-    loss, gradient or weight) counts as unbounded."""
+    """The pair's largest D_twin, taken only over a complete series: every measurement step
+    present and finite, the twin not stopped. Otherwise (a non-finite loss, gradient, weight or
+    D_twin) the pair counts as unbounded."""
     values = [d["D_twin"] for d in divergence]
-    complete = len(values) == len(eval_at) and stop is None
-    largest = max(values) if values else math.inf
-    if not complete:
-        largest = math.inf
-    return {"max_D_twin": largest, "complete": complete}
+    complete = (stop is None and [d["step"] for d in divergence] == list(eval_at)
+                and all(math.isfinite(v) for v in values))  # fmt: skip
+    return {"max_D_twin": max(values) if complete and values else math.inf, "complete": complete}
+
+
+def series_summary(
+    values: Sequence[float], steps: Sequence[int], expected: Sequence[int], stop: str | None,
+    bound: float,
+) -> dict[str, Any]:  # fmt: skip
+    """A K series against the bound: complete only when every expected step was measured, every
+    value is finite and the run did not stop; its maximum is taken only then (a NaN never hides
+    under ``max``), and "below" means strictly below at every step (Revision 2, 2)."""
+    complete = (stop is None and list(steps) == list(expected)
+                and all(math.isfinite(v) for v in values))  # fmt: skip
+    largest = max(values) if complete and values else math.inf
+    return {"complete": complete, "max": largest, "below_bound": complete and largest < bound,
+            "nonfinite_steps": [s for s, v in zip(steps, values, strict=True)
+                                if not math.isfinite(v)]}  # fmt: skip
 
 
 def first_control_step(
@@ -1318,6 +1443,10 @@ def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
         "regular_stream": regular_stream, "control_stream": control_stream,
     }  # fmt: skip
     checks["v0"]["equal"] = checks["v0"]["regular_sha256"] == checks["v0"]["control_sha256"]
+    # Each run's optimizer from its own config's v₀ estimate
+    checks["initial_optimizer_state"] = _initial_state(
+        (regular_cfg, v0), (control_cfg, v0_control), params
+    )  # fmt: skip
     del v0_control
     gc.collect()
 
@@ -1336,7 +1465,6 @@ def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
     }  # fmt: skip
     norm = checks["loss_normalization"]
     norm["equal"] = norm["regular"] == norm["control"]
-    checks["initial_optimizer_state"] = _initial_state(regular_cfg, control_cfg, params, v0)
 
     # The residual gradient at θ₀ on the control's first batch: (iii), (i), (ii), and the NLL
     g_iii, stats_iii, _ = control_residual(control_cfg, env, student, params, prefix)
@@ -1387,8 +1515,13 @@ def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
     # The same-path float64 soft control at the failing rate (Branch F's condition)
     same_path_cfg = with_lr(control_cfg, float(d.d1.same_path_control.rate))
     control = same_path_control(settings, env, same_path_cfg, student, trainable, v0_host)
+    # (iii) must be the recorded control's first gradient, bit for bit, for every control
+    unequal = sorted(lr for lr, equal in residual["iii_equals_record"].items() if not equal)
+    status = {"status": "incomplete",
+              "reason": f"the recomputed (iii) differs from the record of the controls {unequal}"
+              } if unequal else {"status": "complete"}  # fmt: skip
     result = {
-        "part": "d1", "shared_state": checks, "v0_census": census, "residual": residual,
+        "part": "d1", **status, "shared_state": checks, "v0_census": census, "residual": residual,
         "preconditioned_first_step": shares, "same_path_control": control,
         "numerics": numerics(device), "seconds": time.perf_counter() - started,
         "memory": {"before_same_path_control": reset_peak_keep},
@@ -1399,13 +1532,15 @@ def run_d1(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
 
 
 def _initial_state(
-    regular_cfg: DictConfig, control_cfg: DictConfig, params: Sequence, v0: Sequence
+    regular: tuple[DictConfig, Sequence[torch.Tensor]],
+    control: tuple[DictConfig, Sequence[torch.Tensor]],
+    params: Sequence,
 ) -> dict[str, Any]:
-    """Both runs' optimizers as built before their first step: mode, hyperparameters (the rate
-    aside), and the state, which holds only v₀ (m₀ and the step counter start at zeros and 0 in
-    the first step, optim.Adam)."""
+    """Both runs' optimizers as built before their first step, each from its own config and its
+    own v₀ estimate: mode, hyperparameters (the rate aside), and the state, which holds only v₀
+    (m₀ and the step counter start at zeros and 0 in the first step, optim.Adam)."""
     out = {}
-    for label, cfg in (("regular", regular_cfg), ("control", control_cfg)):
+    for label, (cfg, v0) in (("regular", regular), ("control", control)):
         optimizer = build_optimizer(cfg.optimizer, list(params), second_moment=list(v0))
         group = optimizer.param_groups[0]
         state = [optimizer.state[p] for p in params]
@@ -1486,14 +1621,14 @@ def same_path_control(
     for p in params:
         p.grad = None
     bound = float(d.bound)
-    values = [r["K_scoring"] for r in scoring_k]
-    complete = stop is None and len(values) == len(k_at)
-    largest = max(values) if values else math.inf
+    series = series_summary([r["K_scoring"] for r in scoring_k], [r["step"] for r in scoring_k],
+                            k_at, stop, bound)  # fmt: skip
     out = {"rate": float(cfg.optimizer.lr), "steps": taken, "stop": stop, "rows": rows,
            "monitor": readings, "scoring": scoring_k, "scoring_panel": identity,
-           "max_K_scoring": largest if complete and math.isfinite(largest) else math.inf,
-           "bound": bound, "complete": complete,
-           "below_bound": complete and math.isfinite(largest) and largest < bound,
+           "max_K_scoring": series["max"], "bound": bound, "K_star": float(d.k_star),
+           "max_K_scoring_over_K_star": series["max"] / float(d.k_star),
+           "complete": series["complete"],
+           "below_bound": series["below_bound"], "nonfinite_steps": series["nonfinite_steps"],
            "seconds": time.perf_counter() - started, **peak_memory(device)}  # fmt: skip
     del optimizer, monitor, reference, theta0
     gc.collect()
@@ -1529,6 +1664,7 @@ def run_d2(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
              for kind in ("soft", "nll")}  # fmt: skip
     fisher_terms = batch_terms(model, batches, control_cfg, env, kind="soft", soft_targets=targets)
     lanczos_steps, tolerance = int(s.lanczos.steps), float(s.lanczos.tolerance)
+    vector_bytes = sum(p.numel() for p in params) * 4
     spectra: dict[str, list[dict[str, Any]]] = {"soft": [], "nll": []}
     for kind_index, kind in enumerate(("soft", "nll")):
         for b in range(k):
@@ -1536,18 +1672,24 @@ def run_d2(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
             index = 1000 * (kind_index + 1) + b
             result = lanczos(hvp, start_vector(trainable, int(d.seed), index), steps=lanczos_steps,
                              tolerance=tolerance)  # fmt: skip
-            y = ritz_vector(hvp, start_vector(trainable, int(d.seed), index), result)
+            # The Ritz vector beside the Lanczos vectors when the first pass's peak leaves room
+            # for it under the memory rule (1 GB margin), else in host memory, staged
+            limit = memory_limit_bytes(device)
+            needed = vector_bytes + 1e9
+            on_gpu = limit is not None and torch.cuda.max_memory_reserved(device) + needed <= limit
+            y = ritz_vector(hvp, start_vector(trainable, int(d.seed), index), result,
+                            host=not on_gpu)  # fmt: skip
             check = check_vector(hvp, y, device)
-            in_theta = [yi * sqrt_preconditioner(v, eps).cpu() for yi, v in zip(y, v0, strict=True)]
             spectra[kind].append({
                 "batch": b, **{key: result[key] for key in ("top", "bottom", "residual",
                                                            "ritz_converged", "steps",
                                                            "top_trace", "alphas", "betas")},
                 "top_vector_check": check,
+                "ritz_vector_on": "gpu" if on_gpu else "host",
                 "localization": vector_shares(names, y, v0, eps),
-                "localization_in_theta": vector_shares(names, in_theta, v0, eps),
+                "localization_in_theta": vector_shares(names, y, v0, eps, in_theta=True),
             })  # fmt: skip
-            del y, in_theta
+            del y
             gc.collect()
 
     rates = [float(r) for r in s.rates]
@@ -1580,7 +1722,7 @@ def run_d2(settings: DictConfig, env: Environment, runs: Runs, out: Path) -> dic
                 for lr, path in runs.controls.items()}  # fmt: skip
     result = {
         "part": "d2", "v0_sha256": v0_hash, "v0_stream": stream, "beta1": beta, "epsilon": eps,
-        "batches": k, "residual": {"norm": _norm(residual), **residual_stats},
+        "batches": k, "hessians": HESSIANS, "residual": {"norm": _norm(residual), **residual_stats},
         "spectra": spectra, "thresholds": thresholds, "linearized": maps, "observed": observed,
         "numerics": numerics(device), "seconds": time.perf_counter() - started,
         **peak_memory(device), "provenance": provenance(settings, runs),
@@ -1612,7 +1754,7 @@ def _twins(settings: DictConfig, env: Environment, runs: Runs) -> Iterator[tuple
     monitor = Monitor(operational_monitor(cfg), env, Recorder(), other)
     other.to("cpu")
     twins = Twins(env=env, student=student, other=other, trainable=trainable, theta0=theta0,
-                  v0=v0, prefix=prefix, scoring=scoring)  # fmt: skip
+                  v0=v0, prefix=prefix, scoring=scoring, k_star=float(d.k_star))  # fmt: skip
     shared = {"v0_sha256": v0_hash, "v0_stream": stream, "control_residual": stats,
               "control_residual_norm": _norm(residual), "scoring_panel": identity,
               "residual": residual, "monitor": monitor}  # fmt: skip
@@ -1634,17 +1776,22 @@ def run_d3(
     keep_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """D3 (module docstring): the determinism check unless done, then each case not yet written;
-    writes ``d3/determinism.json`` and ``d3/<case>.json``. Raises ``DeterminismFailure`` (after
-    writing its record) when the re-run differs from the archive."""
+    writes ``d3/determinism.json`` and ``d3/<case>.json``. Records written at another commit
+    are moved aside (``kept``) and redone. Raises ``DeterminismFailure`` (after writing its
+    record) when the re-run differs from the archive."""
     d = settings.diagnostic
     all_cases = cases_of(settings)
     eval_at = [int(t) for t in d.d3.eval_at]
     directory = out / "d3"
     record_path = directory / "determinism.json"
+    commit = git_state().get("commit")
+    for path in sorted(directory.glob("*.json")):  # any record of another commit goes aside
+        kept(out, f"d3/{path.name}", commit)
     done = {}
     with _twins(settings, env, runs) as (twins, shared):
-        if record_path.exists():
-            record = json.loads(record_path.read_text())
+        record = kept(out, "d3/determinism.json", commit)
+        if record is not None:
+            pass
         elif determinism:
             case = all_cases[d.d3.determinism]
             cfg = run_config(runs.regular[case.name])
@@ -1661,14 +1808,20 @@ def run_d3(
             raise DeterminismFailure(f"The re-run of {record['run']} differs from its archive: "
                                      f"{record['mismatches'][:3]}; D3 stops")  # fmt: skip
         for name in cases:
-            path = directory / f"{name}.json"
-            if path.exists():
-                done[name] = json.loads(path.read_text())
+            record = kept(out, f"d3/{name}.json", commit)
+            if record is not None:
+                done[name] = record
                 continue
             done[name] = run_case(settings, all_cases[name], twins, shared, runs, directory,
                                   eval_at=eval_at, keep_checkpoints=keep_checkpoints)  # fmt: skip
-            write_json(path, done[name])
+            write_json(directory / f"{name}.json", done[name])
     return done
+
+
+def _remove_checkpoints(directory: Path) -> None:
+    """Twin A's checkpoints of a case, and any partial one an interrupted save left."""
+    for path in [*directory.glob("A-step-*.pt"), *directory.glob(".A-step-*.pt.partial")]:
+        path.unlink()
 
 
 def run_case(
@@ -1683,7 +1836,9 @@ def run_case(
     keep_checkpoints: bool,
 ) -> dict[str, Any]:
     """One D3 case: twin A (checked against its archive), p1–p4 and the reference, each against
-    twin A by D_twin at ``eval_at``."""
+    twin A by D_twin at ``eval_at``. A twin A that differs from its archived run, bit for bit,
+    makes the case ``incomplete``: no pair is run against a twin that is not the archived run
+    (review I1)."""
     d = settings.diagnostic
     bound = float(d.bound)
     env = twins.env
@@ -1696,8 +1851,18 @@ def run_case(
     twins.reset()
     twin_a = run_twin(cfg, twins, eval_at=eval_at, monitor=shared["monitor"], save_dir=checkpoints)
     twin_a["archive"] = compare_archive(twin_a["rows"], twin_a["monitor"], run_dir)
-    if twin_a["stop"] is not None:
-        raise DiagnosticError(f"Twin A of {case.name} stopped: {twin_a['stop']}")
+    record = {"part": "d3", "case": case.name, "optimizer": case.optimizer, "lr": case.lr,
+              "control_lr": case.control_lr, "regular_run": str(run_dir), "bound": bound,
+              "K_star": twins.k_star, "eval_at": list(eval_at)}  # fmt: skip
+    if twin_a["stop"] is not None or not twin_a["archive"]["equal"]:
+        _remove_checkpoints(checkpoints)
+        twins.reset()
+        reason = (f"twin A stopped: {twin_a['stop']}" if twin_a["stop"] is not None
+                  else "twin A differs from its archived run")  # fmt: skip
+        return {**record, "status": "incomplete", "reason": reason, "twin_A": twin_a,
+                "pairs": {}, "numerics": numerics(env.device),
+                "seconds": time.perf_counter() - started,
+                "provenance": provenance(settings, runs)}  # fmt: skip
 
     control_cfg = with_lr(run_config(runs.control(base_control_rate(settings))), case.control_lr)
     delta = first_control_step(control_cfg, twins, shared["residual"])
@@ -1733,16 +1898,14 @@ def run_case(
     pairs[REFERENCE] = reference_twin(cfg, twins, eval_at, checkpoints)
     pairs[REFERENCE]["within_bound"] = pairs[REFERENCE]["max_D_twin"] <= bound
     if not keep_checkpoints:
-        for path in checkpoints.glob("A-step-*.pt"):
-            path.unlink()
+        _remove_checkpoints(checkpoints)
     twins.reset()
     largest = max(p["max_D_twin"] for p in pairs.values())
-    return {"part": "d3", "case": case.name, "optimizer": case.optimizer, "lr": case.lr,
-            "control_lr": case.control_lr, "regular_run": str(run_dir), "bound": bound,
-            "eval_at": list(eval_at), "first_step_displacement_norm": delta_norm,
+    return {**record, "status": "complete", "first_step_displacement_norm": delta_norm,
             "first_step_update_norm": intended,
             "first_step_changed": sum(int((t != 0).sum()) for t in delta),
             "twin_A": twin_a, "pairs": pairs, "max_D_twin": largest,
+            "max_D_twin_over_K_star": largest / twins.k_star,
             "within_bound": all(p["within_bound"] for p in pairs.values()),
             "shared": {k: v for k, v in shared.items() if k not in ("residual", "monitor")},
             "numerics": numerics(env.device), "seconds": time.perf_counter() - started,
@@ -1752,23 +1915,53 @@ def run_case(
 def reference_twin(
     cfg: DictConfig, twins: Twins, eval_at: Sequence[int], checkpoints: Path
 ) -> dict[str, Any]:
-    """The float64 reference (Revision 1): float64 optimizer arithmetic if memory allows, else
-    float64 loss and accumulation only, with the reason recorded."""
+    """The float64 reference (Revisions 1 and 2, 8): float64 optimizer arithmetic if it fits
+    under the memory rule, else float64 loss and accumulation only. A failed attempt is kept
+    under ``failed_attempt``: its error, its rows and its D_twin readings so far, and its peaks
+    (all failures are kept and reported)."""
+    progress: dict[str, Any] = {}
     try:
-        out = run_twin(cfg, twins, eval_at=eval_at, precision="float64", compare_dir=checkpoints)
-        out["mode"] = "float64 loss, accumulation and optimizer arithmetic"
+        out = run_twin(cfg, twins, eval_at=eval_at, precision="float64", compare_dir=checkpoints,
+                       progress=progress)  # fmt: skip
+        out["mode"] = FLOAT64_FULL
         return out
     except torch.OutOfMemoryError as exc:
-        reason = f"out of memory: {str(exc).splitlines()[0] if str(exc) else ''}"
+        failed = {"precision": "float64", "error": f"{type(exc).__name__}: {str(exc)[:4000]}",
+                  "rows": list(progress.get("rows", [])),
+                  "D_twin": list(progress.get("D_twin", [])),
+                  **peak_memory(twins.env.device)}  # fmt: skip
     gc.collect()
     if twins.env.device.type == "cuda":
         torch.cuda.empty_cache()
     twins.reset()
     out = run_twin(cfg, twins, eval_at=eval_at, precision="float64_accumulation",
                    compare_dir=checkpoints)  # fmt: skip
-    out["mode"] = "float64 loss and accumulation only (fp32 optimizer state)"
-    out["fallback_reason"] = reason
+    out["mode"] = FLOAT64_ACCUMULATION
+    out["fallback_reason"] = failed["error"].splitlines()[0]
+    out["failed_attempt"] = failed
     return out
+
+
+FLOAT64_FULL = "float64 loss, accumulation and optimizer arithmetic"
+FLOAT64_ACCUMULATION = "float64 loss and accumulation only (fp32 optimizer state)"
+
+
+def check_inputs(settings: DictConfig, env: Environment, runs: Runs) -> tuple[list[str], list[str]]:
+    """The DATA_DIR streams D1–D3 read, located as the runs locate them: seed 2000's training
+    stream (enough chunks for the archived runs' steps), v₀'s preconditioner stream, and the
+    scoring and monitor panels. Returns what was found and what is missing."""
+    cfg = run_config(runs.regular[str(settings.diagnostic.d3.determinism)])
+    found, missing = [], []
+    responses = int(cfg.train.steps) * int(cfg.train.batch_size)
+    _, path, _ = locate_stream(cfg, env, "training", int(cfg.seed))
+    need, have = -(-responses // int(cfg.teacher.chunk_size)), published_chunks(path)
+    entry = f"training stream {path}: {have} chunks, {need} needed"
+    (found if have >= need else missing).append(entry)
+    for kind, seed in (("preconditioner", int(cfg.seed)), ("kl_benign", None),
+                       ("kl_monitor", None)):  # fmt: skip
+        _, path, _ = locate_stream(cfg, env, kind, seed)
+        (found if (path / MANIFEST_FILE).is_file() else missing).append(f"{kind} stream {path}")
+    return found, missing
 
 
 # ------------------------------------------------------------------------------------ branches
@@ -1790,68 +1983,133 @@ def decide_branch(
     d1: Mapping[str, Any] | None,
     determinism: Mapping[str, Any] | None,
     cases: Mapping[str, Mapping[str, Any]],
+    *,
+    commit: str | None = None,
 ) -> dict[str, Any]:
     """The frozen decision branches (docs/study2-fa-control-diagnostic.md, "Decision
-    branches" and Revision 2), read from the diagnostic's outputs:
+    branches" and Revision 2), read from the diagnostic's outputs.
 
-    - **A** when any D3 pair at the failing case (FA 1.21e-5) exceeds the bound (a pair that
-      stopped on a non-finite value counts as exceeding);
+    **Validity first.** The outcome is ``incomplete``, listing why under ``missing`` and in
+    ``facts.incomplete``, when:
+    - an output is missing: D1, the determinism record, or a prescribed case;
+    - an output was written at another commit than ``commit`` (HEAD; without it, D1's), or at
+      a commit other than the other parts' (review I4);
+    - the determinism check failed (Revision 2, 9), whatever any case says (it is checked
+      before Branch A);
+    - a prescribed case does not hold exactly the pairs p1–p4 and the reference;
+    - a prescribed case is itself ``incomplete``: its twin A differs from its archived run;
+    - D1's recomputed (iii) differs from any control's recorded first gradient (review I1).
+
+    **Then the branches**, on the three prescribed cases:
+    - **A** when any pair at the failing case (FA 1.21e-5) exceeds the bound (a pair that
+      stopped or went non-finite counts as exceeding);
     - **F** when D1 shows that the residual comes from the path discrepancy (``path_dominates``:
       the fp32 same-path residual (i) is at most ``path_share_max`` of the recorded one (iii)),
       the same-path float64 soft control keeps K_scoring strictly below the bound at every
       measured step, and every pair of every case in ``branches.regular_cases`` (every D3 case,
       AdamW 1.32e-5 included) stays within the bound;
-    - **B** when the same-path control exceeds the bound but every pair at the failing case
-      stays within it;
+    - **B** when the same-path control is not below the bound but every pair at the failing
+      case stays within it;
     - **ambiguous** otherwise (an AdamW pair above the bound with F's other conditions met,
       say): the expansion case (FA 1.46e-5) is added to D3 once (``expand``), then the outcome
       is reported without choosing.
 
-    The branch is decided on the three prescribed cases only; the expansion never changes it.
-    The AdamW pairs are reported under every branch (``facts``). Missing inputs (D3 stopped by
-    its determinism check, say) give ``incomplete``."""
+    The expansion never changes the branch. Every prescribed case's pairs (AdamW's included),
+    D_twin/K*, and each reference's mode and fallback reason are reported in ``facts``."""
     d = settings.diagnostic
-    bound = float(d.bound)
+    bound, k_star = float(d.bound), float(d.k_star)
     failing = str(d.branches.failing)
     regular_cases = [str(c) for c in d.branches.regular_cases]
     prescribed = [str(c) for c in d.d3.order]
     expansion = str(d.d3.expansion)
-    missing = []
+    facts: dict[str, Any] = {"bound": bound, "K_star": k_star, "failing_case": failing}
+    missing: list[str] = []
+    incomplete: list[str] = []
+
     if d1 is None:
         missing.append("d1/result.json")
     if determinism is None:
         missing.append("d3/determinism.json")
-    elif not determinism.get("equal"):
-        missing.append("D3 (stopped: the determinism check failed)")
     missing += [f"d3/{name}.json" for name in prescribed if name not in cases]
-    facts: dict[str, Any] = {"bound": bound, "failing_case": failing}
+
+    # One commit for every part, HEAD's if given
+    present = {"d1/result.json": d1, "d3/determinism.json": determinism,
+               **{f"d3/{name}.json": record for name, record in cases.items()}}  # fmt: skip
+    commits = {name: output_commit(record) for name, record in present.items()
+               if record is not None}  # fmt: skip
+    reference = commit if commit is not None else commits.get("d1/result.json")
+    facts.update({"commit": reference, "commits": commits})
+    stale = {name for name, written in commits.items() if written != reference}
+    missing += [f"{name} (written at {commits[name]}, not {reference})" for name in sorted(stale)]
+    usable = {name: record for name, record in cases.items() if f"d3/{name}.json" not in stale}
+
+    current = determinism is not None and "d3/determinism.json" not in stale
+    if current and not determinism.get("equal"):
+        missing.append("D3 (stopped: the determinism check failed)")
+    for name in prescribed:  # the expansion case is only reported (facts.expansion_status)
+        record = usable.get(name)
+        if record is None:
+            continue
+        if record.get("status") == "incomplete":
+            incomplete.append(f"d3/{name}.json: {record.get('reason', 'incomplete')}")
+        elif set(record.get("pairs") or {}) != set(PAIRS):
+            missing.append(f"d3/{name}.json holds the pairs {sorted(record.get('pairs') or {})},"
+                           f" not {list(PAIRS)}")  # fmt: skip
+        elif not ((record.get("twin_A") or {}).get("archive") or {}).get("equal"):
+            incomplete.append(f"d3/{name}.json: twin A differs from its archived run")
+    if expansion in usable:
+        facts["expansion_status"] = usable[expansion].get("status")
+    if d1 is not None and "d1/result.json" not in stale:
+        equals = (d1.get("residual") or {}).get("iii_equals_record") or {}
+        facts["iii_equals_record"] = equals
+        if not equals or not all(equals.values()):
+            incomplete.append("d1/result.json: the recomputed (iii) differs from a control's "
+                              "recorded first gradient")  # fmt: skip
+    facts["twin_A_equal"] = {name: ((record.get("twin_A") or {}).get("archive") or {})
+                             .get("equal") for name, record in usable.items()}  # fmt: skip
+    facts["incomplete"] = incomplete
+
+    def readable(record: Mapping[str, Any]) -> bool:
+        twin_a = ((record.get("twin_A") or {}).get("archive") or {}).get("equal")
+        complete = record.get("status") != "incomplete"
+        return bool(complete and twin_a and set(record.get("pairs") or {}) == set(PAIRS))
+
+    valid = {name for name, record in usable.items() if readable(record)}
 
     def pairs_within(name: str) -> dict[str, bool]:
-        return {key: bool(p["max_D_twin"] <= bound) for key, p in cases[name]["pairs"].items()}
+        return {key: bool(p["max_D_twin"] <= bound) for key, p in usable[name]["pairs"].items()}
 
+    facts["pairs_within"] = {name: pairs_within(name) for name in [*prescribed, expansion]
+                             if name in valid}  # fmt: skip
+    facts["max_D_twin_over_K_star"] = {
+        name: {key: p["max_D_twin"] / k_star for key, p in usable[name]["pairs"].items()}
+        for name in [*prescribed, expansion] if name in valid
+    }  # fmt: skip
+    facts["references"] = {
+        name: {key: usable[name]["pairs"][REFERENCE].get(key)
+               for key in ("mode", "fallback_reason")}
+        for name in [*prescribed, expansion] if name in valid
+    }  # fmt: skip
     out: dict[str, Any] = {"facts": facts, "missing": missing}
-    # Every prescribed case's pairs, AdamW's included, reported under every branch
-    facts["pairs_within"] = {name: pairs_within(name) for name in prescribed if name in cases}
-    if failing in cases:
-        facts["failing_pairs_within"] = pairs_within(failing)
-        if not all(facts["failing_pairs_within"].values()):
-            return {**out, "branch": "A", "expand": None}
-    if missing:
+    if missing or incomplete:
         return {**out, "branch": "incomplete", "expand": None}
+
+    facts["failing_pairs_within"] = pairs_within(failing)
+    if not all(facts["failing_pairs_within"].values()):
+        return {**out, "branch": "A", "expand": None}
     facts["path_dominates"] = bool(d1["residual"]["path_dominates"])
     facts["same_path_control_below"] = bool(d1["same_path_control"]["below_bound"])
     facts["regular_cases_within"] = {name: all(pairs_within(name).values())
                                      for name in regular_cases}  # fmt: skip
-    failing_ok = all(facts["failing_pairs_within"].values())
     if (facts["path_dominates"] and facts["same_path_control_below"]
             and all(facts["regular_cases_within"].values())):  # fmt: skip
         branch = "F"
-    elif not facts["same_path_control_below"] and failing_ok:
-        branch = "B"
+    elif not facts["same_path_control_below"]:
+        branch = "B"  # every failing-case pair is within the bound here
     else:
         branch = "ambiguous"
-    expand = expansion if branch == "ambiguous" and expansion not in cases else None
-    if branch == "ambiguous" and expansion in cases:
+    expand = expansion if branch == "ambiguous" and expansion not in usable else None
+    if branch == "ambiguous" and expansion in valid:
         facts["expansion"] = {"case": expansion, "pairs_within": pairs_within(expansion),
                               "note": "reported without choosing"}  # fmt: skip
     return {**out, "branch": branch, "expand": expand}

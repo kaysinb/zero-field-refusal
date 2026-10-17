@@ -48,7 +48,8 @@ def settings(**changes):
 def test_the_settings_are_k_only_without_harmful_generation() -> None:
     d = settings().diagnostic
     assert d.evaluation == "k_only" and d.harmful_generation is False
-    assert d.bound == pytest.approx(0.01 * math.sqrt(40))
+    assert d.bound == pytest.approx(0.01 * math.sqrt(40)) == pytest.approx(0.01 * d.k_star)
+    assert d.k_star == pytest.approx(math.sqrt(40)) and d.memory_rule_gb == 46
     assert list(d.d3.order) == ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"]
     assert d.d3.expansion == "fa-1.46e-05" and d.d3.expansion not in d.d3.order
     assert d.branches.failing == "fa-1.21e-05"
@@ -436,22 +437,34 @@ def test_twin_divergence_is_k_in_both_directions(tiny) -> None:
 BOUND = 0.0632455532033676
 
 
+COMMIT = "c" * 40
+
+
+def written(record, commit=COMMIT):
+    return {**record, "provenance": {"code": {"commit": commit}}}
+
+
 def outputs(*, path=True, same_path=0.01, pairs=None, determinism=True, expansion=False):
-    """Synthetic D1 and D3 outputs: ``pairs`` maps a case to its pairs' max D_twin."""
+    """Synthetic D1 and D3 outputs at one commit: ``pairs`` maps a case to its pairs' max
+    D_twin; every twin A equals its archive, and (iii) every control's record."""
     within = {k: 0.001 for k in ("p1", "p2", "p3", "p4", "reference")}
     pairs = pairs or {}
     names = ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"] + (["fa-1.46e-05"] if expansion else [])
-    cases = {name: {"pairs": {k: {"max_D_twin": v} for k, v in {**within, **pairs.get(name, {})}
-                              .items()}} for name in names}  # fmt: skip
-    d1 = {
-        "residual": {"path_dominates": path},
+    cases = {name: written({
+        "status": "complete", "twin_A": {"archive": {"equal": True}},
+        "pairs": {k: {"max_D_twin": v, **({"mode": fcd.FLOAT64_FULL} if k == "reference" else {})}
+                  for k, v in {**within, **pairs.get(name, {})}.items()},
+    }) for name in names}  # fmt: skip
+    d1 = written({
+        "residual": {"path_dominates": path,
+                     "iii_equals_record": {"1e-05": True, "1.21e-05": True, "1.46e-05": True}},
         "same_path_control": {"below_bound": same_path < BOUND, "max_K_scoring": same_path},
-    }
-    return d1, {"equal": determinism}, cases
+    })  # fmt: skip
+    return d1, written({"equal": determinism}), cases
 
 
-def decide(d1, determinism, cases):
-    return fcd.decide_branch(settings(), d1, determinism, cases)
+def decide(d1, determinism, cases, **kwargs):
+    return fcd.decide_branch(settings(), d1, determinism, cases, **kwargs)
 
 
 def test_branch_f_needs_the_path_the_same_path_control_and_the_regular_runs() -> None:
@@ -502,10 +515,157 @@ def test_an_ambiguous_branch_expands_once_then_reports_without_choosing() -> Non
 def test_missing_outputs_leave_the_branch_incomplete() -> None:
     d1, determinism, cases = outputs()
     assert decide(None, determinism, cases)["branch"] == "incomplete"
-    out = decide(d1, {"equal": False}, {})
+    out = decide(d1, written({"equal": False}), {})
     assert out["branch"] == "incomplete" and any("determinism" in m for m in out["missing"])
     del cases["adamw-1.32e-05"]
     assert decide(d1, determinism, cases)["missing"] == ["d3/adamw-1.32e-05.json"]
+
+
+def test_a_failed_determinism_check_wins_over_branch_a() -> None:
+    """Review I4, probe 4: the determinism check comes before A (Revision 2, 9)."""
+    d1, _, cases = outputs(pairs={"fa-1.21e-05": {"p1": 1.0}})
+    out = decide(d1, written({"equal": False}), cases)
+    assert out["branch"] == "incomplete"
+    assert decide(d1, written({"equal": True}), cases)["branch"] == "A"
+
+
+@pytest.mark.parametrize("case", ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"])
+def test_a_case_needs_every_pair(case) -> None:
+    """Review I4, probes 1 and 2: an empty pair set, or one without the reference, is no
+    evidence that the pairs stay within the bound."""
+    d1, determinism, cases = outputs()
+    cases[case]["pairs"] = {}
+    out = decide(d1, determinism, cases)
+    assert out["branch"] == "incomplete" and any(case in m for m in out["missing"])
+    d1, determinism, cases = outputs()
+    del cases[case]["pairs"]["reference"]
+    assert decide(d1, determinism, cases)["branch"] == "incomplete"
+
+
+@pytest.mark.parametrize("case", ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"])
+def test_a_twin_a_unlike_its_archive_makes_the_branch_incomplete(case) -> None:
+    """Review I1, probe 3: no pair is read against a twin A that is not the archived run."""
+    d1, determinism, cases = outputs()
+    cases[case]["twin_A"]["archive"]["equal"] = False
+    out = decide(d1, determinism, cases)
+    assert out["branch"] == "incomplete" and out["facts"]["twin_A_equal"][case] is False
+    assert any(case in reason for reason in out["facts"]["incomplete"])
+    d1, determinism, cases = outputs()
+    reason = "twin A differs from its archived run"
+    cases[case] = written({"status": "incomplete", "reason": reason,
+                           "twin_A": {"archive": {"equal": False}}, "pairs": {}})  # fmt: skip
+    assert decide(d1, determinism, cases)["branch"] == "incomplete"
+
+
+def test_a_recomputed_iii_unlike_its_record_makes_the_branch_incomplete() -> None:
+    d1, determinism, cases = outputs()
+    d1["residual"]["iii_equals_record"]["1.21e-05"] = False
+    out = decide(d1, determinism, cases)
+    assert out["branch"] == "incomplete"
+    assert out["facts"]["iii_equals_record"]["1.21e-05"] is False
+
+
+def test_outputs_of_another_commit_are_not_read() -> None:
+    d1, determinism, cases = outputs()
+    assert decide(d1, determinism, cases, commit=COMMIT)["branch"] == "F"
+    out = decide(d1, determinism, cases, commit="d" * 40)  # HEAD moved on: nothing is current
+    assert out["branch"] == "incomplete" and len(out["missing"]) == 5
+    cases["fa-1e-05"] = written(cases["fa-1e-05"], "e" * 40)  # one part of another commit
+    out = decide(d1, determinism, cases)
+    assert out["branch"] == "incomplete"
+    assert out["missing"] == [f"d3/fa-1e-05.json (written at {'e' * 40}, not {COMMIT})"]
+
+
+def test_the_references_mode_is_reported() -> None:
+    d1, determinism, cases = outputs()
+    cases["adamw-1.32e-05"]["pairs"]["reference"].update(
+        mode=fcd.FLOAT64_ACCUMULATION, fallback_reason="OutOfMemoryError: …"
+    )
+    references = decide(d1, determinism, cases)["facts"]["references"]
+    assert references["fa-1.21e-05"] == {"mode": fcd.FLOAT64_FULL, "fallback_reason": None}
+    assert references["adamw-1.32e-05"]["mode"] == fcd.FLOAT64_ACCUMULATION
+
+
+def test_kept_outputs_must_come_from_this_commit(tmp_path) -> None:
+    (tmp_path / "d3").mkdir()
+    (tmp_path / "d3" / "fa-1e-05.json").write_text(json.dumps(written({"x": 1}, "a" * 40)))
+    assert fcd.kept(tmp_path, "d3/fa-1e-05.json", "a" * 40) == written({"x": 1}, "a" * 40)
+    assert fcd.kept(tmp_path, "d3/fa-1e-05.json", "b" * 40) is None
+    assert not (tmp_path / "d3" / "fa-1e-05.json").exists()  # moved aside, kept
+    assert json.loads((tmp_path / "stale" / ("a" * 40) / "d3" / "fa-1e-05.json").read_text())
+    assert fcd.kept(tmp_path, "d3/fa-1e-05.json", "b" * 40) is None  # nothing left to read
+
+
+def test_a_k_series_with_a_non_finite_value_is_never_below_the_bound() -> None:
+    """Review I2: Python's max skips a NaN that is not first."""
+    for values in ([0.01, math.nan, 0.02], [math.nan, 0.01, 0.02], [0.01, 0.02, math.inf]):
+        series = fcd.series_summary(values, [1, 5, 10], [1, 5, 10], None, BOUND)
+        assert not series["complete"] and not series["below_bound"]
+        assert series["max"] == math.inf and series["nonfinite_steps"]
+    good = fcd.series_summary([0.01, 0.02, 0.03], [1, 5, 10], [1, 5, 10], None, BOUND)
+    assert good["below_bound"] and good["max"] == 0.03
+    assert not fcd.series_summary([0.01, 0.02], [1, 5], [1, 5, 10], None, BOUND)["complete"]
+    assert not fcd.series_summary([BOUND] * 3, [1, 5, 10], [1, 5, 10], None, BOUND)["below_bound"]
+    pair = fcd._pair_summary([{"step": 1, "D_twin": 0.01}, {"step": 5, "D_twin": math.nan},
+                              {"step": 10, "D_twin": 0.02}], [1, 5, 10], None)  # fmt: skip
+    assert pair == {"max_D_twin": math.inf, "complete": False}
+    pair = fcd._pair_summary([{"step": 1, "D_twin": 0.01}, {"step": 10, "D_twin": 0.02}],
+                             [1, 5, 10], None)  # fmt: skip
+    assert not pair["complete"]
+
+
+def test_a_failed_float64_reference_is_kept(monkeypatch) -> None:
+    """Review M3: the out-of-memory attempt's rows and D_twin readings stay in the record."""
+
+    def run_twin(cfg, twins, *, eval_at, precision, compare_dir, progress=None):
+        if precision == "float64":
+            progress.update(rows=[{"step": 0}], D_twin=[{"step": 1, "D_twin": 0.001}])
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 5 GiB\nmore")
+        return {"steps": 25, "max_D_twin": 0.002}
+
+    monkeypatch.setattr(fcd, "run_twin", run_twin)
+    twins = type("T", (), {"env": type("E", (), {"device": CPU})(), "reset": lambda self: None})()
+    out = fcd.reference_twin(None, twins, [1, 5], Path("."))
+    assert out["mode"] == fcd.FLOAT64_ACCUMULATION and out["max_D_twin"] == 0.002
+    failed = out["failed_attempt"]
+    assert failed["rows"] == [{"step": 0}] and failed["D_twin"][0]["D_twin"] == 0.001
+    assert out["fallback_reason"].startswith("OutOfMemoryError: CUDA out of memory")
+
+
+def test_the_initial_states_are_built_from_each_run_s_own_v0() -> None:
+    """Review M5: the optimizer state's v hash compares two estimates, not one twice."""
+    params = [torch.nn.Parameter(torch.zeros(3))]
+    cfg = OmegaConf.create({"optimizer": {"name": "adam_frozen", "lr": 1e-5, "beta1": 0.9,
+                                          "eps": 1e-8, "weight_decay": 0.0}})  # fmt: skip
+    same = fcd._initial_state((cfg, [torch.ones(3)]), (cfg, [torch.ones(3)]), params)
+    assert same["equal_except_lr"] and same["regular"]["state_keys"] == ["exp_avg_sq"]
+    other = fcd._initial_state((cfg, [torch.ones(3)]), (cfg, [torch.full((3,), 2.0)]), params)
+    assert not other["equal_except_lr"]
+
+
+def test_the_memory_rule_and_the_monitor_cache() -> None:
+    rule = fcd.apply_memory_rule(CPU, 46)
+    assert rule == {"limit_gb": 46.0, "fraction": None, "total_gb": None}
+    assert fcd.numerics(CPU)["memory_rule"]["limit_gb"] == 46.0
+    assert fcd.peak_memory(CPU) == {}
+    cfg = OmegaConf.create({"eval": {"monitor": {"cache": {"primary": "none",
+                                                           "secondary": "host"}}}})  # fmt: skip
+    with pytest.raises(fcd.DiagnosticError, match="primary"):  # review M2
+        fcd.operational_monitor(cfg)
+    cfg.eval.monitor.cache.primary = "host"
+    assert fcd.operational_monitor(cfg).eval.monitor.cache.secondary == "none"
+
+
+def test_the_script_refuses_every_harmful_prompt_set() -> None:
+    """Review M7: a runtime guard on the Pod, not only in the tests."""
+    namespace = runpy.run_path(str(SCRIPT))
+    env = Environment(tokenizer=None, end_ids=END_IDS, pad_id=PAD_ID, device=CPU, new_model=None,
+                      prompt_set=lambda name: [name], data_root=Path("."))  # fmt: skip
+    guarded = namespace["guard_prompt_sets"](env)
+    assert guarded.prompt_set("alpaca_benign_kl") == ["alpaca_benign_kl"]
+    for name in ("harmful_kl", "harmful_judged", "harmful_evaluation", "harmful_calibration"):
+        with pytest.raises(RuntimeError, match="must not read"):
+            guarded.prompt_set(name)
 
 
 # ----------------------------------------------------------------------- the driver and plan
@@ -521,11 +681,24 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     assert f"SRC=/workspace/code/zero-field-refusal/{commit}/source" in text
     assert all(len(line) <= 100 for line in text.splitlines() if line.startswith("#"))
     run = 'project-run "$SRC" python scripts/fa_control_diagnostic.py'
-    order = [f"step {run} {part}" for part in ("plan", "d1", "d2", "d3")]
-    positions = [text.index(line + "\n") for line in order]
+    lines = text.splitlines()
+    order = [*(f"step {run} {part}" for part in ("plan", "d1", "d2")), f"{run} d3",
+             f"{run} branch --expansion-needed", f"  0) step {run} d3 --expansion ;;",
+             f"step {run} branch"]  # fmt: skip
+    positions = [lines.index(line) for line in order]
     assert positions == sorted(positions)
-    assert f"{run} branch --expansion-needed" in text and f"0) step {run} d3 --expansion" in text
-    assert text.rstrip().splitlines()[-2] == f"step {run} branch"
+    assert lines[-2] == f"step {run} branch"
+    # Review M1: a failed determinism check (exit 2) still records the branch, then stops.
+    d3 = lines.index(f"{run} d3")
+    assert lines[d3 + 1 : d3 + 6] == ["rc=$?", "set -e", 'if [ "$rc" -ne 0 ]; then',
+                                      f'  if [ "$rc" -eq 2 ]; then step {run} branch; fi',
+                                      '  exit "$rc"']  # fmt: skip
+    # Review M8: a free GPU, the disk for D3's checkpoints, and a log in the output directory.
+    gpu = lines.index('if [ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ]; '
+                      "then")  # fmt: skip
+    disk = next(i for i, line in enumerate(lines) if line.startswith('if [ "$free_kb" -lt 40'))
+    log = lines.index('exec > >(tee -a "$OUT/driver-$(date -u +%Y%m%dT%H%M%SZ).log") 2>&1')
+    assert log < gpu < disk < positions[0]
     assert 'OUT="${RUNS_DIR:?}/diagnostics/fa_control"' in text
     assert "harmful_" not in text
 
@@ -645,7 +818,12 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     guarded, requested = forbid_outcomes(monkeypatch, env)
     out = fcd.output_root(root)
 
+    found, missing = fcd.check_inputs(s, guarded, runs)  # the streams D1-D3 read
+    assert len(found) == 4 and not missing
+    fcd.apply_memory_rule(CPU, s.diagnostic.memory_rule_gb)  # recorded only, on the CPU
+
     d1 = fcd.run_d1(s, guarded, runs, out)
+    assert d1["status"] == "complete" and d1["numerics"]["memory_rule"] is not None
     shared = d1["shared_state"]
     assert shared["v0"]["equal"] and shared["trainable_parameters"]["equal"]
     assert shared["loss_normalization"]["equal"]
@@ -662,10 +840,13 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     control = d1["same_path_control"]
     assert control["steps"] == STEPS and [r["step"] for r in control["scoring"]] == [1, 3, 6]
     assert [r["step"] for r in control["monitor"]] == [5]
+    assert control["K_star"] == pytest.approx(math.sqrt(40)) and not control["nonfinite_steps"]
     assert "all" in d1["v0_census"]["groups"] and "attn_q" in d1["v0_census"]["groups"]
 
     d2 = fcd.run_d2(s, guarded, runs, out)
     assert d2["v0_sha256"] == shared["v0"]["regular_sha256"]
+    assert d2["hessians"]["soft"].startswith("(a) exact soft-loss Hessian")
+    assert {r["ritz_vector_on"] for k in ("soft", "nll") for r in d2["spectra"][k]} == {"host"}
     assert [len(d2["spectra"][k]) for k in ("soft", "nll")] == [2, 2]
     assert set(d2["linearized"]) == {"soft|0.0009", "soft|0.001", "nll|0.0009", "nll|0.001"}
     first = d2["linearized"]["soft|0.001"]
@@ -679,11 +860,14 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     assert determinism["equal"] and determinism["steps_compared"] == STEPS
     for name in order:
         case = done[name]
+        assert case["status"] == "complete" and case["K_star"] == pytest.approx(math.sqrt(40))
         assert case["twin_A"]["archive"]["equal"]  # each twin A is its archived run, bitwise
         assert set(case["pairs"]) == {"p1", "p2", "p3", "p4", "reference"}
         for key, pair in case["pairs"].items():
             assert [r["step"] for r in pair["D_twin"]] == [1, 3, 6], key
             assert pair["complete"] and math.isfinite(pair["max_D_twin"])
+            reading = pair["D_twin"][-1]
+            assert reading["D_twin_over_K_star"] == pytest.approx(reading["D_twin"] / math.sqrt(40))
         assert case["pairs"]["p1"]["rounding"][0]["survived"]
         for key in ("p1", "p2", "p3", "p4"):
             attempts = case["pairs"][key]["rounding"]
@@ -700,6 +884,8 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
 
     decision = fcd.decide_branch(s, *fcd.load_outputs(out))
     assert decision["branch"] in fcd.BRANCHES and not decision["missing"]
+    assert decision["branch"] != "incomplete" and not decision["facts"]["incomplete"]
+    assert set(decision["facts"]["references"]) == set(order)
     if decision["expand"]:
         fcd.run_d3(s, guarded, runs, out, cases=[decision["expand"]])
         again = fcd.decide_branch(s, *fcd.load_outputs(out))
@@ -709,7 +895,7 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     # A part already written is kept: the script skips it, and the plan finds the runs.
     config = tmp_path / "settings.yaml"
     OmegaConf.save(s, config)
-    for argv in (["d1"], ["d3"], ["plan"], ["d3", "--dry-run"], ["branch"]):
+    for argv in (["d1"], ["d3"], ["plan", "--no-stream-check"], ["d3", "--dry-run"], ["branch"]):
         monkeypatch.setattr("sys.argv", [str(SCRIPT), *argv, "--config", str(config),
                                          "--runs-root", str(root)])  # fmt: skip
         runpy.run_path(str(SCRIPT), run_name="__main__")
@@ -734,6 +920,51 @@ def test_a_run_that_differs_from_its_archive_stops_d3(world) -> None:
     assert not list((out / "d3").glob("fa-*.json"))
     decision = fcd.decide_branch(s, *fcd.load_outputs(out))
     assert decision["branch"] == "incomplete"
+
+
+def test_a_doctored_archive_or_record_makes_the_outcome_incomplete(world, monkeypatch) -> None:
+    """Review I1: twin A of FA 1.21e-5 against a doctored archive makes that case incomplete,
+    with no pair run; a doctored control record makes D1's (iii) check fail."""
+    env, root = world
+    s = tiny_settings()
+    runs = fcd.locate_runs(s, root)
+    for path in (runs.regular["fa-1.21e-05"] / "metrics.jsonl",
+                 runs.control(1.2e-3) / "metrics.jsonl"):  # fmt: skip
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        next(r for r in rows if "loss" in r)["grad_norm"] *= 1 + 1e-12
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = fcd.output_root(root)
+    done = fcd.run_d3(s, env, runs, out, cases=["fa-1.21e-05"])
+    case = done["fa-1.21e-05"]
+    assert case["status"] == "incomplete" and case["pairs"] == {}
+    assert not case["twin_A"]["archive"]["equal"]
+    assert not list((out / "d3" / "checkpoints" / "fa-1.21e-05").glob("*"))
+    monkeypatch.setattr(fcd, "same_path_control", lambda *args: {"below_bound": True})
+    d1 = fcd.run_d1(s, env, runs, out)
+    assert d1["status"] == "incomplete" and d1["residual"]["iii_equals_record"] == {
+        "0.0009": True,
+        "0.001": True,
+        "0.0012": False,
+    }
+    decision = fcd.decide_branch(s, *fcd.load_outputs(out))
+    assert decision["branch"] == "incomplete"
+    reasons = " ".join(decision["facts"]["incomplete"])
+    assert "fa-1.21e-05" in reasons and "(iii)" in reasons
+
+
+def test_the_plan_checks_the_streams(world) -> None:
+    env, root = world
+    s = tiny_settings()
+    runs = fcd.locate_runs(s, root)
+    found, missing = fcd.check_inputs(s, env, runs)
+    assert not missing
+    monitor = next(f for f in found if f.startswith("kl_monitor")).split(" stream ")[1]
+    (Path(monitor) / "manifest.json").rename(Path(monitor) / "manifest.json.aside")
+    try:
+        _, missing = fcd.check_inputs(s, env, runs)
+        assert [m.split(" ")[0] for m in missing] == ["kl_monitor"]
+    finally:
+        (Path(monitor) / "manifest.json.aside").rename(Path(monitor) / "manifest.json")
 
 
 def test_runs_are_found_by_their_archived_configs(world) -> None:

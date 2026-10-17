@@ -746,28 +746,51 @@ An outcome-free diagnostic outside the confirmation, of why two FA soft-target c
 Its frozen specification is [study2-fa-control-diagnostic.md](study2-fa-control-diagnostic.md).
 It changes no protocol, selection or run record, and this round's controls stay failed.
 
-- **Blind to outcomes.** Only K, the KL between twin runs, norms, eigenvalues and v₀ statistics
-  are computed. Every evaluation reads benign panels only: the scoring panel's responses and the
-  monitor panel. No harmful prompt set, stream or generation is touched, and no refusal, harm or
-  judge quantity is computed (`tests/test_fa_control_diagnostic.py` checks both).
-- **Code and settings.** `scripts/fa_control_diagnostic.py` runs the parts in the specification's
-  order: `d1` (with D4's shared-state checks), `d2`, `d3` and `branch`. The settings are
-  `experiments/fa_control_diagnostic` (not a run config). The runs re-examined are found under
-  `RUNS_DIR/study2_short` and `RUNS_DIR/study2_short_fa_controls` by their archived configs.
-- **Prerequisites on a Pod.** The P1 records of the targeted round and of the FA controls, and
-  `DATA_DIR` restored as for the controls (the driver's header lists the inventories).
-- **Outputs** go to `RUNS_DIR/diagnostics/fa_control/`, which the stage's analysis never reads:
-  `d1/result.json`, `d2/result.json`, `d3/determinism.json`, `d3/<case>.json` and
-  `branch/branch.json`. D3 keeps twin A's parameters under `d3/checkpoints/<case>/` (≈ 31 GB at
-  1.5B) until its case is done. A part already written is kept when the driver runs again.
-- **Stops.** A re-run that differs from its archived run stops D3 (exit 2), and the branch is
-  then `incomplete`.
-- **Cost.** About 2 GPU hours on one L40S, at most ≈ 43 GB allocated (an AdamW float64
-  reference that does not fit falls back to float64 loss and accumulation, recorded); FA 1.46e-5
-  adds ≈ 20 minutes when the three cases are ambiguous.
+- **Blind to outcomes.**
+  - Only K, the KL between twin runs, norms, eigenvalues and v₀ statistics are computed.
+  - Every evaluation reads benign panels only: the scoring panel's responses and the monitor
+    panel.
+  - No harmful prompt set, stream or generation is touched, and no refusal, harm or judge
+    quantity is computed. `tests/test_fa_control_diagnostic.py` checks both.
+  - On the Pod, the script also refuses any prompt set whose name contains "harmful".
+- **Code and settings.**
+  - `scripts/fa_control_diagnostic.py` runs the parts in the specification's order: `d1` (with
+    D4's shared-state checks), `d2`, `d3` and `branch`.
+  - The settings are `experiments/fa_control_diagnostic`, which is not a run config.
+  - The runs re-examined are found by their archived configs, under `RUNS_DIR/study2_short` and
+    `RUNS_DIR/study2_short_fa_controls`.
+- **Prerequisites on a Pod.**
+  - The P1 records of the targeted round and of the FA controls.
+  - `DATA_DIR` restored as for the controls. The driver's header lists the inventories, and
+    `plan` checks the streams D1–D3 read.
+  - A free GPU and 40 GB of free volume. The driver checks both before it starts.
+- **Memory rule.** Each part caps its CUDA memory at 46 GB reserved, in the GB of the run
+  records' peaks (1e9 bytes). Each peak is recorded with `within_memory_rule`. An out-of-memory
+  error under the cap has two outcomes:
+  - the float64 reference falls back to float64 loss and accumulation, and the failed attempt
+    is kept in its record;
+  - any other part fails (exit 4).
+- **Outputs** go to `RUNS_DIR/diagnostics/fa_control/`, which the stage's analysis never reads.
+  - The parts write `d1/result.json`, `d2/result.json`, `d3/determinism.json`, `d3/<case>.json`
+    and `branch/branch.json`, and the driver adds its log.
+  - D3 keeps twin A's parameters under `d3/checkpoints/<case>/` (31.4 GB at 1.5B) until its case
+    is done.
+  - When the driver runs again, a part written at the same commit is kept.
+  - A part written at another commit is moved to `stale/<its commit>/` and redone. `branch`
+    never reads one.
+- **Incomplete outcomes.** The branch is `incomplete` when:
+  - the determinism re-run differs from its archived run. That stops D3 (exit 2), and the driver
+    records the branch before it stops;
+  - a case's twin A differs from its archived run;
+  - the recomputed first gradient of the control differs from a control's record;
+  - an output is missing, partial or of another commit.
+- **Cost.**
+  - About 2.4 GPU hours on one L40S: D1 ≈ 12 min, D2 ≈ 50 min, D3 ≈ 83 min.
+  - FA 1.46e-5 adds ≈ 30 minutes when the three cases are ambiguous.
+  - At most ≈ 45 GB allocated under the 46 GB reserved cap.
 
 ```bash
-python scripts/fa_control_diagnostic.py plan --runs-root runs   # finds the runs; loads nothing
+python scripts/fa_control_diagnostic.py plan --runs-root runs --no-stream-check  # loads nothing
 python scripts/fa_control_diagnostic.py driver --commit SHA --out "$C/fa-control-diagnostic.sh"
 bash "$C/fa-control-diagnostic.sh"                               # on the Pod
 ```

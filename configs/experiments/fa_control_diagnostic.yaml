@@ -13,7 +13,10 @@ diagnostic:
   seed: 2000                        # the targeted round's runs and the FA soft controls
   batch_size: 5
   epsilon: 1.0e-8                   # FA's ε (configs/optimizer/adam_frozen.yaml)
-  bound: 0.0632455532033676         # 0.01 K* (K* = √40): the controls' contamination_k
+  k_star: 6.324555320336759         # K* = √40; outputs report D_twin/K* beside the bound
+  bound: 0.0632455532033676         # 0.01 K*: the controls' contamination_k
+  memory_rule_gb: 46                # base D3: "must fit within 46 GB reserved", in the GB of
+                                    # the run records' peaks (1e9 bytes); enforced as a cap
   experiments:
     regular: study2_short
     control: study2_short_fa_controls
