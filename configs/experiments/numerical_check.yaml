@@ -14,9 +14,11 @@ numerical:
   seeds: [2200, 2201, 2202]         # fresh, for this check only; each has its training stream
                                     # and its v₀ stream at the selected B
   arms: [adamw, adam_frozen, adamw_prewarmed]  # AdamW, FA and pre-warmed, by optimizer name
+  primary_arms: [adamw, adam_frozen]  # a selection may hold these alone: the candidate's
+                                    # fallback with the pre-warmed arm dropped; no other subset
   rates_per_arm: 3                  # the selected rates of each arm
-  # Cases: every selected (arm, rate) on the first seed; each arm's U-rate (its largest selected
-  # rate) on the other seeds: 15 cases.
+  # Cases: every selected (arm, rate) on the first seed; each selected arm's U-rate (its largest
+  # selected rate) on the other seeds: 15 cases, or 10 with the primary arms alone.
   control_arm: adam_frozen          # one same-path control per selected FA rate, on the first
                                     # seed, at the selected B, for the regular run's 25 steps
   regular:                          # twin A: the regular run of the case's seed, arm, rate and B

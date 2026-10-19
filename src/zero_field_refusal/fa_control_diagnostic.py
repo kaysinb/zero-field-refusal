@@ -86,12 +86,17 @@ benign panels, nothing written to a run record.
   more, in a fresh process. A failure is the attempt's record, never lost.
 - **The verdict** (``numerical_verdict``), with its policy (``NumericalScope.policy``) and the
   seeds each rate was tested on: an (arm, rate) is qualified when every pair of every case is
-  within, failing when a pair exceeds (evidence of amplification), not_qualified (technical,
-  never instability) when a case is incomplete after its rerun, else incomplete
-  (``qualification``); a control is accepted when "below", rejected when exceeding or at the
-  bound, not_qualified when incomplete after its rerun, else incomplete (``control_verdict``).
-  Only records written at HEAD from a clean checkout count (``current``). A replacement rate's
-  cases are ``replacement_cases``.
+  within, failing when a pair exceeds (evidence of amplification) or an instability rule
+  stopped a case's regular run, not_qualified (technical, never instability) when a case is
+  incomplete after its rerun, else incomplete (``qualification``); a control is accepted when
+  "below", rejected when exceeding, at the bound or its run stopped by instability,
+  not_qualified when incomplete after its rerun, else incomplete (``control_verdict``). Each
+  selection keeps its own verdict (``verdicts/<selection_digest>.json``, ``write_verdict``). A
+  replacement rate's cases are ``replacement_cases``.
+- **Which records count** (``RecordReader``): those written from a clean checkout at a commit
+  whose GPU code is HEAD's (``code_identity.reuse_check``), under the frozen settings, with
+  the policy's perturbations, of the regular run located now. Reading moves nothing; only a
+  real run of a part, from a clean checkout and after the code check, sets a record aside.
 - **GPU code** (review fa13): the qualification attaches to the GPU code the regular runs and the
   check executed (``code_identity.gpu_code_identity``), not to a commit. Nothing runs, and no
   record counts, unless the commit each regular run recorded has the check's GPU identity
@@ -124,7 +129,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PreTrainedModel
 
 from .batches import chunks, collate
-from .code_identity import gpu_code_identity
+from .code_identity import gpu_code_identity, reuse_check
 from .curvature import _dot, _norm, _ritz, lanczos, start_vector
 from .evaluation import NO_CAP, sequence_kl
 from .losses import loss_denominator, response_logits, response_logprobs, soft_kl, summed_nll
@@ -140,6 +145,7 @@ from .runtime import (
     load_stream_for,
     locate_stream,
 )
+from .schedule import INSTABILITY as RUN_INSTABILITY
 from .schedule import _norm as grad_norm
 from .seeding import derive_seed, seed_everything
 from .teacher import MANIFEST_FILE, Sample, published_chunks
@@ -391,22 +397,18 @@ def numerics(device: torch.device) -> dict[str, Any]:
             "memory_rule": dict(_MEMORY_RULE) or None}  # fmt: skip
 
 
-def kept(
-    out: Path, relative: str, commit: str | None, *, dirty: bool | None = None
-) -> dict[str, Any] | None:
-    """An output already written under ``out``, if it was written at ``commit`` (and, with
-    ``dirty``, from a checkout as dirty); any other is moved aside to ``stale/<its commit>/``
-    (``…-dirty`` when ``dirty`` is given and it was dirty; kept, never read) and None is
+def kept(out: Path, relative: str, commit: str | None) -> dict[str, Any] | None:
+    """An output already written under ``out``, if it was written at ``commit``; one written at
+    another commit is moved aside to ``stale/<its commit>/`` (kept, never read) and None is
     returned, so the part runs again at this commit."""
     path = out / relative
     if not path.exists():
         return None
     record = json.loads(path.read_text())
     written = output_commit(record)
-    if written == commit and (dirty is None or output_dirty(record) is dirty):
+    if written == commit:
         return record
-    label = f"{written}-dirty" if dirty is not None and output_dirty(record) else str(written)
-    set_aside(out, relative, label)
+    set_aside(out, relative, str(written))
     return None
 
 
@@ -810,7 +812,8 @@ class Float64Adam:
             self.beta1, self.beta2 = (float(b) for b in opt_cfg.betas)
             if second_moment is None:
                 raise DiagnosticError("Pre-warmed Adam needs v₀")
-            self.v = [v.to(p.device, torch.float64)
+            # a copy: v is updated in place, and v₀ is shared by every twin of the seed
+            self.v = [v.to(p.device, torch.float64).clone()
                       for v, p in zip(second_moment, self.params, strict=True)]  # fmt: skip
         else:
             self.beta1, self.beta2 = (float(b) for b in opt_cfg.betas)
@@ -2506,6 +2509,9 @@ def decide_branch(
 QUALIFIED, FAILING = "qualified", "failing"  # an (arm, rate)
 NOT_QUALIFIED = "not_qualified"  # technical: incomplete after its one rerun; never instability
 ACCEPTED, REJECTED = "accepted", "rejected"  # a same-path control
+# An attempt or a case whose regular run an instability rule stopped (the ×10 gradient rule, say):
+# evidence against the rate, which is then failing, and its FA control rejected
+INSTABILITY = "instability"
 ATTEMPTS = (1, 2)  # an incomplete case or control runs once more, in a fresh process
 NUMERICAL_SPEC = ("study 2, amendment 4, section 1 (numerical qualification); "
                   "configs/experiments/numerical_check.yaml")  # fmt: skip
@@ -2526,6 +2532,7 @@ class NumericalScope:
 
     seeds: tuple[int, ...]  # the first holds every selected rate and the controls
     arms: tuple[str, ...]  # optimizer names
+    primary_arms: tuple[str, ...]  # a selection may hold these alone (pre-warmed dropped)
     rates_per_arm: int
     control_arm: str  # FA: one same-path control per selected rate of this arm
     experiment: str
@@ -2546,6 +2553,7 @@ class NumericalScope:
         n = settings.numerical
         scope = cls(
             seeds=tuple(int(s) for s in n.seeds), arms=tuple(str(a) for a in n.arms),
+            primary_arms=tuple(str(a) for a in n.primary_arms),
             rates_per_arm=int(n.rates_per_arm), control_arm=str(n.control_arm),
             experiment=str(n.regular.experiment), role=str(n.regular.role),
             steps=int(n.regular.steps), protocol_version=int(n.regular.protocol_version),
@@ -2556,7 +2564,9 @@ class NumericalScope:
             k_star_factor=float(n.k_star_factor), bound_fraction=float(n.bound_fraction),
             memory_rule_gb=float(n.memory_rule_gb),
         )  # fmt: skip
-        if scope.control_arm not in scope.arms or len(set(scope.seeds)) != len(scope.seeds):
+        if (scope.control_arm not in scope.primary_arms
+                or not set(scope.primary_arms) < set(scope.arms)
+                or len(set(scope.seeds)) != len(scope.seeds)):  # fmt: skip
             raise NumericalError(f"Inconsistent scope: {scope}")
         if [k for k, _ in scope.gaussian] != list(PERTURBATIONS[2:]):
             raise NumericalError(f"The Gaussian directions must be {PERTURBATIONS[2:]}")
@@ -2577,18 +2587,29 @@ class NumericalScope:
         return self.bound_fraction * self.k_star(upper)
 
     def policy(
-        self, upper: float, gpu_code: Mapping[str, Any] | None, tool_commit: str | None
+        self, upper: float, gpu_code: Mapping[str, Any] | None, writers: Sequence[str]
     ) -> dict[str, Any]:
         """The numerical policy a qualification is attached to (with its batch and seeds): the
         GPU code the regular runs and the check executed (``code_identity.gpu_code_identity``:
-        commit, file count, sha256; review fa13), the norm, the survival rule and its retry,
-        the bound, the steps and the reference's modes; the check's own commit beside it, for
-        provenance. Any change of it voids the qualification."""
+        commit, file count, sha256; review fa13), the norm, the Gaussian directions' seeds, the
+        survival rule and its retry, the bound, the steps and the reference's modes; beside it,
+        for provenance, the commits that wrote the records read (``tool_commit``). Any change of
+        it voids the qualification."""
         return {"gpu_code": None if gpu_code is None else dict(gpu_code),
-                "tool_commit": tool_commit, "norm": self.norm,
+                "tool_commit": sorted(writers), "norm": self.norm, "gaussian": dict(self.gaussian),
                 "survival_share": self.survival_share, "retry_scale": self.rounding_scale,
                 "bound": self.bound(upper), "steps": list(self.eval_at),
                 "reference": NUMERICAL_REFERENCE}  # fmt: skip
+
+    def same_policy(self, settings: Mapping[str, Any] | None) -> bool:
+        """Whether a record's ``provenance.settings`` are this scope's: every value but the
+        memory rule (which only decides whether the reference falls back, and that is recorded
+        per case)."""
+        try:
+            other = NumericalScope.of(OmegaConf.create({"numerical": dict(settings or {})}))
+        except Exception:  # missing or malformed settings: not this scope's
+            return False
+        return replace(other, memory_rule_gb=self.memory_rule_gb) == self
 
 
 def rate_key(optimizer: str, lr: float) -> str:
@@ -2628,14 +2649,17 @@ def control_path(lr: float, attempt: int) -> str:
 def selected_rates(
     scope: NumericalScope, rates: Mapping[str, Sequence[float]]
 ) -> dict[str, list[float]]:
-    """The selected rates of every arm of the scope, ascending; each arm needs exactly its
-    ``rates_per_arm`` finite, positive rates, distinct as their keys print them. The rates come
-    from the caller (a selection record or the command line), never from the code."""
-    if set(rates) != set(scope.arms):
-        raise NumericalError(f"Rates are needed for exactly the arms {list(scope.arms)}, got "
+    """The selected rates, ascending, by arm in the scope's order: of every arm of the scope, or
+    of the primary arms alone (a selection without the pre-warmed arm, the candidate's
+    fallback); any other set of arms is refused. Each arm needs exactly its ``rates_per_arm``
+    finite, positive rates, distinct as their keys print them. The rates come from the caller
+    (a selection record or the command line), never from the code."""
+    if set(rates) not in (set(scope.arms), set(scope.primary_arms)):
+        raise NumericalError(f"Rates are needed for exactly the arms {list(scope.arms)}, or the "
+                             f"primary arms {list(scope.primary_arms)} alone; got "
                              f"{sorted(rates)}")  # fmt: skip
     out = {}
-    for arm in scope.arms:
+    for arm in (arm for arm in scope.arms if arm in rates):
         values = sorted(float(r) for r in rates[arm])
         if (len(values) != scope.rates_per_arm or not all(_number(r) and r > 0 for r in values)
                 or len({f"{r:g}" for r in values}) != len(values)):  # fmt: skip
@@ -2654,16 +2678,16 @@ def numerical_cases(
     settings: DictConfig, rates: Mapping[str, Sequence[float]], upper: float, *, batch: int
 ) -> list[NumericalCase]:
     """The frozen scope's cases: every selected (arm, rate) on the first numerical seed, then
-    each arm's U-rate (its largest selected rate) on each other seed; 15 with three arms of
-    three rates on three seeds."""
+    each selected arm's U-rate (its largest selected rate) on each other seed; 15 with three
+    arms of three rates on three seeds, 10 with the primary arms alone."""
     scope = NumericalScope.of(settings)
     _upper(upper)
     selected = selected_rates(scope, rates)
     first, *others = scope.seeds
     cases = [NumericalCase(first, arm, lr, int(batch), upper)
-             for arm in scope.arms for lr in selected[arm]]  # fmt: skip
+             for arm in selected for lr in selected[arm]]  # fmt: skip
     cases += [NumericalCase(seed, arm, selected[arm][-1], int(batch), upper)
-              for seed in others for arm in scope.arms]  # fmt: skip
+              for seed in others for arm in selected]  # fmt: skip
     return cases
 
 
@@ -2724,6 +2748,35 @@ def conformance(
         problems.append(f"the run stopped by {reason!r} after {terminal.get('steps')} steps, "
                         f"not after its {scope.steps}")  # fmt: skip
     return problems
+
+
+def instability_stop(run_dir: Path) -> str | None:
+    """Why the regular run stopped, when an instability rule stopped it (its terminal record's
+    ``stop.kind`` is ``instability``, or its reason one of ``schedule.INSTABILITY``: the ×10
+    gradient rule, a non-finite loss, gradient, weight or K, K above its maximum): evidence
+    against the rate, not a technical failure. None otherwise."""
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    stop = terminal.get("stop") or {}
+    if stop.get("kind") != "instability" and stop.get("reason") not in RUN_INSTABILITY:
+        return None
+    detail = f", {json.dumps(stop['detail'])}" if stop.get("detail") else ""
+    return (f"instability: the regular run stopped by {stop.get('reason')!r} after "
+            f"{terminal.get('steps')} steps{detail}")  # fmt: skip
+
+
+def run_identity(run_dir: Path) -> dict[str, Any]:
+    """A regular run as a record names it: its path, run id, config hash (``meta.json``) and
+    the sha256 of the records the check compares or reads (config, metrics, monitor, terminal).
+    The verdict counts a record only for the run located now (review of Task 1, M3)."""
+    digest = hashlib.sha256()
+    for name in ("config.yaml", "metrics.jsonl", "monitor.jsonl", "terminal.json"):
+        path = run_dir / name
+        digest.update(f"{name}\0".encode())
+        digest.update(path.read_bytes() if path.exists() else b"\0missing\0")
+    meta = run_dir / "meta.json"
+    config_hash = json.loads(meta.read_text()).get("config_hash") if meta.exists() else None
+    return {"path": str(run_dir), "run_id": run_dir.name, "config_hash": config_hash,
+            "sha256": digest.hexdigest()}  # fmt: skip
 
 
 def code_check(run_dirs: Iterable[Path], tool_commit: str | None) -> dict[str, Any]:
@@ -2813,9 +2866,10 @@ def first_update_direction(
     residual: Sequence[torch.Tensor], v0: Sequence[torch.Tensor], eps: float
 ) -> tuple[Vector, float]:
     """−P·g, P = 1/(√v₀ + ε): the direction of FA's first update for the gradient g (its
-    bias-corrected first moment is g, so δ₁ = −η·P·g at any rate η), formed in float64 and kept
-    in fp32 per tensor; and its norm (float64 sums of the fp32 tensors)."""
-    out = [(g.double() * preconditioner(v, eps).double()).neg_().float()
+    bias-corrected first moment is g, so δ₁ = −η·P·g at any rate η). v₀ and g are widened to
+    float64 first, so that P and the product are formed in float64; the result is kept in fp32
+    per tensor. Returns it and its norm (float64 sums of the fp32 tensors)."""
+    out = [(g.double() * preconditioner(v.double(), eps)).neg_().float()
            for g, v in zip(residual, v0, strict=True)]  # fmt: skip
     return out, _norm(out)
 
@@ -2866,10 +2920,15 @@ def run_numerical_case(
 ) -> dict[str, Any]:
     """One attempt of one case: twin A (the archived regular run, re-run and compared bit for
     bit), then p1–p4 at the scope's fixed norm and the float64 reference, each against twin A
-    by D_twin at the scope's steps, each with its state (``pair_state``). A regular run that
-    does not conform, or a twin A that stopped or differs from its archive, makes the attempt
-    incomplete, with no pair run. ``progress`` holds twin A and the pairs as they are done."""
+    by D_twin at the scope's steps, each with its state (``pair_state``). A regular run stopped
+    by an instability rule gives the attempt ``instability`` (``instability_stop``: evidence
+    against the rate); one that does not conform otherwise, or a twin A that stopped or differs
+    from its archive, makes the attempt incomplete; either way no pair is run. ``progress``
+    holds twin A and the pairs as they are done."""
     eval_at, bound = list(scope.eval_at), scope.bound(case.upper)
+    unstable = instability_stop(run_dir)
+    if unstable is not None:
+        return {"status": INSTABILITY, "reason": unstable, "pairs": {}}
     cfg = run_config(run_dir)
     problems = conformance(cfg, run_dir, scope, case)
     if problems:
@@ -3017,8 +3076,10 @@ def run_numerical_twins(
                                 "twin_A": progress.get("twin_A"),
                                 "pairs": progress.get("pairs", {})}  # fmt: skip
                         _release_device(env.device)
-                    finish(case, {"regular_run": str(located[case.name]), **body,
-                                  "seconds": time.perf_counter() - started}, facts)  # fmt: skip
+                    finish(case, {"regular_run": str(located[case.name]),
+                                  "regular_run_identity": run_identity(located[case.name]),
+                                  **body, "seconds": time.perf_counter() - started},
+                           facts)  # fmt: skip
         except Exception as exc:  # the seed's setup: every case not yet written records it
             error = _error(exc)
             error["reason"] = f"the setup of seed {seed} failed: {error['reason']}"
@@ -3046,8 +3107,10 @@ def run_numerical_controls(
     ``batch``, for the regular run's steps, K on the scoring panel at the scope's steps against
     the bound of ``upper``. Each control uses its rate's regular run config, which must conform,
     and must read v₀'s stream and the training prefix that run read (``shared_state``, from the
-    run's ``meta.json``); otherwise, or after an error, the attempt is incomplete. Each attempt
-    is written to ``control_path``. Nothing runs unless ``code`` shows the regular runs' GPU code
+    run's ``meta.json``); otherwise, or after an error, the attempt is incomplete. A regular run
+    stopped by an instability rule gives ``instability`` instead (``instability_stop``), and no
+    control runs. Each attempt names its regular run (``run_identity``) and is written to
+    ``control_path``. Nothing runs unless ``code`` shows the regular runs' GPU code
     to be the check's (``require_code``). Returns the records by rate."""
     _attempt_number(attempt)
     require_code(code)
@@ -3063,9 +3126,12 @@ def run_numerical_controls(
         try:
             run_dir = locate_case(root, scope, case)
             cfg = run_config(run_dir)
-            record["regular_run"] = str(run_dir)
+            record.update(regular_run=str(run_dir), regular_run_identity=run_identity(run_dir))
+            unstable = instability_stop(run_dir)
             problems = conformance(cfg, run_dir, scope, case)
-            if problems:
+            if unstable is not None:  # evidence against the rate: the control is rejected
+                record.update(status=INSTABILITY, state=INSTABILITY, reason=unstable)
+            elif problems:
                 record.update(
                     status="incomplete",
                     state=INCOMPLETE,
@@ -3124,23 +3190,12 @@ def run_numerical_controls(
 # ------------------------------------------------------------------ the numerical verdict
 
 
-def current(record: Mapping[str, Any] | None, state: Mapping[str, Any]) -> bool:
-    """A record the verdict reads: written at ``state``'s commit (HEAD) from a clean checkout,
-    the verdict's own checkout being clean too."""
-    commit = state.get("commit")
-    return (record is not None and commit is not None and state.get("dirty") is False
-            and output_commit(record) == commit and output_dirty(record) is False)  # fmt: skip
-
-
-def _not_current(record: Mapping[str, Any], state: Mapping[str, Any]) -> str:
-    return (
-        f"written at {output_commit(record)} (dirty: {output_dirty(record)}), not at "
-        f"{state.get('commit')} from a clean checkout (dirty: {state.get('dirty')})"
-    )
-
-
 def _value(x: Any) -> str:
     return f"{x:.3g}" if _number(x) else str(x)
+
+
+def _close(value: Any, target: float) -> bool:
+    return _number(value) and math.isclose(value, target, rel_tol=1e-6)
 
 
 def _same(record: Mapping[str, Any], identity: Mapping[str, Any], key: str, lr: float) -> bool:
@@ -3150,27 +3205,129 @@ def _same(record: Mapping[str, Any], identity: Mapping[str, Any], key: str, lr: 
     )
 
 
+class RecordReader:
+    """Which records the verdict and the parts read (review of Task 1, I1, I3 and M3). A record
+    counts when:
+
+    - this checkout is a clean checkout of a commit (HEAD);
+    - it was written from a clean checkout of a commit whose GPU code is HEAD's
+      (``code_identity.reuse_check(writer, HEAD)`` reusable): records stay valid across
+      analysis-only commits, and are stale after a change of a GPU path;
+    - it was written under the scope's frozen settings (``NumericalScope.same_policy``);
+    - it names the regular run located now (``run_identity``: path, run id, config hash and the
+      sha256 of the records compared); a complete record, or an instability one, must name one.
+
+    Reading moves nothing. ``checks`` holds the reuse check of every writer commit met."""
+
+    def __init__(self, scope: NumericalScope, state: Mapping[str, Any], root: Path) -> None:
+        self.scope, self.state, self.root = scope, dict(state), Path(root)
+        self.checks: dict[str, dict[str, Any]] = {}
+        self._runs: dict[str, dict[str, Any]] = {}
+
+    def reuse(self, writer: str) -> dict[str, Any]:
+        if writer not in self.checks:
+            try:
+                self.checks[writer] = reuse_check(writer, self.state["commit"])
+            except Exception as exc:  # an unknown commit, say: not reusable
+                self.checks[writer] = {
+                    "reusable": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                }
+        return self.checks[writer]
+
+    def run(self, case: NumericalCase) -> dict[str, Any]:
+        """The case's regular run located now (``run_identity``), or why there is none."""
+        if case.name not in self._runs:
+            try:
+                self._runs[case.name] = run_identity(locate_case(self.root, self.scope, case))
+            except (DiagnosticError, OSError) as exc:
+                self._runs[case.name] = {"error": str(exc)}
+        return self._runs[case.name]
+
+    def why_not(self, record: Mapping[str, Any] | None, case: NumericalCase) -> str | None:
+        """None when ``record`` counts, else why not."""
+        if record is None:
+            return "no record"
+        commit, dirty = self.state.get("commit"), self.state.get("dirty")
+        if commit is None or dirty is not False:
+            return f"read from {commit} (dirty: {dirty}), not a clean checkout of a commit"
+        writer, writer_dirty = output_commit(record), output_dirty(record)
+        if writer is None or writer_dirty is not False:
+            return f"written from {writer} (dirty: {writer_dirty}), not a clean checkout"
+        check = self.reuse(writer)
+        if not check.get("reusable"):
+            detail = check.get("error") or f"GPU paths changed: {check.get('changed')}"
+            return f"written at {writer}, whose GPU code is not HEAD's ({detail})"
+        if not self.scope.same_policy((record.get("provenance") or {}).get("settings")):
+            return "written under other settings than the frozen scope's"
+        named = record.get("regular_run_identity")
+        if named is None and record.get("status") in ("complete", INSTABILITY):
+            return "it names no regular run"
+        if named is not None and named != self.run(case):
+            return "its regular run is not the one located now (path, run id, config or records)"
+        return None
+
+    def writers(self) -> list[str]:
+        return sorted(c for c, check in self.checks.items() if check.get("reusable"))
+
+
+def _policy_problems(record: Mapping[str, Any], scope: NumericalScope) -> list[str]:
+    """How an attempt's perturbations depart from the policy (review of Task 1, I1): each
+    perturbed pair's first attempt at the fixed norm (1e-6 relative), a second attempt only as
+    the single retry, exactly ``rounding_scale`` times the first."""
+    problems = []
+    if not _close(record.get("intended_norm"), scope.norm):
+        problems.append(f"the intended norm {record.get('intended_norm')!r}, not {scope.norm:g}")
+    for key, pair in (record.get("pairs") or {}).items():
+        if key not in PERTURBATIONS:
+            continue
+        attempts = list(pair.get("rounding") or [])
+        if not attempts:
+            if pair.get("D_twin"):
+                problems.append(f"{key} was measured without a recorded perturbation")
+            continue
+        first = attempts[0]
+        if not _close(first.get("intended_norm"), scope.norm):
+            problems.append(f"{key}'s perturbation has the norm {first.get('intended_norm')!r}, "
+                            f"not {scope.norm:g}")  # fmt: skip
+        if len(attempts) > 2:
+            problems.append(f"{key} has {len(attempts)} rounding attempts, not at most 2")
+        elif len(attempts) == 2:
+            second = attempts[1]
+            scaled = (_number(first.get("scale")) and _number(second.get("scale"))
+                      and second["scale"] == first["scale"] * scope.rounding_scale)  # fmt: skip
+            if not scaled or not _close(second.get("intended_norm"),
+                                        scope.norm * scope.rounding_scale):  # fmt: skip
+                problems.append(f"{key}'s retry is not {scope.rounding_scale:g} times its first "
+                                "attempt")  # fmt: skip
+    return problems
+
+
 def attempt_state(
-    record: Mapping[str, Any] | None,
-    case: NumericalCase,
-    *,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    record: Mapping[str, Any] | None, case: NumericalCase, *, reader: RecordReader
 ) -> dict[str, Any]:
-    """One attempt of a case: **exceeding** when any of its pairs is (``pair_state``, the states
-    recomputed from the records at the bound of U; divergence counts), whatever else the
-    attempt shows; **within** when it is complete (twin A equal to its archive, every pair of
-    p1–p4 and the reference present, the reference in one of the policy's modes) and every pair
-    is within; **incomplete** otherwise. Only a current record (``current``) of this case
-    counts; ``present`` says whether there is one."""
-    if record is None:
-        return {"state": INCOMPLETE, "present": False, "reasons": ["no record"]}
-    if not current(record, state):
-        return {"state": INCOMPLETE, "present": False, "reasons": [_not_current(record, state)]}
+    """One attempt of a case. Only a record that counts (``RecordReader``) and is of this case
+    is ``present``. Then:
+
+    - **instability** when its regular run was stopped by an instability rule;
+    - **incomplete** when its perturbations depart from the policy (``_policy_problems``);
+    - **exceeding** when any of its pairs is (``pair_state``, recomputed at the bound of U;
+      divergence counts), whatever else the attempt shows;
+    - **within** when it is complete (twin A equal to its archive, every pair of p1–p4 and the
+      reference present, the reference in one of the policy's modes) and every pair is within;
+    - **incomplete** otherwise."""
+    scope = reader.scope
+    why = reader.why_not(record, case)
+    if why is not None:
+        return {"state": INCOMPLETE, "present": False, "reasons": [why]}
     identity = {"seed": case.seed, "optimizer": case.optimizer, "batch": case.batch,
                 "U": case.upper}  # fmt: skip
     if not _same(record, identity, "lr", case.lr):
         return {"state": INCOMPLETE, "present": False, "reasons": ["the record is of another case"]}
+    if record.get("status") == INSTABILITY:
+        return {"present": True, "state": INSTABILITY, "pair_states": {},
+                "reference_mode": None, "fallback_reason": None,
+                "reasons": [str(record.get("reason"))]}  # fmt: skip
     pairs = {key: pair for key, pair in (record.get("pairs") or {}).items() if key in PAIRS}
     states = {key: pair_state(pair, perturbed=key != REFERENCE, eval_at=list(scope.eval_at),
                               bound=scope.bound(case.upper), survival_share=scope.survival_share)
@@ -3180,6 +3337,9 @@ def attempt_state(
                            "pair_states": {key: s["state"] for key, s in states.items()},
                            "reference_mode": reference.get("mode"),
                            "fallback_reason": reference.get("fallback_reason")}  # fmt: skip
+    policy = _policy_problems(record, scope)
+    if policy:
+        return {**out, "state": INCOMPLETE, "reasons": [f"not the policy's: {p}" for p in policy]}
     exceeding = [key for key in PAIRS if states.get(key, {}).get("state") == EXCEEDING]
     if exceeding:
         return {
@@ -3208,25 +3368,32 @@ def attempt_state(
     return {**out, "state": WITHIN, "reasons": []}
 
 
+EVIDENCE = (EXCEEDING, INSTABILITY)  # a case state that makes its rate failing
+
+
 def case_state(
     attempts: Mapping[int, Mapping[str, Any] | None],
     case: NumericalCase,
     *,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> dict[str, Any]:
-    """A case over its attempts (``attempt_state``): **exceeding** when any attempt is; then,
-    without a first attempt, **incomplete**; with a rerun, the rerun's state, ``not_qualified``
-    (technical) when it is incomplete too; else the first attempt's (incomplete: its rerun is
-    due). The reference's mode and fallback reason are the deciding attempt's."""
-    states = {n: attempt_state(attempts.get(n), case, scope=scope, state=state) for n in ATTEMPTS}
+    """A case over its attempts (``attempt_state``): **instability** or **exceeding** when any
+    attempt is (evidence against the rate); then, without a first attempt, **incomplete**; with
+    a rerun, the rerun's state, ``not_qualified`` (technical) when it is incomplete too; else
+    the first attempt's (incomplete: its rerun is due). The reference's mode and fallback
+    reason are the deciding attempt's."""
+    states = {n: attempt_state(attempts.get(n), case, reader=reader) for n in ATTEMPTS}
     present = [n for n in ATTEMPTS if states[n]["present"]]
     first, rerun = states[ATTEMPTS[0]], states[ATTEMPTS[1]]
-    exceeding = [n for n in present if states[n]["state"] == EXCEEDING]
+    evidence = [n for n in present if states[n]["state"] in EVIDENCE]
     deciding = present[-1] if present else None
-    if exceeding:
-        verdict, technical, deciding = EXCEEDING, False, exceeding[0]
-        reasons = [f"attempt {n}: {r}" for n in exceeding for r in states[n]["reasons"]]
+    if evidence:
+        deciding = evidence[0]
+        verdict, technical = states[deciding]["state"], False
+        if verdict == INSTABILITY:  # its reason starts with "instability:"
+            reasons = list(states[deciding]["reasons"])
+        else:
+            reasons = [f"attempt {n}: {r}" for n in evidence for r in states[n]["reasons"]]
     elif not first["present"]:
         verdict, technical, deciding = INCOMPLETE, False, None
         reasons = [f"no first attempt: {'; '.join(first['reasons'])}"]
@@ -3249,29 +3416,37 @@ def case_state(
             "fallback_reason": decided.get("fallback_reason"), "reasons": reasons}  # fmt: skip
 
 
+def control_case(scope: NumericalScope, rate: float, batch: int, upper: float) -> NumericalCase:
+    """The case whose regular run a same-path control at ``rate`` uses."""
+    return NumericalCase(scope.control_seed, scope.control_arm, float(rate), int(batch), upper)
+
+
 def control_attempt_state(
     record: Mapping[str, Any] | None,
     *,
     rate: float,
     batch: int,
     upper: float,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> dict[str, Any]:
-    """One attempt of a same-path control: **rejected** when it was measured exceeding (or it
-    diverged) or at the bound, D1's states (``control_state``) at 0.01·K*(U); **accepted** when
-    its record is complete (its run conforms and it read its regular run's v₀ stream and
-    training prefix) and K_scoring was measured at every step of the scope, every reading
-    finite and strictly below the bound; **incomplete** otherwise. Only a current record of this
-    control counts (``present``)."""
-    if record is None:
-        return {"state": INCOMPLETE, "present": False, "reasons": ["no record"]}
-    if not current(record, state):
-        return {"state": INCOMPLETE, "present": False, "reasons": [_not_current(record, state)]}
+    """One attempt of a same-path control. Only a record that counts (``RecordReader``) and is
+    of this control is ``present``. Then **rejected** when its regular run was stopped by an
+    instability rule (reason ``instability: …``), or it was measured exceeding (or diverged) or
+    at the bound, D1's states (``control_state``) at 0.01·K*(U); **accepted** when its record is
+    complete (its run conforms and it read its regular run's v₀ stream and training prefix) and
+    K_scoring was measured at every step of the scope, every reading finite and strictly below
+    the bound; **incomplete** otherwise."""
+    scope = reader.scope
+    why = reader.why_not(record, control_case(scope, rate, batch, upper))
+    if why is not None:
+        return {"state": INCOMPLETE, "present": False, "reasons": [why]}
     identity = {"seed": scope.control_seed, "batch": int(batch), "U": upper}
     if not _same(record, identity, "rate", rate):
         return {"state": INCOMPLETE, "present": False,
                 "reasons": ["the record is of another control"]}  # fmt: skip
+    if record.get("status") == INSTABILITY:
+        return {"present": True, "state": REJECTED, "instability": True,
+                "reasons": [str(record.get("reason"))]}  # fmt: skip
     measured = control_state(record, k_at=list(scope.eval_at), bound=scope.bound(upper))
     out = {"present": True, "measured": measured["state"],
            "max_K_scoring": measured["max_K_scoring"],
@@ -3303,22 +3478,23 @@ def control_verdict(
     rate: float,
     batch: int,
     upper: float,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> dict[str, Any]:
     """A same-path control over its attempts (``control_attempt_state``): **rejected** when any
-    attempt is (exceeding or at the bound); then, without a first attempt, **incomplete**; with
-    a rerun, **accepted** when it is accepted and **not_qualified** (technical) when it is
-    incomplete too; else the first attempt's: **accepted**, or **incomplete** (its rerun is
-    due)."""
+    attempt is (exceeding, at the bound, or its run stopped by instability); then, without a
+    first attempt, **incomplete**; with a rerun, **accepted** when it is accepted and
+    **not_qualified** (technical) when it is incomplete too; else the first attempt's:
+    **accepted**, or **incomplete** (its rerun is due)."""
     states = {n: control_attempt_state(attempts.get(n), rate=rate, batch=batch, upper=upper,
-                                       scope=scope, state=state) for n in ATTEMPTS}  # fmt: skip
+                                       reader=reader) for n in ATTEMPTS}  # fmt: skip
     present = [n for n in ATTEMPTS if states[n]["present"]]
     first, rerun = states[ATTEMPTS[0]], states[ATTEMPTS[1]]
     rejected = [n for n in present if states[n]["state"] == REJECTED]
     if rejected:
-        verdict = REJECTED
-        reasons = [f"attempt {n}: {r}" for n in rejected for r in states[n]["reasons"]]
+        verdict, reasons = REJECTED, []
+        for n in rejected:  # an instability reason keeps its prefix
+            reasons += (states[n]["reasons"] if states[n].get("instability")
+                        else [f"attempt {n}: {r}" for r in states[n]["reasons"]])  # fmt: skip
     elif not first["present"]:
         verdict, reasons = INCOMPLETE, [f"no first attempt: {'; '.join(first['reasons'])}"]
     elif rerun["present"]:
@@ -3349,28 +3525,26 @@ def control_verdicts(
     rates: Sequence[float],
     batch: int,
     upper: float,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> dict[float, str]:
     """Each FA rate's same-path control (``control_verdict``; ``records`` maps a rate to its
     attempts' records by number): accepted, rejected, not_qualified or incomplete."""
     return {lr: control_verdict(records.get(lr) or {}, rate=lr, batch=batch, upper=upper,
-                                scope=scope, state=state)["verdict"] for lr in rates}  # fmt: skip
+                                reader=reader)["verdict"] for lr in rates}  # fmt: skip
 
 
 def retry_due(
     attempts: Mapping[str, Mapping[int, Mapping[str, Any] | None]],
     cases: Sequence[NumericalCase],
     *,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> list[NumericalCase]:
-    """The cases whose current first attempt is incomplete, not exceeding, with no rerun yet."""
+    """The cases whose counted first attempt is incomplete (not exceeding, not instability),
+    with no counted rerun yet."""
     due = []
     for case in cases:
         mine = attempts.get(case.name) or {}
-        first, rerun = (attempt_state(mine.get(n), case, scope=scope, state=state)
-                        for n in ATTEMPTS)  # fmt: skip
+        first, rerun = (attempt_state(mine.get(n), case, reader=reader) for n in ATTEMPTS)
         if first["present"] and first["state"] == INCOMPLETE and not rerun["present"]:
             due.append(case)
     return due
@@ -3382,16 +3556,14 @@ def control_retry_due(
     *,
     batch: int,
     upper: float,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> list[float]:
-    """The control rates whose current first attempt is incomplete, with no rerun yet."""
+    """The control rates whose counted first attempt is incomplete, with no counted rerun yet."""
     due = []
     for lr in rates:
         mine = controls.get(lr) or {}
         first, rerun = (control_attempt_state(mine.get(n), rate=lr, batch=batch, upper=upper,
-                                              scope=scope, state=state)
-                        for n in ATTEMPTS)  # fmt: skip
+                                              reader=reader) for n in ATTEMPTS)  # fmt: skip
         if first["present"] and first["state"] == INCOMPLETE and not rerun["present"]:
             due.append(lr)
     return due
@@ -3401,25 +3573,25 @@ def qualification(
     records: Mapping[str, Mapping[int, Mapping[str, Any] | None]],
     cases: Sequence[NumericalCase],
     *,
-    scope: NumericalScope,
-    state: Mapping[str, Any],
+    reader: RecordReader,
 ) -> dict[str, Any]:
     """Each selected (arm, rate) over its cases (``case_state``; ``records`` maps a case's name
     to its attempts' records by number): **failing** when a pair of any case is exceeding
-    (evidence of amplification); else **not_qualified** (technical) when a case is incomplete
-    after its rerun; else **incomplete** when a case is incomplete with its rerun not yet done;
-    else **qualified**: every pair of every case within. Returns ``rates`` (by ``rate_key``),
+    (evidence of amplification) or an instability rule stopped a case's regular run (reason
+    ``instability: …``); else **not_qualified** (technical) when a case is incomplete after its
+    rerun; else **incomplete** when a case is incomplete with its rerun not yet done; else
+    **qualified**: every pair of every case within. Returns ``rates`` (by ``rate_key``),
     ``seeds`` (the seeds each was tested on), ``reasons`` for every rate not qualified, and
     ``cases``."""
-    entries = {case.name: case_state(records.get(case.name) or {}, case, scope=scope,
-                                     state=state) for case in cases}  # fmt: skip
+    entries = {case.name: case_state(records.get(case.name) or {}, case, reader=reader)
+               for case in cases}  # fmt: skip
     rates: dict[str, str] = {}
     seeds: dict[str, list[int]] = {}
     reasons: dict[str, list[str]] = {}
     for key in dict.fromkeys(case.key for case in cases):
         mine = [case for case in cases if case.key == key]
         states = [entries[case.name] for case in mine]
-        if any(s["state"] == EXCEEDING for s in states):
+        if any(s["state"] in EVIDENCE for s in states):
             rates[key] = FAILING
         elif any(s["not_qualified"] for s in states):
             rates[key] = NOT_QUALIFIED
@@ -3428,8 +3600,15 @@ def qualification(
         else:
             rates[key] = QUALIFIED
         seeds[key] = sorted(case.seed for case in mine)
-        found = [f"case s{case.seed}: {reason}" for case in mine
-                 for reason in entries[case.name]["reasons"]]  # fmt: skip
+        found = []
+        for case in mine:
+            entry = entries[case.name]
+            for reason in entry["reasons"]:  # an instability reason leads with its prefix
+                found.append(
+                    f"instability: case s{case.seed}: {reason.removeprefix('instability: ')}"
+                    if entry["state"] == INSTABILITY
+                    else f"case s{case.seed}: {reason}"
+                )
         if found:
             reasons[key] = found
     return {"rates": rates, "seeds": seeds, "reasons": reasons,
@@ -3440,7 +3619,7 @@ def load_numerical(
     out: Path, cases: Sequence[NumericalCase], control_rates: Sequence[float]
 ) -> tuple[dict[str, dict[int, dict | None]], dict[float, dict[int, dict | None]]]:
     """The attempts of every case (by name) and of every control (by rate), each by attempt
-    number, as written under ``out``; None where nothing is."""
+    number, as written under ``out``; None where nothing is. Nothing is moved."""
 
     def read(relative: str) -> dict | None:
         path = out / relative
@@ -3451,6 +3630,43 @@ def load_numerical(
     return attempts, controls
 
 
+def selection_keys(rates: Mapping[str, Sequence[float]]) -> list[str]:
+    """The sorted ``<optimizer>|<lr:g>`` keys of a selection."""
+    return sorted(rate_key(arm, float(lr)) for arm, values in rates.items() for lr in values)
+
+
+def selection_digest(rates: Mapping[str, Sequence[float]]) -> str:
+    """The first 12 hex digits of the sha256 of the selection's sorted keys, one per line
+    (``selection_keys`` joined by newlines, UTF-8): its verdict's name under ``verdicts/``."""
+    return hashlib.sha256("\n".join(selection_keys(rates)).encode()).hexdigest()[:12]
+
+
+def verdict_path(out: Path, rates: Mapping[str, Sequence[float]]) -> Path:
+    """``<out>/verdicts/<selection_digest>.json``: every selection keeps its own verdict."""
+    return out / "verdicts" / f"{selection_digest(rates)}.json"
+
+
+def write_verdict(out: Path, verdict: Mapping[str, Any], rates: Mapping[str, Sequence[float]]):
+    """Write a selection's verdict to ``verdict_path`` and copy it to ``<out>/verdict.json``
+    (the latest, for people to read). An earlier verdict of the same selection moves to
+    ``verdicts/history/<digest>/``; a file at that path holding another selection is refused
+    (never overwritten). Returns the path."""
+    path = verdict_path(out, rates)
+    if path.exists():
+        earlier = json.loads(path.read_text())
+        held = ((earlier.get("provenance") or {}).get("selection") or {}).get("keys")
+        if held != selection_keys(rates):
+            raise NumericalError(f"{path} holds the verdict of another selection ({held}); "
+                                 "nothing is overwritten")  # fmt: skip
+        stamp = str((earlier.get("provenance") or {}).get("written_at")).replace(":", "")
+        history = out / "verdicts" / "history" / selection_digest(rates)
+        history.mkdir(parents=True, exist_ok=True)
+        os.replace(path, history / f"{stamp}-{len(list(history.iterdir()))}.json")
+    write_json(path, verdict)
+    write_json(out / "verdict.json", verdict)
+    return path
+
+
 def numerical_verdict(
     settings: DictConfig,
     out: Path,
@@ -3459,23 +3675,28 @@ def numerical_verdict(
     batch: int,
     upper: float,
     code: Mapping[str, Any] | None,
+    root: Path,
     state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The verdict record, which the selection reads: ``batch``, ``U``, ``bound``, ``commit``
-    (the check's); ``policy`` (``NumericalScope.policy``, with ``code``'s GPU identity of the
-    regular runs: a qualification holds only for this batch and this policy); ``rates``
-    (``qualification``: qualified, failing, not_qualified or incomplete, by ``rate_key``) with
-    the ``seeds`` each was tested on; ``controls`` (``control_verdict``, by
-    ``<lr:g>``: accepted, rejected, not_qualified or incomplete); ``qualified``, true iff every
-    rate is qualified and every control accepted; ``reasons`` (by rate key: its cases' and, for
-    the control arm, ``control: …``); ``cases``, each with its reference's mode and fallback
-    reason; ``reference_fallback``, the cases whose deciding attempt's reference fell back to
-    float64 loss and accumulation; and ``provenance``, with the code check and the reruns due.
-    Only current records count (``current``): written at HEAD from a clean checkout, the
-    verdict's own checkout clean too; and none counts unless ``code`` (``code_check``) shows the
-    regular runs' GPU code to be the check's, each rate then giving that reason."""
+    """The verdict record of one selection, which the selection's replay reads
+    (``write_verdict`` keeps one per selection): ``batch``, ``U``, ``arms`` (the selected arms:
+    all three, or the primary two alone), ``bound``, ``commit`` (the reading checkout's);
+    ``policy`` (``NumericalScope.policy``, with ``code``'s GPU identity of
+    the regular runs and the records' writer commits: a qualification holds only for this
+    batch and this policy); ``rates`` (``qualification``: qualified, failing, not_qualified or
+    incomplete, by ``rate_key``) with the ``seeds`` each was tested on; ``controls``
+    (``control_verdict``, by ``<lr:g>``: accepted, rejected, not_qualified or incomplete);
+    ``qualified``, true iff every rate is qualified and every control accepted; ``reasons`` (by
+    rate key: its cases' and, for the control arm, ``control: …``); ``cases``, each with its
+    reference's mode and fallback reason; ``reference_fallback``, the cases whose deciding
+    attempt's reference fell back to float64 loss and accumulation; and ``provenance``, with the
+    selection, each writer commit's reuse check, the code check and the reruns due. Only
+    records that count (``RecordReader``, on the runs under ``root``) are read, and none unless
+    ``code`` (``code_check``) shows the regular runs' GPU code to be the check's, each rate then
+    giving that reason."""
     scope = NumericalScope.of(settings)
     state = dict(git_state() if state is None else state)
+    reader = RecordReader(scope, state, root)
     cases = numerical_cases(settings, rates, upper, batch=batch)
     control_rates = selected_rates(scope, rates)[scope.control_arm]
     attempts, controls = load_numerical(out, cases, control_rates)
@@ -3483,9 +3704,9 @@ def numerical_verdict(
     if not consistent:  # no record counts against other GPU code
         attempts = {name: dict.fromkeys(ATTEMPTS) for name in attempts}
         controls = {lr: dict.fromkeys(ATTEMPTS) for lr in controls}
-    q = qualification(attempts, cases, scope=scope, state=state)
-    details = {lr: control_verdict(controls[lr], rate=lr, batch=batch, upper=upper, scope=scope,
-                                   state=state) for lr in control_rates}  # fmt: skip
+    q = qualification(attempts, cases, reader=reader)
+    details = {lr: control_verdict(controls[lr], rate=lr, batch=batch, upper=upper,
+                                   reader=reader) for lr in control_rates}  # fmt: skip
     reasons = {key: list(found) for key, found in q["reasons"].items()}
     if not consistent:
         problems = (code or {}).get("problems") or ["no code check"]
@@ -3504,33 +3725,32 @@ def numerical_verdict(
                 for case, entry in zip(cases, q["cases"], strict=True)
                 if entry["reference_mode"] == FLOAT64_ACCUMULATION]  # fmt: skip
     seeds: dict[int, Any] = {}
-    for case in cases:  # the setup facts of each seed, from its latest current attempt
+    for case in cases:  # the setup facts of each seed, from its latest counted attempt
         for n in reversed(ATTEMPTS):
             record = attempts[case.name][n]
-            if current(record, state) and record.get("seed_facts") and case.seed not in seeds:
+            if (record is not None and reader.why_not(record, case) is None
+                    and record.get("seed_facts") and case.seed not in seeds):  # fmt: skip
                 seeds[case.seed] = record["seed_facts"]
     due = {
-        "cases": [case.name for case in retry_due(attempts, cases, scope=scope, state=state)],
-        "controls": [
-            f"{lr:g}"
-            for lr in control_retry_due(
-                controls, control_rates, batch=batch, upper=upper, scope=scope, state=state
-            )
-        ],
-    }
-    commit = state.get("commit")
+        "cases": [case.name for case in retry_due(attempts, cases, reader=reader)],
+        "controls": [f"{lr:g}" for lr in control_retry_due(
+            controls, control_rates, batch=batch, upper=upper, reader=reader)],
+    }  # fmt: skip
+    gpu_code = (code or {}).get("gpu_code") if consistent else None
     return {
         "batch": int(batch), "U": int(upper) if float(upper) == int(upper) else upper,
-        "bound": scope.bound(upper), "commit": commit,
-        "policy": scope.policy(upper, (code or {}).get("gpu_code") if consistent else None,
-                               commit),
+        "arms": list(selected_rates(scope, rates)),
+        "bound": scope.bound(upper), "commit": state.get("commit"),
+        "policy": scope.policy(upper, gpu_code, reader.writers()),
         "rates": q["rates"], "seeds": q["seeds"], "controls": verdicts, "qualified": qualified,
         "reasons": reasons, "cases": q["cases"], "reference_fallback": fallback,
         "provenance": {
             "spec": NUMERICAL_SPEC, "code": state,
             "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "settings": OmegaConf.to_container(settings.numerical, resolve=True),
+            "selection": {"digest": selection_digest(rates), "keys": selection_keys(rates)},
             "selected_rates": selected_rates(scope, rates), "K_star": scope.k_star(upper),
+            "writers": dict(sorted(reader.checks.items())),
             "controls": {f"{lr:g}": detail for lr, detail in details.items()},
             "seeds": {str(seed): facts for seed, facts in sorted(seeds.items())},
             "retry_due": due, "code_check": code,
