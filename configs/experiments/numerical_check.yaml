@@ -1,0 +1,43 @@
+# Study 2, amendment 4, section 1 (numerical acceptance): the frozen scope of the numerical check,
+# the same-path soft control and the twin test on fresh seeds. Not a run config:
+# scripts/numerical_check.py reads these settings beside the archived configs of the regular runs
+# it re-examines, and every computation uses the archived run's own config. The selected rates,
+# B and U are never set here: they come from the selection (a selection record or the command
+# line). Outside the confirmation and blind to outcomes: every evaluation is K-only, on the
+# scoring panel's benign responses (kl_benign) and the monitor panel; no harmful prompt set,
+# stream or generation, and no refusal, harm or judge quantity (tests/test_numerical_check.py
+# asserts both). Outputs: RUNS_DIR/numerical/b{B}-u{U}/, with the verdict record verdict.json.
+experiment: numerical_check
+numerical:
+  evaluation: k_only                # asserted by a test, with the absence of harmful generation
+  harmful_generation: false
+  seeds: [2200, 2201, 2202]         # fresh, for this check only; each has its training stream
+                                    # and its v₀ stream at the selected B
+  arms: [adamw, adam_frozen, adamw_prewarmed]  # AdamW, FA and pre-warmed, by optimizer name
+  rates_per_arm: 3                  # the selected rates of each arm
+  # Cases: every selected (arm, rate) on the first seed; each arm's U-rate (its largest selected
+  # rate) on the other seeds: 15 cases.
+  control_arm: adam_frozen          # one same-path control per selected FA rate, on the first
+                                    # seed, at the selected B, for the regular run's 25 steps
+  regular:                          # twin A: the regular run of the case's seed, arm, rate and B
+    experiment: study2_short
+    role: numerical                 # study2_short.role of the regular numerical runs
+    steps: 25
+    protocol_version: 2             # the regular runs stay at protocol version 2
+  eval_at: [1, 5, 10, 15, 20, 25]   # D_twin and the control's K_scoring are read at these steps
+  k_star_factor: 5                  # K*(U) = √(5U), the geometric mean of the lower target 5 and U
+  bound_fraction: 0.01              # the bound: 0.01·K*(U), the same for every pair and control
+  perturbation:
+    norm: 5.0e-05                   # the intended norm of p1-p4, every arm, rate and B; it never
+                                    # depends on a control's displacement
+    gaussian:                       # seeds of the fixed directions p3 and p4 (p1 and p2: ± FA's
+      p3: 3                         # preconditioned first update of the seed's generation-path
+      p4: 4                         # soft residual at θ₀, the same for every rate and arm)
+    # Revision 3, 2 of docs/study2-fa-control-diagnostic.md: a perturbation survives fp32
+    # rounding when its realized norm is at least this share of its own intended norm; otherwise
+    # it is scaled by rounding_scale once. If that attempt fails too, the pair is incomplete,
+    # never within the bound (it can still be exceeding).
+    survival_share: 0.5
+    rounding_scale: 10
+  memory_rule_gb: 46                # at most 46 GB reserved per process (1e9 bytes), enforced as
+                                    # a cap on the process's CUDA memory

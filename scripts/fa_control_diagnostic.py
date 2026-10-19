@@ -57,7 +57,6 @@ per Hessian–vector product at B 5). Peaks are allocated GB; reserved memory is
 """
 
 import argparse
-import dataclasses
 import json
 import sys
 import textwrap
@@ -74,6 +73,7 @@ from zero_field_refusal.fa_control_diagnostic import (
     cases_of,
     check_inputs,
     decide_branch,
+    guarded_prompt_sets,
     kept,
     load_outputs,
     locate_runs,
@@ -140,14 +140,7 @@ def comment(text: str) -> list[str]:
 def guard_prompt_sets(env):
     """The environment with every prompt set whose name contains "harmful" refused: the
     diagnostic is K-only on benign panels, and this makes any path to a harmful set raise."""
-    original = env.prompt_set
-
-    def prompt_set(name: str):
-        if "harmful" in name:
-            raise RuntimeError(f"The FA control diagnostic must not read the prompt set {name!r}")
-        return original(name)
-
-    return dataclasses.replace(env, prompt_set=prompt_set)
+    return guarded_prompt_sets(env, "harmful", "The FA control diagnostic")
 
 
 def driver_script(commit: str, written_at: str) -> str:

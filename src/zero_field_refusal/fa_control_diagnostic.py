@@ -59,6 +59,43 @@ the loss normalization, the initial optimizer state, the recomputed first gradie
 every control's record) makes the outcome ``incomplete`` (``decide_branch``), as does an
 undecided path criterion, a failed determinism check, a missing output or a case without its
 five pairs.
+
+**The numerical check** (study 2, amendment 4, section 1; scripts/numerical_check.py, settings
+configs/experiments/numerical_check.yaml) generalizes D1's same-path control and D3's twins to
+fresh seeds, all three arms and the selected B and U, with Revision 3's states. Its outputs go
+to ``RUNS_DIR/numerical/b{B}-u{U}/`` (``numerical_root``), and the same rules hold: K-only,
+benign panels, nothing written to a run record.
+
+- **Cases** (``numerical_cases``): every selected (arm, rate) on the first numerical seed, and
+  each arm's U-rate on the others. Twin A is the regular run of that seed, arm, rate and B
+  (experiment ``study2_short``, ``study2_short.role=numerical``), which must conform
+  (``conformance``) and is re-run bit for bit (``compare_archive``). Per seed (``twin_setup``,
+  ``seed_directions``), p1 and p2 are ±(−P·g), FA's first-update direction for the soft-target
+  residual g at θ₀ on batch 0 with generation-path targets, the same for every rate and arm;
+  p3 and p4 the fixed Gaussian directions. Every perturbation has the scope's fixed norm
+  (5e-5), whatever any control did; survival and the ×10 retry are Revision 3, 2's. The
+  reference is the float64 run (pre-warmed Adam included, ``Float64Adam``), with its
+  float64-memory fallback, recorded per case. D_twin is read at the scope's steps against
+  0.01·K*(U), K*(U) = √(5U). The norm one fp32 rounding of θ₀ would leave is recorded as a
+  heuristic, not a bound on accumulated error (``rounding_heuristic``). The regular runs are
+  K-only: nothing of an evaluation of harm is read from them.
+- **The same-path control** (``run_numerical_controls``) is D1's (``same_path_run``) at each
+  selected FA rate on the first seed, from its regular run's config, checked to read that run's
+  v₀ stream and training prefix.
+- **Attempts.** Each case and control is written per attempt; an incomplete one runs once
+  more, in a fresh process. A failure is the attempt's record, never lost.
+- **The verdict** (``numerical_verdict``), with its policy (``NumericalScope.policy``) and the
+  seeds each rate was tested on: an (arm, rate) is qualified when every pair of every case is
+  within, failing when a pair exceeds (evidence of amplification), not_qualified (technical,
+  never instability) when a case is incomplete after its rerun, else incomplete
+  (``qualification``); a control is accepted when "below", rejected when exceeding or at the
+  bound, not_qualified when incomplete after its rerun, else incomplete (``control_verdict``).
+  Only records written at HEAD from a clean checkout count (``current``). A replacement rate's
+  cases are ``replacement_cases``.
+- **GPU code** (review fa13): the qualification attaches to the GPU code the regular runs and the
+  check executed (``code_identity.gpu_code_identity``), not to a commit. Nothing runs, and no
+  record counts, unless the commit each regular run recorded has the check's GPU identity
+  (``code_check``, ``require_code``).
 """
 
 from __future__ import annotations
@@ -71,9 +108,10 @@ import math
 import os
 import re
 import time
+import traceback
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -86,6 +124,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PreTrainedModel
 
 from .batches import chunks, collate
+from .code_identity import gpu_code_identity
 from .curvature import _dot, _norm, _ritz, lanczos, start_vector
 from .evaluation import NO_CAP, sequence_kl
 from .losses import loss_denominator, response_logits, response_logprobs, soft_kl, summed_nll
@@ -167,19 +206,21 @@ class Runs:
 
 
 def _matches(cfg: DictConfig, *, seed: int, batch: int, optimizer: str, lr: float,
-             control: str | None) -> bool:  # fmt: skip
+             control: str | None, role: str | None = None) -> bool:  # fmt: skip
     return (
         cfg.get("seed") == seed
         and cfg.train.batch_size == batch
         and cfg.optimizer.name == optimizer
         and math.isclose(float(cfg.optimizer.lr), lr, rel_tol=1e-9)
         and cfg.get("control") == control
+        and (role is None or OmegaConf.select(cfg, "study2_short.role", default=None) == role)
     )
 
 
 def find_run(root: Path, experiment: str, **match: Any) -> Path:
     """The one finished run (a ``terminal.json``) under ``root/experiment`` whose archived config
-    matches; anything else is an error naming what was found."""
+    matches (with ``role``, its ``study2_short.role`` too); anything else is an error naming what
+    was found."""
     found = []
     for directory in sorted((root / experiment).glob("*")):
         finished = (directory / "config.yaml").is_file() and (directory / "terminal.json").is_file()
@@ -350,26 +391,40 @@ def numerics(device: torch.device) -> dict[str, Any]:
             "memory_rule": dict(_MEMORY_RULE) or None}  # fmt: skip
 
 
-def kept(out: Path, relative: str, commit: str | None) -> dict[str, Any] | None:
-    """An output already written under ``out``, if it was written at ``commit``; one written at
-    another commit is moved aside to ``stale/<its commit>/`` (kept, never read) and None is
+def kept(
+    out: Path, relative: str, commit: str | None, *, dirty: bool | None = None
+) -> dict[str, Any] | None:
+    """An output already written under ``out``, if it was written at ``commit`` (and, with
+    ``dirty``, from a checkout as dirty); any other is moved aside to ``stale/<its commit>/``
+    (``…-dirty`` when ``dirty`` is given and it was dirty; kept, never read) and None is
     returned, so the part runs again at this commit."""
     path = out / relative
     if not path.exists():
         return None
     record = json.loads(path.read_text())
     written = output_commit(record)
-    if written == commit:
+    if written == commit and (dirty is None or output_dirty(record) is dirty):
         return record
-    target = out / "stale" / str(written) / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(path, target)
+    label = f"{written}-dirty" if dirty is not None and output_dirty(record) else str(written)
+    set_aside(out, relative, label)
     return None
+
+
+def set_aside(out: Path, relative: str, label: str) -> None:
+    """Move the output ``out/relative`` to ``out/stale/<label>/relative``: kept, never read."""
+    target = out / "stale" / label / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(out / relative, target)
 
 
 def output_commit(record: Mapping[str, Any] | None) -> str | None:
     """The code commit that wrote an output (``provenance.code.commit``)."""
     return (((record or {}).get("provenance") or {}).get("code") or {}).get("commit")
+
+
+def output_dirty(record: Mapping[str, Any] | None) -> bool | None:
+    """Whether the checkout that wrote an output was dirty (``provenance.code.dirty``)."""
+    return (((record or {}).get("provenance") or {}).get("code") or {}).get("dirty")
 
 
 # ------------------------------------------------------------------------- tensors and groups
@@ -733,23 +788,30 @@ def nll_loss_float64(
 
 
 class Float64Adam:
-    """``optim.Adam``'s arithmetic in float64 on fp32 parameters: the first (and, adaptive, the
-    second) moment in float64, the update formed in float64 and rounded once into the fp32
-    parameter. Frozen mode reads v₀ as stored (fp32) and widens it exactly. The parameters
-    stay fp32, since the forward is fp32: no float64 master copy."""
+    """``optim.Adam``'s arithmetic in float64 on fp32 parameters: the first moment (and, adaptive
+    or pre-warmed, the second) in float64, the update formed in float64 and rounded once into the
+    fp32 parameter. Frozen mode reads v₀ as stored (fp32) and widens it exactly. Pre-warmed mode
+    starts its second moment at v₀ widened exactly (float64) and updates it as
+    ``optim.Adam(second_moment="prewarmed")`` does: v ← β₂v + (1−β₂)g², with no bias correction
+    of v (a full estimate from the start), the first moment bias-corrected as in every mode. The
+    parameters stay fp32, since the forward is fp32: no float64 master copy."""
 
     def __init__(self, params: Sequence[torch.nn.Parameter], opt_cfg: DictConfig,
                  second_moment: Sequence[torch.Tensor] | None = None) -> None:  # fmt: skip
         self.params = list(params)
         self.mode = ADAM_MODES[opt_cfg.name]
-        if self.mode == "prewarmed":
-            raise DiagnosticError("The float64 reference covers frozen and adaptive Adam only")
         self.lr, self.eps = float(opt_cfg.lr), float(opt_cfg.eps)
         if self.mode == "frozen":
             self.beta1, self.beta2 = float(opt_cfg.beta1), None
             if second_moment is None:
                 raise DiagnosticError("Frozen Adam needs v₀")
             self.v = [v.to(p.device) for v, p in zip(second_moment, self.params, strict=True)]
+        elif self.mode == "prewarmed":
+            self.beta1, self.beta2 = (float(b) for b in opt_cfg.betas)
+            if second_moment is None:
+                raise DiagnosticError("Pre-warmed Adam needs v₀")
+            self.v = [v.to(p.device, torch.float64)
+                      for v, p in zip(second_moment, self.params, strict=True)]  # fmt: skip
         else:
             self.beta1, self.beta2 = (float(b) for b in opt_cfg.betas)
             self.v = [torch.zeros_like(p, dtype=torch.float64) for p in self.params]
@@ -765,6 +827,9 @@ class Float64Adam:
             if self.mode == "adaptive":
                 v.mul_(self.beta2).addcmul_(g, g, value=1 - self.beta2)
                 denom = (v.sqrt() / (1 - self.beta2**t) ** 0.5).add_(self.eps)
+            elif self.mode == "prewarmed":
+                v.mul_(self.beta2).addcmul_(g, g, value=1 - self.beta2)
+                denom = v.sqrt().add_(self.eps)
             else:
                 denom = v.double().sqrt().add_(self.eps)
             p.copy_(p.double().addcdiv_(m, denom, value=-self.lr / (1 - b1**t)))
@@ -1137,6 +1202,12 @@ def gaussian(name: str, shape: Sequence[int], seed: int, key: str) -> torch.Tens
     return torch.randn(tuple(shape), generator=generator)
 
 
+def gaussian_norm(trainable: Sequence[tuple[str, torch.Tensor]], seed: int, key: str) -> float:
+    """‖·‖ of the fixed Gaussian direction ``key`` over the trainable parameters (float64 sums)."""
+    return math.sqrt(sum(gaussian(n, p.shape, seed, key).double().pow(2).sum().item()
+                         for n, p in trainable))  # fmt: skip
+
+
 @torch.no_grad()
 def perturb(
     trainable: Sequence[tuple[str, torch.nn.Parameter]],
@@ -1285,12 +1356,12 @@ def run_twin(
     seed_everything(derive_seed(cfg.seed, "torch"))
     reset_peak(device)
     started = time.perf_counter()
-    frozen = ADAM_MODES.get(cfg.optimizer.name, "adaptive") == "frozen"
+    # v₀ for frozen and pre-warmed Adam, as schedule.run_scheduled passes it
+    v0 = twins.v0 if ADAM_MODES.get(cfg.optimizer.name, "adaptive") != "adaptive" else None
     if precision == "float64":
-        optimizer: Any = Float64Adam(params, cfg.optimizer, twins.v0 if frozen else None)
+        optimizer: Any = Float64Adam(params, cfg.optimizer, v0)
     else:
-        optimizer = build_optimizer(cfg.optimizer, params,
-                                    second_moment=twins.v0 if frozen else None)  # fmt: skip
+        optimizer = build_optimizer(cfg.optimizer, params, second_moment=v0)
     rows, readings, divergence = [], [], []
     if progress is not None:
         progress.update({"rows": rows, "monitor": readings, "D_twin": divergence})
@@ -1747,13 +1818,32 @@ def same_path_control(
     trainable: Sequence[tuple[str, torch.nn.Parameter]],
     v0: Sequence[torch.Tensor],
 ) -> dict[str, Any]:
+    """D1's same-path float64 soft control (``same_path_run``) at the diagnostic's steps, bound
+    and K*."""
+    d = settings.diagnostic
+    return same_path_run(env, cfg, student, trainable, v0,
+                         k_at=[int(t) for t in d.d1.same_path_control.k_at],
+                         bound=float(d.bound), k_star=float(d.k_star))  # fmt: skip
+
+
+def same_path_run(
+    env: Environment,
+    cfg: DictConfig,
+    student: PreTrainedModel,
+    trainable: Sequence[tuple[str, torch.nn.Parameter]],
+    v0: Sequence[torch.Tensor],
+    *,
+    k_at: Sequence[int],
+    bound: float,
+    k_star: float,
+) -> dict[str, Any]:
     """The FA soft control with same-path targets: θ₀'s training-path distributions (the frozen
     θ₀ copy, recomputed per micro-batch), the loss and the gradient accumulation in float64,
     the forward and backward in fp32, frozen Adam as the control runs it, for the run's steps.
     K on the scoring panel at ``k_at`` (uncached, against the θ₀ copy) and on the monitor panel
     every ``eval.monitor.every`` steps, with ‖δ‖. ``student`` must be at θ₀. The record carries
-    the control's state (``control_state``: below, exceeding, at the bound or incomplete)."""
-    d = settings.diagnostic
+    the control's state (``control_state``: below, exceeding, at the bound or incomplete) and
+    the identity of the training-stream prefix it read (``training_stream``)."""
     device = env.device
     params = [p for _, p in trainable]
     reference = env.new_model()
@@ -1765,7 +1855,7 @@ def same_path_control(
     monitor = Monitor(operational_monitor(cfg), env, Recorder(), reference)
     prefix = StreamPrefix(cfg, env, int(cfg.seed))
     optimizer = build_optimizer(cfg.optimizer, params, second_moment=list(v0))
-    k_at = [int(t) for t in d.d1.same_path_control.k_at]
+    k_at = [int(t) for t in k_at]
     every, size = int(cfg.eval.monitor.every), int(cfg.train.batch_size)
     rows, readings, scoring_k = [], [], []
     stop, taken, diverged = None, 0, False
@@ -1801,14 +1891,15 @@ def same_path_control(
                               "displacement_norm": displacement})  # fmt: skip
     for p in params:
         p.grad = None
-    bound = float(d.bound)
+    bound = float(bound)
     # Both stops above are a divergence (Revision 3, 3): a non-finite loss, gradient or weight.
     out = {"rate": float(cfg.optimizer.lr), "steps": taken, "stop": stop, "diverged": diverged,
            "rows": rows, "monitor": readings, "scoring": scoring_k, "scoring_panel": identity,
-           "bound": bound, "K_star": float(d.k_star), "k_at": k_at,
+           "bound": bound, "K_star": float(k_star), "k_at": k_at,
+           "training_stream": prefix.identity(taken * size),
            "seconds": time.perf_counter() - started, **peak_memory(device)}  # fmt: skip
     out.update(control_state(out, k_at=k_at, bound=bound))  # its state, Revision 3, 3
-    out["max_K_scoring_over_K_star"] = _over(out["max_K_scoring"], float(d.k_star))
+    out["max_K_scoring_over_K_star"] = _over(out["max_K_scoring"], float(k_star))
     del optimizer, monitor, reference, theta0
     gc.collect()
     return out
@@ -1918,6 +2009,19 @@ def _twins(settings: DictConfig, env: Environment, runs: Runs) -> Iterator[tuple
     determinism = cases_of(settings)[d.d3.determinism]
     cfg = run_config(runs.regular[determinism.name])
     control_cfg = run_config(runs.control(determinism.control_lr))
+    with twin_setup(env, cfg, control_cfg, k_star=float(d.k_star)) as out:
+        yield out
+
+
+@contextmanager
+def twin_setup(
+    env: Environment, cfg: DictConfig, residual_cfg: DictConfig, *, k_star: float
+) -> Iterator[tuple[Twins, Any]]:
+    """What every twin of one seed shares (``Twins``), built from the run config ``cfg`` (its
+    trainable set, v₀ as the run estimates it, its training stream, scoring panel and monitor),
+    and in ``shared``: v₀'s hash and stream, the monitor (its reference is the second model) and
+    the soft-target residual at θ₀ on batch 0 with generation-path targets (``control_residual``
+    under ``residual_cfg``; host tensors), with its statistics."""
     student, trainable = _model(env, cfg)
     other = env.new_model()
     other.requires_grad_(False)
@@ -1927,14 +2031,14 @@ def _twins(settings: DictConfig, env: Environment, runs: Runs) -> Iterator[tuple
     v0_hash = tensors_sha256(list(zip(names, v0, strict=True)))
     v0 = [v.cpu() for v in v0]
     prefix = StreamPrefix(cfg, env, int(cfg.seed))
-    residual, stats, _ = control_residual(control_cfg, env, student, params, prefix)
+    residual, stats, _ = control_residual(residual_cfg, env, student, params, prefix)
     residual = [r.cpu() for r in residual]
     gc.collect()
     scoring, identity = scoring_samples(cfg, env)
     monitor = Monitor(operational_monitor(cfg), env, Recorder(), other)
     other.to("cpu")
     twins = Twins(env=env, student=student, other=other, trainable=trainable, theta0=theta0,
-                  v0=v0, prefix=prefix, scoring=scoring, k_star=float(d.k_star))  # fmt: skip
+                  v0=v0, prefix=prefix, scoring=scoring, k_star=float(k_star))  # fmt: skip
     shared = {"v0_sha256": v0_hash, "v0_stream": stream, "control_residual": stats,
               "control_residual_norm": _norm(residual), "scoring_panel": identity,
               "residual": residual, "monitor": monitor}  # fmt: skip
@@ -2004,6 +2108,69 @@ def _remove_checkpoints(directory: Path) -> None:
         path.unlink()
 
 
+def run_twin_a(
+    cfg: DictConfig,
+    twins: Twins,
+    monitor: Monitor,
+    run_dir: Path,
+    checkpoints: Path,
+    eval_at: Sequence[int],
+) -> dict[str, Any]:
+    """Twin A: the regular run of ``cfg`` re-run from θ₀ with its monitor, its trainable
+    parameters saved to ``checkpoints`` at ``eval_at``, and compared with its archive
+    (``run_dir``) bit for bit (``archive``)."""
+    twins.reset()
+    twin_a = run_twin(cfg, twins, eval_at=eval_at, monitor=monitor, save_dir=checkpoints)
+    twin_a["archive"] = compare_archive(twin_a["rows"], twin_a["monitor"], run_dir)
+    return twin_a
+
+
+def run_pairs(
+    cfg: DictConfig,
+    twins: Twins,
+    directions: Mapping[str, Callable[[str, Sequence[int]], torch.Tensor]],
+    scales: Mapping[str, float],
+    checkpoints: Path,
+    *,
+    eval_at: Sequence[int],
+    bound: float,
+    survival_share: float,
+    rounding_scale: float,
+    pairs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The pairs of a case against twin A's checkpoints: p1–p4 (θ₀ + scale·direction, with the
+    retry of ``apply_perturbation``) and the float64 reference, each with its state
+    (``pair_state``). A perturbation without a scale (its direction has no finite, positive
+    norm) is not run and its pair is incomplete. ``pairs``, if given, receives each pair as it
+    is done, so that the pairs before a failure survive it."""
+    pairs = {} if pairs is None else pairs
+    for key in PERTURBATIONS:
+        if key not in scales:
+            pairs[key] = {"steps": 0, "stop": f"no perturbation: {key}'s direction has no finite, "
+                          "positive norm", "diverged": False, "rows": [], "D_twin": [],
+                          "max_D_twin": None, "complete": False}  # fmt: skip
+            pairs[key].update(pair_state(pairs[key], perturbed=True, eval_at=eval_at,
+                                         bound=bound, survival_share=survival_share))  # fmt: skip
+            continue
+        twins.reset()
+        rounding = apply_perturbation(
+            twins.trainable, twins.theta0, directions[key], scales[key],
+            survival_share=survival_share, rounding_scale=rounding_scale,
+        )  # fmt: skip
+        # A perturbation lost to rounding after its retry still runs: it can be exceeding, never
+        # within (Revision 3, 2 and 3)
+        twin = run_twin(cfg, twins, eval_at=eval_at, compare_dir=checkpoints)
+        twin["rounding"] = rounding
+        twin.update(pair_state(twin, perturbed=True, eval_at=eval_at, bound=bound,
+                               survival_share=survival_share))  # fmt: skip
+        pairs[key] = twin
+    twins.reset()
+    pairs[REFERENCE] = reference_twin(cfg, twins, eval_at, checkpoints)
+    pairs[REFERENCE].update(pair_state(pairs[REFERENCE], perturbed=False, eval_at=eval_at,
+                                       bound=bound, survival_share=survival_share))  # fmt: skip
+    return pairs
+
+
 def run_case(
     settings: DictConfig,
     case: Case,
@@ -2028,9 +2195,7 @@ def run_case(
         raise DiagnosticError(f"{run_dir} ran at {cfg.optimizer.lr}, the case names {case.lr}")
     started = time.perf_counter()
     checkpoints = directory / "checkpoints" / case.name
-    twins.reset()
-    twin_a = run_twin(cfg, twins, eval_at=eval_at, monitor=shared["monitor"], save_dir=checkpoints)
-    twin_a["archive"] = compare_archive(twin_a["rows"], twin_a["monitor"], run_dir)
+    twin_a = run_twin_a(cfg, twins, shared["monitor"], run_dir, checkpoints, eval_at)
     record = {"part": "d3", "case": case.name, "optimizer": case.optimizer, "lr": case.lr,
               "control_lr": case.control_lr, "regular_run": str(run_dir), "bound": bound,
               "K_star": twins.k_star, "eval_at": list(eval_at)}  # fmt: skip
@@ -2060,27 +2225,12 @@ def run_case(
     for key in ("p3", "p4"):
         directions[key] = (lambda name, shape, s=int(d.d3.gaussian[key]), k=key:
                            gaussian(name, shape, s, k))  # fmt: skip
-        norms[key] = math.sqrt(sum(directions[key](n, p.shape).double().pow(2).sum().item()
-                                   for n, p in twins.trainable))  # fmt: skip
-    survival_share = float(d.d3.survival_share)
-    pairs: dict[str, Any] = {}
-    for key in PERTURBATIONS:
-        twins.reset()
-        rounding = apply_perturbation(
-            twins.trainable, twins.theta0, directions[key], delta_norm / norms[key],
-            survival_share=survival_share, rounding_scale=float(d.d3.rounding_scale),
-        )  # fmt: skip
-        # A perturbation lost to rounding after its retry still runs: it can be exceeding, never
-        # within (Revision 3, 2 and 3)
-        twin = run_twin(cfg, twins, eval_at=eval_at, compare_dir=checkpoints)
-        twin["rounding"] = rounding
-        twin.update(pair_state(twin, perturbed=True, eval_at=eval_at, bound=bound,
-                               survival_share=survival_share))  # fmt: skip
-        pairs[key] = twin
-    twins.reset()
-    pairs[REFERENCE] = reference_twin(cfg, twins, eval_at, checkpoints)
-    pairs[REFERENCE].update(pair_state(pairs[REFERENCE], perturbed=False, eval_at=eval_at,
-                                       bound=bound, survival_share=survival_share))  # fmt: skip
+        norms[key] = gaussian_norm(twins.trainable, int(d.d3.gaussian[key]), key)
+    pairs = run_pairs(
+        cfg, twins, directions, {key: delta_norm / norms[key] for key in PERTURBATIONS},
+        checkpoints, eval_at=eval_at, bound=bound, survival_share=float(d.d3.survival_share),
+        rounding_scale=float(d.d3.rounding_scale),
+    )  # fmt: skip
     if not keep_checkpoints:
         _remove_checkpoints(checkpoints)
     twins.reset()
@@ -2137,7 +2287,13 @@ def check_inputs(settings: DictConfig, env: Environment, runs: Runs) -> tuple[li
     """The DATA_DIR streams D1–D3 read, located as the runs locate them: seed 2000's training
     stream (enough chunks for the archived runs' steps), v₀'s preconditioner stream, and the
     scoring and monitor panels. Returns what was found and what is missing."""
-    cfg = run_config(runs.regular[str(settings.diagnostic.d3.determinism)])
+    return stream_inputs(run_config(runs.regular[str(settings.diagnostic.d3.determinism)]), env)
+
+
+def stream_inputs(cfg: DictConfig, env: Environment) -> tuple[list[str], list[str]]:
+    """The DATA_DIR streams a run config's twins read: its seed's training stream (enough chunks
+    for its steps), v₀'s preconditioner stream, and the scoring and monitor panels. Returns what
+    was found and what is missing."""
     found, missing = [], []
     responses = int(cfg.train.steps) * int(cfg.train.batch_size)
     _, path, _ = locate_stream(cfg, env, "training", int(cfg.seed))
@@ -2343,3 +2499,1040 @@ def decide_branch(
                       for name in regular_cases if INCOMPLETE in states[name].values()}  # fmt: skip
             return outcome(6, "incomplete", f"the pairs {unread} are incomplete")
     return outcome(7, "ambiguous")
+
+
+# ----------------------------------------- the numerical check (amendment 4, section 1, fa12)
+
+QUALIFIED, FAILING = "qualified", "failing"  # an (arm, rate)
+NOT_QUALIFIED = "not_qualified"  # technical: incomplete after its one rerun; never instability
+ACCEPTED, REJECTED = "accepted", "rejected"  # a same-path control
+ATTEMPTS = (1, 2)  # an incomplete case or control runs once more, in a fresh process
+NUMERICAL_SPEC = ("study 2, amendment 4, section 1 (numerical qualification); "
+                  "configs/experiments/numerical_check.yaml")  # fmt: skip
+NUMERICAL_REFERENCE = ("float64 loss, accumulation and optimizer arithmetic; fallback float64 "
+                       "loss and accumulation only")  # fmt: skip
+ROUNDING_LABEL = "heuristic, not a bound on accumulated error"
+
+
+class NumericalError(DiagnosticError):
+    """The numerical check cannot run as specified (a rate set outside the scope, say)."""
+
+
+@dataclass(frozen=True)
+class NumericalScope:
+    """The numerical check's frozen scope (configs/experiments/numerical_check.yaml): seeds,
+    arms, the regular runs' experiment and role, the measurement steps, the perturbations'
+    fixed norm and survival rule, the bound's definition and the memory rule."""
+
+    seeds: tuple[int, ...]  # the first holds every selected rate and the controls
+    arms: tuple[str, ...]  # optimizer names
+    rates_per_arm: int
+    control_arm: str  # FA: one same-path control per selected rate of this arm
+    experiment: str
+    role: str
+    steps: int
+    protocol_version: int
+    eval_at: tuple[int, ...]
+    norm: float
+    gaussian: tuple[tuple[str, int], ...]  # (p3, seed), (p4, seed)
+    survival_share: float
+    rounding_scale: float
+    k_star_factor: float  # K*(U) = √(factor·U)
+    bound_fraction: float  # the bound is this fraction of K*(U)
+    memory_rule_gb: float
+
+    @classmethod
+    def of(cls, settings: DictConfig) -> NumericalScope:
+        n = settings.numerical
+        scope = cls(
+            seeds=tuple(int(s) for s in n.seeds), arms=tuple(str(a) for a in n.arms),
+            rates_per_arm=int(n.rates_per_arm), control_arm=str(n.control_arm),
+            experiment=str(n.regular.experiment), role=str(n.regular.role),
+            steps=int(n.regular.steps), protocol_version=int(n.regular.protocol_version),
+            eval_at=tuple(int(t) for t in n.eval_at), norm=float(n.perturbation.norm),
+            gaussian=tuple((str(k), int(v)) for k, v in n.perturbation.gaussian.items()),
+            survival_share=float(n.perturbation.survival_share),
+            rounding_scale=float(n.perturbation.rounding_scale),
+            k_star_factor=float(n.k_star_factor), bound_fraction=float(n.bound_fraction),
+            memory_rule_gb=float(n.memory_rule_gb),
+        )  # fmt: skip
+        if scope.control_arm not in scope.arms or len(set(scope.seeds)) != len(scope.seeds):
+            raise NumericalError(f"Inconsistent scope: {scope}")
+        if [k for k, _ in scope.gaussian] != list(PERTURBATIONS[2:]):
+            raise NumericalError(f"The Gaussian directions must be {PERTURBATIONS[2:]}")
+        if not scope.eval_at or max(scope.eval_at) > scope.steps or not scope.norm > 0:
+            raise NumericalError(f"Inconsistent scope: {scope}")
+        return scope
+
+    @property
+    def control_seed(self) -> int:
+        return self.seeds[0]
+
+    def k_star(self, upper: float) -> float:
+        """K*(U) = √(5U): the geometric mean of the lower target 5 and U."""
+        return math.sqrt(self.k_star_factor * upper)
+
+    def bound(self, upper: float) -> float:
+        """0.01·K*(U): the twins' bound, and the same-path control's."""
+        return self.bound_fraction * self.k_star(upper)
+
+    def policy(
+        self, upper: float, gpu_code: Mapping[str, Any] | None, tool_commit: str | None
+    ) -> dict[str, Any]:
+        """The numerical policy a qualification is attached to (with its batch and seeds): the
+        GPU code the regular runs and the check executed (``code_identity.gpu_code_identity``:
+        commit, file count, sha256; review fa13), the norm, the survival rule and its retry,
+        the bound, the steps and the reference's modes; the check's own commit beside it, for
+        provenance. Any change of it voids the qualification."""
+        return {"gpu_code": None if gpu_code is None else dict(gpu_code),
+                "tool_commit": tool_commit, "norm": self.norm,
+                "survival_share": self.survival_share, "retry_scale": self.rounding_scale,
+                "bound": self.bound(upper), "steps": list(self.eval_at),
+                "reference": NUMERICAL_REFERENCE}  # fmt: skip
+
+
+def rate_key(optimizer: str, lr: float) -> str:
+    """An (arm, rate)'s key in the verdict: ``<optimizer>|<lr:g>``."""
+    return f"{optimizer}|{lr:g}"
+
+
+@dataclass(frozen=True)
+class NumericalCase:
+    """A twin case: the regular run of ``optimizer`` at ``lr`` on ``seed`` at batch ``batch``
+    (experiment and role of the scope), checked against the bound of ``upper`` (U)."""
+
+    seed: int
+    optimizer: str
+    lr: float
+    batch: int
+    upper: float
+
+    @property
+    def name(self) -> str:
+        return f"s{self.seed}-{self.optimizer}-{self.lr:g}"
+
+    @property
+    def key(self) -> str:
+        return rate_key(self.optimizer, self.lr)
+
+    def attempt_path(self, attempt: int) -> str:
+        """An attempt's record, relative to the output directory."""
+        return f"twins/s{self.seed}/{self.optimizer}-{self.lr:g}/attempt-{attempt}.json"
+
+
+def control_path(lr: float, attempt: int) -> str:
+    """A same-path control's attempt record, relative to the output directory."""
+    return f"controls/{lr:g}/attempt-{attempt}.json"
+
+
+def selected_rates(
+    scope: NumericalScope, rates: Mapping[str, Sequence[float]]
+) -> dict[str, list[float]]:
+    """The selected rates of every arm of the scope, ascending; each arm needs exactly its
+    ``rates_per_arm`` finite, positive rates, distinct as their keys print them. The rates come
+    from the caller (a selection record or the command line), never from the code."""
+    if set(rates) != set(scope.arms):
+        raise NumericalError(f"Rates are needed for exactly the arms {list(scope.arms)}, got "
+                             f"{sorted(rates)}")  # fmt: skip
+    out = {}
+    for arm in scope.arms:
+        values = sorted(float(r) for r in rates[arm])
+        if (len(values) != scope.rates_per_arm or not all(_number(r) and r > 0 for r in values)
+                or len({f"{r:g}" for r in values}) != len(values)):  # fmt: skip
+            raise NumericalError(f"{arm} needs {scope.rates_per_arm} distinct positive rates, "
+                                 f"got {list(rates[arm])}")  # fmt: skip
+        out[arm] = values
+    return out
+
+
+def _upper(upper: float) -> None:
+    if not (_number(upper) and upper > 0):
+        raise NumericalError(f"U must be positive, got {upper!r}")
+
+
+def numerical_cases(
+    settings: DictConfig, rates: Mapping[str, Sequence[float]], upper: float, *, batch: int
+) -> list[NumericalCase]:
+    """The frozen scope's cases: every selected (arm, rate) on the first numerical seed, then
+    each arm's U-rate (its largest selected rate) on each other seed; 15 with three arms of
+    three rates on three seeds."""
+    scope = NumericalScope.of(settings)
+    _upper(upper)
+    selected = selected_rates(scope, rates)
+    first, *others = scope.seeds
+    cases = [NumericalCase(first, arm, lr, int(batch), upper)
+             for arm in scope.arms for lr in selected[arm]]  # fmt: skip
+    cases += [NumericalCase(seed, arm, selected[arm][-1], int(batch), upper)
+              for seed in others for arm in scope.arms]  # fmt: skip
+    return cases
+
+
+def replacement_cases(
+    settings: DictConfig, arm: str, rate: float, is_u_rate: bool, *, batch: int, upper: float
+) -> list[NumericalCase]:
+    """The cases a replacement rate brings: one on the first numerical seed, and one on each
+    other seed when it is its arm's new U-rate. A replacement FA rate also gets its same-path
+    control on the first seed. The check over the re-solved selection (``numerical_cases``)
+    holds these, keeps every record already written at this commit, and runs the rest."""
+    scope = NumericalScope.of(settings)
+    _upper(upper)
+    if arm not in scope.arms or not (_number(rate) and rate > 0):
+        raise NumericalError(f"No replacement case for {arm} at {rate!r}")
+    seeds = scope.seeds if is_u_rate else scope.seeds[:1]
+    return [NumericalCase(seed, arm, float(rate), int(batch), upper) for seed in seeds]
+
+
+def numerical_root(batch: int, upper: float, root: Path | None = None) -> Path:
+    """``RUNS_DIR/numerical/b{B}-u{U}/``: the check's outputs and its verdict."""
+    if float(upper) != int(upper):
+        raise NumericalError(f"U must be an integer, got {upper!r}")
+    return (runs_root() if root is None else root) / "numerical" / f"b{int(batch)}-u{int(upper)}"
+
+
+def locate_case(root: Path, scope: NumericalScope, case: NumericalCase) -> Path:
+    """The case's one finished regular run, by its archived config (``find_run``)."""
+    return find_run(root, scope.experiment, seed=case.seed, batch=case.batch,
+                    optimizer=case.optimizer, lr=case.lr, control=None,
+                    role=scope.role)  # fmt: skip
+
+
+def conformance(
+    cfg: DictConfig, run_dir: Path, scope: NumericalScope, case: NumericalCase
+) -> list[str]:
+    """How a case's regular run departs from the prescribed one: its experiment, role, seed,
+    batch, arm, rate, protocol version, planned steps, and a terminal record of every step taken
+    (a run that stopped early cannot be twin A). Empty when it conforms. Only the config and the
+    terminal record are read: nothing of an evaluation of harm, which K-only runs lack."""
+    expected = {
+        "experiment": (cfg.get("experiment"), scope.experiment),
+        "study2_short.role": (OmegaConf.select(cfg, "study2_short.role", default=None),
+                              scope.role),
+        "seed": (cfg.get("seed"), case.seed),
+        "train.batch_size": (cfg.train.batch_size, case.batch),
+        "optimizer.name": (cfg.optimizer.name, case.optimizer),
+        "control": (cfg.get("control"), None),
+        "protocol_version": (cfg.get("protocol_version"), scope.protocol_version),
+        "train.steps": (cfg.train.steps, scope.steps),
+    }  # fmt: skip
+    problems = [f"{key} is {have!r}, not {want!r}" for key, (have, want) in expected.items()
+                if have != want]  # fmt: skip
+    if not math.isclose(float(cfg.optimizer.lr), case.lr, rel_tol=1e-9):
+        problems.append(f"optimizer.lr is {cfg.optimizer.lr}, not {case.lr:g}")
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    reason = (terminal.get("stop") or {}).get("reason")
+    if reason != "steps" or terminal.get("steps") != scope.steps:
+        problems.append(f"the run stopped by {reason!r} after {terminal.get('steps')} steps, "
+                        f"not after its {scope.steps}")  # fmt: skip
+    return problems
+
+
+def code_check(run_dirs: Iterable[Path], tool_commit: str | None) -> dict[str, Any]:
+    """Review fa13: the GPU-code identity (``code_identity.gpu_code_identity``) of the check's
+    own commit and of the commit each regular run recorded (``meta.json``, its ``git`` entry).
+    ``consistent`` when every run was made from a clean checkout of a commit whose GPU identity
+    equals the check's; the check refuses to run otherwise (``require_code``). ``gpu_code`` is
+    the runs' identity (their commit's when they share one, else the check's: equal to it)."""
+
+    def identity(commit: str) -> dict[str, Any]:
+        try:
+            return gpu_code_identity(commit)
+        except Exception as exc:  # an unknown commit, say: no identity, so no run
+            return {"commit": commit, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+
+    if tool_commit:
+        tool = identity(tool_commit)
+    else:
+        tool = {"commit": None, "error": "the check has no commit"}
+    problems = [f"the check's GPU code: {tool['error']}"] if "error" in tool else []
+    runs: dict[str, dict[str, Any]] = {}
+    identities: dict[str, dict[str, Any]] = {}
+    for run_dir in run_dirs:
+        recorded = json.loads((Path(run_dir) / "meta.json").read_text()).get("git") or {}
+        commit, dirty = recorded.get("commit"), recorded.get("dirty")
+        runs[str(run_dir)] = {"commit": commit, "dirty": dirty}
+        if commit is None or dirty is not False:
+            problems.append(f"{Path(run_dir).name} was made from {commit} (dirty: {dirty}), not "
+                            "a clean checkout of a commit")  # fmt: skip
+            continue
+        if commit not in identities:
+            identities[commit] = identity(commit)
+        found = identities[commit]
+        if "error" in found:
+            problems.append(f"{Path(run_dir).name}: the GPU code of {commit}: {found['error']}")
+        elif "error" not in tool and found["sha256"] != tool["sha256"]:
+            problems.append(f"{Path(run_dir).name} was made at {commit}, whose GPU code differs "
+                            f"from the check's at {tool['commit']}")  # fmt: skip
+    if not runs:
+        problems.append("no regular run to compare with")
+    commits = {run["commit"] for run in runs.values()}
+    gpu_code = None
+    if not problems:
+        gpu_code = identities[commits.pop()] if len(commits) == 1 else tool
+    return {"consistent": not problems, "gpu_code": gpu_code, "tool": tool, "runs": runs,
+            "identities": identities, "problems": problems}  # fmt: skip
+
+
+def require_code(code: Mapping[str, Any] | None) -> None:
+    """Refuse to run unless the regular runs' GPU code is the check's (``code_check``)."""
+    if code is None or not code.get("consistent"):
+        problems = (code or {}).get("problems") or ["no code check"]
+        raise NumericalError("The regular runs' GPU code is not the check's: "
+                             + "; ".join(problems))  # fmt: skip
+
+
+def guarded_prompt_sets(env: Environment, word: str, owner: str) -> Environment:
+    """The environment with every prompt set whose name contains ``word`` refused: a K-only part
+    never reads such a set, and this makes any path to one raise."""
+    original = env.prompt_set
+
+    def prompt_set(name: str) -> list[dict]:
+        if word in name:
+            raise RuntimeError(f"{owner} must not read the prompt set {name!r}")
+        return original(name)
+
+    return replace(env, prompt_set=prompt_set)
+
+
+def rounding_heuristic(theta: Iterable[torch.Tensor]) -> dict[str, Any]:
+    """Report-only: the norm one fp32 rounding of θ would leave, sqrt(Σ (ulp(θ)/√12)²) over the
+    coordinates (each rounding error uniform over ± half an ulp, the ulp the spacing above
+    |θ|). A heuristic, not a bound on the numerical error accumulated over a run."""
+    total, count = 0.0, 0
+    for t in theta:
+        a = t.detach().float().abs()
+        ulp = torch.nextafter(a, torch.full_like(a, math.inf)).sub_(a).double()
+        total += ulp.pow(2).sum().item() / 12
+        count += a.numel()
+    return {"norm": math.sqrt(total), "coordinates": count, "label": ROUNDING_LABEL,
+            "estimate": "sqrt(sum over the trainable coordinates of (ulp(theta)/sqrt(12))^2), "
+                        "fp32 ulps of theta_0"}  # fmt: skip
+
+
+@torch.no_grad()
+def first_update_direction(
+    residual: Sequence[torch.Tensor], v0: Sequence[torch.Tensor], eps: float
+) -> tuple[Vector, float]:
+    """−P·g, P = 1/(√v₀ + ε): the direction of FA's first update for the gradient g (its
+    bias-corrected first moment is g, so δ₁ = −η·P·g at any rate η), formed in float64 and kept
+    in fp32 per tensor; and its norm (float64 sums of the fp32 tensors)."""
+    out = [(g.double() * preconditioner(v, eps).double()).neg_().float()
+           for g, v in zip(residual, v0, strict=True)]  # fmt: skip
+    return out, _norm(out)
+
+
+def seed_directions(
+    scope: NumericalScope, twins: Twins, shared: dict[str, Any], eps: float
+) -> dict[str, Any]:
+    """The seed's perturbation directions and their scales to the scope's fixed norm, put in
+    ``shared`` (``directions``, ``scales``): p1 = −P·g and p2 = +P·g, g the soft-target residual
+    of ``twin_setup`` (generation-path targets, batch 0, θ₀), the same at every rate and arm of
+    the seed; p3 and p4 the fixed Gaussian directions. The residual is released. Returns the
+    seed's facts: the residual, the norms, the scales and the rounding heuristic."""
+    residual = shared.pop("residual")
+    direction, norm = first_update_direction(residual, twins.v0, eps)
+    del residual
+    by_name = dict(zip(twins.names, direction, strict=True))
+    directions: dict[str, Callable[[str, Sequence[int]], torch.Tensor]] = {
+        "p1": lambda name, shape: by_name[name],
+        "p2": lambda name, shape: -by_name[name],
+    }
+    norms = {"p1": norm, "p2": norm}
+    for key, seed in scope.gaussian:
+        directions[key] = lambda name, shape, s=seed, k=key: gaussian(name, shape, s, k)
+        norms[key] = gaussian_norm(twins.trainable, seed, key)
+    # The fixed norm, whatever any control's displacement: no scale for a direction without a
+    # finite, positive norm, whose pair is then incomplete
+    scales = {key: scope.norm / n for key, n in norms.items() if _number(n) and n > 0}
+    shared.update(directions=directions, scales=scales)
+    theta0 = (twins.theta0[n] for n in twins.names)
+    return {"v0_sha256": shared["v0_sha256"], "v0_stream": shared["v0_stream"],
+            "residual": shared["control_residual"],
+            "residual_norm": shared["control_residual_norm"], "epsilon": eps,
+            "intended_norm": scope.norm, "direction_norms": norms, "scales": scales,
+            "scoring_panel": shared["scoring_panel"],
+            "rounding_heuristic": rounding_heuristic(theta0)}  # fmt: skip
+
+
+def run_numerical_case(
+    scope: NumericalScope,
+    case: NumericalCase,
+    twins: Twins,
+    shared: Mapping[str, Any],
+    run_dir: Path,
+    checkpoints: Path,
+    *,
+    keep_checkpoints: bool,
+    progress: dict[str, Any],
+) -> dict[str, Any]:
+    """One attempt of one case: twin A (the archived regular run, re-run and compared bit for
+    bit), then p1–p4 at the scope's fixed norm and the float64 reference, each against twin A
+    by D_twin at the scope's steps, each with its state (``pair_state``). A regular run that
+    does not conform, or a twin A that stopped or differs from its archive, makes the attempt
+    incomplete, with no pair run. ``progress`` holds twin A and the pairs as they are done."""
+    eval_at, bound = list(scope.eval_at), scope.bound(case.upper)
+    cfg = run_config(run_dir)
+    problems = conformance(cfg, run_dir, scope, case)
+    if problems:
+        return {
+            "status": "incomplete",
+            "pairs": {},
+            "reason": "the regular run does not conform: " + "; ".join(problems),
+        }
+    try:
+        twin_a = progress["twin_A"] = run_twin_a(cfg, twins, shared["monitor"], run_dir,
+                                                 checkpoints, eval_at)  # fmt: skip
+        if twin_a["stop"] is not None or not twin_a["archive"]["equal"]:
+            reason = (f"twin A stopped: {twin_a['stop']}" if twin_a["stop"] is not None
+                      else "twin A differs from its archived run")  # fmt: skip
+            return {"status": "incomplete", "reason": reason, "twin_A": twin_a, "pairs": {}}
+        pairs = run_pairs(cfg, twins, shared["directions"], shared["scales"], checkpoints,
+                          eval_at=eval_at, bound=bound, survival_share=scope.survival_share,
+                          rounding_scale=scope.rounding_scale,
+                          pairs=progress.setdefault("pairs", {}))  # fmt: skip
+    finally:
+        if not keep_checkpoints:
+            _remove_checkpoints(checkpoints)
+        twins.reset()
+    measured = [p["max_D_twin"] for p in pairs.values() if p.get("max_D_twin") is not None]
+    largest = max(measured) if measured else None
+    reference = pairs[REFERENCE]
+    return {
+        "status": "complete",
+        "twin_A": twin_a,
+        "pairs": pairs,
+        "pair_states": {key: pair["state"] for key, pair in pairs.items()},
+        "reference_mode": reference.get("mode"),
+        "fallback_reason": reference.get("fallback_reason"),
+        "max_D_twin": largest,
+        "max_D_twin_over_K_star": _over(largest, twins.k_star),
+    }
+
+
+def numerical_provenance(settings: DictConfig, **extra: Any) -> dict[str, Any]:
+    return {"spec": NUMERICAL_SPEC, "code": git_state(),
+            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "settings": OmegaConf.to_container(settings.numerical, resolve=True),
+            "hardware": hardware(), "packages": package_versions(), **extra}  # fmt: skip
+
+
+def _error(exc: BaseException) -> dict[str, Any]:
+    return {"reason": f"error: {type(exc).__name__}: {str(exc)[:2000]}",
+            "traceback": traceback.format_exc()[-8000:]}  # fmt: skip
+
+
+def _release_device(device: torch.device) -> None:
+    gc.collect()
+    if torch.device(device).type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def _attempt_number(attempt: int) -> None:
+    if attempt not in ATTEMPTS:
+        raise NumericalError(f"Attempt {attempt}: a case or control has the attempts {ATTEMPTS}")
+
+
+def run_numerical_twins(
+    settings: DictConfig,
+    env: Environment,
+    root: Path,
+    out: Path,
+    cases: Sequence[NumericalCase],
+    *,
+    attempt: int,
+    code: Mapping[str, Any] | None,
+    keep_checkpoints: bool = False,
+    setups: Sequence[NumericalCase] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Attempt ``attempt`` of each case, seed by seed: one ``twin_setup`` per seed, from the
+    regular run of its first control-arm case among ``setups`` (the selection's cases; by
+    default ``cases``): v₀ and the residual for p1 and p2, which no rate changes; then the
+    seed's cases (``run_numerical_case``). Each attempt is written to
+    ``NumericalCase.attempt_path`` under ``out``, whatever happened: a case that failed is its
+    record, incomplete, with its error and the pairs done before it; a seed whose setup failed
+    gives each of its cases that record. Nothing runs unless ``code`` (``code_check``) shows the
+    regular runs' GPU code to be the check's (``require_code``). Returns the records by case
+    name."""
+    _attempt_number(attempt)
+    require_code(code)
+    scope = NumericalScope.of(settings)
+    done: dict[str, dict[str, Any]] = {}
+
+    def finish(case: NumericalCase, body: Mapping[str, Any], facts: Any = None) -> None:
+        record = {"part": "twins", "case": case.name, "seed": case.seed,
+                  "optimizer": case.optimizer, "lr": case.lr, "batch": case.batch,
+                  "U": case.upper, "attempt": attempt, "bound": scope.bound(case.upper),
+                  "K_star": scope.k_star(case.upper), "eval_at": list(scope.eval_at),
+                  "intended_norm": scope.norm, **body, "seed_facts": facts,
+                  "numerics": numerics(env.device),
+                  "provenance": numerical_provenance(settings,
+                                                     gpu_code=code["gpu_code"])}  # fmt: skip
+        write_json(out / case.attempt_path(attempt), record)
+        done[case.name] = record
+
+    for seed in dict.fromkeys(case.seed for case in cases):
+        mine = [case for case in cases if case.seed == seed]
+        located: dict[str, Path] = {}
+        unlocated: dict[str, str] = {}
+        for case in mine:
+            try:
+                located[case.name] = locate_case(root, scope, case)
+            except DiagnosticError as exc:
+                unlocated[case.name] = f"the regular run is not found: {exc}"
+        setup = None
+        for candidate in setups or cases:
+            if candidate.seed == seed and candidate.optimizer == scope.control_arm:
+                try:
+                    setup = located.get(candidate.name) or locate_case(root, scope, candidate)
+                    break
+                except DiagnosticError:
+                    continue
+        if setup is None:
+            for case in mine:
+                reason = unlocated.get(case.name) or (
+                    f"no {scope.control_arm} regular run of seed {seed} to set v₀ and p1, p2 up"
+                )
+                finish(case, {"status": "incomplete", "reason": reason, "pairs": {}})
+            continue
+        try:
+            cfg = run_config(setup)
+            with twin_setup(env, cfg, cfg, k_star=scope.k_star(mine[0].upper)) as (twins, shared):
+                facts = {
+                    "setup_run": str(setup),
+                    **seed_directions(scope, twins, shared, float(cfg.optimizer.eps)),
+                }
+                for case in mine:
+                    if case.name in unlocated:
+                        finish(case, {"status": "incomplete", "reason": unlocated[case.name],
+                                      "pairs": {}}, facts)  # fmt: skip
+                        continue
+                    progress: dict[str, Any] = {}
+                    started = time.perf_counter()
+                    checkpoints = out / "twins" / "checkpoints" / case.name
+                    try:
+                        body = run_numerical_case(scope, case, twins, shared, located[case.name],
+                                                  checkpoints, keep_checkpoints=keep_checkpoints,
+                                                  progress=progress)  # fmt: skip
+                    except Exception as exc:  # recorded; the next case goes on
+                        body = {"status": "incomplete", **_error(exc),
+                                "twin_A": progress.get("twin_A"),
+                                "pairs": progress.get("pairs", {})}  # fmt: skip
+                        _release_device(env.device)
+                    finish(case, {"regular_run": str(located[case.name]), **body,
+                                  "seconds": time.perf_counter() - started}, facts)  # fmt: skip
+        except Exception as exc:  # the seed's setup: every case not yet written records it
+            error = _error(exc)
+            error["reason"] = f"the setup of seed {seed} failed: {error['reason']}"
+            for case in mine:
+                if case.name not in done:
+                    finish(case, {"status": "incomplete", "pairs": {}, **error})
+            _release_device(env.device)
+    return done
+
+
+def run_numerical_controls(
+    settings: DictConfig,
+    env: Environment,
+    root: Path,
+    out: Path,
+    *,
+    rates: Sequence[float],
+    batch: int,
+    upper: float,
+    attempt: int,
+    code: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Attempt ``attempt`` of the same-path float64 soft control (``same_path_run``, D1's) at
+    each of ``rates`` (selected rates of the control arm), on the first numerical seed at
+    ``batch``, for the regular run's steps, K on the scoring panel at the scope's steps against
+    the bound of ``upper``. Each control uses its rate's regular run config, which must conform,
+    and must read v₀'s stream and the training prefix that run read (``shared_state``, from the
+    run's ``meta.json``); otherwise, or after an error, the attempt is incomplete. Each attempt
+    is written to ``control_path``. Nothing runs unless ``code`` shows the regular runs' GPU code
+    to be the check's (``require_code``). Returns the records by rate."""
+    _attempt_number(attempt)
+    require_code(code)
+    scope = NumericalScope.of(settings)
+    k_at, bound, k_star = list(scope.eval_at), scope.bound(upper), scope.k_star(upper)
+    done: dict[str, dict[str, Any]] = {}
+    setup: dict[str, Any] = {}
+    for lr in sorted(float(r) for r in rates):
+        case = NumericalCase(scope.control_seed, scope.control_arm, lr, int(batch), upper)
+        record = {"part": "control", "case": case.name, "rate": lr, "seed": case.seed,
+                  "batch": case.batch, "U": upper, "attempt": attempt, "bound": bound,
+                  "K_star": k_star, "k_at": k_at}  # fmt: skip
+        try:
+            run_dir = locate_case(root, scope, case)
+            cfg = run_config(run_dir)
+            record["regular_run"] = str(run_dir)
+            problems = conformance(cfg, run_dir, scope, case)
+            if problems:
+                record.update(
+                    status="incomplete",
+                    state=INCOMPLETE,
+                    reason="the regular run does not conform: " + "; ".join(problems),
+                )
+            else:
+                if not setup:  # v₀ once, from the first control's run; θ₀ kept on the host
+                    student, trainable = _model(env, cfg)
+                    names = [n for n, _ in trainable]
+                    theta0 = {n: p.detach().cpu().clone() for n, p in trainable}
+                    v0, stream = second_moment(cfg, env, student, [p for _, p in trainable])
+                    setup.update(student=student, trainable=trainable, names=names,
+                                 theta0=theta0, v0_stream=stream,
+                                 v0_sha256=tensors_sha256(list(zip(names, v0, strict=True))),
+                                 v0=[v.cpu() for v in v0])  # fmt: skip
+                    del v0
+                    gc.collect()
+                set_trainable(setup["student"], setup["theta0"], setup["names"])
+                result = same_path_run(env, cfg, setup["student"], setup["trainable"],
+                                       setup["v0"], k_at=k_at, bound=bound,
+                                       k_star=k_star)  # fmt: skip
+                set_trainable(setup["student"], setup["theta0"], setup["names"])
+                streams = ((json.loads((run_dir / "meta.json").read_text()).get("inputs") or {})
+                           .get("streams") or {})  # fmt: skip
+                shared_state = {
+                    "v0_stream": {"control": setup["v0_stream"],
+                                  "regular": streams.get("preconditioner")},
+                    "training_stream": {"control": result["training_stream"],
+                                        "regular": streams.get("training")},
+                }  # fmt: skip
+                for check in shared_state.values():
+                    check["equal"] = check["control"] == check["regular"]
+                unequal = [key for key, check in shared_state.items() if not check["equal"]]
+                record.update(result, shared_state=shared_state, v0_sha256=setup["v0_sha256"],
+                              first_gradient_norm=(result["rows"][0]["grad_norm"]
+                                                   if result["rows"] else None))  # fmt: skip
+                if unequal:
+                    record.update(status="incomplete", reason=f"the control's {unequal} differ "
+                                  "from its regular run's")  # fmt: skip
+                else:
+                    record["status"] = "complete"
+        except Exception as exc:  # recorded: the attempt is incomplete
+            record.update(status="incomplete", state=INCOMPLETE, **_error(exc))
+            _release_device(env.device)
+        record.update(
+            numerics=numerics(env.device),
+            provenance=numerical_provenance(settings, gpu_code=code["gpu_code"]),
+        )
+        write_json(out / control_path(lr, attempt), record)
+        done[f"{lr:g}"] = record
+    setup.clear()
+    _release_device(env.device)
+    return done
+
+
+# ------------------------------------------------------------------ the numerical verdict
+
+
+def current(record: Mapping[str, Any] | None, state: Mapping[str, Any]) -> bool:
+    """A record the verdict reads: written at ``state``'s commit (HEAD) from a clean checkout,
+    the verdict's own checkout being clean too."""
+    commit = state.get("commit")
+    return (record is not None and commit is not None and state.get("dirty") is False
+            and output_commit(record) == commit and output_dirty(record) is False)  # fmt: skip
+
+
+def _not_current(record: Mapping[str, Any], state: Mapping[str, Any]) -> str:
+    return (
+        f"written at {output_commit(record)} (dirty: {output_dirty(record)}), not at "
+        f"{state.get('commit')} from a clean checkout (dirty: {state.get('dirty')})"
+    )
+
+
+def _value(x: Any) -> str:
+    return f"{x:.3g}" if _number(x) else str(x)
+
+
+def _same(record: Mapping[str, Any], identity: Mapping[str, Any], key: str, lr: float) -> bool:
+    value = record.get(key)
+    return all(record.get(k) == v for k, v in identity.items()) and (
+        _number(value) and math.isclose(value, lr, rel_tol=1e-9)
+    )
+
+
+def attempt_state(
+    record: Mapping[str, Any] | None,
+    case: NumericalCase,
+    *,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """One attempt of a case: **exceeding** when any of its pairs is (``pair_state``, the states
+    recomputed from the records at the bound of U; divergence counts), whatever else the
+    attempt shows; **within** when it is complete (twin A equal to its archive, every pair of
+    p1–p4 and the reference present, the reference in one of the policy's modes) and every pair
+    is within; **incomplete** otherwise. Only a current record (``current``) of this case
+    counts; ``present`` says whether there is one."""
+    if record is None:
+        return {"state": INCOMPLETE, "present": False, "reasons": ["no record"]}
+    if not current(record, state):
+        return {"state": INCOMPLETE, "present": False, "reasons": [_not_current(record, state)]}
+    identity = {"seed": case.seed, "optimizer": case.optimizer, "batch": case.batch,
+                "U": case.upper}  # fmt: skip
+    if not _same(record, identity, "lr", case.lr):
+        return {"state": INCOMPLETE, "present": False, "reasons": ["the record is of another case"]}
+    pairs = {key: pair for key, pair in (record.get("pairs") or {}).items() if key in PAIRS}
+    states = {key: pair_state(pair, perturbed=key != REFERENCE, eval_at=list(scope.eval_at),
+                              bound=scope.bound(case.upper), survival_share=scope.survival_share)
+              for key, pair in pairs.items()}  # fmt: skip
+    reference = pairs.get(REFERENCE) or {}
+    out: dict[str, Any] = {"present": True,
+                           "pair_states": {key: s["state"] for key, s in states.items()},
+                           "reference_mode": reference.get("mode"),
+                           "fallback_reason": reference.get("fallback_reason")}  # fmt: skip
+    exceeding = [key for key in PAIRS if states.get(key, {}).get("state") == EXCEEDING]
+    if exceeding:
+        return {
+            **out,
+            "state": EXCEEDING,
+            "reasons": [
+                f"{key} exceeding (max D_twin {_value(pairs[key].get('max_D_twin'))}"
+                + (", diverged)" if states[key]["diverged"] else ")")
+                for key in exceeding
+            ],
+        }
+    reasons = []
+    if record.get("status") != "complete":
+        reasons.append(str(record.get("reason") or "incomplete"))
+    elif not ((record.get("twin_A") or {}).get("archive") or {}).get("equal"):
+        reasons.append("twin A differs from its archived run")
+    if set(pairs) != set(PAIRS):
+        reasons.append(f"the pairs {sorted(pairs)}, not {list(PAIRS)}")
+    unread = [key for key in PAIRS if states.get(key, {}).get("state") == INCOMPLETE]
+    if unread:
+        reasons.append(f"the pairs {unread} are incomplete")
+    if reference and reference.get("mode") not in (FLOAT64_FULL, FLOAT64_ACCUMULATION):
+        reasons.append(f"the reference's mode {reference.get('mode')!r} is not the policy's")
+    if reasons:
+        return {**out, "state": INCOMPLETE, "reasons": reasons}
+    return {**out, "state": WITHIN, "reasons": []}
+
+
+def case_state(
+    attempts: Mapping[int, Mapping[str, Any] | None],
+    case: NumericalCase,
+    *,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """A case over its attempts (``attempt_state``): **exceeding** when any attempt is; then,
+    without a first attempt, **incomplete**; with a rerun, the rerun's state, ``not_qualified``
+    (technical) when it is incomplete too; else the first attempt's (incomplete: its rerun is
+    due). The reference's mode and fallback reason are the deciding attempt's."""
+    states = {n: attempt_state(attempts.get(n), case, scope=scope, state=state) for n in ATTEMPTS}
+    present = [n for n in ATTEMPTS if states[n]["present"]]
+    first, rerun = states[ATTEMPTS[0]], states[ATTEMPTS[1]]
+    exceeding = [n for n in present if states[n]["state"] == EXCEEDING]
+    deciding = present[-1] if present else None
+    if exceeding:
+        verdict, technical, deciding = EXCEEDING, False, exceeding[0]
+        reasons = [f"attempt {n}: {r}" for n in exceeding for r in states[n]["reasons"]]
+    elif not first["present"]:
+        verdict, technical, deciding = INCOMPLETE, False, None
+        reasons = [f"no first attempt: {'; '.join(first['reasons'])}"]
+    elif rerun["present"]:
+        verdict, technical = rerun["state"], rerun["state"] == INCOMPLETE
+        reasons = ([f"not qualified (technical), incomplete after its rerun: attempt 1: "
+                    f"{'; '.join(first['reasons'])}; attempt 2: {'; '.join(rerun['reasons'])}"]
+                   if technical else [])  # fmt: skip
+    else:
+        verdict, technical = first["state"], False
+        reasons = ([f"incomplete, its rerun not yet done: {'; '.join(first['reasons'])}"]
+                   if verdict == INCOMPLETE else [])  # fmt: skip
+    decided = states[deciding] if deciding is not None else {}
+    return {"seed": case.seed, "arm": case.optimizer, "lr": case.lr, "state": verdict,
+            "attempts": len(present), "not_qualified": technical,
+            "attempt_states": [states[n]["state"] if states[n]["present"] else None
+                               for n in ATTEMPTS],
+            "pair_states": [states[n].get("pair_states") for n in ATTEMPTS],
+            "reference_mode": decided.get("reference_mode"),
+            "fallback_reason": decided.get("fallback_reason"), "reasons": reasons}  # fmt: skip
+
+
+def control_attempt_state(
+    record: Mapping[str, Any] | None,
+    *,
+    rate: float,
+    batch: int,
+    upper: float,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """One attempt of a same-path control: **rejected** when it was measured exceeding (or it
+    diverged) or at the bound, D1's states (``control_state``) at 0.01·K*(U); **accepted** when
+    its record is complete (its run conforms and it read its regular run's v₀ stream and
+    training prefix) and K_scoring was measured at every step of the scope, every reading
+    finite and strictly below the bound; **incomplete** otherwise. Only a current record of this
+    control counts (``present``)."""
+    if record is None:
+        return {"state": INCOMPLETE, "present": False, "reasons": ["no record"]}
+    if not current(record, state):
+        return {"state": INCOMPLETE, "present": False, "reasons": [_not_current(record, state)]}
+    identity = {"seed": scope.control_seed, "batch": int(batch), "U": upper}
+    if not _same(record, identity, "rate", rate):
+        return {"state": INCOMPLETE, "present": False,
+                "reasons": ["the record is of another control"]}  # fmt: skip
+    measured = control_state(record, k_at=list(scope.eval_at), bound=scope.bound(upper))
+    out = {"present": True, "measured": measured["state"],
+           "max_K_scoring": measured["max_K_scoring"],
+           "first_gradient_norm": record.get("first_gradient_norm")}  # fmt: skip
+    if measured["state"] in (EXCEEDING, AT_BOUND):
+        return {
+            **out,
+            "state": REJECTED,
+            "reasons": [
+                f"{measured['state']} (max K_scoring {_value(measured['max_K_scoring'])}, bound "
+                f"{scope.bound(upper):.4g}" + (", diverged)" if measured["diverged"] else ")")
+            ],
+        }
+    reasons = []
+    if record.get("status") != "complete":
+        reasons.append(str(record.get("reason") or "incomplete"))
+    if measured["state"] != BELOW:
+        steps = [r.get("step") for r in record.get("scoring") or []]
+        reasons.append(f"K_scoring measured at {steps}, not at every step of "
+                       f"{list(scope.eval_at)}")  # fmt: skip
+    if reasons:
+        return {**out, "state": INCOMPLETE, "reasons": reasons}
+    return {**out, "state": ACCEPTED, "reasons": []}
+
+
+def control_verdict(
+    attempts: Mapping[int, Mapping[str, Any] | None],
+    *,
+    rate: float,
+    batch: int,
+    upper: float,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """A same-path control over its attempts (``control_attempt_state``): **rejected** when any
+    attempt is (exceeding or at the bound); then, without a first attempt, **incomplete**; with
+    a rerun, **accepted** when it is accepted and **not_qualified** (technical) when it is
+    incomplete too; else the first attempt's: **accepted**, or **incomplete** (its rerun is
+    due)."""
+    states = {n: control_attempt_state(attempts.get(n), rate=rate, batch=batch, upper=upper,
+                                       scope=scope, state=state) for n in ATTEMPTS}  # fmt: skip
+    present = [n for n in ATTEMPTS if states[n]["present"]]
+    first, rerun = states[ATTEMPTS[0]], states[ATTEMPTS[1]]
+    rejected = [n for n in present if states[n]["state"] == REJECTED]
+    if rejected:
+        verdict = REJECTED
+        reasons = [f"attempt {n}: {r}" for n in rejected for r in states[n]["reasons"]]
+    elif not first["present"]:
+        verdict, reasons = INCOMPLETE, [f"no first attempt: {'; '.join(first['reasons'])}"]
+    elif rerun["present"]:
+        verdict = ACCEPTED if rerun["state"] == ACCEPTED else NOT_QUALIFIED
+        reasons = (
+            []
+            if verdict == ACCEPTED
+            else [
+                f"not qualified (technical), incomplete after its rerun: attempt 1: "
+                f"{'; '.join(first['reasons'])}; attempt 2: {'; '.join(rerun['reasons'])}"
+            ]
+        )
+    else:
+        verdict = first["state"]
+        reasons = ([f"incomplete, its rerun not yet done: {'; '.join(first['reasons'])}"]
+                   if verdict == INCOMPLETE else [])  # fmt: skip
+    decided = states[present[-1]] if present else {}
+    return {"verdict": verdict, "attempts": len(present), "reasons": reasons,
+            "attempt_states": [states[n]["state"] if states[n]["present"] else None
+                               for n in ATTEMPTS],
+            **{key: decided.get(key) for key in ("measured", "max_K_scoring",
+                                                 "first_gradient_norm")}}  # fmt: skip
+
+
+def control_verdicts(
+    records: Mapping[float, Mapping[int, Mapping[str, Any] | None]],
+    *,
+    rates: Sequence[float],
+    batch: int,
+    upper: float,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> dict[float, str]:
+    """Each FA rate's same-path control (``control_verdict``; ``records`` maps a rate to its
+    attempts' records by number): accepted, rejected, not_qualified or incomplete."""
+    return {lr: control_verdict(records.get(lr) or {}, rate=lr, batch=batch, upper=upper,
+                                scope=scope, state=state)["verdict"] for lr in rates}  # fmt: skip
+
+
+def retry_due(
+    attempts: Mapping[str, Mapping[int, Mapping[str, Any] | None]],
+    cases: Sequence[NumericalCase],
+    *,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> list[NumericalCase]:
+    """The cases whose current first attempt is incomplete, not exceeding, with no rerun yet."""
+    due = []
+    for case in cases:
+        mine = attempts.get(case.name) or {}
+        first, rerun = (attempt_state(mine.get(n), case, scope=scope, state=state)
+                        for n in ATTEMPTS)  # fmt: skip
+        if first["present"] and first["state"] == INCOMPLETE and not rerun["present"]:
+            due.append(case)
+    return due
+
+
+def control_retry_due(
+    controls: Mapping[float, Mapping[int, Mapping[str, Any] | None]],
+    rates: Sequence[float],
+    *,
+    batch: int,
+    upper: float,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> list[float]:
+    """The control rates whose current first attempt is incomplete, with no rerun yet."""
+    due = []
+    for lr in rates:
+        mine = controls.get(lr) or {}
+        first, rerun = (control_attempt_state(mine.get(n), rate=lr, batch=batch, upper=upper,
+                                              scope=scope, state=state)
+                        for n in ATTEMPTS)  # fmt: skip
+        if first["present"] and first["state"] == INCOMPLETE and not rerun["present"]:
+            due.append(lr)
+    return due
+
+
+def qualification(
+    records: Mapping[str, Mapping[int, Mapping[str, Any] | None]],
+    cases: Sequence[NumericalCase],
+    *,
+    scope: NumericalScope,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Each selected (arm, rate) over its cases (``case_state``; ``records`` maps a case's name
+    to its attempts' records by number): **failing** when a pair of any case is exceeding
+    (evidence of amplification); else **not_qualified** (technical) when a case is incomplete
+    after its rerun; else **incomplete** when a case is incomplete with its rerun not yet done;
+    else **qualified**: every pair of every case within. Returns ``rates`` (by ``rate_key``),
+    ``seeds`` (the seeds each was tested on), ``reasons`` for every rate not qualified, and
+    ``cases``."""
+    entries = {case.name: case_state(records.get(case.name) or {}, case, scope=scope,
+                                     state=state) for case in cases}  # fmt: skip
+    rates: dict[str, str] = {}
+    seeds: dict[str, list[int]] = {}
+    reasons: dict[str, list[str]] = {}
+    for key in dict.fromkeys(case.key for case in cases):
+        mine = [case for case in cases if case.key == key]
+        states = [entries[case.name] for case in mine]
+        if any(s["state"] == EXCEEDING for s in states):
+            rates[key] = FAILING
+        elif any(s["not_qualified"] for s in states):
+            rates[key] = NOT_QUALIFIED
+        elif any(s["state"] != WITHIN for s in states):
+            rates[key] = INCOMPLETE
+        else:
+            rates[key] = QUALIFIED
+        seeds[key] = sorted(case.seed for case in mine)
+        found = [f"case s{case.seed}: {reason}" for case in mine
+                 for reason in entries[case.name]["reasons"]]  # fmt: skip
+        if found:
+            reasons[key] = found
+    return {"rates": rates, "seeds": seeds, "reasons": reasons,
+            "cases": [entries[c.name] for c in cases]}  # fmt: skip
+
+
+def load_numerical(
+    out: Path, cases: Sequence[NumericalCase], control_rates: Sequence[float]
+) -> tuple[dict[str, dict[int, dict | None]], dict[float, dict[int, dict | None]]]:
+    """The attempts of every case (by name) and of every control (by rate), each by attempt
+    number, as written under ``out``; None where nothing is."""
+
+    def read(relative: str) -> dict | None:
+        path = out / relative
+        return json.loads(path.read_text()) if path.exists() else None
+
+    attempts = {case.name: {n: read(case.attempt_path(n)) for n in ATTEMPTS} for case in cases}
+    controls = {lr: {n: read(control_path(lr, n)) for n in ATTEMPTS} for lr in control_rates}
+    return attempts, controls
+
+
+def numerical_verdict(
+    settings: DictConfig,
+    out: Path,
+    *,
+    rates: Mapping[str, Sequence[float]],
+    batch: int,
+    upper: float,
+    code: Mapping[str, Any] | None,
+    state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The verdict record, which the selection reads: ``batch``, ``U``, ``bound``, ``commit``
+    (the check's); ``policy`` (``NumericalScope.policy``, with ``code``'s GPU identity of the
+    regular runs: a qualification holds only for this batch and this policy); ``rates``
+    (``qualification``: qualified, failing, not_qualified or incomplete, by ``rate_key``) with
+    the ``seeds`` each was tested on; ``controls`` (``control_verdict``, by
+    ``<lr:g>``: accepted, rejected, not_qualified or incomplete); ``qualified``, true iff every
+    rate is qualified and every control accepted; ``reasons`` (by rate key: its cases' and, for
+    the control arm, ``control: …``); ``cases``, each with its reference's mode and fallback
+    reason; ``reference_fallback``, the cases whose deciding attempt's reference fell back to
+    float64 loss and accumulation; and ``provenance``, with the code check and the reruns due.
+    Only current records count (``current``): written at HEAD from a clean checkout, the
+    verdict's own checkout clean too; and none counts unless ``code`` (``code_check``) shows the
+    regular runs' GPU code to be the check's, each rate then giving that reason."""
+    scope = NumericalScope.of(settings)
+    state = dict(git_state() if state is None else state)
+    cases = numerical_cases(settings, rates, upper, batch=batch)
+    control_rates = selected_rates(scope, rates)[scope.control_arm]
+    attempts, controls = load_numerical(out, cases, control_rates)
+    consistent = code is not None and bool(code.get("consistent"))
+    if not consistent:  # no record counts against other GPU code
+        attempts = {name: dict.fromkeys(ATTEMPTS) for name in attempts}
+        controls = {lr: dict.fromkeys(ATTEMPTS) for lr in controls}
+    q = qualification(attempts, cases, scope=scope, state=state)
+    details = {lr: control_verdict(controls[lr], rate=lr, batch=batch, upper=upper, scope=scope,
+                                   state=state) for lr in control_rates}  # fmt: skip
+    reasons = {key: list(found) for key, found in q["reasons"].items()}
+    if not consistent:
+        problems = (code or {}).get("problems") or ["no code check"]
+        for key in q["rates"]:
+            reasons[key] = [f"code: the regular runs' GPU code is not the check's: {p}"
+                            for p in problems] + reasons.get(key, [])  # fmt: skip
+    for lr, detail in details.items():
+        if detail["reasons"]:
+            reasons.setdefault(rate_key(scope.control_arm, lr), []).extend(
+                f"control: {reason}" for reason in detail["reasons"])  # fmt: skip
+    verdicts = {f"{lr:g}": detail["verdict"] for lr, detail in details.items()}
+    qualified = (all(v == QUALIFIED for v in q["rates"].values())
+                 and all(v == ACCEPTED for v in verdicts.values()))  # fmt: skip
+    fallback = [{"case": case.name, "rate": case.key, "seed": case.seed,
+                 "fallback_reason": entry["fallback_reason"]}
+                for case, entry in zip(cases, q["cases"], strict=True)
+                if entry["reference_mode"] == FLOAT64_ACCUMULATION]  # fmt: skip
+    seeds: dict[int, Any] = {}
+    for case in cases:  # the setup facts of each seed, from its latest current attempt
+        for n in reversed(ATTEMPTS):
+            record = attempts[case.name][n]
+            if current(record, state) and record.get("seed_facts") and case.seed not in seeds:
+                seeds[case.seed] = record["seed_facts"]
+    due = {
+        "cases": [case.name for case in retry_due(attempts, cases, scope=scope, state=state)],
+        "controls": [
+            f"{lr:g}"
+            for lr in control_retry_due(
+                controls, control_rates, batch=batch, upper=upper, scope=scope, state=state
+            )
+        ],
+    }
+    commit = state.get("commit")
+    return {
+        "batch": int(batch), "U": int(upper) if float(upper) == int(upper) else upper,
+        "bound": scope.bound(upper), "commit": commit,
+        "policy": scope.policy(upper, (code or {}).get("gpu_code") if consistent else None,
+                               commit),
+        "rates": q["rates"], "seeds": q["seeds"], "controls": verdicts, "qualified": qualified,
+        "reasons": reasons, "cases": q["cases"], "reference_fallback": fallback,
+        "provenance": {
+            "spec": NUMERICAL_SPEC, "code": state,
+            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "settings": OmegaConf.to_container(settings.numerical, resolve=True),
+            "selected_rates": selected_rates(scope, rates), "K_star": scope.k_star(upper),
+            "controls": {f"{lr:g}": detail for lr, detail in details.items()},
+            "seeds": {str(seed): facts for seed, facts in sorted(seeds.items())},
+            "retry_due": due, "code_check": code,
+        },
+    }  # fmt: skip
