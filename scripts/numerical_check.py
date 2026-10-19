@@ -22,8 +22,10 @@ Outside the confirmation and blind to outcomes: only K, KL between twins and nor
 and written, every evaluation on benign panels; no harmful prompt set, stream or generation is
 touched (src/zero_field_refusal/fa_control_diagnostic.py), and every prompt set whose name
 contains "harmful" raises if any code asks for it (``guard_prompt_sets``). The settings are the
-tracked configs/experiments/numerical_check.yaml: ``control``, ``twins`` and ``verdict`` refuse
-any other ``--config`` unless they only print (``--dry-run``, ``--retry-needed``).
+tracked configs/experiments/numerical_check.yaml: ``control``, ``twins``, ``verdict`` and
+``driver`` refuse a ``--config`` that resolves to any other file (a file of the same name in the
+working directory included, which ``load_config`` would read first) unless they only print
+(``--dry-run``, ``--retry-needed``).
 
 - The regular runs re-examined are found under ``--runs-root`` (RUNS_DIR) by their archived
   configs: experiment study2_short with ``study2_short.role=numerical``, at the case's seed,
@@ -59,7 +61,9 @@ any other ``--config`` unless they only print (``--dry-run``, ``--retry-needed``
 - ``--dry-run`` prints what the part would run, with the cost estimate, without loading a model
   or writing or moving anything (``driver --dry-run`` prints the driver). ``plan`` also checks
   the DATA_DIR streams, unless ``--no-stream-check``, and exits 1 when a run or a stream is
-  missing.
+  missing, or a run departs from the prescribed one. A run that an instability rule stopped
+  (and that conforms otherwise) is found, with a note: the parts record its rate as failing
+  and its FA control rejected.
 - **GPU code** (review fa13): every part compares the GPU-code identity
   (``code_identity.gpu_code_identity``) of the commit each regular run recorded with this
   checkout's (``code_check``). On a mismatch ``plan`` exits 1, ``control`` and ``twins`` run
@@ -90,7 +94,7 @@ import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
-from zero_field_refusal.config import load_config
+from zero_field_refusal.config import _locate, load_config
 from zero_field_refusal.fa_control_diagnostic import (
     ATTEMPTS,
     DiagnosticError,
@@ -106,6 +110,7 @@ from zero_field_refusal.fa_control_diagnostic import (
     control_retry_due,
     git_state,
     guarded_prompt_sets,
+    instability_stop,
     load_numerical,
     locate_case,
     numerical_cases,
@@ -231,9 +236,13 @@ def total_cost(batch: int, scope: NumericalScope, cases, controls: int) -> tuple
     return minutes, minutes + fallback
 
 
-def find_runs(root: Path, scope: NumericalScope, cases) -> tuple[dict, dict]:
-    """The regular run of each case, or why there is none (missing, or not conforming)."""
-    found, problems = {}, {}
+def find_runs(root: Path, scope: NumericalScope, cases) -> tuple[dict, dict, dict]:
+    """The regular run of each case found; why a case has none, or one that cannot be twin A
+    (it departs from the prescribed run); and the notes of runs that an instability rule
+    stopped (review N1). Such a run is found and no problem: the parts record its rate as
+    failing. A run that departs otherwise is a problem even when it stopped by instability
+    (review N4)."""
+    found, problems, notes = {}, {}, {}
     for case in cases:
         try:
             path = locate_case(root, scope, case)
@@ -241,16 +250,24 @@ def find_runs(root: Path, scope: NumericalScope, cases) -> tuple[dict, dict]:
             problems[case.name] = str(exc)
             continue
         found[case.name] = path
-        departures = conformance(run_config(path), path, scope, case)
+        cfg = run_config(path)
+        departures = conformance(cfg, path, scope, case, stop=False)
+        if not departures:
+            unstable = instability_stop(path)
+            if unstable is not None:
+                notes[case.name] = ("instability: the parts will record the rate as failing ("
+                                    f"{unstable.removeprefix('instability: ')})")  # fmt: skip
+                continue
+            departures = conformance(cfg, path, scope, case)
         if departures:
             problems[case.name] = "does not conform: " + "; ".join(departures)
-    return found, problems
+    return found, problems, notes
 
 
 def plan(settings, args, cases, root: Path, out: Path) -> tuple[str, bool]:
     """What the check would run, its cost, and whether every run it needs is there."""
     scope = NumericalScope.of(settings)
-    found, problems = find_runs(root, scope, cases)
+    found, problems, notes = find_runs(root, scope, cases)
     upper = cases[0].upper
     control_rates = sorted({c.lr for c in cases if c.optimizer == scope.control_arm
                             and c.seed == scope.control_seed})  # fmt: skip
@@ -259,8 +276,12 @@ def plan(settings, args, cases, root: Path, out: Path) -> tuple[str, bool]:
              f"{scope.bound(upper):.6g}; perturbation norm {scope.norm:g}; steps "
              f"{list(scope.eval_at)}", f"cases ({len(cases)}):"]  # fmt: skip
     for case in cases:
-        where = problems.get(case.name) or str(found[case.name])
-        lines.append(f"  {case.name}: {'PROBLEM: ' if case.name in problems else ''}{where}")
+        if case.name in problems:
+            lines.append(f"  {case.name}: PROBLEM: {problems[case.name]}")
+        elif case.name in notes:
+            lines.append(f"  {case.name}: {found[case.name]}; NOTE: {notes[case.name]}")
+        else:
+            lines.append(f"  {case.name}: {found[case.name]}")
     lines.append(f"same-path controls on seed {scope.control_seed}: "
                  f"{[f'{lr:g}' for lr in control_rates]}")  # fmt: skip
     cost = costs(args.batch, scope)
@@ -368,11 +389,17 @@ def require_clean() -> None:
                  "count, and none is written or moved from it; commit first")  # fmt: skip
 
 
+def config_path(config: str) -> Path:
+    """The settings file ``--config`` names, found as ``config.load_config`` finds it: a file
+    relative to the working directory first, then one under configs/."""
+    return _locate(config, CONFIG_ROOT)
+
+
 def tracked_config(config: str) -> bool:
-    """Whether ``--config`` names the tracked settings (configs/experiments/numerical_check.yaml,
-    unmodified when the checkout is clean)."""
-    tracked = (CONFIG_ROOT / f"{CONFIG}.yaml").resolve()
-    return config == CONFIG or Path(config).resolve() == tracked
+    """Whether ``--config`` resolves to the tracked settings (configs/experiments/
+    numerical_check.yaml, unmodified when the checkout is clean), whatever the working
+    directory: a file of that name there shadows the name, and is not them (review N2)."""
+    return config_path(config) == (CONFIG_ROOT / f"{CONFIG}.yaml").resolve()
 
 
 def failed(records: dict) -> bool:
@@ -512,7 +539,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     parser.add_argument("--commit")
     args = parser.parse_args()
 
-    settings = load_config(args.config)
+    settings = load_config(config_path(args.config))  # the file tracked_config judges
     scope = NumericalScope.of(settings)
     try:
         rates = selected_rates(scope, rates_of(args))
@@ -521,6 +548,9 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     except NumericalError as exc:
         sys.exit(str(exc))
     if args.part == "driver":
+        if not (args.dry_run or tracked_config(args.config) or untracked_config_for_tests):
+            sys.exit(f"driver writes a driver only under the tracked settings ({CONFIG}), not "
+                     f"{config_path(args.config)}; --dry-run only prints")  # fmt: skip
         script = driver_script(args.commit or "<SHA>", git_state().get("commit")
                                or datetime.now(UTC).isoformat(timespec="seconds"),
                                args.batch, args.upper, rates)  # fmt: skip
@@ -545,7 +575,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     def refuse_untracked() -> None:  # review of Task 1, I1: no record under other settings
         if writes and not tracked_config(args.config) and not untracked_config_for_tests:
             sys.exit(f"{args.part} writes records only under the tracked settings ({CONFIG}), "
-                     f"not {args.config}; --dry-run only prints")  # fmt: skip
+                     f"not {config_path(args.config)}; --dry-run only prints")  # fmt: skip
 
     # Review fa13: the regular runs' GPU code against the check's
     code = code_check(find_runs(root, scope, cases)[0].values(), state.get("commit"))

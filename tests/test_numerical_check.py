@@ -221,6 +221,13 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
                     {"eval_at": [1, 25]}, {"seeds": [1, 2, 3]}):  # fmt: skip
         assert not s.same_policy({**FROZEN, **changed}), changed
     assert not s.same_policy(None) and not s.same_policy({"norm": 5e-5})
+    # The declarative keys too: settings claiming harmful generation are no scope (review nit)
+    assert dict(s.declared) == {"evaluation": '"k_only"', "harmful_generation": "false"}
+    for changed in ({"harmful_generation": True}, {"evaluation": "full"}, {"extra": 1}):
+        assert not s.same_policy({**FROZEN, **changed}), changed
+    assert not s.same_policy({k: v for k, v in FROZEN.items() if k != "harmful_generation"})
+    with pytest.raises(fcd.NumericalError, match="K-only"):
+        fcd.NumericalScope.of(settings(numerical={"evaluation": "full"}))
 
 
 def test_replacement_cases() -> None:
@@ -1009,6 +1016,92 @@ def test_a_dry_run_moves_nothing(world, monkeypatch, capsys) -> None:
     assert snapshot(out) == before
 
 
+def test_a_shadowing_config_is_refused(tmp_path, world, monkeypatch, capsys) -> None:
+    """Review N2: a file ``experiments/numerical_check.yaml`` in the working directory (which
+    ``load_config`` reads before the tracked one) is not the tracked settings: the writing
+    parts refuse it; a dry run only prints."""
+    shadow = tmp_path / "cwd"
+    (shadow / "experiments").mkdir(parents=True)
+    OmegaConf.save(settings(numerical={"perturbation": {"norm": 5e-9}}),
+                   shadow / "experiments" / "numerical_check.yaml")  # fmt: skip
+    monkeypatch.chdir(shadow)
+    namespace = runpy.run_path(str(SCRIPT))
+    assert not namespace["tracked_config"]("experiments/numerical_check")
+    assert namespace["config_path"]("experiments/numerical_check") == (
+        shadow / "experiments" / "numerical_check.yaml").resolve()  # fmt: skip
+    out = fcd.numerical_root(20, 8, world)
+    write_records(out, within_all(cases()), {lr: {1: control(lr), 2: None}
+                                             for lr in RATES["adam_frozen"]})  # fmt: skip
+    before = snapshot(out)
+    for part in ("verdict", "twins", "control"):
+        refused = str(call(monkeypatch, script_argv(part, world)))
+        assert "tracked settings" in refused and str(shadow.resolve()) in refused, part
+    assert call(monkeypatch, script_argv("verdict", world, RATES, "--dry-run")) == 0
+    driver = [str(SCRIPT), "driver", "--batch", "20", "--upper", "8", "--commit", "a" * 40,
+              "--out", str(tmp_path / "driver.sh")]  # fmt: skip
+    for arm, values in RATES.items():
+        driver += ["--rates", f"{arm}={','.join(repr(r) for r in values)}"]
+    assert "tracked settings" in str(call(monkeypatch, driver))
+    assert snapshot(out) == before and not (tmp_path / "driver.sh").exists()
+    monkeypatch.chdir(ROOT)  # the same name resolves to the tracked file again
+    assert namespace["tracked_config"]("experiments/numerical_check")
+    assert call(monkeypatch, script_argv("verdict", world)) == 0
+    capsys.readouterr()
+
+
+def test_a_verdict_counts_its_records_at_another_runs_root(tmp_path, world, monkeypatch,
+                                                           capsys) -> None:  # fmt: skip
+    """Review N3: a record names its run relative to the runs root, so a verdict recomputed with
+    RUNS_DIR restored elsewhere counts the same records."""
+    out = fcd.numerical_root(20, 8, world)
+    write_records(out, within_all(cases()), {lr: {1: control(lr), 2: None}
+                                             for lr in RATES["adam_frozen"]})  # fmt: skip
+    assert identity_of(cases()[0])["run"] == f"study2_short/{cases()[0].name}"
+    assert "path" not in identity_of(cases()[0])
+    assert call(monkeypatch, script_argv("verdict", world)) == 0
+    first = json.loads((out / "verdict.json").read_text())
+    restored = tmp_path / "restored" / "runs"
+    restored.parent.mkdir()
+    shutil.move(world, restored)
+    assert call(monkeypatch, script_argv("verdict", restored)) == 0
+    again = json.loads((fcd.numerical_root(20, 8, restored) / "verdict.json").read_text())
+    assert first["qualified"] is again["qualified"] is True
+    assert again["rates"] == first["rates"] and again["controls"] == first["controls"]
+    assert [e["attempts"] for e in again["cases"]] == [1] * 15
+    capsys.readouterr()
+
+
+def test_the_plan_notes_an_instability_stop(world, monkeypatch, capsys) -> None:
+    """Review N1 and N4: a regular run that an instability rule stopped, conforming otherwise,
+    is found with a note, and is no problem for the plan; one that also departs from the
+    prescribed run (here its protocol version) stays a problem."""
+    namespace = runpy.run_path(str(SCRIPT))
+    s = scope()
+    found = cases()
+    stopped, departing = found[11], found[14]
+    for case in (stopped, departing):
+        run = fcd.locate_case(world, s, case)
+        (run / "terminal.json").write_text(
+            json.dumps({"stop": {"reason": "gradient_spike", "kind": "instability"}, "steps": 3})
+        )
+    run = fcd.locate_case(world, s, departing)
+    cfg = OmegaConf.load(run / "config.yaml")
+    cfg.protocol_version = 3
+    OmegaConf.save(cfg, run / "config.yaml")
+    located, problems, notes = namespace["find_runs"](world, s, found)
+    assert len(located) == 15 and set(problems) == {departing.name}
+    assert "protocol_version is 3, not 2" in problems[departing.name]
+    assert set(notes) == {stopped.name}
+    assert notes[stopped.name].startswith(
+        "instability: the parts will record the rate as "
+        "failing (the regular run stopped by 'gradient_spike'"
+    )
+    assert call(monkeypatch, script_argv("plan", world, RATES, "--no-stream-check")) == 1
+    printed = capsys.readouterr().out
+    assert f"{stopped.name}: " in printed and "NOTE: instability" in printed
+    assert f"{departing.name}: PROBLEM: does not conform" in printed
+
+
 def test_records_follow_the_gpu_code(tmp_path, world) -> None:
     """Review I3, option (a), with code_identity on a repository of its own: records written at
     a commit X count at a later analysis-only commit Y, and are stale after a change of a GPU
@@ -1472,6 +1565,45 @@ def test_no_harm_paths(archive, tmp_path, monkeypatch, clean_head, capsys) -> No
     assert snapshot(out) == after
 
 
+def test_the_parts_record_an_instability_stop(archive, tmp_path, monkeypatch, clean_head,
+                                              capsys) -> None:  # fmt: skip
+    """Review N1, at the driver's level: an FA regular run that the ×10 gradient rule stopped
+    lets the plan pass (with a note); ``control`` and ``twins`` record it; the verdict reads its
+    rate failing (``instability:``) and its FA control rejected."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    guarded, _ = forbid_outcomes(monkeypatch, env)
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", lambda cfg, device: guarded)
+    scope_ = fcd.NumericalScope.of(tiny_settings())
+    case = next(c for c in tiny_cases() if (c.seed, c.optimizer, c.lr) == (0, "adam_frozen",
+                                                                          1.2e-3))  # fmt: skip
+    path = fcd.locate_case(root, scope_, case) / "terminal.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "steps": 4, "stop": {
+        "reason": "gradient_spike", "kind": "instability",
+        "detail": {"grad_norm": 9.0, "reference_median": 0.5}}}))  # fmt: skip
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(tiny_settings(), config)
+    assert run_script(monkeypatch, config, root, "plan", "--device", "cpu") == 0
+    printed = capsys.readouterr().out
+    assert "NOTE: instability: the parts will record the rate as failing" in printed
+    assert "PROBLEM" not in printed and "MISSING" not in printed
+    for part in ("control", "twins", "verdict"):
+        assert run_script(monkeypatch, config, root, part, "--device", "cpu") == 0, part
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    assert json.loads((out / case.attempt_path(1)).read_text())["status"] == "instability"
+    assert json.loads((out / fcd.control_path(1.2e-3, 1)).read_text())["status"] == "instability"
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict["rates"]["adam_frozen|0.0012"] == "failing" and verdict["qualified"] is False
+    assert verdict["controls"]["0.0012"] == "rejected"
+    reasons = verdict["reasons"]["adam_frozen|0.0012"]
+    assert reasons[0].startswith("instability: case s0: the regular run stopped by "
+                                 "'gradient_spike' after 4 steps")  # fmt: skip
+    assert any(r.startswith("control: instability: ") for r in reasons)
+    assert verdict["provenance"]["retry_due"] == {"cases": [], "controls": []}
+    others = {k: v for k, v in verdict["rates"].items() if k != "adam_frozen|0.0012"}
+    assert "incomplete" not in others.values() and "not_qualified" not in others.values()
+    capsys.readouterr()
+
+
 def test_a_twin_a_unlike_its_archive_is_incomplete_twice(
     archive, tmp_path, monkeypatch, clean_head, capsys
 ) -> None:
@@ -1582,17 +1714,23 @@ def test_a_missing_or_unstable_run_is_recorded(archive, tmp_path, monkeypatch,
         "steps": 4,
     }
     interrupted = {"stop": {"reason": "t_max", "kind": "limit"}, "steps": 4}
-    for case, terminal in ((adamw1, unstable), (fa1, interrupted)):
+    prewarmed1 = next(c for c in seed1 if c.optimizer == "adamw_prewarmed")
+    for case, terminal in ((adamw1, unstable), (fa1, interrupted), (prewarmed1, unstable)):
         path = fcd.locate_case(root, scope_, case) / "terminal.json"
         path.write_text(json.dumps({**json.loads(path.read_text()), **terminal}))
+    # Review N4: a run that departs otherwise (its protocol version) is technical, even when an
+    # instability rule stopped it
+    config = fcd.locate_case(root, scope_, prewarmed1) / "config.yaml"
+    config.write_text(config.read_text().replace("protocol_version: 1", "protocol_version: 2"))
     done = fcd.run_numerical_twins(s, env, root, out, seed1, attempt=1, code=consistent_code())
     assert done[adamw1.name]["status"] == "instability" and done[adamw1.name]["pairs"] == {}
     assert done[adamw1.name]["reason"].startswith("instability: the regular run stopped by "
                                                   "'gradient_spike' after 4 steps")  # fmt: skip
     assert done[fa1.name]["status"] == "incomplete"
     assert "stopped by 't_max' after 4 steps" in done[fa1.name]["reason"]
-    prewarmed1 = next(c for c in seed1 if c.optimizer == "adamw_prewarmed")
-    assert done[prewarmed1.name]["status"] == "complete"
+    assert done[prewarmed1.name]["status"] == "incomplete"
+    assert "protocol_version is 2, not 1" in done[prewarmed1.name]["reason"]
+    assert "instability" not in done[prewarmed1.name]["reason"]
     the_reader = tiny_reader(root)
     out_q = fcd.qualification({c.name: {1: done[c.name], 2: None} for c in seed1}, seed1,
                               reader=the_reader)  # fmt: skip

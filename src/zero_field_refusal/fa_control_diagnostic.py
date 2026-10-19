@@ -2520,6 +2520,12 @@ NUMERICAL_REFERENCE = ("float64 loss, accumulation and optimizer arithmetic; fal
 ROUNDING_LABEL = "heuristic, not a bound on accumulated error"
 
 
+# The settings' keys that NumericalScope reads; every other key of ``numerical`` is declarative
+SCOPE_KEYS = frozenset({"seeds", "arms", "primary_arms", "rates_per_arm", "control_arm", "regular",
+                        "eval_at", "perturbation", "k_star_factor", "bound_fraction",
+                        "memory_rule_gb"})  # fmt: skip
+
+
 class NumericalError(DiagnosticError):
     """The numerical check cannot run as specified (a rate set outside the scope, say)."""
 
@@ -2547,6 +2553,10 @@ class NumericalScope:
     k_star_factor: float  # K*(U) = √(factor·U)
     bound_fraction: float  # the bound is this fraction of K*(U)
     memory_rule_gb: float
+    # The settings' declarative keys (``evaluation: k_only`` and the generation flag beside it),
+    # as JSON by key: compared like the rest, so that settings declaring another evaluation
+    # are not this scope's (review nit)
+    declared: tuple[tuple[str, str], ...]
 
     @classmethod
     def of(cls, settings: DictConfig) -> NumericalScope:
@@ -2563,7 +2573,14 @@ class NumericalScope:
             rounding_scale=float(n.perturbation.rounding_scale),
             k_star_factor=float(n.k_star_factor), bound_fraction=float(n.bound_fraction),
             memory_rule_gb=float(n.memory_rule_gb),
+            declared=tuple(sorted(
+                (str(key), json.dumps(value, sort_keys=True))
+                for key, value in OmegaConf.to_container(n, resolve=True).items()
+                if key not in SCOPE_KEYS)),
         )  # fmt: skip
+        if dict(scope.declared).get("evaluation") != json.dumps("k_only"):
+            raise NumericalError(f"The numerical check is K-only: its settings declare "
+                                 f"{dict(scope.declared)}")  # fmt: skip
         if (scope.control_arm not in scope.primary_arms
                 or not set(scope.primary_arms) < set(scope.arms)
                 or len(set(scope.seeds)) != len(scope.seeds)):  # fmt: skip
@@ -2604,7 +2621,8 @@ class NumericalScope:
     def same_policy(self, settings: Mapping[str, Any] | None) -> bool:
         """Whether a record's ``provenance.settings`` are this scope's: every value but the
         memory rule (which only decides whether the reference falls back, and that is recorded
-        per case)."""
+        per case), the declarative keys included (``declared``: settings that declare a
+        generation the check never makes are not this scope's)."""
         try:
             other = NumericalScope.of(OmegaConf.create({"numerical": dict(settings or {})}))
         except Exception:  # missing or malformed settings: not this scope's
@@ -2721,12 +2739,15 @@ def locate_case(root: Path, scope: NumericalScope, case: NumericalCase) -> Path:
 
 
 def conformance(
-    cfg: DictConfig, run_dir: Path, scope: NumericalScope, case: NumericalCase
+    cfg: DictConfig, run_dir: Path, scope: NumericalScope, case: NumericalCase, *, stop: bool = True
 ) -> list[str]:
     """How a case's regular run departs from the prescribed one: its experiment, role, seed,
-    batch, arm, rate, protocol version, planned steps, and a terminal record of every step taken
-    (a run that stopped early cannot be twin A). Empty when it conforms. Only the config and the
-    terminal record are read: nothing of an evaluation of harm, which K-only runs lack."""
+    batch, arm, rate, protocol version, planned steps, and (with ``stop``) a terminal record of
+    every step taken (a run that stopped early cannot be twin A). Empty when it conforms. Only
+    the config and the terminal record are read: nothing of an evaluation of harm, which K-only
+    runs lack. The parts check it without ``stop`` first, then the instability stop
+    (``instability_stop``), then the stop: a run that departs otherwise is a technical
+    departure, even when an instability rule stopped it."""
     expected = {
         "experiment": (cfg.get("experiment"), scope.experiment),
         "study2_short.role": (OmegaConf.select(cfg, "study2_short.role", default=None),
@@ -2742,6 +2763,8 @@ def conformance(
                 if have != want]  # fmt: skip
     if not math.isclose(float(cfg.optimizer.lr), case.lr, rel_tol=1e-9):
         problems.append(f"optimizer.lr is {cfg.optimizer.lr}, not {case.lr:g}")
+    if not stop:
+        return problems
     terminal = json.loads((run_dir / "terminal.json").read_text())
     reason = (terminal.get("stop") or {}).get("reason")
     if reason != "steps" or terminal.get("steps") != scope.steps:
@@ -2765,9 +2788,11 @@ def instability_stop(run_dir: Path) -> str | None:
 
 
 def run_identity(run_dir: Path) -> dict[str, Any]:
-    """A regular run as a record names it: its path, run id, config hash (``meta.json``) and
-    the sha256 of the records the check compares or reads (config, metrics, monitor, terminal).
-    The verdict counts a record only for the run located now (review of Task 1, M3)."""
+    """A regular run as a record names it: its place under the runs root
+    (``<experiment>/<run id>``, so that RUNS_DIR may be restored elsewhere), run id, config hash
+    (``meta.json``) and the sha256 of the records the check compares or reads (config, metrics,
+    monitor, terminal). The verdict counts a record only for the run located now (review of
+    Task 1, M3 and N3)."""
     digest = hashlib.sha256()
     for name in ("config.yaml", "metrics.jsonl", "monitor.jsonl", "terminal.json"):
         path = run_dir / name
@@ -2775,8 +2800,8 @@ def run_identity(run_dir: Path) -> dict[str, Any]:
         digest.update(path.read_bytes() if path.exists() else b"\0missing\0")
     meta = run_dir / "meta.json"
     config_hash = json.loads(meta.read_text()).get("config_hash") if meta.exists() else None
-    return {"path": str(run_dir), "run_id": run_dir.name, "config_hash": config_hash,
-            "sha256": digest.hexdigest()}  # fmt: skip
+    return {"run": f"{run_dir.parent.name}/{run_dir.name}", "run_id": run_dir.name,
+            "config_hash": config_hash, "sha256": digest.hexdigest()}  # fmt: skip
 
 
 def code_check(run_dirs: Iterable[Path], tool_commit: str | None) -> dict[str, Any]:
@@ -2926,11 +2951,13 @@ def run_numerical_case(
     from its archive, makes the attempt incomplete; either way no pair is run. ``progress``
     holds twin A and the pairs as they are done."""
     eval_at, bound = list(scope.eval_at), scope.bound(case.upper)
-    unstable = instability_stop(run_dir)
-    if unstable is not None:
-        return {"status": INSTABILITY, "reason": unstable, "pairs": {}}
     cfg = run_config(run_dir)
-    problems = conformance(cfg, run_dir, scope, case)
+    problems = conformance(cfg, run_dir, scope, case, stop=False)
+    if not problems:  # review N4: an instability stop is evidence only for a conforming run
+        unstable = instability_stop(run_dir)
+        if unstable is not None:
+            return {"status": INSTABILITY, "reason": unstable, "pairs": {}}
+        problems = conformance(cfg, run_dir, scope, case)
     if problems:
         return {
             "status": "incomplete",
@@ -3127,8 +3154,9 @@ def run_numerical_controls(
             run_dir = locate_case(root, scope, case)
             cfg = run_config(run_dir)
             record.update(regular_run=str(run_dir), regular_run_identity=run_identity(run_dir))
-            unstable = instability_stop(run_dir)
-            problems = conformance(cfg, run_dir, scope, case)
+            problems = conformance(cfg, run_dir, scope, case, stop=False)
+            unstable = None if problems else instability_stop(run_dir)  # review N4
+            problems = problems or conformance(cfg, run_dir, scope, case)
             if unstable is not None:  # evidence against the rate: the control is rejected
                 record.update(status=INSTABILITY, state=INSTABILITY, reason=unstable)
             elif problems:
