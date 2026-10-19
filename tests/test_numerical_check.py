@@ -2096,6 +2096,71 @@ def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> No
     assert "nothing to void" in str(void())  # done once: nothing left to move
 
 
+def void_at(world, monkeypatch, upper=8, *extra):
+    """``void`` through the script at B 20 and ``upper``, HEAD at ``OTHER`` (a GPU-path change
+    after the world's runs, made at ``RUN_COMMIT``)."""
+    monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": False})
+    argv = [str(SCRIPT), "void", "--batch", "20", "--upper", str(upper), "--runs-root",
+            str(world), *extra]  # fmt: skip
+    return call(monkeypatch, argv)
+
+
+def test_void_refuses_another_us_check_and_records_a_missing_one(world, monkeypatch,
+                                                                 capsys) -> None:  # fmt: skip
+    """The coordinator's ruling on the re-review's N1: the numerical runs at B serve every U's
+    check, so a check directory of another U at B refuses the void, nothing moved (a wrong
+    --upper included); without the check directory of the given U (a GPU-path change between
+    the K-only runs and their check) the runs move and the record says "no check directory"."""
+    for upper in (7, 8):
+        (fcd.numerical_root(20, upper, world) / "verdicts").mkdir(parents=True)
+        (fcd.numerical_root(20, upper, world) / "verdicts" / "x.json").write_text("{}")
+    before = snapshot(world)
+    for upper, other in ((8, "numerical/b20-u7"), (9, "numerical/b20-u7', 'numerical/b20-u8")):
+        refused = void_at(world, monkeypatch, upper)
+        assert refused not in (0, None), upper
+        assert (f"the check directories ['{other}'] of another U at B 20 exist" in str(refused)
+                and "this case goes to the coordinator" in str(refused))  # fmt: skip
+    assert snapshot(world) == before and not (world / "void").exists()
+    shutil.rmtree(world / "numerical")
+    assert void_at(world, monkeypatch, 8) == 0
+    (record,) = (world / "void" / "same").glob("void-*.json")
+    found = json.loads(record.read_text())
+    assert found["check_directory"] == "no check directory"
+    assert found["moved"] == sorted({f"study2_short/{c.name}" for c in cases() + cases(RESOLVED)})
+    capsys.readouterr()
+
+
+def test_void_refuses_mixed_codes_an_existing_destination_or_an_unclean_run(
+    world, monkeypatch, capsys
+) -> None:
+    """The re-review's N2: old runs of several GPU codes, a destination that exists, and a run
+    that records no clean commit each refuse the void, nothing moved."""
+    first = fcd.locate_case(world, scope(), cases()[0]) / "meta.json"
+    original = first.read_text()
+    older = "d" * 40
+    monkeypatch.setitem(GPU_SHA, older, "older")
+    first.write_text(original.replace(RUN_COMMIT, older))
+    before = snapshot(world)
+    refused = str(void_at(world, monkeypatch))
+    assert "the runs to move have 2 GPU codes (['older', 'same']): void them by hand" in refused
+    assert snapshot(world) == before
+    first.write_text(original)
+    blocking = world / "void" / "same" / "study2_short" / cases()[1].name
+    blocking.mkdir(parents=True)
+    (blocking / "meta.json").write_text("{}")
+    before = snapshot(world)
+    assert f"{blocking} exists: nothing is overwritten" in str(void_at(world, monkeypatch))
+    assert snapshot(world) == before
+    shutil.rmtree(world / "void")
+    first.write_text(original.replace('"dirty": false', '"dirty": true'))
+    before = snapshot(world)
+    refused = str(void_at(world, monkeypatch))
+    assert (f"study2_short/{cases()[0].name} records no clean commit ({RUN_COMMIT}, dirty: "
+            "True): its GPU code is unknown") in refused  # fmt: skip
+    assert snapshot(world) == before and not (world / "void").exists()
+    capsys.readouterr()
+
+
 @pytest.mark.parametrize("role", ["validation", "confirmation", "timecourse"])
 def test_void_refuses_once_s3_has_started(world, monkeypatch, capsys, role) -> None:
     """The coordinator's ruling on concern C1: one run of the role validation, confirmation or

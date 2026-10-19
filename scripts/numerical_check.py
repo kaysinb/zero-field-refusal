@@ -99,9 +99,12 @@ working directory included, which ``load_config`` would read first) unless they 
   moved (path, size, sha256) and a record (``void_plan``, ``void_numerical``). It refuses on a
   checkout that is not clean; when a run of the role validation, confirmation or timecourse
   exists at B (S3 has started: a GPU-path change after that is outside this procedure and goes
-  to the coordinator, since voiding those runs means spending on S3 again); when no run's GPU
-  code differs; when it would move a run of another role (or one whose GPU code cannot be
-  read); and when a launcher log to move also names a run it leaves in place. The selection
+  to the coordinator, since voiding those runs means spending on S3 again); when a check
+  directory of another U exists at B (the numerical runs at B serve it too, and its verdicts
+  would go unread: to the coordinator); when no run's GPU code differs; when it would move a run
+  of another role (or one whose GPU code cannot be read); and when a launcher log to move also
+  names a run it leaves in place. Without ``numerical/b{B}-u{U}/`` (a GPU-path change between
+  the K-only runs and their check) it moves the rest and records "no check directory". The selection
   then calls for the numerical runs again, and their check; the fresh campaign at the same
   rates starts with all its attempts. ``--dry-run`` prints what it would move.
 
@@ -504,7 +507,8 @@ def void(args: argparse.Namespace, settings) -> None:
     unless ``--dry-run``."""
     root = args.runs_root or runs_root()
     found = void_plan(root, NumericalScope.of(settings), args.batch, args.upper, git_state())
-    print(json.dumps({key: found[key] for key in ("batch", "U", "paths", "kept", "destination")}
+    print(json.dumps({key: found[key] for key in ("batch", "U", "paths", "check_directory",
+                                                  "kept", "destination")}
                      | {"old_gpu_code": found["old_gpu_code"], "head_gpu_code": found["head"]},
                      indent=1))  # fmt: skip
     if found["problems"]:

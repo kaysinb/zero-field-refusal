@@ -3045,10 +3045,14 @@ def void_plan(
     ``void/<old GPU code's sha256, first 12>/``, at their paths under ``root``. ``problems``
     (each a refusal): a checkout that is not clean; a run of the role validation, confirmation
     or timecourse at ``batch`` (S3 has started: a GPU-path change after that is outside this
-    procedure, the coordinator's ruling on concern C1); no numerical run whose GPU code differs;
-    such a run of another role; a run that records no clean commit or whose commit has no
-    readable GPU code; old runs of several GPU codes; a journal to move that also names a run
-    left in place; a destination that exists."""
+    procedure, the coordinator's ruling on concern C1); a check directory ``numerical/b{B}-u*/``
+    of another U at ``batch`` (the numerical runs at B serve that check too: the coordinator's
+    ruling on the re-review's N1); no numerical run whose GPU code differs; such a run of
+    another role; a run that records no clean commit or whose commit has no readable GPU code;
+    old runs of several GPU codes; a journal to move that also names a run left in place; a
+    destination that exists. A missing ``numerical/b{B}-u{U}/`` is allowed (a GPU-path change
+    can fall between the K-only runs and their check): ``check_directory`` then says "no check
+    directory", and so does the record."""
     problems: list[str] = []
     commit, dirty = state.get("commit"), state.get("dirty")
     head: dict[str, Any] | None = None
@@ -3114,9 +3118,20 @@ def void_plan(
                         f"({sorted(s[:12] for s in old)}): void them by hand, with a "
                         "record")  # fmt: skip
     directory = numerical_root(batch, upper, root)
+    # The numerical runs at B serve every U's check: another U's check directory at B holds
+    # verdicts (and marks) the replay must still read, which voiding the runs would strand (the
+    # coordinator's ruling on the re-review's N1)
+    others = sorted(p.relative_to(root).as_posix()
+                    for p in directory.parent.glob(f"b{int(batch)}-u*")
+                    if p.is_dir() and p != directory)  # fmt: skip
+    if others:
+        problems.append(f"the check directories {others} of another U at B {batch} exist: the "
+                        "numerical runs at B serve them too, and voiding them would leave those "
+                        "verdicts unread; this case goes to the coordinator")  # fmt: skip
     paths = [run["run"] for run in moved]
-    if directory.is_dir():
-        paths.append(directory.relative_to(root).as_posix())
+    check = directory.relative_to(root).as_posix() if directory.is_dir() else None
+    if check is not None:
+        paths.append(check)
     journals, blocking = _void_journals(root, {run["run"] for run in moved})
     problems += blocking
     paths += journals
@@ -3127,6 +3142,7 @@ def void_plan(
                      if (destination / path).exists()]  # fmt: skip
     return {"batch": int(batch), "U": upper, "head": head, "old_gpu_code": old_code,
             "runs": moved, "kept": kept, "paths": paths,
+            "check_directory": check or "no check directory",
             "destination": None if destination is None else str(destination),
             "problems": problems}  # fmt: skip
 
@@ -3162,6 +3178,7 @@ def void_numerical(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any]
                 "scripts/numerical_check.py void (the final review of gate B, I2; the "
                 "coordinator's ruling on concern C2); nothing deleted",
         "batch": plan["batch"], "U": plan["U"], "moved": plan["paths"],
+        "check_directory": plan["check_directory"],
         "runs": plan["runs"], "kept": plan["kept"], "old_gpu_code": plan["old_gpu_code"],
         "head_gpu_code": plan["head"], "inventory": inventory.name, "code": dict(state),
         "written_at": datetime.now(UTC).isoformat(timespec="seconds"),

@@ -188,7 +188,9 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   attempts. ``void`` refuses once a run of the role validation, confirmation or timecourse
   exists at the batch (the coordinator's ruling on concern C1): a GPU-path change after S3 has
   started is outside this procedure and goes to the coordinator, since voiding those runs means
-  spending on S3 again, a budget decision.
+  spending on S3 again, a budget decision. It refuses too when a check directory of another U
+  exists at the batch (the re-review's N1): the numerical runs at B serve that check as well,
+  whose verdicts the replay would then never read; that case goes to the coordinator.
 - *w_max* (the final review of gate B, I4): frozen since S1. Every campaign's header records
   the w_max it was written under, and the launcher logs that header with each start
   (``issued_w_max``); the replay under another w_max is refused (``incomplete``, with that
