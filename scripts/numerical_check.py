@@ -92,12 +92,18 @@ working directory included, which ``load_config`` would read first) unless they 
   incomplete rate or control; 6 a part failed (recorded); 0 complete.
 - ``void`` (the final review of gate B, I2) moves, never deletes, what a GPU-path change after
   the check left unusable: every numerical run at B (role numerical) whose recorded commit's GPU
-  code is not HEAD's, and ``RUNS_DIR/numerical/b{B}-u{U}/``, to
+  code is not HEAD's, ``RUNS_DIR/numerical/b{B}-u{U}/``, and the launcher's record of the
+  campaigns that made those runs (``launch/<campaign>.jsonl``, ``launch/<campaign>/`` and the
+  campaign's file under ``RUNS_DIR/campaigns/`` with its ``-driver.sh``), to
   ``RUNS_DIR/void/<the old GPU code's sha256, first 12>/``, with an inventory of every file
   moved (path, size, sha256) and a record (``void_plan``, ``void_numerical``). It refuses on a
-  checkout that is not clean, when no run's GPU code differs, and when it would move a run of
-  another role (or one whose GPU code cannot be read). The selection then calls for the
-  numerical runs again, and their check. ``--dry-run`` prints what it would move.
+  checkout that is not clean; when a run of the role validation, confirmation or timecourse
+  exists at B (S3 has started: a GPU-path change after that is outside this procedure and goes
+  to the coordinator, since voiding those runs means spending on S3 again); when no run's GPU
+  code differs; when it would move a run of another role (or one whose GPU code cannot be
+  read); and when a launcher log to move also names a run it leaves in place. The selection
+  then calls for the numerical runs again, and their check; the fresh campaign at the same
+  rates starts with all its attempts. ``--dry-run`` prints what it would move.
 
 Cost on one L40S at 1.5B (fp32), scaled from the FA diagnostic's records at B 5 (≈ 0.17 s per
 response and step with the monitor's readings, a D_twin reading ≈ 30 s, a scoring K ≈ 14.5 s, a

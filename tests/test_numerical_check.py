@@ -2004,8 +2004,11 @@ def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> No
     """The final review of gate B, I2: after a GPU-path change (HEAD at ``OTHER``), ``void``
     moves, never deletes, every numerical run at B whose recorded commit's GPU code is not
     HEAD's and the check's directory to RUNS_DIR/void/<old GPU code>/, with an inventory of
-    every file and its sha256 and a record; a run made at HEAD's GPU code stays. It refuses on
-    a dirty checkout, with nothing to void, and before moving a run of another role."""
+    every file and its sha256 and a record; a run made at HEAD's GPU code stays. With them go
+    the launcher's log of the campaign that made them, its attempts' logs and the campaign's
+    file under campaigns/ with its driver (the coordinator's ruling on concern C2). It refuses
+    on a dirty checkout, with nothing to void, before moving a run of another role, and when
+    the campaign's log also names a run it leaves in place."""
     s = scope()
     out = fcd.numerical_root(20, 8, world)
     write_records(out, within_all(cases()), {lr: {1: control(lr), 2: None}
@@ -2013,6 +2016,27 @@ def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> No
     other_b = fcd.NumericalCase(2200, "adamw", 1.32e-05, 5, 8)
     fake_runs(world / "b5", [other_b])  # at another batch: not touched
     shutil.move(world / "b5" / "study2_short" / other_b.name, world / "study2_short" / "b5-run")
+    # The launcher's record of the campaign that made the first three runs, and its file
+    campaign = "study2-short-numerical-b20-u8-test"
+
+    def start(run_id: str) -> str:
+        return json.dumps({"event": "start", "run": "cell/s0", "attempt": 1, "run_id": run_id,
+                           "experiment": "study2_short", "config_hash": "h"}) + "\n"  # fmt: skip
+
+    def journal(*names):
+        (world / "launch").mkdir(exist_ok=True)
+        text = "".join(start(name) for name in names) + "{cut short\n"
+        (world / "launch" / f"{campaign}.jsonl").write_text(text)
+
+    journal(*(c.name for c in cases()[:3]))
+    (world / "launch" / campaign).mkdir()
+    (world / "launch" / campaign / "attempt.log").write_text("output\n")
+    (world / "launch" / "other.jsonl").write_text(start("x"))
+    (world / "campaigns").mkdir()
+    (world / "campaigns" / "numerical.yaml").write_text(f"# header\nname: {campaign}\ncells: []\n")
+    (world / "campaigns" / "numerical-driver.sh").write_text("#!/usr/bin/env bash\n")
+    (world / "campaigns" / "discovery.yaml").write_text("name: study2-short-discovery\n")
+    (world / "campaigns" / "broken.yaml").write_text("name: [\n")
 
     def void(*extra):
         argv = [str(SCRIPT), "void", "--batch", "20", "--upper", "8", "--runs-root", str(world),
@@ -2025,19 +2049,25 @@ def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> No
     monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": True})
     assert "the checkout is not clean" in str(void())
     monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": False})
-    validation = fcd.locate_case(world, s, cases()[0]) / "config.yaml"
-    text = validation.read_text()
-    validation.write_text(text.replace("role: numerical", "role: validation"))
-    assert "has the role 'validation', not 'numerical'" in str(void())
-    validation.write_text(text)
+    discovery = fcd.locate_case(world, s, cases()[0]) / "config.yaml"
+    text = discovery.read_text()
+    discovery.write_text(text.replace("role: numerical", "role: discovery"))
+    assert "has the role 'discovery', not 'numerical'" in str(void())
+    discovery.write_text(text)
     assert "takes --batch and --upper only" in str(void("--rates", "adamw=1e-05"))
+    journal(*(c.name for c in cases()[:3]), kept.name)  # a log naming a run left in place
+    assert (f"launch/{campaign}.jsonl names runs that void moves and "
+            f"['study2_short/{kept.name}'], which it does not") in str(void())  # fmt: skip
+    journal(*(c.name for c in cases()[:3]))
     before = snapshot(world)
     capsys.readouterr()
     assert void("--dry-run") == 0
     shown = json.loads(capsys.readouterr().out)
     assert snapshot(world) == before  # a dry run moves nothing
     moved = sorted({f"study2_short/{c.name}" for c in cases() + cases(RESOLVED)})
-    assert shown["paths"] == [*moved, "numerical/b20-u8"]
+    assert shown["paths"] == [*moved, "numerical/b20-u8", f"launch/{campaign}.jsonl",
+                              f"launch/{campaign}", "campaigns/numerical.yaml",
+                              "campaigns/numerical-driver.sh"]  # fmt: skip
     assert shown["kept"] == [f"study2_short/{kept.name}"]
     assert shown["destination"] == str(world / "void" / "same")  # the old GPU code, sha256[:12]
     assert void() == 0
@@ -2045,11 +2075,14 @@ def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> No
     destination = world / "void" / "same"
     (inventory,) = destination.glob("inventory-*.tsv")
     rows = [line.split("\t") for line in inventory.read_text().splitlines()[1:]]
-    assert {row[0] for row in rows} == set(before) - {
+    left = {"launch/other.jsonl", "campaigns/discovery.yaml", "campaigns/broken.yaml"}
+    assert {row[0] for row in rows} == set(before) - left - {
         f"study2_short/{kept.name}/{name}" for name in ("config.yaml", "terminal.json",
                                                         "metrics.jsonl", "meta.json")} - {
         f"study2_short/b5-run/{name}" for name in ("config.yaml", "terminal.json",
                                                    "metrics.jsonl", "meta.json")}  # fmt: skip
+    assert f"launch/{campaign}/attempt.log" in {row[0] for row in rows}
+    assert all((world / path).is_file() for path in left)
     for path, size, digest in rows:
         assert (destination / path).stat().st_size == int(size)
         assert hashlib.sha256((destination / path).read_bytes()).hexdigest() == digest
@@ -2061,6 +2094,29 @@ def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> No
     assert (world / "study2_short" / kept.name).is_dir()
     assert (world / "study2_short" / "b5-run").is_dir() and not out.exists()
     assert "nothing to void" in str(void())  # done once: nothing left to move
+
+
+@pytest.mark.parametrize("role", ["validation", "confirmation", "timecourse"])
+def test_void_refuses_once_s3_has_started(world, monkeypatch, capsys, role) -> None:
+    """The coordinator's ruling on concern C1: one run of the role validation, confirmation or
+    timecourse at B, whatever its GPU code, refuses the void, and nothing moves: a GPU-path
+    change after S3 has started goes to the coordinator (a budget decision)."""
+    monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": False})
+    started = fcd.NumericalCase(2100, "adamw", 1.32e-05, 20, 8)
+    fake_runs(world, [started], commit=OTHER)
+    config = world / "study2_short" / started.name / "config.yaml"
+    config.write_text(config.read_text().replace("role: numerical", f"role: {role}"))
+    before = snapshot(world)
+    for extra in ((), ("--dry-run",)):
+        argv = [str(SCRIPT), "void", "--batch", "20", "--upper", "8", "--runs-root", str(world),
+                *extra]  # fmt: skip
+        refused = call(monkeypatch, argv)
+        assert refused not in (0, None) and "S3 has started" in str(refused)
+        assert (f"1 run(s) of the role validation, confirmation or timecourse at B 20 "
+                f"(study2_short/{started.name})") in str(refused)  # fmt: skip
+        assert "goes to the coordinator" in str(refused) and "budget decision" in str(refused)
+    assert snapshot(world) == before and not (world / "void").exists()
+    capsys.readouterr()
 
 
 # ---------------------------------------------------------------------------------- on a GPU

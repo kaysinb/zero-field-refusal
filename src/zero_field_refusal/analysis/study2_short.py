@@ -181,12 +181,14 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   runs (a policy departure, say) is run again. One stale by a GPU-path change cannot be: the
   tool refuses numerical runs whose GPU code is not its own. The voiding procedure (the final
   review of gate B, I2), ``scripts/numerical_check.py void --batch B --upper U`` on a clean
-  checkout of the new commit, moves those numerical runs and the check's directory
-  numerical/b{B}-u{U}/ to $RUNS_DIR/void/<old GPU code>/ with an inventory; the replay then
-  calls for the numerical runs again (``numerical``) and their new check. Runs the replay
-  called for after the voided check (validation runs) are then unexpected and leave the stage
-  ``incomplete`` until the coordinator rules on them: under the versions record's one-commit
-  rule, a GPU-path change after them voids them too.
+  checkout of the new commit, moves those numerical runs, the check's directory
+  numerical/b{B}-u{U}/ and the launcher's record of their campaigns to
+  $RUNS_DIR/void/<old GPU code>/ with an inventory; the replay then calls for the numerical
+  runs again (``numerical``) and their new check, and the fresh campaign starts with all its
+  attempts. ``void`` refuses once a run of the role validation, confirmation or timecourse
+  exists at the batch (the coordinator's ruling on concern C1): a GPU-path change after S3 has
+  started is outside this procedure and goes to the coordinator, since voiding those runs means
+  spending on S3 again, a budget decision.
 - *w_max* (the final review of gate B, I4): frozen since S1. Every campaign's header records
   the w_max it was written under, and the launcher logs that header with each start
   (``issued_w_max``); the replay under another w_max is refused (``incomplete``, with that

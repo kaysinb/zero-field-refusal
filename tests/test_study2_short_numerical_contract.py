@@ -7,7 +7,10 @@ synthetic records (the world of tests/test_numerical_check.py), written by its
 import json
 import runpy
 import shutil
+from pathlib import Path
 
+import yaml
+from omegaconf import OmegaConf
 from test_numerical_check import (
     COMMIT,
     OTHER,
@@ -33,6 +36,7 @@ from zero_field_refusal import fa_control_diagnostic as tool
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
     OPTIMIZERS,
+    exhausted_runs,
     numerical_case_name,
     numerical_digest,
     numerical_policy,
@@ -40,6 +44,10 @@ from zero_field_refusal.analysis.study2_short import (
     read_numerical,
     selection,
 )
+from zero_field_refusal.launch import assess, launch_records, load_campaign, run_campaign
+from zero_field_refusal.protocol import load_run_config
+
+CAMPAIGNS = Path(__file__).parents[1] / "scripts" / "study2_short_campaigns.py"
 
 ARM_OF = {name: arm for arm, name in OPTIMIZERS.items()}
 
@@ -283,6 +291,87 @@ def test_a_void_check_calls_for_fresh_numerical_runs(world) -> None:  # noqa: F8
     assert fresh["next"]["campaign"] == "numerical" and fresh["problems"] == []
     assert len(fresh["next"]["runs"]) == 15
     assert fresh["next"]["check"] == numerical_digest(by_arm(first))
+
+
+def test_after_void_a_fresh_numerical_campaign_has_every_attempt(
+    tmp_path,
+    clean_head,  # noqa: F811
+) -> None:
+    """The coordinator's ruling on concern C2: ``void`` moves the launcher's log of the campaign
+    that made the voided runs (and its attempts' logs, its file under campaigns/ and that file's
+    driver), so that the fresh campaign at the same rates, with the same cell names and config
+    hashes, gets its full three technical attempts, and an exhausted fresh run is given up: the
+    stage does not wait forever. Left in place, the voided starts would count as attempts and
+    hide the given-up run."""
+    root = tmp_path / "runs"
+    runs = grids()
+    _, result, _ = drive(runs, until="numerical")
+    step = result["next"]
+    module = runpy.run_path(str(CAMPAIGNS))
+    tag = f"u{step['U']:g}-{step['check']}"  # as the campaigns script names the campaign
+    campaign = {"header": {"w_max": W_MAX}, "name": f"study2-short-numerical-b20-{tag}",
+                "cells": module["regular_cells"](step["runs"], f"-numerical-{tag}")}  # fmt: skip
+    (root / "campaigns").mkdir(parents=True)
+    path = root / "campaigns" / "numerical.yaml"
+    path.write_text(yaml.safe_dump(campaign, sort_keys=False))
+    (root / "campaigns" / "numerical-driver.sh").write_text("#!/usr/bin/env bash\n")
+    name, launched = load_campaign(path)
+    assert len(launched) == 15
+    # The first launch, under the old GPU code: each run completed at its first attempt
+    (root / "launch" / name).mkdir(parents=True)
+    lines = []
+    for n, run in enumerate(launched):
+        run_id = f"old-{n}-{run.config_hash[:8]}-a1"
+        lines += [json.dumps({"event": "start", "run": run.label, "attempt": 1, "run_id": run_id,
+                              "experiment": run.experiment, "config_hash": run.config_hash,
+                              "command": run.command()[1:], "header": {"w_max": W_MAX}}),
+                  json.dumps({"event": "end", "run": run.label, "attempt": 1, "run_id": run_id,
+                              "returncode": 0, "outcome": "done", "problem": None})]  # fmt: skip
+        run_dir = root / run.experiment / run_id
+        run_dir.mkdir(parents=True)
+        OmegaConf.save(load_run_config(run.config, list(run.overrides)), run_dir / "config.yaml",
+                       resolve=True)  # fmt: skip
+        (run_dir / "meta.json").write_text(json.dumps({
+            "git": {"commit": RUN_COMMIT, "dirty": False}, "config_hash": run.config_hash,
+            "status": "completed"}))  # fmt: skip
+        (root / "launch" / name / f"{run_id}.log").write_text("output\n")
+    (root / "launch" / f"{name}.jsonl").write_text("\n".join(lines) + "\n")
+    old = launch_records(root)
+    # A GPU-path change: HEAD's GPU code is OTHER's; void moves the runs and the record
+    state = {"commit": OTHER, "dirty": False}
+    plan = tool.void_plan(root, scope(), 20, 8.0, state)
+    assert plan["problems"] == [] and len(plan["runs"]) == 15
+    assert plan["paths"][15:] == [f"launch/{name}.jsonl", f"launch/{name}",
+                                  "campaigns/numerical.yaml",
+                                  "campaigns/numerical-driver.sh"]  # fmt: skip
+    record = tool.void_numerical(root, plan, state)
+    (inventory,) = record.parent.glob("inventory-*.tsv")
+    listed = {line.split("\t")[0] for line in inventory.read_text().splitlines()[1:]}
+    assert {f"launch/{name}.jsonl", f"launch/{name}/{old[0]['run_id']}.log",
+            "campaigns/numerical.yaml", "campaigns/numerical-driver.sh"} <= listed  # fmt: skip
+    assert launch_records(root) == [] and not (root / "campaigns" / "numerical.yaml").exists()
+    # The fresh campaign at the same rates: the same cells and config hashes
+    first = launched[0]
+    assert len(assess(first, root, old).technical) == 1  # the voided start, had it stayed
+    fresh = assess(first, root, launch_records(root))
+    assert fresh.technical == set() and fresh.done is None
+
+    def fails(run, run_id, output) -> int:  # a technical failure that leaves no run
+        return 1
+
+    header = {"w_max": W_MAX}
+    assert run_campaign(name, [first], root, execute=fails, header=header)["exhausted"] == [
+        first.label]  # fmt: skip
+    starts = [r for r in launch_records(root) if r["event"] == "start"]
+    assert [r["attempt"] for r in starts] == [1, 2, 3]  # its full three attempts
+    run_campaign(name, [first], root, execute=fails, header=header, recovery="disk fixed")
+    given = exhausted_runs(launch_records(root))
+    assert list(given.values()) == [first.label]
+    ((arm, batch, lr, seed),) = given
+    assert (OPTIMIZERS[arm], batch, seed) == (load_run_config(
+        first.config, list(first.overrides)).optimizer.name, 20, first.seed)  # fmt: skip
+    # The selection's check then goes on without it; with the voided starts left, never
+    assert exhausted_runs(old + launch_records(root)) == {}
 
 
 def test_the_tool_and_the_selection_name_a_case_alike() -> None:

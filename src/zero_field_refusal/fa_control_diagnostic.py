@@ -108,8 +108,9 @@ benign panels, nothing written to a run record.
   the host memory when it was written (``host_record``, M7).
 - **Voiding** (the final review of gate B, I2): after a GPU-path change the numerical runs made
   under the old GPU code can never be checked again; ``void_plan`` and ``void_numerical`` move
-  them, and the check's directory, to ``RUNS_DIR/void/<old GPU code>/`` with an inventory, so
-  that the selection calls for the runs and the check anew.
+  them, the check's directory and the launcher's record of their campaigns to
+  ``RUNS_DIR/void/<old GPU code>/`` with an inventory, so that the selection calls for the runs
+  and the check anew. Not once S3 has started at that batch (the coordinator's ruling).
 """
 
 from __future__ import annotations
@@ -134,6 +135,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
+import yaml
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import PreTrainedModel
@@ -2964,6 +2966,56 @@ def environment_check(
 # --------------------------------- voiding a numerical check after a GPU-path change (gate B, I2)
 
 VOID_DIR = "void"  # RUNS_DIR/void/<the old GPU code's sha256, first 12>/: what ``void`` moved
+# The roles of S3 (validation, confirmation, the time course): a run of one at the batch refuses
+# the void (the coordinator's ruling on concern C1)
+VOID_REFUSED_ROLES = ("validation", "confirmation", "timecourse")
+CAMPAIGNS_DIR = "campaigns"  # RUNS_DIR/campaigns/: where the operator keeps the campaign files
+
+
+def _journal_starts(log: Path) -> list[dict[str, Any]]:
+    """The start records of one launch log (a line cut short by a crash is skipped, as
+    ``launch.launch_records`` skips it)."""
+    starts = []
+    for line in log.read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("event") == "start":
+            starts.append(record)
+    return starts
+
+
+def _void_journals(root: Path, moved: set[str]) -> tuple[list[str], list[str]]:
+    """The launcher's record of the campaigns whose start records name a run in ``moved``
+    (``<experiment>/<run id>`` under ``root``): each campaign's log ``launch/<name>.jsonl``, its
+    attempts' logs ``launch/<name>/``, and its file under ``campaigns/`` (a YAML whose ``name``
+    is the campaign's) with its ``-driver.sh`` beside it when present; and the problems that
+    stop the void: such a log that also names a run directory left in place."""
+    paths, blocking = [], []
+    for log in sorted((root / "launch").glob("*.jsonl")):
+        named = {f"{r.get('experiment')}/{r.get('run_id')}" for r in _journal_starts(log)}
+        if not named & moved:
+            continue
+        left = sorted(n for n in named - moved if (root / n).exists())
+        if left:
+            blocking.append(f"launch/{log.name} names runs that void moves and {left}, which it "
+                            "does not: void them by hand, with a record")  # fmt: skip
+        paths.append(log.relative_to(root).as_posix())
+        attempts = log.with_suffix("")
+        if attempts.is_dir():
+            paths.append(attempts.relative_to(root).as_posix())
+        for file in sorted((root / CAMPAIGNS_DIR).glob("*.y*ml")):
+            try:
+                name = (yaml.safe_load(file.read_text()) or {}).get("name")
+            except (OSError, ValueError, AttributeError, yaml.YAMLError):
+                continue  # not a campaign file
+            if name == log.stem:
+                paths.append(file.relative_to(root).as_posix())
+                driver = file.with_name(f"{file.stem}-driver.sh")
+                if driver.is_file():
+                    paths.append(driver.relative_to(root).as_posix())
+    return paths, blocking
 
 
 def _file_sha256(path: Path) -> str:
@@ -2983,11 +3035,20 @@ def void_plan(
     ``root`` (RUNS_DIR): every run of the scope's experiment at ``batch`` whose role is the
     scope's (numerical), or that runs on a numerical seed or evaluates K only, and whose recorded
     commit's GPU code (``code_identity.gpu_code_identity``) differs from HEAD's (``state``, a
-    clean checkout); and the check's directory ``numerical/b{B}-u{U}/``, if there. They go to
+    clean checkout); the check's directory ``numerical/b{B}-u{U}/``, if there; and the launcher's
+    record of the campaigns that made those runs (the coordinator's ruling on concern C2), so
+    that a fresh campaign at the same rates, with the same cell names and config hashes, starts
+    with every attempt and can be given up: each ``launch/<campaign>.jsonl`` whose start records
+    name a run moved, its attempts' logs ``launch/<campaign>/``, and the campaign's own file
+    under ``campaigns/`` (a YAML whose ``name`` is the campaign's), with its ``-driver.sh`` beside
+    it when present (neither the launcher nor the selection reads those files). They go to
     ``void/<old GPU code's sha256, first 12>/``, at their paths under ``root``. ``problems``
-    (each a refusal): a checkout that is not clean; no numerical run whose GPU code differs; such
-    a run of another role; a run that records no clean commit or whose commit has no readable
-    GPU code; old runs of several GPU codes; a destination that exists."""
+    (each a refusal): a checkout that is not clean; a run of the role validation, confirmation
+    or timecourse at ``batch`` (S3 has started: a GPU-path change after that is outside this
+    procedure, the coordinator's ruling on concern C1); no numerical run whose GPU code differs;
+    such a run of another role; a run that records no clean commit or whose commit has no
+    readable GPU code; old runs of several GPU codes; a journal to move that also names a run
+    left in place; a destination that exists."""
     problems: list[str] = []
     commit, dirty = state.get("commit"), state.get("dirty")
     head: dict[str, Any] | None = None
@@ -2999,7 +3060,7 @@ def void_plan(
         except Exception as exc:
             problems.append(f"HEAD's GPU code: {type(exc).__name__}: {str(exc)[:300]}")
     identities: dict[str, dict[str, Any]] = {}
-    moved, kept = [], []
+    moved, kept, later = [], [], []
     for run_dir in sorted(p for p in (root / scope.experiment).glob("*") if p.is_dir()):
         try:
             cfg = OmegaConf.load(run_dir / "config.yaml")
@@ -3008,6 +3069,9 @@ def void_plan(
         if OmegaConf.select(cfg, "train.batch_size", default=None) != batch:
             continue
         role = OmegaConf.select(cfg, "study2_short.role", default=None)
+        if role in VOID_REFUSED_ROLES:
+            later.append(f"{scope.experiment}/{run_dir.name}")
+            continue
         if not (role == scope.role or cfg.get("seed") in scope.seeds
                 or OmegaConf.select(cfg, "eval.k_only", default=False) is True):  # fmt: skip
             continue
@@ -3035,6 +3099,12 @@ def void_plan(
                 problems.append(f"{name} has the role {role!r}, not {scope.role!r}: void moves "
                                 "the numerical runs only")  # fmt: skip
             moved.append({"run": name, "commit": made, "gpu_code": identity})
+    if later:
+        problems.insert(0, f"{len(later)} run(s) of the role validation, confirmation or "
+                           f"timecourse at B {batch} ({later[0]}{', …' if len(later) > 1 else ''})"
+                           ": S3 has started. A GPU-path change after S3 has started is outside "
+                           "this procedure and goes to the coordinator: voiding those runs means "
+                           "spending on S3 again, which is a budget decision")  # fmt: skip
     old = {run["gpu_code"]["sha256"]: run["gpu_code"] for run in moved}
     if head is not None and not moved:
         problems.append(f"no numerical run at B {batch} has GPU code other than HEAD's "
@@ -3047,6 +3117,9 @@ def void_plan(
     paths = [run["run"] for run in moved]
     if directory.is_dir():
         paths.append(directory.relative_to(root).as_posix())
+    journals, blocking = _void_journals(root, {run["run"] for run in moved})
+    problems += blocking
+    paths += journals
     old_code = next(iter(old.values())) if len(old) == 1 else None
     destination = None if old_code is None else root / VOID_DIR / old_code["sha256"][:12]
     if destination is not None:
@@ -3083,9 +3156,11 @@ def void_numerical(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any]
         os.replace(root / path, target)
     record = destination / f"void-{stamp}.json"
     write_json(record, {
-        "what": "the numerical runs and the check made under GPU code other than HEAD's, moved "
-                "out of RUNS_DIR's experiment and numerical/ by scripts/numerical_check.py void "
-                "(the final review of gate B, I2); nothing deleted",
+        "what": "the numerical runs and the check made under GPU code other than HEAD's, with "
+                "the launcher's logs and the files of the campaigns that made them, moved out of "
+                "RUNS_DIR's experiment, numerical/, launch/ and campaigns/ by "
+                "scripts/numerical_check.py void (the final review of gate B, I2; the "
+                "coordinator's ruling on concern C2); nothing deleted",
         "batch": plan["batch"], "U": plan["U"], "moved": plan["paths"],
         "runs": plan["runs"], "kept": plan["kept"], "old_gpu_code": plan["old_gpu_code"],
         "head_gpu_code": plan["head"], "inventory": inventory.name, "code": dict(state),
