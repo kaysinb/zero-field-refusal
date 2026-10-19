@@ -1,5 +1,6 @@
-"""Study 2's redirected short-regime stage, design A (amendment 3): selection, support, the
-estimator and the looks, as pure functions over ``stage_a.Trajectory`` objects and label rows.
+"""Study 2's redirected short-regime stage, design A (amendment 3; its batch, U and rates selected
+under amendment 4): selection, support, the estimator and the looks, as pure functions over
+``stage_a.Trajectory`` objects, numerical-check verdicts and label rows.
 
 AdamW-25 and FA-25 (Adam with its second moment frozen at θ₀) each run exactly 25 steps at three
 rates targeted at the levels (5, K*, U), K* = √(5U); harm at K* is interpolated linearly in ln K
@@ -17,11 +18,18 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``select_rates``: the rate-ordered triple of usable rates nearest the targets in ln K under the
   support, realized-width and coverage constraints, or the constraints no triple meets with the
   best unconstrained triple; ``repair_rates``: the one repair round from that triple.
-- ``candidate_order``: the candidates (B, U), U = 8 first, the cheaper batch first, with costs.
-- ``selection``: the state machine over every run so far: the next campaign (``targeted``,
-  ``repair``, ``controls``, ``prewarmed``, ``done`` with the frozen rates, ``infeasible`` when
-  every candidate failed, ``incomplete`` when the records are ambiguous), every attempt recorded.
-- ``control_verdict``: an FA soft-target control under amendment 2's acceptance at 0.01 × K*.
+- ``candidate_order``: amendment 4's candidates (U, B) = (8, 20), (7, 20), (8, 5), (7, 5), in
+  that fixed order, with their costs for the report.
+- ``numerical_cases``, ``numerical_policy``, ``numerical_verdict`` and ``read_numerical``: the
+  numerical qualification's cases on seeds 2200-2202, its frozen policy, and the verdict records
+  of the numerical-check tool (scripts/numerical_check.py) under $RUNS_DIR/numerical/.
+- ``selection``: the state machine over every run so far and the verdicts: the next campaign
+  (``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``, the step
+  ``numerical-check``, ``validation``, ``done`` with the frozen rates, ``infeasible`` when no
+  candidate is eligible even for the primary arms alone, ``incomplete`` when the records are
+  ambiguous), every attempt recorded.
+- ``control_verdict``: an FA soft-target control under amendment 2's acceptance at 0.01 × K*
+  (amendment 3's controls, reported and never used under amendment 4).
 - ``block_support``: one arm in one block: supported, or the cause (bracketing, width,
   technical), with its bracket.
 - ``harm``, ``interpolate``, ``arm_harm`` and ``block_difference``: the estimator on label rows
@@ -33,12 +41,13 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``secondary_contrasts``: A − P and P − F on the common three-arm supported cohort, by the
   fixation record's secondary interval.
 - ``utility_family`` and ``validation_verdict``: the simultaneous utility bounds and the verdict
-  of the validation blocks.
+  of the validation blocks, over the three arms (amendment 4) or the primary arms (amendment 3,
+  the fallback).
 - ``progress``: the stage as a whole for scripts/study2_short_campaigns.py and
   scripts/study2_short_summary.py: the records checked against the campaigns (``conformance``,
   one training stream per seed, one v₀ per seed and batch: ``preconditioner_pairing``), the
-  selection's state machine, then the validation blocks and their verdict, then the
-  confirmation blocks with their support (K only), the runs the launcher gave up on
+  selection's state machine with its numerical and validation gates, then the confirmation
+  blocks with their support (K only), the runs the launcher gave up on
   (``exhausted_runs``, with the attempts abandoned by the operator: ``read_abandonment``) counted
   as technical failures; ``confirmation_guard`` decides whether a
   range of blocks may start; ``look_blocks`` turns the blocks into those of ``looks`` once their
@@ -55,9 +64,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   25 whose K_benign and accuracies are finite; K25 is that K_benign. Any other run is a failure:
   an instability failure when its stop is one of Stage A's instability rules, otherwise technical
   (a missing run, another stop, no finite K25).
-- *Discovery runs* of a primary arm at a batch are those on seeds 2000–2002 at Stage A's grid
-  (``stage_a.SHORT_GRID``) and at the rates its rounds prescribed; any other run there is
-  reported as unexpected and never selected.
+- *Discovery runs* of an arm at a batch are those on seeds 2000–2002 at Stage A's grid
+  (``stage_a.SHORT_GRID``, the primary arms) and at the rates its rounds prescribed; any other
+  run there is reported as unexpected and never selected. Numerical and validation runs are
+  those a visit called for. A run at a batch the replay has not reached yet (amendment 3's
+  targeted round at B = 5 while B = 20 is decided) is listed as ``not_reached``, not as a
+  problem: it enters no decision until a visit reaches its batch, where it is judged like any
+  other (amendment 4's replay at (8, 5) prescribes that round again from the same grid).
 - *Targeted rates*: a target lying in several increasing stretches takes the one of the smaller
   rates; a targeted or repair rate already run at that arm and batch is not run again.
 - *Selection*: cost ties are compared at 12 decimals. "The constraints no triple meets" lists
@@ -74,13 +87,23 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   batch, the targeted round's included (coordinator, 2026-10-16). A target outside the usable
   range takes the outward extension on its side (r_5 / 1.21 below, r_U × 1.21 above), the
   brief's "the repair round handles it". When the repair rate is none or a rate already run,
-  there is no repair and the candidate fails (the pre-warmed arm is dropped), before any of the
-  round's rates is run.
+  there is no repair and the candidate fails for that arm, before any of the round's rates is
+  run.
 - *Rounds* run only for an arm with no feasible triple, at most one targeted and one repair round
   per arm, batch and U (coordinator, 2026-10-16: U = 7's targets differ from U = 8's). Every run
   made at the batch enters the selection at either U, so a U = 7 round builds on U = 8's runs and
   proposes only rates not yet run. The primary arms go in step: the targeted round of every arm
-  needing it, then the repair round.
+  needing it, then the repair round; then the pre-warmed arm's rounds. A round spent at an
+  earlier visit of the candidate is reused, never spent again.
+- *Joint discovery* (amendment 4): when the primary arms' targeted round is due at a candidate
+  and the pre-warmed arm has no feasible triple there, the same ``discovery`` campaign holds the
+  pre-warmed arm's first round at (B, U), at the union of the rates of the primary arms'
+  targeted assignments (each target's rate, a grid rate included; a primary arm that needs no
+  round contributes its selected triple). Without that campaign, the pre-warmed arm's first
+  round, when it has no feasible triple, is at the union of the selected AdamW and FA rates
+  (``prewarmed``). Only rates not yet run at the batch are run; one first round per (B, U).
+- *Candidate order* (amendment 4): (U, B) = (8, 20), (7, 20), (8, 5), (7, 5), fixed. The costs
+  below are kept for the report and decide nothing.
 - *Candidate cost*: per arm and target, the usable grid rate (``stage_a.SHORT_GRID``) nearest the
   target in ln median K25 (ties to the smaller rate); per seed the sum of those runs'
   ``training_seconds`` (a rate nearest two targets counts twice: a block runs three per arm),
@@ -88,23 +111,49 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   stream, seconds per chunk × 50 B / chunk size, counted once per block since FA, pre-warmed and
   their controls share v₀ (coordinator, 2026-10-16). The seconds per chunk are amendment 1's
   reference, ``stage_a.stream_time_reference`` over the inputs (the whole version-1 discovery
-  set, checked, with its provenance; anything missing leaves the selection ``incomplete``), so
-  later runs cannot reorder the candidates, unless given. Equal costs go to the smaller batch;
-  an unknown cost (an arm without a usable grid rate) comes after a known one.
-- *FA controls*: a control belongs to a candidate by its batch, rate, seed 2000 and configured
-  contamination bound (0.01 × K* of that U). It must be the prescribed one, as amendment 2's
-  ``stage_a.numerical_acceptance`` requires: the model and stream prefix of its regular twin
-  (the FA run of seed 2000 at its batch and rate), planned for 25 steps, evaluated at least at
-  the twin's steps and step 25; otherwise the selection is ``incomplete``, whatever it showed.
-  It is accepted when it ran its 25 steps and every scoring read
-  (``stage_a.contamination(..., every_read=True)``) is finite and at most the bound. The one
-  re-solve drops the rejected rates and selects again from the same runs, with no new round; a
-  rejected control of the re-solved triple fails the candidate. A rate whose control was
-  rejected at the same batch under a larger bound (an earlier U) is excluded up front, with its
-  reason, since its read above that bound, or non-finite, is above this one too; an accepted
-  control is not reused under a smaller bound.
-- *Pre-warmed AdamW-25*: its first runs are at the union of the frozen AdamW and FA rates, its
-  rounds follow the primary rule, it has no controls, and it is dropped when still infeasible.
+  set, checked, with its provenance; anything missing leaves the selection ``incomplete``). An
+  unknown cost (an arm without a usable grid rate) is None, with its reason.
+- *Amendment 3's FA controls* (experiments/study2_short_fa_controls) are listed under
+  ``amendment3_controls`` with their verdicts under amendment 2's rule (``control_verdict``, at
+  the bound they were configured with) and their departures from its prescription
+  (``control_conformance``). They are never used: no rate is unusable by them. A second control
+  of a key, or one off seed 2000, still leaves the records ambiguous (``incomplete``).
+- *Pre-warmed AdamW-25* (amendment 4): part of a candidate's feasibility. Its first round is
+  that of the joint discovery (or ``prewarmed``), its rounds follow the primary rule, it has no
+  controls; still infeasible, the candidate fails for the three arms.
+- *Numerical qualification* (amendment 4, review fa12): once every arm of the visit has its
+  triple, the K-only regular runs of the check's cases (``numerical_cases``, role numerical,
+  experiments/study2_short_k_only) are called for; once they all exist, the check of the
+  numerical-check tool, whose verdict the replay reads at numerical/<check>/verdict.json under
+  $RUNS_DIR. The candidate's checks are named b{B}-u{U}, then b{B}-u{U}-2 and on, one per
+  distinct request, so that an earlier verdict is never overwritten; a later request whose rates
+  an earlier check of the candidate holds (the primary arms of its three-arm check) reads that
+  check. A verdict decides only when its batch and U are the candidate's, its policy is the
+  frozen one (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound 0.01 × K*, steps
+  1, 5, 10, 15, 20, 25), its GPU code (``policy.gpu_code``, review fa13) is that of the commit
+  its numerical runs recorded (all one commit, else ``incomplete``) and that of the running
+  checkout (``code_identity.reuse_check`` from its commit to HEAD reusable: analysis-only
+  commits keep a qualification, a GPU-path change voids it; the checks are kept in the
+  record), every requested rate and FA control is in it and every rate's seeds cover its
+  cases; otherwise it is stale and the next step runs the check again. A rate or control
+  ``incomplete`` is never a pass: the next step finishes the check. A rate ``failing`` (a pair
+  exceeding) or ``not_qualified`` (technical, with its reason, never reported as instability),
+  or an FA rate whose control is ``rejected`` or ``not_qualified``, is unusable at that batch for
+  every U: excluded up front at every later visit of the batch. The arms holding unusable rates
+  are re-solved once, from the same runs with no new round; the re-solve's cases are called for
+  (a replacement rate on 2200, and on 2201 and 2202 if it is its arm's new U-rate; a replacement
+  FA rate with its control) and checked in a new check; an unusable rate there, or no feasible
+  triple after the re-solve, fails the candidate. The verdict's own ``qualified`` must agree
+  with its states, and an unreadable or malformed verdict leaves the selection ``incomplete``.
+- *Fallback* (amendment 4, review fa12): when no candidate is eligible with the three arms, the
+  candidates are visited again in the same order for the primary arms alone, except those whose
+  primary arms failed at discovery or at the numerical gate (a second chance there would break
+  the one-re-solve rule); a three-arm validation failure does not exclude a candidate, since
+  the fallback's validation is amendment 3's primary-arm one. Every record is reused (rounds,
+  runs, the checks whose rates hold the request); in a three-arm check read again, only the
+  primary arms' rates and the FA controls count, whatever its pre-warmed entries say (review
+  fa13), and nothing of the pre-warmed arm is called for. When no candidate is eligible even
+  then, the stage ends ``infeasible`` with every attempt's reasons.
 - *Support*: the nearest bracketing pair is the largest K25 below K* and the smallest at or above
   it. An unsupported arm's cause is ``technical`` whenever one of its endpoints failed (the
   failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``. Beside
@@ -165,32 +214,41 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``numpy.random.default_rng(derive_seed(bootstrap_seed, "secondary", contrast, k))``, or the t
   interval. The record's ``secondary_status`` (``secondary`` or ``exploratory``) is reported
   beside them.
-- *Utility family*: blocks supported for the primary contrast; for each member the step-25
+- *Utility family*: blocks supported for the primary contrast (in a three-arm validation, for
+  the three arms); for each member, an arm and rate of a supported block's bracket, the step-25
   losses of every completed run of that arm and rate among the given runs; one-sided t bounds at
   1 − 0.05 / (looks × family size) per metric: two looks in confirmation, one in validation, a
   single reading (coordinator, 2026-10-16). A member with fewer than two completed runs has no
   bound and fails; an empty family does not pass.
-- *Validation*: each block's primary arm needs a run at every frozen rate (a missing one is a
-  technical failure); the instability check covers every primary-arm validation run; the FA
-  controls pass when every frozen FA rate has an accepted verdict. Ambiguous records (a second
-  run of an arm, rate and seed, a run at an unfrozen rate) give no verdict (``passes`` None).
+- *Validation*: each block's arm needs a run at every frozen rate (a missing one is a technical
+  failure); the instability check covers every validation run of the arms read; the FA
+  controls pass when every frozen FA rate has an accepted verdict (amendment 4: its same-path
+  control in the check that qualified it). A three-arm candidate's validation (review fa12)
+  reads the three arms: at least 10 of 12 blocks jointly supported for all three, no run of the
+  three stopped by an instability rule, the utility family over all three; the fallback's is
+  amendment 3's primary-arm validation. Ambiguous records (a second run of an arm, rate and
+  seed, a run at an unfrozen rate) give no verdict (``passes`` None). The validation seeds are
+  reused from candidate to candidate at the new batch and rates: a run of the same arm, batch,
+  rate and seed is the same run.
 - *The stage's records* (``progress``): a regular run of the three arms has the role of its seed
   (``study2_short.role``; Stage A's grids ``stage_a.role`` discovery), the model, protocol
   version 2 and the 25-step schedule of experiments/study2_short (Stage A's), monitor version 2
-  (Stage A's own discovery runs read version 1), and measures the Rayleigh quotient exactly on
-  the first 10 confirmation blocks (seeds 3000-3009); an FA control has the role full_control,
+  (Stage A's own discovery runs read version 1), measures the Rayleigh quotient exactly on the
+  first 10 confirmation blocks (seeds 3000-3009) and evaluates K only (``eval.k_only``,
+  experiments/study2_short_k_only) exactly on the numerical seeds; an FA control has the role
+  full_control,
   protocol version 3 and the schedule of experiments/study2_short_fa_controls but its bound;
   every run of a seed read that seed's one training stream, and every run that estimates v₀
   (FA-25, pre-warmed AdamW-25, the FA controls, Stage A's FA grids) read one preconditioner
   stream per seed and batch, the same path with the same sha256 in its ``meta.json``. Any
   departure, and any problem the selection reports (a run it did not prescribe included), leaves
-  the stage ``incomplete``: no campaign is written on records that are not whole. Once the rates
-  are frozen, every later run of the three arms must be at the chosen batch and a frozen rate of
-  an arm still in the stage.
-- *Validation and confirmation*: the validation blocks wait until every run of every arm at its
-  frozen rates on seeds 2100-2111 has its terminal record or was given up by the launcher; a run
-  that is not there yet is not a failure. Then the verdict decides: ``confirmation`` when it
-  passes, ``validation_failed`` otherwise. A confirmation block is complete once every run of
+  the stage ``incomplete``: no campaign is written on records that are not whole. A confirmation
+  run before the rates are frozen is a problem; once they are, every confirmation run must be at
+  the chosen batch and a frozen rate of an arm still in the stage.
+- *Validation and confirmation*: a candidate's validation blocks wait until every run of every
+  arm at its rates on seeds 2100-2111 has its terminal record or was given up by the launcher; a
+  run that is not there yet is not a failure. Then the verdict decides: ``confirmation`` when it
+  passes, the next candidate otherwise. A confirmation block is complete once every run of
   every arm at its frozen rates is there or given up; for the looks also once the bracket runs
   of every arm supported in it are labeled (``look_blocks``: a run without a label file, or
   without a completed judging receipt matching it (``study2_labels.LabelsPending``), is not
@@ -203,7 +261,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   abandoned in the operator's abandonment record (``read_abandonment``); until then it may still
   be running and its run is pending. An earlier attempt without an end record was settled by the
   start of the next. A run with a terminal record is never given up, whatever the journal says.
-  Discovery runs are not covered: the selection waits for them.
+  Discovery and numerical runs are not covered: the selection waits for them.
 - *Confirmation blocks* (``confirmation_guard``, the review of Task 5): ranges start at the first
   block without a run and never overlap one another (re-issuing an issued range completes it);
   the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80). A new range
@@ -222,10 +280,11 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 - *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
   and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
   HEAD), or when the running commit, the model, the judge's identity or the fixation record
-  departs from it; the discovery campaigns (``targeted``, ``repair``, ``controls``,
-  ``prewarmed``) precede it and do not read it. Abandonment records and summary outputs live
-  under ``$RUNS_DIR`` (ignored by Git), archived with an inventory, never committed: a commit
-  after the record's own makes HEAD a descendant that the record does not allow.
+  departs from it; the discovery and numerical campaigns (``discovery``, ``repair``,
+  ``prewarmed``, ``targeted``, ``numerical``) precede it and do not read it. Abandonment
+  records and summary outputs live under ``$RUNS_DIR`` (ignored by Git), archived with an
+  inventory, never committed: a commit after the record's own makes HEAD a descendant that the
+  record does not allow.
 """
 
 from __future__ import annotations
@@ -237,8 +296,9 @@ import json
 import math
 import re
 import statistics
+import subprocess
 from collections import Counter, defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -261,7 +321,6 @@ from .stage_a import (
     LOWER,
     MMLU_BOUND_PP,
     SHORT_GRID,
-    UPPER,
     Trajectory,
     _finite,
     arm_of,
@@ -283,8 +342,10 @@ STEPS = 25
 COVERAGE = 0.1  # |ln median K - ln target| for each target
 EXTENSION = 1.21  # the outward extension of a repair round
 PRECONDITIONER_BATCHES = 50  # v₀'s teacher batches at the selected B, per seed
+NUMERICAL_SEEDS = (2200, 2201, 2202)  # amendment 4: the numerical acceptance's fresh seeds
 VALIDATION_SEEDS = tuple(range(2100, 2112))
 CONFIRMATION_SEEDS = tuple(range(3000, 3080))
+CANDIDATES = ((8.0, 20), (7.0, 20), (8.0, 5), (7.0, 5))  # (U, B): amendment 4's fixed order
 LOOK_SIZES = (36, 60)  # supported blocks at looks 1 and 2 (decided 2026-10-16, coordinator)
 CAP = 80  # started blocks
 EQUIVALENCE = 0.05
@@ -297,8 +358,25 @@ V0_ARMS = (FA, PREWARMED, FA_CONTROL_ARM)  # the runs that estimate v₀ from th
 # The stage's configs (scripts/study2_short_campaigns.py builds every run on them).
 REGULAR = "experiments/study2_short"
 RAYLEIGH = "experiments/study2_short_rayleigh"  # REGULAR measuring the Rayleigh quotient
-FA_CONTROLS = "experiments/study2_short_fa_controls"
-ROLES = ("discovery", "validation", "confirmation")  # study2_short.role in a run's config
+FA_CONTROLS = "experiments/study2_short_fa_controls"  # amendment 3's, reported and not used
+ROLES = ("discovery", "numerical", "validation", "confirmation")  # study2_short.role of a run
+# The numerical-check tool (scripts/numerical_check.py) and its verdicts under $RUNS_DIR: one
+# directory per check, numerical/b{B}-u{U}/verdict.json for a candidate's first.
+NUMERICAL_TOOL = "scripts/numerical_check.py"
+NUMERICAL_DIR = "numerical"
+VERDICT_FILE = "verdict.json"
+K_ONLY = "experiments/study2_short_k_only"  # REGULAR with the K-only evaluation: numerical runs
+OPTIMIZERS = {ADAMW: "adamw", FA: "adam_frozen", PREWARMED: "adamw_prewarmed"}  # its arm names
+# The states of an (arm, rate) and of an FA rate's same-path control in a verdict (review fa12):
+# "not_qualified" is technical (incomplete after its rerun), never instability; "incomplete"
+# waits for the rerun.
+RATE_STATES = ("qualified", "failing", "not_qualified", "incomplete")
+CONTROL_STATES = ("accepted", "rejected", "not_qualified", "incomplete")
+# The frozen numerical policy a verdict must carry (its bound is 0.01 × K* of the U checked).
+NUMERICAL_POLICY = {"norm": 5e-05, "survival_share": 0.5, "retry_scale": 10,
+                    "steps": [1, 5, 10, 15, 20, 25]}  # fmt: skip
+NUMERICAL_BOUND_FRACTION = 0.01
+CONTROL_REASON = "control: "  # a verdict's reason of a same-path control, under its FA rate's key
 RAYLEIGH_BLOCKS = 10  # the first confirmation blocks: every endpoint measures R
 INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look, and the secondary one
 SECONDARY_STATUSES = ("secondary", "exploratory")  # how the secondary contrasts are reported
@@ -578,61 +656,59 @@ def candidate_order(
     grid: Sequence[float] = SHORT_GRID,
     seeds: Sequence[int] = DISCOVERY_SEEDS,
 ) -> list[dict[str, Any]]:
-    """The candidates (8, cheaper B), (8, other B), (7, cheaper B), (7, other B) with their
-    costs: the median over seeds of the summed training seconds of both primary arms' runs at
-    the usable grid rates nearest each target, plus the block's training stream and v₀'s
-    preconditioner stream."""
+    """The candidates in amendment 4's fixed order (``CANDIDATES``: (U, B) = (8, 20), (7, 20),
+    (8, 5), (7, 5)), each with its cost for the report, which no longer orders them: the median
+    over seeds of the summed training seconds of both primary arms' runs at the usable grid
+    rates nearest each target, plus the block's training stream and v₀'s preconditioner
+    stream."""
     cells: dict[tuple[str, int, float], list[Trajectory]] = defaultdict(list)
     for run in runs:
         if run.arm in PRIMARY_ARMS and run.seed in seeds:
             cells[(run.arm, run.batch_size, rate(run.lr))].append(run)
     grid = [rate(lr) for lr in grid]
     order = []
-    for upper in UPPER:
-        entries = []
-        for batch in BATCHES:
-            nearest, reasons, used = {}, [], []
-            for arm in PRIMARY_ARMS:
-                records = {lr: usable_rate(cells.get((arm, batch, lr), []), theta0, seeds)
-                           for lr in grid}  # fmt: skip
-                usable = {lr: rec for lr, rec in records.items() if rec["usable"]}
-                if not usable:
-                    reasons.append(f"{arm}: no usable grid rate at B={batch}")
-                    continue
-                nearest[arm] = [
-                    min(usable, key=lambda lr, t=t: (abs(math.log(usable[lr]["median_K25"])
-                                                         - math.log(t)), lr))
-                    for t in targets(upper)
-                ]  # fmt: skip
-                used += [(arm, lr) for lr in nearest[arm]]
-            entry: dict[str, Any] = {"batch": batch, "U": upper, "K_star": k_star(upper),
-                                     "nearest": nearest, "reasons": reasons}  # fmt: skip
-            if reasons:
-                entry.update(seconds=None, per_seed={}, stream_seconds=None,
-                             preconditioner_seconds=None)  # fmt: skip
-            else:
-                chunk_size = cells[(used[0][0], batch, used[0][1])][0].chunk_size
-                stream = seconds_per_chunk * -(-STEPS * batch // chunk_size)
-                # v₀'s preconditioner stream, once per block (FA and pre-warmed share it).
-                preconditioner = seconds_per_chunk * PRECONDITIONER_BATCHES * batch / chunk_size
-                per_seed = {
-                    seed: stream + preconditioner + sum(
-                        next(r for r in cells[(arm, batch, lr)] if r.seed == seed)
-                        .training_seconds for arm, lr in used)
-                    for seed in seeds
-                }  # fmt: skip
-                entry.update(seconds=statistics.median(per_seed.values()), per_seed=per_seed,
-                             stream_seconds=stream,
-                             preconditioner_seconds=preconditioner)  # fmt: skip
-            entries.append(entry)
-        entries.sort(key=lambda e: (e["seconds"] is None, e["seconds"] or 0.0, e["batch"]))
-        order += entries
+    for upper, batch in CANDIDATES:
+        nearest, reasons, used = {}, [], []
+        for arm in PRIMARY_ARMS:
+            records = {lr: usable_rate(cells.get((arm, batch, lr), []), theta0, seeds)
+                       for lr in grid}  # fmt: skip
+            usable = {lr: rec for lr, rec in records.items() if rec["usable"]}
+            if not usable:
+                reasons.append(f"{arm}: no usable grid rate at B={batch}")
+                continue
+            nearest[arm] = [
+                min(usable, key=lambda lr, t=t: (abs(math.log(usable[lr]["median_K25"])
+                                                     - math.log(t)), lr))
+                for t in targets(upper)
+            ]  # fmt: skip
+            used += [(arm, lr) for lr in nearest[arm]]
+        entry: dict[str, Any] = {"batch": batch, "U": upper, "K_star": k_star(upper),
+                                 "nearest": nearest, "reasons": reasons}  # fmt: skip
+        if reasons:
+            entry.update(seconds=None, per_seed={}, stream_seconds=None,
+                         preconditioner_seconds=None)  # fmt: skip
+        else:
+            chunk_size = cells[(used[0][0], batch, used[0][1])][0].chunk_size
+            stream = seconds_per_chunk * -(-STEPS * batch // chunk_size)
+            # v₀'s preconditioner stream, once per block (FA and pre-warmed share it).
+            preconditioner = seconds_per_chunk * PRECONDITIONER_BATCHES * batch / chunk_size
+            per_seed = {
+                seed: stream + preconditioner + sum(
+                    next(r for r in cells[(arm, batch, lr)] if r.seed == seed)
+                    .training_seconds for arm, lr in used)
+                for seed in seeds
+            }  # fmt: skip
+            entry.update(seconds=statistics.median(per_seed.values()), per_seed=per_seed,
+                         stream_seconds=stream,
+                         preconditioner_seconds=preconditioner)  # fmt: skip
+        order.append(entry)
     return order
 
 
 def control_verdict(control: Trajectory, kstar: float) -> dict[str, Any]:
     """Amendment 2's acceptance of an FA soft-target control at 0.01 × K*: its 25 steps run and
-    every scoring read finite and at most the bound."""
+    every scoring read finite and at most the bound (amendment 3's controls, reported under
+    amendment 4 and not used)."""
     bound = CONTAMINATION_FRACTION * kstar
     reasons = []
     if control.stop != "steps" or control.steps != STEPS:
@@ -678,18 +754,280 @@ def _control_key(run: Trajectory) -> tuple[int, float, float | None]:
     return (run.batch_size, rate(run.lr), _bound_key(_configured_bound(run)))
 
 
-class _Replay:
-    """The bookkeeping of ``selection``'s replay: the rates prescribed per arm and batch, the
-    rounds spent per arm, batch and U, the controls called for."""
+def _amendment3_controls(
+    controls: Mapping[tuple[int, float, float | None], Trajectory],
+    found: Mapping[tuple, Trajectory],
+) -> list[dict[str, Any]]:
+    """Amendment 3's FA soft-target controls with their verdicts under its own rule and their
+    departures from its prescription, for the report: amendment 4 never uses them."""
+    out = []
+    for key in sorted(controls, key=str):
+        control = controls[key]
+        bound = _configured_bound(control)
+        verdict = control_verdict(control, bound / CONTAMINATION_FRACTION if _finite(bound)
+                                  else math.nan)  # fmt: skip
+        twin = found.get((FA, control.batch_size, rate(control.lr), CONTROL_SEED))
+        out.append({"run": control.run_id, "batch": control.batch_size, "lr": rate(control.lr),
+                    "bound": key[2], "contamination": verdict["contamination"],
+                    "accepted": verdict["accepted"], "reasons": verdict["reasons"],
+                    "conformance": control_conformance(control, twin),
+                    "used": False})  # fmt: skip
+    return out
 
-    def __init__(self, runs, controls, theta0, w_max):
-        self.found, self.controls, self.theta0, self.w_max = runs, controls, theta0, w_max
+
+# ------------------------------------------------------------------ the numerical acceptance
+
+
+def numerical_cases(rates: Mapping[str, Sequence[float]]) -> list[tuple[str, float, int]]:
+    """The numerical qualification's cases (amendment 4) for each arm's selected ``rates``, as
+    (arm, rate, seed): every selected rate on seed 2200, then each arm's U-rate (its largest) on
+    seeds 2201 and 2202; 15 cases for three arms. After a re-solve a replacement rate has its
+    case on 2200, and on 2201 and 2202 when it is its arm's new U-rate."""
+    first = [(arm, rate(lr), NUMERICAL_SEEDS[0]) for arm in ARMS
+             for lr in sorted(rates.get(arm) or ())]  # fmt: skip
+    upper = [(arm, rate(max(rates[arm])), seed) for seed in NUMERICAL_SEEDS[1:] for arm in ARMS
+             if rates.get(arm)]  # fmt: skip
+    return first + upper
+
+
+def _pair_key(arm: str, lr: float) -> str:
+    """An (arm, rate) as the verdict record keys it: f"{optimizer}|{lr:g}"."""
+    return f"{OPTIMIZERS[arm]}|{lr:g}"
+
+
+def numerical_policy(upper: float) -> dict[str, Any]:
+    """The frozen numerical policy of a check at U (amendment 4, section 1): the perturbation
+    norm, the survival share and its retry scale, the twin bound 0.01 × K* and the steps."""
+    return {**NUMERICAL_POLICY, "bound": NUMERICAL_BOUND_FRACTION * k_star(upper)}
+
+
+def _reuse_check(base: str, head: str) -> dict[str, Any]:
+    from ..code_identity import reuse_check  # git, read only when a verdict is
+
+    return reuse_check(base, head)
+
+
+def _gpu_code(
+    gpu: Mapping[str, Any], commit: str, reuse: Callable[[str, str], Mapping[str, Any]]
+) -> tuple[dict[str, Any], list[str]]:
+    """The checks that the verdict's GPU code (``gpu``) is that of the numerical runs, made at
+    ``commit``, and that of the running checkout (review fa13), and how it departs from them."""
+    found: dict[str, Any] = {"runs": None, "head": None}
+    departures = []
+
+    def checked(base: str, head: str) -> Mapping[str, Any] | None:
+        try:
+            return reuse(base, head)
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            departures.append(f"the GPU code of {base} cannot be checked against {head}: {exc}")
+            return None
+
+    if commit != gpu["commit"]:
+        found["runs"] = checked(commit, gpu["commit"])
+        if found["runs"] is not None and not found["runs"].get("reusable"):
+            departures.append(f"the numerical runs ran another GPU code ({commit}) than the "
+                              f"verdict's ({gpu['commit']}): "
+                              f"{found['runs'].get('changed')}")  # fmt: skip
+    found["head"] = checked(gpu["commit"], "HEAD")
+    if found["head"] is not None:
+        base = found["head"].get("base") or {}
+        if (base.get("files"), base.get("sha256")) != (gpu["files"], gpu["sha256"]):
+            departures.append(f"the verdict's gpu_code is not the identity of {gpu['commit']}")
+        if not found["head"].get("reusable"):
+            departures.append(f"GPU paths changed since {gpu['commit']}: "
+                              f"{found['head'].get('changed')}")  # fmt: skip
+    return found, departures
+
+
+def _policy_departures(policy: Mapping[str, Any], upper: float) -> list[str]:
+    frozen = numerical_policy(upper)
+    out = []
+    for key in ("norm", "survival_share", "retry_scale"):
+        if not (_number(policy.get(key)) and policy[key] == frozen[key]):
+            out.append(f"{key} {policy.get(key)!r}, frozen {frozen[key]!r}")
+    if not (_number(policy.get("bound"))
+            and math.isclose(policy["bound"], frozen["bound"], rel_tol=1e-12)):  # fmt: skip
+        out.append(f"bound {policy.get('bound')!r}, frozen 0.01 × K* = {frozen['bound']!r}")
+    if not (isinstance(policy.get("steps"), list) and policy["steps"] == frozen["steps"]):
+        out.append(f"steps {policy.get('steps')!r}, frozen {frozen['steps']}")
+    return out
+
+
+def numerical_verdict(
+    record: Any,
+    batch: int,
+    upper: float,
+    rates: Mapping[str, Sequence[float]],
+    commit: str,
+    reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A numerical-check verdict record read for one check of each arm's ``rates`` at ``batch``
+    and ``upper``, whose numerical runs were made at ``commit``. The record (the tool's schema):
+    ``batch``, ``U``, ``rates`` (f"{optimizer}|{lr:g}" → a state of ``RATE_STATES``), ``seeds``
+    (the same keys → the seeds tested), ``controls`` (f"{lr:g}" → a state of
+    ``CONTROL_STATES``), ``qualified``, ``reasons`` and ``policy`` (``norm``,
+    ``survival_share``, ``retry_scale``, ``bound``, ``steps``, ``reference``, ``tool_commit``
+    and ``gpu_code``: the ``code_identity.gpu_code_identity`` of the code the check ran,
+    ``commit``, ``files`` and ``sha256``). ``reuse(base, head)`` is ``code_identity.reuse_check``
+    on this repository (the default): the verdict holds at the running checkout only when the
+    numerical runs' GPU code is the verdict's (the same commit, or ``reuse(commit,
+    gpu_code.commit)`` reusable) and ``reuse(gpu_code.commit, "HEAD")`` is reusable, so that a
+    qualification survives analysis-only commits and no GPU-path change (review fa13); both
+    checks are kept in ``reuse``. ``state``:
+
+    - ``absent``: no record;
+    - ``malformed``: not such a record (a state outside its states, ``qualified`` other than
+      what its rates and controls give, no ``gpu_code`` or ``tool_commit``): no conclusion;
+    - ``stale``: another batch or U, a policy other than the frozen one (``numerical_policy``),
+      a GPU code other than the runs' or than the running checkout's, a ``gpu_code`` other than
+      the identity of its commit, a requested (arm, rate) or an FA rate's control missing, or a
+      rate's seeds short of its cases: the check is run again;
+    - ``incomplete``: a requested rate or control incomplete: the check is finished, never
+      passed;
+    - ``complete``: ``unusable`` lists each requested (arm, rate) that is failing (a pair
+      exceeding: evidence of amplification) or not qualified (technical, with its reason, never
+      instability), and each FA rate whose same-path control was rejected or not qualified.
+
+    A record may hold more rates than requested (a candidate's three-arm check read for its
+    primary arms alone); only the requested ones are read."""
+    out: dict[str, Any] = {"state": "absent", "reasons": [], "rates": {}, "controls": {},
+                           "unusable": [], "policy": None, "reuse": None}  # fmt: skip
+    if record is None:
+        out["reasons"].append("no verdict record")
+        return out
+    fields = ("batch", "U", "rates", "seeds", "controls", "qualified", "policy")
+    if not (isinstance(record, dict) and all(key in record for key in fields)
+            and all(isinstance(record[key], dict) for key in ("rates", "seeds", "controls",
+                                                              "policy"))):  # fmt: skip
+        return {**out, "state": "malformed",
+                "reasons": [f"not a verdict record with {list(fields)}"]}  # fmt: skip
+    gpu = record["policy"].get("gpu_code")
+    if not ((gpu is None or (isinstance(gpu, dict) and isinstance(gpu.get("commit"), str)
+                             and _integer(gpu.get("files")) and isinstance(gpu.get("sha256"), str)))
+            and "gpu_code" in record["policy"] and "tool_commit" in record["policy"]
+            and isinstance(record["policy"].get("reference"), str)):  # fmt: skip
+        return {**out, "state": "malformed",
+                "reasons": ["a policy without its gpu_code (commit, files, sha256, or null), "
+                            "tool_commit and reference"]}  # fmt: skip
+    bad = [f"{key}: {value!r}" for key, value in record["rates"].items()
+           if value not in RATE_STATES]  # fmt: skip
+    bad += [f"control {key}: {value!r}" for key, value in record["controls"].items()
+            if value not in CONTROL_STATES]  # fmt: skip
+    if not (_integer(record["batch"]) and _number(record["U"])):
+        bad.append(f"batch {record['batch']!r} and U {record['U']!r}")
+    qualified = (all(value == "qualified" for value in record["rates"].values())
+                 and all(value == "accepted" for value in record["controls"].values()))  # fmt: skip
+    if record["qualified"] is not qualified:
+        bad.append(f"qualified {record['qualified']!r}, where its rates and controls give "
+                   f"{qualified}")  # fmt: skip
+    if bad:
+        return {**out, "state": "malformed", "reasons": bad}
+    policy = record["policy"]
+    out["policy"] = policy
+    stale = []
+    if (record["batch"], float(record["U"])) != (batch, upper):
+        stale.append(f"a verdict at B={record['batch']}, U={record['U']:g}, not B={batch}, "
+                     f"U={upper:g}")  # fmt: skip
+    stale += [f"policy {departure}" for departure in _policy_departures(policy, upper)]
+    if gpu is None:  # the tool found the regular runs' GPU code not its own: nothing counted
+        stale.append("the verdict holds no GPU code (null): the check found the numerical "
+                     "runs' GPU code not its own")  # fmt: skip
+    else:
+        found, departures = _gpu_code(gpu, commit, reuse or _reuse_check)
+        out["reuse"] = found
+        stale += departures
+    if not isinstance(policy.get("tool_commit"), str):
+        stale.append(f"the verdict's tool_commit is {policy.get('tool_commit')!r}")
+    needed: dict[str, set[int]] = defaultdict(set)
+    for arm, lr, seed in numerical_cases(rates):
+        needed[_pair_key(arm, lr)].add(seed)
+    controls = {f"{lr:g}": rate(lr) for lr in rates.get(FA) or ()}
+    lacking = [key for key in needed if key not in record["rates"]]
+    lacking += [f"control {key}" for key in controls if key not in record["controls"]]
+    if lacking:
+        stale.append(f"the verdict lacks {lacking}")
+    for key, seeds in needed.items():
+        tested = record["seeds"].get(key)
+        if key in record["rates"] and not (isinstance(tested, list) and seeds <= set(tested)):
+            stale.append(f"{key} tested on {tested!r}, its cases need {sorted(seeds)}")
+    if stale:
+        return {**out, "state": "stale", "reasons": stale}
+    out["rates"] = {key: record["rates"][key] for key in needed}
+    out["controls"] = {key: record["controls"][key] for key in controls}
+    unfinished = [key for key, value in out["rates"].items() if value == "incomplete"]
+    unfinished += [f"control {key}" for key, value in out["controls"].items()
+                   if value == "incomplete"]  # fmt: skip
+    if unfinished:
+        return {**out, "state": "incomplete", "reasons": [f"incomplete: {unfinished}"]}
+    # Reasons, read as text only: by rate key, the control's under its FA rate's key prefixed
+    # "control: ".
+    reasons = record.get("reasons") if isinstance(record.get("reasons"), dict) else {}
+
+    def told(key: str, control: bool) -> list[str]:
+        found = reasons.get(key) if isinstance(reasons.get(key), list) else []
+        return [str(r) for r in found if str(r).startswith(CONTROL_REASON) == control]
+
+    pairs = {_pair_key(arm, lr): (arm, rate(lr)) for arm, lrs in rates.items() for lr in lrs}
+    why = {"failing": "failing: a pair exceeding the bound",
+           "not_qualified": "not qualified (technical)"}  # fmt: skip
+    out["unusable"] = [{"arm": arm, "lr": lr, "state": out["rates"][key],
+                        "why": why[out["rates"][key]], "reasons": told(key, False)}
+                       for key, (arm, lr) in pairs.items()
+                       if out["rates"][key] in why]  # fmt: skip
+    control_why = {"rejected": "its same-path control rejected",
+                   "not_qualified": "its same-path control not qualified (technical)"}  # fmt: skip
+    out["unusable"] += [{"arm": FA, "lr": lr, "state": f"control {out['controls'][key]}",
+                         "why": control_why[out["controls"][key]],
+                         "reasons": told(_pair_key(FA, lr), True)}
+                        for key, lr in controls.items()
+                        if out["controls"][key] in control_why]  # fmt: skip
+    out["state"] = "complete"
+    return out
+
+
+def read_numerical(runs_root: str | Path) -> dict[str, Any]:
+    """The numerical-check tool's verdict records under ``runs_root`` ($RUNS_DIR), by their path
+    relative to it (numerical/<check>/verdict.json). A file that does not read as JSON is kept as
+    the text of its error, which ``numerical_verdict`` finds malformed."""
+    root = Path(runs_root)
+    out: dict[str, Any] = {}
+    for path in sorted((root / NUMERICAL_DIR).glob(f"*/{VERDICT_FILE}")):
+        name = path.relative_to(root).as_posix()
+        try:
+            out[name] = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            out[name] = f"unreadable: {exc}"
+    return out
+
+
+def _streams(batch: int) -> dict[str, Any]:
+    """The numerical seeds' streams at the batch, which the numerical campaign needs first."""
+    return {"seeds": list(NUMERICAL_SEEDS), "batch": batch, "training_responses": STEPS * batch,
+            "preconditioner_responses": PRECONDITIONER_BATCHES * batch}  # fmt: skip
+
+
+# ------------------------------------------------------------------ the state machine
+
+
+class _Replay:
+    """The bookkeeping of ``selection``'s replay: the discovery rates prescribed per arm and batch,
+    the rounds spent per arm, batch and U, the rates found unusable per arm and batch, the
+    numerical and validation runs called for, each candidate's numerical checks, and the
+    batches reached."""
+
+    def __init__(self, runs, theta0, w_max, verdicts, facts, exhausted, reuse):
+        self.found, self.theta0, self.w_max = runs, theta0, w_max
+        self.verdicts, self.facts, self.exhausted = verdicts, facts, exhausted
+        self.reuse = reuse
         self.rates: dict[tuple[str, int], set[float]] = defaultdict(set)
         for arm in PRIMARY_ARMS:
             for batch in BATCHES:
                 self.rates[(arm, batch)] = {rate(lr) for lr in SHORT_GRID}
         self.rounds: dict[tuple[str, int, float], dict[str, dict[str, Any]]] = defaultdict(dict)
-        self.called_controls: set[tuple[int, float, float | None]] = set()
+        self.unusable: dict[tuple[str, int], dict[float, str]] = defaultdict(dict)
+        self.called: set[tuple] = set()  # the numerical and validation runs called for
+        self.checks: dict[tuple[int, float], list[dict[str, Any]]] = defaultdict(list)
+        self.reached: set[int] = set()
 
     def records(self, arm: str, batch: int) -> dict[float, dict[str, Any]]:
         return {
@@ -718,6 +1056,14 @@ class _Replay:
         return {"kind": kind, "arm": arm, "batch": batch, "U": upper, "proposal": proposal,
                 "new_rates": new}  # fmt: skip
 
+    def round(self, kind, arm, batch, upper, selected) -> tuple[dict[str, Any], bool]:
+        """The arm's ``kind`` round at the batch and U: the one spent at an earlier visit of the
+        candidate, else a new proposal (True), not yet spent."""
+        spent = self.rounds[(arm, batch, upper)].get(kind)
+        if spent is not None:
+            return spent, False
+        return self.propose(kind, arm, batch, upper, selected), True
+
     def spend(self, record: dict[str, Any], *, prescribe: bool = True) -> None:
         """Record a round; prescribe its new rates unless the candidate fails on it."""
         arm, batch = record["arm"], record["batch"]
@@ -727,26 +1073,51 @@ class _Replay:
         else:
             record["new_rates"] = []
 
-    def rejected_controls(self, batch: int, bound: float | None) -> dict[float, str]:
-        """FA rates whose control, called for at this batch under a larger bound, was rejected
-        there, with the reason."""
-        out = {}
-        for key in sorted(self.called_controls, key=str):
-            control = self.controls.get(key)
-            if key[0] != batch or control is None or key[2] is None or not key[2] > bound:
-                continue
-            verdict = control_verdict(control, _configured_bound(control) / CONTAMINATION_FRACTION)
-            if not verdict["accepted"]:
-                why = "; ".join(verdict["reasons"])
-                out[key[1]] = f"control {control.run_id} rejected at bound {key[2]:g}: {why}"
-        return out
+    def first(self, batch: int, upper: float, initial: Sequence[float], *, joint: bool) -> dict:
+        """The pre-warmed arm's first round at the batch and U, at the rates ``initial``: in the
+        joint discovery campaign (``joint``) or alone. Spent once; a later call returns it."""
+        spent = self.rounds[(PREWARMED, batch, upper)].get("first")
+        if spent is not None:
+            return spent
+        how = ("the union of the primary arms' targeted assignments" if joint
+               else "the union of the primary arms' selected rates")  # fmt: skip
+        record = {"kind": "first", "arm": PREWARMED, "batch": batch, "U": upper,
+                  "proposal": {"rates": list(initial), "joint": joint, "reasons": [how]},
+                  "new_rates": sorted(set(initial) - self.rates[(PREWARMED, batch)])}  # fmt: skip
+        self.spend(record)
+        return record
 
-    def unexpected(self) -> list[str]:
-        runs = [f"unexpected run {key}" for key in sorted(self.found)
-                if rate(key[2]) not in self.rates.get(key[:2], set())]  # fmt: skip
-        controls = [f"unexpected control {key}" for key in sorted(self.controls, key=str)
-                    if key not in self.called_controls]  # fmt: skip
-        return runs + controls
+    def check(self, batch: int, upper: float, rates: Mapping[str, Sequence[float]]) -> dict:
+        """The numerical check of ``rates`` at the candidate: an earlier one of the candidate whose
+        rates hold these (the three-arm check read for the primary arms alone), else the next,
+        named b{B}-u{U}, then b{B}-u{U}-2, ..., with its verdict's path under $RUNS_DIR."""
+        slots = self.checks[(batch, upper)]
+        for slot in slots:
+            if all(slot["rates"].get(arm) == list(lrs) for arm, lrs in rates.items()):
+                return slot
+        name = f"b{batch}-u{upper:g}" + (f"-{len(slots) + 1}" if slots else "")
+        slot = {"name": name, "path": f"{NUMERICAL_DIR}/{name}/{VERDICT_FILE}",
+                "rates": {arm: list(lrs) for arm, lrs in rates.items()},
+                "earlier": [f"{NUMERICAL_DIR}/{s['name']}" for s in slots]}  # fmt: skip
+        slots.append(slot)
+        return slot
+
+    def unexpected(self) -> tuple[list[str], list[str]]:
+        """The runs no visit called for: problems at a batch the replay reached; at a batch it has
+        not reached yet (amendment 3's discovery at B = 5), deferred to the visits there."""
+        problems, deferred = [], []
+        for key in sorted(self.found):
+            arm, batch, lr, seed = key
+            if seed in DISCOVERY_SEEDS:
+                called = lr in self.rates.get((arm, batch), set())
+            else:
+                called = key in self.called
+            if not called:
+                if batch in self.reached:
+                    problems.append(f"unexpected run {key}")
+                else:
+                    deferred.append(f"run {key} at a batch not reached yet")
+        return problems, deferred
 
 
 def selection(
@@ -755,21 +1126,39 @@ def selection(
     w_max: float,
     *,
     seconds_per_chunk: float | None = None,
+    numerical: Mapping[str, Any] | None = None,
+    facts: Mapping[str, Mapping[str, Any]] | None = None,
+    exhausted: Mapping[tuple, str] | None = None,
+    reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """The selection's state machine, replayed from every run so far on the discovery seeds:
-    for the first candidate (B, U) not yet decided, the campaign that comes next, with every
-    attempt recorded. Never reads a judge label or K_harmful.
+    """The selection's state machine (amendment 4), replayed from every run so far and the
+    numerical-check verdicts: the first candidate (U, B) of ``CANDIDATES`` not yet decided, the
+    campaign that comes next, with every attempt recorded. Never reads a judge label or
+    K_harmful.
 
-    Per candidate: each primary arm's selection over its runs at B; for an arm with no feasible
-    triple its targeted round, then its repair round (at most one each per arm, batch and U); then
-    one FA control per selected FA rate, a rejected rate dropped and the selection re-solved once.
-    A candidate fails when a primary arm stays infeasible or the controls fail, and the next one
-    is taken. Then the pre-warmed arm at the chosen B: first runs at the union of the selected
-    rates, then its own rounds; dropped if still infeasible. ``next["campaign"]`` is one of
-    ``targeted``, ``repair``, ``controls``, ``prewarmed`` (with the runs to make), ``done`` (with
-    the frozen rates), ``infeasible`` or ``incomplete`` (ambiguous records: no conclusion)."""
-    arms = (*PRIMARY_ARMS, PREWARMED)
-    found, problems = index(r for r in trajectories if r.arm in arms and r.seed in DISCOVERY_SEEDS)
+    Per candidate, for the three arms: each primary arm's selection over its runs at B; for an
+    arm with no feasible triple its targeted round, the joint ``discovery`` campaign that also
+    holds the pre-warmed arm's first round, then its repair round (at most one each per arm,
+    batch and U); then the pre-warmed arm's first round (if not made) and its own rounds; then
+    the numerical gate: the ``numerical`` campaign (the K-only regular runs of the cases on
+    seeds 2200-2202), then ``numerical-check`` (the tool's check and the verdict it writes), an
+    unusable rate leaving B and the selection re-solved once; then the ``validation`` campaign
+    (seeds 2100-2111) and the three-arm validation verdict. A failure at any step takes the next
+    candidate. When no candidate is eligible with the three arms, the candidates whose primary
+    arms did not fail at discovery or the numerical gate are visited again, in the same order,
+    for the primary arms alone (the pre-warmed arm dropped, amendment 3's primary-arm
+    validation), reusing every record; when none is eligible either, the stage ends
+    ``infeasible`` with every attempt's reasons. ``numerical``: the verdict records by their path
+    under $RUNS_DIR (``read_numerical``), None when not read; ``facts``: ``run_facts`` by run id
+    (the commit of each numerical run); ``exhausted``: the validation runs the launcher gave up
+    on (``exhausted_runs``); ``reuse``: the GPU-code reuse check (``numerical_verdict``),
+    ``code_identity.reuse_check`` on this repository by default. ``next["campaign"]`` is one of
+    ``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``, ``numerical-check``,
+    ``validation`` (with what to make or check), ``done`` (with the frozen rates, ``three_arm``
+    and ``prewarmed_dropped``), ``infeasible`` or ``incomplete`` (ambiguous records: no
+    conclusion)."""
+    seeds = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS)
+    found, problems = index(r for r in trajectories if r.arm in ARMS and r.seed in seeds)
     controls: dict[tuple[int, float, float | None], Trajectory] = {}
     for run in (r for r in trajectories if r.arm == FA_CONTROL_ARM):
         key = _control_key(run)
@@ -789,138 +1178,304 @@ def selection(
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
-    replay = _Replay(found, controls, theta0, w_max)
+    replay = _Replay(found, theta0, w_max, numerical, facts, dict(exhausted or {}), reuse)
     out["candidates"] = candidate_order(list(found.values()), theta0, seconds_per_chunk)
+    out["amendment3_controls"] = _amendment3_controls(controls, found)
     out["attempts"] = attempts = []
     step = None
-    for candidate in out["candidates"]:
-        batch, upper = candidate["batch"], candidate["U"]
-        attempt, step = _primary(replay, batch, upper)
-        attempts.append(attempt)
-        if step is not None:
+    for arms in (ARMS, PRIMARY_ARMS):  # the three arms; then the fallback, the primary arms
+        for upper, batch in CANDIDATES:
+            if arms == PRIMARY_ARMS:
+                first = next(a for a in attempts if (a["batch"], a["U"]) == (batch, upper))
+                if first["failed_at"] in ("discovery", "numerical") and set(
+                        first["failed_arms"]) & set(PRIMARY_ARMS):  # fmt: skip
+                    continue  # its primary arms failed: so they do alone
+            attempt, step = _visit(replay, batch, upper, arms)
+            attempts.append(attempt)
+            if step is not None or attempt["outcome"] == "eligible":
+                break
+        if step is not None or attempts[-1]["outcome"] == "eligible":
             break
-        if attempt["outcome"] == "failed":
-            continue
-        out["prewarmed"], step = _prewarmed(replay, batch, upper, attempt["rates"])
-        if step is None:
-            step = {"campaign": "done", "batch": batch, "U": upper, "K_star": k_star(upper),
-                    "rates": {**attempt["rates"], PREWARMED: out["prewarmed"]["rates"]},
-                    "prewarmed_dropped": out["prewarmed"]["outcome"] == "dropped",
-                    "fa_controls": attempt["fa_controls"]}  # fmt: skip
-        break
-    out["next"] = step or {"campaign": "infeasible"}
+    chosen = attempts[-1]
+    if step is None and chosen["outcome"] == "eligible":
+        step = {"campaign": "done", "batch": chosen["batch"], "U": chosen["U"],
+                "K_star": chosen["K_star"],
+                "rates": {arm: chosen["rates"].get(arm) for arm in ARMS},
+                "three_arm": chosen["three_arm"], "prewarmed_dropped": not chosen["three_arm"],
+                "numerical": [{k: e.get(k) for k in ("check", "verdict", "state", "unusable",
+                                                     "policy", "reuse")}
+                              for e in chosen["numerical"]],
+                "validation": chosen["validation"]}  # fmt: skip
+    elif step is None:  # no candidate eligible, even for the primary arms alone
+        step = {"campaign": "infeasible", "reasons": [
+            f"U={a['U']:g}, B={a['batch']}, {'three arms' if a['three_arm'] else 'primary arms'}"
+            f": {'; '.join(a['reasons'])}" for a in attempts]}  # fmt: skip
+    out["next"] = step
     out["rounds"] = {f"{arm}/B={batch}/U={upper:g}": kinds
                      for (arm, batch, upper), kinds in replay.rounds.items()}  # fmt: skip
-    out["problems"] = out["next"].get("problems", []) + replay.unexpected()
+    unexpected, out["not_reached"] = replay.unexpected()
+    out["problems"] = out["next"].get("problems", []) + unexpected
     return out
 
 
-def _primary(replay: _Replay, batch: int, upper: float) -> tuple[dict[str, Any], dict | None]:
-    """One candidate's primary arms: rounds, then the FA controls. Returns the attempt and the
-    pending campaign, if any."""
-    kstar, bound = k_star(upper), _bound_key(CONTAMINATION_FRACTION * k_star(upper))
-    # A rate whose FA control was rejected at this batch under a larger bound (an earlier U) is
-    # numerically unusable here too: its read above that bound, or non-finite, is above this one.
-    unusable = replay.rejected_controls(batch, bound)
-    attempt: dict[str, Any] = {"batch": batch, "U": upper, "K_star": kstar,
-                               "arms": {arm: {"selections": [], "rounds": []}
-                                        for arm in PRIMARY_ARMS},
-                               "fa_excluded": unusable, "controls": [], "outcome": None,
-                               "reasons": []}  # fmt: skip
-    excluded = {ADAMW: [], FA: sorted(unusable)}
+def _step(campaign: str, attempt: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
+    return {"campaign": campaign, "batch": attempt["batch"], "U": attempt["U"],
+            "K_star": attempt["K_star"], "three_arm": attempt["three_arm"], **fields}  # fmt: skip
+
+
+def _fail(attempt: dict[str, Any], arms: Collection[str], reason: str, at: str) -> None:
+    """The attempt fails on ``arms`` at the gate ``at`` (discovery, numerical or validation),
+    with the reason."""
+    attempt.update(outcome="failed", failed_at=at)
+    attempt["failed_arms"] = [arm for arm in ARMS if arm in {*attempt["failed_arms"], *arms}]
+    attempt["reasons"].append(reason)
+
+
+def _visit(
+    replay: _Replay, batch: int, upper: float, arms: Sequence[str]
+) -> tuple[dict, dict | None]:
+    """One visit of a candidate for ``arms`` (the three arms, or the primary arms alone in the
+    fallback): discovery, the numerical gate, the validation gate. Returns the attempt and the
+    pending step, if any; the attempt's outcome is ``pending``, ``incomplete``, ``failed`` (with
+    the arms it failed on) or ``eligible`` (with the rates)."""
+    replay.reached.add(batch)
+    # Rates found unusable at this batch earlier in the replay (any U) are excluded up front.
+    excluded = {arm: dict(replay.unusable[(arm, batch)]) for arm in arms}
+    attempt: dict[str, Any] = {"batch": batch, "U": upper, "K_star": k_star(upper),
+                               "three_arm": PREWARMED in arms,
+                               "arms": {arm: {"selections": [], "rounds": []} for arm in arms},
+                               "excluded": {arm: dict(e) for arm, e in excluded.items()},
+                               "numerical": [], "validation": None, "outcome": "pending",
+                               "failed_arms": [], "failed_at": None, "reasons": [],
+                               "rates": None}  # fmt: skip
+    selected, step = _discovery(replay, attempt, excluded, batch, upper, arms)
+    if selected is None:
+        return attempt, step
+    selected, controls, step = _numerical(replay, attempt, excluded, batch, upper, selected, arms)
+    if selected is None:
+        return attempt, step
+    rates = {arm: selected[arm]["rates"] for arm in arms}
+    step = _validation(replay, attempt, batch, upper, rates, controls)
+    if step is None and attempt["outcome"] != "failed":
+        attempt.update(outcome="eligible", rates=rates)
+    return attempt, step
+
+
+def _discovery(replay, attempt, excluded, batch, upper, arms) -> tuple[dict | None, dict | None]:
+    """A candidate's discovery: the primary arms' targeted round, as the joint ``discovery``
+    campaign holding the pre-warmed arm's first round when it is due, then their repair round;
+    then the pre-warmed arm's first round, if not made yet, and its own rounds. Returns each
+    arm's selection, or None with the pending step (none when the attempt failed)."""
 
     def solve(arm: str) -> dict[str, Any]:
-        selected = replay.solve(arm, batch, upper, excluded[arm])
+        selected = replay.solve(arm, batch, upper, sorted(excluded[arm]))
         attempt["arms"][arm]["selections"].append(selected)
         return selected
 
-    def fail(reason: str) -> tuple[dict[str, Any], None]:
-        attempt.update(outcome="failed", reasons=[*attempt["reasons"], reason])
-        return attempt, None
+    def pending(campaign: str, runs: list[dict[str, Any]]) -> tuple[None, dict]:
+        attempt["outcome"] = "pending"
+        return None, _step(campaign, attempt, runs=runs)
 
-    selected = {arm: solve(arm) for arm in PRIMARY_ARMS}
+    prewarmed = PREWARMED in arms
+    selected = {arm: solve(arm) for arm in arms}
     for kind in ("targeted", "repair"):
         going = [arm for arm in PRIMARY_ARMS if not selected[arm]["feasible"]]
-        rounds = [replay.propose(kind, arm, batch, upper, selected[arm]) for arm in going]
+        if not going:
+            break
+        rounds, fresh = [], []
+        for arm in going:
+            record, new = replay.round(kind, arm, batch, upper, selected[arm])
+            rounds.append(record)
+            if new:
+                fresh.append(record)
         blocked = [r["arm"] for r in rounds if r["proposal"].get("unrepairable")]
         for spent in rounds:
             attempt["arms"][spent["arm"]]["rounds"].append(spent)
+        for spent in fresh:
             replay.spend(spent, prescribe=not blocked)
         if blocked:
-            return fail(f"{blocked}: a coverage miss that re-targeting cannot repair")
+            _fail(attempt, blocked, f"{blocked}: a coverage miss that re-targeting cannot repair",
+                  "discovery")  # fmt: skip
+            return None, None
+        first = None
+        if kind == "targeted" and prewarmed and not selected[PREWARMED]["feasible"]:
+            # The joint campaign: the pre-warmed arm's first round at the union of the rates the
+            # primary arms' targeted assignments use (a feasible arm's: its selected triple).
+            assigned = {t["rate"] for r in rounds for t in r["proposal"]["targets"]
+                        if t["rate"] is not None}  # fmt: skip
+            assigned |= {lr for arm in PRIMARY_ARMS if arm not in going
+                         for lr in selected[arm]["rates"]}  # fmt: skip
+            first = replay.first(batch, upper, sorted(assigned), joint=True)
+            attempt["arms"][PREWARMED]["rounds"].append(first)
         missing = [m for r in rounds for m in replay.missing(r["arm"], batch, r["new_rates"])]
+        if first is not None:
+            missing += replay.missing(PREWARMED, batch, first["new_rates"])
         if missing:
-            attempt["outcome"] = "pending"
-            return attempt, {"campaign": kind, "batch": batch, "U": upper, "runs": missing}
+            return pending("discovery" if kind == "targeted" else "repair", missing)
         for arm in going:
             selected[arm] = solve(arm)
+        if first is not None:
+            selected[PREWARMED] = solve(PREWARMED)
     infeasible = [arm for arm in PRIMARY_ARMS if not selected[arm]["feasible"]]
     if infeasible:
-        return fail(f"{infeasible} without a feasible triple after the rounds")
-
-    resolved = False
-    while True:
-        rates = selected[FA]["rates"]
-        keys = {lr: (batch, lr, bound) for lr in rates}
-        replay.called_controls |= set(keys.values())
-        absent = [lr for lr, key in keys.items() if key not in replay.controls]
-        if absent:
-            attempt["outcome"] = "pending"
-            return attempt, {"campaign": "controls", "batch": batch, "U": upper, "runs": [
-                {"arm": FA_CONTROL_ARM, "batch": batch, "lr": lr, "seed": CONTROL_SEED,
-                 "contamination_k": CONTAMINATION_FRACTION * kstar} for lr in absent]}  # fmt: skip
-        off = [p for lr, key in keys.items() for p in control_conformance(
-            replay.controls[key], replay.found.get((FA, batch, lr, CONTROL_SEED)))]  # fmt: skip
-        if off:  # not the prescribed control: no conclusion, whatever it showed
-            attempt["outcome"] = "incomplete"
-            return attempt, {"campaign": "incomplete", "problems": off}
-        verdicts = {lr: control_verdict(replay.controls[key], kstar) for lr, key in keys.items()}
-        attempt["controls"].append(verdicts)
-        rejected = [lr for lr, v in verdicts.items() if not v["accepted"]]
-        if not rejected:
-            break
-        if resolved:
-            return fail(f"FA controls rejected after the re-solve: {rejected}")
-        resolved = True
-        excluded[FA] = sorted({*excluded[FA], *rejected})
-        selected[FA] = solve(FA)
-        if not selected[FA]["feasible"]:
-            return fail(f"no feasible FA triple without the rejected rates {rejected}")
-    attempt.update(outcome="decided", rates={arm: selected[arm]["rates"] for arm in PRIMARY_ARMS},
-                   fa_controls=verdicts)  # fmt: skip
-    return attempt, None
-
-
-def _prewarmed(
-    replay: _Replay, batch: int, upper: float, primary: Mapping[str, Sequence[float]]
-) -> tuple[dict[str, Any], dict | None]:
-    """The pre-warmed arm at the chosen batch: its first runs, then its rounds."""
-    initial = sorted(set(primary[ADAMW]) | set(primary[FA]))
-    replay.rates[(PREWARMED, batch)] |= set(initial)
-    record: dict[str, Any] = {"batch": batch, "U": upper, "initial": initial, "selections": [],
-                              "rounds": [], "outcome": "pending", "rates": None}  # fmt: skip
-    missing = replay.missing(PREWARMED, batch, initial)
-    if missing:
-        return record, {"campaign": "prewarmed", "batch": batch, "U": upper, "runs": missing}
-    selected = replay.solve(PREWARMED, batch, upper)
-    record["selections"].append(selected)
+        _fail(attempt, infeasible, f"{infeasible} without a feasible triple after the rounds",
+              "discovery")  # fmt: skip
+        return None, None
+    if not prewarmed:
+        return selected, None
+    if not selected[PREWARMED]["feasible"] and "first" not in replay.rounds[(PREWARMED, batch,
+                                                                             upper)]:  # fmt: skip
+        initial = sorted({lr for arm in PRIMARY_ARMS for lr in selected[arm]["rates"]})
+        first = replay.first(batch, upper, initial, joint=False)
+        attempt["arms"][PREWARMED]["rounds"].append(first)
+        missing = replay.missing(PREWARMED, batch, first["new_rates"])
+        if missing:
+            return pending("prewarmed", missing)
+        selected[PREWARMED] = solve(PREWARMED)
     for kind in ("targeted", "repair"):
-        if selected["feasible"]:
+        if selected[PREWARMED]["feasible"]:
             break
-        spent = replay.propose(kind, PREWARMED, batch, upper, selected)
-        record["rounds"].append(spent)
+        spent, new = replay.round(kind, PREWARMED, batch, upper, selected[PREWARMED])
+        attempt["arms"][PREWARMED]["rounds"].append(spent)
         blocked = bool(spent["proposal"].get("unrepairable"))
-        replay.spend(spent, prescribe=not blocked)
+        if new:
+            replay.spend(spent, prescribe=not blocked)
         if blocked:
             break
         missing = replay.missing(PREWARMED, batch, spent["new_rates"])
         if missing:
-            return record, {"campaign": kind, "batch": batch, "U": upper, "runs": missing}
-        selected = replay.solve(PREWARMED, batch, upper)
-        record["selections"].append(selected)
-    record.update(outcome="decided" if selected["feasible"] else "dropped",
-                  rates=selected["rates"])  # fmt: skip
-    return record, None
+            return pending(kind, missing)
+        selected[PREWARMED] = solve(PREWARMED)
+    if not selected[PREWARMED]["feasible"]:
+        _fail(attempt, [PREWARMED], "the pre-warmed arm without a feasible triple after its "
+              "rounds", "discovery")  # fmt: skip
+        return None, None
+    return selected, None
+
+
+def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple:
+    """The numerical gate: the K-only regular runs of the selected rates' cases
+    (``numerical_cases``), then the check's verdict (``numerical_verdict``). Unusable rates
+    (failing, not qualified, or an FA rate whose control was rejected or not qualified) leave
+    the batch, and the arms holding them are re-solved once without them (no new round); the
+    new selection's cases are run and checked in turn (a new check), and an unusable rate there
+    fails the candidate. Returns the selections and the FA rates' accepted controls, or None with
+    the pending step (none when the attempt failed)."""
+
+    def stop(step: dict | None, outcome: str = "pending") -> tuple[None, None, dict | None]:
+        attempt["outcome"] = outcome
+        return None, None, step
+
+    def incomplete(problems: list[str]) -> tuple[None, None, dict]:
+        return stop({"campaign": "incomplete", "problems": problems}, "incomplete")
+
+    resolved = False
+    while True:
+        request = {arm: list(selected[arm]["rates"]) for arm in arms}
+        keys = [(arm, batch, lr, seed) for arm, lr, seed in numerical_cases(request)]
+        replay.called |= set(keys)
+        check = replay.check(batch, upper, request)
+        entry: dict[str, Any] = {"check": check["name"], "verdict": check["path"],
+                                 "request": request, "state": None, "unusable": []}  # fmt: skip
+        attempt["numerical"].append(entry)
+        missing = [key for key in keys if key not in replay.found]
+        if missing:
+            entry["state"] = "runs missing"
+            return stop(_step("numerical", attempt, check=check["name"], rates=request,
+                              runs=_wanted(missing), streams=_streams(batch)))  # fmt: skip
+        if replay.verdicts is None or replay.facts is None:
+            entry["state"] = "not read"
+            return incomplete(["the numerical-check verdicts and the commits of the numerical "
+                               f"runs were not read ($RUNS_DIR's {NUMERICAL_DIR}/, the runs' "
+                               "meta.json): no conclusion"])  # fmt: skip
+        commits = {(replay.facts.get(replay.found[key].run_id) or {}).get("commit")
+                   for key in keys}  # fmt: skip
+        if len(commits) != 1 or None in commits:
+            entry["state"] = "commits"
+            return incomplete([f"check {check['name']}: its numerical runs record the commits "
+                               f"{sorted(map(str, commits))}, not one commit"])  # fmt: skip
+        (commit,) = commits
+        verdict = numerical_verdict(replay.verdicts.get(check["path"]), batch, upper, request,
+                                    commit, replay.reuse)  # fmt: skip
+        entry.update(verdict)
+        if verdict["state"] == "malformed":
+            return incomplete([f"{check['path']}: {reason}" for reason in verdict["reasons"]])
+        if verdict["state"] != "complete":  # absent, stale or incomplete: never a pass
+            return stop(_step("numerical-check", attempt, rates=request,
+                              check=_check_request(check, batch, upper, request, commit),
+                              reasons=verdict["reasons"]))  # fmt: skip
+        if not verdict["unusable"]:
+            controls = {rate(lr): {"accepted": True, "verdict": check["path"]}
+                        for lr in request.get(FA) or ()}  # fmt: skip
+            return selected, controls, None
+        for unusable in verdict["unusable"]:
+            why = f"{unusable['why']} ({check['path']})"
+            replay.unusable[(unusable["arm"], batch)].setdefault(unusable["lr"], why)
+            excluded[unusable["arm"]].setdefault(unusable["lr"], why)
+        failed = [arm for arm in arms if any(u["arm"] == arm for u in verdict["unusable"])]
+        shown = [f"{u['arm']} {u['lr']:g}: {u['why']}" for u in verdict["unusable"]]
+        if resolved:
+            _fail(attempt, failed, f"unusable rates after the re-solve: {shown}", "numerical")
+            return None, None, None
+        resolved = True
+        for arm in failed:
+            selected[arm] = replay.solve(arm, batch, upper, sorted(excluded[arm]))
+            attempt["arms"][arm]["selections"].append(selected[arm])
+        infeasible = [arm for arm in failed if not selected[arm]["feasible"]]
+        if infeasible:
+            _fail(attempt, infeasible, f"{infeasible} without a feasible triple once the "
+                                       f"unusable rates are dropped: {shown}",
+                  "numerical")  # fmt: skip
+            return None, None, None
+
+
+def _check_request(check, batch, upper, rates, commit) -> dict[str, Any]:
+    """What the numerical-check tool is asked: ``selection``, its rate input (``rates`` by
+    optimizer name, ``batch`` and ``U``; scripts/numerical_check.py --selection), its cases, the
+    frozen policy, the commit its numerical runs recorded (the GPU code it must run), the
+    directory it writes into and its verdict, under $RUNS_DIR (``--out``), and the earlier
+    checks' directories of the candidate, whose case records at this commit it may reuse."""
+    by_name = {OPTIMIZERS[arm]: list(lrs) for arm, lrs in rates.items()}
+    selection = {"rates": by_name, "batch": batch,
+                 "U": int(upper) if float(upper).is_integer() else upper}  # fmt: skip
+    return {"name": check["name"], "tool": NUMERICAL_TOOL, "verdict": check["path"],
+            "out": check["path"].rsplit("/", 1)[0], "records_from": check["earlier"],
+            "selection": selection, "batch": batch, "U": upper, "rates": by_name,
+            "cases": [{"optimizer": OPTIMIZERS[arm], "lr": lr, "seed": seed}
+                      for arm, lr, seed in numerical_cases(rates)],
+            "runs_commit": commit, "policy": numerical_policy(upper)}  # fmt: skip
+
+
+def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
+    """The validation gate: the runs of every arm at its rates on seeds 2100-2111 (a run the
+    launcher gave up on counts as a technical failure), then ``validation_verdict`` over the
+    candidate's arms (the three arms, or the primary arms alone in the fallback); a failure
+    fails the candidate. Returns the pending step, if any."""
+    keys = _keys(rates, batch, VALIDATION_SEEDS)
+    replay.called |= set(keys)
+    gone = {key: replay.exhausted[key] for key in keys
+            if key in replay.exhausted and key not in replay.found}  # fmt: skip
+    missing = [key for key in keys if key not in replay.found and key not in gone]
+    if missing:
+        attempt["outcome"] = "pending"
+        return _step("validation", attempt, rates=rates, prewarmed_dropped=PREWARMED not in rates,
+                     runs=_wanted(missing))  # fmt: skip
+    # An exhausted run is absent: validation_verdict counts its rate as a technical failure.
+    runs = [replay.found[key] for key in keys if key in replay.found]
+    arms = tuple(arm for arm in ARMS if arm in rates)
+    verdict = validation_verdict(runs, rates, controls, replay.theta0, k_star(upper),
+                                 replay.w_max, arms=arms)  # fmt: skip
+    verdict["exhausted"] = {label: list(key) for key, label in sorted(gone.items())}
+    verdict["prewarmed_utility"] = _utility_means([r for r in runs if r.arm == PREWARMED],
+                                                  replay.theta0)  # fmt: skip
+    attempt["validation"] = verdict
+    if verdict["passes"] is None:
+        attempt["outcome"] = "incomplete"
+        return {"campaign": "incomplete", "problems": verdict["problems"]}
+    if not verdict["passes"]:
+        _fail(attempt, arms, "the validation does not pass: " + "; ".join(verdict["reasons"]),
+              "validation")  # fmt: skip
+    return None
 
 
 # ------------------------------------------------------------------ support and the estimator
@@ -1414,16 +1969,18 @@ def utility_family(
     *,
     level: float = UTILITY_LEVEL,
     looks: int = len(LOOK_SIZES),
+    arms: Sequence[str] = PRIMARY_ARMS,
 ) -> dict[str, Any]:
     """The simultaneous one-sided upper bounds on mean utility loss: the family is every
-    (primary arm, rate) in the bracket of a block supported for the primary contrast
-    (``supports``: block → arm → ``block_support``); each member's bound is over every block in
-    ``supports`` where its run completed, at 1 − (1 − level)/(family size × looks) per metric.
-    Passes when every MMLU bound is ≤ 5 pp and every factual bound ≤ 10 pp."""
+    (arm, rate) of ``arms`` in the bracket of a block supported for all of them (the primary
+    contrast's arms; the three arms in a three-arm validation) (``supports``: block → arm →
+    ``block_support``); each member's bound is over every block in ``supports`` where its run
+    completed, at 1 − (1 − level)/(family size × looks) per metric. Passes when every MMLU bound
+    is ≤ 5 pp and every factual bound ≤ 10 pp."""
     members = sorted({
         (arm, by_arm[arm]["bracket"][side]["rate"])
-        for by_arm in supports.values() if all(by_arm[a]["supported"] for a in PRIMARY_ARMS)
-        for arm in PRIMARY_ARMS for side in ("lo", "hi")
+        for by_arm in supports.values() if all(by_arm[a]["supported"] for a in arms)
+        for arm in arms for side in ("lo", "hi")
     })  # fmt: skip
     alpha = (1 - level) / (len(members) * looks) if members else None
     family = []
@@ -1458,48 +2015,58 @@ def validation_verdict(
     w_max: float,
     *,
     seeds: Sequence[int] = VALIDATION_SEEDS,
+    arms: Sequence[str] = PRIMARY_ARMS,
 ) -> dict[str, Any]:
-    """The validation blocks' verdict, on numerics, K and utility only (harm is not an input):
-    at least 10 blocks jointly supported for AdamW-25 and FA-25; no primary-arm run stopped by an
-    instability rule; every frozen FA rate's control accepted; the utility family passes, at a
-    single reading (Bonferroni over the family alone). Ambiguous records (a second run of an arm,
-    rate and seed, a run at a rate outside the frozen ones) leave no conclusion: ``passes`` None,
-    with the problems."""
-    found, problems = index(r for r in runs if r.arm in PRIMARY_ARMS and r.seed in seeds)
-    primary = list(found.values())
+    """The validation blocks' verdict over ``arms``, on numerics, K and utility only (harm is
+    not an input): at least 10 blocks jointly supported for every arm of ``arms``; no run of
+    those arms stopped by an instability rule; every frozen FA rate's control accepted
+    (amendment 4: the same-path control of the numerical check that qualified the rate); the
+    utility family over those arms passes, at a single reading (Bonferroni over the family
+    alone). ``arms``: AdamW-25 and FA-25 (amendment 3's primary-arm validation, kept for the
+    fallback), or the three arms (amendment 4's three-arm validation, review fa12). Ambiguous
+    records (a second run of an arm, rate and seed, a run at a rate outside the frozen ones)
+    leave no conclusion: ``passes`` None, with the problems."""
+    arms = tuple(arms)
+    if not set(PRIMARY_ARMS) <= set(arms) <= set(ARMS):
+        raise ValueError(f"a validation reads the primary arms or the three arms, not {arms}")
+    three = arms == ARMS
+    found, problems = index(r for r in runs if r.arm in arms and r.seed in seeds)
+    read = list(found.values())
     supports = {
-        seed: {arm: block_support([r for r in primary if r.arm == arm and r.seed == seed], kstar,
-                                  w_max, rates=rates[arm]) for arm in PRIMARY_ARMS}
+        seed: {arm: block_support([r for r in read if r.arm == arm and r.seed == seed], kstar,
+                                  w_max, rates=rates[arm]) for arm in arms}
         for seed in seeds
     }  # fmt: skip
     problems += [p for by_arm in supports.values() for s in by_arm.values() for p in s["problems"]]
     if problems:
         return {"passes": None, "reasons": ["incomplete records"], "problems": problems,
-                "supports": supports}  # fmt: skip
-    joint = [s for s in seeds if all(supports[s][arm]["supported"] for arm in PRIMARY_ARMS)]
+                "supports": supports, "arms": list(arms)}  # fmt: skip
+    joint = [s for s in seeds if all(supports[s][arm]["supported"] for arm in arms)]
     reasons = []
     if len(joint) < VALIDATION_MINIMUM:
-        reasons.append(f"{len(joint)} of {len(seeds)} blocks jointly supported, fewer than "
+        reasons.append(f"{len(joint)} of {len(seeds)} blocks jointly supported"
+                       f"{' for the three arms' if three else ''}, fewer than "
                        f"{VALIDATION_MINIMUM}")  # fmt: skip
-    unstable = sorted(r.run_id for r in primary if r.stop in INSTABILITY)
+    unstable = sorted(r.run_id for r in read if r.stop in INSTABILITY)
     if unstable:
-        reasons.append(f"primary-arm runs stopped by an instability rule: {unstable}")
+        reasons.append(f"{'runs of the three arms' if three else 'primary-arm runs'} stopped by "
+                       f"an instability rule: {unstable}")  # fmt: skip
     accepted = {rate(lr): v for lr, v in fa_controls.items()}
     rejected = [lr for lr in rates[FA] if not accepted.get(rate(lr), {}).get("accepted")]
     if rejected:
         reasons.append(f"FA controls not accepted at {rejected}")
-    family = utility_family(primary, supports, theta0, looks=1)
+    family = utility_family(read, supports, theta0, looks=1, arms=arms)
     if not family["passes"]:
         reasons.append("the utility family does not pass")
     causes = {}
-    for arm in PRIMARY_ARMS:
+    for arm in arms:
         lost = [supports[s][arm] for s in seeds if not supports[s][arm]["supported"]]
         causes[arm] = {
             "cause": dict(Counter(s["cause"] for s in lost)),
             "k_cause": dict(Counter(str(s["k_cause"]) for s in lost)),  # None: K alone supports
             "failure_kinds": dict(Counter(f["kind"] for s in lost for f in s["failures"])),
         }
-    return {"passes": not reasons, "reasons": reasons, "problems": [],
+    return {"passes": not reasons, "reasons": reasons, "problems": [], "arms": list(arms),
             "jointly_supported": joint, "causes": causes, "supports": supports,
             "unstable": unstable, "utility": family}  # fmt: skip
 
@@ -1508,9 +2075,10 @@ def validation_verdict(
 
 
 def seed_role(seed: int) -> str | None:
-    """The role of a regular run on ``seed``: discovery, validation or confirmation."""
-    for role, seeds in zip(ROLES, (DISCOVERY_SEEDS, VALIDATION_SEEDS, CONFIRMATION_SEEDS),
-                           strict=True):  # fmt: skip
+    """The role of a regular run on ``seed``: discovery, numerical, validation or confirmation.
+    Numerical runs never count as discovery, validation or confirmation blocks."""
+    for role, seeds in zip(ROLES, (DISCOVERY_SEEDS, NUMERICAL_SEEDS, VALIDATION_SEEDS,
+                                   CONFIRMATION_SEEDS), strict=True):  # fmt: skip
         if seed in seeds:
             return role
     return None
@@ -1692,8 +2260,9 @@ def versions_problems(
 
 def run_facts(run_dir: str | Path) -> dict[str, Any]:
     """What a run's records hold beyond its ``Trajectory``: from ``config.yaml`` its role
-    (``study2_short.role``, else Stage A's ``stage_a.role``) and whether it measures the Rayleigh
-    quotient; from ``meta.json`` the preconditioner stream its v₀ was estimated from
+    (``study2_short.role``, else Stage A's ``stage_a.role``), whether it measures the Rayleigh
+    quotient and whether its evaluation is K-only (``eval.k_only``); from ``meta.json`` the code
+    commit it ran (``git.commit``) and the preconditioner stream its v₀ was estimated from
     (``inputs.streams.preconditioner``: path and sha256), None for a run without one."""
     run_dir = Path(run_dir)
     cfg = OmegaConf.load(run_dir / "config.yaml")
@@ -1701,13 +2270,16 @@ def run_facts(run_dir: str | Path) -> dict[str, Any]:
     if role is None:
         role = OmegaConf.select(cfg, "stage_a.role", default=None)
     rayleigh = OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False)
+    k_only = OmegaConf.select(cfg, "eval.k_only", default=False) is True
     meta_path = run_dir / "meta.json"
     meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
     stream = ((meta.get("inputs") or {}).get("streams") or {}).get("preconditioner")
     preconditioner = None
     if isinstance(stream, dict):
         preconditioner = {"path": stream.get("path"), "sha256": stream.get("sha256")}
-    return {"role": role, "rayleigh": bool(rayleigh), "preconditioner": preconditioner}
+    commit = (meta.get("git") or {}).get("commit")
+    return {"role": role, "rayleigh": bool(rayleigh), "k_only": k_only, "commit": commit,
+            "preconditioner": preconditioner}  # fmt: skip
 
 
 def preconditioner_pairing(
@@ -1851,7 +2423,8 @@ def prescribed() -> dict[str, Any]:
 def conformance(runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]) -> list[str]:
     """How the stage's runs (the three arms and the FA controls; others are ignored) depart from
     its campaigns, ``facts`` giving each run's ``run_facts`` by run id: role, model, protocol
-    version, schedule, monitor and the Rayleigh quotient (see the rulings)."""
+    version, schedule, monitor, the Rayleigh quotient and the K-only evaluation of the
+    numerical runs (see the rulings)."""
     spec, problems = prescribed(), []
     for run in runs:
         if run.arm not in (*ARMS, FA_CONTROL_ARM):
@@ -1880,6 +2453,10 @@ def conformance(runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any
         if fact["rayleigh"] != (not control and measures_rayleigh(run.seed)):
             problems.append(f"{name} {'measures' if fact['rayleigh'] else 'does not measure'} "
                             f"the Rayleigh quotient on seed {run.seed}")  # fmt: skip
+        k_only = fact.get("k_only") is True
+        if k_only != (role == "numerical"):  # numerical runs never answer a harmful prompt
+            problems.append(f"{name} {'evaluates K only' if k_only else 'is not K-only'} on "
+                            f"seed {run.seed}")  # fmt: skip
     return problems
 
 
@@ -1901,15 +2478,19 @@ def progress(
     facts: Mapping[str, Mapping[str, Any]],
     exhausted: Mapping[tuple, str] | None = None,
     seconds_per_chunk: float | None = None,
+    numerical: Mapping[str, Any] | None = None,
+    reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The stage as it stands, on K, numerics and utility only. ``trajectories``: every run so
     far, Stage A's included (its grids are the first discovery runs, its version-1 discovery set
     fixes the stream time); ``facts``: ``run_facts`` by run id; ``exhausted``: the validation and
     confirmation runs the launcher gave up on (``exhausted_runs``), each a technical failure of
-    its arm in its block. ``next["campaign"]`` is the selection's (``targeted``, ``repair``,
-    ``controls``, ``prewarmed``, ``infeasible``), then ``validation`` (with the runs to make),
-    ``validation_failed`` or ``confirmation`` (with the frozen rates); ``incomplete`` whenever the
-    records are not whole (``problems``)."""
+    its arm in its block; ``numerical``: the numerical-check verdicts (``read_numerical``), None
+    when not read; ``reuse``: the selection's GPU-code reuse check. ``next["campaign"]`` is the
+    selection's (``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``,
+    ``numerical-check``, ``validation``, ``infeasible``), then ``confirmation`` (with the frozen
+    rates) once a candidate passed its validation; ``incomplete`` whenever the records are not
+    whole (``problems``)."""
     exhausted = exhausted or {}
     stage = [run for run in trajectories if run.arm in (*ARMS, FA_CONTROL_ARM)]
     problems = conformance(stage, facts) + stream_pairing(stage)
@@ -1918,47 +2499,39 @@ def progress(
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
-    chosen = selection(trajectories, theta0, w_max, seconds_per_chunk=seconds_per_chunk)
+    chosen = selection(trajectories, theta0, w_max, seconds_per_chunk=seconds_per_chunk,
+                       numerical=numerical, facts=facts, exhausted=exhausted,
+                       reuse=reuse)  # fmt: skip
     out.update(selection=chosen, problems=list(chosen["problems"]))
     step = chosen["next"]
+    later = [run for run in stage if run.arm in ARMS and run.seed in CONFIRMATION_SEEDS]
+    if not out["problems"] and step["campaign"] != "done" and later:
+        out["problems"] = [f"confirmation run {run.run_id} before the rates are frozen"
+                           for run in later]  # fmt: skip
     if out["problems"] or step["campaign"] != "done":
         out["next"] = {"campaign": "incomplete"} if out["problems"] else step
         return out
     rates = {arm: list(lrs) for arm, lrs in step["rates"].items() if lrs}
     batch, kstar = step["batch"], step["K_star"]
     frozen = {"batch": batch, "U": step["U"], "K_star": kstar, "rates": rates,
+              "three_arm": step["three_arm"],
               "prewarmed_dropped": step["prewarmed_dropped"]}  # fmt: skip
-    out["frozen"] = {**frozen, "fa_controls": step["fa_controls"]}
-    later = [run for run in stage if run.arm in ARMS and run.seed not in DISCOVERY_SEEDS]
+    out["frozen"] = {**frozen, "numerical": step["numerical"]}
+    verdict = step["validation"]
+    out["validation"] = verdict
+    out["validation_prewarmed_utility"] = verdict["prewarmed_utility"]
     found, problems = index(later)
-    expected = set(_keys(rates, batch, (*VALIDATION_SEEDS, *CONFIRMATION_SEEDS)))
+    expected = set(_keys(rates, batch, CONFIRMATION_SEEDS))
     problems += [f"run outside the frozen rates {key}" for key in sorted(found)
                  if key not in expected]  # fmt: skip
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
     gone = {key: label for key, label in exhausted.items() if key in expected and key not in found}
-    out["exhausted"] = {label: list(key) for key, label in sorted(gone.items())}
-    missing = [key for key in _keys(rates, batch, VALIDATION_SEEDS)
-               if key not in found and key not in gone]  # fmt: skip
+    out["exhausted"] = {**verdict["exhausted"],
+                        **{label: list(key) for key, label in sorted(gone.items())}}  # fmt: skip
     out["confirmation"] = _confirmation(found, gone, rates, batch, kstar, w_max)
-    if missing:
-        out["next"] = {"campaign": "validation", **frozen, "runs": _wanted(missing)}
-        return out
-    # An exhausted run is absent: validation_verdict counts its rate as a technical failure.
-    validation = [found[key] for key in _keys(rates, batch, VALIDATION_SEEDS) if key in found]
-    verdict = validation_verdict(validation, {arm: rates[arm] for arm in PRIMARY_ARMS},
-                                 step["fa_controls"], theta0, kstar, w_max)  # fmt: skip
-    out["validation"] = verdict
-    out["validation_prewarmed_utility"] = _utility_means(
-        [run for run in validation if run.arm == PREWARMED], theta0
-    )
-    if verdict["passes"] is None:
-        out.update(next={"campaign": "incomplete"}, problems=verdict["problems"])
-    elif not verdict["passes"]:
-        out["next"] = {"campaign": "validation_failed", "reasons": verdict["reasons"]}
-    else:
-        out["next"] = {"campaign": "confirmation", **frozen}
+    out["next"] = {"campaign": "confirmation", **frozen}
     return out
 
 

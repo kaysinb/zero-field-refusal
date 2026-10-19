@@ -11,7 +11,6 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
-import math
 import re
 import runpy
 import shutil
@@ -22,15 +21,30 @@ from pathlib import Path
 import numpy as np
 import pytest
 from omegaconf import OmegaConf
-from test_study2_short import SCALE, THETA0, W_MAX, control, made, stage_a_reference, traj
+from test_study2_short import (
+    COMMIT as RUN_COMMIT,
+)
+from test_study2_short import (
+    GPU,
+    SCALE,
+    THETA0,
+    W_MAX,
+    control,
+    made,
+    reusable,
+    stage_a_reference,
+    traj,
+)
 
 from zero_field_refusal.analysis.stage_a import arm_of
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
+    ARMS,
     CONFIRMATION_SEEDS,
     FA,
     FA_CONTROL_ARM,
     FIXATION_KEYS,
+    NUMERICAL_SEEDS,
     PREWARMED,
     V0_ARMS,
     VALIDATION_SEEDS,
@@ -42,13 +56,18 @@ from zero_field_refusal.analysis.study2_short import (
     look_blocks,
     looks,
     measures_rayleigh,
+    numerical_policy,
     preconditioner_pairing,
     prescribed,
     progress,
     read_abandonment,
     read_fixation,
+    read_numerical,
     run_facts,
     seed_role,
+)
+from zero_field_refusal.analysis.study2_short import (
+    OPTIMIZERS as OPTIMIZER_NAMES,
 )
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import MAX_ATTEMPTS, load_campaign
@@ -99,6 +118,24 @@ def test_the_regular_runs_are_stage_as_25_step_runs_but_name_and_role(arm) -> No
     assert arm_of(short) == arm
 
 
+def test_the_numerical_runs_are_the_regular_runs_with_a_k_only_evaluation() -> None:
+    role = "study2_short.role=numerical"
+    plain = load_config("experiments/study2_short", [role])
+    k_only = load_config("experiments/study2_short_k_only", [role])
+    a, b = OmegaConf.to_container(plain), OmegaConf.to_container(k_only)
+    assert b["eval"].pop("k_only") is True and "k_only" not in a["eval"]
+    assert a == b and k_only.experiment == "study2_short"  # the stage's records stay together
+    cfg = load_run_config(
+        "experiments/study2_short_k_only",
+        [role, "optimizer.lr=1.49e-05", "train.batch_size=20", "seed=2200"],
+    )
+    assert config_hash(cfg) and cfg.eval.k_only is True  # fmt: skip
+    assert [seed_role(s) for s in (2002, 2200, 2201, 2202, 2203, 2100, 3000)] == [
+        "discovery", "numerical", "numerical", "numerical", None, "validation",
+        "confirmation"]  # fmt: skip
+    assert not any(measures_rayleigh(s) for s in NUMERICAL_SEEDS)
+
+
 def test_a_regular_run_needs_its_role_and_the_first_blocks_measure_rayleigh() -> None:
     cfg = load_run_config("experiments/study2_short", ["optimizer.lr=1e-5", "seed=3000"])
     with pytest.raises(ValueError, match="study2_short.role"):
@@ -121,13 +158,21 @@ def test_run_facts_read_the_role_the_rayleigh_setting_and_v0_from_the_records(tm
     stream = {"path": "teacher/m/preconditioner/c309eb585c5e/seed-3000", "sha256": "ab" * 32,
               "count": 250}  # fmt: skip
     streams = {"preconditioner": stream, "training": {}}
-    (new / "meta.json").write_text(json.dumps({"inputs": {"streams": streams}}))
+    git = {"commit": "c" * 40, "dirty": False}
+    (new / "meta.json").write_text(json.dumps({"inputs": {"streams": streams}, "git": git}))
     (old / "config.yaml").write_text("stage_a: {role: discovery}\neval: {}\n")
     (old / "meta.json").write_text(json.dumps({"inputs": {"streams": {"training": {}}}}))
-    assert run_facts(new) == {"role": "confirmation", "rayleigh": True,
+    assert run_facts(new) == {"role": "confirmation", "rayleigh": True, "k_only": False,
+                              "commit": "c" * 40,
                               "preconditioner": {"path": stream["path"],
                                                  "sha256": stream["sha256"]}}  # fmt: skip
-    assert run_facts(old) == {"role": "discovery", "rayleigh": False, "preconditioner": None}
+    assert run_facts(old) == {"role": "discovery", "rayleigh": False, "k_only": False,
+                              "commit": None, "preconditioner": None}  # fmt: skip
+    numerical = tmp_path / "numerical"
+    numerical.mkdir()
+    (numerical / "config.yaml").write_text("study2_short: {role: numerical}\n"
+                                           "eval: {k_only: true}\n")  # fmt: skip
+    assert run_facts(numerical)["k_only"] is True and run_facts(numerical)["role"] == "numerical"
 
 
 # ------------------------------------------------------------------ the synthetic stage
@@ -154,8 +199,9 @@ def v0(seed: int, batch: int) -> dict:
 
 def fact(run) -> dict:
     control_run = run.arm == FA_CONTROL_ARM
-    return {"role": "full_control" if control_run else seed_role(run.seed),
-            "rayleigh": not control_run and measures_rayleigh(run.seed),
+    role = "full_control" if control_run else seed_role(run.seed)
+    return {"role": role, "rayleigh": not control_run and measures_rayleigh(run.seed),
+            "k_only": role == "numerical", "commit": RUN_COMMIT,
             "preconditioner": v0(run.seed, run.batch_size) if run.arm in V0_ARMS
             else None}  # fmt: skip
 
@@ -165,22 +211,50 @@ def facts_of(runs) -> dict:
 
 
 def later(arm, batch, lr, seed):
-    """A validation or confirmation run of the world, its K jittered by seed."""
+    """A numerical, validation or confirmation run of the world, its K jittered by seed."""
     k = SCALE[(arm, batch)] * (lr / 1e-5) ** 1.5 * (0.98 + 0.01 * (seed % 5))
     return conform(traj(arm, batch, lr, seed, k, mmlu=0.3 * k, factual=0.1 * k))
 
 
-def stage(runs, exhausted=None):
-    return progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted)
+def qualified_verdicts(runs) -> dict:
+    """The numerical-check tool's verdicts as every check of the synthetic stage would read them:
+    for each batch with numerical runs, a record of every (arm, rate) run there qualified, on the
+    seeds it ran, and every FA rate's control accepted, under every check name of a candidate at
+    that batch (a record may hold more rates than a check asks)."""
+    seeds: dict[int, dict[str, list[int]]] = {}
+    for run in runs:
+        if run.arm in ARMS and run.seed in NUMERICAL_SEEDS:
+            key = f"{OPTIMIZER_NAMES[run.arm]}|{run.lr:g}"
+            seeds.setdefault(run.batch_size, {}).setdefault(key, []).append(run.seed)
+    out = {}
+    for batch, tested in seeds.items():
+        controls = {key.split("|")[1]: "accepted" for key in tested
+                    if key.startswith("adam_frozen|")}  # fmt: skip
+        for upper in (8.0, 7.0):
+            record = {"batch": batch, "U": int(upper), "rates": dict.fromkeys(tested, "qualified"),
+                      "seeds": {k: sorted(v) for k, v in tested.items()}, "controls": controls,
+                      "qualified": True, "reasons": {},
+                      "policy": {"gpu_code": {"commit": RUN_COMMIT, "files": 1,
+                                              "sha256": GPU[RUN_COMMIT]},
+                                 "tool_commit": RUN_COMMIT, "reference": "float64",
+                                 **numerical_policy(upper)}}  # fmt: skip
+            for name in [f"b{batch}-u{upper:g}"] + [f"b{batch}-u{upper:g}-{k}" for k in (2, 3)]:
+                out[f"numerical/{name}/verdict.json"] = record
+    return out
+
+
+def stage(runs, exhausted=None, verdicts=None):
+    """The stage's progress; its numerical checks read ``verdicts`` (``qualified_verdicts``, every
+    check qualified, by default)."""
+    verdicts = qualified_verdicts(runs) if verdicts is None else verdicts
+    return progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted,
+                    numerical=verdicts, reuse=reusable)  # fmt: skip
 
 
 def make(step) -> list:
     runs = []
     for r in step["runs"]:
-        if r["arm"] == FA_CONTROL_ARM:
-            runs.append(conform(control(r["batch"], r["lr"], r["contamination_k"],
-                                        0.1 * r["contamination_k"])))  # fmt: skip
-        elif r["seed"] in (2000, 2001, 2002):
+        if r["seed"] in (2000, 2001, 2002):
             runs.append(conform(made(r["arm"], r["batch"], r["lr"], r["seed"])))
         else:
             runs.append(later(r["arm"], r["batch"], r["lr"], r["seed"]))
@@ -189,7 +263,7 @@ def make(step) -> list:
 
 def until(runs, campaign: str) -> dict:
     """Make every campaign the stage names until it names ``campaign``."""
-    for _ in range(12):
+    for _ in range(30):
         state = stage(runs)
         if state["next"]["campaign"] == campaign:
             return state
@@ -206,29 +280,39 @@ def blocks_of(rates, batch, seeds):
     return [later(arm, batch, lr, s) for s in seeds for arm, lrs in rates.items() for lr in lrs]
 
 
+RATES20 = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
+           PREWARMED: [1.27e-5, 1.48e-5, 1.74e-5]}  # fmt: skip
+
+
 def test_the_stage_goes_from_discovery_to_validation_to_confirmation() -> None:
     runs = base()
-    assert stage(runs)["next"]["campaign"] == "targeted"
+    assert stage(runs)["next"]["campaign"] == "discovery"
+    numerical = until(runs, "numerical")["next"]
+    assert (numerical["batch"], numerical["check"], len(numerical["runs"])) == (20, "b20-u8", 15)
+    assert numerical["streams"] == {"seeds": [2200, 2201, 2202], "batch": 20,
+                                    "training_responses": 500,
+                                    "preconditioner_responses": 1000}  # fmt: skip
     state = until(runs, "validation")
     step = state["next"]
-    assert (step["batch"], step["U"]) == (5, 8.0) and not step["prewarmed_dropped"]
-    assert step["rates"] == {ADAMW: [1e-5, 1.17e-5, 1.37e-5], FA: [1.27e-5, 1.49e-5, 1.74e-5],
-                             PREWARMED: [1e-5, 1.17e-5, 1.37e-5]}  # fmt: skip
+    assert (step["batch"], step["U"]) == (20, 8.0) and not step["prewarmed_dropped"]
+    assert step["three_arm"] and step["rates"] == RATES20
     assert len(step["runs"]) == 3 * 3 * 12  # three arms, three rates, seeds 2100-2111
     runs += make(step)[:-1]  # one validation run still missing: no verdict yet
     assert stage(runs)["next"]["campaign"] == "validation"
     state = until(runs, "confirmation")
     assert state["validation"]["passes"] and len(state["validation"]["jointly_supported"]) == 12
-    assert set(state["validation_prewarmed_utility"]) == {1e-5, 1.17e-5, 1.37e-5}
+    assert state["validation"]["arms"] == list(ARMS)  # the three-arm validation
+    assert set(state["validation_prewarmed_utility"]) == set(RATES20[PREWARMED])
+    assert state["frozen"]["three_arm"] and state["frozen"]["numerical"][0]["state"] == "complete"
     assert not any(b["runs"] for b in state["confirmation"])
-    runs += blocks_of(step["rates"], 5, CONFIRMATION_SEEDS[:3])
-    runs += blocks_of({ADAMW: step["rates"][ADAMW]}, 5, CONFIRMATION_SEEDS[3:4])
+    runs += blocks_of(step["rates"], 20, CONFIRMATION_SEEDS[:3])
+    runs += blocks_of({ADAMW: step["rates"][ADAMW]}, 20, CONFIRMATION_SEEDS[3:4])
     blocks = stage(runs)["confirmation"]
     assert [b["complete"] for b in blocks[:5]] == [True, True, True, False, False]
     assert all(b["supported"] for b in blocks[:3]) and blocks[3]["runs"] == 3
 
 
-def test_a_failed_validation_ends_the_stage_there() -> None:
+def test_a_failed_validation_moves_to_the_next_candidate() -> None:
     runs = base()
     state = until(runs, "validation")
     made_runs = make(state["next"])
@@ -237,19 +321,28 @@ def test_a_failed_validation_ends_the_stage_there() -> None:
     runs += [dataclasses.replace(r, evaluations=[{**r.evaluations[0], "K_benign": 1.0}])
              if r.arm == ADAMW and r.seed in low else r for r in made_runs]  # fmt: skip
     state = stage(runs)
-    assert state["next"]["campaign"] == "validation_failed"
-    assert "6 of 12 blocks jointly supported" in state["next"]["reasons"][0]
+    failed = state["selection"]["attempts"][0]
+    assert failed["failed_at"] == "validation"
+    assert "6 of 12 blocks jointly supported for the three arms" in failed["reasons"][0]
+    step = state["next"]  # (7, 20): its new rates' numerical cases first
+    assert (step["campaign"], step["batch"], step["U"]) == ("numerical", 20, 7.0)
+    state = until(runs, "validation")
+    validation = {(r["arm"], r["lr"]) for r in state["next"]["runs"]}
+    assert {r["seed"] for r in state["next"]["runs"]} == set(VALIDATION_SEEDS)
+    # The validation seeds are reused: only the rates new at U = 7 are run.
+    assert not validation & {(arm, lr) for arm, lrs in RATES20.items() for lr in lrs}
 
 
 def test_records_off_the_campaigns_leave_the_stage_incomplete() -> None:
     runs = base()
     first = make(stage(runs)["next"])[:1]
     ok = stage([*runs, *first])
-    assert ok["next"]["campaign"] == "targeted" and not ok["problems"]  # the rest of the round
+    assert ok["next"]["campaign"] == "discovery" and not ok["problems"]  # the rest of the round
     own = fact(first[0])
     cases = {
         "role": lambda f: {**f, first[0].run_id: {**own, "role": "validation"}},
         "rayleigh": lambda f: {**f, first[0].run_id: {**own, "rayleigh": True}},
+        "k_only": lambda f: {**f, first[0].run_id: {**own, "k_only": True}},
         "unread": lambda f: {k: v for k, v in f.items() if k != first[0].run_id},
     }
     for name, damage in cases.items():
@@ -262,36 +355,40 @@ def test_records_off_the_campaigns_leave_the_stage_incomplete() -> None:
         [other], facts_of([other]))[0]  # fmt: skip
     protocol = dataclasses.replace(conform(control(5, 1e-5, 0.06, 0.0)), protocol_version=2)
     assert "under protocol 2" in conformance([protocol], facts_of([protocol]))[0]
+    # A numerical run must evaluate K only; no other run may.
+    numerical = later(ADAMW, 20, 1.27e-5, 2200)
+    assert conformance([numerical], facts_of([numerical])) == []
+    sealed = {numerical.run_id: {**fact(numerical), "k_only": False}}
+    assert "is not K-only on seed 2200" in conformance([numerical], sealed)[0]
     # A run the state machine did not prescribe stops every campaign until it is resolved.
-    stray = conform(made(ADAMW, 5, 1.23e-5, 2000))
+    stray = conform(made(ADAMW, 20, 1.23e-5, 2000))
     state = stage([*runs, stray])
     assert state["next"] == {"campaign": "incomplete"} and "unexpected run" in state["problems"][0]
 
 
 def test_v0_is_one_preconditioner_stream_per_seed_and_batch() -> None:
     runs = base()
-    until(runs, "prewarmed")  # Stage A's FA grids, the targeted FA runs and the FA controls
+    until(runs, "numerical")  # Stage A's FA grids and the joint discovery's FA and pre-warmed runs
     facts = facts_of(runs)
     assert preconditioner_pairing(runs, facts) == []
-    # The seed's FA control estimated v₀ from another copy of the stream: no conclusion.
-    fa_control = next(r for r in runs if r.arm == FA_CONTROL_ARM)
+    # A pre-warmed run estimated v₀ from another copy of the seed's stream: no conclusion.
+    prewarmed = next(r for r in runs if r.arm == PREWARMED and r.seed == 2000)
     other = {
         **facts,
-        fa_control.run_id: {
-            **facts[fa_control.run_id],
-            "preconditioner": {**v0(2000, 5), "sha256": "x"},
+        prewarmed.run_id: {
+            **facts[prewarmed.run_id],
+            "preconditioner": {**v0(2000, 20), "sha256": "x"},
         },
     }
     found = preconditioner_pairing(runs, other)
-    assert len(found) == 1 and "seed 2000, B=5: v₀ from 2 preconditioner streams" in found[0]
+    assert len(found) == 1 and "seed 2000, B=20: v₀ from 2 preconditioner streams" in found[0]
     state = progress(runs, THETA0, W_MAX, facts=other)
     assert state["next"] == {"campaign": "incomplete"} and state["problems"] == found
     # A pre-warmed run that records no preconditioner stream is a problem too.
-    prewarmed = later(PREWARMED, 5, 1e-5, 2000)
     missing = {**facts, prewarmed.run_id: {**fact(prewarmed), "preconditioner": None}}
     assert "records no preconditioner stream" in preconditioner_pairing([prewarmed], missing)[0]
-    # AdamW-25 estimates no v₀, and B = 20's stream is another one.
-    assert preconditioner_pairing([later(ADAMW, 5, 1e-5, 2000)], {}) == []
+    # AdamW-25 estimates no v₀, and B = 5's stream is another one.
+    assert preconditioner_pairing([later(ADAMW, 20, 1e-5, 2000)], {}) == []
     pair = [later(FA, 5, 1.27e-5, 2000), later(FA, 20, 1.27e-5, 2000)]
     assert preconditioner_pairing(pair, facts_of(pair)) == []
 
@@ -299,10 +396,42 @@ def test_v0_is_one_preconditioner_stream_per_seed_and_batch() -> None:
 def test_later_runs_must_be_at_the_frozen_rates() -> None:
     runs = base()
     until(runs, "validation")
-    stray = later(FA, 5, 1.3e-5, 2100)
+    # A validation run nothing called for at a batch the selection reached: no conclusion.
+    stray = later(FA, 20, 1.3e-5, 2100)
     state = stage([*runs, stray])
     assert state["next"] == {"campaign": "incomplete"}
+    assert "unexpected run ('frozen_adam_25', 20, 1.3e-05, 2100)" in state["problems"]
+    early = later(FA, 20, 1.86e-5, 3000)  # a confirmation run before the rates are frozen
+    state = stage([*runs, early])
+    assert state["next"] == {"campaign": "incomplete"}
+    assert "before the rates are frozen" in state["problems"][0]
+    until(runs, "confirmation")
+    state = stage([*runs, later(FA, 20, 1.3e-5, 3000)])
+    assert state["next"] == {"campaign": "incomplete"}
     assert "outside the frozen rates" in state["problems"][0]
+
+
+def test_primary_only_fallback_reaches_confirmation_with_the_primary_arms() -> None:
+    # The pre-warmed arm never brackets K*: every candidate fails it, and the fallback freezes
+    # the primary arms at (8, 20); their confirmation blocks hold no pre-warmed run.
+    runs = [*base()]
+    real = SCALE.copy()
+    try:
+        for batch in (5, 20):
+            SCALE[(PREWARMED, batch)] = 0.3
+        state = until(runs, "confirmation")
+    finally:
+        SCALE.update(real)
+    frozen = state["frozen"]
+    assert (frozen["batch"], frozen["U"], frozen["three_arm"]) == (20, 8.0, False)
+    assert frozen["prewarmed_dropped"] and set(frozen["rates"]) == {ADAMW, FA}
+    assert state["validation"]["arms"] == [ADAMW, FA]
+    runs += blocks_of(frozen["rates"], 20, CONFIRMATION_SEEDS[:2])
+    blocks = stage(runs)["confirmation"]
+    assert [(b["complete"], b["expected"]) for b in blocks[:3]] == [(True, 6), (True, 6),
+                                                                   (False, 6)]  # fmt: skip
+    assert set(blocks[0]["supports"]) == {ADAMW, FA}
+    assert not [r for r in runs if r.arm == PREWARMED and r.seed not in (2000, 2001, 2002)]
 
 
 # ------------------------------------------------------------------ runs given up
@@ -416,8 +545,8 @@ def test_a_run_given_up_is_a_technical_failure_of_its_block_and_the_looks_go_pas
     runs = base()
     state = until(runs, "confirmation")
     rates = state["next"]["rates"]
-    given_up = (ADAMW, 5, 1.37e-5, 3000)  # the bracket's upper end in block 1
-    runs += [r for r in blocks_of(rates, 5, CONFIRMATION_SEEDS[:2])
+    given_up = (ADAMW, 20, 1.74e-5, 3000)  # the bracket's upper end in block 1
+    runs += [r for r in blocks_of(rates, 20, CONFIRMATION_SEEDS[:2])
              if (r.arm, r.batch_size, r.lr, r.seed) != given_up]  # fmt: skip
     waiting = stage(runs)["confirmation"][0]
     assert not waiting["complete"] and waiting["runs"] == 8  # without the journal it waits
@@ -442,7 +571,7 @@ def test_a_validation_run_given_up_lets_the_verdict_be_read() -> None:
     runs = base()
     step = until(runs, "validation")["next"]
     made_runs = make(step)
-    lost = next(r for r in made_runs if (r.arm, r.lr, r.seed) == (FA, 1.74e-5, 2100))
+    lost = next(r for r in made_runs if (r.arm, r.lr, r.seed) == (FA, 2.17e-5, 2100))
     runs += [r for r in made_runs if r is not lost]
     assert stage(runs)["next"]["campaign"] == "validation"
     key = (lost.arm, lost.batch_size, lost.lr, lost.seed)
@@ -558,7 +687,7 @@ def rows(harmful: int, missing: int = 0) -> list[dict]:
 
 def confirmed(runs: list) -> dict:
     state = until(runs, "confirmation")
-    runs += blocks_of(state["next"]["rates"], 5, CONFIRMATION_SEEDS[:2])
+    runs += blocks_of(state["next"]["rates"], state["next"]["batch"], CONFIRMATION_SEEDS[:2])
     return stage(runs)
 
 
@@ -611,12 +740,25 @@ def runs_root(tmp_path: Path, records: list | None = None) -> str:
 
 
 def script(
-    monkeypatch, tmp_path, path: Path, runs: list, *args: str, versions: bool = True
-) -> Path:
+    monkeypatch, tmp_path, path: Path, runs: list, *args: str, versions: bool = True,
+    root: bool = True, verdicts: dict | None = None,
+) -> Path:  # fmt: skip
     """Run a script on ``runs`` (patched in for the run directories); returns its --out. With
-    ``versions``, the versions record holds (``versions_problems`` has its own tests)."""
+    ``versions``, the versions record holds (``versions_problems`` has its own tests). With
+    ``root``, --runs-root is given (an empty journal unless the arguments name one) and holds
+    ``verdicts`` (every numerical check's, ``qualified_verdicts``, by default); the GPU-code
+    check reads the synthetic commits (``test_study2_short.reusable``)."""
     monkeypatch.setattr("zero_field_refusal.analysis.stage_a.load_trajectories",
                         lambda *roots: list(runs))  # fmt: skip
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_short._reuse_check", reusable)
+    if root:
+        if "--runs-root" not in args:
+            args = (*args, "--runs-root", runs_root(tmp_path))
+        directory = Path(args[args.index("--runs-root") + 1])
+        written = qualified_verdicts(runs) if verdicts is None else verdicts
+        for name, record in written.items():
+            (directory / name).parent.mkdir(parents=True, exist_ok=True)
+            (directory / name).write_text(json.dumps(record))
     if versions:
         monkeypatch.setattr("zero_field_refusal.analysis.study2_short.versions_problems",
                             lambda path, **kwargs: [])  # fmt: skip
@@ -638,9 +780,10 @@ def campaign(monkeypatch, tmp_path, runs, *args: str) -> list:
     return load_campaign(script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args))[1]
 
 
-def refusal(monkeypatch, tmp_path, capsys, runs, *args: str, versions: bool = True) -> str:
+def refusal(monkeypatch, tmp_path, capsys, runs, *args: str, versions: bool = True,
+            root: bool = True) -> str:  # fmt: skip
     with pytest.raises(SystemExit):
-        script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args, versions=versions)
+        script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args, versions=versions, root=root)
     return capsys.readouterr().err
 
 
@@ -648,23 +791,31 @@ def labels_of(runs) -> list[str]:
     return [run.label for run in runs]
 
 
-def test_the_targeted_campaign_records_w_max_and_the_revision(monkeypatch, tmp_path) -> None:
+def fixed(tmp_path: Path) -> str:
+    """A fixation record whose w_max is the synthetic stage's."""
+    return fixation_file(tmp_path, w_max=W_MAX)
+
+
+def test_the_discovery_campaign_records_w_max_and_the_revision(monkeypatch, tmp_path) -> None:
     runs = base()
-    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "targeted", "--w-max", str(W_MAX))
+    record = fixed(tmp_path)
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "discovery", "--fixation", record)
     header = " ".join(line[2:] for line in out.read_text().splitlines() if line.startswith("#"))
-    assert re.search(r"targeted at [0-9a-f]{40}", header) and "w_max 0.35 from --w-max" in header
+    assert re.search(r"discovery at [0-9a-f]{40}", header) and "w_max 0.35 from the fixation" in (
+        header)  # fmt: skip
+    assert f"the fixation record {record}, sha256" in header
     found = load_campaign(out)[1]
-    assert len(found) == 15 and {run.experiment for run in found} == {"study2_short"}
-    assert "frozen_adam_25-b5-1.27e-05/s2001" in labels_of(found)
-    fa = next(run for run in found if run.cell == "frozen_adam_25-b5-1.27e-05")
-    assert fa.overrides[:4] == ("optimizer=adam_frozen", "train.batch_size=5",
-                                "optimizer.lr=1.27e-05", "study2_short.role=discovery")  # fmt: skip
-    record = fixation_file(tmp_path)
-    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "targeted", "--fixation", record)
-    assert f"the fixation record {record}, sha256" in out.read_text().replace("\n# ", " ")
-    split = campaign(monkeypatch, tmp_path, runs, "targeted", "--w-max", str(W_MAX),
+    # The joint discovery at (8, 20): both primary arms' targeted rounds and the pre-warmed
+    # arm's first round, at the union of their rates.
+    assert len(found) == 36 and {run.experiment for run in found} == {"study2_short"}
+    assert "frozen_adam_25-b20-1.59e-05/s2001" in labels_of(found)
+    assert "prewarmed_adamw_25-b20-1.59e-05/s2001" in labels_of(found)
+    fa = next(run for run in found if run.cell == "frozen_adam_25-b20-1.59e-05")
+    assert fa.overrides[:4] == ("optimizer=adam_frozen", "train.batch_size=20",
+                                "optimizer.lr=1.59e-05", "study2_short.role=discovery")  # fmt: skip
+    split = campaign(monkeypatch, tmp_path, runs, "discovery", "--fixation", record,
                      "--seeds", "2002")  # fmt: skip
-    assert len(split) == 5 and {run.seed for run in split} == {2002}
+    assert len(split) == 12 and {run.seed for run in split} == {2002}
 
 
 def test_the_campaigns_refuse_another_step_a_missing_w_max_and_incomplete_records(
@@ -672,51 +823,78 @@ def test_the_campaigns_refuse_another_step_a_missing_w_max_and_incomplete_record
 ) -> None:
     runs = base()
     record = fixation_file(tmp_path)
-    err = refusal(monkeypatch, tmp_path, capsys, runs, "controls", "--fixation", record)
-    assert "the stage's next step is targeted, not controls" in err
-    err = refusal(monkeypatch, tmp_path, capsys, runs, "controls", "--w-max", str(W_MAX))
-    assert "controls needs the fixation record (--fixation)" in err
-    err = refusal(monkeypatch, tmp_path, capsys, runs, "targeted")
-    assert "w_max is needed: --w-max or --fixation" in err
-    err = refusal(monkeypatch, tmp_path, capsys, runs, "targeted", "--w-max", "0.3",
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical", "--fixation", record)
+    assert "the stage's next step is discovery, not numerical" in err
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical", "--w-max", str(W_MAX))
+    assert "numerical needs the fixation record (--fixation)" in err
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "discovery")
+    assert "discovery needs the fixation record (--fixation)" in err
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "discovery", "--w-max", "0.3",
                   "--fixation", record)  # fmt: skip
     assert "--w-max 0.3 differs from the fixation record's 0.47" in err
-    err = refusal(monkeypatch, tmp_path, capsys, runs, "targeted",
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "discovery",
                   "--fixation", fixation_file(tmp_path, se_floor=None))  # fmt: skip
     assert "se_floor None is not a number" in err
-    err = refusal(monkeypatch, tmp_path, capsys, runs[1:], "targeted", "--w-max", str(W_MAX))
+    err = refusal(monkeypatch, tmp_path, capsys, runs[1:], "discovery", "--fixation", record)
     assert "version-1 run missing" in err  # Stage A's reference incomplete: no stream time
-    err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "10",
-                  "--fixation", record)  # fmt: skip
-    assert "confirmation needs --runs-root" in err
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "discovery", "--fixation", record,
+                  root=False)  # fmt: skip
+    assert "discovery needs --runs-root" in err  # the verdicts and the journal live there
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "controls", "--fixation", record)
+    assert "invalid choice: 'controls'" in err  # amendment 3's controls are never run again
 
 
-def test_the_controls_and_prewarmed_campaigns(monkeypatch, tmp_path) -> None:
+def test_the_numerical_campaign(monkeypatch, tmp_path) -> None:
     runs = base()
-    until(runs, "controls")
-    record = fixation_file(tmp_path)
-    found = campaign(monkeypatch, tmp_path, runs, "controls", "--fixation", record)
-    assert labels_of(found) == ["fa-control-b5-1.27e-05-u8/s2000",
-                                "fa-control-b5-1.49e-05-u8/s2000",
-                                "fa-control-b5-1.74e-05-u8/s2000"]  # fmt: skip
-    assert {run.experiment for run in found} == {"study2_short_fa_controls"}
-    bound = next(o for o in found[0].overrides if o.startswith("schedule.instability"))
-    assert float(bound.split("=")[1]) == 0.01 * math.sqrt(40)  # written in full
-    until(runs, "prewarmed")
-    found = campaign(monkeypatch, tmp_path, runs, "prewarmed", "--fixation", record)
-    assert len(found) == 6 * 3 and all("optimizer=adamw_prewarmed" in r.overrides for r in found)
+    until(runs, "numerical")
+    record = fixed(tmp_path)
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "numerical", "--fixation", record)
+    found = load_campaign(out)[1]
+    # The 15 cases' regular runs, K-only: every selected rate on 2200, each U-rate on 2201-2202.
+    assert len(found) == 15 and {run.seed for run in found} == set(NUMERICAL_SEEDS)
+    assert {run.config for run in found} == {"experiments/study2_short_k_only"}
+    assert {run.experiment for run in found} == {"study2_short"}
+    assert all("study2_short.role=numerical" in run.overrides for run in found)
+    assert "adamw_25-b20-1.74e-05-numerical-b20-u8/s2202" in labels_of(found)
+    assert "adamw_25-b20-1.27e-05-numerical-b20-u8/s2201" not in labels_of(found)
+    cfg = load_run_config(found[0].config, found[0].overrides)
+    assert cfg.eval.k_only is True and cfg.study2_short.role == "numerical"
+    header = " ".join(line[2:] for line in out.read_text().splitlines() if line.startswith("#"))
+    assert ("prep --seeds 2200 2201 2202 --batch 20): the training stream of 500 responses and "
+            "v₀'s preconditioner stream of 1000") in header  # fmt: skip
+    assert "The check b20-u8 follows the runs" in header
+
+
+def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_path, capsys):
+    runs = base()
+    until(runs, "numerical")
+    runs += make(stage(runs)["next"])  # the numerical runs; no verdict yet
+    record = fixed(tmp_path)
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "numerical-check", "--fixation", record,
+                 verdicts={})  # fmt: skip
+    # Exactly the record scripts/numerical_check.py --selection reads (Task 1): the rates by
+    # optimizer name, three per arm, with the batch and U.
+    assert json.loads(out.read_text()) == {
+        "rates": {"adamw": [1.27e-5, 1.48e-5, 1.74e-5], "adam_frozen": [1.59e-5, 1.86e-5, 2.17e-5],
+                  "adamw_prewarmed": [1.27e-5, 1.48e-5, 1.74e-5]},
+        "batch": 20, "U": 8}  # fmt: skip
+    shown = capsys.readouterr().out
+    assert f"--selection {out} --batch 20 --upper 8" in shown
+    assert "under $RUNS_DIR/numerical/b20-u8" in shown
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical-check", "--fixation", record)
+    assert "the stage's next step is validation, not numerical-check" in err  # verdict in place
 
 
 def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys) -> None:
     runs = base()
     until(runs, "validation")
-    record, root = fixation_file(tmp_path), runs_root(tmp_path)
+    record, root = fixed(tmp_path), runs_root(tmp_path)
     journal_args = ("--fixation", record, "--runs-root", root)
     found = campaign(monkeypatch, tmp_path, runs, "validation", *journal_args)
     assert len(found) == 108 and {r.seed for r in found} == set(VALIDATION_SEEDS)
     assert all("study2_short.role=validation" in r.overrides for r in found)
     # The launcher grants a recovery round per experiment and cell name: no name recurs.
-    assert "adamw_25-b5-1.17e-05-validation" in {r.cell for r in found}
+    assert "adamw_25-b20-1.27e-05-validation" in {r.cell for r in found}
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
                   *journal_args)  # fmt: skip
     assert "next step is validation" in err  # the validation has not passed yet
@@ -726,7 +904,7 @@ def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys
     assert len(found) == 12 * 9 and {r.seed for r in found} == set(range(3000, 3012))
     measuring = [r for r in found if r.config == "experiments/study2_short_rayleigh"]
     assert {r.seed for r in measuring} == set(range(3000, 3010))  # blocks 1-10 measure R
-    assert {"adamw_25-b5-1e-05-blocks-1-12", "adamw_25-b5-1e-05-blocks-1-12-rayleigh"} <= {
+    assert {"adamw_25-b20-1.27e-05-blocks-1-12", "adamw_25-b20-1.27e-05-blocks-1-12-rayleigh"} <= {
         r.cell for r in found}  # fmt: skip
     cfg = load_run_config(measuring[0].config, measuring[0].overrides)
     assert cfg.eval.rayleigh.enabled and cfg.study2_short.role == "confirmation"
@@ -745,7 +923,7 @@ def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_p
     runs = base()
     until(runs, "validation")
     missing = str(tmp_path / "no-versions.json")
-    args = ("--fixation", fixation_file(tmp_path), "--runs-root", runs_root(tmp_path),
+    args = ("--fixation", fixed(tmp_path), "--runs-root", runs_root(tmp_path),
             "--versions", missing)  # fmt: skip
     err = refusal(monkeypatch, tmp_path, capsys, runs, "validation", *args, versions=False)
     assert f"the versions record does not hold: {missing} is missing" in err
@@ -755,9 +933,8 @@ def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_p
     assert "is missing: write the versions record" in err
     # Discovery precedes the record: its campaigns do not read it.
     early = base()
-    found = campaign(monkeypatch, tmp_path, early, "targeted", "--w-max", str(W_MAX),
-                     "--versions", missing)  # fmt: skip
-    assert len(found) == 15
+    found = campaign(monkeypatch, tmp_path, early, "discovery", *args)
+    assert len(found) == 36
     # With the record holding, the header names it.
     record = tmp_path / "versions.json"
     record.write_text("{}")
@@ -771,11 +948,11 @@ def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_p
 def test_the_abandonment_record_lets_a_lost_attempt_be_given_up(monkeypatch, tmp_path, capsys):
     runs = base()
     rates = until(runs, "confirmation")["next"]["rates"]
-    block_runs = blocks_of(rates, 5, CONFIRMATION_SEEDS[:2])
+    block_runs = blocks_of(rates, 20, CONFIRMATION_SEEDS[:2])
     lost = next(r for r in block_runs if (r.arm, r.seed) == (ADAMW, 3000))
     runs += [r for r in block_runs if r is not lost]
-    cell = f"{ADAMW}-b5-{lost.lr:g}-blocks-1-2-rayleigh"
-    overrides = ["train.batch_size=5", f"optimizer.lr={lost.lr:g}",
+    cell = f"{ADAMW}-b20-{lost.lr:g}-blocks-1-2-rayleigh"
+    overrides = ["train.batch_size=20", f"optimizer.lr={lost.lr:g}",
                  "study2_short.role=confirmation"]  # fmt: skip
     records = journal(cell, 3000, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
                       last_ended=False, config="experiments/study2_short_rayleigh")  # fmt: skip
@@ -786,14 +963,14 @@ def test_the_abandonment_record_lets_a_lost_attempt_be_given_up(monkeypatch, tmp
             {"abandoned": [{"run_id": records[-1]["run_id"], "reason": "Pod terminated mid-run"}]}
         )
     )
-    common = ("--fixation", fixation_file(tmp_path), "--runs-root", root)
+    common = ("--fixation", fixed(tmp_path), "--runs-root", root)
     script(monkeypatch, tmp_path, SUMMARY, runs, *common)
     waiting = json.loads(capsys.readouterr().out)
     assert waiting["confirmation"]["given_up_by_the_launcher"] == {}  # the sixth may still run
     out = script(monkeypatch, tmp_path, SUMMARY, runs, *common, "--abandoned", str(path))
     shown = json.loads(capsys.readouterr().out)
     assert shown["confirmation"]["given_up_by_the_launcher"] == {
-        f"{cell}/s3000": [ADAMW, 5, lost.lr, 3000]}  # fmt: skip
+        f"{cell}/s3000": [ADAMW, 20, lost.lr, 3000]}  # fmt: skip
     assert shown["abandoned"] == {records[-1]["run_id"]: "Pod terminated mid-run"}
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     assert json.loads(out.read_text())["abandonment_record"] == {"path": str(path),
@@ -807,16 +984,16 @@ def test_the_abandonment_record_lets_a_lost_attempt_be_given_up(monkeypatch, tmp
 def test_a_range_issued_before_is_completed_and_then_refused(monkeypatch, tmp_path, capsys):
     runs = base()
     rates = until(runs, "confirmation")["next"]["rates"]
-    record = fixation_file(tmp_path)
-    block_runs = blocks_of(rates, 5, CONFIRMATION_SEEDS[:2])
+    record = fixed(tmp_path)
+    block_runs = blocks_of(rates, 20, CONFIRMATION_SEEDS[:2])
     runs += block_runs[:-1]  # blocks 1-2 issued and launched, one run still to make
-    started = [{"event": "start", "run": f"{r.arm}-b5-{r.lr:g}-blocks-1-2-rayleigh/s{r.seed}",
+    started = [{"event": "start", "run": f"{r.arm}-b20-{r.lr:g}-blocks-1-2-rayleigh/s{r.seed}",
                 "experiment": "study2_short", "config_hash": r.run_id, "run_id": r.run_id,
                 "attempt": 1, "command": []} for r in block_runs]  # fmt: skip
     ended = [{"event": "end", "run_id": r.run_id, "outcome": "done"} for r in block_runs]
     args = ("--fixation", record, "--runs-root", runs_root(tmp_path, started + ended))
     found = campaign(monkeypatch, tmp_path, runs, "confirmation", "--blocks", "1", "2", *args)
-    assert labels_of(found) == ["prewarmed_adamw_25-b5-1.37e-05-blocks-1-2-rayleigh/s3001"]
+    assert labels_of(found) == ["prewarmed_adamw_25-b20-1.74e-05-blocks-1-2-rayleigh/s3001"]
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "2", "3",
                   *args)  # fmt: skip
     assert "have runs already, and 2-3 is not a range issued before" in err
@@ -824,6 +1001,18 @@ def test_a_range_issued_before_is_completed_and_then_refused(monkeypatch, tmp_pa
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
                   *args)  # fmt: skip
     assert "blocks 1-2 have every run already" in err
+
+
+def test_the_numerical_verdicts_are_read_from_the_runs_root(tmp_path) -> None:
+    root = tmp_path / "runs"
+    (root / "numerical" / "b20-u8").mkdir(parents=True)
+    (root / "numerical" / "b20-u8" / "verdict.json").write_text('{"batch": 20}')
+    (root / "numerical" / "b20-u8-2").mkdir()
+    (root / "numerical" / "b20-u8-2" / "verdict.json").write_text("{not json")
+    found = read_numerical(root)
+    assert found["numerical/b20-u8/verdict.json"] == {"batch": 20}
+    assert found["numerical/b20-u8-2/verdict.json"].startswith("unreadable: ")
+    assert read_numerical(tmp_path / "nowhere") == {}
 
 
 def joined(text: str) -> list[str]:
@@ -889,6 +1078,71 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
         with pytest.raises(SystemExit):
             prep("--seeds", "2000", "--batch", "5", *bad)
         assert why in capsys.readouterr().err
+
+
+def test_v0_at_b20_is_1000_responses_and_the_numerical_seeds_get_it(monkeypatch, tmp_path):
+    cfg = load_run_config("experiments/study2_stage_a", ["optimizer=adam_frozen",
+                                                         "train.batch_size=20"])  # fmt: skip
+    assert cfg.optimizer.preconditioner.responses == 50 * 20
+    out = tmp_path / "prep.sh"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            str(CAMPAIGNS),
+            "prep",
+            "--seeds",
+            "2200",
+            "2201",
+            "2202",
+            "--batch",
+            "20",
+            "--commit",
+            COMMIT,
+            "--out",
+            str(out),
+        ],
+    )
+    runpy.run_path(str(CAMPAIGNS), run_name="__main__")
+    commands = joined(out.read_text())
+    run = 'project-run "$SRC" python scripts/'
+    for seed in NUMERICAL_SEEDS:
+        assert (f"step {run}generate_teacher.py experiments/study2_stage_a --stream training "
+                f"--seeds {seed} --responses 500") in commands  # fmt: skip
+        assert (
+            f"kept {run}generate_teacher.py experiments/study2_stage_a optimizer=adam_frozen "
+            f"train.batch_size=20 --stream preconditioner --seeds {seed}"
+        ) in commands
+
+
+def test_the_discovery_seeds_b20_v0_streams_are_archived() -> None:
+    """The B = 20 v₀ streams of seeds 2000-2002 that the archived B = 20 FA runs read are those
+    the preconditioner inventories every Pod restores list (runs/archive), so no discovery seed
+    needs a new one; the numerical seeds' are generated by ``prep``."""
+    from test_study2_short import RUNS, _numeric
+
+    module = campaigns_module()
+    archive, grids = RUNS / "archive", RUNS / "study2_stage_a"
+    if not archive.is_dir() or not grids.is_dir():
+        pytest.skip(f"the archived records are not under {RUNS}")
+    read = {}
+    for config in sorted(grids.rglob("config.yaml")):
+        cfg = OmegaConf.load(config)
+        if (
+            OmegaConf.select(cfg, "optimizer.name"),
+            OmegaConf.select(cfg, "train.batch_size"),
+            OmegaConf.select(cfg, "schedule.policy"),
+        ) != ("adam_frozen", 20, "fixed"):
+            continue
+        meta = _numeric((config.parent / "meta.json").read_text())
+        stream = meta["inputs"]["streams"]["preconditioner"]
+        read.setdefault(int(cfg.seed), set()).add((stream["path"], stream["sha256"]))
+    assert sorted(read) == [2000, 2001, 2002] and all(len(v) == 1 for v in read.values())
+    for seed, ((path, digest),) in read.items():
+        assert "/preconditioner/2048b878f867/" in path  # B = 20's stream, not B = 5's
+        name = f"inventory-2026-10-14-study2-a-preconditioner-s{seed}.tsv"
+        assert name in module.INVENTORIES
+        rows = [line.split("\t") for line in (archive / name).read_text().splitlines()[1:]]
+        assert [path + "/samples.jsonl", digest] in [[row[0], row[2]] for row in rows]
 
 
 def driver_functions(text: str) -> str:
@@ -1242,9 +1496,12 @@ def test_the_summary_prints_the_status_and_refuses_looks_without_a_fixation(
     runs = base()
     script(monkeypatch, tmp_path, SUMMARY, runs, "--w-max", str(W_MAX))
     shown = json.loads(capsys.readouterr().out)
-    assert shown["next"]["campaign"] == "targeted" and len(shown["next"]["runs"]) == 15
-    assert [[c["batch"], c["U"]] for c in shown["candidates"]][:2] == [[5, 8.0], [20, 8.0]]
+    assert shown["next"]["campaign"] == "discovery" and len(shown["next"]["runs"]) == 36
+    assert [[c["batch"], c["U"]] for c in shown["candidates"]] == [[20, 8.0], [20, 7.0],
+                                                                   [5, 8.0], [5, 7.0]]  # fmt: skip
     assert shown["attempts"][0]["arms"][ADAMW][0]["feasible"] is False
+    assert shown["attempts"][0]["three_arm"] and shown["amendment3_controls"] == []
+    assert shown["not_reached"] == []
     with pytest.raises(SystemExit):
         script(monkeypatch, tmp_path, SUMMARY, runs, "--w-max", str(W_MAX), "--judge", "wildguard")
     assert "--judge needs the fixation record (--fixation)" in capsys.readouterr().err

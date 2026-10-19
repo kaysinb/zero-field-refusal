@@ -19,8 +19,10 @@ defaults:
 experiment: study2_short
 protocol_version: 2                 # decisions.md, "Protocol versions"
 study2_short:
-  role: ???                         # discovery (seeds 2000-2002), validation (2100-2111) or
-                                    # confirmation (3000-3079) (analysis.study2_short)
+  role: ???                         # discovery (seeds 2000-2002), numerical (2200-2202, run
+                                    # with experiments/study2_short_k_only: K-only, never
+                                    # blocks), validation (2100-2111) or confirmation
+                                    # (3000-3079) (analysis.study2_short)
 teacher:
   stream: appendable
   chunk_size: 1000

@@ -8,18 +8,21 @@ confirmation blocks are labeled, its looks.
         [--allow-descendants] [--out FILE]
 
 --runs holds every run so far, Stage A's included (as for scripts/study2_short_campaigns.py),
---theta0 the θ₀ run, the utility baseline, and --runs-root RUNS_DIR, whose launch/ journal tells
-which runs the launcher gave up on (technical failures of their blocks; without it such a block
-waits). A run is given up only once the last attempt of its recovery round has ended, or that
-attempt is in the abandonment record --abandoned FILE (analysis.study2_short.read_abandonment: a
-JSON object ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``, ATTEMPT the journal's
-run_id, kept under $RUNS_DIR outside the checkout's tracked tree and archived with an inventory);
-an attempt that may still be running keeps its run pending. The status is the stage's state
-machine (analysis.study2_short.progress), on K, numerics and utility only: the candidates (B, U)
-with their costs, every attempt and round, the frozen rates and FA controls, the validation
-verdict, the support of the confirmation blocks with the counts of the confirmation loop (the
-first block without runs, the supported blocks complete in order, those that may still be
-supported), the problems of the records, and the next campaign.
+--theta0 the θ₀ run, the utility baseline, and --runs-root RUNS_DIR, whose numerical/ holds the
+numerical-check verdicts (without it the selection stops, incomplete, where it needs one) and
+whose launch/ journal tells which runs the launcher gave up on (technical failures of their
+blocks; without it such a block waits). A run is given up only once the last attempt of its
+recovery round has ended, or that attempt is in the abandonment record --abandoned FILE
+(analysis.study2_short.read_abandonment: a JSON object
+``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``, ATTEMPT the journal's run_id, kept
+under $RUNS_DIR outside the checkout's tracked tree and archived with an inventory); an attempt
+that may still be running keeps its run pending. The status is the stage's state
+machine (analysis.study2_short.progress), on K, numerics and utility only: the candidates (U, B)
+in amendment 4's order with their costs, every attempt (its selections, numerical checks and
+validation) and round, amendment 3's FA controls (reported with their verdicts, never used), the
+frozen rates, the validation verdict, the support of the confirmation blocks with the counts of
+the confirmation loop (the first block without runs, the supported blocks complete in order,
+those that may still be supported), the problems of the records, and the next campaign.
 
 --judge NAME (configs/judge/NAME.yaml) adds the looks, on the label counts of the bracket runs
 of every complete confirmation block (analysis.study2_labels.read_endpoint_labels). A run without
@@ -86,6 +89,7 @@ from zero_field_refusal.analysis.study2_short import (
     progress,
     read_abandonment,
     read_fixation,
+    read_numerical,
     run_facts,
     secondary_contrasts,
     sensitivity_looks,
@@ -123,20 +127,14 @@ def status(state: dict[str, Any]) -> dict[str, Any]:
         out["rounds"] = {key: {kind: {"new_rates": r["new_rates"], "proposal": _proposal(r)}
                                for kind, r in kinds.items()}
                          for key, kinds in chosen.get("rounds", {}).items()}  # fmt: skip
-        if "prewarmed" in chosen:
-            pre = chosen["prewarmed"]
-            out["prewarmed"] = {
-                "initial": pre["initial"],
-                "outcome": pre["outcome"],
-                "rates": pre["rates"],
-                "selections": [_selection(s) for s in pre["selections"]],
-            }
+        # Amendment 3's FA controls, reported with their verdicts; amendment 4 does not use them.
+        out["amendment3_controls"] = [
+            {k: c[k] for k in ("run", "batch", "lr", "bound", "contamination", "accepted", "used")}
+            for c in chosen.get("amendment3_controls", [])
+        ]
+        out["not_reached"] = chosen.get("not_reached", [])
     if "frozen" in state:
-        frozen = state["frozen"]
-        out["frozen"] = {**{k: v for k, v in frozen.items() if k != "fa_controls"},
-                         "fa_controls": {lr: {k: v[k] for k in ("run", "contamination", "bound",
-                                                                "accepted")}
-                                         for lr, v in frozen["fa_controls"].items()}}  # fmt: skip
+        out["frozen"] = state["frozen"]
     if "validation" in state:
         verdict = state["validation"]
         out["validation"] = {
@@ -182,16 +180,25 @@ def _selection(s: dict[str, Any]) -> dict[str, Any]:
 
 
 def _attempt(a: dict[str, Any]) -> dict[str, Any]:
-    return {"batch": a["batch"], "U": a["U"], "outcome": a["outcome"], "reasons": a["reasons"],
-            "fa_excluded": a["fa_excluded"],
+    validation = a.get("validation")
+    return {"batch": a["batch"], "U": a["U"], "three_arm": a["three_arm"],
+            "outcome": a["outcome"], "failed_arms": a["failed_arms"], "reasons": a["reasons"],
+            "excluded": a["excluded"],
             "arms": {arm: [_selection(s) for s in d["selections"]]
-                     for arm, d in a["arms"].items()}}  # fmt: skip
+                     for arm, d in a["arms"].items()},
+            "numerical": [{k: e.get(k) for k in ("check", "verdict", "state", "reasons",
+                                                 "unusable")} for e in a["numerical"]],
+            "validation": None if validation is None else {
+                "passes": validation["passes"], "reasons": validation["reasons"],
+                "jointly_supported": len(validation.get("jointly_supported", []))}}  # fmt: skip
 
 
 def _proposal(r: dict[str, Any]) -> Any:
     proposal = r["proposal"]
     if r["kind"] == "targeted":
         return proposal["targets"] + [{"skipped": s} for s in proposal["skipped"]]
+    if r["kind"] == "first":  # the pre-warmed arm's first round
+        return {"rates": proposal["rates"], "joint": proposal["joint"]}
     return proposal["reasons"]
 
 
@@ -393,7 +400,8 @@ def main() -> None:
         exhausted = exhausted_runs(records, abandoned=abandoned)
     except ValueError as exc:
         parser.error(str(exc))
-    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted)
+    numerical = read_numerical(args.runs_root) if args.runs_root is not None else None
+    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted, numerical=numerical)
     shown = status(state)
     shown["launch_journal"] = str(args.runs_root / "launch") if args.runs_root else None
     shown["abandoned"] = abandoned

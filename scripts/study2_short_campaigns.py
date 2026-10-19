@@ -1,10 +1,9 @@
-"""Write the campaigns of study 2's short-regime stage (amendment 3, design A) from the run records,
-and the shell driver of their prerequisites.
+"""Write the campaigns of study 2's short-regime stage (amendment 3, design A, its batch and rates
+selected under amendment 4) from the run records and the numerical-check verdicts, and the shell
+driver of their prerequisites.
 
-    python scripts/study2_short_campaigns.py targeted --runs DIR... --theta0 RUN \
-        (--w-max W | --fixation FILE) [--seeds S ...] [--cells NAME ...] --out FILE
     python scripts/study2_short_campaigns.py KIND --runs DIR... --theta0 RUN --fixation FILE \
-        [--runs-root RUNS_DIR] [--abandoned FILE] [--versions FILE] [--seeds S ...] \
+        --runs-root RUNS_DIR [--abandoned FILE] [--versions FILE] [--seeds S ...] \
         [--cells NAME ...] --out FILE
     python scripts/study2_short_campaigns.py confirmation --blocks FIRST LAST [--after-look K] \
         --runs DIR... --theta0 RUN --fixation FILE --runs-root RUNS_DIR [--abandoned FILE] \
@@ -16,28 +15,40 @@ and the shell driver of their prerequisites.
         --stage0-run-id ID [--aside-root DIR]
 
 KIND is the campaign the stage's state machine names (analysis.study2_short.progress), and each
-kind refuses when it names another step, or when the records are not whole: ``targeted`` or
-``repair`` (a round of discovery runs at the rates it prescribes, on seeds 2000-2002, of the
-primary arms or of the pre-warmed arm), ``controls`` (one FA soft-target control per selected FA
-rate on seed 2000, experiments/study2_short_fa_controls with schedule.instability.contamination_k
-= 0.01 × K*), ``prewarmed`` (the pre-warmed arm's first discovery runs, at the union of the frozen
-AdamW and FA rates), ``validation`` (seeds 2100-2111, every arm at its frozen rates) and
-``confirmation`` (the blocks FIRST to LAST, 1-80, in the preassigned seed order 3000-3079, every
-arm at its frozen rates, once the validation passed; blocks 1-10 run
-experiments/study2_short_rayleigh, which measures the endpoint Rayleigh quotient). A campaign
-holds the runs still missing; ``--seeds`` and ``--cells`` only split it over Pods.
+kind refuses when it names another step, or when the records are not whole. The candidates
+(U, B) come in amendment 4's order (8, 20), (7, 20), (8, 5), (7, 5), each for the three arms:
+``discovery`` (the primary arms' targeted round on seeds 2000-2002, holding the pre-warmed arm's
+first round, at the union of the rates of the primary arms' targeted assignments, when it is
+due), ``repair`` (a repair round, of the primary arms or of the pre-warmed arm), ``prewarmed``
+(the pre-warmed arm's first round alone, at the union of the selected AdamW and FA rates),
+``targeted`` (the pre-warmed arm's own targeted round), ``numerical`` (the regular runs of the
+numerical qualification's cases, role numerical, under experiments/study2_short_k_only: K-only,
+no response to a harmful prompt; every selected rate on seed 2200 and each arm's U-rate on 2201
+and 2202; the streams of those seeds at B come first, from ``prep``),
+``validation`` (seeds 2100-2111, every arm at its selected rates) and ``confirmation`` (the blocks
+FIRST to LAST, 1-80, in the preassigned seed order 3000-3079, every arm at its frozen rates, once
+a candidate's validation passed; blocks 1-10 run experiments/study2_short_rayleigh, which
+measures the endpoint Rayleigh quotient). Between ``numerical`` and ``validation`` the step is
+``numerical-check``, no launcher campaign: the check of scripts/numerical_check.py, with the
+rates, the cases and the verdict path under $RUNS_DIR that the step names (the summary prints
+it); this kind writes its rate input, the JSON selection record ``{"rates": {optimizer:
+[r1, r2, r3]}, "batch": B, "U": U}`` that numerical_check.py --selection reads, and prints the
+directory the check writes into (--out) and the earlier checks' whose case records it reuses.
+When no candidate is eligible with the three arms, the candidates are visited again for the
+primary arms alone, the pre-warmed arm dropped. A campaign holds the runs still missing;
+``--seeds`` and ``--cells`` only split it over Pods.
 
 - --runs holds every run so far: Stage A's (study2_stage_a, study2_controls), whose 25-step grids
   are the first discovery runs and whose version-1 discovery set fixes the stream time, and this
-  stage's (study2_short, study2_short_fa_controls). --theta0 is the θ₀ run (summary.json).
+  stage's (study2_short, and amendment 3's study2_short_fa_controls, reported and never used).
+  --theta0 is the θ₀ run (summary.json).
 - **w_max** is the simulation's: the fixation record (--fixation, ``read_fixation``) is required
-  for every kind but ``targeted``, whose rates do not depend on it; there --w-max may stand in.
-  A --w-max given beside a record must equal it. Every campaign's header records w_max, where it
-  came from and the code revision. Fix w_max before any repair round: rounds already made under
-  another w_max leave the stage incomplete.
-- --runs-root is RUNS_DIR, whose launch/ journal (``launch.launch_records``) tells which runs the
-  launcher gave up on after their recovery round (``exhausted_runs``: technical failures of
-  their blocks) and which confirmation ranges were issued; validation and confirmation need it.
+  for every kind. A --w-max given beside it must equal it. Every campaign's header records
+  w_max, where it came from and the code revision.
+- --runs-root is RUNS_DIR, required for every kind: its numerical/ holds the numerical-check
+  verdicts (``read_numerical``), and its launch/ journal (``launch.launch_records``) tells which
+  runs the launcher gave up on after their recovery round (``exhausted_runs``: technical
+  failures of their blocks) and which confirmation ranges were issued.
   A run is given up only once the last attempt of its recovery round ended, or that attempt is
   in the abandonment record --abandoned FILE (``read_abandonment``: a JSON object
   ``{"abandoned": [{"run_id": ATTEMPT, "reason": TEXT}]}``, ATTEMPT the journal's run_id, kept
@@ -50,8 +61,8 @@ holds the runs still missing; ``--seeds`` and ``--cells`` only split it over Pod
   identity or the fixation record departs from it (``versions_problems``: the record tracked
   and unchanged at HEAD; HEAD is the recorded commit or a child that adds the record alone, or
   any descendant when the record allows it; no uncommitted change or untracked file, so campaign
-  files go under $RUNS_DIR). The discovery kinds (``targeted``, ``repair``, ``controls``,
-  ``prewarmed``) precede the record and do not read it.
+  files go under $RUNS_DIR). The discovery and numerical kinds (``discovery``, ``repair``,
+  ``prewarmed``, ``targeted``, ``numerical``) precede the record and do not read it.
 - **The confirmation loop** (``confirmation_guard``; the looks at 36 and 60 supported blocks, cap
   80): (1) write and launch at most the blocks the guard allows: the next range starts at the
   first block without a run and ends before the next look could fall; (2) let them complete;
@@ -76,9 +87,11 @@ streams exist (``--archived``: seeds whose streams are archived, nothing is gene
 stream stops it) or it
 generates them: the training stream to 25 × B responses (the stream is appendable; the default
 length, study2_stage_a's 4000 steps at its batch 20, is not needed) and v₀'s preconditioner
-stream at B. The driver can be run again after a failure. ``check-streams`` is that check, which
-the driver runs on the Pod through ``runtime.locate_stream``. FILE must not exist; write
-campaigns under an ignored directory such as $RUNS_DIR/campaigns/.
+stream at B, 50 × B responses (1000 at B = 20; those of seeds 2000-2002 at both batches are
+archived). The numerical seeds 2200-2202 are prepared so at the candidate's B before its
+numerical campaign. The driver can be run again after a failure. ``check-streams`` is that
+check, which the driver runs on the Pod through ``runtime.locate_stream``. FILE must not exist;
+write campaigns under an ignored directory such as $RUNS_DIR/campaigns/.
 
 Stage 0 under a new protocol (docs/operations.md) needs the distributions of its path-field
 check's soft-target stream, which the retention policy deleted: DATA_DIR holds only the restored
@@ -121,8 +134,9 @@ from zero_field_refusal.analysis.study2_short import (
     DISCOVERY_SEEDS,
     FA,
     FA_CONTROL_ARM,
-    FA_CONTROLS,
+    K_ONLY,
     LOOK_SIZES,
+    NUMERICAL_SEEDS,
     PREWARMED,
     RAYLEIGH,
     REGULAR,
@@ -136,6 +150,7 @@ from zero_field_refusal.analysis.study2_short import (
     progress,
     read_abandonment,
     read_fixation,
+    read_numerical,
     run_facts,
     seed_role,
     versions_problems,
@@ -144,11 +159,11 @@ from zero_field_refusal.launch import launch_records
 from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
-KINDS = ("targeted", "repair", "controls", "prewarmed", "validation", "confirmation")
-JOURNAL_KINDS = ("validation", "confirmation")  # past the selection: the journal is read
+KINDS = ("discovery", "repair", "prewarmed", "targeted", "numerical", "numerical-check",
+         "validation", "confirmation")  # fmt: skip
 VERSIONED_KINDS = ("validation", "confirmation")  # they need the versions record
 OPTIMIZER = {ADAMW: [], FA: ["optimizer=adam_frozen"], PREWARMED: ["optimizer=adamw_prewarmed"]}
-STAGE_SEEDS = (*DISCOVERY_SEEDS, *VALIDATION_SEEDS, *CONFIRMATION_SEEDS)
+STAGE_SEEDS = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS, *CONFIRMATION_SEEDS)
 STAGE_A = "experiments/study2_stage_a"  # the streams' config, as Stage A generated them
 TEACHER = 'project-run "$SRC" python scripts/generate_teacher.py'
 # generate_teacher.py's refusal of a stream that exists (runtime.generate_stream).
@@ -206,7 +221,8 @@ def regular_cells(runs: list[dict], suffix: str = "") -> list[dict]:
     """One cell per arm, rate and config (the first 10 confirmation blocks measure R), over its
     seeds, with the role of its seeds. The launcher grants a recovery round once per experiment
     and cell name, so a name never recurs in another of the stage's campaigns: ``suffix`` names
-    the validation or the confirmation blocks."""
+    the numerical check (whose seeds of one rate can differ between checks), the validation or
+    the confirmation blocks."""
     groups: dict[tuple, list[int]] = defaultdict(list)
     for r in runs:
         seed = r["seed"]
@@ -218,19 +234,8 @@ def regular_cells(runs: list[dict], suffix: str = "") -> list[dict]:
         overrides = [*OPTIMIZER[arm], f"train.batch_size={batch}", f"optimizer.lr={lr:g}",
                      f"study2_short.role={role}"]  # fmt: skip
         name = f"{arm}-b{batch}-{lr:g}{suffix}" + ("-rayleigh" if rayleigh else "")
-        items.append(cell(name, RAYLEIGH if rayleigh else REGULAR, overrides, sorted(seeds)))
-    return items
-
-
-def control_cells(runs: list[dict], upper: float) -> list[dict]:
-    """One FA soft-target control per rate on seed 2000, its bound 0.01 × K* written in full;
-    a rate may have a control under each U, so the cell's name carries U."""
-    items = []
-    for r in sorted(runs, key=lambda r: r["lr"]):
-        overrides = [f"train.batch_size={r['batch']}", f"optimizer.lr={r['lr']:g}",
-                     f"schedule.instability.contamination_k={r['contamination_k']!r}"]  # fmt: skip
-        items.append(cell(f"fa-control-b{r['batch']}-{r['lr']:g}-u{upper:g}", FA_CONTROLS,
-                          overrides, [r["seed"]]))  # fmt: skip
+        config = RAYLEIGH if rayleigh else K_ONLY if role == "numerical" else REGULAR
+        items.append(cell(name, config, overrides, sorted(seeds)))
     return items
 
 
@@ -606,14 +611,10 @@ def prep(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
 
 
 def w_max_of(parser: argparse.ArgumentParser, args: argparse.Namespace) -> tuple[float, str]:
-    """w_max and where it came from: the fixation record, required but for ``targeted``."""
+    """w_max and where it came from: the fixation record, required for every kind."""
     if args.fixation is None:
-        if args.kind != "targeted":
-            parser.error(f"{args.kind} needs the fixation record (--fixation): its w_max is the "
-                         "simulation's, fixed before any repair round")  # fmt: skip
-        if args.w_max is None or not args.w_max > 0:
-            parser.error("w_max is needed: --w-max or --fixation")
-        return args.w_max, "--w-max"
+        parser.error(f"{args.kind} needs the fixation record (--fixation): its w_max is the "
+                     "simulation's")  # fmt: skip
     try:
         fixed = read_fixation(args.fixation)["w_max"]
     except (OSError, ValueError) as exc:
@@ -626,22 +627,23 @@ def w_max_of(parser: argparse.ArgumentParser, args: argparse.Namespace) -> tuple
 
 def campaign(
     parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> tuple[dict, float, str, list[str]]:
-    """The campaign of ``args.kind``, w_max with its source, and the records it was written
-    under (the versions and abandonment records, path and sha256), for its header."""
+) -> tuple[dict, float, str, list[str], list[str]]:
+    """The campaign of ``args.kind``, w_max with its source, the records it was written under
+    (the versions and abandonment records, path and sha256) and its prerequisites, for its
+    header."""
     if args.theta0 is None or not args.runs:
         parser.error(f"{args.kind} needs --runs and --theta0")
     if (args.kind == "confirmation") != (args.blocks is not None):
         parser.error("--blocks goes with confirmation, and confirmation needs it")
     if args.after_look and args.kind != "confirmation":
         parser.error("--after-look goes with confirmation")
-    if args.kind in ("confirmation", "controls") and args.seeds:
-        parser.error("--seeds splits discovery and validation campaigns only")
-    if args.kind in JOURNAL_KINDS and args.runs_root is None:
-        parser.error(f"{args.kind} needs --runs-root, whose launch journal tells which runs the "
-                     "launcher gave up on")  # fmt: skip
+    if args.kind in ("confirmation", "numerical-check") and args.seeds:
+        parser.error("--seeds splits the discovery, numerical and validation campaigns only")
+    if args.runs_root is None:
+        parser.error(f"{args.kind} needs --runs-root: the stage reads the numerical-check "
+                     "verdicts and the launch journal there")  # fmt: skip
     w_max, source = w_max_of(parser, args)
-    notes = []
+    notes, prerequisites = [], []
     if args.kind in VERSIONED_KINDS:
         problems = versions_problems(args.versions, fixation=args.fixation)
         if problems:
@@ -649,8 +651,6 @@ def campaign(
         notes.append(f"the versions record {args.versions}, sha256 {_sha256(args.versions)}")
     abandoned = {}
     if args.abandoned is not None:
-        if args.kind not in JOURNAL_KINDS:
-            parser.error("--abandoned goes with validation and confirmation")
         try:
             abandoned = read_abandonment(args.abandoned)
         except (OSError, ValueError) as exc:
@@ -663,12 +663,13 @@ def campaign(
         parser.error("; ".join(theta0_problems(theta0)))
     runs = load_trajectories(*args.runs)
     facts = {r.run_id: run_facts(r.run_dir) for r in runs if r.arm in (*ARMS, FA_CONTROL_ARM)}
-    records = launch_records(args.runs_root) if args.runs_root is not None else []
+    records = launch_records(args.runs_root)
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
     except ValueError as exc:
         parser.error(str(exc))
-    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted)
+    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted,
+                     numerical=read_numerical(args.runs_root))  # fmt: skip
     step = state["next"]
     if state["problems"]:
         parser.error("the stage's records are not whole: " + "; ".join(state["problems"]))
@@ -676,10 +677,8 @@ def campaign(
         shown = {k: v for k, v in step.items() if k != "runs"}
         parser.error(f"the stage's next step is {step['campaign']}, not {args.kind}: {shown}")
     batch, upper = step["batch"], step["U"]
-    if args.kind == "controls":
-        written = {"name": f"study2-short-controls-b{batch}-u{upper:g}",
-                   "cells": control_cells(step["runs"], upper)}  # fmt: skip
-        return written, w_max, source, notes
+    if args.kind == "numerical-check":  # no launcher campaign: the check's rate input
+        return {"check": step["check"]}, w_max, source, notes, prerequisites
     if args.kind == "confirmation":
         first, last = args.blocks
         guard = confirmation_guard(state["confirmation"], first, last,
@@ -697,20 +696,33 @@ def campaign(
             parser.error(f"blocks {first}-{last} have every run already")
         written = {"name": f"study2-short-confirmation-{first}-{last}",
                    "cells": regular_cells(wanted, f"-blocks-{first}-{last}")}  # fmt: skip
-        return written, w_max, source, notes
+        return written, w_max, source, notes, prerequisites
     wanted = step["runs"]
     if args.seeds:
         unknown = sorted(set(args.seeds) - {r["seed"] for r in wanted})
         if unknown:
             parser.error(f"no run of seeds {unknown} in this campaign")
         wanted = [r for r in wanted if r["seed"] in args.seeds]
+    if args.kind == "numerical":
+        streams = step["streams"]
+        seeds = " ".join(map(str, streams["seeds"]))
+        prerequisites.append(f"The streams of seeds {seeds} at batch {batch} come first (prep "
+                             f"--seeds {seeds} --batch {batch}): the training stream of "
+                             f"{streams['training_responses']} responses and v₀'s preconditioner "
+                             f"stream of {streams['preconditioner_responses']}. The check "
+                             f"{step['check']} follows the runs.")  # fmt: skip
+        written = {"name": f"study2-short-numerical-{step['check']}",
+                   "cells": regular_cells(wanted, f"-numerical-{step['check']}")}  # fmt: skip
+        return written, w_max, source, notes, prerequisites
     # The pre-warmed arm's own rounds, apart from the primary arms' of the same batch and U.
     own = args.kind in ("targeted", "repair") and {r["arm"] for r in wanted} == {PREWARMED}
     kind = f"{args.kind}-prewarmed" if own else args.kind
+    if not step["three_arm"]:  # the fallback: the primary arms alone
+        kind += "-primary"
     suffix = "-validation" if args.kind == "validation" else ""
     written = {"name": f"study2-short-{kind}-b{batch}-u{upper:g}",
                "cells": regular_cells(wanted, suffix)}  # fmt: skip
-    return written, w_max, source, notes
+    return written, w_max, source, notes, prerequisites
 
 
 def _sha256(path: Path) -> str:
@@ -722,9 +734,10 @@ def main() -> None:
     parser.add_argument("kind", choices=("prep", "check-streams", *SOFT_TARGET_KINDS, *KINDS))
     parser.add_argument("--runs", type=Path, nargs="*", default=[])
     parser.add_argument("--theta0", type=Path, help="the θ₀ run directory (summary.json)")
-    parser.add_argument("--w-max", type=float, help="targeted: w_max without a fixation record")
+    parser.add_argument("--w-max", type=float, help="w_max, which must equal the fixation record's")
     parser.add_argument("--fixation", type=Path, help="the simulation's fixation record (JSON)")
-    parser.add_argument("--runs-root", type=Path, help="RUNS_DIR, whose launch/ journal is read")
+    parser.add_argument("--runs-root", type=Path,
+                        help="RUNS_DIR: its numerical/ verdicts and launch/ journal")  # fmt: skip
     parser.add_argument("--abandoned", type=Path,
                         help="the abandonment record of launcher attempts (JSON)")  # fmt: skip
     parser.add_argument("--versions", type=Path, default=REPO_ROOT / VERSIONS_RECORD,
@@ -755,7 +768,8 @@ def main() -> None:
     args = parser.parse_args()
     seeds = args.seeds or []
     if set(seeds) - set(STAGE_SEEDS) or len(set(seeds)) != len(seeds):
-        parser.error("--seeds: distinct seeds of the stage (2000-2002, 2100-2111, 3000-3079)")
+        parser.error("--seeds: distinct seeds of the stage (2000-2002, 2200-2202, 2100-2111, "
+                     "3000-3079)")  # fmt: skip
     if args.kind in SOFT_TARGET_KINDS:
         if not args.stage0_run_id:
             parser.error(f"{args.kind} needs --stage0-run-id")
@@ -784,7 +798,19 @@ def main() -> None:
     if args.kind == "prep":
         text = prep(parser, args)
     else:
-        written, w_max, source, notes = campaign(parser, args)
+        written, w_max, source, notes, prerequisites = campaign(parser, args)
+        if args.kind == "numerical-check":
+            if args.cells:
+                parser.error("--cells splits launcher campaigns only")
+            check = written["check"]
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(check["selection"], indent=2) + "\n")
+            reuse = "".join(f"; reuse the case records of $RUNS_DIR/{d}" for d in
+                            check["records_from"])  # fmt: skip
+            print(f"{args.out}\nscripts/numerical_check.py driver --selection {args.out} "
+                  f"--batch {check['batch']} --upper {check['U']:g}: outputs and the verdict "
+                  f"under $RUNS_DIR/{check['out']}{reuse}")  # fmt: skip
+            return
         if args.cells:  # a campaign split over Pods, cell by cell, without choosing anything
             unknown = sorted(set(args.cells) - {c["name"] for c in written["cells"]})
             if unknown:
@@ -794,6 +820,7 @@ def main() -> None:
         under = "".join(f", under {note}" for note in notes)
         header = comment(f"Written by {writer}, with w_max {w_max!r} from {source}{under}. "
                          "Do not edit.")  # fmt: skip
+        header += [line for text in prerequisites for line in comment(text)]
         text = "\n".join(header) + "\n" + yaml.safe_dump(written, sort_keys=False)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(text)

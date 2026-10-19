@@ -2,25 +2,42 @@
 support, the estimator and the looks, on synthetic ``Trajectory`` objects and label rows.
 
 The state machine is driven through its campaigns against an analytic world: K25 = c × (rate /
-1e-5)^1.5 × a seed factor, per arm and batch, utility losses growing with K."""
+1e-5)^1.5 × a seed factor, per arm and batch, utility losses growing with K; its numerical checks
+get verdict records of the numerical-check tool's schema. One test replays the archived records
+of the main checkout (K, numerics and utility only), skipped where they are absent."""
 
 import dataclasses
+import json
 import math
+import re
 import statistics
+import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
+from omegaconf import OmegaConf
 from scipy import stats
 
 from zero_field_refusal.analysis import study2_short
-from zero_field_refusal.analysis.stage_a import ADAMW_LONG_GRID, SHORT_GRID, Trajectory
+from zero_field_refusal.analysis.stage_a import (
+    ADAMW_LONG_GRID,
+    SHORT_GRID,
+    Trajectory,
+    arm_of,
+    monitor_spec,
+    schedule_spec,
+)
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
+    ARMS,
+    CANDIDATES,
     FA,
     FA_CONTROL_ARM,
     LOOK_SIZES,
+    NUMERICAL_SEEDS,
     PREWARMED,
+    VALIDATION_SEEDS,
     block_difference,
     block_support,
     bootstrap_t_interval,
@@ -30,8 +47,12 @@ from zero_field_refusal.analysis.study2_short import (
     finite_bounds,
     harm,
     interpolate,
+    numerical_cases,
+    numerical_policy,
+    numerical_verdict,
     repair_rates,
     secondary_contrasts,
+    seed_role,
     select_rates,
     selection,
     sensitivity_looks,
@@ -40,13 +61,16 @@ from zero_field_refusal.analysis.study2_short import (
     utility_family,
     validation_verdict,
 )
+from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.seeding import derive_seed
+from zero_field_refusal.teacher import monitor_version
 
 THETA0 = {"benchmark_accuracy": 0.60, "factual_accuracy": 0.80}
 SEEDS = (2000, 2001, 2002)
 K8 = math.sqrt(40)
 W_MAX = 0.35
 SPC = 90.0  # seconds per chunk
+COMMIT = "c" * 40  # the code commit every synthetic run records
 
 
 def traj(
@@ -124,7 +148,8 @@ def kink(x: float) -> float:
 
 
 def world_k(arm, batch, lr, seed, scale=SCALE, spread=None, kinked=()) -> float:
-    factor = (spread or {}).get(arm, SPREAD)[seed]
+    """The world's K25; a seed outside the discovery seeds' spread gets 0.98 + 0.01 × (seed % 5)."""
+    factor = (spread or {}).get(arm, SPREAD).get(seed, 0.98 + 0.01 * (seed % 5))
     x = lr / 1e-5
     return scale[(arm, batch)] * (kink(x) if (arm, batch) in kinked else x**1.5) * factor
 
@@ -140,24 +165,82 @@ def grids(scale=SCALE, spread=None, kinked=()) -> list[Trajectory]:
             for lr in SHORT_GRID for s in SEEDS]  # fmt: skip
 
 
-def drive(runs, *, scale=SCALE, spread=None, kinked=(), contaminated=(), limit=16):
-    """Make each campaign the state machine asks for until it ends; FA controls at the rates in
-    ``contaminated`` read 2 × their bound. Returns the campaigns and the last result."""
-    seen = []
+# The synthetic commits' GPU code (``code_identity``): "a" × 40 changes analysis files only.
+GPU = {COMMIT: "gpu-1", "a" * 40: "gpu-1", "g" * 40: "gpu-2"}
+
+
+def reuse_at(head: str = COMMIT):
+    """A ``code_identity.reuse_check`` over the synthetic commits, the checkout at ``head``."""
+
+    def reuse(base: str, other: str) -> dict:
+        other = head if other == "HEAD" else other
+        if base not in GPU or other not in GPU:
+            raise ValueError(f"unknown commit {base} or {other}")
+        a, b = ({"commit": c, "files": 1, "sha256": GPU[c]} for c in (base, other))
+        same = a["sha256"] == b["sha256"]
+        return {"base": a, "head": b, "changed": [] if same else ["src/zero_field_refusal/x.py"],
+                "reusable": same}  # fmt: skip
+
+    return reuse
+
+
+reusable = reuse_at()
+
+
+def verdict_of(check: dict, rates=None, controls=None, *, gpu=None, **changes) -> dict:
+    """The numerical-check tool's verdict record for a check request (a ``numerical-check``
+    step's ``check``): every rate qualified on the seeds of its cases and every control accepted,
+    but those ``rates`` ({(optimizer, lr): state}) and ``controls`` ({lr: state}) give, at the
+    GPU code ``gpu`` (that of ``COMMIT`` by default)."""
+    gpu = gpu or {"commit": COMMIT, "files": 1, "sha256": GPU[COMMIT]}
+    rates, controls = rates or {}, controls or {}
+    states = {f"{o}|{lr:g}": rates.get((o, lr), "qualified")
+              for o, lrs in check["rates"].items() for lr in lrs}  # fmt: skip
+    seeds: dict[str, list[int]] = {}
+    for case in check["cases"]:
+        seeds.setdefault(f"{case['optimizer']}|{case['lr']:g}", []).append(case["seed"])
+    checked = {f"{lr:g}": controls.get(lr, "accepted")
+               for lr in check["rates"].get("adam_frozen", [])}  # fmt: skip
+    record = {"batch": check["batch"], "U": int(check["U"]), "rates": states,
+              "seeds": seeds, "controls": checked,
+              "qualified": all(v == "qualified" for v in states.values())
+              and all(v == "accepted" for v in checked.values()),
+              "reasons": {}, "cases": [], "provenance": {},
+              "policy": {"gpu_code": gpu, "tool_commit": gpu["commit"],
+                         **numerical_policy(check["U"]), "reference": "float64"}}  # fmt: skip
+    return {**record, **changes}
+
+
+def commits(runs, commit=COMMIT) -> dict:
+    """``run_facts`` as far as the selection reads them: each run's commit."""
+    return {run.run_id: {"commit": commit} for run in runs}
+
+
+def drive(runs, *, scale=SCALE, spread=None, kinked=(), judge=verdict_of, verdicts=None,
+          hook=None, until=None, limit=60):  # fmt: skip
+    """Make each campaign the state machine asks for until it ends (or names ``until``), and
+    give each check the verdict ``judge`` writes for it (every rate qualified, by default);
+    ``hook`` may replace a run as made. Returns the campaigns, the last result and the
+    verdicts."""
+    seen, verdicts = [], {} if verdicts is None else verdicts
     for _ in range(limit):
-        result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC)
+        result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=verdicts,
+                           facts=commits(runs), reuse=reusable)  # fmt: skip
         step = result["next"]
         seen.append(step["campaign"])
-        if step["campaign"] in ("done", "infeasible", "incomplete"):
-            return seen, result
+        if step["campaign"] in ("done", "infeasible", "incomplete", until):
+            return seen, result, verdicts
+        if step["campaign"] == "numerical-check":
+            verdicts[step["check"]["verdict"]] = judge(step["check"])
+            continue
         for r in step["runs"]:
-            if step["campaign"] == "controls":
-                bound = r["contamination_k"]
-                c = 2 * bound if r["lr"] in contaminated else 0.1 * bound
-                runs.append(control(r["batch"], r["lr"], bound, c))
-            else:
-                runs.append(made(r["arm"], r["batch"], r["lr"], r["seed"], scale, spread, kinked))
+            run = made(r["arm"], r["batch"], r["lr"], r["seed"], scale, spread, kinked)
+            runs.append(hook(run) if hook else run)
     raise AssertionError(f"no end after {seen}")
+
+
+def campaign_runs(step) -> set[tuple]:
+    return {(r["arm"], r["batch"], r["lr"], r["seed"]) for r in step["runs"]}
 
 
 # ------------------------------------------------------------------ usability and targeting
@@ -329,187 +412,386 @@ def test_the_midpoint_repairs_the_widest_bracket() -> None:
 # ------------------------------------------------------------------ candidates and costs
 
 
-def test_candidates_put_u8_first_and_the_cheaper_batch_first_with_costs() -> None:
+def test_candidate_order_is_b20_first() -> None:
     runs = grids()  # 100 s per run at B = 5, 150 s at B = 20
     order = candidate_order(runs, THETA0, SPC)
-    assert [(e["batch"], e["U"]) for e in order] == [(5, 8.0), (20, 8.0), (5, 7.0), (20, 7.0)]
-    # Six runs, one chunk of 125 training responses, v₀'s 50 × 5 = 250 preconditioner responses.
-    assert order[0]["seconds"] == pytest.approx(6 * 100.0 + SPC + SPC * 250 / 1000)
-    assert order[0]["preconditioner_seconds"] == pytest.approx(22.5)
-    assert order[1]["seconds"] == pytest.approx(6 * 150.0 + SPC + SPC * 1000 / 1000)
-    assert order[0]["nearest"][ADAMW] == [1e-5, 1e-5, 1.5e-5]  # medians 5.0, 5.0, 9.19
-    cheap20 = [traj(r.arm, r.batch_size, r.lr, r.seed, r.evaluations[0]["K_benign"],
-                    seconds=60.0 if r.batch_size == 20 else 100.0) for r in runs]  # fmt: skip
-    assert [e["batch"] for e in candidate_order(cheap20, THETA0, SPC)] == [20, 5, 20, 5]
+    assert [(e["U"], e["batch"]) for e in order] == [(8.0, 20), (7.0, 20), (8.0, 5), (7.0, 5)]
+    assert [(e["U"], e["batch"]) for e in order] == list(CANDIDATES)
+    # The costs stay for the report: B = 5 is cheaper and still comes after B = 20. Six runs, one
+    # chunk of training responses, v₀'s 50 × B preconditioner responses (1000 at B = 20).
+    assert order[0]["seconds"] == pytest.approx(6 * 150.0 + SPC + SPC * 1000 / 1000)
+    assert order[0]["preconditioner_seconds"] == pytest.approx(SPC)
+    assert order[2]["seconds"] == pytest.approx(6 * 100.0 + SPC + SPC * 250 / 1000)
+    assert order[2]["seconds"] < order[0]["seconds"]
+    assert order[2]["nearest"][ADAMW] == [1e-5, 1e-5, 1.5e-5]  # medians 5.0, 5.0, 9.19
 
 
-def test_equal_costs_go_to_the_smaller_batch_and_unknown_costs_last() -> None:
-    # B = 20's preconditioner stream costs 67.5 s more per block: its runs are 11.25 s cheaper.
-    runs = [traj(r.arm, r.batch_size, r.lr, r.seed, r.evaluations[0]["K_benign"],
-                 seconds=100.0 if r.batch_size == 5 else 88.75) for r in grids()]  # fmt: skip
-    order = candidate_order(runs, THETA0, SPC)
-    assert order[0]["seconds"] == order[1]["seconds"] and order[0]["batch"] == 5
-    without = [r for r in runs if (r.arm, r.batch_size) != (FA, 5)]
+def test_costs_are_reported_and_never_reorder_the_candidates() -> None:
+    cheap5 = [traj(r.arm, r.batch_size, r.lr, r.seed, r.evaluations[0]["K_benign"],
+                   seconds=10.0 if r.batch_size == 5 else 500.0) for r in grids()]  # fmt: skip
+    assert [e["batch"] for e in candidate_order(cheap5, THETA0, SPC)] == [20, 20, 5, 5]
+    without = [r for r in grids() if (r.arm, r.batch_size) != (FA, 5)]
     order = candidate_order(without, THETA0, SPC)
-    assert [e["batch"] for e in order] == [20, 5, 20, 5]
-    assert order[1]["seconds"] is None and order[1]["reasons"]
+    assert [e["batch"] for e in order] == [20, 20, 5, 5]
+    assert order[2]["seconds"] is None and order[2]["reasons"] == [f"{FA}: no usable grid rate "
+                                                                   "at B=5"]  # fmt: skip
 
 
 # ------------------------------------------------------------------ the state machine
 
 
-def test_the_state_machine_targets_controls_prewarms_and_freezes() -> None:
+def test_the_state_machine_discovers_qualifies_validates_and_freezes() -> None:
     runs = grids()
-    seen, result = drive(runs)
-    assert seen == ["targeted", "controls", "prewarmed", "done"]
+    seen, result, verdicts = drive(runs)
+    assert seen == ["discovery", "numerical", "numerical-check", "validation", "done"]
     done = result["next"]
-    assert (done["batch"], done["U"]) == (5, 8.0)
-    assert done["rates"] == {ADAMW: [1e-5, 1.17e-5, 1.37e-5], FA: [1.27e-5, 1.49e-5, 1.74e-5],
-                             PREWARMED: [1e-5, 1.17e-5, 1.37e-5]}  # fmt: skip
-    assert not done["prewarmed_dropped"]
-    assert all(v["accepted"] for v in done["fa_controls"].values())
+    assert (done["batch"], done["U"], done["three_arm"]) == (20, 8.0, True)
+    assert done["rates"] == {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
+                             PREWARMED: [1.27e-5, 1.48e-5, 1.74e-5]}  # fmt: skip
+    assert not done["prewarmed_dropped"] and done["validation"]["passes"]
+    assert done["validation"]["arms"] == list(ARMS)  # the three-arm validation
+    assert [e["verdict"] for e in done["numerical"]] == ["numerical/b20-u8/verdict.json"]
+    assert list(verdicts) == ["numerical/b20-u8/verdict.json"]
     rounds = result["rounds"]
-    assert rounds[f"{ADAMW}/B=5/U=8"]["targeted"]["new_rates"] == [1.17e-5, 1.37e-5]  # 1e-5 run
+    assert rounds[f"{PREWARMED}/B=20/U=8"]["first"]["proposal"]["joint"]
     assert result["problems"] == [] and len(result["attempts"]) == 1
+    # The numerical runs: 15 cases, K-only, never a block; the validation's: 12 three-arm blocks.
+    numerical = [r for r in runs if r.seed in NUMERICAL_SEEDS]
+    assert len(numerical) == 15 and {seed_role(r.seed) for r in numerical} == {"numerical"}
+    assert len([r for r in runs if r.seed in VALIDATION_SEEDS]) == 3 * 3 * 12
 
 
-def test_the_first_campaign_asks_for_every_seed_of_each_targeted_rate() -> None:
-    result = selection(grids(), THETA0, W_MAX, seconds_per_chunk=SPC)
+def test_the_first_campaign_is_the_joint_discovery_at_b20() -> None:
+    result = selection(grids(), THETA0, W_MAX, seconds_per_chunk=SPC, numerical={}, facts={})
     step = result["next"]
-    assert step["campaign"] == "targeted" and (step["batch"], step["U"]) == (5, 8.0)
+    assert (step["campaign"], step["batch"], step["U"]) == ("discovery", 20, 8.0)
     asked = {(r["arm"], r["lr"]) for r in step["runs"]}
-    assert asked == {(ADAMW, 1.17e-5), (ADAMW, 1.37e-5), (FA, 1.27e-5), (FA, 1.49e-5),
-                     (FA, 1.74e-5)}  # fmt: skip
+    primary = {(ADAMW, 1.27e-5), (ADAMW, 1.48e-5), (ADAMW, 1.74e-5), (FA, 1.59e-5),
+               (FA, 1.86e-5), (FA, 2.17e-5)}  # fmt: skip
+    # The pre-warmed arm's first round: the union of the rates of the targeted assignments.
+    assert asked == primary | {(PREWARMED, lr) for _, lr in primary}
     assert len(step["runs"]) == 3 * len(asked)
+    assert {r["seed"] for r in step["runs"]} == set(SEEDS)
 
 
-def test_a_rejected_fa_control_is_replaced_once() -> None:
+def test_failing_numerical_rate_resolves_once() -> None:
+    # The first check finds AdamW's K* rate failing: it leaves B = 20, AdamW is re-solved once
+    # from the same runs (no round), and only the replacement's case is run: on 2200, since the
+    # U-rate stays.
     runs = grids()
-    seen, result = drive(runs, contaminated=(1.49e-5,))
-    assert seen == ["targeted", "controls", "controls", "prewarmed", "done"]
-    assert result["next"]["rates"][FA] == [1.27e-5, 1.5e-5, 1.74e-5]  # the grid's 1.5e-5
+    asked = []
+
+    def judge(check):
+        asked.append(check)
+        return verdict_of(check, {("adamw", 1.48e-5): "failing"})
+
+    seen, result, verdicts = drive(runs, judge=judge)
+    assert seen == ["discovery", "numerical", "numerical-check", "numerical", "numerical-check",
+                    "validation", "done"]  # fmt: skip
+    assert list(verdicts) == ["numerical/b20-u8/verdict.json", "numerical/b20-u8-2/verdict.json"]
+    # The second check writes into its own directory, reusing the first's case records.
+    assert [(c["out"], c["records_from"]) for c in asked] == [
+        ("numerical/b20-u8", []), ("numerical/b20-u8-2", ["numerical/b20-u8"])]  # fmt: skip
+    assert asked[1]["selection"]["rates"]["adamw"] == [1.27e-5, 1.5e-5, 1.74e-5]
     attempt = result["attempts"][0]
-    assert [sorted(v) for v in attempt["controls"]] == [[1.27e-5, 1.49e-5, 1.74e-5],
-                                                        [1.27e-5, 1.5e-5, 1.74e-5]]  # fmt: skip
-    assert attempt["arms"][FA]["selections"][-1]["excluded"] == [1.49e-5]
-
-
-def test_a_rejected_replacement_fails_the_candidate() -> None:
+    first, second = attempt["numerical"]
+    assert first["unusable"] == [
+        {
+            "arm": ADAMW,
+            "lr": 1.48e-5,
+            "state": "failing",
+            "why": "failing: a pair exceeding the bound",
+            "reasons": [],
+        }
+    ]
+    assert second["check"] == "b20-u8-2" and second["unusable"] == []
+    assert attempt["arms"][ADAMW]["selections"][-1]["excluded"] == [1.48e-5]
+    assert result["next"]["rates"][ADAMW] == [1.27e-5, 1.5e-5, 1.74e-5]
+    replacement = [r for r in runs if r.seed in NUMERICAL_SEEDS and r.lr == 1.5e-5]
+    assert [(r.arm, r.seed) for r in replacement] == [(ADAMW, 2200)]
+    # A second unusable rate at the candidate, here not qualified (technical), fails it; the
+    # next candidate (7, 20) starts without both rates.
     runs = grids()
-    seen, result = drive(runs, contaminated=(1.49e-5, 1.5e-5))
-    first = result["attempts"][0]
-    assert first["outcome"] == "failed" and "after the re-solve" in first["reasons"][0]
-    assert (result["next"]["batch"], result["next"]["U"]) == (20, 8.0)
-    assert seen[:3] == ["targeted", "controls", "controls"] and seen[-1] == "done"
+    judge = lambda check: verdict_of(check, {("adamw", 1.48e-5): "failing",  # noqa: E731
+                                             ("adamw", 1.5e-5): "not_qualified"})  # fmt: skip
+    seen, result, _ = drive(runs, judge=judge)
+    failed, at7 = result["attempts"][:2]
+    assert (failed["outcome"], failed["failed_at"], failed["failed_arms"]) == (
+        "failed", "numerical", [ADAMW])  # fmt: skip
+    assert failed["reasons"] == ["unusable rates after the re-solve: ['adamw_25 1.5e-05: not "
+                                 "qualified (technical)']"]  # fmt: skip
+    assert (at7["batch"], at7["U"]) == (20, 7.0)
+    assert sorted(at7["excluded"][ADAMW]) == [1.48e-5, 1.5e-5]
+    assert "not qualified (technical)" in at7["excluded"][ADAMW][1.5e-5]
+    assert "failing" in at7["excluded"][ADAMW][1.48e-5]  # technical is never instability
+    assert seen[:6] == ["discovery", "numerical", "numerical-check", "numerical",
+                        "numerical-check", "discovery"]  # fmt: skip
+    assert (result["next"]["campaign"], result["next"]["U"]) == ("done", 7.0)
 
 
-def test_a_control_of_another_bound_is_not_this_candidates() -> None:
+def test_a_replacement_u_rate_gets_its_cases_on_2201_and_2202() -> None:
+    scale = {**SCALE, (PREWARMED, 20): 3.3}  # the pre-warmed U-rate has two candidates near 8
+    runs = grids(scale)
+    judge = lambda check: verdict_of(check, {("adamw_prewarmed", 1.86e-5): "failing"})  # noqa: E731
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge)
+    assert seen[:5] == ["discovery", "numerical", "numerical-check", "numerical",
+                        "numerical-check"]  # fmt: skip
+    attempt = result["attempts"][0]
+    before, after = attempt["arms"][PREWARMED]["selections"][-2:]  # the re-solve
+    assert (before["rates"], after["rates"]) == ([1.27e-5, 1.59e-5, 1.86e-5],
+                                                 [1.27e-5, 1.59e-5, 1.74e-5])  # fmt: skip
+    assert after["excluded"] == [1.86e-5]
+    assert result["next"]["rates"][PREWARMED] == [1.27e-5, 1.59e-5, 1.74e-5]
+    replacement = sorted((r.arm, r.lr, r.seed) for r in runs
+                         if r.seed in NUMERICAL_SEEDS and r.lr == 1.74e-5)  # fmt: skip
+    # AdamW's U-rate 1.74e-5 had its three cases already; the pre-warmed arm's new U-rate gets
+    # its own three.
+    assert [(arm, seed) for arm, _, seed in replacement] == [
+        (ADAMW, 2200), (ADAMW, 2201), (ADAMW, 2202),
+        (PREWARMED, 2200), (PREWARMED, 2201), (PREWARMED, 2202)]  # fmt: skip
+    second = verdicts["numerical/b20-u8-2/verdict.json"]
+    assert second["seeds"]["adamw_prewarmed|1.74e-05"] == [2200, 2201, 2202]
+
+
+def test_an_unusable_fa_control_is_like_a_failing_rate() -> None:
     runs = grids()
-    drive(runs)
-    other = [control(5, r.lr, 0.01 * math.sqrt(35), 0.0) for r in runs
-             if r.arm == FA_CONTROL_ARM]  # fmt: skip
-    kept = [r for r in runs if r.arm != FA_CONTROL_ARM] + other
-    result = selection(kept, THETA0, W_MAX, seconds_per_chunk=SPC)
-    assert result["next"]["campaign"] == "controls"
-    # The U = 7 controls and the pre-warmed runs made after them are not called for yet.
-    assert {p.split(" (")[0] for p in result["problems"]} == {"unexpected control",
-                                                              "unexpected run"}  # fmt: skip
-    assert sum(p.startswith("unexpected control") for p in result["problems"]) == 3
+    seen, result, _ = drive(
+        runs, judge=lambda check: verdict_of(check, controls={2.17e-5: "rejected"})
+    )
+    unusable = result["attempts"][0]["numerical"][0]["unusable"]
+    assert unusable == [
+        {
+            "arm": FA,
+            "lr": 2.17e-5,
+            "state": "control rejected",
+            "why": "its same-path control rejected",
+            "reasons": [],
+        }
+    ]
+    # No FA triple at U = 8 without 2.17e-5: the candidate fails, and 2.17e-5 stays out at U = 7.
+    first, at7 = result["attempts"][:2]
+    assert first["failed_at"] == "numerical" and first["failed_arms"] == [FA]
+    assert 2.17e-5 in at7["excluded"][FA]
 
 
-def test_a_control_off_its_prescription_leaves_no_conclusion() -> None:
+def test_old_controls_are_reported_not_used() -> None:
+    # Amendment 3's history at B = 5: its targeted round at (8, 5) and three FA controls, two of
+    # them rejected. B = 20 fails here (AdamW's K stays far below the targets).
+    scale = {**SCALE, (ADAMW, 20): 0.2}
+    runs = grids(scale)
+    history = {ADAMW: [1.17e-5, 1.37e-5], FA: [1.27e-5, 1.49e-5, 1.74e-5]}
+    runs += [made(arm, 5, lr, s, scale) for arm, lrs in history.items() for lr in lrs
+             for s in SEEDS]  # fmt: skip
+    bound = 0.01 * K8
+    runs += [control(5, lr, bound, (2.0 if lr != 1.27e-5 else 0.1) * bound)
+             for lr in history[FA]]  # fmt: skip
+    first = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical={}, facts={})
+    # At (8, 20) the B = 5 runs are not reached yet: no problem, no decision on them.
+    assert first["next"]["campaign"] == "discovery" and first["next"]["batch"] == 20
+    assert first["problems"] == [] and len(first["not_reached"]) == 15
+    reported = first["amendment3_controls"]
+    assert [(c["lr"], c["accepted"], c["used"]) for c in reported] == [
+        (1.27e-5, True, False), (1.49e-5, False, False), (1.74e-5, False, False)]  # fmt: skip
+    assert all(c["conformance"] == [] and c["bound"] == pytest.approx(bound) for c in reported)
+    seen, result, _ = drive(runs, scale=scale, limit=14)
+    at5 = next(a for a in result["attempts"] if (a["batch"], a["U"]) == (5, 8.0))
+    assert at5["excluded"][FA] == {}  # the rejected controls exclude nothing
+    # The replay prescribes amendment 3's targeted round again from the same grid: run already.
+    targeted = result["rounds"][f"{FA}/B=5/U=8"]["targeted"]
+    assert [t["rate"] for t in targeted["proposal"]["targets"]] == history[FA]
+    assert {(r.arm, r.lr) for r in runs if r.batch_size == 5 and r.seed == 2000} >= {
+        (arm, lr) for arm, lrs in history.items() for lr in lrs}  # fmt: skip
+    request = at5["numerical"][0]["request"]
+    assert request[FA] == [1.27e-5, 1.49e-5, 1.74e-5]  # qualified by amendment 4 alone
+    assert result["next"]["campaign"] == "done" and result["next"]["batch"] == 5
+
+
+def test_an_old_control_off_its_prescription_is_reported_not_used() -> None:
     runs = grids()
-    drive(runs)
-    first = next(r for r in runs if r.arm == FA_CONTROL_ARM)
-    moved = [dataclasses.replace(r, model="other@rev") if r is first else r for r in runs]
-    result = selection(moved, THETA0, W_MAX, seconds_per_chunk=SPC)
-    assert result["next"]["campaign"] == "incomplete"
-    assert "is not on the model and stream" in result["problems"][0]
-    twin = next(r for r in runs if (r.arm, r.batch_size, r.lr, r.seed) == (FA, 5, first.lr, 2000))
-    assert control_conformance(first, twin) == []
-    assert "no FA run" in control_conformance(first, None)[0]
-    sparse = dataclasses.replace(first, evaluate_at=(20,))
+    _, done, verdicts = drive(runs)
+    twin = next(r for r in runs if (r.arm, r.batch_size, r.lr, r.seed) == (FA, 20, 1.59e-5, 2000))
+    moved = dataclasses.replace(control(20, 1.59e-5, 0.01 * K8, 0.0), model="other@rev")
+    result = selection([*runs, moved], THETA0, W_MAX, seconds_per_chunk=SPC, numerical=verdicts,
+                       facts=commits(runs), reuse=reusable)  # fmt: skip
+    (reported,) = result["amendment3_controls"]
+    assert "is not on the model and stream" in reported["conformance"][0]
+    assert result["problems"] == [] and result["next"] == done["next"]  # nothing changes
+    assert control_conformance(control(20, 1.59e-5, 0.01 * K8, 0.0), twin) == []
+    assert "no FA run" in control_conformance(moved, None)[0]
+    sparse = dataclasses.replace(moved, model=twin.model, evaluate_at=(20,))
     assert "it needs 25 at [25]" in control_conformance(sparse, twin)[0]
 
 
-def test_a_rate_rejected_by_its_control_at_u8_is_excluded_at_u7() -> None:
-    runs = grids()
-    seen, result = drive(runs, contaminated=(1.27e-5, 1.59e-5, 1.5e-5))
+def test_prewarmed_never_feasible_falls_back() -> None:
+    scale = {**SCALE, (PREWARMED, 20): 0.3, (PREWARMED, 5): 0.3}
+    runs = grids(scale)
+    seen, result, verdicts = drive(runs, scale=scale)
     attempts = result["attempts"]
-    assert [(a["batch"], a["U"], a["outcome"]) for a in attempts[:2]] == [
-        (5, 8.0, "failed"), (20, 8.0, "failed")]  # fmt: skip
-    at7 = attempts[2]
-    assert (at7["batch"], at7["U"]) == (5, 7.0)
-    assert list(at7["fa_excluded"]) == [1.27e-5]
-    assert "rejected at bound 0.0632456" in at7["fa_excluded"][1.27e-5]
-    assert at7["arms"][FA]["selections"][0]["excluded"] == [1.27e-5]
-    # No second control was asked for 1.27e-5 at U = 7's bound.
-    asked = [r for r in runs if r.arm == FA_CONTROL_ARM and (r.batch_size, r.lr) == (5, 1.27e-5)]
-    assert len(asked) == 1
+    # Every candidate fails for the three arms on the pre-warmed arm, after its own rounds.
+    assert [(a["U"], a["batch"], a["three_arm"], a["failed_arms"], a["failed_at"])
+            for a in attempts[:4]] == [(u, b, True, [PREWARMED], "discovery")
+                                       for u, b in CANDIDATES]  # fmt: skip
+    assert [r["kind"] for r in attempts[0]["arms"][PREWARMED]["rounds"]] == [
+        "first", "targeted", "repair"]  # fmt: skip
+    # Then the first candidate eligible for the primary arms alone is taken.
+    fallback = attempts[4]
+    assert (fallback["U"], fallback["batch"], fallback["three_arm"]) == (8.0, 20, False)
+    assert set(fallback["arms"]) == {ADAMW, FA} and fallback["outcome"] == "eligible"
+    done = result["next"]
+    assert done["campaign"] == "done" and (done["batch"], done["U"]) == (20, 8.0)
+    assert done["prewarmed_dropped"] and not done["three_arm"] and done["rates"][PREWARMED] is None
+    assert done["validation"]["arms"] == [ADAMW, FA]  # amendment 3's primary-arm validation
+    assert seen[-4:] == ["numerical", "numerical-check", "validation", "done"]
+    assert list(verdicts) == ["numerical/b20-u8/verdict.json"]
+    assert {(r.arm, r.seed) for r in runs if r.seed in NUMERICAL_SEEDS} <= {
+        (arm, s) for arm in (ADAMW, FA) for s in NUMERICAL_SEEDS}  # fmt: skip
+    assert not [r for r in runs if r.arm == PREWARMED and r.seed in VALIDATION_SEEDS]
 
 
-def test_a_failed_u8_leaves_u7_its_own_rounds_at_the_same_batch() -> None:
+def test_primary_only_fallback_end_to_end() -> None:
+    # The pre-warmed arm fails everywhere: at (8, 20) in the combined numerical verdict (each of
+    # its rates failing or not qualified, no triple left), at (7, 20) in selection (its rates
+    # unusable at B = 20, its rounds no help), at B = 5 in selection. The primary arms qualify at
+    # (8, 20).
+    def judge(check):
+        pre = check["rates"].get("adamw_prewarmed", [])
+        return verdict_of(check, {("adamw_prewarmed", lr): ("failing" if i % 2 else
+                                                            "not_qualified")
+                                  for i, lr in enumerate(pre)})  # fmt: skip
+
+    scale = {**SCALE, (PREWARMED, 5): 0.3}
+    runs = grids(scale)
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge, until="validation")
+    attempts = result["attempts"]
+    assert [(a["U"], a["batch"], a["failed_arms"], a["failed_at"]) for a in attempts[:4]] == [
+        (8.0, 20, [PREWARMED], "numerical"), (7.0, 20, [PREWARMED], "discovery"),
+        (8.0, 5, [PREWARMED], "discovery"), (7.0, 5, [PREWARMED], "discovery")]  # fmt: skip
+    assert "without a feasible triple once the unusable rates" in attempts[0]["reasons"][0]
+    assert all(u["arm"] == PREWARMED for u in attempts[0]["numerical"][0]["unusable"])
+    # The fallback reads the same combined verdict for the primary arms and the FA controls
+    # only: its pre-warmed entries do not block it, and no new check is asked for.
+    fallback = attempts[4]
+    assert (fallback["three_arm"], fallback["numerical"][0]["check"]) == (False, "b20-u8")
+    assert fallback["numerical"][0]["state"] == "complete"
+    assert fallback["numerical"][0]["unusable"] == []
+    step = result["next"]
+    assert (step["campaign"], step["batch"], step["U"], step["three_arm"]) == (
+        "validation", 20, 8.0, False)  # fmt: skip
+    assert step["prewarmed_dropped"] and set(step["rates"]) == {ADAMW, FA}
+    assert {r["arm"] for r in step["runs"]} == {ADAMW, FA} and len(step["runs"]) == 2 * 3 * 12
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge, verdicts=verdicts)
+    assert seen == ["validation", "done"] and list(verdicts) == ["numerical/b20-u8/verdict.json"]
+    done = result["next"]
+    assert done["prewarmed_dropped"] is True and done["three_arm"] is False
+    assert done["rates"] == {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
+                             PREWARMED: None}  # fmt: skip
+    assert done["validation"]["passes"] and done["validation"]["arms"] == [ADAMW, FA]
+    # Nothing of the pre-warmed arm was called for after it was dropped.
+    assert not [r for r in runs if r.arm == PREWARMED and r.seed in VALIDATION_SEEDS]
+    assert result["problems"] == []
+
+
+def test_validation_failure_moves_on() -> None:
+    def lossy(run):  # AdamW's U = 8 rate loses 6 pp MMLU on the validation seeds
+        if run.seed in VALIDATION_SEEDS and (run.arm, run.lr) == (ADAMW, 1.74e-5):
+            k = run.evaluations[0]["K_benign"]
+            return traj(run.arm, run.batch_size, run.lr, run.seed, k, mmlu=6.0, factual=0.1 * k)
+        return run
+
+    runs = grids()
+    seen, result, _ = drive(runs, hook=lossy)
+    assert seen == ["discovery", "numerical", "numerical-check", "validation", "numerical",
+                    "numerical-check", "validation", "done"]  # fmt: skip
+    failed, at7 = result["attempts"]
+    assert (failed["failed_at"], failed["reasons"]) == (
+        "validation",
+        ["the validation does not pass: the utility family does not pass"],
+    )
+    member = next(e for e in failed["validation"]["utility"]["family"]
+                  if (e["arm"], e["rate"]) == (ADAMW, 1.74e-5))  # fmt: skip
+    assert not member["mmlu_passes"]
+    assert (at7["batch"], at7["U"], at7["outcome"]) == (20, 7.0, "eligible")
+    # U = 7 reuses the validation seeds: only the runs at its new rates are made.
+    new = {ADAMW: 1.5e-5, FA: 2e-5, PREWARMED: 1.59e-5}
+    assert at7["rates"] == {ADAMW: [1.27e-5, 1.48e-5, 1.5e-5], FA: [1.59e-5, 1.86e-5, 2e-5],
+                            PREWARMED: [1.27e-5, 1.48e-5, 1.59e-5]}  # fmt: skip
+    validation = {(r.arm, r.lr) for r in runs if r.seed in VALIDATION_SEEDS}
+    assert len([r for r in runs if r.seed in VALIDATION_SEEDS]) == 12 * (9 + 3)
+    assert set(new.items()) <= validation
+    assert result["next"]["validation"]["passes"]
+
+
+def test_a_three_arm_validation_failure_falls_back_to_the_primary_validation() -> None:
+    def unsupported(run):  # the pre-warmed arm never brackets K* on the validation seeds
+        if run.seed in VALIDATION_SEEDS and run.arm == PREWARMED:
+            return traj(run.arm, run.batch_size, run.lr, run.seed, 1.0, mmlu=0.3, factual=0.1)
+        return run
+
+    runs = grids()
+    seen, result, _ = drive(runs, hook=unsupported)
+    attempts = result["attempts"]
+    assert [a["failed_at"] for a in attempts[:4]] == ["validation"] * 4
+    assert "0 of 12 blocks jointly supported for the three arms" in attempts[0]["reasons"][0]
+    # The fallback's validation reads the primary arms of the same runs: nothing new to run.
+    assert seen[-1] == "done" and seen[-2] == "validation" and len(attempts) == 5
+    done = result["next"]
+    assert (done["batch"], done["U"], done["three_arm"]) == (20, 8.0, False)
+    assert done["validation"]["arms"] == [ADAMW, FA] and done["validation"]["passes"]
+
+
+def test_no_eligible_candidate_ends_infeasible_with_its_reasons() -> None:
     wide = {ADAMW: {2000: 0.8, 2001: 1.0, 2002: 1.3}}  # wider than the targets' spacing
     runs = grids(spread=wide)
-    seen, result = drive(runs, spread=wide)
-    # Every candidate, U = 7 included, gets its own targeted and repair rounds.
-    assert seen == ["targeted", "repair"] * 4 + ["infeasible"]
-    attempts = result["attempts"]
-    assert [(a["batch"], a["U"]) for a in attempts] == [(5, 8.0), (20, 8.0), (5, 7.0), (20, 7.0)]
-    assert {a["outcome"] for a in attempts} == {"failed"}
+    seen, result, _ = drive(runs, spread=wide)
+    # Every candidate, U = 7 included, gets its own targeted and repair rounds; the primary arms
+    # failed at discovery everywhere, so the fallback has nothing to visit.
+    assert seen == ["discovery", "repair"] * 4 + ["infeasible"]
+    assert [(a["U"], a["batch"]) for a in result["attempts"]] == list(CANDIDATES)
+    assert result["next"]["reasons"] == [
+        f"U={u:g}, B={b}, three arms: ['{ADAMW}'] without a feasible triple after the rounds"
+        for u, b in CANDIDATES]  # fmt: skip
     rounds = result["rounds"]
-    repair8 = rounds[f"{ADAMW}/B=5/U=8"]["repair"]
-    assert repair8["new_rates"] == [8.26e-6] and "seeds [2002]" in repair8["proposal"]["reasons"][0]
-    # U = 7's targets differ: its targeted round asks for new rates; 1e-5 serves 5 at both U.
-    targeted7 = rounds[f"{ADAMW}/B=5/U=7"]["targeted"]
-    assert [t["rate"] for t in targeted7["proposal"]["targets"]] == [1e-5, 1.12e-5, 1.25e-5]
-    assert targeted7["new_rates"] == [1.12e-5, 1.25e-5]
-    # Its repair proposes r_5 / 1.21 again, already run at U = 8, and r_U × 1.21 (seed 2000 now
-    # stays below K* = √35): only the latter is run.
-    repair7 = rounds[f"{ADAMW}/B=5/U=7"]["repair"]
-    assert repair7["proposal"]["rates"] == [8.26e-6, 1.51e-5]
-    assert repair7["new_rates"] == [1.51e-5]
-    # Every run made at B = 5 enters U = 7's selections.
-    usable7 = attempts[2]["arms"][ADAMW]["selections"][0]["usable"]
-    assert {8.26e-6, 1.17e-5, 1.37e-5} <= set(usable7)
-    assert f"{FA}/B=5/U=7" not in rounds  # FA is feasible at U = 7 from what B = 5 ran
+    repair8 = rounds[f"{ADAMW}/B=20/U=8"]["repair"]
+    assert repair8["new_rates"] == [1.05e-5]
+    # U = 7's targets differ: its targeted round asks for new rates; 1.27e-5 serves 5 at both U.
+    targeted7 = rounds[f"{ADAMW}/B=20/U=7"]["targeted"]
+    assert [t["rate"] for t in targeted7["proposal"]["targets"]] == [1.27e-5, 1.42e-5, 1.59e-5]
+    assert targeted7["new_rates"] == [1.42e-5, 1.59e-5]
+    # Every run made at B = 20 enters U = 7's selections.
+    usable7 = result["attempts"][1]["arms"][ADAMW]["selections"][0]["usable"]
+    assert {1.05e-5, 1.48e-5, 1.74e-5} <= set(usable7)
+    assert f"{FA}/B=20/U=7" not in rounds  # FA is feasible at U = 7 from what B = 20 ran
 
 
 def test_a_coverage_miss_after_the_targeted_round_is_repaired_in_the_state_machine() -> None:
     # AdamW's K bends between the grid's 1e-5 and 1.5e-5: the targeted K* and U rates overshoot.
-    bent = {(ADAMW, 5)}
+    bent = {(ADAMW, 20)}
     runs = grids(kinked=bent)
-    seen, result = drive(runs, kinked=bent)
-    assert seen == ["targeted", "repair", "controls", "prewarmed", "targeted", "done"]
+    seen, result, _ = drive(runs, kinked=bent)
+    assert seen == ["discovery", "repair", "targeted", "numerical", "numerical-check",
+                    "validation", "done"]  # fmt: skip
     first = result["attempts"][0]["arms"][ADAMW]["selections"]
     assert "coverage" in first[1]["unmet"]  # after the targeted round
-    repair = result["rounds"][f"{ADAMW}/B=5/U=8"]["repair"]["proposal"]
-    # K* re-targeted to 1.08e-5 (also the too-wide bracket's midpoint) and U to 1.19e-5.
-    assert repair["rates"] == [1.08e-5, 1.19e-5]
-    assert sum("re-targeted" in reason for reason in repair["reasons"]) == 2
-    assert result["next"]["rates"][ADAMW] == [1e-5, 1.08e-5, 1.16e-5]
-
-
-def test_a_prewarmed_arm_still_infeasible_after_its_rounds_is_dropped() -> None:
-    slow = {**SCALE, (PREWARMED, 5): 2.0}
-    runs = grids()
-    seen, result = drive(runs, scale=slow)
-    assert seen == ["targeted", "controls", "prewarmed", "repair", "done"]
-    done = result["next"]
-    assert done["prewarmed_dropped"] and done["rates"][PREWARMED] is None
-    assert done["rates"][ADAMW] == [1e-5, 1.17e-5, 1.37e-5]  # the primary goes on
-    pre = result["prewarmed"]
-    assert pre["initial"] == sorted({1e-5, 1.17e-5, 1.37e-5, 1.27e-5, 1.49e-5, 1.74e-5})
-    assert [r["kind"] for r in pre["rounds"]] == ["targeted", "repair"]
-    assert pre["rounds"][0]["new_rates"] == []  # every target above the range
-    assert pre["rounds"][1]["new_rates"] == [2.11e-5]  # 1.74e-5 × 1.21
+    repair = result["rounds"][f"{ADAMW}/B=20/U=8"]["repair"]["proposal"]
+    assert repair["rates"] == [1.03e-5, 1.15e-5]
+    assert sum("re-targeted" in reason for reason in repair["reasons"]) >= 1
+    assert result["next"]["rates"][ADAMW] == [1.15e-5, 1.25e-5, 2.1e-5]
+    # The joint round gave the pre-warmed arm no triple; its own targeted round followed.
+    pre = result["rounds"][f"{PREWARMED}/B=20/U=8"]
+    assert pre["first"]["proposal"]["joint"] and pre["targeted"]["new_rates"]
 
 
 def test_unprescribed_runs_are_reported_and_duplicates_leave_no_conclusion() -> None:
-    runs = [*grids(), made(ADAMW, 5, 1.23e-5, 2000)]
-    result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC)
-    assert result["problems"] == ["unexpected run ('adamw_25', 5, 1.23e-05, 2000)"]
+    runs = [*grids(), made(ADAMW, 20, 1.23e-5, 2000)]
+    result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical={}, facts={})
+    assert result["problems"] == ["unexpected run ('adamw_25', 20, 1.23e-05, 2000)"]
     assert 1.23e-5 not in result["attempts"][0]["arms"][ADAMW]["selections"][0]["usable"]
+    later = [*grids(), made(ADAMW, 5, 1.23e-5, 2000), made(FA, 20, 1.5e-5, 2101)]
+    result = selection(later, THETA0, W_MAX, seconds_per_chunk=SPC, numerical={}, facts={})
+    # B = 5 is not reached yet: deferred; a validation run nothing called for is a problem.
+    assert result["not_reached"] == ["run ('adamw_25', 5, 1.23e-05, 2000) at a batch not "
+                                     "reached yet"]  # fmt: skip
+    assert result["problems"] == ["unexpected run ('frozen_adam_25', 20, 1.5e-05, 2101)"]
     twice = [*grids(), traj(ADAMW, 5, 1e-5, 2000, 5.0, name="again")]
     result = selection(twice, THETA0, W_MAX, seconds_per_chunk=SPC)
     assert result["next"] == {"campaign": "incomplete"} and "two runs" in result["problems"][0]
@@ -531,7 +813,7 @@ def test_the_stream_time_is_stage_as_reference_with_its_provenance() -> None:
     result = selection(runs, THETA0, W_MAX)
     assert result["seconds_per_chunk"] == pytest.approx(SPC)
     assert result["stream_time"]["runs"] == 96 and result["stream_time"]["chunks"] == 48
-    assert result["next"]["campaign"] == "targeted"
+    assert result["next"]["campaign"] == "discovery"
     # A run missing from the set leaves the reference undefined: no conclusion.
     partial = selection(runs[:-1], THETA0, W_MAX)
     assert partial["next"] == {"campaign": "incomplete"}
@@ -557,6 +839,352 @@ def test_a_control_verdict_reads_every_scoring_read() -> None:
     assert not control_verdict(nan, K8)["accepted"]
     stopped = control(5, 1e-5, bound, None, stop="contamination", steps=20)
     assert control_verdict(stopped, K8)["reasons"][0] == "stopped by contamination at step 20"
+
+
+# ------------------------------------------------------------------ the numerical verdicts
+
+REQUEST = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
+           PREWARMED: [1.27e-5, 1.48e-5, 1.74e-5]}  # fmt: skip
+
+
+def request_check(rates=REQUEST, upper=8.0) -> dict:
+    """A check request as the state machine writes it (``step["check"]``)."""
+    slot = {"name": "b20-u8", "path": "numerical/b20-u8/verdict.json", "earlier": []}
+    return study2_short._check_request(slot, 20, upper, rates, COMMIT)
+
+
+def read(record, rates=REQUEST, *, commit=COMMIT, reuse=reusable) -> dict:
+    return numerical_verdict(record, 20, 8.0, rates, commit, reuse)
+
+
+def test_numerical_cases_are_the_frozen_scope() -> None:
+    cases = numerical_cases(REQUEST)
+    assert len(cases) == 15
+    assert {(arm, lr) for arm, lr, seed in cases if seed == 2200} == {
+        (arm, lr) for arm, lrs in REQUEST.items() for lr in lrs}  # fmt: skip
+    assert sorted((arm, lr, seed) for arm, lr, seed in cases if seed != 2200) == sorted(
+        (arm, max(lrs), seed) for arm, lrs in REQUEST.items() for seed in (2201, 2202)
+    )
+    assert len(numerical_cases({ADAMW: REQUEST[ADAMW], FA: REQUEST[FA]})) == 10
+    check = request_check()
+    assert check["runs_commit"] == COMMIT
+    assert check["policy"] == {"norm": 5e-05, "survival_share": 0.5, "retry_scale": 10,
+                               "steps": [1, 5, 10, 15, 20, 25], "bound": 0.01 * K8}  # fmt: skip
+
+
+def test_numerical_verdict_reads_the_tools_record() -> None:
+    check = request_check()
+    record = verdict_of(
+        check,
+        {("adamw", 1.48e-5): "failing", ("adamw_prewarmed", 1.27e-5): "not_qualified"},
+        {1.86e-5: "not_qualified"},
+        reasons={"adamw_prewarmed|1.27e-05": ["case s2200 incomplete twice"],
+                 "adam_frozen|1.86e-05": ["control: incomplete after its rerun"]},
+    )  # fmt: skip
+    found = read(record)
+    assert found["state"] == "complete"
+    assert [(u["arm"], u["lr"], u["state"]) for u in found["unusable"]] == [
+        (ADAMW, 1.48e-5, "failing"), (PREWARMED, 1.27e-5, "not_qualified"),
+        (FA, 1.86e-5, "control not_qualified")]  # fmt: skip
+    assert found["unusable"][1]["reasons"] == ["case s2200 incomplete twice"]
+    assert found["unusable"][1]["why"] == "not qualified (technical)"
+    # A control's reasons sit under its FA rate's key, prefixed "control: " (Task 1).
+    assert found["unusable"][2]["reasons"] == ["control: incomplete after its rerun"]
+    # The record keeps the GPU-code check that let the verdict hold at the checkout.
+    assert found["reuse"]["head"]["reusable"] and found["reuse"]["runs"] is None
+    # A three-arm record read for the primary arms alone: the pre-warmed arm is not read, even
+    # incomplete.
+    primary = {arm: REQUEST[arm] for arm in (ADAMW, FA)}
+    assert [u["arm"] for u in read(record, primary)["unusable"]] == [ADAMW, FA]
+    unfinished = verdict_of(check, {("adamw_prewarmed", 1.48e-5): "incomplete"})
+    assert read(unfinished)["state"] == "incomplete"
+    assert read(unfinished, primary)["state"] == "complete"
+    clean = read(verdict_of(check))
+    assert (clean["state"], clean["unusable"]) == ("complete", [])
+    assert read(None)["state"] == "absent"
+
+
+def _gpu(record, **changes):
+    return {
+        **record,
+        "policy": {**record["policy"], "gpu_code": {**record["policy"]["gpu_code"], **changes}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "state", "reason"),
+    [
+        (lambda r: {**r, "rates": {**r["rates"], "adamw|1.48e-05": "incomplete"},
+                    "qualified": False}, "incomplete", "incomplete: ['adamw|1.48e-05']"),
+        (lambda r: {**r, "controls": {**r["controls"], "1.86e-05": "incomplete"},
+                    "qualified": False}, "incomplete", "control 1.86e-05"),
+        (lambda r: {**r, "U": 7}, "stale", "not B=20, U=8"),
+        (lambda r: {**r, "batch": 5}, "stale", "not B=20, U=8"),
+        (lambda r: {**r, "policy": {**r["policy"], "norm": 1e-4}}, "stale", "norm 0.0001"),
+        (lambda r: {**r, "policy": {**r["policy"], "survival_share": 0.4}}, "stale",
+         "survival_share"),
+        (lambda r: {**r, "policy": {**r["policy"], "retry_scale": 100}}, "stale", "retry_scale"),
+        (lambda r: {**r, "policy": {**r["policy"], "bound": 0.0592}}, "stale", "bound"),
+        (lambda r: {**r, "policy": {**r["policy"], "steps": [1, 25]}}, "stale", "steps"),
+        (lambda r: _gpu(r, commit="g" * 40, sha256=GPU["g" * 40]), "stale",
+         "the numerical runs ran another GPU code"),
+        (lambda r: _gpu(r, sha256="other"), "stale", "is not the identity of"),
+        (lambda r: _gpu(r, commit="u" * 40), "stale", "cannot be checked"),
+        (lambda r: {**r, "policy": {**r["policy"], "gpu_code": None}}, "stale",
+         "holds no GPU code (null)"),
+        (lambda r: {**r, "policy": {**r["policy"], "tool_commit": None}}, "stale",
+         "tool_commit is None"),
+        (lambda r: {**r, "seeds": {**r["seeds"], "adamw|1.74e-05": [2200, 2201]}}, "stale",
+         "adamw|1.74e-05 tested on [2200, 2201]"),
+        (lambda r: {**r, "rates": {k: v for k, v in r["rates"].items() if k != "adamw|1.48e-05"}},
+         "stale", "lacks ['adamw|1.48e-05']"),
+        (lambda r: {**r, "controls": {k: v for k, v in r["controls"].items() if k != "1.59e-05"}},
+         "stale", "lacks ['control 1.59e-05']"),
+        (lambda r: {**r, "rates": {**r["rates"], "adamw|1.48e-05": "exceeding"}}, "malformed",
+         "'exceeding'"),
+        (lambda r: {**r, "rates": {**r["rates"], "adamw|1.48e-05": "failing"}}, "malformed",
+         "qualified True"),
+        (lambda r: {**r, "policy": {k: v for k, v in r["policy"].items() if k != "gpu_code"}},
+         "malformed", "without its gpu_code"),
+        (lambda r: {k: v for k, v in r.items() if k != "policy"}, "malformed", "not a verdict"),
+        (lambda r: "unreadable: Expecting value", "malformed", "not a verdict"),
+    ],
+)  # fmt: skip
+def test_incomplete_or_stale_verdict_is_not_a_pass(change, state, reason) -> None:
+    found = read(change(verdict_of(request_check())))
+    assert found["state"] == state and found["unusable"] == []
+    assert any(reason in r for r in found["reasons"]), found["reasons"]
+
+
+def test_a_verdict_holds_across_analysis_only_commits_and_not_gpu_changes() -> None:
+    record = verdict_of(request_check())
+    assert read(record, reuse=reuse_at("a" * 40))["state"] == "complete"  # analysis-only
+    moved = read(record, reuse=reuse_at("g" * 40))  # a GPU path changed since
+    assert moved["state"] == "stale" and "GPU paths changed since" in moved["reasons"][0]
+    # Runs at an analysis-only descendant of the verdict's commit ran the same GPU code.
+    later = read(record, commit="a" * 40)
+    assert later["state"] == "complete" and later["reuse"]["runs"]["reusable"]
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True,
+                          check=True).stdout.strip()  # fmt: skip
+
+
+def _commit(repo: Path, files: dict[str, str], message: str) -> str:
+    for name, text in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_a_gate_b_qualification_survives_gate_c_in_a_repository(tmp_path) -> None:
+    """``code_identity.reuse_check`` in a temporary repository: a verdict whose GPU code is the
+    gate-B commit's holds after a commit touching only analysis/ and docs/, and is stale after
+    one touching a GPU path."""
+    from zero_field_refusal.code_identity import gpu_code_identity, reuse_check
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    gate_b = _commit(repo, {"src/zero_field_refusal/optim.py": "a = 1\n",
+                            "configs/experiments/x.yaml": "k: 1\n",
+                            "src/zero_field_refusal/analysis/study2_short.py": "s = 1\n"},
+                     "gate B")  # fmt: skip
+    runs = grids()
+    seen, result, _ = drive(runs, until="numerical-check")
+    gpu = gpu_code_identity(gate_b, repo)
+    record = verdict_of(result["next"]["check"], gpu=gpu)
+    path = result["next"]["check"]["verdict"]
+
+    def at() -> dict:
+        found = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical={path: record},
+                          facts=commits(runs, gate_b),
+                          reuse=lambda base, head: reuse_check(base, head, repo))  # fmt: skip
+        return found
+
+    assert at()["next"]["campaign"] == "validation"
+    gate_c = _commit(repo, {"src/zero_field_refusal/analysis/study2_short.py": "s = 2\n",
+                            "docs/study2-short-fixation.json": "{}\n"}, "gate C")  # fmt: skip
+    found = at()
+    assert found["next"]["campaign"] == "validation"  # the qualification holds
+    check = found["attempts"][0]["numerical"][0]["reuse"]["head"]
+    assert (check["base"]["commit"], check["head"]["commit"], check["reusable"]) == (
+        gate_b, gate_c, True)  # fmt: skip
+    _commit(repo, {"src/zero_field_refusal/optim.py": "a = 2\n"}, "touches the optimizer")
+    found = at()
+    assert found["next"]["campaign"] == "numerical-check"  # stale: the check is run again
+    assert "src/zero_field_refusal/optim.py" in found["next"]["reasons"][0]
+
+
+def test_the_machine_never_passes_an_incomplete_stale_or_unread_check() -> None:
+    runs = grids()
+    seen, _, _ = drive(runs, until="numerical-check")  # no verdict yet
+    assert seen == ["discovery", "numerical", "numerical-check"]
+
+    def at(verdicts, facts=None):
+        found = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=verdicts,
+                          facts=commits(runs) if facts is None else facts,
+                          reuse=reusable)  # fmt: skip
+        return found["next"]
+
+    path = "numerical/b20-u8/verdict.json"
+    step = at({})
+    assert step["campaign"] == "numerical-check" and step["check"]["verdict"] == path
+    assert step["check"]["runs_commit"] == COMMIT and len(step["check"]["cases"]) == 15
+    # The rate input of scripts/numerical_check.py --selection: rates by optimizer, B and U.
+    assert step["check"]["selection"] == {
+        "rates": {"adamw": [1.27e-5, 1.48e-5, 1.74e-5], "adam_frozen": [1.59e-5, 1.86e-5, 2.17e-5],
+                  "adamw_prewarmed": [1.27e-5, 1.48e-5, 1.74e-5]},
+        "batch": 20, "U": 8}  # fmt: skip
+    assert type(step["check"]["selection"]["U"]) is int
+    good = verdict_of(step["check"])
+    unfinished = {**good, "rates": {**good["rates"], "adamw|1.48e-05": "incomplete"},
+                  "qualified": False}  # fmt: skip
+    for record in (
+        unfinished,
+        {**good, "U": 7},
+        {**good, "policy": {**good["policy"], "norm": 1e-4}},
+    ):
+        found = at({path: record})
+        assert found["campaign"] == "numerical-check" and found["check"]["verdict"] == path
+    assert at({path: good})["campaign"] == "validation"
+    assert at({path: "unreadable: x"})["campaign"] == "incomplete"
+    unread = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=None,
+                       facts=commits(runs))  # fmt: skip
+    assert unread["next"]["campaign"] == "incomplete" and "were not read" in unread["problems"][0]
+    # The numerical runs of one check were made at two commits: no conclusion.
+    mixed = {**commits(runs), next(r for r in runs if r.seed == 2201).run_id: {"commit": "d"}}
+    found = at({path: good}, mixed)
+    assert found["campaign"] == "incomplete" and "not one commit" in found["problems"][0]
+
+
+def test_three_arm_validation() -> None:
+    rates = {arm: [1e-5, 1.2e-5, 1.4e-5] for arm in ARMS}
+    runs = [traj(arm, 5, lr, s, k, mmlu=1.0 + 0.1 * (s % 3), factual=2.0)
+            for s in VALIDATION_SEEDS for arm in ARMS
+            for lr, k in zip(rates[arm], (5.0, 6.0, 7.5), strict=True)]  # fmt: skip
+    accepted = {lr: {"accepted": True} for lr in rates[FA]}
+    three = validation_verdict(runs, rates, accepted, THETA0, K8, W_MAX, arms=ARMS)
+    assert three["passes"] and three["arms"] == list(ARMS)
+    # The utility family holds the pre-warmed arm's bracket too: six members, one reading.
+    assert len(three["utility"]["family"]) == 6
+    assert three["utility"]["alpha_per_bound"] == pytest.approx(0.05 / 6)
+    # The pre-warmed arm unsupported in three blocks: 9 of 12 jointly for the three arms; the
+    # primary-arm validation of the same runs still passes.
+    low = [traj(r.arm, 5, r.lr, r.seed, 1.0) if r.arm == PREWARMED and r.seed < 2103 else r
+           for r in runs]  # fmt: skip
+    found = validation_verdict(low, rates, accepted, THETA0, K8, W_MAX, arms=ARMS)
+    assert found["reasons"] == ["9 of 12 blocks jointly supported for the three arms, fewer "
+                                "than 10"]  # fmt: skip
+    assert validation_verdict(low, rates, accepted, THETA0, K8, W_MAX)["passes"]
+    # An instability stop of a pre-warmed run fails the three-arm validation.
+    unstable = [r for r in runs if not (r.arm == PREWARMED and r.seed == 2104 and r.lr == 1.4e-5)]
+    unstable.append(traj(PREWARMED, 5, 1.4e-5, 2104, None, stop="k_above_max", steps=20))
+    found = validation_verdict(unstable, rates, accepted, THETA0, K8, W_MAX, arms=ARMS)
+    assert found["unstable"] == ["prewarmed_adamw_25-b5-1.4e-05-s2104"]
+    assert found["reasons"][0].startswith("runs of the three arms stopped by an instability rule")
+    with pytest.raises(ValueError, match="primary arms or the three arms"):
+        validation_verdict(runs, rates, accepted, THETA0, K8, W_MAX, arms=(ADAMW, PREWARMED))
+
+
+# ------------------------------------------------------------------ the archived records
+
+ARCHIVED = ("study2_stage_a", "study2_controls", "study2_short", "study2_short_fa_controls")
+# The main checkout's runs/: this checkout's, or that of the checkout holding it (a worktree).
+RUNS = next((root / "runs" for root in (REPO_ROOT, *REPO_ROOT.parents)
+             if (root / "runs" / ARCHIVED[0]).is_dir()), REPO_ROOT / "runs")  # fmt: skip
+THETA0_RUN = "study2_stage_a/20261014T192927Z-theta0-s2000-abb703a1-a1/summary.json"
+# Keys that name harm, prompts, responses, labels or judges: dropped as a record is parsed.
+HIDDEN = re.compile(r"harm|prompt|response|text|label|judge", re.IGNORECASE)
+
+
+def _numeric(text: str):
+    return json.loads(
+        text, object_pairs_hook=lambda pairs: {k: v for k, v in pairs if not HIDDEN.search(k)}
+    )
+
+
+def _rows(path: Path) -> list:
+    if not path.is_file():
+        return []
+    return [_numeric(line) for line in path.read_text().splitlines() if line]
+
+
+def _archived(run_dir: Path) -> Trajectory | None:
+    """A run's ``Trajectory`` from its K, numeric and utility records only (never its responses,
+    harmful prompts, labels or K_harmful), as far as the selection reads it."""
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    if OmegaConf.select(cfg, "schedule", default=None) is None:
+        return None
+    meta = _numeric((run_dir / "meta.json").read_text())
+    terminal = _numeric((run_dir / "terminal.json").read_text())
+    diagnostics = tuple({k: r[k] for k in ("step", "K_scoring", "K_monitor", "K_monitor_full")}
+                        for r in _rows(run_dir / "diagnostics.jsonl"))  # fmt: skip
+    return Trajectory(
+        run_dir=run_dir, run_id=run_dir.name, arm=arm_of(cfg),
+        batch_size=int(cfg.train.batch_size), lr=float(cfg.optimizer.lr), seed=int(cfg.seed),
+        policy=cfg.schedule.policy, levels=tuple(float(x) for x in cfg.schedule.levels),
+        terminal=terminal, evaluations=_rows(run_dir / "evaluations.jsonl"), monitor=[],
+        grad_norms=[], seconds=float(terminal["seconds"]),
+        chunk_size=int(cfg.teacher.chunk_size), planned_steps=int(cfg.train.steps),
+        model=f"{cfg.model.name}@{cfg.model.revision}",
+        stream=meta.get("inputs", {}).get("streams", {}).get("training", {}),
+        harmful_prompts={}, status=str(meta.get("status")),
+        role=OmegaConf.select(cfg, "stage_a.role", default=None),
+        protocol_version=int(cfg.get("protocol_version", 0)), spec=schedule_spec(cfg),
+        evaluate_at=tuple(int(t) for t in cfg.schedule.get("evaluate_at") or ()),
+        monitor_version=monitor_version(cfg), monitor_spec=monitor_spec(cfg),
+        diagnostics=diagnostics,
+        contamination_checks=tuple(_rows(run_dir / "contamination_checks.jsonl")),
+    )  # fmt: skip
+
+
+@pytest.fixture(scope="module")
+def archived():
+    """The archived records of the main checkout (155 runs on 2026-10-19), K, numerics and
+    utility only; skipped where they are absent."""
+    if not all((RUNS / name).is_dir() for name in ARCHIVED) or not (RUNS / THETA0_RUN).is_file():
+        pytest.skip(f"the archived records are not under {RUNS}")
+    dirs = sorted({p.parent for name in ARCHIVED for p in (RUNS / name).rglob("terminal.json")})
+    runs = [run for run in map(_archived, dirs) if run is not None]
+    summary = _numeric((RUNS / THETA0_RUN).read_text())
+    return runs, {key: summary[key] for key in ("benchmark_accuracy", "factual_accuracy")}
+
+
+def test_replay_on_current_records_prescribes_b20_discovery(archived) -> None:
+    runs, theta0 = archived
+    assert len(runs) == 155
+    result = selection(runs, theta0, 0.47, numerical={}, facts={})
+    step = result["next"]
+    assert (step["campaign"], step["batch"], step["U"], step["three_arm"]) == (
+        "discovery", 20, 8.0, True)  # fmt: skip
+    assert result["problems"] == []
+    # The 15 primary runs the frozen machine named on 2026-10-19 (feas_select.json) ...
+    primary = {(ADAMW, 1.49e-5), (ADAMW, 1.83e-5), (ADAMW, 2.24e-5), (FA, 1.34e-5),
+               (FA, 1.62e-5)}  # fmt: skip
+    asked = campaign_runs(step)
+    assert {k for k in asked if k[0] != PREWARMED} == {
+        (arm, 20, lr, s) for arm, lr in primary for s in SEEDS}  # fmt: skip
+    # ... and the pre-warmed arm's first round at the union of the targeted assignments' rates,
+    # FA's U-rate 2e-5 a grid rate run already: 18 runs.
+    union = [1.34e-5, 1.49e-5, 1.62e-5, 1.83e-5, 2e-5, 2.24e-5]
+    assert {k for k in asked if k[0] == PREWARMED} == {
+        (PREWARMED, 20, lr, s) for lr in union for s in SEEDS}  # fmt: skip
+    assert len(step["runs"]) == 33
+    first = result["rounds"][f"{PREWARMED}/B=20/U=8"]["first"]
+    assert first["proposal"]["rates"] == union and first["proposal"]["joint"]
+    # Amendment 3's B = 5 history: its targeted round is not reached yet, its controls are
+    # reported and not used.
+    assert len(result["not_reached"]) == 18
+    assert all(", 5, " in entry for entry in result["not_reached"])
+    reported = [(c["batch"], c["lr"], c["accepted"], c["used"])
+                for c in result["amendment3_controls"]]  # fmt: skip
+    assert reported == [(5, 1.21e-5, False, False), (5, 1.46e-5, False, False),
+                        (5, 1e-5, True, False)]  # fmt: skip
+    assert result["stream_time"]["runs"] == 96 and result["stream_time"]["chunks"] == 162
 
 
 # ------------------------------------------------------------------ support and the estimator
