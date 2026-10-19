@@ -54,9 +54,13 @@ evaluation at those steps (K_scoring, utility, and the harmful responses stored 
 never scored). It is refused until the stage's next step is ``confirmation`` (the selection done,
 its validation passed) and the launcher's journal shows blocks 1-10 in issued confirmation ranges,
 so that their streams exist (``timecourse_guard``); like the confirmation it needs the versions
-record. Its runs never enter a block, a look or the mechanism cohort; the stage's summary reports
-each against its endpoint run (``timecourse_identity``: bit for bit, or excluded), with the
-failed and missing ones per seed and arm (``progress``'s ``timecourse``).
+record. A run whose endpoint run the launcher gave up on is left out, named in the header: its
+identity could never be shown. The loaded runs are split here once (``split_timecourse``): a
+time-course run never counts as a run of its key in another campaign (a confirmation range
+re-issued to complete it offers an endpoint run lost beside its time-course twin), and never
+enters a block, a look or the mechanism cohort; the stage's summary reports each against its
+endpoint run (``timecourse_identity``: bit for bit, or excluded), with the failed and missing
+ones per seed and arm (``progress``'s ``timecourse``).
 
 - --runs holds every run so far: Stage A's (study2_stage_a, study2_controls), whose 25-step grids
   are the first discovery runs and whose version-1 discovery set fixes the stream time, and this
@@ -174,6 +178,7 @@ from zero_field_refusal.analysis.study2_short import (
     read_numerical,
     run_facts,
     seed_role,
+    split_timecourse,
     timecourse_guard,
     versions_problems,
 )
@@ -686,15 +691,18 @@ def campaign(
     theta0 = {key: summary.get(key) for key in ("benchmark_accuracy", "factual_accuracy")}
     if theta0_problems(theta0):
         parser.error("; ".join(theta0_problems(theta0)))
-    runs = load_trajectories(*args.runs)
-    facts = {r.run_id: run_facts(r.run_dir) for r in runs if r.arm in (*ARMS, FA_CONTROL_ARM)}
+    loaded = load_trajectories(*args.runs)
+    facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
+    # The time course's runs, split once here: no campaign's bookkeeping ever counts one of them
+    # as a run of its key (review of Task 5, I1).
+    runs, courses = split_timecourse(loaded, facts)
     records = launch_records(args.runs_root)
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
     except ValueError as exc:
         parser.error(str(exc))
     state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted,
-                     numerical=read_numerical(args.runs_root))  # fmt: skip
+                     numerical=read_numerical(args.runs_root), timecourse=courses)  # fmt: skip
     step = state["next"]
     chosen = state.get("selection") or {}
     waiting = chosen.get("beyond_stale") or []
@@ -714,15 +722,23 @@ def campaign(
         if problems:
             parser.error("; ".join(problems))
         course = state["timecourse"]
+        # A run whose endpoint run was given up could never show its identity: not run, named.
+        left_out = [r for r in course["missing"] if "endpoint_given_up" in r]
         wanted = [{"arm": r["arm"], "batch": course["batch"], "lr": r["lr"], "seed": r["seed"]}
-                  for r in course["missing"]]  # fmt: skip
+                  for r in course["missing"] if "endpoint_given_up" not in r]  # fmt: skip
         if args.seeds:
             unknown = sorted(set(args.seeds) - {r["seed"] for r in wanted})
             if unknown:
                 parser.error(f"no run of seeds {unknown} in this campaign")
             wanted = [r for r in wanted if r["seed"] in args.seeds]
+            left_out = [r for r in left_out if r["seed"] in args.seeds]
         if not wanted:
-            parser.error("the time course has every run already (or given up by the launcher)")
+            parser.error("the time course has every run already, or given up by the launcher "
+                         "with its endpoint run")  # fmt: skip
+        prerequisites += [f"Left out: the time course's {r['arm']} run at {r['lr']:g} on seed "
+                          f"{r['seed']}, whose endpoint run the launcher gave up on "
+                          f"({r['endpoint_given_up']}): its identity could never be shown."
+                          for r in left_out]  # fmt: skip
         written = {"name": f"study2-short-timecourse-b{course['batch']}-u{step['U']:g}",
                    "cells": regular_cells(wanted, "-timecourse", timecourse=True)}  # fmt: skip
         return written, w_max, source, notes, prerequisites
@@ -741,8 +757,11 @@ def campaign(
         if guard["problems"]:
             parser.error(f"blocks {first}-{last}: " + "; ".join(guard["problems"]))
         seeds = CONFIRMATION_SEEDS[first - 1 : last]
+        # The endpoint runs there or given up (``runs`` holds no time-course run, and a given-up
+        # time-course run keeps its own 5-tuple key).
         present = {(r.arm, r.batch_size, rate(r.lr), r.seed) for r in runs
-                   if r.arm in ARMS and r.seed in seeds} | set(exhausted)  # fmt: skip
+                   if r.arm in ARMS and r.seed in seeds}  # fmt: skip
+        present |= {key for key in exhausted if len(key) == 4}
         wanted = [{"arm": arm, "batch": batch, "lr": rate(lr), "seed": seed}
                   for seed in seeds for arm, lrs in step["rates"].items() for lr in lrs
                   if (arm, batch, rate(lr), seed) not in present]  # fmt: skip

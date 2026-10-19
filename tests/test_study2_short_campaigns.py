@@ -72,6 +72,7 @@ from zero_field_refusal.analysis.study2_short import (
     run_facts,
     secondary_contrasts,
     seed_role,
+    split_timecourse,
     timecourse_guard,
     timecourse_summary,
 )
@@ -246,6 +247,23 @@ def course(arm, batch, lr, seed, *, stop: str = "steps", steps: int = 25, scale:
                                          "steps": steps})  # fmt: skip
 
 
+SAME_RECORDS = {"metrics.jsonl": [], "monitor.jsonl": [], "update_scalars.jsonl": [],
+                "meta.json": {}}  # fmt: skip
+
+
+@pytest.fixture
+def records_alike(monkeypatch):
+    """The synthetic runs have no directory: each reads the same records (``_run_records``), so
+    that their identity rests on their evaluations and stops; tests/test_study2_short.py checks
+    the records themselves. Returns the patch, to apply again after an undo."""
+
+    def alike() -> None:
+        monkeypatch.setattr(study2_short, "_run_records", lambda run: SAME_RECORDS)
+
+    alike()
+    return alike
+
+
 def courses(rates, batch, seeds) -> list:
     """The time course's runs of ``seeds``: each arm at its central rate."""
     return [course(arm, batch, sorted(lrs)[1], seed)
@@ -258,8 +276,7 @@ def answered(runs, exhausted=None, verdicts=None) -> dict:
     its selection's digest."""
     verdicts = dict(verdicts or {})
     for _ in range(8):
-        state = progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted,
-                         numerical=verdicts, reuse=reusable)  # fmt: skip
+        state = loaded(runs, exhausted=exhausted, numerical=verdicts)
         # The selection's own step: later runs show as unexpected until its check is answered,
         # and the step waits as ``pending`` under an incomplete ``next``.
         chosen = state.get("selection", {})
@@ -271,12 +288,20 @@ def answered(runs, exhausted=None, verdicts=None) -> dict:
     raise AssertionError("the checks never end")
 
 
+def loaded(runs, **kwargs) -> dict:
+    """``progress`` on the runs as the scripts load them: the time course's split apart once
+    (``split_timecourse``)."""
+    facts = facts_of(runs)
+    regular, timecourse = split_timecourse(runs, facts)
+    return progress(regular, THETA0, W_MAX, facts=facts, reuse=reusable, timecourse=timecourse,
+                    **kwargs)  # fmt: skip
+
+
 def stage(runs, exhausted=None, verdicts=None):
     """The stage's progress; its numerical checks read ``verdicts`` (every check the stage asks
     for answered, qualified, by default: ``answered``)."""
     verdicts = answered(runs, exhausted) if verdicts is None else verdicts
-    return progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted,
-                    numerical=verdicts, reuse=reusable)  # fmt: skip
+    return loaded(runs, exhausted=exhausted, numerical=verdicts)
 
 
 def make(step) -> list:
@@ -747,7 +772,7 @@ def test_look_blocks_wait_for_labels_and_take_delta_from_the_brackets() -> None:
 # ------------------------------------------------------------------ the time course
 
 
-def test_timecourse_excluded_from_blocks() -> None:
+def test_timecourse_excluded_from_blocks(records_alike) -> None:
     """The time course's runs (amendment 4, section 4) share the first blocks' seeds, arms and
     central rates with the endpoint runs, and enter no block, no look and no mechanism cohort:
     the selection, the blocks, the guard's counts, the looks' blocks and the three-arm contrasts
@@ -791,7 +816,7 @@ def test_timecourse_excluded_from_blocks() -> None:
     assert states == [(3000, "identical")] * 3 + [(3001, "excluded")] * 3 + [(3002, "pending")] * 3
 
 
-def test_timecourse_reports_missing() -> None:
+def test_timecourse_reports_missing(records_alike) -> None:
     """Per seed and arm: an absent run is missing, a run stopped early and a run the launcher
     gave up on are failures; an endpoint not there yet leaves the identity pending, an endpoint
     the launcher gave up on leaves it excluded; a given-up time-course run never stands for its
@@ -879,9 +904,21 @@ def test_timecourse_runs_off_their_prescription_leave_the_stage_incomplete() -> 
     assert "does not measure the Rayleigh quotient on seed 3000" in found[0]
     assert seed_role(3009, timecourse=True) == TIMECOURSE and seed_role(3009) == "confirmation"
     assert seed_role(3010, timecourse=True) is None and seed_role(2100, timecourse=True) is None
+    # The loaders split the time course apart once; progress refuses one left among the others,
+    # and a run read as a time-course run that is not one.
+    mixed = [*runs, one]
+    state = progress(mixed, THETA0, W_MAX, facts=facts_of(mixed), reuse=reusable)
+    assert state["next"] == {"campaign": "incomplete"}
+    assert f"time-course run {one.run_id} among the stage's other runs" in state["problems"][0]
+    endpoint = later(ADAMW, 20, central[ADAMW], 3000)
+    state = progress(runs, THETA0, W_MAX, facts=facts_of([*runs, endpoint]), reuse=reusable,
+                     timecourse=[endpoint])  # fmt: skip
+    assert state["next"] == {"campaign": "incomplete"}
+    assert "is read as a time-course run, but its role is 'confirmation'" in state["problems"][0]
+    assert split_timecourse(mixed, facts_of(mixed)) == (runs, [one])
 
 
-def test_summary_reads_no_labels_without_the_argument(monkeypatch) -> None:
+def test_summary_reads_no_labels_without_the_argument(monkeypatch, records_alike) -> None:
     """Labels are read only when the final analysis passes them: ``progress`` gives none, and
     without them no label row is read and every harm is None. With them, the harm of each step
     of an identical run, and nothing of an excluded or pending one."""
@@ -911,6 +948,7 @@ def test_summary_reads_no_labels_without_the_argument(monkeypatch) -> None:
     assert len(rows_read) == 9 * 4 and all(row["harm"] is None for row in rows_read)
     assert [row["step"] for row in summary["trajectories"][0]["rows"]] == [1, 5, 10, 25]
     monkeypatch.undo()
+    records_alike()
     # The final analysis: the identical runs' harm per step; a run without labels is unlabeled.
     timecourse_ids = {run.run_id for run in timecourse}
     labels = {run_id: [{"condition": f"step-{t}", "step": t, "prompts": 500, "harmful": 10 * t,
@@ -1339,6 +1377,78 @@ def test_timecourse_campaign_shape(monkeypatch, tmp_path, capsys) -> None:
     assert frozen["prewarmed_dropped"]
     found = campaign(monkeypatch, tmp_path, primary, "timecourse", *common, "--runs-root", root)
     assert len(found) == 20 and {r.cell.split("-b20")[0] for r in found} == {ADAMW, FA}
+
+
+def range_journal(block_runs) -> list[dict]:
+    """The launcher's records of the confirmation range 1-10, every run started and done."""
+    started = [{"event": "start", "run": f"{r.arm}-b20-{r.lr:g}-blocks-1-10-rayleigh/s{r.seed}",
+                "experiment": "study2_short", "config_hash": r.run_id, "run_id": r.run_id,
+                "attempt": 1, "command": []} for r in block_runs]  # fmt: skip
+    return started + [{"event": "end", "run_id": r.run_id, "outcome": "done"} for r in block_runs]
+
+
+def test_a_confirmation_range_offers_an_endpoint_lost_beside_its_timecourse_twin(
+    monkeypatch, tmp_path
+) -> None:
+    """Review of Task 5, I1: block 3's AdamW-25 endpoint run is lost after its time-course twin
+    finished (and another twin was given up by the launcher). Re-issuing the range 1-10 offers
+    that endpoint run: a time-course run never satisfies a confirmation cell."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    central = {arm: sorted(lrs)[1] for arm, lrs in rates.items()}
+    block_runs = blocks_of(rates, 20, CONFIRMATION_SEEDS[:10])
+    lost = next(r for r in block_runs if (r.arm, r.lr, r.seed) == (ADAMW, central[ADAMW], 3002))
+    runs += [r for r in block_runs if r is not lost]
+    runs.append(course(ADAMW, 20, central[ADAMW], 3002))  # its twin, done
+    gone = next(r for r in block_runs if (r.arm, r.lr, r.seed) == (FA, central[FA], 3004))
+    runs.remove(gone)  # lost too, and its time-course twin given up by the launcher
+    cell = f"{FA}-b20-{central[FA]:g}-timecourse-rayleigh"
+    overrides = ["optimizer=adam_frozen", "train.batch_size=20", f"optimizer.lr={central[FA]:g}",
+                 *study2_short.TIMECOURSE_OVERRIDES]  # fmt: skip
+    records = range_journal(block_runs) + journal(
+        cell, 3004, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
+        config="experiments/study2_short_rayleigh")  # fmt: skip
+    assert (FA, 20, central[FA], 3004, TIMECOURSE) in exhausted_runs(records)
+    state = stage(runs)
+    assert not state["problems"] and state["confirmation"][2]["runs"] == 8
+    args = ("--fixation", fixed(tmp_path), "--runs-root", runs_root(tmp_path, records))
+    found = campaign(monkeypatch, tmp_path, runs, "confirmation", "--blocks", "1", "10", *args)
+    assert sorted(labels_of(found)) == sorted([
+        f"{ADAMW}-b20-{central[ADAMW]:g}-blocks-1-10-rayleigh/s3002",
+        f"{FA}-b20-{central[FA]:g}-blocks-1-10-rayleigh/s3004"])  # fmt: skip
+
+
+def test_the_timecourse_campaign_leaves_out_runs_whose_endpoint_was_given_up(
+    monkeypatch, tmp_path
+) -> None:
+    """Review of Task 5, M3: a time-course run whose endpoint run the launcher gave up on could
+    never show its identity; the campaign does not run it and names it in its header."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    central = {arm: sorted(lrs)[1] for arm, lrs in rates.items()}
+    block_runs = blocks_of(rates, 20, CONFIRMATION_SEEDS[:10])
+    gone = next(r for r in block_runs if (r.arm, r.lr, r.seed) == (ADAMW, central[ADAMW], 3005))
+    runs += [r for r in block_runs if r is not gone]
+    cell = f"{ADAMW}-b20-{central[ADAMW]:g}-blocks-1-10-rayleigh"
+    overrides = ["train.batch_size=20", f"optimizer.lr={central[ADAMW]:g}",
+                 "study2_short.role=confirmation"]  # fmt: skip
+    records = range_journal(block_runs) + journal(
+        cell, 3005, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
+        config="experiments/study2_short_rayleigh")  # fmt: skip
+    label = f"{cell}/s3005"
+    assert exhausted_runs(records)[(ADAMW, 20, central[ADAMW], 3005)] == label
+    summary = stage(runs, exhausted=exhausted_runs(records))["timecourse"]
+    assert [r for r in summary["missing"] if "endpoint_given_up" in r] == [
+        {"seed": 3005, "arm": ADAMW, "lr": central[ADAMW], "endpoint_given_up": label}]  # fmt: skip
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "timecourse", "--fixation",
+                 fixed(tmp_path), "--runs-root", runs_root(tmp_path, records))  # fmt: skip
+    found = load_campaign(out)[1]
+    assert len(found) == 29 and (f"{ADAMW}-b20-{central[ADAMW]:g}-timecourse-rayleigh",
+                                 3005) not in {(r.cell, r.seed) for r in found}  # fmt: skip
+    header = " ".join(line[2:] for line in out.read_text().splitlines() if line.startswith("#"))
+    assert (f"Left out: the time course's {ADAMW} run at {central[ADAMW]:g} on seed 3005, whose "
+            f"endpoint run the launcher gave up on ({label}): its identity could never be "
+            "shown.") in header  # fmt: skip
 
 
 def test_the_numerical_verdicts_are_read_from_the_runs_root(tmp_path) -> None:
@@ -1898,6 +2008,58 @@ def test_the_summary_prints_the_looks_end_to_end(monkeypatch, tmp_path, capsys) 
     assert looked["interval"] == {"method": "bootstrap_t", "resamples": 2000, "seed": 20261016}
     assert (looked["looks"]["waiting"]["started"], looked["looks"]["waiting"]["needs"]) == (2, 36)
     assert looked["missing_labels"] == {ADAMW: 0, FA: 0, PREWARMED: 0}
+
+
+def test_the_summary_is_the_same_with_and_without_the_time_course(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Review of Task 5, C1: the summary with its looks (every look, the utility family, the
+    sensitivities, the blocks and the guard's counts) is byte for byte the same with and without
+    the time course's runs of blocks 1-3, labeled far from their endpoints (one of them not
+    identical); no label of a time-course run is read. Only ``progress.timecourse`` and the
+    command line (its --out) differ."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:3])
+    timecourse = [*courses(rates, 20, TIMECOURSE_SEEDS[:3:2]),
+                  *(course(arm, 20, sorted(lrs)[1], 3001, scale=0.9)
+                    for arm, lrs in rates.items())]  # fmt: skip
+    every = on_disk([*runs, *timecourse], tmp_path)
+    by_name = {run.run_dir.name: run for run in every}
+    read = []
+    monkeypatch.setattr(
+        "zero_field_refusal.analysis.evidence.label_path",
+        lambda run_dir, judge: run_dir / "config.yaml",
+    )  # every run is labeled
+    monkeypatch.setattr("zero_field_refusal.data.load_prompt_set",
+                        lambda name, data: [{"id": "p", "text": "t"}])  # fmt: skip
+
+    def labels(run_dir, judge, identity, prompts):
+        read.append(run_dir.name)
+        run = by_name[run_dir.name]
+        harmful = 400 if run.run_id.startswith(COURSE) else 100 if run.arm == ADAMW else 50
+        return rows(harmful)
+
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", labels)
+    record = fixed(tmp_path)
+    outputs = {}
+    for name, loaded_runs in (("without", every[: len(runs)]), ("with", every)):
+        out = script(monkeypatch, tmp_path, SUMMARY, loaded_runs, "--fixation", record,
+                     "--runs-root", runs_root(tmp_path), "--judge", "wildguard")  # fmt: skip
+        whole = json.loads(out.read_text())
+        outputs[name] = (capsys.readouterr().out, whole)
+    (shown, without), (shown_with, with_course) = outputs["without"], outputs["with"]
+    assert shown == shown_with  # the printed status and looks, byte for byte
+    looked = json.loads(shown)["looks"]
+    assert looked["available"] and looked["utility"]["family"]
+    assert {member["runs"] for member in looked["utility"]["family"]} == {3}  # blocks 1-3 only
+    assert not any(name.startswith(COURSE) for name in read)
+    course_state = with_course["progress"].pop("timecourse")
+    assert [t["run"] is not None for t in course_state["trajectories"][:9]] == [True] * 9
+    assert without["progress"].pop("timecourse")["counts"]["missing"] == 30
+    for whole in (without, with_course):
+        whole.pop("command")  # its --out
+    assert json.dumps(without, sort_keys=True) == json.dumps(with_course, sort_keys=True)
 
 
 def summary_module():

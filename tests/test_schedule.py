@@ -1172,7 +1172,8 @@ def test_intermediate_evaluations_do_not_change_step_25(env, tmp_path, monkeypat
     timecourse, endpoint = (load_trajectory(dirs[name]) for name in ("timecourse", "endpoint"))
     assert timecourse.evaluate_at == TIMECOURSE_STEPS and endpoint.evaluate_at == (25,)
     found = timecourse_identity(timecourse, endpoint)
-    assert found == {"state": "identical", "reasons": [], "endpoint": endpoint.run_id}
+    assert found == {"state": "identical", "reasons": [], "endpoint": endpoint.run_id,
+                     "rayleigh_equal": None}  # these runs do not measure R  # fmt: skip
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")

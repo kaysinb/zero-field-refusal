@@ -22,7 +22,11 @@ in amendment 4's order with their costs, every attempt (its selections, numerica
 validation) and round, amendment 3's FA controls (reported with their verdicts, never used), the
 frozen rates, the validation verdict, the support of the confirmation blocks with the counts of
 the confirmation loop (the first block without runs, the supported blocks complete in order,
-those that may still be supported), the problems of the records, and the next campaign.
+those that may still be supported), the problems of the records, and the next campaign. The time
+course's runs (amendment 4, section 4) are split from the others where they are loaded
+(analysis.study2_short.split_timecourse): no look, label read, utility family, sensitivity or
+contrast ever sees them; OUT.json's ``progress.timecourse`` reports them (their identity with
+their endpoint runs, failed and missing runs per seed and arm), without labels.
 
 --judge NAME (configs/judge/NAME.yaml) adds the looks, on the label counts of the bracket runs
 of every complete confirmation block (analysis.study2_labels.read_endpoint_labels). A run without
@@ -93,6 +97,7 @@ from zero_field_refusal.analysis.study2_short import (
     run_facts,
     secondary_contrasts,
     sensitivity_looks,
+    split_timecourse,
     utility_family,
     versions_problems,
 )
@@ -403,15 +408,19 @@ def main() -> None:
     theta0 = {key: summary.get(key) for key in ("benchmark_accuracy", "factual_accuracy")}
     if theta0_problems(theta0):
         parser.error("; ".join(theta0_problems(theta0)))
-    runs = load_trajectories(*args.runs)
-    facts = {r.run_id: run_facts(r.run_dir) for r in runs if r.arm in (*ARMS, FA_CONTROL_ARM)}
+    loaded = load_trajectories(*args.runs)
+    facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
+    # The time course's runs, split once here: the looks, their labels, the utility family, the
+    # sensitivities and the contrasts read ``runs`` only (review of Task 5, C1).
+    runs, courses = split_timecourse(loaded, facts)
     records = launch_records(args.runs_root) if args.runs_root is not None else []
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
     except ValueError as exc:
         parser.error(str(exc))
     numerical = read_numerical(args.runs_root) if args.runs_root is not None else None
-    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted, numerical=numerical)
+    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted, numerical=numerical,
+                     timecourse=courses)  # fmt: skip
     shown = status(state)
     shown["launch_journal"] = str(args.runs_root / "launch") if args.runs_root else None
     shown["abandoned"] = abandoned

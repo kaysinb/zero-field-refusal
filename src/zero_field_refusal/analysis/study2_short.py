@@ -52,9 +52,10 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   as technical failures; ``confirmation_guard`` decides whether a
   range of blocks may start; ``look_blocks`` turns the blocks into those of ``looks`` once their
   labels exist. ``read_fixation`` reads the values the simulation fixes.
-- ``timecourse_identity``, ``timecourse_summary`` and ``timecourse_guard``: the time course
-  (amendment 4, section 4, "Harm over steps"; exploratory), separate runs of the first 10
-  confirmation blocks at each arm's central rate evaluated at steps 1, 5, 10 and 25: each
+- ``split_timecourse``, ``timecourse_identity``, ``timecourse_summary`` and
+  ``timecourse_guard``: the time course (amendment 4, section 4, "Harm over steps";
+  exploratory), separate runs of the first 10 confirmation blocks at each arm's central rate
+  evaluated at steps 1, 5, 10 and 25: split from the other runs where they are loaded, each
   against its endpoint run bit for bit, the trajectories with the failed and missing runs per
   seed and arm, harm only when the final analysis passes the labels; and when its campaign may
   be written.
@@ -315,18 +316,26 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``schedule.evaluate_at`` [1, 5, 10, 25] (``TIMECOURSE_OVERRIDES``; blocks 1-10 measure the
   Rayleigh quotient, so these runs do too); 30 runs, 20 without the pre-warmed arm. The
   campaign is written only once the stage's next step is ``confirmation`` and blocks 1-10 are in
-  issued confirmation ranges (``timecourse_guard``), with the versions record. Its runs are
-  checked like the others (role, schedule, monitor, Rayleigh, one stream and one v₀ per seed),
-  then kept apart by their role: never in the selection, a confirmation block, a look or the
-  mechanism cohort; one before the rates are frozen, a second run of a key, or a run at a key
-  the time course does not prescribe leaves the stage ``incomplete``. Endpoint identity
+  issued confirmation ranges (``timecourse_guard``), with the versions record; a run whose
+  endpoint run the launcher gave up on is left out and named in the campaign's header (its
+  identity could never be shown). Its runs are split from the others by their role once, where
+  the scripts load them (``split_timecourse``; review of Task 5, C1 and I1): the summary's looks,
+  utility family, sensitivities and contrasts and the campaigns' bookkeeping never see them, and
+  ``progress`` takes them apart (a time-course run among its other runs leaves the stage
+  ``incomplete``). They are checked like the others (role, schedule, monitor, Rayleigh, one
+  stream and one v₀ per seed) and never enter the selection, a confirmation block, a look or
+  the mechanism cohort; one before the rates are frozen, a second run of a key, or a run at a
+  key the time course does not prescribe leaves the stage ``incomplete``. Endpoint identity
   (``timecourse_identity``) compares exactly, field by field as canonical JSON, the training's
   metrics.jsonl rows (every row but those an evaluation logged), the rows of the endpoint's
   evaluation, monitor.jsonl, update_scalars.jsonl, the endpoint's evaluations against the time
   course's of the same steps (step 25: K and utility), the stop with the steps taken and the
   streams read; the timings and memory peaks are left out (not numerics), and so is K_harmful
-  (outcome-blind until the final analysis). Any difference, or a record that does not read,
-  excludes the run with its reasons; no endpoint run yet leaves it pending; an endpoint run the
+  (outcome-blind until the final analysis). Any difference, or a record that is missing or does
+  not read (metrics, monitor, update scalars, meta.json: every regular run writes them),
+  excludes the run with its reasons; the endpoint Rayleigh records (R, ‖δ‖, δᵀH₀δ) are compared
+  beside, as ``rayleigh_equal``, deciding nothing; no endpoint run yet leaves it pending; an
+  endpoint run the
   launcher gave up on leaves it excluded (the conservative reading: its identity can never be
   shown). A time-course run that did not complete its four evaluations, or that the launcher
   gave up on (``exhausted_runs`` keys it with ``TIMECOURSE``, apart from its endpoint run), is a
@@ -2814,38 +2823,46 @@ def progress(
     seconds_per_chunk: float | None = None,
     numerical: Mapping[str, Any] | None = None,
     reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
+    timecourse: Sequence[Trajectory] = (),
 ) -> dict[str, Any]:
     """The stage as it stands, on K, numerics and utility only. ``trajectories``: every run so
-    far, Stage A's included (its grids are the first discovery runs, its version-1 discovery set
-    fixes the stream time); ``facts``: ``run_facts`` by run id; ``exhausted``: the validation and
-    confirmation runs the launcher gave up on (``exhausted_runs``), each a technical failure of
-    its arm in its block; ``numerical``: the numerical-check verdicts (``read_numerical``), None
-    when not read; ``reuse``: the selection's GPU-code reuse check. ``next["campaign"]`` is the
-    selection's (``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``,
-    ``numerical-check``, ``validation``, ``infeasible``), then ``confirmation`` (with the frozen
-    rates) once a candidate passed its validation; ``incomplete`` whenever the records are not
-    whole (``problems``). The time-course runs (role timecourse) are checked with the others,
-    then kept apart: once the rates are frozen, ``timecourse`` is their ``timecourse_summary``,
-    without labels; they never enter the selection, a confirmation block or a look."""
+    far but the time course's, Stage A's included (its grids are the first discovery runs, its
+    version-1 discovery set fixes the stream time); ``timecourse``: the time course's runs, split
+    from the others where they were loaded (``split_timecourse``); ``facts``: ``run_facts`` by
+    run id; ``exhausted``: the validation and confirmation runs the launcher gave up on
+    (``exhausted_runs``), each a technical failure of its arm in its block; ``numerical``: the
+    numerical-check verdicts (``read_numerical``), None when not read; ``reuse``: the
+    selection's GPU-code reuse check. ``next["campaign"]`` is the selection's (``discovery``,
+    ``repair``, ``prewarmed``, ``targeted``, ``numerical``, ``numerical-check``, ``validation``,
+    ``infeasible``), then ``confirmation`` (with the frozen rates) once a candidate passed its
+    validation; ``incomplete`` whenever the records are not whole (``problems``), a time-course
+    run among ``trajectories`` included. The time-course runs are checked with the others
+    (conformance, one stream and one v₀ per seed), then read apart: once the rates are frozen,
+    ``timecourse`` is their ``timecourse_summary``, without labels; they never enter the
+    selection, a confirmation block or a look."""
     exhausted = exhausted or {}
     stage = [run for run in trajectories if run.arm in (*ARMS, FA_CONTROL_ARM)]
-    problems = conformance(stage, facts) + stream_pairing(stage)
-    problems += preconditioner_pairing(stage, facts)
+    timecourse = list(timecourse)
+    problems = [f"time-course run {run.run_id} among the stage's other runs: split them where "
+                "they are loaded (split_timecourse)" for run in stage
+                if (facts.get(run.run_id) or {}).get("role") == TIMECOURSE]  # fmt: skip
+    problems += [f"{run.run_id} is read as a time-course run, but its role is "
+                 f"{(facts.get(run.run_id) or {}).get('role')!r}" for run in timecourse
+                 if (facts.get(run.run_id) or {}).get("role") != TIMECOURSE]  # fmt: skip
+    # The time course's runs share the first blocks' streams and v₀, checked with the others.
+    checked = [*stage, *timecourse]
+    problems += conformance(checked, facts) + stream_pairing(checked)
+    problems += preconditioner_pairing(checked, facts)
     out: dict[str, Any] = {"w_max": w_max}
     if problems:
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
-    # Conformance passed: every run of the stage has its facts. The time course's runs share the
-    # first blocks' streams and v₀ (checked above with the others) and nothing else.
-    timecourse = [run for run in stage if facts[run.run_id]["role"] == TIMECOURSE]
-    apart = {run.run_dir for run in timecourse}
-    chosen = selection([run for run in trajectories if run.run_dir not in apart], theta0, w_max,
-                       seconds_per_chunk=seconds_per_chunk, numerical=numerical, facts=facts,
-                       exhausted=exhausted, reuse=reuse)  # fmt: skip
+    chosen = selection(trajectories, theta0, w_max, seconds_per_chunk=seconds_per_chunk,
+                       numerical=numerical, facts=facts, exhausted=exhausted,
+                       reuse=reuse)  # fmt: skip
     out.update(selection=chosen, problems=list(chosen["problems"]))
     step = chosen["next"]
-    later = [run for run in stage if run.arm in ARMS and run.seed in CONFIRMATION_SEEDS
-             and run.run_dir not in apart]  # fmt: skip
+    later = [run for run in stage if run.arm in ARMS and run.seed in CONFIRMATION_SEEDS]
     if not out["problems"] and step["campaign"] != "done" and (later or timecourse):
         out["problems"] = [f"confirmation run {run.run_id} before the rates are frozen"
                            for run in later]  # fmt: skip
@@ -3015,6 +3032,21 @@ def look_blocks(
 # ------------------------------------------------------------------ the time course
 
 
+def split_timecourse(
+    runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]
+) -> tuple[list[Trajectory], list[Trajectory]]:
+    """The loaded runs, split once where they are loaded: every run but the time course's, and
+    the time course's (role timecourse in ``facts``, ``run_facts`` by run id). The time course
+    shares the first blocks' seeds, arms and central rates with their endpoint runs, so every
+    grouping by seed and arm (blocks, looks, utility, sensitivities, contrasts, campaigns) reads
+    the first list only; ``progress`` takes the second as its ``timecourse``."""
+
+    def course(run: Trajectory) -> bool:
+        return (facts.get(run.run_id) or {}).get("role") == TIMECOURSE
+
+    return [run for run in runs if not course(run)], [run for run in runs if course(run)]
+
+
 def central_rate(rates: Sequence[float]) -> float:
     """An arm's central rate, its K* rate: the middle of its three frozen rates."""
     if len(rates) != 3:
@@ -3056,10 +3088,24 @@ def _canonical(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             for row in rows]  # fmt: skip
 
 
-def _jsonl_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+IDENTITY_RECORDS = ("metrics.jsonl", "monitor.jsonl", "update_scalars.jsonl", "meta.json")
+RAYLEIGH_COMPARED = ("R", "delta_norm", "delta_H_delta")  # rayleigh.json, reported beside
+
+
+def _run_records(run: Trajectory) -> dict[str, Any]:
+    """The records of a run's directory that the identity check reads (``IDENTITY_RECORDS``:
+    the jsonl ones as rows, meta.json as an object). A missing one raises ``FileNotFoundError``:
+    every regular run of the stage writes them all (the update scalars included), so a missing
+    record never compares as equal."""
+    out: dict[str, Any] = {}
+    for name in IDENTITY_RECORDS:
+        path = run.run_dir / name
+        if not path.is_file():
+            raise FileNotFoundError(f"{run.run_id} has no {name}")
+        text = path.read_text()
+        out[name] = (json.loads(text) if name == "meta.json" else
+                     [json.loads(line) for line in text.splitlines() if line.strip()])  # fmt: skip
+    return out
 
 
 def _evaluated(row: Mapping[str, Any]) -> bool:
@@ -3074,7 +3120,8 @@ def _identity_records(timecourse: Trajectory, endpoint: Trajectory) -> dict[str,
     readings, the update scalars, the endpoint's evaluations against the time course's of those
     steps, the stop with the steps taken, and the streams the run read (meta.json)."""
     out: dict[str, tuple] = {}
-    metrics = [_jsonl_rows(run.run_dir / "metrics.jsonl") for run in (timecourse, endpoint)]
+    mine, theirs = _run_records(timecourse), _run_records(endpoint)
+    metrics = (mine["metrics.jsonl"], theirs["metrics.jsonl"])
     out["the training's metrics.jsonl rows"] = tuple(
         _canonical([r for r in rows if not _evaluated(r)]) for rows in metrics
     )
@@ -3083,8 +3130,7 @@ def _identity_records(timecourse: Trajectory, endpoint: Trajectory) -> dict[str,
         _canonical([r for r in rows if _evaluated(r) and r["step"] in logged]) for rows in metrics
     )
     for name, what in (("monitor.jsonl", "readings"), ("update_scalars.jsonl", "rows")):
-        out[f"the {name} {what}"] = tuple(_canonical(_jsonl_rows(run.run_dir / name))
-                                          for run in (timecourse, endpoint))  # fmt: skip
+        out[f"the {name} {what}"] = (_canonical(mine[name]), _canonical(theirs[name]))
     steps = {row["step"] for row in endpoint.evaluations}
     out["the endpoint's evaluations"] = (
         _canonical([r for r in timecourse.evaluations if r["step"] in steps]),
@@ -3094,13 +3140,28 @@ def _identity_records(timecourse: Trajectory, endpoint: Trajectory) -> dict[str,
         _canonical([{"stop": run.terminal["stop"], "steps": run.steps}])
         for run in (timecourse, endpoint)
     )
-    streams = []
-    for run in (timecourse, endpoint):
-        meta = run.run_dir / "meta.json"
-        inputs = (json.loads(meta.read_text()).get("inputs") or {}) if meta.is_file() else {}
-        streams.append(_canonical([inputs.get("streams") or {}]))
-    out["the streams read"] = tuple(streams)
+    out["the streams read"] = tuple(_canonical([(record["meta.json"].get("inputs") or {})
+                                                .get("streams") or {}])
+                                    for record in (mine, theirs))  # fmt: skip
     return out
+
+
+def _rayleigh_equal(timecourse: Trajectory, endpoint: Trajectory) -> bool | None:
+    """Whether the two runs' endpoint Rayleigh records (rayleigh.json: R, ‖δ‖ and δᵀH₀δ, a
+    function of θ₂₅ − θ₀; without its timings and peaks) agree exactly; None when either run
+    lacks one, it does not read, or its measurement failed (R null). Reported beside the
+    identity, never deciding it."""
+    found = []
+    for run in (timecourse, endpoint):
+        path = run.run_dir / "rayleigh.json"
+        try:
+            record = json.loads(path.read_text()) if path.is_file() else None
+        except (OSError, ValueError):
+            record = None
+        if not isinstance(record, dict) or record.get("R") is None:
+            return None
+        found.append(_canonical([{key: record.get(key) for key in RAYLEIGH_COMPARED}]))
+    return found[0] == found[1]
 
 
 def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> dict[str, Any]:
@@ -3112,10 +3173,12 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
     rows), the rows of the endpoint's evaluation there, every monitor.jsonl reading,
     update_scalars.jsonl, the step-25 evaluation (K and utility), the stop and the steps taken,
     and the streams read. ``state`` is ``identical``, ``excluded`` (any difference, with the
-    ``reasons``; also a record that does not read) or ``pending`` (no endpoint run yet)."""
+    ``reasons``; also a record that is missing or does not read: ``_run_records``) or
+    ``pending`` (no endpoint run yet). ``rayleigh_equal`` (``_rayleigh_equal``) is reported
+    beside, never deciding the state."""
     if endpoint is None:
         return {"state": "pending", "reasons": ["its endpoint run is not there yet"],
-                "endpoint": None}  # fmt: skip
+                "endpoint": None, "rayleigh_equal": None}  # fmt: skip
     keys = [(run.arm, run.batch_size, rate(run.lr), run.seed) for run in (timecourse, endpoint)]
     reasons = []
     if keys[0] != keys[1]:
@@ -3123,7 +3186,7 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
     else:
         try:
             records = _identity_records(timecourse, endpoint)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             records, reasons = {}, [f"a record does not read: {exc!r}"]
         for name, (mine, theirs) in records.items():
             if mine == theirs:
@@ -3132,8 +3195,9 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
                           if a != b), min(len(mine), len(theirs)))  # fmt: skip
             reasons.append(f"{name} differ from the endpoint run's from row {first} "
                            f"({len(mine)} rows against {len(theirs)})")  # fmt: skip
+    rayleigh = _rayleigh_equal(timecourse, endpoint) if keys[0] == keys[1] else None
     return {"state": "excluded" if reasons else "identical", "reasons": reasons,
-            "endpoint": endpoint.run_id}  # fmt: skip
+            "endpoint": endpoint.run_id, "rayleigh_equal": rayleigh}  # fmt: skip
 
 
 def timecourse_summary(
@@ -3155,8 +3219,10 @@ def timecourse_summary(
     rows (step, K_scoring, harm), K_scoring the scoring panel's K of each evaluation. ``failures``
     lists the runs that did not complete their four evaluations (stopped early, or given up by
     the launcher: ``exhausted`` by (arm, batch, rate, seed, ``TIMECOURSE``)), ``missing`` the
-    runs not there; ``problems`` a second run of a key or a run the time course does not
-    prescribe (records that are not whole).
+    runs not there (``endpoint_given_up``, with the launcher's label, when its endpoint run was
+    given up: the campaign does not run it, since its identity could never be shown);
+    ``problems`` a second run of a key or a run the time course does not prescribe (records that
+    are not whole).
 
     ``labels`` (run id → label rows, as ``look_blocks`` reads them) is passed only by the final
     analysis. Without it nothing is read and every harm is None; with it, the harm of each step of
@@ -3176,20 +3242,23 @@ def timecourse_summary(
         entry: dict[str, Any] = {"seed": seed, "arm": arm, "lr": lr, "run": None, "state": None,
                                  "reasons": [], "endpoint": None, "rows": []}  # fmt: skip
         trajectories.append(entry)
-        run = found.get(key)
+        run, endpoint = found.get(key), endpoints.get(key)
+        given_up = exhausted.get(key) if endpoint is None else None  # the endpoint's, for good
         if run is None:
             label = exhausted.get((*key, TIMECOURSE))
             if label is None:
-                missing.append({"seed": seed, "arm": arm, "lr": lr})
+                absent = {"seed": seed, "arm": arm, "lr": lr}
+                if given_up is not None:  # its identity could never be shown: never run
+                    absent["endpoint_given_up"] = given_up
+                missing.append(absent)
             else:
                 failures.append({"seed": seed, "arm": arm, "run": label, "kind": "technical",
                                  "reason": "given up by the launcher"})  # fmt: skip
             continue
-        endpoint = endpoints.get(key)
-        if endpoint is None and key in exhausted:
-            identity = {"state": "excluded", "endpoint": None, "reasons": [
-                f"its endpoint run was given up by the launcher ({exhausted[key]}): the identity "
-                "cannot be shown"]}  # fmt: skip
+        if given_up is not None:
+            identity = {"state": "excluded", "endpoint": None, "rayleigh_equal": None,
+                        "reasons": [f"its endpoint run was given up by the launcher ({given_up}): "
+                                    "the identity cannot be shown"]}  # fmt: skip
         else:
             identity = timecourse_identity(run, endpoint)
         entry.update(run=run.run_id, **identity)

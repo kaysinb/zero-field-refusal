@@ -2419,19 +2419,23 @@ def test_timecourse_identity(tmp_path) -> None:
     endpoint = recorded(tmp_path, "endpoint", (25,))
     course = recorded(tmp_path, "course", (1, 5, 10, 25), other=0.125)
     assert timecourse_identity(course, endpoint) == {"state": "identical", "reasons": [],
-                                                     "endpoint": "endpoint"}  # fmt: skip
+                                                     "endpoint": "endpoint",
+                                                     "rayleigh_equal": None}  # fmt: skip
     waiting = ["its endpoint run is not there yet"]
-    pending = {"state": "pending", "reasons": waiting, "endpoint": None}
+    pending = {"state": "pending", "reasons": waiting, "endpoint": None, "rayleigh_equal": None}
     assert timecourse_identity(course, None) == pending
 
-    def edited(record: str, edit) -> Trajectory:
-        """The time-course run with one record edited, in a copy of its directory."""
-        copy = tmp_path / f"course-{len(list(tmp_path.iterdir()))}"
-        shutil.copytree(course.run_dir, copy)
-        rows = [json.loads(line) for line in (copy / record).read_text().splitlines()]
-        edit(rows)
-        (copy / record).write_text("".join(json.dumps(r) + "\n" for r in rows))
-        return dataclasses.replace(course, run_dir=copy, run_id=copy.name)
+    def edited(record: str, edit, run: Trajectory = course) -> Trajectory:
+        """A run with one record edited (``edit`` None: removed), in a copy of its directory."""
+        copy = tmp_path / f"{run.run_id}-{len(list(tmp_path.iterdir()))}"
+        shutil.copytree(run.run_dir, copy)
+        if edit is None:
+            (copy / record).unlink()
+        else:
+            rows = [json.loads(line) for line in (copy / record).read_text().splitlines()]
+            edit(rows)
+            (copy / record).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return dataclasses.replace(run, run_dir=copy, run_id=copy.name)
 
     def bump(row: dict, key: str) -> None:  # one bit: the next float up
         row[key] = math.nextafter(row[key], math.inf)
@@ -2459,6 +2463,9 @@ def test_timecourse_identity(tmp_path) -> None:
             course, terminal={**course.terminal, "stop": {"reason": "gradient_spike"}}),
         "is of ('adamw_25', 20, 1.48e-05, 3001)": dataclasses.replace(endpoint, seed=3001),
         "a record does not read": edited("update_scalars.jsonl", lambda rows: None),
+        # A missing record never compares as equal (review of Task 5, M2).
+        **{f"has no {record}": edited(record, None)
+           for record in ("metrics.jsonl", "monitor.jsonl", "update_scalars.jsonl", "meta.json")},
     }  # fmt: skip
     broken = tmp_path / cases["a record does not read"].run_id / "update_scalars.jsonl"
     broken.write_text(broken.read_text() + '{"step": 26, "upd\n')
@@ -2467,7 +2474,41 @@ def test_timecourse_identity(tmp_path) -> None:
         found = timecourse_identity(mine, theirs)
         assert found["state"] == "excluded", reason
         assert len(found["reasons"]) == 1 and reason in found["reasons"][0], found["reasons"]
+    # Missing from both runs: still excluded, never identical.
+    both = timecourse_identity(cases["has no update_scalars.jsonl"],
+                               edited("update_scalars.jsonl", None, endpoint))  # fmt: skip
+    assert both["state"] == "excluded" and "a record does not read" in both["reasons"][0]
     # The time course's own evaluations (steps 1, 5, 10) are not the endpoint's to compare.
     early = dataclasses.replace(course, evaluations=[
         {**course.evaluations[0], "K_benign": 99.0}, *course.evaluations[1:]])  # fmt: skip
     assert timecourse_identity(early, endpoint)["state"] == "identical"
+
+
+def test_timecourse_identity_reports_the_rayleigh_records_beside(tmp_path) -> None:
+    """The endpoint Rayleigh records (R, ‖δ‖, δᵀH₀δ) are compared beside the identity, without
+    their timings and peaks, and never decide it (review of Task 5, M1): None when either run
+    lacks one or its measurement failed."""
+    from zero_field_refusal.analysis.study2_short import timecourse_identity
+
+    endpoint = recorded(tmp_path, "endpoint", (25,))
+    course = recorded(tmp_path, "course", (1, 5, 10, 25))
+    measured = {"R": 12.5, "delta_norm": 0.031, "delta_H_delta": 0.0120125, "panel": {},
+                "cap": 256, "micro_batch_size": 4}  # fmt: skip
+
+    def write(run: Trajectory, **changes) -> None:
+        record = {**measured, **changes}
+        (run.run_dir / "rayleigh.json").write_text(json.dumps(record, indent=1) + "\n")
+
+    def found() -> dict:
+        return timecourse_identity(course, endpoint)
+
+    write(endpoint, seconds=40.0, peak_allocated_gb=31.2)
+    assert found()["rayleigh_equal"] is None  # the time course has none
+    write(course, seconds=41.5, peak_allocated_gb=33.0)
+    assert found() == {"state": "identical", "reasons": [], "endpoint": "endpoint",
+                       "rayleigh_equal": True}  # fmt: skip
+    write(course, delta_H_delta=math.nextafter(measured["delta_H_delta"], 1.0))
+    assert found()["rayleigh_equal"] is False and found()["state"] == "identical"
+    write(course, R=None, reason="failed: OutOfMemoryError: …", delta_norm=None,
+          delta_H_delta=None)  # fmt: skip
+    assert found()["rayleigh_equal"] is None
