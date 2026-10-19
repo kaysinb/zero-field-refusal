@@ -1177,17 +1177,19 @@ def test_intermediate_evaluations_do_not_change_step_25(env, tmp_path, monkeypat
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+@pytest.mark.parametrize("arm", list(ARMS))
 def test_cuda_intermediate_evaluations_do_not_change_step_25(
     gpu_env,  # noqa: F811
     tmp_path,
     monkeypatch,
+    arm,
 ) -> None:
-    """The same on CUDA, for FA-25 (Adam with v₀ frozen), the arm whose numerics amendment 4
-    qualifies."""
+    """The same on CUDA, for each arm: FA-25 (Adam with v₀ frozen), AdamW-25 and pre-warmed
+    AdamW-25 (review M11)."""
     from zero_field_refusal.analysis.stage_a import load_trajectory
     from zero_field_refusal.analysis.study2_short import timecourse_identity
 
-    dirs = intermediate_evaluations(gpu_env, tmp_path, monkeypatch, "adam_frozen",
+    dirs = intermediate_evaluations(gpu_env, tmp_path, monkeypatch, arm,
                                     "execution.device=cuda")  # fmt: skip
     timecourse, endpoint = (load_trajectory(dirs[name]) for name in ("timecourse", "endpoint"))
     assert timecourse_identity(timecourse, endpoint)["state"] == "identical"

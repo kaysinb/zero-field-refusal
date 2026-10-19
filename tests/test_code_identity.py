@@ -26,6 +26,14 @@ from zero_field_refusal.code_identity import (
         ("configs/experiments/study2_short.yaml", True),
         ("pyproject.toml", True),
         ("uv.lock", True),
+        # The run environment's image (review M4): its build and its launcher
+        ("Dockerfile", True),
+        (".dockerignore", True),
+        (".python-version", True),
+        ("docker/project-run.py", True),
+        ("README.md", False),
+        (".env.example", False),
+        (".gitignore", False),
         ("docs/study2-short-fixation.json", False),
         ("tests/test_optim.py", False),
         ("src/zero_field_refusal/__pycache__/optim.cpython-312.pyc", False),
@@ -88,3 +96,19 @@ def test_identity_reads_the_commit_not_the_working_tree(repo: Path) -> None:
     (repo / "configs" / "x.yaml").write_text("k: 2\n")  # uncommitted
     assert gpu_code_identity(head, repo) == before
     assert before["files"] == 1
+
+
+def test_an_image_change_voids_the_qualification(repo: Path) -> None:
+    """Review M4: the files that build the run environment are GPU paths, so a change of the
+    image's definition is a GPU-code change."""
+    files = {"Dockerfile": "FROM a\n", "docker/project-run.py": "x = 1\n",
+             ".python-version": "3.12\n", ".dockerignore": "**\n",
+             "src/zero_field_refusal/optim.py": "a = 1\n"}  # fmt: skip
+    gate_b = _commit(repo, files, "gate B")
+    assert gpu_code_identity(gate_b, repo)["files"] == len(files)
+    for name, text in (("Dockerfile", "FROM b\n"), ("docker/project-run.py", "x = 2\n"),
+                       (".python-version", "3.13\n"), (".dockerignore", "**\n!x\n")):  # fmt: skip
+        later = _commit(repo, {name: text}, f"changes {name}")
+        check = reuse_check(gate_b, later, repo)
+        assert check["reusable"] is False and check["changed"] == [name], name
+        gate_b = later

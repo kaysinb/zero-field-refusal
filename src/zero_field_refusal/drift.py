@@ -75,7 +75,7 @@ from transformers import PreTrainedModel
 from .code_identity import gpu_code_identity
 from .fa_control_diagnostic import numerics, peak_memory, reset_peak, second_moment, tensors_sha256
 from .models import freeze
-from .paths import runs_root
+from .paths import CONFIG_ROOT, runs_root
 from .protocol import load_run_config
 from .runtime import Environment, StreamPrefix, extend_stream, generate_stream, locate_stream
 from .seeding import derive_seed, seed_everything
@@ -168,12 +168,35 @@ def run_config(scope: DriftScope, batch: int) -> DictConfig:
     return cfg
 
 
+# The Adam arms whose β₂ the drift's ``beta2`` restates (FA has none), by optimizer config
+BETA2_ARMS = ("adamw", "adamw_prewarmed")
+
+
+def optimizer_settings(name: str) -> DictConfig:
+    """The tracked optimizer config configs/optimizer/<name>.yaml, as written (unresolved: its
+    preconditioner interpolates the run's batch)."""
+    return OmegaConf.load(CONFIG_ROOT / "optimizer" / f"{name}.yaml").optimizer
+
+
 def check_run_config(scope: DriftScope, cfg: DictConfig) -> None:
     """The config computes what the definitions say: the drift seed, an appendable training
-    stream, and v₀ from ``v0_batches`` batches at the run's B."""
+    stream, and v₀ from ``v0_batches`` batches at the run's B; and the settings' ε and β₂ are the
+    optimizers' (review M5): ε that of the run config's optimizer and of the tracked AdamW and
+    pre-warmed AdamW configs, β₂ the second of the latter two's ``betas``."""
     problems = []
     if int(cfg.seed) != scope.seed:
         problems.append(f"seed {cfg.seed}, not {scope.seed}")
+    if float(cfg.optimizer.eps) != scope.eps:
+        problems.append(f"drift.eps {scope.eps:g}, but the run's optimizer "
+                        f"({cfg.optimizer.name}) has ε {cfg.optimizer.eps}")  # fmt: skip
+    for name in BETA2_ARMS:
+        tracked = optimizer_settings(name)
+        if float(tracked.eps) != scope.eps:
+            problems.append(f"drift.eps {scope.eps:g}, but configs/optimizer/{name}.yaml has ε "
+                            f"{tracked.eps}")  # fmt: skip
+        if float(tracked.betas[1]) != scope.beta2:
+            problems.append(f"drift.beta2 {scope.beta2:g}, but configs/optimizer/{name}.yaml has "
+                            f"β₂ {tracked.betas[1]}")  # fmt: skip
     if stream_layout(cfg) != "appendable":
         problems.append("the training stream must be appendable (teacher.stream)")
     pre = OmegaConf.select(cfg, "optimizer.preconditioner", default=None)

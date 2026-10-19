@@ -121,6 +121,16 @@ def test_the_settings_are_frozen() -> None:
     adamw = drift.DriftScope.of(OmegaConf.merge(tracked(), {"drift": {"run": {"overrides": []}}}))
     with pytest.raises(drift.DriftError, match="preconditioner"):
         drift.run_config(adamw, 20)
+    # Review M5: ε and β₂ are checked against the optimizers' tracked configs, not restated
+    for changes, message in (({"eps": 1e-7}, "has ε 1e-08"),
+                             ({"beta2": 0.99}, "adamw.yaml has β₂ 0.999")):  # fmt: skip
+        other = drift.DriftScope.of(OmegaConf.merge(tracked(), {"drift": changes}))
+        with pytest.raises(drift.DriftError, match=message):
+            drift.run_config(other, 20)
+    assert [drift.optimizer_settings(name).betas[1] for name in drift.BETA2_ARMS] == [0.999] * 2
+    off = OmegaConf.merge(cfg, {"optimizer": {"eps": 1e-6}})
+    with pytest.raises(drift.DriftError, match=r"the run's optimizer \(adam_frozen\) has ε"):
+        drift.check_run_config(scope, off)
 
 
 # --------------------------------------------------------------------------- first updates

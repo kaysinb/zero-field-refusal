@@ -1494,7 +1494,12 @@ def test_the_prep_driver(monkeypatch, tmp_path, capsys) -> None:
     module = campaigns_module()
     for name in (*module.INVENTORIES, module.V3_RECORD, module.CURVATURE_PANEL):
         assert name in header
-    assert f"for the FA controls also the stage-0 v3 record {module.V3_RECORD}" in header
+    # Review M9: no FA control runs under amendment 4; the v3 record is restored for
+    # pod_setup.sh's check of the whole DATA_DIR
+    assert "FA controls" not in header
+    assert (f"the stage-0 v3 record {module.V3_RECORD} (no run of amendment 4 reads it: it is "
+            "restored because pod_setup.sh checks the whole DATA_DIR against the "
+            "inventories)") in header  # fmt: skip
     assert f"for confirmation blocks 1-10 also the curvature panel {module.CURVATURE_PANEL}" in (
         header
     )

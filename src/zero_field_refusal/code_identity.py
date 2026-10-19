@@ -6,11 +6,13 @@ changing what a GPU run computes. This module names the files that can change a 
 at a commit, and lists the ones two commits differ in, so that a qualification made at one commit
 is reused at a later one only after a recorded check that no such file changed.
 
-A **GPU path** is every tracked file under ``src/zero_field_refusal/``, ``scripts/`` and
-``configs/``, and ``pyproject.toml`` and ``uv.lock``, except the analysis package (its
-``stage_a.py`` stays in: the launcher imports it to qualify terminal records) and the scripts that
-only read records or plan campaigns. The default is inclusion, so an omission errs toward a
-stricter check.
+A **GPU path** is every tracked file under ``src/zero_field_refusal/``, ``scripts/``,
+``configs/`` and ``docker/``, and ``pyproject.toml``, ``uv.lock`` and the files that build the
+run environment's image (``Dockerfile``, its build context's ``.dockerignore`` and
+``.python-version``; ``docker/project-run.py`` is the image's launcher), except the analysis
+package (its ``stage_a.py`` stays in: the launcher imports it to qualify terminal records) and the
+scripts that only read records or plan campaigns. The default is inclusion, so an omission errs
+toward a stricter check.
 """
 
 from __future__ import annotations
@@ -22,8 +24,9 @@ from typing import Any
 
 from .paths import REPO_ROOT
 
-INCLUDED = ("src/zero_field_refusal/", "scripts/", "configs/")
-INCLUDED_FILES = ("pyproject.toml", "uv.lock")
+INCLUDED = ("src/zero_field_refusal/", "scripts/", "configs/", "docker/")
+# The dependency manifests and the files that build the image every Pod run executes in
+INCLUDED_FILES = ("pyproject.toml", "uv.lock", "Dockerfile", ".dockerignore", ".python-version")
 EXCLUDED_PREFIXES = ("src/zero_field_refusal/analysis/",)
 KEPT_IN_EXCLUDED = ("src/zero_field_refusal/analysis/stage_a.py",)  # imported by the launcher
 # Scripts that read records, plan campaigns or write reports; none runs on a GPU

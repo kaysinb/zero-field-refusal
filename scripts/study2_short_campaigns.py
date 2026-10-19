@@ -233,9 +233,11 @@ INVENTORIES = (
     "inventory-2026-10-15-study2-a-stream-s2001-search-s2001-2.tsv",
     "inventory-2026-10-16-study2-a-stream-s2002-final.tsv",
 )
-# The prep of 2026-10-16 (prep --once on P0): the stage-0 record under protocol version 3, which
-# the FA controls need, and the curvature panel, which confirmation blocks 1-10 need. Every later
-# Pod restores both, whatever it runs: pod_setup.sh checks every file in DATA_DIR.
+# The prep of 2026-10-16 (prep --once on P0): the stage-0 record under protocol version 3 (made
+# for amendment 3's FA controls; amendment 4 launches none) and the curvature panel, which
+# confirmation blocks 1-10 need. Every later Pod restores both, whatever it runs: pod_setup.sh
+# checks every file in DATA_DIR against the inventories, so the v3 record is restored for that
+# check (review M9).
 V3_RECORD = "inventory-2026-10-16-study2-stage0-v3-record.tsv"
 CURVATURE_PANEL = "inventory-2026-10-16-study2-curvature-panel.tsv"
 
@@ -310,11 +312,12 @@ def prep_driver(
                  "inventories under runs/archive/, so that the runs read the streams that Stage "
                  f"A's runs read: for every campaign kind {', '.join(INVENTORIES)} (the prompt "
                  "sets, K's reference streams, the protocol-2 path-field record, the monitor-v2 "
-                 "stream, the preconditioner streams and the training streams); for the FA "
-                 f"controls also the stage-0 v3 record {V3_RECORD}; for confirmation blocks 1-10 "
-                 f"also the curvature panel {CURVATURE_PANEL}. Every Pod after the prep of "
-                 "2026-10-16 restores these two as well, and the inventories of the fresh seeds' "
-                 "streams once they are archived."),
+                 "stream, the preconditioner streams and the training streams); the stage-0 v3 "
+                 f"record {V3_RECORD} (no run of amendment 4 reads it: it is restored because "
+                 "pod_setup.sh checks the whole DATA_DIR against the inventories); for "
+                 f"confirmation blocks 1-10 also the curvature panel {CURVATURE_PANEL}. Every Pod "
+                 "after the prep of 2026-10-16 restores these two as well, and the inventories of "
+                 "the fresh seeds' streams once they are archived."),
         *comment("It stops at the first failure and can be run again: a completed stage-0 run "
                  "is kept, a soft-target copy set aside or put back stays so, a stream that "
                  "exists is kept, and a training stream only grows to what the runs read."),
