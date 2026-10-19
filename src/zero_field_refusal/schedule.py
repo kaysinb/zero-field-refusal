@@ -314,9 +314,31 @@ class UpdateScalars:
             state = optimizer.state[p]
             if "step" in state:
                 raise ValueError("The update scalars copy v₀ before the first update")
+            self._check(p)
             v = state["exp_avg_sq"]
             host = torch.empty(v.shape, dtype=v.dtype, pin_memory=v.is_cuda)
             self.v0.append(host.copy_(v))
+
+    def _check(self, p: torch.Tensor) -> None:
+        """What reading in pieces rests on: fp32 moments, as ``Adam.step`` makes them, and a
+        contiguous state and gradient, so that a piece is a view and never a copy of the whole."""
+        state = self.optimizer.state[p]
+        for key in ("exp_avg", "exp_avg_sq"):
+            if key in state and state[key].dtype != torch.float32:
+                raise ValueError(
+                    f"The update scalars read fp32 Adam moments; {key} of a "
+                    f"parameter of shape {tuple(p.shape)} is {state[key].dtype}"
+                )
+            if key in state and not state[key].is_contiguous():
+                raise ValueError(
+                    f"The update scalars read a contiguous Adam state; {key} of a "
+                    f"parameter of shape {tuple(p.shape)} is not contiguous"
+                )
+        if p.grad is not None and not p.grad.is_contiguous():
+            raise ValueError(
+                f"The update scalars read contiguous gradients; the gradient of a "
+                f"parameter of shape {tuple(p.shape)} is not contiguous"
+            )
 
     def _pieces(self, numel: int) -> list[slice]:
         return [slice(start, start + self.chunk) for start in range(0, numel, self.chunk)]
@@ -328,13 +350,16 @@ class UpdateScalars:
         for p in self.params:
             if p.grad is None:
                 continue
+            self._check(p)
             if sums is None:
                 sums = torch.zeros(3, dtype=torch.float64, device=p.device)
             scale = optimizer.step_size(p)
             m, g = optimizer.state[p]["exp_avg"].reshape(-1), p.grad.reshape(-1)
             for piece in self._pieces(m.numel()):
-                u = m[piece].double().div_(optimizer.denominator(p, piece)).mul_(scale)
-                grad = g[piece].double()
+                # Always a copy: the in-place operations below never reach the state.
+                u = m[piece].to(torch.float64, copy=True)
+                u.div_(optimizer.denominator(p, piece)).mul_(scale)
+                grad = g[piece].to(torch.float64, copy=True)
                 sums[0] += u.square().sum()
                 sums[1] += (u * grad).sum()
                 sums[2] += grad.square().sum()
@@ -353,15 +378,18 @@ class UpdateScalars:
             raise ValueError("The departure is the pre-warmed arm's")
         optimizer, sums, histogram = self.optimizer, None, None  # sums: Σ (d_t − d₀)², Σ d₀²
         for p, v0 in zip(self.params, self.v0, strict=True):
+            self._check(p)
             if sums is None:
                 sums = torch.zeros(2, dtype=torch.float64, device=p.device)
                 histogram = _LogHistogram(p.device)
             v0 = v0.reshape(-1)
             for piece in self._pieces(v0.numel()):
                 start = v0[piece].to(p.device, non_blocking=True)  # from pinned memory
-                d0 = optimizer.denominator(p, piece, second_moment=start).double()
+                d0 = optimizer.denominator(p, piece, second_moment=start)
+                d0 = d0.to(torch.float64, copy=True)
                 del start
-                d = optimizer.denominator(p, piece).double().sub_(d0)  # d_t − d₀
+                d = optimizer.denominator(p, piece).to(torch.float64, copy=True)
+                d.sub_(d0)  # d_t − d₀
                 sums[0] += d.square().sum()
                 sums[1] += d0.square().sum()
                 d.div_(d0).abs_().nan_to_num_(nan=math.inf, posinf=math.inf)  # |d_t / d₀ − 1|

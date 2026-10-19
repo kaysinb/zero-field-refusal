@@ -154,24 +154,44 @@ def test_build_optimizer_rejects_non_fp32_state() -> None:
         build_optimizer(cfg.optimizer, params())
 
 
-def adam(ps, mode):
+def adam(ps, mode, spread=None):
+    """Adam in ``mode``; v₀ ~ U(0.5, 1.5), times ``spread`` squared when given."""
     betas = (B1, None) if mode == "frozen" else (B1, B2)
-    v_hat = None if mode == "adaptive" else [torch.rand_like(p) + 0.5 for p in ps]
+    v_hat = [(torch.rand_like(p) + 0.5) * (1 if spread is None else s**2)
+             for p, s in zip(ps, spread or ps, strict=True)]  # fmt: skip
     return Adam(ps, lr=LR, betas=betas, eps=EPS, second_moment=mode,
-                initial_second_moment=v_hat)  # fmt: skip
+                initial_second_moment=None if mode == "adaptive" else v_hat)  # fmt: skip
+
+
+def spread_of(ps):
+    """Magnitudes from 1e-9 to 1 over each parameter's coordinates: where √v is near ε, the
+    placement of ε shows in fp32."""
+    return [10.0 ** torch.linspace(-9, 0, p.numel()).reshape(p.shape) for p in ps]
 
 
 @pytest.mark.parametrize("mode", SECOND_MOMENT_MODES)
-def test_the_denominator_and_step_size_are_those_the_step_applied(mode: str) -> None:
+def test_the_denominator_and_step_size_are_those_the_step_applied(mode: str, monkeypatch) -> None:
     # The read accessors behind the update scalars: from the state after each update they give
-    # back the update itself, bit for bit, whole or by coordinates of the flattened parameter.
+    # back the denominator tensor and the factor that step passed to addcdiv_, bit for bit, and
+    # so the update itself, whole or by coordinates of the flattened parameter.
+    applied, addcdiv = [], torch.Tensor.addcdiv_
+
+    def record(self, tensor1, tensor2, *args, **kwargs):
+        applied.append((self, tensor2, kwargs["value"]))
+        return addcdiv(self, tensor1, tensor2, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "addcdiv_", record)
     ps = params()
-    optimizer = adam(ps, mode)
+    spread = spread_of(ps)
+    optimizer = adam(ps, mode, spread)
     for step in gradients(3):
         before = [p.detach().clone() for p in ps]
-        run(optimizer, ps, [step])
-        for p, start in zip(ps, before, strict=True):
+        applied.clear()
+        run(optimizer, ps, [[g * s for g, s in zip(step, spread, strict=True)]])
+        assert [target for target, _, _ in applied] == ps
+        for p, start, (_, denom, value) in zip(ps, before, applied, strict=True):
             d = optimizer.denominator(p)
+            assert torch.equal(d, denom) and value == -optimizer.step_size(p)
             m = optimizer.state[p]["exp_avg"]
             assert torch.equal(start.addcdiv(m, d, value=-optimizer.step_size(p)), p.detach())
             assert torch.equal(optimizer.denominator(p, slice(1, 3)), d.reshape(-1)[1:3])
@@ -297,6 +317,53 @@ def test_update_scalars_on_cuda_agree_with_the_cpu_under_deterministic_algorithm
     assert departure["norm_ratio"] == pytest.approx(expected["norm_ratio"], rel=1e-5)
     for key in ("median", "p90"):  # the same bin, or a neighbour for a value on its edge
         assert expected[key] / HISTOGRAM_BIN <= departure[key] <= expected[key] * HISTOGRAM_BIN
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_the_hooks_own_transient_stays_within_a_few_pieces() -> None:
+    # Per-parameter temporaries are freed before the next parameter: the hook's peak above the
+    # post-step level is a few pieces of 500 coordinates plus the departure's histogram (its
+    # int64 counts and one bincount of the same size, live together while a piece is added),
+    # whatever the number of parameters, and nothing stays allocated after the call.
+    peaks = {}
+    for count in (2, 16):
+        g = torch.Generator().manual_seed(3)
+        ps = [torch.nn.Parameter(torch.randn(10_000, generator=g).cuda()) for _ in range(count)]
+        v_hat = [(torch.rand(10_000, generator=g) + 0.5).cuda() for _ in range(count)]
+        optimizer = Adam(ps, lr=LR, betas=(B1, B2), eps=EPS, second_moment="prewarmed",
+                         initial_second_moment=v_hat)  # fmt: skip
+        scalars = UpdateScalars(optimizer, chunk=500, departure_at=(1,))
+        for p in ps:
+            p.grad = torch.randn(10_000, generator=g).cuda()
+        optimizer.step()
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        row = scalars(1)
+        torch.cuda.synchronize()
+        peaks[count] = torch.cuda.max_memory_allocated() - base
+        assert torch.cuda.memory_allocated() == base and "d_departure" in row
+    pieces, histogram = 6 * 500 * 8, 2 * 11_000 * 8  # 11000 bins
+    assert peaks[2] == peaks[16] <= pieces + histogram + 4096, peaks
+    # One parameter's fp64 u_t held to the end of the call (10⁴ × 8 B) would break the bound.
+    assert pieces + histogram + 4096 < peaks[2] + 10_000 * 8
+
+
+def test_the_hook_refuses_state_it_would_have_to_copy_whole_or_could_write() -> None:
+    ps = params()
+    optimizer = adam(ps, "adaptive")
+    run(optimizer, ps, gradients(1))
+    state = optimizer.state[ps[0]]
+    state["exp_avg"] = state["exp_avg"].double()
+    with pytest.raises(ValueError, match="fp32 Adam moments; exp_avg"):
+        UpdateScalars(optimizer)(1)
+    state["exp_avg"] = state["exp_avg"].float().t().contiguous().t()  # (5, 3), column-major
+    with pytest.raises(ValueError, match="contiguous Adam state; exp_avg"):
+        UpdateScalars(optimizer)(1)
+    state["exp_avg"] = state["exp_avg"].contiguous()
+    ps[0].grad = torch.randn(3, 5).t()
+    with pytest.raises(ValueError, match="contiguous gradients"):
+        UpdateScalars(optimizer)(1)
 
 
 def test_a_parameter_without_a_gradient_is_not_updated_and_adds_nothing() -> None:

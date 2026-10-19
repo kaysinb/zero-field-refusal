@@ -960,7 +960,7 @@ def test_no_persistent_gpu_allocation(gpu_env, tmp_path, monkeypatch) -> None:  
     assert len(steps["on"]) == 25 and steps["on"] == steps["off"]
     largest = max(p.numel() * p.element_size() for p in params)
     assert largest > 500 * 4  # the pieces split it
-    assert peaks["on"] - peaks["off"] <= largest, (peaks, largest)
+    assert peaks["on"] == peaks["off"], (peaks, largest)  # the run's peak, not the hook's
     (off, metrics_off), (on, metrics_on) = trained["off"], trained["on"]
     assert metrics_on == metrics_off and len(metrics_on) == 25  # on the GPU too
     assert all(torch.equal(a, b) for a, b in zip(off, on, strict=True))

@@ -122,7 +122,7 @@ class Adam(torch.optim.Optimizer):
                 raise ValueError("Adaptive Adam has no denominator before its first update")
             v = state["exp_avg_sq"]
             if coordinates is not None:
-                v = v.reshape(-1)[coordinates]  # a view: the state is contiguous
+                v = v.reshape(-1)[coordinates]  # a view: UpdateScalars checks contiguity
         if self.second_moment == "adaptive":
             bias_correction2_sqrt = (1 - group["betas"][1] ** state["step"]) ** 0.5
             return (v.sqrt() / bias_correction2_sqrt).add_(group["eps"])
