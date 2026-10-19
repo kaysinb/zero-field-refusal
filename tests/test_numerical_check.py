@@ -13,9 +13,12 @@ import functools
 import hashlib
 import json
 import math
+import platform
 import runpy
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,7 +33,7 @@ from zero_field_refusal import fa_control_diagnostic as fcd
 from zero_field_refusal.config import load_config
 from zero_field_refusal.models import freeze, install_neutral_generation_config, set_numerics
 from zero_field_refusal.optim import Adam
-from zero_field_refusal.runtime import Environment, locate_stream
+from zero_field_refusal.runtime import Environment
 from zero_field_refusal.schedule import run_scheduled
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,8 +108,19 @@ def consistent_code():
     return {"consistent": True, "gpu_code": GPU_CODE, "problems": []}
 
 
+@functools.cache
+def recorded_environment() -> dict:
+    """This machine's run environment as ``tracking.Run`` records it in meta.json."""
+    from zero_field_refusal import tracking
+
+    return {"python": platform.python_version(), "packages": tracking.package_versions(),
+            "hardware": tracking.hardware(),
+            "launch": {"source_snapshot_id": None, "container_image": None}}  # fmt: skip
+
+
 def fake_runs(root, found, commit=RUN_COMMIT):
-    """A finished, conforming regular run's records for each case, made at ``commit``."""
+    """A finished, conforming regular run's records for each case, made at ``commit`` in this
+    machine's run environment."""
     for case in found:
         run = root / "study2_short" / case.name
         if run.exists():
@@ -130,11 +144,8 @@ def fake_runs(root, found, commit=RUN_COMMIT):
             json.dumps({"stop": {"reason": "steps", "kind": "limit"}, "steps": 25})
         )
         (run / "metrics.jsonl").write_text(json.dumps({"step": 0, "loss": 1.0}) + "\n")
-        (run / "meta.json").write_text(
-            json.dumps(
-                {"git": {"commit": commit, "dirty": False}, "config_hash": f"hash-{case.name}"}
-            )
-        )
+        meta = {"git": {"commit": commit, "dirty": False}, "config_hash": f"hash-{case.name}"}
+        (run / "meta.json").write_text(json.dumps({**meta, **recorded_environment()}))
     # fmt: skip
 
 
@@ -1102,6 +1113,110 @@ def test_the_plan_notes_an_instability_stop(world, monkeypatch, capsys) -> None:
     assert f"{departing.name}: PROBLEM: does not conform" in printed
 
 
+def test_the_plan_notes_runs_given_up(tmp_path, world, monkeypatch, capsys) -> None:
+    """The final review of gate B, I1: a case whose regular run the launcher gave up on, named
+    in the selection record's ``given_up``, is no problem for the plan but a note: the parts
+    record it incomplete, then not qualified. A seed whose only FA run is given up has its other
+    cases noted too (that run sets the seed's v₀ and p1, p2 up). Unnamed, a missing run stays a
+    problem; a name that is not a case's is refused; the driver passes the names on."""
+    namespace = runpy.run_path(str(SCRIPT))
+    s, found = scope(), cases()
+    adamw = by_name(found, 2200, "adamw", 1.32e-05)
+    fa_2200 = by_name(found, 2200, "adam_frozen", 9.98e-06)
+    fa_2201 = by_name(found, 2201, "adam_frozen", 1.46e-05)
+    given = [adamw.name, fa_2200.name, fa_2201.name]
+    for case in (adamw, fa_2200, fa_2201):
+        shutil.rmtree(fcd.locate_case(world, s, case))
+    assert set(namespace["find_runs"](world, s, found)[1]) == set(given)
+    located, problems, notes = namespace["find_runs"](world, s, found, given)
+    assert problems == {} and len(located) == 12
+    note = "given up by the launcher: the parts will record it not qualified"
+    assert notes[adamw.name] == namespace["GIVEN_UP"] == note
+    assert notes[fa_2200.name] == namespace["GIVEN_UP"] + " (and its same-path control)"
+    seed_2201 = {c.name for c in found if c.seed == 2201} - {fa_2201.name}
+    assert set(notes) == {*given, *seed_2201}
+    for name in seed_2201:
+        assert notes[name].startswith("the seed's adam_frozen runs are given up by the launcher")
+    # The plan through the script, the selection record naming the cases given up
+    record = tmp_path / "selection.json"
+    record.write_text(json.dumps({"rates": RATES, "batch": 20, "U": 8, "given_up": given}))
+    plan = [str(SCRIPT), "plan", "--selection", str(record), "--batch", "20", "--upper", "8",
+            "--runs-root", str(world), "--no-stream-check"]  # fmt: skip
+    assert call(monkeypatch, plan) == 0
+    printed = capsys.readouterr().out
+    assert f"{adamw.name}: no regular run; NOTE: given up by the launcher" in printed
+    assert "PROBLEM" not in printed and "run environment: the regular runs' equals" in printed
+    record.write_text(json.dumps({"rates": RATES, "batch": 20, "U": 8, "given_up": given[:2]}))
+    assert call(monkeypatch, plan) == 1  # the FA run of 2201 is missing and not given up
+    assert f"{fa_2201.name}: PROBLEM:" in capsys.readouterr().out
+    record.write_text(json.dumps({"rates": RATES, "batch": 20, "U": 8,
+                                  "given_up": ["s2200-adamw-9e-06"]}))  # fmt: skip
+    assert "name no case of this check" in str(call(monkeypatch, plan))
+    both = script_argv("plan", world, RATES, "--given-up", adamw.name, "--selection", str(record))
+    assert "Give the rates by --rates" in str(call(monkeypatch, both))
+    # The streams: a seed whose FA runs are all given up has none to check, noted
+    script_globals = namespace["check_streams"].__globals__
+    monkeypatch.setitem(script_globals, "guard_prompt_sets", lambda env: env)
+    monkeypatch.setitem(script_globals, "stream_inputs", lambda cfg, env: (["ok"], []))
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", lambda cfg, device: None)
+    settings_ = settings()
+    have, missing = namespace["check_streams"](settings_, found, world, "cpu", given)
+    assert missing == [] and "seed 2201: no stream checked: its adam_frozen runs are given up by " \
+        "the launcher" in have  # fmt: skip
+    assert namespace["check_streams"](settings_, found, world, "cpu")[1] == [
+        "seed 2201: no adam_frozen run to locate its streams by"]  # fmt: skip
+    # The driver written from the selection record passes them to every part
+    record.write_text(json.dumps({"rates": RATES, "batch": 20, "U": 8, "given_up": given}))
+    driver = tmp_path / "driver.sh"
+    assert call(monkeypatch, [str(SCRIPT), "driver", "--selection", str(record), "--batch", "20",
+                              "--upper", "8", "--commit", "a" * 40, "--out",
+                              str(driver)]) == 0  # fmt: skip
+    args = next(line for line in driver.read_text().splitlines() if line.startswith("ARGS=("))
+    assert args.endswith(" ".join(f"--given-up {name}" for name in given) + ")")
+    capsys.readouterr()
+
+
+def test_run_environment_departures() -> None:
+    """The final review of gate B, I3: the fields a run records are compared (the GPU names as a
+    set); a field it does not record departs when this environment records one; the container
+    image only when the run recorded one."""
+    here = {"hardware.gpus": ["NVIDIA L40S"], "hardware.driver": "580.95",
+            "hardware.torch_cuda": "13.0", "python": "3.12.3",
+            "packages": {"torch": "2.14.0", "numpy": "2.5.0"},
+            "launch.container_image": None}  # fmt: skip
+    meta = {"hardware": {"gpus": ["NVIDIA L40S", "NVIDIA L40S"], "driver": "580.95",
+                         "torch_cuda": "13.0", "world_size": 1},
+            "python": "3.12.3", "packages": {"torch": "2.14.0", "numpy": "2.5.0"},
+            "launch": {"container_image": None}}  # fmt: skip
+    assert fcd.environment_departures(meta, here) == []
+
+    def departures(**changes):
+        return fcd.environment_departures({**meta, **changes}, here)
+
+    assert departures(hardware={**meta["hardware"], "gpus": ["NVIDIA A100"]}) == [
+        ("hardware.gpus", ["NVIDIA A100"], ["NVIDIA L40S"])]  # fmt: skip
+    assert departures(hardware={**meta["hardware"], "driver": "575.1"}) == [
+        ("hardware.driver", "575.1", "580.95")]  # fmt: skip
+    assert departures(python="3.12.4") == [("python", "3.12.4", "3.12.3")]
+    assert departures(packages={"torch": "2.14.1", "numpy": "2.5.0"}) == [
+        ("packages.torch", "2.14.1", "2.14.0")]  # fmt: skip
+    assert departures(packages={"torch": "2.14.0"}) == [("packages.numpy", "not recorded",
+                                                         "2.5.0")]  # fmt: skip
+    old = {key: value for key, value in meta.items() if key != "hardware"}
+    assert [d[0] for d in fcd.environment_departures(old, here)] == [
+        "hardware.gpus", "hardware.driver", "hardware.torch_cuda"]  # fmt: skip
+    cpu = {**here, "hardware.gpus": [], "hardware.driver": None, "hardware.torch_cuda": None}
+    assert fcd.environment_departures(old, cpu) == []  # nothing recorded on either side
+    image = "registry/zfr@sha256:" + "a" * 64
+    assert departures(launch={"container_image": image}) == [
+        ("launch.container_image", image, None)]  # fmt: skip
+    assert fcd.environment_departures({**meta, "launch": {"container_image": image}},
+                                      {**here, "launch.container_image": image}) == []  # fmt: skip
+    assert departures(launch={"container_image": None}) == []  # none recorded: not compared
+    check = fcd.environment_check([], here)
+    assert not check["consistent"] and check["problems"] == ["no regular run to compare with"]
+
+
 def test_records_follow_the_gpu_code(tmp_path, world) -> None:
     """Review I3, option (a), with code_identity on a repository of its own: records written at
     a commit X count at a later analysis-only commit Y, and are stale after a change of a GPU
@@ -1153,13 +1268,20 @@ def test_the_selection_record(tmp_path) -> None:
     arms = {"adamw_25": RATES["adamw"], "frozen_adam_25": RATES["adam_frozen"],
             "prewarmed_adamw_25": RATES["adamw_prewarmed"]}  # fmt: skip
     record.write_text(json.dumps({"batch": 20, "U": 8, "rates": arms}))
-    assert namespace["read_selection"](record, 20, 8.0) == RATES
+    assert namespace["read_selection"](record, 20, 8.0) == (RATES, [])
+    # The final review of gate B, I1: the cases given up by the launcher, the one optional key
+    assert namespace["SELECTION_KEYS"] == {"rates", "batch", "U", "given_up"}
+    record.write_text(json.dumps({"batch": 20, "U": 8, "rates": arms,
+                                  "given_up": ["s2200-adamw-1.32e-05"]}))  # fmt: skip
+    assert namespace["read_selection"](record, 20, 8.0) == (RATES, ["s2200-adamw-1.32e-05"])
     for content, message in (({"batch": 20, "U": 8, **arms}, "needs 'rates'"),
                              ({"rates": arms, "next": {}}, "unexpected keys"),
                              ({"rates": arms, "batch": 5}, "batch 5"),
                              ({"rates": arms, "U": 7}, "U 7"),
                              ({"rates": {"adamw_25": 1e-05}}, "list of numbers"),
                              ({"rates": {"adamw_25": ["1e-05"]}}, "list of numbers"),
+                             ({"rates": arms, "given_up": "s2200-adamw-1.32e-05"}, "given_up"),
+                             ({"rates": arms, "given_up": ["a", "a"]}, "distinct case names"),
                              ([1, 2], "needs 'rates'")):  # fmt: skip
         record.write_text(json.dumps(content))
         with pytest.raises(fcd.NumericalError, match=message):
@@ -1289,14 +1411,26 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     gpu = lines.index('if [ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)" ]; '
                       "then")  # fmt: skip
     disk = next(i for i, line in enumerate(lines) if line.startswith('if [ "$free_kb" -lt 40'))
-    assert head < log < gpu < disk < positions[0]
+    namespace = runpy.run_path(str(SCRIPT))
+    # The final review of gate B: the free host memory (M7), then the checkpoints an interrupted
+    # case left cleared (M8), before the disk check and the plan
+    host = lines.index(f'if ! project-run "$SRC" python -c "{namespace["HOST_FREE"]}" 52.5; then')
+    assert lines[host + 1].startswith('  stop "52.5 GB of free host memory are needed')
+    cleared = lines.index('rm -rf -- "$OUT/twins/checkpoints"')
+    assert [line for line in lines if line.startswith("rm ")] == [lines[cleared]]
+    assert head < log < gpu < host < cleared < disk < positions[0]
+    assert namespace["HOST_MEMORY_GB"] == 1.5 * (30 + 5)
     stop = next(line for line in lines if line.startswith("stop() {"))
     assert f'{run} verdict "${{ARGS[@]}}" || true; exit "$2"; }}' in stop
     exits = [line for line in lines if "exit" in line and not line.startswith("#")]
     assert [line for line in exits if "exit 1" in line or 'exit "$' in line] == [stop]
-    namespace = runpy.run_path(str(SCRIPT))
-    for program in (namespace["READ_FIELD"], namespace["HAS_INCOMPLETE"]):
+    for program in (namespace["READ_FIELD"], namespace["HAS_INCOMPLETE"], namespace["HOST_FREE"]):
         assert not {"$", "`", "\\", '"'} & set(program)
+    # The host-memory program: exit 0 with enough free memory, 1 without
+    for need, code in (("0", 0), ("1e9", 1)):
+        done = subprocess.run([sys.executable, "-c", namespace["HOST_FREE"], need], check=False,
+                              capture_output=True, text=True, cwd=ROOT)  # fmt: skip
+        assert done.returncode == code and "free host memory (GB)" in done.stdout, done.stderr
     # The programs on a verdict: whether a rate or a control is incomplete
     verdict = tmp_path / "verdict.json"
     for rates, controls, code in (({"a|1": "not_qualified"}, {"1": "rejected"}, 1),
@@ -1341,12 +1475,17 @@ def tiny_cases():
 
 
 def run_config_of(base, case, device):
+    """A tiny numerical run as the stage makes them (experiments/study2_short_k_only): the K-only
+    evaluation (``eval.k_only``) and the update scalars on (``tracking.update_scalars``), so
+    that the archive composes the K-only path, the scalars and twin A (the final review of gate
+    B, M3)."""
     experiment = base / "numerical.yaml"
     experiment.write_text("defaults: [experiments/smoke, eval/study2, schedule/short]\n")
     overrides = [*SMALL, *APPENDABLE, "teacher.chunk_size=12", f"train.steps={STEPS}",
                  f"schedule.evaluate_at=[{STEPS}]", "+schedule.instability.grad_rule=log",
-                 "experiment=study2_short", "+study2_short.role=numerical", f"seed={case.seed}",
-                 *OPTIMIZER[case.optimizer], f"optimizer.lr={case.lr}"]  # fmt: skip
+                 "experiment=study2_short", "+study2_short.role=numerical", "+eval.k_only=true",
+                 "tracking.update_scalars=true", f"seed={case.seed}", *OPTIMIZER[case.optimizer],
+                 f"optimizer.lr={case.lr}"]  # fmt: skip
     if case.optimizer != "adamw":
         overrides.append("optimizer.preconditioner.batches=2")
     if device.type != "cpu":
@@ -1354,39 +1493,15 @@ def run_config_of(base, case, device):
     return load_config(experiment, overrides)
 
 
-def k_only(env, runs: Path, base: Path):
-    """The archive as K-only numerical runs leave it (review fa12): no response to a harmful
-    prompt, no harmful K stream, no harm-related summary, input or measurement. The data are
-    copied first; returns the environment on the copy."""
-    data = base / "data-k-only"
-    shutil.copytree(env.data_root, data)
-    cfg = run_config_of(base, tiny_cases()[3], env.device)
-    _, stream, _ = locate_stream(cfg, env, "kl_harmful", None)
-    shutil.rmtree(data / stream.relative_to(env.data_root))
-    for run in sorted(runs.glob("study2_short/*")):
-        shutil.rmtree(run / "responses", ignore_errors=True)
-        summary = json.loads((run / "summary.json").read_text())
-        (run / "summary.json").write_text(
-            json.dumps({k: v for k, v in summary.items() if "harm" not in k and "refusal" not in k})
-        )
-        meta = json.loads((run / "meta.json").read_text())
-        meta["inputs"]["streams"].pop("kl_harmful", None)
-        meta["inputs"].pop("harmful_prompts", None)
-        meta["git"] = {"commit": RUN_COMMIT, "dirty": False}  # as a clean checkout records it
-        (run / "meta.json").write_text(json.dumps(meta))
-        measurements = run / "observations" / "measurements.jsonl"
-        if measurements.exists():
-            rows = [json.loads(line) for line in measurements.read_text().splitlines()]
-            measurements.write_text("".join(json.dumps(r) + "\n" for r in rows
-                                            if r.get("measure") != "kl_harmful"))  # fmt: skip
-    return dataclasses.replace(env, data_root=data)
-
-
 def build_archive(base: Path, device: torch.device):
     """The tiny regular numerical runs of every case, on ``device``, archived as the stage's
-    are, with their seeds' streams (made where the check re-examines them), then made K-only."""
+    are, with their seeds' streams (made where the check re-examines them): K-only runs with
+    the update scalars, as the stage's numerical runs are, recorded at ``RUN_COMMIT`` from a
+    clean checkout. No harmful prompt set is read, so no harmful stream exists."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("RUNS_DIR", str(base / "runs"))
+        patch.setattr("zero_field_refusal.tracking.git_state",
+                      lambda *args, **kwargs: {"commit": RUN_COMMIT, "dirty": False})  # fmt: skip
         tokenizer = tiny_tokenizer()
         end_ids = tokenizer.convert_tokens_to_ids(["<|im_end|>", "<|endoftext|>"])
         sets = prompt_sets()
@@ -1407,9 +1522,11 @@ def build_archive(base: Path, device: torch.device):
         prepare(env, first, "kl_monitor")
         for seed in TINY_SEEDS:
             prepare(env, first, "preconditioner", seed=seed)
+        guarded = fcd.guarded_prompt_sets(env, "harmful", "A K-only numerical run")
         for case in found:
-            run_scheduled(run_config_of(base, case, device), env, run_id=f"numerical-{case.name}")
-    return k_only(env, base / "runs", base), base / "runs"
+            run_scheduled(run_config_of(base, case, device), guarded,
+                          run_id=f"numerical-{case.name}")  # fmt: skip
+    return env, base / "runs"
 
 
 @pytest.fixture(scope="module")
@@ -1450,6 +1567,13 @@ def check_the_records(out, root, *, device, rule_gb=None):
     found = tiny_cases()
     norm = tiny_settings().numerical.perturbation.norm
     the_reader = tiny_reader(root)
+    # The final review of gate B, M3: twin A reproduced K-only runs that recorded the scalars
+    for run in sorted((root / "study2_short").iterdir()):
+        meta = json.loads((run / "meta.json").read_text())
+        assert meta["inputs"]["k_only"] is True and not (run / "responses").exists(), run.name
+        assert "kl_harmful" not in meta["inputs"]["streams"], run.name
+        assert len(fcd.read_jsonl(run / "update_scalars.jsonl")) == STEPS, run.name
+    host = []
     for lr in TINY_RATES["adam_frozen"]:
         record = json.loads((out / fcd.control_path(lr, 1)).read_text())
         assert record["status"] == "complete", record.get("reason")
@@ -1462,10 +1586,12 @@ def check_the_records(out, root, *, device, rule_gb=None):
                                                            UPPER)) is None  # fmt: skip
         if rule_gb is not None:
             assert record["memory_rule_gb"] == rule_gb and record["within_memory_rule"] is True
+        host.append(record["provenance"]["host_memory"])
     facts = {}
     for case in found:
         record = json.loads((out / case.attempt_path(1)).read_text())
         assert record["status"] == "complete", (case.name, record.get("reason"))
+        host.append(record["provenance"]["host_memory"])
         assert the_reader.why_not(record, case) is None, case.name
         assert record["twin_A"]["archive"]["equal"], case.name  # twin A is its run, bitwise
         assert set(record["pairs"]) == set(fcd.PAIRS)
@@ -1488,6 +1614,11 @@ def check_the_records(out, root, *, device, rule_gb=None):
         assert f["scales"]["p1"] * f["direction_norms"]["p1"] == pytest.approx(norm)
         assert f["rounding_heuristic"]["norm"] > 0 and f["residual"]["grad_norm"] > 0
     assert len({f["v0_sha256"] for f in facts.values()}) == 3  # each seed its v₀
+    # The final review of gate B, M7: each record holds the host's peak resident memory and the
+    # free host memory when it was written
+    for entry in host:
+        assert set(entry) == {"peak_rss_gb", "available_gb", "meminfo_gb", "cgroup_gb"}
+        assert entry["peak_rss_gb"] > 0 and entry["meminfo_gb"] > 0
     verdict = json.loads((out / "verdict.json").read_text())
     assert verdict == json.loads(fcd.verdict_path(out, TINY_RATES).read_text())
     assert list(verdict) == VERDICT_KEYS
@@ -1758,6 +1889,178 @@ def test_a_missing_or_unstable_run_is_recorded(archive, tmp_path, monkeypatch,
     (record,) = controls.values()
     assert record["status"] == "incomplete" and record["state"] == "incomplete"
     assert "0 finished runs" in record["reason"] and "traceback" in record
+
+
+def driver_parts(monkeypatch, config, root, args, capsys) -> dict[str, int]:
+    """The parts in the order and with the exit handling of the Pod's driver
+    (``driver_script``), each through the script with the driver's ``ARGS`` and the tests'
+    override of the tracked settings: the plan must pass; the controls and the twins' first
+    attempts; the verdict; one rerun of everything incomplete when ``--retry-needed`` says one is
+    due; the verdict again. Returns each step's exit code; the plan's print is under ``plan``."""
+
+    def part(*extra):
+        argv = [str(SCRIPT), *extra, "--config", str(config), "--runs-root", str(root), *args]
+        return call(monkeypatch, argv, untracked=True)
+
+    codes = {"plan": part("plan")}
+    codes["plan_text"] = capsys.readouterr().out
+    assert codes["plan"] == 0, codes["plan_text"]
+    codes["control"] = part("control", "--device", "cpu")
+    codes["twins"] = part("twins", "--device", "cpu")
+    assert part("verdict") == 0
+    codes["due"] = part("verdict", "--retry-needed")
+    if codes["due"] == 0:
+        codes["rerun_control"] = part("control", "--retry", "--device", "cpu")
+        codes["rerun_twins"] = part("twins", "--retry", "--device", "cpu")
+        assert part("verdict") == 0
+    codes["after"] = part("verdict", "--retry-needed")
+    capsys.readouterr()
+    return codes
+
+
+def test_a_given_up_run_lets_the_driver_finish(archive, tmp_path, monkeypatch, clean_head,
+                                               capsys) -> None:  # fmt: skip
+    """The final review of gate B, I1, end to end: a K-only run the launcher gave up on, named
+    in the selection record (``given_up``), which the driver passes to every part. The plan
+    notes it, the parts record its case incomplete twice, and the verdict holds its rate
+    not_qualified (technical) with nothing left incomplete: the driver ends."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    guarded, requested = forbid_outcomes(monkeypatch, env)
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", lambda cfg, device: guarded)
+    s = tiny_settings()
+    case = next(c for c in tiny_cases() if (c.seed, c.optimizer, c.lr) == (0, "adamw", 1e-3))
+    shutil.rmtree(fcd.locate_case(root, fcd.NumericalScope.of(s), case))
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(s, config)
+    namespace = runpy.run_path(str(SCRIPT))
+    text = namespace["driver_script"]("a" * 40, "now", BATCH, UPPER, TINY_RATES, [case.name])
+    line = next(line for line in text.splitlines() if line.startswith("ARGS=("))
+    args = shlex.split(line.removeprefix("ARGS=(").removesuffix(")"))
+    assert args[-2:] == ["--given-up", case.name]
+    codes = driver_parts(monkeypatch, config, root, args, capsys)
+    assert f"{case.name}: no regular run; NOTE: given up by the launcher" in codes["plan_text"]
+    assert "PROBLEM" not in codes["plan_text"] and "MISSING" not in codes["plan_text"]
+    assert {k: v for k, v in codes.items() if k != "plan_text"} == {
+        "plan": 0, "control": 0, "twins": 0, "due": 0, "rerun_control": 0, "rerun_twins": 0,
+        "after": 3}  # fmt: skip
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    for n in fcd.ATTEMPTS:
+        record = json.loads((out / case.attempt_path(n)).read_text())
+        assert record["status"] == "incomplete" and "traceback" not in record
+        assert record["reason"].startswith("the regular run is not found")
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict["rates"][case.key] == "not_qualified" and verdict["qualified"] is False
+    assert verdict["reasons"][case.key][0].startswith(
+        "case s0: not qualified (technical), incomplete after its rerun: attempt 1: the regular "
+        "run is not found")  # fmt: skip
+    others = {k: v for k, v in verdict["rates"].items() if k != case.key}
+    assert set(others.values()) <= {"qualified", "failing"}
+    assert "incomplete" not in verdict["controls"].values()
+    # The driver's last check: nothing incomplete, so it ends without exit 5
+    done = subprocess.run([sys.executable, "-c", namespace["HAS_INCOMPLETE"],
+                           str(out / "verdict.json")], check=False)  # fmt: skip
+    assert done.returncode == 1
+    assert requested and not [name for name in requested if "harmful" in name]
+
+
+def test_another_run_environment_is_refused(archive, tmp_path, monkeypatch, clean_head,
+                                            capsys) -> None:  # fmt: skip
+    """The final review of gate B, I3: a regular run whose meta.json records another driver,
+    another package version, or a container image this process does not run in: the plan
+    exits 1 naming the field, and ``control`` and ``twins`` exit 7 recording nothing."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    guarded, _ = forbid_outcomes(monkeypatch, env)
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", lambda cfg, device: guarded)
+    monkeypatch.delenv("CONTAINER_IMAGE", raising=False)
+    s = tiny_settings()
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(s, config)
+    case = tiny_cases()[4]
+    meta_path = fcd.locate_case(root, fcd.NumericalScope.of(s), case) / "meta.json"
+    original = json.loads(meta_path.read_text())
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    image = "registry.example/zfr@sha256:" + "b" * 64
+    for change, field in (
+        ({"hardware": {**original["hardware"], "driver": "0.0-other"}}, "hardware.driver"),
+        ({"packages": {**original["packages"], "torch": "0.0"}}, "packages.torch"),
+        ({"launch": {**original["launch"], "container_image": image}}, "launch.container_image"),
+    ):  # fmt: skip
+        meta_path.write_text(json.dumps({**original, **change}))
+        assert run_script(monkeypatch, config, root, "plan", "--no-stream-check") == 1
+        printed = capsys.readouterr().out
+        assert f"RUN ENVIRONMENT MISMATCH: {field}: " in printed, printed
+        assert f"recorded by 1 regular run(s) ({meta_path.parent.name})" in printed
+        for part in ("control", "twins"):
+            assert run_script(monkeypatch, config, root, part, "--device", "cpu") == 7, part
+            assert "RUN ENVIRONMENT MISMATCH" in capsys.readouterr().err
+        assert not out.exists()  # nothing recorded
+    # The image the run recorded is this process's: no mismatch
+    monkeypatch.setenv("CONTAINER_IMAGE", image)
+    assert run_script(monkeypatch, config, root, "plan", "--no-stream-check") == 0
+    assert "run environment: the regular runs' equals this one" in capsys.readouterr().out
+
+
+def test_void_moves_what_another_gpu_code_made(world, monkeypatch, capsys) -> None:
+    """The final review of gate B, I2: after a GPU-path change (HEAD at ``OTHER``), ``void``
+    moves, never deletes, every numerical run at B whose recorded commit's GPU code is not
+    HEAD's and the check's directory to RUNS_DIR/void/<old GPU code>/, with an inventory of
+    every file and its sha256 and a record; a run made at HEAD's GPU code stays. It refuses on
+    a dirty checkout, with nothing to void, and before moving a run of another role."""
+    s = scope()
+    out = fcd.numerical_root(20, 8, world)
+    write_records(out, within_all(cases()), {lr: {1: control(lr), 2: None}
+                                             for lr in RATES["adam_frozen"]})  # fmt: skip
+    other_b = fcd.NumericalCase(2200, "adamw", 1.32e-05, 5, 8)
+    fake_runs(world / "b5", [other_b])  # at another batch: not touched
+    shutil.move(world / "b5" / "study2_short" / other_b.name, world / "study2_short" / "b5-run")
+
+    def void(*extra):
+        argv = [str(SCRIPT), "void", "--batch", "20", "--upper", "8", "--runs-root", str(world),
+                *extra]  # fmt: skip
+        return call(monkeypatch, argv)
+
+    assert "nothing to void" in str(void("--dry-run"))  # HEAD at COMMIT: the runs' GPU code
+    kept = fcd.NumericalCase(2200, "adamw", 1.4e-05, 20, 8)
+    fake_runs(world, [kept], commit=OTHER)  # a run made after the change
+    monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": True})
+    assert "the checkout is not clean" in str(void())
+    monkeypatch.setattr(fcd, "git_state", lambda *a, **k: {"commit": OTHER, "dirty": False})
+    validation = fcd.locate_case(world, s, cases()[0]) / "config.yaml"
+    text = validation.read_text()
+    validation.write_text(text.replace("role: numerical", "role: validation"))
+    assert "has the role 'validation', not 'numerical'" in str(void())
+    validation.write_text(text)
+    assert "takes --batch and --upper only" in str(void("--rates", "adamw=1e-05"))
+    before = snapshot(world)
+    capsys.readouterr()
+    assert void("--dry-run") == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert snapshot(world) == before  # a dry run moves nothing
+    moved = sorted({f"study2_short/{c.name}" for c in cases() + cases(RESOLVED)})
+    assert shown["paths"] == [*moved, "numerical/b20-u8"]
+    assert shown["kept"] == [f"study2_short/{kept.name}"]
+    assert shown["destination"] == str(world / "void" / "same")  # the old GPU code, sha256[:12]
+    assert void() == 0
+    capsys.readouterr()
+    destination = world / "void" / "same"
+    (inventory,) = destination.glob("inventory-*.tsv")
+    rows = [line.split("\t") for line in inventory.read_text().splitlines()[1:]]
+    assert {row[0] for row in rows} == set(before) - {
+        f"study2_short/{kept.name}/{name}" for name in ("config.yaml", "terminal.json",
+                                                        "metrics.jsonl", "meta.json")} - {
+        f"study2_short/b5-run/{name}" for name in ("config.yaml", "terminal.json",
+                                                   "metrics.jsonl", "meta.json")}  # fmt: skip
+    for path, size, digest in rows:
+        assert (destination / path).stat().st_size == int(size)
+        assert hashlib.sha256((destination / path).read_bytes()).hexdigest() == digest
+        assert not (world / path).exists()
+    (record,) = destination.glob("void-*.json")
+    found = json.loads(record.read_text())
+    assert found["moved"] == shown["paths"] and found["old_gpu_code"]["sha256"] == "same"
+    assert found["head_gpu_code"]["sha256"] == "other" and found["inventory"] == inventory.name
+    assert (world / "study2_short" / kept.name).is_dir()
+    assert (world / "study2_short" / "b5-run").is_dir() and not out.exists()
+    assert "nothing to void" in str(void())  # done once: nothing left to move
 
 
 # ---------------------------------------------------------------------------------- on a GPU

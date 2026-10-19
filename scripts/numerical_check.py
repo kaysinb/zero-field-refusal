@@ -10,13 +10,16 @@
         [--runs-root DIR] [--out DIR] [--dry-run]
     python scripts/numerical_check.py driver RATES --batch B --upper U --commit SHA --out FILE
         [--dry-run]
+    python scripts/numerical_check.py void --batch B --upper U [--runs-root DIR] [--dry-run]
 
 RATES is ``--rates OPTIMIZER=R1,R2,R3`` once per arm (adamw, adam_frozen, adamw_prewarmed; or
-the primary arms adamw and adam_frozen alone, a selection without the pre-warmed arm), or
+the primary arms adamw and adam_frozen alone, a selection without the pre-warmed arm), with
+``--given-up CASE`` once per case whose regular run the launcher gave up on, or
 ``--selection FILE``: a JSON record with ``rates``, mapping each arm (by optimizer name, or by
 the analysis's arm name) to its selected rates, and optionally ``batch`` and ``U``, which must
-equal ``--batch`` and ``--upper``; any other key is refused. The rates are never written in the
-code.
+equal ``--batch`` and ``--upper``, and ``given_up``, the cases whose regular run the launcher
+gave up on (each named as the check names a case, ``s<seed>-<optimizer>-<lr>``; the selection's
+check request writes it); any other key is refused. The rates are never written in the code.
 
 Outside the confirmation and blind to outcomes: only K, KL between twins and norms are computed
 and written, every evaluation on benign panels; no harmful prompt set, stream or generation is
@@ -63,13 +66,38 @@ working directory included, which ``load_config`` would read first) unless they 
   the DATA_DIR streams, unless ``--no-stream-check``, and exits 1 when a run or a stream is
   missing, or a run departs from the prescribed one. A run that an instability rule stopped
   (and that conforms otherwise) is found, with a note: the parts record its rate as failing
-  and its FA control rejected.
+  and its FA control rejected. A missing run of a case named given up (``given_up``, the final
+  review of gate B, I1) is no problem either, with a note: the parts record that case
+  incomplete, and not qualified after its rerun (and, for an FA run, its same-path control and
+  every case of its seed when it was the seed's only FA run, which sets v₀ and p1, p2 up).
 - **GPU code** (review fa13): every part compares the GPU-code identity
   (``code_identity.gpu_code_identity``) of the commit each regular run recorded with this
   checkout's (``code_check``). On a mismatch ``plan`` exits 1, ``control`` and ``twins`` run
   nothing and exit 7, and the verdict counts no record. The verdict's policy records that
   identity (``gpu_code``) and the commits that wrote the records (``tool_commit``).
-- ``driver`` writes the bash driver of all parts for a Pod, from the source checkout of SHA.
+- **The run environment** (the final review of gate B, I3): ``plan``, ``control`` and ``twins``
+  compare each regular run's recorded environment (meta.json: the GPU names, the driver,
+  ``torch_cuda``, the Python version, the package versions, and the container image when one is
+  recorded) with this process's (``environment_check``). On a mismatch, as for the GPU code,
+  ``plan`` exits 1 and ``control`` and ``twins`` record nothing and exit 7, naming each field.
+  Twin A reproduces its run bit for bit only in the environment that made it: the check runs
+  on the Pod (or the image, GPU and driver) of the numerical runs.
+- **Host memory** (the final review of gate B, M7): every control and twin record holds the
+  process's peak resident memory and the free host memory when it was written
+  (``provenance.host_memory``); the driver starts only with ``HOST_MEMORY_GB`` free.
+- ``driver`` writes the bash driver of all parts for a Pod, from the source checkout of SHA. It
+  checks the checkout, that nothing else uses the GPU, the free host memory, clears the twins'
+  checkpoints that an interrupted case left (records are kept), checks the free disk, then runs
+  the plan and the parts. Its exits: 1 a precondition or the plan; 5 a verdict with an
+  incomplete rate or control; 6 a part failed (recorded); 0 complete.
+- ``void`` (the final review of gate B, I2) moves, never deletes, what a GPU-path change after
+  the check left unusable: every numerical run at B (role numerical) whose recorded commit's GPU
+  code is not HEAD's, and ``RUNS_DIR/numerical/b{B}-u{U}/``, to
+  ``RUNS_DIR/void/<the old GPU code's sha256, first 12>/``, with an inventory of every file
+  moved (path, size, sha256) and a record (``void_plan``, ``void_numerical``). It refuses on a
+  checkout that is not clean, when no run's GPU code differs, and when it would move a run of
+  another role (or one whose GPU code cannot be read). The selection then calls for the
+  numerical runs again, and their check. ``--dry-run`` prints what it would move.
 
 Cost on one L40S at 1.5B (fp32), scaled from the FA diagnostic's records at B 5 (≈ 0.17 s per
 response and step with the monitor's readings, a D_twin reading ≈ 30 s, a scoring K ≈ 14.5 s, a
@@ -108,6 +136,7 @@ from zero_field_refusal.fa_control_diagnostic import (
     control_attempt_state,
     control_path,
     control_retry_due,
+    environment_check,
     git_state,
     guarded_prompt_sets,
     instability_stop,
@@ -125,6 +154,8 @@ from zero_field_refusal.fa_control_diagnostic import (
     selected_rates,
     set_aside,
     stream_inputs,
+    void_numerical,
+    void_plan,
     write_verdict,
 )
 from zero_field_refusal.paths import CONFIG_ROOT, runs_root
@@ -135,19 +166,32 @@ SCRIPT = 'project-run "$SRC" python scripts/numerical_check.py'
 NOT_DUE = 3  # ``verdict --retry-needed``: no rerun is due
 INCOMPLETE = 5  # the driver: the verdict holds an incomplete rate
 PART_FAILED = 6  # a case or control failed (recorded); the driver: a part did
-CODE_MISMATCH = 7  # review fa13: the regular runs' GPU code is not the check's; nothing runs
+# Review fa13 and the final review of gate B, I3: the regular runs' GPU code or recorded run
+# environment is not the check's; nothing runs
+CODE_MISMATCH = 7
 GPU_USED_MIB = 1000  # the driver starts only below this much GPU memory in use
 DISK_GB = 40  # the free space a case needs: its checkpoints (31.4 GB at 1.5B) and a margin
+# The free host memory the driver needs (the final review of gate B, M7; GB of 1e9 bytes): θ₀,
+# v₀, the second model and the p1 direction on the host (≈ 25-30 GB at 1.5B) and a checkpoint
+# save's transient (≈ 5 GB), × 1.5
+HOST_MEMORY_GB = 1.5 * (30 + 5)
 # The analysis's arm names (analysis.study2_short) and the optimizers they run.
 ARM_OPTIMIZERS = {"adamw_25": "adamw", "frozen_adam_25": "adam_frozen",
                   "prewarmed_adamw_25": "adamw_prewarmed"}  # fmt: skip
-SELECTION_KEYS = {"rates", "batch", "U"}  # the keys a selection record may hold
-# The driver's programs (python -c, through project-run): a field of the verdict, and whether it
-# holds an incomplete rate or control (exit 0). No $, backtick, backslash or double quote inside.
+SELECTION_KEYS = {"rates", "batch", "U", "given_up"}  # the keys a selection record may hold
+# The driver's programs (python -c, through project-run): a field of the verdict, whether it
+# holds an incomplete rate or control (exit 0), and whether the free host memory
+# (``drift.host_memory``: MemAvailable, or the cgroup's free memory when smaller) reaches the
+# requirement (exit 0). No $, backtick, backslash or double quote inside.
 READ_FIELD = "import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])"
 HAS_INCOMPLETE = ("import json, sys; v = json.load(open(sys.argv[1])); "
                   "sys.exit(0 if 'incomplete' in [*v['rates'].values(), *v['controls'].values()] "
                   "else 1)")  # fmt: skip
+HOST_FREE = ("import sys; from zero_field_refusal.drift import host_memory; m = host_memory(); "
+             "print('free host memory (GB):', m); "
+             "sys.exit(0 if (m['available_gb'] or 0) >= float(sys.argv[1]) else 1)")  # fmt: skip
+# A plan's note on a case whose regular run the launcher gave up on (the final review, I1)
+GIVEN_UP = "given up by the launcher: the parts will record it not qualified"
 
 
 def comment(text: str) -> list[str]:
@@ -172,16 +216,25 @@ def parse_rates(items: list[str]) -> dict[str, list[float]]:
     return out
 
 
-def read_selection(path: Path, batch: int, upper: float) -> dict[str, list[float]]:
-    """The rates of a selection record: ``rates`` (required), and ``batch`` and ``U``, which
-    must equal B and U when present. Any other key, or a malformed one, is refused."""
+def given_up_names(names: object, where: str) -> list[str]:
+    """The cases named given up: distinct case names (``s<seed>-<optimizer>-<lr>``)."""
+    if not (isinstance(names, list) and all(isinstance(n, str) and n for n in names)
+            and len(set(names)) == len(names)):  # fmt: skip
+        raise NumericalError(f"{where}: 'given_up' must list distinct case names, got {names!r}")
+    return list(names)
+
+
+def read_selection(path: Path, batch: int, upper: float) -> tuple[dict[str, list[float]], list]:
+    """The rates of a selection record, ``rates`` (required), and the cases it names given up
+    by the launcher, ``given_up`` (optional; the final review of gate B, I1); ``batch`` and
+    ``U`` must equal B and U when present. Any other key, or a malformed one, is refused."""
     try:
         record = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise NumericalError(f"{path}: not a readable JSON selection record ({exc})") from exc
     if not isinstance(record, dict) or "rates" not in record:
-        raise NumericalError(f"{path}: a selection record needs 'rates' (and may hold 'batch' "
-                             "and 'U')")  # fmt: skip
+        raise NumericalError(f"{path}: a selection record needs 'rates' (and may hold 'batch', "
+                             "'U' and 'given_up')")  # fmt: skip
     if set(record) - SELECTION_KEYS:
         raise NumericalError(f"{path}: unexpected keys {sorted(set(record) - SELECTION_KEYS)}; "
                              f"a selection record holds only {sorted(SELECTION_KEYS)}")  # fmt: skip
@@ -195,16 +248,30 @@ def read_selection(path: Path, batch: int, upper: float) -> dict[str, list[float
         for values in rates.values()
     ):  # fmt: skip
         raise NumericalError(f"{path}: 'rates' must map each arm to a list of numbers")
+    given_up = given_up_names(record.get("given_up", []), str(path))
     return {ARM_OPTIMIZERS.get(arm, arm): [float(r) for r in values]
-            for arm, values in rates.items()}  # fmt: skip
+            for arm, values in rates.items()}, given_up  # fmt: skip
 
 
-def rates_of(args: argparse.Namespace) -> dict[str, list[float]]:
+def rates_of(args: argparse.Namespace) -> tuple[dict[str, list[float]], list[str]]:
+    """The selected rates, and the cases given up by the launcher: from ``--rates`` and
+    ``--given-up``, or from a selection record (``--selection``), which names its own."""
     if bool(args.rates) == bool(args.selection):
         raise NumericalError("Give the rates by --rates (once per arm) or by --selection FILE")
     if args.rates:
-        return parse_rates(args.rates)
+        return parse_rates(args.rates), given_up_names(args.given_up, "--given-up")
+    if args.given_up:
+        raise NumericalError("--given-up goes with --rates: a selection record names its own "
+                             "cases given up ('given_up')")  # fmt: skip
     return read_selection(args.selection, args.batch, args.upper)
+
+
+def check_given_up(given_up: list[str], cases) -> None:
+    """Every case named given up is one of the check's (a name the check gives a case)."""
+    unknown = sorted(set(given_up) - {case.name for case in cases})
+    if unknown:
+        raise NumericalError(f"given up: {unknown} name no case of this check "
+                             f"({[case.name for case in cases]})")  # fmt: skip
 
 
 TWINS_PER_CASE = 6.5  # twin A, p1-p4, and the float64 reference ≈ 1.5 twins (review M1)
@@ -236,18 +303,27 @@ def total_cost(batch: int, scope: NumericalScope, cases, controls: int) -> tuple
     return minutes, minutes + fallback
 
 
-def find_runs(root: Path, scope: NumericalScope, cases) -> tuple[dict, dict, dict]:
+def find_runs(
+    root: Path, scope: NumericalScope, cases, given_up=()
+) -> tuple[dict, dict, dict]:  # fmt: skip
     """The regular run of each case found; why a case has none, or one that cannot be twin A
     (it departs from the prescribed run); and the notes of runs that an instability rule
     stopped (review N1). Such a run is found and no problem: the parts record its rate as
     failing. A run that departs otherwise is a problem even when it stopped by instability
-    (review N4)."""
+    (review N4). A case named in ``given_up`` without a run (the final review of gate B, I1) is
+    no problem either, with a note: the parts record it incomplete, not qualified after its
+    rerun; so is every found case of a seed whose control-arm runs are all given up, which the
+    parts record incomplete too (that run sets the seed's v₀ and p1, p2 up)."""
     found, problems, notes = {}, {}, {}
     for case in cases:
         try:
             path = locate_case(root, scope, case)
         except DiagnosticError as exc:
-            problems[case.name] = str(exc)
+            if case.name in given_up:
+                control = case.optimizer == scope.control_arm and case.seed == scope.control_seed
+                notes[case.name] = GIVEN_UP + (" (and its same-path control)" if control else "")
+            else:
+                problems[case.name] = str(exc)
             continue
         found[case.name] = path
         cfg = run_config(path)
@@ -261,13 +337,23 @@ def find_runs(root: Path, scope: NumericalScope, cases) -> tuple[dict, dict, dic
             departures = conformance(cfg, path, scope, case)
         if departures:
             problems[case.name] = "does not conform: " + "; ".join(departures)
+    for seed in dict.fromkeys(case.seed for case in cases):
+        controls = [c for c in cases if c.seed == seed and c.optimizer == scope.control_arm]
+        if controls and all(c.name in given_up and c.name not in found for c in controls):
+            for case in cases:
+                if case.seed == seed and case.name in found and case.name not in notes:
+                    notes[case.name] = (f"the seed's {scope.control_arm} runs are given up by "
+                                        "the launcher: the parts will record it incomplete (that "
+                                        "run sets v₀ and p1, p2 up), not qualified after its "
+                                        "rerun")  # fmt: skip
     return found, problems, notes
 
 
-def plan(settings, args, cases, root: Path, out: Path) -> tuple[str, bool]:
-    """What the check would run, its cost, and whether every run it needs is there."""
+def plan(settings, args, cases, root: Path, out: Path, given_up=()) -> tuple[str, bool]:
+    """What the check would run, its cost, and whether every run it needs is there (a case
+    named given up needs none)."""
     scope = NumericalScope.of(settings)
-    found, problems, notes = find_runs(root, scope, cases)
+    found, problems, notes = find_runs(root, scope, cases, given_up)
     upper = cases[0].upper
     control_rates = sorted({c.lr for c in cases if c.optimizer == scope.control_arm
                             and c.seed == scope.control_seed})  # fmt: skip
@@ -279,7 +365,8 @@ def plan(settings, args, cases, root: Path, out: Path) -> tuple[str, bool]:
         if case.name in problems:
             lines.append(f"  {case.name}: PROBLEM: {problems[case.name]}")
         elif case.name in notes:
-            lines.append(f"  {case.name}: {found[case.name]}; NOTE: {notes[case.name]}")
+            lines.append(f"  {case.name}: {found.get(case.name, 'no regular run')}; NOTE: "
+                         f"{notes[case.name]}")  # fmt: skip
         else:
             lines.append(f"  {case.name}: {found[case.name]}")
     lines.append(f"same-path controls on seed {scope.control_seed}: "
@@ -296,18 +383,31 @@ def plan(settings, args, cases, root: Path, out: Path) -> tuple[str, bool]:
     return "\n".join(lines), not problems
 
 
-def check_streams(settings, cases, root: Path, device: str) -> tuple[list[str], list[str]]:
-    """The DATA_DIR streams of each seed, from its control arm's run (``stream_inputs``)."""
+def check_streams(
+    settings, cases, root: Path, device: str, given_up=()
+) -> tuple[list[str], list[str]]:  # fmt: skip
+    """The DATA_DIR streams of each seed, from a control-arm run of the seed (``stream_inputs``).
+    A seed whose control-arm runs were all given up by the launcher has none to locate them by:
+    noted among those found, its cases recorded incomplete by the parts (``find_runs``)."""
     from zero_field_refusal.runtime import environment
 
     scope = NumericalScope.of(settings)
     found, missing = [], []
     for seed in dict.fromkeys(c.seed for c in cases):
-        case = next(c for c in cases if c.seed == seed and c.optimizer == scope.control_arm)
-        try:
-            cfg = run_config(locate_case(root, scope, case))
-        except DiagnosticError:
-            missing.append(f"seed {seed}: no {scope.control_arm} run to locate its streams by")
+        controls = [c for c in cases if c.seed == seed and c.optimizer == scope.control_arm]
+        cfg = None
+        for case in controls:
+            try:
+                cfg = run_config(locate_case(root, scope, case))
+                break
+            except DiagnosticError:
+                continue
+        if cfg is None:
+            if controls and all(c.name in given_up for c in controls):
+                found.append(f"seed {seed}: no stream checked: its {scope.control_arm} runs are "
+                             "given up by the launcher")  # fmt: skip
+            else:
+                missing.append(f"seed {seed}: no {scope.control_arm} run to locate its streams by")
             continue
         have, lack = stream_inputs(cfg, guard_prompt_sets(environment(cfg, device)))
         found += [f"seed {seed}: {f}" for f in have]
@@ -316,7 +416,9 @@ def check_streams(settings, cases, root: Path, device: str) -> tuple[list[str], 
 
 
 def environment_config(root: Path, scope: NumericalScope, cases):
-    """The config of the first case's regular run found: the environment's model and data."""
+    """The config of the first case's regular run found: the environment's model and data (the
+    same for every regular run of the stage; the parts list the cases they run first, then the
+    selection's, so that a rerun due only for a case whose run was given up still finds one)."""
     for case in cases:
         try:
             return run_config(locate_case(root, scope, case))
@@ -381,6 +483,31 @@ def code_summary(code: dict) -> str:
     return "GPU CODE MISMATCH: " + "; ".join(code["problems"])
 
 
+def environment_summary(check: dict) -> str:
+    """The environment check (``environment_check``) in one line."""
+    if check["consistent"]:
+        here = check["here"]
+        return (f"run environment: the regular runs' equals this one ({here['hardware.gpus']}, "
+                f"driver {here['hardware.driver']}, CUDA {here['hardware.torch_cuda']}, Python "
+                f"{here['python']})")  # fmt: skip
+    return "RUN ENVIRONMENT MISMATCH: " + "; ".join(check["problems"])
+
+
+def void(args: argparse.Namespace, settings) -> None:
+    """``void`` (module docstring): print what it moves, refuse (exit 1) on any problem, move it
+    unless ``--dry-run``."""
+    root = args.runs_root or runs_root()
+    found = void_plan(root, NumericalScope.of(settings), args.batch, args.upper, git_state())
+    print(json.dumps({key: found[key] for key in ("batch", "U", "paths", "kept", "destination")}
+                     | {"old_gpu_code": found["old_gpu_code"], "head_gpu_code": found["head"]},
+                     indent=1))  # fmt: skip
+    if found["problems"]:
+        sys.exit("void refuses: " + "; ".join(found["problems"]))
+    if args.dry_run:
+        return
+    print(void_numerical(root, found, git_state()))
+
+
 def require_clean() -> None:
     """A part that writes runs only from a clean checkout of a commit."""
     state = git_state()
@@ -407,12 +534,15 @@ def failed(records: dict) -> bool:
     return any("traceback" in record for record in records.values())
 
 
-def driver_script(commit: str, written_at: str, batch: int, upper: float, rates: dict) -> str:
+def driver_script(
+    commit: str, written_at: str, batch: int, upper: float, rates: dict, given_up=()
+) -> str:  # fmt: skip
     """The bash driver of the check on a Pod (module docstring)."""
     stamp = "$(date -u +%FT%TZ)"
     run = SCRIPT
-    selection = " ".join(f"--rates {arm}={','.join(repr(r) for r in values)}"
-                         for arm, values in rates.items())  # fmt: skip
+    selection = " ".join([*(f"--rates {arm}={','.join(repr(r) for r in values)}"
+                            for arm, values in rates.items()),
+                          *(f"--given-up {name}" for name in given_up)])  # fmt: skip
     lines = [
         "#!/usr/bin/env bash",
         *comment(f"Written by scripts/numerical_check.py driver at {written_at}; do not edit."),
@@ -424,9 +554,12 @@ def driver_script(commit: str, written_at: str, batch: int, upper: float, rates:
                  "generation."),
         *comment("Before it runs, DATA_DIR holds the numerical seeds' training and v₀ streams at "
                  "this B and the panels (restored with scripts/pod_setup.sh), and RUNS_DIR the "
-                 "regular numerical runs (study2_short, role numerical). The GPU must be free (no "
-                 f"other compute process), and the volume must hold {DISK_GB} GB for a case's "
-                 "checkpoints."),
+                 "regular numerical runs (study2_short, role numerical), made in this run "
+                 "environment (the plan compares the GPU, driver, CUDA, Python, packages and "
+                 "image each run recorded). The GPU must be free (no other compute process), the "
+                 f"host must have {HOST_MEMORY_GB:g} GB of free memory, and the volume must hold "
+                 f"{DISK_GB} GB for a case's checkpoints, once those an interrupted case left are "
+                 "cleared."),
         *comment("Outputs: $OUT (controls, twins, verdicts/<selection digest>.json and its copy "
                  "verdict.json), with this driver's log. It can be run again: every record that "
                  "counts (written at a commit with this GPU code) is kept. Before any "
@@ -458,7 +591,15 @@ def driver_script(commit: str, written_at: str, batch: int, upper: float, rates:
         f"if echo \"$used\" | awk '$1 + 0 >= {GPU_USED_MIB} {{busy = 1}} END {{exit !busy}}'; then",
         '  stop "GPU memory in use ($used MiB); the check does not start" 1',
         "fi",
-        "# The twins keep one case's checkpoints at a time",
+        "# The host holds theta_0, v_0, the second model and the p1 direction, and a checkpoint",
+        "# save's transient (the free memory: MemAvailable, or the cgroup's when smaller)",
+        f'if ! project-run "$SRC" python -c "{HOST_FREE}" {HOST_MEMORY_GB:g}; then',
+        f'  stop "{HOST_MEMORY_GB:g} GB of free host memory are needed; the check does not '
+        'start" 1',
+        "fi",
+        "# The twins keep one case's checkpoints at a time; a case the deadline or a kill",
+        "# interrupted left its own: cleared here (the records are kept)",
+        'rm -rf -- "$OUT/twins/checkpoints"',
         'free_kb=$(df -Pk "$OUT" | awk \'NR == 2 {print $4}\')',
         f'if [ "$free_kb" -lt {DISK_GB * 1_000_000} ]; then',
         f'  stop "{DISK_GB} GB free are needed under $OUT, $free_kb KB are" 1',
@@ -522,8 +663,11 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     the writing parts on settings other than the tracked ones; nothing on the command line
     does."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("part", choices=["plan", "control", "twins", "verdict", "driver"])
+    parser.add_argument("part", choices=["plan", "control", "twins", "verdict", "driver", "void"])
     parser.add_argument("--rates", action="append", default=[], metavar="OPTIMIZER=R1,R2,R3")
+    parser.add_argument("--given-up", action="append", default=[], metavar="CASE",
+                        help="with --rates: a case whose regular run the launcher gave up "
+                             "on")  # fmt: skip
     parser.add_argument("--selection", type=Path, help="a selection record (JSON)")
     parser.add_argument("--batch", type=int, required=True, help="the selected B")
     parser.add_argument("--upper", type=float, required=True, help="the selected U")
@@ -541,9 +685,23 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
 
     settings = load_config(config_path(args.config))  # the file tracked_config judges
     scope = NumericalScope.of(settings)
+    if args.part == "void":  # no rates: every numerical run at B and the check of (B, U)
+        if args.rates or args.selection or args.given_up:
+            sys.exit("void takes --batch and --upper only: it moves every numerical run at B "
+                     "whose GPU code is not HEAD's")  # fmt: skip
+        if not (args.dry_run or tracked_config(args.config) or untracked_config_for_tests):
+            sys.exit(f"void moves runs only under the tracked settings ({CONFIG}), not "
+                     f"{config_path(args.config)}; --dry-run only prints")  # fmt: skip
+        try:
+            void(args, settings)
+        except NumericalError as exc:
+            sys.exit(str(exc))
+        return
     try:
-        rates = selected_rates(scope, rates_of(args))
+        selected, given_up = rates_of(args)
+        rates = selected_rates(scope, selected)
         cases = numerical_cases(settings, rates, args.upper, batch=args.batch)
+        check_given_up(given_up, cases)
         default_out = numerical_root(args.batch, args.upper, args.runs_root)
     except NumericalError as exc:
         sys.exit(str(exc))
@@ -553,7 +711,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
                      f"{config_path(args.config)}; --dry-run only prints")  # fmt: skip
         script = driver_script(args.commit or "<SHA>", git_state().get("commit")
                                or datetime.now(UTC).isoformat(timespec="seconds"),
-                               args.batch, args.upper, rates)  # fmt: skip
+                               args.batch, args.upper, rates, given_up)  # fmt: skip
         if args.dry_run:
             print(script, end="")
             return
@@ -577,8 +735,11 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
             sys.exit(f"{args.part} writes records only under the tracked settings ({CONFIG}), "
                      f"not {config_path(args.config)}; --dry-run only prints")  # fmt: skip
 
-    # Review fa13: the regular runs' GPU code against the check's
-    code = code_check(find_runs(root, scope, cases)[0].values(), state.get("commit"))
+    # Review fa13: the regular runs' GPU code against the check's; the final review of gate B,
+    # I3: for the parts that run the check, their recorded run environment against this one
+    found_runs = list(find_runs(root, scope, cases, given_up)[0].values())
+    code = code_check(found_runs, state.get("commit"))
+    machine = environment_check(found_runs) if args.part in ("plan", "control", "twins") else None
     if args.part == "verdict":
         verdict = numerical_verdict(settings, out, rates=rates, batch=args.batch,
                                     upper=args.upper, code=code, root=root,
@@ -595,14 +756,16 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         print(write_verdict(out, verdict, rates))
         return
     if args.part == "plan":
-        text, complete = plan(settings, args, cases, root, out)
+        text, complete = plan(settings, args, cases, root, out, given_up)
         print(text)
         print(code_summary(code))
+        print(environment_summary(machine))
         if args.dry_run:
             return
         missing = [] if code["consistent"] else ["the GPU code"]
+        missing += [] if machine["consistent"] else ["the run environment"]
         if not args.no_stream_check:
-            found, streams = check_streams(settings, cases, root, "cpu")
+            found, streams = check_streams(settings, cases, root, "cpu", given_up)
             missing += streams
             print("\n".join([*(f"found: {f}" for f in found),
                              *(f"MISSING: {m}" for m in missing)]))  # fmt: skip
@@ -624,6 +787,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         print(f"≈ {minutes:.0f} GPU min, ≈ {allowed:.0f} with a lost full-float64 reference per "
               f"AdamW and pre-warmed case; output {out}")  # fmt: skip
         print(code_summary(code))
+        print(environment_summary(machine))
         return
     if not due:
         return
@@ -632,6 +796,9 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     if not code["consistent"]:  # review fa13: nothing runs against other GPU code
         print(code_summary(code), file=sys.stderr)
         sys.exit(CODE_MISMATCH)
+    if not machine["consistent"]:  # the final review of gate B, I3: nor in another environment
+        print(environment_summary(machine), file=sys.stderr)
+        sys.exit(CODE_MISMATCH)
     move_aside(out, aside)  # only now: a real run, clean, under the check's GPU code
 
     from zero_field_refusal.runtime import environment
@@ -639,7 +806,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     env_cases = (
         [c for c in cases if c.seed == scope.control_seed] if args.part == "control" else due
     )
-    cfg = environment_config(root, scope, env_cases)
+    cfg = environment_config(root, scope, [*env_cases, *cases])
     env = guard_prompt_sets(environment(cfg, args.device))
     rule = apply_memory_rule(env.device, scope.memory_rule_gb)
     print(json.dumps({"memory_rule": rule}))

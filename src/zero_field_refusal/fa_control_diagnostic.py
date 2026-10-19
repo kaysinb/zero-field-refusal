@@ -101,6 +101,15 @@ benign panels, nothing written to a run record.
   check executed (``code_identity.gpu_code_identity``), not to a commit. Nothing runs, and no
   record counts, unless the commit each regular run recorded has the check's GPU identity
   (``code_check``, ``require_code``).
+- **The run environment** (the final review of gate B, I3): twin A reproduces its run bit for
+  bit only where the run was made; ``environment_check`` compares each regular run's recorded
+  GPU names, driver, CUDA, Python, packages and container image with the check's
+  (``environment_departures``), and the script runs nothing on a mismatch. Each record holds
+  the host memory when it was written (``host_record``, M7).
+- **Voiding** (the final review of gate B, I2): after a GPU-path change the numerical runs made
+  under the old GPU code can never be checked again; ``void_plan`` and ``void_numerical`` move
+  them, and the check's directory, to ``RUNS_DIR/void/<old GPU code>/`` with an inventory, so
+  that the selection calls for the runs and the check anew.
 """
 
 from __future__ import annotations
@@ -111,6 +120,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import time
 import traceback
@@ -149,7 +159,7 @@ from .schedule import INSTABILITY as RUN_INSTABILITY
 from .schedule import _norm as grad_norm
 from .seeding import derive_seed, seed_everything
 from .teacher import MANIFEST_FILE, Sample, published_chunks
-from .tracking import git_state, hardware, package_versions
+from .tracking import LAUNCH_ENV, git_state, hardware, package_versions
 from .train import _theta0_second_moment, accumulate_gradient
 
 Vector = list[torch.Tensor]
@@ -2858,6 +2868,232 @@ def require_code(code: Mapping[str, Any] | None) -> None:
                              + "; ".join(problems))  # fmt: skip
 
 
+# The run environment a regular run's meta.json records (``tracking.Run``), compared field by
+# field with the check's own (the final review of gate B, I3): twin A reproduces its run bit for
+# bit only on the same GPU, driver, CUDA, Python and packages, so another environment would turn
+# a technical difference into not_qualified for every case.
+ENVIRONMENT_FIELDS = ("hardware.gpus", "hardware.driver", "hardware.torch_cuda", "python")
+NOT_RECORDED = "not recorded"
+
+
+def current_environment() -> dict[str, Any]:
+    """This process's run environment as a run's meta.json records it (``tracking.Run``): the
+    GPU names (as a set: the machine may hold several of one kind), the driver and torch's CUDA
+    (``tracking.hardware``), the Python version, the tracked package versions and the container
+    image (``CONTAINER_IMAGE``, None when unset)."""
+    found = hardware()
+    image = os.environ.get(LAUNCH_ENV["container_image"]) or None
+    return {"hardware.gpus": sorted(set(found["gpus"])), "hardware.driver": found["driver"],
+            "hardware.torch_cuda": found["torch_cuda"], "python": platform.python_version(),
+            "packages": package_versions(), "launch.container_image": image}  # fmt: skip
+
+
+def _recorded(meta: Mapping[str, Any], field: str) -> tuple[bool, Any]:
+    """Whether ``meta.json`` holds the dotted ``field``, and its value."""
+    node: Any = meta
+    for part in field.split("."):
+        if not isinstance(node, Mapping) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _absent_here(value: Any) -> bool:
+    return value is None or value == [] or value == {}
+
+
+def environment_departures(
+    meta: Mapping[str, Any], here: Mapping[str, Any]
+) -> list[tuple[str, Any, Any]]:
+    """How a run's recorded environment (its ``meta.json``) departs from ``here``
+    (``current_environment``), as (field, recorded, here). A field the run records is compared
+    with this environment's value; a field it does not record (an older tracker's meta.json) is
+    a departure when this environment records a value for it, since the run cannot show it ran
+    in this one, and none when this environment records none either. The packages are compared
+    one by one, the same way. The container image is compared only when the run recorded one:
+    the operator sets ``CONTAINER_IMAGE``, and a run without it recorded none."""
+    out = []
+    for field in ENVIRONMENT_FIELDS:
+        present, value = _recorded(meta, field)
+        want = here[field]
+        if present and field == "hardware.gpus" and isinstance(value, list):
+            value = sorted(set(value))
+        if present and value != want:
+            out.append((field, value, want))
+        elif not present and not _absent_here(want):
+            out.append((field, NOT_RECORDED, want))
+    present, packages = _recorded(meta, "packages")
+    packages = packages if present and isinstance(packages, Mapping) else {}
+    for name in sorted({*packages, *here["packages"]}):
+        if name not in packages:
+            out.append((f"packages.{name}", NOT_RECORDED, here["packages"][name]))
+        elif packages[name] != here["packages"].get(name):
+            out.append((f"packages.{name}", packages[name], here["packages"].get(name)))
+    present, image = _recorded(meta, "launch.container_image")
+    if present and image is not None and image != here["launch.container_image"]:
+        out.append(("launch.container_image", image, here["launch.container_image"]))
+    return out
+
+
+def environment_check(
+    run_dirs: Iterable[Path], here: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """The final review of gate B, I3: each regular run's recorded environment against the
+    check's (``environment_departures``; ``here``: ``current_environment`` by default).
+    ``consistent`` when no run departs; ``problems`` name each departing field, with the runs
+    that recorded each value. The parts that run the check refuse otherwise, recording
+    nothing (scripts/numerical_check.py)."""
+    here = current_environment() if here is None else dict(here)
+    departing: dict[tuple[str, str, str], list[str]] = {}
+    count = 0
+    for run_dir in run_dirs:
+        count += 1
+        meta_path = Path(run_dir) / "meta.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+        for field, have, want in environment_departures(meta, here):
+            key = (field, json.dumps(have), json.dumps(want))
+            departing.setdefault(key, []).append(Path(run_dir).name)
+    problems = [f"{field}: {have} recorded by {len(names)} regular run(s) ({names[0]}"
+                f"{', …' if len(names) > 1 else ''}), {want} here"
+                for (field, have, want), names in sorted(departing.items())]  # fmt: skip
+    if not count:
+        problems.append("no regular run to compare with")
+    return {"consistent": not problems, "here": here, "problems": problems}
+
+
+# --------------------------------- voiding a numerical check after a GPU-path change (gate B, I2)
+
+VOID_DIR = "void"  # RUNS_DIR/void/<the old GPU code's sha256, first 12>/: what ``void`` moved
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 24):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def void_plan(
+    root: Path, scope: NumericalScope, batch: int, upper: float, state: Mapping[str, Any]
+) -> dict[str, Any]:
+    """What ``void_numerical`` would move, read only (the final review of gate B, I2): after a
+    GPU-path change the check cannot run on the numerical runs made under the old GPU code (the
+    code check refuses them), and the selection would wait at a stale check forever. Under
+    ``root`` (RUNS_DIR): every run of the scope's experiment at ``batch`` whose role is the
+    scope's (numerical), or that runs on a numerical seed or evaluates K only, and whose recorded
+    commit's GPU code (``code_identity.gpu_code_identity``) differs from HEAD's (``state``, a
+    clean checkout); and the check's directory ``numerical/b{B}-u{U}/``, if there. They go to
+    ``void/<old GPU code's sha256, first 12>/``, at their paths under ``root``. ``problems``
+    (each a refusal): a checkout that is not clean; no numerical run whose GPU code differs; such
+    a run of another role; a run that records no clean commit or whose commit has no readable
+    GPU code; old runs of several GPU codes; a destination that exists."""
+    problems: list[str] = []
+    commit, dirty = state.get("commit"), state.get("dirty")
+    head: dict[str, Any] | None = None
+    if commit is None or dirty is not False:
+        problems.append(f"the checkout is not clean ({commit}, dirty: {dirty}): commit first")
+    else:
+        try:
+            head = gpu_code_identity(commit)
+        except Exception as exc:
+            problems.append(f"HEAD's GPU code: {type(exc).__name__}: {str(exc)[:300]}")
+    identities: dict[str, dict[str, Any]] = {}
+    moved, kept = [], []
+    for run_dir in sorted(p for p in (root / scope.experiment).glob("*") if p.is_dir()):
+        try:
+            cfg = OmegaConf.load(run_dir / "config.yaml")
+        except (OSError, ValueError):
+            continue  # an attempt that left no config: not a run the check reads
+        if OmegaConf.select(cfg, "train.batch_size", default=None) != batch:
+            continue
+        role = OmegaConf.select(cfg, "study2_short.role", default=None)
+        if not (role == scope.role or cfg.get("seed") in scope.seeds
+                or OmegaConf.select(cfg, "eval.k_only", default=False) is True):  # fmt: skip
+            continue
+        name = f"{scope.experiment}/{run_dir.name}"
+        meta_path = run_dir / "meta.json"
+        git = (json.loads(meta_path.read_text()).get("git") or {}) if meta_path.is_file() else {}
+        made, made_dirty = git.get("commit"), git.get("dirty")
+        if made is None or made_dirty is not False:
+            problems.append(f"{name} records no clean commit ({made}, dirty: {made_dirty}): its "
+                            "GPU code is unknown; move it by hand, with a record")  # fmt: skip
+            continue
+        if made not in identities:
+            try:
+                identities[made] = gpu_code_identity(made)
+            except Exception as exc:  # an unknown commit (a shallow clone, say)
+                identities[made] = {"commit": made, "error": f"{type(exc).__name__}: "
+                                                            f"{str(exc)[:300]}"}  # fmt: skip
+        identity = identities[made]
+        if "error" in identity:
+            problems.append(f"{name}: the GPU code of {made}: {identity['error']}")
+        elif head is not None and identity["sha256"] == head["sha256"]:
+            kept.append(name)
+        elif head is not None:
+            if role != scope.role:
+                problems.append(f"{name} has the role {role!r}, not {scope.role!r}: void moves "
+                                "the numerical runs only")  # fmt: skip
+            moved.append({"run": name, "commit": made, "gpu_code": identity})
+    old = {run["gpu_code"]["sha256"]: run["gpu_code"] for run in moved}
+    if head is not None and not moved:
+        problems.append(f"no numerical run at B {batch} has GPU code other than HEAD's "
+                        f"({head['sha256'][:12]}): nothing to void")  # fmt: skip
+    if len(old) > 1:
+        problems.append(f"the runs to move have {len(old)} GPU codes "
+                        f"({sorted(s[:12] for s in old)}): void them by hand, with a "
+                        "record")  # fmt: skip
+    directory = numerical_root(batch, upper, root)
+    paths = [run["run"] for run in moved]
+    if directory.is_dir():
+        paths.append(directory.relative_to(root).as_posix())
+    old_code = next(iter(old.values())) if len(old) == 1 else None
+    destination = None if old_code is None else root / VOID_DIR / old_code["sha256"][:12]
+    if destination is not None:
+        problems += [f"{destination / path} exists: nothing is overwritten" for path in paths
+                     if (destination / path).exists()]  # fmt: skip
+    return {"batch": int(batch), "U": upper, "head": head, "old_gpu_code": old_code,
+            "runs": moved, "kept": kept, "paths": paths,
+            "destination": None if destination is None else str(destination),
+            "problems": problems}  # fmt: skip
+
+
+def void_numerical(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any]) -> Path:
+    """Move what ``void_plan`` found (``plan``, without problems) into its destination, never
+    deleting: first the inventory ``inventory-<time>.tsv`` there (every file moved, its path
+    under RUNS_DIR, size and sha256), then the moves, then the record ``void-<time>.json`` (what
+    was moved, from and to which GPU code, by which checkout). Returns the record's path."""
+    if plan["problems"] or plan["destination"] is None:
+        raise NumericalError("void refuses: " + "; ".join(plan["problems"] or ["no destination"]))
+    destination = Path(plan["destination"])
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    lines = ["path\tsize\tsha256\n"]
+    for path in plan["paths"]:
+        source = root / path
+        files = [source] if source.is_file() else sorted(p for p in source.rglob("*")
+                                                         if p.is_file())  # fmt: skip
+        lines += [f"{p.relative_to(root).as_posix()}\t{p.stat().st_size}\t{_file_sha256(p)}\n"
+                  for p in files]  # fmt: skip
+    destination.mkdir(parents=True, exist_ok=True)
+    inventory = destination / f"inventory-{stamp}.tsv"
+    inventory.write_text("".join(lines))
+    for path in plan["paths"]:
+        target = destination / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(root / path, target)
+    record = destination / f"void-{stamp}.json"
+    write_json(record, {
+        "what": "the numerical runs and the check made under GPU code other than HEAD's, moved "
+                "out of RUNS_DIR's experiment and numerical/ by scripts/numerical_check.py void "
+                "(the final review of gate B, I2); nothing deleted",
+        "batch": plan["batch"], "U": plan["U"], "moved": plan["paths"],
+        "runs": plan["runs"], "kept": plan["kept"], "old_gpu_code": plan["old_gpu_code"],
+        "head_gpu_code": plan["head"], "inventory": inventory.name, "code": dict(state),
+        "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    })  # fmt: skip
+    return record
+
+
 def guarded_prompt_sets(env: Environment, word: str, owner: str) -> Environment:
     """The environment with every prompt set whose name contains ``word`` refused: a K-only part
     never reads such a set, and this makes any path to one raise."""
@@ -2994,11 +3230,23 @@ def run_numerical_case(
     }
 
 
+def host_record() -> dict[str, Any]:
+    """The host memory when a record is written (the final review of gate B, M7), as the drift
+    records it: this process's peak resident memory so far (``ru_maxrss``) and the free host
+    memory (MemAvailable, the cgroup's limit less its working set, and the smaller), GB of 1e9
+    bytes. The check holds θ₀, v₀, the second model and the p1 direction on the host (≈ 25-30 GB
+    at 1.5B), and ≈ 5 GB more while a checkpoint is saved."""
+    from .drift import host_memory, host_peak_rss_gb  # drift imports this module
+
+    return {"peak_rss_gb": host_peak_rss_gb(), **host_memory()}
+
+
 def numerical_provenance(settings: DictConfig, **extra: Any) -> dict[str, Any]:
     return {"spec": NUMERICAL_SPEC, "code": git_state(),
             "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "settings": OmegaConf.to_container(settings.numerical, resolve=True),
-            "hardware": hardware(), "packages": package_versions(), **extra}  # fmt: skip
+            "hardware": hardware(), "packages": package_versions(), "host_memory": host_record(),
+            **extra}  # fmt: skip
 
 
 def _error(exc: BaseException) -> dict[str, Any]:
@@ -3035,9 +3283,11 @@ def run_numerical_twins(
     seed's cases (``run_numerical_case``). Each attempt is written to
     ``NumericalCase.attempt_path`` under ``out``, whatever happened: a case that failed is its
     record, incomplete, with its error and the pairs done before it; a seed whose setup failed
-    gives each of its cases that record. Nothing runs unless ``code`` (``code_check``) shows the
-    regular runs' GPU code to be the check's (``require_code``). Returns the records by case
-    name."""
+    gives each of its cases that record; a case whose regular run is not found is recorded
+    incomplete with why, and a seed none of whose cases has its run (a rerun due only for a run
+    the launcher gave up on, say) is set up for nothing. Nothing runs unless ``code``
+    (``code_check``) shows the regular runs' GPU code to be the check's (``require_code``).
+    Returns the records by case name."""
     _attempt_number(attempt)
     require_code(code)
     scope = NumericalScope.of(settings)
@@ -3064,6 +3314,11 @@ def run_numerical_twins(
                 located[case.name] = locate_case(root, scope, case)
             except DiagnosticError as exc:
                 unlocated[case.name] = f"the regular run is not found: {exc}"
+        if not located:  # no run to set up for (the rerun of a run given up, say): recorded
+            for case in mine:
+                finish(case, {"status": "incomplete", "reason": unlocated[case.name],
+                              "pairs": {}})  # fmt: skip
+            continue
         setup = None
         for candidate in setups or cases:
             if candidate.seed == seed and candidate.optimizer == scope.control_arm:
