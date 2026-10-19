@@ -1183,4 +1183,10 @@ def test_cuda_intermediate_evaluations_do_not_change_step_25(
 ) -> None:
     """The same on CUDA, for FA-25 (Adam with v₀ frozen), the arm whose numerics amendment 4
     qualifies."""
-    intermediate_evaluations(gpu_env, tmp_path, monkeypatch, "adam_frozen", "execution.device=cuda")
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+    from zero_field_refusal.analysis.study2_short import timecourse_identity
+
+    dirs = intermediate_evaluations(gpu_env, tmp_path, monkeypatch, "adam_frozen",
+                                    "execution.device=cuda")  # fmt: skip
+    timecourse, endpoint = (load_trajectory(dirs[name]) for name in ("timecourse", "endpoint"))
+    assert timecourse_identity(timecourse, endpoint)["state"] == "identical"
