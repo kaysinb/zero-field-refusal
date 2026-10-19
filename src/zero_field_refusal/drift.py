@@ -32,11 +32,15 @@ backward pass left in ``.grad``; it is added to its half's sum (fp32, on the dev
 with the gradient, parameter by parameter. Every norm, dot product and Q is reduced in float64,
 per parameter in pieces of ``REDUCTION_CHUNK`` coordinates. One optimizer is processed at a time,
 with the 64 gradients recomputed for each (4 × 64 backward passes; ``gradients_identical``
-records whether the four passes saw the same losses and gradient norms). After its half
-statistics, only its full sum S = S_a + S_b (fp32) goes to host memory, for the cross cosines,
-which are reduced there: ≈ 5.24 GB per optimizer at 1.5B, 21 GB for four. v₀ stays in pinned host
-memory and is copied to the device one parameter at a time, so no parameter-sized tensor
-persists on the device beyond the two half-sums and the gradient.
+records whether the four passes saw the same losses and gradient norms, and
+``gradient_differences`` the largest relative difference of each and where, so that a
+rounding-level difference is told from a real one). A non-finite loss or ‖g_i‖² stops the run
+(``DriftError``): it is a failure, not a statistic. After its half statistics, only its full sum
+S = S_a + S_b (fp32) goes to host memory, for the cross cosines, which are reduced there:
+≈ 5.24 GB per optimizer at 1.5B, 21 GB for four. v₀ stays in pinned host memory, ≈ 6.7 GB at 1.5B
+rather than 5.24 (PyTorch's pinned allocator rounds each block up to a power of two; one flat
+buffer would round to 8.6 GB), and is copied to the device one parameter at a time, so no
+parameter-sized tensor persists on the device beyond the two half-sums and the gradient.
 
 **Blind to outcomes.** Only norms, dot products, losses and v₀'s hash leave this module. It reads
 the teacher prompts' training stream and v₀'s stream alone: no harmful prompt set, stream or
@@ -398,7 +402,11 @@ def optimizer_pass(
                 g2 += squared_norm(g, chunk)
                 del u, start, g
                 p.grad = None  # the gradient is freed parameter by parameter
-        rows.append({"batch": i, "half": half, "loss": stats["loss"], "grad_norm2": g2.item()})
+        row = {"batch": i, "half": half, "loss": stats["loss"], "grad_norm2": g2.item()}
+        if not (math.isfinite(row["loss"]) and math.isfinite(row["grad_norm2"])):
+            raise DriftError(f"{name}, batch {i}: the loss ({row['loss']}) or ‖g‖² "
+                             f"({row['grad_norm2']}) is not finite")  # fmt: skip
+        rows.append(row)
     q_a, q_b = q.tolist()
     statistics = drift_statistics((sums[0], sums[1]), (q_a, q_b), scope.half, chunk)
     total = []
@@ -408,6 +416,27 @@ def optimizer_pass(
         total.append(sums[0][k].cpu())
         sums[0][k] = None
     return statistics, total, rows
+
+
+def gradient_agreement(rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
+    """Whether every pass saw the first pass's losses and ‖g_i‖² (``identical``), and for each
+    the largest relative difference from the first pass, with the batch and optimizer where it
+    occurs (``at``: None when all are equal)."""
+    names = list(rows)
+    first = rows[names[0]]
+    out: dict[str, Any] = {"identical": all(rows[name] == first for name in names)}
+    for key in ("loss", "grad_norm2"):
+        largest, at = 0.0, None
+        for name in names[1:]:
+            for a, b in zip(first, rows[name], strict=True):
+                if a[key] == b[key]:
+                    continue
+                scale = max(abs(a[key]), abs(b[key]))
+                difference = abs(a[key] - b[key]) / scale
+                if at is None or difference > largest:
+                    largest, at = difference, {"batch": a["batch"], "optimizer": name}
+        out[key] = {"max_relative_difference": largest, "at": at}
+    return out
 
 
 def host_peak_rss_gb() -> float:
@@ -487,6 +516,7 @@ def run_drift(
     gc.collect()
 
     first = rows[scope.optimizers[0]]
+    agreement = gradient_agreement(rows)
     rounding = {name: (cross["sum_norm2"][name] - results[name]["sum_norm2"])
                 / results[name]["sum_norm2"] if results[name]["sum_norm2"] > 0 else None
                 for name in scope.optimizers}  # fmt: skip
@@ -510,8 +540,10 @@ def run_drift(
             "half_sums": "fp32, on the device",
             "reductions": "float64",
             "reduction_chunk": chunk,
-            # the four passes recompute the same 64 gradients: equal losses and ‖g_i‖²
-            "gradients_identical": all(rows[name] == first for name in scope.optimizers),
+            # the four passes recompute the same 64 gradients: equal losses and ‖g_i‖², and if
+            # not, how far apart and where
+            "gradients_identical": agreement["identical"],
+            "gradient_differences": {key: agreement[key] for key in ("loss", "grad_norm2")},
             # ‖S‖² of the fp32 sum in host memory against the float64 one from the halves
             "sum_rounding": rounding,
         },  # fmt: skip

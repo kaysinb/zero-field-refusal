@@ -11,8 +11,8 @@ blind to outcomes: only norms, dot products, losses and v₀'s hash are computed
 (src/zero_field_refusal/drift.py); no harmful prompt set, stream or generation, no judge and no
 refusal, and every prompt set whose name contains "harmful" raises if any code asks for it
 (``guard_prompt_sets``). The settings are the tracked configs/experiments/drift_diagnostic.yaml:
-``run`` and ``driver`` refuse a ``--config`` that resolves to any other file unless they only
-print (``--dry-run``).
+``prepare``, ``run`` and ``driver``, the parts that write, refuse a ``--config`` that resolves
+to any other file unless they only print (``--dry-run``).
 
 - ``prepare`` generates the streams that are missing, on ``--device``, as
   scripts/generate_teacher.py does (``drift.prepare_streams``): seed 2300's drift stream (its
@@ -27,14 +27,18 @@ print (``--dry-run``).
   ``numerics``, the provenance with the GPU-code identity, and the stream identities. It runs
   only from a clean checkout (``tracking.git_state``), under the memory rule (``memory_rule_gb``:
   46 GB reserved, 1e9 bytes, a cap on the process's CUDA memory) and after the host-memory check
-  (exit 5 when it falls short). A result written from a clean checkout at a commit with this GPU
-  code (``code_identity.gpu_code_identity``) is kept: running again skips it. Another is moved
-  aside to ``stale/<its commit>-<time>/`` first. A failure is recorded in ``failed.json`` (the
-  error, the peaks, the commit) before the non-zero exit (4 when out of memory under the rule); a
-  later success renames that record, which is kept. ``--dry-run`` prints what would run without
-  loading a model or writing anything.
+  (exit 5 when it falls short). A result of this B written from a clean checkout at a commit
+  with this GPU code (``code_identity.gpu_code_identity``) is kept: running again skips it.
+  Another is moved aside to ``stale/<its commit>-<time>/`` first. A failure, a non-finite loss
+  or gradient norm included, is recorded in ``failed.json`` (the error, the peaks, the commit)
+  before the non-zero exit (4 when out of memory under the rule); a later success renames that
+  record, which is kept. When the four passes did not see identical gradients, a WARNING line
+  gives the largest relative difference (the result records it). ``--dry-run`` prints what would
+  run without loading a model or writing anything.
 - ``driver`` writes the bash driver for a Pod, from the source checkout of SHA (``--dry-run``
-  prints it).
+  prints it). Before any non-zero exit it records a failure: the failing step's own record, else
+  one through the checkout's Python, else (the checkout or ``project-run`` broken) a minimal one
+  written by bash.
 
 Cost on one L40S at 1.5B (fp32), from the study-2 timings at B 20 (scratchpad batch-cost
 analysis of 2026-10-19: a training step ≈ 1.2 s, ≈ 0.06 s per response; generation ≈ 0.12 s per
@@ -45,7 +49,8 @@ per-batch update and float64 reductions (≈ 0.5 s) and the setup are estimates.
 - ``run`` ≈ 12 min: v₀'s 50 batch gradients, 4 × 64 batch gradients with their updates, the
   setup and the cross cosines in host memory.
 GPU ≈ 22 GB of tensors at 1.5B (the model, a gradient, the two half-sums) and a step's
-activations, under the 46 GB cap; host memory ≈ 21 GB for the four sums and 5.2 GB of pinned v₀.
+activations, under the 46 GB cap; host memory ≈ 21 GB for the four sums and ≈ 6.7 GB of pinned
+v₀ (PyTorch's pinned allocator rounds each parameter's block up to a power of two).
 """
 
 import argparse
@@ -168,9 +173,9 @@ def require_clean() -> dict:
     return state
 
 
-def counted(out: Path, gpu_code: dict) -> dict | None:
-    """The result already under ``out``, if it counts: written from a clean checkout at a
-    commit with this GPU code."""
+def counted(out: Path, gpu_code: dict, batch: int) -> dict | None:
+    """The result already under ``out``, if it counts: of this B, written from a clean checkout
+    at a commit with this GPU code."""
     path = out / drift.RESULT
     if not path.exists() or "error" in gpu_code:
         return None
@@ -180,7 +185,8 @@ def counted(out: Path, gpu_code: dict) -> dict | None:
         return None
     made = record.get("provenance") or {}
     same = (made.get("gpu_code") or {}).get("sha256") == gpu_code.get("sha256")
-    return record if same and (made.get("code") or {}).get("dirty") is False else None
+    clean = (made.get("code") or {}).get("dirty") is False
+    return record if same and clean and record.get("batch") == batch else None
 
 
 def stamp() -> str:
@@ -220,6 +226,10 @@ def run(settings, scope, cfg, args, out: Path) -> None:
     print(json.dumps({"cross_cosines": result["cross_cosines"],
                       "gradients_identical": result["numerics"]["gradients_identical"],
                       "peak": result["peaks"]["all"]}))  # fmt: skip
+    if not result["numerics"]["gradients_identical"]:
+        differences = json.dumps(result["numerics"]["gradient_differences"])
+        print(f"WARNING: the four passes did not see identical gradients: {differences}",
+              file=sys.stderr)  # fmt: skip
     print(out / drift.RESULT)
 
 
@@ -259,6 +269,12 @@ def driver_script(commit: str, written_at: str, batch: int) -> str:
         f'  echo "== {stamp_now} $1" >&2',
         f'  if [ ! -f "$OUT/{FAILED}" ]; then',
         f'    project-run "$SRC" python -c "{FAILURE_RECORD}" "$OUT/{FAILED}" "$1" "$2" || true',
+        "  fi",
+        "  # The checkout or project-run is broken: a minimal record, in bash alone",
+        f'  if [ ! -f "$OUT/{FAILED}" ]; then',
+        r'    local reason=${1//[\"\\]/}',  # no double quote or backslash inside the JSON string
+        "    printf '{\"part\": \"driver\", \"reason\": \"%s\", \"exit_code\": %s}\\n' "
+        f'"$reason" "$2" > "$OUT/{FAILED}"',
         "  fi",
         '  exit "$2"',
         "}",
@@ -319,7 +335,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         cfg = drift.run_config(scope, args.batch)
     except drift.DriftError as exc:
         sys.exit(str(exc))
-    writes = args.part in ("run", "driver") and not args.dry_run
+    writes = args.part in ("prepare", "run", "driver") and not args.dry_run
     if writes and not (tracked_config(args.config) or untracked_config_for_tests):
         sys.exit(f"{args.part} writes only under the tracked settings ({CONFIG}), not "
                  f"{config_path(args.config)}; --dry-run only prints")  # fmt: skip
@@ -368,7 +384,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
 
     state = require_clean()
     gpu_code = drift.code_identity()
-    if counted(out, gpu_code) is not None:
+    if counted(out, gpu_code, args.batch) is not None:
         print(f"kept: {out / drift.RESULT} was written with this GPU code "
               f"({gpu_code.get('sha256')})")  # fmt: skip
         return

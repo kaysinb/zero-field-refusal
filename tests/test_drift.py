@@ -105,6 +105,10 @@ def test_the_settings_are_frozen() -> None:
         assert OmegaConf.to_container(regular.train) == OmegaConf.to_container(cfg.train)
         assert regular.model == cfg.model and regular.execution == cfg.execution
         assert stream_spec(regular, "training", items) == stream_spec(cfg, "training", items)
+        # ε and β₂ are each arm's own (FA has no β₂)
+        assert regular.optimizer.eps == scope.eps
+        if regular.optimizer.name != "adam_frozen":
+            assert regular.optimizer.betas[1] == scope.beta2
     stage_a = load_run_config("experiments/study2_stage_a", ["optimizer=adam_frozen",
                                                              "train.batch_size=20"])  # fmt: skip
     for kind in ("training", "preconditioner"):
@@ -300,6 +304,9 @@ def test_sequential_processing_matches_all_at_once(tiny_world) -> None:
     for got, want in zip(result["batches"], rows, strict=True):
         assert got["grad_norm2"] == pytest.approx(want["grad_norm2"], rel=1e-12)
     assert result["numerics"]["gradients_identical"] is True  # four passes, the same gradients
+    assert result["numerics"]["gradient_differences"] == {
+        key: {"max_relative_difference": 0.0, "at": None} for key in ("loss", "grad_norm2")
+    }
     n = 64
     for name, want in expected.items():
         got = result["optimizers"][name]
@@ -332,6 +339,50 @@ def test_sequential_processing_matches_all_at_once(tiny_world) -> None:
         p.numel() for _, p in freeze(env.new_model(), cfg.train.freeze)
     )
     json.dumps(result)  # writable as JSON
+
+
+def test_gradient_agreement() -> None:
+    """The largest relative difference of the losses and ‖g_i‖² from the first pass's, and
+    where it occurs."""
+    rows = [{"batch": i, "half": 0, "loss": 1.0 + i, "grad_norm2": 4.0} for i in range(3)]
+    same = drift.gradient_agreement({"sgd": rows, "adamw": [dict(r) for r in rows]})
+    assert same == {"identical": True,
+                    "loss": {"max_relative_difference": 0.0, "at": None},
+                    "grad_norm2": {"max_relative_difference": 0.0, "at": None}}  # fmt: skip
+    other = [dict(r) for r in rows]
+    other[2]["grad_norm2"] = 4.0 * (1 + 1e-7)
+    worse = [dict(r) for r in rows]
+    worse[1]["grad_norm2"], worse[0]["loss"] = 5.0, 1.5
+    found = drift.gradient_agreement({"sgd": rows, "adamw": other, "fa": worse})
+    assert found["identical"] is False
+    assert found["grad_norm2"]["max_relative_difference"] == pytest.approx(0.2)
+    assert found["grad_norm2"]["at"] == {"batch": 1, "optimizer": "fa"}
+    assert found["loss"] == {"max_relative_difference": pytest.approx(1 / 3),
+                             "at": {"batch": 0, "optimizer": "fa"}}  # fmt: skip
+
+
+def test_a_non_finite_gradient_is_a_failure(tiny_world, monkeypatch) -> None:
+    """A non-finite ‖g_i‖² or loss stops the run with ``DriftError`` (the script records it as
+    a failure), rather than writing NaN statistics."""
+    env, settings, cfg, _ = tiny_world
+    original, seen = drift.accumulate_gradient, []
+
+    def broken(kind, model, batch, cfg, env, *args):
+        stats = original(model, batch, cfg, env, *args)
+        seen.append(1)
+        if len(seen) == 3 and kind == "grad":  # the third batch of the first pass
+            grad = next(p.grad for p in model.parameters() if p.grad is not None)
+            grad.view(-1)[0] = math.inf
+        elif len(seen) == 3:
+            stats["loss"] = math.nan
+        return stats
+
+    for kind in ("grad", "loss"):
+        seen.clear()
+        monkeypatch.setattr(drift, "accumulate_gradient",
+                            lambda *args, kind=kind: broken(kind, *args))  # fmt: skip
+        with pytest.raises(drift.DriftError, match="sgd, batch 2: .* is not finite"):
+            drift.run_drift(settings, cfg, env, chunk=CHUNK)
 
 
 # -------------------------------------------------------------------------- host memory
@@ -446,7 +497,8 @@ def test_no_harm_paths(tmp_path, monkeypatch, capsys) -> None:
     argv, requested, devices, out = script_world(tmp_path, monkeypatch, CPU)
     assert call(monkeypatch, argv("prepare", "--dry-run")) == 0
     assert "MISSING: drift stream" in capsys.readouterr().out
-    assert call(monkeypatch, argv("prepare")) == 0
+    assert "tracked settings" in str(call(monkeypatch, argv("prepare")))  # it writes DATA_DIR
+    assert call(monkeypatch, argv("prepare"), untracked=True) == 0
     assert "generated:" in capsys.readouterr().out
     assert call(monkeypatch, argv("plan")) == 0
     printed = capsys.readouterr().out
@@ -467,40 +519,74 @@ def test_no_harm_paths(tmp_path, monkeypatch, capsys) -> None:
 
 def test_the_run_keeps_counted_results_and_records_failures(tmp_path, monkeypatch,
                                                             capsys) -> None:  # fmt: skip
-    """``run`` through the script, with the computation stubbed: a result written with this GPU
-    code is kept; one with other GPU code is set aside and redone; a dirty checkout, untracked
-    settings and too little host memory run nothing; a failure is recorded before the exit and
-    renamed by a later success."""
+    """``run`` through the script, with the computation stubbed: a result of this B written with
+    this GPU code is kept; one of another B or other GPU code is set aside and redone; gradients
+    that differ between the passes give a WARNING; a dirty checkout, untracked settings and too
+    little host memory run nothing; a failure, an out-of-memory error with exit 4 included, is
+    recorded before the exit and renamed by a later success."""
     argv, _, _, out = script_world(tmp_path, monkeypatch, CPU)
+    outcomes = [
+        "ok",
+        "differing",
+        RuntimeError("a failure"),
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2 GiB"),
+        "ok",
+    ]
     calls = []
 
     def fake_run(settings, cfg, env, **kwargs):
-        calls.append(cfg.train.batch_size)
-        if len(calls) == 2:
-            raise RuntimeError("a failure")
-        return {"optimizers": {"sgd": {"mean_norm2": 1.0, "trace_cov": 2.0, "ratio": 0.5,
+        calls.append(outcome := outcomes[len(calls)])
+        if isinstance(outcome, BaseException):
+            raise outcome
+        differences = {
+            "loss": {"max_relative_difference": 0.0, "at": None},
+            "grad_norm2": {"max_relative_difference": 1e-7, "at": {"batch": 3, "optimizer": "fa"}},
+        }
+        return {"batch": int(cfg.train.batch_size),
+                "optimizers": {"sgd": {"mean_norm2": 1.0, "trace_cov": 2.0, "ratio": 0.5,
                                        "half_cosine": 0.1}},
-                "cross_cosines": {}, "numerics": {"gradients_identical": True},
+                "cross_cosines": {},
+                "numerics": {"gradients_identical": outcome == "ok",
+                             "gradient_differences": differences},
                 "peaks": {"all": {}},
                 "provenance": {"code": drift.git_state(),
                                "gpu_code": drift.gpu_code_identity()}}  # fmt: skip
+
+    def stale():
+        return [json.loads(p.read_text()) for p in (out / "stale").glob("*/result.json")]
 
     monkeypatch.setattr(drift, "run_drift", fake_run)
     assert call(monkeypatch, argv("run"), untracked=True) == 0
     assert call(monkeypatch, argv("run"), untracked=True) == 0  # kept
     assert "kept:" in capsys.readouterr().out and len(calls) == 1
     assert "tracked settings" in str(call(monkeypatch, argv("run")))
+    # A result of another B (an --out shared between batches, say) does not count
+    record = json.loads((out / drift.RESULT).read_text())
+    (out / drift.RESULT).write_text(json.dumps({**record, "batch": BATCH + 1}))
+    assert call(monkeypatch, argv("run"), untracked=True) == 0
+    assert [r["batch"] for r in stale()] == [BATCH + 1] and len(calls) == 2
+    printed = capsys.readouterr()
+    assert "WARNING: the four passes did not see identical gradients" in printed.err
+    assert '"batch": 3' in printed.err and "1e-07" in printed.err
+    assert call(monkeypatch, argv("run"), untracked=True) == 0  # kept: this B, this GPU code
+    assert len(calls) == 2
     monkeypatch.setattr(
         drift,
         "gpu_code_identity",
         lambda *a, **k: {"commit": COMMIT, "files": 7, "sha256": "other"},
     )
-    with pytest.raises(RuntimeError, match="a failure"):  # the second computation fails
+    with pytest.raises(RuntimeError, match="a failure"):  # other GPU code: redone, and it fails
         call(monkeypatch, argv("run"), untracked=True)
     failure = json.loads((out / "failed.json").read_text())
     assert failure["part"] == "run" and "a failure" in failure["error"]
     assert failure["provenance"]["gpu_code"]["sha256"] == "other"
-    assert [p.name for p in (out / "stale").glob("*/result.json")] == ["result.json"]
+    assert stale() and not (out / drift.RESULT).exists()
+    capsys.readouterr()
+    assert call(monkeypatch, argv("run"), untracked=True) == 4  # out of memory under the rule
+    assert "out of memory under the 46 GB rule" in capsys.readouterr().err
+    failure = json.loads((out / "failed.json").read_text())
+    assert failure["error"].startswith("OutOfMemoryError: CUDA out of memory")
+    assert "peaks" in failure and "traceback" in failure
     assert not (out / drift.RESULT).exists()
     assert call(monkeypatch, argv("run"), untracked=True) == 0
     assert (out / drift.RESULT).exists() and not (out / "failed.json").exists()
@@ -515,7 +601,7 @@ def test_the_run_keeps_counted_results_and_records_failures(tmp_path, monkeypatc
     assert call(monkeypatch, argv("plan")) == 1
     assert "INSUFFICIENT" in capsys.readouterr().out
     failure = json.loads((out / "failed.json").read_text())
-    assert failure["host_memory"]["sufficient"] is False and len(calls) == 3
+    assert failure["host_memory"]["sufficient"] is False and len(calls) == 5
 
 
 def test_the_driver(tmp_path, monkeypatch) -> None:
@@ -535,6 +621,25 @@ def test_the_driver(tmp_path, monkeypatch) -> None:
     assert "trap 'stop" in text and "failed.json" in text
     assert "drift_diagnostic.py run --batch 20" in text
     assert call(monkeypatch, [*base, "--commit", COMMIT, "--out", str(path)]) != 0  # it exists
+    # stop() with a broken project-run (no checkout at $SRC): bash writes a minimal record, valid
+    # JSON whatever the reason holds; a record already there is left as it is
+    begin = text.index("stop() {")
+    stop = tmp_path / "stop.sh"
+    stop.write_text(text[begin : text.index("\n}\n", begin) + 3])
+    out = tmp_path / "out"
+    out.mkdir()
+    program = ('set -euo pipefail; project-run() { return 127; }; OUT="$1"; SRC=/nonexistent; '
+               '. "$2"; stop "$3" 3')  # fmt: skip
+    reason = 'run failed: "quoted" \\ and a backslash (exit 3)'
+    done = subprocess.run(["bash", "-c", program, "bash", str(out), str(stop), reason],
+                          capture_output=True, text=True)  # fmt: skip
+    assert done.returncode == 3 and reason in done.stderr
+    record = json.loads((out / "failed.json").read_text())
+    assert record == {"part": "driver", "reason": "run failed: quoted  and a backslash (exit 3)",
+                      "exit_code": 3}  # fmt: skip
+    (out / "failed.json").write_text('{"part": "run"}\n')  # the failing step's own record
+    done = subprocess.run(["bash", "-c", program, "bash", str(out), str(stop), "other"])
+    assert done.returncode == 3 and (out / "failed.json").read_text() == '{"part": "run"}\n'
 
 
 # ------------------------------------------------------------------------------------- CUDA
@@ -554,7 +659,7 @@ def test_cuda_run(tmp_path, monkeypatch, cuda_rule, capsys) -> None:
     without an index, under a 1 GB memory rule; the peaks are recorded within it."""
     argv, requested, devices, out = script_world(tmp_path, monkeypatch, CUDA, memory_rule_gb=1)
     set_numerics(OmegaConf.create({"tf32": False}))  # TF32 off, as in every run
-    assert call(monkeypatch, argv("prepare")) == 0
+    assert call(monkeypatch, argv("prepare"), untracked=True) == 0
     assert call(monkeypatch, argv("run"), untracked=True) == 0
     assert devices == ["cuda", "cuda"]
     index = torch.cuda.current_device()
