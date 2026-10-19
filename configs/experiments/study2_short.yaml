@@ -3,7 +3,8 @@
 # evaluated at step 25 and stopped early only by instability (the ×10 gradient rule included),
 # under monitor version 2. Everything but the experiment's name and the role equals Stage A's
 # 25-step runs (experiments/study2_stage_a with schedule=short), so that the new discovery runs
-# pool with Stage A's grids (tests/test_study2_short_campaigns.py compares the two). The arm,
+# pool with Stage A's grids (tests/test_study2_short_campaigns.py compares the two); the update
+# scalars are recorded besides (amendment 4, section 4: logging only, numerics unchanged). The arm,
 # batch, rate, role and seed of each run come from the campaigns that
 # scripts/study2_short_campaigns.py writes; the role is `???`, so a run without it fails at load.
 # Results count: runs from a clean checkout of a commit.
@@ -30,3 +31,4 @@ eval:
   projections: 0
 tracking:
   require_clean_git: true
+  update_scalars: true              # schedule.UpdateScalars: update_scalars.jsonl

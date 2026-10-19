@@ -634,10 +634,46 @@ def test_a_k_only_evaluation_reads_no_harmful_prompt_and_measures_what_the_seale
 ) -> None:
     """Study 2's numerical runs (amendment 4, review fa12): with ``eval.k_only`` no harmful
     prompt set is read and no response to a harmful prompt is generated; K, the monitor and
-    utility equal those of the sealed evaluation, and training is unaffected."""
+    utility equal those of the sealed evaluation, and training is unaffected (on CUDA as well:
+    the next test)."""
     from zero_field_refusal.analysis.stage_a import TrajectoryError, load_trajectory
 
-    steps = ("train.steps=25", "schedule.evaluate_at=[5,25]")
+    k_only = k_only_equals_sealed(env, tmp_path, monkeypatch)
+    # Its records must say it is K-only (review of Task 2, minor 7).
+    meta_path = k_only / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    for changed, message in (
+        ({**meta["inputs"], "k_only": False}, "inputs do not record k_only"),
+        ({k: v for k, v in meta["inputs"].items() if k != "k_only"}, "inputs do not record k_only"),
+        ({**meta["inputs"], "streams": {**meta["inputs"]["streams"], "kl_harmful": {}}},
+         "recorded a kl_harmful stream"),
+    ):  # fmt: skip
+        meta_path.write_text(json.dumps({**meta, "inputs": changed}))
+        with pytest.raises(TrajectoryError, match=message):
+            load_trajectory(k_only)
+    meta_path.write_text(json.dumps(meta))
+    (k_only / "responses").mkdir()
+    (k_only / "responses" / "harmful_evaluation.jsonl").write_text("")
+    with pytest.raises(TrajectoryError, match="K-only run recorded harmful prompts or stored"):
+        load_trajectory(k_only)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_cuda_k_only_equals_sealed(gpu_env, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """Study 2's numerical runs on CUDA (review of Task 2, minor 6): the K-only twin of a sealed
+    run reads no harmful prompt and measures K, the monitor and utility as the sealed run does,
+    its training the same."""
+    k_only = k_only_equals_sealed(gpu_env, tmp_path, monkeypatch, "execution.device=cuda")
+    assert json.loads((k_only / "meta.json").read_text())["inputs"]["k_only"] is True
+
+
+def k_only_equals_sealed(env, tmp_path, monkeypatch, *overrides: str) -> Path:
+    """A sealed run and its K-only twin (``eval.k_only``) of 25 steps, on ``env``: the K-only
+    run reads no harmful prompt set and stores no response; K, the monitor, utility and training
+    are the sealed run's. Returns the K-only run's directory."""
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+
+    steps = ("train.steps=25", "schedule.evaluate_at=[5,25]", *overrides)
     sealed_cfg = scheduled(tmp_path, *steps, policy="short")
     ready(env, sealed_cfg)
     sealed = run_scheduled(sealed_cfg, env, run_id="sealed")
@@ -681,10 +717,7 @@ def test_a_k_only_evaluation_reads_no_harmful_prompt_and_measures_what_the_seale
         assert untimed(read_jsonl(sealed / name)) == untimed(read_jsonl(k_only / name)), name
     run = load_trajectory(k_only)  # a K-only run's records are whole without responses
     assert run.evaluations[-1]["K_benign"] == a[-1]["K_benign"]
-    (k_only / "responses").mkdir()
-    (k_only / "responses" / "harmful_evaluation.jsonl").write_text("")
-    with pytest.raises(TrajectoryError, match="K-only run recorded harmful prompts or stored"):
-        load_trajectory(k_only)
+    return k_only
 
 
 def test_a_k_only_numerical_run_writes_what_the_numerical_check_reads(env, tmp_path) -> None:

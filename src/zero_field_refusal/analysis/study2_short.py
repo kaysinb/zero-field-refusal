@@ -121,42 +121,71 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 - *Pre-warmed AdamW-25* (amendment 4): part of a candidate's feasibility. Its first round is
   that of the joint discovery (or ``prewarmed``), its rounds follow the primary rule, it has no
   controls; still infeasible, the candidate fails for the three arms.
-- *Numerical qualification* (amendment 4, review fa12): once every arm of the visit has its
-  triple, the K-only regular runs of the check's cases (``numerical_cases``, role numerical,
+- *Numerical qualification* (amendment 4, review fa12): once every arm of the visit has its triple,
+  the K-only regular runs of the check's cases (``numerical_cases``, role numerical,
   experiments/study2_short_k_only) are called for; once they all exist, the check of the
   numerical-check tool. Every selection's verdict is kept, under $RUNS_DIR, at
-  numerical/b{B}-u{U}/verdicts/<digest>.json (``numerical_digest``; a record whose name is not
-  the digest of its own rates is malformed), so none is overwritten; the request reads its own
-  digest's verdict, else (the primary arms alone) a verdict of the candidate whose rates for the
-  requested arms are exactly the request's, one marking a requested rate unusable first. A
-  verdict at a batch the replay reached that it did not read and that marks a rate unusable
-  leaves no conclusion. A verdict decides only when its batch and U are the candidate's, its
-  policy is the frozen one (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound
-  0.01 × K*, steps 1, 5, 10, 15, 20, 25), its GPU code (``policy.gpu_code``, review fa13; null
-  is stale) is that of the commit its numerical runs recorded (all one commit, else
-  ``incomplete``) and that of the running checkout (``code_identity.reuse_check`` from its
-  commit to HEAD reusable: analysis-only commits keep a qualification, a GPU-path change voids
-  it; the checks are kept in the record), every requested rate and FA control is in it and
-  every rate's seeds cover its cases; otherwise it is stale and the next step runs the check
-  again. A rate or control ``incomplete`` is never a pass: the next step finishes the check. A
-  rate ``failing`` (a pair exceeding, or its numerical run stopped by an instability rule) or
-  ``not_qualified`` (technical, with its reason, never reported as instability), or an FA rate
-  whose control is ``rejected`` or ``not_qualified``, is unusable at that batch for every U:
-  excluded up front at every later visit of the batch. The arms holding unusable rates
-  are re-solved once, from the same runs with no new round; the re-solve's cases are called for
-  (a replacement rate on 2200, and on 2201 and 2202 if it is its arm's new U-rate; a replacement
-  FA rate with its control) and checked in a new check; an unusable rate there, or no feasible
-  triple after the re-solve, fails the candidate. The verdict's own ``qualified`` must agree
-  with its states, and an unreadable or malformed verdict leaves the selection ``incomplete``.
-- *Fallback* (amendment 4, review fa12): when no candidate is eligible with the three arms, the
-  candidates are visited again in the same order for the primary arms alone, except those whose
-  primary arms failed at discovery or at the numerical gate (a second chance there would break
-  the one-re-solve rule); a three-arm validation failure does not exclude a candidate, since
-  the fallback's validation is amendment 3's primary-arm one. Every record is reused (rounds,
-  runs, the checks whose rates hold the request); in a three-arm check read again, only the
-  primary arms' rates and the FA controls count, whatever its pre-warmed entries say (review
-  fa13), and nothing of the pre-warmed arm is called for. When no candidate is eligible even
-  then, the stage ends ``infeasible`` with every attempt's reasons.
+  numerical/b{B}-u{U}/verdicts/<digest>.json (``numerical_digest``; a record whose name is not the
+  digest of its own rates is malformed), so none is overwritten; the request reads its own digest's
+  verdict, else (the primary arms alone) a verdict of the candidate whose rates for the requested
+  arms are exactly the request's, one marking a requested rate unusable first. A verdict at a batch
+  the replay reached that it did not read and that marks a rate unusable leaves no conclusion. A
+  verdict decides only when its batch and U are the candidate's, its policy is the frozen one
+  (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound 0.01 × K*, steps 1, 5, 10, 15,
+  20, 25, and the Gaussian directions' seeds and the reference's modes as the tool's module fixes
+  them), its GPU code (``policy.gpu_code``, review fa13; null is stale) is that of every commit its
+  numerical runs recorded (each the verdict's ``gpu_code.commit`` or ``code_identity.reuse_check``
+  from it to that commit reusable, so that a replacement run made at an analysis-only descendant
+  counts; a run on a dirty checkout or recording no commit leaves the selection ``incomplete``, a
+  commit whose GPU code cannot be checked makes the verdict stale) and that of the running checkout
+  (``reuse_check`` from its commit to HEAD reusable: analysis-only commits keep a qualification, a
+  GPU-path change voids it; the checks are kept in the record), its ``tool_commit`` names the
+  check's commits (a non-empty list, or one commit in an older record), every requested rate and FA
+  control is in it and every rate's seeds cover its cases; otherwise it is stale and the next step
+  runs the check again (review of Task 2, important 1 and 2). A rate or control ``incomplete`` is
+  never a pass: the next step finishes the check. A rate ``failing`` (a pair exceeding, or its
+  numerical run stopped by an instability rule) or ``not_qualified`` (technical, with its reason,
+  never reported as instability), or an FA rate whose control is ``rejected`` or ``not_qualified``,
+  is unusable at that batch for every U: excluded up front at every later visit of the batch. These
+  marks persist when the verdict is stale (review of Task 2, minor 4): staleness voids a
+  qualification, never a failure. They persist too when the tool writes a selection's verdict again:
+  the earlier one, moved to verdicts/history/<digest>/, is read with it, and its marks hold whatever
+  its staleness or unfinished entries (the coordinator, after the integration step); an earlier
+  verdict the replay did not read is an unread verdict like any other. A re-solve is decided only
+  from a current verdict with no incomplete entry, stale or not (the coordinator, after fix round
+  1): while a requested rate or control is incomplete, the next step finishes or reruns the check,
+  and the re-solve is not spent. The arms holding unusable rates are re-solved once, from the same
+  runs with no new round; the re-solve's cases are called for (a replacement rate on 2200, and on
+  2201 and 2202 if it is its arm's new U-rate; a replacement FA rate with its control) and checked
+  in a new check; an unusable rate there, or no feasible triple after the re-solve, fails the
+  candidate. The verdict's own ``qualified`` must agree with its states, and an unreadable or
+  malformed verdict leaves the selection ``incomplete``. A numerical run the launcher gave up on
+  (``exhausted_runs``) lets the check go on (review of Task 2, minor 3): the tool reads its case as
+  not qualified (technical), and its rate leaves the batch.
+- *A stale check with runs beyond it*: when the replay waits at a stale check while runs it
+  called for after that check exist (a GPU-path change after the validation runs, say), the
+  problems name the stale check first and list those runs, all of them under ``beyond_stale``;
+  the replay cannot tell such a run from a stray one until the check is run again, after which
+  a stray run shows as unexpected again. scripts/study2_short_campaigns.py writes the
+  ``numerical-check`` input when every problem is under ``beyond_stale``, and nothing else.
+- *Fallback* (amendment 4, review fa12; review of Task 2, critical 1 and minor 2): when no
+  candidate is eligible with the three arms, the candidates are visited again in the same order
+  for the primary arms alone, each selected over every record at its batch (rounds made at the
+  other U included), except those whose primary arms failed at the numerical gate (a second
+  chance there would break the one-re-solve rule). A candidate whose primary arms failed at
+  discovery in pass 1 is visited again: with no new round beyond each arm's once-only targeted
+  and repair rounds per batch and U, it can only become feasible from rates run since; a
+  three-arm validation failure does not exclude a candidate either, since the fallback's
+  validation is amendment 3's primary-arm one. A primary arm's re-solve in pass 1 at the
+  candidate (a primary rate in an ``unusable`` entry of its checks) is spent: the fallback's
+  visit starts re-solved, so an unusable rate in its check fails the candidate, and a primary
+  arm left without a triple by the unusable rates gets no new round and fails it too (the
+  conservative reading: a round would be a second chance). A re-solve caused by pre-warmed rates
+  only is not carried. Every record is reused (rounds, runs, the checks whose rates hold the
+  request); in a three-arm check read again, only the primary arms' rates and the FA controls
+  count, whatever its pre-warmed entries say (review fa13), and nothing of the pre-warmed arm is
+  called for. When no candidate is eligible even then, the stage ends ``infeasible`` with every
+  attempt's reasons.
 - *Support*: the nearest bracketing pair is the largest K25 below K* and the smallest at or above
   it. An unsupported arm's cause is ``technical`` whenever one of its endpoints failed (the
   failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``. Beside
@@ -264,7 +293,8 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   abandoned in the operator's abandonment record (``read_abandonment``); until then it may still
   be running and its run is pending. An earlier attempt without an end record was settled by the
   start of the next. A run with a terminal record is never given up, whatever the journal says.
-  Discovery and numerical runs are not covered: the selection waits for them.
+  Discovery runs are not covered: the selection waits for them. A numerical run given up lets
+  its check go on (*Numerical qualification*).
 - *Confirmation blocks* (``confirmation_guard``, the review of Task 5): ranges start at the first
   block without a run and never overlap one another (re-issuing an issued range completes it);
   the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80). A new range
@@ -368,6 +398,7 @@ ROLES = ("discovery", "numerical", "validation", "confirmation")  # study2_short
 NUMERICAL_TOOL = "scripts/numerical_check.py"
 NUMERICAL_DIR = "numerical"
 VERDICTS_DIR = "verdicts"  # numerical/b{B}-u{U}/verdicts/<digest>.json, one per selection checked
+HISTORY_DIR = "history"  # verdicts/history/<digest>/*.json: a selection's earlier verdicts
 K_ONLY = "experiments/study2_short_k_only"  # REGULAR with the K-only evaluation: numerical runs
 OPTIMIZERS = {ADAMW: "adamw", FA: "adam_frozen", PREWARMED: "adamw_prewarmed"}  # its arm names
 # The states of an (arm, rate) and of an FA rate's same-path control in a verdict (review fa12):
@@ -800,8 +831,26 @@ def _pair_key(arm: str, lr: float) -> str:
 
 def numerical_policy(upper: float) -> dict[str, Any]:
     """The frozen numerical policy of a check at U (amendment 4, section 1): the perturbation
-    norm, the survival share and its retry scale, the twin bound 0.01 × K* and the steps."""
-    return {**NUMERICAL_POLICY, "bound": NUMERICAL_BOUND_FRACTION * k_star(upper)}
+    norm, the survival share and its retry scale, the twin bound 0.01 × K* and the steps, with
+    the Gaussian directions' seeds and the reference's modes as the numerical-check tool fixes
+    them (``_tool_policy``)."""
+    return {**NUMERICAL_POLICY, "bound": NUMERICAL_BOUND_FRACTION * k_star(upper),
+            **_tool_policy()}  # fmt: skip
+
+
+@functools.cache
+def _tool_policy() -> dict[str, Any]:
+    """What the numerical-check tool fixes and this module does not restate: the seeds of the
+    Gaussian directions p3 and p4 (its tracked settings, configs/experiments/
+    numerical_check.yaml, read through its own ``NumericalScope``) and the reference's modes
+    (``NUMERICAL_REFERENCE``), both from ``fa_control_diagnostic`` (review of Task 2, minor 1).
+    Imported when first needed: the tool's module loads torch."""
+    from .. import fa_control_diagnostic as tool
+    from ..paths import CONFIG_ROOT
+
+    settings = load_config(CONFIG_ROOT / "experiments" / "numerical_check.yaml")
+    scope = tool.NumericalScope.of(settings)
+    return {"gaussian": dict(scope.gaussian), "reference": tool.NUMERICAL_REFERENCE}
 
 
 def _reuse_check(base: str, head: str) -> dict[str, Any]:
@@ -811,11 +860,12 @@ def _reuse_check(base: str, head: str) -> dict[str, Any]:
 
 
 def _gpu_code(
-    gpu: Mapping[str, Any], commit: str, reuse: Callable[[str, str], Mapping[str, Any]]
+    gpu: Mapping[str, Any], commits: Collection[str], reuse: Callable[[str, str], Mapping[str, Any]]
 ) -> tuple[dict[str, Any], list[str]]:
     """The checks that the verdict's GPU code (``gpu``) is that of the numerical runs, made at
-    ``commit``, and that of the running checkout (review fa13), and how it departs from them."""
-    found: dict[str, Any] = {"runs": None, "head": None}
+    ``commits`` (each one's GPU identity the verdict's), and that of the running checkout (review
+    fa13), and how it departs from them."""
+    found: dict[str, Any] = {"runs": {}, "head": None}
     departures = []
 
     def checked(base: str, head: str) -> Mapping[str, Any] | None:
@@ -825,12 +875,12 @@ def _gpu_code(
             departures.append(f"the GPU code of {base} cannot be checked against {head}: {exc}")
             return None
 
-    if commit != gpu["commit"]:
-        found["runs"] = checked(commit, gpu["commit"])
-        if found["runs"] is not None and not found["runs"].get("reusable"):
-            departures.append(f"the numerical runs ran another GPU code ({commit}) than the "
+    for commit in sorted(set(commits) - {gpu["commit"]}):
+        found["runs"][commit] = checked(commit, gpu["commit"])
+        if found["runs"][commit] is not None and not found["runs"][commit].get("reusable"):
+            departures.append(f"numerical runs ran another GPU code ({commit}) than the "
                               f"verdict's ({gpu['commit']}): "
-                              f"{found['runs'].get('changed')}")  # fmt: skip
+                              f"{found['runs'][commit].get('changed')}")  # fmt: skip
     found["head"] = checked(gpu["commit"], "HEAD")
     if found["head"] is not None:
         base = found["head"].get("base") or {}
@@ -853,6 +903,9 @@ def _policy_departures(policy: Mapping[str, Any], upper: float) -> list[str]:
         out.append(f"bound {policy.get('bound')!r}, frozen 0.01 × K* = {frozen['bound']!r}")
     if not (isinstance(policy.get("steps"), list) and policy["steps"] == frozen["steps"]):
         out.append(f"steps {policy.get('steps')!r}, frozen {frozen['steps']}")
+    for key in ("gaussian", "reference"):  # the tool's own values (``_tool_policy``)
+        if policy.get(key) != frozen[key]:
+            out.append(f"{key} {policy.get(key)!r}, frozen {frozen[key]!r}")
     return out
 
 
@@ -861,21 +914,23 @@ def numerical_verdict(
     batch: int,
     upper: float,
     rates: Mapping[str, Sequence[float]],
-    commit: str,
+    commits: str | Collection[str],
     reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """A numerical-check verdict record read for one check of each arm's ``rates`` at ``batch``
-    and ``upper``, whose numerical runs were made at ``commit``. The record (the tool's schema):
-    ``batch``, ``U``, ``rates`` (f"{optimizer}|{lr:g}" → a state of ``RATE_STATES``), ``seeds``
-    (the same keys → the seeds tested), ``controls`` (f"{lr:g}" → a state of
-    ``CONTROL_STATES``), ``qualified``, ``reasons`` and ``policy`` (``norm``,
-    ``survival_share``, ``retry_scale``, ``bound``, ``steps``, ``reference``, ``tool_commit``
-    and ``gpu_code``: the ``code_identity.gpu_code_identity`` of the code the check ran,
-    ``commit``, ``files`` and ``sha256``). ``reuse(base, head)`` is ``code_identity.reuse_check``
-    on this repository (the default): the verdict holds at the running checkout only when the
-    numerical runs' GPU code is the verdict's (the same commit, or ``reuse(commit,
-    gpu_code.commit)`` reusable) and ``reuse(gpu_code.commit, "HEAD")`` is reusable, so that a
-    qualification survives analysis-only commits and no GPU-path change (review fa13); both
+    and ``upper``, whose numerical runs were made at ``commits`` (one commit or several). The
+    record (the tool's schema): ``batch``, ``U``, ``rates`` (f"{optimizer}|{lr:g}" → a state of
+    ``RATE_STATES``), ``seeds`` (the same keys → the seeds tested), ``controls`` (f"{lr:g}" → a
+    state of ``CONTROL_STATES``), ``qualified``, ``reasons`` and ``policy`` (``norm``,
+    ``survival_share``, ``retry_scale``, ``bound``, ``steps``, ``gaussian`` and ``reference``,
+    as ``numerical_policy`` freezes them, ``tool_commit``: a
+    non-empty list of the check's commits, or one commit in older records, and ``gpu_code``: the
+    ``code_identity.gpu_code_identity`` of the code the check ran, ``commit``, ``files`` and
+    ``sha256``). ``reuse(base, head)`` is ``code_identity.reuse_check`` on this repository (the
+    default): the verdict holds at the running checkout only when each commit of the numerical
+    runs has the verdict's GPU code (it is ``gpu_code.commit``, or ``reuse(commit,
+    gpu_code.commit)`` is reusable) and ``reuse(gpu_code.commit, "HEAD")`` is reusable, so that a
+    qualification survives analysis-only commits and no GPU-path change (review fa13); the
     checks are kept in ``reuse``. ``state``:
 
     - ``absent``: no record;
@@ -883,18 +938,27 @@ def numerical_verdict(
       what its rates and controls give, no ``gpu_code`` or ``tool_commit``): no conclusion;
     - ``stale``: another batch or U, a policy other than the frozen one (``numerical_policy``),
       a GPU code other than the runs' or than the running checkout's, a ``gpu_code`` other than
-      the identity of its commit, a requested (arm, rate) or an FA rate's control missing, or a
-      rate's seeds short of its cases: the check is run again;
+      the identity of its commit, a ``tool_commit`` that names no commit, a requested (arm,
+      rate) or an FA rate's control missing, or a rate's seeds short of its cases: the check is
+      run again. Its marks persist (fix round 1): a requested rate it marks failing or not
+      qualified, or an FA rate whose control it marks rejected or not qualified, stays in
+      ``unusable`` at its batch whatever the staleness;
     - ``incomplete``: a requested rate or control incomplete: the check is finished, never
       passed;
     - ``complete``: ``unusable`` lists each requested (arm, rate) that is failing (a pair
-      exceeding: evidence of amplification) or not qualified (technical, with its reason, never
-      instability), and each FA rate whose same-path control was rejected or not qualified.
+      exceeding, or its numerical run stopped by an instability rule: evidence of instability)
+      or not qualified (technical, with its reason, never instability), and each FA rate whose
+      same-path control was rejected or not qualified.
 
-    A record may hold more rates than requested (a candidate's three-arm check read for its
+    ``unfinished`` lists the requested rates and controls a stale or incomplete verdict holds
+    incomplete: a re-solve is decided only from a verdict with none (the coordinator's ruling
+    after fix round 1), so such a verdict's marks wait until the check is finished or rerun. A
+    record may hold more rates than requested (a candidate's three-arm check read for its
     primary arms alone); only the requested ones are read."""
+    commits = {commits} if isinstance(commits, str) else set(commits)
     out: dict[str, Any] = {"state": "absent", "reasons": [], "rates": {}, "controls": {},
-                           "unusable": [], "policy": None, "reuse": None}  # fmt: skip
+                           "unusable": [], "unfinished": [], "policy": None,
+                           "reuse": None}  # fmt: skip
     if record is None:
         out["reasons"].append("no verdict record")
         return out
@@ -927,6 +991,15 @@ def numerical_verdict(
         return {**out, "state": "malformed", "reasons": bad}
     policy = record["policy"]
     out["policy"] = policy
+    needed: dict[str, set[int]] = defaultdict(set)
+    for arm, lr, seed in numerical_cases(rates):
+        needed[_pair_key(arm, lr)].add(seed)
+    controls = {f"{lr:g}": rate(lr) for lr in rates.get(FA) or ()}
+    out["rates"] = {key: record["rates"][key] for key in needed if key in record["rates"]}
+    out["controls"] = {key: record["controls"][key] for key in controls
+                       if key in record["controls"]}  # fmt: skip
+    # The marks, read whatever the staleness when the verdict is of this batch.
+    marks = _marks(record, rates, out) if record["batch"] == batch else []
     stale = []
     if (record["batch"], float(record["U"])) != (batch, upper):
         stale.append(f"a verdict at B={record['batch']}, U={record['U']:g}, not B={batch}, "
@@ -936,15 +1009,15 @@ def numerical_verdict(
         stale.append("the verdict holds no GPU code (null): the check found the numerical "
                      "runs' GPU code not its own")  # fmt: skip
     else:
-        found, departures = _gpu_code(gpu, commit, reuse or _reuse_check)
+        found, departures = _gpu_code(gpu, commits, reuse or _reuse_check)
         out["reuse"] = found
         stale += departures
-    if not isinstance(policy.get("tool_commit"), str):
-        stale.append(f"the verdict's tool_commit is {policy.get('tool_commit')!r}")
-    needed: dict[str, set[int]] = defaultdict(set)
-    for arm, lr, seed in numerical_cases(rates):
-        needed[_pair_key(arm, lr)].add(seed)
-    controls = {f"{lr:g}": rate(lr) for lr in rates.get(FA) or ()}
+    tool = policy.get("tool_commit")
+    if not (
+        (isinstance(tool, str) and tool)
+        or (isinstance(tool, list) and tool and all(isinstance(c, str) and c for c in tool))
+    ):
+        stale.append(f"the verdict's tool_commit {tool!r} names no commit")
     lacking = [key for key in needed if key not in record["rates"]]
     lacking += [f"control {key}" for key in controls if key not in record["controls"]]
     if lacking:
@@ -953,17 +1026,25 @@ def numerical_verdict(
         tested = record["seeds"].get(key)
         if key in record["rates"] and not (isinstance(tested, list) and seeds <= set(tested)):
             stale.append(f"{key} tested on {tested!r}, its cases need {sorted(seeds)}")
-    if stale:
-        return {**out, "state": "stale", "reasons": stale}
-    out["rates"] = {key: record["rates"][key] for key in needed}
-    out["controls"] = {key: record["controls"][key] for key in controls}
     unfinished = [key for key, value in out["rates"].items() if value == "incomplete"]
     unfinished += [f"control {key}" for key, value in out["controls"].items()
                    if value == "incomplete"]  # fmt: skip
+    out["unfinished"] = unfinished
+    if stale:
+        stale += [f"incomplete: {unfinished}"] if unfinished else []
+        return {**out, "state": "stale", "reasons": stale, "unusable": marks}
     if unfinished:
         return {**out, "state": "incomplete", "reasons": [f"incomplete: {unfinished}"]}
-    # Reasons, read as text only: by rate key, the control's under its FA rate's key prefixed
-    # "control: ".
+    out.update(state="complete", unusable=marks)
+    return out
+
+
+def _marks(
+    record: Mapping[str, Any], rates: Mapping[str, Sequence[float]], read: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The requested rates a verdict marks unusable (``read``: its requested ``rates`` and
+    ``controls``), with their reasons, read as text only: by rate key, a control's under its FA
+    rate's key prefixed "control: "."""
     reasons = record.get("reasons") if isinstance(record.get("reasons"), dict) else {}
 
     def told(key: str, control: bool) -> list[str]:
@@ -973,23 +1054,21 @@ def numerical_verdict(
     pairs = {_pair_key(arm, lr): (arm, rate(lr)) for arm, lrs in rates.items() for lr in lrs}
     why = {"failing": "failing: a pair exceeding the bound",
            "not_qualified": "not qualified (technical)"}  # fmt: skip
-    out["unusable"] = [{"arm": arm, "lr": lr, "state": out["rates"][key],
-                        "why": why[out["rates"][key]], "reasons": told(key, False)}
-                       for key, (arm, lr) in pairs.items()
-                       if out["rates"][key] in why]  # fmt: skip
-    for entry in out["unusable"]:  # a numerical run stopped by an instability rule is failing
+    marks = [{"arm": arm, "lr": lr, "state": read["rates"][key], "why": why[read["rates"][key]],
+              "reasons": told(key, False)}
+             for key, (arm, lr) in pairs.items() if read["rates"].get(key) in why]  # fmt: skip
+    for entry in marks:  # a numerical run stopped by an instability rule is failing
         if entry["state"] == "failing" and any(r.startswith("instability:")
                                                for r in entry["reasons"]):  # fmt: skip
             entry["why"] = "failing: its numerical run stopped by an instability rule"
     control_why = {"rejected": "its same-path control rejected",
                    "not_qualified": "its same-path control not qualified (technical)"}  # fmt: skip
-    out["unusable"] += [{"arm": FA, "lr": lr, "state": f"control {out['controls'][key]}",
-                         "why": control_why[out["controls"][key]],
-                         "reasons": told(_pair_key(FA, lr), True)}
-                        for key, lr in controls.items()
-                        if out["controls"][key] in control_why]  # fmt: skip
-    out["state"] = "complete"
-    return out
+    marks += [{"arm": FA, "lr": rate(lr), "state": f"control {read['controls'][f'{lr:g}']}",
+               "why": control_why[read["controls"][f"{lr:g}"]],
+               "reasons": told(_pair_key(FA, lr), True)}
+              for lr in rates.get(FA) or ()
+              if read["controls"].get(f"{lr:g}") in control_why]  # fmt: skip
+    return marks
 
 
 def numerical_digest(rates: Mapping[str, Sequence[float]]) -> str:
@@ -1005,12 +1084,16 @@ def _digest(keys: Collection[str] | Any) -> str:
 
 def read_numerical(runs_root: str | Path) -> dict[str, Any]:
     """The numerical-check tool's verdict records under ``runs_root`` ($RUNS_DIR), by their path
-    relative to it: numerical/b{B}-u{U}/verdicts/<digest>.json, one per selection checked (the
+    relative to it: numerical/b{B}-u{U}/verdicts/<digest>.json, one per selection checked, and
+    the earlier verdicts of a selection, which the tool moves to
+    verdicts/history/<digest>/ when it writes the selection's verdict again (the
     ``verdict.json`` beside them is a copy for people, never read). A file that does not read as
     JSON is kept as the text of its error, which ``numerical_verdict`` finds malformed."""
     root = Path(runs_root)
     out: dict[str, Any] = {}
-    for path in sorted((root / NUMERICAL_DIR).glob(f"*/{VERDICTS_DIR}/*.json")):
+    found = [*(root / NUMERICAL_DIR).glob(f"*/{VERDICTS_DIR}/*.json"),
+             *(root / NUMERICAL_DIR).glob(f"*/{VERDICTS_DIR}/{HISTORY_DIR}/*/*.json")]  # fmt: skip
+    for path in sorted(found):
         name = path.relative_to(root).as_posix()
         try:
             out[name] = json.loads(path.read_text())
@@ -1131,11 +1214,21 @@ class _Replay:
             for path in sorted(self.verdicts):
                 rates = (self.verdicts[path] or {}).get("rates") if isinstance(
                     self.verdicts[path], dict) else None  # fmt: skip
-                if path.startswith(prefix) and isinstance(rates, dict) and {
-                        key for key in rates if key.split("|")[0] in names} == wanted:  # fmt: skip
+                if path.startswith(prefix) and "/" not in path[len(prefix):] and isinstance(
+                        rates, dict) and {key for key in rates
+                                          if key.split("|")[0] in names} == wanted:  # fmt: skip
                     found.append(path)
         self.read |= set(found)
         return [(path, self.verdicts[path]) for path in found]
+
+    def history_of(self, path: str) -> list[tuple[str, Any]]:
+        """The earlier verdicts of the selection whose current verdict is ``path``
+        (verdicts/history/<digest>/), each marked read."""
+        directory, name = path.rsplit("/", 1)
+        prefix = f"{directory}/{HISTORY_DIR}/{name.removesuffix('.json')}/"
+        found = sorted(p for p in self.verdicts or {} if p.startswith(prefix))
+        self.read |= set(found)
+        return [(p, self.verdicts[p]) for p in found]
 
     def unexpected(self) -> tuple[list[str], list[str]]:
         """The runs no visit called for: problems at a batch the replay reached; at a batch it has
@@ -1180,18 +1273,20 @@ def selection(
     unusable rate leaving B and the selection re-solved once; then the ``validation`` campaign
     (seeds 2100-2111) and the three-arm validation verdict. A failure at any step takes the next
     candidate. When no candidate is eligible with the three arms, the candidates whose primary
-    arms did not fail at discovery or the numerical gate are visited again, in the same order,
-    for the primary arms alone (the pre-warmed arm dropped, amendment 3's primary-arm
-    validation), reusing every record; when none is eligible either, the stage ends
-    ``infeasible`` with every attempt's reasons. ``numerical``: the verdict records by their path
-    under $RUNS_DIR (``read_numerical``), None when not read; ``facts``: ``run_facts`` by run id
-    (the commit of each numerical run); ``exhausted``: the validation runs the launcher gave up
-    on (``exhausted_runs``); ``reuse``: the GPU-code reuse check (``numerical_verdict``),
+    arms did not fail at the numerical gate are visited again, in the same order, for the
+    primary arms alone (the pre-warmed arm dropped, amendment 3's primary-arm validation),
+    reusing every record and carrying a primary re-solve of pass 1; when none is eligible
+    either, the stage ends ``infeasible`` with every attempt's reasons. ``numerical``: the
+    verdict records by their path under $RUNS_DIR (``read_numerical``), None when not read;
+    ``facts``: ``run_facts`` by run id (the commit and checkout state of each numerical run);
+    ``exhausted``: the numerical and validation runs the launcher gave up on
+    (``exhausted_runs``); ``reuse``: the GPU-code reuse check (``numerical_verdict``),
     ``code_identity.reuse_check`` on this repository by default. ``next["campaign"]`` is one of
     ``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``, ``numerical-check``,
     ``validation`` (with what to make or check), ``done`` (with the frozen rates, ``three_arm``
-    and ``prewarmed_dropped``), ``infeasible`` or ``incomplete`` (ambiguous records: no
-    conclusion)."""
+    and ``prewarmed_dropped``), ``infeasible`` or ``incomplete``: ambiguous records, or any
+    ``problems`` (review of Task 2, minor 5), the replay's own step then kept as ``pending``
+    (and, at a stale check with runs beyond it, ``beyond_stale``)."""
     seeds = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS)
     found, problems = index(r for r in trajectories if r.arm in ARMS and r.seed in seeds)
     controls: dict[tuple[int, float, float | None], Trajectory] = {}
@@ -1220,12 +1315,16 @@ def selection(
     step = None
     for arms in (ARMS, PRIMARY_ARMS):  # the three arms; then the fallback, the primary arms
         for upper, batch in CANDIDATES:
+            carried = False
             if arms == PRIMARY_ARMS:
                 first = next(a for a in attempts if (a["batch"], a["U"]) == (batch, upper))
-                if first["failed_at"] in ("discovery", "numerical") and set(
+                if first["failed_at"] == "numerical" and set(
                         first["failed_arms"]) & set(PRIMARY_ARMS):  # fmt: skip
-                    continue  # its primary arms failed: so they do alone
-            attempt, step = _visit(replay, batch, upper, arms)
+                    continue  # its primary arms failed their numerical gate: so they do alone
+                # A primary re-solve of pass 1 is spent; one forced by pre-warmed rates is not.
+                carried = any(u["arm"] in PRIMARY_ARMS for e in first["numerical"]
+                              for u in e.get("unusable") or ())  # fmt: skip
+            attempt, step = _visit(replay, batch, upper, arms, carried)
             attempts.append(attempt)
             if step is not None or attempt["outcome"] == "eligible":
                 break
@@ -1252,10 +1351,21 @@ def selection(
     unread, against = _unread_verdicts(replay)
     out["unread_verdicts"] = unread
     out["problems"] = out["next"].get("problems", []) + unexpected + against
+    if step["campaign"] == "numerical-check" and step["state"] == "stale" and unexpected:
+        # The runs beyond a stale check wait for it: the check's input may still be written.
+        waits = (f"the replay waits at the stale check {step['check']['verdict']} "
+                 f"({'; '.join(step['reasons'])}): the runs beyond it are judged once it is "
+                 "rerun")  # fmt: skip
+        out["problems"].insert(0, waits)
+        out["beyond_stale"] = [waits, *unexpected]
+    if out["problems"]:  # no campaign on records that are not whole; the step stays recorded
+        out["pending"], out["next"] = out["next"], {"campaign": "incomplete"}
     return out
 
 
-_VERDICT_PATH = re.compile(rf"^{NUMERICAL_DIR}/b(\d+)-u[^/]+/{VERDICTS_DIR}/[^/]+\.json$")
+_VERDICT_PATH = re.compile(
+    rf"^{NUMERICAL_DIR}/b(\d+)-u[^/]+/{VERDICTS_DIR}/(?:{HISTORY_DIR}/[^/]+/)?[^/]+\.json$"
+)
 
 
 def _unread_verdicts(replay: _Replay) -> tuple[list[str], list[str]]:
@@ -1298,26 +1408,29 @@ def _fail(attempt: dict[str, Any], arms: Collection[str], reason: str, at: str) 
 
 
 def _visit(
-    replay: _Replay, batch: int, upper: float, arms: Sequence[str]
+    replay: _Replay, batch: int, upper: float, arms: Sequence[str], carried: bool = False
 ) -> tuple[dict, dict | None]:
     """One visit of a candidate for ``arms`` (the three arms, or the primary arms alone in the
-    fallback): discovery, the numerical gate, the validation gate. Returns the attempt and the
-    pending step, if any; the attempt's outcome is ``pending``, ``incomplete``, ``failed`` (with
-    the arms it failed on) or ``eligible`` (with the rates)."""
+    fallback): discovery, the numerical gate, the validation gate. ``carried``: the fallback's
+    visit of a candidate whose primary arms pass 1 re-solved already, so that its re-solve is
+    spent (review of Task 2, critical 1). Returns the attempt and the pending step, if any; the
+    attempt's outcome is ``pending``, ``incomplete``, ``failed`` (with the arms it failed on) or
+    ``eligible`` (with the rates)."""
     replay.reached.add(batch)
     # Rates found unusable at this batch earlier in the replay (any U) are excluded up front.
     excluded = {arm: dict(replay.unusable[(arm, batch)]) for arm in arms}
     attempt: dict[str, Any] = {"batch": batch, "U": upper, "K_star": k_star(upper),
-                               "three_arm": PREWARMED in arms,
+                               "three_arm": PREWARMED in arms, "resolve_carried": carried,
                                "arms": {arm: {"selections": [], "rounds": []} for arm in arms},
                                "excluded": {arm: dict(e) for arm, e in excluded.items()},
                                "numerical": [], "validation": None, "outcome": "pending",
                                "failed_arms": [], "failed_at": None, "reasons": [],
                                "rates": None}  # fmt: skip
-    selected, step = _discovery(replay, attempt, excluded, batch, upper, arms)
+    selected, step = _discovery(replay, attempt, excluded, batch, upper, arms, carried)
     if selected is None:
         return attempt, step
-    selected, controls, step = _numerical(replay, attempt, excluded, batch, upper, selected, arms)
+    selected, controls, step = _numerical(replay, attempt, excluded, batch, upper, selected, arms,
+                                          carried)  # fmt: skip
     if selected is None:
         return attempt, step
     rates = {arm: selected[arm]["rates"] for arm in arms}
@@ -1327,11 +1440,15 @@ def _visit(
     return attempt, step
 
 
-def _discovery(replay, attempt, excluded, batch, upper, arms) -> tuple[dict | None, dict | None]:
+def _discovery(
+    replay, attempt, excluded, batch, upper, arms, carried: bool = False
+) -> tuple[dict | None, dict | None]:
     """A candidate's discovery: the primary arms' targeted round, as the joint ``discovery``
     campaign holding the pre-warmed arm's first round when it is due, then their repair round;
-    then the pre-warmed arm's first round, if not made yet, and its own rounds. Returns each
-    arm's selection, or None with the pending step (none when the attempt failed)."""
+    then the pre-warmed arm's first round, if not made yet, and its own rounds. With
+    ``carried`` (the candidate's re-solve spent in pass 1) a primary arm left without a triple by
+    the unusable rates gets no new round: the candidate fails. Returns each arm's selection, or
+    None with the pending step (none when the attempt failed)."""
 
     def solve(arm: str) -> dict[str, Any]:
         selected = replay.solve(arm, batch, upper, sorted(excluded[arm]))
@@ -1354,6 +1471,11 @@ def _discovery(replay, attempt, excluded, batch, upper, arms) -> tuple[dict | No
             rounds.append(record)
             if new:
                 fresh.append(record)
+        if carried and fresh:  # the re-solve is spent: no new round for it
+            _fail(attempt, [r["arm"] for r in fresh], f"{[r['arm'] for r in fresh]} without a "
+                  "feasible triple once the unusable rates are dropped, the candidate's re-solve "
+                  "spent in pass 1", "numerical")  # fmt: skip
+            return None, None
         blocked = [r["arm"] for r in rounds if r["proposal"].get("unrepairable")]
         for spent in rounds:
             attempt["arms"][spent["arm"]]["rounds"].append(spent)
@@ -1419,14 +1541,16 @@ def _discovery(replay, attempt, excluded, batch, upper, arms) -> tuple[dict | No
     return selected, None
 
 
-def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple:
+def _numerical(replay, attempt, excluded, batch, upper, selected, arms, carried=False) -> tuple:
     """The numerical gate: the K-only regular runs of the selected rates' cases
-    (``numerical_cases``), then the check's verdict (``numerical_verdict``). Unusable rates
-    (failing, not qualified, or an FA rate whose control was rejected or not qualified) leave
-    the batch, and the arms holding them are re-solved once without them (no new round); the
-    new selection's cases are run and checked in turn (a new check), and an unusable rate there
-    fails the candidate. Returns the selections and the FA rates' accepted controls, or None with
-    the pending step (none when the attempt failed)."""
+    (``numerical_cases``; one the launcher gave up on lets the check go on, its case then not
+    qualified), then the check's verdict (``numerical_verdict``). Unusable rates (failing, not
+    qualified, or an FA rate whose control was rejected or not qualified; a stale verdict's marks
+    included) leave the batch, and the arms holding them are re-solved once without them (no new
+    round); the new selection's cases are run and checked in turn (a new check), and an unusable
+    rate there fails the candidate. ``carried``: the re-solve was spent in pass 1 (the fallback's
+    visit), so a first unusable primary rate fails the candidate. Returns the selections and the
+    FA rates' accepted controls, or None with the pending step (none when the attempt failed)."""
 
     def stop(step: dict | None, outcome: str = "pending") -> tuple[None, None, dict | None]:
         attempt["outcome"] = outcome
@@ -1435,7 +1559,7 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
     def incomplete(problems: list[str]) -> tuple[None, None, dict]:
         return stop({"campaign": "incomplete", "problems": problems}, "incomplete")
 
-    resolved = False
+    resolved = carried
     while True:
         request = {arm: list(selected[arm]["rates"]) for arm in arms}
         keys = [(arm, batch, lr, seed) for arm, lr, seed in numerical_cases(request)]
@@ -1444,7 +1568,10 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
         entry: dict[str, Any] = {"check": check["name"], "verdict": check["path"],
                                  "request": request, "state": None, "unusable": []}  # fmt: skip
         attempt["numerical"].append(entry)
-        missing = [key for key in keys if key not in replay.found]
+        gone = {key: replay.exhausted[key] for key in keys
+                if key not in replay.found and key in replay.exhausted}  # fmt: skip
+        entry["given_up"] = {label: list(key) for key, label in sorted(gone.items())}
+        missing = [key for key in keys if key not in replay.found and key not in gone]
         if missing:
             entry["state"] = "runs missing"
             return stop(_step("numerical", attempt, check=check["name"], rates=request,
@@ -1454,33 +1581,40 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
             return incomplete(["the numerical-check verdicts and the commits of the numerical "
                                f"runs were not read ($RUNS_DIR's {NUMERICAL_DIR}/, the runs' "
                                "meta.json): no conclusion"])  # fmt: skip
-        commits = {(replay.facts.get(replay.found[key].run_id) or {}).get("commit")
-                   for key in keys}  # fmt: skip
-        if len(commits) != 1 or None in commits:
+        facts = [replay.facts.get(replay.found[key].run_id) or {} for key in keys
+                 if key in replay.found]  # fmt: skip
+        commits = {fact.get("commit") for fact in facts}
+        if None in commits or any(fact.get("dirty") is not False for fact in facts):
             entry["state"] = "commits"
-            return incomplete([f"check {check['name']}: its numerical runs record the commits "
-                               f"{sorted(map(str, commits))}, not one commit"])  # fmt: skip
-        (commit,) = commits
-        path, verdict = _read_check(replay, check, batch, upper, request, commit)
+            return incomplete([f"check {check['name']}: a numerical run records no commit or a "
+                               f"dirty checkout ({sorted(map(str, commits))})"])  # fmt: skip
+        entry["commits"] = sorted(commits)
+        path, verdict = _read_check(replay, check, batch, upper, request, commits)
         entry.update(verdict, verdict=path)
         if verdict["state"] == "malformed":
-            return incomplete([f"{check['path']}: {reason}" for reason in verdict["reasons"]])
-        if verdict["state"] != "complete":  # absent, stale or incomplete: never a pass
-            return stop(_step("numerical-check", attempt, rates=request,
-                              check=_check_request(check, batch, upper, request, commit),
+            return incomplete([f"{path}: {reason}" for reason in verdict["reasons"]])
+        # Never a pass; and only a current verdict with no incomplete entry, stale or not,
+        # decides a re-solve (its earlier verdicts' marks included): the check is finished or
+        # rerun first.
+        decided = verdict["state"] in ("complete", "stale") and not verdict["unfinished"]
+        if not decided or (verdict["state"] != "complete" and not verdict["unusable"]):
+            return stop(_step("numerical-check", attempt, rates=request, state=verdict["state"],
+                              check=_check_request(check, batch, upper, request, commits),
                               reasons=verdict["reasons"]))  # fmt: skip
         if not verdict["unusable"]:
-            controls = {rate(lr): {"accepted": True, "verdict": check["path"]}
+            controls = {rate(lr): {"accepted": True, "verdict": path}
                         for lr in request.get(FA) or ()}  # fmt: skip
             return selected, controls, None
+        # A stale verdict's marks persist: a rate once found unusable at the batch stays so.
         for unusable in verdict["unusable"]:
-            why = f"{unusable['why']} ({check['path']})"
+            why = f"{unusable['why']} ({path}{', stale' if verdict['state'] == 'stale' else ''})"
             replay.unusable[(unusable["arm"], batch)].setdefault(unusable["lr"], why)
             excluded[unusable["arm"]].setdefault(unusable["lr"], why)
         failed = [arm for arm in arms if any(u["arm"] == arm for u in verdict["unusable"])]
         shown = [f"{u['arm']} {u['lr']:g}: {u['why']}" for u in verdict["unusable"]]
         if resolved:
-            _fail(attempt, failed, f"unusable rates after the re-solve: {shown}", "numerical")
+            _fail(attempt, failed, f"unusable rates after the re-solve"
+                  f"{' (spent in pass 1)' if carried else ''}: {shown}", "numerical")  # fmt: skip
             return None, None, None
         resolved = True
         for arm in failed:
@@ -1494,25 +1628,29 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
             return None, None, None
 
 
-def _read_check(replay, check, batch, upper, request, commit) -> tuple[str, dict[str, Any]]:
+def _read_check(replay, check, batch, upper, request, commits) -> tuple[str, dict[str, Any]]:
     """The verdict of a check (``_Replay.verdicts_for``), read for the request: a record whose
     name is not the digest of its own rates is malformed; among several verdicts that answer it,
-    one that marks a requested rate unusable is taken first, then a complete one, then the
-    first. Returns its path (the selection's own when none answers) and its reading."""
+    one that marks a requested rate unusable with no incomplete entry is taken first (stale or
+    not: marks persist), then a complete one, then the first. Each reading's ``unusable`` also
+    holds the marks of its selection's earlier verdicts (``_history_marks``), listed under
+    ``history``. Returns its path (the selection's own when none answers) and its reading."""
     readings = []
     for path, record in replay.verdicts_for(check):
         rates = record.get("rates") if isinstance(record, dict) else None
         stem = path.rsplit("/", 1)[-1].removesuffix(".json")
         if isinstance(rates, dict) and _digest(rates) != stem:
             why = f"its name is not the digest {_digest(rates)} of its rates"
-            readings.append((path, {"state": "malformed", "reasons": [why], "unusable": []}))
+            readings.append((path, {"state": "malformed", "reasons": [why], "unusable": [],
+                                    "unfinished": []}))  # fmt: skip
             continue
-        readings.append((path, numerical_verdict(record, batch, upper, request, commit,
-                                                 replay.reuse)))  # fmt: skip
+        reading = numerical_verdict(record, batch, upper, request, commits, replay.reuse)
+        readings.append((path, _history_marks(replay, path, reading, batch, upper, request)))
     if not readings:
-        return check["path"], numerical_verdict(None, batch, upper, request, commit, replay.reuse)
+        return check["path"], numerical_verdict(None, batch, upper, request, commits,
+                                                replay.reuse)  # fmt: skip
     for wanted in (lambda r: r["state"] == "malformed",
-                   lambda r: r["state"] == "complete" and r["unusable"],
+                   lambda r: bool(r["unusable"]) and not r.get("unfinished"),
                    lambda r: r["state"] == "complete"):  # fmt: skip
         chosen = next(((p, r) for p, r in readings if wanted(r)), None)
         if chosen is not None:
@@ -1520,10 +1658,40 @@ def _read_check(replay, check, batch, upper, request, commit) -> tuple[str, dict
     return readings[0]
 
 
-def _check_request(check, batch, upper, rates, commit) -> dict[str, Any]:
+def _history_marks(replay, path, reading, batch, upper, request) -> dict[str, Any]:
+    """``reading`` (of the current verdict at ``path``) with the marks of its selection's earlier
+    verdicts (``_Replay.history_of``) added to its ``unusable``: a requested rate an earlier
+    verdict marks failing or not qualified, or an FA rate whose control it marks rejected or not
+    qualified, stays unusable at the batch, whatever that verdict's staleness or unfinished
+    entries (the coordinator's ruling after the integration step). Only the decision of the
+    step comes from the current verdict. An earlier verdict that does not read as one of this
+    selection leaves the reading malformed."""
+    stem = path.rsplit("/", 1)[-1].removesuffix(".json")
+    out = {**reading, "unusable": list(reading["unusable"]), "history": []}
+    seen = {(u["arm"], u["lr"]) for u in out["unusable"]}
+    for earlier, record in replay.history_of(path):
+        out["history"].append(earlier)
+        found = numerical_verdict(record, batch, upper, request, set(), lambda base, head: {})
+        rates = record.get("rates") if isinstance(record, dict) else None
+        if found["state"] == "malformed" or not isinstance(rates, dict) or _digest(rates) != stem:
+            why = (found["reasons"] if found["state"] == "malformed"
+                   else [f"not an earlier verdict of the selection {stem}"])  # fmt: skip
+            return {**out, "state": "malformed", "unusable": [], "unfinished": [],
+                    "reasons": [f"{earlier}: {reason}" for reason in why]}  # fmt: skip
+        if record["batch"] != batch:
+            continue
+        for mark in _marks(record, request, found):
+            if (mark["arm"], mark["lr"]) not in seen:
+                seen.add((mark["arm"], mark["lr"]))
+                out["unusable"].append({**mark, "why": f"{mark['why']} (earlier verdict "
+                                                       f"{earlier})"})  # fmt: skip
+    return out
+
+
+def _check_request(check, batch, upper, rates, commits) -> dict[str, Any]:
     """What the numerical-check tool is asked: ``selection``, its rate input (``rates`` by
     optimizer name, ``batch`` and ``U``; scripts/numerical_check.py --selection), its cases, the
-    frozen policy, the commit its numerical runs recorded (the GPU code it must run), the
+    frozen policy, the commits its numerical runs recorded (whose GPU code it must run), the
     directory it writes into and the selection's verdict there, under $RUNS_DIR."""
     by_name = {OPTIMIZERS[arm]: list(lrs) for arm, lrs in rates.items()}
     selection = {"rates": by_name, "batch": batch,
@@ -1533,7 +1701,7 @@ def _check_request(check, batch, upper, rates, commit) -> dict[str, Any]:
             "rates": by_name,
             "cases": [{"optimizer": OPTIMIZERS[arm], "lr": lr, "seed": seed}
                       for arm, lr, seed in numerical_cases(rates)],
-            "runs_commit": commit, "policy": numerical_policy(upper)}  # fmt: skip
+            "runs_commits": sorted(commits), "policy": numerical_policy(upper)}  # fmt: skip
 
 
 def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
@@ -2352,7 +2520,8 @@ def run_facts(run_dir: str | Path) -> dict[str, Any]:
     """What a run's records hold beyond its ``Trajectory``: from ``config.yaml`` its role
     (``study2_short.role``, else Stage A's ``stage_a.role``), whether it measures the Rayleigh
     quotient and whether its evaluation is K-only (``eval.k_only``); from ``meta.json`` the code
-    commit it ran (``git.commit``) and the preconditioner stream its v₀ was estimated from
+    commit it ran (``git.commit``), whether its checkout was dirty (``git.dirty``: None when not
+    recorded) and the preconditioner stream its v₀ was estimated from
     (``inputs.streams.preconditioner``: path and sha256), None for a run without one."""
     run_dir = Path(run_dir)
     cfg = OmegaConf.load(run_dir / "config.yaml")
@@ -2367,8 +2536,9 @@ def run_facts(run_dir: str | Path) -> dict[str, Any]:
     preconditioner = None
     if isinstance(stream, dict):
         preconditioner = {"path": stream.get("path"), "sha256": stream.get("sha256")}
-    commit = (meta.get("git") or {}).get("commit")
-    return {"role": role, "rayleigh": bool(rayleigh), "k_only": k_only, "commit": commit,
+    git = meta.get("git") or {}
+    return {"role": role, "rayleigh": bool(rayleigh), "k_only": k_only,
+            "commit": git.get("commit"), "dirty": git.get("dirty"),
             "preconditioner": preconditioner}  # fmt: skip
 
 

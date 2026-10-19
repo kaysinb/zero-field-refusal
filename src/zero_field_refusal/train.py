@@ -211,7 +211,9 @@ class Evaluator:
     ``eval.k_only`` (study 2's numerical runs, amendment 4) measures K on the scoring panel's
     benign prompts (K_benign) and utility only: no harmful prompt set is read, no K is taken on
     the harmful K prompts and no response to a harmful prompt is generated. What it measures
-    equals the full evaluation's, and training does not depend on it.
+    equals the full evaluation's, and training does not depend on it. One difference: the stop
+    on a non-finite K covers K_benign only, so a sealed run whose K_harmful alone is non-finite
+    stops (``nonfinite_k``) where its K-only twin goes on.
     """
 
     def __init__(

@@ -133,6 +133,13 @@ def status(state: dict[str, Any]) -> dict[str, Any]:
             for c in chosen.get("amendment3_controls", [])
         ]
         out["not_reached"] = chosen.get("not_reached", [])
+        if "pending" in chosen:  # the selection's step, held while the records are not whole
+            pending = chosen["pending"]
+            out["pending"] = {k: v for k, v in pending.items() if k != "runs"}
+            if "runs" in pending:
+                out["pending"]["runs"] = len(pending["runs"])
+        if "beyond_stale" in chosen:
+            out["beyond_stale"] = chosen["beyond_stale"]
     if "frozen" in state:
         out["frozen"] = state["frozen"]
     if "validation" in state:
@@ -182,12 +189,15 @@ def _selection(s: dict[str, Any]) -> dict[str, Any]:
 def _attempt(a: dict[str, Any]) -> dict[str, Any]:
     validation = a.get("validation")
     return {"batch": a["batch"], "U": a["U"], "three_arm": a["three_arm"],
+            "resolve_carried": a.get("resolve_carried", False),
             "outcome": a["outcome"], "failed_arms": a["failed_arms"], "reasons": a["reasons"],
             "excluded": a["excluded"],
             "arms": {arm: [_selection(s) for s in d["selections"]]
                      for arm, d in a["arms"].items()},
             "numerical": [{k: e.get(k) for k in ("check", "verdict", "state", "reasons",
-                                                 "unusable")} for e in a["numerical"]],
+                                                 "unusable", "unfinished", "history", "commits",
+                                                 "given_up")}
+                          for e in a["numerical"]],
             "validation": None if validation is None else {
                 "passes": validation["passes"], "reasons": validation["reasons"],
                 "jointly_supported": len(validation.get("jointly_supported", []))}}  # fmt: skip

@@ -34,6 +34,9 @@ rates, the cases and the verdict path under $RUNS_DIR that the step names (the s
 it); this kind writes its rate input, the JSON selection record ``{"rates": {optimizer:
 [r1, r2, r3]}, "batch": B, "U": U}`` that numerical_check.py --selection reads, and prints the
 directory the check writes into and the selection's verdict there (verdicts/<digest>.json).
+It is the one kind written while the records are not whole, and only when every problem is a run
+made beyond a check that went stale (the selection's ``beyond_stale``): those runs wait for the
+check, which is run again.
 When no candidate is eligible with the three arms, the candidates are visited again for the
 primary arms alone, the pre-warmed arm dropped. A campaign holds the runs still missing;
 ``--seeds`` and ``--cells`` only split it over Pods.
@@ -671,14 +674,21 @@ def campaign(
     state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted,
                      numerical=read_numerical(args.runs_root))  # fmt: skip
     step = state["next"]
-    if state["problems"]:
+    chosen = state.get("selection") or {}
+    waiting = chosen.get("beyond_stale") or []
+    if (args.kind == "numerical-check" and state["problems"]
+            and set(state["problems"]) <= set(waiting)):  # fmt: skip
+        # Runs made beyond a check that went stale wait for it: its rate input may be written.
+        step = chosen["pending"]
+    elif state["problems"]:
         parser.error("the stage's records are not whole: " + "; ".join(state["problems"]))
     if step["campaign"] != args.kind:
         shown = {k: v for k, v in step.items() if k != "runs"}
         parser.error(f"the stage's next step is {step['campaign']}, not {args.kind}: {shown}")
     batch, upper = step["batch"], step["U"]
     if args.kind == "numerical-check":  # no launcher campaign: the check's rate input
-        return {"check": step["check"]}, w_max, source, notes, prerequisites
+        written = {"check": step["check"], "waiting": waiting if state["problems"] else []}
+        return written, w_max, source, notes, prerequisites
     if args.kind == "confirmation":
         first, last = args.blocks
         guard = confirmation_guard(state["confirmation"], first, last,
@@ -811,6 +821,9 @@ def main() -> None:
                   f"--batch {check['batch']} --upper {check['U']:g}: outputs under "
                   f"$RUNS_DIR/{check['out']}, the selection's verdict at "
                   f"$RUNS_DIR/{check['verdict']}")  # fmt: skip
+            if written["waiting"]:
+                print("Written while the stage's records wait for this check, which is run again:"
+                      "\n" + "\n".join(written["waiting"]))  # fmt: skip
             return
         if args.cells:  # a campaign split over Pods, cell by cell, without choosing anything
             unknown = sorted(set(args.cells) - {c["name"] for c in written["cells"]})

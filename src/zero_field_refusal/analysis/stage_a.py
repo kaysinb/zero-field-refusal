@@ -279,7 +279,7 @@ def load_trajectory(run_dir: Path) -> Trajectory:
             problems.append(f"the evaluation of step {row['step']}: m = 1 differs from its reading")
     inputs = meta.get("inputs", {})
     prompts = inputs.get("harmful_prompts", {})
-    problems += _response_problems(run_dir, cfg, evaluations, prompts)
+    problems += _response_problems(run_dir, cfg, evaluations, prompts, inputs)
     if not isinstance(terminal.get("seconds"), int | float):
         problems.append("the terminal record lacks the run's time")
     evaluate_at = tuple(int(t) for t in cfg.schedule.get("evaluate_at") or ())
@@ -691,16 +691,27 @@ def stream_pairing(runs: Sequence[Trajectory]) -> list[str]:
 
 
 def _response_problems(
-    run_dir: Path, cfg: Any, evaluations: Sequence[Mapping[str, Any]], prompts: Mapping[str, Any]
+    run_dir: Path,
+    cfg: Any,
+    evaluations: Sequence[Mapping[str, Any]],
+    prompts: Mapping[str, Any],
+    inputs: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Every evaluation answered exactly the recorded harmful prompts, once each, in order; a
-    K-only run (``eval.k_only``, study 2's numerical runs) answered none and recorded none."""
+    K-only run (``eval.k_only``, study 2's numerical runs) answered none and recorded none, and
+    its ``meta.json`` inputs record it (``k_only``) and no ``kl_harmful`` stream."""
     if OmegaConf.select(cfg, "eval.k_only", default=False) is True:
+        inputs = inputs or {}
         responses = run_dir / "responses"
         stored = sorted(p.name for p in responses.iterdir()) if responses.is_dir() else []
+        problems = []
         if prompts or stored:
-            return [f"a K-only run recorded harmful prompts or stored responses {stored}"]
-        return []
+            problems.append(f"a K-only run recorded harmful prompts or stored responses {stored}")
+        if inputs.get("k_only") is not True:
+            problems.append("a K-only run whose inputs do not record k_only")
+        if "kl_harmful" in (inputs.get("streams") or {}):
+            problems.append("a K-only run that recorded a kl_harmful stream")
+        return problems
     if not evaluations:
         return []
     if not {"set", "count", "ids_sha256"} <= set(prompts):

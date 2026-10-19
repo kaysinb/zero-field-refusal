@@ -30,10 +30,12 @@ from test_study2_short import (
     W_MAX,
     control,
     made,
+    request_check,
     reusable,
     stage_a_reference,
     traj,
     verdict_of,
+    verdict_path,
 )
 
 from zero_field_refusal.analysis.stage_a import arm_of
@@ -107,6 +109,9 @@ def test_the_regular_runs_are_stage_as_25_step_runs_but_name_and_role(arm) -> No
     a, b = OmegaConf.to_container(stage_a), OmegaConf.to_container(short)
     assert (a.pop("experiment"), b.pop("experiment")) == ("study2_stage_a", "study2_short")
     assert a.pop("stage_a") == b.pop("study2_short") == {"role": "discovery"}
+    # The update scalars are recorded besides (amendment 4, section 4): logging only.
+    assert b["tracking"].pop("update_scalars") is True
+    assert a["tracking"].pop("update_scalars") is False
     assert a == b
     assert (short.protocol_version, short.train.steps) == (2, 25)
     assert list(short.schedule.evaluate_at) == [25]
@@ -160,11 +165,11 @@ def test_run_facts_read_the_role_the_rayleigh_setting_and_v0_from_the_records(tm
     (old / "config.yaml").write_text("stage_a: {role: discovery}\neval: {}\n")
     (old / "meta.json").write_text(json.dumps({"inputs": {"streams": {"training": {}}}}))
     assert run_facts(new) == {"role": "confirmation", "rayleigh": True, "k_only": False,
-                              "commit": "c" * 40,
+                              "commit": "c" * 40, "dirty": False,
                               "preconditioner": {"path": stream["path"],
                                                  "sha256": stream["sha256"]}}  # fmt: skip
     assert run_facts(old) == {"role": "discovery", "rayleigh": False, "k_only": False,
-                              "commit": None, "preconditioner": None}  # fmt: skip
+                              "commit": None, "dirty": None, "preconditioner": None}  # fmt: skip
     numerical = tmp_path / "numerical"
     numerical.mkdir()
     (numerical / "config.yaml").write_text("study2_short: {role: numerical}\n"
@@ -198,7 +203,7 @@ def fact(run) -> dict:
     control_run = run.arm == FA_CONTROL_ARM
     role = "full_control" if control_run else seed_role(run.seed)
     return {"role": role, "rayleigh": not control_run and measures_rayleigh(run.seed),
-            "k_only": role == "numerical", "commit": RUN_COMMIT,
+            "k_only": role == "numerical", "commit": RUN_COMMIT, "dirty": False,
             "preconditioner": v0(run.seed, run.batch_size) if run.arm in V0_ARMS
             else None}  # fmt: skip
 
@@ -221,8 +226,10 @@ def answered(runs, exhausted=None, verdicts=None) -> dict:
     for _ in range(8):
         state = progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted,
                          numerical=verdicts, reuse=reusable)  # fmt: skip
-        # The selection's own step: later runs show as unexpected until its check is answered.
-        step = state.get("selection", {}).get("next", state["next"])
+        # The selection's own step: later runs show as unexpected until its check is answered,
+        # and the step waits as ``pending`` under an incomplete ``next``.
+        chosen = state.get("selection", {})
+        step = chosen.get("pending") or chosen.get("next") or state["next"]
         if step["campaign"] != "numerical-check":
             return verdicts
         check = step["check"]
@@ -769,9 +776,10 @@ def campaign(monkeypatch, tmp_path, runs, *args: str) -> list:
 
 
 def refusal(monkeypatch, tmp_path, capsys, runs, *args: str, versions: bool = True,
-            root: bool = True) -> str:  # fmt: skip
+            root: bool = True, verdicts: dict | None = None) -> str:  # fmt: skip
     with pytest.raises(SystemExit):
-        script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args, versions=versions, root=root)
+        script(monkeypatch, tmp_path, CAMPAIGNS, runs, *args, versions=versions, root=root,
+               verdicts=verdicts)  # fmt: skip
     return capsys.readouterr().err
 
 
@@ -875,6 +883,38 @@ def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_
     )
     err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical-check", "--fixation", record)
     assert "the stage's next step is validation, not numerical-check" in err  # verdict in place
+
+
+def test_the_check_input_is_written_while_runs_wait_beyond_a_stale_check(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Review of Task 2, minor 4: the qualifying verdict went stale after the validation runs
+    were made. Those runs wait for the check; its rate input may still be written, and every
+    other kind is refused while the records are not whole."""
+    runs = base()
+    runs += make(until(runs, "validation")["next"])
+    stale = {path: {**record, "policy": {**record["policy"], "norm": 1e-4}}
+             for path, record in answered(runs).items()}  # fmt: skip
+    record = fixed(tmp_path)
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "numerical-check", "--fixation", record,
+                 verdicts=stale)  # fmt: skip
+    assert json.loads(out.read_text()) == {"rates": {"adamw": RATES20[ADAMW],
+                                                     "adam_frozen": RATES20[FA],
+                                                     "adamw_prewarmed": RATES20[PREWARMED]},
+                                           "batch": 20, "U": 8}  # fmt: skip
+    shown = capsys.readouterr().out
+    assert "Written while the stage's records wait for this check" in shown
+    assert f"the replay waits at the stale check {verdict_path(RATES20)} (policy norm" in shown
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "validation", "--fixation", record,
+                  verdicts=stale)  # fmt: skip
+    assert "the stage's records are not whole: the replay waits at the stale check" in err
+    # A problem other than the runs beyond the stale check, here an unread verdict marking a
+    # rate unusable at B = 20: refused as well.
+    other = {**RATES20, ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}
+    unread = verdict_of(request_check(other, upper=7.0), {("adamw", 1.5e-5): "not_qualified"})
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical-check", "--fixation", record,
+                  verdicts={**stale, verdict_path(other, upper=7.0): unread})  # fmt: skip
+    assert "the stage's records are not whole" in err and "did not read marks" in err
 
 
 def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys) -> None:
@@ -1002,9 +1042,14 @@ def test_the_numerical_verdicts_are_read_from_the_runs_root(tmp_path) -> None:
     (kept / "0123456789ab.json").write_text('{"batch": 20}')
     (kept / "ba9876543210.json").write_text("{not json")
     (kept.parent / "verdict.json").write_text('{"batch": 5}')  # the copy for people: not read
+    earlier = kept / "history" / "0123456789ab"  # where the tool moves a selection's earlier one
+    earlier.mkdir(parents=True)
+    (earlier / "2026-10-19T120000+0000-0.json").write_text('{"batch": 20}')
     found = read_numerical(root)
-    assert sorted(found) == ["numerical/b20-u8/verdicts/0123456789ab.json",
-                             "numerical/b20-u8/verdicts/ba9876543210.json"]  # fmt: skip
+    assert sorted(found) == [
+        "numerical/b20-u8/verdicts/0123456789ab.json",
+        "numerical/b20-u8/verdicts/ba9876543210.json",
+        "numerical/b20-u8/verdicts/history/0123456789ab/2026-10-19T120000+0000-0.json"]  # fmt: skip
     assert found["numerical/b20-u8/verdicts/0123456789ab.json"] == {"batch": 20}
     assert found["numerical/b20-u8/verdicts/ba9876543210.json"].startswith("unreadable: ")
     assert read_numerical(tmp_path / "nowhere") == {}
