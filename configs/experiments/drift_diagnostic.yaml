@@ -1,0 +1,25 @@
+# Study 2, amendment 4, section 4: the first-step drift diagnostic, descriptive, outside the
+# confirmation (src/zero_field_refusal/drift.py). Not a run config: scripts/drift_diagnostic.py
+# reads these settings and builds the gradients' config from the regular runs' experiment at the
+# selected B, a command-line argument (20 is expected) never set here. Blind to outcomes: no
+# harmful prompt set, stream or generation, no judge and no refusal (tests/test_drift.py asserts
+# it). Outputs: RUNS_DIR/diagnostics/drift/b{B}/result.json.
+experiment: drift_diagnostic
+drift:
+  seed: 2300                        # the drift seed: its appendable training stream is the drift
+                                    # stream (64·B responses), with its own v₀ stream (50·B)
+  batches: 64                       # n independent batches; batch i holds responses iB … (i+1)B−1
+  halves: [[0, 31], [32, 63]]       # the two fixed halves of half_cosine (batches, inclusive)
+  optimizers: [sgd, adamw, fa, prewarmed]  # first updates, processed one at a time, in this order
+  eps: 1.0e-8                       # ε of every Adam arm (configs/optimizer/)
+  beta2: 0.999                      # β₂ of AdamW and pre-warmed AdamW
+  v0_batches: 50                    # v₀ as FA estimates it: 50 batches at B (adam_frozen.yaml)
+  run:                              # the gradients' config: the regular runs' model, trainable
+    experiment: experiments/study2_short  # set, loss, normalization and streams, at B and the
+    overrides: [optimizer=adam_frozen]    # drift seed; adam_frozen locates v₀'s stream
+  memory_rule_gb: 46                # at most 46 GB reserved per process (1e9 bytes), enforced as
+                                    # a cap on the process's CUDA memory
+  host_memory:                      # free host memory required before a run:
+    sums_gb: 21                     # the four sums S in host memory (5.24 GB each at 1.5B),
+    factor: 1.5                     # times 1.5,
+    margin_gb: 16                   # plus the model and other allocations: 47.5 GB
