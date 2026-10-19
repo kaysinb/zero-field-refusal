@@ -4,12 +4,16 @@ synthetic records (the world of tests/test_numerical_check.py), written by its
 ``write_verdict``, read back by ``study2_short.read_numerical`` and through the selection's
 ``numerical_verdict`` and ``selection``. The verdict's shape is never copied here."""
 
+import json
+import runpy
 import shutil
 
 from test_numerical_check import (
     COMMIT,
+    OTHER,
     RATES,
     RUN_COMMIT,
+    SCRIPT,
     attempt,
     cases,
     clean_head,  # noqa: F401  (the fixture)
@@ -17,7 +21,9 @@ from test_numerical_check import (
     control,
     fake_reuse,
     fake_runs,
+    scope,
     settings,
+    stamped,
     world,  # noqa: F401  (the fixture)
     write_records,
 )
@@ -27,6 +33,7 @@ from zero_field_refusal import fa_control_diagnostic as tool
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
     OPTIMIZERS,
+    numerical_case_name,
     numerical_digest,
     numerical_policy,
     numerical_verdict,
@@ -174,3 +181,111 @@ def test_an_earlier_tool_verdict_keeps_its_marks(world) -> None:  # noqa: F811
         (ADAMW, 1.48e-05, "failing")]  # fmt: skip
     assert found["next"]["campaign"] == "numerical" and found["problems"] == []
     assert found["next"]["rates"][ADAMW] == [1.27e-05, 1.5e-05, 1.74e-05]
+
+
+def unlocated(case, n):
+    """A case's attempt as ``run_numerical_twins`` records a case whose regular run is not
+    found: incomplete, with why, and no regular run named."""
+    return stamped({"part": "twins", "case": case.name, "seed": case.seed,
+                    "optimizer": case.optimizer, "lr": case.lr, "batch": case.batch,
+                    "U": case.upper, "attempt": n, "intended_norm": 5e-05,
+                    "status": "incomplete", "pairs": {},
+                    "reason": "the regular run is not found: 0 finished runs match"})  # fmt: skip
+
+
+def test_a_given_up_numerical_run_reaches_the_tool_and_the_selection_re_solves(
+    tmp_path,
+    world,  # noqa: F811
+) -> None:
+    """The final review of gate B, I1: a K-only run the launcher gave up on. The selection's
+    check request names its case in ``given_up``, as the tool names it; the tool reads the
+    record, its plan notes the case instead of stopping, the parts record it incomplete twice
+    (as for any run not found), and the verdict holds its rate not_qualified. The selection
+    then re-solves AdamW without that rate and calls for the replacement's run."""
+    runs = grids()
+    _, result, _ = drive(runs, until="numerical")
+    step = result["next"]
+    gone = (ADAMW, 20, 1.48e-05, 2200)
+    runs += [made(r["arm"], r["batch"], r["lr"], r["seed"]) for r in step["runs"]
+             if (r["arm"], r["batch"], r["lr"], r["seed"]) != gone]  # fmt: skip
+    exhausted = {gone: f"adamw_25-b20-1.48e-05-numerical-u8-{step['check']}/s2200"}
+
+    def at():
+        return selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC,
+                         numerical=read_numerical(world), facts=commits(runs, RUN_COMMIT),
+                         exhausted=exhausted, reuse=reuse)  # fmt: skip
+
+    check = at()["next"]["check"]
+    name = numerical_case_name(ADAMW, 1.48e-05, 2200)
+    assert check["selection"]["given_up"] == [name] == check["given_up"]
+    assert check["w_max"] == W_MAX and check["runs_commits"] == [RUN_COMMIT]
+    # The tool reads the request and names the case so too
+    record = tmp_path / "selection.json"
+    record.write_text(json.dumps(check["selection"]))
+    namespace = runpy.run_path(str(SCRIPT))
+    rates, given_up = namespace["read_selection"](record, 20, 8.0)
+    found = cases(rates)
+    assert given_up == [name] and name in {c.name for c in found}
+    fake_runs(world, [c for c in found if c.name != name])
+    _, problems, notes = namespace["find_runs"](world, scope(), found, given_up)
+    assert problems == {} and notes == {name: namespace["GIVEN_UP"]}
+    # The parts' records: every other case within, the given-up one incomplete twice
+    out = tool.numerical_root(20, 8, world)
+    records = {c.name: {1: attempt(c), 2: None} for c in found if c.name != name}
+    (case,) = [c for c in found if c.name == name]
+    records[name] = {1: unlocated(case, 1), 2: unlocated(case, 2)}
+    controls = {lr: {1: control(lr), 2: None} for lr in rates["adam_frozen"]}
+    write_records(out, records, controls, found)
+    verdict = tool.numerical_verdict(settings(), out, rates=rates, batch=20, upper=8,
+                                     code=consistent_code(), root=world)  # fmt: skip
+    assert verdict["rates"]["adamw|1.48e-05"] == "not_qualified"
+    assert [k for k, v in verdict["rates"].items() if v != "qualified"] == ["adamw|1.48e-05"]
+    tool.write_verdict(out, verdict, rates)
+    after = at()
+    assert after["next"]["campaign"] == "numerical" and after["problems"] == []
+    entry = after["attempts"][0]["numerical"][0]
+    assert [(u["arm"], u["lr"], u["state"]) for u in entry["unusable"]] == [
+        (ADAMW, 1.48e-05, "not_qualified")]  # fmt: skip
+    assert after["next"]["rates"][ADAMW] == [1.27e-05, 1.5e-05, 1.74e-05]  # the re-solve
+
+
+def test_a_void_check_calls_for_fresh_numerical_runs(world) -> None:  # noqa: F811
+    """The final review of gate B, I2: a qualified check, then a GPU-path change (HEAD's GPU code
+    becomes ``OTHER``'s): the selection waits at the stale check, which the tool cannot run
+    on the old runs. ``void`` moves those runs and the check aside; the loader no longer finds
+    them, and the selection calls for the numerical runs again."""
+    runs = grids()
+    _, result, _ = drive(runs, until="numerical-check")
+    first = result["next"]["check"]["selection"]["rates"]
+    built(world, first)
+
+    def at(head):
+        def moved_reuse(base, other):
+            return fake_reuse(base, head if other == "HEAD" else other)
+
+        return selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC,
+                         numerical=read_numerical(world), facts=commits(runs, RUN_COMMIT),
+                         reuse=moved_reuse)  # fmt: skip
+
+    assert at(COMMIT)["next"]["campaign"] == "validation"
+    stale = at(OTHER)["next"]
+    assert (stale["campaign"], stale["state"]) == ("numerical-check", "stale")
+    plan = tool.void_plan(world, scope(), 20, 8.0, {"commit": OTHER, "dirty": False})
+    assert plan["problems"] == []  # the world's other runs at B 20 too: all of the old code
+    assert {f"study2_short/{c.name}" for c in cases(first)} <= {r["run"] for r in plan["runs"]}
+    tool.void_numerical(world, plan, {"commit": OTHER, "dirty": False})
+    moved = {path.rsplit("/", 1)[1] for path in plan["paths"]}
+    # The loader reads RUNS_DIR without the moved runs
+    runs[:] = [r for r in runs if r.batch_size != 20 or numerical_case_name(
+        r.arm, r.lr, r.seed) not in moved]  # fmt: skip
+    assert read_numerical(world) == {}
+    fresh = at(OTHER)
+    assert fresh["next"]["campaign"] == "numerical" and fresh["problems"] == []
+    assert len(fresh["next"]["runs"]) == 15
+    assert fresh["next"]["check"] == numerical_digest(by_arm(first))
+
+
+def test_the_tool_and_the_selection_name_a_case_alike() -> None:
+    """The given-up cases cross from the selection to the tool by name."""
+    for case in cases():
+        assert numerical_case_name(ARM_OF[case.optimizer], case.lr, case.seed) == case.name

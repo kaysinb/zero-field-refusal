@@ -3,6 +3,7 @@
 A campaign file (YAML) lists cells::
 
     name: stage1-1.5b                    # names the launch log
+    header: {w_max: 0.47}                # optional: logged with every start (``campaign_header``)
     cells:
       - name: adamw-5e-5
         config: experiments/stage1_main_1.5b
@@ -36,7 +37,9 @@ campaign. A stop request (``StopRequest``: ``SIGTERM`` to the launcher) lets the
 finish and starts no other; the runs left are reported as stopped, and the campaign started again
 carries on from there. The launch log ``RUNS_DIR/launch/<campaign name>.jsonl`` gets one record
 per attempt start and end, per recovery round and per stop; each attempt's output goes to
-``RUNS_DIR/launch/<campaign name>/``.
+``RUNS_DIR/launch/<campaign name>/``. A start record carries the campaign's ``header`` when it
+has one (study 2's campaigns record the w_max they were written under, which the replay reads
+back: the final review of gate B, I4).
 """
 
 from __future__ import annotations
@@ -137,6 +140,20 @@ def load_campaign(path: str | Path) -> tuple[str, list[Run]]:
     if len(set(hashes)) != len(hashes):
         raise ValueError(f"{path}: two runs of the campaign have the same config")
     return data["name"], runs
+
+
+def campaign_header(path: str | Path) -> dict[str, Any] | None:
+    """The campaign's optional ``header``: a mapping of names to plain values (numbers, strings,
+    booleans, null) that every start record of the campaign carries; None without one."""
+    data = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    header = data.get("header") if isinstance(data, dict) else None
+    if header is None:
+        return None
+    plain = (int, float, str, bool, type(None))
+    if not (isinstance(header, dict) and all(isinstance(k, str) and isinstance(v, plain)
+                                             for k, v in header.items())):  # fmt: skip
+        raise ValueError(f"{path}: a campaign's header maps names to plain values: {header!r}")
+    return header
 
 
 def _cell_runs(cell: Any, names: set[str]) -> list[Run]:
@@ -268,6 +285,7 @@ def run_campaign(
     dry_run: bool = False,
     recovery: str | None = None,
     stop: Callable[[], bool] | None = None,
+    header: Mapping[str, Any] | None = None,
 ) -> dict[str, list[str]]:
     """Run the missing runs in order; returns the labels by outcome.
 
@@ -275,9 +293,10 @@ def run_campaign(
     stopped (``stop()`` was true before its next attempt; logged once) and, for a dry run,
     pending. ``execute(run, run_id, output)`` runs one attempt under that run id and
     returns its exit code (default: a subprocess). ``recovery`` names the fixed technical cause and
-    opens the recovery round of every cell with an exhausted run that has not had one. Raises
-    ``CampaignError`` before starting anything if a run's existing directories conflict, and stops
-    at an attempt that completes without qualifying.
+    opens the recovery round of every cell with an exhausted run that has not had one.
+    ``header`` (``campaign_header``) goes into every start record. Raises ``CampaignError``
+    before starting anything if a run's existing directories conflict, and stops at an attempt
+    that completes without qualifying.
     """
     execute = execute or _subprocess
     records = launch_records(runs_root)
@@ -322,7 +341,7 @@ def run_campaign(
                 outcome = "stopped"
                 break
             attempts += 1
-            outcome = _attempt(run, attempts, runs_root, out_dir, log, execute)
+            outcome = _attempt(run, attempts, runs_root, out_dir, log, execute, header)
             if outcome != "technical":
                 break
         if outcome == "stopped" and not result["stopped"]:
@@ -336,7 +355,8 @@ def _open(state: Assessment) -> bool:
 
 
 def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
-             execute: Callable[[Run, str, Path], int]) -> str:  # fmt: skip
+             execute: Callable[[Run, str, Path], int],
+             header: Mapping[str, Any] | None = None) -> str:  # fmt: skip
     """One attempt; returns done, diverged or technical; stops the campaign on a conflict."""
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -344,7 +364,8 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
     output = out_dir / f"{run_id}.log"
     _log(log, {"event": "start", "run": run.label, "attempt": attempt, "run_id": run_id,
                "experiment": run.experiment, "config_hash": run.config_hash,
-               "command": run.command()[1:]})  # fmt: skip
+               "command": run.command()[1:],
+               **({"header": dict(header)} if header is not None else {})})  # fmt: skip
     code = execute(run, run_id, output)
     run_dir = Path(runs_root) / run.experiment / run_id
     meta = _read_json(run_dir / "meta.json")

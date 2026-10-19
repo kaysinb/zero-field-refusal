@@ -59,12 +59,14 @@ from zero_field_refusal.analysis.study2_short import (
     conformance,
     exhausted_runs,
     issued_ranges,
+    issued_w_max,
     look_blocks,
     looks,
     measures_rayleigh,
     numerical_digest,
     preconditioner_pairing,
     prescribed,
+    prescribed_hash,
     progress,
     read_abandonment,
     read_fixation,
@@ -75,9 +77,16 @@ from zero_field_refusal.analysis.study2_short import (
     split_timecourse,
     timecourse_guard,
     timecourse_summary,
+    w_max_problems,
 )
 from zero_field_refusal.config import config_hash, load_config
-from zero_field_refusal.launch import MAX_ATTEMPTS, load_campaign
+from zero_field_refusal.launch import (
+    MAX_ATTEMPTS,
+    campaign_header,
+    launch_records,
+    load_campaign,
+    run_campaign,
+)
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.seeding import derive_seed
 
@@ -175,9 +184,13 @@ def test_run_facts_read_the_role_the_rayleigh_setting_and_v0_from_the_records(tm
     assert run_facts(new) == {"role": "confirmation", "rayleigh": True, "k_only": False,
                               "commit": "c" * 40, "dirty": False,
                               "preconditioner": {"path": stream["path"],
-                                                 "sha256": stream["sha256"]}}  # fmt: skip
+                                                 "sha256": stream["sha256"]},
+                              "config_hash": None}  # fmt: skip
     assert run_facts(old) == {"role": "discovery", "rayleigh": False, "k_only": False,
-                              "commit": None, "dirty": None, "preconditioner": None}  # fmt: skip
+                              "commit": None, "dirty": None, "preconditioner": None,
+                              "config_hash": None}  # fmt: skip
+    (new / "meta.json").write_text(json.dumps({"git": git, "config_hash": "abc"}))
+    assert run_facts(new)["config_hash"] == "abc"
     numerical = tmp_path / "numerical"
     numerical.mkdir()
     (numerical / "config.yaml").write_text("study2_short: {role: numerical}\n"
@@ -209,14 +222,18 @@ def v0(seed: int, batch: int) -> dict:
 
 
 def fact(run) -> dict:
+    """``run_facts`` of a synthetic run made by its campaign: with the config hash of its
+    campaign's config (``prescribed_hash``) when it is one of this stage's regular runs."""
     control_run = run.arm == FA_CONTROL_ARM
     role = "full_control" if control_run else seed_role(run.seed)
     if run.run_id.startswith(COURSE):  # a time-course run (``course``)
         role = TIMECOURSE
+    regular = not control_run and run.role is None and role is not None
     return {"role": role, "rayleigh": not control_run and measures_rayleigh(run.seed),
             "k_only": role == "numerical", "commit": RUN_COMMIT, "dirty": False,
-            "preconditioner": v0(run.seed, run.batch_size) if run.arm in V0_ARMS
-            else None}  # fmt: skip
+            "preconditioner": v0(run.seed, run.batch_size) if run.arm in V0_ARMS else None,
+            "config_hash": prescribed_hash(run.arm, run.batch_size, run.lr, run.seed, role)
+            if regular else None}  # fmt: skip
 
 
 def facts_of(runs) -> dict:
@@ -1134,13 +1151,111 @@ def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_
                   "adamw_prewarmed": [1.27e-5, 1.48e-5, 1.74e-5]},
         "batch": 20, "U": 8}  # fmt: skip
     shown = capsys.readouterr().out
-    assert f"--selection {out} --batch 20 --upper 8" in shown
+    # The final review of gate B, M1: the whole command, with the numerical runs' commit and the
+    # driver's file, the request's runs_commits and its w_max (I4)
+    driver = out.with_name(f"{out.stem}-driver.sh")
+    assert (f"python scripts/numerical_check.py driver --selection {out} --batch 20 --upper 8 "
+            f"--commit {RUN_COMMIT} --out {driver}") in shown.splitlines()  # fmt: skip
+    assert f"runs_commits (the numerical runs' commits): ['{RUN_COMMIT}']" in shown
     assert (
-        "outputs under $RUNS_DIR/numerical/b20-u8, the selection's verdict at $RUNS_DIR/"
-        f"numerical/b20-u8/verdicts/{numerical_digest(RATES20)}.json" in shown
+        f"w_max {W_MAX!r}; outputs under $RUNS_DIR/numerical/b20-u8, the selection's verdict at "
+        f"$RUNS_DIR/numerical/b20-u8/verdicts/{numerical_digest(RATES20)}.json" in shown
     )
+    assert "given up" not in shown
     err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical-check", "--fixation", record)
     assert "the stage's next step is validation, not numerical-check" in err  # verdict in place
+
+
+def test_the_check_command_names_its_commits_and_the_cases_given_up(tmp_path) -> None:
+    """Review M1: one runs commit is the driver's --commit; several (one GPU code) leave COMMIT
+    to choose among them; the cases given up are named."""
+    module = campaigns_module()
+    check = {**request_check(), "w_max": 0.47, "given_up": ["s2200-adamw-1.48e-05"],
+             "runs_commits": ["a" * 40, "b" * 40]}  # fmt: skip
+    lines = module.check_command(check, tmp_path / "check.json")
+    assert lines[0].endswith(f"--commit COMMIT --out {tmp_path / 'check-driver.sh'}")
+    assert lines[1].endswith("; COMMIT is one of them, their GPU code being one")
+    assert lines[-1] == "given up by the launcher, named in the record: ['s2200-adamw-1.48e-05']"
+
+
+def test_the_whole_config_of_a_run_is_its_campaigns(tmp_path) -> None:
+    """The final review of gate B, M2: the config hash a regular run's meta.json records must be
+    that of its campaign's config and overrides, as the launcher loads them from the tracked
+    configs; a run whose recorded config differs in one unrelated key is a problem."""
+    run = later(ADAMW, 20, 1.27e-5, 2200)  # a numerical run: experiments/study2_short_k_only
+    config, overrides = study2_short.run_prescription(ADAMW, 20, 1.27e-5, 2200, "numerical")
+    assert (config, overrides) == ("experiments/study2_short_k_only", [
+        "train.batch_size=20", "optimizer.lr=1.27e-05", "study2_short.role=numerical"])  # fmt: skip
+    cfg = load_run_config(config, [*overrides, "seed=2200"])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    def recorded(cfg) -> dict:
+        OmegaConf.save(cfg, run_dir / "config.yaml", resolve=True)
+        (run_dir / "meta.json").write_text(json.dumps({"config_hash": config_hash(cfg),
+                                                       "git": {"commit": RUN_COMMIT,
+                                                               "dirty": False}}))  # fmt: skip
+        return {run.run_id: {**run_facts(run_dir), "preconditioner": None}}
+
+    assert recorded(cfg)[run.run_id]["config_hash"] == prescribed_hash(ADAMW, 20, 1.27e-5, 2200,
+                                                                       "numerical")  # fmt: skip
+    assert conformance([run], recorded(cfg)) == []
+    other = OmegaConf.merge(cfg, {"train": {"max_response_tokens": cfg.train.max_response_tokens
+                                            + 1}})  # fmt: skip
+    (found,) = conformance([run], recorded(other))
+    assert found.startswith(f"{run.run_id} records the config hash '{config_hash(other)}', not "
+                            f"'{config_hash(cfg)}' of its campaign's config "
+                            "experiments/study2_short_k_only")  # fmt: skip
+    # Each role's prescription is the campaigns' cell (the campaigns script builds on it)
+    for arm, seed, role, name in ((FA, 3000, "confirmation", "experiments/study2_short_rayleigh"),
+                                  (PREWARMED, 2100, "validation", "experiments/study2_short"),
+                                  (ADAMW, 3001, TIMECOURSE, "experiments/study2_short_rayleigh"),
+                                  (FA, 2000, "discovery", "experiments/study2_short")):  # fmt: skip
+        config, overrides = study2_short.run_prescription(arm, 20, 1.5e-5, seed, role)
+        assert config == name and prescribed_hash(arm, 20, 1.5e-5, seed, role) == config_hash(
+            load_run_config(config, [*overrides, f"seed={seed}"]))  # fmt: skip
+    # Stage A's grid runs (stage_a.role) keep Stage A's prescription: not compared
+    stage_a = dataclasses.replace(conform(made(ADAMW, 20, 1e-5, 2000)), role="discovery")
+    assert conformance([stage_a], {stage_a.run_id: {**fact(stage_a), "config_hash": None}}) == []
+
+
+def test_a_replay_under_another_w_max_is_refused(monkeypatch, tmp_path, capsys) -> None:
+    """The final review of gate B, I4: the campaign's header records w_max, the launcher logs it
+    with every start, and the replay under another w_max (a fixation record rewritten at gate C,
+    say) is refused, the stage incomplete with that reason; a start logged without a header
+    records none."""
+    runs = base()
+    record = fixed(tmp_path)
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "discovery", "--fixation", record)
+    assert campaign_header(out) == {"w_max": W_MAX}
+    name, found = load_campaign(out)
+    root = Path(runs_root(tmp_path))
+    started = run_campaign(name, found[:1], root, execute=lambda run, run_id, output: 1,
+                           header=campaign_header(out))  # fmt: skip
+    assert started["exhausted"] == [found[0].label]
+    journal = launch_records(root)
+    assert {r["event"] for r in journal} == {"start", "end"}
+    assert all(r["header"] == {"w_max": W_MAX} for r in journal if r["event"] == "start")
+    assert issued_w_max(journal) == {found[0].label: W_MAX}
+    # The same w_max replays; another is refused, with the run that recorded the issued one
+    same = progress(runs, THETA0, W_MAX, facts=facts_of(runs), reuse=reusable,
+                    issued_w_max=issued_w_max(journal))  # fmt: skip
+    assert same["next"]["campaign"] == "discovery"
+    state = progress(runs, THETA0, 0.40, facts=facts_of(runs), reuse=reusable,
+                     issued_w_max=issued_w_max(journal))  # fmt: skip
+    assert state["next"] == {"campaign": "incomplete"}
+    assert state["problems"] == [
+        f"w_max 0.4 differs from the w_max {W_MAX!r} recorded in the header of the issued "
+        f"campaign of {found[0].label}: w_max is frozen since S1 (amendment 4), and the replay "
+        "is refused under another value"]  # fmt: skip
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "discovery",
+                  "--fixation", fixation_file(tmp_path, w_max=0.40), "--runs-root",
+                  str(root))  # fmt: skip
+    assert "the stage's records are not whole: w_max 0.4 differs from the w_max" in err
+    # A start logged before the header existed records none: not compared
+    bare = [{k: v for k, v in r.items() if k != "header"} for r in journal]
+    assert issued_w_max(bare) == {}
+    assert w_max_problems(0.40, issued_w_max(bare)) == []
 
 
 def test_the_check_input_is_written_while_runs_wait_beyond_a_stale_check(

@@ -35,8 +35,11 @@ measures the endpoint Rayleigh quotient). Between ``numerical`` and ``validation
 ``numerical-check``, no launcher campaign: the check of scripts/numerical_check.py, with the
 rates, the cases and the verdict path under $RUNS_DIR that the step names (the summary prints
 it); this kind writes its rate input, the JSON selection record ``{"rates": {optimizer:
-[r1, r2, r3]}, "batch": B, "U": U}`` that numerical_check.py --selection reads, and prints the
-directory the check writes into and the selection's verdict there (verdicts/<digest>.json).
+[r1, r2, r3]}, "batch": B, "U": U}`` that numerical_check.py --selection reads (with
+``"given_up": [case, ...]`` when the launcher gave up on a numerical run), and prints the whole
+command that writes the check's driver (``--commit`` the numerical runs' commit, ``--out``
+beside the record), the request's ``runs_commits`` and w_max, the directory the check writes
+into and the selection's verdict there (verdicts/<digest>.json).
 It is the one kind written while the records are not whole, and only when every problem is a run
 made beyond a check that went stale (the selection's ``beyond_stale``): those runs wait for the
 check, which is run again.
@@ -68,7 +71,10 @@ ones per seed and arm (``progress``'s ``timecourse``).
   --theta0 is the θ₀ run (summary.json).
 - **w_max** is the simulation's: the fixation record (--fixation, ``read_fixation``) is required
   for every kind. A --w-max given beside it must equal it. Every campaign's header records
-  w_max, where it came from and the code revision.
+  w_max, where it came from and the code revision, and its YAML ``header: {w_max: ...}``, which
+  the launcher logs with every start it makes: w_max is frozen since S1, and a replay under
+  another value than one an issued campaign recorded is refused (``issued_w_max``; the final
+  review of gate B, I4).
 - --runs-root is RUNS_DIR, required for every kind: its numerical/ holds the numerical-check
   verdicts (``read_numerical``), and its launch/ journal (``launch.launch_records``) tells which
   runs the launcher gave up on after their recovery round (``exhausted_runs``: technical
@@ -152,31 +158,29 @@ import yaml
 
 from zero_field_refusal.analysis.stage_a import BATCHES, load_trajectories, rate, theta0_problems
 from zero_field_refusal.analysis.study2_short import (
-    ADAMW,
     ARMS,
     CONFIRMATION_SEEDS,
     DISCOVERY_SEEDS,
-    FA,
     FA_CONTROL_ARM,
-    K_ONLY,
     LOOK_SIZES,
     NUMERICAL_SEEDS,
     PREWARMED,
     RAYLEIGH,
-    REGULAR,
     STEPS,
-    TIMECOURSE_OVERRIDES,
+    TIMECOURSE,
     VALIDATION_SEEDS,
     VERSIONS_RECORD,
     confirmation_guard,
     exhausted_runs,
     issued_ranges,
+    issued_w_max,
     measures_rayleigh,
     progress,
     read_abandonment,
     read_fixation,
     read_numerical,
     run_facts,
+    run_prescription,
     seed_role,
     split_timecourse,
     timecourse_guard,
@@ -189,7 +193,6 @@ from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 KINDS = ("discovery", "repair", "prewarmed", "targeted", "numerical", "numerical-check",
          "validation", "confirmation", "timecourse")  # fmt: skip
 VERSIONED_KINDS = ("validation", "confirmation", "timecourse")  # they need the versions record
-OPTIMIZER = {ADAMW: [], FA: ["optimizer=adam_frozen"], PREWARMED: ["optimizer=adamw_prewarmed"]}
 STAGE_SEEDS = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS, *CONFIRMATION_SEEDS)
 STAGE_A = "experiments/study2_stage_a"  # the streams' config, as Stage A generated them
 TEACHER = 'project-run "$SRC" python scripts/generate_teacher.py'
@@ -262,10 +265,10 @@ def regular_cells(runs: list[dict], suffix: str = "", *, timecourse: bool = Fals
     items = []
     for (arm_index, batch, lr, rayleigh, role), seeds in sorted(groups.items()):
         arm = ARMS[arm_index]
-        own = list(TIMECOURSE_OVERRIDES) if timecourse else [f"study2_short.role={role}"]
-        overrides = [*OPTIMIZER[arm], f"train.batch_size={batch}", f"optimizer.lr={lr:g}", *own]
+        # The config and overrides that conformance checks every run's config hash against
+        config, overrides = run_prescription(arm, batch, lr, seeds[0],
+                                             TIMECOURSE if timecourse else role)  # fmt: skip
         name = f"{arm}-b{batch}-{lr:g}{suffix}" + ("-rayleigh" if rayleigh else "")
-        config = RAYLEIGH if rayleigh else K_ONLY if role == "numerical" else REGULAR
         items.append(cell(name, config, overrides, sorted(seeds)))
     return items
 
@@ -705,7 +708,8 @@ def campaign(
     except ValueError as exc:
         parser.error(str(exc))
     state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted,
-                     numerical=read_numerical(args.runs_root), timecourse=courses)  # fmt: skip
+                     numerical=read_numerical(args.runs_root), timecourse=courses,
+                     issued_w_max=issued_w_max(records))  # fmt: skip
     step = state["next"]
     chosen = state.get("selection") or {}
     waiting = chosen.get("beyond_stale") or []
@@ -807,6 +811,26 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_command(check: dict, selection: Path) -> list[str]:
+    """The numerical check's whole command and what it needs (the final review of gate B, M1):
+    the driver written from the selection record at ``selection`` for the commit whose source
+    the Pod runs (the numerical runs' own, ``runs_commits``; any of them when there are several,
+    their GPU code being one), with the request's w_max, the cases given up by the launcher and
+    where the check writes."""
+    commits = check["runs_commits"]
+    commit = commits[0] if len(commits) == 1 else "COMMIT"
+    driver = selection.with_name(f"{selection.stem}-driver.sh")
+    lines = [f"python scripts/numerical_check.py driver --selection {selection} --batch "
+             f"{check['batch']} --upper {check['U']:g} --commit {commit} --out {driver}",
+             f"runs_commits (the numerical runs' commits): {commits}"
+             + ("; COMMIT is one of them, their GPU code being one" if len(commits) > 1 else ""),
+             f"w_max {check['w_max']!r}; outputs under $RUNS_DIR/{check['out']}, the selection's "
+             f"verdict at $RUNS_DIR/{check['verdict']}"]  # fmt: skip
+    if check["given_up"]:
+        lines.append(f"given up by the launcher, named in the record: {check['given_up']}")
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("kind", choices=("prep", "check-streams", *SOFT_TARGET_KINDS, *KINDS))
@@ -883,10 +907,8 @@ def main() -> None:
             check = written["check"]
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps(check["selection"], indent=2) + "\n")
-            print(f"{args.out}\nscripts/numerical_check.py driver --selection {args.out} "
-                  f"--batch {check['batch']} --upper {check['U']:g}: outputs under "
-                  f"$RUNS_DIR/{check['out']}, the selection's verdict at "
-                  f"$RUNS_DIR/{check['verdict']}")  # fmt: skip
+            print(args.out)
+            print("\n".join(check_command(check, args.out)))
             if written["waiting"]:
                 print("Written while the stage's records wait for this check, which is run again:"
                       "\n" + "\n".join(written["waiting"]))  # fmt: skip
@@ -901,7 +923,10 @@ def main() -> None:
         header = comment(f"Written by {writer}, with w_max {w_max!r} from {source}{under}. "
                          "Do not edit.")  # fmt: skip
         header += [line for text in prerequisites for line in comment(text)]
-        text = "\n".join(header) + "\n" + yaml.safe_dump(written, sort_keys=False)
+        # The final review of gate B, I4: the header's w_max, which the launcher logs with every
+        # start, so that a replay under another w_max is refused (``issued_w_max``)
+        recorded = {"header": {"w_max": w_max}, **written}
+        text = "\n".join(header) + "\n" + yaml.safe_dump(recorded, sort_keys=False)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(text)
     print(args.out)

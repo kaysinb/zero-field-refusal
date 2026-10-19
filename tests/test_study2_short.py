@@ -579,7 +579,7 @@ def test_two_verdicts_at_8_20_a_failing_fa_rate_and_the_resolved_selection(tmp_p
     other = {**SELECTED20, ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}
     stray = verdict_of(study2_short._check_request(
         {"name": numerical_digest(other), "dir": "numerical/b20-u7",
-         "path": verdict_path(other, upper=7.0)}, 20, 7.0, other, {COMMIT}),
+         "path": verdict_path(other, upper=7.0)}, 20, 7.0, other, {COMMIT}, w_max=W_MAX),
         {("adamw", 1.5e-5): "not_qualified"})  # fmt: skip
     found = {**verdicts, verdict_path(other, upper=7.0): stray}
     result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=found,
@@ -599,7 +599,7 @@ def test_two_verdicts_at_8_20_a_failing_fa_rate_and_the_resolved_selection(tmp_p
     stop = {"adamw|1.48e-05": ["instability: case s2200 stopped by k_above_max at step 9"]}
     unstable = verdict_of(study2_short._check_request(
         {"name": numerical_digest(SELECTED20), "dir": "numerical/b20-u8",
-         "path": verdict_path(SELECTED20)}, 20, 8.0, SELECTED20, {COMMIT}),
+         "path": verdict_path(SELECTED20)}, 20, 8.0, SELECTED20, {COMMIT}, w_max=W_MAX),
         {("adamw", 1.48e-5): "failing"}, reasons=stop)  # fmt: skip
     entry = numerical_verdict(unstable, 20, 8.0, SELECTED20, COMMIT, reusable)["unusable"][0]
     assert entry["why"] == "failing: its numerical run stopped by an instability rule"
@@ -1037,7 +1037,7 @@ def request_check(rates=REQUEST, upper=8.0) -> dict:
     """A check request as the state machine writes it (``step["check"]``)."""
     slot = {"name": numerical_digest(rates), "dir": "numerical/b20-u8",
             "path": verdict_path(rates, upper=upper)}  # fmt: skip
-    return study2_short._check_request(slot, 20, upper, rates, {COMMIT})
+    return study2_short._check_request(slot, 20, upper, rates, {COMMIT}, w_max=W_MAX)
 
 
 def read(record, rates=REQUEST, *, commit=COMMIT, reuse=reusable) -> dict:
@@ -1462,6 +1462,30 @@ def test_runs_beyond_a_stale_check_wait_for_it() -> None:
     plain = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=verdicts,
                       facts=commits(runs), reuse=reusable)  # fmt: skip
     assert "beyond_stale" not in plain and plain["next"]["campaign"] == "done"
+
+
+def test_the_selection_refuses_a_w_max_other_than_the_issued_campaigns() -> None:
+    """The final review of gate B, I4: w_max is frozen since S1. Under the w_max an issued
+    campaign's header recorded the replay goes on; under another, or against a header holding
+    no number, it is refused before anything is selected."""
+    runs = grids()
+    _, _, verdicts = drive(runs)
+
+    def at(w_max, issued):
+        return selection(runs, THETA0, w_max, seconds_per_chunk=SPC, numerical=verdicts,
+                         facts=commits(runs), reuse=reusable, issued_w_max=issued)  # fmt: skip
+
+    issued = {"adamw_25-b20-1.27e-05/s2000": W_MAX, "frozen_adam_25-b20-1.59e-05/s2001": W_MAX}
+    assert at(W_MAX, issued)["next"]["campaign"] == "done"
+    refused = at(0.30, issued)
+    assert refused["next"] == {"campaign": "incomplete"} and "attempts" not in refused
+    assert refused["problems"] == [study2_short.w_max_problems(0.30, issued)[0]]
+    assert refused["problems"][0].startswith(
+        f"w_max 0.3 differs from the w_max {W_MAX!r} recorded in the header of the issued campaign "
+        "of adamw_25-b20-1.27e-05/s2000 and 1 other run(s)")  # fmt: skip
+    assert study2_short.w_max_problems(W_MAX, {"x/s1": "0.35"})[0].startswith(
+        f"w_max {W_MAX!r} differs from the w_max '0.35'")  # fmt: skip
+    assert study2_short.w_max_problems(W_MAX, None) == []
 
 
 def test_three_arm_validation() -> None:

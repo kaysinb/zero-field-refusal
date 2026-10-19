@@ -168,14 +168,33 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   rate there, or no feasible triple after the re-solve, fails the candidate. The verdict's own
   ``qualified`` must agree with its states, and an unreadable or malformed verdict leaves the
   selection ``incomplete``. A numerical run the launcher gave up on (``exhausted_runs``) lets the
-  check go on (review of Task 2, minor 3): the tool reads its case as not qualified (technical), and
-  its rate leaves the batch.
+  check go on (review of Task 2, minor 3): the check request names its case in ``given_up``
+  (as the tool names a case, ``numerical_case_name``; the final review of gate B, I1), the tool's
+  plan notes it instead of stopping, its parts record the case incomplete and, after the rerun,
+  not qualified (technical), and its rate leaves the batch.
 - *A stale check with runs beyond it*: when the replay waits at a stale check while runs it
-  called for after that check exist (a GPU-path change after the validation runs, say), the
-  problems name the stale check first and list those runs, all of them under ``beyond_stale``;
-  the replay cannot tell such a run from a stray one until the check is run again, after which
-  a stray run shows as unexpected again. scripts/study2_short_campaigns.py writes the
-  ``numerical-check`` input when every problem is under ``beyond_stale``, and nothing else.
+  called for after that check exist, the problems name the stale check first and list those
+  runs, all of them under ``beyond_stale``; the replay cannot tell such a run from a stray one
+  until the check is decided again, after which a stray run shows as unexpected again.
+  scripts/study2_short_campaigns.py writes the ``numerical-check`` input when every problem is
+  under ``beyond_stale``, and nothing else. A check that went stale under the same numerical
+  runs (a policy departure, say) is run again. One stale by a GPU-path change cannot be: the
+  tool refuses numerical runs whose GPU code is not its own. The voiding procedure (the final
+  review of gate B, I2), ``scripts/numerical_check.py void --batch B --upper U`` on a clean
+  checkout of the new commit, moves those numerical runs and the check's directory
+  numerical/b{B}-u{U}/ to $RUNS_DIR/void/<old GPU code>/ with an inventory; the replay then
+  calls for the numerical runs again (``numerical``) and their new check. Runs the replay
+  called for after the voided check (validation runs) are then unexpected and leave the stage
+  ``incomplete`` until the coordinator rules on them: under the versions record's one-commit
+  rule, a GPU-path change after them voids them too.
+- *w_max* (the final review of gate B, I4): frozen since S1. Every campaign's header records
+  the w_max it was written under, and the launcher logs that header with each start
+  (``issued_w_max``); the replay under another w_max is refused (``incomplete``, with that
+  reason), before anything is selected. Starts logged without a header record none.
+- *The whole config* (the final review of gate B, M2): every regular run of this stage records
+  the config hash of its campaign's config and overrides (``prescribed_hash``), checked by
+  ``conformance``; the code that composes them (``run_prescription``) is outside the GPU-code
+  identity, and this check is what shows a change of it after runs were made.
 - *Fallback* (amendment 4, review fa12; review of Task 2, critical 1 and minor 2): when no
   candidate is eligible with the three arms, the candidates are visited again in the same order
   for the primary arms alone, each selected over every record at its batch (rounds made at the
@@ -381,9 +400,10 @@ import numpy as np
 from omegaconf import OmegaConf
 from scipy import stats
 
-from ..config import load_config
+from ..config import config_hash, load_config
 from ..judge import IDENTITY_FIELDS, judge_identity
-from ..paths import REPO_ROOT
+from ..paths import CONFIG_ROOT, REPO_ROOT
+from ..protocol import load_run_config
 from ..seeding import derive_seed
 from ..tracking import code_changes, git_state, tracked
 from .stage_a import (
@@ -454,6 +474,9 @@ VERDICTS_DIR = "verdicts"  # numerical/b{B}-u{U}/verdicts/<digest>.json, one per
 HISTORY_DIR = "history"  # verdicts/history/<digest>/*.json: a selection's earlier verdicts
 K_ONLY = "experiments/study2_short_k_only"  # REGULAR with the K-only evaluation: numerical runs
 OPTIMIZERS = {ADAMW: "adamw", FA: "adam_frozen", PREWARMED: "adamw_prewarmed"}  # its arm names
+# Each arm's optimizer override of the stage's configs (``run_prescription``)
+ARM_OVERRIDES = {ADAMW: (), FA: ("optimizer=adam_frozen",),
+                 PREWARMED: ("optimizer=adamw_prewarmed",)}  # fmt: skip
 # The states of an (arm, rate) and of an FA rate's same-path control in a verdict (review fa12):
 # "not_qualified" is technical (incomplete after its rerun), never instability; "incomplete"
 # waits for the rerun.
@@ -875,6 +898,12 @@ def numerical_cases(rates: Mapping[str, Sequence[float]]) -> list[tuple[str, flo
     upper = [(arm, rate(max(rates[arm])), seed) for seed in NUMERICAL_SEEDS[1:] for arm in ARMS
              if rates.get(arm)]  # fmt: skip
     return first + upper
+
+
+def numerical_case_name(arm: str, lr: float, seed: int) -> str:
+    """A numerical case as the numerical-check tool names it
+    (``fa_control_diagnostic.NumericalCase.name``): ``s<seed>-<optimizer>-<lr:g>``."""
+    return f"s{seed}-{OPTIMIZERS[arm]}-{lr:g}"
 
 
 def _pair_key(arm: str, lr: float) -> str:
@@ -1316,11 +1345,13 @@ def selection(
     facts: Mapping[str, Mapping[str, Any]] | None = None,
     exhausted: Mapping[tuple, str] | None = None,
     reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
+    issued_w_max: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The selection's state machine (amendment 4), replayed from every run so far and the
     numerical-check verdicts: the first candidate (U, B) of ``CANDIDATES`` not yet decided, the
     campaign that comes next, with every attempt recorded. Never reads a judge label or
-    K_harmful.
+    K_harmful. It refuses to replay (``incomplete``) under a ``w_max`` other than one an issued
+    campaign's header recorded (``issued_w_max``, by run label; ``w_max_problems``).
 
     Per candidate, for the three arms: each primary arm's selection over its runs at B; for an
     arm with no feasible triple its targeted round, the joint ``discovery`` campaign that also
@@ -1347,6 +1378,7 @@ def selection(
     (and, at a stale check with runs beyond it, ``beyond_stale``)."""
     seeds = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS)
     found, problems = index(r for r in trajectories if r.arm in ARMS and r.seed in seeds)
+    problems = w_max_problems(w_max, issued_w_max) + problems
     controls: dict[tuple[int, float, float | None], Trajectory] = {}
     for run in (r for r in trajectories if r.arm == FA_CONTROL_ARM):
         key = _control_key(run)
@@ -1656,9 +1688,11 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms, carried=
         # rerun first.
         decided = verdict["state"] in ("complete", "stale") and not verdict["unfinished"]
         if not decided or (verdict["state"] != "complete" and not verdict["unusable"]):
+            given_up = [numerical_case_name(arm, lr, seed) for arm, _, lr, seed in gone]
+            request_record = _check_request(check, batch, upper, request, commits,
+                                            w_max=replay.w_max, given_up=given_up)  # fmt: skip
             return stop(_step("numerical-check", attempt, rates=request, state=verdict["state"],
-                              check=_check_request(check, batch, upper, request, commits),
-                              reasons=verdict["reasons"]))  # fmt: skip
+                              check=request_record, reasons=verdict["reasons"]))  # fmt: skip
         if not verdict["unusable"]:
             controls = {rate(lr): {"accepted": True, "verdict": path}
                         for lr in request.get(FA) or ()}  # fmt: skip
@@ -1751,20 +1785,28 @@ def _history_marks(replay, path, reading, batch, upper, request) -> dict[str, An
     return out
 
 
-def _check_request(check, batch, upper, rates, commits) -> dict[str, Any]:
+def _check_request(
+    check, batch, upper, rates, commits, *, w_max: float, given_up: Sequence[str] = ()
+) -> dict[str, Any]:
     """What the numerical-check tool is asked: ``selection``, its rate input (``rates`` by
-    optimizer name, ``batch`` and ``U``; scripts/numerical_check.py --selection), its cases, the
-    frozen policy, the commits its numerical runs recorded (whose GPU code it must run), the
-    directory it writes into and the selection's verdict there, under $RUNS_DIR."""
+    optimizer name, ``batch`` and ``U``, and ``given_up`` when the launcher gave up on a case's
+    numerical run: the cases as the tool names them, ``numerical_case_name``; the final review
+    of gate B, I1; scripts/numerical_check.py --selection), its cases, the frozen policy, the
+    commits its numerical runs recorded (whose GPU code it must run), the directory it writes
+    into and the selection's verdict there, under $RUNS_DIR, and the w_max the replay that wrote
+    it ran under (I4)."""
     by_name = {OPTIMIZERS[arm]: list(lrs) for arm, lrs in rates.items()}
     selection = {"rates": by_name, "batch": batch,
                  "U": int(upper) if float(upper).is_integer() else upper}  # fmt: skip
+    if given_up:
+        selection["given_up"] = sorted(given_up)
     return {"name": check["name"], "tool": NUMERICAL_TOOL, "verdict": check["path"],
             "out": check["dir"], "selection": selection, "batch": batch, "U": upper,
             "rates": by_name,
             "cases": [{"optimizer": OPTIMIZERS[arm], "lr": lr, "seed": seed}
                       for arm, lr, seed in numerical_cases(rates)],
-            "runs_commits": sorted(commits), "policy": numerical_policy(upper)}  # fmt: skip
+            "given_up": sorted(given_up), "runs_commits": sorted(commits),
+            "policy": numerical_policy(upper), "w_max": w_max}  # fmt: skip
 
 
 def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
@@ -2593,8 +2635,9 @@ def run_facts(run_dir: str | Path) -> dict[str, Any]:
     (``study2_short.role``, else Stage A's ``stage_a.role``), whether it measures the Rayleigh
     quotient and whether its evaluation is K-only (``eval.k_only``); from ``meta.json`` the code
     commit it ran (``git.commit``), whether its checkout was dirty (``git.dirty``: None when not
-    recorded) and the preconditioner stream its v₀ was estimated from
-    (``inputs.streams.preconditioner``: path and sha256), None for a run without one."""
+    recorded), the preconditioner stream its v₀ was estimated from
+    (``inputs.streams.preconditioner``: path and sha256), None for a run without one, and its
+    ``config_hash`` (``config.config_hash`` of its resolved config, as the tracker records it)."""
     run_dir = Path(run_dir)
     cfg = OmegaConf.load(run_dir / "config.yaml")
     role = OmegaConf.select(cfg, "study2_short.role", default=None)
@@ -2611,7 +2654,8 @@ def run_facts(run_dir: str | Path) -> dict[str, Any]:
     git = meta.get("git") or {}
     return {"role": role, "rayleigh": bool(rayleigh), "k_only": k_only,
             "commit": git.get("commit"), "dirty": git.get("dirty"),
-            "preconditioner": preconditioner}  # fmt: skip
+            "preconditioner": preconditioner,
+            "config_hash": meta.get("config_hash")}  # fmt: skip
 
 
 def preconditioner_pairing(
@@ -2733,6 +2777,38 @@ def issued_ranges(
             and (m := _ISSUED.search(str(r.get("run", ""))))}  # fmt: skip
 
 
+def issued_w_max(
+    records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
+) -> dict[str, Any]:
+    """The w_max that each issued campaign's header recorded (the final review of gate B, I4):
+    by the label of each run the launcher started (its journal's start record carries its
+    campaign's ``header``, ``launch.run_campaign``). Starts logged before the header existed
+    record none and are left out: not recorded, so nothing to compare."""
+    return {str(r.get("run")): r["header"]["w_max"] for r in records
+            if r.get("event") == "start" and r.get("experiment") == experiment
+            and isinstance(r.get("header"), dict) and "w_max" in r["header"]}  # fmt: skip
+
+
+def w_max_problems(w_max: float, issued: Mapping[str, Any] | None) -> list[str]:
+    """Why the replay is refused (the final review of gate B, I4): w_max is frozen since S1, and
+    a value other than one recorded in an issued campaign's header (``issued_w_max``) would
+    replay other triples and digests under the runs made so far. One problem per value that
+    differs, naming a run of its campaigns."""
+    by_value: dict[str, list[str]] = defaultdict(list)
+    for label, value in sorted((issued or {}).items()):
+        by_value[json.dumps(value)].append(label)
+    problems = []
+    for shown, labels in sorted(by_value.items()):
+        value = json.loads(shown)
+        if _number(value) and float(value) == float(w_max):
+            continue
+        others = f" and {len(labels) - 1} other run(s)" if len(labels) > 1 else ""
+        problems.append(f"w_max {w_max!r} differs from the w_max {value!r} recorded in the header "
+                        f"of the issued campaign of {labels[0]}{others}: w_max is frozen since S1 "
+                        "(amendment 4), and the replay is refused under another value")  # fmt: skip
+    return problems
+
+
 def _unbound(spec: Mapping[str, Any]) -> dict[str, Any]:
     """A control's schedule without its contamination bound, which its campaign sets."""
     instability = dict(spec.get("instability") or {})
@@ -2757,13 +2833,45 @@ def prescribed() -> dict[str, Any]:
     }
 
 
+def run_prescription(arm: str, batch: int, lr: float, seed: int, role: str) -> tuple[str, list]:
+    """The config and overrides the stage's campaigns give the regular run of ``arm`` at ``batch``
+    and ``lr`` on ``seed`` with ``role`` (the launcher adds ``seed=N``;
+    scripts/study2_short_campaigns.py builds its cells on them): experiments/study2_short_rayleigh
+    on the first 10 confirmation blocks, experiments/study2_short_k_only for the numerical runs,
+    experiments/study2_short otherwise; the arm's optimizer, B, the rate, and the role, or for
+    the time course its role and evaluation steps (``TIMECOURSE_OVERRIDES``)."""
+    config = RAYLEIGH if measures_rayleigh(seed) else K_ONLY if role == "numerical" else REGULAR
+    own = list(TIMECOURSE_OVERRIDES) if role == TIMECOURSE else [f"study2_short.role={role}"]
+    return config, [*ARM_OVERRIDES[arm], f"train.batch_size={batch}", f"optimizer.lr={lr:g}", *own]
+
+
+@functools.cache
+def _config_hash_of(config: str, overrides: tuple[str, ...]) -> str:
+    """``config.config_hash`` of a config loaded as the launcher loads it
+    (``protocol.load_run_config``), from the tracked file under configs/."""
+    return config_hash(load_run_config(CONFIG_ROOT / f"{config}.yaml", list(overrides)))
+
+
+def prescribed_hash(arm: str, batch: int, lr: float, seed: int, role: str) -> str:
+    """The config hash of the run ``run_prescription`` prescribes (the final review of gate B,
+    M2): what its ``meta.json`` must record."""
+    config, overrides = run_prescription(arm, batch, lr, seed, role)
+    return _config_hash_of(config, (*overrides, f"seed={seed}"))
+
+
 def conformance(runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]) -> list[str]:
     """How the stage's runs (the three arms and the FA controls; others are ignored) depart from
     its campaigns, ``facts`` giving each run's ``run_facts`` by run id: role, model, protocol
     version, schedule, monitor, the Rayleigh quotient and the K-only evaluation of the
     numerical runs (see the rulings). A run of the role timecourse is checked against the time
     course's prescription: a seed of the first 10 confirmation blocks, and the regular schedule
-    evaluated at steps 1, 5, 10 and 25."""
+    evaluated at steps 1, 5, 10 and 25. The whole config of every regular run of this stage
+    (role discovery, numerical, validation, confirmation or timecourse; not Stage A's grid runs,
+    which ``stage_a.role`` marks and Stage A's campaigns prescribed, nor amendment 3's FA
+    controls) is checked too (the final review of gate B, M2): the ``config_hash`` its
+    ``meta.json`` records must be ``prescribed_hash``, its campaign's config and overrides
+    loaded from the tracked configs, so that a change of what the campaigns prescribe, or a run
+    made otherwise, shows."""
     spec, problems = prescribed(), []
     for run in runs:
         if run.arm not in (*ARMS, FA_CONTROL_ARM):
@@ -2800,6 +2908,18 @@ def conformance(runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any
         if k_only != (role == "numerical"):  # numerical runs never answer a harmful prompt
             problems.append(f"{name} {'evaluates K only' if k_only else 'is not K-only'} on "
                             f"seed {run.seed}")  # fmt: skip
+        if role is not None and not control and run.role is None:  # not Stage A's grid runs
+            config, overrides = run_prescription(run.arm, run.batch_size, run.lr, run.seed, role)
+            try:
+                want = prescribed_hash(run.arm, run.batch_size, run.lr, run.seed, role)
+            except Exception as exc:  # a prescription the configs refuse
+                problems.append(f"{name}: its campaign's config {config} {overrides} does not "
+                                f"load: {type(exc).__name__}: {str(exc)[:300]}")  # fmt: skip
+                continue
+            if fact.get("config_hash") != want:
+                problems.append(f"{name} records the config hash {fact.get('config_hash')!r}, "
+                                f"not {want!r} of its campaign's config {config} with "
+                                f"{[*overrides, f'seed={run.seed}']}")  # fmt: skip
     return problems
 
 
@@ -2824,6 +2944,7 @@ def progress(
     numerical: Mapping[str, Any] | None = None,
     reuse: Callable[[str, str], Mapping[str, Any]] | None = None,
     timecourse: Sequence[Trajectory] = (),
+    issued_w_max: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The stage as it stands, on K, numerics and utility only. ``trajectories``: every run so
     far but the time course's, Stage A's included (its grids are the first discovery runs, its
@@ -2832,7 +2953,9 @@ def progress(
     run id; ``exhausted``: the validation and confirmation runs the launcher gave up on
     (``exhausted_runs``), each a technical failure of its arm in its block; ``numerical``: the
     numerical-check verdicts (``read_numerical``), None when not read; ``reuse``: the
-    selection's GPU-code reuse check. ``next["campaign"]`` is the selection's (``discovery``,
+    selection's GPU-code reuse check; ``issued_w_max``: the w_max each issued campaign's header
+    recorded (``issued_w_max``), any other than ``w_max`` refusing the replay first
+    (``w_max_problems``). ``next["campaign"]`` is the selection's (``discovery``,
     ``repair``, ``prewarmed``, ``targeted``, ``numerical``, ``numerical-check``, ``validation``,
     ``infeasible``), then ``confirmation`` (with the frozen rates) once a candidate passed its
     validation; ``incomplete`` whenever the records are not whole (``problems``), a time-course
@@ -2843,9 +2966,10 @@ def progress(
     exhausted = exhausted or {}
     stage = [run for run in trajectories if run.arm in (*ARMS, FA_CONTROL_ARM)]
     timecourse = list(timecourse)
-    problems = [f"time-course run {run.run_id} among the stage's other runs: split them where "
-                "they are loaded (split_timecourse)" for run in stage
-                if (facts.get(run.run_id) or {}).get("role") == TIMECOURSE]  # fmt: skip
+    problems = w_max_problems(w_max, issued_w_max)
+    problems += [f"time-course run {run.run_id} among the stage's other runs: split them where "
+                 "they are loaded (split_timecourse)" for run in stage
+                 if (facts.get(run.run_id) or {}).get("role") == TIMECOURSE]  # fmt: skip
     problems += [f"{run.run_id} is read as a time-course run, but its role is "
                  f"{(facts.get(run.run_id) or {}).get('role')!r}" for run in timecourse
                  if (facts.get(run.run_id) or {}).get("role") != TIMECOURSE]  # fmt: skip
@@ -2858,8 +2982,8 @@ def progress(
         out.update(next={"campaign": "incomplete"}, problems=problems)
         return out
     chosen = selection(trajectories, theta0, w_max, seconds_per_chunk=seconds_per_chunk,
-                       numerical=numerical, facts=facts, exhausted=exhausted,
-                       reuse=reuse)  # fmt: skip
+                       numerical=numerical, facts=facts, exhausted=exhausted, reuse=reuse,
+                       issued_w_max=issued_w_max)  # fmt: skip
     out.update(selection=chosen, problems=list(chosen["problems"]))
     step = chosen["next"]
     later = [run for run in stage if run.arm in ARMS and run.seed in CONFIRMATION_SEEDS]

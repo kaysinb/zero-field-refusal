@@ -20,7 +20,13 @@ import json
 import sys
 from pathlib import Path
 
-from zero_field_refusal.launch import CampaignError, StopRequest, load_campaign, run_campaign
+from zero_field_refusal.launch import (
+    CampaignError,
+    StopRequest,
+    campaign_header,
+    load_campaign,
+    run_campaign,
+)
 from zero_field_refusal.paths import load_env, runs_root
 
 
@@ -32,10 +38,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     load_env()
     name, runs = load_campaign(args.campaign)
+    header = campaign_header(args.campaign)  # logged with every start (study 2's w_max)
     stop = StopRequest.on_sigterm()
     try:
         result = run_campaign(name, runs, runs_root(), dry_run=args.dry_run,
-                              recovery=args.recovery, stop=stop)  # fmt: skip
+                              recovery=args.recovery, stop=stop, header=header)  # fmt: skip
     except CampaignError as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps({key: labels for key, labels in result.items() if labels}, indent=1))

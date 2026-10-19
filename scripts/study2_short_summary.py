@@ -88,6 +88,7 @@ from zero_field_refusal.analysis.study2_short import (
     VERSIONS_RECORD,
     confirmation_guard,
     exhausted_runs,
+    issued_w_max,
     look_blocks,
     looks,
     progress,
@@ -420,7 +421,7 @@ def main() -> None:
         parser.error(str(exc))
     numerical = read_numerical(args.runs_root) if args.runs_root is not None else None
     state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted, numerical=numerical,
-                     timecourse=courses)  # fmt: skip
+                     timecourse=courses, issued_w_max=issued_w_max(records))  # fmt: skip
     shown = status(state)
     shown["launch_journal"] = str(args.runs_root / "launch") if args.runs_root else None
     shown["abandoned"] = abandoned

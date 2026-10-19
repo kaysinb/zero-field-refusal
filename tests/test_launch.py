@@ -12,7 +12,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from zero_field_refusal.launch import CampaignError, StopRequest, load_campaign, run_campaign
+from zero_field_refusal.launch import (
+    CampaignError,
+    StopRequest,
+    campaign_header,
+    load_campaign,
+    run_campaign,
+)
 from zero_field_refusal.protocol import ProtocolError
 from zero_field_refusal.tracking import _RUN_ID as RUN_ID
 
@@ -114,6 +120,29 @@ def test_a_wrong_cell_stops_the_campaign_before_anything_runs(tmp_path, cells, e
                                                                match) -> None:  # fmt: skip
     with pytest.raises(error, match=match):
         load_campaign(campaign(tmp_path, f"name: c\ncells: {cells}\n"))
+
+
+def test_the_campaigns_header_goes_into_every_start(tmp_path) -> None:
+    """The final review of gate B, I4: a campaign's optional ``header`` (study 2's records the
+    w_max it was written under) is logged with every start; without one, nothing is added; a
+    header that is not a mapping of plain values is refused."""
+    path = campaign(tmp_path, "header: {w_max: 0.47, source: fixation}\n" + CELLS)
+    assert campaign_header(path) == {"w_max": 0.47, "source": "fixation"}
+    name, runs = load_campaign(path)
+    root = tmp_path / "runs"
+    run_campaign(name, runs[1:2], root, execute=Executor(root, {}),
+                 header=campaign_header(path))  # fmt: skip
+    starts = [json.loads(line) for line in (root / "launch" / f"{name}.jsonl").read_text()
+              .splitlines() if json.loads(line)["event"] == "start"]  # fmt: skip
+    assert len(starts) == 1 and starts[0]["header"] == {"w_max": 0.47, "source": "fixation"}
+    plain = campaign(tmp_path, CELLS)
+    assert campaign_header(plain) is None
+    run_campaign(name, runs[2:3], root, execute=Executor(root, {}), header=None)
+    last = json.loads((root / "launch" / f"{name}.jsonl").read_text().splitlines()[-2])
+    assert last["event"] == "start" and "header" not in last
+    for header in ("header: [0.47]\n", "header: {w_max: [0.47]}\n"):
+        with pytest.raises(ValueError, match="plain values"):
+            campaign_header(campaign(tmp_path, header + CELLS))
 
 
 def test_runs_are_skipped_retried_or_left_by_their_outcome(tmp_path) -> None:
