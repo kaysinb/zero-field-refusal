@@ -25,7 +25,6 @@ from test_study2_short import (
     COMMIT as RUN_COMMIT,
 )
 from test_study2_short import (
-    GPU,
     SCALE,
     THETA0,
     W_MAX,
@@ -34,6 +33,7 @@ from test_study2_short import (
     reusable,
     stage_a_reference,
     traj,
+    verdict_of,
 )
 
 from zero_field_refusal.analysis.stage_a import arm_of
@@ -56,7 +56,7 @@ from zero_field_refusal.analysis.study2_short import (
     look_blocks,
     looks,
     measures_rayleigh,
-    numerical_policy,
+    numerical_digest,
     preconditioner_pairing,
     prescribed,
     progress,
@@ -65,9 +65,6 @@ from zero_field_refusal.analysis.study2_short import (
     read_numerical,
     run_facts,
     seed_role,
-)
-from zero_field_refusal.analysis.study2_short import (
-    OPTIMIZERS as OPTIMIZER_NAMES,
 )
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import MAX_ATTEMPTS, load_campaign
@@ -216,37 +213,27 @@ def later(arm, batch, lr, seed):
     return conform(traj(arm, batch, lr, seed, k, mmlu=0.3 * k, factual=0.1 * k))
 
 
-def qualified_verdicts(runs) -> dict:
-    """The numerical-check tool's verdicts as every check of the synthetic stage would read them:
-    for each batch with numerical runs, a record of every (arm, rate) run there qualified, on the
-    seeds it ran, and every FA rate's control accepted, under every check name of a candidate at
-    that batch (a record may hold more rates than a check asks)."""
-    seeds: dict[int, dict[str, list[int]]] = {}
-    for run in runs:
-        if run.arm in ARMS and run.seed in NUMERICAL_SEEDS:
-            key = f"{OPTIMIZER_NAMES[run.arm]}|{run.lr:g}"
-            seeds.setdefault(run.batch_size, {}).setdefault(key, []).append(run.seed)
-    out = {}
-    for batch, tested in seeds.items():
-        controls = {key.split("|")[1]: "accepted" for key in tested
-                    if key.startswith("adam_frozen|")}  # fmt: skip
-        for upper in (8.0, 7.0):
-            record = {"batch": batch, "U": int(upper), "rates": dict.fromkeys(tested, "qualified"),
-                      "seeds": {k: sorted(v) for k, v in tested.items()}, "controls": controls,
-                      "qualified": True, "reasons": {},
-                      "policy": {"gpu_code": {"commit": RUN_COMMIT, "files": 1,
-                                              "sha256": GPU[RUN_COMMIT]},
-                                 "tool_commit": RUN_COMMIT, "reference": "float64",
-                                 **numerical_policy(upper)}}  # fmt: skip
-            for name in [f"b{batch}-u{upper:g}"] + [f"b{batch}-u{upper:g}-{k}" for k in (2, 3)]:
-                out[f"numerical/{name}/verdict.json"] = record
-    return out
+def answered(runs, exhausted=None, verdicts=None) -> dict:
+    """``verdicts`` with every numerical check the synthetic stage asks for answered as the
+    numerical-check tool would, every rate qualified (``test_study2_short.verdict_of``), each under
+    its selection's digest."""
+    verdicts = dict(verdicts or {})
+    for _ in range(8):
+        state = progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted,
+                         numerical=verdicts, reuse=reusable)  # fmt: skip
+        # The selection's own step: later runs show as unexpected until its check is answered.
+        step = state.get("selection", {}).get("next", state["next"])
+        if step["campaign"] != "numerical-check":
+            return verdicts
+        check = step["check"]
+        verdicts[check["verdict"]] = verdict_of(check)
+    raise AssertionError("the checks never end")
 
 
 def stage(runs, exhausted=None, verdicts=None):
-    """The stage's progress; its numerical checks read ``verdicts`` (``qualified_verdicts``, every
-    check qualified, by default)."""
-    verdicts = qualified_verdicts(runs) if verdicts is None else verdicts
+    """The stage's progress; its numerical checks read ``verdicts`` (every check the stage asks
+    for answered, qualified, by default: ``answered``)."""
+    verdicts = answered(runs, exhausted) if verdicts is None else verdicts
     return progress(runs, THETA0, W_MAX, facts=facts_of(runs), exhausted=exhausted,
                     numerical=verdicts, reuse=reusable)  # fmt: skip
 
@@ -288,7 +275,8 @@ def test_the_stage_goes_from_discovery_to_validation_to_confirmation() -> None:
     runs = base()
     assert stage(runs)["next"]["campaign"] == "discovery"
     numerical = until(runs, "numerical")["next"]
-    assert (numerical["batch"], numerical["check"], len(numerical["runs"])) == (20, "b20-u8", 15)
+    assert (numerical["batch"], numerical["check"], len(numerical["runs"])) == (
+        20, numerical_digest(RATES20), 15)  # fmt: skip
     assert numerical["streams"] == {"seeds": [2200, 2201, 2202], "batch": 20,
                                     "training_responses": 500,
                                     "preconditioner_responses": 1000}  # fmt: skip
@@ -746,7 +734,7 @@ def script(
     """Run a script on ``runs`` (patched in for the run directories); returns its --out. With
     ``versions``, the versions record holds (``versions_problems`` has its own tests). With
     ``root``, --runs-root is given (an empty journal unless the arguments name one) and holds
-    ``verdicts`` (every numerical check's, ``qualified_verdicts``, by default); the GPU-code
+    ``verdicts`` (every check the stage asks for, ``answered``, by default); the GPU-code
     check reads the synthetic commits (``test_study2_short.reusable``)."""
     monkeypatch.setattr("zero_field_refusal.analysis.stage_a.load_trajectories",
                         lambda *roots: list(runs))  # fmt: skip
@@ -755,7 +743,7 @@ def script(
         if "--runs-root" not in args:
             args = (*args, "--runs-root", runs_root(tmp_path))
         directory = Path(args[args.index("--runs-root") + 1])
-        written = qualified_verdicts(runs) if verdicts is None else verdicts
+        written = answered(runs) if verdicts is None else verdicts
         for name, record in written.items():
             (directory / name).parent.mkdir(parents=True, exist_ok=True)
             (directory / name).write_text(json.dumps(record))
@@ -855,14 +843,15 @@ def test_the_numerical_campaign(monkeypatch, tmp_path) -> None:
     assert {run.config for run in found} == {"experiments/study2_short_k_only"}
     assert {run.experiment for run in found} == {"study2_short"}
     assert all("study2_short.role=numerical" in run.overrides for run in found)
-    assert "adamw_25-b20-1.74e-05-numerical-b20-u8/s2202" in labels_of(found)
-    assert "adamw_25-b20-1.27e-05-numerical-b20-u8/s2201" not in labels_of(found)
+    tag = f"numerical-u8-{numerical_digest(RATES20)}"  # the selection's digest: unique names
+    assert f"adamw_25-b20-1.74e-05-{tag}/s2202" in labels_of(found)
+    assert f"adamw_25-b20-1.27e-05-{tag}/s2201" not in labels_of(found)
     cfg = load_run_config(found[0].config, found[0].overrides)
     assert cfg.eval.k_only is True and cfg.study2_short.role == "numerical"
     header = " ".join(line[2:] for line in out.read_text().splitlines() if line.startswith("#"))
     assert ("prep --seeds 2200 2201 2202 --batch 20): the training stream of 500 responses and "
             "v₀'s preconditioner stream of 1000") in header  # fmt: skip
-    assert "The check b20-u8 follows the runs" in header
+    assert f"The check {numerical_digest(RATES20)} follows the runs" in header
 
 
 def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_path, capsys):
@@ -880,7 +869,10 @@ def test_the_numerical_check_writes_the_tools_selection_record(monkeypatch, tmp_
         "batch": 20, "U": 8}  # fmt: skip
     shown = capsys.readouterr().out
     assert f"--selection {out} --batch 20 --upper 8" in shown
-    assert "under $RUNS_DIR/numerical/b20-u8" in shown
+    assert (
+        "outputs under $RUNS_DIR/numerical/b20-u8, the selection's verdict at $RUNS_DIR/"
+        f"numerical/b20-u8/verdicts/{numerical_digest(RATES20)}.json" in shown
+    )
     err = refusal(monkeypatch, tmp_path, capsys, runs, "numerical-check", "--fixation", record)
     assert "the stage's next step is validation, not numerical-check" in err  # verdict in place
 
@@ -1005,13 +997,16 @@ def test_a_range_issued_before_is_completed_and_then_refused(monkeypatch, tmp_pa
 
 def test_the_numerical_verdicts_are_read_from_the_runs_root(tmp_path) -> None:
     root = tmp_path / "runs"
-    (root / "numerical" / "b20-u8").mkdir(parents=True)
-    (root / "numerical" / "b20-u8" / "verdict.json").write_text('{"batch": 20}')
-    (root / "numerical" / "b20-u8-2").mkdir()
-    (root / "numerical" / "b20-u8-2" / "verdict.json").write_text("{not json")
+    kept = root / "numerical" / "b20-u8" / "verdicts"
+    kept.mkdir(parents=True)
+    (kept / "0123456789ab.json").write_text('{"batch": 20}')
+    (kept / "ba9876543210.json").write_text("{not json")
+    (kept.parent / "verdict.json").write_text('{"batch": 5}')  # the copy for people: not read
     found = read_numerical(root)
-    assert found["numerical/b20-u8/verdict.json"] == {"batch": 20}
-    assert found["numerical/b20-u8-2/verdict.json"].startswith("unreadable: ")
+    assert sorted(found) == ["numerical/b20-u8/verdicts/0123456789ab.json",
+                             "numerical/b20-u8/verdicts/ba9876543210.json"]  # fmt: skip
+    assert found["numerical/b20-u8/verdicts/0123456789ab.json"] == {"batch": 20}
+    assert found["numerical/b20-u8/verdicts/ba9876543210.json"].startswith("unreadable: ")
     assert read_numerical(tmp_path / "nowhere") == {}
 
 

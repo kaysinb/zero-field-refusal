@@ -7,6 +7,7 @@ get verdict records of the numerical-check tool's schema. One test replays the a
 of the main checkout (K, numerics and utility only), skipped where they are absent."""
 
 import dataclasses
+import hashlib
 import json
 import math
 import re
@@ -48,6 +49,7 @@ from zero_field_refusal.analysis.study2_short import (
     harm,
     interpolate,
     numerical_cases,
+    numerical_digest,
     numerical_policy,
     numerical_verdict,
     repair_rates,
@@ -241,6 +243,17 @@ def drive(runs, *, scale=SCALE, spread=None, kinked=(), judge=verdict_of, verdic
 
 def campaign_runs(step) -> set[tuple]:
     return {(r["arm"], r["batch"], r["lr"], r["seed"]) for r in step["runs"]}
+
+
+# The world's selection at (U, B) = (8, 20).
+SELECTED20 = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
+              PREWARMED: [1.27e-5, 1.48e-5, 1.74e-5]}  # fmt: skip
+PRIMARY20 = {arm: SELECTED20[arm] for arm in (ADAMW, FA)}
+
+
+def verdict_path(rates, batch: int = 20, upper: float = 8.0) -> str:
+    """Where the numerical-check tool keeps a selection's verdict, under $RUNS_DIR."""
+    return f"numerical/b{batch}-u{upper:g}/verdicts/{numerical_digest(rates)}.json"
 
 
 # ------------------------------------------------------------------ usability and targeting
@@ -450,8 +463,8 @@ def test_the_state_machine_discovers_qualifies_validates_and_freezes() -> None:
                              PREWARMED: [1.27e-5, 1.48e-5, 1.74e-5]}  # fmt: skip
     assert not done["prewarmed_dropped"] and done["validation"]["passes"]
     assert done["validation"]["arms"] == list(ARMS)  # the three-arm validation
-    assert [e["verdict"] for e in done["numerical"]] == ["numerical/b20-u8/verdict.json"]
-    assert list(verdicts) == ["numerical/b20-u8/verdict.json"]
+    assert [e["verdict"] for e in done["numerical"]] == [verdict_path(SELECTED20)]
+    assert list(verdicts) == [verdict_path(SELECTED20)]
     rounds = result["rounds"]
     assert rounds[f"{PREWARMED}/B=20/U=8"]["first"]["proposal"]["joint"]
     assert result["problems"] == [] and len(result["attempts"]) == 1
@@ -488,10 +501,10 @@ def test_failing_numerical_rate_resolves_once() -> None:
     seen, result, verdicts = drive(runs, judge=judge)
     assert seen == ["discovery", "numerical", "numerical-check", "numerical", "numerical-check",
                     "validation", "done"]  # fmt: skip
-    assert list(verdicts) == ["numerical/b20-u8/verdict.json", "numerical/b20-u8-2/verdict.json"]
-    # The second check writes into its own directory, reusing the first's case records.
-    assert [(c["out"], c["records_from"]) for c in asked] == [
-        ("numerical/b20-u8", []), ("numerical/b20-u8-2", ["numerical/b20-u8"])]  # fmt: skip
+    resolved = {**SELECTED20, ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}
+    # Both verdicts are kept, each under its selection's digest, in the check's one directory.
+    assert list(verdicts) == [verdict_path(SELECTED20), verdict_path(resolved)]
+    assert [c["out"] for c in asked] == ["numerical/b20-u8", "numerical/b20-u8"]
     assert asked[1]["selection"]["rates"]["adamw"] == [1.27e-5, 1.5e-5, 1.74e-5]
     attempt = result["attempts"][0]
     first, second = attempt["numerical"]
@@ -504,7 +517,7 @@ def test_failing_numerical_rate_resolves_once() -> None:
             "reasons": [],
         }
     ]
-    assert second["check"] == "b20-u8-2" and second["unusable"] == []
+    assert second["check"] == numerical_digest(resolved) and second["unusable"] == []
     assert attempt["arms"][ADAMW]["selections"][-1]["excluded"] == [1.48e-5]
     assert result["next"]["rates"][ADAMW] == [1.27e-5, 1.5e-5, 1.74e-5]
     replacement = [r for r in runs if r.seed in NUMERICAL_SEEDS and r.lr == 1.5e-5]
@@ -529,6 +542,67 @@ def test_failing_numerical_rate_resolves_once() -> None:
     assert (result["next"]["campaign"], result["next"]["U"]) == ("done", 7.0)
 
 
+def test_two_verdicts_at_8_20_a_failing_fa_rate_and_the_resolved_selection(tmp_path) -> None:
+    """The replay over the tool's verdict files at (8, 20): the first verdict marks FA's lowest
+    rate failing; FA is re-solved once; the second verdict, of the re-solved selection, under its
+    own digest beside the first, qualifies it."""
+    runs = grids()
+    failing = {("adam_frozen", 1.59e-5): "failing"}
+    reason = {"adam_frozen|1.59e-05": ["case s2200: p1 exceeding (max D_twin 0.081)"]}
+    _, _, verdicts = drive(runs, judge=lambda c: verdict_of(c, failing, reasons=reason),
+                           until="validation")  # fmt: skip
+    resolved = {**SELECTED20, FA: [1.5e-5, 1.86e-5, 2.17e-5]}
+    assert list(verdicts) == [verdict_path(SELECTED20), verdict_path(resolved)]
+    # The replacement is not FA's U-rate: one case, on 2200; its control is asked in the check.
+    assert [(r.arm, r.lr, r.seed) for r in runs if r.seed in NUMERICAL_SEEDS
+            and r.lr == 1.5e-5] == [(FA, 1.5e-5, 2200)]  # fmt: skip
+    assert "1.5e-05" in verdicts[verdict_path(resolved)]["controls"]
+    root = tmp_path / "runs"
+    for path, record in verdicts.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(json.dumps(record))
+    (root / "numerical" / "b20-u8" / "verdict.json").write_text("{}")  # a copy, never read
+    found = study2_short.read_numerical(root)
+    assert sorted(found) == sorted(verdicts)
+    result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=found,
+                       facts=commits(runs), reuse=reusable)  # fmt: skip
+    assert result["next"]["campaign"] == "validation" and result["problems"] == []
+    assert result["next"]["rates"][FA] == resolved[FA]
+    first, second = result["attempts"][0]["numerical"]
+    assert first["verdict"] == verdict_path(SELECTED20)
+    assert first["unusable"][0]["reasons"] == reason["adam_frozen|1.59e-05"]
+    assert second["verdict"] == verdict_path(resolved) and second["unusable"] == []
+    assert result["unread_verdicts"] == []
+    # A verdict the replay did not read that marks a rate unusable at the batch: no conclusion.
+    other = {**SELECTED20, ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}
+    stray = verdict_of(study2_short._check_request(
+        {"name": numerical_digest(other), "dir": "numerical/b20-u7",
+         "path": verdict_path(other, upper=7.0)}, 20, 7.0, other, COMMIT),
+        {("adamw", 1.5e-5): "not_qualified"})  # fmt: skip
+    found = {**verdicts, verdict_path(other, upper=7.0): stray}
+    result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=found,
+                       facts=commits(runs), reuse=reusable)  # fmt: skip
+    assert result["unread_verdicts"] == [verdict_path(other, upper=7.0)]
+    assert "a verdict the selection did not read marks ['adamw|1.5e-05']" in result["problems"][0]
+    # A verdict whose name is not the digest of its rates: malformed, no conclusion.
+    misnamed = {verdict_path(SELECTED20): verdicts[verdict_path(resolved)]}
+    result = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical=misnamed,
+                       facts=commits(runs), reuse=reusable)  # fmt: skip
+    assert result["next"]["campaign"] == "incomplete"
+    assert "is not the digest" in result["problems"][0]
+    # An instability stop of a numerical run is failing, with its reason.
+    stop = {"adamw|1.48e-05": ["instability: case s2200 stopped by k_above_max at step 9"]}
+    unstable = verdict_of(study2_short._check_request(
+        {"name": numerical_digest(SELECTED20), "dir": "numerical/b20-u8",
+         "path": verdict_path(SELECTED20)}, 20, 8.0, SELECTED20, COMMIT),
+        {("adamw", 1.48e-5): "failing"}, reasons=stop)  # fmt: skip
+    entry = numerical_verdict(unstable, 20, 8.0, SELECTED20, COMMIT, reusable)["unusable"][0]
+    assert entry["why"] == "failing: its numerical run stopped by an instability rule"
+    assert numerical_digest(SELECTED20) == hashlib.sha256("\n".join(sorted(
+        f"{study2_short.OPTIMIZERS[arm]}|{lr:g}" for arm, lrs in SELECTED20.items()
+        for lr in lrs)).encode()).hexdigest()[:12]  # fmt: skip
+
+
 def test_a_replacement_u_rate_gets_its_cases_on_2201_and_2202() -> None:
     scale = {**SCALE, (PREWARMED, 20): 3.3}  # the pre-warmed U-rate has two candidates near 8
     runs = grids(scale)
@@ -549,7 +623,7 @@ def test_a_replacement_u_rate_gets_its_cases_on_2201_and_2202() -> None:
     assert [(arm, seed) for arm, _, seed in replacement] == [
         (ADAMW, 2200), (ADAMW, 2201), (ADAMW, 2202),
         (PREWARMED, 2200), (PREWARMED, 2201), (PREWARMED, 2202)]  # fmt: skip
-    second = verdicts["numerical/b20-u8-2/verdict.json"]
+    second = verdicts[verdict_path({**SELECTED20, PREWARMED: [1.27e-5, 1.59e-5, 1.74e-5]})]
     assert second["seeds"]["adamw_prewarmed|1.74e-05"] == [2200, 2201, 2202]
 
 
@@ -642,7 +716,7 @@ def test_prewarmed_never_feasible_falls_back() -> None:
     assert done["prewarmed_dropped"] and not done["three_arm"] and done["rates"][PREWARMED] is None
     assert done["validation"]["arms"] == [ADAMW, FA]  # amendment 3's primary-arm validation
     assert seen[-4:] == ["numerical", "numerical-check", "validation", "done"]
-    assert list(verdicts) == ["numerical/b20-u8/verdict.json"]
+    assert list(verdicts) == [verdict_path(PRIMARY20)]  # the primary arms' own check
     assert {(r.arm, r.seed) for r in runs if r.seed in NUMERICAL_SEEDS} <= {
         (arm, s) for arm in (ADAMW, FA) for s in NUMERICAL_SEEDS}  # fmt: skip
     assert not [r for r in runs if r.arm == PREWARMED and r.seed in VALIDATION_SEEDS]
@@ -671,7 +745,9 @@ def test_primary_only_fallback_end_to_end() -> None:
     # The fallback reads the same combined verdict for the primary arms and the FA controls
     # only: its pre-warmed entries do not block it, and no new check is asked for.
     fallback = attempts[4]
-    assert (fallback["three_arm"], fallback["numerical"][0]["check"]) == (False, "b20-u8")
+    assert (fallback["three_arm"], fallback["numerical"][0]["check"]) == (
+        False, numerical_digest(PRIMARY20))  # fmt: skip
+    assert fallback["numerical"][0]["verdict"] == verdict_path(SELECTED20)  # the combined one
     assert fallback["numerical"][0]["state"] == "complete"
     assert fallback["numerical"][0]["unusable"] == []
     step = result["next"]
@@ -680,7 +756,7 @@ def test_primary_only_fallback_end_to_end() -> None:
     assert step["prewarmed_dropped"] and set(step["rates"]) == {ADAMW, FA}
     assert {r["arm"] for r in step["runs"]} == {ADAMW, FA} and len(step["runs"]) == 2 * 3 * 12
     seen, result, verdicts = drive(runs, scale=scale, judge=judge, verdicts=verdicts)
-    assert seen == ["validation", "done"] and list(verdicts) == ["numerical/b20-u8/verdict.json"]
+    assert seen == ["validation", "done"] and list(verdicts) == [verdict_path(SELECTED20)]
     done = result["next"]
     assert done["prewarmed_dropped"] is True and done["three_arm"] is False
     assert done["rates"] == {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
@@ -849,7 +925,8 @@ REQUEST = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
 
 def request_check(rates=REQUEST, upper=8.0) -> dict:
     """A check request as the state machine writes it (``step["check"]``)."""
-    slot = {"name": "b20-u8", "path": "numerical/b20-u8/verdict.json", "earlier": []}
+    slot = {"name": numerical_digest(rates), "dir": "numerical/b20-u8",
+            "path": verdict_path(rates, upper=upper)}  # fmt: skip
     return study2_short._check_request(slot, 20, upper, rates, COMMIT)
 
 
@@ -1030,7 +1107,7 @@ def test_the_machine_never_passes_an_incomplete_stale_or_unread_check() -> None:
                           reuse=reusable)  # fmt: skip
         return found["next"]
 
-    path = "numerical/b20-u8/verdict.json"
+    path = verdict_path(SELECTED20)
     step = at({})
     assert step["campaign"] == "numerical-check" and step["check"]["verdict"] == path
     assert step["check"]["runs_commit"] == COMMIT and len(step["check"]["cases"]) == 15

@@ -124,22 +124,25 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 - *Numerical qualification* (amendment 4, review fa12): once every arm of the visit has its
   triple, the K-only regular runs of the check's cases (``numerical_cases``, role numerical,
   experiments/study2_short_k_only) are called for; once they all exist, the check of the
-  numerical-check tool, whose verdict the replay reads at numerical/<check>/verdict.json under
-  $RUNS_DIR. The candidate's checks are named b{B}-u{U}, then b{B}-u{U}-2 and on, one per
-  distinct request, so that an earlier verdict is never overwritten; a later request whose rates
-  an earlier check of the candidate holds (the primary arms of its three-arm check) reads that
-  check. A verdict decides only when its batch and U are the candidate's, its policy is the
-  frozen one (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound 0.01 × K*, steps
-  1, 5, 10, 15, 20, 25), its GPU code (``policy.gpu_code``, review fa13) is that of the commit
-  its numerical runs recorded (all one commit, else ``incomplete``) and that of the running
-  checkout (``code_identity.reuse_check`` from its commit to HEAD reusable: analysis-only
-  commits keep a qualification, a GPU-path change voids it; the checks are kept in the
-  record), every requested rate and FA control is in it and every rate's seeds cover its
-  cases; otherwise it is stale and the next step runs the check again. A rate or control
-  ``incomplete`` is never a pass: the next step finishes the check. A rate ``failing`` (a pair
-  exceeding) or ``not_qualified`` (technical, with its reason, never reported as instability),
-  or an FA rate whose control is ``rejected`` or ``not_qualified``, is unusable at that batch for
-  every U: excluded up front at every later visit of the batch. The arms holding unusable rates
+  numerical-check tool. Every selection's verdict is kept, under $RUNS_DIR, at
+  numerical/b{B}-u{U}/verdicts/<digest>.json (``numerical_digest``; a record whose name is not
+  the digest of its own rates is malformed), so none is overwritten; the request reads its own
+  digest's verdict, else (the primary arms alone) a verdict of the candidate whose rates for the
+  requested arms are exactly the request's, one marking a requested rate unusable first. A
+  verdict at a batch the replay reached that it did not read and that marks a rate unusable
+  leaves no conclusion. A verdict decides only when its batch and U are the candidate's, its
+  policy is the frozen one (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound
+  0.01 × K*, steps 1, 5, 10, 15, 20, 25), its GPU code (``policy.gpu_code``, review fa13; null
+  is stale) is that of the commit its numerical runs recorded (all one commit, else
+  ``incomplete``) and that of the running checkout (``code_identity.reuse_check`` from its
+  commit to HEAD reusable: analysis-only commits keep a qualification, a GPU-path change voids
+  it; the checks are kept in the record), every requested rate and FA control is in it and
+  every rate's seeds cover its cases; otherwise it is stale and the next step runs the check
+  again. A rate or control ``incomplete`` is never a pass: the next step finishes the check. A
+  rate ``failing`` (a pair exceeding, or its numerical run stopped by an instability rule) or
+  ``not_qualified`` (technical, with its reason, never reported as instability), or an FA rate
+  whose control is ``rejected`` or ``not_qualified``, is unusable at that batch for every U:
+  excluded up front at every later visit of the batch. The arms holding unusable rates
   are re-solved once, from the same runs with no new round; the re-solve's cases are called for
   (a replacement rate on 2200, and on 2201 and 2202 if it is its arm's new U-rate; a replacement
   FA rate with its control) and checked in a new check; an unusable rate there, or no feasible
@@ -364,7 +367,7 @@ ROLES = ("discovery", "numerical", "validation", "confirmation")  # study2_short
 # directory per check, numerical/b{B}-u{U}/verdict.json for a candidate's first.
 NUMERICAL_TOOL = "scripts/numerical_check.py"
 NUMERICAL_DIR = "numerical"
-VERDICT_FILE = "verdict.json"
+VERDICTS_DIR = "verdicts"  # numerical/b{B}-u{U}/verdicts/<digest>.json, one per selection checked
 K_ONLY = "experiments/study2_short_k_only"  # REGULAR with the K-only evaluation: numerical runs
 OPTIMIZERS = {ADAMW: "adamw", FA: "adam_frozen", PREWARMED: "adamw_prewarmed"}  # its arm names
 # The states of an (arm, rate) and of an FA rate's same-path control in a verdict (review fa12):
@@ -974,6 +977,10 @@ def numerical_verdict(
                         "why": why[out["rates"][key]], "reasons": told(key, False)}
                        for key, (arm, lr) in pairs.items()
                        if out["rates"][key] in why]  # fmt: skip
+    for entry in out["unusable"]:  # a numerical run stopped by an instability rule is failing
+        if entry["state"] == "failing" and any(r.startswith("instability:")
+                                               for r in entry["reasons"]):  # fmt: skip
+            entry["why"] = "failing: its numerical run stopped by an instability rule"
     control_why = {"rejected": "its same-path control rejected",
                    "not_qualified": "its same-path control not qualified (technical)"}  # fmt: skip
     out["unusable"] += [{"arm": FA, "lr": lr, "state": f"control {out['controls'][key]}",
@@ -985,13 +992,25 @@ def numerical_verdict(
     return out
 
 
+def numerical_digest(rates: Mapping[str, Sequence[float]]) -> str:
+    """A selection's digest, the name of its verdict: the first 12 hex digits of the sha256 of
+    its sorted f"{optimizer}|{lr:g}" keys joined by newlines (as the numerical-check tool keys
+    it)."""
+    return _digest(_pair_key(arm, lr) for arm, lrs in rates.items() for lr in lrs)
+
+
+def _digest(keys: Collection[str] | Any) -> str:
+    return hashlib.sha256("\n".join(sorted(keys)).encode()).hexdigest()[:12]
+
+
 def read_numerical(runs_root: str | Path) -> dict[str, Any]:
     """The numerical-check tool's verdict records under ``runs_root`` ($RUNS_DIR), by their path
-    relative to it (numerical/<check>/verdict.json). A file that does not read as JSON is kept as
-    the text of its error, which ``numerical_verdict`` finds malformed."""
+    relative to it: numerical/b{B}-u{U}/verdicts/<digest>.json, one per selection checked (the
+    ``verdict.json`` beside them is a copy for people, never read). A file that does not read as
+    JSON is kept as the text of its error, which ``numerical_verdict`` finds malformed."""
     root = Path(runs_root)
     out: dict[str, Any] = {}
-    for path in sorted((root / NUMERICAL_DIR).glob(f"*/{VERDICT_FILE}")):
+    for path in sorted((root / NUMERICAL_DIR).glob(f"*/{VERDICTS_DIR}/*.json")):
         name = path.relative_to(root).as_posix()
         try:
             out[name] = json.loads(path.read_text())
@@ -1026,7 +1045,7 @@ class _Replay:
         self.rounds: dict[tuple[str, int, float], dict[str, dict[str, Any]]] = defaultdict(dict)
         self.unusable: dict[tuple[str, int], dict[float, str]] = defaultdict(dict)
         self.called: set[tuple] = set()  # the numerical and validation runs called for
-        self.checks: dict[tuple[int, float], list[dict[str, Any]]] = defaultdict(list)
+        self.read: set[str] = set()  # the verdicts the replay read
         self.reached: set[int] = set()
 
     def records(self, arm: str, batch: int) -> dict[float, dict[str, Any]]:
@@ -1088,19 +1107,35 @@ class _Replay:
         return record
 
     def check(self, batch: int, upper: float, rates: Mapping[str, Sequence[float]]) -> dict:
-        """The numerical check of ``rates`` at the candidate: an earlier one of the candidate whose
-        rates hold these (the three-arm check read for the primary arms alone), else the next,
-        named b{B}-u{U}, then b{B}-u{U}-2, ..., with its verdict's path under $RUNS_DIR."""
-        slots = self.checks[(batch, upper)]
-        for slot in slots:
-            if all(slot["rates"].get(arm) == list(lrs) for arm, lrs in rates.items()):
-                return slot
-        name = f"b{batch}-u{upper:g}" + (f"-{len(slots) + 1}" if slots else "")
-        slot = {"name": name, "path": f"{NUMERICAL_DIR}/{name}/{VERDICT_FILE}",
-                "rates": {arm: list(lrs) for arm, lrs in rates.items()},
-                "earlier": [f"{NUMERICAL_DIR}/{s['name']}" for s in slots]}  # fmt: skip
-        slots.append(slot)
-        return slot
+        """The numerical check of ``rates`` at the candidate: the tool's directory
+        numerical/b{B}-u{U} and the path of the selection's verdict, verdicts/<digest>.json
+        (``numerical_digest``), under $RUNS_DIR."""
+        directory = f"{NUMERICAL_DIR}/b{batch}-u{upper:g}"
+        digest = numerical_digest(rates)
+        return {"name": digest, "dir": directory,
+                "path": f"{directory}/{VERDICTS_DIR}/{digest}.json",
+                "rates": {arm: list(lrs) for arm, lrs in rates.items()}}  # fmt: skip
+
+    def verdicts_for(self, check: Mapping[str, Any]) -> list[tuple[str, Any]]:
+        """The verdicts that answer the check: the one of its selection's digest; without it,
+        those of the candidate whose rates for the requested arms are exactly the request's,
+        holding other arms too (a three-arm check read for the primary arms alone, review
+        fa13). Each is marked read."""
+        found = []
+        if check["path"] in self.verdicts:
+            found = [check["path"]]
+        else:
+            wanted = {_pair_key(arm, lr) for arm, lrs in check["rates"].items() for lr in lrs}
+            names = {OPTIMIZERS[arm] for arm in check["rates"]}
+            prefix = f"{check['dir']}/{VERDICTS_DIR}/"
+            for path in sorted(self.verdicts):
+                rates = (self.verdicts[path] or {}).get("rates") if isinstance(
+                    self.verdicts[path], dict) else None  # fmt: skip
+                if path.startswith(prefix) and isinstance(rates, dict) and {
+                        key for key in rates if key.split("|")[0] in names} == wanted:  # fmt: skip
+                    found.append(path)
+        self.read |= set(found)
+        return [(path, self.verdicts[path]) for path in found]
 
     def unexpected(self) -> tuple[list[str], list[str]]:
         """The runs no visit called for: problems at a batch the replay reached; at a batch it has
@@ -1214,8 +1249,39 @@ def selection(
     out["rounds"] = {f"{arm}/B={batch}/U={upper:g}": kinds
                      for (arm, batch, upper), kinds in replay.rounds.items()}  # fmt: skip
     unexpected, out["not_reached"] = replay.unexpected()
-    out["problems"] = out["next"].get("problems", []) + unexpected
+    unread, against = _unread_verdicts(replay)
+    out["unread_verdicts"] = unread
+    out["problems"] = out["next"].get("problems", []) + unexpected + against
     return out
+
+
+_VERDICT_PATH = re.compile(rf"^{NUMERICAL_DIR}/b(\d+)-u[^/]+/{VERDICTS_DIR}/[^/]+\.json$")
+
+
+def _unread_verdicts(replay: _Replay) -> tuple[list[str], list[str]]:
+    """The verdicts at a batch the replay reached that it did not read, and the problems among
+    them: one marking a rate unusable (failing, not qualified, a control rejected or not
+    qualified) leaves no conclusion, since a rate unusable at a batch is unusable at every U."""
+    unread, problems = [], []
+    for path in sorted(replay.verdicts or {}):
+        found = _VERDICT_PATH.match(path)
+        if path in replay.read or found is None or int(found[1]) not in replay.reached:
+            continue
+        unread.append(path)
+        record = replay.verdicts[path]
+        rates = record.get("rates") if isinstance(record, dict) else None
+        controls = record.get("controls") if isinstance(record, dict) else None
+        marked = [key for key, value in (rates or {}).items()
+                  if value in ("failing", "not_qualified")]  # fmt: skip
+        marked += [f"control {key}" for key, value in (controls or {}).items()
+                   if value in ("rejected", "not_qualified")]  # fmt: skip
+        if not isinstance(rates, dict):
+            problems.append(f"{path}: a verdict the selection did not read, unreadable: no "
+                            "conclusion")  # fmt: skip
+        elif marked:
+            problems.append(f"{path}: a verdict the selection did not read marks {marked} "
+                            "unusable at its batch: no conclusion")  # fmt: skip
+    return unread, problems
 
 
 def _step(campaign: str, attempt: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
@@ -1395,9 +1461,8 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
             return incomplete([f"check {check['name']}: its numerical runs record the commits "
                                f"{sorted(map(str, commits))}, not one commit"])  # fmt: skip
         (commit,) = commits
-        verdict = numerical_verdict(replay.verdicts.get(check["path"]), batch, upper, request,
-                                    commit, replay.reuse)  # fmt: skip
-        entry.update(verdict)
+        path, verdict = _read_check(replay, check, batch, upper, request, commit)
+        entry.update(verdict, verdict=path)
         if verdict["state"] == "malformed":
             return incomplete([f"{check['path']}: {reason}" for reason in verdict["reasons"]])
         if verdict["state"] != "complete":  # absent, stale or incomplete: never a pass
@@ -1429,18 +1494,43 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
             return None, None, None
 
 
+def _read_check(replay, check, batch, upper, request, commit) -> tuple[str, dict[str, Any]]:
+    """The verdict of a check (``_Replay.verdicts_for``), read for the request: a record whose
+    name is not the digest of its own rates is malformed; among several verdicts that answer it,
+    one that marks a requested rate unusable is taken first, then a complete one, then the
+    first. Returns its path (the selection's own when none answers) and its reading."""
+    readings = []
+    for path, record in replay.verdicts_for(check):
+        rates = record.get("rates") if isinstance(record, dict) else None
+        stem = path.rsplit("/", 1)[-1].removesuffix(".json")
+        if isinstance(rates, dict) and _digest(rates) != stem:
+            why = f"its name is not the digest {_digest(rates)} of its rates"
+            readings.append((path, {"state": "malformed", "reasons": [why], "unusable": []}))
+            continue
+        readings.append((path, numerical_verdict(record, batch, upper, request, commit,
+                                                 replay.reuse)))  # fmt: skip
+    if not readings:
+        return check["path"], numerical_verdict(None, batch, upper, request, commit, replay.reuse)
+    for wanted in (lambda r: r["state"] == "malformed",
+                   lambda r: r["state"] == "complete" and r["unusable"],
+                   lambda r: r["state"] == "complete"):  # fmt: skip
+        chosen = next(((p, r) for p, r in readings if wanted(r)), None)
+        if chosen is not None:
+            return chosen
+    return readings[0]
+
+
 def _check_request(check, batch, upper, rates, commit) -> dict[str, Any]:
     """What the numerical-check tool is asked: ``selection``, its rate input (``rates`` by
     optimizer name, ``batch`` and ``U``; scripts/numerical_check.py --selection), its cases, the
     frozen policy, the commit its numerical runs recorded (the GPU code it must run), the
-    directory it writes into and its verdict, under $RUNS_DIR (``--out``), and the earlier
-    checks' directories of the candidate, whose case records at this commit it may reuse."""
+    directory it writes into and the selection's verdict there, under $RUNS_DIR."""
     by_name = {OPTIMIZERS[arm]: list(lrs) for arm, lrs in rates.items()}
     selection = {"rates": by_name, "batch": batch,
                  "U": int(upper) if float(upper).is_integer() else upper}  # fmt: skip
     return {"name": check["name"], "tool": NUMERICAL_TOOL, "verdict": check["path"],
-            "out": check["path"].rsplit("/", 1)[0], "records_from": check["earlier"],
-            "selection": selection, "batch": batch, "U": upper, "rates": by_name,
+            "out": check["dir"], "selection": selection, "batch": batch, "U": upper,
+            "rates": by_name,
             "cases": [{"optimizer": OPTIMIZERS[arm], "lr": lr, "seed": seed}
                       for arm, lr, seed in numerical_cases(rates)],
             "runs_commit": commit, "policy": numerical_policy(upper)}  # fmt: skip

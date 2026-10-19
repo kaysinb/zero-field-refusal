@@ -33,7 +33,7 @@ measures the endpoint Rayleigh quotient). Between ``numerical`` and ``validation
 rates, the cases and the verdict path under $RUNS_DIR that the step names (the summary prints
 it); this kind writes its rate input, the JSON selection record ``{"rates": {optimizer:
 [r1, r2, r3]}, "batch": B, "U": U}`` that numerical_check.py --selection reads, and prints the
-directory the check writes into (--out) and the earlier checks' whose case records it reuses.
+directory the check writes into and the selection's verdict there (verdicts/<digest>.json).
 When no candidate is eligible with the three arms, the candidates are visited again for the
 primary arms alone, the pre-warmed arm dropped. A campaign holds the runs still missing;
 ``--seeds`` and ``--cells`` only split it over Pods.
@@ -711,8 +711,10 @@ def campaign(
                              f"{streams['training_responses']} responses and v₀'s preconditioner "
                              f"stream of {streams['preconditioner_responses']}. The check "
                              f"{step['check']} follows the runs.")  # fmt: skip
-        written = {"name": f"study2-short-numerical-{step['check']}",
-                   "cells": regular_cells(wanted, f"-numerical-{step['check']}")}  # fmt: skip
+        # The check's selection digest keeps every cell name unique across checks.
+        tag = f"u{upper:g}-{step['check']}"
+        written = {"name": f"study2-short-numerical-b{batch}-{tag}",
+                   "cells": regular_cells(wanted, f"-numerical-{tag}")}  # fmt: skip
         return written, w_max, source, notes, prerequisites
     # The pre-warmed arm's own rounds, apart from the primary arms' of the same batch and U.
     own = args.kind in ("targeted", "repair") and {r["arm"] for r in wanted} == {PREWARMED}
@@ -805,11 +807,10 @@ def main() -> None:
             check = written["check"]
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps(check["selection"], indent=2) + "\n")
-            reuse = "".join(f"; reuse the case records of $RUNS_DIR/{d}" for d in
-                            check["records_from"])  # fmt: skip
             print(f"{args.out}\nscripts/numerical_check.py driver --selection {args.out} "
-                  f"--batch {check['batch']} --upper {check['U']:g}: outputs and the verdict "
-                  f"under $RUNS_DIR/{check['out']}{reuse}")  # fmt: skip
+                  f"--batch {check['batch']} --upper {check['U']:g}: outputs under "
+                  f"$RUNS_DIR/{check['out']}, the selection's verdict at "
+                  f"$RUNS_DIR/{check['verdict']}")  # fmt: skip
             return
         if args.cells:  # a campaign split over Pods, cell by cell, without choosing anything
             unknown = sorted(set(args.cells) - {c["name"] for c in written["cells"]})
