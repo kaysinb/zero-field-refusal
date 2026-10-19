@@ -1366,6 +1366,30 @@ def test_a_verdict_with_an_incomplete_entry_decides_no_re_solve() -> None:
         assert found["attempts"][0]["arms"][ADAMW]["selections"][-1]["excluded"] == [1.48e-5]
 
 
+def test_a_verdict_lacking_an_entry_decides_no_re_solve() -> None:
+    """Re-review 2, new minor 2: a verdict that marks AdamW 1.48e-5 failing but lacks the
+    control of an FA rate, or tested FA's U-rate on fewer seeds than its cases, has evidence
+    still to come: the next step is the check, and the re-solve is not spent."""
+    runs = grids()
+    _, result, _ = drive(runs, until="numerical-check")
+    check = result["next"]["check"]
+    path = check["verdict"]
+    marked = verdict_of(check, {("adamw", 1.48e-5): "failing"})
+    lacking = {**marked, "controls": {k: v for k, v in marked["controls"].items()
+                                      if k != "1.86e-05"}}  # fmt: skip
+    short = {**marked, "seeds": {**marked["seeds"], "adam_frozen|2.17e-05": [2200]}}
+    for record, unfinished in ((lacking, "control 1.86e-05"),
+                               (short, "adam_frozen|2.17e-05 seeds")):  # fmt: skip
+        found = selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC, numerical={path: record},
+                          facts=commits(runs), reuse=reusable)  # fmt: skip
+        step = found["next"]
+        assert (step["campaign"], step["state"]) == ("numerical-check", "stale")
+        attempt = found["attempts"][0]
+        assert attempt["numerical"][0]["unfinished"] == [unfinished]
+        assert len(attempt["arms"][ADAMW]["selections"]) == 2  # no re-solve: not spent
+        assert found["problems"] == []
+
+
 def test_an_earlier_verdict_keeps_its_marks() -> None:
     """The coordinator's ruling after the integration step: the tool moves a selection's
     earlier verdict to verdicts/history/<digest>/ when it writes the selection's verdict again.
@@ -1399,11 +1423,15 @@ def test_an_earlier_verdict_keeps_its_marks() -> None:
     unfinished = verdict_of(check, {("adam_frozen", 1.86e-5): "incomplete"})
     step = at({path: unfinished, moved: earlier})["next"]
     assert (step["campaign"], step["state"]) == ("numerical-check", "incomplete")
-    # An earlier verdict that is not one of this selection: no conclusion.
+    # An earlier verdict that is not one of this selection, or a record at another batch in
+    # its directory (re-review 2, new minor 1): no conclusion.
     other = verdict_of(request_check({**SELECTED20, ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}))
-    found = at({path: rerun, moved: other})
-    assert found["next"]["campaign"] == "incomplete"
-    assert "not an earlier verdict of the selection" in found["problems"][0]
+    elsewhere = verdict_of(check, {("adamw", 1.48e-5): "failing"}, batch=5)
+    for record, why in ((other, "not an earlier verdict of the selection"),
+                        (elsewhere, "its record is at B=5, U=8")):  # fmt: skip
+        found = at({path: rerun, moved: record})
+        assert found["next"]["campaign"] == "incomplete"
+        assert why in found["problems"][0], found["problems"]
     # An earlier verdict of a selection the replay never read, marking a rate: an unread verdict.
     stray = verdict_path(SELECTED20, upper=7.0).replace("/verdicts/", "/verdicts/history/")
     stray = stray.removesuffix(".json") + "/0.json"

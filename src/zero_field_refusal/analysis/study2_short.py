@@ -153,15 +153,16 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   its staleness or unfinished entries (the coordinator, after the integration step); an earlier
   verdict the replay did not read is an unread verdict like any other. A re-solve is decided only
   from a current verdict with no incomplete entry, stale or not (the coordinator, after fix round
-  1): while a requested rate or control is incomplete, the next step finishes or reruns the check,
-  and the re-solve is not spent. The arms holding unusable rates are re-solved once, from the same
-  runs with no new round; the re-solve's cases are called for (a replacement rate on 2200, and on
-  2201 and 2202 if it is its arm's new U-rate; a replacement FA rate with its control) and checked
-  in a new check; an unusable rate there, or no feasible triple after the re-solve, fails the
-  candidate. The verdict's own ``qualified`` must agree with its states, and an unreadable or
-  malformed verdict leaves the selection ``incomplete``. A numerical run the launcher gave up on
-  (``exhausted_runs``) lets the check go on (review of Task 2, minor 3): the tool reads its case as
-  not qualified (technical), and its rate leaves the batch.
+  1): while a requested rate or control is incomplete, missing, or tested on fewer seeds than its
+  cases need (re-review 2), the next step finishes or reruns the check, and the re-solve is not
+  spent. The arms holding unusable rates are re-solved once, from the same runs with no new round;
+  the re-solve's cases are called for (a replacement rate on 2200, and on 2201 and 2202 if it is its
+  arm's new U-rate; a replacement FA rate with its control) and checked in a new check; an unusable
+  rate there, or no feasible triple after the re-solve, fails the candidate. The verdict's own
+  ``qualified`` must agree with its states, and an unreadable or malformed verdict leaves the
+  selection ``incomplete``. A numerical run the launcher gave up on (``exhausted_runs``) lets the
+  check go on (review of Task 2, minor 3): the tool reads its case as not qualified (technical), and
+  its rate leaves the batch.
 - *A stale check with runs beyond it*: when the replay waits at a stale check while runs it
   called for after that check exist (a GPU-path change after the validation runs, say), the
   problems name the stale check first and list those runs, all of them under ``beyond_stale``;
@@ -951,8 +952,9 @@ def numerical_verdict(
       same-path control was rejected or not qualified.
 
     ``unfinished`` lists the requested rates and controls a stale or incomplete verdict holds
-    incomplete: a re-solve is decided only from a verdict with none (the coordinator's ruling
-    after fix round 1), so such a verdict's marks wait until the check is finished or rerun. A
+    incomplete, lacks, or tested on fewer seeds than their cases need: a re-solve is decided only
+    from a verdict with none (the coordinator's ruling after fix round 1; re-review 2), so such
+    a verdict's marks wait until the check is finished or rerun. A
     record may hold more rates than requested (a candidate's three-arm check read for its
     primary arms alone); only the requested ones are read."""
     commits = {commits} if isinstance(commits, str) else set(commits)
@@ -1022,19 +1024,23 @@ def numerical_verdict(
     lacking += [f"control {key}" for key in controls if key not in record["controls"]]
     if lacking:
         stale.append(f"the verdict lacks {lacking}")
+    short = []
     for key, seeds in needed.items():
         tested = record["seeds"].get(key)
         if key in record["rates"] and not (isinstance(tested, list) and seeds <= set(tested)):
             stale.append(f"{key} tested on {tested!r}, its cases need {sorted(seeds)}")
-    unfinished = [key for key, value in out["rates"].items() if value == "incomplete"]
-    unfinished += [f"control {key}" for key, value in out["controls"].items()
+            short.append(f"{key} seeds")
+    incomplete = [key for key, value in out["rates"].items() if value == "incomplete"]
+    incomplete += [f"control {key}" for key, value in out["controls"].items()
                    if value == "incomplete"]  # fmt: skip
-    out["unfinished"] = unfinished
+    # Evidence still to come: an incomplete entry, a missing rate or control, or seeds short of
+    # their cases (re-review 2 of Task 2, new minor 2).
+    out["unfinished"] = incomplete + lacking + short
     if stale:
-        stale += [f"incomplete: {unfinished}"] if unfinished else []
+        stale += [f"incomplete: {incomplete}"] if incomplete else []
         return {**out, "state": "stale", "reasons": stale, "unusable": marks}
-    if unfinished:
-        return {**out, "state": "incomplete", "reasons": [f"incomplete: {unfinished}"]}
+    if incomplete:
+        return {**out, "state": "incomplete", "reasons": [f"incomplete: {incomplete}"]}
     out.update(state="complete", unusable=marks)
     return out
 
@@ -1665,7 +1671,7 @@ def _history_marks(replay, path, reading, batch, upper, request) -> dict[str, An
     qualified, stays unusable at the batch, whatever that verdict's staleness or unfinished
     entries (the coordinator's ruling after the integration step). Only the decision of the
     step comes from the current verdict. An earlier verdict that does not read as one of this
-    selection leaves the reading malformed."""
+    selection, at its batch and U, leaves the reading malformed."""
     stem = path.rsplit("/", 1)[-1].removesuffix(".json")
     out = {**reading, "unusable": list(reading["unusable"]), "history": []}
     seen = {(u["arm"], u["lr"]) for u in out["unusable"]}
@@ -1673,13 +1679,18 @@ def _history_marks(replay, path, reading, batch, upper, request) -> dict[str, An
         out["history"].append(earlier)
         found = numerical_verdict(record, batch, upper, request, set(), lambda base, head: {})
         rates = record.get("rates") if isinstance(record, dict) else None
-        if found["state"] == "malformed" or not isinstance(rates, dict) or _digest(rates) != stem:
-            why = (found["reasons"] if found["state"] == "malformed"
-                   else [f"not an earlier verdict of the selection {stem}"])  # fmt: skip
+        if found["state"] == "malformed":
+            why = found["reasons"]
+        elif not isinstance(rates, dict) or _digest(rates) != stem:
+            why = [f"not an earlier verdict of the selection {stem}"]
+        elif (record["batch"], float(record["U"])) != (batch, upper):  # its directory's (B, U)
+            why = [f"not an earlier verdict of the selection {stem} at B={batch}, U={upper:g}: "
+                   f"its record is at B={record['batch']}, U={record['U']:g}"]  # fmt: skip
+        else:
+            why = []
+        if why:
             return {**out, "state": "malformed", "unusable": [], "unfinished": [],
                     "reasons": [f"{earlier}: {reason}" for reason in why]}  # fmt: skip
-        if record["batch"] != batch:
-            continue
         for mark in _marks(record, request, found):
             if (mark["arm"], mark["lr"]) not in seen:
                 seen.add((mark["arm"], mark["lr"]))
