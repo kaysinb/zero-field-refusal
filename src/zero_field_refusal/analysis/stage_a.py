@@ -693,7 +693,14 @@ def stream_pairing(runs: Sequence[Trajectory]) -> list[str]:
 def _response_problems(
     run_dir: Path, cfg: Any, evaluations: Sequence[Mapping[str, Any]], prompts: Mapping[str, Any]
 ) -> list[str]:
-    """Every evaluation answered exactly the recorded harmful prompts, once each, in order."""
+    """Every evaluation answered exactly the recorded harmful prompts, once each, in order; a
+    K-only run (``eval.k_only``, study 2's numerical runs) answered none and recorded none."""
+    if OmegaConf.select(cfg, "eval.k_only", default=False) is True:
+        responses = run_dir / "responses"
+        stored = sorted(p.name for p in responses.iterdir()) if responses.is_dir() else []
+        if prompts or stored:
+            return [f"a K-only run recorded harmful prompts or stored responses {stored}"]
+        return []
     if not evaluations:
         return []
     if not {"set", "count", "ids_sha256"} <= set(prompts):

@@ -629,6 +629,103 @@ def test_a_cache_that_changes_k_stops_the_run(env, tmp_path, monkeypatch) -> Non
     assert not (run_dir / "terminal.json").exists()  # stopped before training
 
 
+def test_a_k_only_evaluation_reads_no_harmful_prompt_and_measures_what_the_sealed_one_does(
+    env, tmp_path, monkeypatch
+) -> None:
+    """Study 2's numerical runs (amendment 4, review fa12): with ``eval.k_only`` no harmful
+    prompt set is read and no response to a harmful prompt is generated; K, the monitor and
+    utility equal those of the sealed evaluation, and training is unaffected."""
+    from zero_field_refusal.analysis.stage_a import TrajectoryError, load_trajectory
+
+    steps = ("train.steps=25", "schedule.evaluate_at=[5,25]")
+    sealed_cfg = scheduled(tmp_path, *steps, policy="short")
+    ready(env, sealed_cfg)
+    sealed = run_scheduled(sealed_cfg, env, run_id="sealed")
+    assert (sealed / "responses").is_dir()  # the sealed evaluation answers the harmful prompts
+    read = env.prompt_set
+
+    def guarded(name: str):
+        if "harmful" in name:
+            raise AssertionError(f"the K-only run read the prompt set {name}")
+        return read(name)
+
+    monkeypatch.setattr(env, "prompt_set", guarded)
+    k_only_cfg = scheduled(tmp_path, *steps, "+eval.k_only=true", policy="short")
+    k_only = run_scheduled(k_only_cfg, env, run_id="k-only")
+    assert not (k_only / "responses").exists()
+    meta = json.loads((k_only / "meta.json").read_text())
+    assert meta["inputs"]["k_only"] is True and "harmful_prompts" not in meta["inputs"]
+    assert "kl_harmful" not in meta["inputs"]["streams"]
+    a, b = read_jsonl(sealed / "evaluations.jsonl"), read_jsonl(k_only / "evaluations.jsonl")
+    assert [r["step"] for r in a] == [r["step"] for r in b] == [5, 25]
+    measured = ("K_benign", "K_monitor", "K_monitor_full", "benchmark_accuracy",
+                "factual_accuracy", "heldout_nll_per_token")  # fmt: skip
+    for x, y in zip(a, b, strict=True):
+        assert {k: x.get(k) for k in measured} == {k: y.get(k) for k in measured}
+        assert "K_harmful" in x and "K_harmful" not in y
+
+    def untimed(rows: list[dict]) -> list[dict]:  # timings and memory peaks differ, run to run
+        return [{k: v for k, v in r.items() if not any(w in k for w in ("seconds", "time",
+                                                                         "memory", "_gb"))}
+                for r in rows]  # fmt: skip
+
+    trained = read_jsonl(sealed / "metrics.jsonl")
+    measured_rows = read_jsonl(k_only / "metrics.jsonl")
+    assert [r for r in untimed(trained) if "loss" in r] == [r for r in untimed(measured_rows)
+                                                            if "loss" in r]  # training  # fmt: skip
+    assert any("eval/K_harmful" in r for r in trained)
+    assert not any("eval/K_harmful" in r for r in measured_rows)
+    without = [{k: v for k, v in r.items() if k != "eval/K_harmful"} for r in untimed(trained)]
+    assert without == untimed(measured_rows)
+    for name in ("monitor.jsonl", "diagnostics.jsonl"):
+        assert untimed(read_jsonl(sealed / name)) == untimed(read_jsonl(k_only / name)), name
+    run = load_trajectory(k_only)  # a K-only run's records are whole without responses
+    assert run.evaluations[-1]["K_benign"] == a[-1]["K_benign"]
+    (k_only / "responses").mkdir()
+    (k_only / "responses" / "harmful_evaluation.jsonl").write_text("")
+    with pytest.raises(TrajectoryError, match="K-only run recorded harmful prompts or stored"):
+        load_trajectory(k_only)
+
+
+def test_a_k_only_numerical_run_writes_what_the_numerical_check_reads(env, tmp_path) -> None:
+    """Task 1's contract: a K-only FA run of role numerical still writes its metrics, monitor
+    readings and terminal record, and in meta.json its commit and the v₀ and training streams it
+    read, with the role in its archived config; only the harmful generation, the kl_harmful
+    stream and the harm outputs are absent."""
+    from omegaconf import OmegaConf
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]", "+eval.k_only=true",
+                    "optimizer=adam_frozen", "optimizer.lr=1e-3",
+                    "optimizer.preconditioner.batches=3", "+study2_short.role=numerical",
+                    policy="short")  # fmt: skip
+    ready(env, cfg)
+    prepare(env, cfg, "preconditioner")
+    run_dir = run_scheduled(cfg, env, run_id="numerical")
+    for name in ("metrics.jsonl", "monitor.jsonl", "terminal.json", "evaluations.jsonl"):
+        assert (run_dir / name).is_file(), name
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert set(meta["git"]) >= {"commit", "dirty"}
+    streams = meta["inputs"]["streams"]
+    assert {"path", "sha256"} <= set(streams["preconditioner"])
+    assert streams["training"]["count"] == 25 * 4 and streams["training"]["chunks"]
+    assert "kl_harmful" not in streams and "harmful_prompts" not in meta["inputs"]
+    assert OmegaConf.load(run_dir / "config.yaml").study2_short.role == "numerical"
+    assert not (run_dir / "responses").exists()
+    (row,) = read_jsonl(run_dir / "evaluations.jsonl")
+    assert "K_benign" in row and not any("harm" in key.lower() for key in row)
+
+
+def test_k_only_is_a_boolean(env, tmp_path) -> None:
+    from zero_field_refusal.tracking import Run
+    from zero_field_refusal.train import Evaluator
+
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]", "+eval.k_only=1",
+                    policy="short")  # fmt: skip
+    ready(env, cfg)
+    with Run(cfg, run_id="flag") as run, pytest.raises(ValueError, match="eval.k_only"):
+        Evaluator(cfg, env, run, env.new_model(), sealed=True)
+
+
 def test_monitor_version_1_runs_without_diagnostics(env, tmp_path, scripted) -> None:
     cfg = scheduled(tmp_path, *K_RUN, "eval.monitor.version=1")
     ready(env, cfg)

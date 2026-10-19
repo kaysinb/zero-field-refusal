@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from transformers import PreTrainedModel
 
 from .batches import chunks, collate
@@ -207,6 +207,11 @@ class Evaluator:
 
     ``sealed`` (study 2) leaves the outcome closed: the greedy responses to the harmful prompts
     are stored for the judge, but no refusal is scored, so only K and utility leave the run.
+
+    ``eval.k_only`` (study 2's numerical runs, amendment 4) measures K on the scoring panel's
+    benign prompts (K_benign) and utility only: no harmful prompt set is read, no K is taken on
+    the harmful K prompts and no response to a harmful prompt is generated. What it measures
+    equals the full evaluation's, and training does not depend on it.
     """
 
     def __init__(
@@ -220,21 +225,29 @@ class Evaluator:
     ):
         self.cfg, self.env, self.run, self.reference = cfg, env, run, reference
         self.sealed = sealed
+        k_only = OmegaConf.select(cfg, "eval.k_only", default=False)
+        if not isinstance(k_only, bool):
+            raise ValueError(f"eval.k_only: expected true or false, got {k_only!r}")
+        self.k_only = k_only
         self.last_kl: dict[str, torch.Tensor] = {}  # the last condition's K per response
         kl_limit = cfg.eval.kl.limit
         per_prompt = cfg.eval.kl.samples_per_prompt
         self.kl_streams = {}
-        for kind in ("kl_harmful", "kl_benign"):
+        for kind in ("kl_benign",) if k_only else ("kl_harmful", "kl_benign"):
             samples, manifest = load_stream_for(cfg, env, kind, None)
             self.kl_streams[kind] = samples[: kl_limit * per_prompt] if kl_limit else samples
             run.summarize({f"stream/{kind}": manifest["sha256"]})
             run.record_inputs({"streams": {kind: _identity(manifest)}})
-        self.harmful = self._limited(cfg.eval.harmful.prompt_set, cfg.eval.harmful.limit)
-        ids = [item["id"] for item in self.harmful]  # what every evaluation must answer
-        run.record_inputs({"harmful_prompts": {
-            "set": cfg.eval.harmful.prompt_set, "count": len(ids),
-            "ids_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
-        }})  # fmt: skip
+        self.harmful: list[dict] = []
+        if k_only:
+            run.record_inputs({"k_only": True})
+        else:
+            self.harmful = self._limited(cfg.eval.harmful.prompt_set, cfg.eval.harmful.limit)
+            ids = [item["id"] for item in self.harmful]  # what every evaluation must answer
+            run.record_inputs({"harmful_prompts": {
+                "set": cfg.eval.harmful.prompt_set, "count": len(ids),
+                "ids_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+            }})  # fmt: skip
         self.heldout = reference_samples(
             env.prompt_set("alpaca_heldout"), env.encode_prompt, env.encode_text,
             end_id=env.end_ids[0], cap=cfg.teacher.sampling.max_new_tokens,
@@ -275,22 +288,8 @@ class Evaluator:
         if check is not None:
             check()
 
-        responses = greedy_responses(
-            model, [env.encode_prompt(item["text"]) for item in self.harmful],
-            end_ids=env.end_ids, pad_id=env.pad_id,
-            max_new_tokens=cfg.eval.harmful.max_new_tokens,
-            batch_size=execution.generation_batch_size,
-        )  # fmt: skip
-        records = []
-        for item, (ids, ended) in zip(self.harmful, responses, strict=True):
-            text = env.decode(ids)
-            records.append({"condition": condition, "item_id": item["id"], "response_ids": ids,
-                            "text": text, "ended": ended})  # fmt: skip
-            if not self.sealed:
-                records[-1]["keyword_refusal"] = is_keyword_refusal(text, cfg.eval.refusal_keywords)
-        if not self.sealed:
-            out["keyword_refusal_rate"] = float(np.mean([r["keyword_refusal"] for r in records]))
-        _append_jsonl(self.run.path("responses", f"{cfg.eval.harmful.prompt_set}.jsonl"), records)
+        if not self.k_only:
+            self._harmful_responses(model, condition, out)
 
         utility = cfg.eval.utility
         if utility.heldout_reference_nll:
@@ -335,6 +334,29 @@ class Evaluator:
             ]  # fmt: skip
         _append_jsonl(self.run.path("observations", "measurements.jsonl"), rows)
         return out
+
+    def _harmful_responses(
+        self, model: PreTrainedModel, condition: str, out: dict[str, float]
+    ) -> None:
+        """The greedy responses to the harmful prompts, stored; scored for refusal unless
+        sealed."""
+        cfg, env, execution = self.cfg, self.env, self.cfg.execution
+        responses = greedy_responses(
+            model, [env.encode_prompt(item["text"]) for item in self.harmful],
+            end_ids=env.end_ids, pad_id=env.pad_id,
+            max_new_tokens=cfg.eval.harmful.max_new_tokens,
+            batch_size=execution.generation_batch_size,
+        )  # fmt: skip
+        records = []
+        for item, (ids, ended) in zip(self.harmful, responses, strict=True):
+            text = env.decode(ids)
+            records.append({"condition": condition, "item_id": item["id"], "response_ids": ids,
+                            "text": text, "ended": ended})  # fmt: skip
+            if not self.sealed:
+                records[-1]["keyword_refusal"] = is_keyword_refusal(text, cfg.eval.refusal_keywords)
+        if not self.sealed:
+            out["keyword_refusal_rate"] = float(np.mean([r["keyword_refusal"] for r in records]))
+        _append_jsonl(self.run.path("responses", f"{cfg.eval.harmful.prompt_set}.jsonl"), records)
 
 
 def evaluate_theta0(cfg: DictConfig, env: Environment, *, run_id: str | None = None) -> Path:
