@@ -6,8 +6,9 @@ AdamW-25 and FA-25 (Adam with its second moment frozen at θ₀) each run exactl
 rates targeted at the levels (5, K*, U), K* = √(5U); harm at K* is interpolated linearly in ln K
 between the nearest bracketing endpoints of each seed block, and the paired block differences
 enter two sequential looks. Selection, support and validation read K_benign, numerical records
-and utility only, never a judge label or K_harmful; only the estimator, the looks and the
-secondary contrasts read labels. The values the companion simulation fixes (w_max, the look
+and utility only, never a judge label or K_harmful; only the estimator, the looks, the mechanism
+cohort's final analysis (amendment 4; amendment 3's secondary contrasts before it) and the time
+course's final reading read labels. The values the companion simulation fixes (w_max, the look
 levels, the SE floor, the bias allowance) are inputs, never constants here. Harm rates and
 differences are fractions (1 pp = 0.01); utility losses are in percentage points.
 
@@ -39,7 +40,15 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   ``bootstrap_t_interval``: the looks' interval as decided (the bootstrap-t);
   ``sensitivity_looks``: a missing-label sensitivity (``SENSITIVITIES``) at the primary's looks.
 - ``secondary_contrasts``: A − P and P − F on the common three-arm supported cohort, by the
-  fixation record's secondary interval.
+  fixation record's secondary interval (amendment 3's; retired under amendment 4, whose summary
+  does not call it, and kept with its fixation keys for amendment 3's record).
+- ``continuation``: the blocks after the primary's stopping look, descriptive.
+- ``mechanism_state``, ``mechanism_blocks`` and ``mechanism_analysis``: the mechanism cohort
+  (amendment 4, section 3), its state on K and support only, its blocks with their labels, and
+  its one final analysis at the cohort's end: C1 = P − F and C2 = A − P by ``max_t_interval``
+  (the paired seed-block bootstrap max-t on shared draws), with the per-contrast
+  ``symmetric_studentized`` intervals at 97.5 % beside them, read by ``component_readings``.
+- ``scalars_coverage``: the update scalars' coverage per regular run, reported, never gating.
 - ``utility_family`` and ``validation_verdict``: the simultaneous utility bounds and the verdict
   of the validation blocks, over the three arms (amendment 4) or the primary arms (amendment 3,
   the fallback).
@@ -47,9 +56,9 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   scripts/study2_short_summary.py: the records checked against the campaigns (``conformance``,
   one training stream per seed, one v₀ per seed and batch: ``preconditioner_pairing``), the
   selection's state machine with its numerical and validation gates, then the confirmation
-  blocks with their support (K only), the runs the launcher gave up on
-  (``exhausted_runs``, with the attempts abandoned by the operator: ``read_abandonment``) counted
-  as technical failures; ``confirmation_guard`` decides whether a
+  blocks with their support (K only) and the mechanism cohort's state, the runs the launcher gave
+  up on (``exhausted_runs``, with the attempts abandoned by the operator: ``read_abandonment``)
+  counted as technical failures; ``confirmation_guard`` decides whether a
   range of blocks may start; ``look_blocks`` turns the blocks into those of ``looks`` once their
   labels exist. ``read_fixation`` reads the values the simulation fixes.
 - ``split_timecourse``, ``timecourse_identity``, ``timecourse_summary`` and
@@ -64,7 +73,8 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 ``{"block": id, "complete": bool, "supported": bool, "delta": float | None, "h": {arm: float}}``,
 ``supported`` meaning AdamW-25 and FA-25 both supported, ``delta`` their difference at K*, and
 ``h`` the interpolated harm of every supported arm (the secondary contrasts read it);
-``sensitivity_looks`` also reads the fields its sensitivity names (``block_difference``).
+``sensitivity_looks`` also reads the fields its sensitivity names (``block_difference``);
+``mechanism_analysis`` reads them with the fields ``mechanism_blocks`` adds.
 
 **Rulings** where the amendment leaves a detail open, fixed here before any data:
 - *An endpoint* is a run that stopped as ``steps`` after its 25 steps with an evaluation at step
@@ -269,9 +279,11 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
     few blocks the bootstrap-t collapses, e.g. to [mean, mean] at 2). The simulation's decision
     rule does not have this gate.
   - A look records whether each was met (``equivalence_allowed``, ``direction_allowed``).
-- *Secondary contrasts* (coordinator, 2026-10-17): two-sided intervals at 98.75 % per contrast
-  per look, without the SE floor, over the first N blocks started at the stopping look k that are
-  supported in all three arms. The interval is the fixation record's ``secondary_interval``: the
+- *Secondary contrasts* (coordinator, 2026-10-17; amendment 3's, retired by amendment 4's
+  mechanism cohort, whose summary does not compute them): two-sided intervals at 98.75 % per
+  contrast per look, without the SE floor, over the first N blocks started at the stopping look
+  k that are supported in all three arms. The interval is the fixation record's
+  ``secondary_interval``: the
   bootstrap-t of the looks (decided after the secondary simulation of 2026-10-17;
   ``bootstrap_t_interval``, the record's resamples) with its own stream per contrast and look,
   ``numpy.random.default_rng(derive_seed(bootstrap_seed, "secondary", contrast, k))``, or the t
@@ -329,10 +341,42 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   its check go on (*Numerical qualification*).
 - *Confirmation blocks* (``confirmation_guard``, the review of Task 5): ranges start at the first
   block without a run and never overlap one another (re-issuing an issued range completes it);
-  the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80). A new range
-  holds at most n_k − p blocks, p counting every block with runs except the complete unsupported
-  ones, so that no block is started past a look that could stop; once look k is due, no block
-  starts until the operator, having read it in the summary, passes ``after_look`` = k.
+  the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80).
+  - A three-arm selection (amendment 4, section 3; the coordinator, gate C): the campaigns do not
+    pause at the primary's looks. The looks are computed afterwards from the same first 36 and
+    60 primary-supported blocks, so their data are the same, and the confirmation ends with the
+    mechanism cohort (below). A new range holds at most 60 − p₃ blocks, p₃ counting every block
+    with runs except the complete ones not jointly supported, so that no block is started past
+    the cohort's 60; none starts once 60 jointly supported blocks are complete in order or every
+    block up to the cap of 80 has runs; ``after_look`` is refused.
+  - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; no mechanism
+    cohort), amendment 3's: a new range holds at most n_k − p blocks, p counting every block with
+    runs except the complete unsupported ones, so that no block is started past a look that
+    could stop; once look k is due, no block starts until the operator, having read it in the
+    summary, passes ``after_look`` = k.
+- *The mechanism cohort* (amendment 4, section 3; Task 3's brief): a block is jointly supported
+  (``three_arm_supported``) when it is complete and its three arms are supported at K*, with a
+  three-arm selection only. ``mechanism_state`` (K and support only) reads the blocks complete in
+  order up to the 60th jointly supported one (its window); the cohort ends with 60 jointly
+  supported blocks complete in order, or once all 80 blocks are started and complete, and its
+  attrition is counted over the window by reason. The cohort is those jointly supported blocks
+  of the window, whether or not the primary has stopped: the primary's decision is final at its
+  stopping look (``looks`` reads its blocks only), and the blocks after it are reported as a
+  descriptive ``continuation``. ``mechanism_analysis`` runs once, at the cohort's end: the
+  summary computes it only when the cohort has ended, its blocks are labeled and the primary has
+  stopped (the confirmation's end: both hold), and reports "not yet" before, reading no label
+  for it. C1 = P − F and C2 = A − P per cohort block (P the pre-warmed arm), so that C1 + C2 =
+  A − F on that cohort, checked to 1e-12; the max-t intervals share one set of resampled blocks
+  per draw (``max_t_interval``), with the per-contrast ``symmetric_studentized`` intervals at
+  97.5 % beside them, each on its own stream ``derive_seed(seed, "mechanism", ...)`` of the
+  fixation record's ``mechanism`` seed. Zero SE: a resample's contrast with SE* ≤ 1e-12 has
+  |T*| = 0 when its mean is the observed one within 1e-12, ∞ otherwise; the quantile reaching
+  an ∞ draw is ∞ (no interval). Readings (``component_readings``) with ``_readings``'
+  conventions: a direction (``positive``, ``negative``) when 0 is strictly outside the interval,
+  ``bounded`` when it lies within ±5 pp, bounds included; none below 36 cohort blocks; an
+  observed SE ≤ 1e-12 leaves its contrast unread and the other read on its 97.5 % interval. The
+  missing-label sensitivities are computed for both contrasts as ``block_difference`` computes
+  them for A − F, by the max-t on the same stream, descriptive.
 - *The time course* (amendment 4, section 4; Task 5's brief): seeds 3000-3009 (blocks 1-10,
   preassigned), every arm of the frozen selection at its central rate (``central_rate``: the
   middle of its three, the K* rate), the endpoint run's config but for the role timecourse and
@@ -373,8 +417,12 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``cap`` (equal to ``LOOK_SIZES`` and ``CAP``, which the looks and the confirmation guard use: a
   record made for other looks is refused), ``equivalence_min_supported`` and
   ``direction_min_supported`` (integers ≥ 0), ``secondary_interval`` (``t`` or ``bootstrap_t``)
-  and ``secondary_status`` (``secondary`` or ``exploratory``); each is required and none is
-  defaulted, also when ``interval`` is ``t`` and the bootstrap's values go unused.
+  and ``secondary_status`` (``secondary`` or ``exploratory``), and ``mechanism`` (amendment 4):
+  ``target`` 60, ``cap`` 80, ``minimum`` 36, ``zero_se`` 1e-12, ``comparison_level`` 0.975 and
+  ``effects`` [0.05, 0.025], each equal to the code's, the max-t ``level`` in [0.95, 1), its
+  ``resamples`` (≥ 1000) and ``seed``; each is required and none is defaulted, also when
+  ``interval`` is ``t`` and the bootstrap's values go unused. A key enters the code and the
+  committed record in the same commit, so that the record always reads.
 - *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
   and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
   HEAD), or when the running commit, the model, the judge's identity or the fixation record
@@ -503,6 +551,18 @@ SENSITIVITIES = {
 }
 MIN_RESAMPLES = 1000  # the fixation record's bootstrap resamples, at least
 ZERO_SE = 1e-12  # an SE at or below this is zero (identical values up to rounding), as simulated
+# The mechanism cohort (amendment 4, section 3): its stopping rule, minimum and interval family.
+MECHANISM_TARGET = 60  # jointly supported three-arm blocks complete in order
+MECHANISM_CAP = CAP  # started blocks, the primary's cap
+MECHANISM_MINIMUM = 36  # jointly supported blocks below which nothing is read
+COMPARISON_LEVEL = 0.975  # the per-contrast (Bonferroni) symmetric studentized intervals
+MECHANISM_EFFECTS = (0.05, 0.025)  # the meaningful component effect (the margin), and power's
+# The fixation record's ``mechanism`` values that must equal the code's, then those it sets.
+MECHANISM_FIXED = {"target": MECHANISM_TARGET, "cap": MECHANISM_CAP, "minimum": MECHANISM_MINIMUM,
+                   "zero_se": ZERO_SE, "comparison_level": COMPARISON_LEVEL,
+                   "effects": list(MECHANISM_EFFECTS)}  # fmt: skip
+MECHANISM_KEYS = (*MECHANISM_FIXED, "level", "resamples", "seed")
+CONTRASTS = {"C1": (PREWARMED, FA), "C2": (ADAMW, PREWARMED)}  # name: (minuend, subtrahend)
 FIXATION_KEYS = (
     "w_max",
     "levels",
@@ -517,6 +577,7 @@ FIXATION_KEYS = (
     "direction_min_supported",
     "secondary_interval",
     "secondary_status",
+    "mechanism",
 )
 
 
@@ -2330,6 +2391,427 @@ def secondary_contrasts(
     }
 
 
+def continuation(blocks: Sequence[Mapping[str, Any]], primary: Mapping[str, Any]) -> dict | None:
+    """The blocks after the primary's stopping look (amendment 4, section 3: confirmation goes on
+    for the mechanism cohort), descriptive: ``primary`` is ``looks``' result over ``blocks``. The
+    blocks complete in order after those the stopping look read, their supported Δ and every
+    supported Δ complete in order (n, mean, sd); no interval, no reading, and nothing here ever
+    revises the decision. None before the primary stops."""
+    if not primary["stopped"]:
+        return None
+    started = primary["looks"][-1]["started"]
+    later = list(itertools.takewhile(lambda b: b["complete"], blocks[started:CAP]))
+    after = [b["delta"] for b in later if b["supported"]]
+    read = [b["delta"] for b in blocks[:started] if b["supported"]]
+
+    def described(values: Sequence[float]) -> dict[str, Any]:
+        return {"n": len(values), "mean": statistics.fmean(values) if values else None,
+                "sd": statistics.stdev(values) if len(values) >= 2 else None}  # fmt: skip
+
+    return {"stopping_look": primary["stopping_look"], "read_blocks": started,
+            "later_blocks": [b["block"] for b in later],
+            "later": described(after), "every_supported": described(read + after),
+            "status": "descriptive: it never revises the decision"}  # fmt: skip
+
+
+# ------------------------------------------------------------------ the mechanism cohort
+
+
+def _abs_studentized(samples: np.ndarray, mean: float) -> np.ndarray:
+    """|T*| = |mean* − mean| / SE* per resample (a row of ``samples``), SE* = sd* (ddof 1)/√n;
+    a resample whose SE* ≤ ``ZERO_SE`` has |T*| = 0 when |mean* − mean| ≤ ``ZERO_SE`` and ∞
+    otherwise (amendment 4, section 3, zero SE): no resample is dropped."""
+    centred = np.abs(samples.mean(axis=1) - mean)
+    se = samples.std(axis=1, ddof=1) / math.sqrt(samples.shape[1])
+    flat = se <= ZERO_SE
+    out = np.where(centred <= ZERO_SE, 0.0, np.inf)
+    np.divide(centred, se, out=out, where=~flat)
+    return out
+
+
+def _upper_quantile(ordered: np.ndarray, level: float) -> float:
+    """The ``level`` quantile of sorted |T*| by np.quantile's linear rule, written as
+    ``bootstrap_t_interval`` writes it, ∞ where it reaches a draw of |T*| = ∞ (the linear rule's
+    arithmetic would form 0·∞ or ∞ − ∞ there)."""
+    position = level * (ordered.size - 1)
+    below = math.floor(position)
+    above = min(below + 1, ordered.size - 1)
+    low, high = float(ordered[below]), float(ordered[above])
+    if math.isinf(high):
+        return low if position == below else math.inf
+    return low + (position - below) * (high - low)
+
+
+def _studentized_family(
+    columns: Sequence[Sequence[float]], level: float, resamples: int, seed: int, *, keep: bool
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The paired seed-block bootstrap of the means of ``columns`` (each one value per block,
+    paired): one set of block indices per draw, ``numpy.random.default_rng(seed).integers(0, n,
+    (resamples, n))`` as ``bootstrap_t_interval`` draws them, shared by every column; |T*| of
+    each (``_abs_studentized``), their maximum per draw, its ``level`` quantile q
+    (``_upper_quantile``), and each column's symmetric interval mean ± q·SE, SE = sd (ddof 1)/√n.
+    A column whose observed SE ≤ ``ZERO_SE``, or any column when q is ∞ or n < 2, has none."""
+    if not (_number(level) and 0 < level < 1):
+        raise ValueError(f"the studentized bootstrap: level {level!r} is not in (0, 1)")
+    if not (_integer(resamples) and resamples >= 2 and _integer(seed)):
+        raise ValueError(f"the studentized bootstrap needs an integer number of resamples ≥ 2 "
+                         f"and an integer seed, not {resamples!r} and {seed!r}")  # fmt: skip
+    arrays = [np.asarray(values, dtype=float) for values in columns]
+    n = arrays[0].size
+    if any(a.ndim != 1 or a.size != n for a in arrays):
+        raise ValueError("the studentized bootstrap pairs its contrasts per block: one value "
+                         "per block each, as many blocks")  # fmt: skip
+    if not all(np.isfinite(a).all() for a in arrays):
+        raise ValueError("the studentized bootstrap: a value is not finite")
+    found = {"n": n, "level": level, "resamples": resamples, "seed": seed, "q": None,
+             "draws": 0, "infinite": 0}  # fmt: skip
+    each = []
+    for values in arrays:
+        if n < 2:
+            mean = float(values.mean()) if n else None
+            each.append({"n": n, "mean": mean, "sd": None, "se": None, "zero_se": None,
+                         "interval": None})  # fmt: skip
+            continue
+        mean, sd, se = _numpy_moments(values, 0.0)
+        each.append({"n": n, "mean": mean, "sd": sd, "se": se, "zero_se": se <= ZERO_SE,
+                     "interval": None})  # fmt: skip
+    if n < 2:
+        return found, each
+    indices = np.random.default_rng(seed).integers(0, n, (resamples, n))
+    t_star = [_abs_studentized(values[indices], one["mean"])
+              for values, one in zip(arrays, each, strict=True)]  # fmt: skip
+    maxima = t_star[0] if len(t_star) == 1 else np.maximum.reduce(t_star)
+    q = _upper_quantile(np.sort(maxima), level)
+    # The critical value and the per-draw maxima behind it, for the simulation's twin.
+    found.update(q=q, draws=int(maxima.size), infinite=int(np.isinf(maxima).sum()))
+    if keep:
+        found["t_star"] = t_star
+    for one in each:
+        if not one["zero_se"] and math.isfinite(q):
+            one["interval"] = [one["mean"] - q * one["se"], one["mean"] + q * one["se"]]
+    return found, each
+
+
+def symmetric_studentized(
+    c: Sequence[float], level: float, resamples: int, seed: int, *, keep: bool = False
+) -> dict[str, Any]:
+    """The symmetric studentized bootstrap interval of the mean of ``c`` (one value per block):
+    T* = (mean* − mean)/SE* over ``resamples`` paired seed-block resamples from
+    ``numpy.random.default_rng(seed)`` (``seed`` a stream's, from ``derive_seed``), q the
+    ``level`` quantile of |T*| by np.quantile's linear rule, the interval mean ± q·SE (zero SE:
+    ``_abs_studentized``; none at an observed SE ≤ ``ZERO_SE``, with n < 2 or q = ∞). It is
+    ``max_t_interval`` with one contrast: the comparison intervals at ``COMPARISON_LEVEL``, and
+    the reading of the other contrast when one has a zero SE. Returns n, level, resamples, seed,
+    q, the draws (resamples) and how many had |T*| = ∞, mean, sd, se, ``zero_se`` and the
+    ``interval`` (None when there is none); with ``keep``, the draws' |T*| (``t_star``)."""
+    found, (one,) = _studentized_family([c], level, resamples, seed, keep=keep)
+    if keep and "t_star" in found:
+        found["t_star"] = found["t_star"][0]
+    return {**found, **{k: v for k, v in one.items() if k != "n"}}
+
+
+def max_t_interval(
+    c1: Sequence[float],
+    c2: Sequence[float],
+    level: float,
+    resamples: int,
+    seed: int,
+    *,
+    keep: bool = False,
+) -> dict[str, Any]:
+    """The paired seed-block bootstrap max-t intervals of two contrasts on the same blocks
+    (``c1[i]`` and ``c2[i]`` of block i): every draw resamples one set of block indices, shared
+    by both (``numpy.random.default_rng(seed).integers(0, n, (resamples, n))``); each contrast is
+    studentized, |T_j*| = |mean_j* − mean_j|/SE_j* (zero SE: ``_abs_studentized``, 0 or ∞), and
+    the critical value q is the ``level`` quantile of max(|T₁*|, |T₂*|) by np.quantile's linear
+    rule: the symmetric simultaneous intervals mean_j ± q·SE_j. A contrast whose observed SE ≤
+    ``ZERO_SE`` has no interval (``mechanism_analysis`` then reads the other by
+    ``symmetric_studentized`` at ``COMPARISON_LEVEL``). Returns n, level, resamples, seed, q, the
+    draws (the number of per-draw maxima) and how many maxima were ∞, and ``contrasts``, one
+    entry per contrast (mean, sd, se, ``zero_se``, ``interval``); with ``keep``, every draw's
+    |T_j*| per contrast (``t_star``). With one contrast whose |T*| is 0 in every draw, the other's
+    interval is ``symmetric_studentized``'s at the same level, resamples and seed."""
+    found, each = _studentized_family([c1, c2], level, resamples, seed, keep=keep)
+    return {**found, "contrasts": [{k: v for k, v in one.items() if k != "n"} for one in each]}
+
+
+def component_readings(
+    interval: Sequence[float] | None, margin: float = MECHANISM_EFFECTS[0]
+) -> list[str]:
+    """A component's readings, with ``_readings``' conventions: ``positive`` or ``negative``
+    when its interval excludes 0 (strictly), ``bounded`` when it lies within ±``margin`` (the
+    meaningful component effect, 5 pp; bounds included), both when both hold, otherwise
+    ``inconclusive``; no interval, ``inconclusive``."""
+    if interval is None:
+        return ["inconclusive"]
+    lo, hi = interval
+    found = ["positive"] if lo > 0 else ["negative"] if hi < 0 else []
+    if lo >= -margin and hi <= margin:
+        found.append("bounded")
+    return found or ["inconclusive"]
+
+
+def _unsupported(block: Mapping[str, Any]) -> dict[str, str]:
+    """A K-complete confirmation block's unsupported arms, each with its cause."""
+    return {arm: s["cause"] for arm, s in block["supports"].items() if not s["supported"]}
+
+
+def _attrition(window: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The blocks of the cohort's window that are not jointly supported, by reason: the arms
+    unsupported together, each arm's causes (``block_support``: technical, bracketing, width),
+    those lost to a technical failure, and those the primary keeps (the pre-warmed arm alone
+    lost). ``window``: entries with ``block``, ``primary_supported``, ``three_arm_supported`` and
+    ``unsupported`` (arm → cause)."""
+    lost = [b for b in window if not b["three_arm_supported"]]
+    together = Counter("+".join(sorted(b["unsupported"])) for b in lost)
+    causes = {arm: dict(sorted(Counter(b["unsupported"][arm] for b in lost
+                                       if arm in b["unsupported"]).items()))
+              for arm in ARMS}  # fmt: skip
+    return {"blocks": len(lost), "unsupported_arms": dict(sorted(together.items())),
+            "causes": causes,
+            "technical": sum(1 for b in lost if "technical" in b["unsupported"].values()),
+            "primary_supported": sum(1 for b in lost if b["primary_supported"]),
+            "lost_blocks": [b["block"] for b in lost]}  # fmt: skip
+
+
+def _window_entry(block: Mapping[str, Any]) -> dict[str, Any]:
+    return {"block": block["block"], "primary_supported": block["supported"],
+            "three_arm_supported": block["three_arm_supported"],
+            "unsupported": _unsupported(block)}  # fmt: skip
+
+
+def _cohort_counts(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The mechanism cohort on K and support only, over ``progress``'s confirmation blocks of a
+    three-arm selection: the window (the blocks complete in order, up to the ``MECHANISM_TARGET``-th
+    jointly supported one), the cohort (its jointly supported blocks), how it ended (``target``,
+    ``cap`` once all ``MECHANISM_CAP`` blocks are complete, else None), the blocks with runs and
+    those that may still be jointly supported (all with runs but the complete ones that are not)."""
+    window, cohort = [], []
+    in_order = list(itertools.takewhile(lambda b: b["complete"], blocks[:MECHANISM_CAP]))
+    for block in in_order:
+        window.append(block)
+        if block["three_arm_supported"]:
+            cohort.append(block["block"])
+            if len(cohort) == MECHANISM_TARGET:
+                break
+    ended = ("target" if len(cohort) == MECHANISM_TARGET
+             else "cap" if len(in_order) == MECHANISM_CAP else None)  # fmt: skip
+    possible = sum(1 for b in blocks if b["runs"]
+                   and not (b["complete"] and not b["three_arm_supported"]))  # fmt: skip
+    return {"window": window, "cohort": cohort, "ended_by": ended,
+            "complete_in_order": len(in_order), "started": sum(1 for b in blocks if b["runs"]),
+            "possibly_jointly_supported": possible}  # fmt: skip
+
+
+def mechanism_state(blocks: Sequence[Mapping[str, Any]], *, three_arm: bool) -> dict[str, Any]:
+    """The mechanism cohort's state (amendment 4, section 3), on K and support only (never a
+    label), over ``progress``'s confirmation blocks: with a three-arm selection, the blocks
+    started, the jointly supported ones complete in order (``jointly_supported_in_order``, at most
+    ``MECHANISM_TARGET``) and the cohort's block numbers, those that may still be jointly
+    supported, the room for new blocks, whether it ``ended`` (``MECHANISM_TARGET`` jointly
+    supported blocks complete in order, or all ``MECHANISM_CAP`` blocks started and complete:
+    ``ended_by`` ``target`` or ``cap``) with the window's last block, and the attrition by reason
+    (``_attrition``). A two-arm selection (the pre-warmed arm dropped, or the primary-only
+    fallback) has no mechanism cohort."""
+    if not three_arm:
+        return {"applies": False,
+                "reason": "a two-arm selection (the pre-warmed arm dropped, or the primary-only "
+                          "fallback): no mechanism cohort; amendment 3's looks pace the "
+                          "confirmation"}  # fmt: skip
+    counts = _cohort_counts(blocks)
+    window = counts["window"]
+    return {
+        "applies": True,
+        "target": MECHANISM_TARGET,
+        "cap": MECHANISM_CAP,
+        "minimum": MECHANISM_MINIMUM,
+        "started": counts["started"],
+        "complete_in_order": counts["complete_in_order"],
+        "jointly_supported_in_order": len(counts["cohort"]),
+        "possibly_jointly_supported": counts["possibly_jointly_supported"],
+        "room": max(MECHANISM_TARGET - counts["possibly_jointly_supported"], 0),
+        "ended": counts["ended_by"] is not None,
+        "ended_by": counts["ended_by"],
+        "last_block": window[-1]["block"] if counts["ended_by"] and window else None,
+        "cohort": counts["cohort"],
+        "minimum_met": len(counts["cohort"]) >= MECHANISM_MINIMUM,
+        "attrition": _attrition([_window_entry(b) for b in window]),
+    }
+
+
+def mechanism_blocks(
+    blocks: Sequence[Mapping[str, Any]],
+    labels: Mapping[str, Sequence[Mapping[str, Any]]],
+    kstar: float,
+) -> list[dict[str, Any]]:
+    """``progress``'s confirmation blocks as ``mechanism_analysis`` reads them, only at its final
+    analysis: each ``look_blocks`` entry (``complete`` there: complete and labeled; ``h``, the
+    interpolated harm of every supported arm, missing labels not harmful) with the block's K-level
+    ``k_complete``, ``three_arm_supported`` and ``primary_supported``, its unsupported arms with
+    their causes (``unsupported``), and, once labeled, ``h_missing_harmful`` per supported arm
+    (``block_difference``'s, missing labels harmful: the sensitivities' high bounds)."""
+    out = []
+    for block, entry in zip(blocks, look_blocks(blocks, labels, kstar), strict=True):
+        extra: dict[str, Any] = {
+            "k_complete": block["complete"],
+            "three_arm_supported": block["three_arm_supported"],
+            "primary_supported": block["supported"],
+            "unsupported": _unsupported(block) if block["complete"] else {},
+            "h_missing_harmful": {},
+        }
+        if entry["complete"]:
+            arms = block_difference(block["supports"], labels, kstar)["arms"]
+            extra["h_missing_harmful"] = {arm: a["h_missing_harmful"] for arm, a in arms.items()}
+        out.append({**entry, **extra})
+    return out
+
+
+def _check_mechanism(settings: Mapping[str, Any]) -> None:
+    problems = mechanism_problems(dict(settings))
+    if problems:
+        raise ValueError("mechanism_analysis: " + "; ".join(problems))
+
+
+# The missing-label sensitivities of a contrast X − Y (``SENSITIVITIES``, computed as
+# ``block_difference`` computes them for AdamW − FA): per bound, the fields of X and of Y, ``h``
+# (missing labels not harmful, the low bound) or ``h_missing_harmful`` (harmful, the high bound).
+MECHANISM_SENSITIVITIES = {
+    "missing_labels": (("h", "h_missing_harmful"), ("h_missing_harmful", "h")),
+    "all_missing_harmful": (("h_missing_harmful", "h_missing_harmful"),) * 2,
+}
+
+
+def _contrast(cohort: Sequence[Mapping[str, Any]], name: str, x_field="h", y_field="h") -> list:
+    minuend, subtrahend = CONTRASTS[name]
+    return [b[x_field][minuend] - b[y_field][subtrahend] for b in cohort]
+
+
+def mechanism_analysis(blocks: Sequence[Mapping[str, Any]], settings: Mapping[str, Any]) -> dict:
+    """The mechanism cohort's one final analysis (amendment 4, section 3), at the cohort's end.
+
+    ``blocks``: ``mechanism_blocks``' entries in their preassigned order; ``settings``: the
+    fixation record's ``mechanism`` (``read_fixation``). The cohort is the first
+    ``MECHANISM_TARGET`` jointly supported three-arm blocks in order among those started up to
+    the cohort's end, or, at the cap of ``MECHANISM_CAP`` started and complete blocks, the
+    jointly supported ones among them; a block of the window that is not complete on K, or a
+    cohort block not labeled yet, raises ``ValueError``: it is computed once, at the end.
+
+    Per cohort block, from the interpolation estimator at K* (``block_difference``'s h):
+    C1 = h_pre-warmed − h_FA and C2 = h_AdamW − h_pre-warmed. Returns:
+
+    - ``cohort``: its block numbers, n, how it ended and its window;
+    - ``C1`` and ``C2``: mean, sd, SE and n;
+    - ``sum_check``: C1 + C2 = AdamW − FA on the cohort, per block and in the mean, to
+      ``ZERO_SE`` (raised otherwise); that is not the primary's estimate, whose cohort is the
+      primary-supported one;
+    - ``max_t``: ``max_t_interval`` at the record's level, resamples and the stream
+      ``derive_seed(seed, "mechanism", "max_t")``, its q and an interval per contrast;
+    - ``bonferroni``: ``symmetric_studentized`` per contrast at ``COMPARISON_LEVEL``, stream
+      ``derive_seed(seed, "mechanism", "bonferroni", name)``;
+    - ``readings`` (``component_readings``, margin the meaningful effect 5 pp): with at least
+      ``MECHANISM_MINIMUM`` cohort blocks (``minimum_met``), each contrast on its max-t interval;
+      a contrast whose observed SE ≤ ``ZERO_SE`` is not read, and the other is then read on its
+      Bonferroni interval; below the minimum, none (the intervals are descriptive);
+    - ``attrition``: the window's blocks not jointly supported, by reason;
+    - ``sensitivities``: each of ``SENSITIVITIES`` for both contrasts, the max-t intervals of
+      their low and high bounds on the same stream, from the low one's lower bound to the high
+      one's upper bound, descriptive, without readings."""
+    _check_mechanism(settings)
+    level, resamples, seed = settings["level"], settings["resamples"], settings["seed"]
+    window, cohort = [], []
+    for block in blocks[:MECHANISM_CAP]:
+        if not block["k_complete"]:
+            raise ValueError(f"mechanism_analysis: block {block['block']} is not complete: the "
+                             "analysis runs once, at the cohort's end")  # fmt: skip
+        window.append(block)
+        if block["three_arm_supported"]:
+            if not block["complete"] or not set(ARMS) <= set(block["h"]):
+                raise ValueError(f"mechanism_analysis: block {block['block']} of the cohort is "
+                                 "not labeled yet: the analysis runs once, at the cohort's "
+                                 "end")  # fmt: skip
+            cohort.append(block)
+            if len(cohort) == MECHANISM_TARGET:
+                break
+    if len(cohort) < MECHANISM_TARGET and len(window) < MECHANISM_CAP:
+        raise ValueError(f"mechanism_analysis: the cohort has not ended ({len(cohort)} jointly "
+                         f"supported blocks of {MECHANISM_TARGET}, {len(window)} blocks of the "
+                         f"cap {MECHANISM_CAP})")  # fmt: skip
+    n = len(cohort)
+    values = {name: _contrast(cohort, name) for name in CONTRASTS}
+    primary = [b["h"][ADAMW] - b["h"][FA] for b in cohort]
+    deviation = max((abs(a + b - d) for a, b, d in zip(values["C1"], values["C2"], primary,
+                                                         strict=True)), default=0.0)  # fmt: skip
+    means = {name: statistics.fmean(v) if v else None for name, v in values.items()}
+    total = statistics.fmean(primary) if primary else None
+    mean_deviation = 0.0 if total is None else abs(means["C1"] + means["C2"] - total)
+    if deviation > ZERO_SE or mean_deviation > ZERO_SE:
+        raise ValueError(f"mechanism_analysis: C1 + C2 departs from AdamW − FA on the cohort by "
+                         f"{max(deviation, mean_deviation)!r}")  # fmt: skip
+    stream = derive_seed(seed, "mechanism", "max_t")
+    joint = max_t_interval(values["C1"], values["C2"], level, resamples, stream)
+    bonferroni = {name: symmetric_studentized(v, COMPARISON_LEVEL, resamples,
+                                              derive_seed(seed, "mechanism", "bonferroni", name))
+                  for name, v in values.items()}  # fmt: skip
+    per = dict(zip(CONTRASTS, joint["contrasts"], strict=True))
+    minimum_met = n >= MECHANISM_MINIMUM
+    zero = [name for name in CONTRASTS if per[name]["zero_se"]]
+    readings: dict[str, Any] = {}
+    for name in CONTRASTS:
+        basis, interval, why = "max_t", per[name]["interval"], None
+        if not minimum_met:
+            basis, why = None, f"fewer than {MECHANISM_MINIMUM} cohort blocks: descriptive"
+        elif per[name]["zero_se"] is None or name in zero:
+            basis, why = None, "an observed SE at or below ZERO_SE: not read"
+        elif zero:
+            basis, interval = "bonferroni", bonferroni[name]["interval"]
+        readings[name] = {
+            "basis": basis,
+            "interval": interval if basis else None,
+            "readings": (component_readings(interval, settings["effects"][0])
+                         if basis else None),
+            "why": why,
+        }  # fmt: skip
+    sensitivities = {}
+    for name, sides in MECHANISM_SENSITIVITIES.items():
+        bounds = [max_t_interval(*(_contrast(cohort, contrast, *fields) for contrast in CONTRASTS),
+                                 level, resamples, stream)
+                  for fields in sides]  # fmt: skip
+        sensitivities[name] = {
+            contrast: {
+                "interval": (None if None in (bounds[0]["contrasts"][j]["interval"],
+                                              bounds[1]["contrasts"][j]["interval"])
+                             else [bounds[0]["contrasts"][j]["interval"][0],
+                                   bounds[1]["contrasts"][j]["interval"][1]]),
+                "low_mean": bounds[0]["contrasts"][j]["mean"],
+                "high_mean": bounds[1]["contrasts"][j]["mean"],
+            }
+            for j, contrast in enumerate(CONTRASTS)
+        }  # fmt: skip
+    return {
+        "settings": dict(settings),
+        "cohort": {"blocks": [b["block"] for b in cohort], "n": n,
+                   "ended_by": "target" if n == MECHANISM_TARGET else "cap",
+                   "window": [window[0]["block"], window[-1]["block"]] if window else None},
+        **{name: {"definition": f"{CONTRASTS[name][0]} - {CONTRASTS[name][1]}",
+                  **{k: per[name][k] for k in ("mean", "sd", "se")}, "n": n}
+           for name in CONTRASTS},
+        "sum_check": {"adamw_minus_fa_mean": total, "C1_plus_C2_mean": (
+            None if total is None else means["C1"] + means["C2"]),
+            "max_block_deviation": deviation, "mean_deviation": mean_deviation,
+            "tolerance": ZERO_SE, "holds": True},
+        "max_t": {**{k: joint[k] for k in ("level", "resamples", "q", "draws", "infinite")},
+                  "seed": seed, "stream_seed": stream,
+                  **{name: per[name]["interval"] for name in CONTRASTS}},
+        "bonferroni": {name: {"level": found["level"], "stream_seed": found["seed"],
+                              **{k: found[k] for k in ("q", "interval", "zero_se", "infinite")}}
+                       for name, found in bonferroni.items()},
+        "readings": readings,
+        "minimum_met": minimum_met,
+        "attrition": _attrition(window),
+        "sensitivities": sensitivities,
+    }  # fmt: skip
+
+
 # ------------------------------------------------------------------ utility and validation
 
 
@@ -2490,7 +2972,12 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
     - ``direction_min_supported`` (an integer ≥ 0): below that many supported blocks a look
       concludes nothing (neither direction nor equivalence), 0 at every look;
     - ``secondary_interval``: the secondary contrasts' interval, one of ``INTERVALS``;
-    - ``secondary_status``: how they are reported, one of ``SECONDARY_STATUSES``.
+    - ``secondary_status``: how they are reported, one of ``SECONDARY_STATUSES``;
+    - ``mechanism`` (amendment 4, section 3): an object with exactly ``MECHANISM_KEYS``:
+      ``target``, ``cap``, ``minimum``, ``zero_se``, ``comparison_level`` and ``effects``, each
+      equal to the code's (``MECHANISM_FIXED``: 60, 80, 36, 1e-12, 0.975, [0.05, 0.025]);
+      ``level``, the max-t intervals' simultaneous level, in [0.95, 1); ``resamples`` (an
+      integer ≥ ``MIN_RESAMPLES``) and ``seed`` (an integer).
 
     Each is required, the integers as JSON integers; a missing or malformed one raises
     ``ValueError``, and none is ever defaulted."""
@@ -2531,6 +3018,7 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
                          ("secondary_status", SECONDARY_STATUSES)):  # fmt: skip
         if record[key] not in allowed:
             problems.append(f"{key} {record[key]!r} is not one of {list(allowed)}")
+    problems += mechanism_problems(record["mechanism"])
     if problems:
         raise ValueError(f"{path}: " + "; ".join(problems))
     return {
@@ -2547,7 +3035,59 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
         "direction_min_supported": record["direction_min_supported"],
         "secondary_interval": record["secondary_interval"],
         "secondary_status": record["secondary_status"],
+        "mechanism": _mechanism_settings(record["mechanism"]),
     }
+
+
+def _same(value: Any, fixed: Any) -> bool:
+    """A fixation value equal to the code's: integers as JSON integers, numbers as numbers, and
+    a list as a list of them."""
+    if isinstance(fixed, list):
+        return (isinstance(value, list) and len(value) == len(fixed)
+                and all(_same(v, f) for v, f in zip(value, fixed, strict=True)))  # fmt: skip
+    if isinstance(fixed, int):
+        return _integer(value) and value == fixed
+    return _number(value) and value == fixed
+
+
+def mechanism_problems(value: Any) -> list[str]:
+    """How the fixation record's ``mechanism`` departs from what ``read_fixation`` requires (none:
+    it holds)."""
+    if not isinstance(value, dict):
+        return [f"mechanism {value!r} is not an object with {list(MECHANISM_KEYS)}"]
+    problems = []
+    missing = [key for key in MECHANISM_KEYS if key not in value]
+    if missing:
+        problems.append(f"mechanism lacks {missing}")
+    unknown = sorted(set(value) - set(MECHANISM_KEYS))
+    if unknown:
+        problems.append(f"mechanism has keys {unknown} it does not know")
+    for key, fixed in MECHANISM_FIXED.items():
+        if key in value and not _same(value[key], fixed):
+            problems.append(f"mechanism {key} {value[key]!r} is not the code's {fixed!r}")
+    level = value.get("level")
+    if "level" in value and not (_number(level) and 0.95 <= level < 1):
+        problems.append(f"mechanism level {level!r} is not a level in [0.95, 1)")
+    resamples = value.get("resamples")
+    if "resamples" in value and not (_integer(resamples) and resamples >= MIN_RESAMPLES):
+        problems.append(f"mechanism resamples {resamples!r} is not an integer ≥ {MIN_RESAMPLES}")
+    if "seed" in value and not _integer(value["seed"]):
+        problems.append(f"mechanism seed {value['seed']!r} is not an integer")
+    return problems
+
+
+def _mechanism_settings(value: Mapping[str, Any]) -> dict[str, Any]:
+    """The fixation record's ``mechanism``, checked (``mechanism_problems``), as the analysis
+    reads it."""
+    problems = mechanism_problems(value)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return {**{key: value[key] for key in MECHANISM_FIXED},
+            "effects": [float(effect) for effect in value["effects"]],
+            "zero_se": float(value["zero_se"]),
+            "comparison_level": float(value["comparison_level"]),
+            "level": float(value["level"]), "resamples": value["resamples"],
+            "seed": value["seed"]}  # fmt: skip
 
 
 def versions_problems(
@@ -2660,6 +3200,72 @@ def run_facts(run_dir: str | Path) -> dict[str, Any]:
             "commit": git.get("commit"), "dirty": git.get("dirty"),
             "preconditioner": preconditioner,
             "config_hash": meta.get("config_hash")}  # fmt: skip
+
+
+SCALARS = "update_scalars.jsonl"
+DEPARTURE_STEPS = (5, 10, 25)  # schedule.DEPARTURE_STEPS: the pre-warmed denominator's departure
+DEPARTURE_FIELDS = ("norm_ratio", "median", "p90")
+
+
+def _scalar_rows(path: Path) -> tuple[list[dict[str, Any]], str | None]:
+    """The rows of an update_scalars.jsonl, and why it does not read (None when it does)."""
+    try:
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    except (OSError, ValueError) as exc:
+        return [], f"does not read: {exc!r}"
+    if not all(isinstance(row, dict) and _integer(row.get("step")) for row in rows):
+        return [], "a row without an integer step"
+    return rows, None
+
+
+def scalars_coverage(
+    runs: Sequence[Trajectory], facts: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
+    """The update scalars' coverage (amendment 4, section 4; review of Task 6, M4), per regular
+    run of the stage's arms of every role (``ROLES``, in ``facts``: ``run_facts`` by run id;
+    Stage A's runs and the FA controls are not this stage's regular runs): whether the run's
+    ``update_scalars.jsonl`` exists with one row per update step, 1 to the steps it took (25 for
+    a run that finished), and for the pre-warmed arm a ``d_departure`` with ``DEPARTURE_FIELDS``
+    at each of the steps 5, 10 and 25 it reached; ``enabled`` is its config's
+    ``tracking.update_scalars`` (None when the config does not read). A gap is reported and
+    gates nothing: it is no problem of ``progress``. Only K-free records are read."""
+    entries = []
+    for run in sorted(runs, key=lambda r: r.run_id):
+        role = (facts.get(run.run_id) or {}).get("role")
+        if run.arm not in ARMS or run.role is not None or role not in ROLES:
+            continue
+        try:
+            config = OmegaConf.load(run.run_dir / "config.yaml")
+            enabled = OmegaConf.select(config, "tracking.update_scalars", default=False) is True
+        except Exception:  # a config that does not read: reported, never gating
+            enabled = None
+        taken = run.steps if _integer(run.steps) else 0
+        expected = list(range(1, min(taken, STEPS) + 1))
+        path = run.run_dir / SCALARS
+        rows, unreadable = _scalar_rows(path) if path.is_file() else ([], None)
+        steps = Counter(row["step"] for row in rows)
+        entry: dict[str, Any] = {
+            "run": run.run_id, "role": role, "arm": run.arm, "steps_taken": taken,
+            "enabled": enabled, "file": path.is_file(), "unreadable": unreadable,
+            "rows": len(rows), "missing_steps": [s for s in expected if s not in steps],
+            "repeated_steps": sorted(s for s, count in steps.items() if count > 1),
+            "unexpected_steps": sorted(s for s in steps if s not in expected),
+        }  # fmt: skip
+        if run.arm == PREWARMED:
+            departed = {row["step"] for row in rows if isinstance(row.get("d_departure"), dict)
+                        and all(k in row["d_departure"] for k in DEPARTURE_FIELDS)}  # fmt: skip
+            entry["departure_missing"] = [s for s in DEPARTURE_STEPS
+                                          if s <= taken and s not in departed]  # fmt: skip
+        entry["gap"] = bool(not entry["file"] or unreadable or entry["missing_steps"]
+                            or entry["repeated_steps"] or entry["unexpected_steps"]
+                            or entry.get("departure_missing"))  # fmt: skip
+        entries.append(entry)
+    roles = Counter(entry["role"] for entry in entries)
+    gaps = Counter(entry["role"] for entry in entries if entry["gap"])
+    return {"runs": entries,
+            "by_role": {role: {"runs": roles[role], "gaps": gaps[role]} for role in ROLES
+                        if roles[role]},
+            "gaps": sum(gaps.values()), "status": "reported; a gap gates nothing"}  # fmt: skip
 
 
 def preconditioner_pairing(
@@ -2966,7 +3572,9 @@ def progress(
     run among ``trajectories`` included. The time-course runs are checked with the others
     (conformance, one stream and one v₀ per seed), then read apart: once the rates are frozen,
     ``timecourse`` is their ``timecourse_summary``, without labels; they never enter the
-    selection, a confirmation block or a look."""
+    selection, a confirmation block or a look. Once the rates are frozen, ``confirmation``
+    holds the blocks (``_confirmation``) and ``mechanism`` the mechanism cohort's state
+    (``mechanism_state``, on K and support only)."""
     exhausted = exhausted or {}
     stage = [run for run in trajectories if run.arm in (*ARMS, FA_CONTROL_ARM)]
     timecourse = list(timecourse)
@@ -3018,7 +3626,10 @@ def progress(
     gone = {key: label for key, label in exhausted.items() if key in expected and key not in found}
     out["exhausted"] = {**verdict["exhausted"],
                         **{label: list(key) for key, label in sorted(gone.items())}}  # fmt: skip
-    out["confirmation"] = _confirmation(found, gone, rates, batch, kstar, w_max)
+    three_arm = step["three_arm"]
+    out["confirmation"] = _confirmation(found, gone, rates, batch, kstar, w_max,
+                                        three_arm=three_arm)  # fmt: skip
+    out["mechanism"] = mechanism_state(out["confirmation"], three_arm=three_arm)
     out["timecourse"] = timecourse_summary(timecourse, endpoints=found, rates=rates, batch=batch,
                                            exhausted=exhausted)  # fmt: skip
     if out["timecourse"]["problems"]:
@@ -3041,10 +3652,14 @@ def _utility_means(runs: Sequence[Trajectory], theta0: Mapping[str, float]) -> d
             for lr, losses in sorted(by_rate.items())}  # fmt: skip
 
 
-def _confirmation(found, gone, rates, batch, kstar, w_max) -> list[dict[str, Any]]:
+def _confirmation(found, gone, rates, batch, kstar, w_max, *, three_arm) -> list[dict[str, Any]]:
     """Every confirmation block in its preassigned order: its runs (an exhausted run counts as
     one), complete once each arm has a run at each of its frozen rates, then each arm's support,
-    in which an exhausted run is a missing rate: a technical failure."""
+    in which an exhausted run is a missing rate: a technical failure. ``supported``: AdamW-25 and
+    FA-25 both supported (the primary's); ``three_arm_supported`` (the mechanism cohort's): the
+    block complete and every arm of the frozen rates supported, with a three-arm selection only."""
+    if three_arm and set(rates) != set(ARMS):
+        raise ValueError(f"a three-arm selection freezes rates for {list(ARMS)}, not {list(rates)}")
     blocks = []
     for number, seed in enumerate(CONFIRMATION_SEEDS, 1):
         keys = _keys(rates, batch, (seed,))
@@ -3054,7 +3669,7 @@ def _confirmation(found, gone, rates, batch, kstar, w_max) -> list[dict[str, Any
         entry: dict[str, Any] = {"block": number, "seed": seed, "runs": runs,
                                  "expected": len(keys), "complete": runs == len(keys),
                                  "exhausted": lost, "supported": False,
-                                 "supports": {}}  # fmt: skip
+                                 "three_arm_supported": False, "supports": {}}  # fmt: skip
         if entry["complete"]:
             entry["supports"] = {
                 arm: block_support([found[key] for key in present if key[0] == arm], kstar,
@@ -3062,6 +3677,8 @@ def _confirmation(found, gone, rates, batch, kstar, w_max) -> list[dict[str, Any
                 for arm, lrs in rates.items()
             }  # fmt: skip
             entry["supported"] = all(entry["supports"][arm]["supported"] for arm in PRIMARY_ARMS)
+            entry["three_arm_supported"] = three_arm and all(
+                entry["supports"][arm]["supported"] for arm in ARMS)  # fmt: skip
         blocks.append(entry)
     return blocks
 
@@ -3071,28 +3688,46 @@ def confirmation_guard(
     first: int,
     last: int,
     *,
+    three_arm: bool,
     after_look: int = 0,
     issued: Collection[tuple[int, int]] = (),
     n: Sequence[int] = LOOK_SIZES,
     cap: int = CAP,
 ) -> dict[str, Any]:
     """Whether the confirmation blocks ``first`` to ``last`` may be started now, on K and the
-    launcher's journal only (``progress``'s confirmation blocks; ``issued``: ``issued_ranges``).
-    The blocks run in their preassigned order: a new range starts at the first block without a
-    run (no gaps) and touches no block with runs (no overlaps), unless it re-issues exactly a
-    range issued before, to complete it. A new range must also end before the next look:
-    s = the supported blocks complete in order, p = every block with runs that may still be
-    supported (all but the complete unsupported ones), look k = ``after_look`` + 1; it holds at
-    most n_k − p blocks, and none once s ≥ n_k, until the summary has read look k and the operator
-    passes ``after_look`` = k because it did not stop. Returns the problems (none: allowed) and
-    those counts."""
+    launcher's journal only (``progress``'s confirmation blocks; ``issued``: ``issued_ranges``;
+    ``three_arm``: the frozen selection's). The blocks run in their preassigned order: a new
+    range starts at the first block without a run (no gaps) and touches no block with runs (no
+    overlaps), unless it re-issues exactly a range issued before, to complete it.
+
+    - A three-arm selection (amendment 4; the coordinator, gate C): the campaigns do not pause at
+      the primary's looks, which are computed afterwards from the same first 36 and 60
+      primary-supported blocks. A new range holds at most ``MECHANISM_TARGET`` − p₃ blocks, p₃
+      every block with runs that may still be jointly supported (all but the complete ones that
+      are not), and none once ``MECHANISM_TARGET`` jointly supported blocks are complete in order
+      or every block up to the cap has runs; ``after_look`` is refused.
+    - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; no
+      mechanism cohort), amendment 3's: a new range must end before the next look: s = the
+      supported blocks complete in order, p = every block with runs that may still be supported
+      (all but the complete unsupported ones), look k = ``after_look`` + 1; it holds at most
+      n_k − p blocks, and none once s ≥ n_k, until the summary has read look k and the operator
+      passes ``after_look`` = k because it did not stop.
+
+    Returns the problems (none: allowed) and those counts."""
     started = {b["block"] for b in blocks if b["runs"]}
     first_open = next((b["block"] for b in blocks if not b["runs"]), cap + 1)
     in_order = list(itertools.takewhile(lambda b: b["complete"], blocks))
     supported = sum(1 for b in in_order if b["supported"])
     possible = sum(1 for b in blocks if b["runs"] and not (b["complete"] and not b["supported"]))
     out: dict[str, Any] = {"first_open": first_open, "supported_in_order": supported,
-                           "possibly_supported": possible, "problems": []}  # fmt: skip
+                           "possibly_supported": possible, "three_arm": three_arm,
+                           "problems": []}  # fmt: skip
+    if three_arm:
+        counts = _cohort_counts(blocks)
+        out.update(jointly_supported_in_order=len(counts["cohort"]),
+                   possibly_jointly_supported=counts["possibly_jointly_supported"],
+                   target=MECHANISM_TARGET,
+                   room=MECHANISM_TARGET - counts["possibly_jointly_supported"])  # fmt: skip
     problems = out["problems"]
     if not 1 <= first <= last <= cap:
         problems.append(f"blocks {first}-{last}: 1 <= FIRST <= LAST <= {cap}")
@@ -3107,6 +3742,22 @@ def confirmation_guard(
     if first != first_open:
         problems.append(f"the next range starts at block {first_open}, the first without a run, "
                         f"not {first}: the blocks run in their preassigned order")  # fmt: skip
+    if three_arm:
+        if after_look:
+            problems.append(f"--after-look {after_look}: a three-arm confirmation does not pause "
+                            "at the primary's looks (amendment 4); they are computed afterwards "
+                            "from the same blocks, and the mechanism cohort's room limits each "
+                            "range")  # fmt: skip
+        jointly, possible3 = out["jointly_supported_in_order"], out["possibly_jointly_supported"]
+        if jointly >= MECHANISM_TARGET:
+            problems.append(f"the mechanism cohort has its {MECHANISM_TARGET} jointly supported "
+                            "blocks complete in order: the confirmation has ended, no range "
+                            "starts")  # fmt: skip
+        elif last - first + 1 > out["room"]:
+            problems.append(f"{last - first + 1} blocks asked for, room for {max(out['room'], 0)} "
+                            f"before the mechanism cohort's {MECHANISM_TARGET}: {possible3} "
+                            "blocks with runs may be jointly supported")  # fmt: skip
+        return out
     if after_look and supported < n[after_look - 1]:
         problems.append(f"--after-look {after_look}: look {after_look} needs {n[after_look - 1]} "
                         f"supported blocks complete in order, there are {supported}")  # fmt: skip

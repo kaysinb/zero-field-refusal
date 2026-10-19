@@ -44,11 +44,14 @@ from zero_field_refusal.analysis.study2_short import (
     block_support,
     bootstrap_t_interval,
     candidate_order,
+    component_readings,
     control_conformance,
     control_verdict,
     finite_bounds,
     harm,
     interpolate,
+    max_t_interval,
+    mechanism_analysis,
     numerical_cases,
     numerical_digest,
     numerical_policy,
@@ -59,6 +62,7 @@ from zero_field_refusal.analysis.study2_short import (
     select_rates,
     selection,
     sensitivity_looks,
+    symmetric_studentized,
     targeted_rates,
     usable_rate,
     utility_family,
@@ -2536,3 +2540,246 @@ def test_timecourse_identity_reports_the_rayleigh_records_beside(tmp_path) -> No
     write(course, R=None, reason="failed: OutOfMemoryError: …", delta_norm=None,
           delta_H_delta=None)  # fmt: skip
     assert found()["rayleigh_equal"] is None
+
+
+# ------------------------------------------------------------------ the mechanism cohort
+
+MECHANISM = {"target": 60, "cap": 80, "minimum": 36, "zero_se": 1e-12, "comparison_level": 0.975,
+             "effects": [0.05, 0.025], "level": 0.95, "resamples": 2000, "seed": 7}  # fmt: skip
+
+
+def reference_abs_t(values: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """|T*| per draw written out directly, for draws without a zero SE*."""
+    n = values.size
+    samples = values[indices]
+    se = samples.std(axis=1, ddof=1) / math.sqrt(n)
+    return np.abs(samples.mean(axis=1) - values.mean()) / se
+
+
+def test_max_t_uses_shared_draws() -> None:
+    """Every draw resamples one set of block indices, shared by both contrasts (drawn as
+    ``bootstrap_t_interval`` draws them), and for c1 = c2 the critical value is the one-contrast
+    one."""
+    rng = np.random.default_rng(3)
+    c1, c2 = rng.normal(0.02, 0.05, 40), rng.normal(-0.01, 0.03, 40)
+    found = max_t_interval(c1, c2, 0.95, 2000, 11, keep=True)
+    indices = np.random.default_rng(11).integers(0, 40, (2000, 40))
+    for values, t_star in zip((c1, c2), found["t_star"], strict=True):
+        np.testing.assert_array_equal(t_star, reference_abs_t(values, indices))
+    maxima = np.maximum(*found["t_star"])
+    assert found["q"] == pytest.approx(float(np.quantile(maxima, 0.95)), rel=1e-12, abs=0)
+    assert (found["draws"], found["infinite"]) == (2000, 0)
+    for one, values in zip(found["contrasts"], (c1, c2), strict=True):
+        se = values.std(ddof=1) / math.sqrt(40)
+        assert one["interval"] == [one["mean"] - found["q"] * se, one["mean"] + found["q"] * se]
+    # c2 = −c1: |T₂*| = |T₁*| draw for draw, which only shared indices give.
+    mirrored = max_t_interval(c1, -c1, 0.95, 2000, 11, keep=True)
+    np.testing.assert_array_equal(*mirrored["t_star"])
+    one = symmetric_studentized(c1, 0.95, 2000, 11)
+    same = max_t_interval(c1, c1, 0.95, 2000, 11)
+    assert same["q"] == mirrored["q"] == one["q"]
+    assert same["contrasts"][0]["interval"] == one["interval"]
+    # Two contrasts that are not perfectly correlated need a larger critical value.
+    assert found["q"] > one["q"]
+
+
+def test_max_t_reduces_to_symmetric_studentized() -> None:
+    """With a degenerate c2 (|T₂*| = 0 in every draw), the max-t interval of c1 is
+    ``symmetric_studentized``'s at the same level, resamples and seed; that is the symmetric
+    studentized bootstrap computed directly."""
+    c1 = np.random.default_rng(5).normal(0.03, 0.06, 36)
+    flat = np.full(36, 0.02)
+    found = max_t_interval(c1, flat, 0.9, 3000, 21, keep=True)
+    assert not found["t_star"][1].any()
+    one = symmetric_studentized(c1, 0.9, 3000, 21, keep=True)
+    assert found["q"] == one["q"] and found["contrasts"][0]["interval"] == one["interval"]
+    assert found["contrasts"][1]["zero_se"] and found["contrasts"][1]["interval"] is None
+    indices = np.random.default_rng(21).integers(0, 36, (3000, 36))
+    np.testing.assert_array_equal(one["t_star"], reference_abs_t(c1, indices))
+    q = float(np.quantile(reference_abs_t(c1, indices), 0.9))
+    se = c1.std(ddof=1) / 6
+    assert one["q"] == pytest.approx(q, rel=1e-12, abs=0)
+    assert one["interval"] == pytest.approx([c1.mean() - q * se, c1.mean() + q * se], rel=1e-12)
+    assert (one["mean"], one["se"]) == (float(c1.mean()), float(se))
+    # Malformed settings are refused; fewer than 2 blocks give no interval.
+    for bad in ((1.0, 3000, 21), (0.9, 1, 21), (0.9, 3000.0, 21), (0.9, 3000, "21")):
+        with pytest.raises(ValueError):
+            symmetric_studentized(c1, *bad)
+    with pytest.raises(ValueError, match="pairs"):
+        max_t_interval(c1, c1[:-1], 0.9, 3000, 21)
+    assert symmetric_studentized([0.1], 0.9, 3000, 21)["interval"] is None
+
+
+def test_the_zero_se_rule_in_a_resample() -> None:
+    """A resample's contrast whose SE* ≤ 1e-12 has |T*| = 0 when its mean is the observed one
+    within 1e-12, ∞ otherwise; a quantile reaching an ∞ draw is ∞, and gives no interval."""
+    samples = np.array([[0.5, 0.5, 0.5], [0.0, 0.0, 0.0], [0.0, 0.5, 0.5],
+                        [0.5 + 1e-13, 0.5 + 1e-13, 0.5 + 1e-13]])  # fmt: skip
+    found = study2_short._abs_studentized(samples, 0.5)
+    third = (0.5 - 1 / 3) / (np.std([0.0, 0.5, 0.5], ddof=1) / math.sqrt(3))
+    assert found[0] == 0.0 and found[1] == math.inf and found[3] == 0.0
+    assert found[2] == pytest.approx(third)
+    ordered = np.array([0.0, 1.0, 2.0, math.inf])
+    assert study2_short._upper_quantile(ordered, 0.5) == 1.5
+    assert study2_short._upper_quantile(ordered, 2 / 3) == 2.0  # exactly on a finite draw
+    assert study2_short._upper_quantile(ordered, 0.7) == math.inf
+    # Two blocks: a draw of the same block twice has SE* = 0 and its mean elsewhere: ∞.
+    pair = max_t_interval([0.0, 1.0], [0.2, 0.4], 0.95, 4000, 3)
+    indices = np.random.default_rng(3).integers(0, 2, (4000, 2))
+    assert pair["infinite"] == int((indices[:, 0] == indices[:, 1]).sum()) > 1000
+    assert pair["q"] == math.inf and [c["interval"] for c in pair["contrasts"]] == [None, None]
+
+
+def mechanism_entry(number: int, h: dict, *, joint: bool = True, missing: float = 0.0,
+                    labeled: bool = True) -> dict:  # fmt: skip
+    """A ``mechanism_blocks`` entry: complete on K, h per arm (pre-warmed without one when the
+    block is not jointly supported), the high bound ``missing`` above h."""
+    arms = h if joint else {arm: v for arm, v in h.items() if arm != PREWARMED}
+    return {"block": number, "seed": 2999 + number, "complete": labeled, "supported": True,
+            "delta": arms[ADAMW] - arms[FA], "h": arms if labeled else {}, "k_complete": True,
+            "three_arm_supported": joint, "primary_supported": True,
+            "unsupported": {} if joint else {PREWARMED: "bracketing"},
+            "h_missing_harmful": {arm: v + missing for arm, v in arms.items()}
+            if labeled else {}}  # fmt: skip
+
+
+def components(n: int, c1: float, c2: float, *, sd: float = 0.01, seed: int = 1) -> list[dict]:
+    """h per arm of ``n`` blocks with C1 = P − F ≈ c1 and C2 = A − P ≈ c2."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for f, e1, e2 in zip(rng.normal(0.2, 0.03, n), rng.normal(0, sd, n), rng.normal(0, sd, n),
+                         strict=True):  # fmt: skip
+        p = f + c1 + e1
+        out.append({FA: float(f), PREWARMED: float(p), ADAMW: float(p + c2 + e2)})
+    return out
+
+
+def test_minimum_cohort_36() -> None:
+    """With the cap reached at fewer than 36 jointly supported blocks, the intervals are
+    descriptive and nothing is read; from 36 on, the readings."""
+    for joint, read in ((35, False), (36, True)):
+        h = components(80, 0.05, -0.05)
+        blocks = [mechanism_entry(i + 1, h[i], joint=i < joint) for i in range(80)]
+        found = mechanism_analysis(blocks, MECHANISM)
+        assert found["cohort"]["n"] == joint and found["cohort"]["ended_by"] == "cap"
+        assert found["cohort"]["window"] == [1, 80] and found["minimum_met"] is read
+        assert all(found["max_t"][name] is not None for name in ("C1", "C2"))  # descriptive
+        for name in ("C1", "C2"):
+            reading = found["readings"][name]
+            assert (reading["readings"] is not None) is read
+            assert (reading["basis"] == "max_t") is read
+        assert found["attrition"]["blocks"] == 80 - joint
+        assert found["attrition"]["unsupported_arms"] == {PREWARMED: 80 - joint}
+        assert found["attrition"]["primary_supported"] == 80 - joint
+    assert found["readings"]["C1"]["readings"] == ["positive"]
+    # Before the cohort's end it is refused: a block not complete, or a cohort block unlabeled.
+    with pytest.raises(ValueError, match="has not ended"):
+        mechanism_analysis(blocks[:79], MECHANISM)
+    with pytest.raises(ValueError, match="not complete"):
+        mechanism_analysis([*blocks[:40], {**blocks[40], "k_complete": False}, *blocks[41:]],
+                           MECHANISM)  # fmt: skip
+    with pytest.raises(ValueError, match="not labeled"):
+        mechanism_analysis([mechanism_entry(1, h[0], labeled=False), *blocks[1:]], MECHANISM)
+    with pytest.raises(ValueError, match="mechanism minimum"):
+        mechanism_analysis(blocks, {**MECHANISM, "minimum": 35})
+
+
+def test_zero_se_no_reading() -> None:
+    """An observed SE ≤ 1e-12 leaves its contrast unread, and the other is read on its symmetric
+    studentized interval at 97.5 %."""
+    h = components(60, 0.04, 0.0)
+    # C2 = A − P equal to 0.01 in every block, up to rounding: a zero SE.
+    flat = [{**row, ADAMW: row[PREWARMED] + 0.01} for row in h]
+    found = mechanism_analysis([mechanism_entry(i + 1, row) for i, row in enumerate(flat)],
+                               MECHANISM)  # fmt: skip
+    assert found["cohort"]["n"] == 60 and found["cohort"]["ended_by"] == "target"
+    assert found["C2"]["se"] <= 1e-12 and found["max_t"]["C2"] is None
+    assert found["readings"]["C2"] == {
+        "basis": None,
+        "interval": None,
+        "readings": None,
+        "why": "an observed SE at or below ZERO_SE: not read",
+    }
+    c1 = [row[PREWARMED] - row[FA] for row in flat]
+    stream = derive_seed(7, "mechanism", "bonferroni", "C1")
+    comparison = symmetric_studentized(c1, 0.975, 2000, stream)
+    assert found["bonferroni"]["C1"]["interval"] == comparison["interval"]
+    assert found["readings"]["C1"]["basis"] == "bonferroni"
+    assert found["readings"]["C1"]["interval"] == comparison["interval"]
+    assert found["readings"]["C1"]["readings"] == ["positive", "bounded"]
+    # The max-t interval of C1 there is the one-contrast one at the max-t level (|T₂*| = 0).
+    joint = symmetric_studentized(c1, 0.95, 2000, derive_seed(7, "mechanism", "max_t"))
+    assert found["max_t"]["C1"] == joint["interval"]
+
+
+def test_sum_identity_on_cohort() -> None:
+    """C1 + C2 = AdamW − FA on the cohort, per block and in the mean, to 1e-12; that is not the
+    primary's mean, whose cohort holds the blocks the pre-warmed arm lost."""
+    h = components(75, 0.02, 0.01, sd=0.02)
+    lost = set(range(4, 70, 5))  # 14 blocks without the pre-warmed arm, A − F large there
+    rows = [{**row, ADAMW: row[ADAMW] + 0.2} if i in lost else row for i, row in enumerate(h)]
+    blocks = [mechanism_entry(i + 1, row, joint=i not in lost) for i, row in enumerate(rows)]
+    found = mechanism_analysis(blocks, MECHANISM)
+    # The window ends at the 60th jointly supported block, 74: block 75 is no part of it.
+    rows = rows[:74]
+    cohort = [row for i, row in enumerate(rows) if i not in lost]
+    assert found["cohort"]["n"] == 60 and found["cohort"]["window"] == [1, 74]
+    assert found["cohort"]["blocks"] == [i + 1 for i in range(74) if i not in lost]
+    check = found["sum_check"]
+    on_cohort = statistics.fmean(row[ADAMW] - row[FA] for row in cohort)
+    assert check["holds"] and check["max_block_deviation"] <= 1e-12
+    assert check["adamw_minus_fa_mean"] == pytest.approx(on_cohort, abs=1e-15)
+    assert abs(found["C1"]["mean"] + found["C2"]["mean"] - on_cohort) <= 1e-12
+    primary = statistics.fmean(row[ADAMW] - row[FA] for row in rows)
+    assert abs(primary - on_cohort) > 0.03  # components that cancel can hide in the primary
+    assert found["attrition"]["lost_blocks"] == sorted(i + 1 for i in lost)
+
+
+def test_cancellation_readings() -> None:
+    """C1 = +5 and C2 = −5 pp with the primary ≈ 0 read as two opposite directions; components
+    near 0 are bounded by ±5 pp; the readings follow ``_readings``' conventions."""
+    h = components(60, 0.05, -0.05)
+    found = mechanism_analysis([mechanism_entry(i + 1, row) for i, row in enumerate(h)],
+                               MECHANISM)  # fmt: skip
+    assert abs(found["sum_check"]["adamw_minus_fa_mean"]) < 0.01  # the primary near 0
+    assert found["readings"]["C1"]["readings"] == ["positive"]
+    assert found["readings"]["C2"]["readings"] == ["negative"]
+    assert found["readings"]["C1"]["interval"] == found["max_t"]["C1"]
+    lo, hi = found["max_t"]["C1"]
+    assert hi - lo == pytest.approx(2 * found["max_t"]["q"] * found["C1"]["se"])
+    assert {found["bonferroni"][name]["level"] for name in ("C1", "C2")} == {0.975}
+    near = components(60, 0.0, 0.0)
+    bounded = mechanism_analysis([mechanism_entry(i + 1, row) for i, row in enumerate(near)],
+                                 MECHANISM)  # fmt: skip
+    assert [bounded["readings"][n]["readings"] for n in ("C1", "C2")] == [["bounded"]] * 2
+    # The conventions: 0 strictly outside for a direction, ±5 pp bounds included.
+    assert component_readings([0.0, 0.03]) == ["bounded"]
+    assert component_readings([1e-9, 0.06]) == ["positive"]
+    assert component_readings([-0.05, 0.05]) == ["bounded"]
+    assert component_readings([-0.07, -0.01]) == ["negative"]
+    assert component_readings([-0.06, 0.01]) == ["inconclusive"]
+    assert component_readings(None) == ["inconclusive"]
+
+
+def test_the_mechanism_sensitivities_bound_both_contrasts() -> None:
+    """The missing-label sensitivities, for C1 and C2 as ``block_difference`` computes them for
+    A − F, by the max-t on the max-t's own stream: from the low bounds' lower end to the high
+    bounds' upper end."""
+    h = components(60, 0.01, 0.02)
+    blocks = [mechanism_entry(i + 1, row, missing=0.004 * (i % 3)) for i, row in enumerate(h)]
+    found = mechanism_analysis(blocks, MECHANISM)["sensitivities"]
+    stream = derive_seed(7, "mechanism", "max_t")
+
+    def bound(x_field, y_field):
+        return max_t_interval([b[x_field][PREWARMED] - b[y_field][FA] for b in blocks],
+                              [b[x_field][ADAMW] - b[y_field][PREWARMED] for b in blocks],
+                              0.95, 2000, stream)["contrasts"]  # fmt: skip
+
+    low, high = bound("h", "h_missing_harmful"), bound("h_missing_harmful", "h")
+    for j, name in enumerate(("C1", "C2")):
+        assert found["missing_labels"][name]["interval"] == [low[j]["interval"][0],
+                                                             high[j]["interval"][1]]  # fmt: skip
+    both = bound("h_missing_harmful", "h_missing_harmful")
+    for j, name in enumerate(("C1", "C2")):
+        assert found["all_missing_harmful"][name]["interval"] == both[j]["interval"]
+    assert set(found) == set(study2_short.SENSITIVITIES)

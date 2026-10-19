@@ -93,12 +93,23 @@ ones per seed and arm (``progress``'s ``timecourse``).
   any descendant when the record allows it; no uncommitted change or untracked file, so campaign
   files go under $RUNS_DIR). The discovery and numerical kinds (``discovery``, ``repair``,
   ``prewarmed``, ``targeted``, ``numerical``) precede the record and do not read it.
-- **The confirmation loop** (``confirmation_guard``; the looks at 36 and 60 supported blocks, cap
-  80): (1) write and launch at most the blocks the guard allows: the next range starts at the
-  first block without a run and ends before the next look could fall; (2) let them complete;
-  (3) read the support counts (scripts/study2_short_summary.py); (4) label the runs; (5) run the
-  summary with --judge and --fixation; (6) go on only if the look did not stop, passing
-  ``--after-look K`` for look K. Re-issuing exactly a range written before completes it.
+- **The confirmation loop** (``confirmation_guard``; cap 80). Either way the next range starts at
+  the first block without a run, and re-issuing exactly a range written before completes it.
+  - A three-arm selection (amendment 4): the confirmation runs until the mechanism cohort has 60
+    jointly supported blocks (all three arms supported) complete in order, or until all 80 blocks
+    are started and complete, without pausing at the primary's looks, which are computed
+    afterwards from the same first 36 and 60 primary-supported blocks: (1) write and launch at
+    most the blocks the guard allows, 60 − p₃, p₃ the blocks with runs that may still be jointly
+    supported; (2) let them complete; (3) read the counts (scripts/study2_short_summary.py: its
+    ``mechanism``); (4) go on while the cohort has not ended. ``--after-look`` is refused. The
+    runs are labeled as they complete; the summary with --judge and --fixation reads the looks,
+    and the mechanism's final analysis once the cohort has ended.
+  - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; looks at 36
+    and 60 supported blocks): (1) write and launch at most the blocks the guard allows: the next
+    range ends before the next look could fall; (2) let them complete; (3) read the support
+    counts (scripts/study2_short_summary.py); (4) label the runs; (5) run the summary with
+    --judge and --fixation; (6) go on only if the look did not stop, passing ``--after-look K``
+    for look K.
 
 Nothing here reads a judge label or K_harmful.
 
@@ -759,7 +770,7 @@ def campaign(
     if args.kind == "confirmation":
         first, last = args.blocks
         guard = confirmation_guard(state["confirmation"], first, last,
-                                   after_look=args.after_look or 0,
+                                   three_arm=step["three_arm"], after_look=args.after_look or 0,
                                    issued=issued_ranges(records))  # fmt: skip
         if guard["problems"]:
             parser.error(f"blocks {first}-{last}: " + "; ".join(guard["problems"]))
@@ -849,7 +860,8 @@ def main() -> None:
     parser.add_argument("--blocks", type=int, nargs=2, metavar=("FIRST", "LAST"),
                         help="confirmation: the blocks FIRST to LAST, 1-80")  # fmt: skip
     parser.add_argument("--after-look", type=int, choices=range(1, len(LOOK_SIZES) + 1),
-                        help="confirmation: look K was read and did not stop")  # fmt: skip
+                        help="confirmation of a two-arm selection: look K was read and did not "
+                             "stop (refused for three arms)")  # fmt: skip
     parser.add_argument("--batch", type=int, choices=BATCHES, help="prep: the batch size")
     parser.add_argument("--commit", help="prep: the commit whose source checkout the Pod runs")
     parser.add_argument(

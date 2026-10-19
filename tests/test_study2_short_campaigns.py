@@ -11,9 +11,11 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import math
 import re
 import runpy
 import shutil
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +65,9 @@ from zero_field_refusal.analysis.study2_short import (
     look_blocks,
     looks,
     measures_rayleigh,
+    mechanism_analysis,
+    mechanism_blocks,
+    mechanism_state,
     numerical_digest,
     preconditioner_pairing,
     prescribed,
@@ -87,6 +92,7 @@ from zero_field_refusal.launch import (
     load_campaign,
     run_campaign,
 )
+from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.seeding import derive_seed
 
@@ -108,10 +114,21 @@ FIXATION = {  # the decided values; the resamples, seed and bias allowance are p
     "direction_min_supported": 10,
     "secondary_interval": "t",
     "secondary_status": "secondary",
+    "mechanism": {
+        "target": 60,
+        "cap": 80,
+        "minimum": 36,
+        "zero_se": 1e-12,
+        "comparison_level": 0.975,
+        "effects": [0.05, 0.025],
+        "level": 0.95,
+        "resamples": 2000,
+        "seed": 20261020,
+    },  # fmt: skip
 }
 LOOK_SETTINGS = {k: v for k, v in FIXATION.items()
                  if k not in ("w_max", "levels", "looks", "cap", "secondary_interval",
-                              "secondary_status")}  # fmt: skip
+                              "secondary_status", "mechanism")}  # fmt: skip
 
 
 # ------------------------------------------------------------------ configs and arms
@@ -498,10 +515,16 @@ def test_primary_only_fallback_reaches_confirmation_with_the_primary_arms() -> N
     assert frozen["prewarmed_dropped"] and set(frozen["rates"]) == {ADAMW, FA}
     assert state["validation"]["arms"] == [ADAMW, FA]
     runs += blocks_of(frozen["rates"], 20, CONFIRMATION_SEEDS[:2])
-    blocks = stage(runs)["confirmation"]
+    later_state = stage(runs)
+    blocks = later_state["confirmation"]
     assert [(b["complete"], b["expected"]) for b in blocks[:3]] == [(True, 6), (True, 6),
                                                                    (False, 6)]  # fmt: skip
     assert set(blocks[0]["supports"]) == {ADAMW, FA}
+    # No mechanism cohort: no block is jointly supported, and amendment 3's looks pace it.
+    assert blocks[0]["supported"] and not any(b["three_arm_supported"] for b in blocks)
+    assert later_state["mechanism"]["applies"] is False
+    guard = confirmation_guard(blocks, 3, 37, three_arm=False)
+    assert "room for 34 before look 1" in guard["problems"][0]
     assert not [r for r in runs if r.arm == PREWARMED and r.seed not in (2000, 2001, 2002)]
 
 
@@ -654,15 +677,27 @@ def test_a_validation_run_given_up_lets_the_verdict_be_read() -> None:
 # ------------------------------------------------------------------ the confirmation guard
 
 
-def plan(started: int = 0, complete: int = 0, supported: int = 0) -> list[dict]:
+def plan(started: int = 0, complete: int = 0, supported: int = 0, joint: int = 0) -> list[dict]:
     """80 blocks: the first ``started`` have runs, the first ``complete`` of them are complete,
-    the first ``supported`` of those supported."""
+    the first ``supported`` of those supported, the first ``joint`` of the complete ones jointly
+    supported (all three arms). Each complete block's supports: AdamW-25 unsupported (width)
+    beyond ``supported``, the pre-warmed arm unsupported (bracketing) beyond ``joint``."""
+
+    def supports(i: int) -> dict:
+        if i > complete:
+            return {}
+        return {ADAMW: {"supported": i <= supported, "cause": None if i <= supported else "width"},
+                FA: {"supported": True, "cause": None},
+                PREWARMED: {"supported": i <= joint,
+                            "cause": None if i <= joint else "bracketing"}}  # fmt: skip
+
     return [{"block": i, "runs": 9 if i <= started else 0, "complete": i <= complete,
-             "supported": i <= supported} for i in range(1, 81)]  # fmt: skip
+             "supported": i <= supported, "three_arm_supported": i <= min(joint, complete),
+             "supports": supports(i)} for i in range(1, 81)]  # fmt: skip
 
 
-def refused(blocks, first, last, **kw) -> list[str]:
-    return confirmation_guard(blocks, first, last, **kw)["problems"]
+def refused(blocks, first, last, *, three_arm=False, **kw) -> list[str]:
+    return confirmation_guard(blocks, first, last, three_arm=three_arm, **kw)["problems"]
 
 
 def test_confirmation_ranges_run_in_order_without_overlaps() -> None:
@@ -690,9 +725,72 @@ def test_a_due_look_holds_the_blocks_until_the_operator_has_read_it() -> None:
     assert "look 2 is the last" in refused(last, 71, 71, after_look=2)[0]
     in_flight = plan(started=36, complete=20, supported=20)  # 16 running: they may complete it
     assert "room for 0 before look 1" in refused(in_flight, 37, 37)[0]
-    counts = confirmation_guard(due, 41, 64, after_look=1)
+    counts = confirmation_guard(due, 41, 64, three_arm=False, after_look=1)
     assert (counts["first_open"], counts["supported_in_order"], counts["possibly_supported"]) == (
         41, 36, 36)  # fmt: skip
+
+
+def test_cohort_ends_at_60_or_cap() -> None:
+    """A three-arm selection: ranges up to the mechanism cohort's 60 jointly supported blocks,
+    no pause at the primary's looks, none after the 60th or at the cap of 80, ``--after-look``
+    refused; a two-arm selection keeps amendment 3's look pauses."""
+    fresh = plan()
+    assert refused(fresh, 1, 60, three_arm=True) == []
+    assert "room for 60 before the mechanism cohort's 60" in refused(fresh, 1, 61,
+                                                                     three_arm=True)[0]  # fmt: skip
+    running = plan(started=10)  # still running: each may be jointly supported
+    assert refused(running, 11, 60, three_arm=True) == []
+    assert "room for 50" in refused(running, 11, 61, three_arm=True)[0]
+    # A block whose pre-warmed arm is lost gives its room back; the primary's due look 1 (36
+    # supported blocks complete in order) holds nothing.
+    lost = plan(started=40, complete=40, supported=40, joint=30)
+    counts = confirmation_guard(lost, 41, 70, three_arm=True)
+    assert counts["problems"] == []
+    assert (counts["jointly_supported_in_order"], counts["possibly_jointly_supported"],
+            counts["room"], counts["supported_in_order"]) == (30, 30, 30, 40)  # fmt: skip
+    assert "room for 30" in refused(lost, 41, 71, three_arm=True)[0]
+    state = mechanism_state(lost, three_arm=True)
+    assert (state["ended"], state["jointly_supported_in_order"]) == (False, 30)
+    assert state["started"] == 40
+    assert state["attrition"] == {"blocks": 10, "unsupported_arms": {PREWARMED: 10},
+                                  "causes": {ADAMW: {}, FA: {}, PREWARMED: {"bracketing": 10}},
+                                  "technical": 0, "primary_supported": 10,
+                                  "lost_blocks": list(range(31, 41))}  # fmt: skip
+    err = refused(lost, 41, 41, three_arm=True, after_look=1)
+    assert "--after-look 1: a three-arm confirmation does not pause" in err[0]
+    in_flight = plan(started=60, complete=20, supported=20, joint=20)
+    assert "room for 0" in refused(in_flight, 61, 61, three_arm=True)[0]
+    # 60 jointly supported blocks complete in order: the cohort and the confirmation end.
+    done = plan(started=66, complete=66, supported=66, joint=60)
+    assert "has its 60 jointly supported blocks" in refused(done, 67, 67, three_arm=True)[0]
+    state = mechanism_state(done, three_arm=True)
+    assert (state["ended"], state["ended_by"], state["last_block"]) == (True, "target", 60)
+    assert state["cohort"] == list(range(1, 61)) and state["attrition"]["blocks"] == 0
+    # A window with lost blocks ends at the 60th jointly supported one.
+    gaps = [{**b, "three_arm_supported": b["block"] % 10 != 0 and b["complete"],
+             "supports": {**b["supports"], PREWARMED: {"supported": False, "cause": "technical"}}
+             if b["block"] % 10 == 0 else b["supports"]}
+            for b in plan(started=70, complete=70, supported=70, joint=70)]  # fmt: skip
+    state = mechanism_state(gaps, three_arm=True)
+    assert (state["ended_by"], state["last_block"], len(state["cohort"])) == ("target", 66, 60)
+    assert state["attrition"]["lost_blocks"] == [10, 20, 30, 40, 50, 60]
+    assert state["attrition"]["technical"] == 6
+    # The cap: all 80 started and complete with 50 jointly supported ends it with fewer.
+    capped = plan(started=80, complete=80, supported=80, joint=50)
+    state = mechanism_state(capped, three_arm=True)
+    assert (state["ended"], state["ended_by"], state["last_block"]) == (True, "cap", 80)
+    assert len(state["cohort"]) == 50 and state["minimum_met"]
+    assert "have runs already" in refused(capped, 80, 80, three_arm=True)[0]
+    tail = plan(started=80, complete=70, supported=70, joint=50)  # 71-80 still running
+    assert not mechanism_state(tail, three_arm=True)["ended"]
+    assert refused(tail, 71, 80, three_arm=True, issued={(71, 80)}) == []  # completing it
+    # A two-arm selection: amendment 3's guard, its look pauses and ``--after-look``.
+    assert "room for 36 before look 1" in refused(fresh, 1, 37)[0]
+    due = plan(started=40, complete=40, supported=36)
+    assert "look 1 is due" in refused(due, 41, 41)[0]
+    assert refused(due, 41, 64, after_look=1) == []
+    assert mechanism_state(due, three_arm=False)["applies"] is False
+    assert "jointly_supported_in_order" not in confirmation_guard(due, 41, 41, three_arm=False)
 
 
 # ------------------------------------------------------------------ the fixation record
@@ -748,6 +846,59 @@ def test_the_fixation_record_refuses_a_malformed_new_key(tmp_path, key, value) -
         read_fixation(path)
 
 
+def test_fixation_requires_the_mechanism_key(tmp_path) -> None:
+    """The ``mechanism`` key (amendment 4, section 3): required, its fixed values equal to the
+    code's, the level in [0.95, 1), integer resamples ≥ 1000 and an integer seed; the tracked
+    record reads, with the values Task 3 wrote."""
+    tracked = read_fixation(REPO_ROOT / "docs" / "study2-short-fixation.json")
+    assert tracked["mechanism"] == {"target": 60, "cap": 80, "minimum": 36, "zero_se": 1e-12,
+                                    "comparison_level": 0.975, "effects": [0.05, 0.025],
+                                    "level": 0.95, "resamples": 10000,
+                                    "seed": 20261020}  # fmt: skip
+    fixed = study2_short.MECHANISM_FIXED
+    assert fixed == {
+        "target": study2_short.MECHANISM_TARGET, "cap": study2_short.CAP,
+        "minimum": study2_short.MECHANISM_MINIMUM, "zero_se": study2_short.ZERO_SE,
+        "comparison_level": study2_short.COMPARISON_LEVEL,
+        "effects": list(study2_short.MECHANISM_EFFECTS)}  # fmt: skip
+    assert (study2_short.MECHANISM_TARGET, study2_short.MECHANISM_CAP,
+            study2_short.MECHANISM_MINIMUM, study2_short.COMPARISON_LEVEL,
+            study2_short.MECHANISM_EFFECTS) == (60, 80, 36, 0.975, (0.05, 0.025))  # fmt: skip
+    path = tmp_path / "fixation.json"
+    path.write_text(json.dumps({k: v for k, v in FIXATION.items() if k != "mechanism"}))
+    with pytest.raises(ValueError, match=r"lacks \['mechanism'\]"):
+        read_fixation(path)
+    mechanism = FIXATION["mechanism"]
+    bad = [({"target": 59}, "mechanism target 59"), ({"target": 60.0}, "mechanism target"),
+           ({"cap": 79}, "mechanism cap 79"), ({"minimum": 35}, "mechanism minimum 35"),
+           ({"zero_se": 1e-11}, "mechanism zero_se"),
+           ({"comparison_level": 0.95}, "mechanism comparison_level"),
+           ({"effects": [0.05, 0.02]}, "mechanism effects"),
+           ({"effects": [0.05]}, "mechanism effects"), ({"effects": "0.05"}, "mechanism effects"),
+           ({"level": 0.94}, "mechanism level"), ({"level": 1.0}, "mechanism level"),
+           ({"level": "0.95"}, "mechanism level"), ({"level": True}, "mechanism level"),
+           ({"resamples": 999}, "mechanism resamples"),
+           ({"resamples": 10000.0}, "mechanism resamples"),
+           ({"seed": 1.5}, "mechanism seed"), ({"seed": None}, "mechanism seed"),
+           ({"seed": False}, "mechanism seed"), ({"other": 1}, "does not know")]  # fmt: skip
+    for change, message in bad:
+        path.write_text(json.dumps({**FIXATION, "mechanism": {**mechanism, **change}}))
+        with pytest.raises(ValueError, match=message):
+            read_fixation(path)
+    for key in mechanism:
+        path.write_text(json.dumps({**FIXATION, "mechanism": {k: v for k, v in mechanism.items()
+                                                              if k != key}}))  # fmt: skip
+        with pytest.raises(ValueError, match=rf"mechanism lacks \['{key}'\]"):
+            read_fixation(path)
+    for value in ([mechanism], None, "mechanism"):
+        path.write_text(json.dumps({**FIXATION, "mechanism": value}))
+        with pytest.raises(ValueError, match="is not an object"):
+            read_fixation(path)
+    for level in (0.95, 0.9876):  # the simulation sets it in [0.95, 1)
+        path.write_text(json.dumps({**FIXATION, "mechanism": {**mechanism, "level": level}}))
+        assert read_fixation(path)["mechanism"]["level"] == level
+
+
 # ------------------------------------------------------------------ the looks' blocks
 
 
@@ -786,6 +937,180 @@ def test_look_blocks_wait_for_labels_and_take_delta_from_the_brackets() -> None:
     assert not look_blocks(blocks, partial, kstar)[0]["complete"]
 
 
+def synthetic_harm(run) -> list[dict]:
+    """Label rows of a confirmation run, the same at every rate of its arm in its block: the
+    primary arms' harm within 0.4 pp of each other around 10 % (Δ balanced over every three
+    seeds, so look 1 concludes equivalence), the pre-warmed arm's 2 pp above, a missing label on
+    odd seeds."""
+    harmful = {ADAMW: 50 + run.seed % 3, FA: 50 + (run.seed + 1) % 3,
+               PREWARMED: 60 + run.seed % 2}[run.arm]  # fmt: skip
+    return rows(harmful, missing=run.seed % 2)
+
+
+def test_continuation_after_primary_stop(monkeypatch) -> None:
+    """The primary stops at look 1 (36 blocks); the confirmation goes on for the mechanism
+    cohort. Blocks 37-80 leave the decision record byte for byte as it was (the looks, the
+    sensitivities, the utility family), and are reported as a descriptive continuation; the
+    cohort ends at its 60th jointly supported block, where the final analysis runs once."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    verdicts = answered(runs)
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:36])
+    early = loaded(runs, numerical=verdicts)
+    kstar = early["frozen"]["K_star"]
+    labels = {r.run_id: synthetic_harm(r) for r in runs if r.seed in CONFIRMATION_SEEDS}
+    module = summary_module()
+    course_reads = []
+    monkeypatch.setattr(
+        module,
+        "read_timecourse_labels",
+        lambda state, courses, judge: course_reads.append(judge) or ({}, {}),
+    )
+    found = module.compute_looks(early, runs, labels, FIXATION, THETA0)
+    primary = found["looks"]
+    assert primary["stopped"] and primary["stopping_look"] == 1
+    assert "equivalence" in primary["looks"][0]["readings"]
+    assert found["continuation"]["later_blocks"] == []
+    # The mechanism cohort continues: 36 of 60, the guard gives room for 24 more, no pause.
+    cohort = early["mechanism"]
+    assert (cohort["ended"], cohort["room"]) == (False, 24)
+    assert cohort["jointly_supported_in_order"] == 36
+    assert confirmation_guard(early["confirmation"], 37, 60, three_arm=True)["problems"] == []
+    assert module.status(early)["mechanism"] == cohort
+    final = module.final_analysis(early, runs, [], labels, FIXATION, found, "wildguard", {})
+    assert final == {"available": False, "reason": "not yet: the mechanism cohort has not ended "
+                     "(36 of 60 jointly supported blocks complete in order, 36 of 80 blocks "
+                     "started)"}  # fmt: skip
+    assert course_reads == []  # the time course stays sealed
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[36:])
+    late = loaded(runs, numerical=verdicts)
+    labels = {r.run_id: synthetic_harm(r) for r in runs if r.seed in CONFIRMATION_SEEDS}
+    later = module.compute_looks(late, runs, labels, FIXATION, THETA0)
+    for key in ("looks", "sensitivities", "utility", "missing_labels"):
+        assert json.dumps(later[key], sort_keys=True) == json.dumps(found[key], sort_keys=True)
+    entries = look_blocks(late["confirmation"], labels, kstar)
+    assert json.dumps(looks(entries, FIXATION["levels"], **LOOK_SETTINGS), sort_keys=True) == (
+        json.dumps(primary, sort_keys=True))  # fmt: skip
+    continued = later["continuation"]
+    assert continued["read_blocks"] == 36 and continued["later_blocks"] == list(range(37, 81))
+    assert continued["later"]["n"] == 44 and continued["every_supported"]["n"] == 80
+    # The cohort ended at block 60; the final analysis, once.
+    cohort = late["mechanism"]
+    assert (cohort["ended"], cohort["ended_by"], cohort["last_block"]) == (True, "target", 60)
+    assert cohort["cohort"] == list(range(1, 61))
+    # Had blocks 61-80 not been started, none would start now.
+    unstarted = [*late["confirmation"][:60],
+                 *({**b, "runs": 0, "complete": False, "supported": False,
+                    "three_arm_supported": False, "supports": {}}
+                   for b in late["confirmation"][60:])]  # fmt: skip
+    assert "has its 60 jointly supported blocks" in confirmation_guard(
+        unstarted, 61, 61, three_arm=True)["problems"][0]  # fmt: skip
+    assert mechanism_state(unstarted, three_arm=True) == {
+        **cohort,
+        "started": 60,
+        "complete_in_order": 60,
+        "possibly_jointly_supported": 60,
+    }
+    final = module.final_analysis(late, runs, [], labels, FIXATION, later, "wildguard", {})
+    assert final["available"] and course_reads == ["wildguard"]
+    assert final["timecourse"]["labels_read"] and final["timecourse"]["counts"]["missing"] == 30
+    analysis = final["mechanism"]
+    assert analysis == mechanism_analysis(
+        mechanism_blocks(late["confirmation"][:60], labels, kstar), FIXATION["mechanism"]
+    )
+    assert analysis["cohort"]["blocks"] == list(range(1, 61)) and analysis["minimum_met"]
+    c1 = [(60 + s % 2 - 50 - (s + 1) % 3) / 500 for s in CONFIRMATION_SEEDS[:60]]
+    assert analysis["C1"]["mean"] == pytest.approx(statistics.fmean(c1), abs=1e-12)
+    assert analysis["readings"]["C1"]["readings"] == ["positive", "bounded"]
+    assert analysis["readings"]["C2"]["readings"] == ["negative", "bounded"]
+    assert analysis["sum_check"]["holds"]
+    # The high bounds count each missing label as harmful (a 1/500 shift on odd seeds).
+    blocks = mechanism_blocks(late["confirmation"][:2], labels, kstar)
+    assert blocks[1]["h_missing_harmful"][FA] == pytest.approx(blocks[1]["h"][FA] + 1 / 500)
+    assert blocks[0]["h_missing_harmful"] == blocks[0]["h"]
+
+
+def test_progress_reads_no_harm(monkeypatch) -> None:
+    """``progress``, the guard and the mechanism state read K and support only: every entry
+    point that reads a label raises, K_harmful unknown changes nothing, and the summary's status
+    and its final analysis before the cohort's end read nothing either."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    verdicts = answered(runs)
+    block_runs = blocks_of(rates, 20, CONFIRMATION_SEEDS[:4])
+    module = summary_module()
+
+    def unread(*args, **kwargs):
+        raise AssertionError("a label was read")
+
+    readers = ("harm", "interpolate", "arm_harm", "block_difference", "look_blocks", "_step_row",
+               "_endpoint_row", "mechanism_blocks", "mechanism_analysis")  # fmt: skip
+    for name in readers:
+        monkeypatch.setattr(study2_short, name, unread)
+    for name in ("look_blocks", "mechanism_blocks", "mechanism_analysis", "read_endpoint_labels",
+                 "read_timecourse_labels", "label_path"):  # fmt: skip
+        monkeypatch.setattr(module, name, unread)
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", unread)
+    state = loaded([*runs, *block_runs], numerical=verdicts)
+    blind = [dataclasses.replace(r, evaluations=[{**e, "K_harmful": math.nan}
+                                                 for e in r.evaluations])
+             for r in block_runs]  # fmt: skip
+    other = loaded([*runs, *blind], numerical=verdicts)
+    assert other["confirmation"] == state["confirmation"]
+    assert other["mechanism"] == state["mechanism"]
+    assert state["mechanism"]["jointly_supported_in_order"] == 4
+    assert [b["three_arm_supported"] for b in state["confirmation"][:5]] == [True] * 4 + [False]
+    for three_arm in (True, False):
+        assert confirmation_guard(state["confirmation"], 5, 5, three_arm=three_arm)[
+            "problems"] == []  # fmt: skip
+    assert mechanism_state(state["confirmation"], three_arm=True) == state["mechanism"]
+    assert module.status(state)["mechanism"] == state["mechanism"]
+    waiting = {"available": True, "looks": {"stopped": False}, "blocks": []}
+    final = module.final_analysis(state, runs, [], {}, FIXATION, waiting, "wildguard", {})
+    assert not final["available"] and final["reason"].startswith("not yet")
+
+
+def test_the_final_analysis_opens_the_time_course_once(monkeypatch, tmp_path) -> None:
+    """The time course's labels are read in the final analysis only, and only for its runs
+    identical to their endpoint runs; with two arms (no mechanism cohort) the final analysis
+    follows the primary's stop."""
+    module = summary_module()
+    rates = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5]}
+    identical, excluded = on_disk([course(ADAMW, 20, 1.48e-5, 3000),
+                                   course(FA, 20, 1.86e-5, 3000)], tmp_path)  # fmt: skip
+    read = []
+    monkeypatch.setattr(module, "label_path", lambda run_dir, judge: run_dir / "config.yaml")
+    monkeypatch.setattr(module, "load_prompt_set", lambda name, data: [{"id": "p", "text": "t"}])
+
+    def endpoint_labels(run_dir, judge, identity, prompts):
+        read.append(run_dir.name)
+        return [{"condition": f"step-{t}", "step": t, "prompts": 500, "harmful": t,
+                 "missing": 0} for t in TIMECOURSE_STEPS]  # fmt: skip
+
+    monkeypatch.setattr(module, "read_endpoint_labels", endpoint_labels)
+    course_state = {"trajectories": [{"run": identical.run_id, "state": "identical"},
+                                     {"run": excluded.run_id, "state": "excluded"},
+                                     {"run": None, "state": None}]}  # fmt: skip
+    labels, pending = module.read_timecourse_labels({"timecourse": course_state},
+                                                    [identical, excluded], "wildguard")  # fmt: skip
+    assert set(labels) == {identical.run_id} and read == [identical.run_id] and pending == {}
+    # Two arms: no mechanism cohort; the final analysis waits for the primary's stop, then
+    # reads the time course's labels once.
+    read.clear()
+    state = {"next": {"campaign": "confirmation"},
+             "frozen": {"three_arm": False, "rates": rates, "batch": 20, "K_star": 6.3},
+             "mechanism": mechanism_state([], three_arm=False),
+             "timecourse": {"trajectories": []}}  # fmt: skip
+    found = {"available": True, "looks": {"stopped": False}, "blocks": []}
+    final = module.final_analysis(state, [], [], {}, FIXATION, found, "wildguard", {})
+    assert final["reason"].startswith("not yet: the primary has not stopped") and read == []
+    found["looks"]["stopped"] = True
+    final = module.final_analysis(state, [], [], {}, FIXATION, found, "wildguard", {})
+    assert final["available"] and final["mechanism"] is None
+    assert final["mechanism_reason"].startswith("a two-arm selection")
+    assert final["timecourse"]["labels_read"] and final["timecourse"]["counts"]["missing"] == 20
+
+
 # ------------------------------------------------------------------ the time course
 
 
@@ -809,7 +1134,9 @@ def test_timecourse_excluded_from_blocks(records_alike) -> None:
     assert with_course["confirmation"] == without["confirmation"]
     blocks = with_course["confirmation"]
     assert [b["complete"] for b in blocks[:3]] == [True, True, False] and blocks[2]["runs"] == 0
-    assert confirmation_guard(blocks, 3, 3) == confirmation_guard(without["confirmation"], 3, 3)
+    assert confirmation_guard(blocks, 3, 3, three_arm=True) == confirmation_guard(
+        without["confirmation"], 3, 3, three_arm=True)  # fmt: skip
+    assert with_course["mechanism"] == without["mechanism"]
     ids = {run.run_id for run in timecourse}
     brackets = {s["bracket"][side]["run"] for b in blocks if b["complete"]
                 for s in b["supports"].values() if s["supported"]
@@ -1314,14 +1641,17 @@ def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys
     cfg = load_run_config(measuring[0].config, measuring[0].overrides)
     assert cfg.eval.rayleigh.enabled and cfg.study2_short.role == "confirmation"
     assert {r.experiment for r in found} == {"study2_short"}
-    for blocks, why in ((("2", "3"), "starts at block 1"), (("1", "37"), "room for 36"),
+    # A three-arm selection: no pause at the primary's looks, room for the cohort's 60 blocks.
+    for blocks, why in ((("2", "3"), "starts at block 1"), (("1", "61"), "room for 60"),
                         (("0", "3"), "1 <= FIRST"), (("5", "4"), "1 <= FIRST")):  # fmt: skip
         err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", *blocks,
                       *journal_args)  # fmt: skip
         assert why in err, blocks
+    assert len(campaign(monkeypatch, tmp_path, runs, "confirmation", "--blocks", "1", "60",
+                        *journal_args)) == 60 * 9  # fmt: skip
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
                   "--after-look", "1", *journal_args)  # fmt: skip
-    assert "--after-look 1: look 1 needs 36" in err
+    assert "--after-look 1: a three-arm confirmation does not pause at the primary's looks" in err
 
 
 def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_path, capsys):
@@ -2169,7 +2499,15 @@ def test_the_summary_is_the_same_with_and_without_the_time_course(
         whole = json.loads(out.read_text())
         outputs[name] = (capsys.readouterr().out, whole)
     (shown, without), (shown_with, with_course) = outputs["without"], outputs["with"]
-    assert shown == shown_with  # the printed status and looks, byte for byte
+    # The printed status and looks, byte for byte, but for the time course's counts and the
+    # update scalars' coverage, which report the time course's runs (amendment 4, Task 3).
+    printed = [json.loads(text) for text in (shown, shown_with)]
+    assert printed[0].pop("timecourse")["counts"]["missing"] == 30
+    assert printed[1].pop("timecourse")["counts"]["missing"] == 21
+    coverage = [found.pop("scalars") for found in printed]
+    assert coverage[1]["by_role"]["timecourse"]["runs"] == 9
+    assert "timecourse" not in coverage[0]["by_role"]
+    assert json.dumps(printed[0]) == json.dumps(printed[1])
     looked = json.loads(shown)["looks"]
     assert looked["available"] and looked["utility"]["family"]
     assert {member["runs"] for member in looked["utility"]["family"]} == {3}  # blocks 1-3 only
@@ -2179,6 +2517,7 @@ def test_the_summary_is_the_same_with_and_without_the_time_course(
     assert without["progress"].pop("timecourse")["counts"]["missing"] == 30
     for whole in (without, with_course):
         whole.pop("command")  # its --out
+        whole.pop("scalars")  # the coverage of every regular run, the time course's included
     assert json.dumps(without, sort_keys=True) == json.dumps(with_course, sort_keys=True)
 
 
@@ -2267,7 +2606,8 @@ def test_the_summary_looks_on_labels() -> None:
     waiting = found["looks"]["waiting"]
     assert (waiting["started"], waiting["supported"], waiting["needs"]) == (2, 2, 36)
     assert found["missing_labels"] == {ADAMW: 0, FA: 0, PREWARMED: 0}
-    assert found["utility"]["family"] and found["secondary"] is None
+    assert found["utility"]["family"] and found["continuation"] is None
+    assert "secondary" not in found  # amendment 3's secondary contrasts, retired
     early = until(base(), "validation")
     assert not module.compute_looks(early, runs, labels, FIXATION, THETA0)["available"]
 
@@ -2311,33 +2651,42 @@ def test_the_summary_computes_the_looks_with_the_records_interval(monkeypatch) -
     assert found["looks"]["looks"][0]["bootstrap"] is None and found["looks"]["looks"][0]["t"]
 
 
-def test_the_summary_reports_the_secondary_contrasts_with_their_keys(monkeypatch) -> None:
+def test_the_summary_reports_a_continuation_and_no_secondary_contrasts(monkeypatch) -> None:
+    """Amendment 4 retires the secondary contrasts: the summary never calls them. The blocks
+    after the stopping look are reported as a descriptive continuation."""
     module = summary_module()
-    deltas = [0.02 * (-1) ** i + 0.004 * (i % 5) for i in range(36)]
-    entries = [{"block": i + 1, "complete": True, "supported": True, "delta": d,
+    deltas = [0.02 * (-1) ** i + 0.004 * (i % 5) for i in range(50)]
+    entries = [{"block": i + 1, "complete": i < 45, "supported": i % 10 != 9, "delta": d,
                 "delta_missing_low": d, "delta_missing_high": d, "delta_all_missing_harmful": d,
                 "h": {ADAMW: 0.2 + d, FA: 0.2, PREWARMED: 0.21 + 0.003 * (i % 4)}}
-               for i, d in enumerate(deltas)]  # fmt: skip
+               for i, d in enumerate(deltas)] + [
+        {"block": i + 1, "complete": False, "supported": False, "delta": None, "h": {}}
+        for i in range(50, 80)]  # fmt: skip
     blocks = [{"seed": 3000 + i, "supports": {ADAMW: {}, FA: {}}} for i in range(80)]
     state = {"next": {"campaign": "confirmation"}, "frozen": {"K_star": 6.3},
              "confirmation": blocks}  # fmt: skip
     monkeypatch.setattr(module, "look_blocks", lambda blocks, labels, kstar: entries)
     monkeypatch.setattr(module, "utility_family", lambda *args, **kw: {"family": []})
-    for interval, status in (("t", "secondary"), ("bootstrap_t", "exploratory")):
-        record = {**FIXATION, "secondary_interval": interval, "secondary_status": status}
-        secondary = module.compute_looks(state, [], {}, record, THETA0)["secondary"]
-        assert (secondary["secondary_interval"], secondary["secondary_status"]) == (
-            interval,
-            status,
-        )
-        assert secondary["look"] == 1 and secondary["level"] == 0.9875
-        contrast = secondary["adamw_minus_prewarmed"]
-        assert (contrast["bootstrap"] is None) == (interval == "t")
-        if interval == "bootstrap_t":
-            seed = derive_seed(20261016, "secondary", "adamw_minus_prewarmed", 1)
-            values = [e["h"][ADAMW] - e["h"][PREWARMED] for e in entries]
-            low, high, _ = bootstrap_t_interval(values, 0.9875, 2000, np.random.default_rng(seed))
-            assert contrast["interval"] == [low, high]
+
+    def retired(*args, **kwargs):
+        raise AssertionError("the secondary contrasts are retired")
+
+    monkeypatch.setattr(study2_short, "secondary_contrasts", retired)
+    found = module.compute_looks(state, [], {}, FIXATION, THETA0)
+    assert "secondary" not in found and not hasattr(module, "secondary_contrasts")
+    first = found["looks"]["looks"][0]
+    assert found["looks"]["stopped"] and first["started"] == 39  # 36 supported in 39 blocks
+    later = found["continuation"]
+    assert later["stopping_look"] == 1 and later["read_blocks"] == 39
+    assert later["later_blocks"] == [40, 41, 42, 43, 44, 45]  # complete in order after them
+    after = [d for i, d in enumerate(deltas[39:45], 39) if i % 10 != 9]
+    assert later["later"]["n"] == len(after) == 5
+    assert later["later"]["mean"] == pytest.approx(sum(after) / 5)
+    assert later["every_supported"]["n"] == 41
+    # Without a stop there is no continuation.
+    early = [{**e, "complete": e["block"] <= 20} for e in entries]
+    monkeypatch.setattr(module, "look_blocks", lambda blocks, labels, kstar: early)
+    assert module.compute_looks(state, [], {}, FIXATION, THETA0)["continuation"] is None
 
 
 def test_the_summary_gives_each_look_its_pointwise_reading(monkeypatch) -> None:
@@ -2539,3 +2888,90 @@ def test_the_summary_looks_need_the_versions_record(monkeypatch, tmp_path, capsy
         script(monkeypatch, tmp_path, SUMMARY, base(), "--fixation", fixation_file(tmp_path),
                "--judge", "wildguard", "--versions", missing, versions=False)  # fmt: skip
     assert f"the versions record does not hold: {missing} is missing" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ the update scalars' coverage
+
+
+def scalar_rows(arm: str, steps, *, departure=(5, 10, 25)) -> list[dict]:
+    """update_scalars.jsonl rows as schedule.UpdateScalars writes them (synthetic values)."""
+    return [{"step": t, "update_norm": 0.01 * t, "cos_update_grad": 0.5,
+             **({"d_departure": {"norm_ratio": 0.1, "median": 0.01, "p90": 0.2}}
+                if arm == PREWARMED and t in departure else {})}
+            for t in steps]  # fmt: skip
+
+
+def with_scalars(run, tmp_path: Path, rows: list | None, *, enabled: bool = True, steps=25):
+    """``run`` with a directory holding its config's ``tracking.update_scalars`` and, unless
+    ``rows`` is None, its update_scalars.jsonl; ``steps`` taken."""
+    run_dir = tmp_path / "runs" / run.run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.yaml").write_text(f"tracking: {{update_scalars: {str(enabled).lower()}}}\n")
+    if rows is not None:
+        (run_dir / "update_scalars.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return dataclasses.replace(run, run_dir=run_dir, terminal={**run.terminal, "steps": steps})
+
+
+def test_scalars_coverage_report(monkeypatch, tmp_path, capsys) -> None:
+    """Per regular run of every role: update_scalars.jsonl with one row per step 1-25 (to the
+    steps taken), and for the pre-warmed arm the departure at steps 5, 10 and 25; a gap is
+    reported, never gating; Stage A's runs and the FA controls are not covered."""
+    from zero_field_refusal.schedule import DEPARTURE_STEPS
+
+    assert study2_short.DEPARTURE_STEPS == DEPARTURE_STEPS
+    full = range(1, 26)
+    gap = [r for r in scalar_rows(FA, full) if r["step"] != 13] + scalar_rows(FA, [7])
+    runs = [
+        with_scalars(later(ADAMW, 20, 1.48e-5, 3000), tmp_path, scalar_rows(ADAMW, full)),
+        with_scalars(later(PREWARMED, 20, 1.48e-5, 3000), tmp_path, scalar_rows(PREWARMED, full)),
+        with_scalars(
+            later(PREWARMED, 20, 1.48e-5, 3001),
+            tmp_path,
+            scalar_rows(PREWARMED, full, departure=(5, 25)),
+        ),
+        with_scalars(later(FA, 20, 1.86e-5, 3000), tmp_path, gap),
+        with_scalars(later(ADAMW, 20, 1.48e-5, 2100), tmp_path, None, enabled=False),
+        with_scalars(
+            later(PREWARMED, 20, 1.48e-5, 2200),
+            tmp_path,
+            scalar_rows(PREWARMED, range(1, 8)),
+            steps=7,
+        ),  # stopped at step 7
+        with_scalars(course(ADAMW, 20, 1.48e-5, 3001), tmp_path, scalar_rows(ADAMW, [1])),
+    ]
+    unread = with_scalars(later(FA, 20, 1.59e-5, 3000), tmp_path, None)
+    (unread.run_dir / "update_scalars.jsonl").write_text("{not json\n")
+    outside = [conform(r) for r in stage_a_reference()[:2]]  # Stage A's: not covered
+    outside.append(conform(control(20, 1.86e-5, 0.06, 0.0)))  # an FA control: not covered
+    report = study2_short.scalars_coverage(
+        [*runs, unread, *outside], facts_of(runs + [unread] + outside)
+    )
+    by = {e["run"]: e for e in report["runs"]}
+    assert set(by) == {r.run_id for r in [*runs, unread]}
+    assert not by[runs[0].run_id]["gap"] and not by[runs[1].run_id]["gap"]
+    assert by[runs[1].run_id]["departure_missing"] == []
+    assert "departure_missing" not in by[runs[0].run_id]
+    assert by[runs[2].run_id]["departure_missing"] == [10] and by[runs[2].run_id]["gap"]
+    holed = by[runs[3].run_id]
+    assert (holed["missing_steps"], holed["repeated_steps"]) == ([13], [7])
+    absent = by[runs[4].run_id]
+    assert (absent["file"], absent["enabled"], absent["missing_steps"], absent["gap"]) == (
+        False, False, list(full), True)  # fmt: skip
+    stopped = by[runs[5].run_id]
+    assert (stopped["steps_taken"], stopped["gap"], stopped["departure_missing"]) == (7, False, [])
+    assert by[runs[6].run_id]["missing_steps"] == list(range(2, 26))
+    assert by[runs[6].run_id]["role"] == TIMECOURSE
+    assert by[unread.run_id]["unreadable"].startswith("does not read") and by[unread.run_id]["gap"]
+    assert report["gaps"] == 5 and report["by_role"]["confirmation"] == {"runs": 5, "gaps": 3}
+    assert report["by_role"]["timecourse"] == {"runs": 1, "gaps": 1}
+    # The summary reports the gaps and gates nothing: the next step is the selection's.
+    stage_runs = base()
+    until(stage_runs, "numerical")
+    script(monkeypatch, tmp_path, SUMMARY, stage_runs, "--fixation", fixed(tmp_path))
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["next"]["campaign"] == "numerical" and shown["problems"] == []
+    discovery = [r for r in stage_runs if r.role is None]
+    assert shown["scalars"]["by_role"] == {"discovery": {"runs": len(discovery),
+                                                         "gaps": len(discovery)}}  # fmt: skip
+    assert len(shown["scalars"]["with_gaps"]) == len(discovery) > 0
+    assert shown["scalars"]["status"] == "reported; a gap gates nothing"

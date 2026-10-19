@@ -1,5 +1,6 @@
 """Print the state of study 2's short-regime stage (amendment 3, design A) and, once its
-confirmation blocks are labeled, its looks.
+confirmation blocks are labeled, its looks and, at the confirmation's end, amendment 4's final
+analysis.
 
     python scripts/study2_short_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR \
         (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--abandoned FILE] \
@@ -22,11 +23,20 @@ in amendment 4's order with their costs, every attempt (its selections, numerica
 validation) and round, amendment 3's FA controls (reported with their verdicts, never used), the
 frozen rates, the validation verdict, the support of the confirmation blocks with the counts of
 the confirmation loop (the first block without runs, the supported blocks complete in order,
-those that may still be supported), the problems of the records, and the next campaign. The time
+those that may still be supported; with a three-arm selection the jointly supported blocks
+complete in order, those that may still be, and the room for new blocks), the mechanism cohort's
+state (``mechanism``, amendment 4, section 3, on K and support only: the blocks started, the
+jointly supported ones complete in order, whether the cohort has ended, by 60 jointly supported
+blocks or at the cap of 80 started and complete, and its attrition by reason; a two-arm selection
+has none), the problems of the records, and the next campaign. The time
 course's runs (amendment 4, section 4) are split from the others where they are loaded
 (analysis.study2_short.split_timecourse): no look, label read, utility family, sensitivity or
-contrast ever sees them; OUT.json's ``progress.timecourse`` reports them (their identity with
-their endpoint runs, failed and missing runs per seed and arm), without labels.
+contrast ever sees them; the status prints their counts with the failed and missing runs per
+seed and arm (``timecourse``), and OUT.json's ``progress.timecourse`` reports each (its identity
+with its endpoint run), without labels. ``scalars`` reports the update scalars' coverage of every
+regular run of every role (analysis.study2_short.scalars_coverage): whether update_scalars.jsonl
+exists with one row per update step (1-25 for a run that finished) and, for the pre-warmed arm,
+the denominator's departure at steps 5, 10 and 25; a gap is reported and gates nothing.
 
 --judge NAME (configs/judge/NAME.yaml) adds the looks, on the label counts of the bracket runs
 of every complete confirmation block (analysis.study2_labels.read_endpoint_labels). A run without
@@ -35,15 +45,26 @@ labels yet, or whose labels have no completed judging receipt matching its label
 labeled, never "not harmful". It prints the two sequential looks with the finite-cohort bounds,
 the missing-label sensitivities at the primary's looks (``missing_labels``, the worst case for
 the contrast, and ``all_missing_harmful``; analysis.study2_short.sensitivity_looks), the missing
-labels per arm, the secondary contrasts at the stopping look with the fixation record's
-``secondary_interval`` and ``secondary_status`` beside them, and the utility family over the
-blocks started. --judge refuses without the committed versions record (--versions FILE,
-default docs/study2-short-versions.json), or when the running commit, the model, the judge's
-identity or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json
-then records the versions record's path and sha256. The looks need
+labels per arm, the blocks after the stopping look as a descriptive ``continuation`` (amendment
+4: the confirmation goes on for the mechanism cohort; nothing there revises the decision), and
+the utility family over the blocks started. Amendment 3's secondary contrasts are not computed:
+amendment 4's mechanism cohort replaces them. Then ``final``, amendment 4's final analysis,
+computed once the confirmation has ended: with three arms, once the mechanism cohort has ended,
+its blocks are labeled and the primary has stopped; with two arms, once the primary has stopped.
+It holds the mechanism cohort's analysis (three arms; analysis.study2_short.mechanism_analysis:
+C1 = pre-warmed − FA and C2 = AdamW − pre-warmed on the cohort, their sum against AdamW − FA, the
+max-t intervals at the fixation record's ``mechanism`` level with their critical value, the
+per-contrast 97.5 % intervals beside them, the readings, the attrition and the missing-label
+sensitivities) and the time course with its labels (harm per step of each run identical to its
+endpoint run). Before, ``final`` says "not yet" with the reason, and no label is read for it.
+--judge refuses without the committed versions record (--versions FILE, default
+docs/study2-short-versions.json), or when the running commit, the model, the judge's identity
+or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json then
+records the versions record's path and sha256. The looks need
 the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
-allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, and the
-equivalence and direction minima; analysis.study2_short.read_fixation) and are refused without
+allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, the
+equivalence and direction minima, and the mechanism cohort's values;
+analysis.study2_short.read_fixation) and are refused without
 one; none of its values is ever defaulted. The looks print the interval, resamples and seed they
 used, and each bootstrap look its stream's seed and dropped resamples. Beside each look they
 print the bias allowance b, the interval widened by b and the pointwise readings about Δ(K*)
@@ -75,11 +96,12 @@ from typing import Any
 from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis.evidence import label_path
-from zero_field_refusal.analysis.stage_a import load_trajectories, theta0_problems
+from zero_field_refusal.analysis.stage_a import index, load_trajectories, theta0_problems
 from zero_field_refusal.analysis.study2_labels import LabelsPending, read_endpoint_labels
 from zero_field_refusal.analysis.study2_short import (
     ARMS,
     CAP,
+    CONFIRMATION_SEEDS,
     FA_CONTROL_ARM,
     LOOK_SIZES,
     PRIMARY_ARMS,
@@ -87,18 +109,22 @@ from zero_field_refusal.analysis.study2_short import (
     VERSIONS_CONFIG,
     VERSIONS_RECORD,
     confirmation_guard,
+    continuation,
     exhausted_runs,
     issued_w_max,
     look_blocks,
     looks,
+    mechanism_analysis,
+    mechanism_blocks,
     progress,
     read_abandonment,
     read_fixation,
     read_numerical,
     run_facts,
-    secondary_contrasts,
+    scalars_coverage,
     sensitivity_looks,
     split_timecourse,
+    timecourse_summary,
     utility_family,
     versions_problems,
 )
@@ -165,10 +191,13 @@ def status(state: dict[str, Any]) -> dict[str, Any]:
         lost = {arm: [b["supports"][arm] for b in complete if arm in b["supports"]
                       and not b["supports"][arm]["supported"]] for arm in ARMS}  # fmt: skip
         causes = {arm: dict(Counter(s["cause"] for s in found)) for arm, found in lost.items()}
-        # The confirmation loop's counts (K only): where the next range starts, and how many
-        # supported blocks the next look may already have.
-        counts = confirmation_guard(blocks, 1, 1)
+        # The confirmation loop's counts (K only): where the next range starts, how many
+        # supported blocks the next look may already have and, with three arms, how many jointly
+        # supported blocks the mechanism cohort may already have.
+        three_arm = state["frozen"]["three_arm"]
+        counts = confirmation_guard(blocks, 1, 1, three_arm=three_arm)
         out["confirmation"] = {
+            "three_arm": three_arm,
             "blocks_with_runs": sum(1 for b in blocks if b["runs"]),
             "first_block_without_runs": counts["first_open"],
             "complete": len(complete),
@@ -181,6 +210,16 @@ def status(state: dict[str, Any]) -> dict[str, Any]:
             "unsupported_by_cause": causes,
             "given_up_by_the_launcher": state.get("exhausted", {}),
         }  # fmt: skip
+        if three_arm:
+            out["confirmation"].update(
+                jointly_supported_in_order=counts["jointly_supported_in_order"],
+                possibly_jointly_supported=counts["possibly_jointly_supported"],
+                room=max(counts["room"], 0),
+            )
+        out["mechanism"] = state["mechanism"]
+    if state.get("timecourse") is not None:  # without labels, on every run
+        course = state["timecourse"]
+        out["timecourse"] = {key: course[key] for key in ("counts", "failures", "missing")}
     return out
 
 
@@ -296,23 +335,105 @@ def compute_looks(state, runs, labels, fixation, theta0, pending=None) -> dict[s
         },
         "waiting_for_labels": [e["block"] for e in entries[:CAP] if e.get("unlabeled")],
         "labels_pending": dict(pending or {}),
-        "secondary": _secondary(entries, started, primary, fixation),
+        # Amendment 4: the blocks after the stopping look, descriptive (the mechanism cohort's
+        # analysis replaces amendment 3's secondary contrasts, which are not computed).
+        "continuation": continuation(entries, primary),
         "utility": utility_family(primary_runs, supports, theta0),
         "blocks": entries,
     }
 
 
-def _secondary(entries, started, primary, fixation) -> dict[str, Any] | None:
-    """The secondary contrasts at the stopping look, by the fixation record's secondary interval
-    and status (None before the primary stops)."""
+def read_timecourse_labels(state, courses, judge: str) -> tuple[dict, dict[str, str]]:
+    """The label rows of the time course's identical runs (``progress``'s ``timecourse``), by run
+    id, and those whose labels are pending, with the reason, as ``read_labels`` reads them: only
+    in the final analysis (amendment 4, section 4: sealed until then)."""
+    by_id = {run.run_id: run for run in courses}
+    identity = judge_identity(load_config(f"judge/{judge}"))
+    prompts: dict[str, dict[str, str]] = {}
+    labels: dict[str, list[dict[str, Any]]] = {}
+    pending: dict[str, str] = {}
+    for entry in state["timecourse"]["trajectories"]:
+        if entry["state"] != "identical":
+            continue
+        run = by_id[entry["run"]]
+        if not label_path(run.run_dir, judge).is_file():
+            continue
+        cfg = OmegaConf.load(run.run_dir / "config.yaml")
+        name = str(cfg.eval.harmful.prompt_set)
+        if name not in prompts:
+            prompts[name] = {item["id"]: item["text"]
+                             for item in load_prompt_set(name, cfg.data)}  # fmt: skip
+        try:
+            labels[run.run_id] = read_endpoint_labels(run.run_dir, judge, identity, prompts[name])
+        except LabelsPending as exc:
+            pending[run.run_id] = str(exc)
+    return labels, pending
+
+
+def final_analysis(state, runs, courses, labels, fixation, found, judge, exhausted) -> dict:
+    """Amendment 4's final analysis, once the confirmation has ended: with three arms, the
+    mechanism cohort ended (``progress``'s ``mechanism``, K only), its blocks labeled and the
+    primary stopped (``found``: ``compute_looks``' result); with two arms (no mechanism cohort),
+    the primary stopped. Then, once: ``mechanism_analysis`` (three arms) on the fixation record's
+    ``mechanism`` values, and the time course with its labels (``timecourse_summary``). Before,
+    "not yet" with the reason, and no label is read for either."""
+    if state["next"]["campaign"] != "confirmation" or not found.get("available"):
+        return {"available": False, "reason": "not yet: the stage is not at its confirmation"}
+    frozen, primary = state["frozen"], found["looks"]
+    mechanism = state["mechanism"]
+    if frozen["three_arm"]:
+        if not mechanism["ended"]:
+            return {"available": False,
+                    "reason": f"not yet: the mechanism cohort has not ended "
+                              f"({mechanism['jointly_supported_in_order']} of "
+                              f"{mechanism['target']} jointly supported blocks complete in "
+                              f"order, {mechanism['started']} of {mechanism['cap']} blocks "
+                              "started)"}  # fmt: skip
+        cohort = set(mechanism["cohort"])
+        unlabeled = [e["block"] for e in found["blocks"] if e["block"] in cohort
+                     and not e["complete"]]  # fmt: skip
+        if unlabeled:
+            why = f"not yet: cohort blocks {unlabeled} wait for their labels"
+            return {"available": False, "reason": why}
     if not primary["stopped"]:
-        return None
-    return secondary_contrasts(
-        entries, started, look=primary["stopping_look"],
-        interval=fixation["secondary_interval"], status=fixation["secondary_status"],
-        bootstrap_resamples=fixation["bootstrap_resamples"],
-        bootstrap_seed=fixation["bootstrap_seed"],
-    )  # fmt: skip
+        return {"available": False, "reason": "not yet: the primary has not stopped (its "
+                "blocks wait for their labels)"}  # fmt: skip
+    out: dict[str, Any] = {"available": True, "mechanism": None}
+    if frozen["three_arm"]:
+        last = mechanism["last_block"]
+        entries = mechanism_blocks(state["confirmation"][:last], labels, frozen["K_star"])
+        out["mechanism"] = mechanism_analysis(entries, fixation["mechanism"])
+    else:
+        out["mechanism_reason"] = mechanism["reason"]
+    course_labels, pending = read_timecourse_labels(state, courses, judge)
+    endpoints, _ = index(r for r in runs if r.arm in ARMS and r.seed in CONFIRMATION_SEEDS)
+    out["timecourse"] = timecourse_summary(courses, course_labels, endpoints=endpoints,
+                                           rates=frozen["rates"], batch=frozen["batch"],
+                                           exhausted=exhausted)  # fmt: skip
+    out["timecourse_labels_pending"] = pending
+    return out
+
+
+def _final_shown(final: dict[str, Any]) -> dict[str, Any]:
+    """The final analysis, briefly: the mechanism cohort's analysis whole, and of the time course
+    its counts, its unlabeled runs and each trajectory's rows (step, K_scoring, harm)."""
+    if not final["available"]:
+        return final
+    course = final["timecourse"]
+    return {**{k: v for k, v in final.items() if k != "timecourse"},
+            "timecourse": {"counts": course["counts"], "unlabeled": course.get("unlabeled"),
+                           "trajectories": [{k: t[k] for k in ("seed", "arm", "state", "rows")}
+                                            for t in course["trajectories"]]}}  # fmt: skip
+
+
+def _coverage_shown(coverage: dict[str, Any]) -> dict[str, Any]:
+    """The update scalars' coverage, briefly: the counts per role and each run with a gap."""
+    keys = ("run", "enabled", "file", "unreadable", "steps_taken", "missing_steps",
+            "repeated_steps", "unexpected_steps", "departure_missing")  # fmt: skip
+    return {"by_role": coverage["by_role"], "gaps": coverage["gaps"],
+            "status": coverage["status"],
+            "with_gaps": [{k: e[k] for k in keys if k in e} for e in coverage["runs"]
+                          if e["gap"]]}  # fmt: skip
 
 
 def versions_record(
@@ -431,6 +552,11 @@ def main() -> None:
     if args.abandoned is not None:
         digest = hashlib.sha256(args.abandoned.read_bytes()).hexdigest()
         record["abandonment_record"] = {"path": str(args.abandoned), "sha256": digest}
+    # The update scalars' coverage of every regular run, the time course's included: reported,
+    # never gating (review of Task 6, M4).
+    coverage = scalars_coverage([*runs, *courses], facts)
+    record["scalars"] = coverage
+    shown["scalars"] = _coverage_shown(coverage)
     if args.judge:
         digest = hashlib.sha256(args.versions.read_bytes()).hexdigest()
         record["versions_record"] = {"path": str(args.versions), "sha256": digest}
@@ -438,6 +564,10 @@ def main() -> None:
         found = compute_looks(state, runs, labels, fixation, theta0, pending)
         record["looks"] = found
         shown["looks"] = {k: v for k, v in found.items() if k != "blocks"}
+        final = final_analysis(state, runs, courses, labels, fixation, found, args.judge,
+                               exhausted)  # fmt: skip
+        record["final"] = final
+        shown["final"] = _final_shown(final)
     print(json.dumps(shown, indent=1, default=str))
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
