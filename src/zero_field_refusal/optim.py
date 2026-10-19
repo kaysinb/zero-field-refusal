@@ -87,6 +87,47 @@ class Adam(torch.optim.Optimizer):
                     denom = exp_avg_sq.sqrt().add_(eps)
                 p.addcdiv_(exp_avg, denom, value=-lr / (1 - beta1**step))
 
+    # Read accessors (the update scalars, schedule.UpdateScalars). They read the state and
+    # allocate only their result; ``step`` does not use them, and a test checks that they give
+    # back its update bit for bit.
+
+    def _group(self, p: torch.Tensor) -> dict:
+        for group in self.param_groups:
+            if any(q is p for q in group["params"]):
+                return group
+        raise ValueError("Not a parameter of this optimizer")
+
+    def step_size(self, p: torch.Tensor) -> float:
+        """lr / (1 − β₁ᵗ) of ``p``'s last update: the factor ``step`` applied to m_t / d_t."""
+        group = self._group(p)
+        return group["lr"] / (1 - group["betas"][0] ** self.state[p]["step"])
+
+    @torch.no_grad()
+    def denominator(
+        self,
+        p: torch.Tensor,
+        coordinates: slice | None = None,
+        *,
+        second_moment: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """The denominator d_t that ``step`` divided by at ``p``'s last update, computed with
+        its operations into a new fp32 tensor: √v_t / √(1 − β₂ᵗ) + ε (adaptive), √v + ε (frozen:
+        v₀; pre-warmed: v_t, before the first update v₀). With ``coordinates``, only those of the
+        flattened parameter; with ``second_moment`` (on those coordinates), from that v instead
+        of the state's."""
+        group, state = self._group(p), self.state[p]
+        v = second_moment
+        if v is None:
+            if "exp_avg_sq" not in state:
+                raise ValueError("Adaptive Adam has no denominator before its first update")
+            v = state["exp_avg_sq"]
+            if coordinates is not None:
+                v = v.reshape(-1)[coordinates]  # a view: the state is contiguous
+        if self.second_moment == "adaptive":
+            bias_correction2_sqrt = (1 - group["betas"][1] ** state["step"]) ** 0.5
+            return (v.sqrt() / bias_correction2_sqrt).add_(group["eps"])
+        return v.sqrt().add_(group["eps"])
+
 
 def estimate_second_moment(
     params: Sequence[torch.nn.Parameter],

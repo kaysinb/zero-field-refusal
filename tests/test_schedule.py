@@ -4,6 +4,7 @@ In the runs the monitor reads a scripted sequence of K, so each test fixes where
 crossed; training, the scoring panel and the stored responses are real.
 """
 
+import gc
 import json
 import math
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from test_gpu import gpu_env as gpu_env  # noqa: F401  (the fixture)
 from test_train import APPENDABLE, SMALL, prepare, read_jsonl
 from test_train import env as env  # noqa: F401  (the fixture)
 
@@ -22,6 +24,7 @@ from zero_field_refusal.schedule import (
     InstabilityGuard,
     LevelTracker,
     PlateauRule,
+    UpdateScalars,
     run_scheduled,
 )
 from zero_field_refusal.teacher import StreamError
@@ -825,3 +828,143 @@ def test_freeing_the_gradients_changes_no_step_after_an_evaluation(
         )
     assert records["freed"] == records["kept"]
     assert [e[0] for e in records["freed"][1]] == [15, 30]
+
+
+# The update scalars (amendment 4, section 4): the three arms' 25-step runs with the hook on and
+# off. The pre-warmed and frozen arms estimate v₀ on a preconditioner stream of three batches.
+ARMS = {
+    "adamw": (),
+    "adam_frozen": ("optimizer=adam_frozen", "optimizer.preconditioner.batches=3"),
+    "adamw_prewarmed": ("optimizer=adamw_prewarmed", "optimizer.preconditioner.batches=3"),
+}
+
+
+def arm_config(env, tmp_path, arm: str, *overrides: str):
+    cfg = scheduled(tmp_path, "train.steps=25", "schedule.evaluate_at=[25]", *ARMS[arm],
+                    "optimizer.lr=1e-3", *overrides, policy="short")  # fmt: skip
+    prepare(env, cfg, "kl_monitor", *(["preconditioner"] if arm != "adamw" else []))
+    return cfg
+
+
+def built_optimizers(monkeypatch) -> list:
+    """The optimizers the runs build, kept after the run: they hold its final parameters."""
+    from zero_field_refusal import schedule
+
+    built, build = [], schedule.build_optimizer
+
+    def keep(*args, **kwargs):
+        built.append(build(*args, **kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(schedule, "build_optimizer", keep)
+    return built
+
+
+def bits(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.detach().cpu().view(torch.int32)  # fp32 bits: −0.0 and NaN compared exactly
+
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_scalar_logging_is_bit_identical(env, tmp_path, monkeypatch, arm) -> None:
+    """The hook only reads: the parameters and the optimizer state after 25 steps and every
+    record of the run (loss and gradient-norm rows, monitor readings, diagnostics, the
+    evaluation, the stop) are the same bit for bit with and without it."""
+    built = built_optimizers(monkeypatch)
+    outcome = {}
+    for on in (False, True):
+        cfg = arm_config(env, tmp_path, arm, f"tracking.update_scalars={str(on).lower()}")
+        run_dir = run_scheduled(cfg, env, run_id=f"{arm}-scalars-{on}")
+        optimizer = built[-1]
+        params = [p for group in optimizer.param_groups for p in group["params"]]
+        state = [optimizer.state[p][key] for p in params for key in ("exp_avg", "exp_avg_sq")]
+        terminal = json.loads((run_dir / "terminal.json").read_text())
+        assert terminal["steps"] == 25 and terminal["stop"]["reason"] == "steps"
+        outcome[on] = {
+            "params": [bits(p) for p in params],
+            "state": [bits(s) for s in state],
+            "steps": [optimizer.state[p]["step"] for p in params],
+            "metrics": [{k: v for k, v in r.items() if k != "time_s"}
+                        for r in read_jsonl(run_dir / "metrics.jsonl")],
+            "records": [read_jsonl(run_dir / name) for name in
+                        ("monitor.jsonl", "diagnostics.jsonl", "evaluations.jsonl",
+                         "cache_checks.jsonl")],
+            "terminal": (terminal["stop"], terminal["steps"], terminal["evaluations"]),
+        }  # fmt: skip
+        scalars = run_dir / "update_scalars.jsonl"
+        assert scalars.exists() is on
+    off, on = outcome[False], outcome[True]
+    assert all(torch.equal(a, b) for a, b in zip(off["params"], on["params"], strict=True))
+    assert all(torch.equal(a, b) for a, b in zip(off["state"], on["state"], strict=True))
+    assert {k: v for k, v in off.items() if k not in ("params", "state")} == {
+        k: v for k, v in on.items() if k not in ("params", "state")
+    }
+    assert [r["step"] for r in off["metrics"] if "loss" in r] == list(range(25))
+    rows = read_jsonl(scalars)
+    assert [r["step"] for r in rows] == list(range(1, 26))
+    for row in rows:
+        assert row["update_norm"] > 0 and -1 <= row["cos_update_grad"] <= 1
+    departures = {r["step"]: r["d_departure"] for r in rows if "d_departure" in r}
+    assert list(departures) == ([5, 10, 25] if arm == "adamw_prewarmed" else [])
+    for departure in departures.values():
+        assert set(departure) == {"norm_ratio", "median", "p90"}
+        assert departure["norm_ratio"] > 0 and 0 <= departure["median"] <= departure["p90"]
+
+
+def test_the_scalars_are_off_unless_the_config_turns_them_on(env, tmp_path) -> None:
+    cfg = arm_config(env, tmp_path, "adamw", "train.steps=5", "schedule.evaluate_at=[5]")
+    assert cfg.tracking.update_scalars is False  # base.yaml; experiments/study2_short sets it
+    run_dir = run_scheduled(cfg, env, run_id="default")
+    assert not (run_dir / "update_scalars.jsonl").exists()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_no_persistent_gpu_allocation(gpu_env, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """The pre-warmed arm on CUDA, after a warm-up run, without and with the hook (in pieces of
+    500 coordinates, so that the largest parameters span several): after every step the
+    allocated GPU memory is the same, and the run's peak stays within one parameter tensor's size
+    of the unlogged peak. The copy of v₀ is in pinned host memory, and the training is the same
+    bit for bit on the GPU too."""
+    from zero_field_refusal import schedule
+
+    built = built_optimizers(monkeypatch)
+    after, hooks, step = [], [], schedule._Loop.after_step
+
+    def measured(self, model, geometry):  # after the update and the hook
+        after.append(torch.cuda.memory_allocated())
+        return step(self, model, geometry)
+
+    class Pieces(UpdateScalars):
+        def __init__(self, optimizer):
+            super().__init__(optimizer, chunk=500)
+            hooks.append(self)
+
+    monkeypatch.setattr(schedule._Loop, "after_step", measured)
+    monkeypatch.setattr(schedule, "UpdateScalars", Pieces)
+    peaks, steps, trained = {}, {}, {}
+    for name in ("warm-up", "off", "on"):
+        cfg = arm_config(gpu_env, tmp_path, "adamw_prewarmed", "execution.device=cuda",
+                         f"tracking.update_scalars={str(name == 'on').lower()}")  # fmt: skip
+        after.clear()
+        gc.collect()
+        torch.cuda.synchronize()
+        base = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        run_dir = run_scheduled(cfg, gpu_env, run_id=name)
+        torch.cuda.synchronize()
+        peaks[name] = torch.cuda.max_memory_allocated() - base
+        steps[name] = [a - base for a in after]
+        params = [p for group in built[-1].param_groups for p in group["params"]]
+        metrics = [(r["step"], r["loss"], r["grad_norm"])
+                   for r in read_jsonl(run_dir / "metrics.jsonl") if "loss" in r]  # fmt: skip
+        trained[name] = ([bits(p) for p in params], metrics)
+    assert len(steps["on"]) == 25 and steps["on"] == steps["off"]
+    largest = max(p.numel() * p.element_size() for p in params)
+    assert largest > 500 * 4  # the pieces split it
+    assert peaks["on"] - peaks["off"] <= largest, (peaks, largest)
+    (off, metrics_off), (on, metrics_on) = trained["off"], trained["on"]
+    assert metrics_on == metrics_off and len(metrics_on) == 25  # on the GPU too
+    assert all(torch.equal(a, b) for a, b in zip(off, on, strict=True))
+    (hook,) = hooks
+    assert len(hook.v0) == len(params) and all(v.is_pinned() for v in hook.v0)
+    rows = read_jsonl(run_dir / "update_scalars.jsonl")
+    assert [r["step"] for r in rows if "d_departure" in r] == [5, 10, 25]

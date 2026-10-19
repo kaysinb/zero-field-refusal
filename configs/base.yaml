@@ -10,6 +10,8 @@ tracking:
   require_clean_git: false  # true for gate runs, so every result maps to a commit
   gate: null                # 1 or 2: the gate whose evidence the run is; the analysis of
                             # Gate 2 runs needs the frozen K* (scripts/build_analysis.py --k-star)
+  update_scalars: false     # a scheduled Adam run's update scalars, update_scalars.jsonl
+                            # (schedule.UpdateScalars); logging only, numerics unchanged
   wandb:
     enabled: true
     required: false         # true: a failure to start W&B stops the run

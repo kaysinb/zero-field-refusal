@@ -39,6 +39,11 @@ During the run only K, utility and training statistics leave it; refusal and har
 computed. A later stop never removes an earlier evaluation. The run ends with a terminal record
 (``terminal.json``): the stop and its reason, the steps taken, the levels reached (with the step
 and the scoring panel's K) and those missed.
+
+**Update scalars** (amendment 4, section 4; ``tracking.update_scalars``, off in ``base`` and on for
+the regular study-2-short runs): after every update of an Adam arm, a read-only hook
+(``UpdateScalars``) writes a row to ``update_scalars.jsonl``. It changes no numerics, so it is
+not part of the config hash; a test pins the parameters bit for bit with it on and off.
 """
 
 from __future__ import annotations
@@ -59,7 +64,7 @@ from transformers import PreTrainedModel
 
 from .curvature import displacement_in_place, rayleigh_panel, record_endpoint_rayleigh
 from .models import freeze
-from .optim import ADAM_MODES, build_optimizer
+from .optim import ADAM_MODES, Adam, build_optimizer
 from .panels import CacheMismatch, Monitor, ScoringDiagnostics, cache_check
 from .prechecks import check_run_chi_square, check_teacher_gap, require_path_check
 from .runtime import Environment, ReplayedSoftTargets, StreamPrefix, extend_stream
@@ -80,6 +85,8 @@ POLICIES = ("k_stopped", "fixed")
 INSTABILITY = ("nonfinite_loss", "nonfinite_gradient", "nonfinite_weight", "nonfinite_k",
                "k_above_max", "gradient_spike", "contamination")  # fmt: skip
 GRAD_RULES = ("spike", "log")
+DEPARTURE_STEPS = (5, 10, 25)  # the pre-warmed arm's denominator departure (amendment 4)
+SCALAR_CHUNK = 1 << 20  # coordinates per piece of the update scalars' reductions
 
 
 @dataclass(frozen=True)
@@ -267,6 +274,150 @@ class BatchFeed:
         self._checked.add(chunk)
 
 
+class UpdateScalars:
+    """The update scalars of an Adam arm (amendment 4, section 4), read after each update from
+    the optimizer state and from the step's gradient, which ``Adam.step`` leaves in ``.grad``.
+
+    Per step t (the updates taken), of the algebraic step u_t = (lr / (1 − β₁ᵗ))·m_t / d_t, with
+    d_t the denominator the update divided by (``Adam.denominator``: √v_t / √(1 − β₂ᵗ) + ε
+    adaptive, √v₀ + ε frozen, √v_t + ε pre-warmed):
+
+    - ``update_norm``: ‖u_t‖;
+    - ``cos_update_grad``: the cosine between u_t and the step's gradient g_t.
+
+    A parameter without a gradient is not updated (``Adam.step`` skips it) and adds nothing.
+
+    Pre-warmed only, at the steps ``departure_at``: ``d_departure``, the departure of d_t from
+    d₀ = √v₀ + ε (the denominator at v₀, before the first update) over all trainable coordinates:
+    ``norm_ratio`` ‖d_t − d₀‖ / ‖d₀‖, and the ``median`` and ``p90`` of |d_t / d₀ − 1|, read on a
+    log histogram (``_LogHistogram``: at most ≈ 1.16 % above the exact value, never below).
+
+    It only reads. No tensor of the loop is written, and nothing persists on the GPU: v₀ is
+    copied once, before the first update, into pinned host memory (plain host memory on the CPU)
+    and read back piece by piece. Every reduction is in float64, per parameter and in pieces of
+    ``chunk`` coordinates whose temporaries are freed before the next piece.
+    """
+
+    def __init__(
+        self,
+        optimizer: Adam,
+        *,
+        departure_at: Sequence[int] = DEPARTURE_STEPS,
+        chunk: int = SCALAR_CHUNK,
+    ) -> None:
+        self.optimizer, self.chunk = optimizer, chunk
+        self.params = [p for group in optimizer.param_groups for p in group["params"]]
+        prewarmed = optimizer.second_moment == "prewarmed"
+        self.departure_at = tuple(departure_at) if prewarmed else ()
+        self.v0: list[torch.Tensor] = []  # pre-warmed only
+        for p in self.params if prewarmed else []:
+            state = optimizer.state[p]
+            if "step" in state:
+                raise ValueError("The update scalars copy v₀ before the first update")
+            v = state["exp_avg_sq"]
+            host = torch.empty(v.shape, dtype=v.dtype, pin_memory=v.is_cuda)
+            self.v0.append(host.copy_(v))
+
+    def _pieces(self, numel: int) -> list[slice]:
+        return [slice(start, start + self.chunk) for start in range(0, numel, self.chunk)]
+
+    @torch.no_grad()
+    def __call__(self, step: int) -> dict[str, Any]:
+        """The row of update ``step``, read after the update and before the gradients are freed."""
+        optimizer, sums = self.optimizer, None  # Σ u², Σ u·g, Σ g²
+        for p in self.params:
+            if p.grad is None:
+                continue
+            if sums is None:
+                sums = torch.zeros(3, dtype=torch.float64, device=p.device)
+            scale = optimizer.step_size(p)
+            m, g = optimizer.state[p]["exp_avg"].reshape(-1), p.grad.reshape(-1)
+            for piece in self._pieces(m.numel()):
+                u = m[piece].double().div_(optimizer.denominator(p, piece)).mul_(scale)
+                grad = g[piece].double()
+                sums[0] += u.square().sum()
+                sums[1] += (u * grad).sum()
+                sums[2] += grad.square().sum()
+                del u, grad
+        uu, ug, gg = (0.0, math.nan, 0.0) if sums is None else sums.tolist()
+        row = {"step": step, "update_norm": math.sqrt(uu),
+               "cos_update_grad": ug / math.sqrt(uu * gg) if uu * gg > 0 else math.nan}  # fmt: skip
+        if step in self.departure_at:
+            row["d_departure"] = self.departure()
+        return row
+
+    @torch.no_grad()
+    def departure(self) -> dict[str, float]:
+        """``d_departure`` at the current state; before the first update it is 0."""
+        if not self.v0:
+            raise ValueError("The departure is the pre-warmed arm's")
+        optimizer, sums, histogram = self.optimizer, None, None  # sums: Σ (d_t − d₀)², Σ d₀²
+        for p, v0 in zip(self.params, self.v0, strict=True):
+            if sums is None:
+                sums = torch.zeros(2, dtype=torch.float64, device=p.device)
+                histogram = _LogHistogram(p.device)
+            v0 = v0.reshape(-1)
+            for piece in self._pieces(v0.numel()):
+                start = v0[piece].to(p.device, non_blocking=True)  # from pinned memory
+                d0 = optimizer.denominator(p, piece, second_moment=start).double()
+                del start
+                d = optimizer.denominator(p, piece).double().sub_(d0)  # d_t − d₀
+                sums[0] += d.square().sum()
+                sums[1] += d0.square().sum()
+                d.div_(d0).abs_().nan_to_num_(nan=math.inf, posinf=math.inf)  # |d_t / d₀ − 1|
+                del d0
+                histogram.add(d)
+                del d
+        diff, base = sums.tolist()
+        return {"norm_ratio": math.sqrt(diff / base) if base > 0 else math.nan,
+                **histogram.quantiles()}  # fmt: skip
+
+
+class _LogHistogram:
+    """Counts of log10 of non-negative values (+∞ allowed), on the values' device, in 0.005-decade
+    bins over [1e-45, 1e10) (the grid of the FA diagnostic's ``LogHistogram``), zeros apart and
+    the values beyond the grid in its end bins. A q-quantile, the value of rank ⌈qN⌉, is read at
+    the upper edge of its bin, clamped to the extremes seen: for a value on the grid, at most
+    10^0.005 − 1 ≈ 1.16 % above the exact one and not below it. The counts are integers, exact,
+    and deterministic (``bincount``; ``histc`` has no deterministic CUDA kernel)."""
+
+    LOW, HIGH, BINS = -45.0, 10.0, 11000
+    QUANTILES = (("median", 0.5), ("p90", 0.9))
+
+    def __init__(self, device: torch.device) -> None:
+        self.counts = torch.zeros(self.BINS, dtype=torch.int64, device=device)
+        self.total = self.zeros = 0
+        self.low = torch.full((), math.inf, dtype=torch.float64, device=device)
+        self.high = torch.zeros((), dtype=torch.float64, device=device)
+
+    def add(self, values: torch.Tensor) -> None:
+        values = values.reshape(-1)
+        positive = values[values > 0]
+        self.total += values.numel()
+        self.zeros += values.numel() - positive.numel()
+        if positive.numel():
+            self.low = torch.minimum(self.low, positive.min())
+            self.high = torch.maximum(self.high, positive.max())
+            scale = self.BINS / (self.HIGH - self.LOW)
+            bins = positive.log10_().clamp_(self.LOW, self.HIGH).sub_(self.LOW).mul_(scale)
+            bins = bins.long().clamp_(0, self.BINS - 1)  # the floor: non-negative
+            self.counts += torch.bincount(bins, minlength=self.BINS)
+
+    def quantiles(self) -> dict[str, float]:
+        cumulative = (self.zeros + torch.cumsum(self.counts.cpu(), 0)).double()
+        low, high = self.low.item(), self.high.item()
+        width = (self.HIGH - self.LOW) / self.BINS
+        out = {}
+        for name, q in self.QUANTILES:
+            if q * self.total <= self.zeros:
+                out[name] = 0.0
+                continue
+            rank = torch.tensor(q * self.total, dtype=torch.float64)
+            index = min(int(torch.searchsorted(cumulative, rank)), self.BINS - 1)
+            out[name] = min(max(10 ** (self.LOW + (index + 1) * width), low), high)
+        return out
+
+
 def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = None) -> Path:
     """One study-2 run under ``cfg.schedule``; returns the run directory."""
     if cfg.run_type != "train":
@@ -301,6 +452,9 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
             second_moment = _theta0_second_moment(cfg, env, student, params, run)
         optimizer = build_optimizer(cfg.optimizer, params, second_moment=second_moment)
         del second_moment
+        scalars = None  # read-only; the pre-warmed arm's v₀ goes to host memory now
+        if cfg.tracking.get("update_scalars", False) and isinstance(optimizer, Adam):
+            scalars = UpdateScalars(optimizer)
 
         def release() -> None:  # the next step's zero_grad(set_to_none) would free them anyway
             for p in params:
@@ -325,6 +479,8 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
             optimizer.step()
             loop.steps = step + 1  # the update is applied, whatever it did to the weights
             run.log(stats, step=step)
+            if scalars is not None:  # the step's gradient is still in .grad
+                _append_jsonl(run.path("update_scalars.jsonl"), [scalars(loop.steps)])
             if not math.isfinite(_norm(params)):
                 reason = "nonfinite_weight"
                 loop.rejected = {"step": step, "loss": stats["loss"],
@@ -356,7 +512,7 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
             delta = displacement_in_place(trainable, theta0)  # the student now holds θ_end − θ₀
             # The optimizer state, the panels and their caches, and the student's other tensors
             # are not needed for the product: free them before it.
-            del optimizer, loop, release, evaluate, monitor, diagnostics, feed, replayer
+            del optimizer, loop, release, evaluate, monitor, diagnostics, feed, replayer, scalars
             del directions, student, trainable, params
             record_endpoint_rayleigh(cfg, env, run, reference, delta, *panel)
         return run.dir
