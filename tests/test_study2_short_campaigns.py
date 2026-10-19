@@ -38,6 +38,7 @@ from test_study2_short import (
     verdict_path,
 )
 
+from zero_field_refusal.analysis import study2_short
 from zero_field_refusal.analysis.stage_a import arm_of
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
@@ -48,6 +49,9 @@ from zero_field_refusal.analysis.study2_short import (
     FIXATION_KEYS,
     NUMERICAL_SEEDS,
     PREWARMED,
+    TIMECOURSE,
+    TIMECOURSE_SEEDS,
+    TIMECOURSE_STEPS,
     V0_ARMS,
     VALIDATION_SEEDS,
     bootstrap_t_interval,
@@ -66,7 +70,10 @@ from zero_field_refusal.analysis.study2_short import (
     read_fixation,
     read_numerical,
     run_facts,
+    secondary_contrasts,
     seed_role,
+    timecourse_guard,
+    timecourse_summary,
 )
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import MAX_ATTEMPTS, load_campaign
@@ -180,6 +187,7 @@ def test_run_facts_read_the_role_the_rayleigh_setting_and_v0_from_the_records(tm
 # ------------------------------------------------------------------ the synthetic stage
 
 P = prescribed()
+COURSE = "timecourse-"  # the run ids of the synthetic time-course runs (``course``)
 
 
 def conform(run):
@@ -202,6 +210,8 @@ def v0(seed: int, batch: int) -> dict:
 def fact(run) -> dict:
     control_run = run.arm == FA_CONTROL_ARM
     role = "full_control" if control_run else seed_role(run.seed)
+    if run.run_id.startswith(COURSE):  # a time-course run (``course``)
+        role = TIMECOURSE
     return {"role": role, "rayleigh": not control_run and measures_rayleigh(run.seed),
             "k_only": role == "numerical", "commit": RUN_COMMIT, "dirty": False,
             "preconditioner": v0(run.seed, run.batch_size) if run.arm in V0_ARMS
@@ -216,6 +226,30 @@ def later(arm, batch, lr, seed):
     """A numerical, validation or confirmation run of the world, its K jittered by seed."""
     k = SCALE[(arm, batch)] * (lr / 1e-5) ** 1.5 * (0.98 + 0.01 * (seed % 5))
     return conform(traj(arm, batch, lr, seed, k, mmlu=0.3 * k, factual=0.1 * k))
+
+
+def course(arm, batch, lr, seed, *, stop: str = "steps", steps: int = 25, scale: float = 1.0):
+    """A time-course run of the world: its endpoint run (``later``) evaluated at steps 1, 5 and
+    10 too, up to its stop; its K × ``scale`` throughout (1: its endpoint's step 25)."""
+    endpoint = later(arm, batch, lr, seed)
+    final = endpoint.evaluations[0]
+    evaluations = [{**final, "step": t, "condition": f"step-{t}",
+                    "K_benign": final["K_benign"] * (scale * t / 25),
+                    "K_monitor": final["K_monitor"] * (scale * t / 25)}
+                   for t in TIMECOURSE_STEPS
+                   if t <= steps and (t < 25 or stop == "steps")]  # fmt: skip
+    name = f"{COURSE}{arm}-b{batch}-{lr:g}-s{seed}"
+    return dataclasses.replace(endpoint, run_id=name, run_dir=Path("/runs") / name,
+                               evaluations=evaluations, spec=P["timecourse"],
+                               evaluate_at=TIMECOURSE_STEPS,
+                               terminal={**endpoint.terminal, "stop": {"reason": stop},
+                                         "steps": steps})  # fmt: skip
+
+
+def courses(rates, batch, seeds) -> list:
+    """The time course's runs of ``seeds``: each arm at its central rate."""
+    return [course(arm, batch, sorted(lrs)[1], seed)
+            for seed in seeds for arm, lrs in rates.items()]  # fmt: skip
 
 
 def answered(runs, exhausted=None, verdicts=None) -> dict:
@@ -710,6 +744,192 @@ def test_look_blocks_wait_for_labels_and_take_delta_from_the_brackets() -> None:
     assert not look_blocks(blocks, partial, kstar)[0]["complete"]
 
 
+# ------------------------------------------------------------------ the time course
+
+
+def test_timecourse_excluded_from_blocks() -> None:
+    """The time course's runs (amendment 4, section 4) share the first blocks' seeds, arms and
+    central rates with the endpoint runs, and enter no block, no look and no mechanism cohort:
+    the selection, the blocks, the guard's counts, the looks' blocks and the three-arm contrasts
+    are those without them, a block holding time-course runs alone has no run, and none of them
+    is ever a bracket."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:2])
+    # Blocks 1-3 of the time course (block 3 has no endpoint run yet); in block 2 a run whose
+    # K differs from its endpoint's everywhere (excluded), in reach of another bracket.
+    timecourse = [*courses(rates, 20, TIMECOURSE_SEEDS[:3:2]),
+                  *(course(arm, 20, sorted(lrs)[1], 3001, scale=0.9)
+                    for arm, lrs in rates.items())]  # fmt: skip
+    without, with_course = stage(runs), stage([*runs, *timecourse])
+    assert with_course["next"]["campaign"] == "confirmation" and not with_course["problems"]
+    assert with_course["selection"] == without["selection"]
+    assert with_course["confirmation"] == without["confirmation"]
+    blocks = with_course["confirmation"]
+    assert [b["complete"] for b in blocks[:3]] == [True, True, False] and blocks[2]["runs"] == 0
+    assert confirmation_guard(blocks, 3, 3) == confirmation_guard(without["confirmation"], 3, 3)
+    ids = {run.run_id for run in timecourse}
+    brackets = {s["bracket"][side]["run"] for b in blocks if b["complete"]
+                for s in b["supports"].values() if s["supported"]
+                for side in ("lo", "hi")}  # fmt: skip
+    assert brackets and not brackets & ids
+    # Labels for every run, the time course's far from the endpoints': the looks' blocks, the
+    # looks and the three-arm contrasts do not move.
+    labels = {run.run_id: rows(400 if run.run_id in ids else 50 + run.seed % 7)
+              for run in [*runs, *timecourse]}  # fmt: skip
+    kstar = with_course["frozen"]["K_star"]
+    entries = look_blocks(blocks, labels, kstar)
+    plain = {k: v for k, v in labels.items() if k not in ids}
+    assert entries == look_blocks(without["confirmation"], plain, kstar)
+    assert [e["complete"] for e in entries[:3]] == [True, True, False]
+    assert all(set(e["h"]) == set(ARMS) for e in entries[:2])  # the three-arm cohort
+    settings = {"look": 1, "interval": "t", "status": "secondary"}
+    assert secondary_contrasts(entries, 2, **settings) == secondary_contrasts(
+        look_blocks(without["confirmation"], plain, kstar), 2, **settings)  # fmt: skip
+    summary = with_course["timecourse"]
+    states = [(t["seed"], t["state"]) for t in summary["trajectories"][:9]]
+    assert states == [(3000, "identical")] * 3 + [(3001, "excluded")] * 3 + [(3002, "pending")] * 3
+
+
+def test_timecourse_reports_missing() -> None:
+    """Per seed and arm: an absent run is missing, a run stopped early and a run the launcher
+    gave up on are failures; an endpoint not there yet leaves the identity pending, an endpoint
+    the launcher gave up on leaves it excluded; a given-up time-course run never stands for its
+    endpoint run, nor the other way round."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    central = {arm: sorted(lrs)[1] for arm, lrs in rates.items()}
+    gone_endpoint = (ADAMW, 20, central[ADAMW], 3005)
+    # Not there: the endpoint runs of (AdamW, 3004), (AdamW, 3005, given up) and (pre-warmed,
+    # 3003, whose time-course run was given up: that never gives the endpoint run up).
+    runs += [r for r in blocks_of(rates, 20, CONFIRMATION_SEEDS[:10])
+             if (r.arm, r.batch_size, r.lr, r.seed) not in {
+                 (ADAMW, 20, central[ADAMW], 3004), gone_endpoint,
+                 (PREWARMED, 20, central[PREWARMED], 3003)}]  # fmt: skip
+    absent, given_up = (ADAMW, 3001), (PREWARMED, 3003)
+    timecourse = [course(arm, 20, central[arm], seed, stop="gradient_spike", steps=7)
+                  if (arm, seed) == (FA, 3002) else course(arm, 20, central[arm], seed)
+                  for seed in TIMECOURSE_SEEDS for arm in ARMS
+                  if (arm, seed) not in (absent, given_up)]  # fmt: skip
+    # The launcher's journal: the given-up time-course run, keyed apart from its endpoint run.
+    cell = f"{PREWARMED}-b20-{central[PREWARMED]:g}-timecourse-rayleigh"
+    overrides = ["optimizer=adamw_prewarmed", "train.batch_size=20",
+                 f"optimizer.lr={central[PREWARMED]:g}",
+                 *study2_short.TIMECOURSE_OVERRIDES]  # fmt: skip
+    records = journal(cell, 3003, overrides, attempts=2 * MAX_ATTEMPTS, recovered=True,
+                      config="experiments/study2_short_rayleigh")  # fmt: skip
+    exhausted = exhausted_runs(records)
+    assert exhausted == {(PREWARMED, 20, central[PREWARMED], 3003, TIMECOURSE): f"{cell}/s3003"}
+    exhausted[gone_endpoint] = "adamw-endpoint/s3005"
+    state = stage([*runs, *timecourse], exhausted=exhausted)
+    assert state["next"]["campaign"] == "confirmation" and not state["problems"]
+    block = state["confirmation"][3]  # seed 3003: its pre-warmed endpoint run is still pending
+    assert not block["complete"] and block["runs"] == 8 and block["exhausted"] == []
+    assert state["exhausted"] == {"adamw-endpoint/s3005": list(gone_endpoint)}
+    summary = state["timecourse"]
+    assert summary["missing"] == [{"seed": 3001, "arm": ADAMW, "lr": central[ADAMW]}]
+    assert summary["failures"] == [
+        {"seed": 3002, "arm": FA, "run": f"{COURSE}{FA}-b20-{central[FA]:g}-s3002",
+         "kind": "instability", "reason": "stopped by gradient_spike at step 7"},
+        {"seed": 3003, "arm": PREWARMED, "run": f"{cell}/s3003", "kind": "technical",
+         "reason": "given up by the launcher"},
+    ]  # fmt: skip
+    by = {(t["arm"], t["seed"]): t for t in summary["trajectories"]}
+    assert len(by) == 30 and by[absent]["run"] is None and by[given_up]["run"] is None
+    assert by[(FA, 3002)]["state"] == "excluded"  # its endpoint took its 25 steps
+    assert "the stop and the steps taken differ" in by[(FA, 3002)]["reasons"][-1]
+    assert [r["step"] for r in by[(FA, 3002)]["rows"]] == [1, 5]
+    assert by[(ADAMW, 3004)]["state"] == "pending"
+    assert by[(ADAMW, 3005)]["state"] == "excluded"
+    assert "given up by the launcher" in by[(ADAMW, 3005)]["reasons"][0]
+    assert summary["counts"] == {"identical": 25, "excluded": 2, "pending": 1, "failed": 2,
+                                 "missing": 1}  # fmt: skip
+
+
+def test_timecourse_runs_off_their_prescription_leave_the_stage_incomplete() -> None:
+    runs = base()
+    until(runs, "validation")
+    early = course(ADAMW, 20, 1.48e-5, 3000)
+    state = stage([*runs, early])
+    assert state["next"] == {"campaign": "incomplete"}
+    assert f"time-course run {early.run_id} before the rates are frozen" in state["problems"]
+    rates = until(runs, "confirmation")["next"]["rates"]
+    central = {arm: sorted(lrs)[1] for arm, lrs in rates.items()}
+    one = course(ADAMW, 20, central[ADAMW], 3000)
+    again = dataclasses.replace(one, run_id=f"{one.run_id}-again", run_dir=Path("/runs/again"))
+    sealed = later(ADAMW, 20, central[ADAMW], 3001)  # an endpoint run with the time course's steps
+    cases = {
+        "outside the time course": [course(FA, 20, rates[FA][0], 3000)],  # not the central rate
+        "is a time-course run on seed 3010, not one of 3000-3009": [
+            course(ADAMW, 20, central[ADAMW], 3010)],
+        "departs from the prescribed schedule in ['evaluate_at']": [
+            dataclasses.replace(one, spec=P["short"])],  # the endpoint run's evaluation steps
+        "time course: two runs of": [one, again],
+    }  # fmt: skip
+    for problem, extra in cases.items():
+        state = stage([*runs, *extra])
+        assert state["next"] == {"campaign": "incomplete"}, problem
+        assert any(problem in p for p in state["problems"]), (problem, state["problems"])
+    other = dataclasses.replace(sealed, spec=P["timecourse"])
+    assert "departs from the prescribed schedule in ['evaluate_at']" in conformance(
+        [other], facts_of([other]))[0]  # fmt: skip
+    assert conformance([one], facts_of([one])) == []
+    unmeasured = {one.run_id: {**fact(one), "rayleigh": False}}  # blocks 1-10 measure R
+    found = conformance([one], unmeasured)
+    assert "does not measure the Rayleigh quotient on seed 3000" in found[0]
+    assert seed_role(3009, timecourse=True) == TIMECOURSE and seed_role(3009) == "confirmation"
+    assert seed_role(3010, timecourse=True) is None and seed_role(2100, timecourse=True) is None
+
+
+def test_summary_reads_no_labels_without_the_argument(monkeypatch) -> None:
+    """Labels are read only when the final analysis passes them: ``progress`` gives none, and
+    without them no label row is read and every harm is None. With them, the harm of each step
+    of an identical run, and nothing of an excluded or pending one."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:2])
+    timecourse = [*courses(rates, 20, TIMECOURSE_SEEDS[:3:2]),
+                  *(course(arm, 20, sorted(lrs)[1], 3001, scale=0.9)
+                    for arm, lrs in rates.items())]  # fmt: skip
+    seen, summarize = [], study2_short.timecourse_summary
+
+    def spied(*args, **kwargs):
+        seen.append(args[1] if len(args) > 1 else kwargs.get("labels"))
+        return summarize(*args, **kwargs)
+
+    def unread(*args, **kwargs):
+        raise AssertionError("a label was read")
+
+    monkeypatch.setattr(study2_short, "timecourse_summary", spied)
+    for name in ("harm", "_step_row"):
+        monkeypatch.setattr(study2_short, name, unread)
+    state = stage([*runs, *timecourse])
+    summary = state["timecourse"]
+    assert seen and all(labels is None for labels in seen)
+    assert not summary["labels_read"] and "unlabeled" not in summary
+    rows_read = [row for t in summary["trajectories"] for row in t["rows"]]
+    assert len(rows_read) == 9 * 4 and all(row["harm"] is None for row in rows_read)
+    assert [row["step"] for row in summary["trajectories"][0]["rows"]] == [1, 5, 10, 25]
+    monkeypatch.undo()
+    # The final analysis: the identical runs' harm per step; a run without labels is unlabeled.
+    timecourse_ids = {run.run_id for run in timecourse}
+    labels = {run_id: [{"condition": f"step-{t}", "step": t, "prompts": 500, "harmful": 10 * t,
+                        "missing": 0} for t in TIMECOURSE_STEPS]
+              for run_id in sorted(timecourse_ids)[1:]}  # fmt: skip
+    found, _ = study2_short.index(r for r in runs if r.seed in CONFIRMATION_SEEDS)
+    labelled = timecourse_summary(timecourse, labels, endpoints=found, rates=rates, batch=20)
+    assert labelled["labels_read"]
+    unlabeled = sorted(timecourse_ids)[0]  # AdamW-25 on seed 3000, identical
+    assert labelled["unlabeled"] == [unlabeled]
+    assert [t["state"] for t in labelled["trajectories"] if t["run"] == unlabeled] == ["identical"]
+    for t in labelled["trajectories"]:
+        harms = [row["harm"] for row in t["rows"]]
+        if t["state"] == "identical" and t["run"] != unlabeled:
+            assert harms == [10 * s / 500 for s in TIMECOURSE_STEPS]
+        else:
+            assert all(h is None for h in harms), t["state"]
+
+
 # ------------------------------------------------------------------ the campaigns script
 
 
@@ -1033,6 +1253,92 @@ def test_a_range_issued_before_is_completed_and_then_refused(monkeypatch, tmp_pa
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
                   *args)  # fmt: skip
     assert "blocks 1-2 have every run already" in err
+
+
+def issued(first: int, last: int) -> list[dict]:
+    """The launcher's start record of one run of the confirmation range FIRST-LAST."""
+    return [{"event": "start", "experiment": "study2_short", "config_hash": f"r-{first}-{last}",
+             "run": f"{ADAMW}-b20-1.27e-05-blocks-{first}-{last}-rayleigh/s{3000 + first - 1}",
+             "run_id": f"issued-{first}-{last}", "attempt": 1, "command": []}]  # fmt: skip
+
+
+def test_timecourse_campaign_shape(monkeypatch, tmp_path, capsys) -> None:
+    """The time course's campaign (amendment 4, section 4): seeds 3000-3009, each arm at its
+    central rate, the endpoint run's config (blocks 1-10 measure R) but for the role and the
+    evaluation steps; 30 runs, 20 without the pre-warmed arm. Refused before the selection is
+    done, before blocks 1-10 are issued, without the versions record, and once every run is
+    there."""
+    runs = base()
+    until(runs, "validation")
+    record = fixed(tmp_path)
+    common = ("--fixation", record)
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "timecourse", *common,
+                  "--runs-root", runs_root(tmp_path, issued(1, 10)))  # fmt: skip
+    assert "the time course waits for the selection to be done" in err
+    assert "the stage's next step is validation" in err
+    rates = until(runs, "confirmation")["next"]["rates"]
+    for journal_records, lacking in (([], "blocks 1-10 are not in an issued range (10 of 10)"),
+                                     (issued(1, 5), "blocks 6-10 are not in an issued range "
+                                                    "(5 of 10)")):  # fmt: skip
+        err = refusal(monkeypatch, tmp_path, capsys, runs, "timecourse", *common,
+                      "--runs-root", runs_root(tmp_path, journal_records))  # fmt: skip
+        assert lacking in err
+    assert timecourse_guard({(1, 5), (6, 12)}) == [] and timecourse_guard({(1, 10)}) == []
+    (gaps,) = timecourse_guard({(1, 2), (4, 6), (8, 9)})
+    assert "blocks 3, 7, 10 are not in an issued range (3 of 10)" in gaps
+    root = runs_root(tmp_path, issued(1, 5) + issued(6, 12))
+    monkeypatch.undo()  # the versions record no longer patched to hold
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "timecourse", *common, "--runs-root", root,
+                  "--versions", str(tmp_path / "none.json"), versions=False)  # fmt: skip
+    assert "the versions record does not hold" in err and "none.json is missing" in err
+    found = campaign(monkeypatch, tmp_path, runs, "timecourse", *common, "--runs-root", root)
+    central = {ADAMW: 1.48e-5, FA: 1.86e-5, PREWARMED: 1.48e-5}
+    assert {arm: sorted(lrs)[1] for arm, lrs in rates.items()} == central
+    assert len(found) == 30 and {r.seed for r in found} == set(TIMECOURSE_SEEDS)
+    assert {r.cell for r in found} == {f"{arm}-b20-{lr:g}-timecourse-rayleigh"
+                                       for arm, lr in central.items()}  # fmt: skip
+    assert {r.experiment for r in found} == {"study2_short"}
+    # Its cells never count as an issued confirmation range.
+    assert issued_ranges([{"event": "start", "experiment": "study2_short",
+                           "run": f"{r.cell}/s{r.seed}"} for r in found]) == set()  # fmt: skip
+    # Each run is its endpoint run's config but for the role and the evaluation steps.
+    endpoints = campaign(monkeypatch, tmp_path, runs, "confirmation", "--blocks", "1", "10",
+                         *common, "--runs-root", runs_root(tmp_path / "other"))  # fmt: skip
+    twins = {(r.cell.removesuffix("-blocks-1-10-rayleigh"), r.seed): r for r in endpoints}
+    for run in found:
+        twin = twins[(run.cell.removesuffix("-timecourse-rayleigh"), run.seed)]
+        a = OmegaConf.to_container(load_run_config(run.config, list(run.overrides)))
+        b = OmegaConf.to_container(load_run_config(twin.config, list(twin.overrides)))
+        assert (a["study2_short"].pop("role"), b["study2_short"].pop("role")) == (
+            TIMECOURSE, "confirmation")  # fmt: skip
+        assert (a["schedule"].pop("evaluate_at"), b["schedule"].pop("evaluate_at")) == (
+            list(TIMECOURSE_STEPS), [25])  # fmt: skip
+        assert a == b and a["eval"]["rayleigh"]["enabled"] and "k_only" not in a["eval"]
+        assert run.config == twin.config == "experiments/study2_short_rayleigh"
+    split = campaign(monkeypatch, tmp_path, runs, "timecourse", *common, "--runs-root", root,
+                     "--seeds", "3000", "3001")  # fmt: skip
+    assert len(split) == 6 and {r.seed for r in split} == {3000, 3001}
+    # The runs still missing only; none once every run is there.
+    made_runs = courses(rates, 20, TIMECOURSE_SEEDS)
+    rest = campaign(monkeypatch, tmp_path, [*runs, *made_runs[3:]], "timecourse", *common,
+                    "--runs-root", root)  # fmt: skip
+    assert sorted((r.cell, r.seed) for r in rest) == sorted(
+        (f"{arm}-b20-{lr:g}-timecourse-rayleigh", 3000) for arm, lr in central.items())  # fmt: skip
+    err = refusal(monkeypatch, tmp_path, capsys, [*runs, *made_runs], "timecourse", *common,
+                  "--runs-root", root)  # fmt: skip
+    assert "the time course has every run already" in err
+    # Without the pre-warmed arm (the primary-only fallback): 20 runs.
+    primary = [*base()]
+    real = SCALE.copy()
+    try:
+        for batch in (5, 20):
+            SCALE[(PREWARMED, batch)] = 0.3
+        frozen = until(primary, "confirmation")["frozen"]
+    finally:
+        SCALE.update(real)
+    assert frozen["prewarmed_dropped"]
+    found = campaign(monkeypatch, tmp_path, primary, "timecourse", *common, "--runs-root", root)
+    assert len(found) == 20 and {r.cell.split("-b20")[0] for r in found} == {ADAMW, FA}
 
 
 def test_the_numerical_verdicts_are_read_from_the_runs_root(tmp_path) -> None:

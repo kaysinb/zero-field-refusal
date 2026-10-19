@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import statistics
 import subprocess
 from pathlib import Path
@@ -2359,3 +2360,114 @@ def test_the_analysis_bootstrap_interval_equals_the_simulation_s() -> None:
                     assert (low, high) == (-math.inf, math.inf)
                     continue
                 assert (low, high) == (mean - q_high * se, mean - q_low * se)
+
+
+# ------------------------------------------------------------------ the time course
+
+
+def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: float = 0.0):
+    """A 25-step run with the records the identity check reads: metrics.jsonl (the training rows,
+    the monitor's every 5 steps and the evaluations', logged one step back), monitor.jsonl,
+    update_scalars.jsonl (a cosine of 0.0 at step 3), meta.json's streams and the evaluations.
+    ``other`` moves only what the check leaves out: timings, memory peaks and K_harmful."""
+    run_dir = tmp_path / name
+    run_dir.mkdir()
+
+    def k(t: int) -> float:
+        return 6.3 * t / 25
+
+    metrics = []
+    for step in range(25):
+        done, time_s = step + 1, 0.5 * step + other
+        metrics.append({"step": step, "time_s": time_s, "loss": 1 / done, "denominator": 480,
+                        "tokens": 900 + step, "nll_per_token": 0.5 / done,
+                        "grad_norm": 0.25 + 0.01 * step})  # fmt: skip
+        if done % 5 == 0:
+            metrics.append({"step": step, "time_s": time_s, "K_monitor": k(done)})
+        if done in evaluate_at:
+            metrics.append({"step": step, "time_s": time_s, "eval/K_benign": k(done),
+                            "eval/K_harmful": 2 * k(done) + other, "eval/benchmark_accuracy": 0.6,
+                            "eval/peak_allocated_gb": 30 + other})  # fmt: skip
+    records = {
+        "metrics.jsonl": metrics,
+        "monitor.jsonl": [{"step": t, "K_monitor": k(t), "grad_norm": 0.3,
+                           "displacement_norm": 0.01 * t} for t in range(5, 26, 5)],
+        "update_scalars.jsonl": [{"step": t, "update_norm": 1e-3 * t,
+                                  "cos_update_grad": 0.0 if t == 3 else 0.5}
+                                 for t in range(1, 26)],
+    }  # fmt: skip
+    for record, rows in records.items():
+        (run_dir / record).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    stream = {"path": "teacher/m/training/seed-3000", "count": 500, "sha256": "ab", "chunks": ["c"]}
+    (run_dir / "meta.json").write_text(json.dumps({"inputs": {"streams": {"training": stream}}}))
+    evaluations = [{"step": t, "condition": f"step-{t}", "levels": [],
+                    "K_monitor": k(t) if t % 5 == 0 else None, "K_benign": k(t),
+                    "K_harmful": 2 * k(t) + other, "benchmark_accuracy": 0.6,
+                    "factual_accuracy": 0.8, "peak_allocated_gb": 30 + other}
+                   for t in evaluate_at]  # fmt: skip
+    run = traj(ADAMW, 20, 1.48e-5, 3000, None, name=name)
+    return dataclasses.replace(run, run_dir=run_dir, evaluations=evaluations,
+                               evaluate_at=evaluate_at)  # fmt: skip
+
+
+def test_timecourse_identity(tmp_path) -> None:
+    """A time-course run against its endpoint run (amendment 4, section 4): identical whatever
+    the timings, memory peaks and K_harmful (never read); excluded on a one-bit difference in any
+    compared record; pending without its endpoint run."""
+    from zero_field_refusal.analysis.study2_short import timecourse_identity
+
+    endpoint = recorded(tmp_path, "endpoint", (25,))
+    course = recorded(tmp_path, "course", (1, 5, 10, 25), other=0.125)
+    assert timecourse_identity(course, endpoint) == {"state": "identical", "reasons": [],
+                                                     "endpoint": "endpoint"}  # fmt: skip
+    waiting = ["its endpoint run is not there yet"]
+    pending = {"state": "pending", "reasons": waiting, "endpoint": None}
+    assert timecourse_identity(course, None) == pending
+
+    def edited(record: str, edit) -> Trajectory:
+        """The time-course run with one record edited, in a copy of its directory."""
+        copy = tmp_path / f"course-{len(list(tmp_path.iterdir()))}"
+        shutil.copytree(course.run_dir, copy)
+        rows = [json.loads(line) for line in (copy / record).read_text().splitlines()]
+        edit(rows)
+        (copy / record).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return dataclasses.replace(course, run_dir=copy, run_id=copy.name)
+
+    def bump(row: dict, key: str) -> None:  # one bit: the next float up
+        row[key] = math.nextafter(row[key], math.inf)
+
+    def training(rows: list, step: int) -> dict:
+        return next(r for r in rows if r["step"] == step and "loss" in r)
+
+    final = course.evaluations[-1]
+    cases = {
+        # Step 7's training row, the 9th outside the evaluations (step 4's K_monitor row first).
+        "the training's metrics.jsonl rows differ from the endpoint run's from row 8": edited(
+            "metrics.jsonl", lambda rows: bump(training(rows, 7), "grad_norm")),
+        "the metrics.jsonl rows of the endpoint's evaluations differ": edited(
+            "metrics.jsonl", lambda rows: bump(rows[-1], "eval/K_benign")),
+        "the monitor.jsonl readings differ from the endpoint run's from row 2": edited(
+            "monitor.jsonl", lambda rows: bump(rows[2], "grad_norm")),
+        "the update_scalars.jsonl rows differ from the endpoint run's from row 2": edited(
+            "update_scalars.jsonl", lambda rows: rows[2].update(cos_update_grad=-0.0)),
+        "the streams read differ": edited(
+            "meta.json", lambda rows: rows[0]["inputs"]["streams"]["training"].update(count=480)),
+        "the endpoint's evaluations differ": dataclasses.replace(course, evaluations=[
+            *course.evaluations[:3],
+            {**final, "K_benign": math.nextafter(final["K_benign"], math.inf)}]),
+        "the stop and the steps taken differ": dataclasses.replace(
+            course, terminal={**course.terminal, "stop": {"reason": "gradient_spike"}}),
+        "is of ('adamw_25', 20, 1.48e-05, 3001)": dataclasses.replace(endpoint, seed=3001),
+        "a record does not read": edited("update_scalars.jsonl", lambda rows: None),
+    }  # fmt: skip
+    broken = tmp_path / cases["a record does not read"].run_id / "update_scalars.jsonl"
+    broken.write_text(broken.read_text() + '{"step": 26, "upd\n')
+    for reason, run in cases.items():
+        mine, theirs = (course, run) if reason.startswith("is of") else (run, endpoint)
+        found = timecourse_identity(mine, theirs)
+        assert found["state"] == "excluded", reason
+        assert len(found["reasons"]) == 1 and reason in found["reasons"][0], found["reasons"]
+    # The time course's own evaluations (steps 1, 5, 10) are not the endpoint's to compare.
+    early = dataclasses.replace(course, evaluations=[
+        {**course.evaluations[0], "K_benign": 99.0}, *course.evaluations[1:]])  # fmt: skip
+    assert timecourse_identity(early, endpoint)["state"] == "identical"

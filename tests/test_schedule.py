@@ -1098,3 +1098,89 @@ def test_no_persistent_gpu_allocation(gpu_env, tmp_path, monkeypatch) -> None:  
     assert len(hook.v0) == len(params) and all(v.is_pinned() for v in hook.v0)
     rows = read_jsonl(run_dir / "update_scalars.jsonl")
     assert [r["step"] for r in rows if "d_departure" in r] == [5, 10, 25]
+
+
+# The time course (amendment 4, section 4, "Harm over steps"): a run evaluated at steps 1, 5, 10
+# and 25 against its endpoint run, evaluated at step 25 alone. Every regular run records the
+# update scalars, so both runs do here.
+TIMECOURSE_STEPS = (1, 5, 10, 25)
+EXCLUDED = ("time_s", "peak_")  # the timings and memory peaks differ from run to run
+
+
+def comparable(rows: list[dict]) -> list[dict]:
+    return [{k: v for k, v in r.items() if not any(w in k for w in EXCLUDED)} for r in rows]
+
+
+def intermediate_evaluations(env, tmp_path, monkeypatch, arm: str, *overrides: str) -> dict:
+    """The endpoint run (``evaluate_at`` [25]) and its time-course twin ([1, 5, 10, 25]) of one
+    arm, compared bit for bit: the parameters and the optimizer state after step 25, every
+    training row of metrics.jsonl and every other row but the time course's own evaluations,
+    the monitor readings, the scoring diagnostics and the update scalars, the stop, and the
+    step-25 evaluation. Returns the two run directories."""
+    built = built_optimizers(monkeypatch)
+    outcome, dirs = {}, {}
+    for name, steps in (("endpoint", (25,)), ("timecourse", TIMECOURSE_STEPS)):
+        at = ",".join(map(str, steps))
+        cfg = arm_config(env, tmp_path, arm, "tracking.update_scalars=true",
+                         f"schedule.evaluate_at=[{at}]", *overrides)  # fmt: skip
+        run_dir = dirs[name] = run_scheduled(cfg, env, run_id=f"{arm}-{name}")
+        optimizer = built[-1]
+        params = [p for group in optimizer.param_groups for p in group["params"]]
+        state = [optimizer.state[p][key] for p in params for key in ("exp_avg", "exp_avg_sq")]
+        metrics = comparable(read_jsonl(run_dir / "metrics.jsonl"))
+        evaluations = comparable(read_jsonl(run_dir / "evaluations.jsonl"))
+        assert [e["step"] for e in evaluations] == list(steps)
+        assert all(math.isfinite(e["K_benign"]) for e in evaluations)
+        terminal = json.loads((run_dir / "terminal.json").read_text())
+        assert (terminal["steps"], terminal["stop"]["reason"]) == (25, "steps")
+        assert terminal["evaluations"] == list(steps)
+        outcome[name] = {
+            "params": [bits(p) for p in params],
+            "state": [bits(s) for s in state],
+            "training": [r for r in metrics if "loss" in r],
+            "logged": [r for r in metrics if not any(k.startswith("eval/") for k in r)],
+            "evaluated": [r for r in metrics if any(k.startswith("eval/") for k in r)],
+            "records": [comparable(read_jsonl(run_dir / record)) for record in
+                        ("monitor.jsonl", "diagnostics.jsonl", "update_scalars.jsonl")],
+            "step_25": evaluations[-1],
+            "stop": (terminal["stop"], terminal["steps"], terminal["responses"],
+                     terminal["monitor_readings"], terminal["diagnostics"]),
+        }  # fmt: skip
+    endpoint, timecourse = outcome["endpoint"], outcome["timecourse"]
+    assert all(torch.equal(a, b) for a, b in
+               zip(endpoint["params"], timecourse["params"], strict=True))  # fmt: skip
+    assert all(torch.equal(a, b) for a, b in
+               zip(endpoint["state"], timecourse["state"], strict=True))  # fmt: skip
+    assert [r["step"] for r in timecourse["training"]] == list(range(25))
+    for key in ("training", "logged", "records", "step_25", "stop"):
+        assert endpoint[key] == timecourse[key], key
+    assert [r["step"] for r in timecourse["evaluated"]] == [t - 1 for t in TIMECOURSE_STEPS]
+    assert endpoint["evaluated"] == timecourse["evaluated"][-1:]  # logged one step back
+    assert endpoint["step_25"]["K_benign"] == timecourse["step_25"]["K_benign"]
+    return dirs
+
+
+@pytest.mark.parametrize("arm", list(ARMS))
+def test_intermediate_evaluations_do_not_change_step_25(env, tmp_path, monkeypatch, arm) -> None:
+    """Review focus of amendment 4's Task 5: the time course's evaluations at steps 1, 5 and 10
+    change nothing in training, so its step 25 is its endpoint run's, bit for bit, on all three
+    arms; the analysis' identity check reads the two runs as identical."""
+    dirs = intermediate_evaluations(env, tmp_path, monkeypatch, arm)
+    from zero_field_refusal.analysis.stage_a import load_trajectory
+    from zero_field_refusal.analysis.study2_short import timecourse_identity
+
+    timecourse, endpoint = (load_trajectory(dirs[name]) for name in ("timecourse", "endpoint"))
+    assert timecourse.evaluate_at == TIMECOURSE_STEPS and endpoint.evaluate_at == (25,)
+    found = timecourse_identity(timecourse, endpoint)
+    assert found == {"state": "identical", "reasons": [], "endpoint": endpoint.run_id}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_cuda_intermediate_evaluations_do_not_change_step_25(
+    gpu_env,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The same on CUDA, for FA-25 (Adam with v₀ frozen), the arm whose numerics amendment 4
+    qualifies."""
+    intermediate_evaluations(gpu_env, tmp_path, monkeypatch, "adam_frozen", "execution.device=cuda")

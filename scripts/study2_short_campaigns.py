@@ -8,6 +8,9 @@ driver of their prerequisites.
     python scripts/study2_short_campaigns.py confirmation --blocks FIRST LAST [--after-look K] \
         --runs DIR... --theta0 RUN --fixation FILE --runs-root RUNS_DIR [--abandoned FILE] \
         [--versions FILE] [--cells NAME ...] --out FILE
+    python scripts/study2_short_campaigns.py timecourse --runs DIR... --theta0 RUN \
+        --fixation FILE --runs-root RUNS_DIR [--abandoned FILE] [--versions FILE] \
+        [--seeds S ...] [--cells NAME ...] --out FILE
     python scripts/study2_short_campaigns.py prep --seeds S [S ...] --batch B --commit SHA \
         [--archived] [--once --stage0-run-id ID] --out FILE
     python scripts/study2_short_campaigns.py check-streams --seeds S [S ...] --batch B
@@ -41,6 +44,20 @@ When no candidate is eligible with the three arms, the candidates are visited ag
 primary arms alone, the pre-warmed arm dropped. A campaign holds the runs still missing;
 ``--seeds`` and ``--cells`` only split it over Pods.
 
+``timecourse`` (amendment 4, section 4, "Harm over steps"; exploratory) is written beside the
+confirmation, never instead of it: separate runs of the first 10 confirmation blocks (seeds
+3000-3009), each arm of the frozen selection (three, or two when the pre-warmed arm was dropped)
+at its central rate, the K* rate, the middle of its three: 30 runs, or 20. Each is its endpoint
+run's cell (experiments/study2_short_rayleigh, as blocks 1-10 run it) but for
+``study2_short.role=timecourse`` and ``schedule.evaluate_at=[1,5,10,25]``: the regular sealed
+evaluation at those steps (K_scoring, utility, and the harmful responses stored for the judge,
+never scored). It is refused until the stage's next step is ``confirmation`` (the selection done,
+its validation passed) and the launcher's journal shows blocks 1-10 in issued confirmation ranges,
+so that their streams exist (``timecourse_guard``); like the confirmation it needs the versions
+record. Its runs never enter a block, a look or the mechanism cohort; the stage's summary reports
+each against its endpoint run (``timecourse_identity``: bit for bit, or excluded), with the
+failed and missing ones per seed and arm (``progress``'s ``timecourse``).
+
 - --runs holds every run so far: Stage A's (study2_stage_a, study2_controls), whose 25-step grids
   are the first discovery runs and whose version-1 discovery set fixes the stream time, and this
   stage's (study2_short, and amendment 3's study2_short_fa_controls, reported and never used).
@@ -59,8 +76,8 @@ primary arms alone, the pre-warmed arm dropped. A campaign holds the runs still 
   may still be running, and its run stays pending. The campaign's header records the abandonment
   record's path and sha256.
 - **The versions record** (--versions FILE, default docs/study2-short-versions.json, written by
-  ``scripts/study2_short_summary.py versions`` and committed): ``validation`` and
-  ``confirmation`` refuse without it, or when the running commit, the model, the judge's
+  ``scripts/study2_short_summary.py versions`` and committed): ``validation``, ``confirmation``
+  and ``timecourse`` refuse without it, or when the running commit, the model, the judge's
   identity or the fixation record departs from it (``versions_problems``: the record tracked
   and unchanged at HEAD; HEAD is the recorded commit or a child that adds the record alone, or
   any descendant when the record allows it; no uncommitted change or untracked file, so campaign
@@ -144,6 +161,7 @@ from zero_field_refusal.analysis.study2_short import (
     RAYLEIGH,
     REGULAR,
     STEPS,
+    TIMECOURSE_OVERRIDES,
     VALIDATION_SEEDS,
     VERSIONS_RECORD,
     confirmation_guard,
@@ -156,6 +174,7 @@ from zero_field_refusal.analysis.study2_short import (
     read_numerical,
     run_facts,
     seed_role,
+    timecourse_guard,
     versions_problems,
 )
 from zero_field_refusal.launch import launch_records
@@ -163,8 +182,8 @@ from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 KINDS = ("discovery", "repair", "prewarmed", "targeted", "numerical", "numerical-check",
-         "validation", "confirmation")  # fmt: skip
-VERSIONED_KINDS = ("validation", "confirmation")  # they need the versions record
+         "validation", "confirmation", "timecourse")  # fmt: skip
+VERSIONED_KINDS = ("validation", "confirmation", "timecourse")  # they need the versions record
 OPTIMIZER = {ADAMW: [], FA: ["optimizer=adam_frozen"], PREWARMED: ["optimizer=adamw_prewarmed"]}
 STAGE_SEEDS = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS, *CONFIRMATION_SEEDS)
 STAGE_A = "experiments/study2_stage_a"  # the streams' config, as Stage A generated them
@@ -220,12 +239,14 @@ def cell(name: str, config: str, overrides: list[str], seeds: list[int]) -> dict
     return {"name": name, "config": config, "overrides": overrides, "seeds": seeds}
 
 
-def regular_cells(runs: list[dict], suffix: str = "") -> list[dict]:
+def regular_cells(runs: list[dict], suffix: str = "", *, timecourse: bool = False) -> list[dict]:
     """One cell per arm, rate and config (the first 10 confirmation blocks measure R), over its
     seeds, with the role of its seeds. The launcher grants a recovery round once per experiment
     and cell name, so a name never recurs in another of the stage's campaigns: ``suffix`` names
-    the numerical check (whose seeds of one rate can differ between checks), the validation or
-    the confirmation blocks."""
+    the numerical check (whose seeds of one rate can differ between checks), the validation, the
+    confirmation blocks or the time course. With ``timecourse``, the time course's runs: each
+    the endpoint run's cell of its seed, arm and rate but for the role timecourse and the
+    evaluation steps 1, 5, 10 and 25 (``TIMECOURSE_OVERRIDES``)."""
     groups: dict[tuple, list[int]] = defaultdict(list)
     for r in runs:
         seed = r["seed"]
@@ -234,8 +255,8 @@ def regular_cells(runs: list[dict], suffix: str = "") -> list[dict]:
     items = []
     for (arm_index, batch, lr, rayleigh, role), seeds in sorted(groups.items()):
         arm = ARMS[arm_index]
-        overrides = [*OPTIMIZER[arm], f"train.batch_size={batch}", f"optimizer.lr={lr:g}",
-                     f"study2_short.role={role}"]  # fmt: skip
+        own = list(TIMECOURSE_OVERRIDES) if timecourse else [f"study2_short.role={role}"]
+        overrides = [*OPTIMIZER[arm], f"train.batch_size={batch}", f"optimizer.lr={lr:g}", *own]
         name = f"{arm}-b{batch}-{lr:g}{suffix}" + ("-rayleigh" if rayleigh else "")
         config = RAYLEIGH if rayleigh else K_ONLY if role == "numerical" else REGULAR
         items.append(cell(name, config, overrides, sorted(seeds)))
@@ -641,7 +662,8 @@ def campaign(
     if args.after_look and args.kind != "confirmation":
         parser.error("--after-look goes with confirmation")
     if args.kind in ("confirmation", "numerical-check") and args.seeds:
-        parser.error("--seeds splits the discovery, numerical and validation campaigns only")
+        parser.error("--seeds splits the discovery, numerical, validation and time-course "
+                     "campaigns only")  # fmt: skip
     if args.runs_root is None:
         parser.error(f"{args.kind} needs --runs-root: the stage reads the numerical-check "
                      "verdicts and the launch journal there")  # fmt: skip
@@ -682,6 +704,28 @@ def campaign(
         step = chosen["pending"]
     elif state["problems"]:
         parser.error("the stage's records are not whole: " + "; ".join(state["problems"]))
+    if args.kind == "timecourse":  # beside the confirmation, once the selection is done
+        if step["campaign"] != "confirmation":
+            shown = {k: v for k, v in step.items() if k != "runs"}
+            parser.error("the time course waits for the selection to be done and its "
+                         f"validation passed: the stage's next step is {step['campaign']}: "
+                         f"{shown}")  # fmt: skip
+        problems = timecourse_guard(issued_ranges(records))
+        if problems:
+            parser.error("; ".join(problems))
+        course = state["timecourse"]
+        wanted = [{"arm": r["arm"], "batch": course["batch"], "lr": r["lr"], "seed": r["seed"]}
+                  for r in course["missing"]]  # fmt: skip
+        if args.seeds:
+            unknown = sorted(set(args.seeds) - {r["seed"] for r in wanted})
+            if unknown:
+                parser.error(f"no run of seeds {unknown} in this campaign")
+            wanted = [r for r in wanted if r["seed"] in args.seeds]
+        if not wanted:
+            parser.error("the time course has every run already (or given up by the launcher)")
+        written = {"name": f"study2-short-timecourse-b{course['batch']}-u{step['U']:g}",
+                   "cells": regular_cells(wanted, "-timecourse", timecourse=True)}  # fmt: skip
+        return written, w_max, source, notes, prerequisites
     if step["campaign"] != args.kind:
         shown = {k: v for k, v in step.items() if k != "runs"}
         parser.error(f"the stage's next step is {step['campaign']}, not {args.kind}: {shown}")
