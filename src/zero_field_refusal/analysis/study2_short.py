@@ -339,19 +339,22 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   start of the next. A run with a terminal record is never given up, whatever the journal says.
   Discovery runs are not covered: the selection waits for them. A numerical run given up lets
   its check go on (*Numerical qualification*).
-- *Confirmation blocks* (``confirmation_guard``, the review of Task 5): ranges start at the first
-  block without a run and never overlap one another (re-issuing an issued range completes it);
-  the looks fall at 36 and 60 supported blocks (coordinator, 2026-10-16; cap 80).
+- *Confirmation blocks* (``confirmation_guard``, the review of Task 5): a block is started once
+  it has runs or belongs to an issued range, which the launcher may not have reached yet (the
+  review of Task 3, M1); ranges start at the first block not started and never overlap one
+  another (re-issuing an issued range completes it); the looks fall at 36 and 60 supported
+  blocks (coordinator, 2026-10-16; cap 80).
   - A three-arm selection (amendment 4, section 3; the coordinator, gate C): the campaigns do not
     pause at the primary's looks. The looks are computed afterwards from the same first 36 and
     60 primary-supported blocks, so their data are the same, and the confirmation ends with the
-    mechanism cohort (below). A new range holds at most 60 − p₃ blocks, p₃ counting every block
-    with runs except the complete ones not jointly supported, so that no block is started past
-    the cohort's 60; none starts once 60 jointly supported blocks are complete in order or every
-    block up to the cap of 80 has runs; ``after_look`` is refused.
+    mechanism cohort (below). A new range holds at most min(60 − p₃, 80 − the blocks before the
+    first one not started) blocks (the review of Task 3, M3), p₃ counting every started block
+    except the complete ones not jointly supported, so that no block is started past the
+    cohort's 60; none starts once 60 jointly supported blocks are complete in order or every
+    block up to the cap of 80 is started; ``after_look`` is refused, on a re-issue too (M2).
   - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; no mechanism
-    cohort), amendment 3's: a new range holds at most n_k − p blocks, p counting every block with
-    runs except the complete unsupported ones, so that no block is started past a look that
+    cohort), amendment 3's: a new range holds at most n_k − p blocks, p counting every started
+    block except the complete unsupported ones, so that no block is started past a look that
     could stop; once look k is due, no block starts until the operator, having read it in the
     summary, passes ``after_look`` = k.
 - *The mechanism cohort* (amendment 4, section 3; Task 3's brief): a block is jointly supported
@@ -2608,11 +2611,13 @@ def mechanism_state(blocks: Sequence[Mapping[str, Any]], *, three_arm: bool) -> 
     label), over ``progress``'s confirmation blocks: with a three-arm selection, the blocks
     started, the jointly supported ones complete in order (``jointly_supported_in_order``, at most
     ``MECHANISM_TARGET``) and the cohort's block numbers, those that may still be jointly
-    supported, the room for new blocks, whether it ``ended`` (``MECHANISM_TARGET`` jointly
-    supported blocks complete in order, or all ``MECHANISM_CAP`` blocks started and complete:
-    ``ended_by`` ``target`` or ``cap``) with the window's last block, and the attrition by reason
-    (``_attrition``). A two-arm selection (the pre-warmed arm dropped, or the primary-only
-    fallback) has no mechanism cohort."""
+    supported, the room for new blocks (min(``MECHANISM_TARGET`` − those, ``MECHANISM_CAP`` −
+    the blocks before the first without runs), at least 0; on the runs alone: the guard also
+    counts the blocks of issued ranges the launcher has not reached), whether it ``ended``
+    (``MECHANISM_TARGET`` jointly supported blocks complete in order, or all ``MECHANISM_CAP``
+    blocks started and complete: ``ended_by`` ``target`` or ``cap``) with the window's last
+    block, and the attrition by reason (``_attrition``). A two-arm selection (the pre-warmed arm
+    dropped, or the primary-only fallback) has no mechanism cohort."""
     if not three_arm:
         return {"applies": False,
                 "reason": "a two-arm selection (the pre-warmed arm dropped, or the primary-only "
@@ -2620,6 +2625,9 @@ def mechanism_state(blocks: Sequence[Mapping[str, Any]], *, three_arm: bool) -> 
                           "confirmation"}  # fmt: skip
     counts = _cohort_counts(blocks)
     window = counts["window"]
+    first_open = next((b["block"] for b in blocks if not b["runs"]), MECHANISM_CAP + 1)
+    room = min(MECHANISM_TARGET - counts["possibly_jointly_supported"],
+               MECHANISM_CAP - (first_open - 1))  # fmt: skip
     return {
         "applies": True,
         "target": MECHANISM_TARGET,
@@ -2629,7 +2637,7 @@ def mechanism_state(blocks: Sequence[Mapping[str, Any]], *, three_arm: bool) -> 
         "complete_in_order": counts["complete_in_order"],
         "jointly_supported_in_order": len(counts["cohort"]),
         "possibly_jointly_supported": counts["possibly_jointly_supported"],
-        "room": max(MECHANISM_TARGET - counts["possibly_jointly_supported"], 0),
+        "room": max(room, 0),
         "ended": counts["ended_by"] is not None,
         "ended_by": counts["ended_by"],
         "last_block": window[-1]["block"] if counts["ended_by"] and window else None,
@@ -2715,7 +2723,10 @@ def mechanism_analysis(blocks: Sequence[Mapping[str, Any]], settings: Mapping[st
     - ``attrition``: the window's blocks not jointly supported, by reason;
     - ``sensitivities``: each of ``SENSITIVITIES`` for both contrasts, the max-t intervals of
       their low and high bounds on the same stream, from the low one's lower bound to the high
-      one's upper bound, descriptive, without readings."""
+      one's upper bound, descriptive, without readings;
+    - ``missing_labels`` per arm over the cohort, and ``blocks``: each cohort block's h,
+      ``h_missing_harmful`` and missing labels per arm (the summary carries the pre-warmed
+      arm's nowhere else)."""
     _check_mechanism(settings)
     level, resamples, seed = settings["level"], settings["resamples"], settings["seed"]
     window, cohort = [], []
@@ -2809,6 +2820,12 @@ def mechanism_analysis(blocks: Sequence[Mapping[str, Any]], settings: Mapping[st
         "minimum_met": minimum_met,
         "attrition": _attrition(window),
         "sensitivities": sensitivities,
+        # What the summary leaves out until now: the pre-warmed arm's harm and missing labels.
+        "missing_labels": {arm: sum(b.get("missing", {}).get(arm, 0) for b in cohort)
+                           for arm in ARMS},
+        "blocks": [{"block": b["block"], "h": dict(b["h"]),
+                    "h_missing_harmful": dict(b["h_missing_harmful"]),
+                    "missing": dict(b.get("missing", {}))} for b in cohort],
     }  # fmt: skip
 
 
@@ -3696,59 +3713,65 @@ def confirmation_guard(
 ) -> dict[str, Any]:
     """Whether the confirmation blocks ``first`` to ``last`` may be started now, on K and the
     launcher's journal only (``progress``'s confirmation blocks; ``issued``: ``issued_ranges``;
-    ``three_arm``: the frozen selection's). The blocks run in their preassigned order: a new
-    range starts at the first block without a run (no gaps) and touches no block with runs (no
-    overlaps), unless it re-issues exactly a range issued before, to complete it.
+    ``three_arm``: the frozen selection's). A block is started once it has runs or belongs to an
+    issued range (the launcher may not have reached it yet; the review of Task 3, M1). The
+    blocks run in their preassigned order: a new range starts at the first block not started
+    (no gaps) and touches no started block (no overlaps), unless it re-issues exactly a range
+    issued before, to complete it.
 
     - A three-arm selection (amendment 4; the coordinator, gate C): the campaigns do not pause at
       the primary's looks, which are computed afterwards from the same first 36 and 60
-      primary-supported blocks. A new range holds at most ``MECHANISM_TARGET`` − p₃ blocks, p₃
-      every block with runs that may still be jointly supported (all but the complete ones that
-      are not), and none once ``MECHANISM_TARGET`` jointly supported blocks are complete in order
-      or every block up to the cap has runs; ``after_look`` is refused.
+      primary-supported blocks. A new range holds at most ``room`` = min(``MECHANISM_TARGET`` −
+      p₃, ``cap`` − the started blocks before the first open one) blocks, p₃ every started block
+      that may still be jointly supported (all but the complete ones that are not), and none once
+      ``MECHANISM_TARGET`` jointly supported blocks are complete in order or every block up to
+      the cap is started; ``after_look`` is refused, a re-issue included.
     - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; no
       mechanism cohort), amendment 3's: a new range must end before the next look: s = the
-      supported blocks complete in order, p = every block with runs that may still be supported
+      supported blocks complete in order, p = every started block that may still be supported
       (all but the complete unsupported ones), look k = ``after_look`` + 1; it holds at most
       n_k − p blocks, and none once s ≥ n_k, until the summary has read look k and the operator
       passes ``after_look`` = k because it did not stop.
 
     Returns the problems (none: allowed) and those counts."""
-    started = {b["block"] for b in blocks if b["runs"]}
-    first_open = next((b["block"] for b in blocks if not b["runs"]), cap + 1)
+    in_ranges = {block for low, high in issued for block in range(low, high + 1)}
+    started = {b["block"] for b in blocks if b["runs"] or b["block"] in in_ranges}
+    first_open = next((b["block"] for b in blocks if b["block"] not in started), cap + 1)
     in_order = list(itertools.takewhile(lambda b: b["complete"], blocks))
     supported = sum(1 for b in in_order if b["supported"])
-    possible = sum(1 for b in blocks if b["runs"] and not (b["complete"] and not b["supported"]))
+    possible = sum(1 for b in blocks if b["block"] in started
+                   and not (b["complete"] and not b["supported"]))  # fmt: skip
     out: dict[str, Any] = {"first_open": first_open, "supported_in_order": supported,
                            "possibly_supported": possible, "three_arm": three_arm,
                            "problems": []}  # fmt: skip
     if three_arm:
-        counts = _cohort_counts(blocks)
-        out.update(jointly_supported_in_order=len(counts["cohort"]),
-                   possibly_jointly_supported=counts["possibly_jointly_supported"],
-                   target=MECHANISM_TARGET,
-                   room=MECHANISM_TARGET - counts["possibly_jointly_supported"])  # fmt: skip
+        possible3 = sum(1 for b in blocks if b["block"] in started
+                        and not (b["complete"] and not b["three_arm_supported"]))  # fmt: skip
+        out.update(jointly_supported_in_order=len(_cohort_counts(blocks)["cohort"]),
+                   possibly_jointly_supported=possible3, target=MECHANISM_TARGET,
+                   room=min(MECHANISM_TARGET - possible3, cap - (first_open - 1)))  # fmt: skip
     problems = out["problems"]
     if not 1 <= first <= last <= cap:
         problems.append(f"blocks {first}-{last}: 1 <= FIRST <= LAST <= {cap}")
         return out
+    if three_arm and after_look:  # refused before a re-issue too (the review of Task 3, M2)
+        problems.append(f"--after-look {after_look}: a three-arm confirmation does not pause at "
+                        "the primary's looks (amendment 4); they are computed afterwards from "
+                        "the same blocks, and the mechanism cohort's room limits each "
+                        "range")  # fmt: skip
     overlap = sorted(started & set(range(first, last + 1)))
     if overlap:
         if (first, last) not in set(issued):
-            problems.append(f"blocks {overlap[0]}-{overlap[-1]} have runs already, and "
-                            f"{first}-{last} is not a range issued before: ranges never "
-                            "overlap")  # fmt: skip
+            problems.append(f"blocks {overlap[0]}-{overlap[-1]} have runs already or are in a "
+                            f"range issued before, and {first}-{last} is not a range issued "
+                            "before: ranges never overlap")  # fmt: skip
         return out  # a range issued before is completed whatever the looks say now
     if first != first_open:
-        problems.append(f"the next range starts at block {first_open}, the first without a run, "
-                        f"not {first}: the blocks run in their preassigned order")  # fmt: skip
+        problems.append(f"the next range starts at block {first_open}, the first neither with a "
+                        f"run nor in an issued range, not {first}: the blocks run in their "
+                        "preassigned order")  # fmt: skip
     if three_arm:
-        if after_look:
-            problems.append(f"--after-look {after_look}: a three-arm confirmation does not pause "
-                            "at the primary's looks (amendment 4); they are computed afterwards "
-                            "from the same blocks, and the mechanism cohort's room limits each "
-                            "range")  # fmt: skip
-        jointly, possible3 = out["jointly_supported_in_order"], out["possibly_jointly_supported"]
+        jointly = out["jointly_supported_in_order"]
         if jointly >= MECHANISM_TARGET:
             problems.append(f"the mechanism cohort has its {MECHANISM_TARGET} jointly supported "
                             "blocks complete in order: the confirmation has ended, no range "
@@ -3756,7 +3779,7 @@ def confirmation_guard(
         elif last - first + 1 > out["room"]:
             problems.append(f"{last - first + 1} blocks asked for, room for {max(out['room'], 0)} "
                             f"before the mechanism cohort's {MECHANISM_TARGET}: {possible3} "
-                            "blocks with runs may be jointly supported")  # fmt: skip
+                            "started blocks may be jointly supported")  # fmt: skip
         return out
     if after_look and supported < n[after_look - 1]:
         problems.append(f"--after-look {after_look}: look {after_look} needs {n[after_look - 1]} "
@@ -3772,7 +3795,7 @@ def confirmation_guard(
                         f"pass --after-look {k} only if look {k} did not stop")  # fmt: skip
     elif last - first + 1 > out["room"]:
         problems.append(f"{last - first + 1} blocks asked for, room for {max(out['room'], 0)} "
-                        f"before look {k}: {possible} blocks with runs may be supported, look "
+                        f"before look {k}: {possible} started blocks may be supported, look "
                         f"{k} needs {n[k - 1]}")  # fmt: skip
     return out
 

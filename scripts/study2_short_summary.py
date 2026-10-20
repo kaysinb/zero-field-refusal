@@ -22,9 +22,11 @@ machine (analysis.study2_short.progress), on K, numerics and utility only: the c
 in amendment 4's order with their costs, every attempt (its selections, numerical checks and
 validation) and round, amendment 3's FA controls (reported with their verdicts, never used), the
 frozen rates, the validation verdict, the support of the confirmation blocks with the counts of
-the confirmation loop (the first block without runs, the supported blocks complete in order,
+the confirmation loop (the first block without runs, the block the next range starts at, after
+the blocks of the ranges the launcher started too, the supported blocks complete in order,
 those that may still be supported; with a three-arm selection the jointly supported blocks
-complete in order, those that may still be, and the room for new blocks), the mechanism cohort's
+complete in order, those that may still be, and the room for new blocks, at most the blocks left
+to the cap), the mechanism cohort's
 state (``mechanism``, amendment 4, section 3, on K and support only: the blocks started, the
 jointly supported ones complete in order, whether the cohort has ended, by 60 jointly supported
 blocks or at the cap of 80 started and complete, and its attrition by reason; a two-arm selection
@@ -45,18 +47,23 @@ labels yet, or whose labels have no completed judging receipt matching its label
 labeled, never "not harmful". It prints the two sequential looks with the finite-cohort bounds,
 the missing-label sensitivities at the primary's looks (``missing_labels``, the worst case for
 the contrast, and ``all_missing_harmful``; analysis.study2_short.sensitivity_looks), the missing
-labels per arm, the blocks after the stopping look as a descriptive ``continuation`` (amendment
-4: the confirmation goes on for the mechanism cohort; nothing there revises the decision), and
-the utility family over the blocks started. Amendment 3's secondary contrasts are not computed:
-amendment 4's mechanism cohort replaces them. Then ``final``, amendment 4's final analysis,
-computed once the confirmation has ended: with three arms, once the mechanism cohort has ended,
-its blocks are labeled and the primary has stopped; with two arms, once the primary has stopped.
-It holds the mechanism cohort's analysis (three arms; analysis.study2_short.mechanism_analysis:
-C1 = pre-warmed − FA and C2 = AdamW − pre-warmed on the cohort, their sum against AdamW − FA, the
-max-t intervals at the fixation record's ``mechanism`` level with their critical value, the
-per-contrast 97.5 % intervals beside them, the readings, the attrition and the missing-label
-sensitivities) and the time course with its labels (harm per step of each run identical to its
-endpoint run). Before, ``final`` says "not yet" with the reason, and no label is read for it.
+labels of the primary arms, the blocks after the stopping look as a descriptive
+``continuation`` (amendment 4: the confirmation goes on for the mechanism cohort; nothing there
+revises the decision), and the utility family over the blocks started. The looks wait for every
+supported arm's labels, the pre-warmed arm's included, but neither the printed status nor OUT.json
+carries the pre-warmed arm's interpolated harm or missing labels (the looks' ``blocks`` hold the
+primary arms' only): the final analysis opens them. Amendment 3's secondary contrasts are not
+computed: amendment 4's mechanism cohort replaces them. Then ``final``, amendment 4's final
+analysis, computed once the confirmation has ended: with three arms, once the mechanism cohort
+has ended, its blocks are labeled and the primary has stopped; with two arms, once the primary
+has stopped. It holds the mechanism cohort's analysis (three arms;
+analysis.study2_short.mechanism_analysis: C1 = pre-warmed − FA and C2 = AdamW − pre-warmed on
+the cohort, their sum against AdamW − FA, the max-t intervals at the fixation record's
+``mechanism`` level with their critical value, the per-contrast 97.5 % intervals beside them,
+the readings, the attrition, the missing-label sensitivities, and each cohort block's harm and
+missing labels per arm) and the time course with its labels (harm per step of each run identical
+to its endpoint run). Before, ``final`` says "not yet" with the reason, and no label is read for
+it.
 --judge refuses without the committed versions record (--versions FILE, default
 docs/study2-short-versions.json), or when the running commit, the model, the judge's identity
 or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json then
@@ -104,6 +111,7 @@ from zero_field_refusal.analysis.study2_short import (
     CONFIRMATION_SEEDS,
     FA_CONTROL_ARM,
     LOOK_SIZES,
+    PREWARMED,
     PRIMARY_ARMS,
     SENSITIVITIES,
     VERSIONS_CONFIG,
@@ -111,6 +119,7 @@ from zero_field_refusal.analysis.study2_short import (
     confirmation_guard,
     continuation,
     exhausted_runs,
+    issued_ranges,
     issued_w_max,
     look_blocks,
     looks,
@@ -142,8 +151,9 @@ LOOK_SETTINGS = ("interval", "se_floor", "bias_allowance", "equivalence_min_supp
 SENSITIVITY_SETTINGS = ("interval", "se_floor", "bootstrap_resamples", "bootstrap_seed")
 
 
-def status(state: dict[str, Any]) -> dict[str, Any]:
-    """The state machine's status, briefly."""
+def status(state: dict[str, Any], issued=()) -> dict[str, Any]:
+    """The state machine's status, briefly; ``issued``: the confirmation ranges the launcher
+    started (``issued_ranges``), whose blocks the guard's counts take as started."""
     step = state["next"]
     out: dict[str, Any] = {"next": {k: v for k, v in step.items() if k != "runs"}}
     if "runs" in step:
@@ -191,15 +201,18 @@ def status(state: dict[str, Any]) -> dict[str, Any]:
         lost = {arm: [b["supports"][arm] for b in complete if arm in b["supports"]
                       and not b["supports"][arm]["supported"]] for arm in ARMS}  # fmt: skip
         causes = {arm: dict(Counter(s["cause"] for s in found)) for arm, found in lost.items()}
-        # The confirmation loop's counts (K only): where the next range starts, how many
-        # supported blocks the next look may already have and, with three arms, how many jointly
-        # supported blocks the mechanism cohort may already have.
+        # The confirmation loop's counts (K and the launcher's journal only): where the next range
+        # starts (after the blocks with runs and those of the issued ranges), how many supported
+        # blocks the next look may already have and, with three arms, how many jointly supported
+        # blocks the mechanism cohort may already have.
         three_arm = state["frozen"]["three_arm"]
-        counts = confirmation_guard(blocks, 1, 1, three_arm=three_arm)
+        counts = confirmation_guard(blocks, 1, 1, three_arm=three_arm, issued=issued)
         out["confirmation"] = {
             "three_arm": three_arm,
             "blocks_with_runs": sum(1 for b in blocks if b["runs"]),
-            "first_block_without_runs": counts["first_open"],
+            "first_block_without_runs": next((b["block"] for b in blocks if not b["runs"]),
+                                             len(blocks) + 1),
+            "next_range_starts_at": counts["first_open"],
             "complete": len(complete),
             "complete_in_order": next((b["block"] - 1 for b in blocks if not b["complete"]),
                                       len(blocks)),
@@ -330,8 +343,9 @@ def compute_looks(state, runs, labels, fixation, theta0, pending=None) -> dict[s
         },
         "looks": primary,
         "sensitivities": sensitivities,
+        # The primary arms' missing labels; the pre-warmed arm's wait for the final analysis.
         "missing_labels": {
-            arm: sum(e.get("missing", {}).get(arm, 0) for e in read) for arm in ARMS
+            arm: sum(e.get("missing", {}).get(arm, 0) for e in read) for arm in PRIMARY_ARMS
         },
         "waiting_for_labels": [e["block"] for e in entries[:CAP] if e.get("unlabeled")],
         "labels_pending": dict(pending or {}),
@@ -339,8 +353,17 @@ def compute_looks(state, runs, labels, fixation, theta0, pending=None) -> dict[s
         # analysis replaces amendment 3's secondary contrasts, which are not computed).
         "continuation": continuation(entries, primary),
         "utility": utility_family(primary_runs, supports, theta0),
-        "blocks": entries,
+        "blocks": [_sealed(entry) for entry in entries],
     }
+
+
+def _sealed(entry: dict[str, Any]) -> dict[str, Any]:
+    """A look block as the summary records it: without the pre-warmed arm's h and missing labels,
+    which only the final analysis opens (the mechanism cohort's; the coordinator's ruling on
+    Task 3's concern 3). ``look_blocks`` itself is untouched: the looks read the same entries."""
+    return {key: ({arm: v for arm, v in value.items() if arm != PREWARMED}
+                  if key in ("h", "missing") else value)
+            for key, value in entry.items()}  # fmt: skip
 
 
 def read_timecourse_labels(state, courses, judge: str) -> tuple[dict, dict[str, str]]:
@@ -543,7 +566,7 @@ def main() -> None:
     numerical = read_numerical(args.runs_root) if args.runs_root is not None else None
     state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted, numerical=numerical,
                      timecourse=courses, issued_w_max=issued_w_max(records))  # fmt: skip
-    shown = status(state)
+    shown = status(state, issued_ranges(records))
     shown["launch_journal"] = str(args.runs_root / "launch") if args.runs_root else None
     shown["abandoned"] = abandoned
     record: dict[str, Any] = {"command": sys.argv, "code": git_state(),

@@ -793,6 +793,51 @@ def test_cohort_ends_at_60_or_cap() -> None:
     assert "jointly_supported_in_order" not in confirmation_guard(due, 41, 41, three_arm=False)
 
 
+def test_issued_ranges_count_as_started() -> None:
+    """The review of Task 3, M1: a block of an issued range counts as started before the launcher
+    reaches it (in the first open block, p and p₃), so no range is issued over it and no block
+    runs twice; re-issuing exactly an issued range is still allowed. M2: with three arms,
+    ``--after-look`` is refused on a re-issue too."""
+    # Three arms: 1-40 done, 41-60 issued, the launcher at block 50.
+    reached = plan(started=50, complete=40, supported=40, joint=40)
+    issued = {(1, 40), (41, 60)}
+    found = confirmation_guard(reached, 51, 60, three_arm=True, issued=issued)
+    assert "have runs already or are in a range issued before" in found["problems"][0]
+    assert (found["first_open"], found["possibly_jointly_supported"], found["room"]) == (61, 60, 0)
+    assert "room for 0" in refused(reached, 61, 61, three_arm=True, issued=issued)[0]
+    assert refused(reached, 41, 60, three_arm=True, issued=issued) == []  # completing it
+    without = confirmation_guard(reached, 51, 60, three_arm=True)  # what the journal adds
+    assert without["problems"] == [] and without["first_open"] == 51
+    err = refused(reached, 41, 60, three_arm=True, issued=issued, after_look=1)
+    assert len(err) == 1 and "--after-look 1: a three-arm confirmation does not pause" in err[0]
+    # Two arms: 1-36 issued, 20 with runs.
+    early = plan(started=20, complete=20, supported=20)
+    assert "are in a range issued before" in refused(early, 21, 36, issued={(1, 36)})[0]
+    counts = confirmation_guard(early, 37, 37, three_arm=False, issued={(1, 36)})
+    assert (counts["first_open"], counts["possibly_supported"], counts["room"]) == (37, 36, 0)
+    assert "room for 0 before look 1" in counts["problems"][0]
+    assert refused(early, 1, 36, issued={(1, 36)}) == []
+
+
+def test_the_room_stops_at_the_cap(monkeypatch) -> None:
+    """The review of Task 3, M3: with 75 blocks started, the room is 5 (the cap), not 60 − p₃,
+    in the guard, the mechanism state and the summary's status."""
+    blocks = plan(started=75, complete=75, supported=75, joint=30)
+    counts = confirmation_guard(blocks, 76, 80, three_arm=True)
+    assert counts["problems"] == [] and counts["possibly_jointly_supported"] == 30
+    assert counts["room"] == 5 and mechanism_state(blocks, three_arm=True)["room"] == 5
+    assert "1 <= FIRST <= LAST <= 80" in refused(blocks, 76, 81, three_arm=True)[0]
+    cohort = mechanism_state(blocks, three_arm=True)
+    state = {"next": {"campaign": "confirmation"}, "frozen": {"three_arm": True},
+             "confirmation": blocks, "mechanism": cohort}  # fmt: skip
+    shown = summary_module().status(state)
+    assert shown["confirmation"]["room"] == 5 and shown["mechanism"]["room"] == 5
+    # The status counts the launcher's issued ranges as the guard does.
+    issued = summary_module().status(state, {(76, 80)})["confirmation"]
+    assert (issued["first_block_without_runs"], issued["next_range_starts_at"]) == (76, 81)
+    assert issued["room"] == 0
+
+
 # ------------------------------------------------------------------ the fixation record
 
 
@@ -1024,6 +1069,13 @@ def test_continuation_after_primary_stop(monkeypatch) -> None:
     assert analysis["readings"]["C1"]["readings"] == ["positive", "bounded"]
     assert analysis["readings"]["C2"]["readings"] == ["negative", "bounded"]
     assert analysis["sum_check"]["holds"]
+    # The pre-warmed arm's harm and missing labels: in the final analysis, nowhere before.
+    assert not any(PREWARMED in b["h"] or PREWARMED in b.get("missing", {})
+                   for b in later["blocks"])  # fmt: skip
+    assert set(later["missing_labels"]) == {ADAMW, FA}
+    assert analysis["missing_labels"] == {ADAMW: 60, FA: 60, PREWARMED: 60}  # 30 odd seeds × 2
+    assert analysis["blocks"][0]["h"][PREWARMED] == pytest.approx(60 / 500)
+    assert analysis["blocks"][1]["missing"] == {ADAMW: 2, FA: 2, PREWARMED: 2}
     # The high bounds count each missing label as harmful (a 1/500 shift on odd seeds).
     blocks = mechanism_blocks(late["confirmation"][:2], labels, kstar)
     assert blocks[1]["h_missing_harmful"][FA] == pytest.approx(blocks[1]["h"][FA] + 1 / 500)
@@ -1654,6 +1706,38 @@ def test_the_validation_and_confirmation_campaigns(monkeypatch, tmp_path, capsys
     assert "--after-look 1: a three-arm confirmation does not pause at the primary's looks" in err
 
 
+def test_a_two_arm_confirmation_keeps_the_look_pauses(monkeypatch, tmp_path, capsys) -> None:
+    """The review of Task 3, M4: with a two-arm selection (the primary-only fallback) the
+    campaigns script keeps amendment 3's loop: ranges end before look 1, look 1 due holds every
+    block, and ``--after-look 1`` lets the blocks before look 2 start."""
+    runs = [*base()]
+    real = SCALE.copy()
+    try:
+        for batch in (5, 20):
+            SCALE[(PREWARMED, batch)] = 0.3  # the pre-warmed arm never brackets K*
+        frozen = until(runs, "confirmation")["frozen"]
+    finally:
+        SCALE.update(real)
+    assert not frozen["three_arm"] and set(frozen["rates"]) == {ADAMW, FA}
+    args = ("--fixation", fixed(tmp_path), "--runs-root", runs_root(tmp_path))
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "37",
+                  *args)  # fmt: skip
+    assert "room for 36 before look 1" in err
+    assert len(campaign(monkeypatch, tmp_path, runs, "confirmation", "--blocks", "1", "36",
+                        *args)) == 36 * 6  # fmt: skip
+    runs += blocks_of(frozen["rates"], 20, CONFIRMATION_SEEDS[:36])
+    assert all(b["supported"] for b in stage(runs)["confirmation"][:36])
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "37", "37",
+                  *args)  # fmt: skip
+    assert "look 1 is due (36 supported blocks complete in order" in err
+    found = campaign(monkeypatch, tmp_path, runs, "confirmation", "--blocks", "37", "60",
+                     "--after-look", "1", *args)  # fmt: skip
+    assert len(found) == 24 * 6 and {r.seed for r in found} == set(CONFIRMATION_SEEDS[36:60])
+    err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "37", "61",
+                  "--after-look", "1", *args)  # fmt: skip
+    assert "room for 24 before look 2" in err
+
+
 def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_path, capsys):
     runs = base()
     until(runs, "validation")
@@ -1731,7 +1815,7 @@ def test_a_range_issued_before_is_completed_and_then_refused(monkeypatch, tmp_pa
     assert labels_of(found) == ["prewarmed_adamw_25-b20-1.74e-05-blocks-1-2-rayleigh/s3001"]
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "2", "3",
                   *args)  # fmt: skip
-    assert "have runs already, and 2-3 is not a range issued before" in err
+    assert "have runs already or are in a range issued before, and 2-3 is not a range" in err
     runs.append(block_runs[-1])
     err = refusal(monkeypatch, tmp_path, capsys, runs, "confirmation", "--blocks", "1", "2",
                   *args)  # fmt: skip
@@ -2457,7 +2541,59 @@ def test_the_summary_prints_the_looks_end_to_end(monkeypatch, tmp_path, capsys) 
     assert looked["available"] and looked["fixation"] == FIXATION
     assert looked["interval"] == {"method": "bootstrap_t", "resamples": 2000, "seed": 20261016}
     assert (looked["looks"]["waiting"]["started"], looked["looks"]["waiting"]["needs"]) == (2, 36)
-    assert looked["missing_labels"] == {ADAMW: 0, FA: 0, PREWARMED: 0}
+    assert looked["missing_labels"] == {ADAMW: 0, FA: 0}  # the primary arms only
+
+
+def _sealed_everywhere(node) -> None:
+    """No pre-warmed interpolated harm or missing-label count anywhere in a record: no ``h``,
+    ``h_missing_harmful``, ``missing`` or ``missing_labels`` holding the pre-warmed arm, and no
+    number equal to its synthetic harm (77/500)."""
+    if isinstance(node, dict):
+        for key in ("h", "h_missing_harmful", "missing", "missing_labels"):
+            if isinstance(node.get(key), dict):
+                assert PREWARMED not in node[key], (key, node[key])
+        for value in node.values():
+            _sealed_everywhere(value)
+    elif isinstance(node, list):
+        for value in node:
+            _sealed_everywhere(value)
+    elif isinstance(node, float):
+        assert node != pytest.approx(77 / 500, abs=1e-12)
+
+
+def test_the_summary_seals_the_prewarmed_harm_until_the_final_analysis(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The coordinator's ruling on Task 3's concern 3: the looks wait for the pre-warmed labels
+    (``look_blocks`` is untouched), but before the final analysis neither the printed status nor
+    OUT.json carries the pre-warmed arm's h or missing labels; the primary arms' are there."""
+    runs = base()
+    confirmed(runs)
+    runs = on_disk(runs, tmp_path)
+    by_name = {run.run_dir.name: run for run in runs}
+    monkeypatch.setattr(
+        "zero_field_refusal.analysis.evidence.label_path",
+        lambda run_dir, judge: run_dir / "config.yaml",
+    )  # every run is labeled
+    monkeypatch.setattr("zero_field_refusal.data.load_prompt_set",
+                        lambda name, data: [{"id": "p", "text": "t"}])  # fmt: skip
+
+    def labels(run_dir, judge, identity, prompts):
+        arm = by_name[run_dir.name].arm
+        return rows({ADAMW: 100, FA: 50, PREWARMED: 77}[arm], missing=3 if arm == PREWARMED else 1)
+
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", labels)
+    out = script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
+                 "--runs-root", runs_root(tmp_path), "--judge", "wildguard")  # fmt: skip
+    printed, whole = json.loads(capsys.readouterr().out), json.loads(out.read_text())
+    assert printed["looks"]["available"] and not printed["final"]["available"]
+    blocks = whole["looks"]["blocks"]
+    assert [b["complete"] for b in blocks[:3]] == [True, True, False]  # waited for all three arms
+    assert blocks[0]["h"] == pytest.approx({ADAMW: 0.2, FA: 0.1})
+    assert blocks[0]["missing"] == {ADAMW: 2, FA: 2}
+    assert printed["looks"]["missing_labels"] == {ADAMW: 4, FA: 4}
+    for record in (printed, whole):
+        _sealed_everywhere(record)
 
 
 def test_the_summary_is_the_same_with_and_without_the_time_course(
@@ -2605,7 +2741,7 @@ def test_the_summary_looks_on_labels() -> None:
     found = module.compute_looks(state, runs, labels, FIXATION, THETA0)
     waiting = found["looks"]["waiting"]
     assert (waiting["started"], waiting["supported"], waiting["needs"]) == (2, 2, 36)
-    assert found["missing_labels"] == {ADAMW: 0, FA: 0, PREWARMED: 0}
+    assert found["missing_labels"] == {ADAMW: 0, FA: 0}  # the primary arms only
     assert found["utility"]["family"] and found["continuation"] is None
     assert "secondary" not in found  # amendment 3's secondary contrasts, retired
     early = until(base(), "validation")

@@ -93,17 +93,20 @@ ones per seed and arm (``progress``'s ``timecourse``).
   any descendant when the record allows it; no uncommitted change or untracked file, so campaign
   files go under $RUNS_DIR). The discovery and numerical kinds (``discovery``, ``repair``,
   ``prewarmed``, ``targeted``, ``numerical``) precede the record and do not read it.
-- **The confirmation loop** (``confirmation_guard``; cap 80). Either way the next range starts at
-  the first block without a run, and re-issuing exactly a range written before completes it.
+- **The confirmation loop** (``confirmation_guard``; cap 80). A block is started once it has runs
+  or belongs to a range the launcher has started (its journal), even before the launcher reaches
+  it. Either way the next range starts at the first block not started and touches no started
+  block, and re-issuing exactly a range written before completes it.
   - A three-arm selection (amendment 4): the confirmation runs until the mechanism cohort has 60
     jointly supported blocks (all three arms supported) complete in order, or until all 80 blocks
     are started and complete, without pausing at the primary's looks, which are computed
     afterwards from the same first 36 and 60 primary-supported blocks: (1) write and launch at
-    most the blocks the guard allows, 60 − p₃, p₃ the blocks with runs that may still be jointly
-    supported; (2) let them complete; (3) read the counts (scripts/study2_short_summary.py: its
-    ``mechanism``); (4) go on while the cohort has not ended. ``--after-look`` is refused. The
-    runs are labeled as they complete; the summary with --judge and --fixation reads the looks,
-    and the mechanism's final analysis once the cohort has ended.
+    most the blocks the guard allows, min(60 − p₃, 80 − the blocks started), p₃ the started
+    blocks that may still be jointly supported; (2) let them complete; (3) read the counts
+    (scripts/study2_short_summary.py: its ``mechanism``); (4) go on while the cohort has not
+    ended. ``--after-look`` is refused, also on a re-issue. The runs are labeled as they
+    complete; the summary with --judge and --fixation reads the looks, and the mechanism's final
+    analysis once the cohort has ended.
   - A two-arm selection (the pre-warmed arm dropped, or the primary-only fallback; looks at 36
     and 60 supported blocks): (1) write and launch at most the blocks the guard allows: the next
     range ends before the next look could fall; (2) let them complete; (3) read the support
