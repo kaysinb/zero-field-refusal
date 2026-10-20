@@ -2106,12 +2106,27 @@ def driver_parts(monkeypatch, config, root, args, capsys) -> dict[str, int]:
     return codes
 
 
+def check_request(directory: Path, given_up, rates=TINY_RATES, batch=BATCH, upper=UPPER) -> dict:
+    """The selection's check request naming ``given_up``, written as the campaigns script writes
+    it; returns its path, resolved, and sha256 (the evidence the records state)."""
+    path = directory / "request.json"
+    selection = {"rates": rates, "batch": batch, "U": upper, "given_up": sorted(given_up)}
+    path.write_text(json.dumps(selection, indent=2) + "\n")
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def given_up_reason(request) -> str:
+    return (f"given up by the launcher (the check request {request['path']}, sha256 "
+            f"{request['sha256']}): the regular run is not found: ")  # fmt: skip
+
+
 def test_a_given_up_run_lets_the_driver_finish(archive, tmp_path, monkeypatch, clean_head,
                                                capsys) -> None:  # fmt: skip
     """The final review of gate B, I1, end to end: a K-only run the launcher gave up on, named
-    in the selection record (``given_up``), which the driver passes to every part. The plan
-    notes it, the parts record its case incomplete twice, and the verdict holds its rate
-    not_qualified (technical) with nothing left incomplete: the driver ends."""
+    in the selection record (``given_up``), which the driver passes to every part with the
+    record itself (``--request``, review fa14, 2). The plan notes it, the parts record its case
+    incomplete twice, given up by the launcher with the request as evidence, and the verdict
+    holds its rate not_qualified (technical) with nothing left incomplete: the driver ends."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
     guarded, requested = forbid_outcomes(monkeypatch, env)
     monkeypatch.setattr("zero_field_refusal.runtime.environment", lambda cfg, device: guarded)
@@ -2120,11 +2135,13 @@ def test_a_given_up_run_lets_the_driver_finish(archive, tmp_path, monkeypatch, c
     shutil.rmtree(fcd.locate_case(root, fcd.NumericalScope.of(s), case))
     config = tmp_path / "settings.yaml"
     OmegaConf.save(s, config)
+    request = check_request(tmp_path, [case.name])
     namespace = runpy.run_path(str(SCRIPT))
-    text = namespace["driver_script"]("a" * 40, "now", BATCH, UPPER, TINY_RATES, [case.name])
+    text = namespace["driver_script"]("a" * 40, "now", BATCH, UPPER, TINY_RATES, [case.name],
+                                      request["path"])  # fmt: skip
     line = next(line for line in text.splitlines() if line.startswith("ARGS=("))
     args = shlex.split(line.removeprefix("ARGS=(").removesuffix(")"))
-    assert args[-2:] == ["--given-up", case.name]
+    assert args[-4:] == ["--request", request["path"], "--given-up", case.name]
     codes = driver_parts(monkeypatch, config, root, args, capsys)
     assert f"{case.name}: no regular run; NOTE: given up by the launcher" in codes["plan_text"]
     assert "PROBLEM" not in codes["plan_text"] and "MISSING" not in codes["plan_text"]
@@ -2135,17 +2152,171 @@ def test_a_given_up_run_lets_the_driver_finish(archive, tmp_path, monkeypatch, c
     for n in fcd.ATTEMPTS:
         record = json.loads((out / case.attempt_path(n)).read_text())
         assert record["status"] == "incomplete" and "traceback" not in record
-        assert record["reason"].startswith("the regular run is not found")
+        assert record["reason"].startswith(given_up_reason(request))
+        assert record["given_up"] == {"by": "the launcher", "request": request}
     verdict = json.loads((out / "verdict.json").read_text())
     assert verdict["rates"][case.key] == "not_qualified" and verdict["qualified"] is False
     assert verdict["reasons"][case.key][0].startswith(
-        "case s0: not qualified (technical), incomplete after its rerun: attempt 1: the regular "
-        "run is not found")  # fmt: skip
+        "case s0: not qualified (technical), incomplete after its rerun: attempt 1: "
+        + given_up_reason(request))  # fmt: skip
     others = {k: v for k, v in verdict["rates"].items() if k != case.key}
     assert set(others.values()) <= {"qualified", "failing"}
     assert "incomplete" not in verdict["controls"].values()
     # The driver's last check: nothing incomplete, so it ends without exit 5
     done = subprocess.run([sys.executable, "-c", namespace["HAS_INCOMPLETE"],
+                           str(out / "verdict.json")], check=False)  # fmt: skip
+    assert done.returncode == 1
+    assert requested and not [name for name in requested if "harmful" in name]
+
+
+def driver_args(names, request) -> list[str]:
+    """The ``ARGS`` of the driver written for the tiny rates with ``names`` given up."""
+    text = runpy.run_path(str(SCRIPT))["driver_script"](
+        "a" * 40, "now", BATCH, UPPER, TINY_RATES, names, request["path"]
+    )
+    line = next(line for line in text.splitlines() if line.startswith("ARGS=("))
+    return shlex.split(line.removeprefix("ARGS=(").removesuffix(")"))
+
+
+def given_up_records(out, cases, control_rates, request):
+    """Each attempt of ``cases`` and of the controls at ``control_rates``: given up by the
+    launcher, with the request as evidence, and nothing measured. Returns them."""
+    paths = [
+        *(c.attempt_path(n) for c in cases for n in fcd.ATTEMPTS),
+        *(fcd.control_path(lr, n) for lr in control_rates for n in fcd.ATTEMPTS),
+    ]
+    records = [json.loads((out / path).read_text()) for path in paths]
+    for path, record in zip(paths, records, strict=True):
+        assert record["status"] == "incomplete" and "traceback" not in record, path
+        assert record["reason"].startswith(given_up_reason(request)), path
+        assert record["given_up"] == {"by": "the launcher", "request": request}
+        assert record["numerics"] is None and record.get("pairs", {}) == {}
+        assert "scoring" not in record and "twin_A" not in record
+    return records
+
+
+def no_gpu(monkeypatch) -> None:
+    """Every step that needs a GPU raises: the environment (its models and device), the memory
+    rule, the setups and the parts that run models."""
+
+    def needs_a_gpu(*args, **kwargs):
+        raise AssertionError("a step that needs a GPU")
+
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", needs_a_gpu)
+    for name in ("apply_memory_rule", "run_numerical_controls", "run_numerical_twins",
+                 "twin_setup", "_control_setup", "_model"):  # fmt: skip
+        monkeypatch.setattr(fcd, name, needs_a_gpu)
+
+
+def test_every_baseline_given_up_finishes_without_a_gpu(archive, tmp_path, monkeypatch,
+                                                        clean_head, capsys) -> None:  # fmt: skip
+    """Review fa14, 2, the extreme case: the launcher gave up on every numerical run (the tiny
+    archive without any), and the check request names every case. The driver's steps all exit
+    without a step that needs a GPU (no environment, model, setup or memory rule): the code and
+    environment checks, with nothing to compare, are skipped with a note; each case and FA
+    control is recorded twice, given up by the launcher with the request's path and sha256;
+    the verdict holds every rate and control not_qualified with that evidence, and the check's
+    own GPU code in its policy. Nothing is left incomplete."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    shutil.rmtree(root / "study2_short")  # no numerical run at all; the streams stay
+    no_gpu(monkeypatch)
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(tiny_settings(), config)
+    found = tiny_cases()
+    request = check_request(tmp_path, [c.name for c in found])
+    namespace = runpy.run_path(str(SCRIPT))
+    codes = driver_parts(monkeypatch, config, root, driver_args([c.name for c in found], request),
+                         capsys)  # fmt: skip
+    plan_text = codes.pop("plan_text")
+    assert codes == {"plan": 0, "control": 0, "twins": 0, "due": 0, "rerun_control": 0,
+                     "rerun_twins": 0, "after": 3}  # fmt: skip
+    note = namespace["NONE_LOCATED"]
+    assert "PROBLEM" not in plan_text and "MISSING" not in plan_text
+    assert (f"GPU code: {note}; the check's own is recorded (7 files, sha256 same, at {COMMIT})"
+            in plan_text and f"run environment: {note}" in plan_text)  # fmt: skip
+    assert f"check request: {request['path']} (sha256 {request['sha256']})" in plan_text
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    for record in given_up_records(out, found, TINY_RATES["adam_frozen"], request):
+        assert record["provenance"]["checks_skipped"] == note
+        assert record["provenance"]["gpu_code"] == fake_identity(COMMIT)
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict == json.loads(fcd.verdict_path(out, TINY_RATES).read_text())
+    assert len(verdict["rates"]) == 9 and set(verdict["rates"].values()) == {"not_qualified"}
+    assert set(verdict["controls"].values()) == {"not_qualified"} and not verdict["qualified"]
+    assert verdict["policy"]["gpu_code"] == fake_identity(COMMIT)
+    assert verdict["policy"]["tool_commit"] == [COMMIT]
+    check = verdict["provenance"]["code_check"]
+    assert check["consistent"] is True and check["note"] == note and check["runs"] == {}
+    for key, reasons in verdict["reasons"].items():  # each case's, and each FA control's
+        per_case = 3 if key.endswith("|0.0012") else 1  # the U-rate on every seed
+        assert len(reasons) == per_case + key.startswith("adam_frozen|"), key
+        assert all("not qualified (technical)" in r and given_up_reason(request) in r
+                   for r in reasons)  # fmt: skip
+    assert verdict["provenance"]["retry_due"] == {"cases": [], "controls": []}
+    assert all(entry["attempt_states"] == ["incomplete"] * 2 for entry in verdict["cases"])
+    done = subprocess.run([sys.executable, "-c", namespace["HAS_INCOMPLETE"],
+                           str(out / "verdict.json")], check=False)  # fmt: skip
+    assert done.returncode == 1  # nothing incomplete: the driver ends
+    # Without the request, nothing given up is recorded: the plan and the parts refuse
+    shutil.rmtree(out)
+    bare = [a for a in driver_args([c.name for c in found], request)
+            if a not in ("--request", request["path"])]  # fmt: skip
+    for part in ("plan", "control", "twins"):
+        argv = [str(SCRIPT), part, "--config", str(config), "--runs-root", str(root), *bare]
+        assert call(monkeypatch, argv, untracked=True) != 0, part
+    assert "the check request naming the cases given up" in capsys.readouterr().out
+    assert not out.exists()
+
+
+def test_a_seed_given_up_whole_beside_others_finishes(archive, tmp_path, monkeypatch, clean_head,
+                                                      capsys) -> None:  # fmt: skip
+    """Review fa14, 2, a mixed case: every run of seed 1 given up, and the FA run at 1e-3 on seed
+    0 (with it, its same-path control); the others are located. The driver finishes: the cases
+    given up and that control are recorded without a GPU (their reruns build no environment),
+    the rest are checked as ever; their rates are not qualified, the others qualified or failing,
+    nothing is incomplete, and no part failed."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    guarded, requested = forbid_outcomes(monkeypatch, env)
+    built = []
+
+    def environment(cfg, device):  # who builds one: the plan's stream check, or a part
+        built.append((sys._getframe(1).f_code.co_name, device))
+        return guarded
+
+    monkeypatch.setattr("zero_field_refusal.runtime.environment", environment)
+    s = tiny_settings()
+    found = tiny_cases()
+    gone = [c for c in found if c.seed == 1 or (c.seed, c.optimizer, c.lr) == (0, "adam_frozen",
+                                                                               1e-3)]  # fmt: skip
+    for case in gone:
+        shutil.rmtree(fcd.locate_case(root, fcd.NumericalScope.of(s), case))
+    config = tmp_path / "settings.yaml"
+    OmegaConf.save(s, config)
+    request = check_request(tmp_path, [c.name for c in gone])
+    codes = driver_parts(monkeypatch, config, root, driver_args([c.name for c in gone], request),
+                         capsys)  # fmt: skip
+    plan_text = codes.pop("plan_text")
+    assert "PROBLEM" not in plan_text and "MISSING" not in plan_text
+    assert codes == {"plan": 0, "control": 0, "twins": 0, "due": 0, "rerun_control": 0,
+                     "rerun_twins": 0, "after": 3}  # fmt: skip
+    # The plan's stream check of seeds 0 and 2 (seed 1 has no run to read them by), then the
+    # first control and twins parts; neither rerun builds an environment
+    assert built == [("check_streams", "cpu")] * 2 + [("main", "cpu")] * 2
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    for record in given_up_records(out, gone, [1e-3], request):
+        assert "checks_skipped" not in record["provenance"]  # the runs located were checked
+    verdict = json.loads((out / "verdict.json").read_text())
+    unusable = {c.key for c in gone}
+    assert {k for k, v in verdict["rates"].items() if v == "not_qualified"} == unusable
+    assert set(verdict["rates"].values()) - {"not_qualified"} <= {"qualified", "failing"}
+    assert verdict["controls"]["0.001"] == "not_qualified"
+    assert {verdict["controls"][k] for k in ("0.0008", "0.0012")} <= {"accepted", "rejected"}
+    assert verdict["provenance"]["code_check"]["note"] is None
+    for case in found:  # the others ran, with their seed's setup
+        if case not in gone:
+            record = json.loads((out / case.attempt_path(1)).read_text())
+            assert record["status"] == "complete" and record["seed_facts"], case.name
+    done = subprocess.run([sys.executable, "-c", runpy.run_path(str(SCRIPT))["HAS_INCOMPLETE"],
                            str(out / "verdict.json")], check=False)  # fmt: skip
     assert done.returncode == 1
     assert requested and not [name for name in requested if "harmful" in name]

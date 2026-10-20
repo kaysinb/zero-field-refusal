@@ -89,6 +89,13 @@ benign panels, nothing written to a run record.
   own temporaries (batch 0's replayed targets, the device copies) are gone before
   ``twin_setup`` yields, and ``shared`` holds the residual alone until ``seed_directions`` pops
   it. The controls' setup is held by one dict, released when they are done.
+- **Cases given up** (review fa14, 2): a case, or its same-path control, that the check request
+  names given up by the launcher and whose regular run is not located is recorded without a
+  GPU (``given_up_twins``, ``given_up_controls``): incomplete, with the request's path and
+  sha256 as its evidence (``given_up_body``), not qualified (technical) after its rerun. With
+  every case given up, the GPU-code and run-environment checks have nothing to compare and are
+  skipped with a note (``code_check``, ``environment_check``), the policy recording the check's
+  own GPU code.
 - **The verdict** (``numerical_verdict``), with its policy (``NumericalScope.policy``) and the
   seeds each rate was tested on: an (arm, rate) is qualified when every pair of every case is
   within, failing when a pair exceeds (evidence of amplification) or an instability rule
@@ -2831,12 +2838,18 @@ def run_identity(run_dir: Path) -> dict[str, Any]:
             "config_hash": config_hash, "sha256": digest.hexdigest()}  # fmt: skip
 
 
-def code_check(run_dirs: Iterable[Path], tool_commit: str | None) -> dict[str, Any]:
+def code_check(
+    run_dirs: Iterable[Path], tool_commit: str | None, *, skipped: str | None = None
+) -> dict[str, Any]:
     """Review fa13: the GPU-code identity (``code_identity.gpu_code_identity``) of the check's
     own commit and of the commit each regular run recorded (``meta.json``, its ``git`` entry).
     ``consistent`` when every run was made from a clean checkout of a commit whose GPU identity
     equals the check's; the check refuses to run otherwise (``require_code``). ``gpu_code`` is
-    the runs' identity (their commit's when they share one, else the check's: equal to it)."""
+    the runs' identity (their commit's when they share one, else the check's: equal to it).
+    Without any run, the check refuses too ("no regular run to compare with"), unless
+    ``skipped`` says why none is located (review fa14, 2: every case given up by the launcher):
+    then it is skipped with that ``note``, and ``gpu_code`` is the check's own identity, which
+    the verdict's policy records."""
 
     def identity(commit: str) -> dict[str, Any]:
         try:
@@ -2867,14 +2880,15 @@ def code_check(run_dirs: Iterable[Path], tool_commit: str | None) -> dict[str, A
         elif "error" not in tool and found["sha256"] != tool["sha256"]:
             problems.append(f"{Path(run_dir).name} was made at {commit}, whose GPU code differs "
                             f"from the check's at {tool['commit']}")  # fmt: skip
-    if not runs:
+    note = skipped if not runs and skipped else None
+    if not runs and note is None:
         problems.append("no regular run to compare with")
     commits = {run["commit"] for run in runs.values()}
     gpu_code = None
     if not problems:
         gpu_code = identities[commits.pop()] if len(commits) == 1 else tool
     return {"consistent": not problems, "gpu_code": gpu_code, "tool": tool, "runs": runs,
-            "identities": identities, "problems": problems}  # fmt: skip
+            "identities": identities, "problems": problems, "note": note}  # fmt: skip
 
 
 def require_code(code: Mapping[str, Any] | None) -> None:
@@ -2953,13 +2967,15 @@ def environment_departures(
 
 
 def environment_check(
-    run_dirs: Iterable[Path], here: Mapping[str, Any] | None = None
+    run_dirs: Iterable[Path], here: Mapping[str, Any] | None = None, *, skipped: str | None = None
 ) -> dict[str, Any]:
     """The final review of gate B, I3: each regular run's recorded environment against the
     check's (``environment_departures``; ``here``: ``current_environment`` by default).
     ``consistent`` when no run departs; ``problems`` name each departing field, with the runs
     that recorded each value. The parts that run the check refuse otherwise, recording
-    nothing (scripts/numerical_check.py)."""
+    nothing (scripts/numerical_check.py). Without any run, it refuses too, unless ``skipped``
+    says why none is located (review fa14, 2, as for ``code_check``): it is skipped with that
+    ``note``."""
     here = current_environment() if here is None else dict(here)
     departing: dict[tuple[str, str, str], list[str]] = {}
     count = 0
@@ -2973,9 +2989,10 @@ def environment_check(
     problems = [f"{field}: {have} recorded by {len(names)} regular run(s) ({names[0]}"
                 f"{', …' if len(names) > 1 else ''}), {want} here"
                 for (field, have, want), names in sorted(departing.items())]  # fmt: skip
-    if not count:
+    note = skipped if not count and skipped else None
+    if not count and note is None:
         problems.append("no regular run to compare with")
-    return {"consistent": not problems, "here": here, "problems": problems}
+    return {"consistent": not problems, "here": here, "problems": problems, "note": note}
 
 
 # --------------------------------- voiding a numerical check after a GPU-path change (gate B, I2)
@@ -3417,7 +3434,8 @@ def run_numerical_twins(
     record, incomplete, with its error and the pairs done before it; a seed whose setup failed
     gives each of its cases that record; a case whose regular run is not found is recorded
     incomplete with why, and a seed none of whose cases has its run (a rerun due only for runs
-    not found, say) is set up for nothing. Nothing runs unless ``code``
+    not found, say) is set up for nothing; scripts/numerical_check.py records a case given up by
+    the launcher apart, without a GPU (``given_up_twins``). Nothing runs unless ``code``
     (``code_check``) shows the regular runs' GPU code to be the check's (``require_code``).
 
     Memory (review fa14, 1): each seed's setup and cases run in a function of their own
@@ -3641,6 +3659,97 @@ def _control_setup(env: Environment, cfg: DictConfig) -> dict[str, Any]:
     del v0
     gc.collect()
     return setup
+
+
+# A case the check request names given up (review fa14, 2): its record's reason and evidence
+GIVEN_UP = "given up by the launcher"
+
+
+def given_up_body(request: Mapping[str, Any], why: str) -> dict[str, Any]:
+    """Review fa14, 2: an attempt of a case, or of its same-path control, whose regular run the
+    launcher gave up on (the check request names it in ``given_up``) and is not located:
+    incomplete, its reason "given up by the launcher" with the request's path and sha256 as the
+    evidence, and ``why`` no run is located. Incomplete after its rerun too, it is
+    not_qualified (technical), never failing."""
+    evidence = {"path": str(request["path"]), "sha256": str(request["sha256"])}
+    return {"status": "incomplete",
+            "reason": f"{GIVEN_UP} (the check request {evidence['path']}, sha256 "
+                      f"{evidence['sha256']}): {why}",
+            "given_up": {"by": "the launcher", "request": evidence}}  # fmt: skip
+
+
+def _not_located(root: Path, scope: NumericalScope, case: NumericalCase) -> str:
+    """Why ``case`` has no regular run located; a case whose run is located is no case given
+    up (it is checked like any other)."""
+    try:
+        run_dir = locate_case(root, scope, case)
+    except DiagnosticError as exc:
+        return f"the regular run is not found: {exc}"
+    raise NumericalError(f"{case.name} is named given up, but its regular run is located "
+                         f"({run_dir}): it is checked like any other")  # fmt: skip
+
+
+def given_up_twins(
+    settings: DictConfig,
+    root: Path,
+    out: Path,
+    cases: Sequence[NumericalCase],
+    *,
+    attempt: int,
+    code: Mapping[str, Any] | None,
+    request: Mapping[str, Any],
+    **provenance: Any,
+) -> dict[str, dict[str, Any]]:
+    """Review fa14, 2: attempt ``attempt`` of each case the check request (``request``: its
+    ``path`` and ``sha256``) names given up and whose regular run is not located, recorded
+    without a GPU (no model, no device): ``given_up_body`` in the twins part's record
+    (``twin_record``, no numerics). The rest of the twins part is ``run_numerical_twins``.
+    Nothing is written unless ``code`` passes (``require_code``) and no case's run is located.
+    Returns the records by case name."""
+    _attempt_number(attempt)
+    require_code(code)
+    scope = NumericalScope.of(settings)
+    why = {case.name: _not_located(root, scope, case) for case in cases}
+    done = {}
+    for case in cases:
+        body = {**given_up_body(request, why[case.name]), "pairs": {}}
+        done[case.name] = twin_record(settings, case, attempt, code, body, **provenance)
+        write_json(out / case.attempt_path(attempt), done[case.name])
+    return done
+
+
+def given_up_controls(
+    settings: DictConfig,
+    root: Path,
+    out: Path,
+    *,
+    rates: Sequence[float],
+    batch: int,
+    upper: float,
+    attempt: int,
+    code: Mapping[str, Any] | None,
+    request: Mapping[str, Any],
+    **provenance: Any,
+) -> dict[str, dict[str, Any]]:
+    """Review fa14, 2: attempt ``attempt`` of the same-path control at each of ``rates`` whose
+    regular run (``control_case``) the check request names given up and is not located,
+    recorded without a GPU as ``given_up_twins`` records a case: ``given_up_body`` in a
+    control's record (``control_record``), state incomplete, no numerics. The rest of the
+    control part is ``run_numerical_controls``. Returns the records by rate."""
+    _attempt_number(attempt)
+    require_code(code)
+    scope = NumericalScope.of(settings)
+    rates = sorted(float(r) for r in rates)
+    why = {lr: _not_located(root, scope, control_case(scope, lr, batch, upper)) for lr in rates}
+    done = {}
+    for lr in rates:
+        record = {**control_record(scope, lr, batch, upper, attempt),
+                  **given_up_body(request, why[lr]), "state": INCOMPLETE, "numerics": None,
+                  "provenance": numerical_provenance(settings, gpu_code=code["gpu_code"],
+                                                     **provenance)}  # fmt: skip
+        write_json(out / control_path(lr, attempt), record)
+        done[f"{lr:g}"] = record
+    return done
 
 
 # ------------------------------------------------------------------ the numerical verdict

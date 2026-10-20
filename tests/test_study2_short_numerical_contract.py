@@ -18,12 +18,15 @@ from test_numerical_check import (
     RUN_COMMIT,
     SCRIPT,
     attempt,
+    call,
     cases,
     clean_head,  # noqa: F401  (the fixture)
     consistent_code,
     control,
+    fake_identity,
     fake_reuse,
     fake_runs,
+    no_gpu,
     scope,
     settings,
     stamped,
@@ -378,3 +381,78 @@ def test_the_tool_and_the_selection_name_a_case_alike() -> None:
     """The given-up cases cross from the selection to the tool by name."""
     for case in cases():
         assert numerical_case_name(ARM_OF[case.optimizer], case.lr, case.seed) == case.name
+
+
+# The tool's parts as its driver runs them (``driver_script``): the plan, the controls and the
+# twins' first attempts, the verdict, then, a rerun being due, the reruns and the verdict again
+DRIVER_STEPS = (["plan"], ["control"], ["twins"], ["verdict"], ["verdict", "--retry-needed"],
+                ["control", "--retry"], ["twins", "--retry"], ["verdict"],
+                ["verdict", "--retry-needed"])  # fmt: skip
+
+
+def test_every_baseline_given_up_takes_the_technical_path(
+    tmp_path,
+    monkeypatch,
+    clean_head,  # noqa: F811
+) -> None:
+    """Review fa14, 2, through the selection: the launcher gave up on every numerical run of a
+    check. Its request names every case given up, with no runs' commit; the tool's real parts,
+    run from the request on the tracked settings, record each without a GPU and write a verdict
+    holding every rate and FA control not qualified (technical), with the tool's own GPU code.
+    The selection reads it complete and takes the technical non-qualification path the frozen
+    rules prescribe: every arm is re-solved once without those rates; in this world no arm has
+    a feasible triple without them, so the candidate fails at the numerical gate and the
+    selection goes on to the next candidate. The check is never asked for again."""
+    root = tmp_path / "runs"  # no numerical run: the launcher gave up on every one
+    root.mkdir()
+    no_gpu(monkeypatch)
+    runs = grids()
+    _, result, _ = drive(runs, until="numerical")
+    step = result["next"]
+    assert len(step["runs"]) == 15
+    exhausted = {(r["arm"], r["batch"], r["lr"], r["seed"]): f"given-up-{n}"
+                 for n, r in enumerate(step["runs"])}  # fmt: skip
+
+    def at():
+        return selection(runs, THETA0, W_MAX, seconds_per_chunk=SPC,
+                         numerical=read_numerical(root), facts=commits(runs, RUN_COMMIT),
+                         exhausted=exhausted, reuse=reuse)  # fmt: skip
+
+    found = at()
+    check = found["next"]["check"]
+    assert found["next"]["campaign"] == "numerical-check" and found["problems"] == []
+    assert len(check["given_up"]) == 15 and check["runs_commits"] == []
+    solved = {arm: len(a["selections"]) for arm, a in found["attempts"][0]["arms"].items()}
+    request = tmp_path / f"{check['name']}.json"  # as the campaigns script writes it
+    request.write_text(json.dumps(check["selection"], indent=2) + "\n")
+    codes = []
+    for part in DRIVER_STEPS:
+        argv = [str(SCRIPT), *part, "--selection", str(request), "--batch", "20", "--upper", "8",
+                "--runs-root", str(root)]  # fmt: skip
+        codes.append(call(monkeypatch, argv))
+    assert codes == [0, 0, 0, 0, 0, 0, 0, 0, 3]
+    verdict = read_numerical(root)[check["verdict"]]
+    assert set(verdict["rates"].values()) == {"not_qualified"} and len(verdict["rates"]) == 9
+    assert set(verdict["controls"].values()) == {"not_qualified"}
+    assert verdict["policy"]["gpu_code"] == fake_identity(COMMIT)
+    after = at()
+    assert after["problems"] == []
+    (entry,) = after["attempts"][0]["numerical"]
+    assert (entry["check"], entry["state"], entry["commits"]) == (check["name"], "complete", [])
+    requested = {(arm, lr) for arm, lrs in by_arm(check["selection"]["rates"]).items()
+                 for lr in lrs}  # fmt: skip
+    assert {(u["arm"], u["lr"]) for u in entry["unusable"]} == requested
+    assert {u["state"] for u in entry["unusable"]} == {"not_qualified", "control not_qualified"}
+    # The technical path: one re-solve per arm, infeasible without those rates, so the candidate
+    # fails at the numerical gate, never as instability, and the next candidate's step follows
+    first = after["attempts"][0]
+    assert {arm: len(a["selections"]) for arm, a in first["arms"].items()} == {
+        arm: n + 1 for arm, n in solved.items()}  # fmt: skip
+    assert not any(a["selections"][-1]["feasible"] for a in first["arms"].values())
+    assert (first["outcome"], first["failed_at"]) == ("failed", "numerical")
+    assert sorted(first["failed_arms"]) == sorted(solved)
+    assert "without a feasible triple once the unusable rates are dropped" in first["reasons"][0]
+    assert "not qualified (technical)" in first["reasons"][0]
+    assert "instability" not in first["reasons"][0]
+    assert after["next"]["campaign"] == "discovery" and after["next"]["U"] == 7
+    assert at()["next"] == after["next"]  # read again: the check is not asked for again

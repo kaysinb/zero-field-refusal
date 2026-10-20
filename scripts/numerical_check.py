@@ -14,12 +14,14 @@
 
 RATES is ``--rates OPTIMIZER=R1,R2,R3`` once per arm (adamw, adam_frozen, adamw_prewarmed; or
 the primary arms adamw and adam_frozen alone, a selection without the pre-warmed arm), with
-``--given-up CASE`` once per case whose regular run the launcher gave up on, or
-``--selection FILE``: a JSON record with ``rates``, mapping each arm (by optimizer name, or by
-the analysis's arm name) to its selected rates, and optionally ``batch`` and ``U``, which must
-equal ``--batch`` and ``--upper``, and ``given_up``, the cases whose regular run the launcher
-gave up on (each named as the check names a case, ``s<seed>-<optimizer>-<lr>``; the selection's
-check request writes it); any other key is refused. The rates are never written in the code.
+``--given-up CASE`` once per case whose regular run the launcher gave up on and ``--request
+FILE``, the check request that names them, or ``--selection FILE``: a JSON record with
+``rates``, mapping each arm (by optimizer name, or by the analysis's arm name) to its selected
+rates, and optionally ``batch`` and ``U``, which must equal ``--batch`` and ``--upper``, and
+``given_up``, the cases whose regular run the launcher gave up on (each named as the check names
+a case, ``s<seed>-<optimizer>-<lr>``; the selection's check request writes it); any other key is
+refused. The rates are never written in the code. A ``--request`` must name the same rates and
+cases given up as ``--rates`` and ``--given-up`` (the driver passes all three).
 
 Outside the confirmation and blind to outcomes: only K, KL between twins and norms are computed
 and written, every evaluation on benign panels; no harmful prompt set, stream or generation is
@@ -70,6 +72,17 @@ working directory included, which ``load_config`` would read first) unless they 
   review of gate B, I1) is no problem either, with a note: the parts record that case
   incomplete, and not qualified after its rerun (and, for an FA run, its same-path control and
   every case of its seed when it was the seed's only FA run, which sets v₀ and p1, p2 up).
+- **A case given up** (review fa14, 2): ``control`` and ``twins`` record a case (or same-path
+  control) named given up whose regular run is not located without a GPU, before any model or
+  device is touched (``given_up_twins``, ``given_up_controls``): incomplete, with the reason
+  "given up by the launcher" and, as its evidence, the check request's path and sha256
+  (``--selection``, or ``--request``; ``plan`` and the parts refuse a case given up without
+  it). Its rerun is recorded the same way, and the verdict holds it not qualified (technical),
+  never failing; a part whose every due item is such a case builds no environment. When every
+  case is given up and no run is located, the GPU-code and run-environment checks have nothing
+  to compare: they are skipped with a note (``NONE_LOCATED``), recorded in the verdict's
+  ``code_check`` and in the records (``provenance.checks_skipped``), and the verdict's policy
+  records the check's own GPU code.
 - **GPU code** (review fa13): every part compares the GPU-code identity
   (``code_identity.gpu_code_identity``) of the commit each regular run recorded with this
   checkout's (``code_check``). On a mismatch ``plan`` exits 1, ``control`` and ``twins`` run
@@ -89,7 +102,9 @@ working directory included, which ``load_config`` would read first) unless they 
   checks the checkout, that nothing else uses the GPU, the free host memory, clears the twins'
   checkpoints that an interrupted case left (records are kept), checks the free disk, then runs
   the plan and the parts. Its exits: 1 a precondition or the plan; 5 a verdict with an
-  incomplete rate or control; 6 a part failed (recorded); 0 complete.
+  incomplete rate or control; 6 a part failed (recorded); 0 complete. With cases given up, it
+  passes the check request's resolved path to every part (``--request``), and is written only
+  with one (``--selection FILE``, or ``--request FILE``).
 - ``void`` (the final review of gate B, I2) moves, never deletes, what a GPU-path change after
   the check left unusable: every numerical run at B (role numerical) whose recorded commit's GPU
   code is not HEAD's, ``RUNS_DIR/numerical/b{B}-u{U}/``, and the launcher's record of the
@@ -125,7 +140,9 @@ deleted when the case is done.
 """
 
 import argparse
+import hashlib
 import json
+import shlex
 import sys
 import textwrap
 from datetime import UTC, datetime
@@ -143,10 +160,13 @@ from zero_field_refusal.fa_control_diagnostic import (
     code_check,
     conformance,
     control_attempt_state,
+    control_case,
     control_path,
     control_retry_due,
     environment_check,
     git_state,
+    given_up_controls,
+    given_up_twins,
     guarded_prompt_sets,
     instability_stop,
     load_numerical,
@@ -201,6 +221,9 @@ HOST_FREE = ("import sys; from zero_field_refusal.drift import host_memory; m = 
              "sys.exit(0 if (m['available_gb'] or 0) >= float(sys.argv[1]) else 1)")  # fmt: skip
 # A plan's note on a case whose regular run the launcher gave up on (the final review, I1)
 GIVEN_UP = "given up by the launcher: the parts will record it not qualified"
+# Review fa14, 2: why the code and environment checks compare nothing, when they do not
+NONE_LOCATED = ("no regular run is located: the check request names every case given up by the "
+                "launcher, so there is nothing to compare; skipped")  # fmt: skip
 
 
 def comment(text: str) -> list[str]:
@@ -238,8 +261,19 @@ def read_selection(path: Path, batch: int, upper: float) -> tuple[dict[str, list
     by the launcher, ``given_up`` (optional; the final review of gate B, I1); ``batch`` and
     ``U`` must equal B and U when present. Any other key, or a malformed one, is refused."""
     try:
-        record = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise NumericalError(f"{path}: not a readable JSON selection record ({exc})") from exc
+    return parse_selection(data, path, batch, upper)
+
+
+def parse_selection(
+    data: bytes, path: Path, batch: int, upper: float
+) -> tuple[dict[str, list[float]], list]:  # fmt: skip
+    """``read_selection`` of the bytes ``data`` read from ``path``."""
+    try:
+        record = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise NumericalError(f"{path}: not a readable JSON selection record ({exc})") from exc
     if not isinstance(record, dict) or "rates" not in record:
         raise NumericalError(f"{path}: a selection record needs 'rates' (and may hold 'batch', "
@@ -281,6 +315,41 @@ def check_given_up(given_up: list[str], cases) -> None:
     if unknown:
         raise NumericalError(f"given up: {unknown} name no case of this check "
                              f"({[case.name for case in cases]})")  # fmt: skip
+
+
+def request_of(args: argparse.Namespace, scope: NumericalScope, rates: dict, given_up: list):
+    """Review fa14, 2: the check request that names the cases given up, which their records
+    state as evidence: its resolved path and the sha256 of its bytes, as read now. With
+    ``--selection FILE``, that file; with ``--rates`` and ``--given-up``, ``--request FILE``
+    (the driver passes it), which must name the same rates and the same cases given up; without
+    either, None."""
+    if args.request is not None and args.selection is not None:
+        raise NumericalError("--request goes with --rates and --given-up: a selection record is "
+                             "its own request")  # fmt: skip
+    path = args.selection or args.request
+    if path is None:
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise NumericalError(f"{path}: the check request cannot be read ({exc})") from exc
+    named, named_given_up = parse_selection(data, path, args.batch, args.upper)
+    if selected_rates(scope, named) != rates or sorted(named_given_up) != sorted(given_up):
+        raise NumericalError(f"{path}: the check request names other rates or cases given up "
+                             f"({named}, given up {sorted(named_given_up)}) than these "
+                             f"({rates}, given up {sorted(given_up)})")  # fmt: skip
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def given_up_unlocated(part: str, items, given_up, located, scope, batch: int, upper: float):
+    """Review fa14, 2: the items of ``part`` (cases for ``twins``, FA rates for ``control``)
+    whose case the request names given up and whose regular run is not located (``located``,
+    by case name): recorded without a GPU (``given_up_twins``, ``given_up_controls``)."""
+
+    def name(item) -> str:
+        return control_case(scope, item, batch, upper).name if part == "control" else item.name
+
+    return [item for item in items if name(item) in given_up and name(item) not in located]
 
 
 TWINS_PER_CASE = 6.5  # twin A, p1-p4, and the float64 reference ≈ 1.5 twins (review M1)
@@ -427,7 +496,8 @@ def check_streams(
 def environment_config(root: Path, scope: NumericalScope, cases):
     """The config of the first case's regular run found: the environment's model and data (the
     same for every regular run of the stage; the parts list the cases they run first, then the
-    selection's, so that a rerun due only for a case whose run was given up still finds one)."""
+    selection's, so that a rerun due only for cases whose seed's FA runs were given up still
+    finds one; a part whose every due case was given up builds no environment)."""
     for case in cases:
         try:
             return run_config(locate_case(root, scope, case))
@@ -485,6 +555,11 @@ def move_aside(out: Path, relatives: list[str]) -> None:
 
 def code_summary(code: dict) -> str:
     """The code check (``code_check``) in one line."""
+    if code["consistent"] and code.get("note"):  # review fa14, 2: nothing to compare
+        identity = code["gpu_code"] or {}
+        return (f"GPU code: {code['note']}; the check's own is recorded "
+                f"({identity.get('files')} files, sha256 {identity.get('sha256')}, at "
+                f"{identity.get('commit')})")  # fmt: skip
     if code["consistent"]:
         identity = code["gpu_code"] or {}
         return (f"GPU code: the regular runs' equals the check's ({identity.get('files')} files, "
@@ -494,6 +569,8 @@ def code_summary(code: dict) -> str:
 
 def environment_summary(check: dict) -> str:
     """The environment check (``environment_check``) in one line."""
+    if check["consistent"] and check.get("note"):  # review fa14, 2: nothing to compare
+        return f"run environment: {check['note']}"
     if check["consistent"]:
         here = check["here"]
         return (f"run environment: the regular runs' equals this one ({here['hardware.gpus']}, "
@@ -545,13 +622,17 @@ def failed(records: dict) -> bool:
 
 
 def driver_script(
-    commit: str, written_at: str, batch: int, upper: float, rates: dict, given_up=()
+    commit: str, written_at: str, batch: int, upper: float, rates: dict, given_up=(),
+    request: str | None = None,
 ) -> str:  # fmt: skip
-    """The bash driver of the check on a Pod (module docstring)."""
+    """The bash driver of the check on a Pod (module docstring). ``request``: the check
+    request's path, passed to every part (``--request``) when cases are given up (review
+    fa14, 2)."""
     stamp = "$(date -u +%FT%TZ)"
     run = SCRIPT
     selection = " ".join([*(f"--rates {arm}={','.join(repr(r) for r in values)}"
                             for arm, values in rates.items()),
+                          *([f"--request {shlex.quote(request)}"] if request else []),
                           *(f"--given-up {name}" for name in given_up)])  # fmt: skip
     lines = [
         "#!/usr/bin/env bash",
@@ -578,6 +659,10 @@ def driver_script(
                  f"{PART_FAILED}. A verdict that holds an incomplete rate or control ends it with "
                  f"exit {INCOMPLETE}. A verdict that is not qualified is a result, not a "
                  "failure."),
+        *(comment(f"Given up by the launcher, as the check request (--request) names them: "
+                  f"{', '.join(given_up)}. The parts record each without a GPU, with the "
+                  "request's path and sha256, and the verdict holds it not qualified "
+                  "(technical) after the rerun.") if given_up else []),
         "set -euo pipefail",
         ". /etc/rp_environment",
         ". /root/zfr-env.sh",
@@ -680,6 +765,9 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
                         help="with --rates: a case whose regular run the launcher gave up "
                              "on")  # fmt: skip
     parser.add_argument("--selection", type=Path, help="a selection record (JSON)")
+    parser.add_argument("--request", type=Path, metavar="FILE",
+                        help="with --rates and --given-up: the check request (selection record) "
+                             "naming them, the evidence of the cases given up")  # fmt: skip
     parser.add_argument("--batch", type=int, required=True, help="the selected B")
     parser.add_argument("--upper", type=float, required=True, help="the selected U")
     parser.add_argument("--config", default=CONFIG)
@@ -697,7 +785,7 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     settings = load_config(config_path(args.config))  # the file tracked_config judges
     scope = NumericalScope.of(settings)
     if args.part == "void":  # no rates: every numerical run at B and the check of (B, U)
-        if args.rates or args.selection or args.given_up:
+        if args.rates or args.selection or args.given_up or args.request:
             sys.exit("void takes --batch and --upper only: it moves every numerical run at B "
                      "whose GPU code is not HEAD's")  # fmt: skip
         if not (args.dry_run or tracked_config(args.config) or untracked_config_for_tests):
@@ -714,18 +802,26 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         cases = numerical_cases(settings, rates, args.upper, batch=args.batch)
         check_given_up(given_up, cases)
         default_out = numerical_root(args.batch, args.upper, args.runs_root)
+        # Review fa14, 2: the evidence of the cases given up, for the parts that record them
+        request = None if args.part == "verdict" else request_of(args, scope, rates, given_up)
     except NumericalError as exc:
         sys.exit(str(exc))
+    missing_request = ("the check request naming the cases given up (--selection FILE, or "
+                       "--request FILE beside --rates and --given-up): their records state its "
+                       "path and sha256")  # fmt: skip
     if args.part == "driver":
         if not (args.dry_run or tracked_config(args.config) or untracked_config_for_tests):
             sys.exit(f"driver writes a driver only under the tracked settings ({CONFIG}), not "
                      f"{config_path(args.config)}; --dry-run only prints")  # fmt: skip
         script = driver_script(args.commit or "<SHA>", git_state().get("commit")
                                or datetime.now(UTC).isoformat(timespec="seconds"),
-                               args.batch, args.upper, rates, given_up)  # fmt: skip
+                               args.batch, args.upper, rates, given_up,
+                               request["path"] if request and given_up else None)  # fmt: skip
         if args.dry_run:
             print(script, end="")
             return
+        if given_up and request is None:
+            sys.exit(f"driver: cases are given up, and the driver needs {missing_request}")
         if not args.commit or not args.out or args.out.exists():
             sys.exit("driver needs --commit SHA and an --out FILE that does not exist")
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -747,10 +843,17 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
                      f"not {config_path(args.config)}; --dry-run only prints")  # fmt: skip
 
     # Review fa13: the regular runs' GPU code against the check's; the final review of gate B,
-    # I3: for the parts that run the check, their recorded run environment against this one
-    found_runs = list(find_runs(root, scope, cases, given_up)[0].values())
-    code = code_check(found_runs, state.get("commit"))
-    machine = environment_check(found_runs) if args.part in ("plan", "control", "twins") else None
+    # I3: for the parts that run the check, their recorded run environment against this one.
+    # Review fa14, 2: with no run located because every case is given up, both are skipped
+    # with a note, and the check's own GPU code is recorded.
+    located = find_runs(root, scope, cases, given_up)[0]
+    found_runs = list(located.values())
+    every_given_up = all(case.name in given_up for case in cases)
+    skipped = NONE_LOCATED if not found_runs and every_given_up else None
+    code = code_check(found_runs, state.get("commit"), skipped=skipped)
+    machine = (environment_check(found_runs, skipped=skipped)
+               if args.part in ("plan", "control", "twins") else None)  # fmt: skip
+    absent = [case for case in cases if case.name in given_up and case.name not in located]
     if args.part == "verdict":
         verdict = numerical_verdict(settings, out, rates=rates, batch=args.batch,
                                     upper=args.upper, code=code, root=root,
@@ -771,10 +874,13 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
         print(text)
         print(code_summary(code))
         print(environment_summary(machine))
+        if request is not None:
+            print(f"check request: {request['path']} (sha256 {request['sha256']})")
         if args.dry_run:
             return
         missing = [] if code["consistent"] else ["the GPU code"]
         missing += [] if machine["consistent"] else ["the run environment"]
+        missing += [missing_request] if absent and request is None else []
         if not args.no_stream_check:
             found, streams = check_streams(settings, cases, root, "cpu", given_up)
             missing += streams
@@ -790,11 +896,18 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
                            reader=reader, batch=args.batch, upper=args.upper)  # fmt: skip
     names = [f"{lr:g}" for lr in due] if args.part == "control" else [c.name for c in due]
     print(json.dumps({"part": args.part, "attempt": attempt, "due": names, "set_aside": aside}))
+    # Review fa14, 2: what is due for a case given up whose run is not located is recorded
+    # without a GPU, with the check request as its evidence; the rest runs as before
+    gone = given_up_unlocated(args.part, due, given_up, located, scope, args.batch, args.upper)
+    rest = [item for item in due if item not in gone]
     if args.dry_run:
+        if gone:
+            shown = [f"{lr:g}" for lr in gone] if args.part == "control" else [c.name for c in gone]
+            print(f"given up by the launcher, recorded without a GPU: {shown}")
         if args.part == "control":
-            minutes = allowed = total_cost(args.batch, scope, [], len(due))[0]
+            minutes = allowed = total_cost(args.batch, scope, [], len(rest))[0]
         else:
-            minutes, allowed = total_cost(args.batch, scope, due, 0)
+            minutes, allowed = total_cost(args.batch, scope, rest, 0)
         print(f"≈ {minutes:.0f} GPU min, ≈ {allowed:.0f} with a lost full-float64 reference per "
               f"AdamW and pre-warmed case; output {out}")  # fmt: skip
         print(code_summary(code))
@@ -810,27 +923,42 @@ def main(*, untracked_config_for_tests: bool = False) -> None:
     if not machine["consistent"]:  # the final review of gate B, I3: nor in another environment
         print(environment_summary(machine), file=sys.stderr)
         sys.exit(CODE_MISMATCH)
+    if gone and request is None:
+        sys.exit(f"{args.part}: cases are given up, and their records need {missing_request}")
     move_aside(out, aside)  # only now: a real run, clean, under the check's GPU code
 
-    from zero_field_refusal.runtime import environment
+    done: dict = {}
+    noted = {"checks_skipped": code["note"]} if code.get("note") else {}
+    if gone and args.part == "control":
+        done |= given_up_controls(settings, root, out, rates=gone, batch=args.batch,
+                                  upper=args.upper, attempt=attempt, code=code, request=request,
+                                  **noted)  # fmt: skip
+    elif gone:
+        done |= given_up_twins(settings, root, out, gone, attempt=attempt, code=code,
+                               request=request, **noted)  # fmt: skip
+    if rest:  # the environment, and the GPU, only for these
+        from zero_field_refusal.runtime import environment
 
-    env_cases = (
-        [c for c in cases if c.seed == scope.control_seed] if args.part == "control" else due
-    )
-    cfg = environment_config(root, scope, [*env_cases, *cases])
-    env = guard_prompt_sets(environment(cfg, args.device))
-    rule = apply_memory_rule(env.device, scope.memory_rule_gb)
-    print(json.dumps({"memory_rule": rule}))
+        env_cases = (
+            [c for c in cases if c.seed == scope.control_seed] if args.part == "control" else rest
+        )
+        cfg = environment_config(root, scope, [*env_cases, *cases])
+        env = guard_prompt_sets(environment(cfg, args.device))
+        rule = apply_memory_rule(env.device, scope.memory_rule_gb)
+        print(json.dumps({"memory_rule": rule}))
+        if args.part == "control":
+            done |= run_numerical_controls(settings, env, root, out, rates=rest,
+                                           batch=args.batch, upper=args.upper, attempt=attempt,
+                                           code=code)  # fmt: skip
+        else:
+            done |= run_numerical_twins(settings, env, root, out, rest, attempt=attempt,
+                                        code=code, keep_checkpoints=args.keep_checkpoints,
+                                        setups=cases)  # fmt: skip
     if args.part == "control":
-        done = run_numerical_controls(settings, env, root, out, rates=due, batch=args.batch,
-                                      upper=args.upper, attempt=attempt, code=code)  # fmt: skip
         print(json.dumps({lr: {key: r.get(key) for key in ("status", "state", "max_K_scoring",
                                                            "reason")}
                           for lr, r in done.items()}))  # fmt: skip
     else:
-        done = run_numerical_twins(settings, env, root, out, due, attempt=attempt, code=code,
-                                   keep_checkpoints=args.keep_checkpoints,
-                                   setups=cases)  # fmt: skip
         print(json.dumps({name: {key: r.get(key) for key in ("status", "pair_states",
                                                              "max_D_twin", "reason")}
                           for name, r in done.items()}))  # fmt: skip
