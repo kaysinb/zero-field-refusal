@@ -256,6 +256,17 @@ def campaign_runs(step) -> set[tuple]:
 SELECTED20 = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5],
               PREWARMED: [1.27e-5, 1.48e-5, 1.74e-5]}  # fmt: skip
 PRIMARY20 = {arm: SELECTED20[arm] for arm in (ADAMW, FA)}
+# The pre-warmed arm's first round at (8, 20): the union of the primary arms' targeted rates.
+PREWARMED_FIRST = (1.27e-5, 1.48e-5, 1.59e-5, 1.74e-5, 1.86e-5, 2.17e-5)
+
+
+def prewarmed_first_only(run):
+    """A ``drive`` hook: the pre-warmed arm's discovery runs beyond its first round lose 6 pp
+    MMLU, so that no later round of it (its search allowance's included) gives it a triple."""
+    if run.arm == PREWARMED and run.seed in SEEDS and run.lr not in PREWARMED_FIRST:
+        k = run.evaluations[0]["K_benign"]
+        return traj(run.arm, run.batch_size, run.lr, run.seed, k, mmlu=6.0, factual=0.1 * k)
+    return run
 
 
 def verdict_path(rates, batch: int = 20, upper: float = 8.0) -> str:
@@ -435,6 +446,40 @@ def test_the_midpoint_repairs_the_widest_bracket() -> None:
     repair = repair_rates(triple, records, 8.0, 0.2)
     assert repair["rates"] == [1.1e-5]  # √(1e-5 × 1.2e-5) = 1.095e-5
     assert "seed 2000" in repair["reasons"][0] and len(repair["reasons"]) == 1
+    # The search allowance's round never proposes an unusable rate: the midpoint's nearest
+    # admissible rate inside the pair, 1.09e-5 (nearer 1.0954e-5 than 1.11e-5).
+    repair = repair_rates(triple, records, 8.0, 0.2, unusable=[1.1e-5])
+    assert repair["rates"] == [1.09e-5] and repair["unrepairable"] == []
+    assert [(s["unusable"], s["rate"]) for s in repair["substituted"]] == [(1.1e-5, 1.09e-5)]
+    assert "1.1e-05 is unusable at the batch, the nearest admissible rate is 1.09e-05" in (
+        repair["reasons"][0])  # fmt: skip
+
+
+def test_the_allowance_round_never_proposes_an_unusable_rate() -> None:
+    """The coordinator's ruling on C2 (review fa22): the search allowance's repair round keeps an
+    unusable rate's K as data, but never proposes it. Here 1.09e-5 was run and found unusable
+    by a numerical check, its median K exactly the target 5: re-targeting lands on it."""
+    records = {
+        1e-5: rec({2000: 4.0, 2001: 4.0, 2002: 4.0}),
+        1.09e-5: rec({2000: 5.0, 2001: 5.0, 2002: 5.0}),
+        1.2e-5: rec({2000: 6.3, 2001: 6.3, 2002: 6.3}),
+        1.4e-5: rec({2000: 8.0, 2001: 8.0, 2002: 8.0}),
+    }
+    found = select_rates(records, 8.0, W_MAX, exclude=[1.09e-5])
+    assert found["unmet"] == ["coverage"]
+    # The discovery rounds' algorithm, unchanged: the rate already run, no repair.
+    plain = repair_rates(found["best_unconstrained"], records, 8.0, W_MAX)
+    assert plain["rates"] == [] and "1.09e-05, already run" in plain["unrepairable"][0]
+    # The allowance's: the nearest admissible rate inside the bracketing pair (1e-5, 1.09e-5).
+    repair = repair_rates(found["best_unconstrained"], records, 8.0, W_MAX, unusable=[1.09e-5])
+    assert repair["rates"] == [1.08e-5] and repair["unrepairable"] == []
+    assert repair["substituted"][0]["unusable"] == 1.09e-5
+    # Every grid rate of the pair unusable or run: none admissible within the steps, no repair.
+    taken = [round(1e-5 + k * 1e-7, 12) for k in range(1, 10)]
+    blocked = repair_rates(found["best_unconstrained"], records, 8.0, W_MAX, unusable=taken)
+    assert blocked["rates"] == [] and "no admissible rate" in blocked["unrepairable"][0]
+    for proposal, unusable in ((repair, {1.09e-5}), (blocked, set(taken))):
+        assert not set(proposal["rates"]) & unusable
 
 
 # ------------------------------------------------------------------ candidates and costs
@@ -668,10 +713,17 @@ def test_a_replacement_u_rate_gets_its_cases_on_2201_and_2202() -> None:
 
 
 def test_an_unusable_fa_control_is_like_a_failing_rate() -> None:
+    # FA's U-rate's control rejected: FA has no triple at U = 8 without 2.17e-5, so its
+    # allowance's repair round re-targets U; the round never proposes an unusable rate, and
+    # proposes 2.18e-5 instead (review fa22, the coordinator's ruling on C2).
+    def judge(rejected):
+        return lambda check: verdict_of(
+            check,
+            controls={lr: "rejected" for lr in rejected if lr in check["rates"]["adam_frozen"]},
+        )
+
     runs = grids()
-    seen, result, _ = drive(
-        runs, judge=lambda check: verdict_of(check, controls={2.17e-5: "rejected"})
-    )
+    seen, result, _ = drive(runs, judge=judge([2.17e-5]))
     unusable = result["attempts"][0]["numerical"][0]["unusable"]
     assert unusable == [
         {
@@ -682,10 +734,21 @@ def test_an_unusable_fa_control_is_like_a_failing_rate() -> None:
             "reasons": [],
         }
     ]
-    # No FA triple at U = 8 without 2.17e-5: the candidate fails, and 2.17e-5 stays out at U = 7.
+    repair = result["rounds"][f"{FA}/B=20/U=8"]["allowance_repair"]
+    assert repair["new_rates"] == [2.18e-5]
+    assert [(s["unusable"], s["rate"]) for s in repair["proposal"]["substituted"]] == [
+        (2.17e-5, 2.18e-5)]  # fmt: skip
+    assert seen == ["discovery", "numerical", "numerical-check", "repair", "numerical",
+                    "numerical-check", "validation", "done"]  # fmt: skip
+    assert result["next"]["rates"][FA] == [1.59e-5, 1.86e-5, 2.18e-5]
+    # The replacement's control rejected too: FA's allowance is spent, a scientific failure; the
+    # candidate fails, and both rates stay out at U = 7.
+    runs = grids()
+    seen, result, _ = drive(runs, judge=judge([2.17e-5, 2.18e-5]))
     first, at7 = result["attempts"][:2]
     assert first["failed_at"] == "numerical" and first["failed_arms"] == [FA]
-    assert 2.17e-5 in at7["excluded"][FA]
+    assert at7["excluded"][FA].keys() == {2.17e-5, 2.18e-5}
+    assert at7["excluded_kinds"][FA] == {2.17e-5: "scientific", 2.18e-5: "scientific"}
 
 
 def test_old_controls_are_reported_not_used() -> None:
@@ -763,26 +826,29 @@ def test_prewarmed_never_feasible_falls_back() -> None:
 
 def test_primary_only_fallback_end_to_end() -> None:
     # The pre-warmed arm fails everywhere: at (8, 20) in the combined numerical verdict (each of
-    # its rates failing: without them no triple is left, a scientific stop), at (7, 20) in
-    # selection (its rates unusable at B = 20, its rounds no help). The primary arms qualify at
-    # (8, 20). (Were some of them not qualified instead, the technical marks alone would leave
-    # it no triple at (7, 20), and the stage would be blocked there:
-    # ``test_a_technical_exclusion_never_decides_a_later_candidate``.)
+    # its rates failing, and its allowance's repair rates out of their utility bounds: no triple
+    # is left, a scientific stop), at (7, 20) in selection (its rates unusable at B = 20, its
+    # rounds no help). The primary arms qualify at (8, 20). (Were some of them not qualified
+    # instead, the technical marks alone would leave it no triple at (7, 20), and the stage
+    # would be blocked there: ``test_a_technical_exclusion_never_decides_a_later_candidate``.)
     def judge(check):
         pre = check["rates"].get("adamw_prewarmed", [])
         return verdict_of(check, {("adamw_prewarmed", lr): "failing" for lr in pre})
 
     scale = {**SCALE, (PREWARMED, 5): 0.3}
     runs = grids(scale)
-    seen, result, verdicts = drive(runs, scale=scale, judge=judge, until="validation")
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge, until="validation",
+                                   hook=prewarmed_first_only)  # fmt: skip
     attempts = result["attempts"]
     assert [(a["U"], a["batch"], a["failed_arms"], a["failed_at"]) for a in attempts[:2]] == [
         (8.0, 20, [PREWARMED], "numerical"), (7.0, 20, [PREWARMED], "discovery")]  # fmt: skip
     assert "without a feasible triple once the unusable rates" in attempts[0]["reasons"][0]
     assert all(u["arm"] == PREWARMED for u in attempts[0]["numerical"][0]["unusable"])
-    # The search allowance: a re-solve, then a repair round that could not repair.
-    assert [r["kind"] for r in attempts[0]["arms"][PREWARMED]["rounds"]] == [
-        "first", "allowance_repair"]  # fmt: skip
+    # The search allowance: a re-solve, then a repair round (proposing no unusable rate) whose
+    # rates are out of their utility bounds.
+    rounds = attempts[0]["arms"][PREWARMED]["rounds"]
+    assert [r["kind"] for r in rounds] == ["first", "allowance_repair"]
+    assert not set(rounds[1]["new_rates"]) & set(SELECTED20[PREWARMED])
     # The fallback reads the same combined verdict for the primary arms and the FA controls
     # only: its pre-warmed entries do not block it, and no new check is asked for.
     fallback = attempts[2]
@@ -797,7 +863,8 @@ def test_primary_only_fallback_end_to_end() -> None:
         "validation", 20, 8.0, False)  # fmt: skip
     assert step["prewarmed_dropped"] and set(step["rates"]) == {ADAMW, FA}
     assert {r["arm"] for r in step["runs"]} == {ADAMW, FA} and len(step["runs"]) == 2 * 3 * 12
-    seen, result, verdicts = drive(runs, scale=scale, judge=judge, verdicts=verdicts)
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge, verdicts=verdicts,
+                                   hook=prewarmed_first_only)  # fmt: skip
     assert seen == ["validation", "done"] and list(verdicts) == [verdict_path(SELECTED20)]
     done = result["next"]
     assert done["prewarmed_dropped"] is True and done["three_arm"] is False
@@ -811,10 +878,11 @@ def test_primary_only_fallback_end_to_end() -> None:
 
 def test_the_fallback_carries_a_primary_re_solve_of_pass_1() -> None:
     """Review of Task 2, critical 1; review fa22: pass 1 re-solved AdamW at (8, 20) (1.48e-5
-    failing), spending its search allowance there, and failed there on the pre-warmed arm. The
-    fallback's check of AdamW's replacement 1.5e-5 finds it failing: AdamW's allowance at the
-    candidate stays spent, so (8, 20) fails and the next candidate eligible for the primary
-    arms is taken."""
+    failing), spending its search allowance there, and failed there on the pre-warmed arm (its
+    rates failing, its allowance's repair rates out of their utility bounds). The fallback's
+    check of AdamW's replacement 1.5e-5 finds it failing: AdamW's allowance at the candidate
+    stays spent, so (8, 20) fails and the next candidate eligible for the primary arms is
+    taken."""
     scale = {**SCALE, (PREWARMED, 5): 0.3}
     runs = grids(scale)
 
@@ -827,7 +895,7 @@ def test_the_fallback_carries_a_primary_re_solve_of_pass_1() -> None:
             changes[("adamw", 1.5e-5)] = "failing"  # the fallback's: the replacement fails
         return verdict_of(check, changes)
 
-    seen, result, verdicts = drive(runs, scale=scale, judge=judge)
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge, hook=prewarmed_first_only)
     first, *_, fallback, taken = result["attempts"]
     assert (first["U"], first["batch"], first["failed_at"], first["failed_arms"]) == (
         8.0, 20, "numerical", [PREWARMED])  # fmt: skip
@@ -852,9 +920,9 @@ def test_the_fallback_carries_a_primary_re_solve_of_pass_1() -> None:
 def test_the_fallback_gives_a_carried_candidate_no_new_round() -> None:
     """Pass 1 re-solved AdamW at (8, 20), spending its allowance there, and failed the candidate
     at validation (the pre-warmed arm unsupported); (7, 20)'s check then found AdamW's 1.27e-5
-    failing at B = 20, and AdamW's allowance there could not replace it. In the fallback, AdamW
-    has no triple at (8, 20) without its unusable rates; a new round would be a second
-    allowance, so the candidate fails without one (both rates failing: a scientific stop).
+    failing at B = 20, and the replacement its allowance proposed, 1.26e-5, failing too. In the
+    fallback, AdamW has no triple at (8, 20) without its unusable rates; a new round would be a
+    second allowance, so the candidate fails without one (its rates failing: a scientific stop).
     (7, 20)'s primary pair is not visited (its primary arm failed its numerical gate), and the
     stage ends in the B = 20 feasibility report: never B = 5."""
 
@@ -867,8 +935,8 @@ def test_the_fallback_gives_a_carried_candidate_no_new_round() -> None:
         adamw, changes = check["rates"].get("adamw", []), {}
         if (check["batch"], check["U"]) == (20, 8.0) and 1.48e-5 in adamw:
             changes[("adamw", 1.48e-5)] = "failing"
-        if (check["batch"], check["U"]) == (20, 7.0) and 1.27e-5 in adamw:
-            changes[("adamw", 1.27e-5)] = "failing"
+        if (check["batch"], check["U"]) == (20, 7.0):  # 1.27e-5 and its replacement
+            changes.update({("adamw", lr): "failing" for lr in adamw if lr < 1.3e-5})
         return verdict_of(check, changes)
 
     runs = grids()
@@ -877,10 +945,12 @@ def test_the_fallback_gives_a_carried_candidate_no_new_round() -> None:
     assert [(a["U"], a["batch"], a["three_arm"], a["failed_at"]) for a in attempts] == [
         (8.0, 20, True, "validation"), (7.0, 20, True, "numerical"),
         (8.0, 20, False, "numerical")]  # fmt: skip
+    assert attempts[1]["allowance"][ADAMW]["repair"]["rates"] == [1.17e-5, 1.26e-5]
     fallback = attempts[2]
     assert fallback["resolve_carried"] and fallback["failed_arms"] == [ADAMW]
     assert "the candidate's search allowance spent at an earlier visit" in fallback["reasons"][0]
-    assert fallback["numerical"] == [] and fallback["excluded"][ADAMW].keys() == {1.27e-5, 1.48e-5}
+    assert fallback["numerical"] == []
+    assert fallback["excluded"][ADAMW].keys() == {1.26e-5, 1.27e-5, 1.48e-5}
     assert f"{ADAMW}/B=20/U=8" in result["rounds"]
     assert "repair" not in result["rounds"][f"{ADAMW}/B=20/U=8"]  # no new round was made
     assert result["next"]["campaign"] == "infeasible" and result["next"]["scope"] == "B=20"
@@ -947,6 +1017,53 @@ def test_validation_failure_moves_on() -> None:
     assert result["next"]["validation"]["passes"]
 
 
+def test_a_technical_validation_shortfall_blocks() -> None:
+    """The coordinator's ruling on C3 (review fa22; 10 of 12 unchanged): a validation that fails
+    only because blocks are unsupported for technical causes (here AdamW's K* run stopped out of
+    memory on seeds 2100-2102: 9 of 12 jointly supported), with no instability and no utility
+    failure, blocks the stage for a human decision. The same shortfall with a cause in K (the
+    K* run far below K*, so that the bracket is too wide) moves on to (7, 20); so does a
+    shortfall the K-lost blocks make alone, technical losses beside them."""
+
+    def hook(lost: dict[int, str]):
+        def made_run(run):
+            how = lost.get(run.seed)
+            if (run.arm, run.lr) != (ADAMW, 1.48e-5) or how is None:
+                return run
+            if how == "oom":
+                return traj(run.arm, run.batch_size, run.lr, run.seed, None, stop="oom", steps=10)
+            return traj(run.arm, run.batch_size, run.lr, run.seed, 1.0, mmlu=0.3, factual=0.1)
+
+        return made_run
+
+    technical = dict.fromkeys((2100, 2101, 2102), "oom")
+    seen, result, _ = drive(grids(), hook=hook(technical))
+    (attempt,) = result["attempts"]
+    step = result["next"]
+    assert (attempt["outcome"], step["campaign"], step["blocked"], step["at"]) == (
+        "blocked", "incomplete", "technical", "validation")  # fmt: skip
+    assert step["arms"] == [ADAMW] and result["problems"] == []
+    assert [(r["lr"], r["state"]) for r in step["rates"]] == [(1.48e-5, "technical failure")] * 3
+    assert step["rates"][0]["why"] == ("validation block 2100: adamw_25-b20-1.48e-05-s2100: "
+                                       "stopped by oom at step 10")  # fmt: skip
+    assert "9 of 12 blocks jointly supported" in step["reasons"][0]
+    assert "12 of 12 blocks would be jointly supported" in step["reasons"][0]
+    assert attempt["validation"]["passes"] is False  # the verdict itself is unchanged
+    # The same shortfall by K: a scientific failure, the order moves on.
+    by_k = dict.fromkeys((2100, 2101, 2102), "low")
+    seen, result, _ = drive(grids(), hook=hook(by_k))
+    first = result["attempts"][0]
+    assert (first["outcome"], first["failed_at"]) == ("failed", "validation")
+    assert result["attempts"][1]["U"] == 7.0 and "blocked" not in result["next"]
+    # Two blocks lost by K and one by a technical stop: 10 of 12 but for the technical one,
+    # blocked; three by K and one technical: 9 even so, a scientific failure.
+    mixed = {2100: "low", 2101: "low", 2102: "oom"}
+    assert drive(grids(), hook=hook(mixed))[1]["next"]["blocked"] == "technical"
+    mixed[2103] = "low"
+    result = drive(grids(), hook=hook(mixed))[1]
+    assert result["attempts"][0]["failed_at"] == "validation" and "blocked" not in result["next"]
+
+
 def test_a_three_arm_validation_failure_falls_back_to_the_primary_validation() -> None:
     def unsupported(run):  # the pre-warmed arm never brackets K* on the validation seeds
         if run.seed in VALIDATION_SEEDS and run.arm == PREWARMED:
@@ -1006,8 +1123,8 @@ def test_no_candidate_gives_a_b20_feasibility_report() -> None:
     assert f"{FA}/B=20/U=7" not in rounds  # FA is feasible at U = 7 from what B = 20 ran
     # The report keeps the technical apart from the scientific. At (8, 20) FA's 1.59e-5 is not
     # qualified (re-solved, it decided nothing) and AdamW's 1.48e-5 failing (re-solved too); the
-    # three-arm validation then fails on the pre-warmed arm. At (7, 20) AdamW's 1.27e-5 fails
-    # and its allowance cannot replace it; the primary pair at (8, 20) fails on AdamW (its
+    # three-arm validation then fails on the pre-warmed arm. At (7, 20) AdamW's 1.27e-5 fails,
+    # and so does its allowance's replacement; the primary pair at (8, 20) fails on AdamW (its
     # allowance spent there), and (7, 20)'s is not visited.
 
     def unsupported(run):  # the pre-warmed arm never brackets K* on the validation seeds
@@ -1021,8 +1138,8 @@ def test_no_candidate_gives_a_b20_feasibility_report() -> None:
             changes[("adam_frozen", 1.59e-5)] = "not_qualified"
         if check["U"] == 8 and 1.48e-5 in adamw:
             changes[("adamw", 1.48e-5)] = "failing"
-        if check["U"] == 7 and 1.27e-5 in adamw:
-            changes[("adamw", 1.27e-5)] = "failing"
+        if check["U"] == 7:  # 1.27e-5 and its replacement 1.26e-5
+            changes.update({("adamw", lr): "failing" for lr in adamw if lr < 1.3e-5})
         return verdict_of(check, changes, reasons={"adam_frozen|1.59e-05": [S2_TECHNICAL]})
 
     seen, result, _ = drive(grids(), judge=judge, hook=unsupported)
@@ -1106,18 +1223,29 @@ def test_a_technical_rate_spends_the_allowance_then_blocks() -> None:
     seen, result, _ = drive(runs, scale=scale, judge=judge(first))
     assert seen[-1] == "done" and (result["next"]["U"], result["next"]["three_arm"]) == (8.0, True)
     assert result["next"]["rates"] == resolved
-    # A re-solve with no feasible triple gets the allowance's repair round: in S2's shape at the
-    # world's own scale, re-targeting the pre-warmed U-rate gives the excluded rate again, so the
-    # round cannot repair, and the arm is stopped by its technical mark alone: blocked.
-    runs = grids()
+    # A re-solve with no feasible triple gets the allowance's repair round (the coordinator's
+    # ruling on C2). In S2's shape at the world's own scale the pre-warmed U-rate 1.74e-5 is
+    # the one rate near U: re-targeting U lands on it (its K still interpolated), so the round
+    # proposes the nearest admissible rate inside its bracketing pair (1.59e-5, 1.74e-5),
+    # 1.73e-5, never the unusable one; run and checked, it qualifies and the stage is done.
     marked = {("adam_frozen", 1.59e-5), ("adamw_prewarmed", 1.74e-5)}
-    seen, result, _ = drive(runs, judge=judge(marked))
+    runs = grids()
+    seen, result, verdicts = drive(runs, judge=judge(marked))
+    assert seen == ["discovery", "numerical", "numerical-check", "repair", "numerical",
+                    "numerical-check", "validation", "done"]  # fmt: skip
+    rounds = result["rounds"][f"{PREWARMED}/B=20/U=8"]["allowance_repair"]
+    assert rounds["new_rates"] == [1.73e-5] and rounds["proposal"]["unrepairable"] == []
+    assert [(s["unusable"], s["rate"]) for s in rounds["proposal"]["substituted"]] == [
+        (1.74e-5, 1.73e-5)]  # fmt: skip
+    assert result["next"]["rates"][PREWARMED] == [1.27e-5, 1.48e-5, 1.73e-5]
+    assert result["next"]["rates"][FA] == [1.5e-5, 1.86e-5, 2.17e-5]  # re-solved, no round
+    # The replacement not qualified again: the allowance is spent, and the stage is blocked.
+    runs = grids()
+    seen, result, _ = drive(runs, judge=judge(marked | {("adamw_prewarmed", 1.73e-5)}))
     step = result["next"]
     assert (step["blocked"], step["arms"], [r["lr"] for r in step["rates"]]) == (
-        "technical", [PREWARMED], [1.74e-5])  # fmt: skip
-    rounds = result["rounds"][f"{PREWARMED}/B=20/U=8"]
-    assert rounds["allowance_repair"]["new_rates"] == []
-    assert "already run" in rounds["allowance_repair"]["proposal"]["unrepairable"][0]
+        "technical", [PREWARMED], [1.73e-5])  # fmt: skip
+    assert len(result["attempts"]) == 1
 
 
 def test_the_allowance_repair_round_is_a_repair_campaign() -> None:
@@ -1230,9 +1358,10 @@ def test_prewarmed_only_failure_keeps_b20() -> None:
 def test_the_allowance_carries_into_the_primary_pair() -> None:
     """Review fa22: the allowance carries from a candidate's three-arm attempt into its primary
     pair's and is never reset. At (8, 20) AdamW's K* rate is not qualified: AdamW spends its
-    allowance (re-solved to 1.5e-5) while the pre-warmed arm fails the candidate. In the primary
-    pair at (8, 20) the primary-only check finds AdamW's replacement not qualified: its
-    allowance is spent, so no second re-solve, and the stage is blocked."""
+    allowance (re-solved to 1.5e-5) while the pre-warmed arm fails the candidate (its rates
+    failing, its allowance's repair rates out of their utility bounds). In the primary pair at
+    (8, 20) the primary-only check finds AdamW's replacement not qualified: its allowance is
+    spent, so no second re-solve, and the stage is blocked."""
 
     def judge(check):
         rates = check["rates"]
@@ -1244,7 +1373,7 @@ def test_the_allowance_carries_into_the_primary_pair() -> None:
         return verdict_of(check, changes)
 
     runs = grids()
-    seen, result, verdicts = drive(runs, judge=judge)
+    seen, result, verdicts = drive(runs, judge=judge, hook=prewarmed_first_only)
     first, at7, pair = result["attempts"]
     assert first["allowance"][ADAMW]["resolved"] == [1.27e-5, 1.5e-5, 1.74e-5]
     assert (first["failed_arms"], at7["failed_arms"]) == ([PREWARMED], [PREWARMED])

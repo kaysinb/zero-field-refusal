@@ -202,9 +202,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   otherwise it is stopped by technical marks only. The same reading holds at discovery, where
   marks made at the batch by an earlier candidate's check exclude rates up front: an arm left
   without a triple after its rounds by technical exclusions alone is stopped by them (this
-  implementation's reading; the review names no gate). A scientific stop fails the candidate and
-  the order moves on (so do a rejected same-path control, a validation failure, whatever its
-  causes, and no admissible triple); a technical-only stop ends the replay as ``blocked``:
+  implementation's reading, accepted by the coordinator, C1). A scientific stop fails the
+  candidate and the order moves on (so do a rejected same-path control, no admissible triple and
+  a validation failure, except a shortfall of jointly supported blocks that technical failures
+  alone make: *Validation*); a technical-only stop ends the replay as ``blocked``:
   ``next`` is ``{"campaign": "incomplete", "blocked": "technical", ...}`` with the candidate,
   the gate, the arms, the rates with their reasons and the arms' allowances, for a human
   decision. It is no problem of the records, and no campaign is written. At one step a
@@ -217,10 +218,17 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   feasible triple remains, one more deterministic repair round (``repair_rates`` from the
   re-solve's best unconstrained triple, on K and utility only; the ``repair`` campaign, named
   after the check that spent it, whose cells are new rates of their arm and batch) and a
-  re-selection follow. Its re-targeting reads every usable rate of the arm at the batch, the
-  excluded ones' K included (discovery measurements, unchanged by the check), so a coverage miss
-  re-targeted onto an excluded rate, already run, cannot be repaired; such a round runs nothing,
-  as at discovery. Every replacement goes through a new check. An arm whose allowance is spent
+  re-selection follow. The round never proposes an unusable rate (the coordinator's ruling on
+  C2): its interpolation and targeting read every usable rate of the arm at the batch, the
+  excluded ones' K included (discovery measurements; only their numerics failed), and a
+  proposal landing on an excluded rate becomes the nearest admissible rate: of 3 significant
+  digits, nearest the unrounded proposal (ties to the smaller), neither run nor unusable,
+  strictly inside the proposal's own interval (a re-targeted rate's bracketing pair, a
+  midpoint's pair; below r_5, or above r_U, for an outward extension), within 10 steps of the
+  3-digit grid (``SUBSTITUTE_STEPS``). Without one, or for any other coverage miss that
+  re-targeting cannot repair, the round runs nothing, as at discovery. Every other part of the
+  algorithm is unchanged, and the discovery rounds keep it whole. Every replacement goes through
+  a new check. An arm whose allowance is spent
   stops at its next unusable rate, or when its re-selection has no feasible triple, and is
   judged as above.
   The replay keeps the allowance across the candidate's visits: spent at the three-arm visit, it
@@ -349,7 +357,14 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   amendment 3's primary-arm validation. Ambiguous records (a second run of an arm, rate and
   seed, a run at an unfrozen rate) give no verdict (``passes`` None). The validation seeds are
   reused from candidate to candidate at the new batch and rates: a run of the same arm, batch,
-  rate and seed is the same run.
+  rate and seed is the same run. A failed validation fails the candidate, except a technical
+  shortfall (the coordinator's ruling on C3, review fa22; ``_technical_shortfall``; the 10 of 12
+  unchanged): fewer than 10 blocks jointly supported, no instability stop, no utility bound
+  computed above its limit, every FA control accepted, and at least 10 blocks left when only
+  the blocks with an arm unsupported by K (bracketing or width) are counted lost; the blocks
+  lost by technical causes alone (runs given up, other stops, no finite K25) then decide the
+  shortfall, and the stage is ``blocked`` (technical) for a human decision. The same shortfall
+  with a cause in K moves on.
 - *The stage's records* (``progress``): a regular run of the three arms has the role of its seed
   (``study2_short.role``; Stage A's grids ``stage_a.role`` discovery; a time-course run
   timecourse, on seeds 3000-3009, with its own evaluation steps: *The time course*), the model,
@@ -369,7 +384,8 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 - *Validation and confirmation*: a candidate's validation blocks wait until every run of every
   arm at its rates on seeds 2100-2111 has its terminal record or was given up by the launcher; a
   run that is not there yet is not a failure. Then the verdict decides: ``confirmation`` when it
-  passes, the next candidate otherwise. A confirmation block is complete once every run of
+  passes, the next candidate otherwise, but ``blocked`` for a technical shortfall
+  (*Validation*). A confirmation block is complete once every run of
   every arm at its frozen rates is there or given up; for the looks also once the bracket runs
   of every arm supported in it are labeled (``look_blocks``: a run without a label file, or
   without a completed judging receipt matching it (``study2_labels.LabelsPending``), is not
@@ -562,6 +578,7 @@ SCOPE = "B=20"  # an ``infeasible`` stage's record: a B = 20 feasibility report
 # The unusable marks of a verdict (``_marks``' states) that are technical, never scientific
 TECHNICAL_MARKS = ("not_qualified", "control not_qualified")
 ALLOWANCE = "allowance_repair"  # the search allowance's repair round, in ``rounds``
+SUBSTITUTE_STEPS = 10  # how far that round looks, on the 3-digit grid, for an admissible rate
 LOOK_SIZES = (36, 60)  # supported blocks at looks 1 and 2 (decided 2026-10-16, coordinator)
 CAP = 80  # started blocks
 EQUIVALENCE = 0.05
@@ -761,10 +778,31 @@ def targeted_rates(records: Mapping[float, Mapping[str, Any]], upper: float) -> 
             found.append({"target": target, "rate": None, "reason": why})
             continue
         r0, k0, r1, k1 = pair
-        fraction = (math.log(target) - math.log(k0)) / (math.log(k1) - math.log(k0))
-        lr = math.exp(math.log(r0) + fraction * (math.log(r1) - math.log(r0)))
+        lr = _log_interpolated(target, r0, k0, r1, k1)
         found.append({"target": target, "rate": _three(lr), "between": [r0, r1]})
     return {"U": upper, "K_star": k_star(upper), "targets": found, "skipped": skipped}
+
+
+def _log_interpolated(target: float, r0: float, k0: float, r1: float, k1: float) -> float:
+    """The rate where ln K reaches ln ``target`` on the line through (ln r0, ln k0) and
+    (ln r1, ln k1), unrounded."""
+    fraction = (math.log(target) - math.log(k0)) / (math.log(k1) - math.log(k0))
+    return math.exp(math.log(r0) + fraction * (math.log(r1) - math.log(r0)))
+
+
+def _nearest_admissible(
+    exact: float, lo: float | None, hi: float | None, taken: Collection[float]
+) -> float | None:
+    """The rate of 3 significant digits nearest ``exact`` (ties to the smaller) strictly between
+    ``lo`` and ``hi`` (None: unbounded on that side) and not in ``taken``, among the
+    ``SUBSTITUTE_STEPS`` steps of the 3-digit grid on either side of ``exact`` rounded; None
+    when there is none."""
+    base = _three(exact)
+    step = 10.0 ** (math.floor(math.log10(base)) - 2)
+    found = {_three(base + k * step) for k in range(-SUBSTITUTE_STEPS, SUBSTITUTE_STEPS + 1)}
+    admissible = [lr for lr in found if lr > 0 and (lo is None or lr > lo)
+                  and (hi is None or lr < hi) and rate(lr) not in taken]  # fmt: skip
+    return min(admissible, key=lambda lr: (abs(lr - exact), lr), default=None)
 
 
 def _nearest_pair(points: Sequence[Mapping[str, Any]], kstar: float) -> dict[str, Any]:
@@ -850,6 +888,8 @@ def repair_rates(
     records: Mapping[float, Mapping[str, Any]],
     upper: float,
     w_max: float,
+    *,
+    unusable: Collection[float] = (),
 ) -> dict[str, Any]:
     """The one repair round from the best unconstrained triple, over ``records`` (every rate of
     the arm at the batch): a seed with no K below K* adds r_5 / 1.21; a seed with no K at or above
@@ -857,55 +897,89 @@ def repair_rates(
     pair; a target missed by more than 0.1 in ln K is re-targeted, its rate interpolated again
     over every usable rate (outside the usable range, the outward extension on its side). Rates
     rounded to 3 significant digits. A coverage miss whose repair rate is none or a rate already
-    run is ``unrepairable``: the candidate fails."""
+    run is ``unrepairable``: the candidate fails.
+
+    ``unusable`` (the search allowance's round; review fa22, the coordinator's ruling on C2): the
+    arm's rates found unusable at the batch by a numerical check. Their K still enters the
+    interpolation (only their numerics failed), but no proposal is one of them: a proposal
+    landing on one becomes the nearest admissible rate (``_nearest_admissible``: 3 significant
+    digits, nearest the unrounded proposal, neither run nor unusable, strictly inside the
+    proposal's own interval: the bracketing pair of a re-targeted rate or of a midpoint, below
+    r_5 or above r_U for an outward extension), listed under ``substituted``; with none within
+    ``SUBSTITUTE_STEPS`` steps, the proposal is ``unrepairable``."""
     if triple is None:
         return {"from": None, "rates": [], "reasons": ["no triple to repair from"],
-                "unrepairable": []}  # fmt: skip
+                "unrepairable": [], "substituted": []}  # fmt: skip
     r5, _, r_upper = triple["rates"]
     per_seed = triple["per_seed"]
+    existing = {rate(lr) for lr in records}
+    unusable = {rate(lr) for lr in unusable}
     proposals: list[dict[str, Any]] = []
+    unrepairable: list[str] = []
+    substituted: list[dict[str, Any]] = []
+
+    def propose(exact: float, lo: float | None, hi: float | None, reason: str) -> None:
+        """Propose the unrounded rate ``exact``, whose interval is (``lo``, ``hi``)."""
+        lr = _three(exact)
+        if rate(lr) not in unusable:
+            proposals.append({"rate": lr, "reason": reason})
+            return
+        other = _nearest_admissible(exact, lo, hi, existing | unusable)
+        substituted.append({"unusable": lr, "rate": other, "for": reason})
+        if other is None:
+            unrepairable.append(f"{reason}: {lr:g} is unusable at the batch and no admissible "
+                                f"rate lies within {SUBSTITUTE_STEPS} steps")  # fmt: skip
+        else:
+            proposals.append({"rate": other, "reason": f"{reason}: {lr:g} is unusable at the "
+                                                       f"batch, the nearest admissible rate is "
+                                                       f"{other:g}"})  # fmt: skip
+
     low = [seed for seed, b in per_seed.items() if b["lo"] is None]
     high = [seed for seed, b in per_seed.items() if b["hi"] is None]
     wide = [seed for seed, b in per_seed.items() if b["width"] is not None and b["width"] > w_max]
     if low:
-        proposals.append({"rate": _three(r5 / EXTENSION),
-                          "reason": f"no K below K* on seeds {low}: "
-                                    f"r_5 / {EXTENSION}"})  # fmt: skip
+        propose(r5 / EXTENSION, None, r5, f"no K below K* on seeds {low}: r_5 / {EXTENSION}")
     if high:
-        proposals.append({"rate": _three(r_upper * EXTENSION),
-                          "reason": f"no K at or above K* on seeds {high}: "
-                                    f"r_U × {EXTENSION}"})  # fmt: skip
+        propose(r_upper * EXTENSION, r_upper, None,
+                f"no K at or above K* on seeds {high}: r_U × {EXTENSION}")  # fmt: skip
     if wide:
         seed = max(wide, key=lambda s: per_seed[s]["width"])
         pair = per_seed[seed]
         lo, hi = pair["lo"]["rate"], pair["hi"]["rate"]
-        proposals.append({"rate": _three(math.sqrt(lo * hi)),
-                          "reason": f"bracket {pair['width']:.3f} wider than {w_max} on seed "
-                                    f"{seed}: midpoint of {lo:g} and {hi:g}"})  # fmt: skip
-    unrepairable = []
+        propose(math.sqrt(lo * hi), lo, hi, f"bracket {pair['width']:.3f} wider than {w_max} on "
+                f"seed {seed}: midpoint of {lo:g} and {hi:g}")  # fmt: skip
     retargeted = targeted_rates(records, upper)["targets"]
-    existing = {rate(lr) for lr in records}
     for target, deviation, entry in zip(targets(upper), triple["deviations"], retargeted,
                                         strict=True):  # fmt: skip
         if abs(deviation) <= COVERAGE:
             continue
-        lr, how = entry["rate"], "re-targeted over every usable rate"
-        if entry.get("reason") == "below the usable range":
-            lr, how = _three(r5 / EXTENSION), f"below the usable range: r_5 / {EXTENSION}"
-        elif entry.get("reason") == "above the usable range":
-            lr, how = _three(r_upper * EXTENSION), f"above the usable range: r_U × {EXTENSION}"
         missed = f"target {target:.4g} missed by {deviation:+.3f} in ln K"
-        if lr is None or rate(lr) in existing:
-            got = f"{entry['reason']}" if lr is None else f"{lr:g}, already run"
-            unrepairable.append(f"{missed}: {how} gives {got}")
+        how = "re-targeted over every usable rate"
+        if entry.get("reason") == "below the usable range":
+            exact, lo, hi = r5 / EXTENSION, None, r5
+            how = f"below the usable range: r_5 / {EXTENSION}"
+        elif entry.get("reason") == "above the usable range":
+            exact, lo, hi = r_upper * EXTENSION, r_upper, None
+            how = f"above the usable range: r_U × {EXTENSION}"
+        elif entry["rate"] is None:
+            unrepairable.append(f"{missed}: {how} gives {entry['reason']}")
+            continue
         else:
-            proposals.append({"rate": lr, "reason": f"{missed}: {how}"})
+            lo, hi = entry["between"]
+            exact = _log_interpolated(target, lo, records[lo]["median_K25"], hi,
+                                      records[hi]["median_K25"])  # fmt: skip
+        lr = _three(exact)
+        if rate(lr) in existing and rate(lr) not in unusable:
+            unrepairable.append(f"{missed}: {how} gives {lr:g}, already run")
+        else:
+            propose(exact, lo, hi, f"{missed}: {how}")
     return {
         "from": triple["rates"],
         "rates": list(dict.fromkeys(p["rate"] for p in proposals)),
         "reasons": [p["reason"] for p in proposals] + unrepairable or ["nothing to repair"],
         "proposals": proposals,
         "unrepairable": unrepairable,
+        "substituted": substituted,
     }
 
 
@@ -1418,14 +1492,16 @@ class _Replay:
         return [{"arm": arm, "batch": batch, "lr": lr, "seed": s} for lr in rates
                 for s in DISCOVERY_SEEDS if (arm, batch, lr, s) not in self.found]  # fmt: skip
 
-    def propose(self, kind, arm, batch, upper, selected) -> dict[str, Any]:
-        """The arm's ``kind`` round at the batch and U, over every run made at that batch."""
+    def propose(self, kind, arm, batch, upper, selected, unusable=()) -> dict[str, Any]:
+        """The arm's ``kind`` round at the batch and U, over every run made at that batch (a
+        repair round proposing none of ``unusable``: the search allowance's)."""
         records = self.records(arm, batch)
         if kind == "targeted":
             proposal = targeted_rates(records, upper)
             proposed = [t["rate"] for t in proposal["targets"] if t["rate"] is not None]
         else:
-            proposal = repair_rates(selected["best_unconstrained"], records, upper, self.w_max)
+            proposal = repair_rates(selected["best_unconstrained"], records, upper, self.w_max,
+                                    unusable=unusable)  # fmt: skip
             proposed = proposal["rates"]
         new = sorted(set(proposed) - self.rates[(arm, batch)])
         return {"kind": kind, "arm": arm, "batch": batch, "U": upper, "proposal": proposal,
@@ -1439,11 +1515,12 @@ class _Replay:
             return spent, False
         return self.propose(kind, arm, batch, upper, selected), True
 
-    def allowance_round(self, arm, batch, upper, selected, check: str) -> dict[str, Any]:
+    def allowance_round(self, arm, batch, upper, selected, check: str, unusable) -> dict:
         """The search allowance's repair round of the arm at the batch and U: ``repair_rates``
-        from the re-solve's best unconstrained triple, over every run made at the batch; spent
-        after the check ``check`` (its digest), which names its campaign."""
-        record = self.propose("repair", arm, batch, upper, selected)
+        from the re-solve's best unconstrained triple, over every run made at the batch, never
+        proposing one of the arm's rates ``unusable`` at the batch (review fa22, ruling on C2);
+        spent after the check ``check`` (its digest), which names its campaign."""
+        record = self.propose("repair", arm, batch, upper, selected, unusable)
         return {**record, "kind": ALLOWANCE, "after": check}
 
     def spend(self, record: dict[str, Any], *, prescribe: bool = True) -> None:
@@ -1753,9 +1830,10 @@ def feasibility_report(attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     the ``scientific`` failures (a failing rate, a rejected same-path control, no admissible
     triple, a validation failure and its findings: they moved the order on) apart from the
     ``technical`` ones (rates not qualified and numerical runs given up, which spent an
-    allowance and decided nothing; and the technical failures of validation runs, listed apart
-    though the validation they are part of counts as scientific), and the rates excluded up front
-    at the visit with their kind. A candidate the fallback skipped is named, with why."""
+    allowance and decided nothing; and the technical failures of validation runs, listed apart:
+    a validation failing with them failed for another reason too, since a shortfall they alone
+    make blocks the stage), and the rates excluded up front at the visit with their kind. A
+    candidate the fallback skipped is named, with why."""
     report = []
     for scope, arms in (("three arms", ARMS), ("primary pair", PRIMARY_ARMS)):
         for upper, batch in CANDIDATES:
@@ -2082,8 +2160,8 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
         if not going:
             continue
         # No feasible replacement triple: the allowance's one repair round, then a re-selection.
-        rounds = [replay.allowance_round(arm, batch, upper, selected[arm], check["name"])
-                  for arm in going]  # fmt: skip
+        rounds = [replay.allowance_round(arm, batch, upper, selected[arm], check["name"],
+                                         sorted(excluded[arm])) for arm in going]  # fmt: skip
         unrepairable = [r["arm"] for r in rounds if r["proposal"].get("unrepairable")]
         for spent_round in rounds:
             replay.spend(spent_round, prescribe=not unrepairable)
@@ -2202,7 +2280,9 @@ def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
     """The validation gate: the runs of every arm at its rates on seeds 2100-2111 (a run the
     launcher gave up on counts as a technical failure), then ``validation_verdict`` over the
     candidate's arms (the three arms, or the primary arms alone in the fallback); a failure
-    fails the candidate. Returns the pending step, if any."""
+    fails the candidate, but a shortfall of jointly supported blocks that only technical
+    failures make (``_technical_shortfall``) blocks the stage. Returns the pending step, if
+    any."""
     keys = _keys(rates, batch, VALIDATION_SEEDS)
     replay.called |= set(keys)
     gone = {key: replay.exhausted[key] for key in keys
@@ -2225,9 +2305,58 @@ def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
         attempt["outcome"] = "incomplete"
         return {"campaign": "incomplete", "problems": verdict["problems"]}
     if not verdict["passes"]:
-        _fail(attempt, arms, "the validation does not pass: " + "; ".join(verdict["reasons"]),
-              "validation")  # fmt: skip
+        reason = "the validation does not pass: " + "; ".join(verdict["reasons"])
+        shortfall = _technical_shortfall(verdict)
+        if shortfall is not None:
+            stops, kept = shortfall
+            return _block(replay, attempt, stops, f"{reason}: {kept} of {len(VALIDATION_SEEDS)} "
+                          "blocks would be jointly supported but for those lost to technical "
+                          "failures only, a technical shortfall", "validation")  # fmt: skip
+        _fail(attempt, arms, reason, "validation")
     return None
+
+
+def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], int] | None:
+    """A failed validation whose only fault is a shortfall below ``VALIDATION_MINIMUM`` jointly
+    supported blocks that the blocks lost to technical failures alone make (the coordinator's
+    ruling on C3; the threshold unchanged): no run stopped by an instability rule, no utility
+    failure (no member of the family whose upper bound was computed exceeds it: a family left
+    empty, or a member left without a bound, by the lost blocks is no utility failure), every FA
+    control accepted, and at least ``VALIDATION_MINIMUM`` blocks left once only the blocks with
+    an arm unsupported by K (``bracketing`` or ``width``) are counted lost. A block lost only by
+    arms whose cause is ``technical`` (a run given up by the launcher, another stop, no finite
+    K25) counts as technical. Returns, by arm, the technical failures of those blocks as marks
+    (with the launcher's label of a run given up) and the count of blocks left, or None when the
+    failure is not technical only."""
+    if len(verdict["jointly_supported"]) >= VALIDATION_MINIMUM:
+        return None  # no shortfall
+    exceeded = [member for member in (verdict.get("utility") or {}).get("family", [])
+                if any(member[f"{m}_upper_pp"] is not None and not member[f"{m}_passes"]
+                       for m in ("mmlu", "factual"))]  # fmt: skip
+    controls = any(r.startswith("FA controls not accepted") for r in verdict["reasons"])
+    if verdict.get("unstable") or exceeded or controls:
+        return None
+    supports = verdict["supports"]
+    lost = [seed for seed in supports if seed not in verdict["jointly_supported"]]
+    by_k = [seed for seed in lost
+            if any(not s["supported"] and s["cause"] != "technical"
+                   for s in supports[seed].values())]  # fmt: skip
+    kept = len(supports) - len(by_k)
+    if kept < VALIDATION_MINIMUM:
+        return None
+    labels = {(key[0], rate(key[2]), key[3]): label
+              for label, key in (verdict.get("exhausted") or {}).items()}  # fmt: skip
+    stops: dict[str, list] = defaultdict(list)
+    for seed in sorted(set(lost) - set(by_k)):
+        for arm, support in supports[seed].items():
+            for failure in support["failures"] if not support["supported"] else ():
+                label = labels.get((arm, failure["rate"], seed))
+                stops[arm].append({"arm": arm, "lr": failure["rate"], "state": "technical failure",
+                                   "why": f"validation block {seed}: {failure['run'] or 'no run'}"
+                                          f": {failure['reason']}",
+                                   "reasons": [f"given up by the launcher: {label}"]
+                                   if label else []})  # fmt: skip
+    return dict(stops), kept
 
 
 # ------------------------------------------------------------------ support and the estimator

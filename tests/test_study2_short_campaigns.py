@@ -1718,6 +1718,25 @@ def test_the_allowance_repair_campaign_and_the_blocked_stage(monkeypatch, tmp_pa
         assert "the stage is blocked by technical marks only" in err
         assert "frozen_adam_25 1.99e-05: not qualified (technical)" in err
         assert "a human decision" in err
+    # The summary's status shows the blocked step and, per attempt, its failures, its blocked
+    # arms, the kind of every rate excluded up front and each arm's allowance (C5).
+    script(monkeypatch, tmp_path, SUMMARY, runs, "--w-max", str(W_MAX), verdicts=verdicts)
+    shown = json.loads(capsys.readouterr().out)
+    step = shown["next"]
+    assert (step["campaign"], step["blocked"], step["at"], step["arms"]) == (
+        "incomplete", "technical", "numerical", [FA])  # fmt: skip
+    assert [(r["arm"], r["lr"], r["state"]) for r in step["rates"]] == [
+        (FA, 1.99e-5, "not_qualified")]  # fmt: skip
+    assert step["decision"].startswith("a technical non-qualification never decides")
+    assert step["allowances"][FA]["repair"]["rates"] == [1.99e-5]
+    at8, at7 = shown["attempts"]
+    assert (at8["outcome"], at8["failed_at"], at8["blocked_arms"]) == ("failed", "validation", [])
+    assert set(at8["failures"]) == set(ARMS) and at8["allowance"] == {}
+    assert (at7["outcome"], at7["blocked_arms"], at7["blocked_at"]) == ("blocked", [FA],
+                                                                        "numerical")  # fmt: skip
+    assert at7["allowance"][FA]["check"] == state["selection"]["attempts"][1]["numerical"][0][
+        "check"]  # fmt: skip
+    assert at7["allowance_carried"] == [] and set(at7["excluded_kinds"]) == set(ARMS)
 
 
 def test_no_b20_candidate_prints_the_feasibility_report(monkeypatch, tmp_path, capsys) -> None:

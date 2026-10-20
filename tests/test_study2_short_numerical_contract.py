@@ -437,10 +437,11 @@ def test_every_baseline_given_up_takes_the_technical_path(
     holding every rate and FA control not qualified (technical), with the tool's own GPU code.
     The selection reads it complete and takes the technical non-qualification path (review
     fa22): every arm spends its search allowance, re-solved once without those rates; in this
-    world no arm has a feasible triple without them, and the allowance's repair round cannot
-    replace them (re-targeting gives the excluded rates back), so the stage is blocked for a
-    human decision, never moved on to the next candidate (the frozen rules before fa22 failed
-    the candidate here and went on to (7, 20)). The check is never asked for again."""
+    world no arm has a feasible triple without them, so the allowance's repair round follows,
+    proposing no unusable rate (the coordinator's ruling on C2): the next step is that
+    ``repair`` campaign at (8, 20), never the next candidate (the frozen rules before fa22 failed
+    the candidate here and went on to (7, 20)), never instability. The check is never asked for
+    again."""
     root = tmp_path / "runs"  # no numerical run: the launcher gave up on every one
     root.mkdir()
     no_gpu(monkeypatch)
@@ -482,21 +483,22 @@ def test_every_baseline_given_up_takes_the_technical_path(
     assert {(u["arm"], u["lr"]) for u in entry["unusable"]} == requested
     assert {u["state"] for u in entry["unusable"]} == {"not_qualified", "control not_qualified"}
     # The technical path (review fa22): one re-solve per arm, its allowance, infeasible without
-    # those rates; the allowance's repair round cannot repair, so the stage is blocked by
-    # technical marks only, never as instability, and no other candidate follows
+    # those rates; then the allowance's repair round at (8, 20), proposing none of them; never
+    # a failure, never instability, and no other candidate follows
     first = after["attempts"][0]
     assert {arm: len(a["selections"]) for arm, a in first["arms"].items()} == {
         arm: n + 1 for arm, n in solved.items()}  # fmt: skip
     assert not any(a["selections"][-1]["feasible"] for a in first["arms"].values())
     assert set(first["allowance"]) == set(solved)  # each arm spent its own
-    assert (first["outcome"], first["failed_at"], first["failed_arms"]) == ("blocked", None, [])
-    assert len(after["attempts"]) == 1
+    assert (first["outcome"], first["failed_at"], first["failed_arms"]) == ("pending", None, [])
+    assert len(after["attempts"]) == 1 and first["reasons"] == []
     step = after["next"]
-    assert (step["campaign"], step["blocked"], step["at"], step["U"]) == (
-        "incomplete", "technical", "numerical", 8.0)  # fmt: skip
-    assert step["arms"] and set(step["arms"]) <= set(solved)
-    assert {r["state"] for r in step["rates"]} <= {"not_qualified", "control not_qualified"}
-    assert "without a feasible triple once the unusable rates are dropped" in step["reasons"][0]
-    assert "stopped by technical marks only" in step["reasons"][0]
-    assert "instability" not in step["reasons"][0]
+    assert (step["campaign"], step["U"], step["allowance"]) == ("repair", 8.0, check["name"])
+    unusable = {(u["arm"], u["lr"]) for u in entry["unusable"]}
+    asked = {(r["arm"], r["lr"]) for r in step["runs"]}
+    assert (
+        asked and not asked & unusable and {r["seed"] for r in step["runs"]} == {2000, 2001, 2002}
+    )
+    assert {arm for arm, _ in asked} <= set(solved)
+    assert all(a["rounds"][-1]["kind"] == "allowance_repair" for a in first["arms"].values())
     assert at()["next"] == after["next"]  # read again: the check is not asked for again

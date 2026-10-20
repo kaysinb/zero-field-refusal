@@ -19,8 +19,10 @@ recovery round has ended, or that attempt is in the abandonment record --abandon
 under $RUNS_DIR outside the checkout's tracked tree and archived with an inventory); an attempt
 that may still be running keeps its run pending. The status is the stage's state
 machine (analysis.study2_short.progress), on K, numerics and utility only: the candidates (U, B)
-in amendment 4's order with their costs, every attempt (its selections, numerical checks and
-validation) and round, amendment 3's FA controls (reported with their verdicts, never used), the
+in amendment 4's order with their costs (B = 20 only, review fa22), every attempt (its
+selections, numerical checks and validation, its failures, its arms blocked by technical marks
+only, the kind of every rate excluded up front, and each arm's search allowance, spent there or
+carried) and round, amendment 3's FA controls (reported with their verdicts, never used), the
 frozen rates, the validation verdict, the support of the confirmation blocks with the counts of
 the confirmation loop (the first block without runs, the block the next range starts at, after
 the blocks of the ranges the launcher started too, the supported blocks complete in order,
@@ -30,7 +32,9 @@ to the cap), the mechanism cohort's
 state (``mechanism``, amendment 4, section 3, on K and support only: the blocks started, the
 jointly supported ones complete in order, whether the cohort has ended, by 60 jointly supported
 blocks or at the cap of 80 started and complete, and its attrition by reason; a two-arm selection
-has none), the problems of the records, and the next campaign. The time
+has none), the problems of the records, and the next campaign (a stage ``blocked`` by technical
+marks only with its gate, arms, rates and reasons; an ``infeasible`` one with its B = 20
+feasibility report). The time
 course's runs (amendment 4, section 4) are split from the others where they are loaded
 (analysis.study2_short.split_timecourse): no look, label read, utility family, sensitivity or
 contrast ever sees them; the status prints their counts with the failed and missing runs per
@@ -250,8 +254,14 @@ def _attempt(a: dict[str, Any]) -> dict[str, Any]:
     validation = a.get("validation")
     return {"batch": a["batch"], "U": a["U"], "three_arm": a["three_arm"],
             "resolve_carried": a.get("resolve_carried", False),
-            "outcome": a["outcome"], "failed_arms": a["failed_arms"], "reasons": a["reasons"],
-            "excluded": a["excluded"],
+            "outcome": a["outcome"], "failed_arms": a["failed_arms"],
+            "failed_at": a.get("failed_at"), "failures": a.get("failures", {}),
+            "blocked_arms": a.get("blocked_arms", []), "blocked_at": a.get("blocked_at"),
+            "reasons": a["reasons"], "excluded": a["excluded"],
+            "excluded_kinds": a.get("excluded_kinds", {}),
+            # The search allowance per arm (review fa22), spent here or carried from pass 1
+            "allowance": a.get("allowance", {}),
+            "allowance_carried": a.get("allowance_carried", []),
             "arms": {arm: [_selection(s) for s in d["selections"]]
                      for arm, d in a["arms"].items()},
             "numerical": [{k: e.get(k) for k in ("check", "verdict", "state", "reasons",
