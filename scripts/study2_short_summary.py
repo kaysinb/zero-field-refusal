@@ -34,8 +34,9 @@ has none), the problems of the records, and the next campaign. The time
 course's runs (amendment 4, section 4) are split from the others where they are loaded
 (analysis.study2_short.split_timecourse): no look, label read, utility family, sensitivity or
 contrast ever sees them; the status prints their counts with the failed and missing runs per
-seed and arm (``timecourse``), and OUT.json's ``progress.timecourse`` reports each (its identity
-with its endpoint run), without labels. ``scalars`` reports the update scalars' coverage of every
+seed and arm (``timecourse``), and OUT.json's ``progress.timecourse`` reports each (its numerical
+consistency with its endpoint run: identical, consistent, excluded or pending, review fa21),
+without labels. ``scalars`` reports the update scalars' coverage of every
 regular run of every role (analysis.study2_short.scalars_coverage): whether update_scalars.jsonl
 exists with one row per update step (1-25 for a run that finished) and, for the pre-warmed arm,
 the denominator's departure at steps 5, 10 and 25; a gap is reported and gates nothing.
@@ -61,9 +62,9 @@ analysis.study2_short.mechanism_analysis: C1 = pre-warmed − FA and C2 = AdamW 
 the cohort, their sum against AdamW − FA, the max-t intervals at the fixation record's
 ``mechanism`` level with their critical value, the per-contrast 97.5 % intervals beside them,
 the readings, the attrition, the missing-label sensitivities, and each cohort block's harm and
-missing labels per arm) and the time course with its labels (harm per step of each run identical
-to its endpoint run). Before, ``final`` says "not yet" with the reason, and no label is read for
-it.
+missing labels per arm) and the time course with its labels (harm per step of each run
+numerically consistent with its endpoint run: identical or consistent). Before, ``final`` says
+"not yet" with the reason, and no label is read for it.
 --judge refuses without the committed versions record (--versions FILE, default
 docs/study2-short-versions.json), or when the running commit, the model, the judge's identity
 or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json then
@@ -110,6 +111,7 @@ from zero_field_refusal.analysis.study2_short import (
     CAP,
     CONFIRMATION_SEEDS,
     FA_CONTROL_ARM,
+    IDENTITY_COUNTED,
     LOOK_SIZES,
     PREWARMED,
     PRIMARY_ARMS,
@@ -367,16 +369,17 @@ def _sealed(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def read_timecourse_labels(state, courses, judge: str) -> tuple[dict, dict[str, str]]:
-    """The label rows of the time course's identical runs (``progress``'s ``timecourse``), by run
-    id, and those whose labels are pending, with the reason, as ``read_labels`` reads them: only
-    in the final analysis (amendment 4, section 4: sealed until then)."""
+    """The label rows of the time course's runs that count (``progress``'s ``timecourse``:
+    identical or numerically consistent with their endpoint run, ``IDENTITY_COUNTED``, review
+    fa21), by run id, and those whose labels are pending, with the reason, as ``read_labels``
+    reads them: only in the final analysis (amendment 4, section 4: sealed until then)."""
     by_id = {run.run_id: run for run in courses}
     identity = judge_identity(load_config(f"judge/{judge}"))
     prompts: dict[str, dict[str, str]] = {}
     labels: dict[str, list[dict[str, Any]]] = {}
     pending: dict[str, str] = {}
     for entry in state["timecourse"]["trajectories"]:
-        if entry["state"] != "identical":
+        if entry["state"] not in IDENTITY_COUNTED:
             continue
         run = by_id[entry["run"]]
         if not label_path(run.run_dir, judge).is_file():

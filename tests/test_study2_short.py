@@ -1064,7 +1064,8 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
                                "gaussian": {"p3": 3, "p4": 4},
                                "reference": "float64 loss, accumulation and optimizer "
                                             "arithmetic; fallback float64 loss and accumulation "
-                                            "only"}  # fmt: skip
+                                            "only",
+                               "twin_a_consistency": {"abs": 1e-08, "rel": 0.0001}}  # fmt: skip
 
 
 def test_numerical_verdict_reads_the_tools_record() -> None:
@@ -1127,6 +1128,15 @@ def _gpu(record, **changes):
          "stale", "gaussian None"),
         (lambda r: {**r, "policy": {**r["policy"], "reference": "float64"}}, "stale",
          "reference 'float64', frozen 'float64 loss, accumulation"),
+        # Review fa21: twin A's consistency rule is frozen; a verdict without it departs
+        (lambda r: {**r, "policy": {k: v for k, v in r["policy"].items()
+                                    if k != "twin_a_consistency"}}, "stale",
+         "twin_a_consistency None, frozen {'abs': 1e-08, 'rel': 0.0001}"),
+        (lambda r: {**r, "policy": {**r["policy"],
+                                    "twin_a_consistency": {"abs": 1e-08, "rel": 0.001}}},
+         "stale", "twin_a_consistency {'abs': 1e-08, 'rel': 0.001}, frozen"),
+        (lambda r: {**r, "policy": {**r["policy"], "twin_a_consistency": None}}, "stale",
+         "twin_a_consistency None"),
         (lambda r: _gpu(r, commit="g" * 40, sha256=GPU["g" * 40]), "stale",
          "numerical runs ran another GPU code"),
         (lambda r: _gpu(r, sha256="other"), "stale", "is not the identity of"),
@@ -1159,6 +1169,23 @@ def test_incomplete_or_stale_verdict_is_not_a_pass(change, state, reason) -> Non
     found = read(change(verdict_of(request_check())))
     assert found["state"] == state and found["unusable"] == []
     assert any(reason in r for r in found["reasons"]), found["reasons"]
+
+
+def test_the_tools_tracked_consistency_rule_must_be_the_frozen_one(monkeypatch) -> None:
+    """Review fa21: the selection restates twin A's consistency rule (``NUMERICAL_POLICY``); the
+    numerical-check tool's tracked settings must hold the same, or no verdict decides."""
+    record = verdict_of(request_check())
+    assert record["policy"]["twin_a_consistency"] == {"abs": 1e-08, "rel": 0.0001}
+    assert numerical_policy(8.0)["twin_a_consistency"] == {"abs": 1e-08, "rel": 0.0001}
+    assert read(record)["state"] == "complete"
+    tool = study2_short._tool_policy()
+    assert tool["twin_a_consistency"] == study2_short.NUMERICAL_POLICY["twin_a_consistency"]
+    other = {**tool, "twin_a_consistency": {"abs": 1e-08, "rel": 0.001}}
+    monkeypatch.setattr(study2_short, "_tool_policy", lambda: other)
+    found = read(record)
+    assert found["state"] == "stale"
+    assert ("policy the numerical-check tool's twin_a_consistency {'abs': 1e-08, 'rel': 0.001}, "
+            "frozen {'abs': 1e-08, 'rel': 0.0001}") in found["reasons"]  # fmt: skip
 
 
 def test_a_verdict_holds_across_analysis_only_commits_and_not_gpu_changes() -> None:
@@ -2421,7 +2448,11 @@ def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: 
         "monitor.jsonl": [{"step": t, "K_monitor": k(t), "grad_norm": 0.3,
                            "displacement_norm": 0.01 * t} for t in range(5, 26, 5)],
         "update_scalars.jsonl": [{"step": t, "update_norm": 1e-3 * t,
-                                  "cos_update_grad": 0.0 if t == 3 else 0.5}
+                                  "cos_update_grad": 0.0 if t == 3 else 0.5,
+                                  # the denominator's departure, as the pre-warmed arm records it
+                                  **({"d_departure": {"norm_ratio": 0.01 * t, "median": 1e-3 * t,
+                                                      "p90": 2e-3 * t}}
+                                     if t in (5, 10, 25) else {})}
                                  for t in range(1, 26)],
     }  # fmt: skip
     for record, rows in records.items():
@@ -2438,19 +2469,29 @@ def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: 
                                evaluate_at=evaluate_at)  # fmt: skip
 
 
+def tolerance_away(x: float, factor: float) -> float:
+    """y > x > 0 with y − x = factor·(abs + rel·max(|x|, |y|)): ``factor`` times twin A's
+    tolerance (review fa21)."""
+    rule = study2_short.NUMERICAL_POLICY["twin_a_consistency"]
+    return (x + factor * rule["abs"]) / (1 - factor * rule["rel"])
+
+
 def test_timecourse_identity(tmp_path) -> None:
-    """A time-course run against its endpoint run (amendment 4, section 4): identical whatever
-    the timings, memory peaks and K_harmful (never read); excluded on a one-bit difference in any
-    compared record; pending without its endpoint run."""
+    """A time-course run against its endpoint run (amendment 4, section 4; review fa21:
+    numerical consistency): identical whatever the timings, memory peaks and K_harmful (never
+    read); consistent when only the named numerical fields differ, within twin A's tolerance;
+    excluded just over it, on a value not finite, or on a one-bit difference in any other field;
+    pending without its endpoint run."""
     from zero_field_refusal.analysis.study2_short import timecourse_identity
 
     endpoint = recorded(tmp_path, "endpoint", (25,))
     course = recorded(tmp_path, "course", (1, 5, 10, 25), other=0.125)
     assert timecourse_identity(course, endpoint) == {"state": "identical", "reasons": [],
-                                                     "endpoint": "endpoint",
+                                                     "endpoint": "endpoint", "bitwise_equal": True,
                                                      "rayleigh_equal": None}  # fmt: skip
     waiting = ["its endpoint run is not there yet"]
-    pending = {"state": "pending", "reasons": waiting, "endpoint": None, "rayleigh_equal": None}
+    pending = {"state": "pending", "reasons": waiting, "endpoint": None, "bitwise_equal": None,
+               "rayleigh_equal": None}  # fmt: skip
     assert timecourse_identity(course, None) == pending
 
     def edited(record: str, edit, run: Trajectory = course) -> Trajectory:
@@ -2468,27 +2509,92 @@ def test_timecourse_identity(tmp_path) -> None:
     def bump(row: dict, key: str) -> None:  # one bit: the next float up
         row[key] = math.nextafter(row[key], math.inf)
 
+    def move(row: dict, key: str, factor: float) -> None:  # ``factor`` times the tolerance
+        row[key] = tolerance_away(row[key], factor)
+
     def training(rows: list, step: int) -> dict:
         return next(r for r in rows if r["step"] == step and "loss" in r)
 
+    def monitored(rows: list, step: int) -> dict:  # the monitor's K, logged in metrics.jsonl
+        return next(r for r in rows if r["step"] == step and "K_monitor" in r)
+
+    def departure(rows: list, key: str, factor: float) -> None:
+        rows[9]["d_departure"][key] = tolerance_away(rows[9]["d_departure"][key], factor)
+
+    def several(*edits):
+        def edit(rows: list) -> None:
+            for one in edits:
+                one(rows)
+
+        return edit
+
     final = course.evaluations[-1]
+
+    def evaluated(**changes) -> Trajectory:  # the step-25 evaluation changed
+        return dataclasses.replace(course, evaluations=[*course.evaluations[:3],
+                                                        {**final, **changes}])  # fmt: skip
+
+    # Review fa21: each named numerical field half the tolerance away is consistent
+    consistent = {
+        "training": edited("metrics.jsonl", several(
+            lambda rows: move(training(rows, 7), "grad_norm", 0.5),
+            lambda rows: move(training(rows, 3), "loss", 0.5),
+            lambda rows: move(training(rows, 24), "nll_per_token", 0.5),
+            lambda rows: move(monitored(rows, 9), "K_monitor", 0.5))),
+        "one bit": edited("metrics.jsonl", lambda rows: bump(training(rows, 7), "grad_norm")),
+        "the evaluation's row": edited("metrics.jsonl", several(
+            lambda rows: move(rows[-1], "eval/K_benign", 0.5),
+            lambda rows: move(rows[-1], "eval/benchmark_accuracy", 0.5))),
+        "monitor": edited("monitor.jsonl", lambda rows: move(rows[2], "K_monitor", 0.5)),
+        "update scalars": edited("update_scalars.jsonl", several(
+            lambda rows: move(rows[4], "update_norm", 0.5),
+            lambda rows: move(rows[4], "cos_update_grad", 0.5),
+            lambda rows: departure(rows, "median", 0.5),
+            lambda rows: departure(rows, "p90", 0.5),
+            lambda rows: departure(rows, "norm_ratio", 0.5))),
+        "negative zero": edited("update_scalars.jsonl",
+                                lambda rows: rows[2].update(cos_update_grad=-0.0)),
+        "the evaluation": evaluated(K_benign=tolerance_away(final["K_benign"], 0.5),
+                                    K_monitor=tolerance_away(final["K_monitor"], 0.5),
+                                    factual_accuracy=tolerance_away(0.8, 0.5)),
+    }  # fmt: skip
+    for name, run in consistent.items():
+        found = timecourse_identity(run, endpoint)
+        assert found == {"state": "consistent", "reasons": [], "endpoint": "endpoint",
+                         "bitwise_equal": False, "rayleigh_equal": None}, name  # fmt: skip
     cases = {
-        # Step 7's training row, the 9th outside the evaluations (step 4's K_monitor row first).
-        "the training's metrics.jsonl rows differ from the endpoint run's from row 8": edited(
-            "metrics.jsonl", lambda rows: bump(training(rows, 7), "grad_norm")),
-        "the metrics.jsonl rows of the endpoint's evaluations differ": edited(
-            "metrics.jsonl", lambda rows: bump(rows[-1], "eval/K_benign")),
-        "the monitor.jsonl readings differ from the endpoint run's from row 2": edited(
+        # Just over the tolerance. Step 7's training row is the 9th outside the evaluations
+        # (step 4's K_monitor row first)
+        "the training's metrics.jsonl rows are not numerically consistent with the endpoint "
+        "run's from row 8 (30 rows against 30): grad_norm": edited(
+            "metrics.jsonl", lambda rows: move(training(rows, 7), "grad_norm", 1.01)),
+        "the metrics.jsonl rows of the endpoint's evaluations are not numerically consistent": (
+            edited("metrics.jsonl", lambda rows: move(rows[-1], "eval/K_benign", 1.01))),
+        "the update_scalars.jsonl rows are not numerically consistent with the endpoint run's "
+        "from row 9 (25 rows against 25): d_departure.p90": edited(
+            "update_scalars.jsonl", lambda rows: departure(rows, "p90", 1.01)),
+        "the endpoint's evaluations are not numerically consistent": evaluated(
+            K_benign=tolerance_away(final["K_benign"], 1.01)),
+        # A value not finite
+        "loss nan against 0.16666666666666666, outside the tolerance": edited(
+            "metrics.jsonl", lambda rows: training(rows, 5).update(loss=math.nan)),
+        "update_norm inf against 0.005, outside the tolerance": edited(
+            "update_scalars.jsonl", lambda rows: rows[4].update(update_norm=math.inf)),
+        # Every other field exactly: a one-bit difference in a number not named, a count, a
+        # step, a discrete outcome, the stop, the streams
+        "the monitor.jsonl readings are not numerically consistent with the endpoint run's from "
+        "row 2 (5 rows against 5): grad_norm": edited(
             "monitor.jsonl", lambda rows: bump(rows[2], "grad_norm")),
-        "the update_scalars.jsonl rows differ from the endpoint run's from row 2": edited(
-            "update_scalars.jsonl", lambda rows: rows[2].update(cos_update_grad=-0.0)),
-        "the streams read differ": edited(
+        "tokens 907 against 906": edited(
+            "metrics.jsonl", lambda rows: training(rows, 6).update(tokens=907)),
+        "step 7 against 8": edited("update_scalars.jsonl", lambda rows: rows[7].update(step=7)),
+        "levels [8.0] against []": evaluated(levels=[8.0]),
+        "condition 'step-24' against 'step-25'": evaluated(condition="step-24"),
+        "the streams read are not numerically consistent": edited(
             "meta.json", lambda rows: rows[0]["inputs"]["streams"]["training"].update(count=480)),
-        "the endpoint's evaluations differ": dataclasses.replace(course, evaluations=[
-            *course.evaluations[:3],
-            {**final, "K_benign": math.nextafter(final["K_benign"], math.inf)}]),
-        "the stop and the steps taken differ": dataclasses.replace(
+        "the stop and the steps taken are not numerically consistent": dataclasses.replace(
             course, terminal={**course.terminal, "stop": {"reason": "gradient_spike"}}),
+        "a row missing": edited("update_scalars.jsonl", lambda rows: rows.pop()),
         "is of ('adamw_25', 20, 1.48e-05, 3001)": dataclasses.replace(endpoint, seed=3001),
         "a record does not read": edited("update_scalars.jsonl", lambda rows: None),
         # A missing record never compares as equal (review of Task 5, M2).
@@ -2502,10 +2608,37 @@ def test_timecourse_identity(tmp_path) -> None:
         found = timecourse_identity(mine, theirs)
         assert found["state"] == "excluded", reason
         assert len(found["reasons"]) == 1 and reason in found["reasons"][0], found["reasons"]
+        assert found["bitwise_equal"] is (None if reason.startswith(("is of", "a record", "has no"))
+                                          else False), reason  # fmt: skip
     # Missing from both runs: still excluded, never identical.
     both = timecourse_identity(cases["has no update_scalars.jsonl"],
                                edited("update_scalars.jsonl", None, endpoint))  # fmt: skip
     assert both["state"] == "excluded" and "a record does not read" in both["reasons"][0]
+
+    # NaN on both sides: identical bit for bit, but never consistent
+    def nan(rows: list) -> None:
+        rows[2]["cos_update_grad"] = math.nan
+
+    both_nan = edited("update_scalars.jsonl", nan, endpoint)
+    assert timecourse_identity(edited("update_scalars.jsonl", nan), both_nan)["state"] == (
+        "identical")  # fmt: skip
+    found = timecourse_identity(edited("update_scalars.jsonl", several(
+        nan, lambda rows: move(rows[4], "update_norm", 0.5))), both_nan)  # fmt: skip
+    assert found["state"] == "excluded" and found["reasons"] == [
+        "the update_scalars.jsonl rows are not numerically consistent with the endpoint run's "
+        "from row 2 (25 rows against 25): cos_update_grad nan against nan, outside the "
+        "tolerance"]  # fmt: skip
+    # A value inside the tolerance before a field that is not: excluded from that row, its reason
+    mixed = edited(
+        "metrics.jsonl",
+        several(
+            lambda rows: move(training(rows, 7), "loss", 0.5),
+            lambda rows: training(rows, 9).update(tokens=1),
+        ),
+    )
+    found = timecourse_identity(mixed, endpoint)
+    assert found["state"] == "excluded" and len(found["reasons"]) == 1
+    assert "from row 10" in found["reasons"][0] and "tokens 1 against 909" in found["reasons"][0]
     # The time course's own evaluations (steps 1, 5, 10) are not the endpoint's to compare.
     early = dataclasses.replace(course, evaluations=[
         {**course.evaluations[0], "K_benign": 99.0}, *course.evaluations[1:]])  # fmt: skip
@@ -2534,7 +2667,7 @@ def test_timecourse_identity_reports_the_rayleigh_records_beside(tmp_path) -> No
     assert found()["rayleigh_equal"] is None  # the time course has none
     write(course, seconds=41.5, peak_allocated_gb=33.0)
     assert found() == {"state": "identical", "reasons": [], "endpoint": "endpoint",
-                       "rayleigh_equal": True}  # fmt: skip
+                       "bitwise_equal": True, "rayleigh_equal": True}  # fmt: skip
     write(course, delta_H_delta=math.nextafter(measured["delta_H_delta"], 1.0))
     assert found()["rayleigh_equal"] is False and found()["state"] == "identical"
     write(course, R=None, reason="failed: OutOfMemoryError: …", delta_norm=None,

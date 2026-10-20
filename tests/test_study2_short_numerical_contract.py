@@ -112,6 +112,42 @@ def test_a_tool_verdict_reads_with_no_stale_reason(world) -> None:  # noqa: F811
                                               "0.081)"]  # fmt: skip
 
 
+def test_the_consistency_rule_crosses_from_the_settings_to_the_selection(world) -> None:  # noqa: F811
+    """Review fa21: twin A's consistency rule, frozen in the tracked settings, is the tool's
+    (``NumericalScope.policy``, the comparator's own), every verdict the tool writes carries it,
+    and the selection freezes it; a written verdict without it, or with another rule, departs
+    from the policy and decides nothing."""
+    rule = {"abs": 1e-08, "rel": 0.0001}
+    assert OmegaConf.to_container(settings().numerical.twin_a_consistency) == rule
+    assert scope().consistency_rule == tool.TWIN_A_CONSISTENCY == rule
+    assert numerical_policy(8)["twin_a_consistency"] == rule
+    qualified = built(world, RATES)
+    path = f"numerical/b20-u8/verdicts/{numerical_digest(by_arm(RATES))}.json"
+    assert read_numerical(world)[path]["policy"]["twin_a_consistency"] == rule
+    read = numerical_verdict(qualified, 20, 8.0, by_arm(RATES), {RUN_COMMIT}, reuse)
+    assert (read["state"], read["reasons"]) == ("complete", [])
+
+    def without(verdict):
+        return {**verdict, "policy": {key: value for key, value in verdict["policy"].items()
+                                      if key != "twin_a_consistency"}}  # fmt: skip
+
+    def another(verdict):
+        return {
+            **verdict,
+            "policy": {**verdict["policy"], "twin_a_consistency": {"abs": 1e-08, "rel": 0.001}},
+        }
+
+    for change, why in (
+        (without, "twin_a_consistency None, frozen {'abs': 1e-08, 'rel': 0.0001}"),
+        (another, "twin_a_consistency {'abs': 1e-08, 'rel': 0.001}, frozen"),
+    ):
+        built(world, RATES, change=change)
+        written = read_numerical(world)[path]
+        read = numerical_verdict(written, 20, 8.0, by_arm(RATES), {RUN_COMMIT}, reuse)
+        assert read["state"] == "stale" and read["unusable"] == []
+        assert any(why in reason for reason in read["reasons"]), read["reasons"]
+
+
 def test_tool_verdicts_drive_the_selection(world) -> None:  # noqa: F811
     """The selection asks for its check; the tool's verdict of it, qualified, lets the selection
     go on to validation. A verdict marking AdamW's K* rate failing re-solves AdamW, and the

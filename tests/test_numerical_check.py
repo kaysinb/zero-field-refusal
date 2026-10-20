@@ -35,6 +35,7 @@ from zero_field_refusal import fa_control_diagnostic as fcd
 from zero_field_refusal.config import load_config
 from zero_field_refusal.models import freeze, install_neutral_generation_config, set_numerics
 from zero_field_refusal.optim import Adam
+from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.runtime import Environment
 from zero_field_refusal.schedule import run_scheduled
 
@@ -193,7 +194,10 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
         "tool_commit": [COMMIT, LATER], "norm": 5e-05, "gaussian": {"p3": 3, "p4": 4},
         "survival_share": 0.5, "retry_scale": 10, "bound": BOUND, "steps": EVAL_AT,
         "reference": "float64 loss, accumulation and optimizer arithmetic; fallback float64 "
-                     "loss and accumulation only"}  # fmt: skip
+                     "loss and accumulation only",
+        "twin_a_consistency": {"abs": 1e-08, "rel": 0.0001}}  # fmt: skip
+    # Review fa21: the tracked rule is the comparator's own, the same for every arm and batch
+    assert s.consistency_rule == fcd.TWIN_A_CONSISTENCY == {"abs": 1e-08, "rel": 0.0001}
     n = settings().numerical
     assert n.evaluation == "k_only" and n.harmful_generation is False
     assert "rates" not in n  # the rates come from the selection, never from the scope
@@ -231,9 +235,19 @@ def test_numerical_cases_are_the_frozen_scope() -> None:
                     {"perturbation": {**FROZEN["perturbation"], "gaussian": {"p3": 7, "p4": 8}}},
                     {"perturbation": {**FROZEN["perturbation"], "rounding_scale": 1000}},
                     {"perturbation": {**FROZEN["perturbation"], "survival_share": 0.1}},
-                    {"eval_at": [1, 25]}, {"seeds": [1, 2, 3]}):  # fmt: skip
+                    {"eval_at": [1, 25]}, {"seeds": [1, 2, 3]},
+                    {"twin_a_consistency": {"abs": 1e-08, "rel": 0.001}}):  # fmt: skip
         assert not s.same_policy({**FROZEN, **changed}), changed
     assert not s.same_policy(None) and not s.same_policy({"norm": 5e-5})
+    # A record written before review fa21 (no rule in its settings) is not of this scope
+    assert not s.same_policy({k: v for k, v in FROZEN.items() if k != "twin_a_consistency"})
+    for rule in (None, {"abs": 1e-8}, {"abs": 1e-8, "rel": -1.0}, {"abs": 1e-8, "rel": math.inf},
+                 {"abs": 1e-8, "rel": 1e-4, "fields": ["loss"]}):  # fmt: skip
+        bad = {k: v for k, v in FROZEN.items() if k != "twin_a_consistency"}
+        if rule is not None:
+            bad["twin_a_consistency"] = rule
+        with pytest.raises(fcd.NumericalError, match="twin_a_consistency"):
+            fcd.NumericalScope.of(OmegaConf.create({"numerical": bad}))
     # The declarative keys too: settings claiming harmful generation are no scope (review nit)
     assert dict(s.declared) == {"evaluation": '"k_only"', "harmful_generation": "false"}
     for changed in ({"harmful_generation": True}, {"evaluation": "full"}, {"extra": 1}):
@@ -424,6 +438,310 @@ def test_prewarmed_float64_reference_matches_optim(mode) -> None:
     torch.testing.assert_close(b.data, a.data, rtol=1e-5, atol=1e-6)
 
 
+# ------------------------------------------------- twin A against its archive (review fa21)
+
+RULE = fcd.TWIN_A_CONSISTENCY
+STREAMS = {"training": {"path": "teacher/m/training/seed-2200", "count": 120, "sha256": "t",
+                        "chunks": ["c0"]},
+           "preconditioner": {"path": "teacher/m/preconditioner/seed-2200", "sha256": "p",
+                              "count": 1000}}  # fmt: skip
+
+
+def deviated(x: float, factor: float) -> float:
+    """y > x > 0 with y − x = factor·(abs + rel·max(|x|, |y|)): ``factor`` times the tolerance."""
+    return (x + factor * RULE["abs"]) / (1 - factor * RULE["rel"])
+
+
+def training_rows(steps: int = 6) -> list[dict]:
+    return [{"step": t, "loss": 1.0 + 0.125 * t, "denominator": 480.0, "tokens": 400 + t,
+             "nll_per_token": 1.25 + 0.125 * t, "grad_norm": 3.0 + t}
+            for t in range(steps)]  # fmt: skip
+
+
+def readings(steps: int = 6) -> list[dict]:
+    return [{"step": t, "K_monitor": 0.75 * t} for t in range(3, steps + 1, 3)]
+
+
+def archived_run(tmp_path, rows, monitor, *, stop=("steps", "limit"), steps=None,
+                 streams=STREAMS) -> Path:  # fmt: skip
+    """An archived regular run as ``compare_archive`` reads it: metrics.jsonl (the training rows,
+    with the monitor's rows and timings beside them), monitor.jsonl, terminal.json and meta.json's
+    streams."""
+    run_dir = tmp_path / f"run-{len(list(tmp_path.iterdir()))}"
+    run_dir.mkdir()
+    metrics = [{**row, "time_s": 0.5 * n} for n, row in enumerate(rows)]
+    metrics += [{"step": r["step"] - 1, "time_s": 9.0, "K_monitor": r["K_monitor"]}
+                for r in monitor]  # fmt: skip
+    (run_dir / "metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in metrics))
+    (run_dir / "monitor.jsonl").write_text("".join(json.dumps({**r, "grad_norm": 0.5}) + "\n"
+                                                   for r in monitor))  # fmt: skip
+    terminal = {"stop": {"reason": stop[0], "kind": stop[1]},
+                "steps": len(rows) if steps is None else steps}  # fmt: skip
+    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    (run_dir / "meta.json").write_text(json.dumps({"inputs": {"streams": streams}}))
+    return run_dir
+
+
+def compared(tmp_path, rows, monitor, *, rerun_rows=None, rerun_monitor=None, end=None,
+             streams=None, **archive):  # fmt: skip
+    """``compare_archive`` of a re-run (by default the archived rows and readings, copied)
+    against an archive of ``rows`` and ``monitor``."""
+    run_dir = archived_run(tmp_path, rows, monitor, **archive)
+    mine = [dict(r) for r in (rows if rerun_rows is None else rerun_rows)]
+    theirs = [dict(r) for r in (monitor if rerun_monitor is None else rerun_monitor)]
+    return fcd.compare_archive(mine, theirs, run_dir, end=end, streams=streams)
+
+
+def test_within_tolerance_is_the_frozen_rule() -> None:
+    assert fcd.within_tolerance(3.0, 3.0, RULE) and fcd.within_tolerance(0.0, -0.0, RULE)
+    assert fcd.within_tolerance(0.0, 0.5e-8, RULE) and not fcd.within_tolerance(0.0, 2e-8, RULE)
+    for x in (1e-6, 0.3, 3.0, 4321.0):
+        assert fcd.within_tolerance(x, deviated(x, 0.5), RULE)
+        assert fcd.within_tolerance(deviated(x, 0.5), x, RULE)  # symmetric
+        assert not fcd.within_tolerance(x, deviated(x, 1.01), RULE)
+        assert not fcd.within_tolerance(-x, -deviated(x, 1.01), RULE)
+    for bad in (math.nan, math.inf, -math.inf, None, True, "3.0"):
+        assert not fcd.within_tolerance(bad, 3.0, RULE) and not fcd.within_tolerance(3.0, bad, RULE)
+    assert not fcd.within_tolerance(math.nan, math.nan, RULE)
+    assert not fcd.within_tolerance(math.inf, math.inf, RULE)
+
+
+def test_a_bitwise_equal_rerun_is_consistent(tmp_path) -> None:
+    rows, monitor = training_rows(), readings()
+    found = compared(tmp_path, rows, monitor, end={"steps": 6, "stop": None, "diverged": False},
+                     streams=STREAMS)  # fmt: skip
+    assert found["bitwise_equal"] and found["consistent"]
+    assert found["rule"] == {"abs": 1e-08, "rel": 0.0001, "fields": list(fcd.TOLERANCED)}
+    assert found["max_abs"] == found["max_rel"] == dict.fromkeys(fcd.TOLERANCED, 0.0)
+    assert found["max_abs_K_monitor"] == 0.0
+    assert (found["out_of_tolerance"], found["exact_mismatches"], found["mismatch_count"],
+            found["mismatches"]) == (0, 0, 0, [])  # fmt: skip
+    assert (found["steps_compared"], found["monitor_compared"]) == (6, 2)
+    assert found["end"]["equal"] and all(s["equal"] for s in found["streams"].values())
+
+
+def test_a_deviation_inside_the_tolerance_is_consistent(tmp_path) -> None:
+    """Half the tolerance in each toleranced field is consistent (not bit for bit); 1.01 times
+    it in any one of them is not, and the reason names the field, the step and the values."""
+    rows, monitor = training_rows(), readings()
+    archived = [dict(r) for r in rows]
+    archived[2]["loss"] = deviated(rows[2]["loss"], 0.5)
+    archived[3]["grad_norm"] = deviated(rows[3]["grad_norm"], 0.5)
+    archived[4]["nll_per_token"] = deviated(rows[4]["nll_per_token"], 0.5)
+    k_archived = [dict(r) for r in monitor]
+    k_archived[1]["K_monitor"] = deviated(monitor[1]["K_monitor"], 0.5)
+    found = compared(tmp_path, archived, k_archived, rerun_rows=rows, rerun_monitor=monitor)
+    assert found["consistent"] and not found["bitwise_equal"]
+    assert found["out_of_tolerance"] == 0 and found["mismatch_count"] == 4
+    assert all(m["within"] for m in found["mismatches"])
+    assert {(m["key"], m["step"]) for m in found["mismatches"]} == {
+        ("loss", 2),
+        ("grad_norm", 3),
+        ("nll_per_token", 4),
+        ("K_monitor", 6),
+    }
+    diff = archived[3]["grad_norm"] - rows[3]["grad_norm"]
+    assert found["max_abs"]["grad_norm"] == diff
+    assert found["max_rel"]["grad_norm"] == diff / archived[3]["grad_norm"]
+    k_diff = k_archived[1]["K_monitor"] - monitor[1]["K_monitor"]
+    assert found["max_abs_K_monitor"] == found["max_abs"]["K_monitor"] == k_diff
+    for key, step in (("loss", 2), ("grad_norm", 3), ("nll_per_token", 4)):
+        over = [dict(r) for r in archived]
+        over[step][key] = deviated(rows[step][key], 1.01)
+        found = compared(tmp_path, over, k_archived, rerun_rows=rows, rerun_monitor=monitor)
+        assert not found["consistent"] and found["out_of_tolerance"] == 1, key
+        first = found["mismatches"][0]
+        assert (first["key"], first["step"], first["within"]) == (key, step, False)
+        reason = fcd.inconsistency(found)
+        assert reason.startswith(f"twin A is not numerically consistent with its archived run: "
+                                 f"{key} at step {step}: rerun {rows[step][key]!r}, archived "
+                                 f"{over[step][key]!r} (|Δ| ")  # fmt: skip
+        assert "more" not in reason  # the one value outside
+    over = [dict(r) for r in k_archived]
+    over[0]["K_monitor"] = deviated(monitor[0]["K_monitor"], 1.01)
+    found = compared(tmp_path, archived, over, rerun_rows=rows, rerun_monitor=monitor)
+    assert not found["consistent"] and found["out_of_tolerance"] == 1
+    assert "K_monitor at step 3" in fcd.inconsistency(found)
+
+
+@pytest.mark.parametrize("change", ["missing row", "extra row", "reordered rows", "tokens",
+                                    "denominator", "missing field", "extra monitor step",
+                                    "missing monitor step", "reordered monitor steps"])  # fmt: skip
+def test_the_exact_facts_are_exact(tmp_path, change) -> None:
+    """A missing, extra or reordered row, a tokens or denominator difference, a field missing,
+    and a missing, extra or reordered monitor step are mismatches whatever the tolerance."""
+    rows, monitor = training_rows(), readings()
+    mine, theirs = [dict(r) for r in rows], [dict(r) for r in monitor]
+    if change == "missing row":
+        del mine[3]
+    elif change == "extra row":
+        mine.append({**mine[-1], "step": 6})
+    elif change == "reordered rows":
+        mine[2], mine[3] = mine[3], mine[2]
+    elif change in ("tokens", "denominator"):
+        mine[4][change] += 1
+    elif change == "missing field":
+        del mine[1]["nll_per_token"]
+    elif change == "extra monitor step":
+        theirs.append({"step": 9, "K_monitor": 7.0})
+    elif change == "missing monitor step":
+        del theirs[0]
+    else:
+        theirs.reverse()
+    found = compared(tmp_path, rows, monitor, rerun_rows=mine, rerun_monitor=theirs)
+    assert not found["consistent"], change
+    assert found["exact_mismatches"] + found["out_of_tolerance"] >= 1
+    first = found["mismatches"][0]
+    expected = {"missing row": "training steps", "extra row": "training steps",
+                "reordered rows": "training steps", "extra monitor step": "monitor steps",
+                "missing monitor step": "monitor steps",
+                "reordered monitor steps": "monitor steps"}  # fmt: skip
+    if change in expected:
+        assert first["what"] == expected[change] and not first["within"]
+    else:
+        assert first["key"] == {"missing field": "nll_per_token"}.get(change, change)
+    assert fcd.inconsistency(found).startswith("twin A is not numerically consistent")
+
+
+@pytest.mark.parametrize(("rerun", "archived", "bitwise"), [
+    (math.nan, 1.5, False), (1.5, math.nan, False), (math.inf, 1.5, False),
+    (1.5, -math.inf, False), (math.nan, math.nan, False), (math.inf, math.inf, True)])  # fmt: skip
+def test_a_value_not_finite_is_never_consistent(tmp_path, rerun, archived, bitwise) -> None:
+    """NaN or ±∞ on either side is a mismatch, even where both sides match bitwise (the old
+    flag, kept as it was, reads two infinities as equal); the maxima are then ∞."""
+    rows, monitor = training_rows(), readings()
+    mine, theirs = [dict(r) for r in rows], [dict(r) for r in rows]
+    mine[2]["loss"], theirs[2]["loss"] = rerun, archived
+    found = compared(tmp_path, theirs, monitor, rerun_rows=mine)
+    assert not found["consistent"] and found["bitwise_equal"] is bitwise
+    assert found["out_of_tolerance"] == 1 and found["max_abs"]["loss"] == math.inf
+    reason = fcd.inconsistency(found)
+    assert "loss at step 2" in reason and "(not finite)" in reason
+
+
+def test_the_maxima_are_over_every_value_not_the_capped_list(tmp_path) -> None:
+    """More than 50 values differ (within the tolerance): the list keeps 50, the count all of
+    them, and the maxima come from every row, the largest being past the list's end."""
+    rows = training_rows(60)
+    archived = [dict(r) for r in rows]
+    for row in archived[:-1]:
+        row["loss"] = deviated(row["loss"], 0.25)
+        row["grad_norm"] = deviated(row["grad_norm"], 0.25)
+    archived[-1]["grad_norm"] = deviated(rows[-1]["grad_norm"], 0.75)  # step 59: the largest
+    found = compared(tmp_path, archived, readings(60), rerun_rows=rows)
+    assert found["consistent"] and found["mismatch_count"] == 119 > 50
+    assert len(found["mismatches"]) == fcd.MISMATCHES_KEPT == 50
+    assert 59 not in {m["step"] for m in found["mismatches"]}
+    largest = archived[-1]["grad_norm"] - rows[-1]["grad_norm"]
+    assert found["max_abs"]["grad_norm"] == largest
+    assert found["max_rel"]["grad_norm"] == largest / archived[-1]["grad_norm"]
+    relative = [(a["loss"] - r["loss"]) / a["loss"] for a, r in zip(archived, rows, strict=True)]
+    assert found["max_rel"]["loss"] == max(relative)
+    # Outside the rule, the failing value comes first in the capped list, and the reason names it
+    x, y = rows[-1]["grad_norm"], deviated(rows[-1]["grad_norm"], 2.0)
+    archived[-1]["grad_norm"] = y
+    found = compared(tmp_path, archived, readings(60), rerun_rows=rows)
+    assert not found["consistent"] and found["mismatches"][0]["step"] == 59
+    assert fcd.inconsistency(found) == (
+        f"twin A is not numerically consistent with its archived run: grad_norm at step 59: "
+        f"rerun {x!r}, archived {y!r} (|Δ| {y - x:.3g} > {RULE['abs'] + RULE['rel'] * y:.3g})"
+    )
+
+
+@pytest.mark.parametrize(("end", "archived", "equal"), [
+    ({"steps": 6, "stop": None, "diverged": False}, (("steps", "limit"), 6), True),
+    ({"steps": 4, "stop": "non-finite loss or gradient at step 3", "diverged": True},
+     (("steps", "limit"), 6), False),
+    ({"steps": 6, "stop": None, "diverged": False}, (("gradient_spike", "instability"), 6), False),
+    ({"steps": 6, "stop": None, "diverged": False}, (("steps", "limit"), 5), False),
+    ({"steps": 6, "stop": None, "diverged": True}, (("steps", "limit"), 6), False)])  # fmt: skip
+def test_the_stop_is_exact(tmp_path, end, archived, equal) -> None:
+    """The re-run's end against the archived run's stop (reason and kind) and steps: a re-run
+    that took every step, neither stopped nor diverged, is a run stopped by its steps."""
+    (stop, steps) = archived
+    found = compared(tmp_path, training_rows(), readings(), end=end, stop=stop, steps=steps)
+    assert found["end"]["equal"] is equal and found["consistent"] is equal
+    assert found["bitwise_equal"]  # the old flag never read the stop
+    if not equal:
+        assert found["mismatches"][0]["what"] == "the stop"
+        assert found["end"]["archived"] == {"reason": stop[0], "kind": stop[1], "steps": steps}
+
+
+def test_the_streams_are_compared_exactly(tmp_path) -> None:
+    """Provenance (review fa21): the training prefix and v₀'s preconditioner stream the re-run
+    read against those its run recorded, identity for identity (path, count, sha256, chunks),
+    however close the numbers; an arm that reads no v₀ has none on either side."""
+    rows, monitor = training_rows(), readings()
+    archived = [dict(r) for r in rows]
+    archived[2]["loss"] = deviated(rows[2]["loss"], 0.5)  # inside the tolerance
+    found = compared(tmp_path, archived, monitor, rerun_rows=rows, streams=STREAMS)
+    assert found["consistent"] and set(found["streams"]) == {"training", "preconditioner"}
+    for key, field, value in (("preconditioner", "sha256", "q"), ("preconditioner", "count", 999),
+                              ("training", "count", 116), ("training", "chunks", ["c1"]),
+                              ("training", "path", "teacher/m/training/seed-2201")):  # fmt: skip
+        mine = {**STREAMS, key: {**STREAMS[key], field: value}}
+        found = compared(tmp_path, archived, monitor, rerun_rows=rows, streams=mine)
+        assert not found["consistent"] and not found["streams"][key]["equal"], (key, field)
+        assert found["exact_mismatches"] == 1 and found["out_of_tolerance"] == 0
+        assert found["mismatches"][0]["what"] == f"the {key} stream"
+        assert found["streams"][key]["archived"] == STREAMS[key]
+    adaptive = {"training": STREAMS["training"], "preconditioner": None}
+    run_dir = archived_run(tmp_path, rows, monitor, streams={"training": STREAMS["training"]})
+    found = fcd.compare_archive(rows, monitor, run_dir, streams=adaptive)
+    assert found["consistent"] and found["streams"]["preconditioner"] == {
+        "rerun": None,
+        "archived": None,
+        "equal": True,
+    }
+    found = fcd.compare_archive(rows, monitor, run_dir, streams=STREAMS)  # v₀ the run never read
+    assert not found["consistent"] and found["mismatches"][0]["what"] == "the preconditioner stream"
+
+
+# The main checkout's archive of the first S2 check at B = 20, U = 8: under this checkout's runs/,
+# or that of the checkout holding it (a worktree), or where ``void`` moved it with its regular
+# runs (runs/void/<old GPU code>/). Read: the twin records' numbers and the archived regular
+# runs' metrics.jsonl and monitor.jsonl, nothing else.
+S2_TWINS = Path("numerical/b20-u8/twins/s2200")
+S2_RUNS = next((base for root in (REPO_ROOT, *REPO_ROOT.parents)
+                for base in (root / "runs", *sorted((root / "runs").glob("void/*")))
+                if (base / S2_TWINS).is_dir()), None)  # fmt: skip
+# The three cases whose twin A differed from its run bit for bit (S2's verdict f7cf42e3f76f)
+S2_DIFFERING = ("adam_frozen-1.34e-05", "adamw_prewarmed-1.62e-05", "adamw_prewarmed-2e-05")
+
+
+@pytest.mark.skipif(S2_RUNS is None, reason="the archived S2 check is not in this checkout")
+def test_the_archived_s2200_twins_are_consistent() -> None:
+    """Review fa21, 3: recomputed from the full rows (never the capped list), every attempt of
+    the three cases that S2 found unlike their runs is numerically consistent with its run, with
+    fa21's maxima: a largest relative deviation of 3.88e-6 (a gradient norm) and a largest
+    |ΔK_monitor| of 1.16e-5. The seed facts are the same in every record of the seed."""
+    largest = dict.fromkeys(fcd.TOLERANCED, 0.0), dict.fromkeys(fcd.TOLERANCED, 0.0)
+    differing = 0
+    for case in S2_DIFFERING:
+        for path in sorted((S2_RUNS / S2_TWINS / case).glob("attempt-*.json")):
+            record = json.loads(path.read_text())
+            twin = record["twin_A"]
+            assert (twin["steps"], twin["stop"], twin["diverged"]) == (25, None, False)
+            run_dir = S2_RUNS / record["regular_run_identity"]["run"]
+            found = fcd.compare_archive(twin["rows"], twin["monitor"], run_dir)
+            assert found["bitwise_equal"] is twin["archive"]["equal"], path
+            assert found["consistent"], (path, fcd.inconsistency(found))
+            assert (found["steps_compared"], found["monitor_compared"]) == (25, 5)
+            assert found["exact_mismatches"] == found["out_of_tolerance"] == 0
+            differing += not found["bitwise_equal"]
+            for key in fcd.TOLERANCED:
+                largest[0][key] = max(largest[0][key], found["max_abs"][key])
+                largest[1][key] = max(largest[1][key], found["max_rel"][key])
+    assert differing == 5  # FA 1.34e-5 twice, pre-warmed 1.62e-5 once, pre-warmed 2e-5 twice
+    assert max(largest[1].values()) == largest[1]["grad_norm"]  # a gradient norm's
+    assert largest[1]["grad_norm"] == pytest.approx(3.8833e-6, rel=1e-4)
+    assert largest[0]["K_monitor"] == pytest.approx(1.16397e-5, rel=1e-4)
+    assert largest[1]["K_monitor"] < 1.4e-6 and max(largest[1].values()) < 0.04 * RULE["rel"]
+    facts = {json.dumps(json.loads(path.read_text())["seed_facts"], sort_keys=True)
+             for path in (S2_RUNS / S2_TWINS).glob("*/attempt-*.json")}  # fmt: skip
+    assert len(facts) == 1
+
+
 # ------------------------------------------------------------------- records and their states
 
 ROUNDING = [{"scale": 1.0, "intended_norm": 5e-5, "realized_norm": 5e-5, "changed": 9,
@@ -445,7 +763,7 @@ def pair(last=0.001, *, values=None, steps=EVAL_AT, rounding=ROUNDING, stop=None
             "max_D_twin": fcd._largest(values)}  # fmt: skip
 
 
-def attempt(case, n=1, *, pairs=None, status="complete", equal=True, reason=None,
+def attempt(case, n=1, *, pairs=None, status="complete", consistent=True, reason=None,
             mode=fcd.FLOAT64_FULL, rounding=ROUNDING, settings_=None, named=None,
             intended=5e-05, **stamp):  # fmt: skip
     """A case's attempt as ``run_numerical_twins`` writes it; ``pairs`` maps a pair to its last
@@ -466,7 +784,8 @@ def attempt(case, n=1, *, pairs=None, status="complete", equal=True, reason=None
             "lr": case.lr, "batch": case.batch, "U": case.upper, "attempt": n,
             "intended_norm": intended, "status": status, "reason": reason,
             "regular_run_identity": identity_of(case) if named is None else named,
-            "twin_A": {"archive": {"equal": equal}}, "pairs": built}  # fmt: skip
+            "twin_A": {"archive": {"bitwise_equal": consistent, "consistent": consistent}},
+            "pairs": built}  # fmt: skip
     return stamped(body, settings_=settings_, **stamp)
 
 
@@ -536,7 +855,8 @@ def test_failing_pair_makes_rate_failing(world) -> None:
     assert qualify(records, found)["rates"][key] == "failing"
     # Failing (evidence) wins over not_qualified (technical) in another case of the rate
     other = by_name(found, 2200, "adam_frozen", 1.46e-05)
-    records[other.name] = {1: attempt(other, equal=False), 2: attempt(other, 2, equal=False)}
+    records[other.name] = {1: attempt(other, consistent=False),
+                           2: attempt(other, 2, consistent=False)}  # fmt: skip
     assert qualify(records, found)["rates"][key] == "failing"
     # A lost perturbation never counts as within; it can still exceed
     lost = [{"scale": 1.0, "intended_norm": 5e-5, "realized_norm": 0.0, "changed": 0,
@@ -596,7 +916,7 @@ def test_incomplete_twice_is_not_qualified(world) -> None:
     case = by_name(found, 2200, "adamw_prewarmed", 1.1e-05)
     key = "adamw_prewarmed|1.1e-05"
     for first in (
-        attempt(case, equal=False),
+        attempt(case, consistent=False),
         attempt(case, status="incomplete", reason="error: CUDA error"),
         attempt(case, pairs={"reference": None}),  # a missing pair
         attempt(case, pairs={"p2": pair(values=[0.001] * 5, steps=EVAL_AT[:5])}),
@@ -608,7 +928,7 @@ def test_incomplete_twice_is_not_qualified(world) -> None:
         assert out["rates"][key] == "incomplete"  # its rerun is due
         assert out["reasons"][key][0].startswith("case s2200: incomplete, its rerun not yet done")
         assert fcd.retry_due(records, found, reader=reader()) == [case]
-        records[case.name][2] = attempt(case, 2, equal=False)
+        records[case.name][2] = attempt(case, 2, consistent=False)
         out = qualify(records, found)
         assert out["rates"][key] == "not_qualified"
         reason = out["reasons"][key][0]
@@ -623,6 +943,15 @@ def test_incomplete_twice_is_not_qualified(world) -> None:
         assert not fcd.retry_due(records, found, reader=reader())
         records[case.name][2] = attempt(case, 2)  # a complete rerun within the bound
         assert qualify(records, found)["rates"][key] == "qualified"
+    # Review fa21: the gate is consistency; twin A unlike its archive bit for bit counts
+    records = within_all(found)
+    records[case.name][1]["twin_A"]["archive"]["bitwise_equal"] = False
+    assert qualify(records, found)["rates"][key] == "qualified"
+    records[case.name][1]["twin_A"]["archive"]["consistent"] = False
+    out = qualify(records, found)
+    assert out["rates"][key] == "incomplete"
+    assert out["reasons"][key] == ["case s2200: incomplete, its rerun not yet done: twin A is not "
+                                   "numerically consistent with its archived run"]  # fmt: skip
     # No first attempt, or one that does not count, is incomplete and not a rerun's due
     for first in (
         None,
@@ -867,9 +1196,9 @@ def test_verdict_schema(world, monkeypatch, capsys) -> None:
     # One rate failing, one not qualified, one incomplete with its rerun due, one fallback
     failing, technical, due, fallback = found[0], found[9], found[13], found[14]
     v = outcome({failing.name: {1: attempt(failing, pairs={"p1": 0.081}), 2: None},
-                 technical.name: {1: attempt(technical, equal=False),
-                                  2: attempt(technical, 2, equal=False)},
-                 due.name: {1: attempt(due, equal=False), 2: None},
+                 technical.name: {1: attempt(technical, consistent=False),
+                                  2: attempt(technical, 2, consistent=False)},
+                 due.name: {1: attempt(due, consistent=False), 2: None},
                  fallback.name: {1: attempt(fallback, mode=fcd.FLOAT64_ACCUMULATION),
                                  2: None}})  # fmt: skip
     assert v["qualified"] is False
@@ -994,7 +1323,7 @@ def test_a_dry_run_moves_nothing(world, monkeypatch, capsys) -> None:
     root = world
     out = fcd.numerical_root(20, 8, root)
     records = within_all(cases())
-    records[cases()[2].name][1] = attempt(cases()[2], equal=False)  # a rerun is due
+    records[cases()[2].name][1] = attempt(cases()[2], consistent=False)  # a rerun is due
     controls = {lr: {1: control(lr), 2: None} for lr in RATES["adam_frozen"]}
     write_records(out, records, controls)
     assert call(monkeypatch, script_argv("verdict", root)) == 0
@@ -1595,7 +1924,9 @@ def check_the_records(out, root, *, device, rule_gb=None):
         assert record["status"] == "complete", (case.name, record.get("reason"))
         host.append(record["provenance"]["host_memory"])
         assert the_reader.why_not(record, case) is None, case.name
-        assert record["twin_A"]["archive"]["equal"], case.name  # twin A is its run, bitwise
+        archived = record["twin_A"]["archive"]
+        assert archived["bitwise_equal"], case.name  # twin A is its run, bitwise
+        assert archived["consistent"] and archived["end"]["equal"], case.name  # review fa21
         assert set(record["pairs"]) == set(fcd.PAIRS)
         for key, p in record["pairs"].items():
             assert [r["step"] for r in p["D_twin"]] == [1, 3, 6], (case.name, key)
@@ -1737,28 +2068,76 @@ def test_the_parts_record_an_instability_stop(archive, tmp_path, monkeypatch, cl
     capsys.readouterr()
 
 
+def doctored(run_dir: Path, factor: float) -> tuple[float, float]:
+    """The archived run's first gradient norm moved up by ``factor`` times twin A's tolerance
+    (review fa21; twin A reproduces the tiny CPU runs bit for bit); returns (before, after)."""
+    metrics = run_dir / "metrics.jsonl"
+    rows = [json.loads(line) for line in metrics.read_text().splitlines()]
+    row = next(r for r in rows if "loss" in r)
+    before = row["grad_norm"]
+    row["grad_norm"] = deviated(before, factor)
+    metrics.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return before, row["grad_norm"]
+
+
+def test_a_twin_a_inside_the_tolerance_goes_on_to_the_pairs(archive, tmp_path, monkeypatch,
+                                                            clean_head) -> None:  # fmt: skip
+    """Review fa21: a doctored archive half the tolerance away from twin A. Twin A is consistent,
+    not bit for bit; the pairs and the reference run against it, and its rate qualifies as the
+    undoctored world's does."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    s = tiny_settings()
+    found = tiny_cases()
+    key = "adamw_prewarmed|0.0012"  # the pre-warmed U-rate: a case on each seed
+    mine = [c for c in found if c.key == key]
+    case = next(c for c in mine if c.seed == 1)
+    run_dir = fcd.locate_case(root, fcd.NumericalScope.of(s), case)
+    before, after = doctored(run_dir, 0.5)
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    done = fcd.run_numerical_twins(s, env, root, out, mine, attempt=1, setups=found,
+                                   code=consistent_code())  # fmt: skip
+    record = done[case.name]
+    assert record["status"] == "complete", record.get("reason")
+    assert set(record["pairs"]) == set(fcd.PAIRS)
+    archived = record["twin_A"]["archive"]
+    assert archived["consistent"] and not archived["bitwise_equal"]
+    assert archived["mismatches"] == [{"step": 0, "key": "grad_norm", "rerun": before,
+                                       "archived": after, "within": True}]  # fmt: skip
+    assert archived["max_abs"]["grad_norm"] == after - before
+    assert archived["end"]["equal"] and all(c["equal"] for c in archived["streams"].values())
+    assert archived["streams"]["preconditioner"]["rerun"] is not None  # v₀'s, compared
+    records = {c.name: {1: done[c.name], 2: None} for c in mine}
+    the_reader = tiny_reader(root)
+    assert fcd.attempt_state(record, case, reader=the_reader)["state"] == fcd.WITHIN
+    assert fcd.qualification(records, mine, reader=the_reader)["rates"] == {key: "qualified"}
+
+
 def test_a_twin_a_unlike_its_archive_is_incomplete_twice(
     archive, tmp_path, monkeypatch, clean_head, capsys
 ) -> None:
-    """A doctored archive: twin A differs, no pair is run, the case is incomplete; its rerun in
-    a fresh process (``twins --retry``) differs again, and the rate is not_qualified. The
-    record names the doctored run, as located when it ran."""
+    """A doctored archive just outside twin A's tolerance (1.01 times it, review fa21): twin A
+    is not consistent, no pair is run, the case is incomplete and its reason names the field,
+    the step and the values; its rerun in a fresh process (``twins --retry``) differs again,
+    and the rate is not_qualified. The record names the doctored run, as located when it ran."""
     env, root = copy_world(archive, tmp_path, monkeypatch)
     s = tiny_settings()
     found = tiny_cases()
     case = next(c for c in found if c.seed == 1 and c.optimizer == "adamw_prewarmed")
     run_dir = fcd.locate_case(root, fcd.NumericalScope.of(s), case)
-    metrics = run_dir / "metrics.jsonl"
-    rows = [json.loads(line) for line in metrics.read_text().splitlines()]
-    next(r for r in rows if "loss" in r)["grad_norm"] *= 1 + 1e-12
-    metrics.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    before, after = doctored(run_dir, 1.01)
     out = fcd.numerical_root(BATCH, UPPER, root)
     done = fcd.run_numerical_twins(s, env, root, out, [case], attempt=1, setups=found,
                                    code=consistent_code())  # fmt: skip
     first = done[case.name]
     assert first["status"] == "incomplete" and first["pairs"] == {}
-    assert first["reason"] == "twin A differs from its archived run"
-    assert first["twin_A"]["archive"]["mismatches"][0]["key"] == "grad_norm"
+    allowed = RULE["abs"] + RULE["rel"] * after
+    assert first["reason"] == (
+        f"twin A is not numerically consistent with its archived run: grad_norm at step 0: "
+        f"rerun {before!r}, archived {after!r} (|Δ| {after - before:.3g} > {allowed:.3g})"
+    )
+    archived = first["twin_A"]["archive"]
+    assert not archived["consistent"] and archived["out_of_tolerance"] == 1
+    assert archived["mismatches"][0]["key"] == "grad_norm"
     assert first["regular_run_identity"] == fcd.run_identity(run_dir)
     config = tmp_path / "settings.yaml"
     OmegaConf.save(s, config)
@@ -1779,6 +2158,41 @@ def test_a_twin_a_unlike_its_archive_is_incomplete_twice(
     # The cases without a first attempt are incomplete, their rerun not due
     assert verdict["rates"]["adamw|0.0008"] == "incomplete"
     assert verdict["provenance"]["retry_due"] == {"cases": [], "controls": []}
+
+
+def test_twin_a_reads_the_streams_its_run_read(archive, tmp_path, monkeypatch, clean_head) -> None:
+    """Provenance (review fa21): the streams twin A read, the training prefix and, for an arm
+    that reads v₀, the seed's preconditioner stream, are compared exactly with those its run
+    recorded (meta.json). A run that recorded another preconditioner stream is incomplete,
+    however equal its numbers; an AdamW case reads no v₀ and its run records none."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    s = tiny_settings()
+    found = tiny_cases()
+    the_scope = fcd.NumericalScope.of(s)
+    case, adamw = (next(c for c in found if c.seed == 2 and c.optimizer == arm)
+                   for arm in ("adamw_prewarmed", "adamw"))  # fmt: skip
+    path = fcd.locate_case(root, the_scope, case) / "meta.json"
+    meta = json.loads(path.read_text())
+    recorded = meta["inputs"]["streams"]["preconditioner"]
+    meta["inputs"]["streams"]["preconditioner"] = {**recorded, "sha256": "0" * 64}
+    path.write_text(json.dumps(meta))
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    done = fcd.run_numerical_twins(s, env, root, out, [case, adamw], attempt=1, setups=found,
+                                   code=consistent_code())  # fmt: skip
+    first = done[case.name]
+    assert first["status"] == "incomplete" and first["pairs"] == {}
+    archived = first["twin_A"]["archive"]
+    assert archived["bitwise_equal"] and not archived["consistent"]
+    assert archived["exact_mismatches"] == 1 and archived["out_of_tolerance"] == 0
+    assert archived["streams"]["preconditioner"]["rerun"] == recorded
+    assert archived["streams"]["training"]["equal"]
+    assert first["reason"].startswith("twin A is not numerically consistent with its archived "
+                                      "run: the preconditioner stream: rerun ")  # fmt: skip
+    other = done[adamw.name]
+    assert other["status"] == "complete", other.get("reason")
+    assert other["twin_A"]["archive"]["streams"]["preconditioner"] == {
+        "rerun": None, "archived": None, "equal": True}  # fmt: skip
+    assert other["twin_A"]["archive"]["streams"]["training"]["equal"]
 
 
 def test_the_reference_falls_back_in_a_case(archive, tmp_path, monkeypatch, clean_head) -> None:
@@ -2011,7 +2425,7 @@ def test_seed_setups_do_not_overlap(archive, tmp_path, monkeypatch, attempt, fai
         if case.seed == failing:
             assert record["reason"].startswith(f"the setup of seed {failing} failed: error: ")
         else:
-            assert record["status"] == "complete" and record["twin_A"]["archive"]["equal"]
+            assert record["status"] == "complete" and record["twin_A"]["archive"]["consistent"]
     for seed in TINY_SEEDS:  # every watched allocation was made, and is gone after the part
         made = sorted({label for label, _ in allocations.held[seed]})
         assert made == (WATCHED if seed != failing else [w for w in WATCHED if w != "p1 direction"])

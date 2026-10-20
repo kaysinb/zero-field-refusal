@@ -93,8 +93,9 @@ working directory included, which ``load_config`` would read first) unless they 
   ``torch_cuda``, the Python version, the package versions, and the container image when one is
   recorded) with this process's (``environment_check``). On a mismatch, as for the GPU code,
   ``plan`` exits 1 and ``control`` and ``twins`` record nothing and exit 7, naming each field.
-  Twin A reproduces its run bit for bit only in the environment that made it: the check runs
-  on the Pod (or the image, GPU and driver) of the numerical runs.
+  Twin A can be expected to reproduce its run (numerically consistent with it, within the
+  policy's ``twin_a_consistency``: review fa21) only in the environment that made it: the check
+  runs on the Pod (or the image, GPU and driver) of the numerical runs.
 - **Host memory** (the final review of gate B, M7): every control and twin record holds the
   process's peak resident memory and the free host memory when it was written
   (``provenance.host_memory``); the driver starts only with ``HOST_MEMORY_GB`` free.

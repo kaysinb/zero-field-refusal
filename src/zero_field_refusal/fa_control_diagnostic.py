@@ -69,11 +69,18 @@ benign panels, nothing written to a run record.
 - **Cases** (``numerical_cases``): every selected (arm, rate) on the first numerical seed, and
   each arm's U-rate on the others. Twin A is the regular run of that seed, arm, rate and B
   (experiment ``study2_short``, ``study2_short.role=numerical``), which must conform
-  (``conformance``) and is re-run bit for bit (``compare_archive``). Per seed (``twin_setup``,
-  ``seed_directions``), p1 and p2 are ±(−P·g), FA's first-update direction for the soft-target
-  residual g at θ₀ on batch 0 with generation-path targets, the same for every rate and arm;
-  p3 and p4 the fixed Gaussian directions. Every perturbation has the scope's fixed norm
-  (5e-5), whatever any control did; survival and the ×10 retry are Revision 3, 2's. The
+  (``conformance``) and is re-run; the re-run must be numerically consistent with it
+  (``compare_archive``, review fa21): the rows' steps, tokens and denominator, the monitor's
+  steps, the stop and the streams read (training prefix, v₀'s) exactly, the loss, gradient norm,
+  NLL per token and monitor K at every step within the policy's ``twin_a_consistency``
+  (|x − y| ≤ 1e-8 + 1e-4·max(|x|, |y|), both finite); the bitwise flag is kept beside it. A
+  rule chosen after observed numerical failures (fp32-level, harm unopened): it is not proof
+  that the deviations are harmless roundoff, and the pairs and the reference are unchanged.
+  Per seed (``twin_setup``, ``seed_directions``), p1 and p2 are ±(−P·g), FA's first-update
+  direction for the soft-target residual g at θ₀ on batch 0 with generation-path targets, the
+  same for every rate and arm; p3 and p4 the fixed Gaussian directions. Every perturbation has
+  the scope's fixed norm (5e-5), whatever any control did; survival and the ×10 retry are
+  Revision 3, 2's. The
   reference is the float64 run (pre-warmed Adam included, ``Float64Adam``), with its
   float64-memory fallback, recorded per case. D_twin is read at the scope's steps against
   0.01·K*(U), K*(U) = √(5U). The norm one fp32 rounding of θ₀ would leave is recorded as a
@@ -113,10 +120,11 @@ benign panels, nothing written to a run record.
   check executed (``code_identity.gpu_code_identity``), not to a commit. Nothing runs, and no
   record counts, unless the commit each regular run recorded has the check's GPU identity
   (``code_check``, ``require_code``).
-- **The run environment** (the final review of gate B, I3): twin A reproduces its run bit for
-  bit only where the run was made; ``environment_check`` compares each regular run's recorded
-  GPU names, driver, CUDA, Python, packages and container image with the check's
-  (``environment_departures``), and the script runs nothing on a mismatch. Each record holds
+- **The run environment** (the final review of gate B, I3): twin A can be expected to
+  reproduce its run (numerically consistent with it, review fa21) only where the run was made;
+  ``environment_check`` compares each regular run's recorded GPU names, driver, CUDA, Python,
+  packages and container image with the check's (``environment_departures``), and the script
+  runs nothing on a mismatch. Each record holds
   the host memory when it was written (``host_record``, M7).
 - **Voiding** (the final review of gate B, I2): after a GPU-path change the numerical runs made
   under the old GPU code can never be checked again; ``void_plan`` and ``void_numerical`` move
@@ -1285,32 +1293,204 @@ def apply_perturbation(
     return attempts
 
 
-def compare_archive(
-    rows: Sequence[Mapping[str, Any]], readings: Sequence[Mapping[str, Any]], run_dir: Path
-) -> dict[str, Any]:
-    """The re-run's per-step metrics and monitor K against the archived run's, bit for bit."""
-    archived = [r for r in read_jsonl(run_dir / "metrics.jsonl") if "loss" in r]
-    monitor = read_jsonl(run_dir / "monitor.jsonl")
+# Review fa21: a re-run's numerical consistency with its archived run. These fields are compared
+# within the rule; every other fact of the comparison is exact. The rule's values are the frozen
+# policy's (configs/experiments/numerical_check.yaml, ``twin_a_consistency``), the same for every
+# arm and batch.
+TWIN_A_CONSISTENCY = {"abs": 1e-08, "rel": 0.0001}
+TOLERANCED = ("loss", "grad_norm", "nll_per_token", "K_monitor")
+ROW_TOLERANCED = TOLERANCED[:3]  # of each training row; K_monitor of each monitor reading
+ROW_EXACT = ("tokens", "denominator")  # of each training row, beside its step index
+MISMATCHES_KEPT = 50  # the record's list of mismatches is capped, never its counts or maxima
+
+
+def within_tolerance(x: Any, y: Any, rule: Mapping[str, float]) -> bool:
+    """Review fa21's rule: two finite numbers with |x − y| ≤ abs + rel·max(|x|, |y|). A
+    non-finite value (or anything but a number) on either side is outside it, even when the two
+    sides are bitwise equal."""
+    return (_number(x) and _number(y)
+            and abs(x - y) <= rule["abs"] + rule["rel"] * max(abs(x), abs(y)))  # fmt: skip
+
+
+def _deviation(x: Any, y: Any) -> tuple[float, float]:
+    """|x − y| and |x − y| / max(|x|, |y|) (0 for two zeros); ∞ for both unless the two are finite
+    numbers, so that a non-finite value never hides under a maximum."""
+    if not (_number(x) and _number(y)):
+        return math.inf, math.inf
+    diff, scale = abs(x - y), max(abs(x), abs(y))
+    return diff, (diff / scale if scale > 0 else 0.0)
+
+
+def _bitwise_equal(
+    rows: Sequence[Mapping[str, Any]],
+    archived: Sequence[Mapping[str, Any]],
+    readings: Sequence[Mapping[str, Any]],
+    monitor: Sequence[Mapping[str, Any]],
+) -> bool:
+    """The comparison before review fa21, kept as it was (``bitwise_equal``): as many training
+    rows, each row's loss, gradient norm, NLL per token, tokens and denominator that the archived
+    row holds, the same monitor steps and each one's K, all bit for bit."""
     keys = ("loss", "grad_norm", "nll_per_token", "tokens", "denominator")
-    mismatches = []
     if len(archived) != len(rows):
-        mismatches.append({"what": "training steps", "rerun": len(rows), "archived": len(archived)})
-    for mine, theirs in zip(rows, archived, strict=False):
-        for key in keys:
-            if key in theirs and mine.get(key) != theirs[key]:
-                mismatches.append({"step": mine["step"], "key": key, "rerun": mine.get(key),
-                                   "archived": theirs[key]})  # fmt: skip
+        return False
+    for mine, theirs in zip(rows, archived, strict=True):
+        if any(key in theirs and mine.get(key) != theirs[key] for key in keys):
+            return False
     archived_k = {int(r["step"]): r["K_monitor"] for r in monitor}
     rerun_k = {int(r["step"]): r["K_monitor"] for r in readings}
-    if set(archived_k) != set(rerun_k):
-        mismatches.append({"what": "monitor steps", "rerun": sorted(rerun_k),
-                           "archived": sorted(archived_k)})  # fmt: skip
-    for step in sorted(set(archived_k) & set(rerun_k)):
-        if archived_k[step] != rerun_k[step]:
-            mismatches.append({"step": step, "key": "K_monitor", "rerun": rerun_k[step],
-                               "archived": archived_k[step]})  # fmt: skip
-    return {"run": str(run_dir), "equal": not mismatches, "steps_compared": len(archived),
-            "monitor_compared": len(archived_k), "mismatches": mismatches[:50]}  # fmt: skip
+    return archived_k == rerun_k
+
+
+def _read_object(path: Path) -> dict[str, Any] | None:
+    """A JSON object on disk, or None when it is missing or is not one."""
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def compare_archive(
+    rows: Sequence[Mapping[str, Any]],
+    readings: Sequence[Mapping[str, Any]],
+    run_dir: Path,
+    *,
+    end: Mapping[str, Any] | None = None,
+    streams: Mapping[str, Any] | None = None,
+    rule: Mapping[str, float] = TWIN_A_CONSISTENCY,
+) -> dict[str, Any]:
+    """The re-run's per-step metrics and monitor K against the archived run's (``run_dir``).
+
+    ``bitwise_equal`` is the comparison before review fa21, kept as it was (``_bitwise_equal``).
+    ``consistent`` is twin A's gate (review fa21): every exact fact equal and every toleranced
+    value within ``rule`` (``within_tolerance``):
+
+    - **exact**: the training rows' step indices, in order (a missing, extra or reordered row is
+      a mismatch), and each row's ``tokens`` and ``denominator``; the monitor's steps, in order;
+      with ``end`` (the re-run's ``steps``, ``stop`` and ``diverged``), the archived run's stop
+      (terminal.json: its reason and kind, and the steps taken): a re-run that took every step,
+      neither stopped nor diverged, is a run stopped by its steps (reason ``steps``, kind
+      ``limit``) after as many, and anything else differs; with ``streams`` (the re-run's
+      ``training`` prefix and ``preconditioner`` stream, None for an arm that reads none), the
+      streams the run recorded (meta.json), identity for identity;
+    - **within the tolerance**: ``loss``, ``grad_norm`` and ``nll_per_token`` of every training
+      row and ``K_monitor`` of every monitor reading (``TOLERANCED``), at every step compared.
+
+    The record holds the rule with its fields; per toleranced field the largest absolute and
+    relative deviation over every value compared (never over the capped list; ∞ when a value is
+    not finite; None when none was compared) and ``max_abs_K_monitor``; ``out_of_tolerance``,
+    the toleranced values outside the rule, and ``exact_mismatches``, the exact facts that
+    differ; and the mismatches, each fact or value that differs (``within`` true for a value
+    inside the tolerance), those outside first, the first ``MISMATCHES_KEPT`` kept, with their
+    count (``mismatch_count``). The run's identity (config hash, records' sha256) is bound
+    where the records are read (``RecordReader``)."""
+    archived = [r for r in read_jsonl(run_dir / "metrics.jsonl") if "loss" in r]
+    monitor = read_jsonl(run_dir / "monitor.jsonl")
+    outside: list[dict[str, Any]] = []  # the mismatches that fail the gate
+    inside: list[dict[str, Any]] = []  # the values that differ within the tolerance
+    deviations: dict[str, list[tuple[float, float]]] = {key: [] for key in TOLERANCED}
+    out_of_tolerance = 0
+    record: dict[str, Any] = {}
+
+    def exact(what: str, rerun: Any, theirs: Any) -> None:
+        outside.append({"what": what, "rerun": rerun, "archived": theirs, "within": False})
+
+    def toleranced(step: Any, key: str, rerun: Any, theirs: Any) -> None:
+        nonlocal out_of_tolerance
+        deviations[key].append(_deviation(rerun, theirs))
+        entry = {"step": step, "key": key, "rerun": rerun, "archived": theirs}
+        if not within_tolerance(rerun, theirs, rule):
+            out_of_tolerance += 1
+            outside.append({**entry, "within": False})
+        elif rerun != theirs:
+            inside.append({**entry, "within": True})
+
+    steps = ([r.get("step") for r in rows], [r.get("step") for r in archived])
+    if steps[0] != steps[1]:
+        exact("training steps", *steps)
+    mine_by_step = {r.get("step"): r for r in rows}
+    for theirs in archived:
+        step = theirs.get("step")
+        mine = mine_by_step.get(step)
+        if mine is None:  # a mismatch of the steps already
+            continue
+        for key in ROW_EXACT:
+            if key not in mine or key not in theirs or mine[key] != theirs[key]:
+                outside.append({"step": step, "key": key, "rerun": mine.get(key),
+                                "archived": theirs.get(key), "within": False})  # fmt: skip
+        for key in ROW_TOLERANCED:
+            toleranced(step, key, mine.get(key), theirs.get(key))
+    steps = ([r.get("step") for r in readings], [r.get("step") for r in monitor])
+    if steps[0] != steps[1]:
+        exact("monitor steps", *steps)
+    rerun_k = {r.get("step"): r.get("K_monitor") for r in readings}
+    for theirs in monitor:
+        if theirs.get("step") in rerun_k:
+            toleranced(theirs.get("step"), "K_monitor", rerun_k[theirs.get("step")],
+                       theirs.get("K_monitor"))  # fmt: skip
+    if end is not None:
+        terminal = _read_object(run_dir / "terminal.json") or {}
+        stop = terminal.get("stop") if isinstance(terminal.get("stop"), dict) else {}
+        theirs = {"reason": stop.get("reason"), "kind": stop.get("kind"),
+                  "steps": terminal.get("steps")}  # fmt: skip
+        mine = {key: end.get(key) for key in ("steps", "stop", "diverged")}
+        ended = {"reason": "steps", "kind": "limit", "steps": mine["steps"]}  # every step taken
+        alike = mine["stop"] is None and mine["diverged"] is False and theirs == ended
+        record["end"] = {"rerun": mine, "archived": theirs, "equal": alike}
+        if not alike:
+            exact("the stop", mine, theirs)
+    if streams is not None:
+        meta = _read_object(run_dir / "meta.json") or {}
+        recorded = (meta.get("inputs") or {}).get("streams") or {}
+        record["streams"] = {key: {"rerun": value, "archived": recorded.get(key),
+                                   "equal": value == recorded.get(key)}
+                             for key, value in streams.items()}  # fmt: skip
+        for key, check in record["streams"].items():
+            if not check["equal"]:
+                exact(f"the {key} stream", check["rerun"], check["archived"])
+    maxima = {key: (max(d[0] for d in found), max(d[1] for d in found)) if found else (None, None)
+              for key, found in deviations.items()}  # fmt: skip
+    mismatches = outside + inside
+    return {"run": str(run_dir), "bitwise_equal": _bitwise_equal(rows, archived, readings, monitor),
+            "consistent": not outside, "rule": {**rule, "fields": list(TOLERANCED)},
+            "steps_compared": len(archived), "monitor_compared": len(monitor),
+            "max_abs": {key: m[0] for key, m in maxima.items()},
+            "max_rel": {key: m[1] for key, m in maxima.items()},
+            "max_abs_K_monitor": maxima["K_monitor"][0], "out_of_tolerance": out_of_tolerance,
+            "exact_mismatches": len(outside) - out_of_tolerance, **record,
+            "mismatch_count": len(mismatches),
+            "mismatches": mismatches[:MISMATCHES_KEPT]}  # fmt: skip
+
+
+def _short(value: Any, limit: int = 160) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+def inconsistency(archive: Mapping[str, Any]) -> str:
+    """Why twin A is not numerically consistent with its archived run (``compare_archive``): its
+    first mismatch outside the rule, by field, step and values, and how many there are."""
+    found = [m for m in archive.get("mismatches") or [] if not m.get("within")]
+    total = (archive.get("out_of_tolerance") or 0) + (archive.get("exact_mismatches") or 0)
+    head = "twin A is not numerically consistent with its archived run"
+    if not found:
+        return head
+    first = found[0]
+    if "what" in first:
+        detail = (f"{first['what']}: rerun {_short(first['rerun'])}, archived "
+                  f"{_short(first['archived'])}")  # fmt: skip
+    else:
+        detail = (f"{first['key']} at step {first['step']}: rerun {first['rerun']!r}, archived "
+                  f"{first['archived']!r}")  # fmt: skip
+        x, y, rule = first["rerun"], first["archived"], archive.get("rule") or TWIN_A_CONSISTENCY
+        if first["key"] in TOLERANCED:
+            if _number(x) and _number(y):
+                allowed = rule["abs"] + rule["rel"] * max(abs(x), abs(y))
+                detail += f" (|Δ| {abs(x - y):.3g} > {allowed:.3g})"
+            else:
+                detail += " (not finite)"
+    more = f"; {total - 1} more" if total > 1 else ""
+    return f"{head}: {detail}{more}"
 
 
 @dataclass
@@ -2125,7 +2305,7 @@ def run_d3(
             write_json(record_path, record)
         else:
             raise DiagnosticError("D3 needs its determinism check first")
-        if not record["equal"]:
+        if not record["bitwise_equal"]:
             raise DeterminismFailure(f"The re-run of {record['run']} differs from its archive: "
                                      f"{record['mismatches'][:3]}; D3 stops")  # fmt: skip
         for name in cases:
@@ -2152,13 +2332,23 @@ def run_twin_a(
     run_dir: Path,
     checkpoints: Path,
     eval_at: Sequence[int],
+    *,
+    v0_stream: Mapping[str, Any],
+    rule: Mapping[str, float] = TWIN_A_CONSISTENCY,
 ) -> dict[str, Any]:
     """Twin A: the regular run of ``cfg`` re-run from θ₀ with its monitor, its trainable
     parameters saved to ``checkpoints`` at ``eval_at``, and compared with its archive
-    (``run_dir``) bit for bit (``archive``)."""
+    (``run_dir``; ``archive``, ``compare_archive``): bit for bit (``bitwise_equal``) and for
+    numerical consistency under ``rule`` (``consistent``, review fa21), with its stop and the
+    streams it read: the training prefix and, for an arm that reads v₀, ``v0_stream`` (the
+    setup's preconditioner stream)."""
     twins.reset()
     twin_a = run_twin(cfg, twins, eval_at=eval_at, monitor=monitor, save_dir=checkpoints)
-    twin_a["archive"] = compare_archive(twin_a["rows"], twin_a["monitor"], run_dir)
+    adaptive = ADAM_MODES.get(cfg.optimizer.name, "adaptive") == "adaptive"
+    streams = {"training": twins.prefix.identity(twin_a["steps"] * int(cfg.train.batch_size)),
+               "preconditioner": None if adaptive else dict(v0_stream)}  # fmt: skip
+    twin_a["archive"] = compare_archive(twin_a["rows"], twin_a["monitor"], run_dir, end=twin_a,
+                                        streams=streams, rule=rule)  # fmt: skip
     return twin_a
 
 
@@ -2232,11 +2422,12 @@ def run_case(
         raise DiagnosticError(f"{run_dir} ran at {cfg.optimizer.lr}, the case names {case.lr}")
     started = time.perf_counter()
     checkpoints = directory / "checkpoints" / case.name
-    twin_a = run_twin_a(cfg, twins, shared["monitor"], run_dir, checkpoints, eval_at)
+    twin_a = run_twin_a(cfg, twins, shared["monitor"], run_dir, checkpoints, eval_at,
+                        v0_stream=shared["v0_stream"])  # fmt: skip
     record = {"part": "d3", "case": case.name, "optimizer": case.optimizer, "lr": case.lr,
               "control_lr": case.control_lr, "regular_run": str(run_dir), "bound": bound,
               "K_star": twins.k_star, "eval_at": list(eval_at)}  # fmt: skip
-    if twin_a["stop"] is not None or not twin_a["archive"]["equal"]:
+    if twin_a["stop"] is not None or not twin_a["archive"]["bitwise_equal"]:
         _remove_checkpoints(checkpoints)
         twins.reset()
         reason = (f"twin A stopped: {twin_a['stop']}" if twin_a["stop"] is not None
@@ -2440,7 +2631,7 @@ def decide_branch(
     usable = {name: record for name, record in cases.items() if f"d3/{name}.json" not in stale}
 
     current = determinism is not None and "d3/determinism.json" not in stale
-    if current and not determinism.get("equal"):
+    if current and not determinism.get("bitwise_equal"):
         missing.append("D3 (stopped: the determinism check failed)")
     for name in prescribed:  # the expansion case is only reported (facts.expansion_status)
         record = usable.get(name)
@@ -2451,7 +2642,7 @@ def decide_branch(
         elif set(record.get("pairs") or {}) != set(PAIRS):
             missing.append(f"d3/{name}.json holds the pairs {sorted(record.get('pairs') or {})},"
                            f" not {list(PAIRS)}")  # fmt: skip
-        elif not ((record.get("twin_A") or {}).get("archive") or {}).get("equal"):
+        elif not ((record.get("twin_A") or {}).get("archive") or {}).get("bitwise_equal"):
             incomplete.append(f"d3/{name}.json: twin A differs from its archived run")
     if expansion in usable:
         facts["expansion_status"] = usable[expansion].get("status")
@@ -2472,11 +2663,11 @@ def decide_branch(
         facts["same_path_control"] = control
         facts["same_path_control_state"] = control["state"]
     facts["twin_A_equal"] = {name: ((record.get("twin_A") or {}).get("archive") or {})
-                             .get("equal") for name, record in usable.items()}  # fmt: skip
+                             .get("bitwise_equal") for name, record in usable.items()}  # fmt: skip
     facts["incomplete"] = incomplete
 
     def readable(record: Mapping[str, Any]) -> bool:
-        twin_a = ((record.get("twin_A") or {}).get("archive") or {}).get("equal")
+        twin_a = ((record.get("twin_A") or {}).get("archive") or {}).get("bitwise_equal")
         complete = record.get("status") != "incomplete"
         return bool(complete and twin_a and set(record.get("pairs") or {}) == set(PAIRS))
 
@@ -2557,7 +2748,7 @@ ROUNDING_LABEL = "heuristic, not a bound on accumulated error"
 # The settings' keys that NumericalScope reads; every other key of ``numerical`` is declarative
 SCOPE_KEYS = frozenset({"seeds", "arms", "primary_arms", "rates_per_arm", "control_arm", "regular",
                         "eval_at", "perturbation", "k_star_factor", "bound_fraction",
-                        "memory_rule_gb"})  # fmt: skip
+                        "twin_a_consistency", "memory_rule_gb"})  # fmt: skip
 
 
 class NumericalError(DiagnosticError):
@@ -2568,7 +2759,8 @@ class NumericalError(DiagnosticError):
 class NumericalScope:
     """The numerical check's frozen scope (configs/experiments/numerical_check.yaml): seeds,
     arms, the regular runs' experiment and role, the measurement steps, the perturbations'
-    fixed norm and survival rule, the bound's definition and the memory rule."""
+    fixed norm and survival rule, the bound's definition, twin A's consistency rule (review
+    fa21) and the memory rule."""
 
     seeds: tuple[int, ...]  # the first holds every selected rate and the controls
     arms: tuple[str, ...]  # optimizer names
@@ -2586,6 +2778,9 @@ class NumericalScope:
     rounding_scale: float
     k_star_factor: float  # K*(U) = √(factor·U)
     bound_fraction: float  # the bound is this fraction of K*(U)
+    # Review fa21: twin A against its archived run, |x − y| ≤ abs + rel·max(|x|, |y|) on the
+    # toleranced fields (``compare_archive``), as (("abs", a), ("rel", r))
+    twin_a_consistency: tuple[tuple[str, float], ...]
     memory_rule_gb: float
     # The settings' declarative keys (``evaluation: k_only`` and the generation flag beside it),
     # as JSON by key: compared like the rest, so that settings declaring another evaluation
@@ -2595,6 +2790,12 @@ class NumericalScope:
     @classmethod
     def of(cls, settings: DictConfig) -> NumericalScope:
         n = settings.numerical
+        rule = n.get("twin_a_consistency")
+        rule = OmegaConf.to_container(rule) if isinstance(rule, DictConfig) else rule
+        if not (isinstance(rule, dict) and set(rule) == {"abs", "rel"}
+                and all(_number(v) and v >= 0 for v in rule.values())):  # fmt: skip
+            raise NumericalError(f"twin_a_consistency must be {{abs, rel}}, two finite numbers "
+                                 f"≥ 0 (review fa21), got {rule!r}")  # fmt: skip
         scope = cls(
             seeds=tuple(int(s) for s in n.seeds), arms=tuple(str(a) for a in n.arms),
             primary_arms=tuple(str(a) for a in n.primary_arms),
@@ -2606,6 +2807,7 @@ class NumericalScope:
             survival_share=float(n.perturbation.survival_share),
             rounding_scale=float(n.perturbation.rounding_scale),
             k_star_factor=float(n.k_star_factor), bound_fraction=float(n.bound_fraction),
+            twin_a_consistency=tuple(sorted((str(k), float(v)) for k, v in rule.items())),
             memory_rule_gb=float(n.memory_rule_gb),
             declared=tuple(sorted(
                 (str(key), json.dumps(value, sort_keys=True))
@@ -2637,20 +2839,27 @@ class NumericalScope:
         """0.01·K*(U): the twins' bound, and the same-path control's."""
         return self.bound_fraction * self.k_star(upper)
 
+    @property
+    def consistency_rule(self) -> dict[str, float]:
+        """Twin A's consistency rule (review fa21): ``{"abs": a, "rel": r}``."""
+        return dict(self.twin_a_consistency)
+
     def policy(
         self, upper: float, gpu_code: Mapping[str, Any] | None, writers: Sequence[str]
     ) -> dict[str, Any]:
         """The numerical policy a qualification is attached to (with its batch and seeds): the
         GPU code the regular runs and the check executed (``code_identity.gpu_code_identity``:
         commit, file count, sha256; review fa13), the norm, the Gaussian directions' seeds, the
-        survival rule and its retry, the bound, the steps and the reference's modes; beside it,
-        for provenance, the commits that wrote the records read (``tool_commit``). Any change of
-        it voids the qualification."""
+        survival rule and its retry, the bound, the steps, the reference's modes and twin A's
+        consistency rule (``twin_a_consistency``, review fa21); beside it, for provenance, the
+        commits that wrote the records read (``tool_commit``). Any change of it voids the
+        qualification."""
         return {"gpu_code": None if gpu_code is None else dict(gpu_code),
                 "tool_commit": sorted(writers), "norm": self.norm, "gaussian": dict(self.gaussian),
                 "survival_share": self.survival_share, "retry_scale": self.rounding_scale,
                 "bound": self.bound(upper), "steps": list(self.eval_at),
-                "reference": NUMERICAL_REFERENCE}  # fmt: skip
+                "reference": NUMERICAL_REFERENCE,
+                "twin_a_consistency": self.consistency_rule}  # fmt: skip
 
     def same_policy(self, settings: Mapping[str, Any] | None) -> bool:
         """Whether a record's ``provenance.settings`` are this scope's: every value but the
@@ -2900,9 +3109,10 @@ def require_code(code: Mapping[str, Any] | None) -> None:
 
 
 # The run environment a regular run's meta.json records (``tracking.Run``), compared field by
-# field with the check's own (the final review of gate B, I3): twin A reproduces its run bit for
-# bit only on the same GPU, driver, CUDA, Python and packages, so another environment would turn
-# a technical difference into not_qualified for every case.
+# field with the check's own (the final review of gate B, I3): twin A can be expected to
+# reproduce its run (numerically consistent with it, review fa21) only on the same GPU, driver,
+# CUDA, Python and packages, so another environment would turn a technical difference into
+# not_qualified for every case.
 ENVIRONMENT_FIELDS = ("hardware.gpus", "hardware.driver", "hardware.torch_cuda", "python")
 NOT_RECORDED = "not recorded"
 
@@ -3303,13 +3513,15 @@ def run_numerical_case(
     keep_checkpoints: bool,
     progress: dict[str, Any],
 ) -> dict[str, Any]:
-    """One attempt of one case: twin A (the archived regular run, re-run and compared bit for
-    bit), then p1–p4 at the scope's fixed norm and the float64 reference, each against twin A
-    by D_twin at the scope's steps, each with its state (``pair_state``). A regular run stopped
-    by an instability rule gives the attempt ``instability`` (``instability_stop``: evidence
-    against the rate); one that does not conform otherwise, or a twin A that stopped or differs
-    from its archive, makes the attempt incomplete; either way no pair is run. ``progress``
-    holds twin A and the pairs as they are done."""
+    """One attempt of one case: twin A (the archived regular run, re-run and compared with it:
+    ``run_twin_a``), then p1–p4 at the scope's fixed norm and the float64 reference, each
+    against twin A by D_twin at the scope's steps, each with its state (``pair_state``). A
+    regular run stopped by an instability rule gives the attempt ``instability``
+    (``instability_stop``: evidence against the rate); one that does not conform otherwise, or a
+    twin A that stopped or is not numerically consistent with its archive (``compare_archive``
+    under the scope's ``twin_a_consistency``, review fa21; the reason names the first field, step
+    and values outside it: ``inconsistency``), makes the attempt incomplete; either way no pair
+    is run. ``progress`` holds twin A and the pairs as they are done."""
     eval_at, bound = list(scope.eval_at), scope.bound(case.upper)
     cfg = run_config(run_dir)
     problems = conformance(cfg, run_dir, scope, case, stop=False)
@@ -3325,11 +3537,14 @@ def run_numerical_case(
             "reason": "the regular run does not conform: " + "; ".join(problems),
         }
     try:
-        twin_a = progress["twin_A"] = run_twin_a(cfg, twins, shared["monitor"], run_dir,
-                                                 checkpoints, eval_at)  # fmt: skip
-        if twin_a["stop"] is not None or not twin_a["archive"]["equal"]:
+        twin_a = progress["twin_A"] = run_twin_a(
+            cfg, twins, shared["monitor"], run_dir, checkpoints, eval_at,
+            v0_stream=shared["v0_stream"], rule=scope.consistency_rule,
+        )  # fmt: skip
+        # Review fa21: the gate is numerical consistency with the archived run, not bit for bit
+        if twin_a["stop"] is not None or not twin_a["archive"]["consistent"]:
             reason = (f"twin A stopped: {twin_a['stop']}" if twin_a["stop"] is not None
-                      else "twin A differs from its archived run")  # fmt: skip
+                      else inconsistency(twin_a["archive"]))  # fmt: skip
             return {"status": "incomplete", "reason": reason, "twin_A": twin_a, "pairs": {}}
         pairs = run_pairs(cfg, twins, shared["directions"], shared["scales"], checkpoints,
                           eval_at=eval_at, bound=bound, survival_share=scope.survival_share,
@@ -3878,8 +4093,9 @@ def attempt_state(
     - **incomplete** when its perturbations depart from the policy (``_policy_problems``);
     - **exceeding** when any of its pairs is (``pair_state``, recomputed at the bound of U;
       divergence counts), whatever else the attempt shows;
-    - **within** when it is complete (twin A equal to its archive, every pair of p1–p4 and the
-      reference present, the reference in one of the policy's modes) and every pair is within;
+    - **within** when it is complete (twin A numerically consistent with its archive, review
+      fa21: ``compare_archive``'s ``consistent``; every pair of p1–p4 and the reference present,
+      the reference in one of the policy's modes) and every pair is within;
     - **incomplete** otherwise."""
     scope = reader.scope
     why = reader.why_not(record, case)
@@ -3919,8 +4135,8 @@ def attempt_state(
     reasons = []
     if record.get("status") != "complete":
         reasons.append(str(record.get("reason") or "incomplete"))
-    elif not ((record.get("twin_A") or {}).get("archive") or {}).get("equal"):
-        reasons.append("twin A differs from its archived run")
+    elif not ((record.get("twin_A") or {}).get("archive") or {}).get("consistent"):
+        reasons.append("twin A is not numerically consistent with its archived run")
     if set(pairs) != set(PAIRS):
         reasons.append(f"the pairs {sorted(pairs)}, not {list(PAIRS)}")
     unread = [key for key in PAIRS if states.get(key, {}).get("state") == INCOMPLETE]

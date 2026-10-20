@@ -65,7 +65,8 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   ``timecourse_guard``: the time course (amendment 4, section 4, "Harm over steps";
   exploratory), separate runs of the first 10 confirmation blocks at each arm's central rate
   evaluated at steps 1, 5, 10 and 25: split from the other runs where they are loaded, each
-  against its endpoint run bit for bit, the trajectories with the failed and missing runs per
+  checked for numerical consistency with its endpoint run (review fa21), the trajectories with
+  the failed and missing runs per
   seed and arm, harm only when the final analysis passes the labels; and when its campaign may
   be written.
 
@@ -149,12 +150,14 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   the replay reached that it did not read and that marks a rate unusable leaves no conclusion. A
   verdict decides only when its batch and U are the candidate's, its policy is the frozen one
   (``numerical_policy``: norm 5e-05, survival 0.5, retry ×10, bound 0.01 × K*, steps 1, 5, 10, 15,
-  20, 25, and the Gaussian directions' seeds and the reference's modes as the tool's module fixes
-  them), its GPU code (``policy.gpu_code``, review fa13; null is stale) is that of every commit its
-  numerical runs recorded (each the verdict's ``gpu_code.commit`` or ``code_identity.reuse_check``
-  from it to that commit reusable, so that a replacement run made at an analysis-only descendant
-  counts; a run on a dirty checkout or recording no commit leaves the selection ``incomplete``, a
-  commit whose GPU code cannot be checked makes the verdict stale) and that of the running checkout
+  20, 25, twin A's consistency rule ``twin_a_consistency`` {abs 1e-08, rel 1e-04} of review fa21,
+  and the Gaussian directions' seeds and the reference's modes as the tool's module fixes them; a
+  verdict without the rule departs from it), its GPU code (``policy.gpu_code``, review fa13; null
+  is stale) is that of every commit its numerical runs recorded (each the verdict's
+  ``gpu_code.commit`` or ``code_identity.reuse_check`` from it to that commit reusable, so that a
+  replacement run made at an analysis-only descendant counts; a run on a dirty checkout or
+  recording no commit leaves the selection ``incomplete``, a commit whose GPU code cannot be
+  checked makes the verdict stale) and that of the running checkout
   (``reuse_check`` from its commit to HEAD reusable: analysis-only commits keep a qualification, a
   GPU-path change voids it; the checks are kept in the record), its ``tool_commit`` names the
   check's commits (a non-empty list, or one commit in an older record), every requested rate and FA
@@ -395,24 +398,30 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``incomplete``). They are checked like the others (role, schedule, monitor, Rayleigh, one
   stream and one v₀ per seed) and never enter the selection, a confirmation block, a look or
   the mechanism cohort; one before the rates are frozen, a second run of a key, or a run at a
-  key the time course does not prescribe leaves the stage ``incomplete``. Endpoint identity
-  (``timecourse_identity``) compares exactly, field by field as canonical JSON, the training's
-  metrics.jsonl rows (every row but those an evaluation logged), the rows of the endpoint's
-  evaluation, monitor.jsonl, update_scalars.jsonl, the endpoint's evaluations against the time
-  course's of the same steps (step 25: K and utility), the stop with the steps taken and the
-  streams read; the timings and memory peaks are left out (not numerics), and so is K_harmful
-  (outcome-blind until the final analysis). Any difference, or a record that is missing or does
-  not read (metrics, monitor, update scalars, meta.json: every regular run writes them),
-  excludes the run with its reasons; the endpoint Rayleigh records (R, ‖δ‖, δᵀH₀δ) are compared
-  beside, as ``rayleigh_equal``, deciding nothing; no endpoint run yet leaves it pending; an
-  endpoint run the
-  launcher gave up on leaves it excluded (the conservative reading: its identity can never be
-  shown). A time-course run that did not complete its four evaluations, or that the launcher
-  gave up on (``exhausted_runs`` keys it with ``TIMECOURSE``, apart from its endpoint run), is a
-  failure of its seed and arm, a run not there yet is missing. ``timecourse_summary`` reads
-  labels only when the final analysis passes them (``labels``, None by default and in
-  ``progress``), and then only for runs whose identity is ``identical``: an excluded or pending
-  run keeps its K and no harm.
+  key the time course does not prescribe leaves the stage ``incomplete``. The endpoint check,
+  numerical consistency (``timecourse_identity``, review fa21: not identical parameters),
+  compares row for row the training's metrics.jsonl rows (every row but those an evaluation
+  logged), the rows of the endpoint's evaluation, monitor.jsonl, update_scalars.jsonl, the
+  endpoint's evaluations against the time course's of the same steps (step 25: K and utility),
+  the stop with the steps taken and the streams read; the timings and memory peaks are left out
+  (not numerics), and so is K_harmful (outcome-blind until the final analysis). The named
+  numerical fields (``TIMECOURSE_TOLERANCED``: the training rows' loss, gradient norm and NLL per
+  token, the monitor's K, the update scalars' norm, cosine and departure statistics, the step-25
+  evaluation's K and utility numbers) are compared within twin A's tolerance, |x − y| ≤ 1e-8 +
+  1e-4·max(|x|, |y|) with both finite; every other field (counts, steps, stops, metadata, the
+  streams, discrete outcomes) exactly, as canonical JSON. Bit for bit everywhere is
+  ``identical``, within the rule ``consistent`` (the bitwise flag kept as ``bitwise_equal``);
+  both count. Any other difference, or a record that is missing or does not read (metrics,
+  monitor, update scalars, meta.json: every regular run writes them), excludes the run with its
+  reasons; the endpoint Rayleigh records (R, ‖δ‖, δᵀH₀δ) are compared beside, as
+  ``rayleigh_equal``, deciding nothing; no endpoint run yet leaves it pending; an endpoint run
+  the launcher gave up on leaves it excluded (the conservative reading: its consistency can
+  never be shown). A time-course run that did not complete its four evaluations, or that the
+  launcher gave up on (``exhausted_runs`` keys it with ``TIMECOURSE``, apart from its endpoint
+  run), is a failure of its seed and arm, a run not there yet is missing.
+  ``timecourse_summary`` reads labels only when the final analysis passes them (``labels``, None
+  by default and in ``progress``), and then only for runs that count (``identical`` or
+  ``consistent``: ``IDENTITY_COUNTED``): an excluded or pending run keeps its K and no harm.
 - *The fixation record* (``read_fixation``): a JSON object with ``w_max``, ``levels`` (the
   looks' two-sided confidence levels), ``se_floor`` and ``bias_allowance``, the last two in the
   units of Δ (fractions, 1 pp = 0.01), ``interval`` (``bootstrap_t`` or ``t``),
@@ -525,7 +534,9 @@ TIMECOURSE_OVERRIDES = (
     f"study2_short.role={TIMECOURSE}",
     f"schedule.evaluate_at=[{','.join(map(str, TIMECOURSE_STEPS))}]",
 )
-IDENTITY_STATES = ("identical", "excluded", "pending")  # a time-course run against its endpoint
+# A time-course run against its endpoint run (review fa21): identical (bit for bit) and
+# consistent (numerically consistent) count; excluded or pending do not
+IDENTITY_STATES = ("identical", "consistent", "excluded", "pending")
 # The numerical-check tool (scripts/numerical_check.py) and its verdicts under $RUNS_DIR: one
 # directory per check, numerical/b{B}-u{U}/verdict.json for a candidate's first.
 NUMERICAL_TOOL = "scripts/numerical_check.py"
@@ -542,9 +553,12 @@ ARM_OVERRIDES = {ADAMW: (), FA: ("optimizer=adam_frozen",),
 # waits for the rerun.
 RATE_STATES = ("qualified", "failing", "not_qualified", "incomplete")
 CONTROL_STATES = ("accepted", "rejected", "not_qualified", "incomplete")
-# The frozen numerical policy a verdict must carry (its bound is 0.01 × K* of the U checked).
+# The frozen numerical policy a verdict must carry (its bound is 0.01 × K* of the U checked),
+# with twin A's consistency rule against its archived run (review fa21): |x − y| ≤ abs +
+# rel·max(|x|, |y|) on the named numerical fields, both finite.
 NUMERICAL_POLICY = {"norm": 5e-05, "survival_share": 0.5, "retry_scale": 10,
-                    "steps": [1, 5, 10, 15, 20, 25]}  # fmt: skip
+                    "steps": [1, 5, 10, 15, 20, 25],
+                    "twin_a_consistency": {"abs": 1e-08, "rel": 0.0001}}  # fmt: skip
 NUMERICAL_BOUND_FRACTION = 0.01
 CONTROL_REASON = "control: "  # a verdict's reason of a same-path control, under its FA rate's key
 RAYLEIGH_BLOCKS = 10  # the first confirmation blocks: every endpoint measures R
@@ -998,26 +1012,29 @@ def _pair_key(arm: str, lr: float) -> str:
 
 def numerical_policy(upper: float) -> dict[str, Any]:
     """The frozen numerical policy of a check at U (amendment 4, section 1): the perturbation
-    norm, the survival share and its retry scale, the twin bound 0.01 × K* and the steps, with
-    the Gaussian directions' seeds and the reference's modes as the numerical-check tool fixes
-    them (``_tool_policy``)."""
+    norm, the survival share and its retry scale, the twin bound 0.01 × K*, the steps and twin
+    A's consistency rule (review fa21), with the Gaussian directions' seeds, the reference's
+    modes and the consistency rule as the numerical-check tool fixes them (``_tool_policy``)."""
     return {**NUMERICAL_POLICY, "bound": NUMERICAL_BOUND_FRACTION * k_star(upper),
             **_tool_policy()}  # fmt: skip
 
 
 @functools.cache
 def _tool_policy() -> dict[str, Any]:
-    """What the numerical-check tool fixes and this module does not restate: the seeds of the
-    Gaussian directions p3 and p4 (its tracked settings, configs/experiments/
-    numerical_check.yaml, read through its own ``NumericalScope``) and the reference's modes
-    (``NUMERICAL_REFERENCE``), both from ``fa_control_diagnostic`` (review of Task 2, minor 1).
-    Imported when first needed: the tool's module loads torch."""
+    """What the numerical-check tool fixes: the seeds of the Gaussian directions p3 and p4 and
+    twin A's consistency rule (its tracked settings, configs/experiments/numerical_check.yaml,
+    read through its own ``NumericalScope``) and the reference's modes
+    (``NUMERICAL_REFERENCE``), all from ``fa_control_diagnostic`` (review of Task 2, minor 1).
+    The consistency rule is restated in ``NUMERICAL_POLICY`` too (review fa21): a tool whose
+    tracked rule departs from it makes every verdict stale (``_policy_departures``). Imported
+    when first needed: the tool's module loads torch."""
     from .. import fa_control_diagnostic as tool
     from ..paths import CONFIG_ROOT
 
     settings = load_config(CONFIG_ROOT / "experiments" / "numerical_check.yaml")
     scope = tool.NumericalScope.of(settings)
-    return {"gaussian": dict(scope.gaussian), "reference": tool.NUMERICAL_REFERENCE}
+    return {"gaussian": dict(scope.gaussian), "reference": tool.NUMERICAL_REFERENCE,
+            "twin_a_consistency": scope.consistency_rule}  # fmt: skip
 
 
 def _reuse_check(base: str, head: str) -> dict[str, Any]:
@@ -1070,9 +1087,13 @@ def _policy_departures(policy: Mapping[str, Any], upper: float) -> list[str]:
         out.append(f"bound {policy.get('bound')!r}, frozen 0.01 × K* = {frozen['bound']!r}")
     if not (isinstance(policy.get("steps"), list) and policy["steps"] == frozen["steps"]):
         out.append(f"steps {policy.get('steps')!r}, frozen {frozen['steps']}")
-    for key in ("gaussian", "reference"):  # the tool's own values (``_tool_policy``)
+    for key in ("gaussian", "reference", "twin_a_consistency"):  # the tool's (``_tool_policy``)
         if policy.get(key) != frozen[key]:
             out.append(f"{key} {policy.get(key)!r}, frozen {frozen[key]!r}")
+    rule = NUMERICAL_POLICY["twin_a_consistency"]
+    if frozen["twin_a_consistency"] != rule:  # the tool's tracked rule is not the frozen one
+        out.append(f"the numerical-check tool's twin_a_consistency "
+                   f"{frozen['twin_a_consistency']!r}, frozen {rule!r}")  # fmt: skip
     return out
 
 
@@ -1089,8 +1110,8 @@ def numerical_verdict(
     record (the tool's schema): ``batch``, ``U``, ``rates`` (f"{optimizer}|{lr:g}" → a state of
     ``RATE_STATES``), ``seeds`` (the same keys → the seeds tested), ``controls`` (f"{lr:g}" → a
     state of ``CONTROL_STATES``), ``qualified``, ``reasons`` and ``policy`` (``norm``,
-    ``survival_share``, ``retry_scale``, ``bound``, ``steps``, ``gaussian`` and ``reference``,
-    as ``numerical_policy`` freezes them, ``tool_commit``: a
+    ``survival_share``, ``retry_scale``, ``bound``, ``steps``, ``gaussian``, ``reference`` and
+    ``twin_a_consistency``, as ``numerical_policy`` freezes them, ``tool_commit``: a
     non-empty list of the check's commits, or one commit in older records, and ``gpu_code``: the
     ``code_identity.gpu_code_identity`` of the code the check ran, ``commit``, ``files`` and
     ``sha256``). ``reuse(base, head)`` is ``code_identity.reuse_check`` on this repository (the
@@ -3954,6 +3975,27 @@ def _canonical(rows: Sequence[Mapping[str, Any]]) -> list[str]:
 
 IDENTITY_RECORDS = ("metrics.jsonl", "monitor.jsonl", "update_scalars.jsonl", "meta.json")
 RAYLEIGH_COMPARED = ("R", "delta_norm", "delta_H_delta")  # rayleigh.json, reported beside
+# Review fa21: numerical consistency of a time-course run with its endpoint run. These named
+# numerical fields, by record, are compared within twin A's tolerance (NUMERICAL_POLICY's
+# twin_a_consistency); every other field (counts, steps, stops, metadata, the streams, discrete
+# outcomes and every other number) is exact. A nested field is named by its path (``a.b``).
+EVALUATION_NUMBERS = ("K_benign", "K_monitor", "K_monitor_primary", "K_monitor_full",
+                      "heldout_nll_per_token", "factual_accuracy",
+                      "benchmark_accuracy")  # fmt: skip
+UPDATE_SCALAR_NUMBERS = ("update_norm", "cos_update_grad", "d_departure.norm_ratio",
+                         "d_departure.median", "d_departure.p90")  # fmt: skip
+TIMECOURSE_TOLERANCED = {
+    # the training rows' loss, gradient norm and NLL, and the monitor's K logged beside them
+    "the training's metrics.jsonl rows": ("loss", "grad_norm", "nll_per_token", "K_monitor"),
+    # the step-25 evaluation's K and utility numbers, as its metrics.jsonl row logs them
+    "the metrics.jsonl rows of the endpoint's evaluations": tuple(
+        f"eval/{key}" for key in EVALUATION_NUMBERS),
+    "the monitor.jsonl readings": ("K_monitor",),
+    # the update's norm, its cosine with the gradient, the pre-warmed denominator's departure
+    "the update_scalars.jsonl rows": UPDATE_SCALAR_NUMBERS,
+    "the endpoint's evaluations": EVALUATION_NUMBERS,  # step 25: K and utility
+}  # fmt: skip
+IDENTITY_COUNTED = ("identical", "consistent")  # a time-course run with these states counts
 
 
 def _run_records(run: Trajectory) -> dict[str, Any]:
@@ -3978,36 +4020,78 @@ def _evaluated(row: Mapping[str, Any]) -> bool:
 
 
 def _identity_records(timecourse: Trajectory, endpoint: Trajectory) -> dict[str, tuple]:
-    """What the identity check compares, (time course, endpoint) per record, canonical: the
-    training's metrics rows (every row of metrics.jsonl but those an evaluation logged), the rows
-    the endpoint's evaluations logged against the time course's rows of those steps, the monitor
-    readings, the update scalars, the endpoint's evaluations against the time course's of those
-    steps, the stop with the steps taken, and the streams the run read (meta.json)."""
+    """What the endpoint check compares, (time course, endpoint) rows per record, each row with
+    its compared fields (``_compared``): the training's metrics rows (every row of metrics.jsonl
+    but those an evaluation logged), the rows the endpoint's evaluations logged against the time
+    course's rows of those steps, the monitor readings, the update scalars, the endpoint's
+    evaluations against the time course's of those steps, the stop with the steps taken, and the
+    streams the run read (meta.json)."""
+
+    def kept(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: v for k, v in row.items() if _compared(k)} for row in rows]
+
     out: dict[str, tuple] = {}
     mine, theirs = _run_records(timecourse), _run_records(endpoint)
     metrics = (mine["metrics.jsonl"], theirs["metrics.jsonl"])
     out["the training's metrics.jsonl rows"] = tuple(
-        _canonical([r for r in rows if not _evaluated(r)]) for rows in metrics
+        kept([r for r in rows if not _evaluated(r)]) for rows in metrics
     )
     logged = {row["step"] for row in metrics[1] if _evaluated(row)}
     out["the metrics.jsonl rows of the endpoint's evaluations"] = tuple(
-        _canonical([r for r in rows if _evaluated(r) and r["step"] in logged]) for rows in metrics
+        kept([r for r in rows if _evaluated(r) and r["step"] in logged]) for rows in metrics
     )
     for name, what in (("monitor.jsonl", "readings"), ("update_scalars.jsonl", "rows")):
-        out[f"the {name} {what}"] = (_canonical(mine[name]), _canonical(theirs[name]))
+        out[f"the {name} {what}"] = (kept(mine[name]), kept(theirs[name]))
     steps = {row["step"] for row in endpoint.evaluations}
     out["the endpoint's evaluations"] = (
-        _canonical([r for r in timecourse.evaluations if r["step"] in steps]),
-        _canonical(endpoint.evaluations),
+        kept([r for r in timecourse.evaluations if r["step"] in steps]),
+        kept(endpoint.evaluations),
     )
     out["the stop and the steps taken"] = tuple(
-        _canonical([{"stop": run.terminal["stop"], "steps": run.steps}])
-        for run in (timecourse, endpoint)
+        kept([{"stop": run.terminal["stop"], "steps": run.steps}]) for run in (timecourse, endpoint)
     )
-    out["the streams read"] = tuple(_canonical([(record["meta.json"].get("inputs") or {})
-                                                .get("streams") or {}])
+    out["the streams read"] = tuple(kept([(record["meta.json"].get("inputs") or {})
+                                          .get("streams") or {}])
                                     for record in (mine, theirs))  # fmt: skip
     return out
+
+
+def _within_tolerance(x: Any, y: Any) -> bool:
+    """Twin A's rule (review fa21, ``NUMERICAL_POLICY``'s twin_a_consistency): two finite numbers
+    with |x − y| ≤ abs + rel·max(|x|, |y|); a non-finite value on either side is outside it, even
+    when the two are bitwise equal."""
+    rule = NUMERICAL_POLICY["twin_a_consistency"]
+    return (_number(x) and _number(y)
+            and abs(x - y) <= rule["abs"] + rule["rel"] * max(abs(x), abs(y)))  # fmt: skip
+
+
+def _flat(row: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    """A row's fields, a nested object's named by their path (``d_departure.median``)."""
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, Mapping) and value:
+            out.update(_flat(value, f"{prefix}{key}."))
+        else:
+            out[f"{prefix}{key}"] = value
+    return out
+
+
+def _inconsistent(mine: Mapping[str, Any], theirs: Mapping[str, Any], toleranced: Sequence[str]
+                  ) -> str | None:  # fmt: skip
+    """The first field in which two rows are not numerically consistent, or None: the same
+    fields, each of ``toleranced`` within the tolerance (``_within_tolerance``), every other
+    exactly equal as canonical JSON (bit for bit)."""
+    a, b = _flat(mine), _flat(theirs)
+    if a.keys() != b.keys():
+        return f"the fields {sorted(a.keys() ^ b.keys())} are not in both"
+    for key in sorted(a):
+        x, y = a[key], b[key]
+        if key in toleranced:
+            if not _within_tolerance(x, y):
+                return f"{key} {x!r} against {y!r}, outside the tolerance"
+        elif json.dumps(x, sort_keys=True) != json.dumps(y, sort_keys=True):
+            return f"{key} {x!r} against {y!r}"
+    return None
 
 
 def _rayleigh_equal(timecourse: Trajectory, endpoint: Trajectory) -> bool | None:
@@ -4029,22 +4113,29 @@ def _rayleigh_equal(timecourse: Trajectory, endpoint: Trajectory) -> bool | None
 
 
 def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> dict[str, Any]:
-    """Whether a time-course run trained as its endpoint run did, bit for bit (amendment 4,
-    section 4: endpoint identity is required). ``endpoint``: the regular run of the same arm,
-    batch, rate and seed, None while it is not there. Compared exactly (``_canonical``, without
-    the timings, the memory peaks and K_harmful): every metrics.jsonl row of the training
-    (loss, gradient norm and every other field, steps 0-24, and the monitor's and diagnostics'
-    rows), the rows of the endpoint's evaluation there, every monitor.jsonl reading,
+    """The numerical consistency of a time-course run with its endpoint run (amendment 4, section
+    4: the endpoint must be shown the same; review fa21: numerical consistency, not identical
+    parameters). ``endpoint``: the regular run of the same arm, batch, rate and seed, None while
+    it is not there. Compared, without the timings, the memory peaks and K_harmful: every
+    metrics.jsonl row of the training (steps 0-24, with the monitor's and the diagnostics' rows),
+    the rows of the endpoint's evaluation there, every monitor.jsonl reading,
     update_scalars.jsonl, the step-25 evaluation (K and utility), the stop and the steps taken,
-    and the streams read. ``state`` is ``identical``, ``excluded`` (any difference, with the
-    ``reasons``; also a record that is missing or does not read: ``_run_records``) or
-    ``pending`` (no endpoint run yet). ``rayleigh_equal`` (``_rayleigh_equal``) is reported
-    beside, never deciding the state."""
+    and the streams read; row for row, the same rows in the same order. The named numerical
+    fields of ``TIMECOURSE_TOLERANCED`` within twin A's tolerance (``_within_tolerance``: both
+    finite), every other field exactly (``_inconsistent``).
+
+    ``state``: ``identical`` (every record bit for bit, as canonical JSON: ``_canonical``),
+    ``consistent`` (numerically consistent, not bit for bit); both count (``IDENTITY_COUNTED``);
+    ``excluded`` (any other difference, with the ``reasons``: each record's first row and field
+    outside the rule; also a record that is missing or does not read: ``_run_records``); or
+    ``pending`` (no endpoint run yet). ``bitwise_equal`` keeps the bitwise flag (None when
+    nothing was compared). ``rayleigh_equal`` (``_rayleigh_equal``) is reported beside, never
+    deciding the state."""
     if endpoint is None:
         return {"state": "pending", "reasons": ["its endpoint run is not there yet"],
-                "endpoint": None, "rayleigh_equal": None}  # fmt: skip
+                "endpoint": None, "bitwise_equal": None, "rayleigh_equal": None}  # fmt: skip
     keys = [(run.arm, run.batch_size, rate(run.lr), run.seed) for run in (timecourse, endpoint)]
-    reasons = []
+    reasons, bitwise = [], None
     if keys[0] != keys[1]:
         reasons.append(f"the endpoint run {endpoint.run_id} is of {keys[1]}, not {keys[0]}")
     else:
@@ -4052,16 +4143,24 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
             records = _identity_records(timecourse, endpoint)
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             records, reasons = {}, [f"a record does not read: {exc!r}"]
-        for name, (mine, theirs) in records.items():
-            if mine == theirs:
+        if records:
+            bitwise = all(_canonical(mine) == _canonical(theirs)
+                          for mine, theirs in records.values())  # fmt: skip
+        for name, (mine, theirs) in records.items() if not bitwise else ():
+            toleranced = TIMECOURSE_TOLERANCED.get(name, ())
+            rows = enumerate(zip(mine, theirs, strict=False))
+            found = next(((i, why) for i, (a, b) in rows
+                          if (why := _inconsistent(a, b, toleranced))), None)  # fmt: skip
+            if found is None and len(mine) == len(theirs):
                 continue
-            first = next((i for i, (a, b) in enumerate(zip(mine, theirs, strict=False))
-                          if a != b), min(len(mine), len(theirs)))  # fmt: skip
-            reasons.append(f"{name} differ from the endpoint run's from row {first} "
-                           f"({len(mine)} rows against {len(theirs)})")  # fmt: skip
+            first, why = found or (min(len(mine), len(theirs)), "a row missing")
+            reasons.append(f"{name} are not numerically consistent with the endpoint run's "
+                           f"from row {first} ({len(mine)} rows against {len(theirs)}): "
+                           f"{why}")  # fmt: skip
     rayleigh = _rayleigh_equal(timecourse, endpoint) if keys[0] == keys[1] else None
-    return {"state": "excluded" if reasons else "identical", "reasons": reasons,
-            "endpoint": endpoint.run_id, "rayleigh_equal": rayleigh}  # fmt: skip
+    state = "excluded" if reasons else "identical" if bitwise else "consistent"
+    return {"state": state, "reasons": reasons, "endpoint": endpoint.run_id,
+            "bitwise_equal": bitwise, "rayleigh_equal": rayleigh}  # fmt: skip
 
 
 def timecourse_summary(
@@ -4077,9 +4176,10 @@ def timecourse_summary(
     time-course runs (role timecourse), against what it prescribes, each arm of ``rates`` (the
     frozen rates) at its central rate (``central_rate``) on seeds 3000-3009 at ``batch``.
 
-    Per seed and arm (``trajectories``): the run, its identity with its endpoint run
-    (``timecourse_identity``; ``endpoints``: the confirmation runs by key; an endpoint the
-    launcher gave up on, in ``exhausted``, leaves the identity unshowable: ``excluded``), and its
+    Per seed and arm (``trajectories``): the run, its numerical consistency with its endpoint run
+    (``timecourse_identity``: identical, consistent, excluded or pending; ``endpoints``: the
+    confirmation runs by key; an endpoint the launcher gave up on, in ``exhausted``, leaves it
+    unshowable: ``excluded``), and its
     rows (step, K_scoring, harm), K_scoring the scoring panel's K of each evaluation. ``failures``
     lists the runs that did not complete their four evaluations (stopped early, or given up by
     the launcher: ``exhausted`` by (arm, batch, rate, seed, ``TIMECOURSE``)), ``missing`` the
@@ -4090,8 +4190,8 @@ def timecourse_summary(
 
     ``labels`` (run id → label rows, as ``look_blocks`` reads them) is passed only by the final
     analysis. Without it nothing is read and every harm is None; with it, the harm of each step of
-    an identical run (``harm``: missing labels not harmful), a run absent from it
-    ``unlabeled``."""
+    a run that counts (identical or consistent: ``IDENTITY_COUNTED``; ``harm``: missing labels
+    not harmful), a run absent from it ``unlabeled``."""
     exhausted = exhausted or {}
     central = {arm: central_rate(lrs) for arm, lrs in rates.items() if lrs}
     keys = [(arm, batch, rate(lr), seed) for seed in TIMECOURSE_SEEDS
@@ -4120,15 +4220,16 @@ def timecourse_summary(
                                  "reason": "given up by the launcher"})  # fmt: skip
             continue
         if given_up is not None:
-            identity = {"state": "excluded", "endpoint": None, "rayleigh_equal": None,
+            identity = {"state": "excluded", "endpoint": None, "bitwise_equal": None,
+                        "rayleigh_equal": None,
                         "reasons": [f"its endpoint run was given up by the launcher ({given_up}): "
-                                    "the identity cannot be shown"]}  # fmt: skip
+                                    "its numerical consistency cannot be shown"]}  # fmt: skip
         else:
             identity = timecourse_identity(run, endpoint)
         entry.update(run=run.run_id, **identity)
-        rows = labels.get(run.run_id) if labels is not None and identity["state"] == (
-            "identical") else None  # fmt: skip
-        if labels is not None and identity["state"] == "identical" and rows is None:
+        counted = identity["state"] in IDENTITY_COUNTED  # identical or consistent (review fa21)
+        rows = labels.get(run.run_id) if labels is not None and counted else None
+        if labels is not None and counted and rows is None:
             unlabeled.append(run.run_id)
         entry["rows"] = [{"step": e["step"], "K_scoring": e["K_benign"],
                           "harm": None if rows is None else harm(_step_row(rows, run.run_id,

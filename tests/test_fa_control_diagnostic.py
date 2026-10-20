@@ -491,7 +491,7 @@ def outputs(*, path=True, same_path=0.01, pairs=None, determinism=True, expansio
         return out
 
     cases = {name: written({
-        "status": "complete", "twin_A": {"archive": {"equal": True}},
+        "status": "complete", "twin_A": {"archive": {"bitwise_equal": True}},
         "pairs": {key: record(key, pairs.get(name, {}).get(key, 0.001)) for key in fcd.PAIRS},
     }) for name in names}  # fmt: skip
     d1 = written({
@@ -503,7 +503,7 @@ def outputs(*, path=True, same_path=0.01, pairs=None, determinism=True, expansio
         "same_path_control": (control(same_path) if isinstance(same_path, int | float)
                               else same_path),
     })  # fmt: skip
-    return d1, written({"equal": determinism}), cases
+    return d1, written({"bitwise_equal": determinism}), cases
 
 
 def decide(d1, determinism, cases, **kwargs):
@@ -731,7 +731,7 @@ def test_step_6_is_incomplete(case) -> None:
 def test_missing_outputs_leave_the_branch_incomplete() -> None:
     d1, determinism, cases = outputs()
     assert decide(None, determinism, cases)["branch"] == "incomplete"
-    out = decide(d1, written({"equal": False}), {})
+    out = decide(d1, written({"bitwise_equal": False}), {})
     assert out["branch"] == "incomplete" and any("determinism" in m for m in out["missing"])
     del cases["adamw-1.32e-05"]
     assert decide(d1, determinism, cases)["missing"] == ["d3/adamw-1.32e-05.json"]
@@ -740,9 +740,9 @@ def test_missing_outputs_leave_the_branch_incomplete() -> None:
 def test_a_failed_determinism_check_wins_over_branch_a() -> None:
     """Review I4, probe 4: the determinism check comes before A (Revision 2, 9)."""
     d1, _, cases = outputs(pairs={"fa-1.21e-05": {"p1": 1.0}})
-    out = decide(d1, written({"equal": False}), cases)
+    out = decide(d1, written({"bitwise_equal": False}), cases)
     assert out["branch"] == "incomplete"
-    assert decide(d1, written({"equal": True}), cases)["branch"] == "A"
+    assert decide(d1, written({"bitwise_equal": True}), cases)["branch"] == "A"
 
 
 @pytest.mark.parametrize("case", ["fa-1.21e-05", "fa-1e-05", "adamw-1.32e-05"])
@@ -762,14 +762,15 @@ def test_a_case_needs_every_pair(case) -> None:
 def test_a_twin_a_unlike_its_archive_makes_the_branch_incomplete(case) -> None:
     """Review I1, probe 3: no pair is read against a twin A that is not the archived run."""
     d1, determinism, cases = outputs()
-    cases[case]["twin_A"]["archive"]["equal"] = False
+    cases[case]["twin_A"]["archive"]["bitwise_equal"] = False
     out = decide(d1, determinism, cases)
     assert out["branch"] == "incomplete" and out["facts"]["twin_A_equal"][case] is False
     assert any(case in reason for reason in out["facts"]["incomplete"])
     d1, determinism, cases = outputs()
     reason = "twin A differs from its archived run"
     cases[case] = written({"status": "incomplete", "reason": reason,
-                           "twin_A": {"archive": {"equal": False}}, "pairs": {}})  # fmt: skip
+                           "twin_A": {"archive": {"bitwise_equal": False}},
+                           "pairs": {}})  # fmt: skip
     assert decide(d1, determinism, cases)["branch"] == "incomplete"
 
 
@@ -1221,11 +1222,15 @@ def test_the_whole_diagnostic_on_tiny_runs_without_harmful_generation(
     order = list(s.diagnostic.d3.order)
     done = fcd.run_d3(s, guarded, runs, out, cases=order)
     determinism = json.loads((out / "d3" / "determinism.json").read_text())
-    assert determinism["equal"] and determinism["steps_compared"] == STEPS
+    assert determinism["bitwise_equal"] and determinism["steps_compared"] == STEPS
     for name in order:
         case = done[name]
         assert case["status"] == "complete" and case["K_star"] == pytest.approx(math.sqrt(40))
-        assert case["twin_A"]["archive"]["equal"]  # each twin A is its archived run, bitwise
+        archive = case["twin_A"]["archive"]
+        assert archive["bitwise_equal"]  # each twin A is its archived run, bitwise
+        # ... and so consistent with it: its stop and the streams it read too (review fa21)
+        assert archive["consistent"] and archive["end"]["equal"]
+        assert archive["streams"]["training"]["equal"] and archive["mismatch_count"] == 0
         assert set(case["pairs"]) == {"p1", "p2", "p3", "p4", "reference"}
         for key, pair in case["pairs"].items():
             assert [r["step"] for r in pair["D_twin"]] == [1, 3, 6], key
@@ -1288,7 +1293,7 @@ def test_a_run_that_differs_from_its_archive_stops_d3(world) -> None:
     with pytest.raises(fcd.DeterminismFailure, match="differs from its archive"):
         fcd.run_d3(s, env, runs, out, cases=list(s.diagnostic.d3.order))
     record = json.loads((out / "d3" / "determinism.json").read_text())
-    assert not record["equal"] and record["mismatches"][0]["key"] == "grad_norm"
+    assert not record["bitwise_equal"] and record["mismatches"][0]["key"] == "grad_norm"
     assert not list((out / "d3").glob("fa-*.json"))
     decision = fcd.decide_branch(s, *fcd.load_outputs(out))
     assert decision["branch"] == "incomplete"
@@ -1309,7 +1314,7 @@ def test_a_doctored_archive_or_record_makes_the_outcome_incomplete(world, monkey
     done = fcd.run_d3(s, env, runs, out, cases=["fa-1.21e-05"])
     case = done["fa-1.21e-05"]
     assert case["status"] == "incomplete" and case["pairs"] == {}
-    assert not case["twin_A"]["archive"]["equal"]
+    assert not case["twin_A"]["archive"]["bitwise_equal"]
     assert not list((out / "d3" / "checkpoints" / "fa-1.21e-05").glob("*"))
     monkeypatch.setattr(fcd, "same_path_control", lambda *args: {"below_bound": True})
     d1 = fcd.run_d1(s, env, runs, out)
@@ -1346,7 +1351,7 @@ def test_d1_is_incomplete_when_a_shared_state_check_fails(world, monkeypatch) ->
     assert d1["status"] == "incomplete" and all(d1["residual"]["iii_equals_record"].values())
     assert d1["reasons"] == [fcd.SHARED_STATE_CHECKS["initial_optimizer_state"]]
     assert d1["residual"]["path_criterion"]["state"] in ("holds", "false")
-    decision = fcd.decide_branch(s, d1, {"equal": True, "provenance": d1["provenance"]}, {})
+    decision = fcd.decide_branch(s, d1, {"bitwise_equal": True, "provenance": d1["provenance"]}, {})
     assert decision["branch"] == "incomplete"
     assert decision["facts"]["shared_state"]["initial_optimizer_state"] is False
 
@@ -1544,12 +1549,12 @@ def test_the_whole_diagnostic_on_cuda_through_the_script(
     within(d2)
 
     determinism = json.loads((out / "d3" / "determinism.json").read_text())
-    assert determinism["equal"] and determinism["steps_compared"] == STEPS
+    assert determinism["bitwise_equal"] and determinism["steps_compared"] == STEPS
     within(determinism["rerun"])
     order = list(s.diagnostic.d3.order)
     for name in order:
         case = json.loads((out / "d3" / f"{name}.json").read_text())
-        assert case["status"] == "complete" and case["twin_A"]["archive"]["equal"], name
+        assert case["status"] == "complete" and case["twin_A"]["archive"]["bitwise_equal"], name
         within(case["twin_A"])
         assert set(case["pairs"]) == {"p1", "p2", "p3", "p4", "reference"}
         for key, pair in case["pairs"].items():

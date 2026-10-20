@@ -1173,6 +1173,7 @@ def test_intermediate_evaluations_do_not_change_step_25(env, tmp_path, monkeypat
     assert timecourse.evaluate_at == TIMECOURSE_STEPS and endpoint.evaluate_at == (25,)
     found = timecourse_identity(timecourse, endpoint)
     assert found == {"state": "identical", "reasons": [], "endpoint": endpoint.run_id,
+                     "bitwise_equal": True,
                      "rayleigh_equal": None}  # these runs do not measure R  # fmt: skip
 
 

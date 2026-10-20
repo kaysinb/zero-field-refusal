@@ -380,7 +380,7 @@ def main() -> None:
     names = [str(d.d3.expansion)] if args.expansion else [str(c) for c in d.d3.order]
     if args.part == "d3":
         record = kept(out, "d3/determinism.json", commit)
-        if record is not None and not record["equal"]:
+        if record is not None and not record["bitwise_equal"]:
             print(f"D3 stopped: {out / 'd3' / 'determinism.json'} records a re-run that differs",
                   file=sys.stderr)  # fmt: skip
             sys.exit(DETERMINISM_FAILED)

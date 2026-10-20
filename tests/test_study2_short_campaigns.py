@@ -1134,13 +1134,15 @@ def test_progress_reads_no_harm(monkeypatch) -> None:
 
 
 def test_the_final_analysis_opens_the_time_course_once(monkeypatch, tmp_path) -> None:
-    """The time course's labels are read in the final analysis only, and only for its runs
-    identical to their endpoint runs; with two arms (no mechanism cohort) the final analysis
-    follows the primary's stop."""
+    """The time course's labels are read in the final analysis only, and only for its runs that
+    count: identical or numerically consistent with their endpoint runs (review fa21); with two
+    arms (no mechanism cohort) the final analysis follows the primary's stop."""
     module = summary_module()
     rates = {ADAMW: [1.27e-5, 1.48e-5, 1.74e-5], FA: [1.59e-5, 1.86e-5, 2.17e-5]}
-    identical, excluded = on_disk([course(ADAMW, 20, 1.48e-5, 3000),
-                                   course(FA, 20, 1.86e-5, 3000)], tmp_path)  # fmt: skip
+    identical, excluded, consistent = on_disk([course(ADAMW, 20, 1.48e-5, 3000),
+                                               course(FA, 20, 1.86e-5, 3000),
+                                               course(ADAMW, 20, 1.48e-5, 3001)],
+                                              tmp_path)  # fmt: skip
     read = []
     monkeypatch.setattr(module, "label_path", lambda run_dir, judge: run_dir / "config.yaml")
     monkeypatch.setattr(module, "load_prompt_set", lambda name, data: [{"id": "p", "text": "t"}])
@@ -1153,10 +1155,13 @@ def test_the_final_analysis_opens_the_time_course_once(monkeypatch, tmp_path) ->
     monkeypatch.setattr(module, "read_endpoint_labels", endpoint_labels)
     course_state = {"trajectories": [{"run": identical.run_id, "state": "identical"},
                                      {"run": excluded.run_id, "state": "excluded"},
+                                     {"run": consistent.run_id, "state": "consistent"},
                                      {"run": None, "state": None}]}  # fmt: skip
     labels, pending = module.read_timecourse_labels({"timecourse": course_state},
-                                                    [identical, excluded], "wildguard")  # fmt: skip
-    assert set(labels) == {identical.run_id} and read == [identical.run_id] and pending == {}
+                                                    [identical, excluded, consistent],
+                                                    "wildguard")  # fmt: skip
+    counted = [identical.run_id, consistent.run_id]
+    assert sorted(labels) == sorted(counted) and read == counted and pending == {}
     # Two arms: no mechanism cohort; the final analysis waits for the primary's stop, then
     # reads the time course's labels once.
     read.clear()
@@ -1269,13 +1274,14 @@ def test_timecourse_reports_missing(records_alike) -> None:
     by = {(t["arm"], t["seed"]): t for t in summary["trajectories"]}
     assert len(by) == 30 and by[absent]["run"] is None and by[given_up]["run"] is None
     assert by[(FA, 3002)]["state"] == "excluded"  # its endpoint took its 25 steps
-    assert "the stop and the steps taken differ" in by[(FA, 3002)]["reasons"][-1]
+    reason = by[(FA, 3002)]["reasons"][-1]
+    assert "the stop and the steps taken are not numerically consistent" in reason
     assert [r["step"] for r in by[(FA, 3002)]["rows"]] == [1, 5]
     assert by[(ADAMW, 3004)]["state"] == "pending"
     assert by[(ADAMW, 3005)]["state"] == "excluded"
     assert "given up by the launcher" in by[(ADAMW, 3005)]["reasons"][0]
-    assert summary["counts"] == {"identical": 25, "excluded": 2, "pending": 1, "failed": 2,
-                                 "missing": 1}  # fmt: skip
+    assert summary["counts"] == {"identical": 25, "consistent": 0, "excluded": 2, "pending": 1,
+                                 "failed": 2, "missing": 1}  # fmt: skip
 
 
 def test_timecourse_runs_off_their_prescription_leave_the_stage_incomplete() -> None:
@@ -1369,7 +1375,7 @@ def test_summary_reads_no_labels_without_the_argument(monkeypatch, records_alike
     assert [t["state"] for t in labelled["trajectories"] if t["run"] == unlabeled] == ["identical"]
     for t in labelled["trajectories"]:
         harms = [row["harm"] for row in t["rows"]]
-        if t["state"] == "identical" and t["run"] != unlabeled:
+        if t["state"] in ("identical", "consistent") and t["run"] != unlabeled:
             assert harms == [10 * s / 500 for s in TIMECOURSE_STEPS]
         else:
             assert all(h is None for h in harms), t["state"]

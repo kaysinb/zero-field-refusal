@@ -62,7 +62,8 @@ identity could never be shown. The loaded runs are split here once (``split_time
 time-course run never counts as a run of its key in another campaign (a confirmation range
 re-issued to complete it offers an endpoint run lost beside its time-course twin), and never
 enters a block, a look or the mechanism cohort; the stage's summary reports each against its
-endpoint run (``timecourse_identity``: bit for bit, or excluded), with the failed and missing
+endpoint run (``timecourse_identity``: identical bit for bit, or numerically consistent, review
+fa21; else excluded), with the failed and missing
 ones per seed and arm (``progress``'s ``timecourse``).
 
 - --runs holds every run so far: Stage A's (study2_stage_a, study2_controls), whose 25-step grids
