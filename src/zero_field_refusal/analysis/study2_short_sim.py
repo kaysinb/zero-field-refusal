@@ -148,6 +148,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import itertools
 import json
 import math
 import multiprocessing as mp
@@ -156,14 +157,41 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import brentq, least_squares
-from scipy.special import expit, gammaincinv, logit, ndtr, ndtri, roots_genlaguerre
+from scipy.special import (
+    expit,
+    gammainccinv,
+    gammaincinv,
+    logit,
+    ndtr,
+    ndtri,
+    roots_genlaguerre,
+)
 from scipy.stats import norm
 from scipy.stats import t as student_t
+
+# The mechanism cohort's analysis (amendment 4, section 3), read only: the simulation computes
+# its intervals with these functions and reads the cohort's constants from there.
+from .study2_short import (
+    ADAMW,
+    COMPARISON_LEVEL,
+    FA,
+    MECHANISM_CAP,
+    MECHANISM_EFFECTS,
+    MECHANISM_MINIMUM,
+    MECHANISM_TARGET,
+    PREWARMED,
+    _endpoint,
+    _upper_quantile,
+    block_support,
+    max_t_interval,
+    symmetric_studentized,
+)
 
 
 def seed_sequence(base_seed: int, *keys: object) -> np.random.SeedSequence:
@@ -361,6 +389,9 @@ TAGS = {
     "failure_correlated": "fcorr",
     "w_max": "w",
     "postpone": "postpone",
+    "sigma_u_arms": "sua",
+    "sigma_e_arms": "sea",
+    "failure_arms": "fa",
 }
 
 
@@ -387,9 +418,16 @@ class Scenario:
     postpone: int = 0  # look 1 of two-look designs happens this many supported blocks later
     reps: int = OTHER_REPS
     group: str = field(default="", compare=False)  # report grouping only
+    # Amendment 4: per-arm K spreads and technical failure rates (A, F, P), e.g. B = 20's inputs
+    # record (``read_inputs``). None: the scalar fields hold for every arm. A per-arm failure
+    # rate replaces ``failure`` (each arm's marginal; ``failure_correlated`` still applies).
+    sigma_u_arms: tuple[float, float, float] | None = None
+    sigma_e_arms: tuple[float, float, float] | None = None
+    failure_arms: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
         gaps = [d.sizes[1] - d.sizes[0] for d in LOOK_DESIGNS if len(d.sizes) == 2]
+        arms = [v for v in (self.sigma_u_arms, self.sigma_e_arms, self.failure_arms) if v]
         checks = {
             "positions": self.positions in POSITIONS,
             "shape": self.shape in SHAPES,
@@ -398,6 +436,11 @@ class Scenario:
             "rho_b, rho_a": 0 <= self.rho_b <= self.rho_a <= 1,
             "postpone": 0 <= self.postpone < min(gaps),
             "failure": 0 <= self.failure < 1,
+            "per-arm inputs": all(
+                isinstance(v, tuple) and len(v) == len(ARMS) and all(x >= 0 for x in v)
+                for v in arms
+            )
+            and all(0 <= f < 1 for f in self.failure_arms or ()),
         }
         bad = [name for name, ok in checks.items() if not ok]
         if bad:
@@ -420,9 +463,18 @@ class Scenario:
                 parts.append(tag)
             elif isinstance(value, str):
                 parts.append(f"{tag}-{value}")
+            elif isinstance(value, tuple):
+                parts.append(tag + "-".join(f"{v:g}" for v in value))
             else:
                 parts.append(f"{tag}{value:g}")
         return "_".join(parts)
+
+    def k_spreads(self, arms: Sequence[int]) -> tuple[Any, Any]:
+        """(σ_u, σ_e) of the ``arms``: the scalars, or (len(arms), 1) arrays of the per-arm
+        values, which broadcast over the (blocks, arms, rates) endpoint positions."""
+        u = self.sigma_u if self.sigma_u_arms is None else np.array(self.sigma_u_arms)[arms, None]
+        e = self.sigma_e if self.sigma_e_arms is None else np.array(self.sigma_e_arms)[arms, None]
+        return u, e
 
 
 def _pp(value: float) -> str:
@@ -445,6 +497,8 @@ class Parameters:
     shifted: tuple[bool, bool, bool]  # the arms that carry the arm effect
     failure: tuple[float, float]  # intercept and slope of the failure logit in β_b/σ_s
     truth: dict[str, float]  # pointwise population contrasts at K*: "A-F", "P-F", "A-P"
+    # Per arm (A, F, P), when the scenario has per-arm failure rates: (intercept, slope).
+    failure_arms: tuple[tuple[float, float], ...] | None = None
 
 
 def curve_offset(
@@ -520,7 +574,6 @@ def population_rate(
     return float(population_values(_sigma_v(scenario), offset, (0.0, 0.0, 0.0), effect, [0.0])[0])
 
 
-@functools.cache
 def fit_coefficients(
     family: str, arm: int, sigma_v: float, effect: tuple[str, float] | None
 ) -> tuple[tuple[float, float, float], float]:
@@ -530,7 +583,15 @@ def fit_coefficients(
     ``effect`` is the arm's effect (shape, spread), or None. γ is free only where the target has
     a kink.
     """
-    target = FAMILIES[family]
+    return fit_target(FAMILIES[family], arm, sigma_v, effect)
+
+
+@functools.cache
+def fit_target(
+    target: Family, arm: int, sigma_v: float, effect: tuple[str, float] | None
+) -> tuple[tuple[float, float, float], float]:
+    """``fit_coefficients`` for a family given as its target curves (the mechanism's tied
+    stress case uses ``study1``'s curves at another baseline)."""
     goal = target.target(arm, FIT_GRID)
     distribution = NO_EFFECT if effect is None else effect_distribution(*effect)
     kinked = target.kink[arm] != 0
@@ -612,6 +673,9 @@ def solve_parameters(scenario: Scenario, spread: float | None = None) -> Paramet
     effects = _effects(s, spread, shifted)
     h = [population_rate(s, offsets[a], effects[a]) for a in range(len(ARMS))]
     slope = FAILURE_SLOPE if s.failure_correlated else 0.0
+    per_arm = None
+    if s.failure_arms is not None:
+        per_arm = tuple((_logistic_intercept(f, slope), slope) for f in s.failure_arms)
     return Parameters(
         offsets=offsets,
         coefficients=tuple(fit[0] for fit in fits),
@@ -620,6 +684,7 @@ def solve_parameters(scenario: Scenario, spread: float | None = None) -> Paramet
         shifted=shifted,
         failure=(_logistic_intercept(s.failure, slope), slope),
         truth={"A-F": h[0] - h[1], "P-F": h[2] - h[1], "A-P": h[0] - h[2]},
+        failure_arms=per_arm,
     )
 
 
@@ -737,6 +802,17 @@ def block_effects(
     return effect
 
 
+def failure_probability(params: Parameters, stream: np.ndarray, arms: Sequence[int]) -> np.ndarray:
+    """Each run's technical failure probability, broadcasting over (blocks, arms, rates):
+    logistic(intercept + slope·β_b/σ_s), with one law for every arm or, for per-arm failure
+    rates, each arm's own."""
+    if params.failure_arms is None:
+        intercept, slope = params.failure
+        return expit(intercept + slope * stream)[:, None, None]
+    law = np.array(params.failure_arms)[list(arms)]
+    return expit(law[:, 0] + law[:, 1] * stream[:, None])[..., None]
+
+
 def simulate_blocks(
     scenario: Scenario,
     params: Parameters,
@@ -761,9 +837,9 @@ def simulate_blocks(
     tail = rng.random(n)  # the heavy shape's block scale
     effect = block_effects(s, params, latent, arms, tail)
     nominal = np.array(POSITIONS[s.positions])[arms] + misses[arms]
-    x = nominal + s.sigma_u * speed[..., None] + s.sigma_e * rng.standard_normal((n, len(arms), 3))
-    intercept, slope = params.failure
-    failed = rng.random((n, len(arms), 3)) < expit(intercept + slope * stream)[:, None, None]
+    sigma_u, sigma_e = s.k_spreads(arms)
+    x = nominal + sigma_u * speed[..., None] + sigma_e * rng.standard_normal((n, len(arms), 3))
+    failed = rng.random((n, len(arms), 3)) < failure_probability(params, stream, arms)
     eta = (
         np.array(params.offsets)[arms][:, None]
         + curve_offset(params.coefficients, x, arms)
@@ -2536,6 +2612,1254 @@ def run_scenarios(
                         "results": [],
                     }
                 key = calibration_key(scenario).name
+                summary["calibration"] = asdict(calibrations[key]) if key in calibrations else None
+                summaries[name] = summary
+            if progress is not None:
+                progress("replicates", done, len(tasks))
+    return {
+        "calibrations": {k: asdict(v) for k, v in calibrations.items()},
+        "scenarios": [summaries[name] for name in names],
+    }
+
+
+# Amendment 4: B = 20's inputs record
+
+INPUT_FIELDS = ("sigma_u", "sigma_e", "support_rate", "failure_rate")
+INPUT_ENTRY_KEYS = ("value", "source", "provisional", "counts")
+INPUT_TOP_KEYS = ("batch", "status", "description", "arms")
+INPUT_STATUSES = ("provisional", "measured")
+INPUTS_RECORD = "docs/study2-short-b20-inputs.json"  # relative to the repository root
+
+
+@dataclass(frozen=True)
+class Inputs:
+    """B = 20's inputs record (``read_inputs``): per arm (A, F, P) the K spreads σ_u and σ_e
+    (ln K units), the support rate and the technical failure rate, and the record's sha256.
+
+    The simulation uses the K spreads and the failure rates. The support rate is the measured
+    share of supported blocks, which a run reports beside its simulated one: in the model,
+    support follows from the K spreads, the selection miss, w_max and the failures."""
+
+    batch: int
+    status: str
+    sigma_u: tuple[float, float, float]
+    sigma_e: tuple[float, float, float]
+    support_rate: tuple[float, float, float]
+    failure_rate: tuple[float, float, float]
+    provisional: tuple[str, ...]  # "arm.field: what replaces it", one per provisional entry
+    sha256: str
+    path: str
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "sha256": self.sha256,
+            "batch": self.batch,
+            "status": self.status,
+            "provisional": list(self.provisional),
+            **{name: dict(zip(ARMS, getattr(self, name), strict=True)) for name in INPUT_FIELDS},
+        }
+
+
+def _input_value_problem(name: str, value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        return "is not a finite number"
+    if name in ("sigma_u", "sigma_e") and not value > 0:
+        return "is not a positive K spread"
+    if name == "support_rate" and not 0 < value <= 1:
+        return "is not a support rate in (0, 1]"
+    if name == "failure_rate" and not 0 <= value < 1:
+        return "is not a failure rate in [0, 1)"
+    return None
+
+
+def read_inputs(path: str | Path) -> Inputs:
+    """B = 20's inputs record, checked: a JSON object with exactly ``INPUT_TOP_KEYS`` (``batch``
+    a positive integer, ``status`` one of ``INPUT_STATUSES``, ``description`` a string, ``arms``);
+    in ``arms`` exactly A, F and P, each with exactly ``INPUT_FIELDS``, each an object with a
+    ``value`` and a non-empty ``source``, optionally ``provisional`` (what replaces it, a
+    non-empty string) and ``counts`` (integers ≥ 0). The status is ``provisional`` exactly when an
+    entry is. A missing, unknown or malformed field raises ``ValueError``; none is defaulted."""
+    raw = Path(path).read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path}: the inputs record is not JSON ({error})") from None
+    if not isinstance(record, dict):
+        raise ValueError(f"{path}: the inputs record is a JSON object")
+    problems = []
+    missing = [k for k in INPUT_TOP_KEYS if k not in record]
+    unknown = sorted(set(record) - set(INPUT_TOP_KEYS))
+    if missing:
+        problems.append(f"lacks {missing}")
+    if unknown:
+        problems.append(f"has keys {unknown} it does not know")
+    batch, status = record.get("batch"), record.get("status")
+    if "batch" in record and (isinstance(batch, bool) or not isinstance(batch, int) or batch < 1):
+        problems.append(f"batch {batch!r} is not a positive integer")
+    if "status" in record and status not in INPUT_STATUSES:
+        problems.append(f"status {status!r} is not one of {list(INPUT_STATUSES)}")
+    if "description" in record and not isinstance(record["description"], str):
+        problems.append("description is not a string")
+    arms = record.get("arms")
+    values: dict[str, list[float]] = {name: [] for name in INPUT_FIELDS}
+    provisional = []
+    if not isinstance(arms, dict) or sorted(arms) != sorted(ARMS):
+        shown = sorted(arms) if isinstance(arms, dict) else arms
+        problems.append(f"arms {shown!r} are not exactly {list(ARMS)}")
+        arms = {}
+    for arm in ARMS if arms else ():
+        entries = arms[arm]
+        if not isinstance(entries, dict) or sorted(entries) != sorted(INPUT_FIELDS):
+            problems.append(f"arm {arm} does not hold exactly {list(INPUT_FIELDS)}")
+            continue
+        for name in INPUT_FIELDS:
+            entry, where = entries[name], f"{arm}.{name}"
+            if not isinstance(entry, dict):
+                problems.append(f"{where} is not an object")
+                continue
+            lacking = [k for k in ("value", "source") if k not in entry]
+            extra = sorted(set(entry) - set(INPUT_ENTRY_KEYS))
+            if lacking or extra:
+                problems.append(f"{where} lacks {lacking} or has unknown keys {extra}")
+                continue
+            why = _input_value_problem(name, entry["value"])
+            if why:
+                problems.append(f"{where} {entry['value']!r} {why}")
+            else:
+                values[name].append(float(entry["value"]))
+            if not (isinstance(entry["source"], str) and entry["source"].strip()):
+                problems.append(f"{where} has no source")
+            if "provisional" in entry:
+                if not (isinstance(entry["provisional"], str) and entry["provisional"].strip()):
+                    problems.append(f"{where} provisional is not a non-empty string")
+                else:
+                    provisional.append(f"{where}: {entry['provisional']}")
+            counts = entry.get("counts", {})
+            if not (isinstance(counts, dict) and all(
+                    isinstance(v, int) and not isinstance(v, bool) and v >= 0
+                    for v in counts.values())):  # fmt: skip
+                problems.append(f"{where} counts are not integers ≥ 0")
+    if not problems and (status == "provisional") != bool(provisional):
+        problems.append(f"status {status!r} but {len(provisional)} provisional entries")
+    if problems:
+        raise ValueError(f"{path}: " + "; ".join(problems))
+    return Inputs(
+        batch=batch,
+        status=status,
+        **{name: tuple(values[name]) for name in INPUT_FIELDS},
+        provisional=tuple(provisional),
+        sha256=digest,
+        path=str(path),
+    )
+
+
+INPUT_RUN_ARMS = {"A": ADAMW, "F": FA, "P": PREWARMED}  # the runs' arm names
+
+
+def measure_inputs(
+    runs: Sequence[Any],
+    *,
+    batch: int,
+    seeds: Sequence[int],
+    rates: Mapping[str, Sequence[float]] | None = None,
+    kstar: float = K_STAR,
+    w_max: float = DECIDED_W_MAX,
+) -> dict[str, dict[str, Any]]:
+    """The inputs, per arm (A, F, P), measured on 25-step runs (``stage_a.Trajectory``) at
+    ``batch`` on the ``seeds``, from K and support only (K_benign at step 25, the stop; never a
+    label or K_harmful):
+
+    - ``sigma_u`` and ``sigma_e``: over the rates where every seed has an endpoint, ln K25 as
+      rate × seed; σ_u is the SD (ddof 1) of the seed effects (column means after removing the
+      rate means), σ_e the residual SD on (rates − 1)(seeds − 1) degrees of freedom;
+    - with ``rates[arm]`` (the selected rates): ``failure_rate``, the share of those runs (one per
+      rate and seed; a missing run counts) without an endpoint, and, for a triple,
+      ``support_rate``, the share of seeds whose block is supported (``block_support`` at K* and
+      ``w_max``).
+
+    An arm without two complete rates has no spreads (None); one without ``rates`` no rates."""
+    out = {}
+    for arm, name in INPUT_RUN_ARMS.items():
+        mine = [r for r in runs if r.arm == name and r.batch_size == batch and r.seed in seeds
+                and r.planned_steps == 25]  # fmt: skip
+        k25: dict[float, dict[int, float]] = {}
+        for run in mine:
+            row, _ = _endpoint(run)
+            if row is not None:
+                k25.setdefault(float(f"{run.lr:.6g}"), {})[run.seed] = row["K_benign"]
+        complete = sorted(lr for lr, by_seed in k25.items() if set(by_seed) >= set(seeds))
+        found: dict[str, Any] = {"runs": len(mine), "complete_rates": complete}
+        if len(complete) >= 2 and len(seeds) >= 2:
+            table = np.log([[k25[lr][s] for s in seeds] for lr in complete])
+            residual = table - table.mean(axis=1, keepdims=True)
+            effects = residual.mean(axis=0)
+            noise = residual - effects
+            found["sigma_u"] = float(np.std(effects, ddof=1))
+            found["sigma_e"] = float(
+                math.sqrt((noise**2).sum() / ((len(complete) - 1) * (len(seeds) - 1)))
+            )
+        if rates and rates.get(arm):
+            chosen = [float(f"{lr:.6g}") for lr in rates[arm]]
+            at = [r for r in mine if float(f"{r.lr:.6g}") in chosen]
+            ended = sum(1 for r in at if _endpoint(r)[0] is not None)
+            expected = len(chosen) * len(seeds)
+            found["failure_rate"] = (expected - ended) / expected
+            found["failure_counts"] = {"runs": expected, "failures": expected - ended}
+            if len(chosen) == 3:
+                supported = sum(
+                    block_support([r for r in at if r.seed == s], kstar, w_max, rates=chosen)[
+                        "supported"
+                    ]
+                    for s in seeds
+                )
+                found["support_rate"] = supported / len(seeds)
+                found["support_counts"] = {"blocks": len(seeds), "supported": supported}
+        out[arm] = found
+    return out
+
+
+def inputs_record(
+    measured: Mapping[str, Mapping[str, Any]], *, batch: int, where: str
+) -> dict[str, Any]:
+    """The inputs record (``read_inputs``' format, status ``measured``) from ``measure_inputs``
+    with every field of every arm measured; ``where`` names the runs in each source."""
+    arms: dict[str, Any] = {}
+    for arm in ARMS:
+        found = measured[arm]
+        lacking = [name for name in INPUT_FIELDS if found.get(name) is None]
+        if lacking:
+            raise ValueError(f"arm {arm}: {lacking} not measured ({where})")
+        rates = ", ".join(f"{lr:g}" for lr in found["complete_rates"])
+        spread = f"{where}, B = {batch}: ln K25 over the complete rates {rates}"
+        arms[arm] = {
+            "sigma_u": {"value": found["sigma_u"], "source": f"{spread}: SD of the seed effects"},
+            "sigma_e": {"value": found["sigma_e"], "source": f"{spread}: residual SD"},
+            "support_rate": {"value": found["support_rate"], "counts": found["support_counts"],
+                             "source": f"{where}, B = {batch}: seeds whose block is supported "
+                                       "at the selected rates"},
+            "failure_rate": {"value": found["failure_rate"], "counts": found["failure_counts"],
+                             "source": f"{where}, B = {batch}: runs at the selected rates "
+                                       "without an endpoint"},
+        }  # fmt: skip
+    return {"batch": batch, "status": "measured",
+            "description": f"Study 2's B = {batch} simulation inputs, measured on K and support "
+                           f"only ({where}).", "arms": arms}  # fmt: skip
+
+
+def inputs_scenario(scenario: Scenario, inputs: Inputs) -> Scenario:
+    """A primary scenario with the inputs' per-arm K spreads, and their failure rates where the
+    scenario has none of its own (a stress scenario keeps its failure rate)."""
+    changes: dict[str, Any] = {"sigma_u_arms": inputs.sigma_u, "sigma_e_arms": inputs.sigma_e}
+    if scenario.failure == 0 and not scenario.failure_correlated:
+        changes["failure_arms"] = inputs.failure_rate
+    return replace(scenario, **changes)
+
+
+# Amendment 4: the mechanism cohort (section 3)
+#
+# Three arms run per block as in the primary model (``simulate_blocks``), with the inputs' per-arm
+# K spreads and failure rates. The components' per-block effects e₁ (C1 = P − F) and e₂ (C2 =
+# A − P) are drawn on the logit scale from standard normal driving variables with correlation ρ
+# (a Gaussian copula), transformed by the shape: normal σ·w; skewed σ·(G − 2)/√2, G the Gamma(2)
+# quantile of Φ(w); heavy σ·S·w, S the block scale shared by both components; rare_centered
+# M·(B − π); rare_only m·B, B = 1[w > Φ⁻¹(1 − π)]. The arms carry them as a chain: d_F = 0,
+# d_P = e₁, d_A = e₁ + e₂ (rare_only: shifted up per block so that no arm is lowered,
+# d_F = −min(0, e₁, e₁ + e₂), as amendment 3 put a negative rare difference in F). The per-prompt
+# curves are study1's, fitted without block effects (``fit_target``); P follows F.
+#
+# Truth: the supported interpolation estimand of each component, the mean over the jointly
+# supported three-arm population of the interpolated contrast at K* (the primary's interpolation
+# estimand, built the same way). ``EstimandModel`` computes it from the population. Label noise
+# has mean 0, so it is the mean of the interpolated expected harm. Prompts, stream effects and
+# block effects are integrated by quadrature, and the endpoint geometry (selection misses,
+# speeds, position noise) over a fixed sample of ``ESTIMAND_GEOMETRIES`` per arm, with every
+# failure pattern weighted by its probability (given β_b for P under support-dependent
+# attrition). The offsets c_P, then c_A, are solved so that it equals the declared (C1, C2) in
+# every attrition mode; c_F makes F's population rate at K* the baseline.
+
+COMPONENTS = ("C1", "C2")  # C1 = P − F, C2 = A − P
+COMPONENT_ARMS = ((2, 1), (0, 2))  # (minuend, subtrahend) arm indices of C1 and C2
+COMPONENT_MEANS = (
+    (0.0, 0.0),
+    (0.025, 0.025),
+    (0.05, 0.05),
+    (0.05, 0.0),
+    (0.0, 0.05),
+    (0.05, -0.05),
+    (-0.05, 0.05),
+    (-0.05, -0.05),
+    (-0.025, 0.025),
+)
+SD_RATIOS = {"1:1": (1.0, 1.0), "2:1": (1.0, 0.5), "1:2": (0.5, 1.0)}  # (C1, C2) / the larger
+COMPONENT_RHOS = (-0.5, 0.0, 0.5)  # correlation of the components' per-block driving variables
+ATTRITIONS = ("none", "independent", "support_dependent")
+MECHANISM_SHAPES = ("normal", "skewed", "heavy", "rare_centered", "rare_only", "tied")
+REQUIRED_SHAPES = ("normal", "skewed")
+REQUIRED_SDS = (0.05, 0.10)
+STRESS_SDS = (0.05, 0.10, 0.15)
+TIED_BASELINES = (1e-4, 2e-5)  # most blocks have h = 0 in every arm
+MECHANISM_BASELINE = FAMILIES["study1"].baseline
+MECHANISM_W_MAX = DECIDED_W_MAX
+MECHANISM_REPS = 10_000
+MECHANISM_STRESS_REPS = 2_000
+# Bootstrap resamples per replicate and interval (the analysis fixes its own, 10 000): chosen
+# for run time, as amendment 3's simulation chose 2000 (``BOOTSTRAP_RESAMPLES``).
+MECHANISM_RESAMPLES = BOOTSTRAP_RESAMPLES
+MECHANISM_LEVELS = tuple(round(0.95 + 0.005 * i, 3) for i in range(9))  # 0.95 … 0.99
+MECHANISM_COVERAGE = 0.95
+MECHANISM_STREAMS = {"calibration": "mechanism-calibration", "check": "mechanism-check"}
+ESTIMAND_GEOMETRIES = 8192
+COPULA_NODES = 48
+G_STEP = 0.004  # the grid of the arms' expected-harm functions (logit units)
+L_STEP = 0.001
+PATTERNS = tuple(itertools.product((False, True), repeat=3))  # failed rates of an arm's endpoints
+
+if MECHANISM_CAP != CAP:  # pragma: no cover - the analysis and the simulation share the cap
+    raise ImportError("the mechanism cohort's cap must be the primary's")
+
+
+def coverage_floor(reps: int, target: float = MECHANISM_COVERAGE) -> float:
+    """The coverage requirement within MC error: target − 2·√(target·(1 − target)/R)."""
+    return target - 2 * math.sqrt(target * (1 - target) / reps)
+
+
+def stream_seed(base_seed: int, *keys: object) -> int:
+    """An integer seed for the analysis's bootstrap functions, which draw from
+    ``numpy.random.default_rng(seed)``: the full SHA-256 digest of the key list as an integer."""
+    blob = json.dumps([base_seed, *keys]).encode()
+    return int.from_bytes(hashlib.sha256(blob).digest(), "little")
+
+
+@dataclass(frozen=True)
+class Mechanism:
+    """A mechanism scenario: the declared supported interpolation estimands (C1, C2), the shape,
+    the larger component SD ``sd`` with the SD ratio (C1 : C2), the correlation ρ of the
+    components' driving variables, the attrition, F's population rate at K* (``baseline``) and
+    the replicates."""
+
+    c1: float = 0.0
+    c2: float = 0.0
+    shape: str = "normal"
+    sd: float = 0.05
+    ratio: str = "1:1"
+    rho: float = 0.0
+    attrition: str = "none"
+    baseline: float = MECHANISM_BASELINE
+    reps: int = MECHANISM_REPS
+    group: str = field(default="", compare=False)
+
+    def __post_init__(self) -> None:
+        checks = {
+            "shape": self.shape in MECHANISM_SHAPES,
+            "ratio": self.ratio in SD_RATIOS,
+            "rho": -1 < self.rho < 1,
+            "attrition": self.attrition in ATTRITIONS,
+            "baseline": 0 < self.baseline < 1,
+            "sd": self.sd >= 0,
+            "tied": self.shape != "tied" or (self.c1, self.c2, self.sd) == (0.0, 0.0, 0.0),
+        }
+        bad = [name for name, ok in checks.items() if not ok]
+        if bad:
+            raise ValueError(f"Invalid mechanism fields {bad}: {self}")
+
+    @property
+    def name(self) -> str:
+        sd = "sdna" if self.shape == "rare_only" else f"sd{round(100 * self.sd, 6):g}"
+        parts = ["mech", self.shape, sd, "r" + self.ratio.replace(":", "-"), f"rho{self.rho:+g}",
+                 f"c1{_pp(self.c1)}", f"c2{_pp(self.c2)}", self.attrition]  # fmt: skip
+        if self.baseline != MECHANISM_BASELINE:
+            parts.append(f"h{self.baseline:g}")
+        return "_".join(parts)
+
+    @property
+    def truth(self) -> tuple[float, float]:
+        return self.c1, self.c2
+
+    @property
+    def targets(self) -> tuple[float, float]:
+        """The components' target SDs (fractions); none for rare_only and tied."""
+        if self.shape in ("rare_only", "tied"):
+            return 0.0, 0.0
+        r1, r2 = SD_RATIOS[self.ratio]
+        return self.sd * r1, self.sd * r2
+
+    @property
+    def key(self) -> Mechanism:
+        """The (0, 0) scenario without attrition whose component SDs set the spreads."""
+        return replace(self, c1=0.0, c2=0.0, attrition="none", reps=0, group="")
+
+
+def mechanism_base(inputs: Inputs) -> Scenario:
+    """The primary model's settings the mechanism shares (study1's curves, the decided w_max,
+    prompt and stream effects, label correlations, selection misses), with the inputs' per-arm
+    K spreads."""
+    return Scenario(w_max=MECHANISM_W_MAX, sigma_u_arms=inputs.sigma_u,
+                    sigma_e_arms=inputs.sigma_e)  # fmt: skip
+
+
+def failure_laws(attrition: str, inputs: Inputs) -> tuple[tuple[float, float], ...]:
+    """Per arm (A, F, P), the failure logit's (intercept, slope) in β_b/σ_s: none; independent,
+    each arm at its inputs' rate; support-dependent, A and F independent at theirs and P's
+    failures more frequent in high-harm blocks (``failure_correlated``'s law) at its rate."""
+    if attrition == "none":
+        return ((-math.inf, 0.0),) * len(ARMS)
+    laws = [(_logistic_intercept(rate, 0.0), 0.0) for rate in inputs.failure_rate]
+    if attrition == "support_dependent":
+        laws[2] = (_logistic_intercept(inputs.failure_rate[2], FAILURE_SLOPE), FAILURE_SLOPE)
+    return tuple(laws)
+
+
+def _skewed_effect(w: np.ndarray) -> np.ndarray:
+    """(G − 2)/√2, G the Gamma(2) quantile of Φ(w), accurate in both tails."""
+    w = np.asarray(w, dtype=float)
+    upper = gammainccinv(GAMMA_SHAPE, ndtr(-np.abs(w)))
+    lower = gammaincinv(GAMMA_SHAPE, ndtr(np.minimum(w, 0.0)))
+    return (np.where(w > 0, upper, lower) - GAMMA_SHAPE) / math.sqrt(GAMMA_SHAPE)
+
+
+def component_effects(
+    shape: str, spreads: Sequence[float], w1: np.ndarray, w2: np.ndarray, tail: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """e₁ and e₂ (logit) from the driving variables w₁, w₂ and the heavy shape's block scale
+    draw ``tail``; ``spreads`` are σ (normal, skewed, heavy), M (rare_centered) or signed m
+    (rare_only)."""
+    s1, s2 = spreads
+    if shape == "tied":
+        return np.zeros_like(w1), np.zeros_like(w2)
+    if shape == "normal":
+        return s1 * w1, s2 * w2
+    if shape == "skewed":
+        return s1 * _skewed_effect(w1), s2 * _skewed_effect(w2)
+    if shape == "heavy":
+        scale = np.where(tail < HEAVY_SHARE, *HEAVY_SCALES)
+        return s1 * scale * w1, s2 * scale * w2
+    rare = (w1 > RARE_THRESHOLD).astype(float), (w2 > RARE_THRESHOLD).astype(float)
+    if shape == "rare_centered":
+        return s1 * (rare[0] - RARE), s2 * (rare[1] - RARE)
+    return s1 * rare[0], s2 * rare[1]
+
+
+def arm_effects(shape: str, e1: np.ndarray, e2: np.ndarray) -> np.ndarray:
+    """(…, 3) arm effects d_A, d_F, d_P with d_P − d_F = e₁ and d_A − d_P = e₂."""
+    e1, e2 = np.asarray(e1, dtype=float), np.asarray(e2, dtype=float)
+    base = -np.minimum(np.minimum(e1, e1 + e2), 0.0) if shape == "rare_only" else np.zeros_like(e1)
+    return np.stack([base + e1 + e2, base, base + e1], axis=-1)
+
+
+def _bivariate_upper(threshold: float, rho: float) -> float:
+    """P(w₁ > t, w₂ > t) for standard normals with correlation ρ."""
+    scale = math.sqrt(1 - rho**2)
+    value, _ = quad(lambda x: norm.pdf(x) * norm.cdf((rho * x - threshold) / scale), threshold,
+                    math.inf, epsabs=1e-15, epsrel=1e-13)  # fmt: skip
+    return float(value)
+
+
+def component_nodes(
+    shape: str, spreads: Sequence[float], rho: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Quadrature of (e₁, e₂): nodes and weights (summing to 1). Continuous shapes: a
+    ``COPULA_NODES``² Gauss–Hermite grid on the driving variables (heavy: for each block scale);
+    rare shapes: the four (B₁, B₂) with their exact probabilities."""
+    if shape == "tied":
+        return np.zeros(1), np.zeros(1), np.ones(1)
+    if shape in ("rare_centered", "rare_only"):
+        both = _bivariate_upper(RARE_THRESHOLD, rho)
+        w1 = np.array([np.inf, np.inf, -np.inf, -np.inf])
+        w2 = np.array([np.inf, -np.inf, np.inf, -np.inf])
+        weights = np.array([both, RARE - both, RARE - both, 1 - 2 * RARE + both])
+        e1, e2 = component_effects(shape, spreads, w1, w2, np.zeros(4))
+        return e1, e2, weights
+    z, w = np.polynomial.hermite_e.hermegauss(COPULA_NODES)
+    w = w / w.sum()
+    w1 = np.repeat(z, z.size)
+    w2 = rho * w1 + math.sqrt(1 - rho**2) * np.tile(z, z.size)
+    weights = np.outer(w, w).ravel()
+    if shape == "heavy":
+        high = component_effects(shape, spreads, w1, w2, np.zeros(w1.size))
+        low = component_effects(shape, spreads, w1, w2, np.ones(w1.size))
+        return (np.concatenate([high[0], low[0]]), np.concatenate([high[1], low[1]]),
+                np.concatenate([HEAVY_SHARE * weights, (1 - HEAVY_SHARE) * weights]))  # fmt: skip
+    e1, e2 = component_effects(shape, spreads, w1, w2, np.ones(w1.size))
+    return e1, e2, weights
+
+
+@functools.cache
+def _geometry(
+    arm: int, sigma_u: float, sigma_e: float, tau: float, w_max: float, base_seed: int
+) -> tuple[tuple[np.ndarray, np.ndarray, float], ...]:
+    """A fixed sample of one arm's endpoint geometry (a selection miss per rate, the speed, the
+    position noise) and, per failure pattern (``PATTERNS``), the supported geometries' endpoint
+    positions x (k, 3), their interpolation weights at K* (k, 3) and the supported share. The
+    weights come from ``interpolate_at_zero`` itself, applied to unit harms."""
+    rng = generator(base_seed, "estimand", "geometry", arm)
+    n = ESTIMAND_GEOMETRIES
+    x = np.array(NOMINAL) + rng.uniform(-tau, tau, (n, 3))
+    x = x + sigma_u * rng.standard_normal((n, 1)) + sigma_e * rng.standard_normal((n, 3))
+    out = []
+    for pattern in PATTERNS:
+        failed = np.broadcast_to(np.array(pattern), (n, 3))
+        weights = np.stack(
+            [interpolate_at_zero(x, np.tile(np.eye(3)[r], (n, 1)), failed, w_max)[0]
+             for r in range(3)],
+            axis=1,
+        )  # fmt: skip
+        supported = np.isfinite(weights[:, 0])
+        out.append((x[supported], weights[supported], float(supported.mean())))
+    return tuple(out)
+
+
+def _pattern_probabilities(law: tuple[float, float], z: np.ndarray) -> np.ndarray:
+    """(nodes, 8) probabilities of the failure patterns given β_b/σ_s = ``z``."""
+    intercept, slope = law
+    p = expit(intercept + slope * np.asarray(z, dtype=float))[:, None]
+    failures = np.array([sum(pattern) for pattern in PATTERNS])
+    return p**failures * (1 - p) ** (3 - failures)
+
+
+def _expected_harm_table(
+    values: np.ndarray, weights: np.ndarray, sigma: float, low: float, high: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """G(z) = E[σ(z + d + v)] on a grid of z in [low, high], d ~ (``values``, ``weights``) and
+    v ~ N(0, σ²): L(y) = E_v σ(y + v) by Gauss–Hermite on a fine grid, then G = Σ w·L(z + d)."""
+    z = np.arange(low, high + G_STEP / 2, G_STEP)
+    y = np.arange(low + values.min() - 1, high + values.max() + 1 + L_STEP, L_STEP)
+    nodes, h = _hermite()
+    table = np.empty(y.size)
+    for start in range(0, y.size, 4096):
+        table[start : start + 4096] = expit(y[start : start + 4096, None] + sigma * nodes) @ h
+    g = np.zeros(z.size)
+    for start in range(0, values.size, 256):
+        shifted = z[:, None] + values[None, start : start + 256]
+        g += np.interp(shifted, y, table) @ weights[start : start + 256]
+    return z, g
+
+
+class EstimandModel:
+    """The supported interpolation estimand from the population (see the section comment):
+    ``mean(arm, offset)`` is E[ĥ_arm | all three arms supported] at the arm's logit offset,
+    ``contrasts(offsets)`` the components."""
+
+    def __init__(
+        self,
+        base: Scenario,
+        coefficients: Sequence[tuple[float, float, float]],
+        effects: Sequence[tuple[np.ndarray, np.ndarray]],
+        failure: Sequence[tuple[float, float]],
+        centre: float,
+        base_seed: int,
+    ) -> None:
+        self.failure = tuple(failure)
+        # β_b is integrated apart from the prompts only where a failure law depends on it.
+        self.explicit = any(slope != 0 and math.isfinite(i) for i, slope in self.failure)
+        nodes, weights = _hermite()
+        self.z = nodes if self.explicit else np.zeros(1)
+        self.zw = weights if self.explicit else np.ones(1)
+        sigma = base.sigma_alpha if self.explicit else _sigma_v(base)
+        self.shift = base.sigma_s * self.z
+        sigma_u, sigma_e = (np.broadcast_to(np.ravel(v), len(ARMS))
+                            for v in base.k_spreads([0, 1, 2]))  # fmt: skip
+        span = 16 + float(np.abs(self.shift).max())
+        self.arms: list[dict[str, Any]] = []
+        for a in range(len(ARMS)):
+            geometry = _geometry(a, float(sigma_u[a]), float(sigma_e[a]), base.tau, base.w_max,
+                                 base_seed)  # fmt: skip
+            probabilities = _pattern_probabilities(self.failure[a], self.z)  # (nodes, 8)
+            used = np.flatnonzero(probabilities.max(axis=0) > 0)
+            entries = []
+            for p in used:
+                x, w, _ = geometry[p]
+                delta = _shape(x, *coefficients[a])
+                keep = w != 0
+                entries.append((int(p), w[keep] / ESTIMAND_GEOMETRIES, delta[keep]))
+            support = probabilities[:, used] @ np.array([geometry[p][2] for p in used])
+            values, probs = effects[a]
+            grid, table = _expected_harm_table(values, probs, sigma, centre - span, centre + span)
+            self.arms.append({"probabilities": probabilities, "entries": entries,
+                              "support": support, "grid": grid, "table": table})  # fmt: skip
+        self.p_joint = float(self.zw @ np.prod([m["support"] for m in self.arms], axis=0))
+
+    def mean(self, arm: int, offset: float) -> float:
+        """E[ĥ_arm | jointly supported] at logit offset ``offset``."""
+        model = self.arms[arm]
+        total = np.zeros(self.z.size)  # E[ĥ_arm · 1(arm supported) | β_b]
+        for p, w, delta in model["entries"]:
+            z = offset + delta[None, :] + self.shift[:, None]
+            harm = np.interp(z, model["grid"], model["table"]) @ w
+            total += model["probabilities"][:, p] * harm
+        others = np.prod([m["support"] for k, m in enumerate(self.arms) if k != arm], axis=0)
+        return float(self.zw @ (total * others)) / self.p_joint
+
+    def means(self, offsets: Sequence[float]) -> tuple[float, ...]:
+        return tuple(self.mean(a, offsets[a]) for a in range(len(ARMS)))
+
+    def contrasts(self, offsets: Sequence[float]) -> tuple[float, ...]:
+        h = self.means(offsets)
+        return tuple(h[i] - h[j] for i, j in COMPONENT_ARMS)
+
+    def support(self) -> dict[str, float]:
+        """P(arm supported) per arm and P(all three), marginal over β_b."""
+        per_arm = {arm: float(self.zw @ m["support"]) for arm, m in zip(ARMS, self.arms,
+                                                                       strict=True)}  # fmt: skip
+        return {**per_arm, "joint": self.p_joint}
+
+
+@dataclass(frozen=True)
+class MechanismParameters:
+    """What a mechanism scenario's draws need: offsets (c_A, c_F, c_P), per-prompt curve
+    coefficients, the component spreads (σ, M or signed m), each arm's failure law, and the
+    population quantities (the estimand per component, per-arm means and support)."""
+
+    offsets: tuple[float, float, float]
+    coefficients: tuple[tuple[float, float, float], ...]
+    spreads: tuple[float, float]
+    failure: tuple[tuple[float, float], ...]
+    estimand: dict[str, Any]
+
+
+def _rare_only_shifts(m: Mechanism, base: Scenario, offset: float) -> tuple[float, float]:
+    """Signed m per component: the rare shift that raises a population rate at the baseline by
+    |C| in one arm (amendment 3's rare_only, per component); 0 for C = 0."""
+    rate = population_rate(base, offset, NO_EFFECT)
+
+    def gap(size: float) -> float:
+        return population_rate(base, offset, effect_distribution("rare_only", size)) - rate
+
+    shifts = []
+    for c in m.truth:
+        if c == 0:
+            shifts.append(0.0)
+            continue
+        if gap(60.0) <= abs(c):
+            raise ValueError(f"rare_only cannot reach |C| = {abs(c)} in {m.name}")
+        size = float(brentq(lambda s, c=c: gap(s) - abs(c), 0.0, 60.0, xtol=1e-12))
+        shifts.append(math.copysign(size, c))
+    return shifts[0], shifts[1]
+
+
+def mechanism_parameters(
+    m: Mechanism,
+    inputs: Inputs,
+    spreads: Sequence[float] = (0.0, 0.0),
+    *,
+    base_seed: int = 0,
+    solve: bool = True,
+) -> MechanismParameters:
+    """A mechanism scenario's parameters: the curves; c_F, making F's population rate at K* the
+    baseline; the spreads (rare_only: from the declared means); the failure laws; and, with
+    ``solve``, c_P then c_A such that the supported interpolation estimand equals the declared
+    (C1, C2). Without ``solve`` (the spread calibration): c_A = c_P = c_F."""
+    base = mechanism_base(inputs)
+    target = Family(**STUDY1, baseline=m.baseline)
+    sigma_v = _sigma_v(base)
+    fits = [fit_target(target, a, sigma_v, None) for a in (0, 1)]
+    coefficients = (fits[0][0], fits[1][0], fits[1][0])  # P follows F
+    c_f = _solve_offset(lambda c: population_rate(base, c, NO_EFFECT), m.baseline)
+    if m.shape == "rare_only":
+        spreads = _rare_only_shifts(m, base, c_f)
+    spreads = (float(spreads[0]), float(spreads[1]))
+    failure = failure_laws(m.attrition, inputs)
+    if not solve:
+        return MechanismParameters((c_f, c_f, c_f), coefficients, spreads, failure, {})
+    e1, e2, weights = component_nodes(m.shape, spreads, m.rho)
+    d = arm_effects(m.shape, e1, e2)
+    effects = [(d[:, a], weights) for a in range(len(ARMS))]
+    model = EstimandModel(base, coefficients, effects, failure, c_f, base_seed)
+    h_f = model.mean(1, c_f)
+    c_p = float(brentq(lambda c: model.mean(2, c) - h_f - m.c1, c_f - 15, c_f + 15, xtol=1e-13))
+    h_p = model.mean(2, c_p)
+    c_a = float(brentq(lambda c: model.mean(0, c) - h_p - m.c2, c_f - 15, c_f + 15, xtol=1e-13))
+    offsets = (c_a, c_f, c_p)
+    estimand = {
+        **dict(zip(COMPONENTS, model.contrasts(offsets), strict=True)),
+        "arm_means": dict(zip(ARMS, model.means(offsets), strict=True)),
+        "support": model.support(),
+        "beta_explicit": model.explicit,
+    }
+    return MechanismParameters(offsets, coefficients, spreads, failure, estimand)
+
+
+def simulate_mechanism_blocks(
+    m: Mechanism,
+    params: MechanismParameters,
+    base: Scenario,
+    alpha: np.ndarray,
+    misses: np.ndarray,
+    rng: np.random.Generator,
+    n: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """ĥ(K*) and the support cause of ``n`` new three-arm blocks, each (n, 3): the primary's
+    block model (``simulate_blocks`` with ρ_u = ρ_uh = 0) carrying the components' effects."""
+    stream = rng.standard_normal(n)  # β_b/σ_s
+    speed = rng.standard_normal((n, len(ARMS)))  # u/σ_u
+    latent = rng.standard_normal((n, 2))
+    tail = rng.random(n)  # the heavy shape's block scale
+    w1 = latent[:, 0]
+    w2 = m.rho * w1 + math.sqrt(1 - m.rho**2) * latent[:, 1]
+    effect = arm_effects(m.shape, *component_effects(m.shape, params.spreads, w1, w2, tail))
+    arms = [0, 1, 2]
+    sigma_u, sigma_e = base.k_spreads(arms)
+    nominal = np.array(POSITIONS[base.positions]) + misses
+    x = nominal + sigma_u * speed[..., None] + sigma_e * rng.standard_normal((n, len(ARMS), 3))
+    law = np.array(params.failure)
+    probability = expit(law[:, 0] + law[:, 1] * stream[:, None])[..., None]
+    failed = rng.random((n, len(ARMS), 3)) < probability
+    eta = (
+        np.array(params.offsets)[:, None]
+        + curve_offset(params.coefficients, x, arms)
+        + base.sigma_s * stream[:, None, None]
+        + effect[..., None]
+    )
+    harm = endpoint_harm(eta, alpha, base.rho_b, base.rho_a, rng)
+    return interpolate_at_zero(x, harm, failed, base.w_max)
+
+
+def cohort_contrasts(estimates: np.ndarray, causes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """C1 and C2 on the mechanism cohort: the first ``MECHANISM_TARGET`` jointly supported
+    blocks in started order (at the cap, all of them)."""
+    joint = np.flatnonzero((causes == SUPPORTED).all(axis=1))[:MECHANISM_TARGET]
+    e = estimates[joint]
+    return e[:, 2] - e[:, 1], e[:, 0] - e[:, 2]
+
+
+def mechanism_intervals(
+    c1: np.ndarray,
+    c2: np.ndarray,
+    levels: Sequence[float],
+    resamples: int,
+    seeds: Sequence[int],
+) -> dict[str, Any]:
+    """The analysis's intervals on one cohort: ``max_t_interval`` (seed ``seeds[0]``) and its
+    critical value at every level of ``levels`` from the same draws (``_upper_quantile`` of the
+    per-draw maxima, as ``max_t_interval`` takes it at its own level); ``symmetric_studentized``
+    at ``COMPARISON_LEVEL`` per component (seeds ``seeds[1]`` and ``seeds[2]``: separate streams,
+    as in the analysis)."""
+    joint = max_t_interval(c1, c2, levels[0], resamples, seeds[0], keep=True)
+    if "t_star" in joint:
+        ordered = np.sort(np.maximum(*joint["t_star"]))
+        q = [_upper_quantile(ordered, level) for level in levels]
+    else:  # fewer than 2 blocks: no interval
+        q = [math.inf] * len(levels)
+    bonferroni = [symmetric_studentized(c, COMPARISON_LEVEL, resamples, s)
+                  for c, s in zip((c1, c2), seeds[1:], strict=True)]  # fmt: skip
+    contrasts = joint["contrasts"]
+    return {
+        "n": joint["n"],
+        "mean": [math.nan if c["mean"] is None else c["mean"] for c in contrasts],
+        "sd": [math.nan if c["sd"] is None else c["sd"] for c in contrasts],
+        "se": [math.nan if c["se"] is None else c["se"] for c in contrasts],
+        "zero_se": [bool(c["zero_se"]) for c in contrasts],
+        "readable": [c["zero_se"] is not None for c in contrasts],
+        "q": q,
+        "infinite": joint["infinite"],
+        "draws": joint["draws"],
+        "bonferroni_q": [math.inf if b["q"] is None else b["q"] for b in bonferroni],
+        "bonferroni_infinite": [b["infinite"] for b in bonferroni],
+    }
+
+
+ROW_FIELDS = ("n", "started", "mean", "sd", "se", "zero_se", "readable", "q", "infinite", "draws",
+              "bonferroni_q", "bonferroni_infinite", "supported", "technical", "sum",
+              "correlation")  # fmt: skip
+
+
+def mechanism_replicate(
+    m: Mechanism,
+    params: MechanismParameters,
+    base: Scenario,
+    rep: int,
+    *,
+    base_seed: int,
+    stream: str,
+    levels: Sequence[float],
+    resamples: int,
+) -> dict[str, Any]:
+    """One confirmation: blocks start until ``MECHANISM_TARGET`` are jointly supported in all
+    three arms or ``MECHANISM_CAP`` have started; then the cohort's intervals
+    (``mechanism_intervals``; streams (base_seed, stream, name, rep, "max_t") and (…, rep,
+    "bonferroni", component)) and its summaries."""
+    rng = generator(base_seed, stream, m.name, rep)
+    alpha, misses = draw_constants(base, rng)
+    estimates = np.full((CAP, len(ARMS)), np.nan)
+    causes = np.full((CAP, len(ARMS)), NOT_STARTED, dtype=np.int8)
+    started = joint = 0
+    while started < CAP and joint < MECHANISM_TARGET:
+        n = min(CHUNK_BLOCKS, CAP - started)
+        estimate, cause = simulate_mechanism_blocks(m, params, base, alpha, misses, rng, n)
+        estimates[started : started + n], causes[started : started + n] = estimate, cause
+        joint += int(np.count_nonzero((cause == SUPPORTED).all(axis=1)))
+        started += n
+    # The window: blocks in order up to the cohort's last one (blocks are drawn in chunks).
+    joint_blocks = np.flatnonzero((causes[:started] == SUPPORTED).all(axis=1))
+    if joint_blocks.size >= MECHANISM_TARGET:
+        started = int(joint_blocks[MECHANISM_TARGET - 1]) + 1
+    c1, c2 = cohort_contrasts(estimates[:started], causes[:started])
+    seeds = [stream_seed(base_seed, stream, m.name, rep, "max_t")]
+    seeds += [stream_seed(base_seed, stream, m.name, rep, "bonferroni", c) for c in COMPONENTS]
+    row = mechanism_intervals(c1, c2, levels, resamples, seeds)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        correlation = float(np.corrcoef(c1, c2)[0, 1]) if c1.size > 2 else math.nan
+    row |= {
+        "started": started,
+        "supported": (causes[:started] == SUPPORTED).sum(axis=0).tolist(),
+        "technical": (causes[:started] == TECHNICAL).sum(axis=0).tolist(),
+        "sum": [float(c1.sum()), float(c2.sum())],
+        "correlation": correlation,
+    }
+    return row
+
+
+def _stack_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, np.ndarray]:
+    return {key: np.array([r[key] for r in rows], dtype=float) for key in ROW_FIELDS}
+
+
+# Spread calibration of the components
+
+
+@dataclass(frozen=True)
+class ComponentCalibration:
+    key: str
+    targets: tuple[float, float]
+    spreads: tuple[float, float]
+    attained: tuple[float, float]
+    noise: tuple[float, float]  # at spreads 0: response and K noise alone
+    evaluations: int
+    cpu_seconds: float
+
+
+def component_sds(
+    key: Mechanism,
+    inputs: Inputs,
+    spreads: Sequence[float],
+    *,
+    seed: int | np.random.SeedSequence,
+    replicates: int,
+    blocks: int,
+) -> tuple[float, float]:
+    """√(mean within-replicate variance of C_j over jointly supported blocks), per component, at
+    the given spreads (equal offsets, no attrition)."""
+    params = mechanism_parameters(key, inputs, spreads, solve=False)
+    base = mechanism_base(inputs)
+    rng = np.random.default_rng(seed)
+    variances: list[list[float]] = [[], []]
+    for _ in range(replicates):
+        alpha, misses = draw_constants(base, rng)
+        estimate, cause = simulate_mechanism_blocks(key, params, base, alpha, misses, rng, blocks)
+        joint = (cause == SUPPORTED).all(axis=1)
+        if joint.sum() < 2:
+            continue
+        e = estimate[joint]
+        for j, (i, k) in enumerate(COMPONENT_ARMS):
+            variances[j].append(float((e[:, i] - e[:, k]).var(ddof=1)))
+    if not variances[0]:
+        raise ValueError(f"No replicate of {key.name} has two jointly supported blocks")
+    return float(np.sqrt(np.mean(variances[0]))), float(np.sqrt(np.mean(variances[1])))
+
+
+def calibrate_components(
+    key: Mechanism, inputs: Inputs, *, base_seed: int, replicates: int = 100, blocks: int = 200
+) -> ComponentCalibration:
+    """The component spreads giving the key's target SDs of C1 and C2 at (0, 0), by alternating
+    root finding on common random numbers (each spread barely moves the other component's SD).
+    A target below the noise alone gets spread 0, and the attained SD is reported."""
+    cpu = time.process_time()
+    seed = seed_sequence(base_seed, "mechanism-spread", key.name)
+    cache: dict[tuple[float, float], tuple[float, float]] = {}
+
+    def attained(spreads: tuple[float, float]) -> tuple[float, float]:
+        if spreads not in cache:
+            cache[spreads] = component_sds(key, inputs, spreads, seed=seed,
+                                           replicates=replicates, blocks=blocks)  # fmt: skip
+        return cache[spreads]
+
+    targets = key.targets
+    noise = attained((0.0, 0.0))
+    spreads = [0.0, 0.0]
+    for _ in range(10 if key.shape not in ("rare_only", "tied") else 0):
+        before = tuple(spreads)
+        for j in (0, 1):
+
+            def gap(s: float, j: int = j) -> float:
+                trial = list(spreads)
+                trial[j] = s
+                return attained((trial[0], trial[1]))[j] - targets[j]
+
+            if gap(0.0) >= 0:
+                spreads[j] = 0.0
+                continue
+            high = 0.5
+            while gap(high) < 0:
+                high *= 2
+                if high > 64:
+                    raise ValueError(f"The SD of {key.name}'s {COMPONENTS[j]} cannot reach "
+                                     f"{targets[j]}")  # fmt: skip
+            spreads[j] = float(brentq(gap, 0.0, high, xtol=1e-4, rtol=1e-4))
+        if max(abs(a - b) for a, b in zip(spreads, before, strict=True)) < 2e-4:
+            break
+    final = (spreads[0], spreads[1])
+    return ComponentCalibration(key.name, targets, final, attained(final), noise, len(cache),
+                                time.process_time() - cpu)  # fmt: skip
+
+
+# Grids
+
+
+def mechanism_grid(
+    reps: int = MECHANISM_REPS, stress_reps: int = MECHANISM_STRESS_REPS, stress: bool = True
+) -> list[Mechanism]:
+    """The required grid (normal and skewed at SD 5 and 10 pp; group ``required``) and, with
+    ``stress``, the stress grid (heavy and rare_centered at SD 5, 10 and 15, normal and skewed at
+    15, rare_only, and the tied case; group ``stress``), each over every (C1, C2) × SD ratio × ρ
+    × attrition (rare_only: ratio 1:1; tied: (0, 0) and ρ 0 at each tied baseline)."""
+    factors = [(c, ratio, rho, attrition) for c in COMPONENT_MEANS for ratio in SD_RATIOS
+               for rho in COMPONENT_RHOS for attrition in ATTRITIONS]  # fmt: skip
+    grid = [
+        Mechanism(*c, shape=shape, sd=sd, ratio=ratio, rho=rho, attrition=attrition, reps=reps,
+                  group="required")
+        for shape in REQUIRED_SHAPES for sd in REQUIRED_SDS
+        for c, ratio, rho, attrition in factors
+    ]  # fmt: skip
+    if not stress:
+        return grid
+    cells = [(shape, sd) for shape in ("heavy", "rare_centered") for sd in STRESS_SDS]
+    cells += [(shape, sd) for shape in REQUIRED_SHAPES for sd in STRESS_SDS
+              if sd not in REQUIRED_SDS]  # fmt: skip
+    grid += [
+        Mechanism(*c, shape=shape, sd=sd, ratio=ratio, rho=rho, attrition=attrition,
+                  reps=stress_reps, group="stress")
+        for shape, sd in cells for c, ratio, rho, attrition in factors
+    ]  # fmt: skip
+    grid += [
+        Mechanism(*c, shape="rare_only", sd=0.0, rho=rho, attrition=attrition, reps=stress_reps,
+                  group="stress")
+        for c in COMPONENT_MEANS for rho in COMPONENT_RHOS for attrition in ATTRITIONS
+    ]  # fmt: skip
+    grid += [
+        Mechanism(shape="tied", sd=0.0, baseline=b, attrition=attrition, reps=stress_reps,
+                  group="stress")
+        for b in TIED_BASELINES for attrition in ATTRITIONS
+    ]  # fmt: skip
+    return grid
+
+
+# Summaries and verdicts
+
+
+def _rates(flags: np.ndarray) -> dict[str, float]:
+    p, se = _rate(flags)
+    return {"value": p, "se": se}
+
+
+def mechanism_readings(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[str, np.ndarray]:
+    """Per replicate and component, the analysis's readings (``mechanism_analysis``) at the
+    max-t critical values ``q`` (R,): nothing below the minimum cohort or for a contrast without
+    an observed SE or with a zero one; when the other contrast's SE is zero, the reading uses
+    the Bonferroni interval; otherwise the max-t interval (none when q = ∞: inconclusive).
+    Returns boolean (R, 2) arrays ``positive``, ``negative`` and ``bounded``
+    (``component_readings``, the meaningful effect as margin)."""
+    n, mean, se = rows["n"], rows["mean"], rows["se"]
+    zero, readable = rows["zero_se"].astype(bool), rows["readable"].astype(bool)
+    minimum = (n >= MECHANISM_MINIMUM)[:, None]
+    use_bonferroni = zero[:, ::-1] & readable & ~zero
+    critical = np.where(use_bonferroni, rows["bonferroni_q"], q[:, None])
+    has = minimum & readable & ~zero & np.isfinite(critical)
+    with np.errstate(invalid="ignore"):
+        low, high = mean - critical * se, mean + critical * se
+    margin = MECHANISM_EFFECTS[0]
+    return {
+        "positive": has & (low > 0),
+        "negative": has & (high < 0),
+        "bounded": has & (low >= -margin) & (high <= margin),
+    }
+
+
+def _covered(rows: Mapping[str, np.ndarray], q: np.ndarray, truth: Sequence[float]) -> np.ndarray:
+    """(R, 2): the symmetric interval mean ± q·SE contains the truth; a contrast without an
+    interval (no observed SE, a zero one, or q = ∞) counts as covered (the whole line)."""
+    mean, se = rows["mean"], rows["se"]
+    has = rows["readable"].astype(bool) & ~rows["zero_se"].astype(bool) & np.isfinite(q)
+    value = np.array(truth)
+    with np.errstate(invalid="ignore"):
+        inside = (mean - q * se <= value) & (value <= mean + q * se)
+    return ~has | inside
+
+
+def summarize_mechanism(
+    m: Mechanism,
+    params: MechanismParameters,
+    rows: Mapping[str, np.ndarray],
+    levels: Sequence[float],
+    seconds: float = 0.0,
+) -> dict[str, Any]:
+    """A mechanism scenario's outputs from its replicates: per level, the simultaneous max-t
+    coverage and, per component, its coverage and readings (direction power, false direction,
+    bounded); the Bonferroni coverage; the minimum's reach; the infinite-q and zero-SE shares;
+    the attained SDs and correlation; the estimand check (the pooled cohort mean against the
+    declared value); and the support."""
+    truth = m.truth
+    by_level = []
+    for i, level in enumerate(levels):
+        q = rows["q"][:, i]
+        covered = _covered(rows, q[:, None], truth)
+        readings = mechanism_readings(rows, q)
+        components = {}
+        for j, name in enumerate(COMPONENTS):
+            c = truth[j]
+            either = readings["positive"][:, j] | readings["negative"][:, j]
+            right = readings["positive" if c > 0 else "negative"][:, j] if c else None
+            wrong = readings["negative" if c > 0 else "positive"][:, j] if c else either
+            components[name] = {
+                "coverage": _rates(covered[:, j]),
+                "power": None if right is None else _rates(right),
+                "false_direction": _rates(wrong),
+                "bounded": _rates(readings["bounded"][:, j]),
+            }
+        by_level.append({
+            "level": level,
+            "simultaneous": _rates(covered.all(axis=1)),
+            "infinite_q": _rates(~np.isfinite(q)),
+            "components": components,
+        })  # fmt: skip
+    bonferroni = _covered(rows, rows["bonferroni_q"], truth)
+    n, sd, started = rows["n"], rows["sd"], rows["started"]
+    usable = n >= 2
+    with np.errstate(invalid="ignore", divide="ignore"):
+        per_rep = rows["sum"] / n[:, None]
+    pooled = rows["sum"].sum(axis=0) / n.sum()
+    pooled_se = per_rep[usable].std(axis=0, ddof=1) / math.sqrt(max(usable.sum(), 1))
+    blocks = started.sum()
+    return {
+        "name": m.name,
+        "settings": asdict(m),
+        "reps": int(n.size),
+        "seconds": seconds,
+        "parameters": {
+            "offsets": dict(zip(ARMS, params.offsets, strict=True)),
+            "spreads": dict(zip(COMPONENTS, params.spreads, strict=True)),
+            "failure": {arm: list(law) for arm, law in zip(ARMS, params.failure, strict=True)},
+            "estimand": params.estimand,
+        },
+        "levels": by_level,
+        "bonferroni": {
+            "level": COMPARISON_LEVEL,
+            **{name: _rates(bonferroni[:, j]) for j, name in enumerate(COMPONENTS)},
+            "infinite_q": {
+                name: _rates(~np.isfinite(rows["bonferroni_q"][:, j]))
+                for j, name in enumerate(COMPONENTS)
+            },
+        },  # fmt: skip
+        "minimum_met": _rates(n >= MECHANISM_MINIMUM),
+        "cohort": {
+            "mean_n": float(n.mean()),
+            "min_n": int(n.min()),
+            "mean_started": float(started.mean()),
+            "ended_at_cap": _rates(n < MECHANISM_TARGET),
+        },
+        "zero_se": {
+            name: _rates(rows["zero_se"][:, j].astype(bool)) for j, name in enumerate(COMPONENTS)
+        },  # fmt: skip
+        "infinite_draw_share": float((rows["infinite"] / rows["draws"].clip(min=1)).mean()),
+        "attained_sd": {
+            name: float(np.sqrt(np.nanmean(sd[usable, j] ** 2)))
+            for j, name in enumerate(COMPONENTS)
+        },  # fmt: skip
+        "mean_correlation": float(np.nanmean(rows["correlation"]))
+        if np.isfinite(rows["correlation"]).any()
+        else None,
+        "estimand_check": {
+            name: {
+                "declared": truth[j],
+                "population": params.estimand.get(name),
+                "cohort_mean": float(pooled[j]),
+                "se": float(pooled_se[j]),
+                "z": float((pooled[j] - truth[j]) / pooled_se[j]) if pooled_se[j] > 0 else None,
+            }
+            for j, name in enumerate(COMPONENTS)
+        },
+        "support": {
+            "simulated_per_arm": dict(
+                zip(ARMS, (rows["supported"].sum(axis=0) / blocks).tolist(), strict=True)
+            ),
+            "technical_per_arm": dict(
+                zip(ARMS, (rows["technical"].sum(axis=0) / blocks).tolist(), strict=True)
+            ),
+            "population": params.estimand.get("support"),
+        },  # fmt: skip
+    }
+
+
+def _cell(scenario: Mapping[str, Any]) -> tuple[str, float]:
+    return scenario["settings"]["shape"], scenario["settings"]["sd"]
+
+
+def mechanism_checks(
+    scenarios: Sequence[Mapping[str, Any]], readings_at: float | None = None
+) -> dict[str, Any]:
+    """The calibration rule over the required cells (normal and skewed at SD 5 and 10 pp): per
+    level, each cell's smallest simultaneous max-t coverage over its scenarios against
+    ``coverage_floor`` at the scenario's replicates; ``level`` is the smallest level at which
+    every required cell holds (None if none). Stress cells are reported the same way and do not
+    bind. Beside it, per cell at ``readings_at`` (default: that level, else the first), the
+    power, false direction and bounded rates and the minimum's reach (``reading_summary``)."""
+    levels = [entry["level"] for entry in scenarios[0]["levels"]] if scenarios else []
+    groups = {"required": [s for s in scenarios if s["settings"]["group"] == "required"],
+              "stress": [s for s in scenarios if s["settings"]["group"] != "required"]}  # fmt: skip
+    per_level = []
+    for i, level in enumerate(levels):
+        entry: dict[str, Any] = {"level": level}
+        for group, members in groups.items():
+            cells = []
+            for cell in dict.fromkeys(_cell(s) for s in members):
+                mine = [s for s in members if _cell(s) == cell]
+                worst = min(mine, key=lambda s: s["levels"][i]["simultaneous"]["value"])
+                value = worst["levels"][i]["simultaneous"]["value"]
+                floor = coverage_floor(worst["reps"])
+                cells.append({"shape": cell[0], "sd": cell[1], "min_coverage": value,
+                              "mc_se": worst["levels"][i]["simultaneous"]["se"],
+                              "scenario": worst["name"], "floor": floor, "meets": value >= floor,
+                              "short": sum(s["levels"][i]["simultaneous"]["value"]
+                                           < coverage_floor(s["reps"]) for s in mine),
+                              "scenarios": len(mine)})  # fmt: skip
+            entry[group] = {"cells": cells, "meets": all(c["meets"] for c in cells)}
+        per_level.append(entry)
+    passing = [e["level"] for e in per_level if e["required"]["cells"] and e["required"]["meets"]]
+    chosen = min(passing, default=None)
+    shown = readings_at if readings_at is not None else chosen if chosen is not None else (
+        levels[0] if levels else None)  # fmt: skip
+    return {
+        "floor_rule": "0.95 − 2·√(0.95·0.05/R), R the scenario's replicates",
+        "per_level": per_level,
+        "level": chosen,
+        "readings_at": shown,
+        "readings": {group: reading_summary(members, levels.index(shown))
+                     for group, members in groups.items()} if shown is not None else {},
+    }  # fmt: skip
+
+
+def reading_summary(scenarios: Sequence[Mapping[str, Any]], i: int) -> list[dict[str, Any]]:
+    """Per cell (shape × SD) and component SD (the larger, 1, or half of it, 0.5), at level index
+    ``i``: the smallest and mean direction power at |C| = 5 and 2.5 pp, the largest false
+    direction rate and the smallest and mean bounded rate at C = 0, and the smallest share of
+    replicates reaching the minimum cohort."""
+    out = []
+    for cell in dict.fromkeys(_cell(s) for s in scenarios):
+        mine = [s for s in scenarios if _cell(s) == cell]
+        for scale in (1.0, 0.5):
+            picks = [(s, name, s["settings"]["c1" if name == "C1" else "c2"])
+                     for s in mine for j, name in enumerate(COMPONENTS)
+                     if SD_RATIOS[s["settings"]["ratio"]][j] == scale]  # fmt: skip
+            if not picks:
+                continue
+            entry: dict[str, Any] = {"shape": cell[0], "sd": cell[1], "component_sd": scale}
+            for effect in MECHANISM_EFFECTS:
+                powers = [s["levels"][i]["components"][name]["power"]["value"]
+                          for s, name, c in picks if math.isclose(abs(c), effect)]  # fmt: skip
+                entry[f"power_{_pp(effect)[1:]}pp"] = (
+                    {"min": min(powers), "mean": float(np.mean(powers)), "scenarios": len(powers)}
+                    if powers else None
+                )  # fmt: skip
+            null = [s["levels"][i]["components"][name] for s, name, c in picks if c == 0]
+            entry["max_false_direction_at_0"] = max(
+                (r["false_direction"]["value"] for r in null), default=None
+            )
+            bounded = [r["bounded"]["value"] for r in null]
+            entry["bounded_at_0"] = (
+                {"min": min(bounded), "mean": float(np.mean(bounded))} if bounded else None
+            )
+            entry["min_minimum_met"] = min(s["minimum_met"]["value"] for s, _, _ in picks)
+            out.append(entry)
+    return out
+
+
+# Running the mechanism grid
+
+
+@dataclass(frozen=True)
+class MechanismSettings:
+    stream: str
+    inputs: Inputs
+    levels: tuple[float, ...] = MECHANISM_LEVELS
+    resamples: int = MECHANISM_RESAMPLES
+    base_seed: int = 0
+    workers: int = 1
+    chunk: int = 250  # replicates per worker task
+    spread_replicates: int = 100
+    spread_blocks: int = 200
+
+    def __post_init__(self) -> None:
+        if not self.levels or any(not 0.5 < v < 1 for v in self.levels):
+            raise ValueError(f"Mechanism levels must lie in (0.5, 1): {self.levels}")
+        if self.resamples < 2:
+            raise ValueError("The bootstrap needs at least 2 resamples")
+
+
+def _mechanism_calibration_task(task: tuple[Mechanism, MechanismSettings]) -> ComponentCalibration:
+    key, settings = task
+    return calibrate_components(key, settings.inputs, base_seed=settings.base_seed,
+                                replicates=settings.spread_replicates,
+                                blocks=settings.spread_blocks)  # fmt: skip
+
+
+def _mechanism_setup_task(task: tuple[Mechanism, tuple[float, float], MechanismSettings]):
+    m, spreads, settings = task
+    return m.name, mechanism_parameters(m, settings.inputs, spreads, base_seed=settings.base_seed)
+
+
+def _mechanism_replicate_task(task):
+    m, params, start, stop, settings = task
+    clock = time.process_time()
+    base = mechanism_base(settings.inputs)
+    rows = [mechanism_replicate(m, params, base, rep, base_seed=settings.base_seed,
+                                stream=settings.stream, levels=settings.levels,
+                                resamples=settings.resamples)
+            for rep in range(start, stop)]  # fmt: skip
+    return m.name, start, _stack_rows(rows), time.process_time() - clock
+
+
+def run_mechanism(
+    mechanisms: Sequence[Mechanism],
+    settings: MechanismSettings,
+    progress: Callable[[str, int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Calibrate the component spreads, solve every scenario's parameters, simulate it and
+    summarize it."""
+    names = [m.name for m in mechanisms]
+    if len(set(names)) != len(names):
+        raise ValueError("Mechanism names must be unique: they name the random streams")
+    keys = {m.key.name: m.key for m in mechanisms if m.shape not in ("rare_only", "tied")}
+    calibrations: dict[str, ComponentCalibration] = {}
+    with _executor(settings.workers) as imap:
+        tasks = [(key, settings) for key in keys.values()]
+        for done, result in enumerate(imap(_mechanism_calibration_task, tasks), start=1):
+            calibrations[result.key] = result
+            if progress is not None:
+                progress("spread", done, len(tasks))
+        setups = [(m, calibrations[m.key.name].spreads if m.key.name in calibrations
+                   else (0.0, 0.0), settings) for m in mechanisms]  # fmt: skip
+        params = {}
+        for done, (name, found) in enumerate(imap(_mechanism_setup_task, setups), start=1):
+            params[name] = found
+            if progress is not None:
+                progress("setup", done, len(setups))
+        by_name = {m.name: m for m in mechanisms}
+        tasks = [(m, params[m.name], start, min(start + settings.chunk, m.reps), settings)
+                 for m in mechanisms for start in range(0, m.reps, settings.chunk)]  # fmt: skip
+        pending = {m.name: math.ceil(m.reps / settings.chunk) for m in mechanisms}
+        parts: dict[str, list] = {name: [] for name in names}
+        summaries: dict[str, dict] = {}
+        for done, (name, start, rows, seconds) in enumerate(
+            imap(_mechanism_replicate_task, tasks), start=1
+        ):
+            parts[name].append((start, rows, seconds))
+            pending[name] -= 1
+            if pending[name] == 0:
+                chunks = sorted(parts.pop(name), key=lambda item: item[0])
+                merged = {k: np.concatenate([c[1][k] for c in chunks]) for k in ROW_FIELDS}
+                m = by_name[name]
+                summary = summarize_mechanism(m, params[name], merged, settings.levels,
+                                              sum(c[2] for c in chunks))  # fmt: skip
+                key = m.key.name
                 summary["calibration"] = asdict(calibrations[key]) if key in calibrations else None
                 summaries[name] = summary
             if progress is not None:

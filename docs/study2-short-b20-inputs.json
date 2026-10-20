@@ -1,0 +1,69 @@
+{
+  "batch": 20,
+  "status": "provisional",
+  "description": "Study 2's B = 20 simulation inputs (amendment 4, section 3): per arm, the K spreads, the support rate and the technical failure rate, read on K and support only. Provisional until S1: S1's K-only data replace every entry, and the simulation that fixes the mechanism level runs again on them.",
+  "arms": {
+    "A": {
+      "sigma_u": {
+        "value": 0.056,
+        "source": "Stage A's 25-step AdamW-25 grid at B = 20 (runs/study2_stage_a, seeds 2000-2002, rates 0.5-4e-5, 6 complete rates): ln K25 as rate x seed, SD of the seed effects 0.0557"
+      },
+      "sigma_e": {
+        "value": 0.015,
+        "source": "Stage A's 25-step AdamW-25 grid at B = 20 (runs/study2_stage_a, seeds 2000-2002, 6 complete rates): residual SD of ln K25, 0.0151"
+      },
+      "support_rate": {
+        "value": 0.9961,
+        "source": "Amendment 3's simulated value: share of started blocks supported for AdamW-25 in the decided simulation's central scenario (runs/analysis/study2_short_sim/2026-10-16/full-r5/main, interp_normal_study1_sd5_d+0_w0.47, 20 000 replicates); Stage A has no B = 20 run at targeted rates",
+        "provisional": "S1"
+      },
+      "failure_rate": {
+        "value": 0.0,
+        "counts": {"runs": 12, "failures": 0},
+        "source": "Stage A's 25-step AdamW-25 grid at B = 20 (runs/study2_stage_a, seeds 2000-2002) at the rates 0.5-2e-5 that span the targets: runs without a step-25 endpoint"
+      }
+    },
+    "F": {
+      "sigma_u": {
+        "value": 0.078,
+        "source": "Stage A's 25-step FA-25 grid at B = 20 (runs/study2_stage_a, seeds 2000-2002, rates 0.5-2e-5, 4 complete rates): ln K25 as rate x seed, SD of the seed effects 0.0775"
+      },
+      "sigma_e": {
+        "value": 0.036,
+        "source": "Stage A's 25-step FA-25 grid at B = 20 (runs/study2_stage_a, seeds 2000-2002, 4 complete rates): residual SD of ln K25, 0.0358"
+      },
+      "support_rate": {
+        "value": 0.9962,
+        "source": "Amendment 3's simulated value: share of started blocks supported for FA-25 in the decided simulation's central scenario (runs/analysis/study2_short_sim/2026-10-16/full-r5/main, interp_normal_study1_sd5_d+0_w0.47, 20 000 replicates); Stage A has no B = 20 run at targeted rates",
+        "provisional": "S1"
+      },
+      "failure_rate": {
+        "value": 0.0,
+        "counts": {"runs": 12, "failures": 0},
+        "source": "Stage A's 25-step FA-25 grid at B = 20 (runs/study2_stage_a, seeds 2000-2002) at the rates 0.5-2e-5 that span the targets: runs without a step-25 endpoint"
+      }
+    },
+    "P": {
+      "sigma_u": {
+        "value": 0.078,
+        "source": "FA-25's value: Stage A has no pre-warmed run at B = 20",
+        "provisional": "S1"
+      },
+      "sigma_e": {
+        "value": 0.036,
+        "source": "FA-25's value: Stage A has no pre-warmed run at B = 20",
+        "provisional": "S1"
+      },
+      "support_rate": {
+        "value": 0.9962,
+        "source": "Amendment 3's simulated value: share of started blocks supported for the pre-warmed arm in the decided simulation's central scenario (runs/analysis/study2_short_sim/2026-10-16/full-r5/main, interp_normal_study1_sd5_d+0_w0.47, 20 000 replicates)",
+        "provisional": "S1"
+      },
+      "failure_rate": {
+        "value": 0.0,
+        "source": "FA-25's value: Stage A has no pre-warmed run at B = 20",
+        "provisional": "S1"
+      }
+    }
+  }
+}

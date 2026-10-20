@@ -38,6 +38,48 @@ mode but the decided ones evaluates by default every look design (24/50, 36/60, 
   and of both jointly, against 97.5 % and 95 %.
 - smoke: one reduced scenario per shape and per revision-1 addition.
 
+Amendment 4 (batch 20 and the mechanism cohort; the inputs record
+docs/study2-short-b20-inputs.json, read by ``sim.read_inputs``):
+
+- mechanism: the mechanism cohort's simulation (``sim.mechanism_grid``: the required grid at
+  10 000 replicates per scenario and the stress grid at --stress-reps, default 2 000) on the
+  ``mechanism-calibration`` stream, every level of ``sim.MECHANISM_LEVELS`` (0.95 … 0.99)
+  evaluated from the same bootstrap draws, with --bootstrap resamples per replicate and interval
+  (default 2 000). Its verdict ``checks`` (``sim.mechanism_checks``) applies the calibration rule:
+  per required cell (normal and skewed at SD 5 and 10 pp) the smallest simultaneous max-t
+  coverage against 0.95 − 2·√(0.95·0.05/R), and the smallest level at which every cell holds.
+- mechanism-check: the required grid on the separate ``mechanism-check`` stream at one level,
+  --level or the level of --level-from (a mechanism run's summary.json).
+- inputs: measures the inputs record on 25-step runs under --runs-root, from K and support only
+  (``sim.measure_inputs``), at --batch on --seeds with each arm's selected rates (--rates
+  A=r1,r2,r3 F=r1,r2,r3 P=r1,r2,r3), and writes it to --out (a JSON file).
+- compare: the decision rates of a rerun (--new, a summary.json) against archived runs (--old),
+  scenario by scenario, matched on every setting but the per-arm inputs; a difference beyond two
+  MC SEs of the difference is flagged.
+- final: the level-fixing run after S1 in one command (below).
+
+--inputs applies an inputs record to the primary modes too (``sim.inputs_scenario``: per-arm K
+spreads, and per-arm failure rates where a scenario has none of its own); the mechanism modes
+read docs/study2-short-b20-inputs.json by default. Every simulation copies the record it read to
+inputs.json, records its sha256 in summary.json, and writes inventory.tsv: the path, size and
+sha256 of every file it wrote.
+
+The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
+the selection's record):
+
+    python scripts/study2_short_simulate.py final --runs-root $RUNS_DIR/study2_short \\
+        --rates A=r1,r2,r3 F=r1,r2,r3 P=r1,r2,r3 --workers 8 --write \\
+        --out $RUNS_DIR/analysis/study2_short_sim/<date>-b20-final
+
+It measures the inputs (B = 20, seeds 2000-2002) into OUT/inputs.json, then runs mechanism
+(OUT/mechanism), mechanism-check at the implied level when it is above 0.95 (OUT/check), the
+primary rerun decided, decided-gate and decided-bias with the inputs (OUT/decided, OUT/gate,
+OUT/bias) and their comparison with amendment 3's archived runs (OUT/compare-*), and writes
+OUT/final.json with the fixed level and the flagged rates. With --write it also writes the
+record to docs/study2-short-b20-inputs.json and the fixed level to docs/study2-short-fixation.json
+(mechanism.level; never when no level passed or the check failed). Without --runs-root it uses
+--inputs as it is.
+
 --looks restricts the look designs evaluated; --intervals picks t and/or bootstrap_t (the
 studentized bootstrap of the mean with --bootstrap resamples per look and replicate, computed in
 the workers); --secondary-intervals does the same for the secondary contrasts (default t;
@@ -82,10 +124,13 @@ on those names; --reps overrides every scenario's replicate count.
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import math
 import os
 import platform
+import re
+import shutil
 import sys
 import time
 from dataclasses import asdict, replace
@@ -94,7 +139,7 @@ from importlib import metadata
 from pathlib import Path
 
 from zero_field_refusal.analysis import study2_short_sim as sim
-from zero_field_refusal.paths import runs_root
+from zero_field_refusal.paths import REPO_ROOT, runs_root
 from zero_field_refusal.tracking import git_state
 
 PACKAGES = ("numpy", "scipy", "zero-field-refusal")
@@ -133,11 +178,24 @@ ALLOWANCE_MODES = ("decided", "decided-gate", "decided-secondary")  # b = DECIDE
 SECONDARY_MODES = ("decided-secondary",)  # t and bootstrap-t secondaries by default
 CHUNK = 250  # replicates per worker task
 GATE_CHUNK = 5000  # decided-gate: most replicates are a validation gate only
+# Amendment 4.
+MECHANISM_MODES = {"mechanism": "calibration", "mechanism-check": "check"}
+OTHER_MODES = ("inputs", "compare", "final")
+INPUTS_RECORD = REPO_ROOT / sim.INPUTS_RECORD
+FIXATION_RECORD = REPO_ROOT / "docs" / "study2-short-fixation.json"
+# Amendment 3's archived decided runs (revision 5), which the primary rerun is compared with.
+ARCHIVED = {
+    "decided": "analysis/study2_short_sim/2026-10-16/full-r5/main/summary.json",
+    "decided-gate": "analysis/study2_short_sim/2026-10-16/full-r5/gate/summary.json",
+    "decided-bias": "analysis/study2_short_sim/2026-10-16/full-r5/bias/summary.json",
+}
+FINAL_PRIMARY = {"decided": "decided", "decided-gate": "gate", "decided-bias": "bias"}
+INVENTORY = "inventory.tsv"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("mode", choices=tuple(GRIDS))
+    parser.add_argument("mode", choices=(*GRIDS, *MECHANISM_MODES, *OTHER_MODES))
     parser.add_argument("--designs", nargs="+", choices=DESIGNS, help="keep these designs only")
     parser.add_argument(
         "--looks",
@@ -185,6 +243,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0, help="base seed of all randomness")
     parser.add_argument("--out", type=Path, help="output directory")
     parser.add_argument("--list", action="store_true", help="print the scenario names and exit")
+    # Amendment 4.
+    parser.add_argument(
+        "--inputs",
+        type=Path,
+        help=f"an inputs record (mechanism modes: default {sim.INPUTS_RECORD})",
+    )
+    parser.add_argument("--stress-reps", type=int, help="mechanism: replicates per stress scenario")
+    parser.add_argument(
+        "--groups", nargs="+", choices=("required", "stress"), help="mechanism: the grid's groups"
+    )
+    parser.add_argument("--levels", type=float, nargs="+", help="mechanism: the levels evaluated")
+    parser.add_argument("--level", type=float, help="mechanism-check: the level checked")
+    parser.add_argument("--level-from", type=Path, help="mechanism-check: a mechanism summary.json")
+    parser.add_argument("--runs-root", type=Path, nargs="+", help="inputs, final: run directories")
+    parser.add_argument(
+        "--rates",
+        nargs="+",
+        metavar="ARM=R1,R2,R3",
+        help="inputs, final: each arm's selected rates (A, F, P)",
+    )
+    parser.add_argument("--batch", type=int, default=20, help="inputs, final: the batch size")
+    parser.add_argument(
+        "--seeds", type=int, nargs="+", default=[2000, 2001, 2002], help="inputs, final: seeds"
+    )
+    parser.add_argument("--new", type=Path, help="compare: the rerun's summary.json")
+    parser.add_argument("--old", type=Path, nargs="+", help="compare: archived summary.json files")
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="final: write the record and the fixed level into docs/",
+    )
     return parser
 
 
@@ -193,6 +282,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must lie in 1..{MAX_WORKERS}")
+    if args.mode in MECHANISM_MODES:
+        return mechanism_main(args, parser)
+    if args.mode == "inputs":
+        return inputs_main(args, parser)
+    if args.mode == "compare":
+        return compare_main(args, parser)
+    if args.mode == "final":
+        return final_main(args, parser)
 
     grid = GRIDS[args.mode]
     if args.mode in SIZED:
@@ -202,6 +299,9 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(f"--boundary-reps and --other-reps apply to {', '.join(SIZED)} only")
     else:
         scenarios = grid()
+    inputs = None if args.inputs is None else sim.read_inputs(args.inputs)
+    if inputs is not None:
+        scenarios = [sim.inputs_scenario(s, inputs) for s in scenarios]
     scenarios = select(scenarios, args.designs, args.scenarios, args.reps)
     if not scenarios:
         parser.error("No scenario selected")
@@ -261,11 +361,15 @@ def main(argv: list[str] | None = None) -> None:
             "constants": constants(),
         },
         "versions": versions,
+        **({} if inputs is None else {"inputs": inputs.summary()}),
         **result,
         **verdicts(args.mode, result["scenarios"], selection),
     }
+    if inputs is not None:
+        shutil.copyfile(inputs.path, out / "inputs.json")
     (out / "summary.json").write_text(json_text(summary))
     (out / "results.md").write_text(markdown(summary))
+    write_inventory(out)
     print(f"Wrote {out}")
 
 
@@ -383,6 +487,542 @@ def verdicts(mode: str, scenarios: list[dict], selection: dict) -> dict:
     if secondary:  # runs with secondary intervals other than t alone
         found["secondary_checks"] = secondary
     return found
+
+
+# Amendment 4: the mechanism cohort, the inputs record, comparisons and the final run
+
+
+def versions_record() -> dict:
+    """Recorded at launch: the source of a long run is the one it started with."""
+    return {
+        "python": platform.python_version(),
+        **{name: metadata.version(name) for name in PACKAGES},
+        "git": git_state(),
+    }
+
+
+def progress_printer(clock: float):
+    def progress(stage: str, done: int, total: int) -> None:
+        if done == total or done % max(1, total // 20) == 0:
+            minutes = (time.perf_counter() - clock) / 60
+            print(f"{stage}: {done}/{total}, {minutes:.1f} min", file=sys.stderr, flush=True)
+
+    return progress
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 24):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_inventory(out: Path) -> Path:
+    """``out``/inventory.tsv: the path (relative to ``out``), size and sha256 of every file under
+    ``out`` but this inventory, sorted by path."""
+    target = out / INVENTORY
+    lines = ["path\tsize\tsha256"]
+    for path in sorted(p for p in out.rglob("*") if p.is_file() and p != target):
+        rel = path.relative_to(out).as_posix()
+        lines.append(f"{rel}\t{path.stat().st_size}\t{file_sha256(path)}")
+    target.write_text("\n".join(lines) + "\n")
+    return target
+
+
+def checked_level(path: Path) -> float | None:
+    """The level a mechanism run's calibration rule implies (None: no level passed)."""
+    return json.loads(path.read_text())["checks"]["level"]
+
+
+def mechanism_constants() -> dict:
+    return {
+        "target": sim.MECHANISM_TARGET,
+        "cap": sim.MECHANISM_CAP,
+        "minimum": sim.MECHANISM_MINIMUM,
+        "comparison_level": sim.COMPARISON_LEVEL,
+        "effects": list(sim.MECHANISM_EFFECTS),
+        "coverage_target": sim.MECHANISM_COVERAGE,
+        "w_max": sim.MECHANISM_W_MAX,
+        "component_means": [list(c) for c in sim.COMPONENT_MEANS],
+        "sd_ratios": {k: list(v) for k, v in sim.SD_RATIOS.items()},
+        "rhos": list(sim.COMPONENT_RHOS),
+        "attritions": list(sim.ATTRITIONS),
+        "required": {"shapes": list(sim.REQUIRED_SHAPES), "sds": list(sim.REQUIRED_SDS)},
+        "stress_sds": list(sim.STRESS_SDS),
+        "tied_baselines": list(sim.TIED_BASELINES),
+        "estimand_geometries": sim.ESTIMAND_GEOMETRIES,
+        "copula_nodes": sim.COPULA_NODES,
+        "failure_slope": sim.FAILURE_SLOPE,
+        "chunk_blocks": sim.CHUNK_BLOCKS,
+        "prompts": sim.PROMPTS,
+    }
+
+
+RESAMPLES_REASON = (
+    "run time: the required grid alone is 9.72 million replicates; a replicate's three bootstrap "
+    "sets cost ~1.6 ms at 2 000 resamples and ~14.6 ms at 10 000 (block simulation ~8.5 ms), "
+    "~3.4 h against ~7.6 h on 8 uncontended workers; amendment 3's simulation also used 2 000"
+)
+
+
+def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    which = MECHANISM_MODES[args.mode]
+    inputs = sim.read_inputs(args.inputs or INPUTS_RECORD)
+    default = ("required", "stress") if which == "calibration" else ("required",)
+    groups = tuple(args.groups or default)
+    if which == "check":
+        if (args.level is None) == (args.level_from is None):
+            parser.error("mechanism-check needs exactly one of --level and --level-from")
+        level = args.level if args.level is not None else checked_level(args.level_from)
+        if level is None:
+            parser.error(f"{args.level_from}: no level passed the calibration rule")
+        levels = (level,)
+    else:
+        levels = tuple(sorted(args.levels)) if args.levels else sim.MECHANISM_LEVELS
+    grid = sim.mechanism_grid(
+        stress_reps=args.stress_reps or sim.MECHANISM_STRESS_REPS, stress="stress" in groups
+    )
+    grid = [m for m in grid if m.group in groups]
+    if args.scenarios:
+        grid = [m for m in grid if any(fnmatch.fnmatch(m.name, p) for p in args.scenarios)]
+    if args.reps is not None:
+        grid = [replace(m, reps=args.reps) for m in grid]
+    if not grid:
+        parser.error("No scenario selected")
+    if args.list:
+        for m in grid:
+            print(f"{m.name}  reps={m.reps}  group={m.group}")
+        return
+    settings = sim.MechanismSettings(
+        stream=sim.MECHANISM_STREAMS[which],
+        inputs=inputs,
+        levels=levels,
+        resamples=args.bootstrap,
+        base_seed=args.seed,
+        workers=args.workers,
+        chunk=args.chunk or CHUNK,
+        spread_replicates=args.spread_replicates,
+        spread_blocks=args.spread_blocks,
+    )
+    versions = versions_record()
+    started = datetime.now(UTC)
+    stamp = started.strftime("%Y%m%dT%H%M%SZ")
+    out = args.out or runs_root() / "analysis" / "study2_short_sim" / f"{args.mode}-{stamp}"
+    out.mkdir(parents=True, exist_ok=True)
+    clock = time.perf_counter()
+    result = sim.run_mechanism(grid, settings, progress_printer(clock))
+    checks = sim.mechanism_checks(result["scenarios"])
+    summary = {
+        "mode": args.mode,
+        "started": started.isoformat(timespec="seconds"),
+        "runtime_s": time.perf_counter() - clock,
+        "settings": {
+            "stream": settings.stream,
+            "base_seed": settings.base_seed,
+            "workers": settings.workers,
+            "chunk": settings.chunk,
+            "spread_replicates": settings.spread_replicates,
+            "spread_blocks": settings.spread_blocks,
+            "levels": list(settings.levels),
+            "resamples": settings.resamples,
+            "resamples_reason": RESAMPLES_REASON,
+            "groups": list(groups),
+            "level_from": None if args.level_from is None else str(args.level_from),
+            "constants": mechanism_constants(),
+        },
+        "inputs": inputs.summary(),
+        "versions": versions,
+        **result,
+        "checks": checks,
+    }
+    if which == "check":
+        summary["check"] = {
+            "level": levels[0],
+            "passes": checks["per_level"][0]["required"]["meets"],
+            "from": summary["settings"]["level_from"],
+        }
+    shutil.copyfile(inputs.path, out / "inputs.json")
+    (out / "summary.json").write_text(json_text(summary))
+    (out / "results.md").write_text(mechanism_markdown(summary))
+    write_inventory(out)
+    print(f"Wrote {out}")
+
+
+def parse_rates(items: list[str] | None) -> dict[str, list[float]]:
+    """--rates A=r1,r2,r3 … as {arm: [rates]}."""
+    rates: dict[str, list[float]] = {}
+    for item in items or ():
+        arm, _, values = item.partition("=")
+        if arm not in sim.ARMS or not values:
+            raise ValueError(f"--rates takes ARM=r1,r2,r3 with ARM one of {sim.ARMS}: {item!r}")
+        rates[arm] = [float(v) for v in values.split(",")]
+    return rates
+
+
+def measured_record(args: argparse.Namespace) -> dict:
+    """The inputs record measured on the runs under --runs-root (K and support only)."""
+    from zero_field_refusal.analysis.stage_a import load_trajectories
+
+    runs = load_trajectories(*args.runs_root)
+    measured = sim.measure_inputs(runs, batch=args.batch, seeds=tuple(args.seeds),
+                                  rates=parse_rates(args.rates))  # fmt: skip
+    seeds = f"{min(args.seeds)}-{max(args.seeds)}"
+    where = f"runs under {', '.join(str(p) for p in args.runs_root)}, seeds {seeds}"
+    return sim.inputs_record(measured, batch=args.batch, where=where)
+
+
+def inputs_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if not args.runs_root or not args.rates or args.out is None:
+        parser.error("inputs needs --runs-root, --rates and --out (the record's path)")
+    record = measured_record(args)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(record, indent=2) + "\n")
+    sim.read_inputs(args.out)
+    print(f"Wrote {args.out}")
+
+
+# Settings that carry the inputs, which a comparison across inputs ignores, and rates compared.
+INPUT_SETTINGS = ("sigma_u_arms", "sigma_e_arms", "failure_arms", "group", "reps")
+COMPARED_RATES = (("p_positive", "se_positive"), ("p_negative", "se_negative"),
+                  ("p_equivalence", "se_equivalence"), ("power", "se_power"),
+                  ("p_cap_exhausted", "se_cap_exhausted"))  # fmt: skip
+COMPARED_GATED = (("p_positive", "se_positive"), ("p_negative", "se_negative"),
+                  ("p_equivalence", "se_equivalence"), ("power", "se_power"))  # fmt: skip
+
+
+def _match_key(settings: dict) -> str:
+    return json.dumps({k: v for k, v in settings.items() if k not in INPUT_SETTINGS},
+                      sort_keys=True)  # fmt: skip
+
+
+def _difference(what: str, new: float, new_se: float, old: float, old_se: float) -> dict:
+    se = math.hypot(new_se, old_se)
+    z = (new - old) / se if se > 0 else (0.0 if new == old else math.inf)
+    return {"rate": what, "new": new, "new_se": new_se, "old": old, "old_se": old_se,
+            "difference": new - old, "se": se, "z": z, "beyond_2se": abs(z) > 2}  # fmt: skip
+
+
+def compare_runs(new: dict, old: list[dict]) -> dict:
+    """Per scenario matched on every setting but the per-arm inputs (and replicates), and per
+    result row (look design, interval, rule, α, floor): each decision rate of the rerun against
+    the archived one, the gated rates where both have them, and the block bias and gate failure;
+    the difference, its MC SE √(SE_new² + SE_old²) (independent streams), z, and whether it is
+    beyond two SEs. With many rates some exceed two SEs by chance (about 4.6 % of them)."""
+    archived = {_match_key(s["settings"]): s for summary in old for s in summary["scenarios"]}
+    entries, unmatched = [], []
+    for scenario in new["scenarios"]:
+        match = archived.get(_match_key(scenario["settings"]))
+        if match is None:
+            unmatched.append(scenario["name"])
+            continue
+        rows = {(r["looks"], r["interval"], r["rule"], r["alpha"], r["floor"]): r
+                for r in match["results"]}  # fmt: skip
+        found = []
+        for row in scenario["results"]:
+            key = (row["looks"], row["interval"], row["rule"], row["alpha"], row["floor"])
+            if key not in rows:
+                continue
+            past = rows[key]
+            label = f"{row['looks']} {row['interval']} {row['rule']} α {row['alpha']:g}"
+            for rate, se in COMPARED_RATES:
+                found.append({"row": label, **_difference(rate, row[rate], row[se], past[rate],
+                                                          past[se])})  # fmt: skip
+            new_gated, old_gated = row.get("gated") or {}, past.get("gated") or {}
+            for rate, se in COMPARED_GATED:
+                if rate in new_gated and rate in old_gated:
+                    found.append({"row": label, **_difference(
+                        f"gated {rate}", new_gated[rate], new_gated[se], old_gated[rate],
+                        old_gated[se])})  # fmt: skip
+        d_new, d_old = scenario["diagnostics"], match["diagnostics"]
+        found.append({"row": "diagnostics", **_difference(
+            "block_bias", d_new["block_bias"], d_new["block_bias_se"], d_old["block_bias"],
+            d_old["block_bias_se"])})  # fmt: skip
+        if "p_gate_fail" in d_new and "p_gate_fail" in d_old:
+            found.append({"row": "diagnostics", **_difference(
+                "p_gate_fail", d_new["p_gate_fail"], d_new["se_gate_fail"], d_old["p_gate_fail"],
+                d_old["se_gate_fail"])})  # fmt: skip
+        entries.append({"scenario": scenario["name"], "archived": match["name"],
+                        "reps": [scenario["reps"], match["reps"]], "rates": found})  # fmt: skip
+    rates = [r for e in entries for r in e["rates"]]
+    flagged = [{"scenario": e["scenario"], **r} for e in entries for r in e["rates"]
+               if r["beyond_2se"]]  # fmt: skip
+    finite = [abs(r["z"]) for r in rates if math.isfinite(r["z"])]
+    return {
+        "compared": len(rates),
+        "beyond_2se": len(flagged),
+        "expected_by_chance": round(0.0455 * len(rates), 1),
+        "max_abs_z": max(finite, default=None),
+        "flagged": flagged,
+        "unmatched": unmatched,
+        "scenarios": entries,
+    }
+
+
+def compare_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.new is None or not args.old:
+        parser.error("compare needs --new and --old")
+    comparison = compare_runs(json.loads(args.new.read_text()),
+                              [json.loads(p.read_text()) for p in args.old])  # fmt: skip
+    comparison = {"new": str(args.new), "new_sha256": file_sha256(args.new),
+                  "old": [{"path": str(p), "sha256": file_sha256(p)} for p in args.old],
+                  **comparison}  # fmt: skip
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = args.out or runs_root() / "analysis" / "study2_short_sim" / f"compare-{stamp}"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "comparison.json").write_text(json_text(comparison))
+    (out / "comparison.md").write_text(comparison_markdown(comparison))
+    write_inventory(out)
+    print(f"Wrote {out}: {comparison['beyond_2se']} of {comparison['compared']} rates beyond 2 SE")
+
+
+def write_fixation_level(path: Path, level: float) -> None:
+    """Set the fixation record's ``mechanism.level``, leaving every other byte as it is, and
+    check the result with the analysis's reader."""
+    from zero_field_refusal.analysis.study2_short import read_fixation
+
+    text = path.read_text()
+    pattern = re.compile(r'("mechanism":\s*\{[^{}]*?"level":\s*)(-?[0-9.eE+-]+)')
+    updated, count = pattern.subn(lambda m: m.group(1) + json.dumps(level), text)
+    if count != 1:
+        raise ValueError(f"{path}: no single mechanism level to set")
+    before, after = json.loads(text), json.loads(updated)
+    before["mechanism"]["level"] = level
+    if before != after:
+        raise ValueError(f"{path}: setting the level changed something else")
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(updated)
+    read_fixation(temporary)
+    temporary.replace(path)
+
+
+def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """The level-fixing run after S1 (module docstring, "The final run after S1")."""
+    if bool(args.runs_root) != bool(args.rates):
+        parser.error("final measures the inputs with both --runs-root and --rates, or neither")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = args.out or runs_root() / "analysis" / "study2_short_sim" / f"final-{stamp}"
+    out.mkdir(parents=True, exist_ok=True)
+    record = out / "inputs.json"
+    if args.runs_root:
+        record.write_text(json.dumps(measured_record(args), indent=2) + "\n")
+    else:
+        shutil.copyfile(args.inputs or INPUTS_RECORD, record)
+    inputs = sim.read_inputs(record)
+    common = ["--inputs", str(record), "--workers", str(args.workers), "--seed", str(args.seed)]
+    if args.reps is not None:
+        common += ["--reps", str(args.reps)]
+    tuning = ["--bootstrap", str(args.bootstrap), "--spread-replicates",
+              str(args.spread_replicates), "--spread-blocks", str(args.spread_blocks)]  # fmt: skip
+    mechanism = [*common, *tuning]
+    if args.stress_reps is not None:
+        mechanism += ["--stress-reps", str(args.stress_reps)]
+    if args.scenarios:
+        mechanism += ["--scenarios", *args.scenarios]
+    main(["mechanism", *mechanism, "--out", str(out / "mechanism")])
+    calibration = out / "mechanism" / "summary.json"
+    level = checked_level(calibration)
+    check = None
+    if level is not None and level > sim.MECHANISM_COVERAGE:
+        main(["mechanism-check", *mechanism, "--level-from", str(calibration),
+              "--out", str(out / "check")])  # fmt: skip
+        check = json.loads((out / "check" / "summary.json").read_text())["check"]
+    fixed = level if level is not None and (check is None or check["passes"]) else None
+    comparisons = {}
+    for mode, name in FINAL_PRIMARY.items():
+        primary = [*common, "--spread-replicates", str(args.spread_replicates),
+                   "--spread-blocks", str(args.spread_blocks)]  # fmt: skip
+        main([mode, *primary, "--out", str(out / name)])
+        archived = runs_root() / ARCHIVED[mode]
+        if archived.is_file():
+            target = out / f"compare-{name}"
+            main(["compare", "--new", str(out / name / "summary.json"), "--old", str(archived),
+                  "--out", str(target)])  # fmt: skip
+            found = json.loads((target / "comparison.json").read_text())
+            comparisons[name] = {
+                k: found[k] for k in ("compared", "beyond_2se", "expected_by_chance", "max_abs_z")
+            }
+        else:
+            comparisons[name] = {"archived": str(archived), "missing": True}
+    final = {
+        "inputs": inputs.summary(),
+        "level_on_calibration_stream": level,
+        "check": check,
+        "fixed_level": fixed,
+        "rule": "0.95 if it holds on the calibration stream, else the smallest raised level that "
+        "holds there and passes the check stream; none otherwise",
+        "comparisons": comparisons,
+        "written": [],
+    }
+    if args.write:
+        if args.runs_root:
+            shutil.copyfile(record, INPUTS_RECORD)
+            final["written"].append(str(INPUTS_RECORD))
+        if fixed is not None:
+            write_fixation_level(FIXATION_RECORD, fixed)
+            final["written"].append(f"{FIXATION_RECORD}: mechanism.level {fixed}")
+    (out / "final.json").write_text(json_text(final))
+    write_inventory(out)
+    print(f"Wrote {out}: fixed level {fixed}")
+
+
+def _rate_cell(item: dict | None, digits: int = 2) -> str:
+    if not item:
+        return "–"
+    return f"{pp(item['value'], digits)} ({pp(item['se'], digits)})"
+
+
+def mechanism_markdown(summary: dict) -> str:
+    settings, checks, inputs = summary["settings"], summary["checks"], summary["inputs"]
+    shown = checks["readings_at"]
+    levels = settings["levels"]
+    index = levels.index(shown) if shown in levels else 0
+    parts = [
+        f"# Study 2 mechanism simulation: {summary['mode']}",
+        "",
+        f"Started {summary['started']}, {summary['runtime_s'] / 60:.1f} min with "
+        f"{settings['workers']} workers, stream `{settings['stream']}`, base seed "
+        f"{settings['base_seed']}, {settings['resamples']} bootstrap resamples per replicate and "
+        f"interval. Inputs `{inputs['path']}` (sha256 {inputs['sha256']}, {inputs['status']}). "
+        "Rates in %, MC SE in brackets; SDs in pp.",
+        "",
+        "## Inputs",
+        "",
+        inputs_table(summary),
+        "",
+        "## Calibration rule",
+        "",
+        "Simultaneous max-t coverage of both components, the smallest over each cell's "
+        "scenarios, against 0.95 − 2·√(0.95·0.05/R). Required: normal and skewed at SD 5 and "
+        f"10 pp. Level the rule implies: **{checks['level']}**.",
+        "",
+        rule_table(checks),
+        "",
+        f"## Readings at level {shown}",
+        "",
+        "Direction power at |C| = 5 and 2.5 pp (smallest / mean over scenarios and components "
+        "with that component SD), the largest false direction and the bounded rate at C = 0, "
+        "and the smallest share reaching the 36-block minimum.",
+        "",
+        readings_table(checks),
+        "",
+        f"## Scenarios at level {shown}",
+        "",
+        scenario_table(summary["scenarios"], index),
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def inputs_table(summary: dict) -> str:
+    inputs = summary["inputs"]
+    simulated = {}
+    for s in summary["scenarios"]:
+        if s["settings"]["attrition"] == "none" and (s["parameters"]["estimand"] or {}).get(
+            "support"
+        ):
+            simulated = s["parameters"]["estimand"]["support"]
+            break
+    rows = [
+        [arm, f"{inputs['sigma_u'][arm]:.4f}", f"{inputs['sigma_e'][arm]:.4f}",
+         pp(inputs["support_rate"][arm]), pp(simulated.get(arm)), pp(inputs["failure_rate"][arm])]
+        for arm in sim.ARMS
+    ]  # fmt: skip
+    text = table(["arm", "σ_u", "σ_e", "support (record)", "support (simulated, no attrition)",
+                  "failure rate"], rows)  # fmt: skip
+    if inputs["provisional"]:
+        text += "\n\nProvisional: " + "; ".join(inputs["provisional"]) + "."
+    return text
+
+
+def rule_table(checks: dict) -> str:
+    rows = []
+    for entry in checks["per_level"]:
+        for group in ("required", "stress"):
+            for c in entry[group]["cells"]:
+                rows.append([
+                    f"{entry['level']:.3f}", group, c["shape"],
+                    "–" if c["shape"] in ("rare_only", "tied") else pp(c["sd"], 0),
+                    f"{pp(c['min_coverage'])} ({pp(c['mc_se'])})", pp(c["floor"]),
+                    "yes" if c["meets"] else "**no**", f"{c['short']}/{c['scenarios']}",
+                    c["scenario"],
+                ])  # fmt: skip
+    header = ["level", "group", "shape", "SD", "min coverage", "floor", "meets", "short",
+              "worst scenario"]  # fmt: skip
+    return table(header, rows)
+
+
+def readings_table(checks: dict) -> str:
+    rows = []
+    for group, entries in checks["readings"].items():
+        for e in entries:
+
+            def power(key: str, e: dict = e) -> str:
+                item = e.get(key)
+                return "–" if not item else f"{pp(item['min'], 1)} / {pp(item['mean'], 1)}"
+
+            bounded = e.get("bounded_at_0")
+            rows.append([
+                group, e["shape"], "–" if e["shape"] in ("rare_only", "tied") else pp(e["sd"], 0),
+                "larger" if e["component_sd"] == 1.0 else "half",
+                power("power_5pp"), power("power_2.5pp"),
+                pp(e["max_false_direction_at_0"]),
+                "–" if not bounded else f"{pp(bounded['min'], 1)} / {pp(bounded['mean'], 1)}",
+                pp(e["min_minimum_met"]),
+            ])  # fmt: skip
+    header = ["group", "shape", "SD", "component SD", "power @5", "power @2.5",
+              "max false dir @0", "bounded @0", "min reach 36"]  # fmt: skip
+    return table(header, rows)
+
+
+def scenario_table(scenarios: list[dict], index: int) -> str:
+    rows = []
+    for s in scenarios:
+        at, first = s["levels"][index], s["levels"][0]
+        comps = at["components"]
+        check = s["estimand_check"]
+        rows.append([
+            s["name"], s["settings"]["group"], _rate_cell(first["simultaneous"]),
+            _rate_cell(at["simultaneous"]),
+            pp(comps["C1"]["coverage"]["value"]), pp(comps["C2"]["coverage"]["value"]),
+            pp(s["bonferroni"]["C1"]["value"]), pp(s["bonferroni"]["C2"]["value"]),
+            " / ".join(pp((comps[c]["power"] or {}).get("value"), 1) for c in sim.COMPONENTS),
+            " / ".join(pp(comps[c]["bounded"]["value"], 1) for c in sim.COMPONENTS),
+            pp(s["minimum_met"]["value"], 1), pp(at["infinite_q"]["value"]),
+            " / ".join(pp(s["zero_se"][c]["value"], 1) for c in sim.COMPONENTS),
+            " / ".join(pp(s["attained_sd"][c], 1) for c in sim.COMPONENTS),
+            "–" if s["mean_correlation"] is None else f"{s['mean_correlation']:+.2f}",
+            " / ".join("–" if check[c]["z"] is None else f"{check[c]['z']:+.1f}"
+                       for c in sim.COMPONENTS),
+            str(s["reps"]),
+        ])  # fmt: skip
+    header = ["scenario", "group", "sim cov @0.95", "sim cov", "C1 cov", "C2 cov", "Bonf C1",
+              "Bonf C2", "power C1/C2", "bounded C1/C2", "reach 36", "q = ∞", "zero SE C1/C2",
+              "SD C1/C2", "corr", "estimand z C1/C2", "reps"]  # fmt: skip
+    return table(header, rows)
+
+
+def comparison_markdown(comparison: dict) -> str:
+    rows = [
+        [f["scenario"], f["row"], f["rate"], pp(f["new"]), pp(f["old"]), pp(f["difference"]),
+         pp(f["se"]), f"{f['z']:+.2f}"]
+        for f in comparison["flagged"]
+    ]  # fmt: skip
+    parts = [
+        "# Primary rerun against the archived run",
+        "",
+        f"New `{comparison['new']}`; archived "
+        + ", ".join(f"`{o['path']}`" for o in comparison["old"])
+        + f". {comparison['compared']} rates compared, {comparison['beyond_2se']} beyond two "
+        f"MC SEs of the difference (about {comparison['expected_by_chance']} expected by chance "
+        f"at independent streams); largest |z| {comparison['max_abs_z']}. Rates in %.",
+        "",
+        table(["scenario", "row", "rate", "new", "archived", "difference", "SE", "z"], rows)
+        if rows
+        else "No rate differs by more than two MC SEs.",
+    ]
+    if comparison["unmatched"]:
+        parts += ["", "Unmatched: " + ", ".join(comparison["unmatched"])]
+    return "\n".join(parts) + "\n"
 
 
 # Markdown
