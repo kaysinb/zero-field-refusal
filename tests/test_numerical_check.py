@@ -10,6 +10,7 @@ under a 1 GB memory rule."""
 import ast
 import dataclasses
 import functools
+import gc
 import hashlib
 import json
 import math
@@ -19,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import weakref
 from pathlib import Path
 
 import pytest
@@ -1891,6 +1893,192 @@ def test_a_missing_or_unstable_run_is_recorded(archive, tmp_path, monkeypatch,
     assert "0 finished runs" in record["reason"] and "traceback" in record
 
 
+# --------------------------------------- memory: one seed's setup at a time (review fa14, 1)
+
+
+class Allocations:
+    """Weak references to what a setup allocates, by the seed set up, collected by wrapping the
+    allocating functions: the student and its trainable parameters (``_model``), the second
+    model and each control's reference (the environment's ``new_model``, through ``env``), v₀
+    (``second_moment``), the residual and batch 0's replayed targets (``control_residual``),
+    the directions p1, p2 (``first_update_direction``), θ₀ (``Twins``) and the monitors
+    (``Monitor``). ``on_setup(seed)`` runs at each setup's first allocation (the student)."""
+
+    def __init__(self, monkeypatch, env, on_setup=None):
+        self.held: dict[int, list] = {}
+        self.seed = None
+        self.on_setup = on_setup or (lambda seed: None)
+        originals = {name: getattr(fcd, name) for name in (
+            "_model", "second_moment", "control_residual", "first_update_direction", "Twins",
+            "Monitor")}  # fmt: skip
+
+        def model(env_, cfg):
+            self.on_setup(int(cfg.seed))
+            self.seed = int(cfg.seed)
+            student, trainable = originals["_model"](env_, cfg)
+            self.keep("student", student, *(p for _, p in trainable))
+            return student, trainable
+
+        def second_moment(*args):
+            v0, stream = originals["second_moment"](*args)
+            self.keep("v0", *v0)
+            return v0, stream
+
+        def control_residual(*args):
+            residual, stats, replay = originals["control_residual"](*args)
+            self.keep("residual", *residual)
+            self.keep("replayed targets", *replay)
+            return residual, stats, replay
+
+        def first_update_direction(*args):
+            direction, norm = originals["first_update_direction"](*args)
+            self.keep("p1 direction", *direction)
+            return direction, norm
+
+        def twins(**kwargs):
+            made = originals["Twins"](**kwargs)
+            self.keep("theta0", made, *made.theta0.values())
+            return made
+
+        def monitor(*args):
+            made = originals["Monitor"](*args)
+            self.keep("monitor", made)
+            return made
+
+        for name, wrapper in (("_model", model), ("second_moment", second_moment),
+                              ("control_residual", control_residual),
+                              ("first_update_direction", first_update_direction),
+                              ("Twins", twins), ("Monitor", monitor)):  # fmt: skip
+            monkeypatch.setattr(fcd, name, wrapper)
+
+        def new_model():
+            made = env.new_model()
+            self.keep("second model", made)
+            return made
+
+        self.env = dataclasses.replace(env, new_model=new_model)
+
+    def keep(self, label, *objects):
+        self.held.setdefault(self.seed, []).extend((label, weakref.ref(o)) for o in objects)
+
+    def alive(self, seeds) -> list[str]:
+        """What the setups of ``seeds`` allocated that is still reachable, after a collection."""
+        gc.collect()
+        return sorted({label for seed in seeds for label, ref in self.held.get(seed, [])
+                       if ref() is not None})  # fmt: skip
+
+
+WATCHED = ["monitor", "p1 direction", "replayed targets", "residual", "second model", "student",
+           "theta0", "v0"]  # fmt: skip
+
+
+@pytest.mark.parametrize("attempt, failing", [(1, None), (2, None), (1, 1)])
+def test_seed_setups_do_not_overlap(archive, tmp_path, monkeypatch, attempt, failing) -> None:
+    """Review fa14, 1, on the CPU: when a seed's setup starts (its first allocation), nothing the
+    setups of the seeds before allocated is reachable any more (after ``gc.collect()``): their
+    models, θ₀, v₀, the residual, batch 0's replayed targets, the directions and the monitor.
+    So for a first attempt, a rerun (the retry path, attempt 2), and a seed whose setup fails
+    after allocating (``failing``), the next seed's setup then starting alone."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    s = tiny_settings()
+    found = tiny_cases()
+    overlaps, started = [], []
+
+    def on_setup(seed):
+        started.append(seed)
+        earlier = [held for held in allocations.held if held != seed]
+        overlaps.append((seed, allocations.alive(earlier)))
+
+    allocations = Allocations(monkeypatch, env, on_setup)
+    if failing is not None:
+        directions = fcd.seed_directions
+
+        def seed_directions(scope_, twins, shared, eps):
+            if twins.prefix.seed == failing:
+                raise RuntimeError("a setup that fails once it has allocated")
+            return directions(scope_, twins, shared, eps)
+
+        monkeypatch.setattr(fcd, "seed_directions", seed_directions)
+    mine = [c for c in found if (c.optimizer, c.lr) == ("adam_frozen", 1.2e-3)]  # one per seed
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    done = fcd.run_numerical_twins(s, allocations.env, root, out, mine, attempt=attempt,
+                                   setups=found, code=consistent_code())  # fmt: skip
+    assert started == TINY_SEEDS
+    assert overlaps == [(seed, []) for seed in TINY_SEEDS]
+    for case in mine:
+        record = done[case.name]
+        assert record["attempt"] == attempt
+        if case.seed == failing:
+            assert record["reason"].startswith(f"the setup of seed {failing} failed: error: ")
+        else:
+            assert record["status"] == "complete" and record["twin_A"]["archive"]["equal"]
+    for seed in TINY_SEEDS:  # every watched allocation was made, and is gone after the part
+        made = sorted({label for label, _ in allocations.held[seed]})
+        assert made == (WATCHED if seed != failing else [w for w in WATCHED if w != "p1 direction"])
+    assert allocations.alive(TINY_SEEDS) == []
+
+
+def test_setup_only_tensors_are_released_before_yield(archive, tmp_path, monkeypatch) -> None:
+    """Review fa14, 1: inside ``twin_setup``, at its yield, batch 0's replayed targets are no
+    longer referenced, and the residual only by ``shared``: once the caller pops it
+    (``seed_directions`` does), it is freed. At the exit ``shared`` is emptied, and nothing of
+    the setup outlives the caller's own references."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    s = tiny_settings()
+    case = next(c for c in tiny_cases() if c.seed == 0 and c.optimizer == "adam_frozen")
+    cfg = fcd.run_config(fcd.locate_case(root, fcd.NumericalScope.of(s), case))
+    allocations = Allocations(monkeypatch, env)
+    with fcd.twin_setup(allocations.env, cfg, cfg, k_star=1.0) as (twins, shared):
+        alive = allocations.alive([0])
+        assert "replayed targets" not in alive
+        assert set(alive) == set(WATCHED) - {"p1 direction", "replayed targets"}
+        residual = shared.pop("residual")
+        assert "residual" in allocations.alive([0])
+        del residual
+        assert "residual" not in allocations.alive([0])
+        twins.reset()  # the twins are whole without them
+        assert twins.theta0 and twins.v0 and "monitor" in shared
+    assert shared == {}
+    del twins, shared
+    assert allocations.alive([0]) == []
+
+
+def test_the_controls_setup_is_released(archive, tmp_path, monkeypatch) -> None:
+    """Review fa14, 1, for the same-path controls: their setup is built once (one student);
+    each control's own reference model is gone when the next control allocates its own, a
+    failed control's too, and nothing of the part is reachable once it returns."""
+    env, root = copy_world(archive, tmp_path, monkeypatch)
+    s = tiny_settings()
+    made, references, students = [], [], []
+    allocations = Allocations(monkeypatch, env, on_setup=students.append)
+
+    def new_model():  # the student first (the setup's), then each control's θ₀ copy
+        gc.collect()
+        references.append(sum(ref() is not None for ref in made[1:]))
+        model = env.new_model()
+        made.append(weakref.ref(model))
+        return model
+
+    run = fcd.same_path_run
+
+    def same_path_run(env_, cfg, *args, **kwargs):
+        result = run(env_, cfg, *args, **kwargs)
+        if math.isclose(float(cfg.optimizer.lr), 1e-3):
+            raise RuntimeError("a control that fails once it has run")
+        return result
+
+    monkeypatch.setattr(fcd, "same_path_run", same_path_run)
+    out = fcd.numerical_root(BATCH, UPPER, root)
+    done = fcd.run_numerical_controls(s, dataclasses.replace(env, new_model=new_model), root, out,
+                                      rates=TINY_RATES["adam_frozen"], batch=BATCH, upper=UPPER,
+                                      attempt=1, code=consistent_code())  # fmt: skip
+    assert [r["status"] for r in done.values()] == ["complete", "incomplete", "complete"]
+    assert "a control that fails" in done["0.001"]["reason"]
+    assert students == [0] and len(made) == 4 and references == [0, 0, 0, 0]
+    assert sorted({label for label, _ in allocations.held[0]}) == ["monitor", "student", "v0"]
+    assert allocations.alive([0]) == [] and all(ref() is None for ref in made)
+
+
 def driver_parts(monkeypatch, config, root, args, capsys) -> dict[str, int]:
     """The parts in the order and with the exit handling of the Pod's driver
     (``driver_script``), each through the script with the driver's ``ARGS`` and the tests'
@@ -2225,3 +2413,64 @@ def test_cuda_pipeline(cuda_archive, cuda_rule, tmp_path, monkeypatch, clean_hea
     out = fcd.numerical_root(BATCH, UPPER, root)
     check_the_records(out, root, device="cuda", rule_gb=1)
     assert requested and not [name for name in requested if "harmful" in name]
+
+
+@needs_cuda
+def test_seed_setups_do_not_overlap_on_cuda(cuda_archive, tmp_path, monkeypatch) -> None:
+    """Review fa14, 1, on a GPU (the tiny model): ``torch.cuda.memory_allocated()`` when a
+    seed's setup starts equals its value before the first seed's, for first attempts, reruns
+    (the retry path) and after a seed whose setup failed once it had allocated. The same-path
+    controls each start beside the setup alone, and every part ends where it began."""
+    env, root = copy_world(cuda_archive, tmp_path, monkeypatch)
+    s = tiny_settings()
+    found = tiny_cases()
+    index = fcd.cuda_index(CUDA)
+    starts = []
+    model = fcd._model
+
+    def first_allocation(env_, cfg):  # a setup's first allocation: its student
+        starts.append(torch.cuda.memory_allocated(index))
+        return model(env_, cfg)
+
+    monkeypatch.setattr(fcd, "_model", first_allocation)
+    mine = [c for c in found if (c.optimizer, c.lr) == ("adam_frozen", 1.2e-3)]  # one per seed
+    gc.collect()
+    torch.cuda.empty_cache()
+    before = torch.cuda.memory_allocated(index)
+    for attempt in fcd.ATTEMPTS:
+        done = fcd.run_numerical_twins(s, env, root, tmp_path / "out", mine, attempt=attempt,
+                                       setups=found, code=consistent_code())  # fmt: skip
+        assert [r["status"] for r in done.values()] == ["complete"] * 3
+    assert starts == [before] * 6, (before, starts)
+    assert torch.cuda.memory_allocated(index) == before
+    # A setup that fails once it has allocated: the next seed's starts alone too
+    directions = fcd.seed_directions
+
+    def seed_directions(scope_, twins, shared, eps):
+        if twins.prefix.seed == 1:
+            raise RuntimeError("a setup that fails once it has allocated")
+        return directions(scope_, twins, shared, eps)
+
+    monkeypatch.setattr(fcd, "seed_directions", seed_directions)
+    starts.clear()
+    done = fcd.run_numerical_twins(s, env, root, tmp_path / "failed", mine, attempt=1,
+                                   setups=found, code=consistent_code())  # fmt: skip
+    assert [r["status"] for r in done.values()] == ["complete", "incomplete", "complete"]
+    assert starts == [before] * 3, (before, starts)
+    assert torch.cuda.memory_allocated(index) == before
+    # The controls: one setup, then each control's θ₀ copy beside it alone
+    starts.clear()
+    levels = []
+
+    def new_model():
+        levels.append(torch.cuda.memory_allocated(index))
+        return env.new_model()
+
+    done = fcd.run_numerical_controls(s, dataclasses.replace(env, new_model=new_model), root,
+                                      tmp_path / "out", rates=TINY_RATES["adam_frozen"],
+                                      batch=BATCH, upper=UPPER, attempt=1,
+                                      code=consistent_code())  # fmt: skip
+    assert [r["status"] for r in done.values()] == ["complete"] * 3
+    assert starts == [before] and levels[0] == before and len(levels) == 4
+    assert len(set(levels[1:])) == 1 and levels[1] > before, levels
+    assert torch.cuda.memory_allocated(index) == before

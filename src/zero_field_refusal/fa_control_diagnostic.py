@@ -84,6 +84,11 @@ benign panels, nothing written to a run record.
   v₀ stream and training prefix.
 - **Attempts.** Each case and control is written per attempt; an incomplete one runs once
   more, in a fresh process. A failure is the attempt's record, never lost.
+- **Memory** (review fa14, 1): one seed's setup at a time. Each seed's setup and cases run in a
+  function of their own and the device is released before the next seed's setup; the setup's
+  own temporaries (batch 0's replayed targets, the device copies) are gone before
+  ``twin_setup`` yields, and ``shared`` holds the residual alone until ``seed_directions`` pops
+  it. The controls' setup is held by one dict, released when they are done.
 - **The verdict** (``numerical_verdict``), with its policy (``NumericalScope.policy``) and the
   seeds each rate was tested on: an (arm, rate) is qualified when every pair of every case is
   within, failing when a pair exceeds (evidence of amplification) or an instability rule
@@ -2036,7 +2041,14 @@ def twin_setup(
     trainable set, v₀ as the run estimates it, its training stream, scoring panel and monitor),
     and in ``shared``: v₀'s hash and stream, the monitor (its reference is the second model) and
     the soft-target residual at θ₀ on batch 0 with generation-path targets (``control_residual``
-    under ``residual_cfg``; host tensors), with its statistics."""
+    under ``residual_cfg``; host tensors), with its statistics.
+
+    Memory (review fa14, 1): the setup's own temporaries (the replayed targets of batch 0, the
+    device copies of v₀ and the residual) are released before it yields, and ``shared`` holds
+    the residual's only reference, so that a caller that pops it (``seed_directions``) frees it.
+    At exit, ``shared`` is emptied and the setup's references are dropped; the caller must hold
+    nothing of ``twins`` past its ``with`` (``run_numerical_twins`` scopes each seed in a
+    function), so that the next setup does not allocate beside this one."""
     student, trainable = _model(env, cfg)
     other = env.new_model()
     other.requires_grad_(False)
@@ -2046,7 +2058,8 @@ def twin_setup(
     v0_hash = tensors_sha256(list(zip(names, v0, strict=True)))
     v0 = [v.cpu() for v in v0]
     prefix = StreamPrefix(cfg, env, int(cfg.seed))
-    residual, stats, _ = control_residual(residual_cfg, env, student, params, prefix)
+    residual, stats, replay = control_residual(residual_cfg, env, student, params, prefix)
+    del replay  # batch 0's replayed targets: only the residual needs them
     residual = [r.cpu() for r in residual]
     gc.collect()
     scoring, identity = scoring_samples(cfg, env)
@@ -2057,10 +2070,12 @@ def twin_setup(
     shared = {"v0_sha256": v0_hash, "v0_stream": stream, "control_residual": stats,
               "control_residual_norm": _norm(residual), "scoring_panel": identity,
               "residual": residual, "monitor": monitor}  # fmt: skip
+    del residual  # ``shared`` holds it alone
     try:
         yield twins, shared
     finally:
-        del twins, monitor, other, student
+        shared.clear()
+        del twins, shared, monitor, other, student, trainable, params, theta0, v0, prefix
         gc.collect()
 
 
@@ -3357,6 +3372,31 @@ def _attempt_number(attempt: int) -> None:
         raise NumericalError(f"Attempt {attempt}: a case or control has the attempts {ATTEMPTS}")
 
 
+def twin_record(
+    settings: DictConfig,
+    case: NumericalCase,
+    attempt: int,
+    code: Mapping[str, Any],
+    body: Mapping[str, Any],
+    *,
+    facts: Any = None,
+    device: torch.device | None = None,
+    **provenance: Any,
+) -> dict[str, Any]:
+    """Attempt ``attempt`` of ``case`` as the twins part records it: the case, its bound and
+    steps, ``body`` (its status and why, twin A and the pairs), the seed's setup facts, the
+    numerics of ``device`` (None for an attempt that ran nothing on a device) and the
+    provenance, with the regular runs' GPU code (``code``) and any other ``provenance``."""
+    scope = NumericalScope.of(settings)
+    return {"part": "twins", "case": case.name, "seed": case.seed, "optimizer": case.optimizer,
+            "lr": case.lr, "batch": case.batch, "U": case.upper, "attempt": attempt,
+            "bound": scope.bound(case.upper), "K_star": scope.k_star(case.upper),
+            "eval_at": list(scope.eval_at), "intended_norm": scope.norm, **body,
+            "seed_facts": facts, "numerics": None if device is None else numerics(device),
+            "provenance": numerical_provenance(settings, gpu_code=code["gpu_code"],
+                                               **provenance)}  # fmt: skip
+
+
 def run_numerical_twins(
     settings: DictConfig,
     env: Environment,
@@ -3376,28 +3416,65 @@ def run_numerical_twins(
     ``NumericalCase.attempt_path`` under ``out``, whatever happened: a case that failed is its
     record, incomplete, with its error and the pairs done before it; a seed whose setup failed
     gives each of its cases that record; a case whose regular run is not found is recorded
-    incomplete with why, and a seed none of whose cases has its run (a rerun due only for a run
-    the launcher gave up on, say) is set up for nothing. Nothing runs unless ``code``
+    incomplete with why, and a seed none of whose cases has its run (a rerun due only for runs
+    not found, say) is set up for nothing. Nothing runs unless ``code``
     (``code_check``) shows the regular runs' GPU code to be the check's (``require_code``).
-    Returns the records by case name."""
+
+    Memory (review fa14, 1): each seed's setup and cases run in a function of their own
+    (``run_cases``), so that nothing of the setup (the models, θ₀, v₀, the directions, the
+    monitor) is reachable once it returns, and the device is released (``_release_device``)
+    before the next seed's setup allocates. A failed case or setup is released the same way,
+    once its exception (which holds the failing frames) is dropped. Returns the records by case
+    name."""
     _attempt_number(attempt)
     require_code(code)
     scope = NumericalScope.of(settings)
     done: dict[str, dict[str, Any]] = {}
 
     def finish(case: NumericalCase, body: Mapping[str, Any], facts: Any = None) -> None:
-        record = {"part": "twins", "case": case.name, "seed": case.seed,
-                  "optimizer": case.optimizer, "lr": case.lr, "batch": case.batch,
-                  "U": case.upper, "attempt": attempt, "bound": scope.bound(case.upper),
-                  "K_star": scope.k_star(case.upper), "eval_at": list(scope.eval_at),
-                  "intended_norm": scope.norm, **body, "seed_facts": facts,
-                  "numerics": numerics(env.device),
-                  "provenance": numerical_provenance(settings,
-                                                     gpu_code=code["gpu_code"])}  # fmt: skip
+        record = twin_record(settings, case, attempt, code, body, facts=facts, device=env.device)
         write_json(out / case.attempt_path(attempt), record)
         done[case.name] = record
 
-    for seed in dict.fromkeys(case.seed for case in cases):
+    def run_cases(
+        mine: Sequence[NumericalCase],
+        setup: Path,
+        located: Mapping[str, Path],
+        unlocated: Mapping[str, str],
+    ) -> None:
+        """One seed's setup and its cases; every reference to them is this function's."""
+        cfg = run_config(setup)
+        with twin_setup(env, cfg, cfg, k_star=scope.k_star(mine[0].upper)) as (twins, shared):
+            facts = {
+                "setup_run": str(setup),
+                **seed_directions(scope, twins, shared, float(cfg.optimizer.eps)),
+            }
+            for case in mine:
+                if case.name in unlocated:
+                    finish(case, {"status": "incomplete", "reason": unlocated[case.name],
+                                  "pairs": {}}, facts)  # fmt: skip
+                    continue
+                progress: dict[str, Any] = {}
+                started = time.perf_counter()
+                checkpoints = out / "twins" / "checkpoints" / case.name
+                failed = False
+                try:
+                    body = run_numerical_case(scope, case, twins, shared, located[case.name],
+                                              checkpoints, keep_checkpoints=keep_checkpoints,
+                                              progress=progress)  # fmt: skip
+                except Exception as exc:  # recorded; the next case goes on
+                    body = {"status": "incomplete", **_error(exc),
+                            "twin_A": progress.get("twin_A"),
+                            "pairs": progress.get("pairs", {})}  # fmt: skip
+                    failed = True
+                if failed:  # the exception, and the frames it held, are dropped by now
+                    _release_device(env.device)
+                finish(case, {"regular_run": str(located[case.name]),
+                              "regular_run_identity": run_identity(located[case.name]),
+                              **body, "seconds": time.perf_counter() - started},
+                       facts)  # fmt: skip
+
+    def run_seed(seed: int) -> None:
         mine = [case for case in cases if case.seed == seed]
         located: dict[str, Path] = {}
         unlocated: dict[str, str] = {}
@@ -3410,7 +3487,7 @@ def run_numerical_twins(
             for case in mine:
                 finish(case, {"status": "incomplete", "reason": unlocated[case.name],
                               "pairs": {}})  # fmt: skip
-            continue
+            return
         setup = None
         for candidate in setups or cases:
             if candidate.seed == seed and candidate.optimizer == scope.control_arm:
@@ -3425,42 +3502,21 @@ def run_numerical_twins(
                     f"no {scope.control_arm} regular run of seed {seed} to set v₀ and p1, p2 up"
                 )
                 finish(case, {"status": "incomplete", "reason": reason, "pairs": {}})
-            continue
+            return
         try:
-            cfg = run_config(setup)
-            with twin_setup(env, cfg, cfg, k_star=scope.k_star(mine[0].upper)) as (twins, shared):
-                facts = {
-                    "setup_run": str(setup),
-                    **seed_directions(scope, twins, shared, float(cfg.optimizer.eps)),
-                }
-                for case in mine:
-                    if case.name in unlocated:
-                        finish(case, {"status": "incomplete", "reason": unlocated[case.name],
-                                      "pairs": {}}, facts)  # fmt: skip
-                        continue
-                    progress: dict[str, Any] = {}
-                    started = time.perf_counter()
-                    checkpoints = out / "twins" / "checkpoints" / case.name
-                    try:
-                        body = run_numerical_case(scope, case, twins, shared, located[case.name],
-                                                  checkpoints, keep_checkpoints=keep_checkpoints,
-                                                  progress=progress)  # fmt: skip
-                    except Exception as exc:  # recorded; the next case goes on
-                        body = {"status": "incomplete", **_error(exc),
-                                "twin_A": progress.get("twin_A"),
-                                "pairs": progress.get("pairs", {})}  # fmt: skip
-                        _release_device(env.device)
-                    finish(case, {"regular_run": str(located[case.name]),
-                                  "regular_run_identity": run_identity(located[case.name]),
-                                  **body, "seconds": time.perf_counter() - started},
-                           facts)  # fmt: skip
+            run_cases(mine, setup, located, unlocated)
         except Exception as exc:  # the seed's setup: every case not yet written records it
             error = _error(exc)
             error["reason"] = f"the setup of seed {seed} failed: {error['reason']}"
             for case in mine:
                 if case.name not in done:
                     finish(case, {"status": "incomplete", "pairs": {}, **error})
-            _release_device(env.device)
+
+    for seed in dict.fromkeys(case.seed for case in cases):
+        run_seed(seed)
+        # Nothing of the seed is reachable now (a failed setup's exception included): it is
+        # freed before the next seed's setup allocates
+        _release_device(env.device)
     return done
 
 
@@ -3485,7 +3541,12 @@ def run_numerical_controls(
     stopped by an instability rule gives ``instability`` instead (``instability_stop``), and no
     control runs. Each attempt names its regular run (``run_identity``) and is written to
     ``control_path``. Nothing runs unless ``code`` shows the regular runs' GPU code
-    to be the check's (``require_code``). Returns the records by rate."""
+    to be the check's (``require_code``). Returns the records by rate.
+
+    Memory (review fa14, 1): the setup shared by the controls (``_control_setup``) is held by
+    ``setup`` alone, and each control's own models and optimizer are released when
+    ``same_path_run`` returns; a failed control is released once its exception, which holds the
+    failing frames, is dropped, and the setup when the last control is done."""
     _attempt_number(attempt)
     require_code(code)
     scope = NumericalScope.of(settings)
@@ -3493,10 +3554,9 @@ def run_numerical_controls(
     done: dict[str, dict[str, Any]] = {}
     setup: dict[str, Any] = {}
     for lr in sorted(float(r) for r in rates):
-        case = NumericalCase(scope.control_seed, scope.control_arm, lr, int(batch), upper)
-        record = {"part": "control", "case": case.name, "rate": lr, "seed": case.seed,
-                  "batch": case.batch, "U": upper, "attempt": attempt, "bound": bound,
-                  "K_star": k_star, "k_at": k_at}  # fmt: skip
+        case = control_case(scope, lr, batch, upper)
+        record = control_record(scope, lr, batch, upper, attempt)
+        failed = False
         try:
             run_dir = locate_case(root, scope, case)
             cfg = run_config(run_dir)
@@ -3514,16 +3574,7 @@ def run_numerical_controls(
                 )
             else:
                 if not setup:  # v₀ once, from the first control's run; θ₀ kept on the host
-                    student, trainable = _model(env, cfg)
-                    names = [n for n, _ in trainable]
-                    theta0 = {n: p.detach().cpu().clone() for n, p in trainable}
-                    v0, stream = second_moment(cfg, env, student, [p for _, p in trainable])
-                    setup.update(student=student, trainable=trainable, names=names,
-                                 theta0=theta0, v0_stream=stream,
-                                 v0_sha256=tensors_sha256(list(zip(names, v0, strict=True))),
-                                 v0=[v.cpu() for v in v0])  # fmt: skip
-                    del v0
-                    gc.collect()
+                    setup.update(_control_setup(env, cfg))
                 set_trainable(setup["student"], setup["theta0"], setup["names"])
                 result = same_path_run(env, cfg, setup["student"], setup["trainable"],
                                        setup["v0"], k_at=k_at, bound=bound,
@@ -3550,6 +3601,8 @@ def run_numerical_controls(
                     record["status"] = "complete"
         except Exception as exc:  # recorded: the attempt is incomplete
             record.update(status="incomplete", state=INCOMPLETE, **_error(exc))
+            failed = True
+        if failed:  # the exception, and the frames it held, are dropped by now
             _release_device(env.device)
         record.update(
             numerics=numerics(env.device),
@@ -3560,6 +3613,34 @@ def run_numerical_controls(
     setup.clear()
     _release_device(env.device)
     return done
+
+
+def control_record(
+    scope: NumericalScope, rate: float, batch: int, upper: float, attempt: int
+) -> dict[str, Any]:
+    """The head of a same-path control's attempt record: its case, rate, seed, B, U, attempt,
+    bound, K* and steps."""
+    case = control_case(scope, rate, batch, upper)
+    return {"part": "control", "case": case.name, "rate": float(rate), "seed": case.seed,
+            "batch": case.batch, "U": upper, "attempt": attempt, "bound": scope.bound(upper),
+            "K_star": scope.k_star(upper), "k_at": list(scope.eval_at)}  # fmt: skip
+
+
+def _control_setup(env: Environment, cfg: DictConfig) -> dict[str, Any]:
+    """What every same-path control of a part shares, from the first control's run config: the
+    student and its trainable set, θ₀ and v₀ (host), v₀'s hash and stream. Built in a function
+    of its own, so that the device copy of v₀ is gone and the returned dict holds the only
+    references once it returns (review fa14, 1)."""
+    student, trainable = _model(env, cfg)
+    names = [n for n, _ in trainable]
+    theta0 = {n: p.detach().cpu().clone() for n, p in trainable}
+    v0, stream = second_moment(cfg, env, student, [p for _, p in trainable])
+    setup = {"student": student, "trainable": trainable, "names": names, "theta0": theta0,
+             "v0_stream": stream, "v0_sha256": tensors_sha256(list(zip(names, v0, strict=True))),
+             "v0": [v.cpu() for v in v0]}  # fmt: skip
+    del v0
+    gc.collect()
+    return setup
 
 
 # ------------------------------------------------------------------ the numerical verdict
