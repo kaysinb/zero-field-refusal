@@ -405,11 +405,15 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   endpoint's evaluations against the time course's of the same steps (step 25: K and utility),
   the stop with the steps taken and the streams read; the timings and memory peaks are left out
   (not numerics), and so is K_harmful (outcome-blind until the final analysis). The named
-  numerical fields (``TIMECOURSE_TOLERANCED``: the training rows' loss, gradient norm and NLL per
-  token, the monitor's K, the update scalars' norm, cosine and departure statistics, the step-25
-  evaluation's K and utility numbers) are compared within twin A's tolerance, |x − y| ≤ 1e-8 +
-  1e-4·max(|x|, |y|) with both finite; every other field (counts, steps, stops, metadata, the
-  streams, discrete outcomes) exactly, as canonical JSON. Bit for bit everywhere is
+  continuous fields (``TIMECOURSE_TOLERANCED``: the training rows' loss, gradient norm and NLL
+  per token; the monitor's K and its readings' gradient and displacement norms; the scoring
+  diagnostics' K_scoring and K_monitor_full at step 25, in monitor.jsonl and their metrics.jsonl
+  rows; the update scalars' norm, cosine and the denominator's departure norm ratio; the step-25
+  evaluation's K and held-out NLL) are compared within twin A's tolerance, |x − y| ≤ 1e-8 +
+  1e-4·max(|x|, |y|) with both finite; every other field exactly, as canonical JSON: counts,
+  steps, stops, metadata, the streams and the discrete outcomes (the benchmark and factual
+  accuracies, k/N; the departure's median and p90, bin edges of a histogram; review fa21: no
+  tolerance on discrete outcomes). Bit for bit everywhere is
   ``identical``, within the rule ``consistent`` (the bitwise flag kept as ``bitwise_equal``);
   both count. Any other difference, or a record that is missing or does not read (metrics,
   monitor, update scalars, meta.json: every regular run writes them), excludes the run with its
@@ -3976,24 +3980,28 @@ def _canonical(rows: Sequence[Mapping[str, Any]]) -> list[str]:
 IDENTITY_RECORDS = ("metrics.jsonl", "monitor.jsonl", "update_scalars.jsonl", "meta.json")
 RAYLEIGH_COMPARED = ("R", "delta_norm", "delta_H_delta")  # rayleigh.json, reported beside
 # Review fa21: numerical consistency of a time-course run with its endpoint run. These named
-# numerical fields, by record, are compared within twin A's tolerance (NUMERICAL_POLICY's
-# twin_a_consistency); every other field (counts, steps, stops, metadata, the streams, discrete
-# outcomes and every other number) is exact. A nested field is named by its path (``a.b``).
+# continuous fields, by record, are compared within twin A's tolerance (NUMERICAL_POLICY's
+# twin_a_consistency); every other field is exact: counts, steps, stops, metadata, the streams
+# and the discrete outcomes (the accuracies, k/N; the departure's median and p90, bin edges of a
+# histogram), and every number not named. A nested field is named by its path (``a.b``).
 EVALUATION_NUMBERS = ("K_benign", "K_monitor", "K_monitor_primary", "K_monitor_full",
-                      "heldout_nll_per_token", "factual_accuracy",
-                      "benchmark_accuracy")  # fmt: skip
-UPDATE_SCALAR_NUMBERS = ("update_norm", "cos_update_grad", "d_departure.norm_ratio",
-                         "d_departure.median", "d_departure.p90")  # fmt: skip
+                      "heldout_nll_per_token")  # fmt: skip
+DIAGNOSTIC_NUMBERS = ("K_scoring", "K_monitor_full")  # the scoring diagnostics' (step 25)
+UPDATE_SCALAR_NUMBERS = ("update_norm", "cos_update_grad", "d_departure.norm_ratio")
 TIMECOURSE_TOLERANCED = {
-    # the training rows' loss, gradient norm and NLL, and the monitor's K logged beside them
-    "the training's metrics.jsonl rows": ("loss", "grad_norm", "nll_per_token", "K_monitor"),
-    # the step-25 evaluation's K and utility numbers, as its metrics.jsonl row logs them
+    # the training rows' loss, gradient norm and NLL, with the monitor's K and the diagnostics'
+    # K logged beside them
+    "the training's metrics.jsonl rows": ("loss", "grad_norm", "nll_per_token", "K_monitor",
+                                          *DIAGNOSTIC_NUMBERS),
+    # the step-25 evaluation's K and held-out NLL, as its metrics.jsonl row logs them
     "the metrics.jsonl rows of the endpoint's evaluations": tuple(
         f"eval/{key}" for key in EVALUATION_NUMBERS),
-    "the monitor.jsonl readings": ("K_monitor",),
+    # the monitor's K, the gradient's and displacement's norms, the diagnostics' K
+    "the monitor.jsonl readings": ("K_monitor", "grad_norm", "displacement_norm",
+                                   *DIAGNOSTIC_NUMBERS),
     # the update's norm, its cosine with the gradient, the pre-warmed denominator's departure
     "the update_scalars.jsonl rows": UPDATE_SCALAR_NUMBERS,
-    "the endpoint's evaluations": EVALUATION_NUMBERS,  # step 25: K and utility
+    "the endpoint's evaluations": EVALUATION_NUMBERS,  # step 25: K and held-out NLL
 }  # fmt: skip
 IDENTITY_COUNTED = ("identical", "consistent")  # a time-course run with these states counts
 
@@ -4120,9 +4128,10 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
     metrics.jsonl row of the training (steps 0-24, with the monitor's and the diagnostics' rows),
     the rows of the endpoint's evaluation there, every monitor.jsonl reading,
     update_scalars.jsonl, the step-25 evaluation (K and utility), the stop and the steps taken,
-    and the streams read; row for row, the same rows in the same order. The named numerical
+    and the streams read; row for row, the same rows in the same order. The named continuous
     fields of ``TIMECOURSE_TOLERANCED`` within twin A's tolerance (``_within_tolerance``: both
-    finite), every other field exactly (``_inconsistent``).
+    finite), every other field exactly (``_inconsistent``), the discrete outcomes included (the
+    accuracies, the departure's median and p90).
 
     ``state``: ``identical`` (every record bit for bit, as canonical JSON: ``_canonical``),
     ``consistent`` (numerically consistent, not bit for bit); both count (``IDENTITY_COUNTED``);

@@ -2422,7 +2422,8 @@ def test_the_analysis_bootstrap_interval_equals_the_simulation_s() -> None:
 
 def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: float = 0.0):
     """A 25-step run with the records the identity check reads: metrics.jsonl (the training rows,
-    the monitor's every 5 steps and the evaluations', logged one step back), monitor.jsonl,
+    the monitor's every 5 steps, the scoring diagnostics' at step 25 and the evaluations', logged
+    one step back), monitor.jsonl (the diagnostics' K beside the reading at step 25),
     update_scalars.jsonl (a cosine of 0.0 at step 3), meta.json's streams and the evaluations.
     ``other`` moves only what the check leaves out: timings, memory peaks and K_harmful."""
     run_dir = tmp_path / name
@@ -2431,22 +2432,27 @@ def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: 
     def k(t: int) -> float:
         return 6.3 * t / 25
 
+    diagnostics = {"K_scoring": 6.25, "K_monitor_full": 6.5}  # step 25's
     metrics = []
     for step in range(25):
         done, time_s = step + 1, 0.5 * step + other
         metrics.append({"step": step, "time_s": time_s, "loss": 1 / done, "denominator": 480,
                         "tokens": 900 + step, "nll_per_token": 0.5 / done,
                         "grad_norm": 0.25 + 0.01 * step})  # fmt: skip
+        if done == 25:
+            metrics.append({"step": step, "time_s": time_s, **diagnostics})
         if done % 5 == 0:
             metrics.append({"step": step, "time_s": time_s, "K_monitor": k(done)})
         if done in evaluate_at:
             metrics.append({"step": step, "time_s": time_s, "eval/K_benign": k(done),
                             "eval/K_harmful": 2 * k(done) + other, "eval/benchmark_accuracy": 0.6,
+                            "eval/heldout_nll_per_token": 1.125,
                             "eval/peak_allocated_gb": 30 + other})  # fmt: skip
     records = {
         "metrics.jsonl": metrics,
         "monitor.jsonl": [{"step": t, "K_monitor": k(t), "grad_norm": 0.3,
-                           "displacement_norm": 0.01 * t} for t in range(5, 26, 5)],
+                           "displacement_norm": 0.01 * t, **(diagnostics if t == 25 else {})}
+                          for t in range(5, 26, 5)],
         "update_scalars.jsonl": [{"step": t, "update_norm": 1e-3 * t,
                                   "cos_update_grad": 0.0 if t == 3 else 0.5,
                                   # the denominator's departure, as the pre-warmed arm records it
@@ -2462,7 +2468,8 @@ def recorded(tmp_path: Path, name: str, evaluate_at: tuple[int, ...], *, other: 
     evaluations = [{"step": t, "condition": f"step-{t}", "levels": [],
                     "K_monitor": k(t) if t % 5 == 0 else None, "K_benign": k(t),
                     "K_harmful": 2 * k(t) + other, "benchmark_accuracy": 0.6,
-                    "factual_accuracy": 0.8, "peak_allocated_gb": 30 + other}
+                    "factual_accuracy": 0.8, "heldout_nll_per_token": 1.125,
+                    "peak_allocated_gb": 30 + other}
                    for t in evaluate_at]  # fmt: skip
     run = traj(ADAMW, 20, 1.48e-5, 3000, None, name=name)
     return dataclasses.replace(run, run_dir=run_dir, evaluations=evaluations,
@@ -2479,8 +2486,9 @@ def tolerance_away(x: float, factor: float) -> float:
 def test_timecourse_identity(tmp_path) -> None:
     """A time-course run against its endpoint run (amendment 4, section 4; review fa21:
     numerical consistency): identical whatever the timings, memory peaks and K_harmful (never
-    read); consistent when only the named numerical fields differ, within twin A's tolerance;
-    excluded just over it, on a value not finite, or on a one-bit difference in any other field;
+    read); consistent when only the named continuous fields differ, within twin A's tolerance;
+    excluded just over it, on a value not finite, on any difference in a discrete outcome (the
+    accuracies, the departure's median and p90), or on a one-bit difference in any other field;
     pending without its endpoint run."""
     from zero_field_refusal.analysis.study2_short import timecourse_identity
 
@@ -2534,29 +2542,38 @@ def test_timecourse_identity(tmp_path) -> None:
         return dataclasses.replace(course, evaluations=[*course.evaluations[:3],
                                                         {**final, **changes}])  # fmt: skip
 
-    # Review fa21: each named numerical field half the tolerance away is consistent
+    def diagnosed(rows: list) -> dict:  # the scoring diagnostics' row in metrics.jsonl
+        return next(r for r in rows if "K_scoring" in r)
+
+    # Review fa21: each named continuous field half the tolerance away is consistent
     consistent = {
         "training": edited("metrics.jsonl", several(
             lambda rows: move(training(rows, 7), "grad_norm", 0.5),
             lambda rows: move(training(rows, 3), "loss", 0.5),
             lambda rows: move(training(rows, 24), "nll_per_token", 0.5),
-            lambda rows: move(monitored(rows, 9), "K_monitor", 0.5))),
+            lambda rows: move(monitored(rows, 9), "K_monitor", 0.5),
+            lambda rows: move(diagnosed(rows), "K_scoring", 0.5),
+            lambda rows: move(diagnosed(rows), "K_monitor_full", 0.5))),
         "one bit": edited("metrics.jsonl", lambda rows: bump(training(rows, 7), "grad_norm")),
         "the evaluation's row": edited("metrics.jsonl", several(
             lambda rows: move(rows[-1], "eval/K_benign", 0.5),
-            lambda rows: move(rows[-1], "eval/benchmark_accuracy", 0.5))),
-        "monitor": edited("monitor.jsonl", lambda rows: move(rows[2], "K_monitor", 0.5)),
+            lambda rows: move(rows[-1], "eval/heldout_nll_per_token", 0.5))),
+        "monitor": edited("monitor.jsonl", several(
+            lambda rows: move(rows[2], "K_monitor", 0.5),
+            lambda rows: move(rows[2], "grad_norm", 0.5),
+            lambda rows: move(rows[3], "displacement_norm", 0.5),
+            lambda rows: move(rows[4], "K_scoring", 0.5),
+            lambda rows: move(rows[4], "K_monitor_full", 0.5))),
+        "monitor, one bit": edited("monitor.jsonl", lambda rows: bump(rows[2], "grad_norm")),
         "update scalars": edited("update_scalars.jsonl", several(
             lambda rows: move(rows[4], "update_norm", 0.5),
             lambda rows: move(rows[4], "cos_update_grad", 0.5),
-            lambda rows: departure(rows, "median", 0.5),
-            lambda rows: departure(rows, "p90", 0.5),
             lambda rows: departure(rows, "norm_ratio", 0.5))),
         "negative zero": edited("update_scalars.jsonl",
                                 lambda rows: rows[2].update(cos_update_grad=-0.0)),
         "the evaluation": evaluated(K_benign=tolerance_away(final["K_benign"], 0.5),
                                     K_monitor=tolerance_away(final["K_monitor"], 0.5),
-                                    factual_accuracy=tolerance_away(0.8, 0.5)),
+                                    heldout_nll_per_token=tolerance_away(1.125, 0.5)),
     }  # fmt: skip
     for name, run in consistent.items():
         found = timecourse_identity(run, endpoint)
@@ -2566,13 +2583,16 @@ def test_timecourse_identity(tmp_path) -> None:
         # Just over the tolerance. Step 7's training row is the 9th outside the evaluations
         # (step 4's K_monitor row first)
         "the training's metrics.jsonl rows are not numerically consistent with the endpoint "
-        "run's from row 8 (30 rows against 30): grad_norm": edited(
+        "run's from row 8 (31 rows against 31): grad_norm": edited(
             "metrics.jsonl", lambda rows: move(training(rows, 7), "grad_norm", 1.01)),
         "the metrics.jsonl rows of the endpoint's evaluations are not numerically consistent": (
             edited("metrics.jsonl", lambda rows: move(rows[-1], "eval/K_benign", 1.01))),
+        "the monitor.jsonl readings are not numerically consistent with the endpoint run's from "
+        "row 3 (5 rows against 5): displacement_norm": edited(
+            "monitor.jsonl", lambda rows: move(rows[3], "displacement_norm", 1.01)),
         "the update_scalars.jsonl rows are not numerically consistent with the endpoint run's "
-        "from row 9 (25 rows against 25): d_departure.p90": edited(
-            "update_scalars.jsonl", lambda rows: departure(rows, "p90", 1.01)),
+        "from row 9 (25 rows against 25): d_departure.norm_ratio": edited(
+            "update_scalars.jsonl", lambda rows: departure(rows, "norm_ratio", 1.01)),
         "the endpoint's evaluations are not numerically consistent": evaluated(
             K_benign=tolerance_away(final["K_benign"], 1.01)),
         # A value not finite
@@ -2580,11 +2600,19 @@ def test_timecourse_identity(tmp_path) -> None:
             "metrics.jsonl", lambda rows: training(rows, 5).update(loss=math.nan)),
         "update_norm inf against 0.005, outside the tolerance": edited(
             "update_scalars.jsonl", lambda rows: rows[4].update(update_norm=math.inf)),
-        # Every other field exactly: a one-bit difference in a number not named, a count, a
-        # step, a discrete outcome, the stop, the streams
-        "the monitor.jsonl readings are not numerically consistent with the endpoint run's from "
-        "row 2 (5 rows against 5): grad_norm": edited(
-            "monitor.jsonl", lambda rows: bump(rows[2], "grad_norm")),
+        # The discrete outcomes exactly, even inside the tolerance (review fa21): the accuracies
+        # (k/N) and the departure's median and p90 (a histogram's bin edges)
+        "eval/benchmark_accuracy 0.6000000000000001 against 0.6": edited(
+            "metrics.jsonl", lambda rows: bump(rows[-1], "eval/benchmark_accuracy")),
+        f"benchmark_accuracy {tolerance_away(0.6, 0.5)!r} against 0.6": evaluated(
+            benchmark_accuracy=tolerance_away(0.6, 0.5)),
+        "factual_accuracy 0.8000000000000002 against 0.8": evaluated(
+            factual_accuracy=math.nextafter(0.8, 1.0)),
+        "from row 9 (25 rows against 25): d_departure.median ": edited(
+            "update_scalars.jsonl", lambda rows: departure(rows, "median", 0.5)),
+        "from row 9 (25 rows against 25): d_departure.p90 ": edited(
+            "update_scalars.jsonl", lambda rows: departure(rows, "p90", 0.5)),
+        # Every other field exactly: a count, a step, a discrete outcome, the stop, the streams
         "tokens 907 against 906": edited(
             "metrics.jsonl", lambda rows: training(rows, 6).update(tokens=907)),
         "step 7 against 8": edited("update_scalars.jsonl", lambda rows: rows[7].update(step=7)),
@@ -2643,6 +2671,62 @@ def test_timecourse_identity(tmp_path) -> None:
     early = dataclasses.replace(course, evaluations=[
         {**course.evaluations[0], "K_benign": 99.0}, *course.evaluations[1:]])  # fmt: skip
     assert timecourse_identity(early, endpoint)["state"] == "identical"
+
+
+def test_a_deviation_like_s2s_is_consistent(tmp_path) -> None:
+    """The coordinator's ruling on fa21's concern C1: a time-course run whose training departs
+    from its endpoint run's at the fp32 level from step 11 on, as S2's twins did (relative
+    deviations up to 3.9e-6), the deviation carried into every continuous number after it (the
+    gradient's and displacement's norms, the monitor's and the diagnostics' K, the update
+    scalars, the step-25 evaluation's K and held-out NLL), is consistent. The departure's median
+    and p90 (bin edges) stay as they were; one changed answer (an accuracy) excludes the run."""
+    from zero_field_refusal.analysis.study2_short import timecourse_identity
+
+    endpoint = recorded(tmp_path, "endpoint", (25,))
+    course = recorded(tmp_path, "course", (1, 5, 10, 25))
+    run_dir = tmp_path / "deviating"
+    shutil.copytree(course.run_dir, run_dir)
+
+    def scale(row: dict, factors: dict) -> None:
+        for key, rel in factors.items():
+            if key in row:
+                row[key] *= 1 + rel
+
+    def metrics(row: dict) -> None:
+        if row["step"] >= 11:
+            scale(row, {"loss": 3.1e-7, "grad_norm": 3.88e-6, "nll_per_token": 3.1e-7,
+                        "K_monitor": 1.37e-6, "K_scoring": 1e-6, "K_monitor_full": 1.2e-6,
+                        "eval/K_benign": 1e-6, "eval/heldout_nll_per_token": 2e-7})  # fmt: skip
+
+    def monitor(row: dict) -> None:
+        if row["step"] >= 15:
+            scale(row, {"K_monitor": 1.37e-6, "grad_norm": 3.5e-6, "displacement_norm": 2e-6,
+                        "K_scoring": 1e-6, "K_monitor_full": 1.2e-6})  # fmt: skip
+
+    def scalars(row: dict) -> None:
+        if row["step"] >= 12:
+            scale(row, {"update_norm": 2e-6, "cos_update_grad": 1e-6})
+            scale(row.get("d_departure", {}), {"norm_ratio": 1e-6})
+
+    for name, edit in (("metrics.jsonl", metrics), ("monitor.jsonl", monitor),
+                       ("update_scalars.jsonl", scalars)):  # fmt: skip
+        rows = [json.loads(line) for line in (run_dir / name).read_text().splitlines()]
+        for row in rows:
+            edit(row)
+        (run_dir / name).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    final = dict(course.evaluations[-1])
+    scale(final, {"K_benign": 1e-6, "K_monitor": 1.37e-6, "heldout_nll_per_token": 2e-7})
+    deviating = dataclasses.replace(course, run_dir=run_dir, run_id="deviating",
+                                    evaluations=[*course.evaluations[:3], final])  # fmt: skip
+    assert timecourse_identity(deviating, endpoint) == {
+        "state": "consistent", "reasons": [], "endpoint": "endpoint", "bitwise_equal": False,
+        "rayleigh_equal": None}  # fmt: skip
+    answered = dataclasses.replace(deviating, evaluations=[
+        *course.evaluations[:3], {**final, "factual_accuracy": 0.8 + 1 / 250}])  # fmt: skip
+    found = timecourse_identity(answered, endpoint)
+    assert found["state"] == "excluded" and found["reasons"] == [
+        "the endpoint's evaluations are not numerically consistent with the endpoint run's from "
+        "row 0 (1 rows against 1): factual_accuracy 0.804 against 0.8"]  # fmt: skip
 
 
 def test_timecourse_identity_reports_the_rayleigh_records_beside(tmp_path) -> None:
