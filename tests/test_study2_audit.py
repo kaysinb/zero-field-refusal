@@ -1,10 +1,12 @@
 """Study 2's terminal audit of the judge (amendment 4; the audit design v3, after review fa18): the
 frame, the PPS-with-replacement draw by the largest coefficient, the Clopper–Pearson bound on each
 arm's total error and the bias bound of each estimand, the Hansen–Hurwitz estimate, the reference
-harm, the fixation record's ``audit`` key, and the command line's (analysis.study2_audit_cli) draw
-(behind the summary's final analysis, with D7's blinding) and estimate. Synthetic frames, labels
-and texts only: no real label, prompt or response."""
+harm, the non-estimable estimands of an empty cohort (review fa19), the fixation record's
+``audit`` key, and the command line's (analysis.study2_audit_cli) draw (behind the summary's final
+analysis, with D7's blinding) and estimate. Synthetic frames, labels and texts only: no real
+label, prompt or response."""
 
+import dataclasses
 import json
 import math
 import subprocess
@@ -36,6 +38,7 @@ from test_study2_short_campaigns import answered as answered_checks
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import study2_audit_cli
 from zero_field_refusal.analysis.study2_audit import (
+    EMPTY_COHORT,
     ESTIMANDS,
     SIDES,
     agreement_check,
@@ -51,6 +54,7 @@ from zero_field_refusal.analysis.study2_audit import (
     estimands,
     hansen_hurwitz,
     judge_point,
+    non_estimable,
     reference_harm,
     reference_readings,
     reference_value,
@@ -123,13 +127,20 @@ def label_rows(labels: dict) -> dict:
             for run, found in labels.items()}  # fmt: skip
 
 
-def world(monkeypatch, *, three_arm=True, blocks=60, prompts=20, seed=0, harm=None):
+def world(monkeypatch, *, three_arm=True, blocks=60, prompts=20, seed=0, harm=None,
+          supported=True):  # fmt: skip
     """The summary's state, looks and final analysis over synthetic blocks, computed by Task 3's
     functions (``look_blocks``, ``looks``, ``mechanism_state``, the summary's ``final_analysis``),
-    and the judge's item labels of every bracket run."""
+    and the judge's item labels of every bracket run. With ``supported`` false, no arm is
+    supported in any block (cause ``bracketing``)."""
     rng = np.random.default_rng(seed)
     arms = ARMS if three_arm else PRIMARY_ARMS
     confirmation, labels = cohort_blocks(rng, blocks, arms, prompts, harm)
+    if not supported:
+        for block in confirmation:
+            block.update(supported=False, three_arm_supported=False)
+            for support in block["supports"].values():
+                support.update(supported=False, cause="bracketing")
     rows = label_rows(labels)
     module = summary_module()
     monkeypatch.setattr(module, "read_timecourse_labels", lambda state, courses, judge: ({}, {}))
@@ -183,9 +194,12 @@ def true_bias(frame, c, reference) -> float:
 
 def replicates(frame, count: int, seed: int, sizes=None):
     """``count`` independent draws of the fixation's sizes, as the chunks of one draw of
-    count × sizes (the draws are independent and identically distributed)."""
+    count × sizes (the draws are independent and identically distributed). The frame is a
+    three-arm selection's when it holds a pre-warmed item (``frame_of``'s cohorts are never
+    empty)."""
     sizes = sizes or SIZES
-    big = draw_audit(frame, {k: v * count for k, v in sizes.items()}, seed)
+    three_arm = any(item["arm"] == PREWARMED for item in frame)
+    big = draw_audit(frame, {k: v * count for k, v in sizes.items()}, seed, three_arm=three_arm)
     per = {arm: sizes[key] for key, arm in zip(("adamw", "fa", "prewarmed"), ARMS, strict=True)}
     for r in range(count):
         yield {"arms": big["arms"], "items": big["items"],
@@ -251,7 +265,7 @@ def test_each_draw_follows_q() -> None:
     confirmation[0]["supports"][ADAMW]["bracket"]["hi"]["K"] = K_STAR  # w_lo = 0, w_hi = 1
     frame = audit_frame({"K_star": K_STAR, "primary": confirmation, "mechanism": None}, labels)
     a = weights(frame)
-    drawn = draw_audit(frame, {"adamw": 200_000, "fa": 1, "prewarmed": 1}, SEED)
+    drawn = draw_audit(frame, {"adamw": 200_000, "fa": 1, "prewarmed": 1}, SEED, three_arm=False)
     assert drawn["arms"][PREWARMED]["draws"] == 0
     members = [i["index"] for i in frame if i["arm"] == ADAMW]
     total = math.fsum(a[members].tolist())
@@ -266,14 +280,15 @@ def test_each_draw_follows_q() -> None:
     for item in drawn["items"]:
         assert item["q"] == pytest.approx(a[item["index"]] / item["A"])
     assert drawn["arms"][ADAMW]["stream_seed"] == study2_audit_cli.derive_seed(SEED, ADAMW)
-    assert drawn == draw_audit(frame, {"adamw": 200_000, "fa": 1, "prewarmed": 1}, SEED)
+    assert drawn == draw_audit(frame, {"adamw": 200_000, "fa": 1, "prewarmed": 1}, SEED,
+                               three_arm=False)  # fmt: skip
 
 
 def test_duplicates_are_labeled_once_and_counted_per_draw() -> None:
     """On a frame of 4 items per arm, 400 draws repeat items: each distinct item is listed once
     with its multiplicity, and an error (a missing reference too) counts once per draw."""
     frame = frame_of(11, blocks=1, prompts=2, three_arm=False)
-    drawn = draw_audit(frame, SIZES, SEED)
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=False)
     items = [e for e in drawn["items"] if e["arm"] == ADAMW]
     assert len(items) == len({e["index"] for e in items}) == 4
     assert sum(e["multiplicity"] for e in items) == 400 == len(drawn["draws"][ADAMW])
@@ -347,7 +362,7 @@ def test_the_zero_error_bound_is_the_closed_form(primary) -> None:
     synthetic frame (60 blocks), fa18's half-widths: Δ 3.33 pp at a stop at 36 (A = 1.4) and
     2.38 pp at 60; C1 and C2 4.03 pp and 3.56 pp."""
     frame = frame_of(12, blocks=60, prompts=5, primary=primary)
-    drawn = draw_audit(frame, SIZES, SEED)
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=True)
     reference = {e["index"]: frame[e["index"]]["y_judge"] for e in drawn["items"]}
     found = audit_estimates(frame, drawn, reference, arm_level=ARM_LEVEL, bias_level=LEVEL)
     totals = {arm: found["arms"][arm]["A"] for arm in ARMS}
@@ -389,7 +404,7 @@ def test_hansen_hurwitz_is_unbiased_and_its_se_holds() -> None:
 
 def test_missing_references_count_as_errors_and_leave_the_point_estimate() -> None:
     frame = frame_of(14, blocks=4, prompts=30, three_arm=False)
-    drawn = draw_audit(frame, SIZES, SEED)
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=False)
     reference = {e["index"]: frame[e["index"]]["y_judge"] for e in drawn["items"]}
     lost = next(e for e in drawn["items"] if e["arm"] == FA)
     found = audit_estimates(frame, drawn, {**reference, lost["index"]: None}, arm_level=ARM_LEVEL,
@@ -413,7 +428,7 @@ def test_the_two_arm_case_draws_no_prewarmed_item(monkeypatch) -> None:
     frame = audit_frame(cohorts, labels)
     assert {i["arm"] for i in frame} == {ADAMW, FA}
     assert np.array_equal(weights(frame), np.abs(coefficients(frame, "delta")))
-    drawn = draw_audit(frame, SIZES, SEED)
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=False)
     assert drawn["arms"][PREWARMED] == {
         "size": 200,
         "frame": 0,
@@ -424,6 +439,7 @@ def test_the_two_arm_case_draws_no_prewarmed_item(monkeypatch) -> None:
     }
     assert set(drawn["draws"]) == {ADAMW, FA} and {e["arm"] for e in drawn["items"]} == {ADAMW, FA}
     assert estimands(frame) == ["delta", f"{ADAMW}@primary", f"{FA}@primary"]
+    assert drawn["non_estimable"] == {}  # the mechanism cohort's estimands are not the selection's
     reference = {e["index"]: frame[e["index"]]["y_judge"] for e in drawn["items"]}
     found = audit_estimates(frame, drawn, reference, arm_level=ARM_LEVEL, bias_level=LEVEL)
     bound = found["estimands"]["delta"]["bound"]
@@ -431,6 +447,82 @@ def test_the_two_arm_case_draws_no_prewarmed_item(monkeypatch) -> None:
                                        + found["arms"][FA]["T_upper"])  # fmt: skip
     assert bound["joint_level"] == pytest.approx(1 - 2 * ALPHA)
     assert "reference_harm" in found["estimands"]["delta"]
+
+
+def test_an_empty_cohort_is_non_estimable_and_adds_no_weight() -> None:
+    """Review fa19. An empty mechanism cohort (at the cap, no block jointly supported while the
+    primary's stopping look read some): C1, C2 and the arms' harms on it are non-estimable with
+    the reason and have no coefficients; a_i is |c_i^Δ| alone, A_a = 1 for AdamW-25 and FA-25,
+    and their draws are the two-arm selection's; the pre-warmed arm, with no item of weight,
+    draws nothing, with the reason, and Δ's bound sums AdamW-25's and FA-25's at 1 − 2·0.025/3.
+    An empty primary cohort: Δ and the arms' harms on it are non-estimable, a_i is the larger of
+    |c_i^C1| and |c_i^C2|, every arm is drawn (A_a = 1) and C1's bound is at 97.5 %. Neither
+    cohort holding a block: no contrast to weight by, and no draw."""
+    rng = np.random.default_rng(20)
+    confirmation, labels = cohort_blocks(rng, 6, ARMS, 5)
+    on_mechanism = ["C1", "C2", *(f"{arm}@mechanism" for arm in ARMS)]
+    on_primary = ["delta", f"{ADAMW}@primary", f"{FA}@primary"]
+    assert list(ESTIMANDS) == [*on_primary[:1], *on_mechanism[:2], *on_primary[1:],
+                               *on_mechanism[2:]]  # fmt: skip
+    # The mechanism cohort empty.
+    frame = audit_frame({"K_star": K_STAR, "primary": confirmation[:4], "mechanism": []}, labels)
+    assert {i["arm"] for i in frame} == set(PRIMARY_ARMS)
+    assert estimands(frame) == on_primary
+    absent = non_estimable(frame, three_arm=True)
+    assert absent == dict.fromkeys(on_mechanism, EMPTY_COHORT["mechanism"])
+    assert non_estimable(frame, three_arm=False) == {}  # two arms: not the selection's
+    for name in absent:
+        with pytest.raises(ValueError, match="holds no block of its cohort"):
+            coefficients(frame, name)
+    assert np.array_equal(weights(frame), np.abs(coefficients(frame, "delta")))
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=True)
+    assert drawn["non_estimable"] == absent
+    assert drawn["arms"][PREWARMED] == {
+        "size": 200, "frame": 0, "A": 0.0, "draws": 0, "distinct": 0,
+        "reason": f"{EMPTY_COHORT['mechanism']}: no item has weight: not drawn"}  # fmt: skip
+    assert set(drawn["draws"]) == set(PRIMARY_ARMS)
+    assert {arm: drawn["arms"][arm]["A"] for arm in PRIMARY_ARMS} == pytest.approx(
+        {ADAMW: 1.0, FA: 1.0})  # fmt: skip
+    two = draw_audit(frame, SIZES, SEED, three_arm=False)
+    assert two["draws"] == drawn["draws"] and two["items"] == drawn["items"]
+    assert two["arms"][PREWARMED]["reason"] == "no frame (a two-arm selection): not drawn"
+    reference = {e["index"]: frame[e["index"]]["y_judge"] for e in drawn["items"]}
+    found = audit_estimates(frame, drawn, reference, arm_level=ARM_LEVEL, bias_level=LEVEL)
+    assert list(found["estimands"]) == on_primary and found["non_estimable"] == absent
+    assert set(found["arms"]) == set(PRIMARY_ARMS)
+    bound = found["estimands"]["delta"]["bound"]
+    assert bound["arms"] == [ADAMW, FA] and bound["joint_level"] == pytest.approx(1 - 2 * ALPHA)
+    assert bound["U"] == pytest.approx(found["arms"][ADAMW]["T_upper"]
+                                       + found["arms"][FA]["T_upper"])  # fmt: skip
+    # The primary's cohort empty.
+    frame = audit_frame({"K_star": K_STAR, "primary": [], "mechanism": confirmation}, labels)
+    assert estimands(frame) == on_mechanism
+    absent = non_estimable(frame, three_arm=True)
+    assert absent == dict.fromkeys(on_primary, EMPTY_COHORT["primary"])
+    for name in absent:
+        with pytest.raises(ValueError, match="holds no block of its cohort"):
+            coefficients(frame, name)
+    c1, c2 = (np.abs(coefficients(frame, name)) for name in ("C1", "C2"))
+    assert np.array_equal(weights(frame), np.maximum(c1, c2))
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=True)
+    assert drawn["non_estimable"] == absent
+    assert {arm: drawn["arms"][arm]["draws"] for arm in ARMS} == SIZE_OF
+    assert {arm: drawn["arms"][arm]["A"] for arm in ARMS} == pytest.approx(
+        dict.fromkeys(ARMS, 1.0))  # fmt: skip
+    reference = {e["index"]: frame[e["index"]]["y_judge"] for e in drawn["items"]}
+    found = audit_estimates(frame, drawn, reference, arm_level=ARM_LEVEL, bias_level=LEVEL)
+    assert list(found["estimands"]) == on_mechanism and found["non_estimable"] == absent
+    assert found["estimands"]["C1"]["bound"]["joint_level"] == pytest.approx(LEVEL)
+    with pytest.raises(ValueError, match="not a cohort of the selection"):
+        non_estimable(frame, three_arm=False)
+    # Neither cohort holding a block.
+    assert non_estimable([], three_arm=True) == {
+        **dict.fromkeys(on_primary, EMPTY_COHORT["primary"]),
+        **dict.fromkeys(on_mechanism, EMPTY_COHORT["mechanism"])}  # fmt: skip
+    with pytest.raises(ValueError, match="no contrast is estimable"):
+        weights([])
+    with pytest.raises(ValueError, match="no contrast is estimable"):
+        draw_audit([], SIZES, SEED, three_arm=True)
 
 
 # ------------------------------------------------------------------ coverage
@@ -574,7 +666,7 @@ def test_hansen_hurwitz_counts_every_missing_draw() -> None:
     """Review of 02826e5, item 3: with every AdamW-25 draw missing the estimate is None, and the
     missing draws of every arm are counted, FA-25's after AdamW-25's too."""
     frame = frame_of(17, blocks=4, prompts=30, three_arm=False)
-    drawn = draw_audit(frame, SIZES, SEED)
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=False)
     reference = {e["index"]: None if e["arm"] == ADAMW else frame[e["index"]]["y_judge"]
                  for e in drawn["items"]}  # fmt: skip
     lost = next(e for e in drawn["items"] if e["arm"] == FA)
@@ -591,7 +683,7 @@ def test_hansen_hurwitz_divides_by_the_responding_draws() -> None:
     random, descriptive only), not over n_a."""
     frame = frame_of(18, blocks=4, prompts=30, three_arm=False)
     c = coefficients(frame, "delta")
-    drawn = draw_audit(frame, SIZES, SEED)
+    drawn = draw_audit(frame, SIZES, SEED, three_arm=False)
     truth = place_errors(frame, {ADAMW: 0.1, FA: 0.1}, rng=np.random.default_rng(2))
     reference = {e["index"]: int(truth[e["index"]]) for e in drawn["items"]}
     for arm in PRIMARY_ARMS:
@@ -824,6 +916,27 @@ def test_an_error_after_the_gate_refuses(monkeypatch, tmp_path, capsys) -> None:
     assert not (tmp_path / "audit").exists()
 
 
+def test_draw_refuses_when_no_estimand_is_estimable(monkeypatch, tmp_path, capsys) -> None:
+    """Review fa19: with no arm supported in any of the 80 blocks, Task 3's final analysis is
+    available (the primary stopped at its cap look with no supported block, the mechanism cohort
+    ended at the cap empty), but every estimand is non-estimable: ``draw`` refuses (exit 2) with
+    both cohorts' reasons, reads no label and writes nothing."""
+    worlds = world(monkeypatch, blocks=80, prompts=4, supported=False)
+    state, found, final, labels = worlds
+    stopping = found["looks"]["looks"][-1]
+    assert found["looks"]["stopped"] and stopping["at_cap"] and stopping["supported"] == 0
+    assert final["available"] and final["mechanism"]["cohort"]["blocks"] == []
+    reads = []
+    patched(monkeypatch, tmp_path, worlds, reads)
+    with pytest.raises(SystemExit) as stopped:
+        study2_audit_cli.main(draw_args(tmp_path))
+    assert stopped.value.code == 2 and reads == []
+    error = capsys.readouterr().err
+    assert "refused: after the final analysis: no estimand is estimable: " in error
+    assert EMPTY_COHORT["primary"] in error and EMPTY_COHORT["mechanism"] in error
+    assert not (tmp_path / "audit").exists()
+
+
 def estimate_args(tmp_path, out, reference, *extra) -> list[str]:
     return ["estimate", "--sample", str(out), "--fixation", str(tmp_path / "fixation.json"),
             "--reference", str(reference), *extra]  # fmt: skip
@@ -888,7 +1001,7 @@ def test_draw_writes_blinded_files_and_estimate_reads_them(monkeypatch, tmp_path
     printed = capsys.readouterr().out
     assert "synthetic" not in printed
     shown = json.loads(printed)
-    assert list(shown["estimands"]) == list(ESTIMANDS)
+    assert list(shown["estimands"]) == list(ESTIMANDS) and shown["non_estimable"] == {}
     arms = shown["arms"]
     assert {arm: arms[arm]["draws"] for arm in ARMS} == SIZE_OF
     assert all(arms[arm]["T_upper"] == pytest.approx(arms[arm]["A"] * arms[arm]["p_upper"])
@@ -963,16 +1076,12 @@ def test_draw_writes_blinded_files_and_estimate_reads_them(monkeypatch, tmp_path
     assert found["counts"]["check"] == math.ceil(0.1 * found["counts"]["agreements"])
 
 
-def test_draw_on_a_synthetic_archive_runs_the_real_final_state(monkeypatch, tmp_path,
-                                                                capsys) -> None:  # fmt: skip
-    """Review M3: ``draw`` through the real ``final_state`` (the summary's functions, loaded from
-    scripts/study2_short_summary.py) on a synthetic archive of 60 three-arm confirmation blocks:
-    only the run loader, the facts, the GPU-code check, the versions record and the label
-    readers are synthetic, as in the summary's end-to-end tests. The primary stops at look 1;
-    the frame's judge-rated Δ, C1 and C2 match the final analysis, the audit is drawn."""
-    runs = base()
-    rates = until(runs, "confirmation")["next"]["rates"]
-    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:60])
+def archive(monkeypatch, tmp_path, runs) -> tuple[list[str], str]:
+    """``draw``'s arguments on a synthetic archive of ``runs``, run through the real
+    ``final_state`` (the summary's functions, loaded from scripts/study2_short_summary.py): only
+    the run loader, the facts, the GPU-code check, the versions record and the label readers are
+    synthetic (``synthetic_harm``), as in the summary's end-to-end tests. Returns the arguments
+    and the fixation record's path."""
     runs = on_disk(runs, tmp_path)
     by_dir = {run.run_dir: run for run in runs}
     by_name = {run.run_id: run for run in runs}
@@ -1005,19 +1114,124 @@ def test_draw_on_a_synthetic_archive_runs_the_real_final_state(monkeypatch, tmp_
     synthetic_readers(monkeypatch, labels, [])
     versions = tmp_path / "versions-holding.json"
     versions.write_text("{}")
-    out = tmp_path / "audit"
-    study2_audit_cli.main(["draw", "--runs", str(tmp_path), "--theta0", str(theta0_dir(tmp_path)),
-                           "--fixation", fixation_file(tmp_path), "--judge", JUDGE,
-                           "--runs-root", str(root), "--versions", str(versions),
-                           "--out", str(out)])  # fmt: skip
+    fixation = fixation_file(tmp_path)
+    return ["draw", "--runs", str(tmp_path), "--theta0", str(theta0_dir(tmp_path)),
+            "--fixation", fixation, "--judge", JUDGE, "--runs-root", str(root),
+            "--versions", str(versions), "--out", str(tmp_path / "audit")], fixation  # fmt: skip
+
+
+def test_draw_on_a_synthetic_archive_runs_the_real_final_state(monkeypatch, tmp_path,
+                                                                capsys) -> None:  # fmt: skip
+    """Review M3: ``draw`` through the real ``final_state`` on a synthetic archive of 60
+    three-arm confirmation blocks (``archive``). The primary stops at look 1; the frame's
+    judge-rated Δ, C1 and C2 match the final analysis, the audit is drawn."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:60])
+    args, _ = archive(monkeypatch, tmp_path, runs)
+    study2_audit_cli.main(args)
     shown = json.loads(capsys.readouterr().out)
     assert shown["stopping_look"] == 1 and shown["cohorts"] == {"primary": 36, "mechanism": 60}
     assert {arm: shown["arms"][arm]["draws"] for arm in ARMS} == SIZE_OF
-    selection = json.loads((out / "selection.json").read_text())
+    assert shown["non_estimable"] == {}
+    selection = json.loads((tmp_path / "audit" / "selection.json").read_text())
     assert selection["arms"][ADAMW]["A"] == pytest.approx(1.4)
     c1 = [(60 + s % 2 - 50 - (s + 1) % 3) / 500 for s in CONFIRMATION_SEEDS[:60]]
     assert selection["estimands"]["C1"]["judge_point"] == pytest.approx(math.fsum(c1) / 60,
                                                                         abs=1e-12)  # fmt: skip
+
+
+def unbracketed(run):
+    """A run as ``blocks_of`` makes it, but a pre-warmed one with its K a fifth of the world's:
+    at all three of its arm's rates K lies below K*, so the arm brackets K* in no block (cause
+    ``bracketing``) and no block is jointly supported."""
+    if run.arm != PREWARMED:
+        return run
+    evaluations = [{**e, "K_benign": e["K_benign"] / 5, "K_monitor": e["K_monitor"] / 5}
+                   for e in run.evaluations]  # fmt: skip
+    return dataclasses.replace(run, evaluations=evaluations)
+
+
+def test_a_capped_confirmation_with_an_empty_mechanism_cohort_audits_delta(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Review fa19, the capped outcome: the pre-warmed arm brackets K* in none of the 80 blocks,
+    so through the real ``final_state`` and ``final_analysis`` (``archive``) the confirmation ends
+    at the cap with the primary stopped at look 1 (36 supported blocks) and no block in the
+    mechanism cohort. ``draw`` succeeds: C1, C2 and the arms' harms on the mechanism cohort are
+    non-estimable with the reason; the pre-warmed arm draws nothing, with its reason; AdamW-25 and
+    FA-25 draw 400 each, weighted by Δ alone (A_a = 1, as with two arms). ``estimate`` bounds Δ by
+    AdamW-25's and FA-25's T^U at the joint level 1 − 2·0.025/3, prints its reference harm and the
+    non-estimable estimands, and refuses a selection.json whose markers were changed."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    runs += [unbracketed(run) for run in blocks_of(rates, 20, CONFIRMATION_SEEDS)]
+    args, fixation = archive(monkeypatch, tmp_path, runs)
+    study2_audit_cli.main(args)
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["stopping_look"] == 1 and shown["cohorts"] == {"primary": 36, "mechanism": 0}
+    mechanism = ["C1", "C2", *(f"{arm}@mechanism" for arm in ARMS)]
+    reason = EMPTY_COHORT["mechanism"]
+    assert reason.startswith("the mechanism cohort is empty")
+    assert shown["non_estimable"] == dict.fromkeys(mechanism, reason)
+    assert shown["arms"][PREWARMED] == {"size": 200, "frame": 0, "A": 0.0, "draws": 0,
+                                        "distinct": 0,
+                                        "reason": f"{reason}: no item has weight: not drawn"
+                                        }  # fmt: skip
+    assert {arm: shown["arms"][arm]["draws"] for arm in PRIMARY_ARMS} == {ADAMW: 400, FA: 400}
+    out = tmp_path / "audit"
+    selection = json.loads((out / "selection.json").read_text())
+    assert selection["three_arm"] and selection["cohorts"]["mechanism"] == []
+    assert selection["cohorts"]["primary"] == list(range(1, 37))
+    assert list(selection["estimands"]) == ["delta", f"{ADAMW}@primary", f"{FA}@primary"]
+    assert selection["non_estimable"] == shown["non_estimable"]
+    assert {arm: selection["arms"][arm]["A"] for arm in PRIMARY_ARMS} == pytest.approx(
+        {ADAMW: 1.0, FA: 1.0})  # fmt: skip
+    key = json.loads((out / "key.json").read_text())
+    assert {e["arm"] for e in key.values()} == set(PRIMARY_ARMS)
+    assert all(e["cohorts"] == ["primary"] and e["block"] <= 36 for e in key.values())
+    # ``estimate``, with some references flipped.
+    labels = {e["unique_id"]: e["judge"] or "refusal" for e in key.values()}
+    for uid in sorted(labels)[:30:6]:
+        labels[uid] = "refusal" if labels[uid] == HARMFUL else HARMFUL
+    reference = tmp_path / "reference.json"
+    reference.write_text(json.dumps(labels))
+    estimate = ["estimate", "--sample", str(out), "--fixation", fixation,
+                "--reference", str(reference)]  # fmt: skip
+    study2_audit_cli.main(estimate)
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["non_estimable"] == selection["non_estimable"]
+    assert list(shown["estimands"]) == list(selection["estimands"])
+    arms = shown["arms"]
+    assert set(arms) == set(PRIMARY_ARMS) and all(arms[a]["level"] == ARM_LEVEL for a in arms)
+    delta = shown["estimands"]["delta"]
+    assert delta["U"] == pytest.approx(arms[ADAMW]["T_upper"] + arms[FA]["T_upper"])
+    assert delta["joint_level"] == pytest.approx(1 - 2 * ALPHA)
+    assert delta["interval"] == [-delta["U"], delta["U"]]
+    harm = delta["reference_harm"]
+    assert harm["judge_point"] == pytest.approx(selection["estimands"]["delta"]["judge_point"])
+    assert harm["interval"] == pytest.approx([harm["judge_point"] - delta["U"],
+                                              harm["judge_point"] + delta["U"]])  # fmt: skip
+    assert harm["readings"] and harm["conditional"].startswith("conditional")
+    # The tamper checks cover the markers, the arms' reasons and the cohorts.
+    original = (out / "selection.json").read_text()
+    changes = [
+        lambda s: s["non_estimable"].pop("C1"),
+        lambda s: s["non_estimable"].update(C2="another reason"),
+        lambda s: s["arms"][PREWARMED].update(reason="no frame (a two-arm selection): not drawn"),
+        lambda s: s.update(three_arm=False),
+        lambda s: s["cohorts"].update(mechanism=None),
+    ]
+    for change in changes:
+        changed = json.loads(original)
+        change(changed)
+        (out / "selection.json").write_text(json.dumps(changed))
+        with pytest.raises(SystemExit) as stopped:
+            study2_audit_cli.main(estimate)
+        assert stopped.value.code == 2 and "refused: " in capsys.readouterr().err
+    (out / "selection.json").write_text(original)
+    study2_audit_cli.main(estimate)  # whole again
+    assert json.loads(capsys.readouterr().out)["estimands"]["delta"]["U"] == delta["U"]
 
 
 def test_draw_refuses_a_directory_in_the_checkout(tmp_path) -> None:

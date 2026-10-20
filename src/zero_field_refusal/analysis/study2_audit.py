@@ -20,11 +20,15 @@ the runs and writes and reads the audit's files.
 - ``coefficients``: c_i^E = s_i · w_i / (n_E · P_i) of an estimand (``ESTIMANDS``): s_i the
   item's sign in it (0 outside its cohort or arms), n_E its cohort's blocks. The judge-rated
   estimand is Σ c_i y_J,i (``judge_point``), and the judge's net bias B_E = Σ c_i (y_J,i − y_R,i).
-- ``weights`` and ``draw_audit``: a_i = max over Δ, C1 and C2 of |c_i^E|; per arm, A_a = Σ a_i
-  and q_i = a_i/A_a, and the fixation record's n_a draws (400, 400, 200) with replacement with
-  probabilities q_i, from the stream ``derive_seed(seed, arm)`` (numpy's ``Generator.choice``).
-  An item drawn twice is labeled once and counts once per draw (its multiplicity). An arm
-  without a frame (the pre-warmed arm under a two-arm selection) is not drawn.
+- ``estimands`` and ``non_estimable``: the estimands whose cohort the frame holds a block of,
+  and those of the selection whose cohort is empty, each with its reason (``EMPTY_COHORT``).
+- ``weights`` and ``draw_audit``: a_i = max over the estimable ones of Δ, C1 and C2 of
+  |c_i^E|; per arm, A_a = Σ a_i and q_i = a_i/A_a, and the fixation record's n_a draws (400,
+  400, 200) with replacement with probabilities q_i, from the stream ``derive_seed(seed, arm)``
+  (numpy's ``Generator.choice``). An item drawn twice is labeled once and counts once per draw
+  (its multiplicity). An arm without a frame (the pre-warmed arm under a two-arm selection) or
+  whose items all have a_i = 0 (the pre-warmed arm when the mechanism cohort is empty) is not
+  drawn, with the reason.
 - ``clopper_pearson_upper`` and ``arm_bounds``: e_i = 1[y_J,i ≠ y_R,i], a missing reference
   counting as an error; x_a the draws that hit an error; p_a^U the one-sided Clopper–Pearson upper
   bound at ``arm_level`` (1 − 0.025/3) and T_a^U = A_a · p_a^U ≥ Σ_i a_i e_i, the three arms
@@ -40,24 +44,34 @@ the runs and writes and reads the audit's files.
   when it excludes 0, ``within_5pp`` when it lies within ±5 pp.
 - ``agreement_check``: the 10 % of the reference labellers' agreements the researcher checks,
   drawn without replacement from the stream ``derive_seed(seed, "agreement_check")``.
-- ``audit_estimates``: the arms' bounds and, for every estimand the frame holds, the above.
+- ``audit_estimates``: the arms' bounds and, for every estimable estimand, the above; the
+  non-estimable ones with their reasons.
 
 **Rulings** where the design leaves a detail open, fixed here before any label:
 - *The stopping-look cohort* is the blocks among the first ``started`` of the primary's stopping
   look that are supported for AdamW-25 and FA-25: exactly the blocks whose Δ its mean reads, so
   Σ c_i y_J,i of Δ is the look's mean (checked to 1e-12 by the command line). A block of it
   outside the mechanism cohort holds AdamW-25's and FA-25's items only.
-- *The weights* a_i run over the contrasts the frame holds (Δ alone under a two-arm selection).
-  An item with a_i = 0 (none: w = 0, a bracket end at K* exactly) is never drawn. The draws of an
-  arm run over its items in the frame's order (arm, block, side, then the prompt set's order);
-  the streams name the arm as the code does (``adamw_25``, ``frozen_adam_25``,
+- *The weights* a_i run over the estimable contrasts (Δ alone under a two-arm selection or when
+  the mechanism cohort is empty; C1 and C2 alone when the primary's cohort is empty). An item
+  with a_i = 0 (none: w = 0, a bracket end at K* exactly) is never drawn. The draws of an arm run
+  over its items in the frame's order (arm, block, side, then the prompt set's order); the
+  streams name the arm as the code does (``adamw_25``, ``frozen_adam_25``,
   ``prewarmed_adamw_25``).
 - *The estimands*: Δ = AdamW-25 − FA-25 on the stopping-look cohort (``delta``, the formal
   reading); C1 = pre-warmed − FA-25 and C2 = AdamW-25 − pre-warmed on the mechanism cohort, and
   each arm's own interpolated harm on each cohort that holds it (``<arm>@<cohort>``),
   descriptive, whose bound is its arm's T_a^U (its |c_i| ≤ a_i too).
-- *The joint level* is 1 − (number of arms drawn)·(1 − arm_level): 97.5 % with three arms, more
-  with two.
+- *Non-estimable estimands* (review fa19): an estimand of the selection whose cohort is empty
+  (at the cap, the mechanism cohort may hold no jointly supported block while the primary's
+  stopping look read some; or the stopping look read no supported block) is marked
+  non-estimable with its reason (``non_estimable``): no coefficients, no bound, no point
+  estimate and no reference harm. The audit goes on with the estimable ones; with none, the
+  command line refuses to draw. Under a two-arm selection the mechanism cohort's estimands are
+  not the selection's, and are neither estimable nor marked.
+- *The joint level* is 1 − (number of arms drawn)·(1 − arm_level), each arm at ``arm_level``
+  (1 − 0.025/3): 97.5 % with three arms drawn; 1 − 2·0.025/3 with two (a two-arm selection, or
+  the pre-warmed arm not drawn when the mechanism cohort is empty).
 - *Hansen–Hurwitz with missing references* (the design's "The point estimate"): an arm's draws
   whose item has no reference are left out and counted, over every arm; the arm's mean and sample
   variance run over its responding draws (the divisor n'_a), assuming the missing draws are
@@ -104,6 +118,13 @@ ESTIMANDS: dict[str, dict[str, Any]] = {
 CONTRAST_ESTIMANDS = ("delta", *CONTRASTS)  # those that set a_i and have a reference harm
 CONDITIONAL = ("conditional on the realized cohort: over the audit draw, not the supported-block "
                "population")  # fmt: skip
+EMPTY_COHORT = {  # why a cohort of the selection holds no block (review fa19)
+    "primary": "the primary's stopping-look cohort is empty: its stopping look read no block "
+               "supported for AdamW-25 and FA-25",
+    "mechanism": "the mechanism cohort is empty: no block of its window is jointly supported for "
+                 "the three arms",
+}  # fmt: skip
+NO_WEIGHT = "no item has weight: not drawn"  # an arm of the selection whose items all have a_i = 0
 
 
 # ------------------------------------------------------------------ the frame
@@ -118,8 +139,9 @@ def audit_cohorts(
     confirmation has ended, the cohort blocks are labeled and the primary has stopped. Returns
     K*, whether the selection has three arms, the stopping look, the stopping-look cohort's
     blocks (``primary``), the mechanism cohort's (``mechanism``, None with two arms), each as
-    ``progress``'s confirmation blocks, and the judge-rated estimates the final analysis computed
-    (``judge``: Δ at the stopping look, and C1 and C2 with three arms)."""
+    ``progress``'s confirmation blocks (an empty list when the cohort holds none), and the
+    judge-rated estimates the final analysis computed (``judge``: Δ at the stopping look, and C1
+    and C2 with three arms; None, the final analysis's, where the cohort is empty)."""
     if not final.get("available"):
         raise ValueError(f"the audit is drawn after the final analysis, which is "
                          f"{final.get('reason', 'not available')}")  # fmt: skip
@@ -234,10 +256,33 @@ def coefficients(frame: Sequence[Mapping[str, Any]], estimand: str) -> np.ndarra
                     dtype=float)  # fmt: skip
 
 
+def _held(frame: Sequence[Mapping[str, Any]]) -> set[str]:
+    """The cohorts the frame holds a block of."""
+    return {cohort for item in frame for cohort in item["cohorts"]}
+
+
+def _selected(three_arm: bool) -> list[str]:
+    """The cohorts of the selection: the primary's, and the mechanism cohort with three arms."""
+    return [cohort for cohort in COHORTS if cohort != "mechanism" or three_arm]
+
+
 def estimands(frame: Sequence[Mapping[str, Any]]) -> list[str]:
-    """The estimands whose cohort the frame holds, in ``ESTIMANDS``' order."""
-    cohorts = {cohort for item in frame for cohort in item["cohorts"]}
+    """The estimable estimands: those whose cohort the frame holds, in ``ESTIMANDS``' order."""
+    cohorts = _held(frame)
     return [name for name, spec in ESTIMANDS.items() if spec["cohort"] in cohorts]
+
+
+def non_estimable(frame: Sequence[Mapping[str, Any]], *, three_arm: bool) -> dict[str, str]:
+    """The estimands of the selection whose cohort is empty (the frame holds no block of it), in
+    ``ESTIMANDS``' order, each with its reason (``EMPTY_COHORT``): no coefficients, bound, point
+    estimate or reference harm. With two arms the mechanism cohort's estimands are not the
+    selection's and are not listed."""
+    selected, held = _selected(three_arm), _held(frame)
+    if not held <= set(selected):
+        raise ValueError(f"non_estimable: the frame holds {sorted(held - set(selected))}, not a "
+                         f"cohort of the selection")  # fmt: skip
+    return {name: EMPTY_COHORT[spec["cohort"]] for name, spec in ESTIMANDS.items()
+            if spec["cohort"] in selected and spec["cohort"] not in held}  # fmt: skip
 
 
 def judge_point(frame: Sequence[Mapping[str, Any]], coefficient: np.ndarray) -> float:
@@ -250,27 +295,45 @@ def judge_point(frame: Sequence[Mapping[str, Any]], coefficient: np.ndarray) -> 
 
 
 def weights(frame: Sequence[Mapping[str, Any]]) -> np.ndarray:
-    """a_i = max over the contrasts the frame holds (``CONTRAST_ESTIMANDS``) of |c_i^E|."""
+    """a_i = max over the estimable contrasts (those of ``CONTRAST_ESTIMANDS`` whose cohort the
+    frame holds) of |c_i^E|: a non-estimable one (its cohort empty) adds nothing. Raises when no
+    contrast is estimable."""
     names = [name for name in estimands(frame) if name in CONTRAST_ESTIMANDS]
     if not names:
-        raise ValueError("weights: the frame holds no contrast")
+        raise ValueError("weights: no contrast is estimable (the frame holds no block)")
     return np.max(np.abs(np.vstack([coefficients(frame, name) for name in names])), axis=0)
 
 
+def _not_drawn(frame: Sequence[Mapping[str, Any]], arm: str, three_arm: bool) -> str:
+    """Why an arm with A_a = 0 is not drawn: it has no frame (the pre-warmed arm under a two-arm
+    selection), every cohort of the selection that holds it is empty, or its items all have
+    a_i = 0."""
+    cohorts = [cohort for cohort in _selected(three_arm) if arm in COHORTS[cohort]]
+    if not cohorts:
+        return "no frame (a two-arm selection): not drawn"
+    held = _held(frame)
+    if not held & set(cohorts):
+        return "; ".join(EMPTY_COHORT[cohort] for cohort in cohorts) + f": {NO_WEIGHT}"
+    return NO_WEIGHT
+
+
 def draw_audit(
-    frame: Sequence[Mapping[str, Any]], sizes: Mapping[str, int], seed: int
+    frame: Sequence[Mapping[str, Any]], sizes: Mapping[str, int], seed: int, *, three_arm: bool
 ) -> dict[str, Any]:
     """The audit's draw: ``sizes`` the fixation record's (keys of ``AUDIT_ARMS``), ``seed`` its
-    seed. Per arm with a frame, n_a draws with replacement, ``numpy.random.default_rng(
-    derive_seed(seed, arm)).choice(N_a, n_a, replace=True, p=q)`` over the arm's items in the
-    frame's order, q_i = a_i/A_a (``weights``). Returns per arm its size, frame, A_a, draws,
-    distinct items and stream seed (or the reason it is not drawn); the frame indices drawn per
-    arm in draw order (``draws``); and the distinct items drawn (``items``: frame index, arm, a_i,
-    q_i, A_a, multiplicity), in frame order."""
+    seed, ``three_arm`` whether the selection has the mechanism cohort. Per arm with weight, n_a
+    draws with replacement, ``numpy.random.default_rng(derive_seed(seed, arm)).choice(N_a, n_a,
+    replace=True, p=q)`` over the arm's items in the frame's order, q_i = a_i/A_a (``weights``,
+    over the estimable contrasts). Returns per arm its size, frame, A_a, draws, distinct items and
+    stream seed, or, with A_a = 0, 0 draws and the reason it is not drawn (``_not_drawn``); the
+    frame indices drawn per arm in draw order (``draws``); the distinct items drawn (``items``:
+    frame index, arm, a_i, q_i, A_a, multiplicity), in frame order; and the non-estimable
+    estimands with their reasons (``non_estimable``)."""
     if set(sizes) != set(AUDIT_ARMS):
         raise ValueError(f"draw_audit: sizes for {list(AUDIT_ARMS)}, not {sorted(sizes)}")
     if [item["index"] for item in frame] != list(range(len(frame))):
         raise ValueError("draw_audit: the frame's indices are not its order")
+    absent = non_estimable(frame, three_arm=three_arm)
     a = weights(frame)
     arms: dict[str, Any] = {}
     draws: dict[str, list[int]] = {}
@@ -283,8 +346,7 @@ def draw_audit(
         total = math.fsum(a[members].tolist()) if members else 0.0
         if not total:
             arms[arm] = {"size": size, "frame": len(members), "A": total, "draws": 0,
-                         "distinct": 0,
-                         "reason": "no frame (a two-arm selection): not drawn"}  # fmt: skip
+                         "distinct": 0, "reason": _not_drawn(frame, arm, three_arm)}  # fmt: skip
             continue
         q = a[members] / total
         stream = derive_seed(seed, arm)
@@ -296,7 +358,8 @@ def draw_audit(
                      "distinct": len(counts), "stream_seed": stream}  # fmt: skip
         items += [{"index": i, "arm": arm, "a": float(a[i]), "q": float(a[i] / total),
                    "A": total, "multiplicity": counts[i]} for i in sorted(counts)]  # fmt: skip
-    return {"seed": seed, "sizes": dict(sizes), "arms": arms, "draws": draws, "items": items}
+    return {"seed": seed, "sizes": dict(sizes), "arms": arms, "draws": draws, "items": items,
+            "non_estimable": absent}  # fmt: skip
 
 
 # ------------------------------------------------------------------ the bounds
@@ -363,7 +426,7 @@ def arm_bounds(
 
 def bias_bound(bounds: Mapping[str, Mapping[str, Any]], estimand: str) -> dict[str, Any]:
     """U_E = Σ T_a^U over the estimand's arms (``arm_bounds``): |B_E| ≤ U_E, the interval
-    [−U_E, +U_E]."""
+    [−U_E, +U_E], at the joint level of the arms drawn, 1 − (their number)·(1 − arm level)."""
     arms = list(ESTIMANDS[estimand]["signs"])
     absent = [arm for arm in arms if arm not in bounds]
     if absent:
@@ -450,12 +513,19 @@ def audit_estimates(
     arm_level: float,
     bias_level: float,
 ) -> dict[str, Any]:
-    """The arms' bounds (``arm_bounds`` at ``arm_level``) and, per estimand the frame holds: its
-    cohort's blocks, status, judge point, the bound (``bias_bound``), the Hansen–Hurwitz estimate
-    (Wald at ``bias_level``) and, for Δ, C1 and C2, the reference harm."""
+    """The arms' bounds (``arm_bounds`` at ``arm_level``, over the arms drawn) and, per estimable
+    estimand (``estimands``): its cohort's blocks, status, judge point, the bound
+    (``bias_bound``), the Hansen–Hurwitz estimate (Wald at ``bias_level``) and, for Δ, C1 and C2,
+    the reference harm; and the non-estimable estimands with their reasons (``draw_audit``'s
+    ``non_estimable``), which get none of these."""
     bounds = arm_bounds(frame, sample, reference, arm_level)
+    absent = dict(sample["non_estimable"])
+    names = estimands(frame)
+    if set(names) & set(absent):
+        raise ValueError(f"audit_estimates: {sorted(set(names) & set(absent))} are estimable in "
+                         f"the frame, not the draw's non-estimable")  # fmt: skip
     out = {}
-    for name in estimands(frame):
+    for name in names:
         spec = ESTIMANDS[name]
         c = coefficients(frame, name)
         bound = bias_bound(bounds, name)
@@ -469,7 +539,7 @@ def audit_estimates(
         if name in CONTRAST_ESTIMANDS:
             entry["reference_harm"] = reference_harm(point, bound)
         out[name] = entry
-    return {"arms": bounds, "estimands": out}
+    return {"arms": bounds, "estimands": out, "non_estimable": absent}
 
 
 # ------------------------------------------------------------------ the reference's resolution

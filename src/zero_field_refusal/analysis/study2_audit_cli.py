@@ -19,12 +19,16 @@ cohort blocks are labeled and the primary has stopped; before, it reads no item'
 Then it reads the judge's label of every response of each bracket run of the primary's
 stopping-look cohort and of the mechanism cohort (each checked as
 analysis.study2_labels.read_endpoint_labels checks it, its counts against that reader's), builds
-the frame (analysis.study2_audit.audit_frame), checks that the frame's judge-rated Δ, C1 and C2 are
-the final analysis's to 1e-12, and draws the fixation record's ``audit``: per arm 400, 400 and 200
-draws with replacement with probability proportional to a_i, the item's largest |coefficient|
-(``draw_audit``). An error after the gate refuses too (exit 2), and nothing is written. It writes
-into --out, which must not exist (default $RUNS_DIR/audit/study2-short-<UTC time>), the files of
-study 1's D7 check:
+the frame (analysis.study2_audit.audit_frame), marks the estimands whose cohort is empty
+non-estimable with the reason (``non_estimable``; review fa19: at the cap the mechanism cohort may
+hold no block while the primary's holds some), checks that the frame's judge-rated Δ, C1 and C2
+are the final analysis's to 1e-12 (a non-estimable one: that the final analysis has none either),
+and draws the fixation record's ``audit``: per arm 400, 400 and 200 draws with replacement with
+probability proportional to a_i, the item's largest |coefficient| over the estimable contrasts
+(``draw_audit``; an arm whose items all have a_i = 0, the pre-warmed arm when the mechanism cohort
+is empty, draws nothing, with the reason). With no estimable estimand it refuses (exit 2) and
+writes nothing; so does any other error after the gate. It writes into --out, which must not
+exist (default $RUNS_DIR/audit/study2-short-<UTC time>), the files of study 1's D7 check:
 
 - ``sample.jsonl``: each distinct item drawn once, in a shuffled order,
   ``{item_id, prompt, response}``;
@@ -36,14 +40,15 @@ study 1's D7 check:
 - ``frame.jsonl``: every frame item, the same fields with its multiplicity (0 when not drawn) and
   its item id when drawn: hidden like key.json;
 - ``selection.json``: the audit's settings and seed, the fixation record's and the versions
-  record's sha256, the cohorts, per arm its frame, A_a, draws, distinct items and stream seed, the
-  estimands with their cohorts' blocks and judge-rated estimates, the dilution (AdamW-25's and
-  FA-25's draws and distinct items in the stopping-look cohort), and the items and sha256 of every
-  other file.
+  record's sha256, the cohorts, per arm its frame, A_a, draws, distinct items and stream seed (or
+  the reason it is not drawn), the estimable estimands with their cohorts' blocks and judge-rated
+  estimates, the non-estimable ones with their reasons (``non_estimable``), the dilution
+  (AdamW-25's and FA-25's draws and distinct items in the stopping-look cohort), and the items and
+  sha256 of every other file.
 
-It prints only counts. The files hold model responses to harmful prompts: keep them under
-$RUNS_DIR (ignored by Git), archive them with an inventory, and hand the labellers unique.jsonl
-alone.
+It prints only counts and the reasons. The files hold model responses to harmful prompts: keep
+them under $RUNS_DIR (ignored by Git), archive them with an inventory, and hand the labellers
+unique.jsonl alone.
 
 ``agreements`` reads the two labellers' labels of unique.jsonl's items (JSON objects
 ``{"item_id": label | null}``, GPT's as --first and Grok's as --second; null: a failed output)
@@ -55,17 +60,20 @@ record with every agreement (it must not exist). Item ids only, never a text.
 ``estimate`` reads the resolved reference labels (--reference: a JSON object
 ``{"item_id": label | null}`` over every item id of unique.jsonl, a label one of refusal,
 safe_non_refusal or harmful_compliance, null a missing reference: failed or unresolved). It checks
-the files against selection.json's sha256, the audit against the fixation record, the draw made
-again from frame.jsonl against key.json's items and multiplicities, and each estimand's
-judge-rated estimate against selection.json's. It prints per arm the draws, the distinct items,
-the draws hitting an error (a missing reference counts as one), the missing references, A_a, the
-Clopper–Pearson bound p_a^U at the record's arm_level and T_a^U = A_a p_a^U; and per estimand (Δ
-on the stopping-look cohort, the formal reading; C1, C2 and each arm's harm, descriptive) the bound
-U_E (the sum over its arms) with [−U_E, +U_E], the Hansen–Hurwitz estimate with its SE and Wald
-interval (descriptive; missing references left out and counted), and for Δ, C1 and C2 the
-reference harm of the realized cohort [judge point − U_E, judge point + U_E] with its readings.
---out writes the whole record, with selection.json's sha256 (it must not exist). Numbers only,
-never a text. For ``agreements`` and ``estimate``, a file missing, unreadable or garbled
+the files against selection.json's sha256, the audit against the fixation record, frame.jsonl's
+cohorts against selection.json's, the draw made again from frame.jsonl against key.json's items
+and multiplicities and against selection.json's arms, its estimable and non-estimable estimands
+(with the reasons) against selection.json's, and each estimand's judge-rated estimate against
+selection.json's. It prints per arm drawn the draws, the distinct items, the draws hitting an
+error (a missing reference counts as one), the missing references, A_a, the Clopper–Pearson bound
+p_a^U at the record's arm_level and T_a^U = A_a p_a^U; per estimable estimand (Δ on the
+stopping-look cohort, the formal reading; C1, C2 and each arm's harm, descriptive) the bound U_E
+(the sum over its arms) with [−U_E, +U_E] at the joint level of the arms drawn, the
+Hansen–Hurwitz estimate with its SE and Wald interval (descriptive; missing references left out
+and counted), and for Δ, C1 and C2 the reference harm of the realized cohort [judge point − U_E,
+judge point + U_E] with its readings; and the non-estimable estimands with their reasons. --out
+writes the whole record, with selection.json's sha256 (it must not exist). Numbers and reasons
+only, never a text. For ``agreements`` and ``estimate``, a file missing, unreadable or garbled
 (selection.json, key.json, frame.jsonl, a labels file) refuses (exit 2, "refused: ..."), as
 ``draw`` does.
 """
@@ -96,6 +104,7 @@ from zero_field_refusal.analysis.study2_audit import (
     draw_audit,
     estimands,
     judge_point,
+    non_estimable,
     reference_value,
     weights,
 )
@@ -280,12 +289,20 @@ def _draw(args, audit, cohorts, runs) -> dict[str, Any]:
         prompts = prompt_texts(run_dir, cache)
         labels[run_id], files[run_id] = item_labels(run_dir, args.judge, identity, prompts)
     frame = audit_frame(cohorts, labels)
+    absent = non_estimable(frame, three_arm=cohorts["three_arm"])
+    if not estimands(frame):
+        raise ValueError("no estimand is estimable: " + "; ".join(dict.fromkeys(absent.values())))
     for name, expected in cohorts["judge"].items():
+        if name in absent:  # its cohort is empty: the final analysis has no estimate either
+            if expected is not None:
+                raise ValueError(f"{name} is not estimable ({absent[name]}), but the final "
+                                 f"analysis has {expected!r}")  # fmt: skip
+            continue
         point = judge_point(frame, coefficients(frame, name))
         if expected is None or abs(point - expected) > TOLERANCE:
             raise ValueError(f"the frame's judge-rated {name} {point!r} is not the final "
                              f"analysis's {expected!r}")  # fmt: skip
-    drawn = draw_audit(frame, audit["sizes"], audit["seed"])
+    drawn = draw_audit(frame, audit["sizes"], audit["seed"], three_arm=cohorts["three_arm"])
     texts: dict[str, dict[str, str]] = {}
     blinded, key = [], {}
     for item_id, entry in _order(drawn["items"], audit["seed"]):
@@ -338,6 +355,7 @@ def _draw(args, audit, cohorts, runs) -> dict[str, Any]:
                                             if ESTIMANDS[name]["cohort"] in i["cohorts"]}),
                              "judge_point": judge_point(frame, coefficients(frame, name))}
                       for name in estimands(frame)},
+        "non_estimable": drawn["non_estimable"],
         "dilution": dilution,
     }  # fmt: skip
     out = args.out
@@ -354,10 +372,11 @@ def _draw(args, audit, cohorts, runs) -> dict[str, Any]:
 
 
 def draw_counts(record: dict[str, Any], out: Path) -> dict[str, Any]:
-    """What ``draw`` prints: counts only."""
+    """What ``draw`` prints: counts, and the reasons of the arms not drawn and of the
+    non-estimable estimands."""
     return {"out": str(out), "arms": record["arms"],
             "cohorts": {k: None if v is None else len(v) for k, v in record["cohorts"].items()},
-            "stopping_look": record["stopping_look"],
+            "non_estimable": record["non_estimable"], "stopping_look": record["stopping_look"],
             "drawn_in_the_stopping_look_cohort": record["dilution"],
             "files": {k: v["items"] for k, v in record["files"].items()}}  # fmt: skip
 
@@ -367,9 +386,12 @@ def draw_counts(record: dict[str, Any], out: Path) -> dict[str, Any]:
 
 def read_sample(directory: Path, fixation: dict[str, Any]) -> dict[str, Any]:
     """The draw's files, checked: their sha256 against selection.json's, its audit settings
-    against the fixation record's, the draw made again from frame.jsonl against key.json's items,
-    a_i, q_i and multiplicities, and each estimand's judge-rated estimate against
-    selection.json's."""
+    against the fixation record's, frame.jsonl's cohorts against selection.json's (the
+    mechanism cohort absent exactly under a two-arm selection), the draw made again from
+    frame.jsonl against key.json's items, a_i, q_i and multiplicities and against
+    selection.json's arms (the reasons of the arms not drawn included), the estimable and
+    non-estimable estimands (with their reasons) against selection.json's, and each estimand's
+    judge-rated estimate against selection.json's."""
     path = directory / "selection.json"
     selection = json.loads(path.read_text())
     for name in FILES:
@@ -380,7 +402,17 @@ def read_sample(directory: Path, fixation: dict[str, Any]) -> dict[str, Any]:
     rows = [json.loads(line) for line in (directory / "frame.jsonl").read_text().splitlines()]
     frame = [{k: v for k, v in row.items() if k not in DRAWN_FIELDS} for row in rows]
     key = json.loads((directory / "key.json").read_text())
-    drawn = draw_audit(frame, fixation["audit"]["sizes"], fixation["audit"]["seed"])
+    three_arm = selection["three_arm"]
+    if not isinstance(three_arm, bool):
+        raise Refused(f"selection.json's three_arm {three_arm!r} is not a boolean")
+    for cohort in COHORTS:
+        listed = selection["cohorts"][cohort]
+        held = sorted({item["block"] for item in frame if cohort in item["cohorts"]})
+        absent = cohort == "mechanism" and not three_arm
+        if (listed is None) != absent or held != sorted(listed or []):
+            raise Refused(f"frame.jsonl's {cohort} cohort is not selection.json's")
+    drawn = draw_audit(frame, fixation["audit"]["sizes"], fixation["audit"]["seed"],
+                       three_arm=three_arm)  # fmt: skip
     again = {e["index"]: e for e in drawn["items"]}
     recorded = {entry["frame_index"]: entry for entry in key.values()}
     if set(again) != set(recorded) or any(
@@ -389,6 +421,12 @@ def read_sample(directory: Path, fixation: dict[str, Any]) -> dict[str, Any]:
         for i in again
     ):
         raise Refused("the draw made again from frame.jsonl is not key.json's")
+    if drawn["arms"] != selection["arms"]:
+        raise Refused("the draw made again from frame.jsonl is not selection.json's arms")
+    if drawn["non_estimable"] != selection["non_estimable"]:
+        raise Refused("selection.json's non-estimable estimands are not the frame's")
+    if list(selection["estimands"]) != estimands(frame):
+        raise Refused("selection.json's estimands are not the frame's estimable ones")
     for name, entry in selection["estimands"].items():
         point = judge_point(frame, coefficients(frame, name))
         if abs(point - entry["judge_point"]) > TOLERANCE:
@@ -462,6 +500,7 @@ def estimate(args: argparse.Namespace) -> dict[str, Any]:
             "cohorts": {k: None if v is None else len(v)
                         for k, v in selection["cohorts"].items()},
             "arms": found["arms"], "estimands": found["estimands"],
+            "non_estimable": found["non_estimable"],
             "missing_references": {
                 "items": sum(1 for v in reference.values() if v is None),
                 "draws": sum(entry["missing_draws"] for entry in found["arms"].values())},
@@ -469,8 +508,9 @@ def estimate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def estimate_shown(record: dict[str, Any]) -> dict[str, Any]:
-    """What ``estimate`` prints: per arm its draws and bound; per estimand the bound, the
-    Hansen–Hurwitz estimate and the reference harm."""
+    """What ``estimate`` prints: per arm drawn its draws and bound; per estimable estimand the
+    bound, the Hansen–Hurwitz estimate and the reference harm; the non-estimable estimands with
+    their reasons."""
     arms = {arm: {k: entry[k] for k in ("draws", "distinct", "errors", "missing_draws",
                                          "missing_items", "A", "p_upper", "T_upper", "level")}
             for arm, entry in record["arms"].items()}  # fmt: skip
@@ -488,7 +528,7 @@ def estimate_shown(record: dict[str, Any]) -> dict[str, Any]:
                 k: harm[k] for k in ("judge_point", "interval", "readings", "conditional")
             }
     return {"cohorts": record["cohorts"], "stopping_look": record["stopping_look"],
-            "arms": arms, "estimands": shown,
+            "arms": arms, "estimands": shown, "non_estimable": record["non_estimable"],
             "missing_references": record["missing_references"]}  # fmt: skip
 
 
