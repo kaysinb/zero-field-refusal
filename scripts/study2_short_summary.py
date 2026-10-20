@@ -263,6 +263,7 @@ def _attempt(a: dict[str, Any]) -> dict[str, Any]:
             # The search allowance per arm (review fa22), spent here or carried from pass 1
             "allowance": a.get("allowance", {}),
             "allowance_carried": a.get("allowance_carried", []),
+            "allowance_owed": a.get("allowance_owed", []),
             "arms": {arm: [_selection(s) for s in d["selections"]]
                      for arm, d in a["arms"].items()},
             "numerical": [{k: e.get(k) for k in ("check", "verdict", "state", "reasons",

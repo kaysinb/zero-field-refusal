@@ -203,9 +203,15 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   spent and a new round due), it is stopped by technical marks only when lifting its technical
   exclusions, the scientific ones kept, gives it a feasible triple, whatever the marks of its
   last verdict (technical marks never decide; review of fa22, M2), and by a scientific failure
-  otherwise (no admissible triple). An arm stopped by technical marks only is never selected
-  again at the candidate, even when another arm's scientific failure fails the candidate: the
-  fallback's visit then blocks on it (review of fa22, I1). The same reading holds at discovery,
+  otherwise (no admissible triple). An arm stopped by technical marks only at the numerical gate
+  is never selected again at the candidate, even when another arm's scientific failure fails
+  the candidate: the fallback's visit then blocks on it (review of fa22, I1). After a technical
+  stop at discovery beside a scientific one, the fallback's visit runs the same discovery again:
+  a primary arm stopped scientifically fails it again, and the arm stopped technically is judged
+  again by the same rule. One allowance holds in all per arm, batch and U: an arm
+  marked by a check that stopped the candidate before its re-solve owes its allowance, and a
+  later visit's re-selection of it is that allowance (its second re-review, minor 1). The same
+  reading holds at discovery,
   where marks made at the batch by an earlier candidate's check exclude rates up front: an arm left
   without a triple after its rounds by technical exclusions alone is stopped by them (this
   implementation's reading, accepted by the coordinator, C1). A scientific stop fails the
@@ -1475,6 +1481,9 @@ class _Replay:
         # and the arms an allowance-spent stop found stopped by technical marks only there.
         self.allowance: dict[tuple[str, int, float], dict[str, Any]] = {}
         self.stopped: dict[tuple[str, int, float], dict[str, Any]] = {}
+        # The allowances owed: an arm marked by a check that stopped the candidate before the
+        # arm's re-solve; a later visit's re-selection of it is that allowance.
+        self.owed: dict[tuple[str, int, float], dict[str, Any]] = {}
         self.called: set[tuple] = set()  # the numerical and validation runs called for
         self.read: set[str] = set()  # the verdicts the replay read
         self.reached: set[int] = set()
@@ -1917,15 +1926,19 @@ def _arm_feasibility(attempt: Mapping[str, Any], arm: str) -> dict[str, Any]:
 def _validation_feasibility(verdict: Mapping[str, Any], arm: str) -> dict[str, list[str]]:
     """A failed validation's findings for one arm, classed by their cause (review of fa22, M4):
     a block unsupported by K (``bracketing`` or ``width``), an instability stop and a utility
-    bound above its limit are scientific; a block whose cause is ``technical`` (a failed or
-    missing endpoint), a run's technical failure and a utility member left without a bound are
-    technical."""
+    bound above its limit are scientific, and so is a block whose failures hold an instability
+    stop; a block whose cause is ``technical`` (a failed or missing endpoint) otherwise, a run's
+    technical failure and a utility member left without a bound are technical."""
     found: dict[str, list[str]] = {"scientific": [], "technical": []}
     for seed, by_arm in sorted((verdict.get("supports") or {}).items()):
         support = by_arm.get(arm)
         if support is None or support["supported"]:
             continue
-        kind = "technical" if support["cause"] == "technical" else "scientific"
+        # A block lost with an instability stop among its failures is scientific, whatever its
+        # cause (the second re-review of fa22, minor 2).
+        technical = support["cause"] == "technical" and "instability" not in support[
+            "failure_kinds"]  # fmt: skip
+        kind = "technical" if technical else "scientific"
         found[kind].append(f"validation block {seed}: unsupported ({support['cause']}; by K "
                            f"alone: {support['k_cause']})")  # fmt: skip
         for failure in support["failures"]:
@@ -1971,7 +1984,7 @@ def _visit(
                                                   for arm, e in excluded.items()},
                                "numerical": [], "validation": None, "outcome": "pending",
                                "failed_arms": [], "failed_at": None, "failures": {},
-                               "stopped_technical": [], "reasons": [],
+                               "stopped_technical": [], "allowance_owed": [], "reasons": [],
                                "rates": None}  # fmt: skip
     # An arm whose allowance here is spent and that an earlier visit's numerical gate found
     # stopped by technical marks only (another arm's scientific failure then failing the
@@ -1985,6 +1998,24 @@ def _visit(
                                "candidate's numerical gate at an earlier visit, the search "
                                f"allowance spent there: no selection again ({told})",
                                "numerical")  # fmt: skip
+    # An arm marked at an earlier visit by a check that stopped the candidate before its
+    # re-solve owes its allowance: this visit's re-selection of it is that allowance (the
+    # second re-review of fa22, minor 1), spent first; after it, the arm is carried.
+    owed = [
+        arm
+        for arm in arms
+        if (arm, batch, upper) in replay.owed and (arm, batch, upper) not in replay.allowance
+    ]
+    for check in sorted({replay.owed[(arm, batch, upper)]["check"] for arm in owed}):
+        group = [arm for arm in owed if replay.owed[(arm, batch, upper)]["check"] == check]
+        debt = {arm: replay.owed[(arm, batch, upper)] for arm in group}
+        stops, step = _spend_allowance(replay, attempt, excluded, batch, upper, {}, group, check,
+                                       debt[group[0]]["verdict"],
+                                       {arm: d["marks"] for arm, d in debt.items()},
+                                       deferred=True)  # fmt: skip
+        if stops:
+            return attempt, step
+    carried = [*carried, *owed]
     selected, step = _discovery(replay, attempt, excluded, batch, upper, arms, carried)
     if selected is None:
         return attempt, step
@@ -2194,45 +2225,75 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
                             else "technical", marks[arm]) for arm in spent}  # fmt: skip
             note = f" (spent at an earlier visit: {earlier})" if earlier else ""
             listed = [s for arm in spent for s in shown[arm]]
+            # A holder whose allowance is unspent owes it: the candidate stops before its
+            # re-solve, and a later visit's re-selection is that allowance (second re-review of
+            # fa22, minor 1: one allowance in all).
+            for arm in holders:
+                if arm not in spent:
+                    replay.owed.setdefault((arm, batch, upper),
+                                           {"check": check["name"], "verdict": path,
+                                            "marks": shown[arm]})  # fmt: skip
+            attempt["allowance_owed"] = [arm for arm in holders if arm not in spent]
             return None, None, _stop(replay, attempt, causes, "unusable rates after the search "
                                      f"allowance{note}: {listed}", "numerical")  # fmt: skip
-        for arm in holders:  # the allowance: the re-solve, from the current discovery points
-            spending = {"arm": arm, "batch": batch, "U": upper, "check": check["name"],
-                        "verdict": path, "three_arm": attempt["three_arm"], "marks": shown[arm],
-                        "resolved": None, "repair": None}  # fmt: skip
-            replay.allowance[(arm, batch, upper)] = attempt["allowance"][arm] = spending
+        stops, step = _spend_allowance(replay, attempt, excluded, batch, upper, selected, holders,
+                                       check["name"], path, shown)  # fmt: skip
+        if stops:
+            return None, None, step
+
+
+def _spend_allowance(
+    replay, attempt, excluded, batch, upper, selected, holders, check: str, path: str,
+    shown: Mapping[str, list[str]], *, deferred: bool = False,
+) -> tuple[bool, dict | None]:  # fmt: skip
+    """The search allowance of ``holders`` at the candidate, spent by the check ``check``
+    (verdict ``path``; ``shown``: each holder's marks as text): each re-solved once, from its
+    current discovery points; left without a feasible triple, one repair round (``repair_rates``
+    proposing no unusable rate; the ``repair`` campaign) and a re-selection. When one arm's
+    round has a coverage miss it cannot repair, no arm's round of the check runs and the stop
+    comes first: that means less search, never more. ``deferred``: an allowance owed since an
+    earlier visit (``_Replay.owed``), spent at this visit's start. Returns (False, None) when
+    every holder has a feasible triple again, else (True, the step: the pending ``repair``
+    campaign, the blocked step, or None when the attempt failed)."""
+    for arm in holders:  # the re-solve, from the current discovery points
+        spending = {"arm": arm, "batch": batch, "U": upper, "check": check, "verdict": path,
+                    "three_arm": attempt["three_arm"], "marks": list(shown[arm]),
+                    "deferred": deferred, "resolved": None, "repair": None}  # fmt: skip
+        replay.allowance[(arm, batch, upper)] = attempt["allowance"][arm] = spending
+        selected[arm] = replay.solve(arm, batch, upper, sorted(excluded[arm]))
+        attempt["arms"][arm]["selections"].append(selected[arm])
+        spending["resolved"] = selected[arm]["rates"]
+    going = [arm for arm in holders if not selected[arm]["feasible"]]
+    if not going:
+        return False, None
+    # No feasible replacement triple: the allowance's one repair round, then a re-selection.
+    rounds = [replay.allowance_round(arm, batch, upper, selected[arm], check,
+                                     sorted(excluded[arm])) for arm in going]  # fmt: skip
+    unrepairable = [r["arm"] for r in rounds if r["proposal"].get("unrepairable")]
+    for spent_round in rounds:
+        replay.spend(spent_round, prescribe=not unrepairable)
+        attempt["arms"][spent_round["arm"]]["rounds"].append(spent_round)
+        replay.allowance[(spent_round["arm"], batch, upper)]["repair"] = {
+            "rates": spent_round["new_rates"],
+            "reasons": spent_round["proposal"]["reasons"]}  # fmt: skip
+    if not unrepairable:
+        missing = [m for r in rounds for m in replay.missing(r["arm"], batch, r["new_rates"])]
+        if missing:
+            attempt["outcome"] = "pending"
+            return True, _step("repair", attempt, runs=missing, allowance=check)
+        for arm in going:
             selected[arm] = replay.solve(arm, batch, upper, sorted(excluded[arm]))
             attempt["arms"][arm]["selections"].append(selected[arm])
-            spending["resolved"] = selected[arm]["rates"]
-        going = [arm for arm in holders if not selected[arm]["feasible"]]
-        if not going:
-            continue
-        # No feasible replacement triple: the allowance's one repair round, then a re-selection.
-        rounds = [replay.allowance_round(arm, batch, upper, selected[arm], check["name"],
-                                         sorted(excluded[arm])) for arm in going]  # fmt: skip
-        unrepairable = [r["arm"] for r in rounds if r["proposal"].get("unrepairable")]
-        for spent_round in rounds:
-            replay.spend(spent_round, prescribe=not unrepairable)
-            attempt["arms"][spent_round["arm"]]["rounds"].append(spent_round)
-            replay.allowance[(spent_round["arm"], batch, upper)]["repair"] = {
-                "rates": spent_round["new_rates"],
-                "reasons": spent_round["proposal"]["reasons"]}  # fmt: skip
-        if not unrepairable:
-            missing = [m for r in rounds for m in replay.missing(r["arm"], batch, r["new_rates"])]
-            if missing:
-                return stop(_step("repair", attempt, runs=missing, allowance=check["name"]))
-            for arm in going:
-                selected[arm] = replay.solve(arm, batch, upper, sorted(excluded[arm]))
-                attempt["arms"][arm]["selections"].append(selected[arm])
-        stopped = unrepairable or [arm for arm in going if not selected[arm]["feasible"]]
-        if stopped:
-            causes = _causes(replay, batch, upper, stopped, excluded)
-            why = ("its repair round has a coverage miss that re-targeting cannot repair"
-                   if unrepairable else "none after its repair round")  # fmt: skip
-            listed = [s for arm in stopped for s in shown[arm]]
-            return None, None, _stop(replay, attempt, causes, f"{stopped} without a feasible "
-                                     f"triple once the unusable rates are dropped, the search "
-                                     f"allowance spent ({why}): {listed}", "numerical")  # fmt: skip
+    stopped = unrepairable or [arm for arm in going if not selected[arm]["feasible"]]
+    if not stopped:
+        return False, None
+    causes = _causes(replay, batch, upper, stopped, excluded)
+    why = ("its repair round has a coverage miss that re-targeting cannot repair"
+           if unrepairable else "none after its repair round")  # fmt: skip
+    listed = [s for arm in stopped for s in shown[arm]]
+    return True, _stop(replay, attempt, causes, f"{stopped} without a feasible triple once the "
+                       f"unusable rates are dropped, the search allowance spent ({why}): "
+                       f"{listed}", "numerical")  # fmt: skip
 
 
 def _read_check(replay, check, batch, upper, request, commits) -> tuple[str, dict[str, Any]]:
@@ -2328,9 +2389,9 @@ def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
     """The validation gate: the runs of every arm at its rates on seeds 2100-2111 (a run the
     launcher gave up on counts as a technical failure), then ``validation_verdict`` over the
     candidate's arms (the three arms, or the primary arms alone in the fallback); a failure
-    fails the candidate, but a shortfall of jointly supported blocks that only technical
-    failures make (``_technical_shortfall``) blocks the stage. Returns the pending step, if
-    any."""
+    fails the candidate, but one that only technical failures make (``_technical_shortfall``: a
+    shortfall of jointly supported blocks, or a utility member left without a bound) blocks the
+    stage. Returns the pending step, if any."""
     keys = _keys(rates, batch, VALIDATION_SEEDS)
     replay.called |= set(keys)
     gone = {key: replay.exhausted[key] for key in keys
@@ -2387,15 +2448,21 @@ def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], s
     labels = {(key[0], rate(key[2]), key[3]): label
               for label, key in (verdict.get("exhausted") or {}).items()}  # fmt: skip
 
-    def mark(arm: str, seed: int, failure: Mapping[str, Any], what: str) -> dict[str, Any]:
-        label = labels.get((arm, failure["rate"], seed))
-        return {"arm": arm, "lr": failure["rate"], "state": "technical failure",
-                "why": f"{what}validation block {seed}: {failure['run'] or 'no run'}: "
-                       f"{failure['reason']}",
-                "reasons": [f"given up by the launcher: {label}"] if label else []}  # fmt: skip
-
     stops: dict[str, list] = defaultdict(list)
     told = []
+    seen: set[tuple] = set()  # a failure listed once, by the first fault naming it
+
+    def mark(arm: str, seed: int, failure: Mapping[str, Any], what: str) -> None:
+        if (arm, seed, failure["rate"]) in seen:
+            return
+        seen.add((arm, seed, failure["rate"]))
+        label = labels.get((arm, failure["rate"], seed))
+        stops[arm].append({"arm": arm, "lr": failure["rate"], "state": "technical failure",
+                           "why": f"{what}validation block {seed}: {failure['run'] or 'no run'}: "
+                                  f"{failure['reason']}",
+                           "reasons": [f"given up by the launcher: {label}"]
+                           if label else []})  # fmt: skip
+
     if len(verdict["jointly_supported"]) < VALIDATION_MINIMUM:
         lost = [seed for seed in supports if seed not in verdict["jointly_supported"]]
         by_k = [seed for seed in lost
@@ -2407,7 +2474,7 @@ def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], s
         for seed in sorted(set(lost) - set(by_k)):
             for arm, support in supports[seed].items():
                 for failure in support["failures"] if not support["supported"] else ():
-                    stops[arm].append(mark(arm, seed, failure, ""))
+                    mark(arm, seed, failure, "")
         told.append(f"{kept} of {len(supports)} blocks would be jointly supported but for those "
                     "lost to technical failures only")  # fmt: skip
     unbounded = [member for member in family
@@ -2415,12 +2482,10 @@ def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], s
     for member in unbounded:
         arm, lr = member["arm"], member["rate"]
         what = f"utility at {lr:g} without a bound ({member['runs']} completed runs): "
-        stops[arm] += [
-            mark(arm, seed, failure, what)
-            for seed, by_arm in sorted(supports.items())
-            for failure in by_arm[arm]["failures"]
-            if failure["rate"] == lr
-        ]
+        for seed, by_arm in sorted(supports.items()):
+            for failure in by_arm[arm]["failures"]:
+                if failure["rate"] == lr:
+                    mark(arm, seed, failure, what)
         told.append(f"the utility member {arm} at {lr:g} has {member['runs']} completed runs, "
                     "fewer than two: no bound")  # fmt: skip
     if not stops:
