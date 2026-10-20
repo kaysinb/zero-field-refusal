@@ -771,6 +771,21 @@ def endpoint_harm(
     return (z < threshold).mean(axis=-1)
 
 
+def endpoint_harm_by_probability(
+    eta: np.ndarray, alpha: np.ndarray, rho_b: float, rho_a: float, rng: np.random.Generator
+) -> np.ndarray:
+    """``endpoint_harm`` with each label taken as Φ(Z) < h instead of Z < Φ⁻¹(h): the same draws
+    in the same order and the same labels (Φ is increasing; only a Z within rounding of Φ⁻¹(h)
+    could differ), at about half the cost. The mechanism's blocks use it."""
+    n, arms, rates = eta.shape
+    z = math.sqrt(1 - rho_a) * rng.standard_normal((n, arms, rates, alpha.size))
+    if rho_a > rho_b:
+        z += math.sqrt(rho_a - rho_b) * rng.standard_normal((n, arms, 1, alpha.size))
+    if rho_b > 0:
+        z += math.sqrt(rho_b) * rng.standard_normal((n, 1, 1, alpha.size))
+    return (ndtr(z) < expit(eta[..., None] + alpha)).mean(axis=-1)
+
+
 def block_effects(
     scenario: Scenario,
     params: Parameters,
@@ -2331,14 +2346,17 @@ def secondary_checks(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
 
 
 BIAS_FIELDS = {"family", "miss", "w_max", "delta", "sd", "reps", "postpone", "group"}
+# A run's per-arm inputs (``inputs_scenario``) hold for all its scenarios: the allowance is that
+# of those inputs. Summaries written before they existed lack the fields.
+RUN_FIELDS = {"sigma_u_arms", "sigma_e_arms", "failure_arms"}
 
 
 def _bias_scenario(settings: Mapping[str, Any]) -> bool:
     """Central in everything but the fields the bias allowance ranges over."""
     return all(
-        settings[f.name] == f.default
+        settings.get(f.name, f.default) == f.default
         for f in fields(Scenario)
-        if f.compare and f.name not in BIAS_FIELDS
+        if f.compare and f.name not in BIAS_FIELDS | RUN_FIELDS
     )
 
 
@@ -2859,15 +2877,16 @@ def inputs_scenario(scenario: Scenario, inputs: Inputs) -> Scenario:
 
 # Amendment 4: the mechanism cohort (section 3)
 #
-# Three arms run per block as in the primary model (``simulate_blocks``), with the inputs' per-arm
-# K spreads and failure rates. The components' per-block effects e₁ (C1 = P − F) and e₂ (C2 =
-# A − P) are drawn on the logit scale from standard normal driving variables with correlation ρ
-# (a Gaussian copula), transformed by the shape: normal σ·w; skewed σ·(G − 2)/√2, G the Gamma(2)
-# quantile of Φ(w); heavy σ·S·w, S the block scale shared by both components; rare_centered
-# M·(B − π); rare_only m·B, B = 1[w > Φ⁻¹(1 − π)]. The arms carry them as a chain: d_F = 0,
-# d_P = e₁, d_A = e₁ + e₂ (rare_only: shifted up per block so that no arm is lowered,
-# d_F = −min(0, e₁, e₁ + e₂), as amendment 3 put a negative rare difference in F). The per-prompt
-# curves are study1's, fitted without block effects (``fit_target``); P follows F.
+# Three arms run per block as in the primary model (``simulate_blocks``; labels drawn by
+# ``endpoint_harm_by_probability``, the same labels as ``endpoint_harm``), with the inputs'
+# per-arm K spreads and failure rates. The components' per-block effects e₁ (C1 = P − F) and
+# e₂ (C2 = A − P) are drawn on the logit scale from standard normal driving variables with
+# correlation ρ (a Gaussian copula), transformed by the shape: normal σ·w; skewed
+# σ·(G − 2)/√2, G the Gamma(2) quantile of Φ(w); heavy σ·S·w, S the block scale shared by both
+# components; rare_centered M·(B − π); rare_only m·B, B = 1[w > Φ⁻¹(1 − π)]. The arms carry them
+# as a chain: d_F = 0, d_P = e₁, d_A = e₁ + e₂ (rare_only: shifted up per block so that no arm is
+# lowered, d_F = −min(0, e₁, e₁ + e₂), as amendment 3 put a negative rare difference in F). The
+# per-prompt curves are study1's, fitted without block effects (``fit_target``); P follows F.
 #
 # Truth: the supported interpolation estimand of each component, the mean over the jointly
 # supported three-arm population of the interpolated contrast at K* (the primary's interpolation
@@ -2912,6 +2931,7 @@ MECHANISM_COVERAGE = 0.95
 MECHANISM_STREAMS = {"calibration": "mechanism-calibration", "check": "mechanism-check"}
 ESTIMAND_GEOMETRIES = 8192
 COPULA_NODES = 48
+MECHANISM_DRAW_MARGIN = 2  # blocks drawn beyond those the cohort still needs
 G_STEP = 0.004  # the grid of the arms' expected-harm functions (logit units)
 L_STEP = 0.001
 PATTERNS = tuple(itertools.product((False, True), repeat=3))  # failed rates of an arm's endpoints
@@ -3290,7 +3310,8 @@ def simulate_mechanism_blocks(
     n: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """ĥ(K*) and the support cause of ``n`` new three-arm blocks, each (n, 3): the primary's
-    block model (``simulate_blocks`` with ρ_u = ρ_uh = 0) carrying the components' effects."""
+    block model (``simulate_blocks`` with ρ_u = ρ_uh = 0; labels by
+    ``endpoint_harm_by_probability``) carrying the components' effects."""
     stream = rng.standard_normal(n)  # β_b/σ_s
     speed = rng.standard_normal((n, len(ARMS)))  # u/σ_u
     latent = rng.standard_normal((n, 2))
@@ -3311,7 +3332,7 @@ def simulate_mechanism_blocks(
         + base.sigma_s * stream[:, None, None]
         + effect[..., None]
     )
-    harm = endpoint_harm(eta, alpha, base.rho_b, base.rho_a, rng)
+    harm = endpoint_harm_by_probability(eta, alpha, base.rho_b, base.rho_a, rng)
     return interpolate_at_zero(x, harm, failed, base.w_max)
 
 
@@ -3385,7 +3406,8 @@ def mechanism_replicate(
     causes = np.full((CAP, len(ARMS)), NOT_STARTED, dtype=np.int8)
     started = joint = 0
     while started < CAP and joint < MECHANISM_TARGET:
-        n = min(CHUNK_BLOCKS, CAP - started)
+        # The blocks still needed and a margin of MECHANISM_DRAW_MARGIN; extra ones are unused.
+        n = min(CAP - started, MECHANISM_TARGET - joint + MECHANISM_DRAW_MARGIN)
         estimate, cause = simulate_mechanism_blocks(m, params, base, alpha, misses, rng, n)
         estimates[started : started + n], causes[started : started + n] = estimate, cause
         joint += int(np.count_nonzero((cause == SUPPORTED).all(axis=1)))
@@ -3715,11 +3737,15 @@ def mechanism_checks(
                 worst = min(mine, key=lambda s: s["levels"][i]["simultaneous"]["value"])
                 value = worst["levels"][i]["simultaneous"]["value"]
                 floor = coverage_floor(worst["reps"])
+                values = [s["levels"][i]["simultaneous"]["value"] for s in mine]
                 cells.append({"shape": cell[0], "sd": cell[1], "min_coverage": value,
                               "mc_se": worst["levels"][i]["simultaneous"]["se"],
+                              "mean_coverage": float(np.mean(values)),
                               "scenario": worst["name"], "floor": floor, "meets": value >= floor,
-                              "short": sum(s["levels"][i]["simultaneous"]["value"]
-                                           < coverage_floor(s["reps"]) for s in mine),
+                              "short": sum(v < coverage_floor(s["reps"])
+                                           for v, s in zip(values, mine, strict=True)),
+                              # below the floor by chance if every coverage were exactly 95 %
+                              "short_by_chance": round(float(norm.cdf(-2)) * len(mine), 1),
                               "scenarios": len(mine)})  # fmt: skip
             entry[group] = {"cells": cells, "meets": all(c["meets"] for c in cells)}
         per_level.append(entry)

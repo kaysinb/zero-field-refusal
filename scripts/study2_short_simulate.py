@@ -71,10 +71,11 @@ the selection's record):
         --rates A=r1,r2,r3 F=r1,r2,r3 P=r1,r2,r3 --workers 8 --write \\
         --out $RUNS_DIR/analysis/study2_short_sim/<date>-b20-final
 
-It measures the inputs (B = 20, seeds 2000-2002) into OUT/inputs.json, then runs mechanism
-(OUT/mechanism), mechanism-check at the implied level when it is above 0.95 (OUT/check), the
-primary rerun decided, decided-gate and decided-bias with the inputs (OUT/decided, OUT/gate,
-OUT/bias) and their comparison with amendment 3's archived runs (OUT/compare-*), and writes
+It measures the inputs (B = 20, seeds 2000-2002) into OUT/inputs.json, then runs, binding results
+first: mechanism on the required grid (OUT/mechanism), mechanism-check at the implied level when
+it is above 0.95 (OUT/check), the primary rerun decided, decided-gate and decided-bias with the
+inputs (OUT/decided, OUT/gate, OUT/bias) and their comparison with amendment 3's archived runs
+(OUT/compare-*), and mechanism on the stress grid (OUT/stress, reported only). It writes
 OUT/final.json with the fixed level and the flagged rates. With --write it also writes the
 record to docs/study2-short-b20-inputs.json and the fixed level to docs/study2-short-fixation.json
 (mechanism.level; never when no level passed or the check failed). Without --runs-root it uses
@@ -560,9 +561,10 @@ def mechanism_constants() -> dict:
 
 
 RESAMPLES_REASON = (
-    "run time: the required grid alone is 9.72 million replicates; a replicate's three bootstrap "
-    "sets cost ~1.6 ms at 2 000 resamples and ~14.6 ms at 10 000 (block simulation ~8.5 ms), "
-    "~3.4 h against ~7.6 h on 8 uncontended workers; amendment 3's simulation also used 2 000"
+    "run time: the required grid alone is 9.72 million replicates; per replicate on one idle "
+    "core the blocks cost ~7 ms and the three bootstrap sets ~1.6 ms at 2 000 resamples against "
+    "~14.6 ms at 10 000, so 10 000 would about triple the run on a shared machine; amendment 3's "
+    "simulation also used 2 000"
 )
 
 
@@ -815,11 +817,10 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     tuning = ["--bootstrap", str(args.bootstrap), "--spread-replicates",
               str(args.spread_replicates), "--spread-blocks", str(args.spread_blocks)]  # fmt: skip
     mechanism = [*common, *tuning]
-    if args.stress_reps is not None:
-        mechanism += ["--stress-reps", str(args.stress_reps)]
     if args.scenarios:
         mechanism += ["--scenarios", *args.scenarios]
-    main(["mechanism", *mechanism, "--out", str(out / "mechanism")])
+    # What binds first: the required grid, its check, the primary rerun; the stress grid last.
+    main(["mechanism", *mechanism, "--groups", "required", "--out", str(out / "mechanism")])
     calibration = out / "mechanism" / "summary.json"
     level = checked_level(calibration)
     check = None
@@ -844,6 +845,12 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
             }
         else:
             comparisons[name] = {"archived": str(archived), "missing": True}
+    stress = [*mechanism, "--groups", "stress", "--out", str(out / "stress")]
+    if args.stress_reps is not None:
+        stress += ["--stress-reps", str(args.stress_reps)]
+    names = [m.name for m in sim.mechanism_grid() if m.group == "stress"]
+    if not args.scenarios or any(fnmatch.fnmatch(n, p) for n in names for p in args.scenarios):
+        main(["mechanism", *stress])
     final = {
         "inputs": inputs.summary(),
         "level_on_calibration_stream": level,
@@ -942,12 +949,13 @@ def rule_table(checks: dict) -> str:
                 rows.append([
                     f"{entry['level']:.3f}", group, c["shape"],
                     "–" if c["shape"] in ("rare_only", "tied") else pp(c["sd"], 0),
-                    f"{pp(c['min_coverage'])} ({pp(c['mc_se'])})", pp(c["floor"]),
-                    "yes" if c["meets"] else "**no**", f"{c['short']}/{c['scenarios']}",
+                    f"{pp(c['min_coverage'])} ({pp(c['mc_se'])})", pp(c.get("mean_coverage")),
+                    pp(c["floor"]), "yes" if c["meets"] else "**no**",
+                    f"{c['short']}/{c['scenarios']} ({c.get('short_by_chance', '–')})",
                     c["scenario"],
                 ])  # fmt: skip
-    header = ["level", "group", "shape", "SD", "min coverage", "floor", "meets", "short",
-              "worst scenario"]  # fmt: skip
+    header = ["level", "group", "shape", "SD", "min coverage", "mean", "floor", "meets",
+              "short (by chance at 95 %)", "worst scenario"]  # fmt: skip
     return table(header, rows)
 
 

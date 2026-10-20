@@ -407,6 +407,9 @@ def test_the_calibration_rule_takes_the_smallest_level_every_required_cell_meets
     assert checks["level"] == 0.955
     first = checks["per_level"][0]
     assert not first["required"]["meets"] and not first["stress"]["meets"]
+    skewed = first["required"]["cells"][1]
+    assert (skewed["short"], skewed["mean_coverage"]) == (1, pytest.approx(floor - 0.001))
+    assert skewed["short_by_chance"] == pytest.approx(0.0, abs=0.05)  # 2.3 % of one scenario
     assert checks["per_level"][1]["required"]["meets"]  # the stress cell never binds
     assert (
         sim.mechanism_checks(
@@ -426,7 +429,8 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
 
     def fake(argv):
         mode, out = argv[0], Path(argv[argv.index("--out") + 1])
-        calls.append(mode)
+        groups = argv[argv.index("--groups") + 1] if "--groups" in argv else None
+        calls.append(f"{mode} {groups}" if groups else mode)
         out.mkdir(parents=True, exist_ok=True)
         level = fake.level
         if mode == "mechanism":
@@ -446,20 +450,24 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
     monkeypatch.setattr(script, "main", fake)
     monkeypatch.setattr(script, "runs_root", lambda: tmp_path / "runs")
     parser = script.build_parser()
-    for level, passes, fixed, modes in (
-        (0.95, None, 0.95, ["mechanism", "decided", "decided-gate", "decided-bias"]),
-        (0.96, True, 0.96, ["mechanism", "mechanism-check", "decided", "decided-gate",
-                            "decided-bias"]),
-        (0.96, False, None, ["mechanism", "mechanism-check", "decided", "decided-gate",
-                             "decided-bias"]),
-        (None, None, None, ["mechanism", "decided", "decided-gate", "decided-bias"]),
-    ):  # fmt: skip
+    primary = ["decided", "compare", "decided-gate", "compare", "decided-bias", "compare"]
+    for level, passes, fixed, check in (
+        (0.95, None, 0.95, []),
+        (0.96, True, 0.96, ["mechanism-check"]),
+        (0.96, False, None, ["mechanism-check"]),
+        (None, None, None, []),
+    ):
         fake.level, fake.passes = level, passes
         calls.clear()
         out = tmp_path / f"final-{level}-{passes}"
+        (tmp_path / "runs").mkdir(exist_ok=True)
+        for path in script.ARCHIVED.values():  # amendment 3's archived runs, compared with
+            (tmp_path / "runs" / path).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / "runs" / path).write_text("{}")
         args = parser.parse_args(["final", "--inputs", str(RECORD), "--out", str(out)])
         script.final_main(args, parser)
-        assert calls == modes
+        # Binding results first: the required grid, its check, the primary rerun; stress last.
+        assert calls == ["mechanism required", *check, *primary, "mechanism stress"]
         final = json.loads((out / "final.json").read_text())
         assert final["fixed_level"] == fixed and final["written"] == []
         assert (out / "inventory.tsv").is_file()
@@ -481,6 +489,29 @@ def test_the_fixation_level_is_written_alone(tmp_path: Path) -> None:
 
 
 # The primary model with per-arm inputs
+
+
+def test_labels_by_probability_are_the_primary_models_labels() -> None:
+    """The mechanism draws labels as Φ(Z) < h, the primary model as Z < Φ⁻¹(h): the same
+    draws give the same endpoint harms."""
+    rng = np.random.default_rng(11)
+    eta = rng.normal(-2, 1.5, (40, 3, 3))
+    alpha = 1.5 * rng.standard_normal(sim.PROMPTS)
+    for rho_b, rho_a in ((0.3, 0.7), (0.0, 0.0), (0.6, 0.9)):
+        one = sim.endpoint_harm(eta, alpha, rho_b, rho_a, np.random.default_rng(4))
+        two = sim.endpoint_harm_by_probability(eta, alpha, rho_b, rho_a, np.random.default_rng(4))
+        np.testing.assert_array_equal(one, two)
+
+
+def test_the_bias_allowance_holds_with_per_arm_inputs() -> None:
+    """A rerun with the inputs (every scenario carries them) still yields its allowance."""
+    scenarios = []
+    for family, bias in (("study1", 0.002), ("kink", -0.009)):
+        scenario = sim.inputs_scenario(sim.Scenario(family=family, w_max=0.47), inputs())
+        scenarios.append({"name": scenario.name, "settings": dataclasses.asdict(scenario),
+                          "diagnostics": {"block_bias": bias, "block_bias_se": 1e-4}})  # fmt: skip
+    found = sim.bias_allowance(scenarios)["allowance"]
+    assert found["value"] == 0.009 and found["family"] == "kink"
 
 
 def test_per_arm_inputs_equal_to_the_scalars_change_no_draw() -> None:
