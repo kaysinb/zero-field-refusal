@@ -19,10 +19,14 @@ driver of their prerequisites.
 
 KIND is the campaign the stage's state machine names (analysis.study2_short.progress), and each
 kind refuses when it names another step, or when the records are not whole. The candidates
-(U, B) come in amendment 4's order (8, 20), (7, 20), (8, 5), (7, 5), each for the three arms:
+(U, B) come in amendment 4's order (8, 20), (7, 20), each for the three arms (B = 20 is the
+study's fixed scope, review fa22: no B = 5 candidate is ever prescribed):
 ``discovery`` (the primary arms' targeted round on seeds 2000-2002, holding the pre-warmed arm's
 first round, at the union of the rates of the primary arms' targeted assignments, when it is
-due), ``repair`` (a repair round, of the primary arms or of the pre-warmed arm), ``prewarmed``
+due), ``repair`` (a repair round, of the primary arms or of the pre-warmed arm; or, after a
+numerical exclusion left an arm without a feasible triple, its search allowance's one repair
+round, named ``...-allowance-<check>`` after the check that spent it, its cells new rates of
+their arm and batch), ``prewarmed``
 (the pre-warmed arm's first round alone, at the union of the selected AdamW and FA rates),
 ``targeted`` (the pre-warmed arm's own targeted round), ``numerical`` (the regular runs of the
 numerical qualification's cases, role numerical, under experiments/study2_short_k_only: K-only,
@@ -44,8 +48,13 @@ It is the one kind written while the records are not whole, and only when every 
 made beyond a check that went stale (the selection's ``beyond_stale``): those runs wait for the
 check, which is run again.
 When no candidate is eligible with the three arms, the candidates are visited again for the
-primary arms alone, the pre-warmed arm dropped. A campaign holds the runs still missing;
-``--seeds`` and ``--cells`` only split it over Pods.
+primary arms alone, the pre-warmed arm dropped. When none is eligible either, the stage ends
+``infeasible``: every kind is refused, and the B = 20 feasibility report (JSON: per candidate and
+arm, the scientific failures apart from the technical ones) is printed; it is not a
+confirmation. A stage stopped by technical marks only (``blocked``: a rate not qualified after its
+arm's search allowance was spent) refuses every kind with the rates and their reasons: the
+decision is a human one. A campaign holds the runs still missing; ``--seeds`` and ``--cells``
+only split it over Pods.
 
 ``timecourse`` (amendment 4, section 4, "Harm over steps"; exploratory) is written beside the
 confirmation, never instead of it: separate runs of the first 10 confirmation blocks (seeds
@@ -734,6 +743,13 @@ def campaign(
         step = chosen["pending"]
     elif state["problems"]:
         parser.error("the stage's records are not whole: " + "; ".join(state["problems"]))
+    if step.get("blocked"):  # technical marks only (review fa22): no campaign, a human decision
+        parser.error(blocked_message(step))
+    if step["campaign"] == "infeasible":  # the B = 20 feasibility report, not a confirmation
+        print(json.dumps(step["feasibility"], indent=2))
+        parser.error(f"the stage ended infeasible: no candidate at B = 20 qualifies (scope "
+                     f"{step['scope']}); its feasibility report is printed, and no campaign "
+                     "follows")  # fmt: skip
     if args.kind == "timecourse":  # beside the confirmation, once the selection is done
         if step["campaign"] != "confirmation":
             shown = {k: v for k, v in step.items() if k != "runs"}
@@ -817,9 +833,25 @@ def campaign(
     if not step["three_arm"]:  # the fallback: the primary arms alone
         kind += "-primary"
     suffix = "-validation" if args.kind == "validation" else ""
-    written = {"name": f"study2-short-{kind}-b{batch}-u{upper:g}",
-               "cells": regular_cells(wanted, suffix)}  # fmt: skip
+    name = f"study2-short-{kind}-b{batch}-u{upper:g}"
+    if step.get("allowance"):  # a search allowance's round: named after the check that spent it
+        name += f"-allowance-{step['allowance']}"
+    written = {"name": name, "cells": regular_cells(wanted, suffix)}
     return written, w_max, source, notes, prerequisites
+
+
+def blocked_message(step: dict) -> str:
+    """The refusal of a stage stopped by technical marks only (review fa22): the candidate, the
+    gate, the reasons and the rates with theirs, for a human decision."""
+    rates = "; ".join(f"{r['arm']} {r['lr']:g}: {r['why']}"
+                      + (f" ({'; '.join(r['reasons'])})" if r.get("reasons") else "")
+                      for r in step["rates"])  # fmt: skip
+    scope = "three arms" if step["three_arm"] else "primary pair"
+    return (
+        f"the stage is blocked by technical marks only at U={step['U']:g}, B={step['batch']} "
+        f"({scope}, {step['at']}): {'; '.join(step['reasons'])}; the rates: {rates}; "
+        f"{step['decision']}; no campaign is written"
+    )
 
 
 def _sha256(path: Path) -> str:

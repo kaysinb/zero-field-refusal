@@ -435,10 +435,12 @@ def test_every_baseline_given_up_takes_the_technical_path(
     check. Its request names every case given up, with no runs' commit; the tool's real parts,
     run from the request on the tracked settings, record each without a GPU and write a verdict
     holding every rate and FA control not qualified (technical), with the tool's own GPU code.
-    The selection reads it complete and takes the technical non-qualification path the frozen
-    rules prescribe: every arm is re-solved once without those rates; in this world no arm has
-    a feasible triple without them, so the candidate fails at the numerical gate and the
-    selection goes on to the next candidate. The check is never asked for again."""
+    The selection reads it complete and takes the technical non-qualification path (review
+    fa22): every arm spends its search allowance, re-solved once without those rates; in this
+    world no arm has a feasible triple without them, and the allowance's repair round cannot
+    replace them (re-targeting gives the excluded rates back), so the stage is blocked for a
+    human decision, never moved on to the next candidate (the frozen rules before fa22 failed
+    the candidate here and went on to (7, 20)). The check is never asked for again."""
     root = tmp_path / "runs"  # no numerical run: the launcher gave up on every one
     root.mkdir()
     no_gpu(monkeypatch)
@@ -479,16 +481,22 @@ def test_every_baseline_given_up_takes_the_technical_path(
                  for lr in lrs}  # fmt: skip
     assert {(u["arm"], u["lr"]) for u in entry["unusable"]} == requested
     assert {u["state"] for u in entry["unusable"]} == {"not_qualified", "control not_qualified"}
-    # The technical path: one re-solve per arm, infeasible without those rates, so the candidate
-    # fails at the numerical gate, never as instability, and the next candidate's step follows
+    # The technical path (review fa22): one re-solve per arm, its allowance, infeasible without
+    # those rates; the allowance's repair round cannot repair, so the stage is blocked by
+    # technical marks only, never as instability, and no other candidate follows
     first = after["attempts"][0]
     assert {arm: len(a["selections"]) for arm, a in first["arms"].items()} == {
         arm: n + 1 for arm, n in solved.items()}  # fmt: skip
     assert not any(a["selections"][-1]["feasible"] for a in first["arms"].values())
-    assert (first["outcome"], first["failed_at"]) == ("failed", "numerical")
-    assert sorted(first["failed_arms"]) == sorted(solved)
-    assert "without a feasible triple once the unusable rates are dropped" in first["reasons"][0]
-    assert "not qualified (technical)" in first["reasons"][0]
-    assert "instability" not in first["reasons"][0]
-    assert after["next"]["campaign"] == "discovery" and after["next"]["U"] == 7
+    assert set(first["allowance"]) == set(solved)  # each arm spent its own
+    assert (first["outcome"], first["failed_at"], first["failed_arms"]) == ("blocked", None, [])
+    assert len(after["attempts"]) == 1
+    step = after["next"]
+    assert (step["campaign"], step["blocked"], step["at"], step["U"]) == (
+        "incomplete", "technical", "numerical", 8.0)  # fmt: skip
+    assert step["arms"] and set(step["arms"]) <= set(solved)
+    assert {r["state"] for r in step["rates"]} <= {"not_qualified", "control not_qualified"}
+    assert "without a feasible triple once the unusable rates are dropped" in step["reasons"][0]
+    assert "stopped by technical marks only" in step["reasons"][0]
+    assert "instability" not in step["reasons"][0]
     assert at()["next"] == after["next"]  # read again: the check is not asked for again

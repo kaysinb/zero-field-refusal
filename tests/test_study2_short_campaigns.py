@@ -1654,6 +1654,97 @@ def test_a_replay_under_another_w_max_is_refused(monkeypatch, tmp_path, capsys) 
     assert w_max_problems(0.40, issued_w_max(bare)) == []
 
 
+def judged(runs, judge, campaign, hook=None, verdicts=None) -> tuple[dict, dict]:
+    """Make every campaign the stage names, each check answered by ``judge`` (beside
+    ``verdicts``), until it names ``campaign``; ``hook`` may replace a run as made. Returns the
+    state and the verdicts."""
+    verdicts = {} if verdicts is None else verdicts
+    for _ in range(40):
+        state = loaded(runs, numerical=verdicts)
+        step = state["next"]
+        if step["campaign"] == campaign:
+            return state, verdicts
+        assert not state["problems"], state["problems"]
+        if step["campaign"] == "numerical-check":
+            verdicts[step["check"]["verdict"]] = judge(step["check"])
+            continue
+        runs += [hook(run) if hook else run for run in make(step)]
+    raise AssertionError(f"never reached {campaign}")
+
+
+def test_the_allowance_repair_campaign_and_the_blocked_stage(monkeypatch, tmp_path, capsys):
+    """Review fa22, through the campaigns script: (8, 20) fails its validation (AdamW's U-rate
+    loses 6 pp MMLU); at (7, 20) FA's U-rate 2e-5 is not qualified and FA's re-solve has no
+    triple, so its allowance holds one repair round, written by the ``repair`` kind under a name
+    of its own (the check that spent it) and with cells no other campaign has. Its replacement
+    not qualified again, the stage is blocked: every kind is refused, with the rates and
+    reasons, and no campaign is written."""
+
+    def lossy(run):
+        if run.seed in VALIDATION_SEEDS and (run.arm, run.lr) == (ADAMW, 1.74e-5):
+            k = run.evaluations[0]["K_benign"]
+            return conform(traj(run.arm, run.batch_size, run.lr, run.seed, k, mmlu=6.0,
+                                factual=0.1 * k))  # fmt: skip
+        return run
+
+    def judge(check):
+        fa = check["rates"]["adam_frozen"]
+        marked = {("adam_frozen", lr): "not_qualified" for lr in (2e-5, 1.99e-5) if lr in fa}
+        return verdict_of(check, marked if check["U"] == 7 else {})
+
+    runs = base()
+    state, verdicts = judged(runs, judge, "repair", hook=lossy)
+    step = state["next"]
+    assert (step["U"], step["three_arm"]) == (7.0, True) and step["allowance"]
+    # The round's rate is new at its arm and batch, so its cell name is new too.
+    assert not [r for r in runs if (r.arm, r.batch_size, r.lr) == (FA, 20, 1.99e-5)]
+    record = fixed(tmp_path)
+    out = script(monkeypatch, tmp_path, CAMPAIGNS, runs, "repair", "--fixation", record,
+                 verdicts=verdicts)  # fmt: skip
+    name, found = load_campaign(out)
+    assert name == f"study2-short-repair-b20-u7-allowance-{step['allowance']}"
+    assert {run.cell for run in found} == {"frozen_adam_25-b20-1.99e-05"}
+    assert {run.seed for run in found} == {2000, 2001, 2002}
+    assert all("study2_short.role=discovery" in run.overrides for run in found)
+    # The repair runs made, the replacement is checked; not qualified again: blocked.
+    runs += make(step)
+    state, verdicts = judged(runs, judge, "incomplete", verdicts=verdicts)
+    blocked = state["next"]
+    assert (blocked["blocked"], blocked["U"], blocked["arms"]) == ("technical", 7.0, [FA])
+    assert state["problems"] == [] and blocked["rates"][0]["lr"] == 1.99e-5
+    for kind in ("discovery", "repair", "numerical", "validation"):
+        err = refusal(monkeypatch, tmp_path, capsys, runs, kind, "--fixation", record,
+                      verdicts=verdicts)  # fmt: skip
+        assert "the stage is blocked by technical marks only" in err
+        assert "frozen_adam_25 1.99e-05: not qualified (technical)" in err
+        assert "a human decision" in err
+
+
+def test_no_b20_candidate_prints_the_feasibility_report(monkeypatch, tmp_path, capsys) -> None:
+    """Review fa22: AdamW's K far below the targets at B = 20, no candidate qualifies; every
+    kind is refused, and the B = 20 feasibility report is printed (never a B = 5 campaign)."""
+    real = SCALE.copy()
+    try:
+        SCALE[(ADAMW, 20)] = 0.2
+        runs = base()
+        at5 = [r for r in runs if r.batch_size == 5]  # Stage A's grids only
+        state = until(runs, "infeasible")
+        assert state["next"]["scope"] == "B=20" and state["problems"] == []
+        assert [r for r in runs if r.batch_size == 5] == at5  # no campaign at B = 5
+        with pytest.raises(SystemExit):
+            script(monkeypatch, tmp_path, CAMPAIGNS, runs, "discovery", "--fixation",
+                   fixed(tmp_path))  # fmt: skip
+    finally:
+        SCALE.update(real)
+    printed = capsys.readouterr()
+    report = json.loads(printed.out)
+    assert (report["scope"], report["confirmation"]) == ("B=20", False)
+    assert [(c["U"], c["scope"]) for c in report["candidates"]] == [
+        (8.0, "three arms"), (7.0, "three arms"), (8.0, "primary pair"),
+        (7.0, "primary pair")]  # fmt: skip
+    assert "the stage ended infeasible: no candidate at B = 20 qualifies" in printed.err
+
+
 def test_the_check_input_is_written_while_runs_wait_beyond_a_stale_check(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -2504,8 +2595,8 @@ def test_the_summary_prints_the_status_and_refuses_looks_without_a_fixation(
     script(monkeypatch, tmp_path, SUMMARY, runs, "--w-max", str(W_MAX))
     shown = json.loads(capsys.readouterr().out)
     assert shown["next"]["campaign"] == "discovery" and len(shown["next"]["runs"]) == 36
-    assert [[c["batch"], c["U"]] for c in shown["candidates"]] == [[20, 8.0], [20, 7.0],
-                                                                   [5, 8.0], [5, 7.0]]  # fmt: skip
+    # B = 20 only (review fa22)
+    assert [[c["batch"], c["U"]] for c in shown["candidates"]] == [[20, 8.0], [20, 7.0]]
     assert shown["attempts"][0]["arms"][ADAMW][0]["feasible"] is False
     assert shown["attempts"][0]["three_arm"] and shown["amendment3_controls"] == []
     assert shown["not_reached"] == []
