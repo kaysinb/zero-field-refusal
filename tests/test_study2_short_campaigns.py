@@ -125,10 +125,21 @@ FIXATION = {  # the decided values; the resamples, seed and bias allowance are p
         "resamples": 2000,
         "seed": 20261020,
     },  # fmt: skip
+    "audit": {
+        "sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
+        "strata": ["side", "judge_label"],
+        "allocation": "equal",
+        "selection": "srswor",
+        "seed": 20261021,
+        "bias_level": 0.975,
+        "interval": "hypergeometric_worst_case",
+        "missing_reference": "sign_aware_bounds",
+        "agreement_check_share": 0.1,
+    },  # fmt: skip
 }
 LOOK_SETTINGS = {k: v for k, v in FIXATION.items()
                  if k not in ("w_max", "levels", "looks", "cap", "secondary_interval",
-                              "secondary_status", "mechanism")}  # fmt: skip
+                              "secondary_status", "mechanism", "audit")}  # fmt: skip
 
 
 # ------------------------------------------------------------------ configs and arms

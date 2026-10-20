@@ -22,5 +22,16 @@
     "level": 0.95,
     "resamples": 10000,
     "seed": 20261020
+  },
+  "audit": {
+    "sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
+    "strata": ["side", "judge_label"],
+    "allocation": "equal",
+    "selection": "srswor",
+    "seed": 20261021,
+    "bias_level": 0.975,
+    "interval": "hypergeometric_worst_case",
+    "missing_reference": "sign_aware_bounds",
+    "agreement_check_share": 0.1
   }
 }

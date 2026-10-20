@@ -423,9 +423,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   and ``secondary_status`` (``secondary`` or ``exploratory``), and ``mechanism`` (amendment 4):
   ``target`` 60, ``cap`` 80, ``minimum`` 36, ``zero_se`` 1e-12, ``comparison_level`` 0.975 and
   ``effects`` [0.05, 0.025], each equal to the code's, the max-t ``level`` in [0.95, 1), its
-  ``resamples`` (≥ 1000) and ``seed``; each is required and none is defaulted, also when
-  ``interval`` is ``t`` and the bootstrap's values go unused. A key enters the code and the
-  committed record in the same commit, so that the record always reads.
+  ``resamples`` (≥ 1000) and ``seed``; and ``audit`` (amendment 4, the terminal audit of the
+  judge, ``analysis.study2_audit``): ``sizes`` (400, 400 and 200), ``strata``, ``allocation``,
+  ``selection``, ``bias_level`` (0.975), ``interval``, ``missing_reference`` and
+  ``agreement_check_share`` (0.1), each equal to the code's, and the draw's ``seed``. Each is
+  required and none is defaulted, also when ``interval`` is ``t`` and the bootstrap's values go
+  unused. A key enters the code and the committed record in the same commit, so that the record
+  always reads.
 - *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
   and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
   HEAD), or when the running commit, the model, the judge's identity or the fixation record
@@ -566,6 +570,16 @@ MECHANISM_FIXED = {"target": MECHANISM_TARGET, "cap": MECHANISM_CAP, "minimum": 
                    "effects": list(MECHANISM_EFFECTS)}  # fmt: skip
 MECHANISM_KEYS = (*MECHANISM_FIXED, "level", "resamples", "seed")
 CONTRASTS = {"C1": (PREWARMED, FA), "C2": (ADAMW, PREWARMED)}  # name: (minuend, subtrahend)
+# The terminal audit of the judge (amendment 4; analysis.study2_audit): the fixation record's
+# ``audit`` values that must equal the code's, then the one it sets (the draw's seed). ``sizes``
+# names the arms as the record does (``AUDIT_ARMS``).
+AUDIT_ARMS = {"adamw": ADAMW, "fa": FA, "prewarmed": PREWARMED}
+AUDIT_FIXED = {"sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
+               "strata": ["side", "judge_label"], "allocation": "equal", "selection": "srswor",
+               "bias_level": 0.975, "interval": "hypergeometric_worst_case",
+               "missing_reference": "sign_aware_bounds",
+               "agreement_check_share": 0.1}  # fmt: skip
+AUDIT_KEYS = (*AUDIT_FIXED, "seed")
 FIXATION_KEYS = (
     "w_max",
     "levels",
@@ -581,6 +595,7 @@ FIXATION_KEYS = (
     "secondary_interval",
     "secondary_status",
     "mechanism",
+    "audit",
 )
 
 
@@ -2994,7 +3009,11 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
       ``target``, ``cap``, ``minimum``, ``zero_se``, ``comparison_level`` and ``effects``, each
       equal to the code's (``MECHANISM_FIXED``: 60, 80, 36, 1e-12, 0.975, [0.05, 0.025]);
       ``level``, the max-t intervals' simultaneous level, in [0.95, 1); ``resamples`` (an
-      integer ≥ ``MIN_RESAMPLES``) and ``seed`` (an integer).
+      integer ≥ ``MIN_RESAMPLES``) and ``seed`` (an integer);
+    - ``audit`` (amendment 4, the terminal audit of the judge; ``analysis.study2_audit``): an
+      object with exactly ``AUDIT_KEYS``: ``sizes``, ``strata``, ``allocation``, ``selection``,
+      ``bias_level``, ``interval``, ``missing_reference`` and ``agreement_check_share``, each
+      equal to the code's (``AUDIT_FIXED``), and ``seed`` (an integer), the audit draw's.
 
     Each is required, the integers as JSON integers; a missing or malformed one raises
     ``ValueError``, and none is ever defaulted."""
@@ -3036,6 +3055,7 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
         if record[key] not in allowed:
             problems.append(f"{key} {record[key]!r} is not one of {list(allowed)}")
     problems += mechanism_problems(record["mechanism"])
+    problems += audit_problems(record["audit"])
     if problems:
         raise ValueError(f"{path}: " + "; ".join(problems))
     return {
@@ -3053,15 +3073,22 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
         "secondary_interval": record["secondary_interval"],
         "secondary_status": record["secondary_status"],
         "mechanism": _mechanism_settings(record["mechanism"]),
+        "audit": _audit_settings(record["audit"]),
     }
 
 
 def _same(value: Any, fixed: Any) -> bool:
-    """A fixation value equal to the code's: integers as JSON integers, numbers as numbers, and
-    a list as a list of them."""
+    """A fixation value equal to the code's: integers as JSON integers, numbers as numbers,
+    strings as strings, a list as a list of them and an object as one with the same keys and
+    values."""
     if isinstance(fixed, list):
         return (isinstance(value, list) and len(value) == len(fixed)
                 and all(_same(v, f) for v, f in zip(value, fixed, strict=True)))  # fmt: skip
+    if isinstance(fixed, dict):
+        return (isinstance(value, dict) and set(value) == set(fixed)
+                and all(_same(value[key], f) for key, f in fixed.items()))  # fmt: skip
+    if isinstance(fixed, str):
+        return isinstance(value, str) and value == fixed
     if isinstance(fixed, int):
         return _integer(value) and value == fixed
     return _number(value) and value == fixed
@@ -3105,6 +3132,38 @@ def _mechanism_settings(value: Mapping[str, Any]) -> dict[str, Any]:
             "comparison_level": float(value["comparison_level"]),
             "level": float(value["level"]), "resamples": value["resamples"],
             "seed": value["seed"]}  # fmt: skip
+
+
+def audit_problems(value: Any) -> list[str]:
+    """How the fixation record's ``audit`` departs from what ``read_fixation`` requires (none: it
+    holds)."""
+    if not isinstance(value, dict):
+        return [f"audit {value!r} is not an object with {list(AUDIT_KEYS)}"]
+    problems = []
+    missing = [key for key in AUDIT_KEYS if key not in value]
+    if missing:
+        problems.append(f"audit lacks {missing}")
+    unknown = sorted(set(value) - set(AUDIT_KEYS))
+    if unknown:
+        problems.append(f"audit has keys {unknown} it does not know")
+    for key, fixed in AUDIT_FIXED.items():
+        if key in value and not _same(value[key], fixed):
+            problems.append(f"audit {key} {value[key]!r} is not the code's {fixed!r}")
+    if "seed" in value and not _integer(value["seed"]):
+        problems.append(f"audit seed {value['seed']!r} is not an integer")
+    return problems
+
+
+def _audit_settings(value: Mapping[str, Any]) -> dict[str, Any]:
+    """The fixation record's ``audit``, checked (``audit_problems``), as the audit reads it."""
+    problems = audit_problems(value)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return {"sizes": dict(value["sizes"]), "strata": list(value["strata"]),
+            "allocation": value["allocation"], "selection": value["selection"],
+            "seed": value["seed"], "bias_level": float(value["bias_level"]),
+            "interval": value["interval"], "missing_reference": value["missing_reference"],
+            "agreement_check_share": float(value["agreement_check_share"])}  # fmt: skip
 
 
 def versions_problems(
