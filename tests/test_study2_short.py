@@ -1153,7 +1153,7 @@ def test_no_candidate_gives_a_b20_feasibility_report() -> None:
     assert not any("1.59e-05" in line for line in at8[FA]["scientific"])
     assert "numerical 1.48e-05: failing: a pair exceeding the bound" in at8[ADAMW]["scientific"]
     assert at8[ADAMW]["technical"] == [] and at8[PREWARMED]["technical"] == []
-    assert sum("unsupported by K (bracketing)" in line
+    assert sum("unsupported (bracketing; by K alone: bracketing)" in line
                for line in at8[PREWARMED]["scientific"]) == 12  # fmt: skip
     at7 = report["candidates"][1]["arms"]
     assert at7[FA]["excluded"] == {
@@ -1387,6 +1387,168 @@ def test_the_allowance_carries_into_the_primary_pair() -> None:
     assert [(r["lr"], r["state"]) for r in step["rates"]] == [(1.5e-5, "not_qualified")]
     assert "spent at an earlier visit: ['adamw_25']" in step["reasons"][0]
     assert verdict_path(PRIMARY20 | {ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}) in verdicts
+
+
+def test_a_technical_stop_beside_a_scientific_failure_blocks_the_primary_pair() -> None:
+    """Review of fa22, I1: one allowance in all per arm, batch and U, across passes. At (8, 20)
+    AdamW's K* rate is not qualified and the pre-warmed U-rate failing: both spend their
+    allowances. The second check finds AdamW's replacement 1.5e-5 not qualified (technical)
+    and the pre-warmed replacement failing (scientific): the candidate fails on the pre-warmed
+    arm alone, AdamW stopped technically beside it. (7, 20) fails on the pre-warmed arm. The
+    primary pair at (8, 20) then blocks on AdamW's technical stop: AdamW is never selected
+    again (U = 7's rates would have given it a third check and ``done``). With the replacement
+    failing instead, AdamW fails with the pre-warmed arm and the fallback skips (8, 20)."""
+    scale = {**SCALE, (PREWARMED, 20): 3.3}
+
+    def judge(replacement: str):
+        def verdict(check):
+            rates, changes = check["rates"], {}
+            if check["U"] == 8:
+                states = {1.48e-5: "not_qualified", 1.5e-5: replacement}
+                changes = {("adamw", lr): states[lr] for lr in rates["adamw"] if lr in states}
+                changes |= {
+                    ("adamw_prewarmed", lr): "failing"
+                    for lr in rates.get("adamw_prewarmed", [])
+                    if lr in (1.86e-5, 1.74e-5)
+                }
+            if check["U"] == 7:
+                changes = {("adamw_prewarmed", lr): "failing"
+                           for lr in rates.get("adamw_prewarmed", [])}  # fmt: skip
+            return verdict_of(check, changes)
+
+        return verdict
+
+    runs = grids(scale)
+    seen, result, verdicts = drive(runs, scale=scale, judge=judge("not_qualified"),
+                                   hook=prewarmed_first_only)  # fmt: skip
+    first, at7, pair = result["attempts"]
+    assert (first["failed_at"], first["failed_arms"], first["stopped_technical"]) == (
+        "numerical", [PREWARMED], [ADAMW])  # fmt: skip
+    assert "besides, adamw_25 stopped by technical marks only (['1.5e-05'])" in (
+        first["reasons"][0])  # fmt: skip
+    assert at7["failed_arms"] == [PREWARMED]
+    assert (pair["U"], pair["three_arm"], pair["outcome"], pair["allowance_carried"]) == (
+        8.0, False, "blocked", [ADAMW])  # fmt: skip
+    assert pair["arms"][ADAMW]["selections"] == [] and pair["numerical"] == []
+    step = result["next"]
+    assert (step["blocked"], step["at"], step["U"], step["arms"]) == (
+        "technical", "numerical", 8.0, [ADAMW])  # fmt: skip
+    assert [(r["lr"], r["state"]) for r in step["rates"]] == [(1.5e-5, "not_qualified")]
+    assert len([v for v in verdicts if v.startswith("numerical/b20-u8/")]) == 2  # no third
+    # The replacement failing (scientific): AdamW fails, and the fallback skips (8, 20).
+    runs = grids(scale)
+    seen, result, _ = drive(runs, scale=scale, judge=judge("failing"),
+                            hook=prewarmed_first_only)  # fmt: skip
+    attempts = result["attempts"]
+    assert [(a["U"], a["three_arm"], a["failed_arms"]) for a in attempts] == [
+        (8.0, True, [ADAMW, PREWARMED]), (7.0, True, [PREWARMED]), (7.0, False, [])]  # fmt: skip
+    assert (result["next"]["campaign"], result["next"]["U"]) == ("done", 7.0)
+
+
+def test_the_nearest_admissible_rate_crosses_a_decade() -> None:
+    """Review of fa22, M1: the allowance round's substitute walks the 3-digit grid of each
+    rate's own decade, so below 1.00e-5 comes 9.99e-6, not 9.9e-6."""
+    nearest = study2_short._nearest_admissible
+    assert nearest(1.0e-5, 9.95e-6, 1.02e-5, {1e-5}) == 9.99e-6
+    assert nearest(1.0004e-5, 9.95e-6, 1.02e-5, {1e-5, 1.01e-5}) == 9.99e-6
+    assert nearest(9.99e-6, None, None, {9.99e-6, 9.98e-6}) == 1e-5  # up across the decade
+    assert nearest(1.7352e-5, 1.59e-5, 1.74e-5, {1.74e-5}) == 1.73e-5
+
+
+def test_a_cause_lifted_by_technical_exclusions_blocks_after_the_allowance() -> None:
+    """Review of fa22, M2: after the allowance's repair, an arm left without a triple is judged
+    by lifting its technical exclusions, whatever the marks of its last verdict. FA's 1.86e-5 is
+    not qualified and 2.17e-5's control rejected; the round proposes 1.85e-5 and 2.18e-5, and
+    1.85e-5 is out of its utility bounds: no triple. Lifting 1.86e-5 gives (1.59e-5, 1.86e-5,
+    2.18e-5), so the stop is technical and the stage blocks, the rejected control
+    notwithstanding."""
+
+    def hook(run):
+        if run.arm == FA and run.seed in SEEDS and run.lr == 1.85e-5:
+            k = run.evaluations[0]["K_benign"]
+            return traj(run.arm, run.batch_size, run.lr, run.seed, k, mmlu=6.0, factual=0.1 * k)
+        return run
+
+    def judge(check):
+        fa = check["rates"]["adam_frozen"]
+        return verdict_of(
+            check,
+            {("adam_frozen", 1.86e-5): "not_qualified"} if 1.86e-5 in fa else {},
+            controls={2.17e-5: "rejected"} if 2.17e-5 in fa else {},
+        )
+
+    seen, result, _ = drive(grids(), judge=judge, hook=hook)
+    assert seen == ["discovery", "numerical", "numerical-check", "repair", "incomplete"]
+    (attempt,) = result["attempts"]
+    assert attempt["allowance"][FA]["repair"]["rates"] == [1.85e-5, 2.18e-5]
+    step = result["next"]
+    assert (step["blocked"], step["arms"], [r["lr"] for r in step["rates"]]) == (
+        "technical", [FA], [1.86e-5])  # fmt: skip
+    assert "its same-path control rejected" in step["reasons"][0]  # in the last verdict
+
+
+def test_a_utility_member_left_without_a_bound_by_technical_failures_blocks() -> None:
+    """Review of fa22, M3: AdamW's K* rate reads below K* on every validation seed but 2103, so
+    that its r_5 1.27e-5 brackets K* there only; its runs on the other seeds ran out of memory.
+    Every block stays jointly supported, but the utility member (AdamW, 1.27e-5) has one
+    completed run and no bound: a technical failure, so the stage blocks. Its runs completed
+    with a loss above 5 pp instead, the bound is above its limit and the order moves on."""
+
+    def hook(oom: bool):
+        def made_run(run):
+            if run.arm != ADAMW or run.seed not in VALIDATION_SEEDS:
+                return run
+            if run.lr == 1.48e-5:
+                k = K8 * (1.05 if run.seed == 2103 else 0.95)
+                return traj(run.arm, run.batch_size, run.lr, run.seed, k, mmlu=0.3 * k,
+                            factual=0.1 * k)  # fmt: skip
+            if run.lr == 1.27e-5 and oom and run.seed != 2103:
+                return traj(run.arm, run.batch_size, run.lr, run.seed, None, stop="oom", steps=10)
+            if run.lr == 1.27e-5 and not oom:
+                k = run.evaluations[0]["K_benign"]
+                return traj(run.arm, run.batch_size, run.lr, run.seed, k, mmlu=6.0, factual=0.1)
+            return run
+
+        return made_run
+
+    seen, result, _ = drive(grids(), hook=hook(oom=True))
+    (attempt,) = result["attempts"]
+    assert len(attempt["validation"]["jointly_supported"]) == 12
+    assert attempt["validation"]["reasons"] == ["the utility family does not pass"]
+    step = result["next"]
+    assert (step["blocked"], step["at"], step["arms"]) == ("technical", "validation", [ADAMW])
+    assert len(step["rates"]) == 11 and {r["lr"] for r in step["rates"]} == {1.27e-5}
+    assert step["rates"][0]["why"].startswith("utility at 1.27e-05 without a bound (1 completed "
+                                              "runs): validation block 2100")  # fmt: skip
+    assert "has 1 completed runs, fewer than two: no bound" in step["reasons"][0]
+    seen, result, _ = drive(grids(), hook=hook(oom=False))
+    first = result["attempts"][0]
+    assert (first["failed_at"], result["attempts"][1]["U"]) == ("validation", 7.0)
+
+
+def test_the_feasibility_report_files_technical_losses_as_technical() -> None:
+    """Review of fa22, M4: a validation block unsupported for a technical cause (an endpoint run
+    out of memory) is listed under technical, one unsupported by K under scientific, and a
+    utility member without a bound under technical."""
+    runs = validation_runs()
+    lost = {(ADAMW, 1.2e-5, 2100), (ADAMW, 1.4e-5, 2101)}
+    runs = [r for r in runs if (r.arm, r.lr, r.seed) not in lost]
+    runs.append(traj(ADAMW, 5, 1.2e-5, 2100, None, stop="oom", steps=10))  # technical
+    runs.append(traj(ADAMW, 5, 1.4e-5, 2101, 6.1))  # every K below K*: bracketing
+    accepted = {lr: {"accepted": True} for lr in FROZEN[FA]}
+    verdict = validation_verdict(runs, FROZEN, accepted, THETA0, K8, W_MAX)
+    found = study2_short._validation_feasibility(verdict, ADAMW)
+    assert "validation block 2100: unsupported (technical; by K alone: width)" in (
+        found["technical"])  # fmt: skip
+    assert any("2100" in line and "stopped by oom" in line for line in found["technical"])
+    assert "validation block 2101: unsupported (bracketing; by K alone: bracketing)" in (
+        found["scientific"])  # fmt: skip
+    assert not any("2100" in line for line in found["scientific"])
+    unbounded = {**verdict, "utility": {"family": [
+        {"arm": ADAMW, "rate": 1e-5, "runs": 1, "mmlu_upper_pp": None, "factual_upper_pp": None,
+         "mmlu_passes": False, "factual_passes": False}]}}  # fmt: skip
+    found = study2_short._validation_feasibility(unbounded, ADAMW)
+    assert any(line.startswith("validation utility at 1e-05") for line in found["technical"])
 
 
 def test_a_technical_exclusion_never_decides_a_later_candidate() -> None:

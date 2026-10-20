@@ -257,6 +257,7 @@ def _attempt(a: dict[str, Any]) -> dict[str, Any]:
             "outcome": a["outcome"], "failed_arms": a["failed_arms"],
             "failed_at": a.get("failed_at"), "failures": a.get("failures", {}),
             "blocked_arms": a.get("blocked_arms", []), "blocked_at": a.get("blocked_at"),
+            "stopped_technical": a.get("stopped_technical", []),
             "reasons": a["reasons"], "excluded": a["excluded"],
             "excluded_kinds": a.get("excluded_kinds", {}),
             # The search allowance per arm (review fa22), spent here or carried from pass 1

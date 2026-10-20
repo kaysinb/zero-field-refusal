@@ -196,16 +196,23 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   control is ``not_qualified``: unusable like any other (a missing measurement never counts as
   passing), it spends its arm's search allowance. A rate ``failing`` (an exceeding pair, or an
   instability stop) and an FA rate whose control is ``rejected`` are *scientific* failures; a
-  rate once marked scientific stays so. An arm that cannot go on is stopped by a scientific
-  failure when its last verdict marks one of its rates scientific, or, left without a feasible
-  triple, when it has none even with its technical exclusions lifted (no admissible triple);
-  otherwise it is stopped by technical marks only. The same reading holds at discovery, where
-  marks made at the batch by an earlier candidate's check exclude rates up front: an arm left
+  rate once marked scientific stays so. An arm that cannot go on is judged by why. Holding an
+  unusable rate once its allowance is spent, it is stopped by a scientific failure when that
+  verdict marks one of its rates scientific, otherwise by technical marks only. Left without a
+  feasible triple (after its rounds, after its allowance's re-selection, or with its allowance
+  spent and a new round due), it is stopped by technical marks only when lifting its technical
+  exclusions, the scientific ones kept, gives it a feasible triple, whatever the marks of its
+  last verdict (technical marks never decide; review of fa22, M2), and by a scientific failure
+  otherwise (no admissible triple). An arm stopped by technical marks only is never selected
+  again at the candidate, even when another arm's scientific failure fails the candidate: the
+  fallback's visit then blocks on it (review of fa22, I1). The same reading holds at discovery,
+  where marks made at the batch by an earlier candidate's check exclude rates up front: an arm left
   without a triple after its rounds by technical exclusions alone is stopped by them (this
   implementation's reading, accepted by the coordinator, C1). A scientific stop fails the
   candidate and the order moves on (so do a rejected same-path control, no admissible triple and
-  a validation failure, except a shortfall of jointly supported blocks that technical failures
-  alone make: *Validation*); a technical-only stop ends the replay as ``blocked``:
+  a validation failure, except one that technical failures alone make: a shortfall of jointly
+  supported blocks, or a utility member left without a bound: *Validation*); a technical-only
+  stop ends the replay as ``blocked``:
   ``next`` is ``{"campaign": "incomplete", "blocked": "technical", ...}`` with the candidate,
   the gate, the arms, the rates with their reasons and the arms' allowances, for a human
   decision. It is no problem of the records, and no campaign is written. At one step a
@@ -358,13 +365,15 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   seed, a run at an unfrozen rate) give no verdict (``passes`` None). The validation seeds are
   reused from candidate to candidate at the new batch and rates: a run of the same arm, batch,
   rate and seed is the same run. A failed validation fails the candidate, except a technical
-  shortfall (the coordinator's ruling on C3, review fa22; ``_technical_shortfall``; the 10 of 12
-  unchanged): fewer than 10 blocks jointly supported, no instability stop, no utility bound
-  computed above its limit, every FA control accepted, and at least 10 blocks left when only
-  the blocks with an arm unsupported by K (bracketing or width) are counted lost; the blocks
-  lost by technical causes alone (runs given up, other stops, no finite K25) then decide the
-  shortfall, and the stage is ``blocked`` (technical) for a human decision. The same shortfall
-  with a cause in K moves on.
+  one (the coordinator's rulings on C3 and M3, review fa22; ``_technical_shortfall``; the 10 of
+  12 and the utility bounds unchanged): no instability stop, no utility bound computed above
+  its limit, every FA control accepted, and every remaining fault technical. A shortfall below
+  10 jointly supported blocks is technical when at least 10 blocks are left once only the
+  blocks with an arm unsupported by K (bracketing or width) are counted lost: the blocks lost by
+  technical causes alone (runs given up, other stops, no finite K25) decide it. A utility
+  member left without a bound (fewer than two completed runs) is technical: its runs failed
+  technically or were given up. The stage is then ``blocked`` (technical) for a human decision;
+  the same shortfall with a cause in K, or a bound above its limit, moves on.
 - *The stage's records* (``progress``): a regular run of the three arms has the role of its seed
   (``study2_short.role``; Stage A's grids ``stage_a.role`` discovery; a time-course run
   timecourse, on seeds 3000-3009, with its own evaluation steps: *The time course*), the model,
@@ -794,15 +803,27 @@ def _nearest_admissible(
     exact: float, lo: float | None, hi: float | None, taken: Collection[float]
 ) -> float | None:
     """The rate of 3 significant digits nearest ``exact`` (ties to the smaller) strictly between
-    ``lo`` and ``hi`` (None: unbounded on that side) and not in ``taken``, among the
-    ``SUBSTITUTE_STEPS`` steps of the 3-digit grid on either side of ``exact`` rounded; None
-    when there is none."""
+    ``lo`` and ``hi`` (None: unbounded on that side) and not in ``taken``, among ``exact``
+    rounded and the ``SUBSTITUTE_STEPS`` grid neighbours on either side of it, each step taken
+    on the 3-digit grid of its own decade (below 1.00e-5 comes 9.99e-6; review of fa22, M1);
+    None when there is none."""
     base = _three(exact)
-    step = 10.0 ** (math.floor(math.log10(base)) - 2)
-    found = {_three(base + k * step) for k in range(-SUBSTITUTE_STEPS, SUBSTITUTE_STEPS + 1)}
+    found = [base]
+    for down in (False, True):
+        lr = base
+        for _ in range(SUBSTITUTE_STEPS):
+            lr = _three(lr - _grid_step(lr, down=True) if down else lr + _grid_step(lr))
+            found.append(lr)
     admissible = [lr for lr in found if lr > 0 and (lo is None or lr > lo)
                   and (hi is None or lr < hi) and rate(lr) not in taken]  # fmt: skip
     return min(admissible, key=lambda lr: (abs(lr - exact), lr), default=None)
+
+
+def _grid_step(lr: float, *, down: bool = False) -> float:
+    """The step of the 3-significant-digit grid at ``lr``: that of its decade, or, going
+    ``down`` from the decade's first rate (1.00 × 10^e), that of the decade below."""
+    mantissa, exponent = f"{lr:.2e}".split("e")
+    return 10.0 ** (int(exponent) - (1 if down and mantissa == "1.00" else 0) - 2)
 
 
 def _nearest_pair(points: Sequence[Mapping[str, Any]], kstar: float) -> dict[str, Any]:
@@ -1450,8 +1471,10 @@ class _Replay:
         # The marks behind ``unusable``, by rate: "technical" or "scientific" (scientific wins).
         self.kinds: dict[tuple[str, int], dict[float, str]] = defaultdict(dict)
         self.marks: dict[tuple[str, int], dict[float, dict[str, Any]]] = defaultdict(dict)
-        # The search allowance spent per (arm, batch, U), kept across the candidate's visits.
+        # The search allowance spent per (arm, batch, U), kept across the candidate's visits,
+        # and the arms an allowance-spent stop found stopped by technical marks only there.
         self.allowance: dict[tuple[str, int, float], dict[str, Any]] = {}
+        self.stopped: dict[tuple[str, int, float], dict[str, Any]] = {}
         self.called: set[tuple] = set()  # the numerical and validation runs called for
         self.read: set[str] = set()  # the verdicts the replay read
         self.reached: set[int] = set()
@@ -1811,12 +1834,20 @@ def _stop(
 ) -> dict[str, Any] | None:
     """Arms that cannot go on, ``causes`` by arm: (``scientific`` or ``technical``, the marks
     that stop it). Any scientific cause fails the candidate (its arms; the technical ones are
-    named in the reason); otherwise the replay is blocked. Returns the blocked step, or None
-    when the attempt failed."""
+    named in the reason); otherwise the replay is blocked. Either way each arm stopped
+    technically is kept with its marks at the candidate (``_Replay.stopped``), so that a later
+    visit of the candidate (the fallback's) blocks on it rather than select the arm again
+    (review of fa22, I1: one allowance in all per arm, batch and U). Returns the blocked step,
+    or None when the attempt failed."""
     scientific = [arm for arm, (cause, _) in causes.items() if cause == "scientific"]
     technical = {arm: marks for arm, (cause, marks) in causes.items() if cause == "technical"}
     rates = {arm: [format(m["lr"], "g") for m in marks] for arm, marks in technical.items()}
     told = "; ".join(f"{arm} stopped by technical marks only ({rates[arm]})" for arm in technical)
+    for arm, marks in technical.items():
+        replay.stopped.setdefault((arm, attempt["batch"], attempt["U"]),
+                                  {"at": at, "marks": marks, "reason": told,
+                                   "three_arm": attempt["three_arm"]})  # fmt: skip
+    attempt["stopped_technical"] = sorted(technical, key=ARMS.index)
     if scientific:
         _fail(attempt, scientific, reason + (f"; besides, {told}" if told else ""), at)
         return None
@@ -1830,10 +1861,10 @@ def feasibility_report(attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     the ``scientific`` failures (a failing rate, a rejected same-path control, no admissible
     triple, a validation failure and its findings: they moved the order on) apart from the
     ``technical`` ones (rates not qualified and numerical runs given up, which spent an
-    allowance and decided nothing; and the technical failures of validation runs, listed apart:
-    a validation failing with them failed for another reason too, since a shortfall they alone
-    make blocks the stage), and the rates excluded up front at the visit with their kind. A
-    candidate the fallback skipped is named, with why."""
+    allowance and decided nothing; and the validation's blocks and utility members lost by
+    technical causes, listed apart: a validation failing with them failed for another reason
+    too, since a failure they alone make blocks the stage), and the rates excluded up front at the
+    visit with their kind. A candidate the fallback skipped is named, with why."""
     report = []
     for scope, arms in (("three arms", ARMS), ("primary pair", PRIMARY_ARMS)):
         for upper, batch in CANDIDATES:
@@ -1884,23 +1915,27 @@ def _arm_feasibility(attempt: Mapping[str, Any], arm: str) -> dict[str, Any]:
 
 
 def _validation_feasibility(verdict: Mapping[str, Any], arm: str) -> dict[str, list[str]]:
-    """A failed validation's findings for one arm: unsupported blocks by K, instability stops
-    and utility bounds (scientific), the technical failures of its runs (technical)."""
+    """A failed validation's findings for one arm, classed by their cause (review of fa22, M4):
+    a block unsupported by K (``bracketing`` or ``width``), an instability stop and a utility
+    bound above its limit are scientific; a block whose cause is ``technical`` (a failed or
+    missing endpoint), a run's technical failure and a utility member left without a bound are
+    technical."""
     found: dict[str, list[str]] = {"scientific": [], "technical": []}
     for seed, by_arm in sorted((verdict.get("supports") or {}).items()):
         support = by_arm.get(arm)
         if support is None or support["supported"]:
             continue
-        if support["k_cause"]:
-            found["scientific"].append(f"validation block {seed}: unsupported by K "
-                                       f"({support['k_cause']})")  # fmt: skip
+        kind = "technical" if support["cause"] == "technical" else "scientific"
+        found[kind].append(f"validation block {seed}: unsupported ({support['cause']}; by K "
+                           f"alone: {support['k_cause']})")  # fmt: skip
         for failure in support["failures"]:
             line = (f"validation block {seed}: {failure['run'] or 'no run'} at "
                     f"{failure['rate']:g}: {failure['reason']}")  # fmt: skip
             found["scientific" if failure["kind"] == "instability" else "technical"].append(line)
     for member in (verdict.get("utility") or {}).get("family", []):
         if member["arm"] == arm and not (member["mmlu_passes"] and member["factual_passes"]):
-            found["scientific"].append(
+            bounded = all(member[f"{m}_upper_pp"] is not None for m in ("mmlu", "factual"))
+            found["scientific" if bounded else "technical"].append(
                 f"validation utility at {member['rate']:g}: upper bounds MMLU "
                 f"{member['mmlu_upper_pp']} pp, factual {member['factual_upper_pp']} pp "
                 f"({member['runs']} runs)")  # fmt: skip
@@ -1936,7 +1971,20 @@ def _visit(
                                                   for arm, e in excluded.items()},
                                "numerical": [], "validation": None, "outcome": "pending",
                                "failed_arms": [], "failed_at": None, "failures": {},
-                               "reasons": [], "rates": None}  # fmt: skip
+                               "stopped_technical": [], "reasons": [],
+                               "rates": None}  # fmt: skip
+    # An arm whose allowance here is spent and that an earlier visit's numerical gate found
+    # stopped by technical marks only (another arm's scientific failure then failing the
+    # candidate) is never selected again: the stage blocks (review of fa22, I1).
+    stopped = {arm: replay.stopped[(arm, batch, upper)] for arm in carried
+               if replay.stopped.get((arm, batch, upper), {}).get("at") == "numerical"}  # fmt: skip
+    if stopped:
+        told = "; ".join(entry["reason"] for entry in stopped.values())
+        return attempt, _block(replay, attempt, {arm: e["marks"] for arm, e in stopped.items()},
+                               f"{list(stopped)} stopped by technical marks only at this "
+                               "candidate's numerical gate at an earlier visit, the search "
+                               f"allowance spent there: no selection again ({told})",
+                               "numerical")  # fmt: skip
     selected, step = _discovery(replay, attempt, excluded, batch, upper, arms, carried)
     if selected is None:
         return attempt, step
@@ -2306,57 +2354,78 @@ def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
         return {"campaign": "incomplete", "problems": verdict["problems"]}
     if not verdict["passes"]:
         reason = "the validation does not pass: " + "; ".join(verdict["reasons"])
-        shortfall = _technical_shortfall(verdict)
-        if shortfall is not None:
-            stops, kept = shortfall
-            return _block(replay, attempt, stops, f"{reason}: {kept} of {len(VALIDATION_SEEDS)} "
-                          "blocks would be jointly supported but for those lost to technical "
-                          "failures only, a technical shortfall", "validation")  # fmt: skip
+        technical = _technical_shortfall(verdict)
+        if technical is not None:
+            stops, told = technical
+            return _block(replay, attempt, stops, f"{reason}: {told}: technical failures only",
+                          "validation")  # fmt: skip
         _fail(attempt, arms, reason, "validation")
     return None
 
 
-def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], int] | None:
-    """A failed validation whose only fault is a shortfall below ``VALIDATION_MINIMUM`` jointly
-    supported blocks that the blocks lost to technical failures alone make (the coordinator's
-    ruling on C3; the threshold unchanged): no run stopped by an instability rule, no utility
-    failure (no member of the family whose upper bound was computed exceeds it: a family left
-    empty, or a member left without a bound, by the lost blocks is no utility failure), every FA
-    control accepted, and at least ``VALIDATION_MINIMUM`` blocks left once only the blocks with
-    an arm unsupported by K (``bracketing`` or ``width``) are counted lost. A block lost only by
-    arms whose cause is ``technical`` (a run given up by the launcher, another stop, no finite
-    K25) counts as technical. Returns, by arm, the technical failures of those blocks as marks
-    (with the launcher's label of a run given up) and the count of blocks left, or None when the
-    failure is not technical only."""
-    if len(verdict["jointly_supported"]) >= VALIDATION_MINIMUM:
-        return None  # no shortfall
-    exceeded = [member for member in (verdict.get("utility") or {}).get("family", [])
+def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], str] | None:
+    """A failed validation whose every fault technical failures alone make (the coordinator's
+    rulings on C3 and M3; the thresholds unchanged): no run stopped by an instability rule, no
+    utility bound computed above its limit, every FA control accepted, and
+    - a shortfall below ``VALIDATION_MINIMUM`` jointly supported blocks only if at least
+      ``VALIDATION_MINIMUM`` blocks are left once only the blocks with an arm unsupported by K
+      (``bracketing`` or ``width``) are counted lost: a block lost only by arms whose cause is
+      ``technical`` (a run given up by the launcher, another stop, no finite K25) is technical;
+    - a utility member without a bound (fewer than two completed runs: the others failed
+      technically or were given up, no instability stop being among them) is technical.
+
+    Returns, by arm, the technical failures as marks (each run's, with the launcher's label of
+    a run given up) and what they made, or None when the failure is not technical only."""
+    family = (verdict.get("utility") or {}).get("family", [])
+    exceeded = [member for member in family
                 if any(member[f"{m}_upper_pp"] is not None and not member[f"{m}_passes"]
                        for m in ("mmlu", "factual"))]  # fmt: skip
     controls = any(r.startswith("FA controls not accepted") for r in verdict["reasons"])
     if verdict.get("unstable") or exceeded or controls:
         return None
     supports = verdict["supports"]
-    lost = [seed for seed in supports if seed not in verdict["jointly_supported"]]
-    by_k = [seed for seed in lost
-            if any(not s["supported"] and s["cause"] != "technical"
-                   for s in supports[seed].values())]  # fmt: skip
-    kept = len(supports) - len(by_k)
-    if kept < VALIDATION_MINIMUM:
-        return None
     labels = {(key[0], rate(key[2]), key[3]): label
               for label, key in (verdict.get("exhausted") or {}).items()}  # fmt: skip
+
+    def mark(arm: str, seed: int, failure: Mapping[str, Any], what: str) -> dict[str, Any]:
+        label = labels.get((arm, failure["rate"], seed))
+        return {"arm": arm, "lr": failure["rate"], "state": "technical failure",
+                "why": f"{what}validation block {seed}: {failure['run'] or 'no run'}: "
+                       f"{failure['reason']}",
+                "reasons": [f"given up by the launcher: {label}"] if label else []}  # fmt: skip
+
     stops: dict[str, list] = defaultdict(list)
-    for seed in sorted(set(lost) - set(by_k)):
-        for arm, support in supports[seed].items():
-            for failure in support["failures"] if not support["supported"] else ():
-                label = labels.get((arm, failure["rate"], seed))
-                stops[arm].append({"arm": arm, "lr": failure["rate"], "state": "technical failure",
-                                   "why": f"validation block {seed}: {failure['run'] or 'no run'}"
-                                          f": {failure['reason']}",
-                                   "reasons": [f"given up by the launcher: {label}"]
-                                   if label else []})  # fmt: skip
-    return dict(stops), kept
+    told = []
+    if len(verdict["jointly_supported"]) < VALIDATION_MINIMUM:
+        lost = [seed for seed in supports if seed not in verdict["jointly_supported"]]
+        by_k = [seed for seed in lost
+                if any(not s["supported"] and s["cause"] != "technical"
+                       for s in supports[seed].values())]  # fmt: skip
+        kept = len(supports) - len(by_k)
+        if kept < VALIDATION_MINIMUM:
+            return None
+        for seed in sorted(set(lost) - set(by_k)):
+            for arm, support in supports[seed].items():
+                for failure in support["failures"] if not support["supported"] else ():
+                    stops[arm].append(mark(arm, seed, failure, ""))
+        told.append(f"{kept} of {len(supports)} blocks would be jointly supported but for those "
+                    "lost to technical failures only")  # fmt: skip
+    unbounded = [member for member in family
+                 if not (member["mmlu_passes"] and member["factual_passes"])]  # fmt: skip
+    for member in unbounded:
+        arm, lr = member["arm"], member["rate"]
+        what = f"utility at {lr:g} without a bound ({member['runs']} completed runs): "
+        stops[arm] += [
+            mark(arm, seed, failure, what)
+            for seed, by_arm in sorted(supports.items())
+            for failure in by_arm[arm]["failures"]
+            if failure["rate"] == lr
+        ]
+        told.append(f"the utility member {arm} at {lr:g} has {member['runs']} completed runs, "
+                    "fewer than two: no bound")  # fmt: skip
+    if not stops:
+        return None
+    return dict(stops), "; ".join(told)
 
 
 # ------------------------------------------------------------------ support and the estimator
