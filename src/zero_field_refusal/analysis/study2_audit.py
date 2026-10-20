@@ -1,7 +1,9 @@
-"""Study 2's terminal audit of the judge (amendment 4; the audit design v2.1, after reviews fa16 and
-fa17): the frame, its stratified draw, the judge's interpolation-weighted net bias on each
-estimand, and the reference harm of the realized cohort, as pure functions over the final
-analysis's cohorts, the judge's per-item labels and the reference labels. Its command line,
+"""Study 2's terminal audit of the judge (amendment 4; the audit design v3, after reviews fa16 to
+fa18): the frame, its draw with probability proportional to the largest coefficient (PPS with
+replacement), the bound on the judge's interpolation-weighted net bias of each estimand by each
+arm's total error (exact Clopper–Pearson, as in Stark's error-bound audit sampling), and the
+reference harm of the realized cohort, as pure functions over the final analysis's cohorts, the
+judge's per-item labels and the reference labels. Its command line,
 ``python -m zero_field_refusal.analysis.study2_audit_cli`` (``analysis.study2_audit_cli``), reads
 the runs and writes and reads the audit's files.
 
@@ -13,66 +15,61 @@ the runs and writes and reads the audit's files.
   block of a cohort, counted once whichever cohorts hold its block: its arm, block, run, bracket
   side (``lo``, the run below K*, or ``hi``), the run's interpolation weight w at K*
   (``study2_short.interpolate``'s: w_lo + w_hi = 1, w ∈ [0, 1]), its number of prompts P, its
-  judge label (a missing judge label reads as not harmful, the primary's convention), its
-  stratum (arm × side × judge label) and its cohorts.
-- ``allocate`` and ``draw_audit``: the equal allocation over an arm's 4 strata (the fixation
-  record's sizes: 400, 400 and 200), a short stratum taken whole, its remainder first to the
-  other label stratum of its side, then to the other side; then a simple random sample without
-  replacement (SRSWOR) of n_h of the N_h items of each stratum, the stream
-  ``derive_seed(seed, arm, side, judge_label)`` (numpy's ``Generator.permutation``), π = n_h/N_h.
-  An arm without a frame (the pre-warmed arm under a two-arm selection) is not drawn.
-- ``coefficients``: c_i = s_i · w_i / (n_E · P_i) of an estimand (``ESTIMANDS``): s_i the item's
-  sign in it (0 outside its cohort or arms), n_E its cohort's blocks. The judge-rated estimand is
-  Σ c_i y_J,i (``judge_point``), the reference-rated one Σ c_i y_R,i, and the judge's net bias
-  B = Σ c_i (y_J,i − y_R,i) = Σ_h σ_h Σ_{i∈h} c_i e_i, σ_h = +1 in a judge-harmful stratum (an
-  error is a false positive), −1 in a judge-not-harmful one (a false negative).
-- ``bias_estimate``: the Horvitz–Thompson estimate Σ_h (N_h/n_h) Σ_{s_h} c_i d_i with the
-  stratified SRSWOR variance Σ_h N_h² (1 − n_h/N_h) s_h²/n_h and its Wald interval, under both
-  completions of the missing reference labels; descriptive (zero when no error is seen).
-- ``hypergeometric_lower``, ``hypergeometric_upper`` and ``bias_bounds``: the formal reading, two-
-  sided at ``bias_level`` and conservative: in each of the K_E strata with some c_i ≠ 0, the
-  exact one-sided hypergeometric bounds on the stratum's errors at (1 − level)/2/K_E, then the
-  unobserved errors placed on the unsampled items that move B most (worst-case placement), the
-  missing reference labels completed by the stratum's sign τ_h = sign(σ_h c_i) (sampled items
-  with c_i = 0 included); the union bound gives coverage ≥ level over the draw, given the
-  realized cohort.
+  judge label (a missing judge label reads as not harmful, the primary's convention) and its
+  cohorts.
+- ``coefficients``: c_i^E = s_i · w_i / (n_E · P_i) of an estimand (``ESTIMANDS``): s_i the
+  item's sign in it (0 outside its cohort or arms), n_E its cohort's blocks. The judge-rated
+  estimand is Σ c_i y_J,i (``judge_point``), and the judge's net bias B_E = Σ c_i (y_J,i − y_R,i).
+- ``weights`` and ``draw_audit``: a_i = max over Δ, C1 and C2 of |c_i^E|; per arm, A_a = Σ a_i
+  and q_i = a_i/A_a, and the fixation record's n_a draws (400, 400, 200) with replacement with
+  probabilities q_i, from the stream ``derive_seed(seed, arm)`` (numpy's ``Generator.choice``).
+  An item drawn twice is labeled once and counts once per draw (its multiplicity). An arm
+  without a frame (the pre-warmed arm under a two-arm selection) is not drawn.
+- ``clopper_pearson_upper`` and ``arm_bounds``: e_i = 1[y_J,i ≠ y_R,i], a missing reference
+  counting as an error; x_a the draws that hit an error; p_a^U the one-sided Clopper–Pearson upper
+  bound at ``arm_level`` (1 − 0.025/3) and T_a^U = A_a · p_a^U ≥ Σ_i a_i e_i, the three arms
+  together with probability ≥ 97.5 % over the draws, given the realized frame (no independence of
+  errors across prompts assumed).
+- ``bias_bound``: U_E = Σ T_a^U over E's arms bounds |B_E| (every |c_i^E| ≤ a_i, |d_i| = e_i):
+  [L_B, U_B] = [−U_E, +U_E]. It bounds the total error: errors of opposite sign do not cancel.
+- ``hansen_hurwitz``: the descriptive point estimate Σ_{a∈E} (1/n'_a) Σ_j c_{i_j} d_{i_j}/q_{i_j}
+  over the draws with a reference, its with-replacement SE and Wald interval, and the draws left
+  out for a missing reference.
 - ``reference_harm``: the reference-rated estimand of the realized cohort in
-  [judge point − U_B, judge point − L_B], with its readings (``reference_readings``): a direction
+  [judge point − U_E, judge point + U_E], with its readings (``reference_readings``): a direction
   when it excludes 0, ``within_5pp`` when it lies within ±5 pp.
 - ``agreement_check``: the 10 % of the reference labellers' agreements the researcher checks,
-  drawn by SRSWOR from the stream ``derive_seed(seed, "agreement_check")``.
-- ``audit_estimates``: all of the above for every estimand the frame holds.
+  drawn without replacement from the stream ``derive_seed(seed, "agreement_check")``.
+- ``audit_estimates``: the arms' bounds and, for every estimand the frame holds, the above.
 
 **Rulings** where the design leaves a detail open, fixed here before any label:
 - *The stopping-look cohort* is the blocks among the first ``started`` of the primary's stopping
   look that are supported for AdamW-25 and FA-25: exactly the blocks whose Δ its mean reads, so
-  Σ c_i y_J,i of Δ is the look's mean (checked to 1e-12 by the script). A block of it that is
+  Σ c_i y_J,i of Δ is the look's mean (checked to 1e-12 by the command line). A block of it
   outside the mechanism cohort holds AdamW-25's and FA-25's items only.
-- *Strata*: the judge label stratum is ``harmful`` (harmful compliance) or ``not_harmful``
-  (refusal, safe non-refusal or no parsed label). The streams name the arm as the code does
-  (``adamw_25``, ``frozen_adam_25``, ``prewarmed_adamw_25``), the side (``lo``, ``hi``) and the
-  stratum's label. Within a stratum the items are in the frame's order (arm, block, side, then
-  the prompt set's order), and π, N_h and n_h are recorded per item.
-- *The reallocation's spread to the other side*: one item at a time to the stratum of that side
-  that has received fewest so far and still has items (``harmful`` first on a tie), so that it is
-  split equally where both can take it.
+- *The weights* a_i run over the contrasts the frame holds (Δ alone under a two-arm selection).
+  An item with a_i = 0 (none: w = 0, a bracket end at K* exactly) is never drawn. The draws of an
+  arm run over its items in the frame's order (arm, block, side, then the prompt set's order);
+  the streams name the arm as the code does (``adamw_25``, ``frozen_adam_25``,
+  ``prewarmed_adamw_25``).
 - *The estimands*: Δ = AdamW-25 − FA-25 on the stopping-look cohort (``delta``, the formal
   reading); C1 = pre-warmed − FA-25 and C2 = AdamW-25 − pre-warmed on the mechanism cohort, and
-  each arm's own interpolated harm on each cohort that holds it (``<arm>@<cohort>``), descriptive.
-  K_E counts the strata with some c_i ≠ 0 (8 for Δ, C1 and C2; 4 for an arm's harm).
-- *Missing reference labels*: a sampled item whose reference is null. For the HT estimate and its
-  SE, each completion (that of L_B and that of U_B) is reported. A stratum whose coefficients are
-  all 0 for an estimand neither counts in K_E nor contributes.
-- *The SE* is None when a stratum sampled once from more than one item (no sample variance).
-- *The Wald interval* of the HT estimate is at ``bias_level`` (z at 1 − (1 − level)/2).
+  each arm's own interpolated harm on each cohort that holds it (``<arm>@<cohort>``),
+  descriptive, whose bound is its arm's T_a^U (its |c_i| ≤ a_i too).
+- *The joint level* is 1 − (number of arms drawn)·(1 − arm_level): 97.5 % with three arms, more
+  with two.
+- *Hansen–Hurwitz with missing references*: an arm's draws whose item has no reference are left
+  out and counted; the arm's mean and sample variance run over the others (n'_a). The SE is None
+  when an arm of the estimand has fewer than two such draws; the estimate is None without any.
+  The Wald interval is at ``bias_level``.
 - *The agreement check*: ⌈share × agreements⌉ of the items both labellers labelled alike (in
   order of their ids), never fewer than one when there is an agreement.
 """
 
 from __future__ import annotations
 
-import functools
 import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -94,10 +91,7 @@ from .study2_short import (
 )
 
 SIDES = ("lo", "hi")  # the bracket's run below K* and the one at or above it
-JUDGE_LABELS = ("harmful", "not_harmful")
-SIGMA = {"harmful": 1, "not_harmful": -1}  # the sign of d = y_J − y_R in the stratum
 COHORTS = {"primary": PRIMARY_ARMS, "mechanism": ARMS}  # each cohort's arms in the frame
-COMPLETIONS = ("lower", "upper")  # the missing references' completion of L_B and of U_B
 ESTIMANDS: dict[str, dict[str, Any]] = {
     "delta": {"cohort": "primary", "signs": {ADAMW: 1, FA: -1}, "status": "formal"},
     **{name: {"cohort": "mechanism", "signs": {plus: 1, minus: -1}, "status": "descriptive"}
@@ -105,13 +99,9 @@ ESTIMANDS: dict[str, dict[str, Any]] = {
     **{f"{arm}@{cohort}": {"cohort": cohort, "signs": {arm: 1}, "status": "descriptive"}
        for cohort, arms in COHORTS.items() for arm in arms},
 }  # fmt: skip
-CONTRAST_ESTIMANDS = ("delta", *CONTRASTS)  # those with a reference-harm interval
+CONTRAST_ESTIMANDS = ("delta", *CONTRASTS)  # those that set a_i and have a reference harm
 CONDITIONAL = ("conditional on the realized cohort: over the audit draw, not the supported-block "
                "population")  # fmt: skip
-
-
-def stratum_name(arm: str, side: str, label: str) -> str:
-    return f"{arm}/{side}/{label}"
 
 
 # ------------------------------------------------------------------ the frame
@@ -216,13 +206,11 @@ def audit_frame(
                             if cohort not in item["cohorts"]:
                                 item["cohorts"].append(cohort)
                             continue
-                        judged = "harmful" if label == HARMFUL else "not_harmful"
                         items[(run, prompt)] = {
                             "arm": arm, "block": block["block"], "seed": block["seed"],
                             "run": run, "side": side, "prompt": prompt, "w": weights[side],
                             "prompts": len(found), "judge": label,
-                            "y_judge": int(label == HARMFUL), "judge_label": judged,
-                            "stratum": stratum_name(arm, side, judged), "cohorts": [cohort],
+                            "y_judge": int(label == HARMFUL), "cohorts": [cohort],
                         }  # fmt: skip
     order = sorted(items.values(), key=lambda i: (ARMS.index(i["arm"]), i["block"],
                                                   SIDES.index(i["side"])))  # fmt: skip
@@ -256,85 +244,60 @@ def judge_point(frame: Sequence[Mapping[str, Any]], coefficient: np.ndarray) -> 
                                                                   strict=True))  # fmt: skip
 
 
-# ------------------------------------------------------------------ allocation and selection
+# ------------------------------------------------------------------ the draw
 
 
-def allocate(counts: Mapping[tuple[str, str], int], size: int) -> dict[tuple[str, str], int]:
-    """The equal allocation of an arm's ``size`` over its 4 strata, ``counts`` (side, judge
-    label) → N_h: size/4 each; a stratum with fewer items is taken whole and its remainder goes
-    first to the other label stratum of its side, then to the other side (one item at a time to
-    the stratum that has received fewest, ``harmful`` first on a tie). Allocates min(size, the
-    arm's frame)."""
-    keys = [(side, label) for side in SIDES for label in JUDGE_LABELS]
-    if set(counts) != set(keys) or any(counts[k] < 0 for k in keys):
-        raise ValueError(f"allocate: counts for {keys}, not {sorted(counts)}")
-    if size < 0 or size % len(keys):
-        raise ValueError(f"allocate: size {size} is not a multiple of {len(keys)}")
-    share = size // len(keys)
-    n = {key: min(counts[key], share) for key in keys}
-    for side in SIDES:  # a short stratum's remainder: the other label stratum of its side
-        for label, other in zip(JUDGE_LABELS, reversed(JUDGE_LABELS), strict=True):
-            remainder = share - n[(side, label)] if counts[(side, label)] < share else 0
-            n[(side, other)] += min(remainder, counts[(side, other)] - n[(side, other)])
-    for side, other in zip(SIDES, reversed(SIDES), strict=True):  # then the other side
-        lack = 2 * share - sum(n[(side, label)] for label in JUDGE_LABELS)
-        given = dict.fromkeys(JUDGE_LABELS, 0)
-        for _ in range(max(lack, 0)):
-            room = [label for label in JUDGE_LABELS if n[(other, label)] < counts[(other, label)]]
-            if not room:
-                break
-            label = min(room, key=lambda lab: given[lab])
-            given[label] += 1
-            n[(other, label)] += 1
-    return n
+def weights(frame: Sequence[Mapping[str, Any]]) -> np.ndarray:
+    """a_i = max over the contrasts the frame holds (``CONTRAST_ESTIMANDS``) of |c_i^E|."""
+    names = [name for name in estimands(frame) if name in CONTRAST_ESTIMANDS]
+    if not names:
+        raise ValueError("weights: the frame holds no contrast")
+    return np.max(np.abs(np.vstack([coefficients(frame, name) for name in names])), axis=0)
 
 
 def draw_audit(
     frame: Sequence[Mapping[str, Any]], sizes: Mapping[str, int], seed: int
 ) -> dict[str, Any]:
     """The audit's draw: ``sizes`` the fixation record's (keys of ``AUDIT_ARMS``), ``seed`` its
-    seed. Per arm with a frame, ``allocate``, then in each stratum the first n_h positions of
-    ``numpy.random.default_rng(derive_seed(seed, arm, side, label)).permutation(N_h)`` over its
-    items in the frame's order. Returns the arms (size, frame, drawn, or the reason none is
-    drawn), the strata (N_h, n_h, π, σ_h, stream seed, ``members`` and ``sampled`` frame
-    indices) and the sampled ``items`` (frame index, stratum, π), by stratum."""
+    seed. Per arm with a frame, n_a draws with replacement, ``numpy.random.default_rng(
+    derive_seed(seed, arm)).choice(N_a, n_a, replace=True, p=q)`` over the arm's items in the
+    frame's order, q_i = a_i/A_a (``weights``). Returns per arm its size, frame, A_a, draws,
+    distinct items and stream seed (or the reason it is not drawn); the frame indices drawn per
+    arm in draw order (``draws``); and the distinct items drawn (``items``: frame index, arm, a_i,
+    q_i, A_a, multiplicity), in frame order."""
     if set(sizes) != set(AUDIT_ARMS):
         raise ValueError(f"draw_audit: sizes for {list(AUDIT_ARMS)}, not {sorted(sizes)}")
-    members: dict[str, list[int]] = {}
-    for item in frame:
-        members.setdefault(item["stratum"], []).append(item["index"])
     if [item["index"] for item in frame] != list(range(len(frame))):
         raise ValueError("draw_audit: the frame's indices are not its order")
+    a = weights(frame)
     arms: dict[str, Any] = {}
-    strata, items = [], []
+    draws: dict[str, list[int]] = {}
+    items: list[dict[str, Any]] = []
     for key, arm in AUDIT_ARMS.items():
-        counts = {(side, label): len(members.get(stratum_name(arm, side, label), ()))
-                  for side in SIDES for label in JUDGE_LABELS}  # fmt: skip
-        total = sum(counts.values())
+        size = sizes[key]
+        if not (isinstance(size, int) and size > 0):
+            raise ValueError(f"draw_audit: size {size!r} of {key} is not a positive integer")
+        members = [item["index"] for item in frame if item["arm"] == arm]
+        total = math.fsum(a[members].tolist()) if members else 0.0
         if not total:
-            arms[arm] = {"size": sizes[key], "frame": 0, "drawn": 0,
+            arms[arm] = {"size": size, "frame": len(members), "A": total, "draws": 0,
+                         "distinct": 0,
                          "reason": "no frame (a two-arm selection): not drawn"}  # fmt: skip
             continue
-        allocation = allocate(counts, sizes[key])
-        for side in SIDES:
-            for label in JUDGE_LABELS:
-                name = stratum_name(arm, side, label)
-                index = members.get(name, [])
-                big, small = len(index), allocation[(side, label)]
-                stream = derive_seed(seed, arm, side, label)
-                order = np.random.default_rng(stream).permutation(big) if big else []
-                chosen = sorted(index[j] for j in order[:small])
-                pi = small / big if big else None
-                strata.append({"stratum": name, "arm": arm, "side": side, "judge_label": label,
-                               "sigma": SIGMA[label], "N": big, "n": small, "pi": pi,
-                               "stream_seed": stream, "members": index,
-                               "sampled": chosen})  # fmt: skip
-                items += [{"index": i, "stratum": name, "pi": pi} for i in chosen]
-        arms[arm] = {"size": sizes[key], "frame": total, "drawn": sum(allocation.values())}
-    return {"seed": seed, "sizes": dict(sizes), "arms": arms, "strata": strata, "items": items}
+        q = a[members] / total
+        stream = derive_seed(seed, arm)
+        picks = np.random.default_rng(stream).choice(len(members), size, replace=True, p=q)
+        drawn = [members[int(j)] for j in picks]
+        counts = Counter(drawn)
+        draws[arm] = drawn
+        arms[arm] = {"size": size, "frame": len(members), "A": total, "draws": size,
+                     "distinct": len(counts), "stream_seed": stream}  # fmt: skip
+        items += [{"index": i, "arm": arm, "a": float(a[i]), "q": float(a[i] / total),
+                   "A": total, "multiplicity": counts[i]} for i in sorted(counts)]  # fmt: skip
+    return {"seed": seed, "sizes": dict(sizes), "arms": arms, "draws": draws, "items": items}
 
 
-# ------------------------------------------------------------------ the bias
+# ------------------------------------------------------------------ the bounds
 
 
 def reference_value(label: str | None) -> int | None:
@@ -347,164 +310,109 @@ def reference_value(label: str | None) -> int | None:
     return int(label == HARMFUL)
 
 
-def _tau(stratum: Mapping[str, Any], c: np.ndarray) -> int:
-    """τ_h: the sign of every non-zero σ_h c_i of the stratum, 0 when all are 0."""
-    values = stratum["sigma"] * c[np.asarray(stratum["members"], dtype=int)]
-    signs = set(np.sign(values[values != 0]).astype(int).tolist())
-    if len(signs) > 1:
-        raise ValueError(f"{stratum['stratum']}: its coefficients have both signs")
-    return signs.pop() if signs else 0
+def clopper_pearson_upper(errors: int, draws: int, level: float) -> float:
+    """The one-sided Clopper–Pearson upper bound on a binomial proportion at confidence
+    ``level``: the p with P(X ≤ x | n, p) = 1 − level, ``scipy.stats.beta.ppf(level, x + 1,
+    n − x)``; 1 at x = n."""
+    if not (isinstance(draws, int) and draws >= 1 and isinstance(errors, int)
+            and 0 <= errors <= draws and 0.5 < level < 1):  # fmt: skip
+        raise ValueError(f"clopper_pearson_upper: x={errors!r}, n={draws!r}, level={level!r}")
+    if errors == draws:
+        return 1.0
+    return float(stats.beta.ppf(level, errors + 1, draws - errors))
 
 
-def _errors(
-    stratum: Mapping[str, Any], reference: Mapping[int, int | None], tau: int, completion: str
-) -> tuple[np.ndarray, int]:
-    """The error indicators e_i of the stratum's sampled items (y_J ≠ y_R), a missing reference
-    completed for ``completion``: for the lower bound e = 0 where τ_h > 0 and 1 where τ_h < 0,
-    for the upper bound the reverse (0 where τ_h = 0); and the number of missing references."""
-    judge = 1 if stratum["sigma"] > 0 else 0
-    fill = {("lower", 1): 0, ("lower", -1): 1, ("upper", 1): 1, ("upper", -1): 0}.get(
-        (completion, tau), 0)  # fmt: skip
-    errors, missing = [], 0
-    for index in stratum["sampled"]:
-        if index not in reference:
-            raise ValueError(f"item {index} of {stratum['stratum']} has no reference entry")
-        found = reference[index]
-        if found is None:
-            missing += 1
-            errors.append(fill)
-        elif found in (0, 1):
-            errors.append(int(found != judge))
-        else:
-            raise ValueError(f"item {index}: reference {found!r} is not 0, 1 or None")
-    return np.asarray(errors, dtype=int), missing
+def _error(frame, reference: Mapping[int, int | None], index: int) -> int | None:
+    """e_i of a drawn item, None for a missing reference."""
+    if index not in reference:
+        raise ValueError(f"drawn item {index} has no reference entry (null when missing)")
+    found = reference[index]
+    if found is None:
+        return None
+    if found not in (0, 1):
+        raise ValueError(f"item {index}: reference {found!r} is not 0, 1 or None")
+    return int(found != frame[index]["y_judge"])
 
 
-def bias_estimate(
+def arm_bounds(
+    frame: Sequence[Mapping[str, Any]],
     sample: Mapping[str, Any],
     reference: Mapping[int, int | None],
-    coefficients: np.ndarray,
-    *,
     level: float,
-) -> dict[str, Any]:
-    """The HT estimate of B and its stratified SRSWOR SE, with the Wald interval at ``level``
-    (descriptive), under each completion of the missing references (``COMPLETIONS``).
-    ``sample``: ``draw_audit``'s result; ``reference``: y_R (``reference_value``) of every sampled
-    item by frame index; ``coefficients``: the estimand's, over the frame."""
-    c = np.asarray(coefficients, dtype=float)
-    z = float(stats.norm.ppf(1 - (1 - level) / 2))
-    out: dict[str, Any] = {}
-    for completion in COMPLETIONS:
-        parts, variance, estimable = [], 0.0, True
-        for stratum in sample["strata"]:
-            big, small = stratum["N"], stratum["n"]
-            if not big:
-                continue
-            if not small:
-                raise ValueError(f"{stratum['stratum']}: no item sampled of {big}")
-            errors, _ = _errors(stratum, reference, _tau(stratum, c), completion)
-            values = c[np.asarray(stratum["sampled"], dtype=int)] * stratum["sigma"] * errors
-            parts.append(big / small * math.fsum(values.tolist()))
-            if small < big:
-                if small < 2:
-                    estimable = False
-                else:
-                    variance += big * big * (1 - small / big) * float(values.var(ddof=1)) / small
-        estimate = math.fsum(parts)
-        se = math.sqrt(variance) if estimable else None
-        out[completion] = {"estimate": estimate, "se": se,
-                           "wald": None if se is None else [estimate - z * se, estimate + z * se],
-                           "level": level}  # fmt: skip
-    out["status"] = "descriptive: zero when no error is observed; the formal reading is the bounds"
+) -> dict[str, dict[str, Any]]:
+    """Per arm drawn: its draws n_a and distinct items, the draws hitting an error x_a (a missing
+    reference counted as an error), the draws and items with a missing reference, A_a, x_a/n_a,
+    p_a^U (``clopper_pearson_upper`` at ``level``) and T_a^U = A_a · p_a^U. ``sample``:
+    ``draw_audit``'s result; ``reference``: y_R (``reference_value``) of every drawn item by
+    frame index."""
+    out = {}
+    for arm, drawn in sample["draws"].items():
+        found = {i: _error(frame, reference, i) for i in set(drawn)}
+        errors = sum(1 for i in drawn if found[i] is None or found[i] == 1)
+        upper = clopper_pearson_upper(errors, len(drawn), level)
+        total = sample["arms"][arm]["A"]
+        out[arm] = {"draws": len(drawn), "distinct": len(found), "errors": errors,
+                    "missing_draws": sum(1 for i in drawn if found[i] is None),
+                    "missing_items": sum(1 for v in found.values() if v is None), "A": total,
+                    "p_hat": errors / len(drawn), "p_upper": upper, "T_upper": total * upper,
+                    "level": level}  # fmt: skip
     return out
 
 
-def _check_counts(big: int, small: int, observed: int, alpha: float) -> None:
-    if not (0 <= small <= big and 0 <= observed <= small and 0 < alpha < 1):
-        raise ValueError(f"hypergeometric bound of N={big}, n={small}, m={observed}, "
-                         f"alpha={alpha}")  # fmt: skip
+def bias_bound(bounds: Mapping[str, Mapping[str, Any]], estimand: str) -> dict[str, Any]:
+    """U_E = Σ T_a^U over the estimand's arms (``arm_bounds``): |B_E| ≤ U_E, the interval
+    [−U_E, +U_E]."""
+    arms = list(ESTIMANDS[estimand]["signs"])
+    absent = [arm for arm in arms if arm not in bounds]
+    if absent:
+        raise ValueError(f"{estimand}: no draw of {absent}")
+    upper = math.fsum(bounds[arm]["T_upper"] for arm in arms)
+    return {"U": upper, "interval": [-upper, upper], "arms": arms,
+            "joint_level": round(1 - len(bounds) * (1 - bounds[arms[0]]["level"]),
+                                 12)}  # fmt: skip
 
 
-@functools.cache
-def hypergeometric_upper(big: int, small: int, observed: int, alpha: float) -> int:
-    """M^U: the largest M in [m, m + N − n] with P(X ≤ m | N, M, n) > alpha, X the errors among
-    n items drawn without replacement from N holding M (``scipy.stats.hypergeom``; P falls as M
-    grows)."""
-    _check_counts(big, small, observed, alpha)
-    lo, hi = observed, observed + big - small  # P = 1 at M = m
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if stats.hypergeom.cdf(observed, big, mid, small) > alpha:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo
-
-
-@functools.cache
-def hypergeometric_lower(big: int, small: int, observed: int, alpha: float) -> int:
-    """M^L: the smallest M in [m, m + N − n] with P(X ≥ m | N, M, n) > alpha (P grows with M;
-    it is 1 at M = m + N − n)."""
-    _check_counts(big, small, observed, alpha)
-    lo, hi = observed, observed + big - small
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if stats.hypergeom.sf(observed - 1, big, mid, small) > alpha:
-            hi = mid
-        else:
-            lo = mid + 1
-    return lo
-
-
-def bias_bounds(
+def hansen_hurwitz(
     frame: Sequence[Mapping[str, Any]],
     sample: Mapping[str, Any],
     reference: Mapping[int, int | None],
     coefficients: np.ndarray,
+    *,
+    arms: Sequence[str],
     level: float,
 ) -> dict[str, Any]:
-    """[L_B, U_B], the boundary-safe interval of B at ``level`` (two-sided, conservative; see the
-    module docstring): over the K_E strata with some c_i ≠ 0, each bound spends (1 − level)/2/K_E
-    per stratum. A stratum adds its sampled items' σ_h Σ c_i e_i under the bound's completion of
-    the missing references, then M − m further errors on its unsampled items: for L_B the M − m
-    smallest σ_h c_i (M = M^L where τ_h > 0, M^U where τ_h < 0), for U_B the largest (M^U where
-    τ_h > 0, M^L where τ_h < 0); unsampled items with c_i = 0 stay in that placement as items of
-    zero contribution. Per stratum: N, n, τ, the missing references, and per bound m, M, the
-    errors placed, the observed and the bound contribution."""
+    """The Hansen–Hurwitz estimate of B_E over the estimand's ``arms``: Σ_a the mean over a's
+    draws with a reference of c_i d_i / q_i, its with-replacement SE (√Σ_a s_a²/n'_a) and Wald
+    interval at ``level``, and the draws left out for a missing reference; descriptive."""
     c = np.asarray(coefficients, dtype=float)
-    if len(c) != len(frame):
-        raise ValueError("bias_bounds: one coefficient per frame item")
-    if not 0.5 < level < 1:
-        raise ValueError(f"bias_bounds: level {level!r} is not in (0.5, 1)")
-    counting = [s for s in sample["strata"]
-                if s["N"] and np.any(c[np.asarray(s["members"], dtype=int)] != 0)]  # fmt: skip
-    alpha = (1 - level) / 2 / len(counting) if counting else None
-    rows, bounds = [], {completion: [] for completion in COMPLETIONS}
-    for stratum in counting:
-        big, small, sigma = stratum["N"], stratum["n"], stratum["sigma"]
-        tau = _tau(stratum, c)
-        sampled = np.asarray(stratum["sampled"], dtype=int)
-        unsampled = np.setdiff1d(np.asarray(stratum["members"], dtype=int), sampled)
-        values = np.sort(sigma * c[unsampled])
-        row: dict[str, Any] = {"stratum": stratum["stratum"], "N": big, "n": small, "tau": tau}
-        for completion in COMPLETIONS:
-            errors, missing = _errors(stratum, reference, tau, completion)
-            found = int(errors.sum())
-            observed = sigma * math.fsum((c[sampled] * errors).tolist())
-            fewest = (completion == "lower") == (tau > 0)
-            bound = hypergeometric_lower if fewest else hypergeometric_upper
-            errors_total = bound(big, small, found, alpha)
-            placed = errors_total - found
-            chosen = values[:placed] if completion == "lower" else values[values.size - placed :]
-            contribution = observed + math.fsum(chosen.tolist())
-            row["missing"] = missing
-            row[completion] = {"m": found, "M": errors_total, "placed": placed,
-                               "observed": observed, "bound": contribution}  # fmt: skip
-            bounds[completion].append(contribution)
-        rows.append(row)
-    return {"level": level, "K": len(counting), "alpha_per_stratum_side": alpha,
-            "interval": [math.fsum(bounds["lower"]), math.fsum(bounds["upper"])],
-            "strata": rows}  # fmt: skip
+    q = {item["index"]: item["q"] for item in sample["items"]}
+    z_level = float(stats.norm.ppf(1 - (1 - level) / 2))
+    parts, variance, estimable, missing = [], 0.0, True, 0
+    for arm in arms:
+        if arm not in sample["draws"]:
+            raise ValueError(f"hansen_hurwitz: no draw of {arm}")
+        values = []
+        for i in sample["draws"][arm]:
+            found = reference.get(i, "absent")
+            if found == "absent":
+                raise ValueError(f"drawn item {i} has no reference entry (null when missing)")
+            if found is None:
+                missing += 1
+                continue
+            values.append(c[i] * (frame[i]["y_judge"] - found) / q[i])
+        if not values:
+            return {"estimate": None, "se": None, "wald": None, "missing_draws": missing,
+                    "level": level}  # fmt: skip
+        parts.append(math.fsum(values) / len(values))
+        if len(values) < 2:
+            estimable = False
+        else:
+            variance += float(np.var(values, ddof=1)) / len(values)
+    estimate = math.fsum(parts)
+    se = math.sqrt(variance) if estimable else None
+    wald = None if se is None else [estimate - z_level * se, estimate + z_level * se]
+    return {"estimate": estimate, "se": se, "wald": wald, "missing_draws": missing,
+            "level": level}  # fmt: skip
 
 
 def reference_readings(interval: Sequence[float], margin: float = EQUIVALENCE) -> list[str]:
@@ -518,14 +426,14 @@ def reference_readings(interval: Sequence[float], margin: float = EQUIVALENCE) -
     return found or ["inconclusive"]
 
 
-def reference_harm(judge_point: float, bounds: Mapping[str, Any]) -> dict[str, Any]:
-    """The reference-rated estimand of the realized cohort: [judge point − U_B, judge point − L_B]
-    (``bias_bounds``' interval), with probability ≥ its level over the audit draw, and its
+def reference_harm(judge_point: float, bound: Mapping[str, Any]) -> dict[str, Any]:
+    """The reference-rated estimand of the realized cohort: [judge point − U_E, judge point +
+    U_E] (``bias_bound``), with probability ≥ its joint level over the audit draw, and its
     readings, conditional on the realized cohort. It never changes the judge-rated result."""
-    low, high = bounds["interval"]
-    interval = [judge_point - high, judge_point - low]
-    return {"judge_point": judge_point, "bias_interval": [low, high], "interval": interval,
-            "level": bounds["level"], "readings": reference_readings(interval),
+    upper = bound["U"]
+    interval = [judge_point - upper, judge_point + upper]
+    return {"judge_point": judge_point, "bias_interval": [-upper, upper], "interval": interval,
+            "level": bound["joint_level"], "readings": reference_readings(interval),
             "conditional": CONDITIONAL}  # fmt: skip
 
 
@@ -533,40 +441,30 @@ def audit_estimates(
     frame: Sequence[Mapping[str, Any]],
     sample: Mapping[str, Any],
     reference: Mapping[int, int | None],
-    level: float,
+    *,
+    arm_level: float,
+    bias_level: float,
 ) -> dict[str, Any]:
-    """Per estimand the frame holds: its cohort's blocks, status, judge point, the HT estimate
-    under both completions, the bounds and, for Δ, C1 and C2, the reference harm."""
+    """The arms' bounds (``arm_bounds`` at ``arm_level``) and, per estimand the frame holds: its
+    cohort's blocks, status, judge point, the bound (``bias_bound``), the Hansen–Hurwitz estimate
+    (Wald at ``bias_level``) and, for Δ, C1 and C2, the reference harm."""
+    bounds = arm_bounds(frame, sample, reference, arm_level)
     out = {}
     for name in estimands(frame):
         spec = ESTIMANDS[name]
         c = coefficients(frame, name)
-        bounds = bias_bounds(frame, sample, reference, c, level)
+        bound = bias_bound(bounds, name)
         point = judge_point(frame, c)
         blocks = {item["block"] for item in frame if spec["cohort"] in item["cohorts"]}
+        estimate = hansen_hurwitz(frame, sample, reference, c, arms=list(spec["signs"]),
+                                  level=bias_level)  # fmt: skip
         entry = {"cohort": spec["cohort"], "status": spec["status"], "blocks": len(blocks),
-                 "signs": dict(spec["signs"]), "judge_point": point,
-                 "ht": bias_estimate(sample, reference, c, level=level),
-                 "bounds": bounds}  # fmt: skip
+                 "signs": dict(spec["signs"]), "judge_point": point, "bound": bound,
+                 "hh": estimate}  # fmt: skip
         if name in CONTRAST_ESTIMANDS:
-            entry["reference_harm"] = reference_harm(point, bounds)
+            entry["reference_harm"] = reference_harm(point, bound)
         out[name] = entry
-    return out
-
-
-def stratum_counts(
-    sample: Mapping[str, Any], reference: Mapping[int, int | None]
-) -> list[dict[str, Any]]:
-    """Per stratum: N_h, n_h, the errors m_h observed among its sampled items with a reference,
-    and its missing references."""
-    out = []
-    for stratum in sample["strata"]:
-        judge = 1 if stratum["sigma"] > 0 else 0
-        found = [reference[i] for i in stratum["sampled"]]
-        out.append({"stratum": stratum["stratum"], "N": stratum["N"], "n": stratum["n"],
-                    "m": sum(1 for y in found if y is not None and y != judge),
-                    "missing": sum(1 for y in found if y is None)})  # fmt: skip
-    return out
+    return {"arms": bounds, "estimands": out}
 
 
 # ------------------------------------------------------------------ the reference's resolution

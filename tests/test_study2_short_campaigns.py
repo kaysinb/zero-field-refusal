@@ -127,13 +127,13 @@ FIXATION = {  # the decided values; the resamples, seed and bias allowance are p
     },  # fmt: skip
     "audit": {
         "sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
-        "strata": ["side", "judge_label"],
-        "allocation": "equal",
-        "selection": "srswor",
-        "seed": 20261021,
+        "selection": "pps_with_replacement",
+        "weight": "max_abs_coefficient",
+        "interval": "clopper_pearson_total_error",
+        "arm_level": 0.9916666666666667,
         "bias_level": 0.975,
-        "interval": "hypergeometric_worst_case",
-        "missing_reference": "sign_aware_bounds",
+        "missing_reference": "error",
+        "seed": 20261021,
         "agreement_check_share": 0.1,
     },  # fmt: skip
 }

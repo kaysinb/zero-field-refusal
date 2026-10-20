@@ -424,12 +424,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``target`` 60, ``cap`` 80, ``minimum`` 36, ``zero_se`` 1e-12, ``comparison_level`` 0.975 and
   ``effects`` [0.05, 0.025], each equal to the code's, the max-t ``level`` in [0.95, 1), its
   ``resamples`` (≥ 1000) and ``seed``; and ``audit`` (amendment 4, the terminal audit of the
-  judge, ``analysis.study2_audit``): ``sizes`` (400, 400 and 200), ``strata``, ``allocation``,
-  ``selection``, ``bias_level`` (0.975), ``interval``, ``missing_reference`` and
-  ``agreement_check_share`` (0.1), each equal to the code's, and the draw's ``seed``. Each is
-  required and none is defaulted, also when ``interval`` is ``t`` and the bootstrap's values go
-  unused. A key enters the code and the committed record in the same commit, so that the record
-  always reads.
+  judge, design v3, ``analysis.study2_audit``): ``sizes`` (400, 400 and 200), ``selection``
+  (``pps_with_replacement``), ``weight`` (``max_abs_coefficient``), ``interval``
+  (``clopper_pearson_total_error``), ``arm_level`` (1 − 0.025/3), ``bias_level`` (0.975),
+  ``missing_reference`` (``error``) and ``agreement_check_share`` (0.1), each equal to the
+  code's, and the draw's ``seed``. Each is required and none is defaulted, also when
+  ``interval`` is ``t`` and the bootstrap's values go unused. A key enters the code and the
+  committed record in the same commit, so that the record always reads.
 - *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
   and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
   HEAD), or when the running commit, the model, the judge's identity or the fixation record
@@ -570,14 +571,15 @@ MECHANISM_FIXED = {"target": MECHANISM_TARGET, "cap": MECHANISM_CAP, "minimum": 
                    "effects": list(MECHANISM_EFFECTS)}  # fmt: skip
 MECHANISM_KEYS = (*MECHANISM_FIXED, "level", "resamples", "seed")
 CONTRASTS = {"C1": (PREWARMED, FA), "C2": (ADAMW, PREWARMED)}  # name: (minuend, subtrahend)
-# The terminal audit of the judge (amendment 4; analysis.study2_audit): the fixation record's
-# ``audit`` values that must equal the code's, then the one it sets (the draw's seed). ``sizes``
-# names the arms as the record does (``AUDIT_ARMS``).
+# The terminal audit of the judge (amendment 4, the audit design v3 after review fa18;
+# analysis.study2_audit): the fixation record's ``audit`` values that must equal the code's, then
+# the one it sets (the draw's seed). ``sizes`` names the arms as the record does (``AUDIT_ARMS``);
+# ``arm_level`` is 1 − 0.025/3, each arm's share of the 97.5 % ``bias_level``.
 AUDIT_ARMS = {"adamw": ADAMW, "fa": FA, "prewarmed": PREWARMED}
 AUDIT_FIXED = {"sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
-               "strata": ["side", "judge_label"], "allocation": "equal", "selection": "srswor",
-               "bias_level": 0.975, "interval": "hypergeometric_worst_case",
-               "missing_reference": "sign_aware_bounds",
+               "selection": "pps_with_replacement", "weight": "max_abs_coefficient",
+               "interval": "clopper_pearson_total_error", "arm_level": 1 - 0.025 / 3,
+               "bias_level": 0.975, "missing_reference": "error",
                "agreement_check_share": 0.1}  # fmt: skip
 AUDIT_KEYS = (*AUDIT_FIXED, "seed")
 FIXATION_KEYS = (
@@ -3010,10 +3012,11 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
       equal to the code's (``MECHANISM_FIXED``: 60, 80, 36, 1e-12, 0.975, [0.05, 0.025]);
       ``level``, the max-t intervals' simultaneous level, in [0.95, 1); ``resamples`` (an
       integer ≥ ``MIN_RESAMPLES``) and ``seed`` (an integer);
-    - ``audit`` (amendment 4, the terminal audit of the judge; ``analysis.study2_audit``): an
-      object with exactly ``AUDIT_KEYS``: ``sizes``, ``strata``, ``allocation``, ``selection``,
-      ``bias_level``, ``interval``, ``missing_reference`` and ``agreement_check_share``, each
-      equal to the code's (``AUDIT_FIXED``), and ``seed`` (an integer), the audit draw's.
+    - ``audit`` (amendment 4, the terminal audit of the judge, design v3;
+      ``analysis.study2_audit``): an object with exactly ``AUDIT_KEYS``: ``sizes``,
+      ``selection``, ``weight``, ``interval``, ``arm_level``, ``bias_level``,
+      ``missing_reference`` and ``agreement_check_share``, each equal to the code's
+      (``AUDIT_FIXED``), and ``seed`` (an integer), the audit draw's.
 
     Each is required, the integers as JSON integers; a missing or malformed one raises
     ``ValueError``, and none is ever defaulted."""
@@ -3159,10 +3162,10 @@ def _audit_settings(value: Mapping[str, Any]) -> dict[str, Any]:
     problems = audit_problems(value)
     if problems:
         raise ValueError("; ".join(problems))
-    return {"sizes": dict(value["sizes"]), "strata": list(value["strata"]),
-            "allocation": value["allocation"], "selection": value["selection"],
-            "seed": value["seed"], "bias_level": float(value["bias_level"]),
-            "interval": value["interval"], "missing_reference": value["missing_reference"],
+    return {"sizes": dict(value["sizes"]), "selection": value["selection"],
+            "weight": value["weight"], "interval": value["interval"],
+            "arm_level": float(value["arm_level"]), "bias_level": float(value["bias_level"]),
+            "missing_reference": value["missing_reference"], "seed": value["seed"],
             "agreement_check_share": float(value["agreement_check_share"])}  # fmt: skip
 
 

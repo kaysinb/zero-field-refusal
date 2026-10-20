@@ -1,5 +1,5 @@
-"""Draw study 2's terminal audit of the judge, and estimate the judge's bias once its reference
-labels are resolved (amendment 4; the audit design v2.1; analysis.study2_audit).
+"""Draw study 2's terminal audit of the judge, and bound the judge's bias once its reference labels
+are resolved (amendment 4; the audit design v3, after review fa18; analysis.study2_audit).
 
     python -m zero_field_refusal.analysis.study2_audit_cli draw --runs DIR [DIR ...] \
         --theta0 RUN_DIR --fixation FILE --judge NAME [--runs-root RUNS_DIR] \
@@ -14,28 +14,32 @@ The command line lives in the analysis package, not in scripts/: every file unde
 
 ``draw`` takes the arguments of scripts/study2_short_summary.py with --judge, and computes the
 summary's final analysis as the summary does (its functions, loaded from the script). It refuses
-(exit 2) unless that final analysis is available: the confirmation has ended, the cohort blocks are
-labeled and the primary has stopped; before, it reads no item's judge label. Then it reads the
-judge's label of every response of each bracket run of the primary's stopping-look cohort and of
-the mechanism cohort (each checked as analysis.study2_labels.read_endpoint_labels checks it, its
-counts against that reader's), builds the frame (analysis.study2_audit.audit_frame), checks that
-the frame's judge-rated Δ, C1 and C2 are the final analysis's to 1e-12, and draws the fixation
-record's ``audit`` (sizes 400, 400 and 200; SRSWOR per stratum of arm × side × judge label;
-``draw_audit``). It writes into --out, which must not exist (default
-$RUNS_DIR/audit/study2-short-<UTC time>), the files of study 1's D7 check:
+(exit 2, "refused: ...") unless that final analysis is available: the confirmation has ended, the
+cohort blocks are labeled and the primary has stopped; before, it reads no item's judge label.
+Then it reads the judge's label of every response of each bracket run of the primary's
+stopping-look cohort and of the mechanism cohort (each checked as
+analysis.study2_labels.read_endpoint_labels checks it, its counts against that reader's), builds
+the frame (analysis.study2_audit.audit_frame), checks that the frame's judge-rated Δ, C1 and C2 are
+the final analysis's to 1e-12, and draws the fixation record's ``audit``: per arm 400, 400 and 200
+draws with replacement with probability proportional to a_i, the item's largest |coefficient|
+(``draw_audit``). An error after the gate refuses too (exit 2), and nothing is written. It writes
+into --out, which must not exist (default $RUNS_DIR/audit/study2-short-<UTC time>), the files of
+study 1's D7 check:
 
-- ``sample.jsonl``: the sampled items in a shuffled order, ``{item_id, prompt, response}``;
+- ``sample.jsonl``: each distinct item drawn once, in a shuffled order,
+  ``{item_id, prompt, response}``;
 - ``unique.jsonl``: each distinct (prompt, response) once, ``{item_id, prompt, response}``, the
   only file the reference labellers see;
-- ``key.json``: per sampled item its origin (arm, block, seed, run, prompt id, bracket side,
-  weight, prompts, the judge's label), stratum, N_h, n_h, π and unique id: hidden until the
-  reference labels are resolved;
-- ``frame.jsonl``: every frame item, the same fields and its cohorts (the estimates' coefficients
-  and the worst-case placement read it): hidden like key.json;
-- ``selection.json``: the audit's settings and seed, the fixation record's sha256, the cohorts,
-  per arm and stratum N_h, n_h, π and the stream seed, the estimands with their cohorts' blocks,
-  the strata that count and the judge-rated estimates, the dilution (sampled items in the
-  stopping-look cohort per arm), and the items and sha256 of every other file.
+- ``key.json``: per distinct item drawn its origin (arm, block, seed, run, prompt id, bracket
+  side, weight, prompts, the judge's label), cohorts, a_i, q_i, A_a, its multiplicity among the
+  draws and its unique id: hidden until the reference labels are resolved;
+- ``frame.jsonl``: every frame item, the same fields with its multiplicity (0 when not drawn) and
+  its item id when drawn: hidden like key.json;
+- ``selection.json``: the audit's settings and seed, the fixation record's and the versions
+  record's sha256, the cohorts, per arm its frame, A_a, draws, distinct items and stream seed, the
+  estimands with their cohorts' blocks and judge-rated estimates, the dilution (AdamW-25's and
+  FA-25's draws and distinct items in the stopping-look cohort), and the items and sha256 of every
+  other file.
 
 It prints only counts. The files hold model responses to harmful prompts: keep them under
 $RUNS_DIR (ignored by Git), archive them with an inventory, and hand the labellers unique.jsonl
@@ -45,20 +49,23 @@ alone.
 ``{"item_id": label | null}``, GPT's as --first and Grok's as --second; null: a failed output)
 and prints the counts, the disagreements and failed outputs to resolve, and the agreements the
 researcher checks: ⌈0.1 × agreements⌉ drawn with the stream derive_seed(seed, "agreement_check")
-of the fixation record's audit seed (analysis.study2_audit.agreement_check); --out writes the same
-record (it must not exist). Item ids only, never a text.
+of the fixation record's audit seed (analysis.study2_audit.agreement_check); --out writes the
+record with every agreement (it must not exist). Item ids only, never a text.
 
 ``estimate`` reads the resolved reference labels (--reference: a JSON object
 ``{"item_id": label | null}`` over every item id of unique.jsonl, a label one of refusal,
-safe_non_refusal or harmful_compliance, null a missing reference: failed or unresolved), checks
-the files against selection.json's sha256 and the draw against the fixation record (the draw is
-made again from frame.jsonl and must give key.json's items), and prints per estimand (Δ on the
-stopping-look cohort, the formal reading; C1, C2 and each arm's harm, descriptive) the HT estimate
-with its SE and Wald interval under both completions of the missing references, the
-boundary-safe interval [L_B, U_B] at the record's bias_level, and for Δ, C1 and C2 the reference
-harm of the realized cohort [judge point − U_B, judge point − L_B] with its readings; then per
-stratum N_h, n_h, m_h and the missing references. --out writes the whole record (it must not
-exist). Numbers only, never a text.
+safe_non_refusal or harmful_compliance, null a missing reference: failed or unresolved). It checks
+the files against selection.json's sha256, the audit against the fixation record, the draw made
+again from frame.jsonl against key.json's items and multiplicities, and each estimand's
+judge-rated estimate against selection.json's. It prints per arm the draws, the distinct items,
+the draws hitting an error (a missing reference counts as one), the missing references, A_a, the
+Clopper–Pearson bound p_a^U at the record's arm_level and T_a^U = A_a p_a^U; and per estimand (Δ
+on the stopping-look cohort, the formal reading; C1, C2 and each arm's harm, descriptive) the bound
+U_E (the sum over its arms) with [−U_E, +U_E], the Hansen–Hurwitz estimate with its SE and Wald
+interval (descriptive; missing references left out and counted), and for Δ, C1 and C2 the
+reference harm of the realized cohort [judge point − U_E, judge point + U_E] with its readings.
+--out writes the whole record, with selection.json's sha256 (it must not exist). Numbers only,
+never a text.
 """
 
 import argparse
@@ -88,7 +95,7 @@ from zero_field_refusal.analysis.study2_audit import (
     estimands,
     judge_point,
     reference_value,
-    stratum_counts,
+    weights,
 )
 from zero_field_refusal.analysis.study2_labels import _labels, _responses, read_endpoint_labels
 from zero_field_refusal.analysis.study2_short import (
@@ -113,7 +120,8 @@ ENDPOINT = f"step-{STEPS}"
 FILES = ("sample.jsonl", "unique.jsonl", "key.json", "frame.jsonl")
 TOLERANCE = 1e-12  # the frame's judge-rated estimates against the final analysis's
 KEY_FIELDS = ("arm", "block", "seed", "run", "prompt", "side", "w", "prompts", "judge",
-              "y_judge", "judge_label", "stratum")  # fmt: skip
+              "y_judge")  # fmt: skip
+DRAWN_FIELDS = ("a", "q", "A", "multiplicity", "sampled")  # frame.jsonl's fields of the draw
 
 
 class Refused(Exception):
@@ -233,7 +241,7 @@ def prompt_texts(run_dir: Path, cache: dict[str, dict[str, str]]) -> dict[str, s
 
 
 def _order(items: list[dict[str, Any]], seed: int) -> list[tuple[str, dict[str, Any]]]:
-    """The sampled items shuffled across strata, each with an opaque id (as D7's)."""
+    """The distinct items drawn, shuffled across arms, each with an opaque id (as D7's)."""
     rng = random.Random(derive_seed(seed, "order"))
     shuffled = list(items)
     rng.shuffle(shuffled)
@@ -247,10 +255,6 @@ def _order(items: list[dict[str, Any]], seed: int) -> list[tuple[str, dict[str, 
     return named
 
 
-def _plain(stratum: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in stratum.items() if k not in ("members", "sampled")}
-
-
 def draw(args: argparse.Namespace) -> dict[str, Any]:
     summary = summary_module()
     fixation, state, runs, found, final = final_state(args, summary)
@@ -258,7 +262,13 @@ def draw(args: argparse.Namespace) -> dict[str, Any]:
         cohorts = audit_cohorts(state, found, final)
     except ValueError as exc:
         raise Refused(str(exc)) from exc
-    audit = fixation["audit"]
+    try:
+        return _draw(args, fixation["audit"], cohorts, runs)
+    except (OSError, KeyError, ValueError) as exc:  # LabelsPending is a ValueError
+        raise Refused(f"after the final analysis: {exc}") from exc
+
+
+def _draw(args, audit, cohorts, runs) -> dict[str, Any]:
     by_id = {run.run_id: run for run in runs}
     identity = judge_identity(load_config(f"judge/{args.judge}"))
     cache: dict[str, dict[str, str]] = {}
@@ -268,11 +278,10 @@ def draw(args: argparse.Namespace) -> dict[str, Any]:
         prompts = prompt_texts(run_dir, cache)
         labels[run_id], files[run_id] = item_labels(run_dir, args.judge, identity, prompts)
     frame = audit_frame(cohorts, labels)
-    points = {}
     for name, expected in cohorts["judge"].items():
-        points[name] = judge_point(frame, coefficients(frame, name))
-        if expected is None or abs(points[name] - expected) > TOLERANCE:
-            raise ValueError(f"the frame's judge-rated {name} {points[name]!r} is not the final "
+        point = judge_point(frame, coefficients(frame, name))
+        if expected is None or abs(point - expected) > TOLERANCE:
+            raise ValueError(f"the frame's judge-rated {name} {point!r} is not the final "
                              f"analysis's {expected!r}")  # fmt: skip
     drawn = draw_audit(frame, audit["sizes"], audit["seed"])
     texts: dict[str, dict[str, str]] = {}
@@ -285,27 +294,30 @@ def draw(args: argparse.Namespace) -> dict[str, Any]:
         prompts = prompt_texts(run_dir, cache)
         blinded.append({"item_id": item_id, "prompt": prompts[item["prompt"]],
                         "response": texts[item["run"]][item["prompt"]]})  # fmt: skip
-        stratum = next(s for s in drawn["strata"] if s["stratum"] == item["stratum"])
         key[item_id] = {"frame_index": item["index"], **{k: item[k] for k in KEY_FIELDS},
-                        "cohorts": list(item["cohorts"]), "N": stratum["N"], "n": stratum["n"],
-                        "pi": entry["pi"]}  # fmt: skip
+                        "cohorts": list(item["cohorts"]),
+                        **{k: entry[k] for k in ("a", "q", "A", "multiplicity")}}  # fmt: skip
     unique, unique_of = unique_texts(blinded, 1)
     for item_id, unique_id in unique_of.items():
         key[item_id]["unique_id"] = unique_id
-    sampled_as = {entry["frame_index"]: item_id for item_id, entry in key.items()}
+    a = weights(frame)
+    totals = {arm: found["A"] for arm, found in drawn["arms"].items()}
+    drawn_as = {entry["frame_index"]: (item_id, entry["multiplicity"])
+                for item_id, entry in key.items()}  # fmt: skip
+    rows = []
+    for item in frame:
+        total = totals[item["arm"]]
+        item_id, multiplicity = drawn_as.get(item["index"], (None, 0))
+        rows.append({**item, "a": float(a[item["index"]]), "A": total,
+                     "q": float(a[item["index"]] / total) if total else None,
+                     "multiplicity": multiplicity, "sampled": item_id})  # fmt: skip
     primary = {b["block"] for b in cohorts["primary"]}
-    out = args.out
-    out.mkdir(parents=True)
-    write_calibration_files(blinded, key, out / "sample.jsonl", out / "key.json")
-    (out / "unique.jsonl").write_text("".join(json.dumps(u, ensure_ascii=False) + "\n"
-                                              for u in unique))  # fmt: skip
-    (out / "frame.jsonl").write_text(
-        "".join(
-            json.dumps({**item, "sampled": sampled_as.get(item["index"])}) + "\n" for item in frame
-        )
-    )
+    dilution = {}
+    for arm in (ADAMW, FA):
+        inside = [i for i in drawn["draws"].get(arm, []) if frame[i]["block"] in primary]
+        dilution[arm] = {"draws": len(inside), "distinct": len(set(inside))}
     record = {
-        "what": "Study 2's terminal audit of the judge (amendment 4; the audit design v2.1).",
+        "what": "Study 2's terminal audit of the judge (amendment 4; the audit design v3).",
         "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "command": sys.argv,
         "code": git_state(),
@@ -319,18 +331,22 @@ def draw(args: argparse.Namespace) -> dict[str, Any]:
                                                                    cohorts[cohort]]
                     for cohort in COHORTS},
         "arms": drawn["arms"],
-        "strata": [_plain(s) for s in drawn["strata"]],
         "estimands": {name: {"cohort": ESTIMANDS[name]["cohort"],
                              "blocks": len({i["block"] for i in frame
                                             if ESTIMANDS[name]["cohort"] in i["cohorts"]}),
                              "judge_point": judge_point(frame, coefficients(frame, name))}
                       for name in estimands(frame)},
-        "dilution": {arm: sum(1 for e in drawn["items"] if frame[e["index"]]["arm"] == arm
-                              and frame[e["index"]]["block"] in primary)
-                     for arm in (ADAMW, FA)},
-        "files": {name: {"items": len((out / name).read_text().splitlines()) if name.endswith(
-            ".jsonl") else len(key), "sha256": _sha256(out / name)} for name in FILES},
+        "dilution": dilution,
     }  # fmt: skip
+    out = args.out
+    out.mkdir(parents=True)
+    write_calibration_files(blinded, key, out / "sample.jsonl", out / "key.json")
+    (out / "unique.jsonl").write_text("".join(json.dumps(u, ensure_ascii=False) + "\n"
+                                              for u in unique))  # fmt: skip
+    (out / "frame.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    record["files"] = {name: {"items": len((out / name).read_text().splitlines())
+                              if name.endswith(".jsonl") else len(key),
+                              "sha256": _sha256(out / name)} for name in FILES}  # fmt: skip
     (out / "selection.json").write_text(json.dumps(record, indent=1) + "\n")
     return record
 
@@ -338,10 +354,9 @@ def draw(args: argparse.Namespace) -> dict[str, Any]:
 def draw_counts(record: dict[str, Any], out: Path) -> dict[str, Any]:
     """What ``draw`` prints: counts only."""
     return {"out": str(out), "arms": record["arms"],
-            "strata": [{k: s[k] for k in ("stratum", "N", "n")} for s in record["strata"]],
             "cohorts": {k: None if v is None else len(v) for k, v in record["cohorts"].items()},
             "stopping_look": record["stopping_look"],
-            "sampled_in_the_stopping_look_cohort": record["dilution"],
+            "drawn_in_the_stopping_look_cohort": record["dilution"],
             "files": {k: v["items"] for k, v in record["files"].items()}}  # fmt: skip
 
 
@@ -350,22 +365,35 @@ def draw_counts(record: dict[str, Any], out: Path) -> dict[str, Any]:
 
 def read_sample(directory: Path, fixation: dict[str, Any]) -> dict[str, Any]:
     """The draw's files, checked: their sha256 against selection.json's, its audit settings
-    against the fixation record's, and the draw made again from frame.jsonl against key.json."""
-    selection = json.loads((directory / "selection.json").read_text())
+    against the fixation record's, the draw made again from frame.jsonl against key.json's items,
+    a_i, q_i and multiplicities, and each estimand's judge-rated estimate against
+    selection.json's."""
+    path = directory / "selection.json"
+    selection = json.loads(path.read_text())
     for name in FILES:
         if _sha256(directory / name) != selection["files"][name]["sha256"]:
             raise Refused(f"{directory / name} is not the file the draw wrote")
     if selection["audit"] != fixation["audit"]:
         raise Refused("the fixation record's audit is not the one the draw used")
-    frame = [json.loads(line) for line in (directory / "frame.jsonl").read_text().splitlines()]
-    for item in frame:
-        item.pop("sampled")
+    rows = [json.loads(line) for line in (directory / "frame.jsonl").read_text().splitlines()]
+    frame = [{k: v for k, v in row.items() if k not in DRAWN_FIELDS} for row in rows]
     key = json.loads((directory / "key.json").read_text())
     drawn = draw_audit(frame, fixation["audit"]["sizes"], fixation["audit"]["seed"])
-    if sorted(e["index"] for e in drawn["items"]) != sorted(e["frame_index"]
-                                                            for e in key.values()):  # fmt: skip
+    again = {e["index"]: e for e in drawn["items"]}
+    recorded = {entry["frame_index"]: entry for entry in key.values()}
+    if set(again) != set(recorded) or any(
+        (again[i]["multiplicity"], again[i]["a"], again[i]["q"])
+        != (recorded[i]["multiplicity"], recorded[i]["a"], recorded[i]["q"])
+        for i in again
+    ):
         raise Refused("the draw made again from frame.jsonl is not key.json's")
-    return {"selection": selection, "frame": frame, "key": key, "drawn": drawn}
+    for name, entry in selection["estimands"].items():
+        point = judge_point(frame, coefficients(frame, name))
+        if abs(point - entry["judge_point"]) > TOLERANCE:
+            raise Refused(f"the frame's judge-rated {name} {point!r} is not selection.json's "
+                          f"{entry['judge_point']!r}")  # fmt: skip
+    return {"selection": selection, "selection_sha256": _sha256(path), "frame": frame,
+            "key": key, "drawn": drawn}  # fmt: skip
 
 
 def _labels_file(path: Path) -> dict[str, Any]:
@@ -415,42 +443,50 @@ def estimate(args: argparse.Namespace) -> dict[str, Any]:
         raise Refused(str(exc)) from exc
     reference = {entry["frame_index"]: values[entry["unique_id"]]
                  for entry in sample["key"].values()}  # fmt: skip
-    level = fixation["audit"]["bias_level"]
-    found = audit_estimates(sample["frame"], sample["drawn"], reference, level)
+    audit = fixation["audit"]
+    found = audit_estimates(
+        sample["frame"],
+        sample["drawn"],
+        reference,
+        arm_level=audit["arm_level"],
+        bias_level=audit["bias_level"],
+    )
     selection = sample["selection"]
     return {"sample": str(args.sample),
+            "selection": {"path": str(args.sample / "selection.json"),
+                          "sha256": sample["selection_sha256"]},
             "reference": {"path": str(args.reference), "sha256": _sha256(args.reference)},
-            "audit": fixation["audit"], "stopping_look": selection["stopping_look"],
+            "audit": audit, "stopping_look": selection["stopping_look"],
             "cohorts": {k: None if v is None else len(v)
                         for k, v in selection["cohorts"].items()},
-            "estimands": found, "strata": stratum_counts(sample["drawn"], reference),
-            "missing_references": sum(1 for v in reference.values() if v is None)}  # fmt: skip
+            "arms": found["arms"], "estimands": found["estimands"],
+            "missing_references": {
+                "items": sum(1 for v in reference.values() if v is None),
+                "draws": sum(entry["missing_draws"] for entry in found["arms"].values())},
+            }  # fmt: skip
 
 
 def estimate_shown(record: dict[str, Any]) -> dict[str, Any]:
-    """What ``estimate`` prints: per estimand the HT estimates, the bounds and the reference
-    harm; per stratum its counts."""
+    """What ``estimate`` prints: per arm its draws and bound; per estimand the bound, the
+    Hansen–Hurwitz estimate and the reference harm."""
+    arms = {arm: {k: entry[k] for k in ("draws", "distinct", "errors", "missing_draws",
+                                         "missing_items", "A", "p_upper", "T_upper", "level")}
+            for arm, entry in record["arms"].items()}  # fmt: skip
     shown = {}
     for name, entry in record["estimands"].items():
-        shown[name] = {
-            "status": entry["status"],
-            "cohort": entry["cohort"],
-            "blocks": entry["blocks"],
-            "strata": entry["bounds"]["K"],
-            "ht": {
-                c: {k: entry["ht"][c][k] for k in ("estimate", "se", "wald")}
-                for c in ("lower", "upper")
-            },
-            "bounds": entry["bounds"]["interval"],
-            "level": entry["bounds"]["level"],
-        }
+        shown[name] = {"status": entry["status"], "cohort": entry["cohort"],
+                       "blocks": entry["blocks"], "U": entry["bound"]["U"],
+                       "interval": entry["bound"]["interval"],
+                       "joint_level": entry["bound"]["joint_level"],
+                       "hh": {k: entry["hh"][k] for k in ("estimate", "se", "wald",
+                                                           "missing_draws")}}  # fmt: skip
         if "reference_harm" in entry:
             harm = entry["reference_harm"]
             shown[name]["reference_harm"] = {
                 k: harm[k] for k in ("judge_point", "interval", "readings", "conditional")
             }
     return {"cohorts": record["cohorts"], "stopping_look": record["stopping_look"],
-            "estimands": shown, "strata": record["strata"],
+            "arms": arms, "estimands": shown,
             "missing_references": record["missing_references"]}  # fmt: skip
 
 
@@ -483,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
     one.add_argument("--versions", type=Path, default=REPO_ROOT / VERSIONS_RECORD)
     one.add_argument("--out", type=Path, help="a new directory under $RUNS_DIR")
     two = sub.add_parser("agreements", help="the agreements the researcher checks")
-    three = sub.add_parser("estimate", help="the bias and the reference harm")
+    three = sub.add_parser("estimate", help="the bias bounds and the reference harm")
     for later in (two, three):
         later.add_argument("--sample", type=Path, required=True, help="the draw's directory")
         later.add_argument("--fixation", type=Path, required=True)
@@ -519,7 +555,7 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps(estimate_shown(record), indent=1))
             _write(args.out, record)
     except Refused as exc:
-        parser.error(str(exc))
+        parser.error(f"refused: {exc}")
 
 
 if __name__ == "__main__":
