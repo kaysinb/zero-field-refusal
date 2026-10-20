@@ -499,11 +499,115 @@ def tight_frame():
     return frame, reference
 
 
-def exact_miss(p: float, level: float) -> float:
+def code_bounds(level: float, draws: int = 400) -> np.ndarray:
+    """The code's Clopper–Pearson bound at ``level`` for every x = 0..n."""
+    return np.array([clopper_pearson_upper(x, draws, level) for x in range(draws + 1)])
+
+
+def exact_miss(p: float, level: float, bounds: np.ndarray | None = None) -> float:
     """P(p^U(X) < p), X ~ Binomial(400, p), with the code's bound at ``level``."""
+    bounds = code_bounds(level) if bounds is None else bounds
+    xs = np.arange(bounds.size)
+    return float(stats.binom.pmf(xs, bounds.size - 1, p)[bounds < p].sum())
+
+
+def largest_miss(level: float) -> float:
+    """The largest miss probability over p just above and just below each of the code's first
+    16 boundaries p^U(x0) and a uniform grid of 600 points in [0.002, 0.06]."""
+    bounds = code_bounds(level)
+    grid = [b * (1 + s) for b in bounds[:16] for s in (1e-9, -1e-9)]
+    grid += np.linspace(0.002, 0.06, 600).tolist()
+    return max(exact_miss(p, level, bounds) for p in grid)
+
+
+def test_the_largest_miss_sits_just_below_alpha() -> None:
+    """Review M1, sharpened. At a boundary p = p^U(x0), P(X ≤ x0 | p) = α: just above it the bound
+    misses exactly X ≤ x0, with probability just below α; just below it P(X ≤ x0 | p) is just
+    above α, but the bound covers x0 and the miss is P(X ≤ x0 − 1 | p) < α. The largest miss over
+    those points and a fine grid lies in (0.9 α, α]. A split of 0.025/2 per arm (1.5 α) leaves
+    that window, as does one of 0.025/6."""
+    bounds = code_bounds(ARM_LEVEL)
+    for x0 in range(16):
+        above, below = bounds[x0] * (1 + 1e-9), bounds[x0] * (1 - 1e-9)
+        tail_above = stats.binom.cdf(x0, 400, above)
+        assert ALPHA * (1 - 1e-6) < tail_above < ALPHA
+        assert exact_miss(above, ARM_LEVEL, bounds) == pytest.approx(tail_above, rel=1e-12)
+        assert ALPHA < stats.binom.cdf(x0, 400, below) < ALPHA * (1 + 1e-6)
+        missed = stats.binom.cdf(x0 - 1, 400, below) if x0 else 0.0
+        assert exact_miss(below, ARM_LEVEL, bounds) == pytest.approx(missed, rel=1e-12, abs=1e-300)
+    found = largest_miss(ARM_LEVEL)
+    assert 0.9 * ALPHA < found <= ALPHA
+    assert not largest_miss(1 - 0.025 / 2) <= ALPHA  # 1.5 α: above the window
+    assert not largest_miss(1 - 0.025 / 6) > 0.9 * ALPHA  # α/2: below it
+    print(f"largest miss {found / ALPHA:.6f} α")
+
+
+def even_frame(seed: int, blocks: int, prompts: int, rate: float):
+    """A two-arm frame with K* at each bracket's geometric middle (every a_i equal, A_a = 1) and
+    exactly ``rate`` of each arm's items in error at random: p_a = rate exactly."""
+    frame = frame_of(seed, blocks=blocks, prompts=prompts, three_arm=False, even=True)
+    reference = place_errors(frame, {ADAMW: rate, FA: rate}, rng=np.random.default_rng(seed))
+    return frame, reference
+
+
+def test_the_one_percent_width_is_pinned() -> None:
+    """At exactly 1 % errors (every a_i equal), E[U_Δ] = Σ_a A_a E[p^U(X_a)], X_a ~ Binomial(400,
+    0.01): 0.0582 with A_a = 1, fa18's about 5.8 pp at 60 blocks; the mean U_Δ over 2000 draws
+    through draw_audit, arm_bounds and bias_bound lies within 2 % of it."""
+    frame, reference = even_frame(19, 2, 50, 0.01)
+    a = weights(frame)
+    for arm in PRIMARY_ARMS:
+        members = [i["index"] for i in frame if i["arm"] == arm]
+        wrong = sum(1 for i in members if reference[i] != frame[i]["y_judge"])
+        assert (len(members), wrong) == (200, 2) and np.all(a[members] == a[members[0]])
     xs = np.arange(401)
-    below = np.array([clopper_pearson_upper(int(x), 400, level) < p for x in xs])
-    return float(stats.binom.pmf(xs, 400, p)[below].sum())
+    expected = 2 * float((stats.binom.pmf(xs, 400, 0.01) * code_bounds(ARM_LEVEL)).sum())
+    assert expected == pytest.approx(0.0582, abs=0.0005)
+    truth = dict(enumerate(reference.tolist()))
+    widths = [bias_bound(arm_bounds(frame, sample, truth, ARM_LEVEL), "delta")["U"]
+              for sample in replicates(frame, 2000, 3)]  # fmt: skip
+    print(f"1 % width: expected {expected:.5f}, mean over 2000 draws {np.mean(widths):.5f}")
+    assert float(np.mean(widths)) == pytest.approx(expected, rel=0.02)
+
+
+def test_hansen_hurwitz_counts_every_missing_draw() -> None:
+    """Review of 02826e5, item 3: with every AdamW-25 draw missing the estimate is None, and the
+    missing draws of every arm are counted, FA-25's after AdamW-25's too."""
+    frame = frame_of(17, blocks=4, prompts=30, three_arm=False)
+    drawn = draw_audit(frame, SIZES, SEED)
+    reference = {e["index"]: None if e["arm"] == ADAMW else frame[e["index"]]["y_judge"]
+                 for e in drawn["items"]}  # fmt: skip
+    lost = next(e for e in drawn["items"] if e["arm"] == FA)
+    reference[lost["index"]] = None
+    found = hansen_hurwitz(frame, drawn, reference, coefficients(frame, "delta"),
+                           arms=[ADAMW, FA], level=LEVEL)  # fmt: skip
+    assert (found["estimate"], found["se"], found["wald"]) == (None, None, None)
+    assert found["missing_draws"] == 400 + lost["multiplicity"]
+
+
+def test_hansen_hurwitz_divides_by_the_responding_draws() -> None:
+    """Review of 02826e5, item 4: with errors and missing references (n'_a < n_a), each arm's
+    mean runs over its responding draws, the design's divisor n'_a (missing completely at
+    random, descriptive only), not over n_a."""
+    frame = frame_of(18, blocks=4, prompts=30, three_arm=False)
+    c = coefficients(frame, "delta")
+    drawn = draw_audit(frame, SIZES, SEED)
+    truth = place_errors(frame, {ADAMW: 0.1, FA: 0.1}, rng=np.random.default_rng(2))
+    reference = {e["index"]: int(truth[e["index"]]) for e in drawn["items"]}
+    for arm in PRIMARY_ARMS:
+        for entry in [e for e in drawn["items"] if e["arm"] == arm][:3]:
+            reference[entry["index"]] = None
+    q = {e["index"]: e["q"] for e in drawn["items"]}
+    responding, every = 0.0, 0.0
+    for arm in PRIMARY_ARMS:
+        z = [c[i] * (frame[i]["y_judge"] - reference[i]) / q[i] for i in drawn["draws"][arm]
+             if reference[i] is not None]  # fmt: skip
+        assert len(z) < 400 and any(z)
+        responding += math.fsum(z) / len(z)
+        every += math.fsum(z) / 400
+    found = hansen_hurwitz(frame, drawn, reference, c, arms=list(PRIMARY_ARMS), level=LEVEL)
+    assert found["estimate"] == pytest.approx(responding, rel=1e-12)
+    assert found["estimate"] != pytest.approx(every, rel=1e-6)
 
 
 def test_the_near_tight_coverage_catches_a_miscalibrated_level() -> None:
@@ -789,6 +893,15 @@ def test_draw_writes_blinded_files_and_estimate_reads_them(monkeypatch, tmp_path
     assert {arm: arms[arm]["draws"] for arm in ARMS} == SIZE_OF
     assert all(arms[arm]["T_upper"] == pytest.approx(arms[arm]["A"] * arms[arm]["p_upper"])
                for arm in ARMS)  # fmt: skip
+    # The levels as wired: each arm at the fixation's arm level (never the bias level), the
+    # estimands jointly at 0.975 (review of 02826e5, item 1).
+    for arm in ARMS:
+        assert arms[arm]["level"] == ARM_LEVEL
+        assert arms[arm]["p_upper"] == clopper_pearson_upper(
+            arms[arm]["errors"], arms[arm]["draws"], ARM_LEVEL
+        )
+    assert all(entry["joint_level"] == pytest.approx(0.975)
+               for entry in shown["estimands"].values())  # fmt: skip
     delta = shown["estimands"]["delta"]
     assert delta["U"] == pytest.approx(arms[ADAMW]["T_upper"] + arms[FA]["T_upper"])
     assert delta["interval"] == [-delta["U"], delta["U"]]
@@ -821,7 +934,23 @@ def test_draw_writes_blinded_files_and_estimate_reads_them(monkeypatch, tmp_path
     with pytest.raises(SystemExit):
         cli.main(estimate_args(tmp_path, out, reference))
     assert "not selection.json's" in capsys.readouterr().err
+    # A missing, garbled or misshapen selection.json, or a missing frame, refuses (exit 2).
+    for damage in ("", "{not json", "[]", None):
+        if damage is None:
+            (out / "selection.json").write_text(original)
+            frame_text = (out / "frame.jsonl").read_text()
+            (out / "frame.jsonl").unlink()
+        elif damage == "":
+            (out / "selection.json").unlink()
+        else:
+            (out / "selection.json").write_text(damage)
+        with pytest.raises(SystemExit) as stopped:
+            cli.main(estimate_args(tmp_path, out, reference))
+        assert stopped.value.code == 2 and "refused: " in capsys.readouterr().err
+    (out / "frame.jsonl").write_text(frame_text)
     (out / "selection.json").write_text(original)
+    cli.main(estimate_args(tmp_path, out, reference))  # whole again
+    assert json.loads(capsys.readouterr().out)["estimands"]["delta"]["U"] == delta["U"]
     # The agreements to check, from the two labellers' files.
     first, second = tmp_path / "gpt.json", tmp_path / "grok.json"
     first.write_text(json.dumps({k: v or "refusal" for k, v in labels.items()}))

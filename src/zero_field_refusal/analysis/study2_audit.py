@@ -58,10 +58,12 @@ the runs and writes and reads the audit's files.
   descriptive, whose bound is its arm's T_a^U (its |c_i| ≤ a_i too).
 - *The joint level* is 1 − (number of arms drawn)·(1 − arm_level): 97.5 % with three arms, more
   with two.
-- *Hansen–Hurwitz with missing references*: an arm's draws whose item has no reference are left
-  out and counted; the arm's mean and sample variance run over the others (n'_a). The SE is None
-  when an arm of the estimand has fewer than two such draws; the estimate is None without any.
-  The Wald interval is at ``bias_level``.
+- *Hansen–Hurwitz with missing references* (the design's "The point estimate"): an arm's draws
+  whose item has no reference are left out and counted, over every arm; the arm's mean and sample
+  variance run over its responding draws (the divisor n'_a), assuming the missing draws are
+  missing completely at random; descriptive only. The SE is None when an arm of the estimand has
+  fewer than two responding draws; the estimate is None without any. The Wald interval is at
+  ``bias_level``.
 - *The agreement check*: ⌈share × agreements⌉ of the items both labellers labelled alike (in
   order of their ids), never fewer than one when there is an agreement.
 """
@@ -382,12 +384,17 @@ def hansen_hurwitz(
     level: float,
 ) -> dict[str, Any]:
     """The Hansen–Hurwitz estimate of B_E over the estimand's ``arms``: Σ_a the mean over a's
-    draws with a reference of c_i d_i / q_i, its with-replacement SE (√Σ_a s_a²/n'_a) and Wald
-    interval at ``level``, and the draws left out for a missing reference; descriptive."""
+    responding draws (those with a reference) of c_i d_i / q_i, its with-replacement SE
+    (√Σ_a s_a²/n'_a) and Wald interval at ``level``, and the draws left out for a missing
+    reference, counted over every arm. The divisor is n'_a, the arm's responding draws, under the
+    assumption that the missing draws are missing completely at random (the audit design v3,
+    "The point estimate"); the estimate is descriptive only. With no responding draw in an arm the
+    estimate is None; with fewer than two, the SE."""
     c = np.asarray(coefficients, dtype=float)
     q = {item["index"]: item["q"] for item in sample["items"]}
     z_level = float(stats.norm.ppf(1 - (1 - level) / 2))
-    parts, variance, estimable, missing = [], 0.0, True, 0
+    responding: dict[str, list[float]] = {}
+    missing = 0
     for arm in arms:
         if arm not in sample["draws"]:
             raise ValueError(f"hansen_hurwitz: no draw of {arm}")
@@ -400,16 +407,14 @@ def hansen_hurwitz(
                 missing += 1
                 continue
             values.append(c[i] * (frame[i]["y_judge"] - found) / q[i])
-        if not values:
-            return {"estimate": None, "se": None, "wald": None, "missing_draws": missing,
-                    "level": level}  # fmt: skip
-        parts.append(math.fsum(values) / len(values))
-        if len(values) < 2:
-            estimable = False
-        else:
-            variance += float(np.var(values, ddof=1)) / len(values)
-    estimate = math.fsum(parts)
-    se = math.sqrt(variance) if estimable else None
+        responding[arm] = values
+    if not all(responding.values()):
+        return {"estimate": None, "se": None, "wald": None, "missing_draws": missing,
+                "level": level}  # fmt: skip
+    estimate = math.fsum(math.fsum(v) / len(v) for v in responding.values())
+    se = None
+    if all(len(v) >= 2 for v in responding.values()):
+        se = math.sqrt(math.fsum(float(np.var(v, ddof=1)) / len(v) for v in responding.values()))
     wald = None if se is None else [estimate - z_level * se, estimate + z_level * se]
     return {"estimate": estimate, "se": se, "wald": wald, "missing_draws": missing,
             "level": level}  # fmt: skip

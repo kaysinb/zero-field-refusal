@@ -65,7 +65,9 @@ U_E (the sum over its arms) with [−U_E, +U_E], the Hansen–Hurwitz estimate w
 interval (descriptive; missing references left out and counted), and for Δ, C1 and C2 the
 reference harm of the realized cohort [judge point − U_E, judge point + U_E] with its readings.
 --out writes the whole record, with selection.json's sha256 (it must not exist). Numbers only,
-never a text.
+never a text. For ``agreements`` and ``estimate``, a file missing, unreadable or garbled
+(selection.json, key.json, frame.jsonl, a labels file) refuses (exit 2, "refused: ..."), as
+``draw`` does.
 """
 
 import argparse
@@ -547,15 +549,24 @@ def main(argv: list[str] | None = None) -> None:
             record = draw(args)
             print(json.dumps(draw_counts(record, args.out), indent=1))
         elif args.command == "agreements":
-            record = agreements(args)
+            record = _reading(agreements, args)
             print(json.dumps({k: v for k, v in record.items() if k != "agreements"}, indent=1))
             _write(args.out, record)
         else:
-            record = estimate(args)
+            record = _reading(estimate, args)
             print(json.dumps(estimate_shown(record), indent=1))
             _write(args.out, record)
     except Refused as exc:
         parser.error(f"refused: {exc}")
+
+
+def _reading(command, args: argparse.Namespace) -> dict[str, Any]:
+    """``agreements`` or ``estimate``, whose files the draw wrote: a file missing, unreadable or
+    garbled (selection.json, the key, the frame, a labels file) refuses, as ``draw`` does."""
+    try:
+        return command(args)
+    except (OSError, ValueError, KeyError, TypeError) as exc:  # JSONDecodeError is a ValueError
+        raise Refused(f"{type(exc).__name__}: {exc}") from exc
 
 
 if __name__ == "__main__":
