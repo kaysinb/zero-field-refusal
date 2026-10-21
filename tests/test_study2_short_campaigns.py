@@ -42,6 +42,7 @@ from test_study2_short import (
 
 from zero_field_refusal.analysis import study2_short
 from zero_field_refusal.analysis.stage_a import arm_of
+from zero_field_refusal.analysis.study2_labels import LabelsPending
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
     ARMS,
@@ -2880,6 +2881,65 @@ def test_the_summary_seals_the_prewarmed_harm_until_the_final_analysis(
         _sealed_everywhere(record)
 
 
+def test_the_summary_seals_the_prewarmed_pending_reason_until_the_final_analysis(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Review fa26: a pre-warmed run whose labels are pending (an incomplete judging receipt)
+    shows only a generic status, in the printed status and OUT.json, while the mechanism cohort
+    is unfinished; a primary arm's pending reason stays whole."""
+    runs = base()
+    state = confirmed(runs)
+    first = state["confirmation"][0]["supports"]
+    pending = {first[arm]["bracket"]["lo"]["run"]: arm for arm in (ADAMW, PREWARMED)}
+    runs = on_disk(runs, tmp_path)
+    by_name = {run.run_dir.name: run for run in runs}
+    monkeypatch.setattr(
+        "zero_field_refusal.analysis.evidence.label_path",
+        lambda run_dir, judge: run_dir / "config.yaml",
+    )  # every run is labeled
+    monkeypatch.setattr("zero_field_refusal.data.load_prompt_set",
+                        lambda name, data: [{"id": "p", "text": "t"}])  # fmt: skip
+    reason = "{}: 17 items without a label after 1 labeling rounds of 3: rerun the labeling"
+    absent = "{}: has no record of 23 expected items (first: x): an empty or partial label file"
+
+    def labels(run_dir, judge, identity, prompts):
+        if run_dir.name in pending:
+            raise LabelsPending((absent if pending[run_dir.name] == PREWARMED else reason)
+                                .format(run_dir.name))  # fmt: skip
+        return rows({ADAMW: 100, FA: 50, PREWARMED: 77}[by_name[run_dir.name].arm])
+
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", labels)
+    out = script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
+                 "--runs-root", runs_root(tmp_path), "--judge", "wildguard")  # fmt: skip
+    printed, whole = json.loads(capsys.readouterr().out), json.loads(out.read_text())
+    assert printed["looks"]["available"] and not printed["final"]["available"]
+    prewarmed = next(run for run, arm in pending.items() if arm == PREWARMED)
+    primary = next(run for run, arm in pending.items() if arm == ADAMW)
+    generic = "labeling pending (sealed until the final analysis)"
+    for record in (printed, whole):
+        assert record["looks"]["labels_pending"] == {
+            prewarmed: generic, primary: reason.format(primary)}  # fmt: skip
+        text = json.dumps(record)
+        assert "no record of 23" not in text and prewarmed + ":" not in text
+
+
+def test_the_summary_opens_the_pending_reasons_with_the_final_analysis() -> None:
+    """Once the final analysis is available the looks carry the full reasons, a pre-warmed run's
+    included; before, ``compute_looks`` shows the generic status (the unsealing needs a finished
+    mechanism cohort and a stopped primary: tested here on the function)."""
+    runs = base()
+    state = confirmed(runs)
+    module = summary_module()
+    prewarmed = next(r.run_id for r in runs if r.arm == PREWARMED)
+    pending = {prewarmed: "3 items without a label after 1 labeling rounds of 3"}
+    found = module.compute_looks(state, runs, {}, FIXATION, THETA0, pending)
+    assert found["labels_pending"] == {prewarmed: module.PENDING_SEALED}
+    module.open_pending(found, pending, {"available": False, "reason": "not yet"})
+    assert found["labels_pending"] == {prewarmed: module.PENDING_SEALED}
+    module.open_pending(found, pending, {"available": True})
+    assert found["labels_pending"] == pending
+
+
 def test_the_summary_is_the_same_with_and_without_the_time_course(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -2979,8 +3039,6 @@ def test_the_summary_reads_the_labels_of_the_brackets_once(monkeypatch, tmp_path
 
 
 def test_the_summary_keeps_runs_without_a_completed_receipt_pending(monkeypatch, tmp_path):
-    from zero_field_refusal.analysis.study2_labels import LabelsPending
-
     runs = base()
     state = confirmed(runs)
     module = summary_module()

@@ -57,7 +57,8 @@ labels of the primary arms, the blocks after the stopping look as a descriptive
 revises the decision), and the utility family over the blocks started. The looks wait for every
 supported arm's labels, the pre-warmed arm's included, but neither the printed status nor OUT.json
 carries the pre-warmed arm's interpolated harm or missing labels (the looks' ``blocks`` hold the
-primary arms' only): the final analysis opens them. Amendment 3's secondary contrasts are not
+primary arms' only), nor the reason a pre-warmed run's labels are pending (``labels_pending``
+shows its generic status): the final analysis opens them. Amendment 3's secondary contrasts are not
 computed: amendment 4's mechanism cohort replaces them. Then ``final``, amendment 4's final
 analysis, computed once the confirmation has ended: with three arms, once the mechanism cohort
 has ended, its blocks are labeled and the primary has stopped; with two arms, once the primary
@@ -367,13 +368,32 @@ def compute_looks(state, runs, labels, fixation, theta0, pending=None) -> dict[s
             arm: sum(e.get("missing", {}).get(arm, 0) for e in read) for arm in PRIMARY_ARMS
         },
         "waiting_for_labels": [e["block"] for e in entries[:CAP] if e.get("unlabeled")],
-        "labels_pending": dict(pending or {}),
+        "labels_pending": _sealed_pending(pending or {}, runs),
         # Amendment 4: the blocks after the stopping look, descriptive (the mechanism cohort's
         # analysis replaces amendment 3's secondary contrasts, which are not computed).
         "continuation": continuation(entries, primary),
         "utility": utility_family(primary_runs, supports, theta0),
         "blocks": [_sealed(entry) for entry in entries],
     }
+
+
+PENDING_SEALED = "labeling pending (sealed until the final analysis)"
+
+
+def _sealed_pending(pending: dict[str, str], runs) -> dict[str, str]:
+    """The runs whose labels are pending, with the reason, as the summary records them: the
+    pre-warmed arm's reasons carry its missing-label counts, which only the final analysis opens,
+    so its runs show a generic status (the run stays listed; the primary arms' reasons stay)."""
+    prewarmed = {run.run_id for run in runs if run.arm == PREWARMED}
+    return {run_id: PENDING_SEALED if run_id in prewarmed else reason
+            for run_id, reason in pending.items()}  # fmt: skip
+
+
+def open_pending(found: dict[str, Any], pending: dict[str, str], final: dict[str, Any]) -> None:
+    """With the final analysis available, the looks' ``labels_pending`` carries the full reasons
+    (``final_analysis`` does not read it: it is computed on the sealed ``found``)."""
+    if final["available"] and "labels_pending" in found:
+        found["labels_pending"] = dict(pending)
 
 
 def _sealed(entry: dict[str, Any]) -> dict[str, Any]:
@@ -605,10 +625,11 @@ def main() -> None:
         record["versions_record"] = {"path": str(args.versions), "sha256": digest}
         labels, pending = read_labels(state, runs, args.judge)
         found = compute_looks(state, runs, labels, fixation, theta0, pending)
-        record["looks"] = found
-        shown["looks"] = {k: v for k, v in found.items() if k != "blocks"}
         final = final_analysis(state, runs, courses, labels, fixation, found, args.judge,
                                exhausted)  # fmt: skip
+        open_pending(found, pending, final)
+        record["looks"] = found
+        shown["looks"] = {k: v for k, v in found.items() if k != "blocks"}
         record["final"] = final
         shown["final"] = _final_shown(final)
     print(json.dumps(shown, indent=1, default=str))

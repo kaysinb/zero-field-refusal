@@ -691,7 +691,8 @@ stops:
    used in all, the labels still missing and the label file's sha256. A round deletes the
    receipt before it starts; an interrupted one leaves none. Without a receipt matching its label
    file, a run's labels do not count: the summary lists it under `labels_pending` and its block
-   waits. Rerun the labeling to complete it. A run with a completed receipt (no label missing,
+   waits (the pre-warmed arm's reasons are sealed until the final analysis: only a generic status
+   shows). Rerun the labeling to complete it. A run with a completed receipt (no label missing,
    or its three rounds used) is left as it is, nothing sent. A round that fails (the judge gone)
    stops the invocation: the runs after it are "not attempted" and keep their rounds, so bring
    the judge back and rerun. A run another `label_runs.py` is labeling is `busy`, nothing sent.
@@ -728,8 +729,8 @@ python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F 
   - the confirmation counts, the runs the launcher gave up and the attempts abandoned.
 - **With `--judge`** (the looks need the fixation record and the versions record, and are
   refused without them):
-  - the runs whose labels are pending (`labels_pending`, with the reason) and the blocks waiting
-    for labels;
+  - the runs whose labels are pending (`labels_pending`, with the reason; the pre-warmed arm's
+    runs show only a generic status until the final analysis) and the blocks waiting for labels;
   - the interval, resamples and seed used; each bootstrap look also gives its stream's seed and
     the resamples dropped for a zero SE;
   - the looks with their finite-cohort bounds;
