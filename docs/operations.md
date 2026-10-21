@@ -1171,6 +1171,13 @@ python -m zero_field_refusal.analysis.study2_label_cli --judge wildguard RUN_DIR
   - **Labeling duration:** retry rounds take time, for the call as a whole.
   - **Request counts:** the judge server's access log and its statistics count the requests of
     every round.
+
+  These are documented limits of the blinding (review fa28): batching reduces what they
+  attribute to a run but does not remove them, and no scientific decision may use a labeling's
+  timing, its request counts or a call's status.
+- **These rules are procedural protection, not enforced access control** (review fa28): nothing
+  technically prevents running `label_runs.py` on a study-2 run or opening a sealed record. They
+  hold because every operator follows them.
 - **Exit:** non-zero for the open runs exactly as `label_runs.py`; for the sealed runs only for
   error, busy, not attempted or not complete, with a message that names the statuses and the
   record, never a count. Rerun after "not complete" or "not attempted" (bring the judge back
