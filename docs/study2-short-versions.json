@@ -1,0 +1,24 @@
+{
+  "what": "The versions of study 2's short-regime validation and confirmation (amendment 3), written before the validation campaign.",
+  "written_at": "2026-10-21T23:08:24+00:00",
+  "code": {
+    "commit": "4fbd19ab12b16c071c79368b47b06003a91bf167",
+    "allow_descendants": false
+  },
+  "model": {
+    "name": "Qwen/Qwen2.5-1.5B-Instruct",
+    "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+  },
+  "judge": {
+    "config": "judge/wildguard",
+    "backend": "wildguard",
+    "prompt_version": "wildguard@cbba4823",
+    "judge_model": "allenai/wildguard",
+    "judge_revision": "cbba4823f3e8020e5a74a5e29bf85072def6f2ff",
+    "rubric_version": null
+  },
+  "fixation": {
+    "path": "docs/study2-short-fixation.json",
+    "sha256": "ef3aa5785d05f0bf0b704e53b9aa8e19c3d4e1799b8abde02e1fb06ac2c9e10c"
+  }
+}
