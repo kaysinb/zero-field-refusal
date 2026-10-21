@@ -1694,6 +1694,32 @@ def test_the_check_command_names_its_commits_and_the_cases_given_up(tmp_path) ->
     assert lines[0].endswith(f"--commit COMMIT --out {tmp_path / 'check-driver.sh'}")
     assert lines[1].endswith("; COMMIT is one of them, their GPU code being one")
     assert lines[-1] == "given up by the launcher, named in the record: ['s2200-adamw-1.48e-05']"
+    # A checkout commit given changes nothing while runs name their commits.
+    assert module.check_command(check, tmp_path / "check.json", "c" * 40) == lines
+    one = {**check, "runs_commits": ["a" * 40]}
+    assert f"--commit {'a' * 40} --out" in module.check_command(one, tmp_path / "check.json",
+                                                                "c" * 40)[0]  # fmt: skip
+
+
+def test_the_check_command_with_no_run_located_names_the_stages_commit(tmp_path) -> None:
+    """Review fa14, concern 4: every case given up and no numerical run located leave
+    runs_commits empty; the driver then runs from the stage's checkout commit, the clean
+    checkout writing the request, and the command says so (COMMIT, with the reason, when that
+    checkout is not clean)."""
+    module = campaigns_module()
+    gone = ["s2200-adamw-1.48e-05", "s2201-adamw-1.8e-05"]
+    check = {**request_check(), "w_max": 0.47, "given_up": gone, "runs_commits": []}
+    lines = module.check_command(check, tmp_path / "check.json", "c" * 40)
+    assert lines[0].endswith(f"--commit {'c' * 40} --out {tmp_path / 'check-driver.sh'}")
+    assert lines[1] == (
+        "runs_commits (the numerical runs' commits): []; none: no numerical run is located (every "
+        "case given up by the launcher), so the driver runs from the stage's checkout commit, the "
+        "one writing this request")  # fmt: skip
+    assert lines[-1] == f"given up by the launcher, named in the record: {gone}"
+    dirty = module.check_command(check, tmp_path / "check.json", None)
+    assert dirty[0].endswith(f"--commit COMMIT --out {tmp_path / 'check-driver.sh'}")
+    assert dirty[1].endswith("(COMMIT: this checkout is not clean; write the request from a "
+                             "clean checkout of the stage's commit)")  # fmt: skip
 
 
 def test_the_whole_config_of_a_run_is_its_campaigns(tmp_path) -> None:
@@ -1854,6 +1880,9 @@ def test_the_allowance_repair_campaign_and_the_blocked_stage(monkeypatch, tmp_pa
     at8, at7 = shown["attempts"]
     assert (at8["outcome"], at8["failed_at"], at8["blocked_arms"]) == ("failed", "validation", [])
     assert set(at8["failures"]) == set(ARMS) and at8["allowance"] == {}
+    # A failed visit holds no rates; its check shows the rates it was asked for (C5)
+    assert at8["rates"] is None and set(at8["numerical"][0]["request"]) == set(ARMS)
+    assert at8["validation"]["passes"] is False and at8["validation"]["exhausted"] == {}
     assert (at7["outcome"], at7["blocked_arms"], at7["blocked_at"]) == ("blocked", [FA],
                                                                         "numerical")  # fmt: skip
     assert at7["allowance"][FA]["check"] == state["selection"]["attempts"][1]["numerical"][0][
@@ -2784,6 +2813,12 @@ def test_the_summary_prints_the_looks_end_to_end(monkeypatch, tmp_path, capsys) 
         "sha256": hashlib.sha256(versions.read_bytes()).hexdigest(),
     }
     assert shown["next"]["campaign"] == "confirmation"
+    # The eligible attempt shows its rates, the rates its check was asked for and the
+    # validation's runs given up (review fa22, C5)
+    eligible = shown["attempts"][-1]
+    assert eligible["outcome"] == "eligible" and set(eligible["rates"]) == set(ARMS)
+    assert eligible["numerical"][-1]["request"] == eligible["rates"]
+    assert eligible["validation"]["passes"] and eligible["validation"]["exhausted"] == {}
     confirmation = shown["confirmation"]
     assert (confirmation["first_block_without_runs"], confirmation["supported_in_order"]) == (3, 2)
     looked = shown["looks"]

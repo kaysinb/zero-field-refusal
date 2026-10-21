@@ -488,14 +488,16 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   accuracies, k/N; the departure's median and p90, bin edges of a histogram; review fa21: no
   tolerance on discrete outcomes). Bit for bit everywhere is
   ``identical``, within the rule ``consistent`` (the bitwise flag kept as ``bitwise_equal``);
-  both count. Any other difference, or a record that is missing or does not read (metrics,
-  monitor, update scalars, meta.json: every regular run writes them), excludes the run with its
-  reasons; the endpoint Rayleigh records (R, ‖δ‖, δᵀH₀δ) are compared beside, as
-  ``rayleigh_equal``, deciding nothing; no endpoint run yet leaves it pending; an endpoint run
-  the launcher gave up on leaves it excluded (the conservative reading: its consistency can
-  never be shown). A time-course run that did not complete its four evaluations, or that the
-  launcher gave up on (``exhausted_runs`` keys it with ``TIMECOURSE``, apart from its endpoint
-  run), is a failure of its seed and arm, a run not there yet is missing.
+  both count. Bit-equal records go through the rule too (review fa23): a named continuous field
+  that is not finite excludes the run, whatever the endpoint run holds. Any other difference, or
+  a record that is missing or does not read (metrics, monitor, update scalars, meta.json: every
+  regular run writes them), excludes the run with its reasons; the endpoint Rayleigh records
+  (R, ‖δ‖, δᵀH₀δ) are compared beside, as ``rayleigh_equal``, deciding nothing; no endpoint
+  run yet leaves it pending; an endpoint run the launcher gave up on leaves it excluded (the
+  conservative reading: its consistency can never be shown). A time-course run that did not
+  complete its four evaluations, or that the launcher gave up on (``exhausted_runs`` keys it
+  with ``TIMECOURSE``, apart from its endpoint run), is a failure of its seed and arm, a run not
+  there yet is missing.
   ``timecourse_summary`` reads labels only when the final analysis passes them (``labels``, None
   by default and in ``progress``), and then only for runs that count (``identical`` or
   ``consistent``: ``IDENTITY_COUNTED``): an excluded or pending run keeps its K and no harm.
@@ -4784,13 +4786,15 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
     finite), every other field exactly (``_inconsistent``), the discrete outcomes included (the
     accuracies, the departure's median and p90).
 
-    ``state``: ``identical`` (every record bit for bit, as canonical JSON: ``_canonical``),
-    ``consistent`` (numerically consistent, not bit for bit); both count (``IDENTITY_COUNTED``);
-    ``excluded`` (any other difference, with the ``reasons``: each record's first row and field
-    outside the rule; also a record that is missing or does not read: ``_run_records``); or
-    ``pending`` (no endpoint run yet). ``bitwise_equal`` keeps the bitwise flag (None when
-    nothing was compared). ``rayleigh_equal`` (``_rayleigh_equal``) is reported beside, never
-    deciding the state."""
+    ``state``: ``identical`` (every record bit for bit, as canonical JSON: ``_canonical``, and
+    within the rule), ``consistent`` (numerically consistent, not bit for bit); both count
+    (``IDENTITY_COUNTED``); ``excluded`` (any other difference, with the ``reasons``: each
+    record's first row and field outside the rule; also a record that is missing or does not
+    read: ``_run_records``); or ``pending`` (no endpoint run yet). The rule is applied to
+    records that are bit-equal too (review fa23): a toleranced field that is not finite (NaN or
+    ∞) excludes the run even when both runs hold the same value. ``bitwise_equal`` keeps the
+    bitwise flag (None when nothing was compared). ``rayleigh_equal`` (``_rayleigh_equal``) is
+    reported beside, never deciding the state."""
     if endpoint is None:
         return {"state": "pending", "reasons": ["its endpoint run is not there yet"],
                 "endpoint": None, "bitwise_equal": None, "rayleigh_equal": None}  # fmt: skip
@@ -4806,7 +4810,9 @@ def timecourse_identity(timecourse: Trajectory, endpoint: Trajectory | None) -> 
         if records:
             bitwise = all(_canonical(mine) == _canonical(theirs)
                           for mine, theirs in records.values())  # fmt: skip
-        for name, (mine, theirs) in records.items() if not bitwise else ():
+        # Every record goes through the rule, bit-equal ones too (review fa23): a toleranced
+        # field that is not finite excludes the run even when both runs hold the same NaN or ∞.
+        for name, (mine, theirs) in records.items():
             toleranced = TIMECOURSE_TOLERANCED.get(name, ())
             rows = enumerate(zip(mine, theirs, strict=False))
             found = next(((i, why) for i, (a, b) in rows

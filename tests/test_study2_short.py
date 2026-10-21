@@ -3,9 +3,9 @@ support, the estimator and the looks, on synthetic ``Trajectory`` objects and la
 
 The state machine is driven through its campaigns against an analytic world: K25 = c × (rate /
 1e-5)^1.5 × a seed factor, per arm and batch, utility losses growing with K; its numerical checks
-get verdict records of the numerical-check tool's schema. One test replays the archived records
-of the main checkout made before S1 (K, numerics and utility only), skipped where they are
-absent."""
+get verdict records of the numerical-check tool's schema. Two tests replay the archived records
+of the main checkout (K, numerics and utility only), skipped where they are absent: those made
+before S1, and those up to the S2 repeat with its verdict."""
 
 import dataclasses
 import hashlib
@@ -2352,6 +2352,110 @@ def test_replay_on_current_records_prescribes_b20_discovery(archived) -> None:
     assert result["stream_time"]["runs"] == 96 and result["stream_time"]["chunks"] == 162
 
 
+# The archived records up to the S2 repeat (the final review of gate B, M12): S1's discovery at
+# (8, 20), 33 runs of 2026-10-20, and the repeated numerical stage's 15 K-only runs of
+# 2026-10-21, whose check (verdicts/f7cf42e3f76f.json under the runs root's numerical/b20-u8/)
+# qualified every selected rate. The voided first S2 (runs/void/) is not read.
+S1_RUNS = (
+    "20261020T040226Z-adamw_25-b20-1.49e-05-s2000-73cfafa6-a1",
+    "20261020T040832Z-adamw_25-b20-1.49e-05-s2001-5bc2d505-a1",
+    "20261020T041436Z-adamw_25-b20-1.49e-05-s2002-b10bbc13-a1",
+    "20261020T042038Z-adamw_25-b20-1.83e-05-s2000-cee4e9e5-a1",
+    "20261020T042643Z-adamw_25-b20-1.83e-05-s2001-929321ae-a1",
+    "20261020T043248Z-adamw_25-b20-1.83e-05-s2002-106eeaf8-a1",
+    "20261020T043850Z-adamw_25-b20-2.24e-05-s2000-2c5b801d-a1",
+    "20261020T044451Z-adamw_25-b20-2.24e-05-s2001-e08544cb-a1",
+    "20261020T045054Z-adamw_25-b20-2.24e-05-s2002-55e708dc-a1",
+    "20261020T045655Z-frozen_adam_25-b20-1.34e-05-s2000-105400dc-a1",
+    "20261020T050346Z-frozen_adam_25-b20-1.34e-05-s2001-f015380c-a1",
+    "20261020T051043Z-frozen_adam_25-b20-1.34e-05-s2002-6ef5454f-a1",
+    "20261020T051743Z-frozen_adam_25-b20-1.62e-05-s2000-9a2393cb-a1",
+    "20261020T052449Z-frozen_adam_25-b20-1.62e-05-s2001-c0f54476-a1",
+    "20261020T053146Z-frozen_adam_25-b20-1.62e-05-s2002-d230fd18-a1",
+    "20261020T053842Z-prewarmed_adamw_25-b20-1.34e-s2000-9f9e017c-a1",
+    "20261020T054542Z-prewarmed_adamw_25-b20-1.34e-s2001-72e1875c-a1",
+    "20261020T055251Z-prewarmed_adamw_25-b20-1.34e-s2002-0f9be4f6-a1",
+    "20261020T060001Z-prewarmed_adamw_25-b20-1.49e-s2000-0c0da153-a1",
+    "20261020T060719Z-prewarmed_adamw_25-b20-1.49e-s2001-6c71f0ed-a1",
+    "20261020T061434Z-prewarmed_adamw_25-b20-1.49e-s2002-56d96a83-a1",
+    "20261020T062148Z-prewarmed_adamw_25-b20-1.62e-s2000-7d51f0e0-a1",
+    "20261020T062902Z-prewarmed_adamw_25-b20-1.62e-s2001-edbbad7c-a1",
+    "20261020T063630Z-prewarmed_adamw_25-b20-1.62e-s2002-8b9ecc9e-a1",
+    "20261020T064338Z-prewarmed_adamw_25-b20-1.83e-s2000-1ecac218-a1",
+    "20261020T065056Z-prewarmed_adamw_25-b20-1.83e-s2001-3ff5a95a-a1",
+    "20261020T065810Z-prewarmed_adamw_25-b20-1.83e-s2002-22b7fcbc-a1",
+    "20261020T070520Z-prewarmed_adamw_25-b20-2e-05-s2000-ab61dde2-a1",
+    "20261020T071228Z-prewarmed_adamw_25-b20-2e-05-s2001-b9752381-a1",
+    "20261020T071944Z-prewarmed_adamw_25-b20-2e-05-s2002-e9b59593-a1",
+    "20261020T072705Z-prewarmed_adamw_25-b20-2.24e-s2000-3dae74aa-a1",
+    "20261020T073409Z-prewarmed_adamw_25-b20-2.24e-s2001-94b82083-a1",
+    "20261020T074116Z-prewarmed_adamw_25-b20-2.24e-s2002-d723d212-a1",
+)
+S2_REPEAT_RUNS = (
+    "20261021T004244Z-adamw_25-b20-1.49e-05-numeri-s2200-740612f9-a1",
+    "20261021T004755Z-adamw_25-b20-1.83e-05-numeri-s2200-bd67150c-a1",
+    "20261021T005258Z-adamw_25-b20-2.24e-05-numeri-s2200-1b7ce603-a1",
+    "20261021T005802Z-adamw_25-b20-2.24e-05-numeri-s2201-c8845b99-a1",
+    "20261021T010304Z-adamw_25-b20-2.24e-05-numeri-s2202-300a9e6c-a1",
+    "20261021T010807Z-frozen_adam_25-b20-1.34e-05--s2200-b4bda238-a1",
+    "20261021T011357Z-frozen_adam_25-b20-1.62e-05--s2200-7db2ec0a-a1",
+    "20261021T011951Z-frozen_adam_25-b20-2e-05-num-s2200-b3099589-a1",
+    "20261021T012540Z-frozen_adam_25-b20-2e-05-num-s2201-9dc47a2b-a1",
+    "20261021T013132Z-frozen_adam_25-b20-2e-05-num-s2202-690029bf-a1",
+    "20261021T013725Z-prewarmed_adamw_25-b20-1.34e-s2200-01a35d98-a1",
+    "20261021T014330Z-prewarmed_adamw_25-b20-1.62e-s2200-43a0a9c2-a1",
+    "20261021T014932Z-prewarmed_adamw_25-b20-2e-05-s2200-d90e9d26-a1",
+    "20261021T015537Z-prewarmed_adamw_25-b20-2e-05-s2201-36e8842c-a1",
+    "20261021T020146Z-prewarmed_adamw_25-b20-2e-05-s2202-077b4b1f-a1",
+)
+S2_REPEAT_COMMIT = "aa4c007c333ef62f7b34b64a3f3c51cee35fa1f9"  # the runs' and the check's commit
+S2_REPEAT_VERDICT = "numerical/b20-u8/verdicts/f7cf42e3f76f.json"
+
+
+def test_replay_after_the_s2_repeat_prescribes_the_three_arm_validation(archived) -> None:
+    """The selection at HEAD, replayed on the archived records up to the S2 repeat (the 155 runs
+    before S1, S1's 33 and the repeat's 15, read by their recorded run ids; K, numerics and
+    utility only) with the repeat's verdict, prescribes the three-arm validation at (U, B) =
+    (8, 20) with the frozen rates (the final review of gate B, M12). Skipped where the records,
+    the verdict or the runs' commit are absent."""
+    runs, theta0 = archived
+    names = (*S1_RUNS, *S2_REPEAT_RUNS)
+    dirs = [RUNS / "study2_short" / name for name in names]
+    if not all((d / "terminal.json").is_file() for d in dirs) or not (
+            RUNS / S2_REPEAT_VERDICT).is_file():  # fmt: skip
+        pytest.skip(f"S1's and the S2 repeat's records are not under {RUNS}")
+    probe = subprocess.run(["git", "cat-file", "-e", f"{S2_REPEAT_COMMIT}^{{commit}}"],
+                           cwd=REPO_ROOT, capture_output=True)  # fmt: skip
+    if probe.returncode != 0:
+        pytest.skip(f"the S2 repeat's commit {S2_REPEAT_COMMIT} is not in this clone")
+    later = [run for run in map(_archived, dirs) if run is not None]
+    assert [run.run_id for run in later] == list(names)
+    facts = {run.run_id: study2_short.run_facts(run.run_dir) for run in later}
+    assert {facts[name]["commit"] for name in S2_REPEAT_RUNS} == {S2_REPEAT_COMMIT}
+    assert all(facts[name]["k_only"] and facts[name]["role"] == "numerical"
+               for name in S2_REPEAT_RUNS)  # fmt: skip
+    numerical = study2_short.read_numerical(RUNS)
+    assert S2_REPEAT_VERDICT in numerical
+    result = selection([*runs, *later], theta0, 0.47, numerical=numerical, facts=facts,
+                       exhausted={})  # fmt: skip
+    assert result["problems"] == [] and result["unread_verdicts"] == []
+    step = result["next"]
+    assert (step["campaign"], step["batch"], step["U"], step["three_arm"]) == (
+        "validation", 20, 8.0, True)  # fmt: skip
+    assert step["rates"] == {ADAMW: [1.49e-5, 1.83e-5, 2.24e-5], FA: [1.34e-5, 1.62e-5, 2e-5],
+                             PREWARMED: [1.34e-5, 1.62e-5, 2e-5]}  # fmt: skip
+    # Every arm at its three rates on the twelve validation seeds: 108 runs.
+    assert len(step["runs"]) == 108
+    assert {run["seed"] for run in step["runs"]} == set(VALIDATION_SEEDS)
+    (attempt,) = result["attempts"]
+    assert (attempt["outcome"], attempt["failed_arms"], attempt["allowance"]) == (
+        "pending", [], {})  # fmt: skip
+    (check,) = attempt["numerical"]
+    assert (check["verdict"], check["state"], check["unusable"], check["unfinished"]) == (
+        S2_REPEAT_VERDICT, "complete", [], [])  # fmt: skip
+    assert check["commits"] == [S2_REPEAT_COMMIT] and check["reuse"]["head"]["reusable"]
+
+
 # ------------------------------------------------------------------ support and the estimator
 
 
@@ -3350,19 +3454,54 @@ def test_timecourse_identity(tmp_path) -> None:
                                edited("update_scalars.jsonl", None, endpoint))  # fmt: skip
     assert both["state"] == "excluded" and "a record does not read" in both["reasons"][0]
 
-    # NaN on both sides: identical bit for bit, but never consistent
+    # NaN on both sides: bit for bit alike, but never consistent, so excluded (review fa23: the
+    # rule applies to bit-equal records too)
     def nan(rows: list) -> None:
         rows[2]["cos_update_grad"] = math.nan
 
     both_nan = edited("update_scalars.jsonl", nan, endpoint)
-    assert timecourse_identity(edited("update_scalars.jsonl", nan), both_nan)["state"] == (
-        "identical")  # fmt: skip
-    found = timecourse_identity(edited("update_scalars.jsonl", several(
-        nan, lambda rows: move(rows[4], "update_norm", 0.5))), both_nan)  # fmt: skip
-    assert found["state"] == "excluded" and found["reasons"] == [
+    found = timecourse_identity(edited("update_scalars.jsonl", nan), both_nan)
+    assert (found["state"], found["bitwise_equal"]) == ("excluded", True)
+    assert found["reasons"] == [
         "the update_scalars.jsonl rows are not numerically consistent with the endpoint run's "
         "from row 2 (25 rows against 25): cos_update_grad nan against nan, outside the "
         "tolerance"]  # fmt: skip
+    found = timecourse_identity(edited("update_scalars.jsonl", several(
+        nan, lambda rows: move(rows[4], "update_norm", 0.5))), both_nan)  # fmt: skip
+    assert (found["state"], found["bitwise_equal"]) == ("excluded", False)
+    assert found["reasons"] == [
+        "the update_scalars.jsonl rows are not numerically consistent with the endpoint run's "
+        "from row 2 (25 rows against 25): cos_update_grad nan against nan, outside the "
+        "tolerance"]  # fmt: skip
+    # The same for ∞ on both sides, in every record that holds a toleranced field: the
+    # training's rows, their evaluation's row, the monitor, the update scalars, the evaluation.
+    both_inf = {
+        "the training's metrics.jsonl rows": ("metrics.jsonl", lambda rows: training(
+            rows, 12).update(grad_norm=math.inf)),
+        "the metrics.jsonl rows of the endpoint's evaluations": ("metrics.jsonl", lambda rows:
+                                                                  rows[-1].update(
+                                                                      {"eval/K_benign":
+                                                                       math.inf})),
+        "the monitor.jsonl readings": ("monitor.jsonl", lambda rows: rows[1].update(
+            K_monitor=-math.inf)),
+        "the update_scalars.jsonl rows": ("update_scalars.jsonl", lambda rows: rows[9][
+            "d_departure"].update(norm_ratio=math.inf)),
+    }  # fmt: skip
+    for name, (record, edit) in both_inf.items():
+        found = timecourse_identity(edited(record, edit), edited(record, edit, endpoint))
+        assert (found["state"], found["bitwise_equal"]) == ("excluded", True), name
+        assert len(found["reasons"]) == 1 and found["reasons"][0].startswith(name), name
+        assert "inf against " in found["reasons"][0] and "outside the tolerance" in found[
+            "reasons"][0]  # fmt: skip
+    evaluation = [*endpoint.evaluations[:-1], {**endpoint.evaluations[-1],
+                                               "heldout_nll_per_token": math.inf}]  # fmt: skip
+    found = timecourse_identity(
+        dataclasses.replace(course, evaluations=[*course.evaluations[:3], evaluation[-1]]),
+        dataclasses.replace(endpoint, evaluations=evaluation))  # fmt: skip
+    assert (found["state"], found["bitwise_equal"]) == ("excluded", True)
+    assert found["reasons"][0].startswith("the endpoint's evaluations are not numerically")
+    # A finite run bit-equal to its endpoint stays identical.
+    assert timecourse_identity(course, endpoint)["state"] == "identical"
     # A value inside the tolerance before a field that is not: excluded from that row, its reason
     mixed = edited(
         "metrics.jsonl",

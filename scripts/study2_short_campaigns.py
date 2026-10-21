@@ -858,19 +858,36 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def check_command(check: dict, selection: Path) -> list[str]:
+def check_command(check: dict, selection: Path, checkout: str | None = None) -> list[str]:
     """The numerical check's whole command and what it needs (the final review of gate B, M1):
     the driver written from the selection record at ``selection`` for the commit whose source
     the Pod runs (the numerical runs' own, ``runs_commits``; any of them when there are several,
     their GPU code being one), with the request's w_max, the cases given up by the launcher and
-    where the check writes."""
+    where the check writes. When no numerical run is located (every case given up by the
+    launcher), ``runs_commits`` is empty and the driver runs from the stage's checkout commit
+    (review fa14, concern 4): ``checkout``, the commit of the clean checkout writing the request,
+    or COMMIT, said so, when that checkout is not clean."""
     commits = check["runs_commits"]
-    commit = commits[0] if len(commits) == 1 else "COMMIT"
+    if len(commits) == 1:
+        commit = commits[0]
+    elif not commits and checkout:
+        commit = checkout
+    else:
+        commit = "COMMIT"
+    if len(commits) > 1:
+        which = "; COMMIT is one of them, their GPU code being one"
+    elif not commits:
+        unclean = (" (COMMIT: this checkout is not clean; write the request from a clean "
+                   "checkout of the stage's commit)")  # fmt: skip
+        which = ("; none: no numerical run is located (every case given up by the launcher), so "
+                 "the driver runs from the stage's checkout commit, the one writing this request"
+                 + ("" if checkout else unclean))  # fmt: skip
+    else:
+        which = ""
     driver = selection.with_name(f"{selection.stem}-driver.sh")
     lines = [f"python scripts/numerical_check.py driver --selection {selection} --batch "
              f"{check['batch']} --upper {check['U']:g} --commit {commit} --out {driver}",
-             f"runs_commits (the numerical runs' commits): {commits}"
-             + ("; COMMIT is one of them, their GPU code being one" if len(commits) > 1 else ""),
+             f"runs_commits (the numerical runs' commits): {commits}{which}",
              f"w_max {check['w_max']!r}; outputs under $RUNS_DIR/{check['out']}, the selection's "
              f"verdict at $RUNS_DIR/{check['verdict']}"]  # fmt: skip
     if check["given_up"]:
@@ -956,7 +973,9 @@ def main() -> None:
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps(check["selection"], indent=2) + "\n")
             print(args.out)
-            print("\n".join(check_command(check, args.out)))
+            state = git_state()  # the stage's checkout: its commit when clean
+            checkout = state.get("commit") if state.get("dirty") is False else None
+            print("\n".join(check_command(check, args.out, checkout)))
             if written["waiting"]:
                 print("Written while the stage's records wait for this check, which is run again:"
                       "\n" + "\n".join(written["waiting"]))  # fmt: skip

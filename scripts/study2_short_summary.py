@@ -266,13 +266,18 @@ def _attempt(a: dict[str, Any]) -> dict[str, Any]:
             "allowance_owed": a.get("allowance_owed", []),
             "arms": {arm: [_selection(s) for s in d["selections"]]
                      for arm, d in a["arms"].items()},
-            "numerical": [{k: e.get(k) for k in ("check", "verdict", "state", "reasons",
-                                                 "unusable", "unfinished", "history", "commits",
-                                                 "given_up")}
+            # The rates the visit holds once eligible (None before), each check with the rates
+            # it was asked for, and the validation's runs given up by the launcher (review fa22,
+            # C5: what a reader of the status needs to follow the order)
+            "rates": a.get("rates"),
+            "numerical": [{k: e.get(k) for k in ("check", "verdict", "request", "state",
+                                                 "reasons", "unusable", "unfinished", "history",
+                                                 "commits", "given_up")}
                           for e in a["numerical"]],
             "validation": None if validation is None else {
                 "passes": validation["passes"], "reasons": validation["reasons"],
-                "jointly_supported": len(validation.get("jointly_supported", []))}}  # fmt: skip
+                "jointly_supported": len(validation.get("jointly_supported", [])),
+                "exhausted": validation.get("exhausted", {})}}  # fmt: skip
 
 
 def _proposal(r: dict[str, Any]) -> Any:
