@@ -65,13 +65,16 @@ inputs.json, records its sha256 in summary.json, and writes inventory.tsv: the p
 sha256 of every file it wrote.
 
 The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
-the selection's record):
+the selection's record; both roots, because a selected rate may be one of Stage A's grid rates,
+FA's 2e-5 at U = 8, and a selected rate without a run counts as a failure):
 
-    python scripts/study2_short_simulate.py final --runs-root $RUNS_DIR/study2_short \\
+    python scripts/study2_short_simulate.py final \\
+        --runs-root $RUNS_DIR/study2_short $RUNS_DIR/study2_stage_a \\
         --rates A=r1,r2,r3 F=r1,r2,r3 P=r1,r2,r3 --workers 8 --write \\
         --out $RUNS_DIR/analysis/study2_short_sim/<date>-b20-final
 
-It measures the inputs (B = 20, seeds 2000-2002) into OUT/inputs.json, then runs, binding results
+It measures the inputs (B = 20, seeds 2000-2002; the K spreads over every complete rate under
+both roots, Stage A's grid and S1's rates) into OUT/inputs.json, then runs, binding results
 first: mechanism on the required grid (OUT/mechanism), mechanism-check at the implied level when
 it is above 0.95 (OUT/check), the primary rerun decided, decided-gate and decided-bias with the
 inputs (OUT/decided, OUT/gate, OUT/bias) and their comparison with amendment 3's archived runs
@@ -79,7 +82,8 @@ inputs (OUT/decided, OUT/gate, OUT/bias) and their comparison with amendment 3's
 OUT/final.json with the fixed level and the flagged rates. With --write it also writes the
 record to docs/study2-short-b20-inputs.json and the fixed level to docs/study2-short-fixation.json
 (mechanism.level; never when no level passed or the check failed). Without --runs-root it uses
---inputs as it is.
+--inputs as it is. A written level other than 0.95 also needs the tracked record's pin in
+tests/test_study2_short_campaigns.py (test_fixation_requires_the_mechanism_key) updated.
 
 --looks restricts the look designs evaluated; --intervals picks t and/or bootstrap_t (the
 studentized bootstrap of the mean with --bootstrap resamples per look and replicate, computed in
