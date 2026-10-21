@@ -172,6 +172,16 @@ confirmation in two looks; its procedure is in
 [operations](operations.md#study-2-short-regime-amendment-3). The text below describes Stage A
 as it ran.
 
+**Amended on 2026-10-19** ([amendment 4](study2-preregistration.md#amendment-4-a-corrected-numerical-criterion-batch-20-and-the-mechanism-cohort)):
+B = 20 is the fixed scope, and the work runs in five stages. S1, the discovery at (8, 20), with
+the pre-warmed arm's first round; S2, the numerical qualification of the selected rates on fresh
+K-only seeds (voided after a GPU-path change and repeated once); then, after the review of the
+analysis code (gate C) and the versions record, S3, the three-arm validation on 12 fresh blocks;
+S4, the confirmation up to 60 blocks jointly supported for the three arms (cap 80), with the time
+course on its first 10 blocks and the drift diagnostic; S5, judging, the looks, the final
+analyses and the audit. Before each stage its forecast is set against the remaining budget. The
+procedure is in [operations](operations.md#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort).
+
 **Stage A (feasibility):** code first, then numerics, discovery and validation on fresh seeds:
 
 1. **Code**, each piece reviewed before any GPU use:

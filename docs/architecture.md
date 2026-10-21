@@ -111,6 +111,21 @@ scientific design is in [design.md](design.md); procedures for running things ar
    pass of Hessian–vector products at θ₀ on the frozen copy (`curvature.endpoint_rayleigh`),
    into `rayleigh.json` and the summary; the student's weights become δ, since the run is over.
    A failed measurement is recorded there too (R null, `failed: …`) before the error goes on.
+   Two switches of amendment 4 leave the training's numerics unchanged:
+   - `eval.k_only` (`experiments/study2_short_k_only`, the numerical seeds' runs) evaluates K on
+     the scoring panel's benign responses, the monitor and utility only: no harmful prompt set is
+     read, no K on harmful prompts is measured and no harmful response is generated
+     (`inputs.k_only` in `meta.json`).
+   - `tracking.update_scalars` (on for `experiments/study2_short`) writes `update_scalars.jsonl`:
+     after every update of an Adam arm, the norm of the algebraic step
+     u_t = (lr/(1−β₁ᵗ))·m_t/d_t and its cosine with the step's gradient, read from the optimizer
+     state (`schedule.UpdateScalars`; `step` counts the updates taken, 1–25, as in
+     `monitor.jsonl`); for the pre-warmed arm at steps 5, 10 and 25 also `d_departure`, the
+     departure of the denominator d_t = √v_t + ε from d₀ = √v₀ + ε (the norm ratio, and the
+     median and 90th percentile of |d_t/d₀ − 1| read on a histogram of 0.005-decade bins, at most
+     1.16 % above the exact value). The hook only reads; v₀ is kept in pinned host memory and no
+     GPU buffer persists. Tests pin the parameters, the optimizer state and every other record
+     bit for bit with the hook on and off.
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
    model and the rubric version are recorded with every label. A run's labels from the judge
    `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record
@@ -143,21 +158,27 @@ Implemented:
 | `runtime` | the run environment (tokenizer, model factory, prompt sets); generating and loading streams and soft-target distributions; extending appendable streams, reading their prefix and replaying their soft targets |
 | `batches` | right-padded prompt + response rows with explicit response targets and truncation to the cap |
 | `losses` | the training path; summed NLL over response tokens divided by a constant; the token-count control; the soft-target control loss |
-| `optim` | Adam with fp32 state in adaptive, frozen and pre-warmed modes (H2a); the θ₀ second-moment estimate; SGD with and without momentum from PyTorch |
-| `train` | one training run with the step-0 teacher gap, projections, in-process evaluation and controls |
+| `optim` | Adam with fp32 state in adaptive, frozen and pre-warmed modes (H2a); the θ₀ second-moment estimate; SGD with and without momentum from PyTorch; read-only accessors of a parameter's step size and denominator, which a test pins to the step's own |
+| `train` | one training run with the step-0 teacher gap, projections, in-process evaluation and controls; study 2's K-only evaluation (`eval.k_only`: K on the benign panels, the monitor and utility, no harmful prompt) |
 | `evaluation` | K against a frozen θ₀ copy, greedy responses, utility, weight geometry, the line scan θ₀ ± aΔθ, random-direction controls |
 | `refusal` | the versioned keyword refusal list |
 | `diagnostics`, `checks` | stage-0 measurements: mean-gradient scaling, the token-count field, the path discrepancy, the Adam check, the step profile |
 | `panels` | study 2: K on the monitor panel (version 2: nested panels on the scoring prompts, cached θ₀ logits), the scoring panel's K alone for diagnostics, the cache checks, and the Stage-A check that the monitor agrees with the scoring panel |
 | `analysis.stage_a` | study 2, Stage A: run records checked for integrity (including every evaluation's answers to the recorded harmful prompts), summaries per arm, batch and rate (reachability and steps per level, utility, time, stops), soft-target screen and numerical acceptance, the gradient rule's margin and possible false alarms, monitor agreement, and the selection rule as one function, which first requires the whole prescribed search and otherwise returns `incomplete` |
-| `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record |
+| `schedule` | study 2 runs: batches read lazily from the appendable stream with each chunk checked when first read (teacher gap, the run's path-field bound for its maximum exposure), monitor readings, full evaluations where K levels are crossed, the stops (target, plateau, instability, T_max) and the terminal record; the update scalars of amendment 4 (`UpdateScalars`, logging only) |
 | `curvature` | study 2, Stage A: top curvature of the training loss at θ₀ by Lanczos on Hessian–vector products (a fixed number of steps, convergence by the Ritz residual and agreement of independent starts, not a certified accuracy of the top eigenvalue), for single batches at each batch size and for the Hessian pooled over many responses. The pooled 2/λ_max describes the mean dynamics, not SGD's mean-square stability, and single-batch medians do not certify a rate: the curvature guides the SGD rate screen, the soft-target control accepts rates. Amendment 3: the endpoint Rayleigh quotient R = δᵀH₀δ/‖δ‖² of a study-2 run's displacement, H₀ the training loss's Hessian at θ₀ on the curvature panel, recorded signed (null with its reason for a zero or non-finite ‖δ‖ or a failed measurement), from one pass of products over the panel (δᵀH₀δ without a sum of products) after the run's terminal record |
-| `fa_control_diagnostic` | study 2: the outcome-blind diagnostic of the FA soft-control failure ([specification](study2-fa-control-diagnostic.md)), K-only on benign panels: shared-state checks, the v₀ census and the residual's sources (D4, D1), preconditioned Lanczos and the linearized bias-corrected recurrence (D2), twin runs against perturbations and a float64 reference (D3), and the frozen decision branches |
+| `fa_control_diagnostic` | study 2: the outcome-blind diagnostic of the FA soft-control failure ([specification](study2-fa-control-diagnostic.md)), K-only on benign panels: shared-state checks, the v₀ census and the residual's sources (D4, D1), preconditioned Lanczos and the linearized bias-corrected recurrence (D2), twin runs against perturbations and a float64 reference (D3), and the frozen decision branches. Amendment 4's numerical check, built on D1 and D3: its frozen scope (`NumericalScope`), the cases and the same-path controls, twin A's numerical consistency with its archived run (`compare_archive`, review fa21; the diagnostic keeps its bitwise gate), the float64 reference with its fallback, the records bound to the GPU code, the policy and the run located now, the run-environment check, the verdict per selection, and the void of a numerical stage |
+| `code_identity` | study 2, amendment 4: the GPU-code identity, a sha256 over every GPU path of a commit (the code a GPU run executes: `src/` outside `analysis/` but with `analysis/stage_a.py`, `scripts/` but the analysis scripts, `configs/`, `docker/`, the dependency manifests and the files that build the image), the GPU paths two commits differ in, and the reuse check by which a qualification holds at a later commit |
+| `drift` | study 2, amendment 4: the first-step drift diagnostic, descriptive: seed 2300's stream of 64 batches, each gradient transformed by the first update of SGD, AdamW, FA and pre-warmed AdamW (bit for bit `optim.Adam`'s first step), the unbiased mean and trace estimates, the cosine between two fixed halves and the cross-optimizer cosines, one optimizer at a time with float64 reductions; its streams prepared as the regular runs' |
 | `judge` | three-label judge over an OpenAI-compatible endpoint (WildGuard and rubric formats), resumable label files, agreement with reference labels |
 | `launch` | campaign files: cells checked against the protocol, expanded into runs, run in order in fresh processes under their own run ids; qualifying completed runs skipped, diverged runs left, technical failures retried up to three attempts |
 | `judge_check` | the blind sample of the judge check across optimizers: strata chosen from K alone, prompts and seeds paired across optimizers |
 | `run_judging` | judge items from a run's stored responses, labeled into the run's label file (`<run dir>/judge/<judge>.jsonl`), in at most three rounds per run and judge across reruns, each counted before its requests in `<judge>.rounds.json`, with a judging receipt once the labeling completed (`<judge>.receipt.json`: expected items, judge identity, rounds used in all, labels still missing, label file sha256), kept as it is on a rerun; labels changed outside a round (a receipt that no longer matches, or a label file changed after its receipt was deleted) are refused, nothing sent; a failed round stops the invocation, and a run another process is labeling is busy (a lock); the conditions of a study-2 run are its recorded evaluations `step-<N>`, and it is labelable once its terminal record was published with whole records, whatever its status |
 | `analysis.study2_labels` | per-evaluation judge-label counts of a study-2 run, with the bounds for missing labels; counts no label without a completed receipt matching the label file (the run stays pending); refuses stale, foreign-judge or conflicting labels |
+| `analysis.study2_short` | study 2's short regime (amendments 3 and 4), pure functions over run records: the selection's state machine (the B = 20 order and its primary-pair fallback, discovery rounds, the numerical gate reading the check's verdicts, the search allowance, technical and scientific failures, the three-arm validation, `infeasible` with the feasibility report, `blocked`), the stage's conformance, support and the interpolation estimator, the looks, the confirmation guard, the mechanism cohort and its final max-t analysis, the time course with its numerical consistency against the endpoint runs, the update scalars' coverage, and the fixation and versions records (`read_fixation`, `versions_problems`). It reads K, numerics and utility, and labels only in the looks and the final analyses |
+| `analysis.study2_short_sim` | the simulation of the short regime's confirmation: amendment 3's primary procedure (levels, validation gate, bias allowance), and amendment 4's mechanism cohort (component scenarios, attrition modes, the max-t intervals of the analysis on shared draws, each replicate's conditional truth, the calibration rule with its single check), from the B = 20 inputs record |
+| `analysis.study2_audit` | the terminal audit of the judge (amendment 4, design v3): the deduplicated frame and its coefficients, the draw with replacement proportional to the largest coefficient, the Clopper–Pearson bound on each arm's total error and each estimand's bias bound, the descriptive Hansen–Hurwitz estimate, the reference harm of the realized cohort, non-estimable estimands, and the 10 % agreement check |
+| `analysis.study2_audit_cli` | the audit's command line (`python -m zero_field_refusal.analysis.study2_audit_cli draw / agreements / estimate`), in the analysis package so that it is no GPU path: the draw behind the summary's final analysis, with D7's blinded files, the labellers' agreements, and the estimate from the resolved reference labels |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 | `analysis` | h(K) fits, K\* and the decisive cells over eligible cells (`analysis.eligibility`), Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`, with `analysis.outputs`); the Gate 1 report from the stage-1 runs (`analysis.gate1`) |
@@ -187,6 +208,18 @@ Entry points in `scripts/`:
 - `fa_control_diagnostic.py`: the parts of the FA soft-control diagnostic, its plan and its
   Pod driver, into `RUNS_DIR/diagnostics/fa_control/`
   ([operations](operations.md#study-2-fa-soft-control-diagnostic));
+- `numerical_check.py`: amendment 4's numerical check of the selected rates (`plan`, `control`,
+  `twins`, `verdict`, the Pod `driver`) into `RUNS_DIR/numerical/b{B}-u{U}/`, and the `void` of a
+  numerical stage after a GPU-path change ([operations](operations.md#s2-the-numerical-stage));
+- `drift_diagnostic.py`: amendment 4's first-step drift diagnostic (`prepare`, `plan`, `run`, the
+  Pod `driver`) into `RUNS_DIR/diagnostics/drift/b{B}/`
+  ([operations](operations.md#the-drift-diagnostic));
+- `study2_short_campaigns.py`, `study2_short_summary.py`, `study2_short_simulate.py`: the short
+  regime's campaigns, prerequisite drivers and numerical-check requests; its summary, looks, final
+  analysis and versions record; its simulation and the final level-fixing run. They read records
+  and write no GPU result (`code_identity.ANALYSIS_SCRIPTS`)
+  ([operations](operations.md#study-2-short-regime-amendment-3)); the audit's command line is a
+  module of the analysis package, `analysis.study2_audit_cli`;
 - `harmful_pool_cleaning.py`: the counts and the blind-labeling pairs behind the cleaning of
   study 2's harmful evaluation set (the pairs file holds prompt texts and stays out of Git);
 - `stage_a_campaigns.py`: the campaigns of study 2's Stage A, one seed each, the data-dependent
@@ -311,6 +344,13 @@ for SGD their learning rate is η_config / L. Adam's update does not depend on t
   double-backward graph of one micro-batch of `execution.micro_batch_size` (≈ 13–17 GB by count
   at 4): ≈ 30–34 GB. The Stage-A curvature run's Lanczos steps held two vectors more and ran on
   an L40S at micro-batch 4; `rayleigh.json` records the product's peak.
+- Amendment 4's tools run under a cap of 46 GB reserved per process (1e9 bytes) and check the
+  free host memory first. The numerical check holds one seed's setup at a time (θ₀, v₀, a second
+  model, the p1 direction) and needs 52.5 GB of free host memory; its float64 reference of the
+  AdamW and pre-warmed arms falls back to float64 loss and accumulation if it meets the cap. The
+  drift diagnostic keeps the four sums S on the host (≈ 21 GB at 1.5B) and needs 47.5 GB. The
+  update scalars keep v₀ pinned on the host for the pre-warmed arm (≈ 6.7 GB at 1.5B: the pinned
+  allocator rounds each parameter's block up to a power of two).
 - Pure bf16 training is ruled out: at typical weight magnitudes the bf16 grid spacing exceeds
   Adam's update, so the update rounds to zero.
 - 8-bit Adam would change the optimizer under study. For the same reason the optimizers stay plain
@@ -385,6 +425,11 @@ paths are defined in [operations](operations.md#containers).
   uses it to skip cells that already have a completed run.
   - `protocol_version` in `configs/base.yaml` is part of the hash. Bump it on any change to code or
     data that alters results, so the launcher never skips a cell computed by older code.
+  - `tracking.update_scalars` records only, outside the hash like the rest of `tracking`;
+    `eval.k_only` is inside it, since it changes what a run evaluates.
+  - **The GPU-code identity** (`code_identity`) is a second identity, of code rather than of a
+    config: amendment 4's numerical qualification holds for the GPU code its runs and check
+    executed, and a later commit reuses it only after a recorded check that no GPU path changed.
   - `meta.json` records the config hash, the git commit, the hash of `uv.lock`, package versions,
     GPUs, and the source snapshot and container image passed by the launcher
     (`SOURCE_SNAPSHOT_ID`, `CONTAINER_IMAGE`). Input-manifest provenance still needs the
