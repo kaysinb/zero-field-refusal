@@ -2881,12 +2881,24 @@ def test_the_summary_seals_the_prewarmed_harm_until_the_final_analysis(
         _sealed_everywhere(record)
 
 
-def test_the_summary_seals_the_prewarmed_pending_reason_until_the_final_analysis(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    """Review fa26: a pre-warmed run whose labels are pending (an incomplete judging receipt)
-    shows only a generic status, in the printed status and OUT.json, while the mechanism cohort
-    is unfinished; a primary arm's pending reason stays whole."""
+def _pending_summary(monkeypatch, tmp_path, capsys, *, released: bool = False):
+    """The summary with a pre-warmed and a primary bracket run whose labels are pending. The
+    pre-warmed run's reason is the real one: a run labeled by the real labeling path with one
+    round of three (``test_study2_labels``), read by the real ``read_endpoint_labels``. With
+    ``released``, ``final_analysis`` is patched to an available one (the minimal shape
+    ``_final_shown`` needs). Returns the printed status, OUT.json, the two run ids and reasons."""
+    import test_study2_labels as labeling
+
+    monkeypatch.setattr("zero_field_refusal.run_judging.load_trajectory", lambda run_dir: None)
+    short = labeling.make_run(tmp_path / "judged", name="short")
+    labeling.label_runs([short], labeling.JUDGE, lambda cfg: labeling.PROMPTS,
+                        labeling.factory(labeling.FakeWildGuard(["cannot classify"])),
+                        rounds=1)  # fmt: skip
+    with pytest.raises(LabelsPending) as caught:
+        labeling.read(short)
+    real = str(caught.value)
+    assert "6 items without a label after 1 labeling rounds of 3" in real
+
     runs = base()
     state = confirmed(runs)
     first = state["confirmation"][0]["supports"]
@@ -2899,28 +2911,60 @@ def test_the_summary_seals_the_prewarmed_pending_reason_until_the_final_analysis
     )  # every run is labeled
     monkeypatch.setattr("zero_field_refusal.data.load_prompt_set",
                         lambda name, data: [{"id": "p", "text": "t"}])  # fmt: skip
-    reason = "{}: 17 items without a label after 1 labeling rounds of 3: rerun the labeling"
-    absent = "{}: has no record of 23 expected items (first: x): an empty or partial label file"
+    primary_reason = "{}: 17 items without a label after 1 labeling rounds of 3: rerun"
 
     def labels(run_dir, judge, identity, prompts):
         if run_dir.name in pending:
-            raise LabelsPending((absent if pending[run_dir.name] == PREWARMED else reason)
-                                .format(run_dir.name))  # fmt: skip
+            raise LabelsPending(real if pending[run_dir.name] == PREWARMED
+                                else primary_reason.format(run_dir.name))  # fmt: skip
         return rows({ADAMW: 100, FA: 50, PREWARMED: 77}[by_name[run_dir.name].arm])
 
     monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", labels)
+    if released:
+        final = {"available": True, "mechanism": None, "timecourse_labels_pending": {},
+                 "timecourse": {"counts": {}, "trajectories": []}}  # fmt: skip
+
+        def run_path(path, run_name):  # the script in-process, so that the patch takes effect
+            module = summary_module()
+            module.final_analysis = lambda *args: final
+            module.main()
+
+        monkeypatch.setattr(runpy, "run_path", run_path)
     out = script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
                  "--runs-root", runs_root(tmp_path), "--judge", "wildguard")  # fmt: skip
     printed, whole = json.loads(capsys.readouterr().out), json.loads(out.read_text())
-    assert printed["looks"]["available"] and not printed["final"]["available"]
     prewarmed = next(run for run, arm in pending.items() if arm == PREWARMED)
     primary = next(run for run, arm in pending.items() if arm == ADAMW)
+    return printed, whole, prewarmed, primary, real, primary_reason.format(primary)
+
+
+def test_the_summary_seals_the_prewarmed_pending_reason_until_the_final_analysis(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Review fa26: a pre-warmed run whose labels are pending (a real incomplete judging
+    receipt) shows only a generic status, in the printed status and OUT.json, while the mechanism
+    cohort is unfinished; a primary arm's pending reason stays whole."""
+    printed, whole, prewarmed, primary, real, reason = _pending_summary(
+        monkeypatch, tmp_path, capsys)  # fmt: skip
+    assert printed["looks"]["available"] and not printed["final"]["available"]
     generic = "labeling pending (sealed until the final analysis)"
     for record in (printed, whole):
-        assert record["looks"]["labels_pending"] == {
-            prewarmed: generic, primary: reason.format(primary)}  # fmt: skip
+        assert record["looks"]["labels_pending"] == {prewarmed: generic, primary: reason}
         text = json.dumps(record)
-        assert "no record of 23" not in text and prewarmed + ":" not in text
+        assert real not in text and "6 items without a label" not in text
+        assert prewarmed + ":" not in text and "no record of" not in text
+
+
+def test_the_summary_opens_the_prewarmed_pending_reason_with_the_final_analysis(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The same state with an available final analysis (patched): the printed status and
+    OUT.json carry the pre-warmed run's full reason (main's order: final, unseal, record)."""
+    printed, whole, prewarmed, primary, real, reason = _pending_summary(
+        monkeypatch, tmp_path, capsys, released=True)  # fmt: skip
+    assert printed["final"]["available"] and whole["final"]["available"]
+    for record in (printed, whole):
+        assert record["looks"]["labels_pending"] == {prewarmed: real, primary: reason}
 
 
 def test_the_summary_opens_the_pending_reasons_with_the_final_analysis() -> None:
