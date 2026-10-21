@@ -276,6 +276,7 @@ topics:
   - src/zero_field_refusal/fa_control_diagnostic.py
   - src/zero_field_refusal/analysis/study2_short*.py
   - src/zero_field_refusal/analysis/study2_audit*.py
+  - src/zero_field_refusal/analysis/study2_label_cli.py
   - scripts/numerical_check.py
   - scripts/drift_diagnostic.py
   - scripts/study2_short_*.py
@@ -289,6 +290,7 @@ topics:
   - tests/test_numerical_check.py
   - tests/test_gate_c.py
   - tests/test_study2_audit.py
+  - tests/test_study2_label_cli.py
   - tests/test_study2_short*.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release

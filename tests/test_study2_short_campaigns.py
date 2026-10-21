@@ -2984,6 +2984,125 @@ def test_the_summary_opens_the_pending_reasons_with_the_final_analysis() -> None
     assert found["labels_pending"] == pending
 
 
+MALFORMED = "sealed-label-value"  # a label outside judge.LABELS, which the reader's error names
+
+
+def _malformed_summary(monkeypatch, tmp_path, arm: str):
+    """The summary with ``arm``'s first bracket run reading a real malformed label file (a label
+    outside the labels, by the real ``read_endpoint_labels``; ``test_study2_labels``' run), the
+    other runs labeled. Returns that run's id, the sealed directory and the summary to run."""
+    import test_study2_labels as labeling
+
+    from zero_field_refusal.analysis.study2_labels import read_endpoint_labels
+
+    judged = labeling.make_run(tmp_path / "judged", name="malformed")
+    found = [labeling.record("step-25", pid, "refusal") for pid in labeling.IDS]
+    found[0] = labeling.record("step-25", labeling.IDS[0], MALFORMED)
+    labeling.write_labels(judged, found)
+    with pytest.raises(ValueError, match=MALFORMED):  # the message carries the label value
+        read_endpoint_labels(judged, labeling.JUDGE, labeling.IDENTITY, labeling.PROMPTS)
+    runs = base()
+    state = confirmed(runs)
+    target = state["confirmation"][0]["supports"][arm]["bracket"]["lo"]["run"]
+    runs = on_disk(runs, tmp_path)
+    by_name = {run.run_dir.name: run for run in runs}
+    monkeypatch.setattr(
+        "zero_field_refusal.analysis.evidence.label_path",
+        lambda run_dir, judge: run_dir / "config.yaml",
+    )  # every run is labeled
+    monkeypatch.setattr("zero_field_refusal.data.load_prompt_set",
+                        lambda name, data: [{"id": "p", "text": "t"}])  # fmt: skip
+
+    def labels(run_dir, judge, identity, prompts):
+        if run_dir.name == target:
+            return read_endpoint_labels(judged, labeling.JUDGE, labeling.IDENTITY,
+                                        labeling.PROMPTS)  # fmt: skip
+        return rows({ADAMW: 100, FA: 50, PREWARMED: 77}[by_name[run_dir.name].arm])
+
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", labels)
+    sealed = tmp_path / "sealed"
+
+    def summary():
+        return script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
+                      "--runs-root", runs_root(tmp_path), "--judge", "wildguard",
+                      "--sealed-dir", str(sealed))  # fmt: skip
+
+    return target, sealed, summary
+
+
+def test_the_summary_seals_a_malformed_prewarmed_label_file(monkeypatch, tmp_path, capsys) -> None:
+    """Review fa27, 2: a pre-warmed run whose cached label file holds a label outside the labels
+    exits non-zero with only the run, a generic status and the sealed record's path; stdout and
+    stderr carry nothing else, and the record (0600) holds the traceback with the label."""
+    target, sealed, summary = _malformed_summary(monkeypatch, tmp_path, PREWARMED)
+    with pytest.raises(SystemExit) as stopped:
+        summary()
+    out, err = capsys.readouterr()
+    (record,) = sealed.glob("summary-*-wildguard.json")
+    assert json.loads(stopped.value.code) == {"runs": [target], "sealed": True,
+                                              "status": "error (details sealed)",
+                                              "sealed_record": str(record)}  # fmt: skip
+    assert out == "" and err == "" and MALFORMED not in stopped.value.code
+    assert oct(record.stat().st_mode & 0o777) == "0o600"
+    assert oct(sealed.stat().st_mode & 0o777) == "0o700"
+    whole = json.loads(record.read_text())
+    assert whole["runs"] == [target] and f"the label '{MALFORMED}'" in whole["traceback"]
+
+
+def test_the_summary_keeps_a_primary_runs_label_error_whole(monkeypatch, tmp_path) -> None:
+    """The same malformed label file in an AdamW run raises its error as it is: nothing sealed."""
+    _, sealed, summary = _malformed_summary(monkeypatch, tmp_path, ADAMW)
+    with pytest.raises(ValueError, match=f"the label '{MALFORMED}'"):
+        summary()
+    assert not sealed.exists()
+
+
+def test_the_summary_refuses_a_sealed_directory_git_could_track(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Review fa27, fix round 1: ``--sealed-dir`` in the checkout outside runs/ is refused before
+    any label is read."""
+    runs = base()
+    confirmed(runs)
+
+    def unread(*args, **kwargs):
+        raise AssertionError("a label was read")
+
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", unread)
+    tracked = REPO_ROOT / "docs" / "sealed-test"
+    with pytest.raises(SystemExit):
+        script(monkeypatch, tmp_path, SUMMARY, runs, "--fixation", fixation_file(tmp_path),
+               "--judge", "wildguard", "--sealed-dir", str(tracked))  # fmt: skip
+    assert "lies in the checkout outside runs/" in capsys.readouterr().err
+    assert not tracked.exists()
+
+
+def test_a_prewarmed_label_row_error_in_a_block_is_sealed() -> None:
+    """``block_difference`` (through ``compute_looks``' ``look_blocks``): an error on the
+    pre-warmed arm's label rows is a ``SealedLabelError`` naming its bracket and a generic status
+    (the original kept for the sealed record); a primary arm's is raised as it is."""
+    from zero_field_refusal.analysis.study2_short import SealedLabelError
+
+    runs = base()
+    state = confirmed(runs)
+    module = summary_module()
+    supports = state["confirmation"][0]["supports"]
+    labels = {run.run_id: rows({ADAMW: 100, FA: 50, PREWARMED: 77}[run.arm]) for run in runs
+              if run.arm in ARMS}  # fmt: skip
+    for arm in (PREWARMED, ADAMW):
+        bracket = [supports[arm]["bracket"][side]["run"] for side in ("lo", "hi")]
+        broken = {**labels, bracket[0]: []}  # no label row of step 25
+        if arm == ADAMW:
+            with pytest.raises(ValueError, match="0 label rows of step-25"):
+                module.compute_looks(state, runs, broken, FIXATION, THETA0)
+            continue
+        with pytest.raises(SealedLabelError) as caught:
+            module.compute_looks(state, runs, broken, FIXATION, THETA0)
+        assert str(caught.value) == f"{', '.join(bracket)}: error (details sealed)"
+        assert caught.value.runs == bracket and caught.value.__suppress_context__
+        assert "0 label rows of step-25" in str(caught.value.error)
+
+
 def test_the_summary_is_the_same_with_and_without_the_time_course(
     monkeypatch, tmp_path, capsys
 ) -> None:

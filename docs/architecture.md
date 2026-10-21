@@ -186,6 +186,7 @@ Implemented:
 | `analysis.study2_short_sim` | the simulation of the short regime's confirmation: amendment 3's primary procedure (levels, validation gate, bias allowance), and amendment 4's mechanism cohort (component scenarios, attrition modes, the max-t intervals of the analysis on shared draws, each replicate's conditional truth, the calibration rule with its single check), from the B = 20 inputs record |
 | `analysis.study2_audit` | the terminal audit of the judge (amendment 4, design v3): the deduplicated frame and its coefficients, the draw with replacement proportional to the largest coefficient, the Clopper–Pearson bound on each arm's total error and each estimand's bias bound, the descriptive Hansen–Hurwitz estimate, the reference harm of the realized cohort, non-estimable estimands, and the 10 % agreement check |
 | `analysis.study2_audit_cli` | the audit's command line (`python -m zero_field_refusal.analysis.study2_audit_cli draw / agreements / estimate`), in the analysis package so that it is no GPU path: the draw behind the summary's final analysis, with D7's blinded files, the labellers' agreements, and the estimate from the resolved reference labels |
+| `analysis.study2_label_cli` | study 2's only labeling command (`python -m zero_field_refusal.analysis.study2_label_cli`; review fa27), in the analysis package so that it is no GPU path: `run_judging.label_runs` at three rounds, the open runs printed as `label_runs.py` prints them, the sealed runs (the pre-warmed arm, the time course of every arm, any run it cannot classify) labeled in a separate call with stdout, stderr and logging captured and shown by an allowlisted status alone (one status for the whole call when its judge fails), their details in a sealed record (`$RUNS_DIR/sealed`, 0700/0600, never in a path Git could track) that the summary's and the audit draw's sealed errors share |
 | `labeling`, `calibration` | the pool of calibration responses, blind calibration samples, the terminal labeling session and the import of reference labels |
 | `runindex` | one table of all runs from their `meta.json`, `config.yaml` and `summary.json` |
 | `analysis` | h(K) fits, K\* and the decisive cells over eligible cells (`analysis.eligibility`), Δ(K\*) with the paired seed bootstrap, the H2 rule, the full-analysis simulation; the runs table from run directories with explicit exclusions (`analysis.evidence`) and versioned tables, results, figure and manifest (`analysis.build`, with `analysis.outputs`); the Gate 1 report from the stage-1 runs (`analysis.gate1`) |
@@ -225,8 +226,9 @@ Entry points in `scripts/`:
   regime's campaigns, prerequisite drivers and numerical-check requests; its summary, looks, final
   analysis and versions record; its simulation and the final level-fixing run. They read records
   and write no GPU result (`code_identity.ANALYSIS_SCRIPTS`)
-  ([operations](operations.md#study-2-short-regime-amendment-3)); the audit's command line is a
-  module of the analysis package, `analysis.study2_audit_cli`;
+  ([operations](operations.md#study-2-short-regime-amendment-3)); the audit's command line and
+  study 2's labeling command are modules of the analysis package, `analysis.study2_audit_cli` and
+  `analysis.study2_label_cli`;
 - `harmful_pool_cleaning.py`: the counts and the blind-labeling pairs behind the cleaning of
   study 2's harmful evaluation set (the pairs file holds prompt texts and stays out of Git);
 - `stage_a_campaigns.py`: the campaigns of study 2's Stage A, one seed each, the data-dependent
@@ -247,7 +249,9 @@ Entry points in `scripts/`:
   the 1.5B stage-1 runs (strata, sample, key, selection record);
 - `label_runs.py`: labels every response of completed run directories (study-2 runs: published
   terminal records) with one judge into their label files, the input of the analysis build; the
-  label file is the cache, and a judging receipt marks a completed labeling;
+  label file is the cache, and a judging receipt marks a completed labeling. It prints every
+  run's counts, so study 2 labels only through `analysis.study2_label_cli`
+  ([sealed output](operations.md#labeling-and-sealed-output));
 - `import_labels.py`: imports reference labels made outside the project (the ensemble) next to
   the sample, with their provenance folder and hashes;
 - `index_runs.py`: flattens `meta.json`, `config.yaml` and `summary.json` of every run, failed ones

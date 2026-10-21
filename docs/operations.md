@@ -680,22 +680,24 @@ stops:
    `rayleigh.json`, as for any campaign that measures R.
 3. **Read the support counts** in the summary: `first_block_without_runs`, `supported_in_order`
    and `possibly_supported`.
-4. **Label** the new runs: `scripts/label_runs.py --judge wildguard RUN_DIRS` (three rounds, the
-   default). A study-2 run is labeled once its terminal record was published with whole records,
-   whatever its status (a Rayleigh measurement that failed afterwards leaves it `failed`). The
-   three rounds are a run's in all, across reruns: `judge/wildguard.rounds.json` counts each
-   round before its requests are sent, so an interrupted round counts as used, and a rerun
-   resumes with the rounds left, sending nothing once they are used. A reply already in the
-   label file is reused and is no round. When a run's rounds are over, its judging receipt
-   `judge/wildguard.receipt.json` records the expected items, the judge's identity, the rounds
-   used in all, the labels still missing and the label file's sha256. A round deletes the
-   receipt before it starts; an interrupted one leaves none. Without a receipt matching its label
-   file, a run's labels do not count: the summary lists it under `labels_pending` and its block
-   waits (the pre-warmed arm's reasons are sealed until the final analysis: only a generic status
-   shows). Rerun the labeling to complete it. A run with a completed receipt (no label missing,
-   or its three rounds used) is left as it is, nothing sent. A round that fails (the judge gone)
-   stops the invocation: the runs after it are "not attempted" and keep their rounds, so bring
-   the judge back and rerun. A run another `label_runs.py` is labeling is `busy`, nothing sent.
+4. **Label** the new runs with study 2's sealed labeling command,
+   `python -m zero_field_refusal.analysis.study2_label_cli --judge wildguard RUN_DIRS`, never with
+   `scripts/label_runs.py` ([sealed output](#labeling-and-sealed-output)): it labels as
+   `label_runs.py` does, in three rounds. A study-2 run is labeled once its terminal record was
+   published with whole records, whatever its status (a Rayleigh measurement that failed afterwards
+   leaves it `failed`). The three rounds are a run's in all, across reruns:
+   `judge/wildguard.rounds.json` counts each round before its requests are sent, so an interrupted
+   round counts as used, and a rerun resumes with the rounds left, sending nothing once they are
+   used. A reply already in the label file is reused and is no round. When a run's rounds are over,
+   its judging receipt `judge/wildguard.receipt.json` records the expected items, the judge's
+   identity, the rounds used in all, the labels still missing and the label file's sha256. A round
+   deletes the receipt before it starts; an interrupted one leaves none. Without a receipt matching
+   its label file, a run's labels do not count: the summary lists it under `labels_pending` and its
+   block waits (the pre-warmed arm's reasons are sealed until the final analysis: only a generic
+   status shows). Rerun the labeling to complete it. A run with a completed receipt (no label
+   missing, or its three rounds used) is left as it is, nothing sent. A round that fails (the judge
+   gone) stops the invocation: the runs after it are "not attempted" and keep their rounds, so bring
+   the judge back and rerun. A run another labeling holds is `busy`, nothing sent.
    These are refused, with nothing sent and nothing written:
    - **The labels changed outside a round.** Either the receipt no longer matches its label file,
      judge, items or counts, or the label file changed after its receipt was deleted. Restore the
@@ -1064,8 +1066,9 @@ mechanism cohort. The summary reports each against its endpoint run: `identical`
   time-course run resumes training after each intermediate evaluation, which no endpoint run
   does.
 - **Label the time-course runs only for the final analysis,** by their explicit run directories,
-  never with a glob over `study2_short` at a look: nothing would read their labels, but the
-  outputs would no longer be sealed.
+  never with a glob over `study2_short` at a look: nothing would read their labels. The sealed
+  labeling command seals their output, every arm's
+  ([sealed output](#labeling-and-sealed-output)).
 - A run and its endpoint run that both stopped before the first monitor reading show `excluded`
   with a missing-record reason; both are failures of their seed and arm in any case.
 
@@ -1108,7 +1111,89 @@ inventory. It enters no decision.
   stopping look, and `final`, "not yet" with its reason until the confirmation has ended. Until
   then neither the printed status nor `--out` carries the pre-warmed arm's interpolated harm or
   missing labels. `final` holds the mechanism cohort's analysis and the time course with its
+  labels;
+- **a sealed error** instead, when a pre-warmed run's labels do not read for a reason other than
+  a pending receipt (a malformed label file, say), or its label rows fail in a block: only the
+  runs, `error (details sealed)` and the path of a sealed record
+  (`$RUNS_DIR/sealed/summary-<UTC timestamp>-<judge>.json`, `--sealed-dir`) holding the
+  traceback, and a non-zero exit ([sealed output](#labeling-and-sealed-output)). A primary arm's
+  error is shown whole.
+
+### Labeling and sealed output
+
+Study 2 labels its runs only with the sealed labeling command (review fa27), which wraps
+`run_judging.label_runs` in the analysis package (a new script would be a GPU path):
+
+```bash
+python -m zero_field_refusal.analysis.study2_label_cli --judge wildguard RUN_DIR ... \
+  [--workers N] [--sealed-dir DIR]
+```
+
+- **Never run `scripts/label_runs.py` on study-2 runs,** detached or not, nor `scripts/judge.py
+  label` on items built from their responses. They print each run's unparseable count, rounds and
+  errors, and their output also lands in a captured log (`run_detached.py`'s `stdout.log` and
+  `stderr.log`). Neither they nor `run_judging` may change: they are GPU paths.
+- **The command** has `label_runs.py`'s setup (`.env`, the judge config, the WildGuard token
+  check, each run's prompt set), its three rounds, receipts, rounds records, lock and refusals
+  (amendment 3's step 4). It labels the open runs first, in one call, and prints them exactly as
+  `label_runs.py` does. Then it labels the sealed runs in a second call, with stdout, stderr and
+  logging captured. If the open call's judge fails, the sealed runs are "not attempted".
+- **Sealed runs:** every study-2 run of the pre-warmed arm, whatever its role; every time-course
+  run (role `timecourse` on seeds 3000–3009), every arm; and, fail closed, every run whose
+  `config.yaml` does not classify. A run on seeds 3000–3009 is open only as a confirmation run of
+  a primary arm. No step before the final analysis reads a pre-warmed run's labels, whatever its
+  role: amendment 4 fixes the confirmation's size, so no variance is planned from validation
   labels.
+- **What a sealed run shows:** `{"run_id": …, "sealed": true, "status": S}` and nothing else. S is
+  one of:
+  - `labeled (details sealed until the final analysis)`: a receipt matching the label file;
+  - `not complete: rerun the labeling (details sealed)`;
+  - `error (details sealed)`, `busy` or `not attempted`.
+
+  The status comes from the receipt and the technical flags alone, never from a count or from the
+  rounds a run used. A completed receipt with missing labels is "labeled". A run that recorded no
+  evaluation is "labeled": it has nothing to label. A receipt written again for its unchanged
+  label file is "not complete", whatever its rounds; a rerun keeps or resumes it, and it is then
+  "labeled".
+- **A judge failure in the sealed call** gives every sealed run of that call the one status "not
+  complete": the call stopped on a failed round, or the judge fails its re-probe after the call.
+  The judge is re-probed with one synthetic judgment after the call (a fixed harmless pair, never
+  a study item, through a temporary label file, removed after), and a WildGuard judge with the
+  token check too; a request failure, a timeout or an answer that does not parse fails it. Which
+  run a dying judge hits, and whether a run needed a retry round at all, depends on how its
+  outputs parsed. Rerun once the judge is back. "error" stays for the errors that are no judge
+  failure, run by run.
+- **Residuals** that only a change of `run_judging`, a GPU path, could remove, accepted:
+  - **An invocation-level bit:** a judge that fails during a call and recovers before the
+    re-probe, or fails at a set time, can still make that call end "labeled" or "not complete"
+    by the parsing of its runs taken together (more retry rounds reach a judge that is about to
+    fail). Label sealed runs in batches, never one sealed run alone.
+  - **Labeling duration:** retry rounds take time, for the call as a whole.
+  - **Request counts:** the judge server's access log and its statistics count the requests of
+    every round.
+- **Exit:** non-zero for the open runs exactly as `label_runs.py`; for the sealed runs only for
+  error, busy, not attempted or not complete, with a message that names the statuses and the
+  record, never a count. Rerun after "not complete" or "not attempted" (bring the judge back
+  first), and wait out "busy".
+- **An "error" that stays after a rerun:** the run waits. An outcome-blind helper may open its
+  record and relays only the exception's class and one remedy from this list: rerun; restore the
+  label file from the archive; exclude the run by a recorded decision. Never a count or a value.
+  The coordinator decides.
+- **The sealed record:** `$RUNS_DIR/sealed/labeling-<UTC timestamp>-<judge>.json` (the directory
+  0700, the file 0600), one per invocation with a sealed run. It holds the sealed runs' full
+  summaries, the captured output and any traceback; only its path is printed. The summary's and
+  the audit draw's sealed errors write `summary-…` and `audit-…` records there. All three
+  commands read `.env` and take `$RUNS_DIR/sealed` by default (`--sealed-dir` otherwise), and
+  refuse a directory in the checkout outside `runs/`, where Git could track it.
+- **Never open a sealed record before the final analysis** (but as above): do not print, search
+  or compare it, and do not read a sealed run's receipt, rounds record or label file either,
+  which hold the same counts. Archive the directory with an inventory, like the run directories
+  (`archive.py` prints counts only). After the final analysis the details are read from the
+  records, the receipts and the final analysis. Receipts, label files and rounds records stay as
+  they are: their counts serve integrity and the retries.
+- **The judge server's log:** never enable request or output logging (`--enable-log-requests`,
+  `--enable-log-outputs`, or `VLLM_LOGGING_LEVEL` at `DEBUG`), and read the log only for the
+  start and the deadline watcher's lines.
 
 ### The audit (S5)
 
@@ -1124,10 +1209,13 @@ python -m zero_field_refusal.analysis.study2_audit_cli estimate --sample DIR --f
   --reference REFERENCE.json --out "$RUNS_DIR/audit/estimate-DATE.json"
 ```
 
-- **`draw`** refuses (exit 2) before the final analysis exists, reading no label. It writes
-  `sample.jsonl`, `unique.jsonl`, `key.json`, `frame.jsonl` and `selection.json`, and prints only
-  counts. The files hold responses to harmful prompts: keep them under `$RUNS_DIR`, archive them
-  with an inventory, and give the labellers `unique.jsonl` alone.
+- **`draw`** refuses (exit 2) before the final analysis exists, reading no item's label. An error
+  on the pre-warmed arm's label counts, which it reads for the summary's looks, refuses with only
+  the runs, a generic status and a sealed record's path (`audit-…`, `--sealed-dir`;
+  [sealed output](#labeling-and-sealed-output)). It writes `sample.jsonl`, `unique.jsonl`,
+  `key.json`, `frame.jsonl` and `selection.json`, and prints only counts. The files hold
+  responses to harmful prompts: keep them under `$RUNS_DIR`, archive them with an inventory, and
+  give the labellers `unique.jsonl` alone.
 - **`agreements`** reads the two labellers' labels by item id (null: a failed output) and lists
   the disagreements and failed outputs to resolve, and the 10 % of the agreements the researcher
   checks, drawn from the audit's seed.
@@ -1282,6 +1370,13 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   its config) is labeled at every evaluation it recorded, `step-<N>`, whatever its stop reason (a
   run that stopped before its first evaluation is skipped);
   `analysis.study2_labels.read_endpoint_labels` then counts the labels per evaluation, strictly.
+  Study-2 runs are labeled only with `analysis.study2_label_cli`, the same labeling with the
+  sealed runs' output sealed, never with `label_runs.py`
+  ([sealed output](#labeling-and-sealed-output)).
+- **Logging:** never add `--enable-log-requests` or `--enable-log-outputs` to the command, nor
+  raise `VLLM_LOGGING_LEVEL` to `DEBUG`: the log would then hold the judged prompts and
+  responses and the judge's outputs. Read the log only for the start and the deadline watcher's
+  lines ([sealed output](#labeling-and-sealed-output)).
 - The Pod has no SSH and no persistent storage: stop it as soon as the labels are written; the
   labels and their raw outputs stay local next to the sample or in the run directories.
 - **Deadline without SSH.** When a hard stop is needed (the user away), the start command is

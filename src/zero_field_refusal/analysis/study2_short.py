@@ -37,7 +37,8 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
   technical), with its bracket.
 - ``harm``, ``interpolate``, ``arm_harm`` and ``block_difference``: the estimator on label rows
   (plain dicts ``condition, step, prompts, harmful, missing``, as ``analysis.study2_labels``
-  reads them), given per run id, with the per-block bounds of the missing-label sensitivities.
+  reads them), given per run id, with the per-block bounds of the missing-label sensitivities;
+  an error on the pre-warmed arm's rows is a ``SealedLabelError`` (review fa27).
 - ``looks`` and ``finite_bounds``: the two sequential looks and the finite-cohort bounds;
   ``bootstrap_t_interval``: the looks' interval as decided (the bootstrap-t);
   ``sensitivity_looks``: a missing-label sensitivity (``SENSITIVITIES``) at the primary's looks.
@@ -2596,6 +2597,22 @@ def arm_harm(
     return out
 
 
+SEALED_ERROR = "error (details sealed)"  # the status shown for a sealed run's error (fa27)
+
+
+class SealedLabelError(ValueError):
+    """An error on the label rows of a run whose label-derived details are sealed until the final
+    analysis (the pre-warmed arm: amendment 4, section 3; review fa27). Its message names the
+    runs and the generic status ``SEALED_ERROR``; ``error`` is the original exception, which it
+    is raised in place of ``from None``, so that a traceback Python prints shows neither its
+    message nor its chain. The commands write ``error`` into a sealed record
+    (``analysis.study2_label_cli.write_sealed_record``)."""
+
+    def __init__(self, runs: Sequence[str], error: BaseException) -> None:
+        self.runs, self.error = list(runs), error
+        super().__init__(f"{', '.join(self.runs)}: {SEALED_ERROR}")
+
+
 def block_difference(
     supports: Mapping[str, Mapping[str, Any]],
     labels: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -2605,8 +2622,21 @@ def block_difference(
     (``SENSITIVITIES``; low an arm's ``h``, high its ``h_missing_harmful``):
     ``delta_missing_low`` = A_low − F_high and ``delta_missing_high`` = A_high − F_low (the worst
     case for the contrast), ``delta_all_missing_harmful`` = A_high − F_high; and the interpolated
-    harm of every supported arm of ``supports`` (arm → ``block_support``)."""
-    arms = {arm: arm_harm(s, labels, kstar) for arm, s in supports.items() if s["supported"]}
+    harm of every supported arm of ``supports`` (arm → ``block_support``). An error on the
+    pre-warmed arm's label rows raises ``SealedLabelError`` with its bracket's runs (review
+    fa27); the primary arms' errors are raised as they are."""
+    arms: dict[str, dict[str, Any]] = {}
+    for arm, support in supports.items():
+        if not support["supported"]:
+            continue
+        if arm != PREWARMED:
+            arms[arm] = arm_harm(support, labels, kstar)
+            continue
+        try:
+            arms[arm] = arm_harm(support, labels, kstar)
+        except Exception as exc:
+            runs = [support["bracket"][side]["run"] for side in ("lo", "hi")]
+            raise SealedLabelError(runs, exc) from None
     supported = all(arm in arms for arm in PRIMARY_ARMS)
     bounds = (key for pair in SENSITIVITIES.values() for key in pair)
     out: dict[str, Any] = {"supported": supported, "delta": None, **dict.fromkeys(bounds)}

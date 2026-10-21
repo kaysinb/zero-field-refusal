@@ -4,7 +4,7 @@ analysis.
 
     python scripts/study2_short_summary.py --runs DIR [DIR ...] --theta0 RUN_DIR \
         (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--abandoned FILE] \
-        [--judge NAME [--versions FILE]] [--out OUT.json]
+        [--judge NAME [--versions FILE] [--sealed-dir DIR]] [--out OUT.json]
     python scripts/study2_short_summary.py versions --judge NAME --fixation FILE \
         [--allow-descendants] [--out FILE]
 
@@ -58,18 +58,24 @@ revises the decision), and the utility family over the blocks started. The looks
 supported arm's labels, the pre-warmed arm's included, but neither the printed status nor OUT.json
 carries the pre-warmed arm's interpolated harm or missing labels (the looks' ``blocks`` hold the
 primary arms' only), nor the reason a pre-warmed run's labels are pending (``labels_pending``
-shows its generic status): the final analysis opens them. Amendment 3's secondary contrasts are not
-computed: amendment 4's mechanism cohort replaces them. Then ``final``, amendment 4's final
-analysis, computed once the confirmation has ended: with three arms, once the mechanism cohort
-has ended, its blocks are labeled and the primary has stopped; with two arms, once the primary
-has stopped. It holds the mechanism cohort's analysis (three arms;
-analysis.study2_short.mechanism_analysis: C1 = pre-warmed − FA and C2 = AdamW − pre-warmed on
-the cohort, their sum against AdamW − FA, the max-t intervals at the fixation record's
-``mechanism`` level with their critical value, the per-contrast 97.5 % intervals beside them,
-the readings, the attrition, the missing-label sensitivities, and each cohort block's harm and
-missing labels per arm) and the time course with its labels (harm per step of each run
-numerically consistent with its endpoint run: identical or consistent). Before, ``final`` says
-"not yet" with the reason, and no label is read for it.
+shows its generic status): the final analysis opens them. Nor do the error paths: an error
+reading a pre-warmed run's labels other than a pending one (a malformed label file, say), or on
+the pre-warmed arm's label rows in a block (analysis.study2_short.SealedLabelError), writes its
+traceback to a sealed record (analysis.study2_label_cli.write_sealed_record:
+``<sealed dir>/summary-<UTC timestamp>-<judge>.json``, --sealed-dir, default $RUNS_DIR/sealed,
+refused where Git could track it; never opened before the final analysis) and exits non-zero
+with only the runs, a generic status and the record's path; the primary arms' errors are raised
+as they are (review fa27). Amendment 3's secondary contrasts are not computed: amendment 4's
+mechanism cohort replaces them. Then ``final``, amendment 4's final analysis, computed once the
+confirmation has ended: with three arms, once the mechanism cohort has ended, its blocks are
+labeled and the primary has stopped; with two arms, once the primary has stopped. It holds the
+mechanism cohort's analysis (three arms; analysis.study2_short.mechanism_analysis:
+C1 = pre-warmed − FA and C2 = AdamW − pre-warmed on the cohort, their sum against AdamW − FA, the
+max-t intervals at the fixation record's ``mechanism`` level with their critical value, the
+per-contrast 97.5 % intervals beside them, the readings, the attrition, the missing-label
+sensitivities, and each cohort block's harm and missing labels per arm) and the time course with its
+labels (harm per step of each run numerically consistent with its endpoint run: identical or
+consistent). Before, ``final`` says "not yet" with the reason, and no label is read for it.
 --judge refuses without the committed versions record (--versions FILE, default
 docs/study2-short-versions.json), or when the running commit, the model, the judge's identity
 or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json then
@@ -104,12 +110,18 @@ import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from omegaconf import OmegaConf
 
 from zero_field_refusal.analysis.evidence import label_path
 from zero_field_refusal.analysis.stage_a import index, load_trajectories, theta0_problems
+from zero_field_refusal.analysis.study2_label_cli import (
+    sealed_directory,
+    sealed_failure,
+    sealed_traceback,
+    write_sealed_record,
+)
 from zero_field_refusal.analysis.study2_labels import LabelsPending, read_endpoint_labels
 from zero_field_refusal.analysis.study2_short import (
     ARMS,
@@ -123,6 +135,7 @@ from zero_field_refusal.analysis.study2_short import (
     SENSITIVITIES,
     VERSIONS_CONFIG,
     VERSIONS_RECORD,
+    SealedLabelError,
     confirmation_guard,
     continuation,
     exhausted_runs,
@@ -148,7 +161,7 @@ from zero_field_refusal.config import load_config
 from zero_field_refusal.data import load_prompt_set
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.launch import launch_records
-from zero_field_refusal.paths import REPO_ROOT
+from zero_field_refusal.paths import REPO_ROOT, load_env
 from zero_field_refusal.tracking import git_state
 
 # The fixation record's values that ``looks`` takes (its look sizes and cap equal the module's).
@@ -303,7 +316,8 @@ def read_labels(state, runs, judge: str) -> tuple[dict[str, list[dict[str, Any]]
     block, by run id, and the runs whose labels are pending, by run id with the reason. A run
     without a label file is not labeled yet and left out; one whose labels have no completed
     judging receipt matching them (``LabelsPending``) is pending and left out too. Any other
-    problem of a label file raises."""
+    problem of a label file raises: a pre-warmed run's as ``SealedLabelError`` (review fa27),
+    whose message carries no label-derived value."""
     by_id = {run.run_id: run for run in runs}
     identity = judge_identity(load_config(f"judge/{judge}"))
     prompts: dict[str, dict[str, str]] = {}
@@ -329,6 +343,10 @@ def read_labels(state, runs, judge: str) -> tuple[dict[str, list[dict[str, Any]]
                                                               prompts[name])  # fmt: skip
                 except LabelsPending as exc:
                     pending[run.run_id] = str(exc)
+                except Exception as exc:  # e.g. a label value outside the labels, in its message
+                    if run.arm != PREWARMED:
+                        raise
+                    raise SealedLabelError([run.run_id], exc) from None
     return labels, pending
 
 
@@ -403,6 +421,21 @@ def _sealed(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: ({arm: v for arm, v in value.items() if arm != PREWARMED}
                   if key in ("h", "missing") else value)
             for key, value in entry.items()}  # fmt: skip
+
+
+def seal(exc: SealedLabelError, directory: Path, judge: str) -> NoReturn:
+    """Exit after an error on the pre-warmed arm's labels: its traceback goes to a sealed record,
+    and only the runs, the generic status and the record's path are shown (review fa27)."""
+    path = write_sealed_record(directory, "summary", judge, {
+        "what": "A sealed error of scripts/study2_short_summary.py on the pre-warmed arm's labels "
+                "(review fa27). Opened in the final analysis, never before.",
+        "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "command": sys.argv,
+        "code": git_state(),
+        "runs": exc.runs,
+        "traceback": sealed_traceback(exc),
+    })  # fmt: skip
+    sys.exit(sealed_failure(exc, path))
 
 
 def read_timecourse_labels(state, courses, judge: str) -> tuple[dict, dict[str, str]]:
@@ -547,6 +580,7 @@ def versions_main(argv: list[str]) -> None:
 
 
 def main() -> None:
+    load_env()  # $RUNS_DIR of .env, for the sealed records' default directory
     if sys.argv[1:2] == ["versions"]:
         versions_main(sys.argv[2:])
         return
@@ -561,6 +595,9 @@ def main() -> None:
                         help="the abandonment record of launcher attempts (JSON)")  # fmt: skip
     parser.add_argument("--versions", type=Path, default=REPO_ROOT / VERSIONS_RECORD,
                         help="with --judge: the versions record")  # fmt: skip
+    parser.add_argument("--sealed-dir", type=Path,
+                        help="with --judge: where a sealed error's record goes (default "
+                             "$RUNS_DIR/sealed)")  # fmt: skip
     parser.add_argument("--out", type=Path, help="the whole record (JSON); must not exist")
     args = parser.parse_args()
     if args.out is not None and args.out.exists():
@@ -583,6 +620,10 @@ def main() -> None:
         problems = versions_problems(args.versions, fixation=args.fixation, judge=args.judge)
         if problems:
             parser.error("the versions record does not hold: " + "; ".join(problems))
+        try:
+            sealed_dir = sealed_directory(args.sealed_dir)
+        except ValueError as exc:
+            parser.error(str(exc))
     abandoned = {}
     if args.abandoned is not None:
         try:
@@ -623,10 +664,13 @@ def main() -> None:
     if args.judge:
         digest = hashlib.sha256(args.versions.read_bytes()).hexdigest()
         record["versions_record"] = {"path": str(args.versions), "sha256": digest}
-        labels, pending = read_labels(state, runs, args.judge)
-        found = compute_looks(state, runs, labels, fixation, theta0, pending)
-        final = final_analysis(state, runs, courses, labels, fixation, found, args.judge,
-                               exhausted)  # fmt: skip
+        try:
+            labels, pending = read_labels(state, runs, args.judge)
+            found = compute_looks(state, runs, labels, fixation, theta0, pending)
+            final = final_analysis(state, runs, courses, labels, fixation, found, args.judge,
+                                   exhausted)  # fmt: skip
+        except SealedLabelError as exc:
+            seal(exc, sealed_dir, args.judge)
         open_pending(found, pending, final)
         record["looks"] = found
         shown["looks"] = {k: v for k, v in found.items() if k != "blocks"}

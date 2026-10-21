@@ -3,7 +3,7 @@ are resolved (amendment 4; the audit design v3, after review fa18; analysis.stud
 
     python -m zero_field_refusal.analysis.study2_audit_cli draw --runs DIR [DIR ...] \
         --theta0 RUN_DIR --fixation FILE --judge NAME [--runs-root RUNS_DIR] \
-        [--abandoned FILE] [--versions FILE] [--out DIR]
+        [--abandoned FILE] [--versions FILE] [--out DIR] [--sealed-dir DIR]
     python -m zero_field_refusal.analysis.study2_audit_cli agreements --sample DIR \
         --fixation FILE --first FILE --second FILE [--out FILE]
     python -m zero_field_refusal.analysis.study2_audit_cli estimate --sample DIR \
@@ -16,6 +16,11 @@ The command line lives in the analysis package, not in scripts/: every file unde
 summary's final analysis as the summary does (its functions, loaded from the script). It refuses
 (exit 2, "refused: ...") unless that final analysis is available: the confirmation has ended, the
 cohort blocks are labeled and the primary has stopped; before, it reads no item's judge label.
+An error on the pre-warmed arm's label counts there (analysis.study2_short.SealedLabelError, as
+the summary seals it; review fa27) refuses with only the runs, a generic status and the path of
+its sealed record (``<sealed dir>/audit-<UTC timestamp>-<judge>.json``, --sealed-dir, default
+$RUNS_DIR/sealed, refused where Git could track it, as --out is; analysis.study2_label_cli's
+``sealed_directory`` and ``write_sealed_record``), which holds the traceback.
 Then it reads the judge's label of every response of each bracket run of the primary's
 stopping-look cohort and of the mechanism cohort (each checked as
 analysis.study2_labels.read_endpoint_labels checks it, its counts against that reader's), builds
@@ -108,12 +113,20 @@ from zero_field_refusal.analysis.study2_audit import (
     reference_value,
     weights,
 )
+from zero_field_refusal.analysis.study2_label_cli import (
+    in_tracked_tree,
+    sealed_directory,
+    sealed_failure,
+    sealed_traceback,
+    write_sealed_record,
+)
 from zero_field_refusal.analysis.study2_labels import _labels, _responses, read_endpoint_labels
 from zero_field_refusal.analysis.study2_short import (
     ADAMW,
     FA,
     STEPS,
     VERSIONS_RECORD,
+    SealedLabelError,
     read_fixation,
 )
 from zero_field_refusal.config import load_config
@@ -121,7 +134,7 @@ from zero_field_refusal.data import load_prompt_set
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.judge_check import unique_texts
 from zero_field_refusal.labeling import write_calibration_files
-from zero_field_refusal.paths import REPO_ROOT, runs_root
+from zero_field_refusal.paths import REPO_ROOT, load_env, runs_root
 from zero_field_refusal.run_judging import scheduled_conditions
 from zero_field_refusal.seeding import derive_seed
 from zero_field_refusal.tracking import git_state
@@ -268,7 +281,19 @@ def _order(items: list[dict[str, Any]], seed: int) -> list[tuple[str, dict[str, 
 
 def draw(args: argparse.Namespace) -> dict[str, Any]:
     summary = summary_module()
-    fixation, state, runs, found, final = final_state(args, summary)
+    try:
+        fixation, state, runs, found, final = final_state(args, summary)
+    except SealedLabelError as exc:  # the pre-warmed arm's label counts: sealed (review fa27)
+        path = write_sealed_record(args.sealed_dir, "audit", args.judge, {
+            "what": "A sealed error of the audit's draw on the pre-warmed arm's labels (review "
+                    "fa27). Opened in the final analysis, never before.",
+            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "command": sys.argv,
+            "code": git_state(),
+            "runs": exc.runs,
+            "traceback": sealed_traceback(exc),
+        })  # fmt: skip
+        raise Refused(sealed_failure(exc, path)) from None
     try:  # the gate: the summary's final analysis; no item label is read before it
         cohorts = audit_cohorts(state, found, final)
     except ValueError as exc:
@@ -535,12 +560,6 @@ def estimate_shown(record: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------ main
 
 
-def _tracked_tree(path: Path) -> bool:
-    """Whether ``path`` lies in the checkout outside its ignored runs/ directory."""
-    found, root = path.resolve(), REPO_ROOT.resolve()
-    return found.is_relative_to(root) and not found.is_relative_to(root / "runs")
-
-
 def _write(path: Path | None, record: dict[str, Any]) -> None:
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -560,6 +579,8 @@ def build_parser() -> argparse.ArgumentParser:
     one.add_argument("--abandoned", type=Path, help="the abandonment record (JSON)")
     one.add_argument("--versions", type=Path, default=REPO_ROOT / VERSIONS_RECORD)
     one.add_argument("--out", type=Path, help="a new directory under $RUNS_DIR")
+    one.add_argument("--sealed-dir", type=Path,
+                     help="a sealed error's record (default $RUNS_DIR/sealed)")  # fmt: skip
     two = sub.add_parser("agreements", help="the agreements the researcher checks")
     three = sub.add_parser("estimate", help="the bias bounds and the reference harm")
     for later in (two, three):
@@ -574,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    load_env()  # $RUNS_DIR of .env, for the default --out and sealed directory
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "draw" and args.out is None:
@@ -581,9 +603,14 @@ def main(argv: list[str] | None = None) -> None:
         args.out = runs_root() / "audit" / f"study2-short-{stamp}"
     if args.out is not None and args.out.exists():
         parser.error(f"{args.out} exists: the audit's files are written once")
-    if args.command == "draw" and _tracked_tree(args.out):
+    if args.command == "draw" and in_tracked_tree(args.out):
         parser.error(f"{args.out} lies in the checkout outside runs/: the audit's files hold "
                      "model responses and never enter Git; write them under $RUNS_DIR")  # fmt: skip
+    if args.command == "draw":
+        try:
+            args.sealed_dir = sealed_directory(args.sealed_dir)
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         if args.command == "draw":
             record = draw(args)

@@ -1234,6 +1234,51 @@ def test_a_capped_confirmation_with_an_empty_mechanism_cohort_audits_delta(
     assert json.loads(capsys.readouterr().out)["estimands"]["delta"]["U"] == delta["U"]
 
 
+def test_draw_seals_an_error_on_the_prewarmed_labels_before_its_gate(monkeypatch, tmp_path,
+                                                                     capsys) -> None:  # fmt: skip
+    """Review fa27: ``draw`` computes the summary's looks before its gate, reading the bracket
+    runs' label counts. A pre-warmed run whose labels raise there (a label outside the labels, in
+    the message) refuses with only the run, a generic status and the sealed record's path; the
+    record holds the traceback, and nothing is drawn."""
+    runs = base()
+    rates = until(runs, "confirmation")["next"]["rates"]
+    runs += blocks_of(rates, 20, CONFIRMATION_SEEDS[:2])
+    args, _ = archive(monkeypatch, tmp_path, runs)
+    by_name = {run.run_id: run for run in runs}
+    failing = {run.run_id for run in runs if run.arm == PREWARMED}
+    malformed = "sealed-label-value"
+
+    def labels(run_dir, judge, identity, prompts):
+        if run_dir.name in failing:
+            raise ValueError(f"{run_dir}: step-25/p001 has the label '{malformed}'")
+        return synthetic_harm(by_name[run_dir.name])
+
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_labels.read_endpoint_labels", labels)
+    sealed = tmp_path / "sealed"
+    with pytest.raises(SystemExit) as stopped:
+        study2_audit_cli.main([*args, "--sealed-dir", str(sealed)])
+    out, err = capsys.readouterr()
+    (record,) = sealed.glob("audit-*-wildguard.json")
+    shown = json.loads(err.split("refused: ", 1)[1])
+    assert stopped.value.code == 2 and shown["runs"][0] in failing
+    assert shown == {"runs": shown["runs"][:1], "sealed": True, "status": "error (details sealed)",
+                     "sealed_record": str(record)}  # fmt: skip
+    assert malformed not in out + err and out == ""
+    assert f"the label '{malformed}'" in json.loads(record.read_text())["traceback"]
+    assert not (tmp_path / "audit").exists()
+
+
+def test_draw_refuses_a_sealed_directory_git_could_track(tmp_path, capsys) -> None:
+    """Review fa27, fix round 1: as ``--out``, ``--sealed-dir`` is refused in the checkout outside
+    runs/."""
+    tracked = REPO_ROOT / "docs" / "sealed-test"
+    with pytest.raises(SystemExit) as stopped:
+        study2_audit_cli.main([*draw_args(tmp_path), "--sealed-dir", str(tracked)])
+    assert stopped.value.code == 2
+    assert "lies in the checkout outside runs/" in capsys.readouterr().err
+    assert not tracked.exists()
+
+
 def test_draw_refuses_a_directory_in_the_checkout(tmp_path) -> None:
     args = draw_args(tmp_path)
     args[-1] = str(REPO_ROOT / "docs" / "audit-test")
