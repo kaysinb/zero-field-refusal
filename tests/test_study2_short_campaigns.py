@@ -136,10 +136,33 @@ FIXATION = {  # the decided values; the resamples, seed and bias allowance are p
         "seed": 20261021,
         "agreement_check_share": 0.1,
     },  # fmt: skip
-}
+    # Amendment 4's other fixed values, as the tracked record holds them (the code's)
+    "candidates": {"order": [{"U": 8, "B": 20}, {"U": 7, "B": 20}],
+                   "arms": ["adamw_25", "frozen_adam_25", "prewarmed_adamw_25"],
+                   "fallback_arms": ["adamw_25", "frozen_adam_25"], "end": "infeasible",
+                   "scope": "B=20"},
+    "numerical": {"seeds": [2200, 2201, 2202],
+                  "cases": {"every_rate": [2200], "u_rate": [2201, 2202]}, "norm": 5e-05,
+                  "survival_share": 0.5, "retry_scale": 10, "bound_fraction": 0.01,
+                  "steps": [1, 5, 10, 15, 20, 25], "gaussian": {"p3": 3, "p4": 4},
+                  "reference": "float64 loss, accumulation and optimizer arithmetic; fallback "
+                               "float64 loss and accumulation only",
+                  "twin_a_consistency": {"abs": 1e-08, "rel": 0.0001}},
+    "validation": {"seeds": list(range(2100, 2112)), "minimum": 10,
+                   "arms": ["adamw_25", "frozen_adam_25", "prewarmed_adamw_25"],
+                   "fallback_arms": ["adamw_25", "frozen_adam_25"], "utility_level": 0.95,
+                   "bounds_pp": {"mmlu": 5.0, "factual": 10.0}},
+    "timecourse": {"seeds": list(range(3000, 3010)), "steps": [1, 5, 10, 25]},
+    "drift": {"seed": 2300, "batches": 64, "halves": [[0, 31], [32, 63]],
+              "optimizers": ["sgd", "adamw", "fa", "prewarmed"], "v0_batches": 50},
+    "scalars": {"arms": ["adamw_25", "frozen_adam_25", "prewarmed_adamw_25"],
+                "departure_arm": "prewarmed_adamw_25", "departure_steps": [5, 10, 25]},
+}  # fmt: skip
 LOOK_SETTINGS = {k: v for k, v in FIXATION.items()
                  if k not in ("w_max", "levels", "looks", "cap", "secondary_interval",
-                              "secondary_status", "mechanism", "audit")}  # fmt: skip
+                              "secondary_status", "mechanism", "audit", "candidates",
+                              "numerical", "validation", "timecourse", "drift",
+                              "scalars")}  # fmt: skip
 
 
 # ------------------------------------------------------------------ configs and arms
@@ -953,6 +976,105 @@ def test_fixation_requires_the_mechanism_key(tmp_path) -> None:
     for level in (0.95, 0.9876):  # the simulation sets it in [0.95, 1)
         path.write_text(json.dumps({**FIXATION, "mechanism": {**mechanism, "level": level}}))
         assert read_fixation(path)["mechanism"]["level"] == level
+
+
+def test_fixation_requires_amendment_4s_fixed_values(tmp_path) -> None:
+    """Amendment 4's other values fixed before any harm label (``FIXED_KEYS``): the candidate
+    order with its fallback (review fa22: B = 20 only), the numerical policy (with review fa21's
+    rule), the validation rule, the time course, the drift stream and the update scalars. Each
+    is required, an object whose every value is the code's: a missing key, a missing or unknown
+    sub-key, another value or another JSON type is refused; the tracked record reads, with
+    them."""
+    from zero_field_refusal import drift, schedule
+    from zero_field_refusal.analysis.study2_short import FIXED_KEYS, fixed_values
+    from zero_field_refusal.config import load_config as load
+    from zero_field_refusal.fa_control_diagnostic import NUMERICAL_REFERENCE, NumericalScope
+    from zero_field_refusal.paths import CONFIG_ROOT
+
+    tracked = read_fixation(REPO_ROOT / "docs" / "study2-short-fixation.json")
+    fixed = fixed_values()
+    assert FIXED_KEYS == ("candidates", "numerical", "validation", "timecourse", "drift",
+                          "scalars") and set(FIXED_KEYS) <= set(FIXATION_KEYS)  # fmt: skip
+    assert {key: tracked[key] for key in FIXED_KEYS} == {key: FIXATION[key] for key in FIXED_KEYS}
+    assert {key: FIXATION[key] for key in FIXED_KEYS} == fixed
+    # The code's values, from the constants the selection, the tools and the scalars use
+    assert [(c["U"], c["B"]) for c in fixed["candidates"]["order"]] == list(study2_short.CANDIDATES)
+    assert all(c["B"] == 20 for c in fixed["candidates"]["order"])  # no B = 5 candidate
+    numerical = fixed["numerical"]
+    policy = study2_short.numerical_policy(8)
+    assert {k: numerical[k] for k in ("norm", "survival_share", "retry_scale", "steps",
+                                      "gaussian", "reference", "twin_a_consistency")} == {
+        k: policy[k] for k in ("norm", "survival_share", "retry_scale", "steps", "gaussian",
+                               "reference", "twin_a_consistency")}  # fmt: skip
+    assert policy["bound"] == pytest.approx(numerical["bound_fraction"] * math.sqrt(40))
+    assert numerical["reference"] == NUMERICAL_REFERENCE
+    scope = NumericalScope.of(load(CONFIG_ROOT / "experiments" / "numerical_check.yaml"))
+    assert (list(scope.seeds), scope.norm, scope.survival_share, scope.rounding_scale,
+            scope.bound_fraction, list(scope.eval_at), scope.consistency_rule) == (
+        numerical["seeds"], numerical["norm"], numerical["survival_share"],
+        numerical["retry_scale"], numerical["bound_fraction"], numerical["steps"],
+        numerical["twin_a_consistency"])  # fmt: skip
+    cases = study2_short.numerical_cases({ADAMW: [1e-5, 1.2e-5, 1.4e-5]})
+    assert sorted({seed for _, lr, seed in cases if lr != 1.4e-5}) == numerical["cases"][
+        "every_rate"] and sorted({seed for _, lr, seed in cases} - {2200}) == numerical["cases"][
+        "u_rate"]  # fmt: skip
+    validation = fixed["validation"]
+    assert (validation["seeds"], validation["minimum"]) == (list(VALIDATION_SEEDS), 10)
+    assert validation["bounds_pp"] == {"mmlu": 5.0, "factual": 10.0}
+    assert fixed["timecourse"] == {"seeds": list(study2_short.TIMECOURSE_SEEDS),
+                                   "steps": list(study2_short.TIMECOURSE_STEPS)}  # fmt: skip
+    settings = drift.DriftScope.of(load(CONFIG_ROOT / "experiments" / "drift_diagnostic.yaml"))
+    assert (fixed["drift"]["seed"], fixed["drift"]["batches"], fixed["drift"]["v0_batches"]) == (
+        settings.seed, settings.batches, settings.v0_batches) == (2300, 64, 50)  # fmt: skip
+    assert fixed["drift"]["halves"] == [[0, 31], [32, 63]]
+    assert fixed["scalars"]["departure_steps"] == list(schedule.DEPARTURE_STEPS) == list(
+        study2_short.DEPARTURE_STEPS)  # fmt: skip
+    path = tmp_path / "fixation.json"
+    for key in FIXED_KEYS:
+        path.write_text(json.dumps({k: v for k, v in FIXATION.items() if k != key}))
+        with pytest.raises(ValueError, match=rf"lacks \['{key}'\]"):
+            read_fixation(path)
+        value = FIXATION[key]
+        for value_bad in ([value], None, key):
+            path.write_text(json.dumps({**FIXATION, key: value_bad}))
+            with pytest.raises(ValueError, match=f"{key} .* is not an object"):
+                read_fixation(path)
+        for name in value:
+            path.write_text(json.dumps({**FIXATION, key: {k: v for k, v in value.items()
+                                                          if k != name}}))  # fmt: skip
+            with pytest.raises(ValueError, match=rf"{key} lacks \['{name}'\]"):
+                read_fixation(path)
+        path.write_text(json.dumps({**FIXATION, key: {**value, "other": 1}}))
+        with pytest.raises(ValueError, match=rf"{key} has keys \['other'\] it does not know"):
+            read_fixation(path)
+    bad = [("candidates", "order", [{"U": 8, "B": 20}, {"U": 7, "B": 20}, {"U": 8, "B": 5}]),
+           ("candidates", "order", [{"U": 8, "B": 20.0}, {"U": 7, "B": 20}]),
+           ("candidates", "order", [{"U": 7, "B": 20}, {"U": 8, "B": 20}]),
+           ("candidates", "fallback_arms", ["adamw_25"]), ("candidates", "end", "b5"),
+           ("numerical", "seeds", [2200, 2201]), ("numerical", "norm", 5e-5 * 1.0001),
+           ("numerical", "survival_share", 0.4), ("numerical", "retry_scale", 10.0),
+           ("numerical", "bound_fraction", 0.02), ("numerical", "steps", [1, 5, 10, 25]),
+           ("numerical", "gaussian", {"p3": 3, "p4": 5}),
+           ("numerical", "reference", "float64 loss, accumulation and optimizer arithmetic"),
+           ("numerical", "twin_a_consistency", {"abs": 1e-08, "rel": 0.001}),
+           ("numerical", "cases", {"every_rate": [2200, 2201], "u_rate": [2202]}),
+           ("validation", "minimum", 9), ("validation", "seeds", list(range(2100, 2111))),
+           ("validation", "arms", ["adamw_25", "frozen_adam_25"]),
+           ("validation", "utility_level", 0.9), ("validation", "bounds_pp", {"mmlu": 5.0}),
+           ("timecourse", "seeds", list(range(3000, 3009))), ("timecourse", "steps", [1, 25]),
+           ("drift", "seed", 2301), ("drift", "batches", 32), ("drift", "halves", [[0, 63]]),
+           ("drift", "optimizers", ["sgd", "adamw"]), ("drift", "v0_batches", 49),
+           ("scalars", "departure_steps", [5, 25]),
+           ("scalars", "departure_arm", "adamw_25")]  # fmt: skip
+    for key, name, value in bad:
+        path.write_text(json.dumps({**FIXATION, key: {**FIXATION[key], name: value}}))
+        with pytest.raises(ValueError, match=f"{key} {name} .* is not the code's"):
+            read_fixation(path)
+    # The JSON numbers as numbers: U 8.0 or 8 alike; the record's own values are returned
+    path.write_text(json.dumps({**FIXATION, "candidates": {**FIXATION["candidates"], "order": [
+        {"U": 8.0, "B": 20}, {"U": 7.0, "B": 20}]}}))  # fmt: skip
+    assert read_fixation(path)["candidates"]["order"] == [{"U": 8.0, "B": 20},
+                                                          {"U": 7.0, "B": 20}]  # fmt: skip
 
 
 # ------------------------------------------------------------------ the looks' blocks

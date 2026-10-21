@@ -514,9 +514,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   (``pps_with_replacement``), ``weight`` (``max_abs_coefficient``), ``interval``
   (``clopper_pearson_total_error``), ``arm_level`` (1 − 0.025/3), ``bias_level`` (0.975),
   ``missing_reference`` (``error``) and ``agreement_check_share`` (0.1), each equal to the
-  code's, and the draw's ``seed``. Each is required and none is defaulted, also when
-  ``interval`` is ``t`` and the bootstrap's values go unused. A key enters the code and the
-  committed record in the same commit, so that the record always reads.
+  code's, and the draw's ``seed``; and amendment 4's other values fixed before any harm label
+  (``FIXED_KEYS``, ``fixed_values``), each an object equal to the code's: ``candidates`` (the
+  B = 20 order and its primary-pair fallback), ``numerical`` (the numerical policy),
+  ``validation`` (the validation rule), ``timecourse`` (its seeds and steps), ``drift`` (its
+  stream, batches and halves) and ``scalars`` (the departure steps). Each is required and none
+  is defaulted, also when ``interval`` is ``t`` and the bootstrap's values go unused. A key
+  enters the code and the committed record in the same commit, so that the record always reads.
 - *The versions record* (``versions_problems``, review fa4 and its fix review): the validation
   and confirmation campaigns and the looks refuse without it committed (tracked and unchanged at
   HEAD), or when the running commit, the model, the judge's identity or the fixation record
@@ -529,6 +533,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
 
 from __future__ import annotations
 
+import copy
 import functools
 import hashlib
 import itertools
@@ -680,6 +685,11 @@ AUDIT_FIXED = {"sizes": {"adamw": 400, "fa": 400, "prewarmed": 200},
                "bias_level": 0.975, "missing_reference": "error",
                "agreement_check_share": 0.1}  # fmt: skip
 AUDIT_KEYS = (*AUDIT_FIXED, "seed")
+# Amendment 4's other values fixed before any harm label, each a fixation-record key whose every
+# value must be the code's (``fixed_values``): the candidate order with its fallback (review
+# fa22: B = 20 only), the numerical policy (section 1, with review fa21's rule), the validation
+# rule, the time course, the drift stream and the update scalars.
+FIXED_KEYS = ("candidates", "numerical", "validation", "timecourse", "drift", "scalars")
 FIXATION_KEYS = (
     "w_max",
     "levels",
@@ -696,6 +706,7 @@ FIXATION_KEYS = (
     "secondary_status",
     "mechanism",
     "audit",
+    *FIXED_KEYS,
 )
 
 
@@ -3583,7 +3594,17 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
       ``analysis.study2_audit``): an object with exactly ``AUDIT_KEYS``: ``sizes``,
       ``selection``, ``weight``, ``interval``, ``arm_level``, ``bias_level``,
       ``missing_reference`` and ``agreement_check_share``, each equal to the code's
-      (``AUDIT_FIXED``), and ``seed`` (an integer), the audit draw's.
+      (``AUDIT_FIXED``), and ``seed`` (an integer), the audit draw's;
+    - amendment 4's other fixed values (``FIXED_KEYS``), each an object whose keys and values
+      are exactly the code's (``fixed_values``): ``candidates`` (the order, (U, B) = (8, 20) then
+      (7, 20), for the three arms, then for the primary pair, else ``infeasible`` with its
+      B = 20 report), ``numerical`` (the seeds, the cases, the norm, the survival share and its
+      retry, the bound's fraction of K*, the steps, the Gaussian directions' seeds, the
+      reference with its fallback and twin A's consistency rule), ``validation`` (the seeds, the
+      10 jointly supported blocks of 12, the three arms or, in the fallback, the primary pair,
+      and the simultaneous utility bounds), ``timecourse`` (its seeds and steps), ``drift`` (its
+      seed, batches, halves, optimizers and v₀'s batches) and ``scalars`` (the arms, and the
+      pre-warmed arm's departure steps).
 
     Each is required, the integers as JSON integers; a missing or malformed one raises
     ``ValueError``, and none is ever defaulted."""
@@ -3626,6 +3647,9 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
             problems.append(f"{key} {record[key]!r} is not one of {list(allowed)}")
     problems += mechanism_problems(record["mechanism"])
     problems += audit_problems(record["audit"])
+    fixed = fixed_values()
+    for key in FIXED_KEYS:
+        problems += fixed_problems(key, record[key], fixed[key])
     if problems:
         raise ValueError(f"{path}: " + "; ".join(problems))
     return {
@@ -3644,6 +3668,7 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
         "secondary_status": record["secondary_status"],
         "mechanism": _mechanism_settings(record["mechanism"]),
         "audit": _audit_settings(record["audit"]),
+        **{key: copy.deepcopy(record[key]) for key in FIXED_KEYS},
     }
 
 
@@ -3734,6 +3759,87 @@ def _audit_settings(value: Mapping[str, Any]) -> dict[str, Any]:
             "arm_level": float(value["arm_level"]), "bias_level": float(value["bias_level"]),
             "missing_reference": value["missing_reference"], "seed": value["seed"],
             "agreement_check_share": float(value["agreement_check_share"])}  # fmt: skip
+
+
+@functools.cache
+def _gpu_fixed() -> dict[str, Any]:
+    """What the GPU tools fix for the fixation record's ``drift`` and ``scalars``: the drift
+    diagnostic's tracked settings (configs/experiments/drift_diagnostic.yaml, read through its
+    own ``DriftScope``) and the pre-warmed arm's departure steps (``schedule.DEPARTURE_STEPS``).
+    Imported when first needed: the tools load torch."""
+    from .. import drift, schedule
+
+    scope = drift.DriftScope.of(load_config(CONFIG_ROOT / "experiments" / "drift_diagnostic.yaml"))
+    return {"drift": {"seed": scope.seed, "batches": scope.batches,
+                      "halves": [[0, scope.half - 1], [scope.half, scope.batches - 1]],
+                      "optimizers": list(scope.optimizers), "v0_batches": scope.v0_batches},
+            "departure_steps": list(schedule.DEPARTURE_STEPS)}  # fmt: skip
+
+
+def fixed_values() -> dict[str, dict[str, Any]]:
+    """The values of amendment 4's fixed fixation keys (``FIXED_KEYS``) as the code holds them;
+    a fixation record must hold each exactly (``fixed_problems``):
+
+    - ``candidates``: the order of ``CANDIDATES`` as (U, B) objects, for ``arms`` (the three
+      arms), then for ``fallback_arms`` (the primary pair), else ``end`` ``infeasible`` with its
+      report of ``scope`` B=20 (review fa22: no B = 5 candidate);
+    - ``numerical``: the seeds ``NUMERICAL_SEEDS``, the ``cases`` (every selected rate on the
+      first seed, each arm's U-rate on the others: ``numerical_cases``), and the frozen policy
+      of ``numerical_policy`` (the norm, the survival share, the retry scale, the bound's
+      fraction of K*, the steps and twin A's consistency rule of review fa21, with the Gaussian
+      directions' seeds and the reference's modes as the numerical-check tool fixes them);
+    - ``validation``: the seeds ``VALIDATION_SEEDS``, at least ``VALIDATION_MINIMUM`` blocks
+      jointly supported for ``arms`` (the three arms; the primary pair, ``fallback_arms``, in
+      the fallback), and the simultaneous one-sided utility bounds at ``UTILITY_LEVEL`` against
+      the MMLU and factual limits in percentage points (Bonferroni over the family);
+    - ``timecourse``: ``TIMECOURSE_SEEDS`` and ``TIMECOURSE_STEPS``;
+    - ``drift``: the drift diagnostic's seed, batches, halves, optimizers and v₀'s batches;
+    - ``scalars``: the arms whose every regular run records the update scalars, and the
+      pre-warmed arm's denominator departure steps."""
+    tool, gpu = _tool_policy(), _gpu_fixed()
+    return {
+        "candidates": {"order": [{"U": upper, "B": batch} for upper, batch in CANDIDATES],
+                       "arms": list(ARMS), "fallback_arms": list(PRIMARY_ARMS),
+                       "end": "infeasible", "scope": SCOPE},
+        "numerical": {"seeds": list(NUMERICAL_SEEDS),
+                      "cases": {"every_rate": [NUMERICAL_SEEDS[0]],
+                                "u_rate": list(NUMERICAL_SEEDS[1:])},
+                      "norm": NUMERICAL_POLICY["norm"],
+                      "survival_share": NUMERICAL_POLICY["survival_share"],
+                      "retry_scale": NUMERICAL_POLICY["retry_scale"],
+                      "bound_fraction": NUMERICAL_BOUND_FRACTION,
+                      "steps": list(NUMERICAL_POLICY["steps"]),
+                      "gaussian": dict(tool["gaussian"]), "reference": tool["reference"],
+                      "twin_a_consistency": dict(NUMERICAL_POLICY["twin_a_consistency"])},
+        "validation": {"seeds": list(VALIDATION_SEEDS), "minimum": VALIDATION_MINIMUM,
+                       "arms": list(ARMS), "fallback_arms": list(PRIMARY_ARMS),
+                       "utility_level": UTILITY_LEVEL,
+                       "bounds_pp": {"mmlu": MMLU_BOUND_PP, "factual": FACTUAL_BOUND_PP}},
+        "timecourse": {"seeds": list(TIMECOURSE_SEEDS), "steps": list(TIMECOURSE_STEPS)},
+        "drift": copy.deepcopy(gpu["drift"]),
+        "scalars": {"arms": list(ARMS), "departure_arm": PREWARMED,
+                    "departure_steps": list(gpu["departure_steps"])},
+    }  # fmt: skip
+
+
+def fixed_problems(key: str, value: Any, fixed: Mapping[str, Any]) -> list[str]:
+    """How the fixation record's ``key`` (one of ``FIXED_KEYS``) departs from the code's values
+    ``fixed`` (``fixed_values``): it must be an object with exactly their keys, each value equal
+    to the code's (``_same``: integers as JSON integers, lists and objects whole); none: it
+    holds."""
+    if not isinstance(value, dict):
+        return [f"{key} {value!r} is not an object with {list(fixed)}"]
+    problems = []
+    missing = [name for name in fixed if name not in value]
+    if missing:
+        problems.append(f"{key} lacks {missing}")
+    unknown = sorted(set(value) - set(fixed))
+    if unknown:
+        problems.append(f"{key} has keys {unknown} it does not know")
+    for name, frozen in fixed.items():
+        if name in value and not _same(value[name], frozen):
+            problems.append(f"{key} {name} {value[name]!r} is not the code's {frozen!r}")
+    return problems
 
 
 def versions_problems(
