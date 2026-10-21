@@ -991,3 +991,19 @@ def test_the_workers_may_use_every_core_of_the_machine(monkeypatch):
     with pytest.raises(SystemExit):
         script.main(["mechanism", "--workers", "33", "--list"])
     script.main(["mechanism", "--workers", "32", "--list"])
+
+
+def test_the_versions_record_runs_from_an_uninstalled_checkout(monkeypatch):
+    """On a Pod the project is imported through project-run without being installed: its
+    version reads None and the run goes on, its source recorded by git."""
+    script = load_script()
+    real = script.metadata.version
+
+    def version(name):
+        if name == "zero-field-refusal":
+            raise script.metadata.PackageNotFoundError(name)
+        return real(name)
+
+    monkeypatch.setattr(script.metadata, "version", version)
+    record = script.versions_record()
+    assert record["zero-field-refusal"] is None and record["numpy"] and "git" in record

@@ -529,11 +529,20 @@ def verdicts(mode: str, scenarios: list[dict], selection: dict) -> dict:
 # Amendment 4: the mechanism cohort, the inputs record, comparisons and the final run
 
 
+def _version(name: str) -> str | None:
+    """A package's installed version; None for one imported from a checkout without being
+    installed (the project on a Pod, through ``project-run``), whose source ``git`` records."""
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
 def versions_record() -> dict:
     """Recorded at launch: the source of a long run is the one it started with."""
     return {
         "python": platform.python_version(),
-        **{name: metadata.version(name) for name in PACKAGES},
+        **{name: _version(name) for name in PACKAGES},
         "git": git_state(),
     }
 
