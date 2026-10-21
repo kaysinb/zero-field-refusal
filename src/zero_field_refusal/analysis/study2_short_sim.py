@@ -3205,13 +3205,15 @@ def attrition_rate(attrition: str) -> tuple[str, float]:
     return mode, float(rate)
 
 
-def failure_laws(attrition: str) -> tuple[tuple[float, float], ...]:
-    """Per arm (A, F, P), the failure logit's (intercept, slope) in β_b/σ_s: none; independent,
-    every arm's runs at the mode's rate; support-dependent, A and F independent at that rate and
-    P's runs at it as a marginal, more often in high-harm blocks (``failure_correlated``'s law)."""
+def failure_laws(attrition: str, inputs: Inputs) -> tuple[tuple[float, float], ...]:
+    """Per arm (A, F, P), the failure logit's (intercept, slope) in β_b/σ_s: ``none``, the
+    measured baseline, each arm independently at the inputs' measured rate (as the primary rerun
+    uses it; 0 of 9 at S1, so none); independent, every arm's runs at the mode's rate;
+    support-dependent, A and F independent at that rate and P's runs at it as a marginal, more
+    often in high-harm blocks (``failure_correlated``'s law)."""
     mode, rate = attrition_rate(attrition)
     if mode == "none":
-        return ((-math.inf, 0.0),) * len(ARMS)
+        return tuple((_logistic_intercept(r, 0.0), 0.0) for r in inputs.failure_rate)
     laws = [(_logistic_intercept(rate, 0.0), 0.0)] * len(ARMS)
     if mode == "support_dependent":
         laws[2] = (_logistic_intercept(rate, FAILURE_SLOPE), FAILURE_SLOPE)
@@ -3557,6 +3559,8 @@ class PanelTruth:
         t = self.tables[a]
         start = t["z_low"] + first - t["low"]
         segment = t["table"][start : start + t["z"].size + weights.size - 1]
+        if start < 0 or segment.size != t["z"].size + weights.size - 1:
+            raise ValueError("the panel lies beyond the conditional truth's table")
         return np.correlate(segment, weights, mode="valid")
 
     def means(self, alpha: np.ndarray, misses: np.ndarray) -> np.ndarray:
@@ -3569,7 +3573,10 @@ class PanelTruth:
             x = np.array(arm.nominal) + misses[a]
             x = x + arm.sigma_u * t["speed"] + arm.sigma_e * t["noise"]
             curve = arm.offset + _shape(x, *arm.coefficients)  # (geometries, 3)
-            at = np.interp(curve[None] + self.shift[:, None, None], t["z"], harm)  # (nodes, n, 3)
+            where = curve[None] + self.shift[:, None, None]  # (nodes, n, 3)
+            if where.min() < t["z"][0] or where.max() > t["z"][-1]:  # np.interp would clamp
+                raise ValueError("an endpoint's curve lies beyond the conditional truth's grid")
+            at = np.interp(where, t["z"], harm)
             xs = np.broadcast_to(x, (len(SINGLE_FAILURE_PATTERNS), *x.shape))
             supported, low, high, upper = bracket_weights(
                 xs, np.broadcast_to(self.failed, xs.shape), self.w_max
@@ -3656,7 +3663,7 @@ def mechanism_parameters(
     if m.shape == "rare_only":
         spreads = _rare_only_shifts(m, base, c_f)
     spreads = (float(spreads[0]), float(spreads[1]))
-    failure = failure_laws(m.attrition)
+    failure = failure_laws(m.attrition, inputs)
     if not solve:
         return MechanismParameters((c_f, c_f, c_f), coefficients, spreads, failure, {})
     e1, e2, weights = component_nodes(m.shape, spreads, m.rho)
@@ -3970,6 +3977,14 @@ def _rates(flags: np.ndarray) -> dict[str, float]:
     return {"value": p, "se": se}
 
 
+def _subset_rates(flags: np.ndarray, subset: np.ndarray) -> dict[str, Any]:
+    """The rate of ``flags`` among the replicates in ``subset``, and the subset's share."""
+    share = float(subset.mean()) if subset.size else 0.0
+    if not subset.any():
+        return {"value": None, "se": None, "share": share}
+    return {**_rates(flags[subset]), "share": share}
+
+
 def mechanism_readings(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[str, np.ndarray]:
     """Per replicate and component, the analysis's readings (``mechanism_analysis``) at the
     max-t critical values ``q`` (R,): nothing below the minimum cohort or for a contrast without
@@ -3995,8 +4010,8 @@ def mechanism_readings(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[st
 
 def interval_status(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[str, np.ndarray]:
     """(R, 2) per contrast: ``missing`` (no interval: fewer than 2 blocks or an observed SE at or
-    below ``ZERO_SE``), ``whole_line`` (q = ∞: the interval is the whole line, uninformative) or
-    ``finite``; ``q`` broadcasts against (R, 2)."""
+    below ``ZERO_SE``), ``whole_line`` (q = ∞: uninformative; the analysis itself returns no
+    interval for it) or ``finite``; ``q`` broadcasts against (R, 2)."""
     missing = ~rows["readable"].astype(bool) | rows["zero_se"].astype(bool)
     finite_q = np.broadcast_to(np.isfinite(q), missing.shape)
     return {"missing": missing, "whole_line": ~missing & ~finite_q, "finite": ~missing & finite_q}
@@ -4005,7 +4020,8 @@ def interval_status(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[str, 
 def _covered(rows: Mapping[str, np.ndarray], q: np.ndarray, truth: Any) -> np.ndarray:
     """(R, 2): the symmetric interval mean ± q·SE contains the truth ((R, 2) per replicate, or
     one value per contrast). A missing interval does not cover (review fa24, Q3); a whole-line
-    one covers trivially and is counted apart (``interval_status``)."""
+    one (q = ∞, uninformative; the analysis returns no interval for it) is counted as covering,
+    as the brief rules, and reported separately (``interval_status``)."""
     mean, se = rows["mean"], rows["se"]
     status = interval_status(rows, q)
     value = np.asarray(truth, dtype=float)
@@ -4033,6 +4049,7 @@ def summarize_mechanism(
     declared = m.truth
     truth = rows["truth"]  # (R, 2)
     margin = MECHANISM_EFFECTS[0]
+    reading = rows["n"] >= MECHANISM_MINIMUM
     by_level = []
     for i, level in enumerate(levels):
         q = rows["q"][:, i]
@@ -4057,13 +4074,19 @@ def summarize_mechanism(
                 "bounded": _rates(readings["bounded"][:, j]),
                 "false_bounded": _rates(readings["bounded"][:, j] & (np.abs(t) > margin)),
             }
+        both = covered.all(axis=1)
         by_level.append({
             "level": level,
-            "simultaneous": _rates(covered.all(axis=1)),
+            "simultaneous": _rates(both),
+            # Readings need the minimum cohort; below it the intervals are descriptive only
+            # (review fa25): the coverage of each kind apart, with its share of replicates.
+            "simultaneous_readable": _subset_rates(both, reading),
+            "simultaneous_descriptive": _subset_rates(both, ~reading),
             "simultaneous_population": _rates(population.all(axis=1)),
             "missing": _rates(status["missing"].any(axis=1)),
             "whole_line": _rates(status["whole_line"].any(axis=1)),
             "usable": _rates(status["finite"].all(axis=1)),
+            "readable": _rates(status["finite"].all(axis=1) & reading),
             "infinite_q": _rates(~np.isfinite(q)),
             "components": components,
         })  # fmt: skip
@@ -4079,9 +4102,12 @@ def summarize_mechanism(
     with np.errstate(invalid="ignore", divide="ignore"):
         conditional_z = gap.mean(axis=0) / (gap.std(axis=0, ddof=1) / math.sqrt(max(len(gap), 1)))
     blocks = started.sum()
+    measured = m.attrition == "none" and any(math.isfinite(i) for i, _ in params.failure)
     return {
         "name": m.name,
         "settings": asdict(m),
+        # "none" runs the inputs' measured failure rates; a non-zero one is a measured baseline
+        "attrition_label": "measured baseline" if measured else m.attrition,
         "reps": int(n.size),
         "seconds": seconds,
         "parameters": {
@@ -4163,14 +4189,19 @@ def _cell(scenario: Mapping[str, Any]) -> tuple[str, float]:
 
 
 def mechanism_checks(
-    scenarios: Sequence[Mapping[str, Any]], readings_at: float | None = None
+    scenarios: Sequence[Mapping[str, Any]],
+    readings_at: float | None = None,
+    *,
+    predeclare: bool = True,
 ) -> dict[str, Any]:
     """The calibration rule over the required cells (normal and skewed at SD 5 and 10 pp): per
     level, each cell's smallest simultaneous max-t coverage over its scenarios against
     ``coverage_floor`` at the scenario's replicates; ``level`` is the smallest level at which
     every required cell holds (None if none). Stress cells are reported the same way and do not
     bind. Beside it, per cell at ``readings_at`` (default: that level, else the first), the
-    power, false direction and bounded rates and the minimum's reach (``reading_summary``)."""
+    power, false direction and bounded rates and the minimum's reach (``reading_summary``).
+    With ``predeclare`` (the calibration stream), the borderline scenarios at that level
+    (``borderline_scenarios``); a check stream's verdict leaves them None."""
     levels = [entry["level"] for entry in scenarios[0]["levels"]] if scenarios else []
     groups = {"required": [s for s in scenarios if s["settings"]["group"] == "required"],
               "stress": [s for s in scenarios if s["settings"]["group"] != "required"]}  # fmt: skip
@@ -4206,7 +4237,10 @@ def mechanism_checks(
     chosen = min(passing, default=None)
     shown = readings_at if readings_at is not None else chosen if chosen is not None else (
         levels[0] if levels else None)  # fmt: skip
-    borderline = [] if chosen is None else borderline_scenarios(scenarios, chosen)
+    # The borderline set is declared on the calibration stream only; a check stream's verdict
+    # carries the predeclared one in its ``check`` record instead.
+    borderline = (None if not predeclare else
+                  [] if chosen is None else borderline_scenarios(scenarios, chosen))  # fmt: skip
     return {
         "floor_rule": "0.95 − 2·√(0.95·0.05/R), R the scenario's replicates",
         "per_level": per_level,
@@ -4282,6 +4316,7 @@ def reading_summary(scenarios: Sequence[Mapping[str, Any]], i: int) -> list[dict
             entry["max_ended_at_cap"] = max(s["cohort"]["ended_at_cap"]["value"] for s in scen)
             entry["max_under_minimum"] = max(s["cohort"]["under_minimum"]["value"] for s in scen)
             entry["min_usable"] = min(s["levels"][i]["usable"]["value"] for s in scen)
+            entry["min_readable"] = min(s["levels"][i]["readable"]["value"] for s in scen)
             entry["max_missing"] = max(s["levels"][i]["missing"]["value"] for s in scen)
             entry["max_whole_line"] = max(s["levels"][i]["whole_line"]["value"] for s in scen)
             out.append(entry)

@@ -89,12 +89,14 @@ first: mechanism on the required grid (OUT/mechanism), one mechanism-check at th
 chose, 0.95 included, with its borderline scenarios at 50 000 (OUT/check), the primary rerun
 decided (with --conditional), decided-gate and decided-bias with the inputs (OUT/decided, OUT/gate,
 OUT/bias) and their comparison with amendment 3's archived runs (OUT/compare-*), and mechanism on
-the stress grid (OUT/stress, reported only). It writes OUT/final.json with the fixed level (the
-chosen one when the check passes, else none: no repetition) and the flagged rates. With --write
-it also writes the record to docs/study2-short-b20-inputs.json and the fixed level to
-docs/study2-short-fixation.json (mechanism.level; never when no level passed or the check
-failed). Without --runs-root it uses
---inputs as it is. A written level other than 0.95 also needs the tracked record's pin in
+the stress grid at the fixed level (OUT/stress, reported only). It writes OUT/final.json with the
+fixed level and the flagged rates. A level is fixed only if it holds on the calibration stream
+and passes the single binding check at it, 0.95 included; otherwise none is, with no repetition,
+and final.json and the log warn that docs/study2-short-fixation.json keeps its placeholder
+mechanism.level 0.95, which must not be used. With --write and a fixed level it also writes the
+record to docs/study2-short-b20-inputs.json and the level to docs/study2-short-fixation.json
+(mechanism.level); without a fixed level it writes neither. Without --runs-root it uses --inputs
+as it is. A written level other than 0.95 also needs the tracked record's pin in
 tests/test_study2_short_campaigns.py (test_fixation_requires_the_mechanism_key) updated.
 
 --looks restricts the look designs evaluated; --intervals picks t and/or bootstrap_t (the
@@ -277,6 +279,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--precision-reps",
         type=int,
         help=f"mechanism-check: replicates of a borderline scenario (default {sim.PRECISION_REPS})",
+    )
+    parser.add_argument(
+        "--readings-at", type=float, help="mechanism: the level the readings tables show"
     )
     parser.add_argument(
         "--conditional",
@@ -622,12 +627,21 @@ def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
     if args.reps is not None:
         grid = [replace(m, reps=args.reps) for m in grid]
     # The predeclared precision check (review fa24, Q2): the calibration run's borderline
-    # scenarios, once, at PRECISION_REPS replicates on the check stream.
+    # scenarios, once, at PRECISION_REPS replicates on the check stream. Only a check from a
+    # calibration summary (--level-from) over the whole required grid at its replicates is
+    # binding; a borderline scenario missing from the grid is an error, never dropped.
     borderline = []
     precision = args.precision_reps or sim.PRECISION_REPS
     if which == "check" and args.level_from is not None:
-        borderline = json.loads(args.level_from.read_text())["checks"].get("borderline", [])
+        borderline = json.loads(args.level_from.read_text())["checks"].get("borderline") or []
+        names = {m.name for m in grid}
+        absent = [name for name in borderline if name not in names]
+        if absent:
+            parser.error(f"borderline scenarios of {args.level_from} not in the grid: {absent}")
         grid = [replace(m, reps=precision) if m.name in borderline else m for m in grid]
+    binding = (which == "check" and args.level_from is not None and not args.scenarios
+               and args.reps is None and groups == ("required",)
+               and precision == sim.PRECISION_REPS)  # fmt: skip
     if not grid:
         parser.error("No scenario selected")
     if args.list:
@@ -652,7 +666,11 @@ def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
     out.mkdir(parents=True, exist_ok=True)
     clock = time.perf_counter()
     result = sim.run_mechanism(grid, settings, progress_printer(clock))
-    checks = sim.mechanism_checks(result["scenarios"])
+    if args.readings_at is not None and args.readings_at not in levels:
+        parser.error(f"--readings-at {args.readings_at} is not an evaluated level {levels}")
+    checks = sim.mechanism_checks(
+        result["scenarios"], args.readings_at, predeclare=which == "calibration"
+    )
     summary = {
         "mode": args.mode,
         "started": started.isoformat(timespec="seconds"),
@@ -669,6 +687,7 @@ def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
             "resamples_reason": RESAMPLES_REASON,
             "groups": list(groups),
             "level_from": None if args.level_from is None else str(args.level_from),
+            "readings_at": args.readings_at,
             "constants": mechanism_constants(),
         },
         "inputs": inputs.summary(),
@@ -681,10 +700,12 @@ def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         summary["check"] = {
             "level": levels[0],
             "passes": checks["per_level"][0]["required"]["meets"],
+            "binding": binding,
             "from": summary["settings"]["level_from"],
-            "borderline": borderline,
+            "borderline": borderline,  # predeclared on the calibration stream
             "precision_reps": precision,
             "precision_floor": sim.coverage_floor(precision),
+            "floor": sim.coverage_floor(sim.MECHANISM_REPS),
             "short": [name for c in cells for name in c["short_scenarios"]],
         }
     shutil.copyfile(inputs.path, out / "inputs.json")
@@ -876,7 +897,8 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         main(["mechanism-check", *mechanism, *precision, "--level-from", str(calibration),
               "--out", str(out / "check")])  # fmt: skip
         check = json.loads((out / "check" / "summary.json").read_text())["check"]
-    fixed = level if level is not None and check is not None and check["passes"] else None
+    fixed = (level if level is not None and check is not None and check["passes"]
+             and check.get("binding", False) else None)  # fmt: skip
     comparisons = {}
     for mode, name in FINAL_PRIMARY.items():
         primary = [*common, "--spread-replicates", str(args.spread_replicates),
@@ -896,6 +918,8 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         else:
             comparisons[name] = {"archived": str(archived), "missing": True}
     stress = [*mechanism, "--groups", "stress", "--out", str(out / "stress")]
+    if fixed is not None:  # the stress readings at the fixed level
+        stress += ["--readings-at", str(fixed)]
     if args.stress_reps is not None:
         stress += ["--stress-reps", str(args.stress_reps)]
     names = [m.name for m in sim.mechanism_grid() if m.group == "stress"]
@@ -906,18 +930,25 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         "level_on_calibration_stream": level,
         "check": check,
         "fixed_level": fixed,
-        "rule": "0.95 if it holds on the calibration stream, else the smallest raised level that "
-        "holds there and passes the check stream; none otherwise",
+        "rule": "a level is fixed only if it holds on the calibration stream (the smallest level "
+        "on the grid at which every required scenario meets its floor) and passes the single "
+        "independent check at it on the check stream, 0.95 included (the predeclared borderline "
+        "scenarios at 50 000 replicates); otherwise no level is fixed",
         "comparisons": comparisons,
         "written": [],
     }
-    if args.write:
+    if fixed is None:
+        final["warning"] = (
+            "no mechanism level is fixed: docs/study2-short-fixation.json keeps its placeholder "
+            "mechanism.level 0.95, which must not be used"
+        )
+        print(f"WARNING: {final['warning']}", file=sys.stderr, flush=True)
+    if args.write and fixed is not None:  # the record and its level go in together, or nothing
         if args.runs_root:
             shutil.copyfile(record, INPUTS_RECORD)
             final["written"].append(str(INPUTS_RECORD))
-        if fixed is not None:
-            write_fixation_level(FIXATION_RECORD, fixed)
-            final["written"].append(f"{FIXATION_RECORD}: mechanism.level {fixed}")
+        write_fixation_level(FIXATION_RECORD, fixed)
+        final["written"].append(f"{FIXATION_RECORD}: mechanism.level {fixed}")
     (out / "final.json").write_text(json_text(final))
     write_inventory(out)
     print(f"Wrote {out}: fixed level {fixed}")
@@ -934,6 +965,31 @@ def mechanism_markdown(summary: dict) -> str:
     shown = checks["readings_at"]
     levels = settings["levels"]
     index = levels.index(shown) if shown in levels else 0
+    if settings.get("readings_at") is not None:
+        readings = f"at the fixed level {shown}"
+    elif checks["level"] is not None and "check" not in summary:
+        readings = f"at the level the rule implies on this stream, {shown}"
+    else:
+        readings = f"at {shown} (no level fixed on this run)"
+    coverage = (
+        "Simultaneous max-t coverage of both components' conditional truths (each replicate's: "
+        "fresh supported seed blocks given its prompt panel and misses), against "
+        "0.95 − 2·√(0.95·0.05/R) per scenario at its own R. A missing interval does not cover; a "
+        "whole-line one (q = ∞) is uninformative, counted as covering as the brief rules and "
+        "reported separately; the analysis itself returns no interval for it. Required: normal "
+        "and skewed at SD 5 and 10 pp. At exactly 95 % coverage the expected number below the "
+        "floor is 2.3 % of a cell's scenarios and the chance of at least one is nearly 1 (in "
+        "brackets)."
+    )
+    if "check" in summary:
+        rule = ["## The check", "", check_text(summary["check"]), "", coverage, "",
+                rule_table(checks)]  # fmt: skip
+    else:
+        borderline = checks.get("borderline") or []
+        rule = ["## Calibration rule", "", coverage + f" Level the rule implies: "
+                f"**{checks['level']}**; predeclared borderline scenarios there (under 95 %, "
+                f"checked once at {sim.PRECISION_REPS} on the check stream): {len(borderline)}.",
+                "", rule_table(checks)]  # fmt: skip
     parts = [
         f"# Study 2 mechanism simulation: {summary['mode']}",
         "",
@@ -947,36 +1003,47 @@ def mechanism_markdown(summary: dict) -> str:
         "",
         inputs_table(summary),
         "",
-        "## Calibration rule",
+        *rule,
         "",
-        "Simultaneous max-t coverage of both components' conditional truths (each replicate's: "
-        "fresh supported seed blocks given its prompt panel and misses; a missing interval does "
-        "not cover), against 0.95 − 2·√(0.95·0.05/R) per scenario at its own R. Required: "
-        f"normal and skewed at SD 5 and 10 pp. Level the rule implies: **{checks['level']}**; "
-        f"borderline scenarios there (under 95 %, checked once at {sim.PRECISION_REPS}): "
-        f"{len(checks.get('borderline', []))}. At exactly 95 % coverage the expected number "
-        "below the floor is 2.3 % of a cell's scenarios and the chance of at least one is "
-        "nearly 1 (shown in brackets).",
-        "",
-        rule_table(checks),
-        "",
-        f"## Readings at level {shown}",
+        f"## Readings {readings}",
         "",
         "Direction power at |C| = 5 and 2.5 pp at the declared sign and at the conditional "
-        "truth's (smallest / mean over scenarios and components with that component SD; over "
-        "every replicate), the largest false direction against the conditional truth (at C = 0 "
-        "and anywhere), the bounded rate at C = 0, the largest false bounded rate at |C| = 5 pp, "
-        "and per cell the smallest reach of the 36-block minimum, the largest shares ending at "
-        "the cap and under 36, the smallest share of usable intervals and the largest of missing "
-        "and whole-line ones.",
+        "truth's (smallest / mean over scenarios and components with that component SD; "
+        "unconditional, over every replicate, a reading or not), the largest false direction "
+        "against the conditional truth (at C = 0 and anywhere), the bounded rate at C = 0, the "
+        "largest false bounded rate at |C| = 5 pp, and per cell the smallest reach of the "
+        "36-block minimum, the largest shares ending at the cap and under 36, the smallest "
+        "shares of usable intervals (both finite) and of readable ones (finite with at least 36 "
+        "blocks: a reading may be made), and the largest of missing and whole-line ones. Below "
+        "36 blocks the intervals are descriptive only: with 20 % failures in every arm most "
+        "cohorts end near 27 blocks, so those scenarios' coverage comes from descriptive "
+        "intervals (the scenario table splits it).",
         "",
         readings_table(checks),
         "",
-        f"## Scenarios at level {shown}",
+        f"## Scenarios {readings}",
         "",
         scenario_table(summary["scenarios"], index),
     ]
     return "\n".join(parts) + "\n"
+
+
+def check_text(check: dict) -> str:
+    """The single check (review fa24, Q2) as its record has it: the level, whether it binds,
+    the borderline set predeclared on the calibration stream with its replicates and floor, the
+    floor of the others, the verdict and the scenarios short of their floor."""
+    borderline = check.get("borderline") or []
+    short = check.get("short") or []
+    binds = "binding" if check.get("binding") else "not binding (a partial or level-only run)"
+    return (
+        f"Check of level **{check['level']}** on the separate check stream, from "
+        f"`{check.get('from')}`; {binds}. Predeclared borderline scenarios (under 95 % on the "
+        f"calibration stream): {len(borderline)}, each at {check['precision_reps']} replicates "
+        f"against {pp(check['precision_floor'], 3)} %; the others at {sim.MECHANISM_REPS} against "
+        f"{pp(check.get('floor', sim.coverage_floor(sim.MECHANISM_REPS)), 3)} %. Verdict: "
+        f"**{'passes' if check['passes'] else 'fails'}**; scenarios short of their floor: "
+        f"{len(short)}" + (": " + ", ".join(short) if short else ".")
+    )
 
 
 def inputs_table(summary: dict) -> str:
@@ -1038,12 +1105,13 @@ def readings_table(checks: dict) -> str:
                 "–" if not bounded else f"{pp(bounded['min'], 1)} / {pp(bounded['mean'], 1)}",
                 pp(e.get("max_false_bounded_at_5pp")),
                 pp(e["min_minimum_met"]), pp(e["max_ended_at_cap"]), pp(e["max_under_minimum"]),
-                pp(e["min_usable"]), pp(e["max_missing"]), pp(e["max_whole_line"]),
+                pp(e["min_usable"]), pp(e.get("min_readable")), pp(e["max_missing"]),
+                pp(e["max_whole_line"]),
             ])  # fmt: skip
     header = ["group", "shape", "SD", "component SD", "power @5", "power @5 cond", "power @2.5",
               "power @2.5 cond", "max false dir @0 / any", "bounded @0", "max false bounded @5",
-              "min reach 36", "max at cap", "max under 36", "min usable", "max missing",
-              "max whole line"]  # fmt: skip
+              "min reach 36", "max at cap", "max under 36", "min usable", "min readable",
+              "max missing", "max whole line"]  # fmt: skip
     return table(header, rows)
 
 
@@ -1062,7 +1130,10 @@ def scenario_table(scenarios: list[dict], index: int) -> str:
             " / ".join(pp(comps[c]["bounded"]["value"], 1) for c in sim.COMPONENTS),
             pp(s["minimum_met"]["value"], 1), pp(at["infinite_q"]["value"]),
             f"{pp(at['missing']['value'])} / {pp(at['whole_line']['value'])} / "
-            f"{pp(at['usable']['value'])}",
+            f"{pp(at['usable']['value'])} / {pp(at['readable']['value'])}",
+            " / ".join("–" if at[k]["value"] is None else
+                       f"{pp(at[k]['value'])} ({pp(at[k]['share'], 0)})"
+                       for k in ("simultaneous_readable", "simultaneous_descriptive")),
             _rate_cell(at["simultaneous_population"]),
             " / ".join(f"{pp(s['conditional_truth'][c]['mean'], 2)}±"
                        f"{pp(s['conditional_truth'][c]['sd'], 2)}" for c in sim.COMPONENTS),
@@ -1071,13 +1142,16 @@ def scenario_table(scenarios: list[dict], index: int) -> str:
             "–" if s["mean_correlation"] is None else f"{s['mean_correlation']:+.2f}",
             " / ".join("–" if check[c]["z"] is None else f"{check[c]['z']:+.1f}"
                        for c in sim.COMPONENTS),
+            " / ".join("–" if check[c].get("conditional_z") is None else
+                       f"{check[c]['conditional_z']:+.1f}" for c in sim.COMPONENTS),
             str(s["reps"]),
         ])  # fmt: skip
     header = ["scenario", "group", "sim cov @0.95", "sim cov", "C1 cov", "C2 cov", "Bonf C1",
               "Bonf C2", "power C1/C2", "bounded C1/C2", "reach 36", "q = ∞",
-              "missing / whole line / usable", "sim cov (population)",
+              "missing / whole line / usable / readable",
+              "sim cov readable / descriptive (share)", "sim cov (population)",
               "conditional truth C1/C2 (mean ± SD, pp)", "zero SE C1/C2", "SD C1/C2", "corr",
-              "estimand z C1/C2", "reps"]  # fmt: skip
+              "population z C1/C2", "conditional z C1/C2", "reps"]  # fmt: skip
     return table(header, rows)
 
 

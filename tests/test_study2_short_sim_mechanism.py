@@ -423,7 +423,7 @@ def _verdict_scenario(
         "settings": {"group": group, "shape": shape, "sd": sd, "ratio": "1:1", "c1": 0.05,
                      "c2": 0.0},
         "levels": [{"level": lv, "simultaneous": {"value": c, "se": 0.002},
-                    "usable": {"value": 1.0}, "missing": {"value": 0.0},
+                    "usable": {"value": 1.0}, "readable": {"value": 1.0}, "missing": {"value": 0.0},
                     "whole_line": {"value": 0.0},
                     "components": {name: component for name in sim.COMPONENTS}}
                    for lv, c in coverages],
@@ -472,15 +472,17 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
         calls.append(f"{mode} {groups}" if groups else mode)
         if mode == "decided":
             assert "--conditional" in argv
+        if mode == "mechanism" and groups == "stress":  # the stress readings at the fixed level
+            shown = argv[argv.index("--readings-at") + 1] if "--readings-at" in argv else None
+            assert shown == (None if fake.fixed is None else str(fake.fixed))
         out.mkdir(parents=True, exist_ok=True)
         level = fake.level
         if mode == "mechanism":
             (out / "summary.json").write_text(json.dumps({"checks": {"level": level}}))
         elif mode == "mechanism-check":
             assert argv[argv.index("--level-from") + 1].endswith("mechanism/summary.json")
-            (out / "summary.json").write_text(
-                json.dumps({"check": {"level": level, "passes": fake.passes}})
-            )
+            check = {"level": level, "passes": fake.passes, "binding": fake.binding}
+            (out / "summary.json").write_text(json.dumps({"check": check}))
         elif mode == "compare":
             (out / "comparison.json").write_text(
                 json.dumps(
@@ -492,14 +494,15 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
     monkeypatch.setattr(script, "runs_root", lambda: tmp_path / "runs")
     parser = script.build_parser()
     primary = ["decided", "compare", "decided-gate", "compare", "decided-bias", "compare"]
-    for level, passes, fixed, check in (
-        (0.95, True, 0.95, ["mechanism-check"]),
-        (0.95, False, None, ["mechanism-check"]),
-        (0.96, True, 0.96, ["mechanism-check"]),
-        (0.96, False, None, ["mechanism-check"]),
-        (None, None, None, []),
+    for level, passes, binding, fixed, check in (
+        (0.95, True, True, 0.95, ["mechanism-check"]),
+        (0.95, False, True, None, ["mechanism-check"]),
+        (0.96, True, True, 0.96, ["mechanism-check"]),
+        (0.96, False, True, None, ["mechanism-check"]),
+        (0.96, True, False, None, ["mechanism-check"]),  # a partial check never fixes a level
+        (None, None, None, None, []),
     ):
-        fake.level, fake.passes = level, passes
+        fake.level, fake.passes, fake.binding, fake.fixed = level, passes, binding, fixed
         calls.clear()
         out = tmp_path / f"final-{level}-{passes}"
         (tmp_path / "runs").mkdir(exist_ok=True)
@@ -512,6 +515,8 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
         assert calls == ["mechanism required", *check, *primary, "mechanism stress"]
         final = json.loads((out / "final.json").read_text())
         assert final["fixed_level"] == fixed and final["written"] == []
+        assert ("warning" in final) == (fixed is None)  # the placeholder 0.95 must not be used
+        assert "only if it holds on the calibration stream" in final["rule"]
         assert (out / "inventory.tsv").is_file()
 
 
@@ -625,10 +630,16 @@ def test_mechanism_mode_smoke(tmp_path: Path) -> None:
             dict(zip(sim.COMPONENTS, (s["settings"]["c1"], s["settings"]["c2"]), strict=True))
         )
         assert len(s["levels"]) == 2
-        # With 20 % failures in every arm the three-arm cohort mostly stays under 36 blocks.
+        # With 20 % failures in every arm the three-arm cohort mostly stays under 36 blocks:
+        # its intervals are descriptive, apart from the readable ones.
         under = s["cohort"]["under_minimum"]["value"]
-        assert under == (0.0 if s["settings"]["attrition"] == "none" else under)
+        if s["settings"]["attrition"] == "none":
+            assert under == 0.0
         assert s["minimum_met"]["value"] == 1 - under
+        at = s["levels"][0]
+        assert at["simultaneous_readable"]["share"] == pytest.approx(1 - under)
+        assert at["simultaneous_descriptive"]["share"] == pytest.approx(under)
+        assert at["readable"]["value"] <= at["usable"]["value"]
     assert summary["calibrations"] and summary["checks"]["per_level"][0]["level"] == 0.95
     assert "## Calibration rule" in (out / "results.md").read_text()
     lines = (out / "inventory.tsv").read_text().splitlines()
@@ -772,6 +783,16 @@ def test_the_precision_check_is_predeclared_and_single(tmp_path: Path) -> None:
     assert {s["name"]: s["reps"] for s in summary["scenarios"]} == {names[0]: 7, names[1]: 4}
     assert summary["check"]["borderline"] == names[:1]
     assert summary["check"]["precision_reps"] == 7 and summary["settings"]["levels"] == [0.96]
+    # A partial check (selected scenarios, other replicates) never binds; the check stream
+    # declares no borderline set of its own, and its report renders the predeclared record.
+    assert summary["check"]["binding"] is False and summary["checks"]["borderline"] is None
+    report = (out / "results.md").read_text()
+    assert "## The check" in report and "Level the rule implies" not in report
+    assert "on the calibration stream): 1, each at 7 replicates" in report
+    # A borderline scenario missing from the grid is an error, never dropped.
+    with pytest.raises(SystemExit):
+        script.main(["mechanism-check", "--scenarios", names[1], "--reps", "4", *TINY,
+                     "--level-from", str(calibration), "--out", str(tmp_path / "x")])  # fmt: skip
 
 
 def test_attrition_grid_has_five_modes() -> None:
@@ -779,9 +800,14 @@ def test_attrition_grid_has_five_modes() -> None:
     (A and F independent, P's failures through β_b at that marginal rate)."""
     assert sim.ATTRITIONS == ("none", "independent-0.1", "independent-0.2",
                               "support_dependent-0.1", "support_dependent-0.2")  # fmt: skip
-    assert sim.failure_laws("none") == ((-math.inf, 0.0),) * 3
-    assert sim.failure_laws("independent-0.1") == ((sim._logistic_intercept(0.1, 0.0), 0.0),) * 3
-    laws = sim.failure_laws("support_dependent-0.2")
+    assert sim.failure_laws("none", inputs()) == ((-math.inf, 0.0),) * 3  # measured 0
+    measured = inputs(failure_rate=(0.05, 0.0, 0.0))  # a non-zero measured baseline
+    assert sim.failure_laws("none", measured)[0] == (sim._logistic_intercept(0.05, 0.0), 0.0)
+    assert (
+        sim.failure_laws("independent-0.1", measured)
+        == ((sim._logistic_intercept(0.1, 0.0), 0.0),) * 3
+    )
+    laws = sim.failure_laws("support_dependent-0.2", inputs())
     assert laws[:2] == ((sim._logistic_intercept(0.2, 0.0), 0.0),) * 2
     intercept, slope = laws[2]
     nodes, weights = sim._hermite()
@@ -824,3 +850,132 @@ def test_primary_conditional_truth_report(tmp_path: Path) -> None:
     assert {"max_false_positive", "max_false_equivalence_5pp", "min_coverage", "population",
             "pointwise", "meets"} <= set(group)  # fmt: skip
     assert "## Against the conditional truth" in (with_truth / "results.md").read_text()
+
+
+# The scoped review of round 2
+
+
+def _independent_truth(arms, sigma_s, w_max, alpha, misses, n, seed):
+    """The conditional truth by brute force (review M8): fresh blocks drawn directly (stream
+    effect, speed, position noise, failures; no block effect), the panel's exact mean on a fine
+    grid, a bracket of its own; the ratio estimate of each arm's mean on the joint support and
+    its delta-method SE for the first minus the second arm and for any pair asked."""
+    rng = np.random.default_rng(seed)
+    beta = rng.standard_normal(n)
+    harm, ok = [], []
+    for a, arm in enumerate(arms):
+        z = np.arange(arm.offset - 6, arm.offset + 6, 0.0005)
+        table = (1 / (1 + np.exp(-(z[:, None] + alpha[None, :])))).mean(axis=1)
+        x = np.array(arm.nominal) + misses[a]
+        x = (
+            x
+            + arm.sigma_u * rng.standard_normal((n, 1))
+            + arm.sigma_e * rng.standard_normal((n, 3))
+        )
+        intercept, slope = arm.failure
+        failed = rng.random((n, 3)) < 1 / (1 + np.exp(-(intercept + slope * beta)))[:, None]
+        eta = arm.offset + sim._shape(x, *arm.coefficients) + sigma_s * beta[:, None]
+        h = np.interp(eta, z, table)
+        low_ok, high_ok = (x < 0) & ~failed, (x >= 0) & ~failed
+        x_low = np.where(low_ok, x, -np.inf).max(axis=1)
+        x_high = np.where(high_ok, x, np.inf).min(axis=1)
+        i_low = np.where(low_ok, x, -np.inf).argmax(axis=1)
+        i_high = np.where(high_ok, x, np.inf).argmin(axis=1)
+        good = np.isfinite(x_low) & np.isfinite(x_high) & (x_high - x_low <= w_max)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t = -x_low / (x_high - x_low)
+            rows = np.arange(n)
+            value = (1 - t) * h[rows, i_low] + t * h[rows, i_high]
+        harm.append(np.where(good, value, 0.0))
+        ok.append(good)
+    joint = np.all(ok, axis=0)
+    harm = np.array(harm).T  # (n, arms)
+    means = harm[joint].mean(axis=0)
+    return means, joint, harm
+
+
+def _ratio_se(joint, values, estimate) -> float:
+    return math.sqrt(((joint * (values - estimate)) ** 2).mean() / joint.size) / joint.mean()
+
+
+def test_conditional_truth_matches_an_independent_computation() -> None:
+    """``PanelTruth`` against a brute-force computation of its own (review M8): exact panel sums,
+    fresh blocks with correlated failures, a bracket of its own. Without block effects the
+    contrast varies little across fresh blocks, so 200 000 of them pin it to about 1e-5."""
+    scenario = sim.Scenario(delta=0.05, w_max=0.47, failure=0.2, failure_correlated=True)
+    params = sim.solve_parameters(scenario, 0.0)
+    engine = sim.primary_truth(scenario, params, 0)
+    alpha, misses = sim.draw_constants(scenario, sim.generator(77, "independent", "primary"))
+    alpha = alpha + 0.3
+    h = engine.means(alpha, misses)
+    means, joint, harm = _independent_truth(engine.arms, scenario.sigma_s, scenario.w_max, alpha,
+                                            misses, 200_000, 1)  # fmt: skip
+    estimate = means[0] - means[1]
+    se = _ratio_se(joint, harm[:, 0] - harm[:, 1], estimate)
+    assert se < 5e-5 and abs((h[0] - h[1]) - estimate) < 4 * se
+    # The mechanism's three arms, P's failures through β (support-dependent at 20 %).
+    m = sim.Mechanism(0.05, -0.05, attrition="support_dependent-0.2")
+    params = sim.mechanism_parameters(m, inputs(), (0.0, 0.0))
+    base = sim.mechanism_base(inputs())
+    alpha, misses = sim.draw_constants(base, sim.generator(77, "independent", "mechanism"))
+    truth = sim.conditional_contrasts(params, alpha, misses)
+    means, joint, harm = _independent_truth(params.conditional.arms, base.sigma_s, base.w_max,
+                                            alpha, misses, 200_000, 2)  # fmt: skip
+    for (i, j), value in zip(sim.COMPONENT_ARMS, truth, strict=True):
+        estimate = means[i] - means[j]
+        se = _ratio_se(joint, harm[:, i] - harm[:, j], estimate)
+        assert se < 5e-5 and abs(value - estimate) < 4 * se
+
+
+def test_conditional_truth_never_clamps() -> None:
+    """An endpoint curve beyond the engine's grid raises instead of being clamped by np.interp
+    (review M10)."""
+    scenario = sim.Scenario(w_max=0.47)
+    params = sim.solve_parameters(scenario, 0.3)
+    engine = sim.primary_truth(scenario, params, 0)
+    alpha, misses = sim.draw_constants(scenario, sim.generator(1, "clamp"))
+    engine.means(alpha, misses)  # within the grid
+    steep = dataclasses.replace(engine.arms[0], coefficients=(40.0, 0.0, 0.0))
+    wild = sim.PanelTruth([steep, engine.arms[1]], scenario.sigma_s, scenario.w_max, 0)
+    with pytest.raises(ValueError, match="beyond the conditional truth's grid"):
+        wild.means(alpha, misses)
+
+
+def test_write_with_a_failed_check_writes_nothing(tmp_path, monkeypatch) -> None:
+    """``final --write``: a failed or partial check leaves the fixation record and the inputs
+    record untouched, says so in final.json and warns; a binding pass writes both."""
+    script = load_script()
+    fixation, record = tmp_path / "fixation.json", tmp_path / "inputs-record.json"
+    monkeypatch.setattr(script, "FIXATION_RECORD", fixation)
+    monkeypatch.setattr(script, "INPUTS_RECORD", record)
+    monkeypatch.setattr(script, "measured_record", lambda args: json.loads(RECORD.read_text()))
+    monkeypatch.setattr(script, "runs_root", lambda: tmp_path / "runs")
+
+    def fake(argv):
+        mode, out = argv[0], Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        if mode == "mechanism":
+            (out / "summary.json").write_text(json.dumps({"checks": {"level": 0.96}}))
+        elif mode == "mechanism-check":
+            check = {"level": 0.96, "passes": fake.passes, "binding": True}
+            (out / "summary.json").write_text(json.dumps({"check": check}))
+
+    monkeypatch.setattr(script, "main", fake)
+    parser = script.build_parser()
+    for passes in (False, True):
+        fake.passes = passes
+        fixation.write_text(FIXATION.read_text())
+        record.write_text("{}\n")
+        out = tmp_path / f"final-{passes}"
+        args = parser.parse_args(["final", "--runs-root", str(tmp_path), "--rates",
+                                  "A=1e-5,2e-5,3e-5", "--write", "--out", str(out)])  # fmt: skip
+        script.final_main(args, parser)
+        final = json.loads((out / "final.json").read_text())
+        if passes:
+            assert analysis.read_fixation(fixation)["mechanism"]["level"] == 0.96
+            assert json.loads(record.read_text()) == json.loads(RECORD.read_text())
+            assert len(final["written"]) == 2 and "warning" not in final
+        else:
+            assert fixation.read_text() == FIXATION.read_text()
+            assert record.read_text() == "{}\n"
+            assert final["written"] == [] and "placeholder" in final["warning"]
