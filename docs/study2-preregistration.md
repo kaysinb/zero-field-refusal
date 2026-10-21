@@ -11,6 +11,12 @@ primary question to AdamW-25 against frozen Adam-25 in the short regime. Where t
 describe the original design, the amendment governs the new stage; the protocol before it is
 archived in [archive/study2-preregistration-v1.md](archive/study2-preregistration-v1.md).
 
+**Amendment 4** ([2026-10-19, with decisions to 2026-10-21](#amendment-4-a-corrected-numerical-criterion-batch-20-and-the-mechanism-cohort))
+keeps amendment 3's primary question and replaces its numerical acceptance, its batch order, its
+secondary contrasts and the audit's sampling: a twin test on fresh K-only seeds, B = 20 as the
+fixed scope, the mechanism cohort of the three arms, and an audit drawn by coefficient. Where it
+differs from amendment 3 or the sections above, it governs.
+
 Study 2 follows the stopped pilot (study 1: [preregistration](preregistration.md),
 [decision](decisions.md#study-decisions), [short report](reports/gate-1.md)). It is a new
 preregistered study on fresh seeds, with its own run, config and stream names in the namespace
@@ -547,6 +553,7 @@ Format: date, item, old value → new value, reason, and which data had been see
 | 2026-10-15 | The monitor panel ([amendment 1](#amendment-1-the-monitor-panel)) | 25 further prompts × 2 responses, disjoint from the scoring panel → the scoring panel's 100 prompts × 1 fresh response each (m = 1), with a nested second response (m = 2) as the declared fallback; scoring diagnostics every 25 steps; θ₀'s logits cached | Version 1 failed the agreement check: it read 13.3 % below the scoring panel at the median (p95 17.5 %; bounds 5 % and 15 %), low at all 14 states, which put the evaluations of the upper level outside the fit band | K only: the 14 full evaluations of the discovery runs so far (K_benign, K_monitor, the scoring panel's K per response, response lengths) and step times; no harm label, no response text, no utility |
 | 2026-10-16 | The full soft-target controls' gradient rule ([amendment 2](#amendment-2-the-full-controls-gradient-rule)) | A gradient norm above 10 × the median of the preceding norms stops a control → in the full controls it is only logged; a monitor reading or scoring diagnostic above 0.01 × √35 is checked at once without the cache, and a verified exceedance stops and rejects the control; the three full controls are rerun | All three full controls stopped on single batches of the soft-target noise floor, with their scoring K at 1.3–2.2·10⁻⁹ and no growth, which made the outcome `numerics_fail`. Adopted after that was seen, and disclosed: both outcomes are reported | K, gradient and displacement norms of the controls, the rejected batches' stream positions, response lengths and sampled log-probabilities there, the replay, teacher-gap and cache checks; the search's K and the selection's outcome; no harm label, no response text, no utility of a control |
 | 2026-10-16 | The primary question ([amendment 3](#amendment-3-redirection-to-the-short-regime)) | AdamW-long against SGD-long by a fitted curve → AdamW-25 against FA-25, exactly 25 steps, three targeted rates per arm, interpolation in ln K; two looks (36 / 60 supported, cap 80), paired bootstrap-t, α 0.040; w_max 0.47; equivalence only at a look with ≥ 36 supported, no reading below 10 supported; bias allowance b = 1.084 pp for the pointwise reading; pre-warmed AdamW-25 secondary | SGD-long does not reach the zone on the tested policies; the rectification hypothesis concerns Adam's first steps | Stage A's K, utility, numerical records and step times; the short grids' K trajectories; amendment 2's control reruns and the momentum pilot (K and numerics); study 1's published data; no study-2 judge label, no response text |
+| 2026-10-19, with decisions to 2026-10-21 | The numerical acceptance, the batch order, the secondary contrasts and the audit ([amendment 4](#amendment-4-a-corrected-numerical-criterion-batch-20-and-the-mechanism-cohort)) | An FA soft-target control per FA rate → a twin test (perturbations of norm 5 · 10⁻⁵ and a float64 reference, D_twin ≤ 0.01·K\*) on 15 K-only cases of fresh seeds, twin A numerically consistent with its run (fa21), and a same-path control per FA rate; candidates (8, 5), (8, 20), (7, 5), (7, 20) → B = 20 only, the three arms then the primary pair, else a feasibility report, a technical failure blocking for a human decision (fa22); secondary contrasts → the mechanism cohort (60 jointly supported blocks, cap 80, minimum 36) with a max-t interval, both estimands conditional on the benchmark (fa24); exploratory time course, drift and scalars; the audit drawn by coefficient, 400 / 400 / 200 (fa16–fa20) | Two of amendment 3's FA controls failed at B = 5; the diagnostic found the control's targets on another path (branch F). Later: S2's first check failed technically only, on fp32-level differences of twin A (fa21, fa22); the provisional simulation's coverage depended on the estimand (fa24) | Amendment 3's discovery K and utility and its controls' numerics, the diagnostic's records, Stage A's B = 20 grids, study 1's published data; for the later decisions S1's K and utility summaries, S2's numerical records and the provisional simulation; no study-2 judge label, no response text |
 
 ### Amendment 1: the monitor panel
 
@@ -1134,3 +1141,681 @@ Project 1's total is about $170, approved by the user:
   and contingency.
 
 Reference labelling and API costs are excluded. The ≈ $64 of Stage A is sunk.
+
+### Amendment 4: a corrected numerical criterion, batch 20, and the mechanism cohort
+
+Decided on 2026-10-19 by the user, after the FA soft-control diagnostic (branch F) and the second
+reviewer's advice fa11 and reviews fa12 and fa13. Like amendment 3, it is a **data-informed
+revision with fresh confirmatory data**. No study-2 harm label exists. Where this amendment
+differs from amendment 3, it governs. Everything else in amendment 3 stands: the arms, the
+targets, the selection rule, the primary analysis and its looks, the levels and the bias
+allowance.
+
+- **Status.** S1 (discovery) and S2 (the numerical qualification) ran on code the second
+  reviewer approved (gate B: reviews fa14 and fa15; for the S2 repeat, fa23). The analysis, the
+  simulation, the
+  audit and this text (gate C) go to the second reviewer before validation (S3); no run of S3
+  starts before that review passes and the versions record is committed.
+- **Later decisions.** The text below is the decision of 2026-10-19 as amended by these, each
+  disclosed with what was known when it was made
+  ([below](#what-was-known-when-it-was-decided-1)):
+  - the GPU-code identity of a qualification (review fa13, 2026-10-19, before any run);
+  - the audit's design v3 (reviews fa16–fa20, 2026-10-20 and -21, during S1 and S2);
+  - twin A's numerical-consistency rule (review fa21, 2026-10-20, after S2's first check);
+  - B = 20 as the study's fixed scope (review fa22, 2026-10-20, after S1 and S2's first check);
+  - S2 voided and repeated once (review fa23, 2026-10-21);
+  - the estimand conditional on the benchmark, the simulation's calibration and its attrition
+    modes (reviews fa24 and fa25, 2026-10-21, after the simulation's provisional run).
+
+#### What was known when it was decided
+
+- **Amendment 3's targeted round** (B = 5, U = 8, 18 runs, seeds 2000–2002) made both primary arms
+  feasible: AdamW 1.12/1.32/1.6 · 10⁻⁵, FA 0.998/1.21/1.46 · 10⁻⁵.
+- **Its FA soft controls failed at two of three rates.** On seed 2000, the controls at 1.21 and
+  1.46 · 10⁻⁵ were rejected by the contamination rule: K grew exponentially from a residual
+  gradient of 1.14 · 10⁻⁴. The control at 1.0 · 10⁻⁵ was accepted.
+  - Under amendment 3's rule, (8, 5) then had no feasible FA triple without the rejected rates.
+    The rule's next step was a targeted round at (8, 20).
+  - **These controls stay failed and are reported.** This amendment's qualification is separate
+    from them and does not re-qualify them.
+- **A claim of amendment 3 was wrong.** "Its denominator is fixed, so its update is linear in the
+  gradient and tiny residual gradients stay tiny" ([numerical acceptance](#numerical-acceptance-1);
+  also the reason given for protocol version 3 in [decisions](decisions.md#protocol-versions)) is
+  retracted. Linearity of one update does not imply stability of repeated updates. The
+  preconditioned curvature at θ₀ is at or above the stability limits of the bias-corrected
+  recurrence: ηλ_top ≈ 23–58 against the asymptotic 38.
+- **The outcome-blind diagnostic** ([study2-fa-control-diagnostic.md](study2-fa-control-diagnostic.md),
+  frozen in three revisions before its run; report in `runs/diagnostics/fa_control/`) selected
+  branch F by its frozen rules.
+  - The control's targets came from the generation path, its logits from the training path. With
+    the targets computed on the training path instead, the first-batch residual norm was **6.9 %**
+    of the original. With a float64 loss as well, it was about 2 · 10⁻¹⁴.
+  - The regular runs did not amplify the tested perturbations. All 15 twin pairs (FA 1.21 · 10⁻⁵,
+    FA 1.0 · 10⁻⁵, AdamW 1.32 · 10⁻⁵ × four perturbations and a float64 reference) stayed below
+    0.01·K\* by a factor of at least 2 700, without growth over the 25 steps. Every twin A there
+    (B = 5) reproduced its archived run bit for bit.
+  - Caveat: the same-path float64 control did not move. Its gradient was about 2 · 10⁻¹⁴, so it
+    met its condition trivially and could not test amplification.
+  - The linearized recurrence (D2) predicts strong amplification at every rate, including the one
+    that passed. It does not discriminate the controls.
+- **Known K and utility at B = 20** (Stage A's 25-step grids):
+  - neither arm is feasible on the grid alone;
+  - by the method validated at B = 5, a targeted round is predicted feasible for both;
+  - at the U-rate, MMLU loss is expected near its limit: an expected upper bound of about 4.1–4.4 pp
+    against 5 pp, against 2.6–3.2 pp at B = 5.
+- **Study 1's variance decomposition** (published data): about 85 % of the paired difference's
+  spread across seeds is seed variation. Doubling the prompts would lower the SE by about 4 %;
+  doubling the seeds, by 29 %. The prompt set is therefore not enlarged.
+- **Read for the decision of 2026-10-19:** K, numerical records, utility and timings only.
+- **Known at the later decisions.**
+  - **S1** (2026-10-20, from `aa17a99`): the discovery at (8, 20), 33 runs on seeds 2000–2002, all
+    of them 25 steps. The selection then named the numerical stage at (8, 20) for the three arms,
+    with the rates AdamW 1.49, 1.83 and 2.24 · 10⁻⁵, FA 1.34, 1.62 and 2.0 · 10⁻⁵ and pre-warmed
+    1.34, 1.62 and 2.0 · 10⁻⁵ (`runs/analysis/study2-short-summary-20261020-s1.json`). As the
+    second reviewer summarized them in fa22, their realized bracket widths were 0.228–0.320 in
+    ln K, against w_max 0.47, and the largest mean MMLU loss of a selected discovery cell was
+    3.6 pp, against 5 pp.
+  - **S2's first check** (2026-10-20): not qualified, for technical reasons only
+    ([section 1](#1-numerical-qualification-replaces-amendment-3s-fa-soft-control-rule)).
+  - **The simulation's provisional run** ([section 3](#3-the-mechanism-cohort-and-its-analysis-replaces-amendment-3s-secondary-contrasts)),
+    on Stage A's B = 20 spreads with the pre-warmed arm's taken equal to FA's.
+  - **What informed these decisions:** the existing K, utility summaries and numerical records of
+    S1 and S2, and the simulation's outputs. **No harm label was opened**: no study-2 judge label
+    exists, and no response text was read.
+  - The changes of fa21 and fa22 were frozen before the S2 repeat, and those of fa24 before the
+    simulation's final run. They are **prospective for the repeat and the confirmation, but
+    informed by earlier numerical and feasibility data** (fa21, fa22), and by the provisional
+    simulation's results (fa24). They are outcome-blind for harm, not prospective with respect to
+    those data. The earlier outcomes are kept and reported: S2's first verdict, and the
+    provisional simulation (`runs/archive/inventory-2026-10-21-study2-short-sim-b20-provisional.tsv`).
+
+#### 1. Numerical qualification (replaces amendment 3's FA soft-control rule)
+
+The criterion now asks whether the regular runs amplify tiny perturbations into a functional
+difference. The diagnostic showed that the old control did not answer that question. Both parts
+below must pass: the twin qualification and the same-path control's acceptance.
+
+- **Numerical seeds.** Three fresh seeds, 2200–2202, are used for this qualification only.
+  - Each gets its training stream and its v₀ stream at the selected B.
+  - They are development data, never confirmation or validation blocks. Replacement rates may reuse
+    them under the frozen rule.
+  - **Their runs are K-only:** no response to a harmful prompt is generated. The sealed evaluator of
+    the regular runs still generates harmful responses, so these runs use a K-only evaluation
+    (`experiments/study2_short_k_only`): the scoring panel, the monitor and utility.
+- **The twin test.** Its machinery is the diagnostic's D3, with Revision 3's rules.
+  - **Cases.** All nine selected (arm, rate) pairs (AdamW, FA and pre-warmed, three rates each) on
+    seed 2200. Each arm's U-rate on seeds 2201 and 2202. That makes 15 cases.
+  - A replacement rate gets a case on 2200. If it is an arm's new U-rate, it also gets cases on 2201
+    and 2202.
+  - **Twin A** is the regular K-only run of that seed, arm and rate, launched first through the
+    launcher. The check runs it again and requires it to be **numerically consistent** with the
+    archived run (review fa21; amended from "bit for bit"):
+    - **within the tolerance** |x − y| ≤ 10⁻⁸ + 10⁻⁴·max(|x|, |y|), both values finite: the
+      loss, the gradient norm and the NLL per token of every training row, and the monitor's K at
+      every reading, at every step;
+    - **exactly:** the step indices and their order, each row's tokens and denominator, the
+      monitor's steps, the stop (reason, kind, steps taken, divergence), the streams read (the
+      training prefix, and the preconditioner stream of the arms that read v₀) against the run's
+      `meta.json`, and the run's identity (its config hash and the sha256 of its records);
+    - the bitwise flag is kept beside it (`bitwise_equal`), and every record holds the rule, the
+      largest deviation of each field over every value compared and the mismatches.
+
+    A twin A that is not consistent leaves its case incomplete. The rule is the same for every arm
+    and batch, and is part of the numerical policy every verdict carries.
+  - **What the rule is.** An operational consistency check of the re-run, not proof that the
+    differences are harmless rounding. Its relative scale is not comparable with the bound
+    0.01·K\* = 0.063 on the full-vocabulary KL. The perturbations, the reference, the bound and
+    the survival rule are unchanged. Kernel nondeterminism at B = 20 is a plausible explanation of
+    the observed differences, not an established one.
+  - **The perturbations,** with every norm frozen at **‖p‖ = 5 · 10⁻⁵**:
+    - p1 and p2 are ± the FA-preconditioned first update of that seed's generation-path soft
+      residual. This is the direction that the old control amplified.
+    - p3 and p4 are two fixed-seed Gaussian directions over the trainable parameters (seeds 3 and
+      4).
+
+    The scale is an operational choice. It is about ten times the first-step displacement of the
+    failed controls, it survived rounding in the diagnostic and in its CPU pre-check, and it does not
+    depend on the same-path control. The check also records a heuristic: the norm that one fp32
+    rounding of the trainable weights would leave (about 2 · 10⁻⁵, from the weights' ulps). That
+    heuristic is not a bound on the numerical error accumulated over a run.
+  - **Survival** (Revision 3, item 2): the realized norm must be at least half the intended norm,
+    with one ×10 retry. A pair that does not survive is incomplete.
+  - **Reference:** the unperturbed run with a float64 loss, gradient accumulation and optimizer
+    arithmetic, fp32 parameters and TF32 off. The pre-warmed arm's second moment is float64 too.
+    - **The float64-memory fallback is retained** (diagnostic, Revision 2, item 8): if the full
+      reference does not fit the memory rule, it runs with a float64 loss and accumulation only.
+    - The fallback is part of the numerical policy. It is recorded per case and reported with every
+      qualification that used it.
+  - **Measure:** D_twin, the larger directional full-vocabulary KL on the 400 scoring responses, at
+    steps 1, 5, 10, 15, 20 and 25. The bound is 0.01·K\* of the selected U.
+  - **States** (Revision 3, item 3): within, exceeding (divergence counts) or incomplete.
+- **The same-path soft control.** It checks the arithmetic and path consistency of the training
+  path. It is not independent evidence that the generation-sampled NLL has zero expected gradient.
+  - One control runs per selected FA rate, on seed 2200, at the selected B, for 25 steps.
+  - Its targets are θ₀'s distributions computed by the training path on the frozen copy. Its loss
+    and accumulation are float64, and FA is as implemented. This is the diagnostic's D1 control.
+  - It is accepted when K_scoring is measured at steps 1, 5, 10, 15, 20 and 25 and every reading is
+    finite and below 0.01·K\*. Its first gradient norm is recorded.
+  - Its zero displacement is expected. It scales nothing.
+- **Verdicts.**
+  - **qualified:** every pair of every tested case of the (arm, rate) is within.
+  - **failing:** a pair is exceeding, or the rate's regular run stopped by an instability rule.
+    This is evidence of amplification, and the rate becomes unusable at that batch for every U.
+  - **not qualified (technical):** a case or a control is incomplete after its one rerun in a fresh
+    process, or the launcher gave up on its regular run. The rate is unusable at that batch, but
+    it is reported with its technical reason, never as demonstrated instability.
+  - **Rejected control:** exceeding, at the bound, or its run stopped by instability. A control not
+    qualified is technical, as above. Either way the FA rate is unusable.
+
+  An unusable rate leads to the search allowance of [section 2](#2-batch-and-u-replaces-amendment-3s-batch-and-u):
+  a re-solve of the selection without it and, if no feasible selection remains, one repair round.
+  Every replacement gets its own cases. All of this is decided on K and numerics only.
+- **What a qualification is attached to:**
+  - the batch, the arm and the rate;
+  - the tested seeds;
+  - the numerical policy: the norm 5 · 10⁻⁵, the survival rule and retry, the bound, the steps, the
+    reference mode, twin A's consistency rule, and the **GPU-code identity**. That identity is a
+    hash of every file a GPU run executes (`code_identity.py`): the run code, the configs, the
+    dependency lock and the files that build the image, but not the analysis package (except
+    `analysis/stage_a.py`, which the launcher imports) or the analysis-only scripts.
+
+  Any change of that policy voids it. A later commit keeps the qualification only after a recorded
+  check that its GPU-code identity is unchanged (fa13). That is how gate C's analysis-only commits
+  reuse the qualification made on gate B's GPU code (`docs/study2-short-gate-b.json`: commit
+  `e380bcc`, 119 files, sha256 `5cddd583…7680`; `tests/test_gate_c.py`).
+- **The independent teacher-path checks stay.** Stage 0's path-field record under protocol version
+  3, certified at 25 steps × B = 20 (bound 2.40 · 10⁻⁶ against 0.01), and the replay digests of the
+  generation path.
+- The ×10 gradient rule stays a stop for every regular run.
+- **What it shows:** tested numerical stability against the stated perturbations, at the stated
+  scale, on three fresh seeds. It does not prove that the implemented field is exactly zero.
+- **S2, as it ran.**
+  - **The first check** (2026-10-20, runs and check from `aa17a99`, under the bitwise twin-A gate
+    then in force): verdict `f7cf42e3f76f` not qualified. Seven of nine rates qualified. FA
+    1.34 · 10⁻⁵ and pre-warmed 2.0 · 10⁻⁵ were **not qualified (technical)**: in both attempts,
+    twin A on seed 2200 departed from its archived run at the fp32 level (relative deviations up
+    to 3.9 · 10⁻⁶, recomputed from the full rows by fa21; |ΔK_monitor| at most 1.16 · 10⁻⁵), so
+    their perturbation pairs were never measured. The three same-path controls were accepted; no
+    pair exceeded the bound and no run stopped by instability. Every archived attempt meets the
+    rule above.
+  - **The void.** The rule changed a GPU path (the comparator; gate-B commit `e380bcc`). The first
+    S2's numerical runs, its check directory and its launcher records were therefore moved, never
+    deleted, by the void procedure ([operations](operations.md#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort))
+    to `runs/void/78b166a28a61/` (inventory `runs/archive/inventory-2026-10-21-study2-short-void-s2.tsv`).
+    S1 stands.
+  - **The repeat** (2026-10-21, from `aa4c007`, whose GPU code is `e380bcc`'s; review fa23): one full
+    S2 at the same rates, 15 K-only runs and the check. Verdict `f7cf42e3f76f` **qualified**: nine of
+    nine rates and the three controls accepted, 15 cases without a rerun. Twin A was bit-equal in 8
+    of 15 cases and numerically consistent in all 15; its largest relative deviation was
+    2.19 · 10⁻⁵, 22 % of the tolerance. The largest D_twin was 2.46 · 10⁻³ · K\*, against the bound
+    0.01·K\*.
+  - **Both decisions are reported.** Archives: the first S2's runs, streams, check and Pod attempts
+    (`runs/archive/inventory-2026-10-20-study2-short-numerical-b20-u8.tsv`,
+    `…-streams-s2200-2202-b20.tsv`, `…-numerical-check-b20-u8.tsv`, `…-study2-a4-pod-attempts.tsv`);
+    the repeat's runs and check (`runs/archive/inventory-2026-10-21-study2-short-numerical-b20-u8-repeat.tsv`
+    and `…-numerical-check-b20-u8-repeat-v2.tsv`). After the repeat the selection names the
+    three-arm validation at (8, 20) at S1's rates
+    (`runs/analysis/study2-short-summary-20261021-s2r.json`).
+
+#### 2. Batch and U (replaces amendment 3's "Batch and U")
+
+**B = 20 is the study's fixed scope** (review fa22, which replaces the candidate order of the
+decision of 2026-10-19: (8, 20), (7, 20), (8, 5), (7, 5), then a primary-only scan). The gates
+are not weakened to make B = 20 eligible; a B = 20 that the safeguards do not allow ends in a
+feasibility report.
+
+- **The order:**
+  1. the three arms at (U, B) = (8, 20);
+  2. the three arms at (7, 20);
+  3. the primary pair (AdamW-25, FA-25) at (8, 20);
+  4. the primary pair at (7, 20);
+  5. otherwise the stage ends `infeasible`, with the **B = 20 feasibility report**.
+
+  No B = 5 candidate is ever prescribed. B = 20 comes first for continuity with the pilot. The
+  cost difference is small (about 15 % per block), and B = 5's original reason, SGD's
+  reachability, left with SGD.
+- **A three-arm candidate is eligible** when, at that (U, B):
+  1. all three arms meet the selection rule. The pre-warmed arm is now part of feasibility;
+  2. every selected (arm, rate) is qualified, and every FA control is accepted (section 1);
+  3. the three-arm validation passes: on seeds 2100–2111,
+     - ≥ 10 of 12 blocks jointly supported for all three arms;
+     - no run of the three arms stops by an instability rule;
+     - the one-sided 95 % upper bounds on mean utility loss stay ≤ 5 pp MMLU and ≤ 10 pp factual,
+       simultaneously (Bonferroni) for every endpoint of the three arms that enters a supported
+       block's bracket.
+- **The primary pair** (steps 3 and 4) is visited only when no three-arm candidate is eligible.
+  Steps 1 and 2 of the eligibility then cover the primary arms, and the validation is amendment 3's
+  primary-arm validation. Every record is reused, the pre-warmed arm is dropped, and the mechanism
+  cohort does not run: its results are reported as not estimable, and the scope statement says so.
+  A candidate whose primary arms failed their numerical gate in the three-arm visit is not visited
+  again.
+- **Technical and scientific failures.**
+  - **Scientific:** a failing rate (an exceeding pair, or an instability stop), a rejected
+    same-path control, no admissible triple, or a validation failure by instability, utility or
+    support in K. A scientific failure moves the order to the next step.
+  - **Technical:** a rate not qualified (a reproducibility mismatch, exhausted attempts, out of
+    memory, missing measurements, a numerical run the launcher gave up on), or an FA control not
+    qualified. The rate is unusable at the batch, as any other, and it spends its arm's search
+    allowance. A missing measurement never counts as passing.
+  - **A technical failure never decides the batch or the candidate.** An arm that cannot go on
+    after its allowance, by technical marks only, stops the stage as **blocked**: the stage
+    refuses every campaign and goes to a human decision, with its rates and reasons. An arm
+    stopped so is never selected again at that candidate, also in the primary pair's visit.
+  - **A technical validation shortfall** blocks too: a validation that fails only by technical
+    failures (blocks lost to technical causes alone bringing it below 10 of 12, or a utility
+    member left without a bound for lack of completed runs), with no instability stop, no utility
+    bound above its limit and every FA control accepted. The thresholds are unchanged.
+- **The search allowance** (one per arm and candidate, in all). When a check marks one of an arm's
+  rates unusable:
+  - the arm is re-solved once from its current discovery points, without the unusable rates;
+  - if no feasible triple remains, one more deterministic repair round, by the existing repair
+    algorithm on K and utility only, then a re-selection. The round never proposes an unusable
+    rate: the unusable rates' K stays as data, and a proposal falling on one becomes the nearest
+    admissible rate of 3 significant digits inside the proposal's own interval, within 10 steps
+    of that grid;
+  - every replacement goes through a new check.
+
+  The allowance is carried into the primary pair's visit of the candidate and never reset; the
+  pre-warmed arm's is its own. An arm marked by a check that stopped the candidate before its
+  re-solve owes its allowance, and a later visit's re-selection of it spends it. It replaces, at
+  B = 20, the earlier reading that a re-solve calls for no new round.
+- **Pre-warmed only.** If only the pre-warmed arm cannot qualify or validate, the primary comparison
+  stays at B = 20 (the primary pair's visit), and the mechanism cohort is dropped as above.
+- **The safeguards are unchanged:**
+  - D_twin ≤ 0.01·K\* and the perturbations' survival rule;
+  - the same-path control's acceptance, and the independent path checks;
+  - the instability rules, the ×10 gradient rule included;
+  - no extrapolation, w_max 0.47, and each target within ±0.1 of its rate's median in ln K;
+  - the utility bounds, the ±5 pp margin and the inference levels;
+  - ≥ 10 of 12 jointly supported validation blocks.
+
+  0.01·K\* is an operational stability criterion, the KL on benign, teacher-forced
+  continuations. It is not a demonstrated ±5 pp bound on the error of harmful compliance.
+- **After fixation** nothing here applies: unsupported blocks, the cap of 80, low power, a utility
+  failure or an inconclusive interval in the confirmation never change the batch.
+- **The B = 20 feasibility report.** Per candidate and arm, what failed and why, the scientific
+  failures apart from the technical ones. It is not a confirmation. Safeguards that do not pass
+  lead to an honest B = 20 feasibility result, not to a guaranteed confirmation.
+- **The validation seeds 2100–2111 are reused** from candidate to candidate at the new rates. This
+  is outcome-blind selection: no harm is judged before confirmation is fixed. It means the eventual
+  validation is the last of a selection sequence, not an untouched certificate, and the report says
+  so.
+- **Discovery at each candidate** runs on seeds 2000–2002. The primary arms' targeted round is the
+  one the state machine prescribes: 15 runs at (8, 20). The pre-warmed arm's first round runs in the
+  same campaign, at the union of the rates of the primary arms' targeted assignments: 18 runs.
+  After that, repairs follow the rule per arm.
+  - Amendment 3's control outcomes are recorded and reported, and are not used. A candidate's rates
+    are qualified only by this amendment's checks, on fresh seeds.
+  - Amendment 3's 18 runs at B = 5 are listed and enter no decision.
+- **v₀** is computed fresh for each seed at the selected B: 50 batches, that is 1 000 responses at
+  B = 20. It is shared by that seed's FA and pre-warmed runs, and by the numerical checks.
+  - B = 20 v₀ streams exist for seeds 2000–2002.
+  - Rates are refit on K only. The curvature panel is unchanged.
+- **The main risk is utility at the U-rate.** If it fails, the rule moves on; nothing is
+  re-decided by hand.
+- **Why B = 20 is held** (fa22). The second reviewer classified every route by which the earlier
+  order could reach B = 5. Technical problems and search limits are repaired, bounded or blocked
+  as above; the real safeguards are kept, and when they fail, the stage ends in the B = 20
+  feasibility report rather than at another batch.
+
+#### 3. The mechanism cohort and its analysis (replaces amendment 3's "secondary contrasts")
+
+- **Cohort.** Confirmation continues until 60 jointly supported three-arm blocks, complete in
+  order, capped at 80 started blocks, whether or not the primary has stopped.
+  - The primary's looks and rule are unchanged (36/60 on primary-supported blocks, cap 80).
+  - Its decision is final at the look where it stops. Later blocks are reported as a descriptive
+    continuation and never revise it.
+  - **The campaigns do not pause at the primary's looks** with three arms. The looks are computed
+    afterwards from the same first 36 and 60 primary-supported blocks in order, so their data are
+    those of a paused loop. A new range of blocks holds at most min(60 − p₃, 80 − the blocks
+    started), p₃ the started blocks that may still be jointly supported. With the primary pair
+    alone, amendment 3's loop with its pauses stands.
+  - Confirmation ends when both hold: the primary has its decision or its terminal look, and the
+    mechanism cohort has its 60 three-arm blocks or the cap is reached.
+- **Contrasts,** on the common three-arm supported cohort, with the interpolation estimator at K\*
+  per block and arm:
+  - C1 = pre-warmed − FA: updating an initially shared denominator.
+  - C2 = AdamW − pre-warmed: initialization and early normalization.
+
+  C1 + C2 equals AdamW − FA **on that same cohort** (checked to 10⁻¹²). That is not necessarily the
+  primary estimate, which uses the primary-supported cohort. Components that cancel can hide in the
+  primary.
+- **One final analysis,** run once, when the confirmation has ended: the cohort has ended **and**
+  the primary has stopped. Since C1 + C2 = AdamW − FA, an earlier reading would preview the
+  primary. Until then the summary's outputs carry neither the pre-warmed arm's interpolated harm nor
+  its missing labels.
+  - **The interval** for C1 and C2 is the paired seed-block bootstrap max-t. The two contrasts share
+    the same resampled blocks in every draw. Each is studentized, and the maximum of |T\*| over the
+    two contrasts gives one critical value for both: symmetric simultaneous intervals, at the
+    level the simulation fixes, with 10 000 resamples and the seed 20261020 (the fixation record).
+  - **For comparison,** symmetric studentized bootstrap intervals at 97.5 % per contrast
+    (Bonferroni) are reported beside them.
+  - **Minimum cohort:** no reading with fewer than 36 jointly supported three-arm blocks. The
+    intervals are then reported as descriptive only.
+  - **Zero SE.**
+    - An observed contrast whose SE is at or below 10⁻¹² gets no reading. The other contrast is
+      then read with its symmetric studentized interval at the per-contrast Bonferroni level
+      (97.5 %).
+    - In a bootstrap resample, a contrast whose SE is at or below 10⁻¹² gets |T\*| = 0 if its mean
+      equals the observed mean within 10⁻¹², and |T\*| = ∞ otherwise; a critical value reaching an
+      infinite draw gives no interval.
+  - Attrition is reported by reason, and the missing-label sensitivities of both contrasts beside
+    them, descriptive.
+- **Readings:**
+  - a direction per component when 0 lies strictly outside its interval;
+  - a component bounded by ±5 pp when its interval lies inside, bounds included;
+  - otherwise inconclusive.
+
+  A direction and "bounded" can hold together. The meaningful component effect is ±5 pp, the
+  primary's margin. Power is also reported at ±2.5 pp. Neither reading identifies sign-step
+  rectification on its own.
+- **The estimand of both analyses** (review fa24; amends amendment 3's wording of Δ_25). The
+  estimand is **the expected interpolated contrast over fresh supported seed blocks, conditional on
+  the 521-prompt benchmark and the frozen rates**: Δ_25 for the primary, C1 and C2 for the
+  mechanism. That is the target of the paired seed-block bootstrap. The inference is a benchmark-specific
+  optimizer comparison across fresh training seeds; it does not establish the contrast on unseen
+  harmful prompts. The primary's levels, its allowance b = 1.084 pp and its minima are unchanged:
+  the simulation rechecks them against the conditional truth and changes none of them.
+- **The simulation** checks the coverage of both interval types and the power before the level is
+  fixed (`analysis/study2_short_sim.py`, `scripts/study2_short_simulate.py`; its code was approved
+  by the second reviewer in fa25).
+  - **Truth:** each replicate's conditional truth, the expected supported interpolation contrast
+    over fresh seed blocks given that replicate's 521-prompt panel and selection misses (fa24). The
+    observed cohort mean is not the truth.
+  - Component scenarios (C1, C2), in pp: (0, 0), (2.5, 2.5), (5, 5), (5, 0), (0, 5), (5, −5),
+    (−5, 5), (−5, −5) and (−2.5, 2.5).
+  - Component SDs: equal, 2 : 1 and 1 : 2, with correlation −0.5, 0 and +0.5.
+  - **Attrition** (fa24): technical failures of 0, 10 and 20 %, independent or support-dependent,
+    five modes in all. In the support-dependent mode AdamW and FA fail independently, and the
+    pre-warmed arm fails at the same marginal rate through the shared stream effect, more often in
+    high-harm blocks. No claim is made that this covers every dependence, nor that 20 % is the
+    worst case. The measured zero (Stage A 0 of 12, S1 0 of 9 per arm) is the baseline, not
+    evidence that attrition is impossible: 0 of 9 allows up to 28.3 % at one-sided 95 %.
+  - **The required grid:** the normal and right-skewed shapes at SD 5 and 10 pp, every scenario,
+    SD ratio, correlation and attrition mode: 1 620 scenarios at 10 000 replicates. The
+    heavy-tailed and rare-seed shapes, SD 15 and a tied-contrast case are stress cases, reported
+    like amendment 3's, with no attrition, independent 20 % and support-dependent 20 %.
+  - **Inputs:** B = 20's K spreads, support and failure rates, measured on K and support only from
+    S1 and Stage A's grids on seeds 2000–2002, at the frozen rates (σ_u / σ_e in ln K: AdamW
+    0.055 / 0.013, FA 0.086 / 0.032, pre-warmed 0.072 / 0.027; support 3 of 3 and failures 0 of 9
+    per arm; `runs/analysis/study2_short_sim/2026-10-21-b20-inputs.json`, sha256 `7a1eb65a…`,
+    inventory `runs/archive/inventory-2026-10-21-study2-short-sim-b20-inputs.tsv`).
+  - **Coverage** is counted against the conditional truth. A missing interval (a zero SE, or fewer
+    than two blocks) does not cover. An explicit whole-line interval (an infinite critical value)
+    covers trivially, and its frequency is reported on its own line as uninformative.
+  - **The calibration rule** (fa24, Q2). On the calibration stream, the level is the smallest of
+    0.95, 0.955, …, 0.99 at which every required scenario's simultaneous coverage reaches
+    0.95 − 2·√(0.95·0.05/R): 94.56 % at R = 10 000.
+    - **Predeclared:** the borderline scenarios, those under 95.00 % on the calibration stream at
+      that level.
+    - **One check** on a separate stream at that level, 0.95 included: the borderline scenarios at
+      R = 50 000 against 0.95 − 2·√(0.95·0.05/50 000) ≈ 94.805 %, the others at 10 000 against
+      94.56 %.
+    - **No repetition.** If any scenario fails the check, no level is fixed; the outcome goes to the
+      second reviewer before any harm label exists. The level is never preselected (fa25).
+    - At exactly nominal coverage, 5.5 of 243 scenarios are expected under the floor by chance, and
+      at least one with probability ≈ 99.6 %: the scenario-wise rule is conservative, which is
+      kept.
+  - **Reported beside coverage:** cap exhaustion, cohorts under 36, the frequency of usable
+    intervals, and the unconditional power (over all simulated studies, a cohort under 36 counting
+    as no reading). A finite interval of a cohort under 36 is descriptive, not a reading.
+  - **The primary simulation** is rerun with B = 20's inputs, with the conditional truth of Δ beside
+    the population figures. Amendment 3's fixed levels and allowance stay (fa24: conservative
+    shifts alone do not change them). The provisional run found its shifts beyond MC error in the
+    conservative direction only (kink, false direction at Δ = 0: 8.22 → 6.00 %; stress pair: 2.93 →
+    2.10 %), and an allowance of 0.966 pp at B = 20, below the fixed 1.084.
+  - **What the provisional run showed** (Stage A's spreads, the pre-warmed arm's taken as FA's):
+    against the population truth the required grid needed a level of 0.985; against the
+    conditional truth, an indicative slice of 20 scenarios pointed to about 0.96 (mean coverage
+    94.8 % at 0.95, 95.9 % at 0.96). Heavy attrition dominates the cohort: with 20 % failures in
+    every arm about 95 % of the mechanism cohorts stay under 36 blocks; with 10 %, about 99 % reach
+    the cap before 60 jointly supported blocks, and about 99 % still reach 36. These are findings
+    about the design, not failures of the simulation.
+  - **Results of the final run.** Pending: the run is in progress; its fixed level, coverage and
+    power, and the primary's recheck, are entered here from its `final.json`. Until a level is
+    fixed, the fixation record's `mechanism.level` 0.95 is a placeholder that must not be used.
+
+<!-- FINAL SIMULATION: level, coverage, power -->
+
+#### 4. Two exploratory measurements of the mechanism
+
+Both are labeled exploratory. Neither enters any decision.
+
+- **Harm over steps.**
+  - The first 10 confirmation blocks (seeds 3000–3009), preassigned. Each arm at its central
+    (K\*) rate: 30 runs, or 20 without the pre-warmed arm.
+  - **Separate runs**, evaluated at steps 1, 5, 10 and 25 with K_scoring at each. The endpoint runs
+    are not altered. Like blocks 1–10, they measure the endpoint Rayleigh quotient.
+  - **The endpoint must be shown the same, numerically** (fa21: numerical consistency, not
+    identical parameters). Against its endpoint run, row for row:
+    - **within twin A's tolerance,** both values finite: the training rows' loss, gradient norm
+      and NLL per token; the monitor's K and its readings' gradient and displacement norms; the
+      scoring diagnostics' K at step 25; the update scalars' norm, cosine and the denominator's
+      departure ratio; the step-25 evaluation's K and held-out NLL. A value that is not finite
+      excludes the run even when both runs hold it bit for bit (review fa23);
+    - **exactly:** every other field, the counts, steps, stop and streams, and the discrete
+      outcomes (the accuracies, and the departure's median and 90th percentile).
+
+    Bit for bit is `identical`, within the rule `consistent`; both count. A run that is neither,
+    or whose endpoint run the launcher gave up on, is reported and excluded. The Rayleigh records
+    are compared beside, deciding nothing.
+  - Failed or missing trajectories are reported per seed and arm.
+  - Outputs are sealed, and opened only in the final analysis. The time-course runs never enter a
+    block, a look or the mechanism cohort.
+  - Reported as harm against step and against K. Equal-step curves are not equal-K causal
+    comparisons.
+- **First-step drift against diffusion,** descriptive.
+  - Setup: θ₀, at the selected B, with 64 independent batches from a dedicated stream: seed 2300's
+    appendable training stream, batch i holding its responses iB … (i+1)B − 1, with its own v₀
+    stream of 50 batches. Every gradient g_i uses the training NLL and its normalization.
+  - It is transformed by each optimizer's first update, all from the same g_i:
+    - SGD: g;
+    - AdamW: m̂₁/(√v̂₁ + ε), approximately sign-normalized;
+    - FA: g/(√v₀ + ε);
+    - pre-warmed: g/(√(β₂v₀ + (1−β₂)g²) + ε).
+  - Per optimizer, with S = Σu_i, Q = Σ‖u_i‖² and n = 64:
+    - the unbiased estimates ‖μ‖² = (‖S‖² − Q)/(n(n − 1)) and tr Σ = (Q − ‖S‖²/n)/(n − 1). A
+      negative estimate is kept as is;
+    - the cosine between the means of two fixed halves, batches 0–31 and 32–63;
+    - the cross-optimizer cosines of the mean directions.
+
+    No null distribution is claimed.
+  - **Precision and memory.**
+    - Each update is formed in fp32. The two half-sums are accumulated in fp32 on the GPU: 32
+      additions, with a relative rounding error of about 2 · 10⁻⁶, negligible for these
+      descriptive statistics.
+    - Every norm, dot product and Q is reduced in float64.
+    - One optimizer is processed at a time, with the 64 gradients recomputed per optimizer; the
+      record says whether the four passes saw the same losses and gradient norms. Its half
+      statistics are then computed, and only its full sum S (fp32, 5.24 GB) is kept, on the host,
+      for the cross-optimizer cosines: 21 GB for four optimizers.
+    - The run requires free host memory of at least 1.5 × 21 GB plus 16 GB for the model and other
+      allocations (47.5 GB), and stops otherwise.
+  - FA's zero-mean argument applies at θ₀, not after k evolving steps. No equal-K mean or noise
+    intervention is run.
+- **Scalars on every run of the three arms** (recorded; they change no numerics, and tests pin
+  this bit for bit for all three arms). The update is the algebraic step
+  u_t = (lr/(1−β₁ᵗ))·m_t / d_t, computed from the optimizer state. Per step (t = 1 … 25):
+  - its norm ‖u_t‖;
+  - its cosine with that step's gradient.
+
+  For pre-warmed only, at steps 5, 10 and 25, the departure of the actual denominator
+  d_t = √v_t + ε (not bias-corrected, as the optimizer applies it) from d₀ = √v₀ + ε:
+  - the norm ratio ‖d_t − d₀‖ / ‖d₀‖;
+  - the median and 90th percentile of |d_t / d₀ − 1|, read on a histogram of 0.005-decade bins:
+    at most 1.16 % above the exact value, never below.
+
+  A pinned host copy of v₀ is kept for this; no GPU buffer is added. The scalars are recorded from
+  S1 on; amendment 3's runs have none, which the summary reports as gaps.
+
+#### 5. Fixed before any harm label
+
+The following go into the fixation record and this text before any study-2 harm label exists:
+
+- the batch rule: the B = 20 order and its primary-pair fallback;
+- the support, selection and validation rules;
+- the numerical policy and scope;
+- the mechanism cohort, with its stopping rule, minimum cohort, zero-SE rule, interval family and
+  level;
+- the meaningful component effects;
+- the audit allocation, with its interpolation weights;
+- the time-course cohort and its steps;
+- the drift stream, its batch count and halves;
+- the scalars.
+
+**Audit** (the audit design v3, after reviews fa16–fa20; it replaces the preregistration's
+[audit](#judge-and-audit), stratified by arm, K band and the judge's label with inclusion
+probabilities, and amendment 3's "stratified as preregistered, with recorded inclusion
+probabilities; pre-warmed is audited only if the budget allows").
+
+- **One terminal draw,** after the confirmation has ended (the final analysis is available). Audit
+  results never trigger further training and never change the primary.
+- **The frame.** One item is one (run, harmful prompt) response, counted once whichever cohort
+  holds its block: every response of AdamW-25's and FA-25's bracket runs in the primary's
+  stopping-look cohort or the mechanism cohort, and of the pre-warmed arm's bracket runs in the
+  mechanism cohort. Each item's coefficient in an estimand E is c_i^E = s_i^E·w_i / (n_E·P_i),
+  with s_i^E its sign in E (0 outside E's cohort or arms), w_i its run's interpolation weight at
+  K\*, n_E the blocks of E's cohort and P_i its run's prompts. The estimands are Δ on the
+  stopping-look cohort, and C1 and C2 on the mechanism cohort.
+- **The draw.** Within each arm, with replacement, with probability proportional to
+  a_i = max_E |c_i^E|: 400 draws for AdamW-25, 400 for FA-25 and **200 for pre-warmed, reserved
+  now**, so that component conclusions do not rest on the judge alone. The seed is 20261021. An
+  item drawn twice is labeled once and counts once per draw. A two-arm selection has no pre-warmed
+  frame and no pre-warmed draw.
+- **The bound.** An error is a judge label that differs from the reference label; a missing
+  reference counts as an error. Per arm, the one-sided Clopper–Pearson upper bound at 1 − 0.025/3
+  on the error probability of a draw gives T_a, a bound on Σ a_i e_i; |bias of E| ≤ the sum of its
+  arms' T_a. The three arm bounds hold together with probability ≥ 97.5 % over the draws, given
+  the realized frame, with no independence of errors across prompts assumed.
+- **The point estimate** (Hansen–Hurwitz) is descriptive. It divides by the draws with a reference
+  label, which assumes the missing ones are missing completely at random; their number is
+  reported.
+- **Reference harm, for the realized cohort:** [Δ̂_J − U_Δ, Δ̂_J + U_Δ], Δ̂_J the judge-rated Δ of
+  the stopping-look cohort. A direction when it excludes 0; within ±5 pp when it lies inside. It is
+  stated conditional on the realized cohort and reported apart from the judge-rated primary, whose
+  intervals, levels and decision stay exactly as fixed. No joint-coverage claim is made between
+  the judge-rated population result and the audit. C1 and C2 follow the same pattern, descriptive.
+- **An empty cohort** (fa19): an estimand whose cohort is empty is non-estimable, with its reason,
+  and gets no bound; a_i is taken over the estimable estimands, and an arm whose items all have
+  a_i = 0 draws nothing, with its reason. With no estimable estimand the draw refuses.
+- **The reference labels and their resolution.**
+  - The coordinator makes them outside the project, as in study 1's D7: GPT and Grok label every
+    item independently; model versions and the call path are recorded.
+  - **Blinding:** the labellers see only the prompt and the response. The arm, the run, the block
+    and the WildGuard label stay hidden until the labels are resolved.
+  - **Resolution:** where GPT and Grok agree, their label is the reference, unless the researcher
+    overrides it in the check of 10 % of the agreements, drawn with a recorded seed; the
+    researcher resolves every disagreement; an unresolved label or a failed output stays missing.
+    There is no automated arbiter.
+- **Disclosures.**
+  - **A departure from the preregistered strata:** the audit is no longer stratified by K band and
+    the judge's label. Sampling proportional to the coefficient within each arm replaces them; the
+    bound does not need them. The arm stratification and the sizes stay.
+  - **The bound counts total error and ignores cancellation:** errors in opposite directions do not
+    cancel in it.
+  - **Expected half-widths** of the reference-harm interval: with no observed error, Δ 3.33 pp when
+    the primary stops at 36 inside a 60-block mechanism cohort and 2.38 pp at 60, C1 and C2 4.03
+    and 3.56 pp; with 1 % random errors, Δ about 8.0 and 5.8 pp; with 1 % of errors on the
+    heaviest items, about 12.1 and 7.8 pp. A reference-harm reading may well be inconclusive.
+  - **Dilution:** the frame of AdamW-25 and FA-25 serves the primary and the components together.
+    When the primary stops at 36 inside a mechanism cohort of 60 blocks, about 240 of an arm's 400
+    draws fall in the primary's cohort.
+
+**Code order.** All code that touches a GPU run (the numerical tool, the K-only evaluation, the
+time-course runs, the drift diagnostic and the scalars) was frozen and reviewed before numerical
+qualification (gate B). The analysis, simulation, audit and fixation follow before validation
+(gate C), and change no GPU path: `tests/test_gate_c.py` checks every gate-C commit against the
+gate-B record. The versions record pins one commit for validation and confirmation.
+
+#### 6. Budget and resources
+
+- **The ceiling for project 1's remaining work is about $227,** approved by the user on 2026-10-19:
+  about $275 with the ≈ $48.4 spent since Stage A. Stage A is excluded.
+- **Before each stage**, an estimate is set against what remains. A stage whose forecast does not fit
+  is neither trimmed nor cancelled. It is stopped, and it goes to the user with its price: how much
+  must be added for it to run, and what would be cut otherwise. The user may raise the ceiling.
+- **Before validation,** the confirmation's cost up to its 80-block cap is reserved.
+- **What remains** is always the ceiling minus the actual billed spend (Runpod billing, per pod),
+  never minus a forecast.
+- **Reference labels** for the terminal audit (400 + 400 primary draws and 200 pre-warmed) are made
+  by the coordinator, outside the project's API, as in study 1's D7. If paid API labellers become
+  necessary, their price comes to the user before S5. No planned step disappears to make the
+  numbers fit.
+- **Forecast at B = 20,** made at the decision, active GPU cost; ×1.15 for long campaigns, ×1.5 for
+  small gated rounds; the "high" column uses ×1.67 everywhere:
+
+  | Item | Active | Centre | High |
+  |---|---|---|---|
+  | Discovery: 15 + 18 runs, a repair | $5.1 | $7.7 | $8.5 |
+  | Numerical: 3 seeds' streams, 15 K-only runs, 15 twin cases, 3 controls | $9.7 | $14.6 | $16.2 |
+  | Validation, 12 three-arm blocks, with its judging | $15.2 | $17.5 | $25.4 |
+  | Confirmation, ≈ 65 started in the centre; 80 (the cap) in the high column | $82.5 / $101.6 | $94.9 | $169.7 |
+  | Time course, 30 runs × 4 evaluations, with judging | $9.5 | $10.9 | $15.9 |
+  | Drift: 2 streams, 4 × 64 gradients | $0.4 | $0.6 | $0.7 |
+  | Judging sessions | $1.6 | $1.8 | $2.7 |
+  | **Total** | | **≈ $148** | **≈ $239** |
+  | One further candidate: discovery, numerical, validation | $30 | +$38 | +$50 |
+
+- **Reading.**
+  - The centre fits with room for one further candidate (≈ $186).
+  - The high column assumes the overhead of small gated rounds, 1.67, for an 80-block confirmation
+    as well. That exceeds $227.
+  - The long chained campaigns of Stage A measured 1.05. With confirmation at 1.15 and everything
+    else at 1.67, the forecast is ≈ $188, and ≈ $238 with a further candidate.
+- **Rule.** Confirmation runs as long unattended campaigns. Before validation, the forecast is redone
+  with the overhead measured in discovery and the numerical stage, and with the cap reserved. If it
+  exceeds what remains, the work stops before validation and goes to the user with the price, as
+  above. The repeat of S2 is part of the actual spend.
+- **Pods.** L40S, minCuda 13.0, not OC-AU-1, with a hard-stop deadline, created by the coordinator
+  on request. GPU work for a stage needs the reviewer's approval of the code it runs. The
+  simulation's final run uses a dedicated CPU Pod.
+
+#### Reporting
+
+- **Results are stated directly on the benchmark,** honestly and without self-deprecation: "on the
+  set of 521 harmful prompts (HarmBench standard behaviors and AdvBench, study 2's
+  `harmful_evaluation`) across N independent training seeds, AdamW-25 and FA-25 differ by …" (or
+  are equivalent within ±5 pp, or the result is inconclusive), and likewise for the components.
+- **The generalization limit is stated once,** in the methods or the limitations: the estimand is
+  conditional on that benchmark and the frozen rates, and the result does not establish the
+  contrast on unseen harmful prompts. It is not repeated as a caveat on every conclusion.
+- The scope statement names the batch, the U and the arms the rule selected, and, when the
+  pre-warmed arm was dropped, that the mechanism results are not estimable. A stage that ends
+  `infeasible` reports the B = 20 feasibility report, not a confirmation.
+- Reported beside the results: both S2 decisions, amendment 3's failed controls, the reused
+  validation seeds, the provisional simulation, the audit's disclosures and every departure above.
+
+#### Machinery (additions)
+
+- **Seeds:**
+  - numerical 2200–2202 (development, never blocks);
+  - drift 2300.
+
+  These come in addition to amendment 3's discovery 2000–2002, validation 2100–2111 and
+  confirmation 3000–3079.
+- **The fixation record** (`docs/study2-short-fixation.json`, read by
+  `analysis.study2_short.read_fixation`, which refuses a record that lacks a key or departs from
+  the code's value) gains:
+  - `candidates`: the B = 20 order and its primary-pair fallback;
+  - `numerical`: the seeds, the cases, the scale 5 · 10⁻⁵, the survival share and its retry, the
+    bound's fraction of K\*, the steps, the Gaussian directions' seeds, the reference mode with its
+    fallback and twin A's consistency rule;
+  - `validation`: the seeds, the 10 of 12, the three arms (the primary pair in the fallback) and
+    the utility bounds;
+  - `mechanism`: the cohort's 60/80, its minimum of 36, the zero-SE rule, the per-contrast level
+    97.5 %, the meaningful component effects 5 / 2.5 pp, and the max-t level with its resamples
+    and seed;
+  - `audit`: the design v3, the sizes 400 / 400 / 200 and the draw's seed;
+  - `timecourse`: its seeds and steps;
+  - `drift`: the stream's seed, its 64 batches and its halves;
+  - `scalars`: the pre-warmed arm's departure steps.
+- **Records.** `docs/study2-short-gate-b.json` (gate B's commit and GPU-code identity),
+  `docs/study2-short-b20-inputs.json` (the simulation's B = 20 inputs) and, before validation, the
+  versions record of amendment 3.
+- **Protocol versions.**
+  - The regular runs stay at version 2.
+  - The K-only evaluation of the numerical seeds generates no harmful response, and changes nothing
+    in training.
+  - The same-path control and the twin test run in the numerical-check tool, outside the launcher,
+    as the diagnostic did, so stage 0 is not rerun.
+  - Logging the scalars changes no numerics; tests pin this.

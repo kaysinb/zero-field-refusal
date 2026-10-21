@@ -388,6 +388,13 @@ targeted rates per arm, with pre-warmed AdamW-25 as the secondary arm; its rules
 of [the study-2 preregistration](study2-preregistration.md). The selection, the support and the
 validation read K, numerics and utility only; only the looks read judge labels.
 
+**Amendment 4 changes this procedure** ([its section](#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort)):
+the campaign kinds and their order (B = 20 only, the numerical stage instead of the FA controls,
+the three-arm validation), the confirmation loop of a three-arm selection, and the fixation
+record's keys. What follows stays valid where that section does not replace it: the configs,
+the records and their refusals, the prerequisites, the versions record, the given-up runs and the
+abandonment record, labeling, and the loop of a two-arm selection.
+
 - **Configs.** `experiments/study2_short` holds the regular runs of the three arms
   (`optimizer=adam_frozen`, `optimizer=adamw_prewarmed`). It equals Stage A's 25-step runs
   (`experiments/study2_stage_a schedule=short`) except for the experiment name and the role,
@@ -531,10 +538,12 @@ driver, keeps the whole regenerated stream for inspection and needs the lead's d
   secondary contrasts.
 - `secondary_status`: how the secondary contrasts are reported, `secondary` (decided) or
   `exploratory`. The summary prints both values beside the secondary contrasts.
+- amendment 4's keys: `mechanism`, `audit`, `candidates`, `numerical`, `validation`,
+  `timecourse`, `drift` and `scalars` ([below](#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort)).
 
 Each value is required and none is defaulted, the bootstrap's values also under `t`. The
 committed record is `docs/study2-short-fixation.json` (a test ties it to the simulation's decided
-design):
+design); its amendment-3 keys are:
 
 ```json
 {"w_max": 0.47, "levels": [0.991983603686668, 0.9630570834481011], "se_floor": 0.0,
@@ -544,13 +553,14 @@ design):
  "secondary_status": "secondary"}
 ```
 
-Every campaign except `targeted` needs the record (`--fixation`), which is checked whole.
-`targeted` may take `--w-max` instead, because its rates do not depend on w_max. A `--w-max`
-given beside a record must equal it. Each campaign's header records w_max, its source and the
-code revision. Fix w_max before any repair round: rounds made under another w_max leave the stage
-incomplete.
+Every campaign kind needs the record (`--fixation`), which is checked whole (under amendment 3,
+`targeted` could take `--w-max` instead; amendment 4 requires the record and `--runs-root` for
+every kind). A `--w-max` given beside a record must equal it. Each campaign's header records
+w_max, its source and the code revision. Fix w_max before any repair round: rounds made under
+another w_max leave the stage incomplete.
 
-**Campaigns.** Each kind is written only when the stage's state machine names it, in this order:
+**Campaigns** (amendment 3's; amendment 4's kinds and order replace them, [below](#study-2-amendment-4-numerical-qualification-batch-20-and-the-mechanism-cohort)).
+Each kind is written only when the stage's state machine names it, in this order:
 
 1. `targeted` and `repair` (discovery rounds, primary arms first);
 2. `controls`;
@@ -654,8 +664,10 @@ the versions record's path and sha256. Write campaigns, summaries and abandonmen
 inventory.
 
 **The confirmation loop.** The looks fall at 36 and 60 supported blocks, and the cap is 80 started
-blocks. Blocks run in their preassigned order, block k on seed 2999 + k. Repeat these steps until
-a look stops:
+blocks. Blocks run in their preassigned order, block k on seed 2999 + k. Under amendment 4 this
+loop, with its pauses at the looks, is that of a two-arm selection; a three-arm selection runs
+[without pauses](#the-confirmation-loop-of-a-three-arm-selection). Repeat these steps until a look
+stops:
 
 1. **Write** `confirmation --blocks FIRST LAST [--after-look K] --runs-root runs`, then launch
    it. The script enforces these rules:
@@ -735,16 +747,407 @@ python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F 
     - `all_missing_harmful`: every missing label harmful in both arms;
   - the missing labels per arm;
   - the secondary contrasts at the stopping look, with `secondary_interval` and
-    `secondary_status` beside them;
+    `secondary_status` beside them (amendment 3; amendment 4's summary no longer computes them:
+    the mechanism cohort's final analysis replaces them);
   - the utility family.
 - **Output.** Only counts, K, rates and intervals are printed: never a prompt, a response or a
   judge output.
+
+## Study 2, amendment 4: numerical qualification, batch 20 and the mechanism cohort
+
+The stage's rules are [amendment 4](study2-preregistration.md#amendment-4-a-corrected-numerical-criterion-batch-20-and-the-mechanism-cohort):
+B = 20 as the fixed scope, the numerical qualification on K-only runs of fresh seeds, the
+three-arm validation, the mechanism cohort, the time course, the drift diagnostic and the update
+scalars. This section is its procedure, stage by stage: S1 discovery, S2 the numerical stage, S3
+validation, S4 confirmation with the time course and the drift, S5 judging and the analyses. The
+amendment-3 procedure above still holds where this section does not replace it. The selection,
+the numerical stage, validation, the drift and the summary's status read K, numerics and utility
+only; judge labels are read by the looks, the final analyses and the audit alone.
+
+### Code, gates and what may change
+
+- **Gate B** is the code every GPU run executes. Its record, `docs/study2-short-gate-b.json`,
+  names the commit gate B was reviewed at (`e380bcc`) and its GPU-code identity (119 files,
+  sha256 `5cddd583…7680`; `code_identity.gpu_code_identity`). S1 ran from `aa17a99`, gate B as
+  first approved (review fa15; GPU code `78b166a2…`); the fa21 change then touched only the
+  numerical check's code and settings, and S1 stands. The S2 repeat ran from `aa4c007`, with
+  gate B's current GPU code.
+- **Gate C** (the analysis, the simulation, the audit, the fixation and the docs) changes no GPU
+  path. A **GPU path** (`code_identity.is_gpu_path`) is every tracked file under `scripts/`,
+  `src/zero_field_refusal/` (outside `analysis/`, but with `analysis/stage_a.py`), `configs/` and
+  `docker/`, and `Dockerfile`, `.dockerignore`, `.python-version`, `pyproject.toml` and `uv.lock`;
+  the analysis-only scripts (`study2_short_campaigns.py`, `study2_short_summary.py`,
+  `study2_short_simulate.py` and the others listed in `code_identity.ANALYSIS_SCRIPTS`) are not.
+  Gate C also leaves alone the modules the launcher and the GPU tools load: `analysis/__init__.py`
+  and its imports, and `analysis/stage_a.py`. `tests/test_gate_c.py` checks both against the
+  gate-B record; a gate-C change that fails it would void S2's qualification.
+- **A qualification survives analysis-only commits.** The numerical check's records and the
+  selection's reading of its verdicts hold at any later commit with the same GPU code
+  (`code_identity.reuse_check`). A GPU-path change after the K-only runs voids them: see
+  [the void](#the-void-and-the-repeat-of-a-numerical-stage).
+
+### Pods
+
+- **Created by the coordinator on request:** L40S, minCuda 13.0, not OC-AU-1, the dependency image
+  of [containers](#containers), a volume at `/workspace` (150 GB for S1 and S2), host RAM of at
+  least 64 GB (80 GB preferred), and `scripts/pod_deadline_watch.py` in the start command with
+  `ZFR_DEADLINE_EPOCH`. Right after the start, check the watcher's log line
+  `zfr-deadline … auth True`, the GPU and its driver, and the host memory the container may use
+  (the cgroup's limit, which can be below the machine's).
+- **The Pod's environment.** An SSH session does not see the Pod's environment variables: source
+  `/etc/rp_environment` first (`pod_setup.sh` failed without it); the stage's drivers source it,
+  and `/root/zfr-env.sh`, themselves.
+- **SSH.** Use direct SSH to the Pod's public IP and mapped port. Read the host key from the Pod's
+  logs and pin it in a known-hosts file before the first connection.
+- **Code.** A Git bundle of the reviewed commit, checked out clean under
+  `/workspace/code/zero-field-refusal/<commit>/source` (the drivers check the commit and that the
+  checkout is clean, as the runs read it). The numerical check needs the commit objects of the
+  K-only runs' commits in that checkout: a shallow clone makes its code check refuse.
+- **Detached work.** Start every campaign and driver detached, with the shared runpod-research
+  skill's `run_detached.py` and an attempt directory under `/workspace/attempts/<name>`, never in
+  the SSH session. Run no GPU job beside a campaign: generation, measurements and checks go
+  between campaigns.
+- **`DATA_DIR`.** Restore only the inventories the stage needs (amendment 3's list, the numerical
+  seeds' streams once archived): `pod_setup.sh` verifies every file of `DATA_DIR` against them.
+- **Results.** Download each stage's run directories, launch journals and outputs, compare their
+  sha256 with the Pod's, archive them with an inventory, and check that `DATA_DIR` still matches
+  its inventories (no stream grew). Then the Pod can stop.
+- **CPU Pods** (the simulation) have no volume: download the output before stopping.
+
+### Memory, disk and the run environment
+
+- **GPU:** every part of the numerical check and the drift diagnostic caps its process's CUDA
+  memory at 46 GB reserved (1e9 bytes). S1's first regular run at B = 20 used about 39.5 GB of
+  the GPU.
+- **Host memory, free before a driver starts** (MemAvailable, or the cgroup's free memory when
+  smaller): 52.5 GB for the numerical check, 47.5 GB for the drift diagnostic
+  (1.5 × 21 GB + 16 GB). A pre-warmed regular run keeps a pinned host copy of v₀ for the update
+  scalars, about 6.7 GB at 1.5B.
+- **Disk:** the numerical check keeps one case's checkpoints at a time (up to 31.4 GB at 1.5B,
+  deleted when the case is done); its driver clears those an interrupted case left and needs
+  40 GB free under its output directory. The drift driver needs 5 GB.
+- **The run environment** (the final review of gate B, I3). The check compares each K-only run's
+  recorded environment (`meta.json`: the GPU names, the driver, `torch_cuda`, Python, the
+  packages, and the container image when recorded) with its own. A difference stops it with
+  `RUN ENVIRONMENT MISMATCH: <field>: …`: `plan` exits 1, `control` and `twins` record nothing and
+  exit 7. Run the check on the Pod that made the K-only runs (or the same image, GPU type and
+  driver), with the same `CONTAINER_IMAGE` as the launcher. After the first K-only run on a Pod,
+  read its `meta.json` `hardware`: a null GPU name or driver where the check records one would
+  refuse the check for good.
+
+### w_max and the fixation record
+
+- Every campaign kind needs `--fixation docs/study2-short-fixation.json` and `--runs-root`. The
+  record is read whole (`analysis.study2_short.read_fixation`): a missing key, or a value of
+  amendment 4's keys other than the code's, refuses.
+- **w_max 0.47 is frozen since S1.** Every launcher campaign carries `header: {w_max: …}`, which
+  the launcher logs with every start it makes; a replay under another w_max is refused
+  (`incomplete`). Campaigns from before the headers (amendment 3's) record none and are not
+  compared. The check request records its w_max too, which is printed, never read back.
+- **Amendment 4's keys:** `mechanism` (the cohort, its interval family and the max-t level),
+  `audit`, `candidates`, `numerical`, `validation`, `timecourse`, `drift` and `scalars`.
+  `mechanism.level` is a placeholder (0.95) until the simulation's final run fixes a level
+  ([below](#the-simulations-final-run)); it must not be used before.
+
+### S1: discovery at (8, 20)
+
+Locally, at the reviewed commit (`R` and `THETA0` as in amendment 3's commands; campaigns and
+summaries go under `$RUNS_DIR`, here `runs/`):
+
+```bash
+F=docs/study2-short-fixation.json
+python scripts/study2_short_campaigns.py discovery --runs $R --theta0 $THETA0 --fixation $F \
+  --runs-root runs --out runs/campaigns/study2-short-discovery-b20-u8.yaml
+python scripts/study2_short_campaigns.py prep --seeds 2000 2001 2002 --batch 20 --commit SHA \
+  --archived --out runs/campaigns/study2-short-prep-s2000-2002-b20.sh
+```
+
+The `discovery` campaign holds the primary arms' targeted round (15 runs) and the pre-warmed
+arm's first round at the union of their rates (18 runs). On the Pod, after `pod_setup.sh` with
+amendment 3's inventories and `check_runtime.py`, run the prep driver (it only checks the archived
+streams of seeds 2000–2002 at B = 20) and launch the campaign detached:
+
+```bash
+. /etc/rp_environment
+SRC=/workspace/code/zero-field-refusal/SHA/source
+bash "$RUNS_DIR/campaigns/study2-short-prep-s2000-2002-b20.sh"
+project-run "$SRC" python scripts/launch.py "$RUNS_DIR/campaigns/study2-short-discovery-b20-u8.yaml"
+```
+
+On the first run, check `meta.json` (the commit, a clean checkout, the image, the hardware),
+`update_scalars.jsonl` (25 rows) and the GPU peak. When the campaign ends, download and archive
+it (`runs/archive/inventory-2026-10-20-study2-short-discovery-b20-u8.tsv`) and write the summary,
+which names the next step:
+
+```bash
+python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F --runs-root runs \
+  --out runs/analysis/study2-short-summary-20261020-s1.json
+```
+
+### S2: the numerical stage
+
+1. **The K-only runs and their streams,** written locally:
+
+   ```bash
+   python scripts/study2_short_campaigns.py numerical --runs $R --theta0 $THETA0 --fixation $F \
+     --runs-root runs --out runs/campaigns/study2-short-numerical-b20-u8.yaml
+   python scripts/study2_short_campaigns.py prep --seeds 2200 2201 2202 --batch 20 --commit SHA \
+     --out runs/campaigns/study2-short-prep-s2200-2202-b20.sh
+   ```
+
+   On the Pod the prep driver generates seeds 2200–2202's training streams (25 × B = 500
+   responses) and v₀ streams (50 × B = 1 000). Archive them with an inventory before any run reads
+   them (`inventory-2026-10-20-study2-short-streams-s2200-2202-b20.tsv`), then launch the campaign:
+   15 runs of `experiments/study2_short_k_only`, every selected rate on 2200 and each arm's U-rate
+   on 2201 and 2202. Download and archive the runs.
+2. **The check request,** written locally once the runs are in the record store:
+
+   ```bash
+   python scripts/study2_short_campaigns.py numerical-check --runs $R --theta0 $THETA0 \
+     --fixation $F --runs-root runs --out runs/campaigns/study2-short-numerical-check-b20-u8.json
+   ```
+
+   It writes the request (`{"rates": …, "batch": 20, "U": 8}`, with `given_up` when the launcher
+   gave up on a K-only run) and prints the driver's whole command, `runs_commits` (the K-only runs'
+   commits: the driver's `--commit`), the w_max, the directory the check writes into and the
+   selection's verdict there (`numerical/b20-u8/verdicts/<digest>.json`).
+3. **The driver, written on the Pod** from the request copied unchanged to the Pod's
+   `$RUNS_DIR/campaigns/`. It embeds the request's absolute path, and every part checks the
+   request's content: a moved or edited request stops the plan before any GPU use.
+
+   ```bash
+   C="$RUNS_DIR/campaigns"
+   project-run "$SRC" python scripts/numerical_check.py driver \
+     --selection "$C/study2-short-numerical-check-b20-u8.json" --batch 20 --upper 8 \
+     --commit SHA --out "$C/study2-short-numerical-check-b20-u8-driver.sh"
+   bash "$C/study2-short-numerical-check-b20-u8-driver.sh"   # detached
+   ```
+
+   The driver checks the checkout, that no process holds the GPU and under 1 000 MiB of it is in
+   use, the free host memory, clears an interrupted case's checkpoints and checks the free disk.
+   Then `plan` (missing runs or streams, the GPU code, the run environment), the same-path
+   controls, the twins' first attempts and the verdict; then one rerun, in a fresh process, of
+   every control and case left incomplete, and the verdict again. It records the verdict before
+   any non-zero exit. **Exits:** 1, a precondition or the plan; 5, a verdict with an incomplete
+   rate or control; 6, a part failed (recorded; the driver goes on); 0, complete. A verdict that
+   is not qualified is a result, not a failure.
+4. **Outputs** under `$RUNS_DIR/numerical/b20-u8/`: `controls/<lr>/attempt-<n>.json`,
+   `twins/s<seed>/<optimizer>-<lr>/attempt-<n>.json`, `verdicts/<digest>.json` (one per selection;
+   `verdict.json` is a copy of the latest, never read), the driver's log and `stale/`. A record
+   counts only when written from a clean checkout with this GPU code, under the frozen settings,
+   for the run located now; running the driver again keeps it. A `--dry-run` moves nothing.
+   Download the directory with the request and the driver, archive them with an inventory, and
+   run the summary: it reads the verdicts under `--runs-root`.
+5. **Cases given up.** A K-only run the launcher gave up on is named in the request; `plan` notes
+   it, and the parts record it incomplete, then not qualified (technical), without a GPU. An FA
+   run on 2200 given up makes its rate's same-path control not qualified too (the control part
+   then exits 0), and a seed whose only FA run is given up leaves every case of that seed
+   incomplete. When every case is given up and no run is located, `runs_commits` is empty: the
+   driver runs from the stage's checkout commit, which the `numerical-check` kind names. The code
+   and environment checks are then skipped, with a note, and no part touches the GPU, but the
+   driver still runs its preconditions on the Pod. The selection then takes the technical path:
+   the search allowance, then `blocked`.
+
+### The void and the repeat of a numerical stage
+
+A GPU-path change after the K-only runs (S2's: the fa21 comparator, `e380bcc`) leaves their
+records unusable: the tool refuses runs whose GPU code is not its own. At a clean checkout of the
+new commit, both on the Pod and in the local record store:
+
+```bash
+python scripts/numerical_check.py void --batch 20 --upper 8 --runs-root "$RUNS_DIR" --dry-run
+python scripts/numerical_check.py void --batch 20 --upper 8 --runs-root "$RUNS_DIR"
+```
+
+- **It moves, never deletes,** to `$RUNS_DIR/void/<the old GPU code's sha256, first 12>/` at the
+  same relative paths: every numerical run at B whose recorded commit's GPU code is not HEAD's,
+  `numerical/b{B}-u{U}/`, and the launcher's record of the campaigns that made those runs
+  (`launch/<campaign>.jsonl`, `launch/<campaign>/`, and the campaign's file under `campaigns/`
+  with its `-driver.sh`). It writes an inventory of every file moved (path, size, sha256) and a
+  record beside them. Archive that directory with an inventory.
+- **It refuses** on a checkout that is not clean; when no run's GPU code differs; when it would
+  move a run of another role, or one whose GPU code cannot be read; when the old runs hold several
+  GPU codes; when the destination exists; when a launcher journal it would move also names a run
+  it leaves in place; and, for the coordinator to decide, when S3 has started (a validation,
+  confirmation or time-course run exists at B: voiding those means spending on S3 again) or when
+  a check directory of another U exists at B. Without `numerical/b{B}-u{U}/` (a change between
+  the K-only runs and their check) it moves the rest and records "no check directory".
+- **Afterwards** the voided check's marks are gone with its verdicts: the selection calls for the
+  K-only runs again (`numerical`), and their campaign starts with all its attempts, then the check.
+- **As run on 2026-10-21:** the void went to `runs/void/78b166a28a61/`
+  (`runs/archive/inventory-2026-10-21-study2-short-void-s2.tsv`). A new Pod restored S2's
+  inventories with the archived streams of 2200–2202 (`prep --archived`), and ran the campaign
+  `study2-short-numerical-b20-u8-repeat` and the check of `…-numerical-check-b20-u8-repeat.json`
+  from `aa4c007`. The bucket never overwrites an object, so the repeated check directory went to
+  a new prefix, `runs/numerical-repeat-20261021/`: the first repeat inventory lists the first
+  S2's objects at the old paths as mismatches, and `…-repeat-v2.tsv` is the repeat's.
+
+### S3: validation
+
+After the second reviewer approves gate C, write and commit the versions record (amendment 3's
+procedure above), from a clean checkout of the commit that validation and confirmation run from.
+Then:
+
+```bash
+C=runs/campaigns  # locally; on a Pod, $RUNS_DIR/campaigns
+python scripts/study2_short_campaigns.py prep --seeds 2100 2101 2102 2103 2104 2105 2106 2107 \
+  2108 2109 2110 2111 --batch 20 --commit SHA --out "$C/study2-short-prep-s2100-2111-b20.sh"
+python scripts/study2_short_campaigns.py validation --runs $R --theta0 $THETA0 --fixation $F \
+  --runs-root runs --out "$C/study2-short-validation-b20-u8.yaml"
+```
+
+The prep generates the twelve seeds' streams; archive them before the runs read them. The
+campaign holds every arm at its three rates on the twelve seeds: 108 runs with three arms. The
+summary then gives the three-arm verdict and the next step: `confirmation`, the next candidate,
+or `blocked` (a technical shortfall) with its reasons.
+
+### S4: confirmation, the time course and the drift
+
+#### The confirmation loop of a three-arm selection
+
+The campaigns do not pause at the primary's looks: the looks are computed afterwards from the same
+first 36 and 60 primary-supported blocks. Confirmation goes on until the mechanism cohort has 60
+jointly supported blocks complete in order, or until all 80 blocks are started and complete.
+
+1. **Write** `confirmation --blocks FIRST LAST --runs-root runs`, then launch it. A range holds at
+   most min(60 − p₃, 80 − the blocks started), p₃ the started blocks that may still be jointly
+   supported; a block is started once it has runs or belongs to a range the launcher started.
+   `--after-look` is refused. Prepare and archive the range's streams first, as for validation.
+2. **Let the blocks complete.**
+3. **Read the counts** in the summary's `mechanism` and `confirmation`:
+   `jointly_supported_in_order`, `possibly_jointly_supported`, `room`, `ended` and `ended_by`.
+4. **Go on** while the cohort has not ended.
+
+Label the runs as they complete (amendment 3's step 4). The summary with `--judge` reads the
+looks as their blocks are labeled, and `final` once the confirmation has ended: the cohort ended,
+its blocks labeled, and the primary stopped. With the primary pair alone (two arms), amendment
+3's loop with its pauses applies.
+
+#### The time course
+
+Once the next step is `confirmation` and blocks 1–10 are in issued confirmation ranges (their
+streams exist), write the time-course campaign beside the confirmation:
+
+```bash
+python scripts/study2_short_campaigns.py timecourse --runs $R --theta0 $THETA0 --fixation $F \
+  --runs-root runs --out "$C/study2-short-timecourse-b20-u8.yaml"
+```
+
+It holds each arm's central (K\*) rate on seeds 3000–3009 (30 runs, 20 with two arms), the
+endpoint's config with `study2_short.role=timecourse` and `schedule.evaluate_at=[1,5,10,25]`. A
+run whose endpoint run the launcher gave up on is left out and named in the header. The scripts
+split these runs from the others where they load them: they never enter a block, a look or the
+mechanism cohort. The summary reports each against its endpoint run: `identical`, `consistent`,
+`excluded` or `pending`.
+
+#### The drift diagnostic
+
+Once, at the selected B, on a Pod between campaigns:
+
+```bash
+C="$RUNS_DIR/campaigns"
+project-run "$SRC" python scripts/drift_diagnostic.py driver --batch 20 --commit SHA \
+  --out "$C/drift-b20-driver.sh"
+bash "$C/drift-b20-driver.sh"   # detached
+```
+
+The driver checks the checkout, that the GPU is free and 5 GB of disk; then `plan` (the host
+memory: 47.5 GB), `prepare` (seed 2300's drift stream, 64 × B responses, and its v₀ stream,
+50 × B, generated as the regular runs' streams are) and `run`. The result is
+`$RUNS_DIR/diagnostics/drift/b20/result.json`; a failure leaves `failed.json` (exit 4 when out of
+memory, 5 when the host memory falls short). Archive the streams and the result with an
+inventory. It enters no decision.
+
+### The summary under amendment 4
+
+`scripts/study2_short_summary.py`, with the arguments of amendment 3, prints:
+
+- **the selection:** the candidates (B = 20 only), and per attempt its rates once eligible, its
+  selections, each check with the rates it was asked for, its state, its unusable rates with their
+  kind (scientific or technical), the search allowance spent, carried or owed, the failures, the
+  arms blocked by technical marks only, and the validation with the runs given up; the rounds;
+  amendment 3's controls (reported, never used); the B = 5 runs not reached; the next step, or
+  `blocked` with its rates and reasons, or `infeasible` with the B = 20 feasibility report;
+- **the confirmation counts** and `mechanism`, on K and support only: the blocks started, those
+  jointly supported in order and possibly so, the room, whether the cohort ended and by what, and
+  its attrition by reason;
+- **`timecourse`:** the counts by state, with the failed and missing runs per seed and arm;
+- **`scalars`:** whether each regular run has `update_scalars.jsonl` with one row per update step
+  and, for the pre-warmed arm, the departure at steps 5, 10 and 25. Amendment 3's runs have none;
+  a gap is reported and gates nothing;
+- **with `--judge`:** the looks on the primary arms, the descriptive continuation after the
+  stopping look, and `final`, "not yet" with its reason until the confirmation has ended. Until
+  then neither the printed status nor `--out` carries the pre-warmed arm's interpolated harm or
+  missing labels. `final` holds the mechanism cohort's analysis and the time course with its
+  labels.
+
+### The audit (S5)
+
+Once `final` exists, the terminal audit is drawn, labeled outside the project and estimated:
+
+```bash
+python -m zero_field_refusal.analysis.study2_audit_cli draw --runs $R --theta0 $THETA0 \
+  --fixation $F --judge wildguard --runs-root runs [--abandoned FILE] \
+  --out "$RUNS_DIR/audit/study2-short-DATE"
+python -m zero_field_refusal.analysis.study2_audit_cli agreements --sample DIR --fixation $F \
+  --first GPT.json --second GROK.json --out "$RUNS_DIR/audit/agreements-DATE.json"
+python -m zero_field_refusal.analysis.study2_audit_cli estimate --sample DIR --fixation $F \
+  --reference REFERENCE.json --out "$RUNS_DIR/audit/estimate-DATE.json"
+```
+
+- **`draw`** refuses (exit 2) before the final analysis exists, reading no label. It writes
+  `sample.jsonl`, `unique.jsonl`, `key.json`, `frame.jsonl` and `selection.json`, and prints only
+  counts. The files hold responses to harmful prompts: keep them under `$RUNS_DIR`, archive them
+  with an inventory, and give the labellers `unique.jsonl` alone.
+- **`agreements`** reads the two labellers' labels by item id (null: a failed output) and lists
+  the disagreements and failed outputs to resolve, and the 10 % of the agreements the researcher
+  checks, drawn from the audit's seed.
+- **`estimate`** reads the resolved reference labels (null: missing) and prints, per arm drawn,
+  the draws, errors, missing references and bounds, and per estimand the bias bound, the
+  descriptive estimate and the reference harm of the realized cohort. Item ids and numbers only,
+  never a text.
+
+The command line lives in the analysis package, because a new file under `scripts/` would be a
+GPU path.
+
+### The simulation's final run
+
+The level of the mechanism's max-t intervals is fixed by one final run, after the S2 repeat named
+the frozen rates. Its inputs are measured first, on K and support only, from S1's runs and Stage
+A's grids at B = 20 (here `runs/analysis/study2_short_sim/2026-10-21-b20-inputs.json`):
+
+```bash
+python scripts/study2_short_simulate.py inputs --runs-root runs/study2_short runs/study2_stage_a \
+  --batch 20 --rates A=1.49e-05,1.83e-05,2.24e-05 F=1.34e-05,1.62e-05,2e-05 \
+  P=1.34e-05,1.62e-05,2e-05 --out runs/analysis/study2_short_sim/DATE-b20-inputs.json
+python scripts/study2_short_simulate.py final --inputs runs/analysis/study2_short_sim/DATE-b20-inputs.json \
+  --workers N --out "$RUNS_DIR/analysis/study2_short_sim/DATE-b20-final"
+```
+
+- It runs on a dedicated CPU Pod, where `--workers` may be every core. The primary rerun is
+  compared with amendment 3's three archived decided runs, which the Pod's runs root must hold
+  (`analysis/study2_short_sim/2026-10-16/full-r5/main`, `gate` and `bias`, each with its
+  `summary.json`); a missing one is recorded as missing.
+- In order: the mechanism's required grid on the calibration stream, one check at the level it
+  chose (0.95 included; the borderline scenarios at 50 000 replicates), the primary rerun with the
+  conditional truth, the validation gate and the bias allowance, their comparisons with amendment
+  3's runs, and the stress grid. `final.json` holds the fixed level, or none, with the rule and
+  the flagged rates.
+- `--write` writes a fixed level into `mechanism.level` and the inputs record into
+  `docs/study2-short-b20-inputs.json`, and nothing without a fixed level. Run without it on a Pod,
+  the two are written in the checkout from `final.json` and the inputs record, with the tracked
+  record's pin in `tests/test_study2_short_campaigns.py` updated, and committed before the versions
+  record. Without a fixed level nothing is written and the outcome goes to the second reviewer.
+- Download the output before stopping the Pod, and archive it with an inventory.
 
 ## Study 2, FA soft-control diagnostic
 
 An outcome-free diagnostic outside the confirmation, of why two FA soft-target controls failed.
 Its frozen specification is [study2-fa-control-diagnostic.md](study2-fa-control-diagnostic.md).
-It changes no protocol, selection or run record, and this round's controls stay failed.
+It changes no protocol, selection or run record, and this round's controls stay failed. It ran
+once, and chose branch F. Its module, `fa_control_diagnostic.py`, now also holds amendment 4's
+numerical check ([above](#s2-the-numerical-stage)), which reuses its D1 control and D3 twins;
+the diagnostic itself keeps D3's bitwise twin-A gate.
 
 - **Blind to outcomes.**
   - Only K, the KL between twin runs, norms, eigenvalues and v₀ statistics are computed.
