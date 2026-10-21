@@ -1155,8 +1155,9 @@ allowance.
 
 - **Status.** S1 (discovery) and S2 (the numerical qualification) ran on code the second
   reviewer approved (gate B: reviews fa14 and fa15; for the S2 repeat, fa23). The analysis, the
-  simulation, the audit and this text (gate C) go to the second reviewer before validation (S3);
-  no run of S3 starts before that review passes and the versions record is committed.
+  simulation, the audit and this text passed gate C at `2b08093` (reviews fa26–fa28), and the
+  final simulation's results and level were checked in fa29; no run of S3 starts before the
+  versions record is committed.
 - **Later decisions.** The text below is the decision of 2026-10-19 as amended by these, each
   disclosed with what was known when it was made
   ([below](#what-was-known-when-it-was-decided-1)):
@@ -1640,7 +1641,7 @@ feasibility report.
         was above it already.
       - The validation gate fails in at most 0.19 % of studies without technical failures
         (amendment 3: ≤ 0.05 %), and in 96.0–98.1 % with 20 % (amendment 3: 96–98 %). The bias
-        allowance at B = 20 is 0.935 pp (kink), below the fixed 1.084 pp.
+        allowance at B = 20 is 0.934 pp (kink, the bias run), below the fixed 1.084 pp.
     - **The stress grid** at 0.975 (2 000 replicates, reported only), minimum coverage:
       heavy-tailed 96.35 / 95.15 / 93.25 % at SD 5 / 10 / 15; normal SD 15, 95.55 %; skewed SD 15,
       93.95 %; rare seeds, centered, 90.2–91.2 %; rare seeds only, 89.90 %; the tied-contrast case,
@@ -1651,8 +1652,11 @@ feasibility report.
       ran on the same Pod, from the same source, as `final` calls them, after the checkout was
       installed editable without dependencies so that its version could be read; the code still
       came from the checkout. `final.json` was assembled from the outputs with `final`'s own
-      functions and rule text (`…-b20-final-rest-attempt/final-assembly.json` records how). The
-      defect is fixed, with a test, in the commit that records these results.
+      functions and rule text (`…-b20-final-rest-attempt/final-assembly.json` records how). It
+      differs from what `final` would have written only in the inputs record's path, which it
+      gives relative to the repository instead of the Pod's absolute path; the record's sha256 is
+      the same. The second reviewer confirmed the equivalence (fa29). The defect is fixed, with a
+      test, in the commit that records these results.
 
 #### 4. Two exploratory measurements of the mechanism
 
