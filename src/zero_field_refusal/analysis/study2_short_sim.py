@@ -891,6 +891,10 @@ class Replicates:
     secondary_bootstrap: dict[str, np.ndarray] = field(default_factory=dict)
     secondary_dropped: dict[str, np.ndarray] = field(default_factory=dict)
     secondary_bootstrap_cpu_seconds: float = 0.0
+    # The conditional truth (review fa24, Q1; ``primary_truth``), per replicate when computed:
+    # the interpolation contrast over fresh primary-supported blocks and the pointwise one.
+    conditional_truth: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    conditional_pointwise: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def gate_passed(self) -> np.ndarray:
@@ -1754,6 +1758,47 @@ def outcome_rates(
     return rates
 
 
+def conditional_rates(
+    decisions: Decisions,
+    truth: np.ndarray,
+    pointwise: np.ndarray,
+    allowance: float | None = None,
+) -> dict[str, Any]:
+    """A design's decisions against each replicate's conditional truth (review fa24, Q1): the
+    interpolation contrast over fresh primary-supported blocks given the replicate's panel and
+    misses, and its pointwise contrast at K*. Coverage of the stopping look's interval (a look
+    without an interval, unbounded, does not cover; its share apart); false positive (a positive
+    direction with the truth ≤ 0), false negative, false equivalence (|truth| ≥ the margin), the
+    right direction; with an allowance b the pointwise readings against the pointwise truth
+    (equivalence when |Δ_pt| ≥ the margin, a direction against its sign) and the coverage of the
+    interval widened by b. Every rate is over all replicates."""
+    d = decisions
+    missing = ~(np.isfinite(d.low) & np.isfinite(d.high))
+    covered = ~missing & (d.low <= truth) & (truth <= d.high)
+    out: dict[str, Any] = {
+        "truth_mean": float(truth.mean()),
+        "truth_sd": float(truth.std(ddof=1)) if truth.size > 1 else 0.0,
+        "coverage": _rates(covered),
+        "missing": _rates(missing),
+        "false_positive": _rates(d.positive & (truth <= 0)),
+        "false_negative": _rates(d.negative & (truth >= 0)),
+        "false_equivalence": _rates(d.equivalence & (np.abs(truth) >= MARGIN)),
+        "right_direction": _rates((d.positive & (truth > 0)) | (d.negative & (truth < 0))),
+    }
+    if allowance is not None:
+        readings = pointwise_readings(d, allowance)
+        widened = ~missing & (d.low - allowance <= pointwise) & (pointwise <= d.high + allowance)
+        out["pointwise"] = {
+            "truth_mean": float(pointwise.mean()),
+            "truth_sd": float(pointwise.std(ddof=1)) if pointwise.size > 1 else 0.0,
+            "coverage": _rates(widened),
+            "false_positive": _rates(readings["positive"] & (pointwise <= 0)),
+            "false_negative": _rates(readings["negative"] & (pointwise >= 0)),
+            "false_equivalence": _rates(readings["equivalence"] & (np.abs(pointwise) >= MARGIN)),
+        }
+    return out
+
+
 def summarize_scenario(
     scenario: Scenario,
     params: Parameters,
@@ -1836,6 +1881,13 @@ def summarize_scenario(
                         rates["bias_vs_block_mean"] = (
                             rates["mean_estimate"] - diagnostics["block_mean"]
                         )
+                        if data.conditional_truth.size:
+                            rates["conditional"] = conditional_rates(
+                                decisions,
+                                data.conditional_truth,
+                                data.conditional_pointwise,
+                                allowance,
+                            )
                         if by_interval:
                             rates["secondary_coverage_by_interval"] = {
                                 name: secondary_coverage(
@@ -2285,6 +2337,72 @@ def validation_checks(
     return checks
 
 
+def _conditional_worst(rows: Sequence[Mapping], path: Sequence[str], pick: Callable = max) -> dict:
+    """The worst value of a nested rate (``path`` within each row) over ``rows``."""
+    if not rows:
+        return {"value": None, "scenario": None, "mc_se": None}
+
+    def get(row: Mapping) -> Mapping:
+        for key in path:
+            row = row[key]
+        return row
+
+    row = pick(rows, key=lambda r: get(r)["value"])
+    return {"value": get(row)["value"], "scenario": row["scenario"], "mc_se": get(row)["se"]}
+
+
+def conditional_checks(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
+    """The primary's decided design against each replicate's conditional truth (review fa24, Q1),
+    per look design × interval × rule × α × floor and group (and over all): the largest false
+    positive and negative at Δ = 0, the largest false equivalence at |Δ| = 5 pp, the smallest
+    coverage of the stopping look's interval and the largest share without one, and the
+    pointwise readings' rates; beside them the population figures (``constraint_summary``).
+    ``meets`` compares the conditional rates with amendment 3's bounds (2.5 % per side, 5 %). It
+    reports only: no fixed level changes."""
+    rows = [r for r in result_rows(scenarios) if "conditional" in r]
+    checks = []
+    keys = dict.fromkeys((r["looks"], r["interval"], r["rule"], r["alpha"], r["floor"])
+                         for r in rows)  # fmt: skip
+    for looks, interval, rule, alpha, floor in keys:
+        mine = [r for r in rows if (r["looks"], r["interval"], r["rule"], r["alpha"], r["floor"])
+                == (looks, interval, rule, alpha, floor)]  # fmt: skip
+        groups = {"all": mine} | {g: [r for r in mine if r["group"] == g]
+                                  for g in dict.fromkeys(r["group"] for r in mine)}  # fmt: skip
+        out = {}
+        for group, members in groups.items():
+            null = [r for r in members if r["delta"] == 0]
+            near = [r for r in members if math.isclose(abs(r["delta"]), MARGIN)]
+            entry: dict[str, Any] = {
+                "max_false_positive": _conditional_worst(null, ("conditional", "false_positive")),
+                "max_false_negative": _conditional_worst(null, ("conditional", "false_negative")),
+                "max_false_equivalence_5pp": _conditional_worst(
+                    near, ("conditional", "false_equivalence")
+                ),
+                "min_coverage": _conditional_worst(members, ("conditional", "coverage"), min),
+                "max_missing": _conditional_worst(members, ("conditional", "missing")),
+            }
+            if all("pointwise" in r["conditional"] for r in members):
+                entry["pointwise"] = {
+                    name: _conditional_worst(subset, ("conditional", "pointwise", rate), pick)
+                    for name, subset, rate, pick in (
+                        ("max_false_positive", null, "false_positive", max),
+                        ("max_false_negative", null, "false_negative", max),
+                        ("max_false_equivalence_5pp", near, "false_equivalence", max),
+                        ("min_coverage", members, "coverage", min),
+                    )
+                }
+            values = [entry["max_false_positive"]["value"], entry["max_false_negative"]["value"]]
+            equivalence = entry["max_false_equivalence_5pp"]["value"]
+            entry["meets"] = all(v is None or v <= MAX_FALSE_DIRECTION for v in values) and (
+                equivalence is None or equivalence <= MAX_FALSE_EQUIVALENCE
+            )
+            entry["population"] = constraint_summary(members)
+            out[group] = entry
+        checks.append({"looks": looks, "interval": interval, "rule": rule, "alpha": alpha,
+                       "floor": floor, "groups": out})  # fmt: skip
+    return checks
+
+
 def secondary_checks(scenarios: Sequence[Mapping]) -> list[dict[str, Any]]:
     """Coverage of the secondary contrasts' pointwise truths at the stopping look, per look
     design × interval × rule × α × floor × secondary interval and per shape × target SD: the
@@ -2434,6 +2552,9 @@ class RunSettings:
     prescreen: bool = False  # simulate only the studies that pass the validation gate
     # The secondary contrasts' intervals; the first is the one the rows' secondary_coverage reads.
     secondary_intervals: tuple[str, ...] = ("t",)
+    # Each replicate's conditional truth of Δ (review fa24, Q1; ``primary_truth``) and the rows'
+    # ``conditional`` rates against it.
+    conditional: bool = False
 
     def __post_init__(self) -> None:
         unknown = (
@@ -2517,7 +2638,45 @@ def _replicate_task(task: tuple[Scenario, Parameters, int, int, RunSettings]):
             cpu_seconds=data.cpu_seconds + cpu,
             secondary_bootstrap_cpu_seconds=cpu,
         )
+    if settings.conditional:
+        clock, cpu = time.perf_counter(), time.process_time()
+        engine = primary_truth(scenario, params, settings.base_seed)
+        truth, pointwise = [], []
+        for rep in map(int, data.rep_ids):
+            # The replicate's own panel and misses, redrawn from its stream's first draws.
+            rng = generator(settings.base_seed, settings.stream, scenario.name, rep)
+            alpha, misses = draw_constants(scenario, rng)
+            h, p = engine.means(alpha, misses), engine.pointwise(alpha)
+            truth.append(h[0] - h[1])
+            pointwise.append(p[0] - p[1])
+        data = replace(
+            data,
+            conditional_truth=np.array(truth),
+            conditional_pointwise=np.array(pointwise),
+            seconds=data.seconds + time.perf_counter() - clock,
+            cpu_seconds=data.cpu_seconds + time.process_time() - cpu,
+        )
     return scenario.name, start, data
+
+
+def primary_truth(scenario: Scenario, params: Parameters, base_seed: int) -> PanelTruth:
+    """The conditional truth's engine for the primary contrast (review fa24, Q1): arms A and F as
+    the block model draws them, their joint support the primary's (``PanelTruth``). It needs arm
+    effects and speeds independent across arms and of the speeds (ρ_u = ρ_uh = 0, as in every
+    decided scenario)."""
+    if scenario.rho_u or scenario.rho_uh:
+        raise ValueError(f"{scenario.name}: the conditional truth needs ρ_u = ρ_uh = 0")
+    effects = _effects(scenario, params.spread, params.shifted)
+    sigma_u, sigma_e = (
+        np.broadcast_to(np.ravel(v), len(ARMS)) for v in scenario.k_spreads([0, 1, 2])
+    )
+    arms = [
+        ArmModel(params.offsets[a], params.coefficients[a], effects[a],
+                 params.failure if params.failure_arms is None else params.failure_arms[a],
+                 float(sigma_u[a]), float(sigma_e[a]), POSITIONS[scenario.positions][a])
+        for a in (0, 1)
+    ]  # fmt: skip
+    return PanelTruth(arms, scenario.sigma_s, scenario.w_max, base_seed)
 
 
 @contextmanager
@@ -2605,6 +2764,8 @@ def run_scenarios(
                     secondary_bootstrap_cpu_seconds=sum(
                         c.secondary_bootstrap_cpu_seconds for c in chunks
                     ),
+                    conditional_truth=np.concatenate([c.conditional_truth for c in chunks]),
+                    conditional_pointwise=np.concatenate([c.conditional_pointwise for c in chunks]),
                 )
                 scenario = by_name[name]
                 if merged.started.size:
@@ -2888,15 +3049,20 @@ def inputs_scenario(scenario: Scenario, inputs: Inputs) -> Scenario:
 # lowered, d_F = −min(0, e₁, e₁ + e₂), as amendment 3 put a negative rare difference in F). The
 # per-prompt curves are study1's, fitted without block effects (``fit_target``); P follows F.
 #
-# Truth: the supported interpolation estimand of each component, the mean over the jointly
-# supported three-arm population of the interpolated contrast at K* (the primary's interpolation
-# estimand, built the same way). ``EstimandModel`` computes it from the population. Label noise
-# has mean 0, so it is the mean of the interpolated expected harm. Prompts, stream effects and
-# block effects are integrated by quadrature, and the endpoint geometry (selection misses,
+# Declared values: the population's supported interpolation estimand of each component, the mean
+# over the jointly supported three-arm population of the interpolated contrast at K* (the
+# primary's interpolation estimand, built the same way). ``EstimandModel`` computes it. Label
+# noise has mean 0, so it is the mean of the interpolated expected harm. Prompts, stream effects
+# and block effects are integrated by quadrature, and the endpoint geometry (selection misses,
 # speeds, position noise) over a fixed sample of ``ESTIMAND_GEOMETRIES`` per arm, with every
 # failure pattern weighted by its probability (given β_b for P under support-dependent
 # attrition). The offsets c_P, then c_A, are solved so that it equals the declared (C1, C2) in
 # every attrition mode; c_F makes F's population rate at K* the baseline.
+#
+# Truth (review fa24, Q1): each replicate's own, the expected interpolated contrast over fresh
+# supported seed blocks conditional on its 521-prompt panel and its selection misses
+# (``PanelTruth``), against which coverage, false direction and "bounded" are read; the
+# declared population values stay beside it, and power is reported at both.
 
 COMPONENTS = ("C1", "C2")  # C1 = P − F, C2 = A − P
 COMPONENT_ARMS = ((2, 1), (0, 2))  # (minuend, subtrahend) arm indices of C1 and C2
@@ -2913,7 +3079,15 @@ COMPONENT_MEANS = (
 )
 SD_RATIOS = {"1:1": (1.0, 1.0), "2:1": (1.0, 0.5), "1:2": (0.5, 1.0)}  # (C1, C2) / the larger
 COMPONENT_RHOS = (-0.5, 0.0, 0.5)  # correlation of the components' per-block driving variables
-ATTRITIONS = ("none", "independent", "support_dependent")
+# Attrition (review fa24, Q3): none, and at a technical failure rate of 10 % or 20 % per run
+# (amendment 3's failure unit) either independent in every arm or support-dependent (the
+# pre-warmed arm's failures through the shared stream effect β_b, amendment 3's
+# ``failure_correlated`` law; A and F independent at the same rate). The measured zero (Stage A
+# 0/12, S1 0/9 per arm) is the baseline.
+ATTRITION_RATES = (0.1, 0.2)
+ATTRITIONS = ("none", *(f"{mode}-{rate:g}" for mode in ("independent", "support_dependent")
+                        for rate in ATTRITION_RATES))  # fmt: skip
+STRESS_ATTRITIONS = ("none", "independent-0.2", "support_dependent-0.2")
 MECHANISM_SHAPES = ("normal", "skewed", "heavy", "rare_centered", "rare_only", "tied")
 REQUIRED_SHAPES = ("normal", "skewed")
 REQUIRED_SDS = (0.05, 0.10)
@@ -2929,6 +3103,10 @@ MECHANISM_RESAMPLES = BOOTSTRAP_RESAMPLES
 MECHANISM_LEVELS = tuple(round(0.95 + 0.005 * i, 3) for i in range(9))  # 0.95 … 0.99
 MECHANISM_COVERAGE = 0.95
 MECHANISM_STREAMS = {"calibration": "mechanism-calibration", "check": "mechanism-check"}
+# The predeclared precision check (review fa24, Q2): a required scenario under the floor plus two
+# MC SEs at R = 10 000 on the calibration stream, i.e. under 95 %, is checked once at 50 000.
+PRECISION_REPS = 50_000
+BORDERLINE_BELOW = MECHANISM_COVERAGE  # the floor at R = 10 000 plus its two MC SEs
 ESTIMAND_GEOMETRIES = 8192
 COPULA_NODES = 48
 MECHANISM_DRAW_MARGIN = 2  # blocks drawn beyond those the cohort still needs
@@ -3019,15 +3197,24 @@ def mechanism_base(inputs: Inputs) -> Scenario:
                     sigma_e_arms=inputs.sigma_e)  # fmt: skip
 
 
-def failure_laws(attrition: str, inputs: Inputs) -> tuple[tuple[float, float], ...]:
-    """Per arm (A, F, P), the failure logit's (intercept, slope) in β_b/σ_s: none; independent,
-    each arm at its inputs' rate; support-dependent, A and F independent at theirs and P's
-    failures more frequent in high-harm blocks (``failure_correlated``'s law) at its rate."""
+def attrition_rate(attrition: str) -> tuple[str, float]:
+    """(mode, rate) of an attrition name: ("none", 0.0), ("independent", 0.1), …"""
     if attrition == "none":
+        return "none", 0.0
+    mode, _, rate = attrition.rpartition("-")
+    return mode, float(rate)
+
+
+def failure_laws(attrition: str) -> tuple[tuple[float, float], ...]:
+    """Per arm (A, F, P), the failure logit's (intercept, slope) in β_b/σ_s: none; independent,
+    every arm's runs at the mode's rate; support-dependent, A and F independent at that rate and
+    P's runs at it as a marginal, more often in high-harm blocks (``failure_correlated``'s law)."""
+    mode, rate = attrition_rate(attrition)
+    if mode == "none":
         return ((-math.inf, 0.0),) * len(ARMS)
-    laws = [(_logistic_intercept(rate, 0.0), 0.0) for rate in inputs.failure_rate]
-    if attrition == "support_dependent":
-        laws[2] = (_logistic_intercept(inputs.failure_rate[2], FAILURE_SLOPE), FAILURE_SLOPE)
+    laws = [(_logistic_intercept(rate, 0.0), 0.0)] * len(ARMS)
+    if mode == "support_dependent":
+        laws[2] = (_logistic_intercept(rate, FAILURE_SLOPE), FAILURE_SLOPE)
     return tuple(laws)
 
 
@@ -3225,17 +3412,203 @@ class EstimandModel:
         return {**per_arm, "joint": self.p_joint}
 
 
+# The conditional truth (review fa24, Q1): the expected interpolated contrast over fresh supported
+# seed blocks, conditional on the replicate's 521-prompt panel and its selection misses.
+
+CONDITIONAL_STEP = 0.02  # the panel convolution's grid (logit units)
+CONDITIONAL_GEOMETRIES = 1024  # fresh endpoint geometries per arm, common to all replicates
+CONDITIONAL_NODES = 12  # Gauss–Hermite nodes over β_b where a failure law depends on it
+CONDITIONAL_SPAN = 4.0  # the curve's reach at the endpoints (logit), beyond β_b's shift
+PANEL_SPAN = 9.0  # |α_i| the tables cover (σ_α = 1.5: 6 SD)
+SINGLE_FAILURE_PATTERNS = tuple(p for p in PATTERNS if sum(p) <= 1)  # two failures: no bracket
+
+
+@dataclass(frozen=True)
+class ArmModel:
+    """One arm as the block model draws it: logit offset, per-prompt curve coefficients
+    (s, q, γ), block-effect distribution (nodes, weights), failure law (intercept, slope in
+    β_b/σ_s), K spreads and nominal endpoint positions."""
+
+    offset: float
+    coefficients: tuple[float, float, float]
+    effect: tuple[np.ndarray, np.ndarray]
+    failure: tuple[float, float]
+    sigma_u: float
+    sigma_e: float
+    nominal: tuple[float, float, float]
+
+
+def bracket_weights(
+    x: np.ndarray, failed: np.ndarray, w_max: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """``interpolate_at_zero``'s bracket without the harms: whether supported, the indices of the
+    lower and upper endpoints, and the upper one's weight t (ĥ = (1 − t)·h_lo + t·h_hi)."""
+    below, above = x < 0, x >= 0
+    low_ok, high_ok = below & ~failed, above & ~failed
+    low = np.argmax(np.where(low_ok, x, -np.inf), axis=-1)
+    high = np.argmin(np.where(high_ok, x, np.inf), axis=-1)
+    x_low = np.take_along_axis(x, low[..., None], axis=-1)[..., 0]
+    x_high = np.take_along_axis(x, high[..., None], axis=-1)[..., 0]
+    supported = (
+        low_ok.any(axis=-1) & high_ok.any(axis=-1) & ~(x_high - x_low > w_max)
+    )  # bracketing implies a point below and above
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t = -x_low / (x_high - x_low)
+    return supported, low, high, np.where(supported, t, 0.0)
+
+
+def _effect_table(effect: tuple[np.ndarray, np.ndarray], sigma: float, y: np.ndarray) -> np.ndarray:
+    """L(y) = E[σ(y + d + σ·v)], d ~ ``effect`` and v ~ N(0, 1) (none for σ = 0)."""
+    values, weights = (np.asarray(v, dtype=float) for v in effect)
+    out = np.zeros(y.size)
+    if sigma == 0:
+        for start in range(0, values.size, 256):
+            chunk = slice(start, start + 256)
+            out += expit(y[:, None] + values[None, chunk]) @ weights[chunk]
+        return out
+    t = np.arange(y.min() + values.min() - 1, y.max() + values.max() + 1 + L_STEP, L_STEP)
+    nodes, h = _hermite()
+    smooth = np.empty(t.size)
+    for start in range(0, t.size, 4096):
+        smooth[start : start + 4096] = expit(t[start : start + 4096, None] + sigma * nodes) @ h
+    for start in range(0, values.size, 256):
+        shifted = y[:, None] + values[None, start : start + 256]
+        out += np.interp(shifted, t, smooth) @ weights[start : start + 256]
+    return out
+
+
+class PanelTruth:
+    """The truth of a replicate (review fa24, Q1): per arm, the expected interpolated harm at K*
+    over fresh seed blocks supported in every arm given (the joint support), conditional on the
+    replicate's prompt panel α (its 521 values) and selection misses τ, averaged over the stream
+    effect, speeds, block effects, endpoint noise, failures and labels (label noise has mean 0).
+
+    - The panel enters as its own mean over prompts: a convolution on a grid of step
+      ``step`` with the panel binned linearly (error ≈ step²/8·max|L''|, about 5e-6).
+    - Block effects, and β_b where no failure law depends on it, are integrated into the arm's
+      table by quadrature; otherwise β_b by Gauss–Hermite with ``nodes`` nodes.
+    - The endpoint geometry given τ (speed, position noise), with every failure pattern of at most
+      one failed endpoint (two failures leave no bracket) weighted by its probability, over a
+      fixed sample of ``geometries`` per arm, common to all replicates (base_seed,
+      "conditional-truth", "geometry", arm).
+
+    ``means(alpha, misses)``: the arms' conditional means; ``pointwise(alpha)``: their conditional
+    harm at x = 0 over fresh blocks, support aside (the pointwise contrast's truth)."""
+
+    def __init__(
+        self,
+        arms: Sequence[ArmModel],
+        sigma_s: float,
+        w_max: float,
+        base_seed: int,
+        *,
+        step: float = CONDITIONAL_STEP,
+        geometries: int = CONDITIONAL_GEOMETRIES,
+        nodes: int = CONDITIONAL_NODES,
+    ) -> None:
+        self.arms, self.w_max, self.step = list(arms), w_max, step
+        laws = [arm.failure for arm in self.arms]
+        self.explicit = any(slope != 0 and math.isfinite(i) for i, slope in laws)
+        if self.explicit:
+            z, w = np.polynomial.hermite_e.hermegauss(nodes)
+            self.z, self.zw = z, w / w.sum()
+        else:
+            self.z, self.zw = np.zeros(1), np.ones(1)
+        self.shift = sigma_s * self.z
+        reach = CONDITIONAL_SPAN + float(np.abs(self.shift).max())
+        sigma = 0.0 if self.explicit else sigma_s  # β_b folded into the table where it can be
+        used = [PATTERNS.index(p) for p in SINGLE_FAILURE_PATTERNS]
+        self.failed = np.array(SINGLE_FAILURE_PATTERNS)[:, None, :]  # (patterns, 1, 3)
+        self.tables = []
+        for a, arm in enumerate(self.arms):
+            low = math.floor((arm.offset - reach - PANEL_SPAN) / step)
+            high = math.ceil((arm.offset + reach + PANEL_SPAN) / step)
+            z_low = math.floor((arm.offset - reach) / step)
+            z_high = math.ceil((arm.offset + reach) / step)
+            rng = generator(base_seed, "conditional-truth", "geometry", a)
+            self.tables.append({
+                "low": low,
+                "table": _effect_table(arm.effect, sigma, np.arange(low, high + 1) * step),
+                "z_low": z_low,
+                "z": np.arange(z_low, z_high + 1) * step,
+                "speed": rng.standard_normal((geometries, 1)),
+                "noise": rng.standard_normal((geometries, 3)),
+                "probabilities": _pattern_probabilities(arm.failure, self.z)[:, used],
+            })  # fmt: skip
+
+    def _panel(self, alpha: np.ndarray) -> tuple[int, np.ndarray]:
+        """The panel's linear binning on the grid: the first bin's index and the weights."""
+        if np.abs(alpha).max() > PANEL_SPAN - 2 * self.step:
+            raise ValueError("a prompt effect lies beyond the conditional truth's tables")
+        position = np.asarray(alpha, dtype=float) / self.step
+        lower = np.floor(position).astype(int)
+        frac = position - lower
+        first = int(lower.min())
+        size = int(lower.max()) - first + 2
+        weights = np.bincount(lower - first, 1 - frac, size) + np.bincount(lower - first + 1, frac,
+                                                                          size)  # fmt: skip
+        return first, weights / alpha.size
+
+    def _harm(self, a: int, panel: tuple[int, np.ndarray]) -> np.ndarray:
+        """G(z) = Σ_i L(z + α_i)/521 on the arm's z grid."""
+        first, weights = panel
+        t = self.tables[a]
+        start = t["z_low"] + first - t["low"]
+        segment = t["table"][start : start + t["z"].size + weights.size - 1]
+        return np.correlate(segment, weights, mode="valid")
+
+    def means(self, alpha: np.ndarray, misses: np.ndarray) -> np.ndarray:
+        """The arms' conditional means (in the order given) on their joint support."""
+        panel = self._panel(alpha)
+        expected, support = [], []
+        for a, arm in enumerate(self.arms):
+            t = self.tables[a]
+            harm = self._harm(a, panel)
+            x = np.array(arm.nominal) + misses[a]
+            x = x + arm.sigma_u * t["speed"] + arm.sigma_e * t["noise"]
+            curve = arm.offset + _shape(x, *arm.coefficients)  # (geometries, 3)
+            at = np.interp(curve[None] + self.shift[:, None, None], t["z"], harm)  # (nodes, n, 3)
+            xs = np.broadcast_to(x, (len(SINGLE_FAILURE_PATTERNS), *x.shape))
+            supported, low, high, upper = bracket_weights(
+                xs, np.broadcast_to(self.failed, xs.shape), self.w_max
+            )  # (patterns, n)
+            rows = np.arange(x.shape[0])
+            interpolated = (1 - upper) * at[:, rows, low] + upper * at[:, rows, high]
+            per_pattern = (interpolated * supported).sum(axis=-1) / x.shape[0]  # (nodes, patterns)
+            probabilities = t["probabilities"]
+            expected.append((probabilities * per_pattern).sum(axis=1))
+            support.append(probabilities @ supported.mean(axis=1))
+        support = np.array(support)  # (arms, nodes)
+        joint = support.prod(axis=0)
+        total = float(self.zw @ joint)
+        return np.array([
+            float(self.zw @ (expected[a] * np.prod(np.delete(support, a, axis=0), axis=0)))
+            / total for a in range(len(self.arms))
+        ])  # fmt: skip
+
+    def pointwise(self, alpha: np.ndarray) -> np.ndarray:
+        """The arms' conditional harm at x = 0 over fresh blocks (β_b averaged), support aside."""
+        panel = self._panel(alpha)
+        return np.array([
+            float(self.zw @ np.interp(arm.offset + self.shift, self.tables[a]["z"],
+                                      self._harm(a, panel)))
+            for a, arm in enumerate(self.arms)
+        ])  # fmt: skip
+
+
 @dataclass(frozen=True)
 class MechanismParameters:
     """What a mechanism scenario's draws need: offsets (c_A, c_F, c_P), per-prompt curve
-    coefficients, the component spreads (σ, M or signed m), each arm's failure law, and the
-    population quantities (the estimand per component, per-arm means and support)."""
+    coefficients, the component spreads (σ, M or signed m), each arm's failure law, the
+    population quantities (the estimand per component, per-arm means and support) and the
+    conditional truth's engine (``PanelTruth``, when solved)."""
 
     offsets: tuple[float, float, float]
     coefficients: tuple[tuple[float, float, float], ...]
     spreads: tuple[float, float]
     failure: tuple[tuple[float, float], ...]
     estimand: dict[str, Any]
+    conditional: PanelTruth | None = None
 
 
 def _rare_only_shifts(m: Mechanism, base: Scenario, offset: float) -> tuple[float, float]:
@@ -3265,11 +3638,13 @@ def mechanism_parameters(
     *,
     base_seed: int = 0,
     solve: bool = True,
+    conditional: bool = True,
 ) -> MechanismParameters:
     """A mechanism scenario's parameters: the curves; c_F, making F's population rate at K* the
     baseline; the spreads (rare_only: from the declared means); the failure laws; and, with
     ``solve``, c_P then c_A such that the supported interpolation estimand equals the declared
-    (C1, C2). Without ``solve`` (the spread calibration): c_A = c_P = c_F."""
+    (C1, C2), with the conditional truth's engine unless ``conditional`` is False (the spread
+    calibration needs none). Without ``solve``: c_A = c_P = c_F."""
     base = mechanism_base(inputs)
     target = Family(**STUDY1, baseline=m.baseline)
     sigma_v = _sigma_v(base)
@@ -3279,7 +3654,7 @@ def mechanism_parameters(
     if m.shape == "rare_only":
         spreads = _rare_only_shifts(m, base, c_f)
     spreads = (float(spreads[0]), float(spreads[1]))
-    failure = failure_laws(m.attrition, inputs)
+    failure = failure_laws(m.attrition)
     if not solve:
         return MechanismParameters((c_f, c_f, c_f), coefficients, spreads, failure, {})
     e1, e2, weights = component_nodes(m.shape, spreads, m.rho)
@@ -3297,7 +3672,18 @@ def mechanism_parameters(
         "support": model.support(),
         "beta_explicit": model.explicit,
     }
-    return MechanismParameters(offsets, coefficients, spreads, failure, estimand)
+    engine = None
+    if conditional:
+        arms = [ArmModel(offsets[a], coefficients[a], effects[a], failure[a], inputs.sigma_u[a],
+                         inputs.sigma_e[a], NOMINAL) for a in range(len(ARMS))]  # fmt: skip
+        engine = PanelTruth(arms, base.sigma_s, base.w_max, base_seed)
+    return MechanismParameters(offsets, coefficients, spreads, failure, estimand, engine)
+
+
+def conditional_contrasts(params: MechanismParameters, alpha, misses) -> tuple[float, float]:
+    """The replicate's conditional truth of C1 and C2 (``PanelTruth``)."""
+    h = params.conditional.means(alpha, misses)
+    return tuple(float(h[i] - h[j]) for i, j in COMPONENT_ARMS)
 
 
 def simulate_mechanism_blocks(
@@ -3382,7 +3768,7 @@ def mechanism_intervals(
 
 ROW_FIELDS = ("n", "started", "mean", "sd", "se", "zero_se", "readable", "q", "infinite", "draws",
               "bonferroni_q", "bonferroni_infinite", "supported", "technical", "sum",
-              "correlation")  # fmt: skip
+              "correlation", "truth")  # fmt: skip
 
 
 def mechanism_replicate(
@@ -3428,6 +3814,8 @@ def mechanism_replicate(
         "technical": (causes[:started] == TECHNICAL).sum(axis=0).tolist(),
         "sum": [float(c1.sum()), float(c2.sum())],
         "correlation": correlation,
+        # The replicate's truth: fresh supported blocks given its panel and misses (fa24, Q1).
+        "truth": list(conditional_contrasts(params, alpha, misses)),
     }
     return row
 
@@ -3463,7 +3851,7 @@ def component_sds(
     """√(mean within-replicate variance of C_j over jointly supported blocks), per component, at
     the given spreads, with the offsets solved for the key's (0, 0) estimand as a run draws the
     scenario (``mechanism_parameters``; the logistic's slope depends on them), no attrition."""
-    params = mechanism_parameters(key, inputs, spreads, base_seed=base_seed)
+    params = mechanism_parameters(key, inputs, spreads, base_seed=base_seed, conditional=False)
     base = mechanism_base(inputs)
     rng = np.random.default_rng(seed)
     variances: list[list[float]] = [[], []]
@@ -3536,9 +3924,13 @@ def mechanism_grid(
     """The required grid (normal and skewed at SD 5 and 10 pp; group ``required``) and, with
     ``stress``, the stress grid (heavy and rare_centered at SD 5, 10 and 15, normal and skewed at
     15, rare_only, and the tied case; group ``stress``), each over every (C1, C2) × SD ratio × ρ
-    × attrition (rare_only: ratio 1:1; tied: (0, 0) and ρ 0 at each tied baseline)."""
+    × attrition: the required grid over every mode of ``ATTRITIONS`` (1 620 scenarios), the
+    stress grid over ``STRESS_ATTRITIONS`` (rare_only: ratio 1:1; tied: (0, 0) and ρ 0 at each
+    tied baseline)."""
     factors = [(c, ratio, rho, attrition) for c in COMPONENT_MEANS for ratio in SD_RATIOS
                for rho in COMPONENT_RHOS for attrition in ATTRITIONS]  # fmt: skip
+    stressed = [(c, ratio, rho, attrition) for c, ratio, rho, attrition in factors
+                if attrition in STRESS_ATTRITIONS]  # fmt: skip
     grid = [
         Mechanism(*c, shape=shape, sd=sd, ratio=ratio, rho=rho, attrition=attrition, reps=reps,
                   group="required")
@@ -3553,17 +3945,17 @@ def mechanism_grid(
     grid += [
         Mechanism(*c, shape=shape, sd=sd, ratio=ratio, rho=rho, attrition=attrition,
                   reps=stress_reps, group="stress")
-        for shape, sd in cells for c, ratio, rho, attrition in factors
+        for shape, sd in cells for c, ratio, rho, attrition in stressed
     ]  # fmt: skip
     grid += [
         Mechanism(*c, shape="rare_only", sd=0.0, rho=rho, attrition=attrition, reps=stress_reps,
                   group="stress")
-        for c in COMPONENT_MEANS for rho in COMPONENT_RHOS for attrition in ATTRITIONS
+        for c in COMPONENT_MEANS for rho in COMPONENT_RHOS for attrition in STRESS_ATTRITIONS
     ]  # fmt: skip
     grid += [
         Mechanism(shape="tied", sd=0.0, baseline=b, attrition=attrition, reps=stress_reps,
                   group="stress")
-        for b in TIED_BASELINES for attrition in ATTRITIONS
+        for b in TIED_BASELINES for attrition in STRESS_ATTRITIONS
     ]  # fmt: skip
     return grid
 
@@ -3599,15 +3991,25 @@ def mechanism_readings(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[st
     }
 
 
-def _covered(rows: Mapping[str, np.ndarray], q: np.ndarray, truth: Sequence[float]) -> np.ndarray:
-    """(R, 2): the symmetric interval mean ± q·SE contains the truth; a contrast without an
-    interval (no observed SE, a zero one, or q = ∞) counts as covered (the whole line)."""
+def interval_status(rows: Mapping[str, np.ndarray], q: np.ndarray) -> dict[str, np.ndarray]:
+    """(R, 2) per contrast: ``missing`` (no interval: fewer than 2 blocks or an observed SE at or
+    below ``ZERO_SE``), ``whole_line`` (q = ∞: the interval is the whole line, uninformative) or
+    ``finite``; ``q`` broadcasts against (R, 2)."""
+    missing = ~rows["readable"].astype(bool) | rows["zero_se"].astype(bool)
+    finite_q = np.broadcast_to(np.isfinite(q), missing.shape)
+    return {"missing": missing, "whole_line": ~missing & ~finite_q, "finite": ~missing & finite_q}
+
+
+def _covered(rows: Mapping[str, np.ndarray], q: np.ndarray, truth: Any) -> np.ndarray:
+    """(R, 2): the symmetric interval mean ± q·SE contains the truth ((R, 2) per replicate, or
+    one value per contrast). A missing interval does not cover (review fa24, Q3); a whole-line
+    one covers trivially and is counted apart (``interval_status``)."""
     mean, se = rows["mean"], rows["se"]
-    has = rows["readable"].astype(bool) & ~rows["zero_se"].astype(bool) & np.isfinite(q)
-    value = np.array(truth)
+    status = interval_status(rows, q)
+    value = np.asarray(truth, dtype=float)
     with np.errstate(invalid="ignore"):
         inside = (mean - q * se <= value) & (value <= mean + q * se)
-    return ~has | inside
+    return status["whole_line"] | (status["finite"] & inside)
 
 
 def summarize_mechanism(
@@ -3617,42 +4019,63 @@ def summarize_mechanism(
     levels: Sequence[float],
     seconds: float = 0.0,
 ) -> dict[str, Any]:
-    """A mechanism scenario's outputs from its replicates: per level, the simultaneous max-t
-    coverage and, per component, its coverage and readings (direction power, false direction,
-    bounded); the Bonferroni coverage; the minimum's reach; the infinite-q and zero-SE shares;
-    the attained SDs and correlation; the estimand check (the pooled cohort mean against the
-    declared value); and the support."""
-    truth = m.truth
+    """A mechanism scenario's outputs from its replicates, against each replicate's conditional
+    truth (review fa24, Q1; ``PanelTruth``) with the declared population values beside it: per
+    level, the simultaneous max-t coverage (a missing interval does not cover) and the shares of
+    missing, whole-line and usable intervals; per component its coverage and readings: power at
+    the declared value's sign and at the conditional truth's, false direction (a direction
+    against the conditional truth's sign), bounded, and false bounded (bounded while the
+    conditional truth lies beyond the meaningful effect); the Bonferroni coverage; the
+    minimum's reach, cap exhaustion; the zero-SE and infinite-q shares; the conditional truth's
+    spread; the attained SDs and correlation; the estimand checks; and the support."""
+    declared = m.truth
+    truth = rows["truth"]  # (R, 2)
+    margin = MECHANISM_EFFECTS[0]
     by_level = []
     for i, level in enumerate(levels):
         q = rows["q"][:, i]
         covered = _covered(rows, q[:, None], truth)
+        population = _covered(rows, q[:, None], declared)
+        status = interval_status(rows, q[:, None])
         readings = mechanism_readings(rows, q)
         components = {}
         for j, name in enumerate(COMPONENTS):
-            c = truth[j]
-            either = readings["positive"][:, j] | readings["negative"][:, j]
-            right = readings["positive" if c > 0 else "negative"][:, j] if c else None
-            wrong = readings["negative" if c > 0 else "positive"][:, j] if c else either
+            c, t = declared[j], truth[:, j]
+            positive, negative = readings["positive"][:, j], readings["negative"][:, j]
+            right = (positive if c > 0 else negative) if c else None
             components[name] = {
                 "coverage": _rates(covered[:, j]),
+                "coverage_population": _rates(population[:, j]),
                 "power": None if right is None else _rates(right),
-                "false_direction": _rates(wrong),
+                "power_conditional": _rates((positive & (t > 0)) | (negative & (t < 0))),
+                "false_direction": _rates((positive & (t <= 0)) | (negative & (t >= 0))),
+                "false_direction_declared": _rates(
+                    (negative if c > 0 else positive) if c else positive | negative
+                ),
                 "bounded": _rates(readings["bounded"][:, j]),
+                "false_bounded": _rates(readings["bounded"][:, j] & (np.abs(t) > margin)),
             }
         by_level.append({
             "level": level,
             "simultaneous": _rates(covered.all(axis=1)),
+            "simultaneous_population": _rates(population.all(axis=1)),
+            "missing": _rates(status["missing"].any(axis=1)),
+            "whole_line": _rates(status["whole_line"].any(axis=1)),
+            "usable": _rates(status["finite"].all(axis=1)),
             "infinite_q": _rates(~np.isfinite(q)),
             "components": components,
         })  # fmt: skip
     bonferroni = _covered(rows, rows["bonferroni_q"], truth)
+    bonferroni_status = interval_status(rows, rows["bonferroni_q"])
     n, sd, started = rows["n"], rows["sd"], rows["started"]
     usable = n >= 2
     with np.errstate(invalid="ignore", divide="ignore"):
         per_rep = rows["sum"] / n[:, None]
     pooled = rows["sum"].sum(axis=0) / n.sum()
     pooled_se = per_rep[usable].std(axis=0, ddof=1) / math.sqrt(max(usable.sum(), 1))
+    gap = (per_rep - truth)[usable]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        conditional_z = gap.mean(axis=0) / (gap.std(axis=0, ddof=1) / math.sqrt(max(len(gap), 1)))
     blocks = started.sum()
     return {
         "name": m.name,
@@ -3673,6 +4096,14 @@ def summarize_mechanism(
                 name: _rates(~np.isfinite(rows["bonferroni_q"][:, j]))
                 for j, name in enumerate(COMPONENTS)
             },
+            "missing": {
+                name: _rates(bonferroni_status["missing"][:, j])
+                for j, name in enumerate(COMPONENTS)
+            },
+            "whole_line": {
+                name: _rates(bonferroni_status["whole_line"][:, j])
+                for j, name in enumerate(COMPONENTS)
+            },
         },  # fmt: skip
         "minimum_met": _rates(n >= MECHANISM_MINIMUM),
         "cohort": {
@@ -3680,7 +4111,16 @@ def summarize_mechanism(
             "min_n": int(n.min()),
             "mean_started": float(started.mean()),
             "ended_at_cap": _rates(n < MECHANISM_TARGET),
+            "under_minimum": _rates(n < MECHANISM_MINIMUM),
         },
+        "conditional_truth": {
+            name: {
+                "mean": float(truth[:, j].mean()),
+                "sd": float(truth[:, j].std(ddof=1)) if truth.shape[0] > 1 else 0.0,
+                "mean_minus_declared": float(truth[:, j].mean() - declared[j]),
+            }
+            for j, name in enumerate(COMPONENTS)
+        },  # fmt: skip
         "zero_se": {
             name: _rates(rows["zero_se"][:, j].astype(bool)) for j, name in enumerate(COMPONENTS)
         },  # fmt: skip
@@ -3694,11 +4134,13 @@ def summarize_mechanism(
         else None,
         "estimand_check": {
             name: {
-                "declared": truth[j],
+                "declared": declared[j],
                 "population": params.estimand.get(name),
                 "cohort_mean": float(pooled[j]),
                 "se": float(pooled_se[j]),
-                "z": float((pooled[j] - truth[j]) / pooled_se[j]) if pooled_se[j] > 0 else None,
+                "z": float((pooled[j] - declared[j]) / pooled_se[j]) if pooled_se[j] > 0 else None,
+                # each cohort's mean against its own conditional truth, averaged
+                "conditional_z": float(conditional_z[j]) if np.isfinite(conditional_z[j]) else None,
             }
             for j, name in enumerate(COMPONENTS)
         },
@@ -3741,14 +4183,20 @@ def mechanism_checks(
                 value = worst["levels"][i]["simultaneous"]["value"]
                 floor = coverage_floor(worst["reps"])
                 values = [s["levels"][i]["simultaneous"]["value"] for s in mine]
+                # each scenario against the floor at its own replicates (10 000, or 50 000 for a
+                # borderline one on the check stream)
+                short = [s["name"] for v, s in zip(values, mine, strict=True)
+                         if v < coverage_floor(s["reps"])]  # fmt: skip
+                chance = float(norm.cdf(-2))  # below the floor at exactly 95 % coverage
                 cells.append({"shape": cell[0], "sd": cell[1], "min_coverage": value,
                               "mc_se": worst["levels"][i]["simultaneous"]["se"],
                               "mean_coverage": float(np.mean(values)),
-                              "scenario": worst["name"], "floor": floor, "meets": value >= floor,
-                              "short": sum(v < coverage_floor(s["reps"])
-                                           for v, s in zip(values, mine, strict=True)),
-                              # below the floor by chance if every coverage were exactly 95 %
-                              "short_by_chance": round(float(norm.cdf(-2)) * len(mine), 1),
+                              "scenario": worst["name"], "floor": floor, "meets": not short,
+                              "short": len(short), "short_scenarios": short,
+                              # if every coverage were exactly 95 %: the expected number below
+                              # the floor, and the probability that at least one is
+                              "short_by_chance": round(chance * len(mine), 1),
+                              "any_short_by_chance": 1 - (1 - chance) ** len(mine),
                               "scenarios": len(mine)})  # fmt: skip
             entry[group] = {"cells": cells, "meets": all(c["meets"] for c in cells)}
         per_level.append(entry)
@@ -3756,21 +4204,42 @@ def mechanism_checks(
     chosen = min(passing, default=None)
     shown = readings_at if readings_at is not None else chosen if chosen is not None else (
         levels[0] if levels else None)  # fmt: skip
+    borderline = [] if chosen is None else borderline_scenarios(scenarios, chosen)
     return {
         "floor_rule": "0.95 − 2·√(0.95·0.05/R), R the scenario's replicates",
         "per_level": per_level,
         "level": chosen,
+        # Predeclared (review fa24, Q2): checked once at PRECISION_REPS on the check stream.
+        "borderline": borderline,
         "readings_at": shown,
         "readings": {group: reading_summary(members, levels.index(shown))
                      for group, members in groups.items()} if shown is not None else {},
     }  # fmt: skip
 
 
+def borderline_scenarios(scenarios: Sequence[Mapping[str, Any]], level: float) -> list[str]:
+    """The required scenarios whose simultaneous coverage at ``level`` on the calibration stream
+    lies below the floor plus two MC SEs at R = ``MECHANISM_REPS``, i.e. below 95 %: predeclared
+    for one check at ``PRECISION_REPS`` replicates (review fa24, Q2)."""
+    out = []
+    for s in scenarios:
+        if s["settings"]["group"] != "required":
+            continue
+        i = [e["level"] for e in s["levels"]].index(level)
+        if s["levels"][i]["simultaneous"]["value"] < BORDERLINE_BELOW:
+            out.append(s["name"])
+    return out
+
+
 def reading_summary(scenarios: Sequence[Mapping[str, Any]], i: int) -> list[dict[str, Any]]:
     """Per cell (shape × SD) and component SD (the larger, 1, or half of it, 0.5), at level index
-    ``i``: the smallest and mean direction power at |C| = 5 and 2.5 pp, the largest false
-    direction rate and the smallest and mean bounded rate at C = 0, and the smallest share of
-    replicates reaching the minimum cohort."""
+    ``i``: the smallest and mean direction power at |C| = 5 and 2.5 pp, at the declared value and
+    at the conditional truth (unconditional: over every replicate, readings or not), the largest
+    false direction (against the conditional truth) at C = 0 and anywhere, the smallest and mean
+    bounded rate at C = 0, the largest false bounded rate at |C| = 5 pp; and over the cell's
+    scenarios the smallest share reaching the minimum cohort, the largest shares ending at the
+    cap and under the minimum, the smallest share of usable intervals and the largest shares of
+    missing and whole-line ones."""
     out = []
     for cell in dict.fromkeys(_cell(s) for s in scenarios):
         mine = [s for s in scenarios if _cell(s) == cell]
@@ -3782,21 +4251,37 @@ def reading_summary(scenarios: Sequence[Mapping[str, Any]], i: int) -> list[dict
                 continue
             entry: dict[str, Any] = {"shape": cell[0], "sd": cell[1], "component_sd": scale}
             for effect in MECHANISM_EFFECTS:
-                powers = [s["levels"][i]["components"][name]["power"]["value"]
-                          for s, name, c in picks if math.isclose(abs(c), effect)]  # fmt: skip
-                entry[f"power_{_pp(effect)[1:]}pp"] = (
-                    {"min": min(powers), "mean": float(np.mean(powers)), "scenarios": len(powers)}
-                    if powers else None
-                )  # fmt: skip
+                for key, label in (("power", ""), ("power_conditional", "_conditional")):
+                    powers = [s["levels"][i]["components"][name][key]["value"]
+                              for s, name, c in picks if math.isclose(abs(c), effect)]  # fmt: skip
+                    entry[f"power_{_pp(effect)[1:]}pp{label}"] = (
+                        {"min": min(powers), "mean": float(np.mean(powers)),
+                         "scenarios": len(powers)} if powers else None
+                    )  # fmt: skip
             null = [s["levels"][i]["components"][name] for s, name, c in picks if c == 0]
             entry["max_false_direction_at_0"] = max(
                 (r["false_direction"]["value"] for r in null), default=None
+            )
+            entry["max_false_direction"] = max(
+                s["levels"][i]["components"][name]["false_direction"]["value"]
+                for s, name, _ in picks
             )
             bounded = [r["bounded"]["value"] for r in null]
             entry["bounded_at_0"] = (
                 {"min": min(bounded), "mean": float(np.mean(bounded))} if bounded else None
             )
-            entry["min_minimum_met"] = min(s["minimum_met"]["value"] for s, _, _ in picks)
+            entry["max_false_bounded_at_5pp"] = max(
+                (s["levels"][i]["components"][name]["false_bounded"]["value"]
+                 for s, name, c in picks if math.isclose(abs(c), MECHANISM_EFFECTS[0])),
+                default=None,
+            )  # fmt: skip
+            scen = list({s["name"]: s for s, _, _ in picks}.values())
+            entry["min_minimum_met"] = min(s["minimum_met"]["value"] for s in scen)
+            entry["max_ended_at_cap"] = max(s["cohort"]["ended_at_cap"]["value"] for s in scen)
+            entry["max_under_minimum"] = max(s["cohort"]["under_minimum"]["value"] for s in scen)
+            entry["min_usable"] = min(s["levels"][i]["usable"]["value"] for s in scen)
+            entry["max_missing"] = max(s["levels"][i]["missing"]["value"] for s in scen)
+            entry["max_whole_line"] = max(s["levels"][i]["whole_line"]["value"] for s in scen)
             out.append(entry)
     return out
 

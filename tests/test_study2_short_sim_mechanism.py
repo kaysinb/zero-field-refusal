@@ -34,9 +34,6 @@ def inputs(**changes) -> sim.Inputs:
     return dataclasses.replace(sim.read_inputs(RECORD), **changes)
 
 
-STRESSED = {"failure_rate": (0.1, 0.1, 0.3)}  # attrition modes that differ from none
-
-
 # The max-t interval and the readings: exactly the analysis's
 
 
@@ -226,22 +223,22 @@ def test_inputs_are_measured_on_k_and_support_only(tmp_path: Path) -> None:
 
 def test_component_scenarios_have_declared_means() -> None:
     """The supported interpolation estimand computed from the population equals the declared
-    (C1, C2) for every component scenario under every attrition mode (failure rates that make
-    the modes differ), and a large simulated cohort's mean agrees within its MC error."""
-    stressed = inputs(**STRESSED)
+    (C1, C2) for every component scenario under every attrition mode, and a large simulated
+    cohort's mean agrees within its MC error."""
     for c1, c2 in sim.COMPONENT_MEANS:
         for attrition in sim.ATTRITIONS:
             m = sim.Mechanism(c1, c2, sd=0.05, rho=0.5, attrition=attrition)
-            params = sim.mechanism_parameters(m, stressed, (0.35, 0.3))
+            params = sim.mechanism_parameters(m, inputs(), (0.35, 0.3), conditional=False)
             assert params.estimand["C1"] == pytest.approx(c1, abs=1e-10)
             assert params.estimand["C2"] == pytest.approx(c2, abs=1e-10)
-            assert params.estimand["beta_explicit"] == (attrition == "support_dependent")
+            explicit = attrition.startswith("support_dependent")
+            assert params.estimand["beta_explicit"] == explicit
     # The population is not the declared values by construction: unsolved offsets miss them,
     # and a simulated cohort agrees with the solved ones.
     m = sim.Mechanism(0.05, -0.05, shape="skewed", sd=0.10, rho=-0.5,
-                      attrition="support_dependent")  # fmt: skip
-    params = sim.mechanism_parameters(m, stressed, (0.8, 0.8))
-    base = sim.mechanism_base(stressed)
+                      attrition="support_dependent-0.2")  # fmt: skip
+    params = sim.mechanism_parameters(m, inputs(), (0.8, 0.8), conditional=False)
+    base = sim.mechanism_base(inputs())
     sums, sizes = [], []
     for rep in range(600):
         rng = sim.generator(1, "test-estimand", rep)
@@ -307,14 +304,14 @@ def test_component_effects_follow_the_shapes() -> None:
 def test_attrition_support_dependent_hits_high_harm_blocks() -> None:
     """Support-dependent attrition: the pre-warmed arm's runs fail more often in high-harm
     blocks (the stream effect), so the blocks it loses carry more harm in every arm; under
-    independent attrition the lost blocks are like the others."""
-    stressed = inputs(**STRESSED)
-    base = sim.mechanism_base(stressed)
-    gaps = {}
-    for attrition in ("independent", "support_dependent"):
+    independent attrition the lost blocks are like the others. A and F fail independently at
+    the mode's rate in both."""
+    base = sim.mechanism_base(inputs())
+    gaps, technical = {}, {}
+    for attrition in ("independent-0.2", "support_dependent-0.2"):
         m = sim.Mechanism(sd=0.05, attrition=attrition)
-        params = sim.mechanism_parameters(m, stressed, (0.3, 0.3), solve=False)
-        assert params.failure[0] == (sim._logistic_intercept(0.1, 0.0), 0.0)
+        params = sim.mechanism_parameters(m, inputs(), (0.3, 0.3), solve=False)
+        assert params.failure[:2] == ((sim._logistic_intercept(0.2, 0.0), 0.0),) * 2
         estimates, causes = [], []
         for rep in range(40):
             rng = sim.generator(2, "test-attrition", rep)
@@ -327,9 +324,11 @@ def test_attrition_support_dependent_hits_high_harm_blocks() -> None:
         assert lost.mean() > 0.2  # P loses a block when an endpoint it needs fails
         f_ok = c[:, 1] == sim.SUPPORTED
         gaps[attrition] = e[f_ok & lost, 1].mean() - e[f_ok & ~lost, 1].mean()
-        assert (c[:, 0] == sim.TECHNICAL).mean() < lost.mean()  # A fails at its own 0.1
-    assert gaps["support_dependent"] > 0.03
-    assert abs(gaps["independent"]) < 0.01
+        technical[attrition] = (c[:, 0] == sim.TECHNICAL).mean()
+    assert gaps["support_dependent-0.2"] > 0.03
+    assert abs(gaps["independent-0.2"]) < 0.01
+    assert technical["support_dependent-0.2"] == pytest.approx(technical["independent-0.2"],
+                                                               abs=0.02)  # fmt: skip
 
 
 def test_mechanism_grid() -> None:
@@ -337,7 +336,8 @@ def test_mechanism_grid() -> None:
     names = [m.name for m in grid]
     assert len(set(names)) == len(names)
     required = [m for m in grid if m.group == "required"]
-    assert len(required) == 2 * 2 * 9 * 3 * 3 * 3 == 972
+    assert len(required) == 2 * 2 * 9 * 3 * 3 * 5 == 1620
+    assert {m.attrition for m in required} == set(sim.ATTRITIONS)
     assert {m.reps for m in required} == {10_000}
     assert {(m.shape, m.sd) for m in required} == {
         (s, sd) for s in ("normal", "skewed") for sd in (0.05, 0.10)
@@ -358,15 +358,19 @@ def test_mechanism_grid() -> None:
 
 
 def test_tied_contrasts_give_infinite_critical_values() -> None:
-    """The tied stress case: most blocks have h = 0 in every arm, so resamples give |T*| = ∞;
-    a q of ∞ or a zero SE leaves a contrast without an interval and without a reading."""
+    """The tied stress case: most blocks have h = 0 in every arm, so resamples give |T*| = ∞:
+    whole-line intervals, reported apart; a zero SE leaves a contrast without an interval, which
+    does not cover."""
     m = sim.Mechanism(shape="tied", sd=0.0, baseline=2e-5, reps=40)
     settings = sim.MechanismSettings(stream="test", inputs=inputs(), levels=(0.95,), resamples=300)
     found = sim.run_mechanism([m], settings)
     (s,) = found["scenarios"]
-    assert s["levels"][0]["infinite_q"]["value"] > 0.5
+    at = s["levels"][0]
+    assert at["infinite_q"]["value"] > 0.5 and at["whole_line"]["value"] > 0.5
     assert s["infinite_draw_share"] > 0.05
-    assert s["levels"][0]["simultaneous"]["value"] == 1.0  # no interval: the whole line
+    assert at["missing"]["value"] > 0
+    assert at["simultaneous"]["value"] <= 1 - at["missing"]["value"]
+    assert at["usable"]["value"] < 0.5
 
 
 # The calibration rule and its streams
@@ -402,18 +406,29 @@ def test_calibration_uses_separate_streams(tmp_path: Path) -> None:
         script.main(["mechanism-check", *pattern, *TINY, "--level-from", str(level_from)])
 
 
-def _verdict_scenario(name: str, group: str, shape: str, sd: float, coverages: list) -> dict:
+def _verdict_scenario(
+    name: str, group: str, shape: str, sd: float, coverages: list, reps: int = 10_000
+) -> dict:
+    rate = {"value": 0.9}
+    component = {
+        "power": rate,
+        "power_conditional": rate,
+        "false_direction": {"value": 0.01},
+        "bounded": {"value": 0.5},
+        "false_bounded": {"value": 0.01},
+    }
     return {
         "name": name,
-        "reps": 10_000,
+        "reps": reps,
         "settings": {"group": group, "shape": shape, "sd": sd, "ratio": "1:1", "c1": 0.05,
                      "c2": 0.0},
         "levels": [{"level": lv, "simultaneous": {"value": c, "se": 0.002},
-                    "components": {name: {"power": {"value": 0.9}, "false_direction":
-                                          {"value": 0.01}, "bounded": {"value": 0.5}}
-                                   for name in sim.COMPONENTS}}
+                    "usable": {"value": 1.0}, "missing": {"value": 0.0},
+                    "whole_line": {"value": 0.0},
+                    "components": {name: component for name in sim.COMPONENTS}}
                    for lv, c in coverages],
         "minimum_met": {"value": 1.0},
+        "cohort": {"ended_at_cap": {"value": 0.0}, "under_minimum": {"value": 0.0}},
     }  # fmt: skip
 
 
@@ -444,9 +459,10 @@ def test_the_calibration_rule_takes_the_smallest_level_every_required_cell_meets
 
 
 def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypatch) -> None:
-    """The final run's order: the mechanism on the calibration stream; a check-stream run only
-    when the implied level is above 0.95; the primary rerun and its comparisons; the fixed level
-    is 0.95, or the raised level that passed the check, else none."""
+    """The final run's order: the mechanism on the calibration stream; one check-stream run at
+    the level it chose, 0.95 included (review fa24, Q2: no repetition); the primary rerun (the
+    decided one against the conditional truth) and its comparisons; the fixed level is the
+    chosen one when the check passes, else none."""
     script = load_script()
     calls = []
 
@@ -454,6 +470,8 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
         mode, out = argv[0], Path(argv[argv.index("--out") + 1])
         groups = argv[argv.index("--groups") + 1] if "--groups" in argv else None
         calls.append(f"{mode} {groups}" if groups else mode)
+        if mode == "decided":
+            assert "--conditional" in argv
         out.mkdir(parents=True, exist_ok=True)
         level = fake.level
         if mode == "mechanism":
@@ -475,7 +493,8 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
     parser = script.build_parser()
     primary = ["decided", "compare", "decided-gate", "compare", "decided-bias", "compare"]
     for level, passes, fixed, check in (
-        (0.95, None, 0.95, []),
+        (0.95, True, 0.95, ["mechanism-check"]),
+        (0.95, False, None, ["mechanism-check"]),
         (0.96, True, 0.96, ["mechanism-check"]),
         (0.96, False, None, ["mechanism-check"]),
         (None, None, None, []),
@@ -595,7 +614,7 @@ def test_mechanism_mode_smoke(tmp_path: Path) -> None:
     script = load_script()
     out = tmp_path / "mechanism"
     script.main(["mechanism", "--scenarios", "mech_skewed_sd10_r2-1_rho-0.5_c1-5_c2+5_none",
-                 "mech_rare_only_sdna_r1-1_rho+0.5_c1+5_c2+0_independent", "--reps", "6", *TINY,
+                 "mech_rare_only_sdna_r1-1_rho+0.5_c1+5_c2+0_independent-0.2", "--reps", "6", *TINY,
                  "--levels", "0.95", "0.97", "--out", str(out)])  # fmt: skip
     summary = json.loads((out / "summary.json").read_text())
     assert summary["settings"]["stream"] == "mechanism-calibration"
@@ -605,7 +624,11 @@ def test_mechanism_mode_smoke(tmp_path: Path) -> None:
         assert {c: s["parameters"]["estimand"][c] for c in sim.COMPONENTS} == pytest.approx(
             dict(zip(sim.COMPONENTS, (s["settings"]["c1"], s["settings"]["c2"]), strict=True))
         )
-        assert len(s["levels"]) == 2 and s["minimum_met"]["value"] == 1.0
+        assert len(s["levels"]) == 2
+        # With 20 % failures in every arm the three-arm cohort mostly stays under 36 blocks.
+        under = s["cohort"]["under_minimum"]["value"]
+        assert under == (0.0 if s["settings"]["attrition"] == "none" else under)
+        assert s["minimum_met"]["value"] == 1 - under
     assert summary["calibrations"] and summary["checks"]["per_level"][0]["level"] == 0.95
     assert "## Calibration rule" in (out / "results.md").read_text()
     lines = (out / "inventory.tsv").read_text().splitlines()
@@ -615,3 +638,189 @@ def test_mechanism_mode_smoke(tmp_path: Path) -> None:
     for name, (size, digest) in listed.items():
         data = (out / name).read_bytes()
         assert int(size) == len(data) and digest == hashlib.sha256(data).hexdigest()
+
+
+# Review fa24: the conditional truth, missing intervals, the precision check, attrition
+
+
+def _fresh_means(simulate, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """The mean and its MC SE of per-draw cohort means over ``n`` fresh seed draws."""
+    means = np.array([simulate(rep) for rep in range(n)])
+    return means.mean(axis=0), means.std(axis=0, ddof=1) / math.sqrt(n)
+
+
+def test_conditional_truth_is_the_fresh_seed_expectation() -> None:
+    """With a replicate's prompt panel and misses held fixed, the mean of the cohort estimates
+    over many fresh seed draws equals its conditional truth (``PanelTruth``) within MC error:
+    the components (also under support-dependent attrition), the primary's Δ (under correlated
+    failures) and its pointwise Δ. A panel with higher harm moves the truth away from the
+    population's declared value, so the check is not the population one."""
+    base = sim.mechanism_base(inputs())
+    for attrition in ("none", "support_dependent-0.2"):
+        m = sim.Mechanism(-0.05, 0.05, shape="skewed", sd=0.05, rho=0.5, attrition=attrition)
+        params = sim.mechanism_parameters(m, inputs(), (0.35, 0.3))
+        alpha, misses = sim.draw_constants(base, sim.generator(8, "panel", attrition))
+        alpha = alpha + 0.5  # a panel with more harm than the population's
+        truth = np.array(sim.conditional_contrasts(params, alpha, misses))
+
+        def cohort(rep: int, m=m, params=params, alpha=alpha, misses=misses) -> np.ndarray:
+            rng = sim.generator(9, "fresh", m.name, rep)
+            e, c = sim.simulate_mechanism_blocks(m, params, base, alpha, misses, rng, 60)
+            return np.array(sim.cohort_contrasts(e, c)).mean(axis=1)
+
+        mean, se = _fresh_means(cohort, 300)
+        assert np.all(np.abs(mean - truth) < 4 * se), (attrition, mean, truth, se)
+        assert np.abs(truth - np.array(m.truth)).max() > 6 * se.max()
+    # The primary's Δ, with failures correlated with the stream effect.
+    scenario = sim.Scenario(delta=0.05, w_max=0.47, failure=0.2, failure_correlated=True)
+    params = sim.solve_parameters(scenario, 0.3)
+    engine = sim.primary_truth(scenario, params, 0)
+    alpha, misses = sim.draw_constants(scenario, sim.generator(8, "panel", "primary"))
+    alpha = alpha + 0.5
+    h, p = engine.means(alpha, misses), engine.pointwise(alpha)
+
+    def primary(rep: int) -> np.ndarray:
+        rng = sim.generator(9, "fresh", "primary", rep)
+        e, _ = sim.simulate_blocks(scenario, params, alpha, misses, rng, 60, arms=(0, 1))
+        d = e[:, 0] - e[:, 1]
+        return np.array([d[np.isfinite(d)].mean()])
+
+    mean, se = _fresh_means(primary, 400)
+    assert abs(mean[0] - (h[0] - h[1])) < 4 * se[0]
+    # The pointwise truth: the panel's expected harm at x = 0 over fresh stream and arm effects.
+    rng = np.random.default_rng(10)
+    stream = scenario.sigma_s * rng.standard_normal(20_000)
+    effect = params.spread * rng.standard_normal((20_000, 2))  # the normal shape, every arm
+    harm = [expit_mean(params.offsets[a] + stream + effect[:, a], alpha) for a in (0, 1)]
+    draws = harm[0] - harm[1]
+    assert abs(draws.mean() - (p[0] - p[1])) < 4 * draws.std() / math.sqrt(draws.size)
+
+
+def expit_mean(eta: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """Per draw, the mean over the panel of σ(η + α_i)."""
+    return (1 / (1 + np.exp(-(eta[:, None] + alpha[None, :])))).mean(axis=1)
+
+
+def test_conditional_truth_is_accurate_against_a_finer_computation() -> None:
+    """The engine's grid, geometry sample and β nodes against a much finer configuration: equal
+    to well under 0.01 pp."""
+    m = sim.Mechanism(0.05, -0.05, shape="normal", sd=0.10, attrition="support_dependent-0.1")
+    params = sim.mechanism_parameters(m, inputs(), (0.8, 0.5))
+    base = sim.mechanism_base(inputs())
+    alpha, misses = sim.draw_constants(base, sim.generator(8, "panel", "fine"))
+    fine = sim.PanelTruth(params.conditional.arms, base.sigma_s, base.w_max, 0, step=0.005,
+                          geometries=16_384, nodes=32)  # fmt: skip
+    assert params.conditional.means(alpha, misses) == pytest.approx(fine.means(alpha, misses),
+                                                                    abs=1e-4)  # fmt: skip
+
+
+def test_missing_intervals_do_not_cover() -> None:
+    """A missing interval (no observed SE, or a zero one) does not cover; a whole-line one
+    (q = ∞) covers trivially and is counted apart (review fa24, Q3)."""
+    rows = {
+        "readable": np.array([[1, 1], [1, 1], [0, 0], [1, 1]], dtype=float),
+        "zero_se": np.array([[0, 0], [1, 0], [0, 0], [0, 0]], dtype=float),
+        "mean": np.array([[0.01, 0.0], [0.01, 0.0], [np.nan, np.nan], [0.01, 0.0]]),
+        "se": np.full((4, 2), 0.01),
+    }
+    q = np.array([2.0, 2.0, 2.0, np.inf])[:, None]
+    truth = np.zeros((4, 2))
+    covered = sim._covered(rows, q, truth)
+    assert covered.tolist() == [[True, True], [False, True], [False, False], [True, True]]
+    status = sim.interval_status(rows, q)
+    assert status["missing"].tolist() == [[False, False], [True, False], [True, True],
+                                          [False, False]]  # fmt: skip
+    assert status["whole_line"].tolist() == [[False, False], [False, False], [False, False],
+                                             [True, True]]  # fmt: skip
+    assert status["finite"].all(axis=1).tolist() == [True, False, False, False]
+
+
+def test_the_precision_check_is_predeclared_and_single(tmp_path: Path) -> None:
+    """The borderline set is fixed on the calibration stream (under 95 % at the chosen level),
+    checked once at R = 50 000 against 0.95 − 2·√(0.95·0.05/50 000), each scenario against the
+    floor at its own replicates; the final run checks once (``test_final_run_…``)."""
+    assert sim.PRECISION_REPS == 50_000 and sim.BORDERLINE_BELOW == 0.95
+    assert sim.coverage_floor(50_000) == pytest.approx(0.94805, abs=1e-5)
+    levels = [(0.95, 0.9499), (0.955, 0.9501)]
+    scenarios = [
+        _verdict_scenario("low", "required", "normal", 0.05, levels),
+        _verdict_scenario("high", "required", "normal", 0.05, [(0.95, 0.951), (0.955, 0.96)]),
+        _verdict_scenario("stress", "stress", "heavy", 0.15, [(0.95, 0.90), (0.955, 0.90)]),
+    ]
+    checks = sim.mechanism_checks(scenarios)
+    assert checks["level"] == 0.95 and checks["borderline"] == ["low"]
+    assert sim.borderline_scenarios(scenarios, 0.955) == []
+    # On the check stream: a borderline scenario at 50 000 against its own, higher floor.
+    check = [
+        _verdict_scenario("low", "required", "normal", 0.05, [(0.95, 0.948)], reps=50_000),
+        _verdict_scenario("high", "required", "normal", 0.05, [(0.95, 0.946)]),
+    ]
+    cell = sim.mechanism_checks(check)["per_level"][0]["required"]["cells"][0]
+    assert not cell["meets"] and cell["short_scenarios"] == ["low"]
+    # The script takes the borderline set from the calibration summary.
+    script = load_script()
+    names = [
+        "mech_normal_sd5_r1-1_rho+0_c1+0_c2+0_none",
+        "mech_normal_sd5_r1-1_rho+0_c1+5_c2+0_none",
+    ]
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps({"checks": {"level": 0.96, "borderline": names[:1]}}))
+    out = tmp_path / "check"
+    script.main(["mechanism-check", "--scenarios", *names, "--reps", "4", "--precision-reps", "7",
+                 *TINY, "--level-from", str(calibration), "--out", str(out)])  # fmt: skip
+    summary = json.loads((out / "summary.json").read_text())
+    assert {s["name"]: s["reps"] for s in summary["scenarios"]} == {names[0]: 7, names[1]: 4}
+    assert summary["check"]["borderline"] == names[:1]
+    assert summary["check"]["precision_reps"] == 7 and summary["settings"]["levels"] == [0.96]
+
+
+def test_attrition_grid_has_five_modes() -> None:
+    """None; independent at 10 % and 20 % (every arm's runs); support-dependent at 10 % and 20 %
+    (A and F independent, P's failures through β_b at that marginal rate)."""
+    assert sim.ATTRITIONS == ("none", "independent-0.1", "independent-0.2",
+                              "support_dependent-0.1", "support_dependent-0.2")  # fmt: skip
+    assert sim.failure_laws("none") == ((-math.inf, 0.0),) * 3
+    assert sim.failure_laws("independent-0.1") == ((sim._logistic_intercept(0.1, 0.0), 0.0),) * 3
+    laws = sim.failure_laws("support_dependent-0.2")
+    assert laws[:2] == ((sim._logistic_intercept(0.2, 0.0), 0.0),) * 2
+    intercept, slope = laws[2]
+    nodes, weights = sim._hermite()
+    assert slope == sim.FAILURE_SLOPE
+    assert weights @ (1 / (1 + np.exp(-(intercept + slope * nodes)))) == pytest.approx(0.2)
+    required = [m for m in sim.mechanism_grid(stress=False)]
+    assert len(required) == 1620
+    stress = [m for m in sim.mechanism_grid() if m.group == "stress"]
+    assert {m.attrition for m in stress} == set(sim.STRESS_ATTRITIONS)
+
+
+def test_primary_conditional_truth_report(tmp_path: Path) -> None:
+    """The decided design against each replicate's conditional truth of Δ, through the script:
+    the rows' conditional rates and pointwise readings, the verdict beside the population
+    figures, and decisions identical to a run without it (no draw changes)."""
+    script = load_script()
+    pattern = [
+        "--scenarios",
+        "interp_normal_study1_sd5_d+0_w0.47",
+        "interp_normal_study1_sd5_d+5_w0.47",
+    ]
+    with_truth, without = tmp_path / "conditional", tmp_path / "plain"
+    script.main(["decided", *pattern, "--reps", "6", "--conditional", *TINY, "--out",
+                 str(with_truth)])  # fmt: skip
+    script.main(["decided", *pattern, "--reps", "6", *TINY, "--out", str(without)])
+    summary = json.loads((with_truth / "summary.json").read_text())
+    plain = json.loads((without / "summary.json").read_text())
+    assert summary["settings"]["conditional"] is True
+    for s, p in zip(summary["scenarios"], plain["scenarios"], strict=True):
+        for row, other in zip(s["results"], p["results"], strict=True):
+            c = row.pop("conditional")
+            assert row == other  # the population figures are the same draws
+            assert set(c) >= {"coverage", "missing", "false_positive", "false_negative",
+                              "false_equivalence", "right_direction", "pointwise"}  # fmt: skip
+            assert set(c["pointwise"]) >= {"coverage", "false_equivalence"}
+    checks = summary["conditional_checks"]
+    assert {(c["rule"], c["looks"]) for c in checks} == {("standard", "36_60"),
+                                                       ("eq_min36", "36_60")}  # fmt: skip
+    group = checks[0]["groups"]["all"]
+    assert {"max_false_positive", "max_false_equivalence_5pp", "min_coverage", "population",
+            "pointwise", "meets"} <= set(group)  # fmt: skip
+    assert "## Against the conditional truth" in (with_truth / "results.md").read_text()
