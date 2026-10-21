@@ -256,6 +256,29 @@ def test_component_scenarios_have_declared_means() -> None:
     assert np.all(np.abs(pooled - np.array(m.truth)) < 4 * se), (pooled, se)
 
 
+def test_component_sds_hit_their_targets_where_the_run_draws_them() -> None:
+    """The spreads are calibrated at the offsets the run solves for (0, 0): an independent
+    sample of the (0, 0) scenario attains the target SDs. Equal offsets left them 6-10 % short at
+    SD 10, where the solved offsets lower P's and A's harm and the logistic's slope; the
+    calibration's and this sample's SDs are each good to about 2 %."""
+    key = sim.Mechanism(sd=0.10, rho=0.0).key
+    calibration = sim.calibrate_components(key, inputs(), base_seed=0, replicates=60, blocks=200)
+    assert calibration.attained == pytest.approx(key.targets, rel=1e-3)
+    params = sim.mechanism_parameters(key, inputs(), calibration.spreads)
+    base = sim.mechanism_base(inputs())
+    variances = []
+    for rep in range(200):
+        rng = sim.generator(3, "test-sd", rep)
+        alpha, misses = sim.draw_constants(base, rng)
+        estimate, cause = sim.simulate_mechanism_blocks(key, params, base, alpha, misses, rng, 100)
+        e = estimate[(cause == sim.SUPPORTED).all(axis=1)]
+        variances.append([(e[:, i] - e[:, k]).var(ddof=1) for i, k in sim.COMPONENT_ARMS])
+    attained = np.sqrt(np.mean(variances, axis=0))
+    assert attained == pytest.approx(key.targets, rel=0.05)
+    unsolved = sim.mechanism_parameters(key, inputs(), calibration.spreads, solve=False)
+    assert unsolved.offsets[0] - params.offsets[0] > 0.2  # the offsets the run uses differ
+
+
 def test_component_effects_follow_the_shapes() -> None:
     rng = np.random.default_rng(3)
     w1 = rng.standard_normal(400_000)

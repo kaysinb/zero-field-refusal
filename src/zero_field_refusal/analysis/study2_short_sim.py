@@ -3458,10 +3458,12 @@ def component_sds(
     seed: int | np.random.SeedSequence,
     replicates: int,
     blocks: int,
+    base_seed: int = 0,
 ) -> tuple[float, float]:
     """√(mean within-replicate variance of C_j over jointly supported blocks), per component, at
-    the given spreads (equal offsets, no attrition)."""
-    params = mechanism_parameters(key, inputs, spreads, solve=False)
+    the given spreads, with the offsets solved for the key's (0, 0) estimand as a run draws the
+    scenario (``mechanism_parameters``; the logistic's slope depends on them), no attrition."""
+    params = mechanism_parameters(key, inputs, spreads, base_seed=base_seed)
     base = mechanism_base(inputs)
     rng = np.random.default_rng(seed)
     variances: list[list[float]] = [[], []]
@@ -3482,17 +3484,18 @@ def component_sds(
 def calibrate_components(
     key: Mechanism, inputs: Inputs, *, base_seed: int, replicates: int = 100, blocks: int = 200
 ) -> ComponentCalibration:
-    """The component spreads giving the key's target SDs of C1 and C2 at (0, 0), by alternating
-    root finding on common random numbers (each spread barely moves the other component's SD).
-    A target below the noise alone gets spread 0, and the attained SD is reported."""
+    """The component spreads giving the key's target SDs of C1 and C2 at (0, 0) (with the offsets
+    solved there, ``component_sds``), by alternating root finding on common random numbers (each
+    spread barely moves the other component's SD). A target below the noise alone gets spread 0,
+    and the attained SD is reported."""
     cpu = time.process_time()
     seed = seed_sequence(base_seed, "mechanism-spread", key.name)
     cache: dict[tuple[float, float], tuple[float, float]] = {}
 
     def attained(spreads: tuple[float, float]) -> tuple[float, float]:
         if spreads not in cache:
-            cache[spreads] = component_sds(key, inputs, spreads, seed=seed,
-                                           replicates=replicates, blocks=blocks)  # fmt: skip
+            cache[spreads] = component_sds(key, inputs, spreads, seed=seed, replicates=replicates,
+                                           blocks=blocks, base_seed=base_seed)  # fmt: skip
         return cache[spreads]
 
     targets = key.targets
