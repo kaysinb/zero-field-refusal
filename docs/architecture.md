@@ -120,12 +120,19 @@ scientific design is in [design.md](design.md); procedures for running things ar
      after every update of an Adam arm, the norm of the algebraic step
      u_t = (lr/(1−β₁ᵗ))·m_t/d_t and its cosine with the step's gradient, read from the optimizer
      state (`schedule.UpdateScalars`; `step` counts the updates taken, 1–25, as in
-     `monitor.jsonl`); for the pre-warmed arm at steps 5, 10 and 25 also `d_departure`, the
-     departure of the denominator d_t = √v_t + ε from d₀ = √v₀ + ε (the norm ratio, and the
-     median and 90th percentile of |d_t/d₀ − 1| read on a histogram of 0.005-decade bins, at most
-     1.16 % above the exact value). The hook only reads; v₀ is kept in pinned host memory and no
-     GPU buffer persists. Tests pin the parameters, the optimizer state and every other record
-     bit for bit with the hook on and off.
+     `monitor.jsonl`, while `metrics.jsonl` counts from 0); for the pre-warmed arm at steps 5,
+     10 and 25 also `d_departure`, the departure of the denominator d_t = √v_t + ε from
+     d₀ = √v₀ + ε (the norm ratio, and the median, the lower one, and the 90th percentile of
+     |d_t/d₀ − 1|, each the value of rank ⌈qN⌉ read at the upper edge of its bin of a histogram of
+     0.005-decade bins over [10⁻⁴⁵, 10¹⁰), at most 1.16 % above the exact value and never below).
+     That histogram (`schedule._LogHistogram`) has the grid of the FA diagnostic's
+     `LogHistogram` but its own arithmetic (exact int64 counts by `bincount`, deterministic on
+     CUDA); no output is shared between the two. The hook only reads; v₀ is kept in pinned host
+     memory and no GPU buffer persists. Tests pin the parameters, the optimizer state and every
+     other record bit for bit with the hook on and off. Runs made before the switch (Stage A's
+     grids, amendment 3's runs) have no scalars.
+   - In a K-only run the non-finite-K stop (`nonfinite_k`) reads K_benign alone, and the run
+     stores no `responses/`.
 5. **Judge.** The judge labels stored responses in a separate step, batched across runs. The judge
    model and the rubric version are recorded with every label. A run's labels from the judge
    `<name>` (`configs/judge/<name>.yaml`) live in `<run dir>/judge/<name>.jsonl`, in the record

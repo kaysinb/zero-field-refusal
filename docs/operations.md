@@ -809,9 +809,13 @@ only; judge labels are read by the looks, the final analyses and the audit alone
   between campaigns.
 - **`DATA_DIR`.** Restore only the inventories the stage needs (amendment 3's list, the numerical
   seeds' streams once archived): `pod_setup.sh` verifies every file of `DATA_DIR` against them.
-- **Results.** Download each stage's run directories, launch journals and outputs, compare their
-  sha256 with the Pod's, archive them with an inventory, and check that `DATA_DIR` still matches
-  its inventories (no stream grew). Then the Pod can stop.
+- **Results.** Download each stage's run directories, launch journals and outputs before writing
+  the next campaign, compare their sha256 with the Pod's, archive them with an inventory, and
+  check that `DATA_DIR` still matches its inventories (no stream grew). Then the Pod can stop.
+- **Where the stage's scripts run.** The campaigns, the check requests and the summary run on the
+  local record store: a full clone with every run so far (Stage A's included), the launch
+  journals and `runs/numerical/`. They write under `$RUNS_DIR` (`runs/campaigns/`,
+  `runs/analysis/`), never into the checkout's tracked tree.
 - **CPU Pods** (the simulation) have no volume: download the output before stopping.
 
 ### Memory, disk and the run environment
@@ -877,7 +881,10 @@ project-run "$SRC" python scripts/launch.py "$RUNS_DIR/campaigns/study2-short-di
 On the first run, check `meta.json` (the commit, a clean checkout, the image, the hardware),
 `update_scalars.jsonl` (25 rows) and the GPU peak. When the campaign ends, download and archive
 it (`runs/archive/inventory-2026-10-20-study2-short-discovery-b20-u8.tsv`) and write the summary,
-which names the next step:
+which names the next step. It can be a further round (`repair`, `prewarmed` or the pre-warmed
+arm's `targeted`, and after a numerical check the search allowance's `repair`, named
+`…-allowance-<check>`): each is written the same way and runs in a Pod session of its own, with a
+download before the next is written. S1 needed none.
 
 ```bash
 python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F --runs-root runs \
@@ -930,10 +937,16 @@ python scripts/study2_short_summary.py --runs $R --theta0 $THETA0 --fixation $F 
    every control and case left incomplete, and the verdict again. It records the verdict before
    any non-zero exit. **Exits:** 1, a precondition or the plan; 5, a verdict with an incomplete
    rate or control; 6, a part failed (recorded; the driver goes on); 0, complete. A verdict that
-   is not qualified is a result, not a failure.
+   is not qualified is a result, not a failure. Run alone, `control` and `twins` exit 7 on a
+   GPU-code or environment mismatch, and `verdict --retry-needed` exits 3 when no rerun is due.
+   Give the Pod a deadline that covers the whole check and its reruns: a killed driver can be run
+   again, and keeps every record that counts.
 4. **Outputs** under `$RUNS_DIR/numerical/b20-u8/`: `controls/<lr>/attempt-<n>.json`,
    `twins/s<seed>/<optimizer>-<lr>/attempt-<n>.json`, `verdicts/<digest>.json` (one per selection;
-   `verdict.json` is a copy of the latest, never read), the driver's log and `stale/`. A record
+   a selection's earlier verdicts move to `verdicts/history/<digest>/` and their marks still
+   count; `verdict.json` is a copy of the latest, never read), the driver's log and `stale/`. A
+   verdict at a batch the selection reached that it did not read, and that marks a rate unusable,
+   leaves the stage incomplete: move a stray verdict aside, never delete it. A record
    counts only when written from a clean checkout with this GPU code, under the frozen settings,
    for the run located now; running the driver again keeps it. A `--dry-run` moves nothing.
    Download the directory with the request and the driver, archive them with an inventory, and
@@ -1016,6 +1029,9 @@ jointly supported blocks complete in order, or until all 80 blocks are started a
 2. **Let the blocks complete.**
 3. **Read the counts** in the summary's `mechanism` and `confirmation`:
    `jointly_supported_in_order`, `possibly_jointly_supported`, `room`, `ended` and `ended_by`.
+   `confirmation.room` counts the blocks of the ranges the launcher started as started, as the
+   guard does; `mechanism.room` counts only blocks with runs, so it can be the larger. An issued
+   range none of whose runs exists yet is completed by writing exactly that range again.
 4. **Go on** while the cohort has not ended.
 
 Label the runs as they complete (amendment 3's step 4). The summary with `--judge` reads the
@@ -1039,6 +1055,18 @@ run whose endpoint run the launcher gave up on is left out and named in the head
 split these runs from the others where they load them: they never enter a block, a look or the
 mechanism cohort. The summary reports each against its endpoint run: `identical`, `consistent`,
 `excluded` or `pending`.
+
+- **The Pod** holds the streams of seeds 3000–3009 at B (check them with `check-streams`, or a
+  `prep --archived` driver), on the GPU type and image of the endpoint runs: elsewhere their
+  consistency can fail, which excludes runs.
+- **Launch one run first** and read its memory peaks against the 46 GB rule before the rest: a
+  time-course run resumes training after each intermediate evaluation, which no endpoint run
+  does.
+- **Label the time-course runs only for the final analysis,** by their explicit run directories,
+  never with a glob over `study2_short` at a look: nothing would read their labels, but the
+  outputs would no longer be sealed.
+- A run and its endpoint run that both stopped before the first monitor reading show `excluded`
+  with a missing-record reason; both are failures of their seed and arm in any case.
 
 #### The drift diagnostic
 
