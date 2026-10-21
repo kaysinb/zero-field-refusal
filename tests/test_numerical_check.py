@@ -697,16 +697,31 @@ def test_the_streams_are_compared_exactly(tmp_path) -> None:
     assert not found["consistent"] and found["mismatches"][0]["what"] == "the preconditioner stream"
 
 
-# The main checkout's archive of the first S2 check at B = 20, U = 8: under this checkout's runs/,
-# or that of the checkout holding it (a worktree), or where ``void`` moved it with its regular
-# runs (runs/void/<old GPU code>/). Read: the twin records' numbers and the archived regular
-# runs' metrics.jsonl and monitor.jsonl, nothing else.
+# The main checkout's archive of the first S2 check at B = 20, U = 8: where ``void`` moved it with
+# its regular runs (runs/void/<old GPU code>/), or, before the void, under this checkout's runs/
+# or that of the checkout holding it (a worktree). The S2 repeat of 2026-10-21 wrote its own check
+# at runs/numerical/b20-u8/, so the first check is told by its records: written under the bitwise
+# twin-A gate before review fa21, they hold ``archive.equal``. Read: the twin records' numbers and
+# the archived regular runs' metrics.jsonl and monitor.jsonl, nothing else.
 S2_TWINS = Path("numerical/b20-u8/twins/s2200")
-S2_RUNS = next((base for root in (REPO_ROOT, *REPO_ROOT.parents)
-                for base in (root / "runs", *sorted((root / "runs").glob("void/*")))
-                if (base / S2_TWINS).is_dir()), None)  # fmt: skip
 # The three cases whose twin A differed from its run bit for bit (S2's verdict f7cf42e3f76f)
 S2_DIFFERING = ("adam_frozen-1.34e-05", "adamw_prewarmed-1.62e-05", "adamw_prewarmed-2e-05")
+
+
+def _first_s2_check(base: Path) -> bool:
+    """Whether ``base`` holds the first S2 check: its first differing case's first attempt read
+    under the bitwise gate (``twin_A.archive.equal``)."""
+    path = base / S2_TWINS / S2_DIFFERING[0] / "attempt-1.json"
+    try:
+        archive = json.loads(path.read_text())["twin_A"]["archive"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return isinstance(archive, dict) and "equal" in archive
+
+
+S2_RUNS = next((base for root in (REPO_ROOT, *REPO_ROOT.parents)
+                for base in (*sorted((root / "runs").glob("void/*")), root / "runs")
+                if _first_s2_check(base)), None)  # fmt: skip
 
 
 @pytest.mark.skipif(S2_RUNS is None, reason="the archived S2 check is not in this checkout")
