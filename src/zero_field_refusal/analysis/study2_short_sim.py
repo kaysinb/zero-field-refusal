@@ -3419,7 +3419,10 @@ CONDITIONAL_STEP = 0.02  # the panel convolution's grid (logit units)
 CONDITIONAL_GEOMETRIES = 1024  # fresh endpoint geometries per arm, common to all replicates
 CONDITIONAL_NODES = 12  # Gauss–Hermite nodes over β_b where a failure law depends on it
 CONDITIONAL_SPAN = 4.0  # the curve's reach at the endpoints (logit), beyond β_b's shift
-PANEL_SPAN = 9.0  # |α_i| the tables cover (σ_α = 1.5: 6 SD)
+# |α_i| the tables cover: 8 SD at σ_α = 1.5. A run draws ~10¹⁰ prompt effects (about 7 SD at
+# most); a rarer one is clipped there, where the logistic is saturated (σ(c ± 11.9) differs from
+# 0 or 1 by under 1e-4 at the offsets used, under 3e-7 in a panel's mean of 521).
+PANEL_SPAN = 12.0
 SINGLE_FAILURE_PATTERNS = tuple(p for p in PATTERNS if sum(p) <= 1)  # two failures: no bracket
 
 
@@ -3538,9 +3541,8 @@ class PanelTruth:
 
     def _panel(self, alpha: np.ndarray) -> tuple[int, np.ndarray]:
         """The panel's linear binning on the grid: the first bin's index and the weights."""
-        if np.abs(alpha).max() > PANEL_SPAN - 2 * self.step:
-            raise ValueError("a prompt effect lies beyond the conditional truth's tables")
-        position = np.asarray(alpha, dtype=float) / self.step
+        bound = PANEL_SPAN - 2 * self.step
+        position = np.clip(np.asarray(alpha, dtype=float), -bound, bound) / self.step
         lower = np.floor(position).astype(int)
         frac = position - lower
         first = int(lower.min())

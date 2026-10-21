@@ -160,7 +160,7 @@ from zero_field_refusal.paths import REPO_ROOT, runs_root
 from zero_field_refusal.tracking import git_state
 
 PACKAGES = ("numpy", "scipy", "zero-field-refusal")
-MAX_WORKERS = 8
+MAX_WORKERS = 12  # of the 16 cores of the shared machine (the lead allows up to 12)
 GRIDS = {
     "calibrate": sim.calibration_grid,
     "validate": sim.validation_grid,
