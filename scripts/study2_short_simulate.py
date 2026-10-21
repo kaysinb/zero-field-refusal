@@ -162,7 +162,7 @@ from zero_field_refusal.paths import REPO_ROOT, runs_root
 from zero_field_refusal.tracking import git_state
 
 PACKAGES = ("numpy", "scipy", "zero-field-refusal")
-MAX_WORKERS = 12  # of the 16 cores of the shared machine (the lead allows up to 12)
+DEFAULT_WORKERS = 12  # of the 16 cores of the shared laptop (the lead allows up to 12)
 GRIDS = {
     "calibrate": sim.calibration_grid,
     "validate": sim.validation_grid,
@@ -251,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     allowance = parser.add_mutually_exclusive_group()
     allowance.add_argument("--allowance-from", type=Path, help="a bias run's summary.json")
     allowance.add_argument("--allowance", type=float, help="the bias allowance b (fraction)")
-    parser.add_argument("--workers", type=int, default=min(MAX_WORKERS, os.cpu_count() or 1))
+    parser.add_argument("--workers", type=int, default=min(DEFAULT_WORKERS, os.cpu_count() or 1))
     parser.add_argument(
         "--chunk",
         type=int,
@@ -312,8 +312,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not 1 <= args.workers <= MAX_WORKERS:
-        parser.error(f"--workers must lie in 1..{MAX_WORKERS}")
+    if not 1 <= args.workers <= (os.cpu_count() or 1):  # a dedicated CPU Pod may use every core
+        parser.error(f"--workers must lie in 1..{os.cpu_count() or 1}")
     if args.mode in MECHANISM_MODES:
         return mechanism_main(args, parser)
     if args.mode == "inputs":

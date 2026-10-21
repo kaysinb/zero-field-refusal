@@ -979,3 +979,15 @@ def test_write_with_a_failed_check_writes_nothing(tmp_path, monkeypatch) -> None
             assert fixation.read_text() == FIXATION.read_text()
             assert record.read_text() == "{}\n"
             assert final["written"] == [] and "placeholder" in final["warning"]
+
+
+def test_the_workers_may_use_every_core_of_the_machine(monkeypatch):
+    """A dedicated CPU Pod may use every core; more than the machine has is refused, and the
+    default stays at the shared laptop's 12."""
+    script = load_script()
+    monkeypatch.setattr(script.os, "cpu_count", lambda: 32)
+    assert script.build_parser().parse_args(["mechanism"]).workers == script.DEFAULT_WORKERS == 12
+    monkeypatch.setattr(script, "mechanism_main", lambda *a, **k: None, raising=False)
+    with pytest.raises(SystemExit):
+        script.main(["mechanism", "--workers", "33", "--list"])
+    script.main(["mechanism", "--workers", "32", "--list"])
