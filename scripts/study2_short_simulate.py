@@ -346,12 +346,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.exact_alphas and not args.alphas:
         parser.error("--exact-alphas needs --alphas")
     settings = run_settings(args, selection)
-    # Recorded at launch: the source of a long run is the one it started with.
-    versions = {
-        "python": platform.python_version(),
-        **{name: metadata.version(name) for name in PACKAGES},
-        "git": git_state(),
-    }
+    # Recorded at launch: the source of a long run is the one it started with. An uninstalled
+    # checkout (a Pod's project-run) reads None as the project's version.
+    versions = versions_record()
     started = datetime.now(UTC)
     stamp = started.strftime("%Y%m%dT%H%M%SZ")
     out = args.out or runs_root() / "analysis" / "study2_short_sim" / f"{args.mode}-{stamp}"

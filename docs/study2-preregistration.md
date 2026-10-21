@@ -1589,11 +1589,70 @@ feasibility report.
     the cohort: with 20 % failures in every arm about 95 % of the mechanism cohorts stay under 36
     blocks; with 10 %, about 99 % reach the cap before 60 jointly supported blocks, and about 99 %
     still reach 36. These are findings about the design, not failures of the simulation.
-  - **Results of the final run.** Pending: the run is in progress; its fixed level, coverage and
-    power, and the primary's recheck, are entered here from its `final.json`. Until a level is
-    fixed, the fixation record's `mechanism.level` 0.95 is a placeholder that must not be used.
+  - **Results of the final run** (`runs/analysis/study2_short_sim/2026-10-21-b20-final`, code
+    6cc4067, the measured inputs `7a1eb65a…`; inventories
+    `runs/archive/inventory-2026-10-22-study2-short-sim-b20-final-binding.tsv` and
+    `…-b20-final.tsv`).
+    - **The fixed level is 0.975** (`mechanism.level` in the fixation record). On the calibration
+      stream 0.975 is the smallest level at which all 1 620 required scenarios meet their floor
+      (94.56 %); at 0.970 one skewed SD-10 scenario fell short. No scenario was under 95.00 % at
+      0.975, so the predeclared borderline set was empty, and the check ran every scenario at
+      10 000 replicates on the check stream: all met the floor, and the check binds.
+    - **Coverage at 0.975,** simultaneous, against the conditional truth; the minimum over each
+      cell's 405 scenarios, calibration / check stream: normal SD 5, 97.09 / 97.01 %; normal SD
+      10, 96.37 / 96.56 %; skewed SD 5, 95.78 / 95.81 %; skewed SD 10, 95.15 / 95.20 %. No
+      required scenario gave a missing or a whole-line interval. A component with zero true value
+      reads a false direction in at most 1.24 % of studies (check stream: 1.21 %).
+    - **The cohort under attrition** (means over the required scenarios): with no failures it
+      always reaches 60 jointly supported blocks below the cap; with 10 % failures, independent or
+      support-dependent, it holds 48 blocks on average, 99 % of cohorts end at the cap of 80 and
+      0.5 % stay under 36; with 20 %, it holds 27–28 blocks, every cohort ends at the cap and about
+      94 % stay under 36, which gives no reading.
+    - **Power at 0.975** to read a component's direction at its declared sign, unconditional (a
+      cohort under 36 counts as no reading); minimum / mean over the components with that effect,
+      both shapes:
 
-<!-- FINAL SIMULATION: level, coverage, power -->
+      | Attrition | 5 pp, SD 5 | 5 pp, SD 10 | 2.5 pp, SD 5 | 2.5 pp, SD 10 |
+      |---|---|---|---|---|
+      | none | 99.7 / 100.0 % | 62.1 / 87.7 % | 73.4 / 90.0 % | 5.9 / 39.3 % |
+      | 10 %, independent | 97.6 / 99.3 % | 42.1 / 78.3 % | 53.0 / 80.9 % | 3.0 / 30.8 % |
+      | 10 %, support-dependent | 98.1 / 99.4 % | 41.5 / 79.5 % | 54.6 / 82.7 % | 2.9 / 32.1 % |
+      | 20 %, either | ≤ 6.7 % | ≤ 6.6 % | ≤ 6.5 % | ≤ 4.9 % |
+
+    - **The primary's recheck** with B = 20's inputs. Amendment 3's fixed levels and its allowance
+      stay (fa24).
+      - In the plausible range (normal and right-skewed shapes, SD 3–10 pp), against the
+        conditional truth: false direction at Δ = 0 at most 2.30 % (+) and 1.00 % (−), false
+        equivalence at ±5 pp at most 1.18 %, and the stopping look's interval covers in at least
+        95.28 % of studies. Against the population truth the central scenarios give 2.46 / 2.48 %
+        (amendment 3: 2.56 / 2.58 %).
+      - The heavy-tailed stress shape exceeds as it did in amendment 3: false direction (+) at
+        Δ = 0 3.32 % against the conditional truth at SD 15 (3.63 % against the population truth;
+        amendment 3: 3.22 %) and 2.67 % at SD 10, with coverage 93.14 and 94.28 %.
+      - In the kink family the population false direction at Δ = 0 falls to 6.07 % (amendment 3:
+        8.22 %); the conditional truth there is +0.79 pp, against which the rate is 0.00 %.
+      - Against amendment 3's archived runs, 291 of 1 380 rates differ by more than 2 MC SE in the
+        decided run (62.8 expected by chance; the inputs changed), 15 of 160 in the validation gate
+        and 73 of 480 in the bias run. Five error rates rise beyond 2 MC SE: the heavy-tailed SD-15
+        false direction above, 3.22 → 3.63 %; rare seeds only, false equivalence at −5 pp, 2.14 →
+        2.47 %; normal SD 15 at +5 pp, 1.39 → 1.75 %; skewed SD 5, false direction (−), 1.15 →
+        1.42 %; heavy-tailed SD 3, 0.68 → 0.89 %. Only the first is above 2.5 %, in a shape that
+        was above it already.
+      - The validation gate fails in at most 0.19 % of studies without technical failures
+        (amendment 3: ≤ 0.05 %), and in 96.0–98.1 % with 20 % (amendment 3: 96–98 %). The bias
+        allowance at B = 20 is 0.935 pp (kink), below the fixed 1.084 pp.
+    - **The stress grid** at 0.975 (2 000 replicates, reported only), minimum coverage:
+      heavy-tailed 96.35 / 95.15 / 93.25 % at SD 5 / 10 / 15; normal SD 15, 95.55 %; skewed SD 15,
+      93.95 %; rare seeds, centered, 90.2–91.2 %; rare seeds only, 89.90 %; the tied-contrast case,
+      46.20 %.
+    - **How the run ended.** `final` stopped after its check, at the primary rerun: the primary
+      modes read the project's version without the fallback the mechanism modes had, and the
+      checkout ran uninstalled. The calibration and the check were complete. The remaining steps
+      ran on the same Pod, from the same source, as `final` calls them, after the checkout was
+      installed editable without dependencies so that its version could be read; the code still
+      came from the checkout. `final.json` was assembled from the outputs with `final`'s own
+      functions and rule text (`…-b20-final-rest-attempt/final-assembly.json` records how). The
+      defect is fixed, with a test, in the commit that records these results.
 
 #### 4. Two exploratory measurements of the mechanism
 

@@ -112,11 +112,12 @@ def test_simulated_readings_are_the_analysis_readings() -> None:
 def test_b20_inputs_are_recorded(tmp_path: Path) -> None:
     found = sim.read_inputs(RECORD)
     assert found.sha256 == hashlib.sha256(RECORD.read_bytes()).hexdigest()
-    assert (found.batch, found.status) == (20, "provisional")
-    assert found.sigma_u == (0.056, 0.078, 0.078) and found.sigma_e == (0.015, 0.036, 0.036)
-    assert {p.split(":")[0] for p in found.provisional} >= {
-        "P.sigma_u", "P.sigma_e", "P.support_rate", "P.failure_rate"
-    }  # fmt: skip
+    # The record the final run used: measured on K and support only from S1 and Stage A's grids
+    # at the frozen rates (seeds 2000-2002), with nothing provisional left.
+    assert (found.batch, found.status, found.provisional) == (20, "measured", ())
+    assert [round(s, 4) for s in found.sigma_u] == [0.0548, 0.0863, 0.0724]
+    assert [round(s, 4) for s in found.sigma_e] == [0.0131, 0.0324, 0.0274]
+    assert found.sha256.startswith("7a1eb65a")
     raw = json.loads(RECORD.read_text())
 
     def refused(change, match: str) -> None:
@@ -138,7 +139,8 @@ def test_b20_inputs_are_recorded(tmp_path: Path) -> None:
     refused(lambda r: r["arms"]["A"]["sigma_e"].pop("source"), "lacks")
     refused(lambda r: r["arms"]["A"]["sigma_e"].update(source=" "), "no source")
     refused(lambda r: r["arms"]["A"]["sigma_e"].update(note="x"), "unknown keys")
-    refused(lambda r: r.update(status="measured"), "provisional entries")
+    refused(lambda r: r.update(status="provisional"), "provisional entries")
+    refused(lambda r: r["arms"]["P"]["sigma_u"].update(provisional="S3"), "provisional entries")
     (tmp_path / "broken.json").write_text("{")
     with pytest.raises(ValueError, match="not JSON"):
         sim.read_inputs(tmp_path / "broken.json")
@@ -150,7 +152,8 @@ def test_b20_inputs_are_recorded(tmp_path: Path) -> None:
     path = tmp_path / "inputs.json"
     path.write_text(json.dumps(record))
     changed = sim.read_inputs(path)
-    assert sim.mechanism_base(changed).sigma_u_arms == (0.09, 0.078, 0.078)
+    others = tuple(raw["arms"][arm]["sigma_u"]["value"] for arm in ("F", "P"))
+    assert sim.mechanism_base(changed).sigma_u_arms == (0.09, *others)
     script = load_script()
     out = tmp_path / "run"
     script.main(["mechanism", "--inputs", str(path), "--scenarios",
@@ -171,9 +174,10 @@ def test_b20_inputs_are_recorded(tmp_path: Path) -> None:
     summary = json.loads((out / "summary.json").read_text())
     assert summary["inputs"]["sha256"] == digest
     (scenario,) = summary["scenarios"]
-    assert scenario["settings"]["sigma_u_arms"] == [0.09, 0.078, 0.078]
+    assert scenario["settings"]["sigma_u_arms"] == [0.09, *others]
+    assert scenario["settings"]["sigma_e_arms"] == list(changed.sigma_e)
     assert scenario["settings"]["failure_arms"] == [0.0, 0.0, 0.0]
-    assert "_sua0.09-0.078-0.078_sea0.015-0.036-0.036_fa0-0-0" in scenario["name"]
+    assert "_sua0.09-" in scenario["name"] and scenario["name"].endswith("_fa0-0-0")
 
 
 def test_inputs_are_measured_on_k_and_support_only(tmp_path: Path) -> None:
@@ -532,7 +536,7 @@ def test_the_fixation_level_is_written_alone(tmp_path: Path) -> None:
     assert after == before
     changed = [a for a, b in zip(FIXATION.read_text().splitlines(), path.read_text().splitlines(),
                                  strict=True) if a != b]  # fmt: skip
-    assert changed == ['    "level": 0.95,']
+    assert changed == ['    "level": 0.975,']
 
 
 # The primary model with per-arm inputs
@@ -581,7 +585,8 @@ def test_per_arm_inputs_equal_to_the_scalars_change_no_draw() -> None:
     assert inputs_scenario.failure_arms is None  # a stress scenario keeps its failures
     central = sim.inputs_scenario(sim.Scenario(), inputs())
     assert central.failure_arms == (0.0, 0.0, 0.0)
-    assert central.k_spreads([0, 2])[0].ravel().tolist() == [0.056, 0.078]
+    record = inputs()
+    assert central.k_spreads([0, 2])[0].ravel().tolist() == [record.sigma_u[0], record.sigma_u[2]]
 
 
 def test_compare_flags_rates_beyond_two_mc_errors() -> None:
@@ -635,7 +640,7 @@ def test_mechanism_mode_smoke(tmp_path: Path) -> None:
         under = s["cohort"]["under_minimum"]["value"]
         if s["settings"]["attrition"] == "none":
             assert under == 0.0
-        assert s["minimum_met"]["value"] == 1 - under
+        assert s["minimum_met"]["value"] == pytest.approx(1 - under)
         at = s["levels"][0]
         assert at["simultaneous_readable"]["share"] == pytest.approx(1 - under)
         assert at["simultaneous_descriptive"]["share"] == pytest.approx(under)
@@ -1007,3 +1012,22 @@ def test_the_versions_record_runs_from_an_uninstalled_checkout(monkeypatch):
     monkeypatch.setattr(script.metadata, "version", version)
     record = script.versions_record()
     assert record["zero-field-refusal"] is None and record["numpy"] and "git" in record
+
+
+def test_a_primary_mode_runs_from_an_uninstalled_checkout(monkeypatch, tmp_path: Path) -> None:
+    """The primary modes record their versions the same way: the final run on a Pod stopped at its
+    primary rerun when they read the project's version without the fallback."""
+    script = load_script()
+    real = script.metadata.version
+
+    def version(name):
+        if name == "zero-field-refusal":
+            raise script.metadata.PackageNotFoundError(name)
+        return real(name)
+
+    monkeypatch.setattr(script.metadata, "version", version)
+    out = tmp_path / "primary"
+    script.main(["decided", "--scenarios", "interp_normal_study1_sd5_d+0_w0.47", "--reps", "2",
+                 *TINY, "--out", str(out)])  # fmt: skip
+    versions = json.loads((out / "summary.json").read_text())["versions"]
+    assert versions["zero-field-refusal"] is None and versions["numpy"] and "git" in versions

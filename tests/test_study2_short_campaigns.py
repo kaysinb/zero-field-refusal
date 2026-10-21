@@ -929,11 +929,11 @@ def test_the_fixation_record_refuses_a_malformed_new_key(tmp_path, key, value) -
 def test_fixation_requires_the_mechanism_key(tmp_path) -> None:
     """The ``mechanism`` key (amendment 4, section 3): required, its fixed values equal to the
     code's, the level in [0.95, 1), integer resamples ≥ 1000 and an integer seed; the tracked
-    record reads, with the values Task 3 wrote."""
+    record reads, with the values Task 3 wrote and the level the final simulation fixed."""
     tracked = read_fixation(REPO_ROOT / "docs" / "study2-short-fixation.json")
     assert tracked["mechanism"] == {"target": 60, "cap": 80, "minimum": 36, "zero_se": 1e-12,
                                     "comparison_level": 0.975, "effects": [0.05, 0.025],
-                                    "level": 0.95, "resamples": 10000,
+                                    "level": 0.975, "resamples": 10000,
                                     "seed": 20261020}  # fmt: skip
     fixed = study2_short.MECHANISM_FIXED
     assert fixed == {

@@ -853,8 +853,8 @@ only; judge labels are read by the looks, the final analyses and the audit alone
   compared. The check request records its w_max too, which is printed, never read back.
 - **Amendment 4's keys:** `mechanism` (the cohort, its interval family and the max-t level),
   `audit`, `candidates`, `numerical`, `validation`, `timecourse`, `drift` and `scalars`.
-  `mechanism.level` is a placeholder (0.95) until the simulation's final run fixes a level
-  ([below](#the-simulations-final-run)); it must not be used before.
+  `mechanism.level` is 0.975, the level the simulation's final run fixed
+  ([below](#the-simulations-final-run)); until then it held a placeholder, 0.95.
 
 ### S1: discovery at (8, 20)
 
