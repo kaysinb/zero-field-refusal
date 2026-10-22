@@ -914,12 +914,16 @@ def test_draw_checks_the_record_the_running_confirmation_named(monkeypatch, tmp_
     seen = []
     monkeypatch.setattr("zero_field_refusal.analysis.study2_short.versions_problems",
                         lambda path, **kwargs: seen.append(kwargs) or ["held"])  # fmt: skip
+    monkeypatch.setattr("zero_field_refusal.analysis.stage_a.load_trajectories",
+                        lambda *roots: [])  # fmt: skip
+    theta0_dir(tmp_path)
     with pytest.raises(SystemExit) as stopped:
         cli.main([*draw_args(tmp_path), "--runs-root", runs_root(tmp_path, records)])
     assert stopped.value.code == 2
     assert seen[-1]["issued"] == {first: [
         {"path": "docs/study2-short-versions.json", "sha256": None},
         {"path": "docs/study2-short-versions-2.json", "sha256": "b" * 64}]}  # fmt: skip
+    assert seen[-1]["unlaunched"] == []
     assert "refused: the versions record does not hold: held" in capsys.readouterr().err
     assert not (tmp_path / "audit").exists()
 

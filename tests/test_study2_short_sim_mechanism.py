@@ -532,8 +532,17 @@ def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
     before anything runs, so that a forecast never writes mechanism.level or the inputs
     record. Every part writes its Markdown report at U = 6. The archived runs it would be
     compared with are amendment 3's, at U = 8: the comparisons are skipped and recorded so.
-    Tiny replicates."""
+    The forecast describes the frozen analysis: its readings and stress are at the committed
+    level, 0.975, whatever the calibration stream implies (here made to imply 0.95), which
+    appears only as a diagnostic; no binding check runs and no level is fixed. Tiny
+    replicates."""
     script = load_script()
+    checks = sim.mechanism_checks
+
+    def implying_095(*args, **kwargs):  # the calibration rule's level, other than 0.975
+        return {**checks(*args, **kwargs), "level": 0.95}
+
+    monkeypatch.setattr(sim, "mechanism_checks", implying_095)
     monkeypatch.setattr(script, "runs_root", lambda: tmp_path / "runs")
     for path in script.ARCHIVED.values():  # present: only U ≠ 8 skips them
         (tmp_path / "runs" / path).parent.mkdir(parents=True, exist_ok=True)
@@ -542,7 +551,8 @@ def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
     out = tmp_path / "final"
     argv = ["final", "--inputs", str(RECORD), "--out", str(out), "--upper", "6", "--reps", "2",
             *TINY, "--scenarios", "mech_normal_sd5_r1-1_rho-0.5_c1+0_c2+0_none",
-            "--precision-reps", "2", "--stress-reps", "2"]  # fmt: skip
+            "mech_heavy_sd5_r1-1_rho-0.5_c1+0_c2+0_none", "--precision-reps", "2",
+            "--stress-reps", "2"]  # fmt: skip
     try:
         with pytest.raises(SystemExit):
             script.main([*argv, "--write"])
@@ -550,6 +560,15 @@ def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
         script.main(argv)
         final = json.loads((out / "final.json").read_text())
         assert (final["upper"], final["k_star"]) == (6.0, math.sqrt(30)) and final["written"] == []
+        assert (final["fixed_level"], final["forecast_level"]) == (None, 0.975)
+        assert final["recalibration_diagnostic"]["level"] == 0.95
+        assert "level_on_calibration_stream" not in final and "warning" not in final
+        assert final["check"]["skipped"].startswith("nothing is fixed at U = 6")
+        assert not (out / "check").exists()
+        for name in ("mechanism", "stress"):
+            summary = json.loads((out / name / "summary.json").read_text())
+            assert summary["settings"]["readings_at"] == 0.975, name
+            assert summary["checks"]["readings_at"] == 0.975, name
         parts = sorted(p.parent.name for p in out.glob("*/summary.json"))
         assert {"mechanism", "decided", "gate", "bias"} <= set(parts)
         for name in parts:

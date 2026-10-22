@@ -177,10 +177,6 @@ def final_state(args: argparse.Namespace, summary) -> tuple:
     except (OSError, ValueError) as exc:
         raise Refused(str(exc)) from exc
     records = summary.launch_records(args.runs_root) if args.runs_root is not None else []
-    problems = summary.versions_problems(args.versions, fixation=args.fixation, judge=args.judge,
-                                         issued=summary.issued_versions(records))  # fmt: skip
-    if problems:
-        raise Refused("the versions record does not hold: " + "; ".join(problems))
     abandoned = {}
     if args.abandoned is not None:
         try:
@@ -192,6 +188,10 @@ def final_state(args: argparse.Namespace, summary) -> tuple:
     if summary.theta0_problems(theta0):
         raise Refused("; ".join(summary.theta0_problems(theta0)))
     loaded = summary.load_trajectories(*args.runs)
+    problems = summary.versions_problems(args.versions, fixation=args.fixation, judge=args.judge,
+                                         **summary.versions_evidence(records, loaded))  # fmt: skip
+    if problems:
+        raise Refused("the versions record does not hold: " + "; ".join(problems))
     facts = {r.run_id: summary.run_facts(r.run_dir) for r in loaded
              if r.arm in (*summary.ARMS, summary.FA_CONTROL_ARM)}  # fmt: skip
     runs, courses = summary.split_timecourse(loaded, facts)

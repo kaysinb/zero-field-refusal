@@ -1955,9 +1955,13 @@ candidate.
    `scripts/study2_short_simulate.py`, which sets K\* = √(5U) and the nominal half-span
    ln √(U/5) of the endpoints and nothing else; its default, U = 8, gives every earlier run's
    constants (K\* = √40, half-span 0.235). Before a U = 6 candidate is fixed, its power and
-   support are forecast with the existing simulation procedure at its rates, with `--upper 6`.
-   A U = 7 candidate's forecast is made the same way, with `--upper 7`, before its
-   confirmation. Each forecast is a report, made before any confirmation, and decides nothing.
+   support are forecast with the existing simulation procedure at its rates, with `--upper 6`,
+   **at the committed level**: the coverage, power and stress results are those of the frozen
+   analysis, at the fixation record's `mechanism.level` (0.975). The forecast fixes no level and
+   runs no binding check; the level the calibration rule would imply at that U is reported only
+   as a diagnostic, never fixed or used. A U = 7 candidate's forecast is made the same way, with
+   `--upper 7`, before its confirmation. Each forecast is a report, made before any
+   confirmation, and decides nothing.
 7. **The pair at a given U takes the three arms' triples at that U.** Its rates are the primary
    arms' triples of the three-arm visit at the same U (their last selection there, a re-solve
    of the search allowance included), with no round and no selection of its own, so that no
@@ -2025,7 +2029,8 @@ candidate.
 - **The simulation's U** (`analysis.study2_short_sim.set_upper`, `--upper`): K\* and the
   half-span only, 8 by default; the forecast's summaries record U, K\* and the half-span, and a
   forecast at another U never writes `mechanism.level` or the inputs record (`--write` is
-  refused there).
+  refused there). At another U, `final` reports at the committed level (`forecast_level`), runs
+  no check stream, and keeps the calibration rule's level as `recalibration_diagnostic`.
 - **The fixation record's `candidates`** gains U = 6 in `order` and the pair's own
   `fallback_order`; it is read strictly against the code, as before. Nothing else in the fixation
   record changes: `mechanism.level` stays 0.975.
@@ -2043,5 +2048,10 @@ candidate.
     confirmation's later blocks, its time course, its looks and the audit are refused under any
     record other than the one the confirmation started with: a confirmation started at
     `6fb20a9` is continued and read from that checkout.
+  - **The check fails closed.** Every confirmation or time-course run of the record store must
+    have its start in the launch journal; a run restored without it has no record that can be
+    shown, and continuation, the looks and the audit are refused until the journal is restored.
+    A later record that does not name the first, its exact path and sha256, with a non-empty
+    reason, is refused both when it is written and when it is checked.
 - **No GPU path changes.** The qualification made on gate B's GPU code holds
   (`reuse_check(e380bcc, HEAD)`: no GPU path changed).

@@ -106,7 +106,9 @@ ones per seed and arm (``progress``'s ``timecourse``).
   uncommitted change or untracked file, so campaign files go under $RUNS_DIR), or when an issued
   confirmation or time-course campaign named another record (``issued_versions``, from the
   launch journal, a header naming none under the first record: a confirmation keeps the record
-  it started with). The campaign's YAML header names its record (``versions_record``,
+  it started with), or when a confirmation or time-course run of --runs has no start in the
+  journal (``unlaunched_runs``: the check fails closed). The campaign's YAML header names its
+  record (``versions_record``,
   ``versions_sha256``), which the launcher logs with every start. The discovery and numerical
   kinds (``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``) precede the
   record and do not read it.
@@ -204,7 +206,6 @@ from zero_field_refusal.analysis.study2_short import (
     confirmation_guard,
     exhausted_runs,
     issued_ranges,
-    issued_versions,
     issued_w_max,
     measures_rayleigh,
     progress,
@@ -216,6 +217,7 @@ from zero_field_refusal.analysis.study2_short import (
     seed_role,
     split_timecourse,
     timecourse_guard,
+    versions_evidence,
     versions_problems,
 )
 from zero_field_refusal.launch import launch_records
@@ -713,14 +715,6 @@ def campaign(
     w_max, source = w_max_of(parser, args)
     notes, prerequisites = [], []
     records = launch_records(args.runs_root)
-    if args.kind in VERSIONED_KINDS:
-        # The record this campaign is written under; a confirmation's earlier campaigns named
-        # theirs in the journal (amendment 5: two records, each for its own commit).
-        problems = versions_problems(args.versions, fixation=args.fixation,
-                                     issued=issued_versions(records))  # fmt: skip
-        if problems:
-            parser.error("the versions record does not hold: " + "; ".join(problems))
-        notes.append(f"the versions record {args.versions}, sha256 {_sha256(args.versions)}")
     abandoned = {}
     if args.abandoned is not None:
         try:
@@ -734,6 +728,15 @@ def campaign(
     if theta0_problems(theta0):
         parser.error("; ".join(theta0_problems(theta0)))
     loaded = load_trajectories(*args.runs)
+    if args.kind in VERSIONED_KINDS:
+        # The record this campaign is written under; a confirmation's earlier campaigns named
+        # theirs in the journal, which must show the start of every confirmation run (amendment
+        # 5: two records, each for its own commit).
+        problems = versions_problems(args.versions, fixation=args.fixation,
+                                     **versions_evidence(records, loaded))  # fmt: skip
+        if problems:
+            parser.error("the versions record does not hold: " + "; ".join(problems))
+        notes.insert(0, f"the versions record {args.versions}, sha256 {_sha256(args.versions)}")
     facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
     # The time course's runs, split once here: no campaign's bookkeeping ever counts one of them
     # as a run of its key (review of Task 5, I1).

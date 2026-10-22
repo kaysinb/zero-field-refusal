@@ -82,7 +82,11 @@ rates before its confirmation. Every summary.json records U in its settings (wit
 half-span in its constants); ``final`` passes U to each of its runs and records it in
 final.json, and refuses --write at any U but 8: a forecast never writes mechanism.level or the
 inputs record. At U ≠ 8 it skips the comparisons with amendment 3's archived runs, which are at
-U = 8, and records them in final.json as skipped.
+U = 8, and records them in final.json as skipped. A forecast at U ≠ 8 describes the frozen
+analysis: it reports coverage, power and stress at the committed level, the fixation record's
+mechanism.level (``--readings-at`` forwarded to the mechanism and stress runs), runs no binding
+check, fixes no level (final.json: ``fixed_level`` null, ``forecast_level`` the committed level),
+and keeps the level the calibration rule implies there only as ``recalibration_diagnostic``.
 
 The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
 the selection's record; both roots, because a selected rate may be one of Stage A's grid rates,
@@ -895,7 +899,8 @@ def write_fixation_level(path: Path, level: float) -> None:
 
 
 def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    """The level-fixing run after S1 (module docstring, "The final run after S1")."""
+    """The level-fixing run after S1 (module docstring, "The final run after S1"); at U other
+    than 8, a forecast at the committed level that fixes nothing (module docstring, --upper)."""
     if bool(args.runs_root) != bool(args.rates):
         parser.error("final measures the inputs with both --runs-root and --rates, or neither")
     sim.set_upper(args.upper)  # as main sets it; also when called on its own
@@ -922,12 +927,21 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     mechanism = [*common, *tuning]
     if args.scenarios:
         mechanism += ["--scenarios", *args.scenarios]
+    # A forecast at U other than 8 describes the frozen analysis: its readings and stress at the
+    # committed level, which it never re-fixes; the calibration rule's level is a diagnostic.
+    forecast = sim.U != sim.DEFAULT_UPPER
+    committed = committed_level() if forecast else None
+    at_committed = [] if committed is None else ["--readings-at", str(committed)]
     # What binds first: the required grid, its check, the primary rerun; the stress grid last.
-    main(["mechanism", *mechanism, "--groups", "required", "--out", str(out / "mechanism")])
+    main(["mechanism", *mechanism, *at_committed, "--groups", "required", "--out",
+          str(out / "mechanism")])  # fmt: skip
     calibration = out / "mechanism" / "summary.json"
     level = checked_level(calibration)
     check = None
-    if level is not None:
+    if forecast:  # nothing is fixed at another U: no binding check
+        check = {"skipped": f"nothing is fixed at U = {sim.U:g}: the forecast reports at the "
+                            f"committed level {committed}"}  # fmt: skip
+    elif level is not None:
         # One check at the chosen level, 0.95 included; the borderline scenarios at
         # PRECISION_REPS; no repetition (review fa24, Q2).
         precision = (
@@ -936,8 +950,8 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         main(["mechanism-check", *mechanism, *precision, "--level-from", str(calibration),
               "--out", str(out / "check")])  # fmt: skip
         check = json.loads((out / "check" / "summary.json").read_text())["check"]
-    fixed = (level if level is not None and check is not None and check["passes"]
-             and check.get("binding", False) else None)  # fmt: skip
+    fixed = (level if not forecast and level is not None and check is not None
+             and check["passes"] and check.get("binding", False) else None)  # fmt: skip
     comparisons = {}
     for mode, name in FINAL_PRIMARY.items():
         primary = [*common, "--spread-replicates", str(args.spread_replicates),
@@ -959,7 +973,9 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         else:
             comparisons[name] = {"archived": str(archived), "missing": True}
     stress = [*mechanism, "--groups", "stress", "--out", str(out / "stress")]
-    if fixed is not None:  # the stress readings at the fixed level
+    if forecast:  # the stress readings at the committed level
+        stress += at_committed
+    elif fixed is not None:  # the stress readings at the fixed level
         stress += ["--readings-at", str(fixed)]
     if args.stress_reps is not None:
         stress += ["--stress-reps", str(args.stress_reps)]
@@ -979,7 +995,20 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         "comparisons": comparisons,
         "written": [],
     }
-    if fixed is None:
+    if forecast:
+        del final["level_on_calibration_stream"]
+        final.update(
+            forecast_level=committed,
+            recalibration_diagnostic={
+                "level": level,
+                "what": "the level the calibration rule would imply on the calibration stream at "
+                "this U: a diagnostic, never fixed and never used; the readings and the stress "
+                "results are at the committed level (forecast_level)",
+            },
+            rule=f"a forecast at U = {sim.U:g} fixes no level: it reports coverage, power and "
+            "stress at the committed level, the fixation record's mechanism.level",
+        )
+    elif fixed is None:
         final["warning"] = (
             "no mechanism level is fixed: docs/study2-short-fixation.json keeps its placeholder "
             "mechanism.level 0.95, which must not be used"
@@ -993,7 +1022,15 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         final["written"].append(f"{FIXATION_RECORD}: mechanism.level {fixed}")
     (out / "final.json").write_text(json_text(final))
     write_inventory(out)
-    print(f"Wrote {out}: fixed level {fixed}")
+    shown = f"forecast at the committed level {committed}" if forecast else f"fixed level {fixed}"
+    print(f"Wrote {out}: {shown}")
+
+
+def committed_level() -> float:
+    """The committed mechanism level, the fixation record's ``mechanism.level``."""
+    from zero_field_refusal.analysis.study2_short import read_fixation
+
+    return read_fixation(FIXATION_RECORD)["mechanism"]["level"]
 
 
 def _rate_cell(item: dict | None, digits: int = 2) -> str:

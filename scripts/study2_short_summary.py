@@ -83,7 +83,9 @@ one, docs/study2-short-versions-2.json; the first, docs/study2-short-versions.js
 its own commit), or when the running commit, the model, the judge's identity or the fixation
 record departs from it, or when the issued confirmation campaigns named another record in
 their headers (analysis.study2_short.versions_problems, issued_versions; the launch journal
-under --runs-root); OUT.json then records the versions record's path and sha256. The looks need
+under --runs-root), or when a confirmation or time-course run has no start in that journal
+(unlaunched_runs: the check fails closed); OUT.json then records the versions record's path and
+sha256. The looks need
 the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
 allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, the
 equivalence and direction minima, and the mechanism cohort's values;
@@ -150,12 +152,12 @@ from zero_field_refusal.analysis.study2_short import (
     SENSITIVITIES,
     VERSIONS_CONFIG,
     VERSIONS_RECORD,
+    VERSIONS_RECORDS,
     SealedLabelError,
     confirmation_guard,
     continuation,
     exhausted_runs,
     issued_ranges,
-    issued_versions,
     issued_w_max,
     look_blocks,
     looks,
@@ -173,6 +175,7 @@ from zero_field_refusal.analysis.study2_short import (
     split_timecourse,
     timecourse_summary,
     utility_family,
+    versions_evidence,
     versions_problems,
 )
 from zero_field_refusal.config import load_config
@@ -624,6 +627,14 @@ def versions_main(argv: list[str]) -> None:
                                  supersedes=args.supersedes, reason=args.reason)  # fmt: skip
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
+    # Fails closed (amendment 5): the first record names none, every later one names the first.
+    first = REPO_ROOT / VERSIONS_RECORDS[0]
+    if args.out.resolve() == first.resolve():
+        if args.supersedes is not None:
+            parser.error(f"{VERSIONS_RECORDS[0]} is the first versions record: it supersedes none")
+    elif args.supersedes is None or args.supersedes.resolve() != first.resolve():
+        parser.error(f"{args.out} is a later versions record: it must name the first, "
+                     f"--supersedes {VERSIONS_RECORDS[0]}, with --reason TEXT")  # fmt: skip
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(record, indent=2) + "\n")
     print(args.out)
@@ -733,11 +744,7 @@ def main() -> None:
     if w_max is None or not w_max > 0:
         parser.error("w_max is needed: --w-max or --fixation")
     records = launch_records(args.runs_root) if args.runs_root is not None else []
-    if args.judge:  # the looks read labels: the versions record must hold, the confirmation's
-        problems = versions_problems(args.versions, fixation=args.fixation, judge=args.judge,
-                                     issued=issued_versions(records))  # fmt: skip
-        if problems:
-            parser.error("the versions record does not hold: " + "; ".join(problems))
+    if args.judge:
         try:
             sealed_dir = sealed_directory(args.sealed_dir)
         except ValueError as exc:
@@ -753,6 +760,12 @@ def main() -> None:
     if theta0_problems(theta0):
         parser.error("; ".join(theta0_problems(theta0)))
     loaded = load_trajectories(*args.runs)
+    if args.judge:  # the looks read labels: the versions record must hold, the confirmation's,
+        # shown by the journal's start of every confirmation run
+        problems = versions_problems(args.versions, fixation=args.fixation, judge=args.judge,
+                                     **versions_evidence(records, loaded))  # fmt: skip
+        if problems:
+            parser.error("the versions record does not hold: " + "; ".join(problems))
     facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
     # The time course's runs, split once here: the looks, their labels, the utility family, the
     # sensitivities and the contrasts read ``runs`` only (review of Task 5, C1).

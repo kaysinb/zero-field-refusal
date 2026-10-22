@@ -552,7 +552,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   (``issued_versions``; a start whose header names none, as every campaign written at the
   first record's commit, counts under the first record); once a confirmation has started, its
   later blocks, its time course, its looks and the audit are refused under any other record.
-  A record checked must be one of ``VERSIONS_RECORDS``.
+  A record checked must be one of ``VERSIONS_RECORDS``; a later one must name the first, its
+  exact path and sha256, with a reason. The check fails closed: every confirmation or
+  time-course run of the record store must have its start in the launch journal
+  (``unlaunched_runs``), or continuation, the looks and the audit are refused.
 """
 
 from __future__ import annotations
@@ -4018,7 +4021,8 @@ def versions_problems(
     fixation: str | Path,
     judge: str | None = None,
     repo: Path = REPO_ROOT,
-    issued: Mapping[str, Mapping[str, Any]] | None = None,
+    issued: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    unlaunched: Sequence[str] = (),
 ) -> list[str]:
     """How the running checkout and configs depart from the versions record at ``path`` (one of
     ``VERSIONS_RECORDS``, by default the current ``VERSIONS_RECORD``, written by
@@ -4034,14 +4038,17 @@ def versions_problems(
     - ``judge``'s identity is that of its config (``judge.judge_identity``), and the config is
       ``judge/<judge>`` when ``judge`` is given;
     - ``fixation.sha256`` is the sha256 of the fixation record ``fixation``;
-    - a later record (amendment 5) names the one before it, ``supersedes`` its path in the
-      checkout and its sha256, which must be that file's, with the ``reason`` (a non-empty
-      string): both or neither;
-    - ``path`` is one of ``VERSIONS_RECORDS``;
+    - ``path`` is one of ``VERSIONS_RECORDS``; the first names no other record, and every later
+      one (amendment 5) names the first, ``supersedes`` its exact path and the sha256 of the
+      committed file, which reads as a versions record, with a non-empty ``reason``;
     - ``issued``: the versions records that the issued confirmation and time-course campaigns
       named (``issued_versions``, by run label; a campaign written before the header named one
       under the first record), each of which must be this one: a confirmation runs, and its
-      looks are read, under the record it started with.
+      looks are read, under the record it started with;
+    - ``unlaunched``: the confirmation and time-course runs of the record store with no start
+      in the launch journal (``unlaunched_runs``), which must be none: a run whose start is not
+      shown has no record that can be shown (fails closed: a run store restored without its
+      journal is refused).
     """
     path = Path(path)
     if not path.is_file():
@@ -4108,7 +4115,8 @@ def versions_problems(
     digest = hashlib.sha256(Path(fixation).read_bytes()).hexdigest()
     if (record.get("fixation") or {}).get("sha256") != digest:
         problems.append(f"the record's fixation sha256 is not that of {fixation}")
-    problems += _succession_problems(record, repo)
+    if own in VERSIONS_RECORDS:
+        problems += _succession_problems(record, repo, own)
     own_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     others: dict[str, list[str]] = defaultdict(list)
     for label, named in sorted((issued or {}).items()):
@@ -4122,6 +4130,12 @@ def versions_problems(
                     else "its header names none: a campaign written before the second record"
                 )
                 others[f"{entry['path']} ({shown})"].append(label)
+    if unlaunched:
+        more = f" and {len(unlaunched) - 1} other(s)" if len(unlaunched) > 1 else ""
+        problems.append(f"the confirmation or time-course run {unlaunched[0]}{more} has no start "
+                        "in the launch journal, so the versions record it was launched under "
+                        "cannot be shown: restore the launch journal (--runs-root) that started "
+                        "it")  # fmt: skip
     for named, labels in sorted(others.items()):
         more = f" and {len(labels) - 1} other run(s)" if len(labels) > 1 else ""
         problems.append(f"the issued confirmation campaign of {labels[0]}{more} was written under "
@@ -4131,12 +4145,22 @@ def versions_problems(
     return problems
 
 
-def _succession_problems(record: Mapping[str, Any], repo: Path) -> list[str]:
-    """How a later versions record's reference to the one before departs from what
-    ``versions_problems`` requires (none: it holds, or the record is the first)."""
+def _succession_problems(record: Mapping[str, Any], repo: Path, own: str | None) -> list[str]:
+    """How a versions record's succession departs from what ``versions_problems`` requires
+    (none: it holds). The first record (``VERSIONS_RECORDS[0]``) names none; every later one
+    names the first, its exact path and the sha256 of the committed file, which reads as a
+    versions record, with a non-empty reason (fails closed: a later record without them is
+    refused)."""
     supersedes, reason = record.get("supersedes"), record.get("reason")
+    if own == VERSIONS_RECORDS[0]:
+        if supersedes is None and reason is None:
+            return []
+        return [f"{own} is the first versions record: it supersedes none"]
     if supersedes is None and reason is None:
-        return []
+        return [
+            f"{own} is a later versions record: it must name the first, "
+            f"{VERSIONS_RECORDS[0]} (supersedes: its path and sha256), with its reason"
+        ]
     if not (isinstance(reason, str) and reason.strip()):
         return [f"the record's reason {reason!r} is not a non-empty string"]
     if not (isinstance(supersedes, dict) and set(supersedes) == {"path", "sha256"}
@@ -4153,6 +4177,9 @@ def _succession_problems(record: Mapping[str, Any], repo: Path) -> list[str]:
         read_versions_record(earlier)
     except ValueError as exc:
         return [f"the record supersedes {supersedes['path']}: {exc}"]
+    if supersedes["path"] != VERSIONS_RECORDS[0]:
+        return [f"the record supersedes {supersedes['path']}, not the first versions record "
+                f"{VERSIONS_RECORDS[0]}"]  # fmt: skip
     return []
 
 
@@ -4177,6 +4204,29 @@ def read_versions_record(path: str | Path) -> dict[str, Any]:
 
 
 _RUN_SEED = re.compile(r"/s(\d+)$")
+
+
+def unlaunched_runs(
+    records: Sequence[Mapping[str, Any]],
+    runs: Sequence[Trajectory],
+    experiment: str = "study2_short",
+) -> list[str]:
+    """The confirmation and time-course runs among ``runs`` (an arm of the stage on a
+    confirmation seed) that no start record of the launch journal names (``run_id``): their
+    campaign, and so the versions record they were launched under, cannot be shown."""
+    started = {str(r.get("run_id")) for r in records
+               if r.get("event") == "start" and r.get("experiment") == experiment}  # fmt: skip
+    return sorted(r.run_id for r in runs if r.arm in ARMS and r.seed in CONFIRMATION_SEEDS
+                  and r.run_id not in started)  # fmt: skip
+
+
+def versions_evidence(
+    records: Sequence[Mapping[str, Any]], runs: Sequence[Trajectory]
+) -> dict[str, Any]:
+    """What ``versions_problems`` checks a record against, from the launch journal ``records``
+    and every run of the record store (the time course's included): ``issued`` and
+    ``unlaunched``."""
+    return {"issued": issued_versions(records), "unlaunched": unlaunched_runs(records, runs)}
 
 
 def issued_versions(
