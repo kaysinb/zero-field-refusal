@@ -20,8 +20,8 @@ differs from amendment 3 or the sections above, it governs.
 **Amendment 5** ([2026-10-22](#amendment-5-the-candidate-order-at-batch-20-after-u-8))
 amends amendment 4's B = 20 order after the three-arm validation at U = 8 failed on utility: the
 three arms at U = 7, then at U = 6, then the primary pair at U = 7 and at U = 6, else the B = 20
-feasibility report; the pair is not visited at U = 8. It was decided before any outcome of the
-U = 7 candidate.
+feasibility report; the pair is not visited at U = 8, and its rates at each U are the three
+arms' triples there. It was decided before any outcome of the U = 7 candidate.
 
 Study 2 follows the stopped pilot (study 1: [preregistration](preregistration.md),
 [decision](decisions.md#study-decisions), [short report](reports/gate-1.md)). It is a new
@@ -560,7 +560,7 @@ Format: date, item, old value → new value, reason, and which data had been see
 | 2026-10-16 | The full soft-target controls' gradient rule ([amendment 2](#amendment-2-the-full-controls-gradient-rule)) | A gradient norm above 10 × the median of the preceding norms stops a control → in the full controls it is only logged; a monitor reading or scoring diagnostic above 0.01 × √35 is checked at once without the cache, and a verified exceedance stops and rejects the control; the three full controls are rerun | All three full controls stopped on single batches of the soft-target noise floor, with their scoring K at 1.3–2.2·10⁻⁹ and no growth, which made the outcome `numerics_fail`. Adopted after that was seen, and disclosed: both outcomes are reported | K, gradient and displacement norms of the controls, the rejected batches' stream positions, response lengths and sampled log-probabilities there, the replay, teacher-gap and cache checks; the search's K and the selection's outcome; no harm label, no response text, no utility of a control |
 | 2026-10-16 | The primary question ([amendment 3](#amendment-3-redirection-to-the-short-regime)) | AdamW-long against SGD-long by a fitted curve → AdamW-25 against FA-25, exactly 25 steps, three targeted rates per arm, interpolation in ln K; two looks (36 / 60 supported, cap 80), paired bootstrap-t, α 0.040; w_max 0.47; equivalence only at a look with ≥ 36 supported, no reading below 10 supported; bias allowance b = 1.084 pp for the pointwise reading; pre-warmed AdamW-25 secondary | SGD-long does not reach the zone on the tested policies; the rectification hypothesis concerns Adam's first steps | Stage A's K, utility, numerical records and step times; the short grids' K trajectories; amendment 2's control reruns and the momentum pilot (K and numerics); study 1's published data; no study-2 judge label, no response text |
 | 2026-10-19, with decisions to 2026-10-21 | The numerical acceptance, the batch order, the secondary contrasts and the audit ([amendment 4](#amendment-4-a-corrected-numerical-criterion-batch-20-and-the-mechanism-cohort)) | An FA soft-target control per FA rate → a twin test (perturbations of norm 5 · 10⁻⁵ and a float64 reference, D_twin ≤ 0.01·K\*) on 15 K-only cases of fresh seeds, twin A numerically consistent with its run (fa21), and a same-path control per FA rate; candidates (8, 5), (8, 20), (7, 5), (7, 20) → B = 20 only, the three arms then the primary pair, else a feasibility report, a technical failure blocking for a human decision (fa22); secondary contrasts → the mechanism cohort (60 jointly supported blocks, cap 80, minimum 36) with a max-t interval, both estimands conditional on the benchmark (fa24); exploratory time course, drift and scalars; the audit drawn by coefficient, 400 / 400 / 200 (fa16–fa20) | Two of amendment 3's FA controls failed at B = 5; the diagnostic found the control's targets on another path (branch F). Later: S2's first check failed technically only, on fp32-level differences of twin A (fa21, fa22); the stratified audit's formal interval was invalid or uninformative at 1 000 labels (fa16–fa18); the provisional simulation's coverage depended on the estimand (fa24) | Amendment 3's discovery K and utility and its controls' numerics, the diagnostic's records, Stage A's B = 20 grids, study 1's published data; for the later decisions S1's K and utility summaries, S2's numerical records, the provisional simulation and round 2's checks of the amended one (known at fa25); no study-2 judge label, no response text |
-| 2026-10-22, decided before any outcome of the U = 7 candidate | The B = 20 candidate order ([amendment 5](#amendment-5-the-candidate-order-at-batch-20-after-u-8)) | The three arms at (8, 20), (7, 20), then the primary pair at (8, 20), (7, 20) → the three arms at (8, 20), (7, 20), (6, 20), then the primary pair at (7, 20), (6, 20), else the feasibility report; U = 6 the floor (K\* = √30), the pair at U = 8 not visited | S3, the three-arm validation at (8, 20), failed on utility (FA's MMLU bounds 5.79 and 6.59 pp, the pre-warmed arm's 6.26 pp, against 5 pp); recomputed for the pair alone on S3's runs, FA still fails (5.62 and 6.40 pp) | S3's K, numerics and utility, and the pair's recomputation on them; U = 7's discovery started, no outcome known; no study-2 judge label, no response text |
+| 2026-10-22, decided before any outcome of the U = 7 candidate | The B = 20 candidate order ([amendment 5](#amendment-5-the-candidate-order-at-batch-20-after-u-8)) | The three arms at (8, 20), (7, 20), then the primary pair at (8, 20), (7, 20) → the three arms at (8, 20), (7, 20), (6, 20), then the primary pair at (7, 20), (6, 20), else the feasibility report; U = 6 the floor (K\* = √30), the pair at U = 8 not visited; the pair's rates: a selection over every record at the batch → the three arms' triples at the same U; the simulation gains a U input (K\* and the half-span) for the U = 7 and U = 6 forecasts | S3, the three-arm validation at (8, 20), failed on utility (FA's MMLU bounds 5.79 and 6.59 pp, the pre-warmed arm's 6.26 pp, against 5 pp); recomputed for the pair alone on S3's runs, FA still fails (5.62 and 6.40 pp) | S3's K, numerics and utility, and the pair's recomputation on them; U = 7's discovery started, no outcome known; no study-2 judge label, no response text |
 
 ### Amendment 1: the monitor panel
 
@@ -1918,9 +1918,11 @@ gate-B record. The versions record pins one commit for validation and confirmati
 
 Decided on 2026-10-22 by the researcher, **before any outcome of the U = 7 candidate**, after the
 three-arm validation at (8, 20) (S3) failed on utility. Where this amendment differs from
-amendment 4, it governs; everything else in amendment 4 stands. It amends one rule, the order of
-the B = 20 candidates ([amendment 4 §2](#2-batch-and-u-replaces-amendment-3s-batch-and-u)), and
-changes no threshold.
+amendment 4, it governs; everything else in amendment 4 stands. It amends the order of the
+B = 20 candidates ([amendment 4 §2](#2-batch-and-u-replaces-amendment-3s-batch-and-u)) and where
+the primary pair takes its rates (item 7), gives the simulation a U input (item 6), and changes
+no threshold. Items 6 and 7 were settled the same day, also before any outcome of the U = 7
+candidate.
 
 #### The decision
 
@@ -1931,9 +1933,10 @@ changes no threshold.
    4. the primary pair (AdamW-25, FA-25) at (7, 20);
    5. the primary pair at (6, 20);
    6. otherwise the stage ends `infeasible`, with the **B = 20 feasibility report**.
-2. **The primary pair at U = 8 is not visited.** S3's records decide it: recomputed on S3's
-   runs for the pair alone, a family of six utility bounds, FA fails its MMLU bound at 1.62 and
-   2.0 · 10⁻⁵ ([below](#what-was-known-when-it-was-decided-2)).
+2. **The primary pair at U = 8 is not visited.** S3's records decide it: the pair's rates at
+   U = 8 are the three arms' triple there (item 7), so its verdict is a recomputation on S3's
+   runs for the pair alone, a family of six utility bounds, and FA fails its MMLU bound at 1.62
+   and 2.0 · 10⁻⁵ ([below](#what-was-known-when-it-was-decided-2)).
 3. **U = 6 is the floor.** K\* = √30 ≈ 5.477, so the twin bound is D_twin ≤ 0.01·K\* ≈ 0.05477.
    There is no candidate at U = 5.
 4. **Unchanged:**
@@ -1947,20 +1950,27 @@ changes no threshold.
 5. **Money.** A next candidate is visited only when what remains of the budget covers its checks
    and the confirmation. Otherwise the stage stops for a budget decision, with the price, as
    [amendment 4 §6](#6-budget-and-resources) sets out. This is procedural: no code enforces it.
-6. **Power at U = 6.** Before a U = 6 candidate is fixed, its power and support are forecast with
-   the existing simulation procedure at its rates. The forecast is a report, made before any
-   confirmation.
-7. **The pair at a given U** reuses every record of the three-arm visit at that U, as amendment 4
-   has it.
-   - If the three-arm validation ran, the pair's verdict is a recomputation on the same runs.
-   - If the visit stopped earlier, the pair runs what is missing: its numerical check and its own
-     validation of 72 runs (two arms, three rates, twelve seeds).
-   - The pair's selection is made over every record at B = 20, as amendment 4 prescribes. The
-     three arms' visit at (6, 20) comes before the pair's at (7, 20). Rates run by U = 6's rounds
-     therefore enter the pair's selection at U = 7, and may replace a rate of the three arms'
-     triple there. A rate new to the pair gets its numerical case and a check at U = 7, and its
-     validation runs if they do not exist yet. The pair's validation is then no longer a pure
-     recomputation, and the report says so.
+6. **Power at U = 6, and at U = 7.** The simulation gains a U input, `--upper` of
+   `scripts/study2_short_simulate.py`, which sets K\* = √(5U) and the nominal half-span
+   ln √(U/5) of the endpoints and nothing else; its default, U = 8, gives every earlier run's
+   constants (K\* = √40, half-span 0.235). Before a U = 6 candidate is fixed, its power and
+   support are forecast with the existing simulation procedure at its rates, with `--upper 6`.
+   A U = 7 candidate's forecast is made the same way, with `--upper 7`, before its
+   confirmation. Each forecast is a report, made before any confirmation, and decides nothing.
+7. **The pair at a given U takes the three arms' triples at that U.** Its rates are the primary
+   arms' triples of the three-arm visit at the same U (their last selection there, a re-solve
+   of the search allowance included), with no round and no selection of its own, so that no
+   rate run at another U enters them. Every record of that visit is reused.
+   - If the three-arm validation ran, the pair's verdict is a pure recomputation of the same
+     records: no new run.
+   - If the visit stopped earlier, the pair runs only what is missing at that U: its numerical
+     check if none qualified its rates, and its own validation of 72 runs (two arms, three
+     rates, twelve seeds).
+   - A primary arm without a feasible triple at that visit fails the pair as it failed the three
+     arms (or blocks it, if it was stopped there by technical marks only). A triple holding a
+     rate found unusable at the batch since stops the pair by the kind of its mark, with no
+     re-selection.
+   - Amendment 4's re-selection of the pair over every record at the batch is withdrawn.
 
 #### What was known when it was decided
 
@@ -1996,14 +2006,21 @@ changes no threshold.
   in ln K, inside the selection's coverage tolerance of 0.1; the realized-width bound w_max 0.47
   and the other selection rules are unchanged. The forecast of item 6 shows what this does to
   support and power before a U = 6 candidate is fixed.
+- **The pair forgoes later rates.** Pinned to the three arms' triples (item 7), the pair at U = 7
+  never takes a rate that U = 6's rounds run, even one nearer U = 7's targets. That keeps the
+  pair's verdict a recomputation of records made before any later candidate, and it is the
+  reason the pair at U = 8 needs no visit.
 
 #### Machinery
 
 - **The code.** `analysis.study2_short`: `CANDIDATES` holds the three arms' order, (8, 20), (7, 20),
-  (6, 20); `FALLBACK_CANDIDATES` the pair's, (7, 20), (6, 20). `pair_recomputation` gives the
-  pair's verdict on a three-arm validation's runs. The archived records up to S3 replay to S3's
-  verdict at (8, 20) and to the same next step: U = 7's discovery for the three arms, six FA runs
-  at 1.52 and 1.75 · 10⁻⁵ on seeds 2000–2002.
+  (6, 20); `FALLBACK_CANDIDATES` the pair's, (7, 20), (6, 20). The pair's visit takes the three
+  arms' triples (item 7). `pair_recomputation` gives the pair's verdict on a three-arm
+  validation's runs. The archived records up to S3 replay exactly to S3's verdict at (8, 20), to
+  the pair's recomputation there (5.62 and 6.40 pp), and to the same next step: U = 7's
+  discovery for the three arms, six FA runs at 1.52 and 1.75 · 10⁻⁵ on seeds 2000–2002.
+- **The simulation's U** (`analysis.study2_short_sim.set_upper`, `--upper`): K\* and the
+  half-span only, 8 by default; the forecast's `summary.json` records U, K\* and the half-span.
 - **The fixation record's `candidates`** gains U = 6 in `order` and the pair's own
   `fallback_order`; it is read strictly against the code, as before. Nothing else in the fixation
   record changes: `mechanism.level` stays 0.975.
@@ -2015,7 +2032,11 @@ changes no threshold.
     commit of this amendment's code, and committed alone. It names the first (`supersedes`: its
     path and sha256) and the reason: the candidate-selection code changed.
   - A campaign is written under the record of its checkout, and names it in its header (the
-    launcher logs it with every start). A confirmation's later blocks, its time course, its looks
-    and the audit are refused under any record other than the one the confirmation started with.
+    launcher logs it with every start). A confirmation's start whose header names none, as every
+    campaign written at `6fb20a9`, counts under the first record; every record a block's starts
+    named is kept, so that a retry under another record does not hide the first. A
+    confirmation's later blocks, its time course, its looks and the audit are refused under any
+    record other than the one the confirmation started with: a confirmation started at
+    `6fb20a9` is continued and read from that checkout.
 - **No GPU path changes.** The qualification made on gate B's GPU code holds
   (`reuse_check(e380bcc, HEAD)`: no GPU path changed).

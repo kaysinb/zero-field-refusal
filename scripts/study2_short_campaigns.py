@@ -105,10 +105,11 @@ ones per seed and arm (``progress``'s ``timecourse``).
   or a child that adds the record alone, or any descendant when the record allows it; no
   uncommitted change or untracked file, so campaign files go under $RUNS_DIR), or when an issued
   confirmation or time-course campaign named another record (``issued_versions``, from the
-  launch journal: a confirmation keeps the record it started with). The campaign's YAML header
-  names its record (``versions_record``, ``versions_sha256``), which the launcher logs with every
-  start. The discovery and numerical kinds (``discovery``, ``repair``,
-  ``prewarmed``, ``targeted``, ``numerical``) precede the record and do not read it.
+  launch journal, a header naming none under the first record: a confirmation keeps the record
+  it started with). The campaign's YAML header names its record (``versions_record``,
+  ``versions_sha256``), which the launcher logs with every start. The discovery and numerical
+  kinds (``discovery``, ``repair``, ``prewarmed``, ``targeted``, ``numerical``) precede the
+  record and do not read it.
 - **The confirmation loop** (``confirmation_guard``; cap 80). A block is started once it has runs
   or belongs to a range the launcher has started (its journal), even before the launcher reaches
   it. Either way the next range starts at the first block not started and touches no started

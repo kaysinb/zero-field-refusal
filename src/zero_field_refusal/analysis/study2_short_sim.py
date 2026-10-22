@@ -19,7 +19,8 @@ readings of an interval use b: a direction needs the interval to exclude [−b, 
 needs it inside ±(5 pp − b).
 
 Design (``interp``). Each arm runs three fixed rates for exactly 25 steps. Their endpoints sit at
-the nominal positions x_r = (−w, 0, +w), w = ln √(U/5) = 0.235 for U = 8, or, for
+the nominal positions x_r = (−w, 0, +w), w = ln √(U/5) = 0.235 for U = 8 (U an input, 8 by
+default: ``set_upper``, which sets K* = √(5U) too), or, for
 ``positions="grid"`` (design ``interp_grid``), at the coarse B = 5 discovery brackets: A (−0.39,
 0.17, 0.57), F (−0.23, 0.27, 0.73), with P at the nominal positions.
 
@@ -208,14 +209,42 @@ def generator(base_seed: int, *keys: object) -> np.random.Generator:
 ARMS = ("A", "F", "P")  # AdamW-25, frozen Adam-25, pre-warmed AdamW-25
 SECONDARY_CONTRASTS = ("P-F", "A-P")
 PROMPTS = 521
-K_STAR = math.sqrt(40)
-U = 8
-HALF_SPAN = math.log(math.sqrt(U / 5))  # w = 0.235
-NOMINAL = (-HALF_SPAN, 0.0, HALF_SPAN)
+# U, the upper target (amendment 5: an input, 8 by default; ``set_upper``): it sets K* = √(5U)
+# and the nominal half-span w = ln √(U/5) only. A process spawned by the simulation reads it from
+# the environment as it imports this module, so that its workers simulate the same U.
+DEFAULT_UPPER = 8.0
+UPPER_ENV = "ZFR_STUDY2_SIM_UPPER"
+
+
+def _at_upper(upper: float) -> tuple[float, float, float, tuple[float, float, float]]:
+    """U, K* = √(5U), the half-span w = ln √(U/5) and the nominal positions (−w, 0, w)."""
+    upper = float(upper)
+    if not (math.isfinite(upper) and upper > 5):
+        raise ValueError(f"U must be a number above 5 (the lower target), not {upper!r}")
+    half = math.log(math.sqrt(upper / 5))
+    return upper, math.sqrt(5 * upper), half, (-half, 0.0, half)
+
+
+U, K_STAR, HALF_SPAN, NOMINAL = _at_upper(float(os.environ.get(UPPER_ENV, DEFAULT_UPPER)))
 POSITIONS = {
     "nominal": (NOMINAL, NOMINAL, NOMINAL),
     "grid": ((-0.39, 0.17, 0.57), (-0.23, 0.27, 0.73), NOMINAL),  # B = 5 discovery medians
 }
+
+
+def set_upper(upper: float) -> None:
+    """Simulate at U: K* and the nominal half-span (the nominal positions, also the pre-warmed
+    arm's in the B = 5 grid design) follow it, nothing else does. U = 8, the default, gives the
+    constants every earlier run used (K* = √40, w = 0.235). Set before any simulation in the
+    process: it is passed on to the workers through the environment (``UPPER_ENV``)."""
+    global U, K_STAR, HALF_SPAN, NOMINAL
+    U, K_STAR, HALF_SPAN, NOMINAL = _at_upper(upper)
+    os.environ[UPPER_ENV] = repr(U)
+    POSITIONS["nominal"] = (NOMINAL, NOMINAL, NOMINAL)
+    POSITIONS["grid"] = (*POSITIONS["grid"][:2], NOMINAL)
+    _geometry.cache_clear()
+
+
 MISSES = ("common", "arm", "rate")
 SHAPES = ("normal", "skewed", "rare_centered", "rare_only", "heavy")
 RARE = 0.1  # π
@@ -2943,7 +2972,7 @@ def measure_inputs(
     batch: int,
     seeds: Sequence[int],
     rates: Mapping[str, Sequence[float]] | None = None,
-    kstar: float = K_STAR,
+    kstar: float | None = None,
     w_max: float = DECIDED_W_MAX,
 ) -> dict[str, dict[str, Any]]:
     """The inputs, per arm (A, F, P), measured on 25-step runs (``stage_a.Trajectory``) at
@@ -2956,9 +2985,10 @@ def measure_inputs(
     - with ``rates[arm]`` (the selected rates): ``failure_rate``, the share of those runs (one per
       rate and seed; a missing run counts) without an endpoint, and, for a triple,
       ``support_rate``, the share of seeds whose block is supported (``block_support`` at K* and
-      ``w_max``).
+      ``w_max``; K* of the simulated U, ``K_STAR``, unless ``kstar`` is given).
 
     An arm without two complete rates has no spreads (None); one without ``rates`` no rates."""
+    kstar = K_STAR if kstar is None else kstar
     out = {}
     for arm, name in INPUT_RUN_ARMS.items():
         mine = [r for r in runs if r.arm == name and r.batch_size == batch and r.seed in seeds

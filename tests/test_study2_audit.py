@@ -898,6 +898,32 @@ def test_draw_refuses_before_the_final_analysis_and_reads_no_label(monkeypatch, 
     assert not (tmp_path / "audit").exists()
 
 
+def test_draw_checks_the_record_the_running_confirmation_named(monkeypatch, tmp_path,
+                                                               capsys) -> None:  # fmt: skip
+    """Amendment 5: the draw checks its versions record against those the issued confirmation
+    campaigns named in the launch journal (``issued_versions``): here a start written before
+    the headers named one, which counts under the first record, and its retry under another
+    record, both kept. The draw refuses before it reads anything when the check does not hold."""
+    cli = study2_audit_cli
+    first = "c-blocks-1-2-rayleigh/s3000"
+    records = [{"event": "start", "experiment": "study2_short", "run": first,
+                "header": {"w_max": 0.47}},
+               {"event": "start", "experiment": "study2_short", "run": first,
+                "header": {"w_max": 0.47, "versions_record": "docs/study2-short-versions-2.json",
+                           "versions_sha256": "b" * 64}}]  # fmt: skip
+    seen = []
+    monkeypatch.setattr("zero_field_refusal.analysis.study2_short.versions_problems",
+                        lambda path, **kwargs: seen.append(kwargs) or ["held"])  # fmt: skip
+    with pytest.raises(SystemExit) as stopped:
+        cli.main([*draw_args(tmp_path), "--runs-root", runs_root(tmp_path, records)])
+    assert stopped.value.code == 2
+    assert seen[-1]["issued"] == {first: [
+        {"path": "docs/study2-short-versions.json", "sha256": None},
+        {"path": "docs/study2-short-versions-2.json", "sha256": "b" * 64}]}  # fmt: skip
+    assert "refused: the versions record does not hold: held" in capsys.readouterr().err
+    assert not (tmp_path / "audit").exists()
+
+
 def test_an_error_after_the_gate_refuses(monkeypatch, tmp_path, capsys) -> None:
     """Review nit: a label pending or another error after the gate exits 2 with "refused" and
     writes nothing."""

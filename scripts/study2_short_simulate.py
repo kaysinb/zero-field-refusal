@@ -74,6 +74,12 @@ read docs/study2-short-b20-inputs.json by default. Every simulation copies the r
 inputs.json, records its sha256 in summary.json, and writes inventory.tsv: the path, size and
 sha256 of every file it wrote.
 
+--upper U (amendment 5; every mode) simulates at U: it sets K* = √(5U), at which the inputs
+measure support, and the nominal half-span ln √(U/5) of the endpoints, and nothing else
+(``sim.set_upper``; the workers inherit it). The default, 8, gives every earlier run's constants
+(K* = √40, half-span 0.235). A candidate at U = 7 or U = 6 is forecast with --upper 7 or 6 at its
+rates before its confirmation. summary.json records U, K* and the half-span in its constants.
+
 The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
 the selection's record; both roots, because a selected rate may be one of Stage A's grid rates,
 FA's 2e-5 at U = 8, and a selected rate without a run counts as a failure):
@@ -296,6 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="inputs, final: each arm's selected rates (A, F, P)",
     )
     parser.add_argument("--batch", type=int, default=20, help="inputs, final: the batch size")
+    parser.add_argument("--upper", type=float, default=sim.DEFAULT_UPPER,
+                        help="U: K* = sqrt(5U) and the nominal half-span ln sqrt(U/5) only "
+                             "(default 8, every earlier run's)")  # fmt: skip
     parser.add_argument(
         "--seeds", type=int, nargs="+", default=[2000, 2001, 2002], help="inputs, final: seeds"
     )
@@ -312,6 +321,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:  # U before anything is simulated or measured; the workers inherit it
+        sim.set_upper(args.upper)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 1 <= args.workers <= (os.cpu_count() or 1):  # a dedicated CPU Pod may use every core
         parser.error(f"--workers must lie in 1..{os.cpu_count() or 1}")
     if args.mode in MECHANISM_MODES:
@@ -489,8 +502,14 @@ def alpha_choice(
     return tuple(sorted(alphas))
 
 
+def upper() -> dict:
+    """The simulated U with what it sets (``sim.set_upper``)."""
+    return {"upper": sim.U, "k_star": sim.K_STAR, "half_span": sim.HALF_SPAN}
+
+
 def constants() -> dict:
     return {
+        **upper(),
         "prompts": sim.PROMPTS,
         "cap": sim.CAP,
         "look_designs": [asdict(d) for d in sim.LOOK_DESIGNS],
@@ -580,6 +599,7 @@ def checked_level(path: Path) -> float | None:
 
 def mechanism_constants() -> dict:
     return {
+        **upper(),
         "target": sim.MECHANISM_TARGET,
         "cap": sim.MECHANISM_CAP,
         "minimum": sim.MECHANISM_MINIMUM,

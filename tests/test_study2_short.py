@@ -619,34 +619,39 @@ def test_the_pair_after_a_visit_stopped_before_validation_runs_its_own() -> None
 
 
 def test_the_pair_after_a_full_three_arm_validation_only_recomputes() -> None:
-    """The pre-warmed arm unsupported on the validation seeds fails the three arms' validation
-    at (8, 20) and (7, 20); at (6, 20) AdamW's new rates are unstable, so the candidate fails
-    at discovery and leaves (7, 20)'s selection as it was. The pair at (7, 20) then reads the
-    three-arm check there for its primary entries and recomputes its validation on the runs
-    the three arms made: no new check, no new run."""
+    """Amendment 5: the pair's rates at a U are the three arms' triples at that U. The
+    pre-warmed arm unsupported on the validation seeds fails the three arms' validation at
+    (8, 20), (7, 20) and (6, 20); U = 6's discovery runs AdamW at 1.35e-5 and 1.43e-5, the
+    latter nearer U = 7's K* than the three arms' 1.48e-5 there. The pair at (7, 20) keeps
+    the three arms' U = 7 triple all the same, reads their check there and recomputes their
+    validation's verdict on the same runs: no new check, no new run."""
 
-    def hook(run):
+    def unsupported(run):  # the pre-warmed arm never brackets K* on the validation seeds
         if run.seed in VALIDATION_SEEDS and run.arm == PREWARMED:
             return traj(run.arm, run.batch_size, run.lr, run.seed, 1.0, mmlu=0.3, factual=0.1)
-        if run.arm == ADAMW and run.seed in SEEDS and 1.3e-5 < run.lr < 1.45e-5:
-            return traj(run.arm, run.batch_size, run.lr, run.seed, None, stop="k_above_max",
-                        steps=15)  # fmt: skip
         return run
 
     runs = grids()
-    seen, result, verdicts = drive(runs, hook=hook)
+    seen, result, verdicts = drive(runs, hook=unsupported)
     at8, at7, at6, pair = result["attempts"]
     assert [(a["U"], a["three_arm"], a["failed_at"]) for a in (at8, at7, at6, pair)] == [
-        (8.0, True, "validation"), (7.0, True, "validation"), (6.0, True, "discovery"),
+        (8.0, True, "validation"), (7.0, True, "validation"), (6.0, True, "validation"),
         (7.0, False, None)]  # fmt: skip
-    assert seen[-3:] == ["validation", "discovery", "done"]  # nothing new after U = 6's round
+    assert at6["arms"][ADAMW]["selections"][-1]["rates"] == [1.27e-5, 1.35e-5, 1.43e-5]
+    # Nothing is made after U = 6's validation: the pair asks for no campaign.
+    assert seen[-3:] == ["numerical-check", "validation", "done"]
     done = result["next"]
     assert (done["campaign"], done["U"], done["three_arm"]) == ("done", 7.0, False)
-    assert {arm: done["rates"][arm] for arm in (ADAMW, FA)} == {
-        arm: at7["arms"][arm]["selections"][-1]["rates"] for arm in (ADAMW, FA)}  # fmt: skip
-    assert pair["numerical"][0]["verdict"] == at7["numerical"][0]["verdict"]
-    assert len(verdicts) == 2  # (8, 20)'s check and (7, 20)'s
-    assert len([r for r in runs if r.seed in VALIDATION_SEEDS]) == 12 * (9 + 3)
+    triple7 = {arm: at7["arms"][arm]["selections"][-1]["rates"] for arm in (ADAMW, FA)}
+    assert triple7[ADAMW] == [1.27e-5, 1.48e-5, 1.5e-5]
+    assert {arm: done["rates"][arm] for arm in (ADAMW, FA)} == triple7
+    assert all(s["pinned"] == {"U": 7.0, "batch": 20}
+               for arm in (ADAMW, FA) for s in pair["arms"][arm]["selections"])  # fmt: skip
+    assert [e["verdict"] for e in pair["numerical"]] == [at7["numerical"][0]["verdict"]]
+    assert len(verdicts) == 3  # the three arms' checks at U = 8, 7 and 6; none for the pair
+    recomputed = study2_short.pair_recomputation(at7, runs, THETA0, W_MAX)["verdict"]
+    assert {k: done["validation"][k] for k in ("passes", "jointly_supported", "utility")} == {
+        k: recomputed[k] for k in ("passes", "jointly_supported", "utility")}  # fmt: skip
     assert done["validation"]["passes"] and done["validation"]["arms"] == [ADAMW, FA]
 
 
@@ -970,7 +975,8 @@ def test_prewarmed_never_feasible_falls_back() -> None:
     assert done["prewarmed_dropped"] and not done["three_arm"] and done["rates"][PREWARMED] is None
     assert done["validation"]["arms"] == [ADAMW, FA]  # amendment 3's primary-arm validation
     assert seen[-4:] == ["numerical", "numerical-check", "validation", "done"]
-    primary7 = {ADAMW: [1.27e-5, 1.43e-5, 1.5e-5], FA: [1.59e-5, 1.86e-5, 2e-5]}
+    # The three arms' U = 7 triples (amendment 5), not U = 6's 1.43e-5 for AdamW
+    primary7 = {ADAMW: [1.27e-5, 1.48e-5, 1.5e-5], FA: [1.59e-5, 1.86e-5, 2e-5]}
     assert {arm: done["rates"][arm] for arm in (ADAMW, FA)} == primary7
     assert list(verdicts) == [verdict_path(primary7, upper=7.0)]  # the primary arms' own check
     assert {(r.arm, r.seed) for r in runs if r.seed in NUMERICAL_SEEDS} <= {
@@ -1092,8 +1098,10 @@ def test_the_fallback_gives_a_carried_candidate_no_new_round() -> None:
     failing at B = 20, and the replacement its allowance proposed, 1.26e-5, failing too. In the
     fallback, AdamW has no triple at (8, 20) without its unusable rates; a new round would be a
     second allowance, so the candidate fails without one (its rates failing: a scientific stop).
-    (7, 20)'s primary pair is not visited (its primary arm failed its numerical gate), and the
-    stage ends in the B = 20 feasibility report: never B = 5."""
+    Its rates being the three arms' triples there (amendment 5), the pinned triple holding
+    1.27e-5 fails it without a check. (7, 20)'s primary pair is not visited (its primary arm
+    failed its numerical gate), and the stage ends in the B = 20 feasibility report: never
+    B = 5."""
 
     def unsupported(run):  # the pre-warmed arm never brackets K* on the validation seeds
         if run.seed in VALIDATION_SEEDS and run.arm == PREWARMED:
@@ -1117,7 +1125,9 @@ def test_the_fallback_gives_a_carried_candidate_no_new_round() -> None:
     assert attempts[1]["allowance"][ADAMW]["repair"]["rates"] == [1.17e-5, 1.26e-5]
     fallback = attempts[2]
     assert fallback["resolve_carried"] and fallback["failed_arms"] == [ADAMW]
-    assert "the candidate's search allowance spent at an earlier visit" in fallback["reasons"][0]
+    assert fallback["reasons"][0].startswith("the pinned triples hold rates found unusable at the "
+                                             "batch since the three arms' visit: ['adamw_25 "
+                                             "1.27e-05: failing")  # fmt: skip
     assert fallback["numerical"] == []
     assert fallback["excluded"][ADAMW].keys() == {1.26e-5, 1.27e-5, 1.48e-5}
     assert f"{ADAMW}/B=20/U=8" in result["rounds"]
@@ -1128,11 +1138,13 @@ def test_the_fallback_gives_a_carried_candidate_no_new_round() -> None:
 
 
 @pytest.mark.usefixtures("amendment4_order")
-def test_the_fallback_reselects_over_every_record_at_its_batch() -> None:
-    """Review of Task 2, minor 2: a candidate that failed at discovery in pass 1 is visited again
-    in the fallback, its primary arms selected over every record at its batch. Here AdamW has no
-    triple at (8, 20) in pass 1 (its K* rates unstable on seed 2002, a coverage miss its repair
-    cannot fix); U = 7's round at B = 20 adds 1.42e-5, which gives it one in the fallback."""
+def test_the_fallback_never_reselects_over_rates_run_since() -> None:
+    """Amendment 5: the pair's rates at a candidate are the three arms' triples there, never a
+    selection over rates run since. Here AdamW has no triple at (8, 20) in pass 1 (its K* rates
+    unstable on seed 2002, a coverage miss its repair cannot fix); U = 7's round at B = 20 adds
+    1.42e-5, which would give it one at (8, 20) (amendment 4's re-selection). The pair at
+    (8, 20) fails all the same, and the pair at (7, 20) is taken with the three arms' triples
+    there."""
     scale = {**SCALE, (PREWARMED, 20): 0.3, (PREWARMED, 5): 0.3}
     unstable = {(ADAMW, 20, 1.5e-5, 2002), (ADAMW, 20, 1.48e-5, 2002)}
 
@@ -1148,13 +1160,19 @@ def test_the_fallback_reselects_over_every_record_at_its_batch() -> None:
     assert [(a["U"], a["batch"], a["three_arm"], a["failed_at"], a["failed_arms"])
             for a in attempts] == [
         (8.0, 20, True, "discovery", [ADAMW]), (7.0, 20, True, "discovery", [PREWARMED]),
-        (8.0, 20, False, None, [])]  # fmt: skip
+        (8.0, 20, False, "discovery", [ADAMW]), (7.0, 20, False, None, [])]  # fmt: skip
     assert "a coverage miss that re-targeting cannot repair" in attempts[0]["reasons"][0]
     assert 1.42e-5 in result["rounds"][f"{ADAMW}/B=20/U=7"]["targeted"]["new_rates"]
+    assert attempts[2]["reasons"] == [f"['{ADAMW}'] without a feasible triple at the three arms' "
+                                      "visit of the candidate, to which the pair's rates are "
+                                      "pinned"]  # fmt: skip
     assert seen[-4:] == ["numerical", "numerical-check", "validation", "done"]
     done = result["next"]
-    assert (done["batch"], done["U"], done["three_arm"]) == (20, 8.0, False)
-    assert done["rates"][ADAMW] == [1.27e-5, 1.42e-5, 1.74e-5]
+    assert (done["batch"], done["U"], done["three_arm"]) == (20, 7.0, False)
+    assert {arm: done["rates"][arm] for arm in (ADAMW, FA)} == {
+        arm: attempts[1]["arms"][arm]["selections"][-1]["rates"] for arm in (ADAMW, FA)
+    }
+    assert 1.42e-5 in done["rates"][ADAMW]  # U = 7's own triple
 
 
 def test_validation_failure_moves_on() -> None:
@@ -1236,11 +1254,8 @@ def test_a_technical_validation_shortfall_blocks() -> None:
 
 def test_a_three_arm_validation_failure_falls_back_to_the_primary_validation() -> None:
     """The pre-warmed arm unsupported on the validation seeds fails the three arms at (8, 20),
-    (7, 20) and (6, 20); the primary pair at (7, 20) is selected again over every record at
-    B = 20 (amendment 4), which U = 6's round has grown: AdamW's K* rate is now 1.43e-5, run by
-    that round, not the three-arm visit's 1.48e-5. Its validation reads runs already made (U =
-    6's validation ran 1.43e-5): no validation run is new, but the changed selection needs its
-    own check at (7, 20)."""
+    (7, 20) and (6, 20); the primary pair at (7, 20) takes the three arms' triples there
+    (amendment 5) and passes amendment 3's primary-arm validation on their runs."""
 
     def unsupported(run):  # the pre-warmed arm never brackets K* on the validation seeds
         if run.seed in VALIDATION_SEEDS and run.arm == PREWARMED:
@@ -1252,17 +1267,12 @@ def test_a_three_arm_validation_failure_falls_back_to_the_primary_validation() -
     attempts = result["attempts"]
     assert [a["failed_at"] for a in attempts[:3]] == ["validation"] * 3
     assert "0 of 12 blocks jointly supported for the three arms" in attempts[0]["reasons"][0]
-    assert seen[-3:] == ["validation", "numerical-check", "done"] and len(attempts) == 4
+    assert seen[-2:] == ["validation", "done"] and len(attempts) == 4
     done = result["next"]
     assert (done["batch"], done["U"], done["three_arm"]) == (20, 7.0, False)
     assert done["validation"]["arms"] == [ADAMW, FA] and done["validation"]["passes"]
-    at7, pair = attempts[1], attempts[3]
-    assert at7["rates"] is None and at7["arms"][ADAMW]["selections"][-1]["rates"] == [
-        1.27e-5, 1.48e-5, 1.5e-5]  # fmt: skip
-    assert done["rates"][ADAMW] == [1.27e-5, 1.43e-5, 1.5e-5]
-    assert pair["numerical"][0]["verdict"] == verdict_path(
-        {arm: done["rates"][arm] for arm in (ADAMW, FA)}, upper=7.0)  # fmt: skip
-    assert len([v for v in verdicts if v.startswith("numerical/b20-u7/")]) == 2
+    assert done["rates"][ADAMW] == [1.27e-5, 1.48e-5, 1.5e-5]
+    assert len([v for v in verdicts if v.startswith("numerical/b20-u7/")]) == 1
 
 
 def test_no_candidate_gives_a_b20_feasibility_report() -> None:
@@ -1280,9 +1290,11 @@ def test_no_candidate_gives_a_b20_feasibility_report() -> None:
              for u, b in order]  # fmt: skip
     assert [(a["U"], a["batch"], a["three_arm"]) for a in result["attempts"]] == pairs
     step = result["next"]
+    pinned = "at the three arms' visit of the candidate, to which the pair's rates are pinned"
     assert step["reasons"] == [
         f"U={u:g}, B={b}, {'three arms' if arms else 'primary arms'}: ['{ADAMW}'] without a "
-        "feasible triple after the rounds" for u, b, arms in pairs]  # fmt: skip
+        f"feasible triple {'after the rounds' if arms else pinned}"
+        for u, b, arms in pairs]  # fmt: skip
     report = step["feasibility"]
     assert (step["scope"], report["scope"], report["confirmation"]) == ("B=20", "B=20", False)
     assert [(c["U"], c["batch"], c["scope"], c["visited"], c["failed_at"])
@@ -1529,8 +1541,8 @@ def test_prewarmed_only_failure_keeps_b20() -> None:
 
     # Excluded at B = 20 after (8, 20)'s check, the pre-warmed rates leave it no triple at
     # (7, 20) and (6, 20); a failed validation fails the three arms jointly, its reasons naming
-    # the pre-warmed arm's blocks.
-    primary7 = {ADAMW: [1.27e-5, 1.43e-5, 1.5e-5], FA: [1.59e-5, 1.86e-5, 2e-5]}
+    # the pre-warmed arm's blocks. The pair takes the three arms' U = 7 triples (amendment 5).
+    primary7 = {ADAMW: [1.27e-5, 1.48e-5, 1.5e-5], FA: [1.59e-5, 1.86e-5, 2e-5]}
     for judge, hook, at, arms in (
         (failing, None, ("numerical", "discovery", "discovery"), [PREWARMED]),
         (verdict_of, unsupported, ("validation",) * 3, list(ARMS)),
@@ -1642,13 +1654,13 @@ def test_a_technical_stop_beside_a_scientific_failure_blocks_the_primary_pair() 
 
 
 @pytest.mark.usefixtures("amendment4_order")
-def test_a_mark_beside_a_spent_stop_charges_the_allowance() -> None:
-    """The second re-review of fa22, minor 1 (one allowance in all): the pre-warmed arm fails
-    twice at (8, 20); its second check also marks FA's unchanged 1.86e-5 (technical or
-    failing), FA's allowance unspent when the pre-warmed arm's stop fails the candidate. FA
-    owes it: the fallback's re-selection of FA at (8, 20) is that allowance, so when the
-    primary pair's check marks the replacement not qualified FA is judged by it and the stage
-    blocks, with three checks at (8, 20), not four; marked failing, FA fails instead."""
+def test_a_mark_beside_a_spent_stop_stops_the_pinned_pair() -> None:
+    """The pre-warmed arm fails twice at (8, 20); its second check also marks FA's unchanged
+    1.86e-5 (technical or failing), FA's allowance unspent when the pre-warmed arm's stop fails
+    the candidate: FA owes it. The pair's rates at (8, 20) are the three arms' triples there
+    (amendment 5), FA's holding 1.86e-5, and the pair has no re-selection: marked not qualified,
+    the stage blocks on FA there; marked failing, FA fails the candidate. No further check is
+    made at (8, 20)."""
     scale = {**SCALE, (PREWARMED, 20): 3.3}
 
     def judge(mark: str, replacement: str):
@@ -1669,31 +1681,26 @@ def test_a_mark_beside_a_spent_stop_charges_the_allowance() -> None:
 
         return verdict
 
-    for mark in ("not_qualified", "failing"):
+    for mark, outcome in (("not_qualified", "blocked"), ("failing", "failed")):
         runs = grids(scale)
         seen, result, verdicts = drive(runs, scale=scale, judge=judge(mark, "not_qualified"),
                                        hook=prewarmed_first_only)  # fmt: skip
-        first, at7, pair = result["attempts"]
+        first, at7, pair = result["attempts"][:3]
         assert (first["failed_arms"], first["allowance_owed"]) == ([PREWARMED], [FA])
         assert FA not in first["allowance"]  # not spent there: owed
-        owed = pair["allowance"][FA]
-        assert owed["deferred"] and owed["check"] == first["numerical"][1]["check"]
-        assert owed["resolved"] == [1.59e-5, 1.78e-5, 2.17e-5] and owed["repair"] is None
-        step = result["next"]
-        assert (step["blocked"], step["U"], step["three_arm"], step["arms"]) == (
-            "technical", 8.0, False, [FA])  # fmt: skip
-        assert [(r["lr"], r["state"]) for r in step["rates"]] == [(1.78e-5, "not_qualified")]
-        assert len([v for v in verdicts if v.startswith("numerical/b20-u8/")]) == 3
-    # The replacement failing: FA, its allowance spent, fails scientifically at (8, 20), and the
-    # order moves on to the primary pair at (7, 20) (where 1.86e-5's technical exclusion
-    # alone leaves FA no triple: blocked there, C1).
-    runs = grids(scale)
-    seen, result, _ = drive(runs, scale=scale, judge=judge("not_qualified", "failing"),
-                            hook=prewarmed_first_only)  # fmt: skip
-    pair, at7 = result["attempts"][2:]
-    assert (pair["U"], pair["three_arm"], pair["failed_at"], pair["failed_arms"]) == (
-        8.0, False, "numerical", [FA])  # fmt: skip
-    assert (at7["U"], at7["three_arm"], at7["outcome"]) == (7.0, False, "blocked")
+        assert (pair["U"], pair["three_arm"], pair["outcome"]) == (8.0, False, outcome)
+        assert FA not in pair["allowance"] and pair["numerical"] == []  # no re-selection
+        assert 1.86e-5 in pair["arms"][FA]["selections"][-1]["rates"]
+        assert "the pinned triples hold rates found unusable" in pair["reasons"][0]
+        assert len([v for v in verdicts if v.startswith("numerical/b20-u8/")]) == 2
+        if outcome == "blocked":
+            step = result["next"]
+            assert (step["blocked"], step["U"], step["three_arm"], step["arms"]) == (
+                "technical", 8.0, False, [FA])  # fmt: skip
+            assert [(r["lr"], r["state"]) for r in step["rates"]] == [
+                (1.86e-5, "not_qualified")]  # fmt: skip
+        else:
+            assert (pair["failed_at"], pair["failed_arms"]) == ("numerical", [FA])
 
 
 def test_the_nearest_admissible_rate_crosses_a_decade() -> None:
@@ -2631,7 +2638,7 @@ def test_replay_after_the_s2_repeat_prescribes_the_three_arm_validation(archived
     assert {facts[name]["commit"] for name in S2_REPEAT_RUNS} == {S2_REPEAT_COMMIT}
     assert all(facts[name]["k_only"] and facts[name]["role"] == "numerical"
                for name in S2_REPEAT_RUNS)  # fmt: skip
-    numerical = study2_short.read_numerical(RUNS)
+    numerical = u8_verdicts()
     assert S2_REPEAT_VERDICT in numerical
     result = selection([*runs, *later], theta0, 0.47, numerical=numerical, facts=facts,
                        exhausted={})  # fmt: skip
@@ -2657,6 +2664,14 @@ def test_replay_after_the_s2_repeat_prescribes_the_three_arm_validation(archived
 # started at 20261022T134346Z, pinned by the sha256 of their sorted run ids.
 S3_LAST = "20261022T134346Z"
 S3_RUNS_SHA256 = "8fde9f0b3020c039aa6a36a01d64ef896af67c3e4961049c9131b9dae50b2d3b"
+S3_SUMMARY = RUNS / "analysis" / "study2-short-summary-20261022-s3.json"
+
+
+def u8_verdicts() -> dict:
+    """The numerical-check verdicts the replays up to S3 knew: those of (8, 20) alone, so that
+    a later candidate's verdicts (numerical/b20-u7/ and on) cannot change them."""
+    return {path: record for path, record in study2_short.read_numerical(RUNS).items()
+            if path.startswith(f"{study2_short.NUMERICAL_DIR}/b20-u8/")}  # fmt: skip
 
 
 def test_replay_after_s3_prescribes_u7_discovery_for_the_three_arms(archived) -> None:
@@ -2685,7 +2700,7 @@ def test_replay_after_s3_prescribes_u7_discovery_for_the_three_arms(archived) ->
     later = [run for run in map(_archived, [*dirs, *s3]) if run is not None]
     assert len(later) == len(names) + 108
     facts = {run.run_id: study2_short.run_facts(run.run_dir) for run in later}
-    result = selection([*runs, *later], theta0, 0.47, numerical=study2_short.read_numerical(RUNS),
+    result = selection([*runs, *later], theta0, 0.47, numerical=u8_verdicts(),
                        facts=facts, exhausted={})  # fmt: skip
     assert result["problems"] == [] and result["unread_verdicts"] == []
     at8, at7 = result["attempts"]
@@ -2703,6 +2718,21 @@ def test_replay_after_s3_prescribes_u7_discovery_for_the_three_arms(archived) ->
     assert bounds[(FA, 1.62e-5)][0] == pytest.approx(5.79, abs=0.005)
     assert bounds[(FA, 2e-5)][0] == pytest.approx(6.59, abs=0.005)
     assert bounds[(PREWARMED, 1.62e-5)][0] == pytest.approx(6.26, abs=0.005)
+    if S3_SUMMARY.is_file():  # replay invariance, exactly: S3's own summary of 2026-10-22
+        s3 = _numeric(S3_SUMMARY.read_text())["progress"]["selection"]["attempts"][0]
+        assert (s3["U"], s3["three_arm"]) == (8.0, True)
+        assert json.loads(json.dumps(verdict["utility"])) == s3["validation"]["utility"]
+        assert verdict["jointly_supported"] == s3["validation"]["jointly_supported"]
+    # The pair's recomputation on S3's runs (amendment 5, item 2): six bounds, FA failing.
+    pair = study2_short.pair_recomputation(at8, [*runs, *later], theta0, 0.47)
+    recomputed = pair["verdict"]
+    assert pair["rates"] == {ADAMW: [1.49e-5, 1.83e-5, 2.24e-5], FA: [1.34e-5, 1.62e-5, 2e-5]}
+    assert recomputed["passes"] is False and len(recomputed["jointly_supported"]) == 12
+    assert recomputed["reasons"] == ["the utility family does not pass"]
+    family = {(m["arm"], m["rate"]): m["mmlu_upper_pp"] for m in recomputed["utility"]["family"]}
+    assert len(family) == 6 and recomputed["utility"]["alpha_per_bound"] == pytest.approx(0.05 / 6)
+    assert round(family[(FA, 1.62e-5)], 4) == 5.6195 and round(family[(FA, 2e-5)], 4) == 6.3987
+    assert [key for key, mmlu in sorted(family.items()) if mmlu > 5] == [(FA, 1.62e-5), (FA, 2e-5)]
     step = result["next"]
     assert (step["campaign"], step["batch"], step["U"], step["three_arm"]) == (
         "discovery", 20, 7.0, True)  # fmt: skip

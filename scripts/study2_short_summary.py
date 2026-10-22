@@ -166,6 +166,7 @@ from zero_field_refusal.analysis.study2_short import (
     read_abandonment,
     read_fixation,
     read_numerical,
+    read_versions_record,
     run_facts,
     scalars_coverage,
     sensitivity_looks,
@@ -179,7 +180,7 @@ from zero_field_refusal.data import load_prompt_set
 from zero_field_refusal.judge import judge_identity
 from zero_field_refusal.launch import launch_records
 from zero_field_refusal.paths import REPO_ROOT, load_env
-from zero_field_refusal.tracking import git_state
+from zero_field_refusal.tracking import git_state, tracked
 
 # The fixation record's values that ``looks`` takes (its look sizes and cap equal the module's).
 LOOK_SETTINGS = ("interval", "se_floor", "bias_allowance", "equivalence_min_supported",
@@ -559,7 +560,8 @@ def versions_record(
 ) -> dict[str, Any]:
     """The versions record (see the module docstring); ``ValueError`` unless the checkout is a
     clean one of a known commit. A later record names the one before it (``supersedes``: its
-    path in the checkout, which must hold it, and its sha256) with the ``reason``."""
+    path in the checkout, where Git must track it and it must read as a versions record, and its
+    sha256) with the ``reason``."""
     code = git_state()
     if not code.get("commit") or code.get("dirty") is not False:
         raise ValueError(f"the versions record needs a clean checkout of a known commit, not "
@@ -572,6 +574,11 @@ def versions_record(
         earlier = supersedes.resolve()
         if not (earlier.is_file() and earlier.is_relative_to(REPO_ROOT.resolve())):
             raise ValueError(f"{supersedes} is not a file of the checkout {REPO_ROOT}")
+        if not tracked(earlier.relative_to(REPO_ROOT.resolve()).as_posix(), REPO_ROOT):
+            raise ValueError(
+                f"{supersedes} is not committed: a later record follows a committed one"
+            )
+        read_versions_record(earlier)
         succession = {
             "supersedes": {
                 "path": earlier.relative_to(REPO_ROOT.resolve()).as_posix(),

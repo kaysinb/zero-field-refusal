@@ -662,11 +662,14 @@ in the checkout), and refuse when:
 - the judge's identity is not that of its config, or (for the summary) the config is not
   `judge/NAME` of `--judge NAME`;
 - the fixation record given (`--fixation`) has another sha256;
-- a later record's `supersedes` does not name a file of the checkout with that sha256, or its
-  `reason` is empty;
+- the record is not one of `docs/study2-short-versions.json` and
+  `docs/study2-short-versions-2.json` (`VERSIONS_RECORDS`);
+- a later record's `supersedes` does not name a committed file of the checkout, with that
+  sha256, that reads as a versions record, or its `reason` is empty (`--supersedes` refuses such
+  a file when the record is written);
 - an issued confirmation or time-course campaign named another record in its header (the launch
-  journal under `--runs-root`; `issued_versions`): a confirmation keeps the record it started
-  with.
+  journal under `--runs-root`; `issued_versions`; a header naming none counts under the first
+  record): a confirmation keeps the record it started with.
 
 The discovery campaigns (`targeted`, `repair`, `controls`, `prewarmed`) come before the record
 and run without it. The campaigns' headers and the summary's `--out` file (with `--judge`) record
@@ -1042,13 +1045,17 @@ replaces the order after S3 failed on utility. The state machine visits, in this
 
 Each candidate has its own discovery, numerical check (`numerical/b20-u{U}/`, the bound 0.01·K\*
 of its U; at U = 6, K\* = √30) and validation, and the procedure of S1–S3 holds at each, with
-`u7` or `u6` in the campaign names. The pair at a U reuses every record of the three arms' visit
-there: after a three-arm validation, its verdict is recomputed on the same runs; otherwise it runs
-its own check and validation (72 runs). A rate that U = 6's rounds added can enter the pair's
-selection at U = 7, with its own case, check and validation runs. Before a next candidate's
-campaigns, set its forecast (its checks and the confirmation) against what remains of the
-budget; if it does not fit, stop with the price. Before a U = 6 candidate is fixed, forecast its
-power and support with the simulation at its rates.
+`u7` or `u6` in the campaign names. The pair at a U takes the three arms' triples there and
+reuses every record of their visit: after a three-arm validation, its verdict is recomputed on the
+same runs, with no campaign; otherwise it runs only what is missing at that U, its check if none
+qualified its rates and its validation (72 runs). No rate run at another U enters it. Before a
+next candidate's campaigns, set its forecast (its checks and the confirmation) against what
+remains of the budget; if it does not fit, stop with the price.
+
+**The power forecast at U = 7 or U = 6**, before that candidate's confirmation: the simulation's
+procedure at its rates with `--upper 7` or `--upper 6` (`scripts/study2_short_simulate.py`;
+K\* and the half-span only, 8 by default). Its `summary.json` records U, K\* and the
+half-span; archive it with an inventory. It is a report and decides nothing.
 
 **The pair's recomputation at U = 8**, read on K, numerics and utility only:
 
@@ -1075,7 +1082,11 @@ python scripts/study2_short_summary.py pair-recheck --runs $R --theta0 $THETA0 -
 
 Run each campaign, summary and audit from the checkout of the record it is written under, and
 pass `--runs-root`: once a confirmation has started, its later ranges, its time course, its looks
-and the audit are refused under any other record than the one its issued campaigns named.
+and the audit are refused under any other record than the one its issued campaigns named. A
+confirmation start whose header names no record (every campaign written at `6fb20a9`) counts
+under the first record: a confirmation started at `6fb20a9` is continued, summarized and audited
+from that checkout, and the new code refuses it. Every record a block's starts named counts, so
+a retry under the other record is refused too.
 
 ### S4: confirmation, the time course and the drift
 

@@ -2061,9 +2061,11 @@ def test_the_callers_check_the_record_the_running_confirmation_named(
     monkeypatch, tmp_path, capsys
 ) -> None:
     """Amendment 5: two versions records coexist. The campaigns and the summary's looks (the
-    audit's draw runs the summary's) check the record they are given against those that the
+    audit's draw has its own test) check the record they are given against those that the
     issued confirmation campaigns' headers named in the launch journal (``issued_versions``):
-    the starts of runs on a confirmation seed only, and only those whose header names one."""
+    the starts of runs on a confirmation seed only, every distinct record of a label's starts
+    (a retry under another record does not hide the first), and a header naming none (a
+    campaign written at the first record's commit) under the first record."""
     from zero_field_refusal.analysis.study2_short import issued_versions
 
     named = {"versions_record": "docs/study2-short-versions.json", "versions_sha256": "a" * 64}
@@ -2074,11 +2076,16 @@ def test_the_callers_check_the_record_the_running_confirmation_named(
          "header": {"w_max": W_MAX, **named}},
         {"event": "start", "experiment": "study2_short", "run": "y-blocks-1-2/s3001",
          "header": {"w_max": W_MAX}},
+        {"event": "start", "experiment": "study2_short", "run": "y-blocks-1-2/s3001",
+         "header": {"w_max": W_MAX, **named}},
+        {"event": "start", "experiment": "study2_short", "run": "x-blocks-1-2-rayleigh/s3000",
+         "header": {"w_max": W_MAX, **named}},
         {"event": "end", "experiment": "study2_short", "run": "x-blocks-1-2/s3002",
          "header": named},
     ]  # fmt: skip
-    issued = {"x-blocks-1-2-rayleigh/s3000": {"path": named["versions_record"],
-                                              "sha256": named["versions_sha256"]}}  # fmt: skip
+    entry = {"path": named["versions_record"], "sha256": named["versions_sha256"]}
+    first = {"path": "docs/study2-short-versions.json", "sha256": None}
+    issued = {"x-blocks-1-2-rayleigh/s3000": [entry], "y-blocks-1-2/s3001": [first, entry]}
     assert issued_versions(records) == issued
     runs = base()
     until(runs, "confirmation")
@@ -3628,20 +3635,45 @@ def test_two_versions_records_each_hold_for_their_own_commit(tmp_path) -> None:
     git(repo, "commit", "-qm", "the second versions record")
     assert versions_problems(new, fixation=fixations[1], repo=repo) == []
     own = hashlib.sha256(new.read_bytes()).hexdigest()
-    # A confirmation that started under the second record keeps it; under the first, refused.
+    # A confirmation that started under the second record keeps it; under the first, refused:
+    # named by its sha256, or by no header key at all (written at the first record's commit,
+    # as every campaign at 6fb20a9), and also when a retry ran under the second.
+    label = "c-blocks-1-2-rayleigh/s3000"
+    mine, unnamed = {"path": second, "sha256": own}, {"path": first, "sha256": None}
     assert versions_problems(new, fixation=fixations[1], repo=repo, issued={
-        "c-blocks-1-2-rayleigh/s3000": {"path": second, "sha256": own}}) == []  # fmt: skip
+        label: [mine]}) == []  # fmt: skip
     (found,) = versions_problems(new, fixation=fixations[1], repo=repo, issued={
-        "c-blocks-1-2-rayleigh/s3000": {"path": first, "sha256": digest},
-        "c-blocks-1-2/s3000": {"path": first, "sha256": digest}})  # fmt: skip
-    assert found.startswith("the issued confirmation campaign of c-blocks-1-2-rayleigh/s3000 "
-                            "and 1 other run(s) was written under the versions record "
-                            f"{first} (sha256 {digest})")  # fmt: skip
-    # The first record's checkout still holds it, and does not hold the second.
+        label: [{"path": first, "sha256": digest}],
+        "c-blocks-1-2/s3000": [{"path": first, "sha256": digest}]})  # fmt: skip
+    assert found.startswith(f"the issued confirmation campaign of {label} and 1 other run(s) "
+                            f"was written under the versions record {first} (sha256 {digest}), "
+                            f"not {new}")  # fmt: skip
+    for named in ([unnamed], [unnamed, mine]):
+        (found,) = versions_problems(new, fixation=fixations[1], repo=repo, issued={label: named})
+        assert found.startswith(f"the issued confirmation campaign of {label} was written under "
+                                f"the versions record {first} (its header names none: a "
+                                "campaign written before the second record)")  # fmt: skip
+    # The first record's checkout still holds it, also for a confirmation started there, and
+    # does not hold the second.
     git(repo, "checkout", "-q", at_old)
     assert versions_problems(old, fixation=fixations[0], repo=repo) == []
+    assert versions_problems(old, fixation=fixations[0], repo=repo,
+                             issued={label: [unnamed]}) == []  # fmt: skip
     assert "is missing" in versions_problems(new, fixation=fixations[1], repo=repo)[0]
     git(repo, "checkout", "-q", "-")
+    # A record that is not one of VERSIONS_RECORDS is refused.
+    other = repo / "docs" / "study2-short-versions-3.json"
+    other.write_text(new.read_text())
+    git(repo, "add", "docs/study2-short-versions-3.json")
+    git(repo, "commit", "-qm", "another record")
+    assert ("docs/study2-short-versions-3.json is not one of the versions records "
+            f"{list(VERSIONS_RECORDS)}") in versions_problems(other, fixation=fixations[1],
+                                                              repo=repo)  # fmt: skip
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+    (repo / "notes.json").write_text("{}\n")  # tracked, but not a versions record
+    git(repo, "add", "notes.json")
+    git(repo, "commit", "-qm", "notes")
+    notes = hashlib.sha256((repo / "notes.json").read_bytes()).hexdigest()
     # The reference must be whole and true: both keys, the reason, the earlier file's sha256.
     for change, message in (
         ({"reason": ""}, "the record's reason '' is not a non-empty string"),
@@ -3650,6 +3682,8 @@ def test_two_versions_records_each_hold_for_their_own_commit(tmp_path) -> None:
         ({"supersedes": {"path": "docs/none.json", "sha256": digest}},
          "the record supersedes docs/none.json, which the checkout does not hold"),
         ({"supersedes": {"path": first, "sha256": "0" * 64}}, "at another sha256 than the file's"),
+        ({"supersedes": {"path": "notes.json", "sha256": notes}}, "is not a versions record"),
+        ({"supersedes": {"path": "code.py", "sha256": "0" * 64}}, "at another sha256"),
     ):  # fmt: skip
         held = json.loads(new.read_text())
         new.write_text(json.dumps({**held, **change}))
@@ -3661,7 +3695,8 @@ def test_two_versions_records_each_hold_for_their_own_commit(tmp_path) -> None:
 def test_the_second_versions_record_names_the_first(monkeypatch, tmp_path, capsys) -> None:
     """``versions --supersedes FILE --reason TEXT`` writes a later record: the first's format
     with the path in the checkout and the sha256 of the record it follows, and the reason; both
-    or neither, the earlier one a file of the checkout; the output is written once."""
+    or neither, the earlier one a committed file of the checkout that reads as a versions
+    record; the output is written once."""
     module = summary_module()
     fixation = Path(fixation_file(tmp_path))
     first = REPO_ROOT / "docs" / "study2-short-versions.json"
@@ -3684,8 +3719,10 @@ def test_the_second_versions_record_names_the_first(monkeypatch, tmp_path, capsy
         module.main()
     assert "the versions record is written once" in capsys.readouterr().err
     out.unlink()
+    tracked_file = REPO_ROOT / "docs" / "study2-short-fixation.json"  # not a versions record
     for bad in ([*argv[:6], *argv[8:]], [*argv[:8], "--reason", " ", *argv[10:]],
-                [*argv[:7], str(fixation), *argv[8:]]):  # fmt: skip
+                [*argv[:7], str(fixation), *argv[8:]],
+                [*argv[:7], str(tracked_file), *argv[8:]]):  # fmt: skip
         monkeypatch.setattr("sys.argv", bad)
         with pytest.raises(SystemExit):
             module.main()
@@ -3693,6 +3730,7 @@ def test_the_second_versions_record_names_the_first(monkeypatch, tmp_path, capsy
     err = capsys.readouterr().err
     assert "needs both --supersedes and a non-empty --reason" in err
     assert f"{fixation} is not a file of the checkout" in err
+    assert f"{tracked_file} is not a versions record" in err
 
 
 def test_the_summary_looks_need_the_versions_record(monkeypatch, tmp_path, capsys) -> None:

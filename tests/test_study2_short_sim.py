@@ -2,6 +2,9 @@ import dataclasses
 import importlib.util
 import json
 import math
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -980,3 +983,51 @@ def test_script_lists_and_filters_scenarios(capsys) -> None:
     load_script().main(["bias", "--designs", "interp_grid", "--list"])
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == len(FAMILIES) and all(line.startswith("interp_grid_") for line in lines)
+
+
+@pytest.fixture
+def at_default_upper(monkeypatch):
+    """Leaves the simulated U, and the environment its workers read, at the default after."""
+    monkeypatch.delenv(sim.UPPER_ENV, raising=False)
+    yield
+    sim.set_upper(sim.DEFAULT_UPPER)
+    monkeypatch.delenv(sim.UPPER_ENV, raising=False)
+
+
+def test_the_default_upper_reproduces_the_earlier_constants(at_default_upper) -> None:
+    """Amendment 5: U is an input (``set_upper``, ``--upper``); its default, 8, gives exactly
+    the constants every earlier run used, K* = √40 and the half-span ln √(8/5) = 0.235."""
+    assert (sim.DEFAULT_UPPER, sim.U) == (8.0, 8.0)
+    assert math.sqrt(40) == sim.K_STAR
+    assert math.log(math.sqrt(8 / 5)) == sim.HALF_SPAN and round(sim.HALF_SPAN, 3) == 0.235
+    assert sim.NOMINAL == (-sim.HALF_SPAN, 0.0, sim.HALF_SPAN)
+    assert POSITIONS["nominal"] == (sim.NOMINAL,) * 3
+    assert POSITIONS["grid"] == ((-0.39, 0.17, 0.57), (-0.23, 0.27, 0.73), sim.NOMINAL)
+
+
+def test_the_upper_sets_k_star_and_the_half_span_only(at_default_upper, capsys) -> None:
+    """``set_upper`` (and the script's ``--upper``) moves K* and the nominal positions, nothing
+    else, passes U to spawned workers through the environment, and returns exactly to the
+    earlier constants at U = 8; U must lie above the lower target 5."""
+    before = (sim.PROMPTS, sim.CAP, POSITIONS["grid"][:2], sim.FAMILIES)
+    sim.set_upper(6)
+    assert (6.0, math.sqrt(30)) == (sim.U, sim.K_STAR)
+    assert pytest.approx(0.0912, abs=1e-4) == sim.HALF_SPAN
+    assert POSITIONS["nominal"] == ((-sim.HALF_SPAN, 0.0, sim.HALF_SPAN),) * 3
+    assert POSITIONS["grid"][2] == sim.NOMINAL
+    assert (sim.PROMPTS, sim.CAP, POSITIONS["grid"][:2], sim.FAMILIES) == before
+    assert os.environ[sim.UPPER_ENV] == "6.0"
+    code = "from zero_field_refusal.analysis import study2_short_sim as s; print(s.U, s.K_STAR)"
+    child = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           check=True, env=os.environ.copy())  # fmt: skip
+    assert child.stdout.split() == ["6.0", repr(math.sqrt(30))]
+    sim.set_upper(8)
+    assert (math.sqrt(40), math.log(math.sqrt(8 / 5))) == (sim.K_STAR, sim.HALF_SPAN)
+    for bad in (5, 4.0, math.nan):
+        with pytest.raises(ValueError, match="above 5"):
+            sim.set_upper(bad)
+    load_script().main(["bias", "--designs", "interp_grid", "--list", "--upper", "7"])
+    capsys.readouterr()
+    assert (7.0, math.sqrt(35)) == (sim.U, sim.K_STAR)
+    assert load_script().upper() == {"upper": 7.0, "k_star": math.sqrt(35),
+                                     "half_span": math.log(math.sqrt(7 / 5))}  # fmt: skip

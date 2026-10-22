@@ -211,9 +211,9 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   otherwise (no admissible triple). An arm stopped by technical marks only at the numerical gate
   is never selected again at the candidate, even when another arm's scientific failure fails
   the candidate: the fallback's visit then blocks on it (review of fa22, I1). After a technical
-  stop at discovery beside a scientific one, the fallback's visit runs the same discovery again:
-  a primary arm stopped scientifically fails it again, and the arm stopped technically is judged
-  again by the same rule. One allowance holds in all per arm, batch and U: an arm
+  stop at discovery beside a scientific one, the fallback's pinned visit (amendment 5) fails on
+  the arm stopped scientifically and blocks on the arm stopped technically, as the three arms'
+  visit stopped them. One allowance holds in all per arm, batch and U: an arm
   marked by a check that stopped the candidate before its re-solve owes its allowance, and a
   later visit's re-selection of it is that allowance (its second re-review, minor 1). The same
   reading holds at discovery,
@@ -281,15 +281,17 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   identity, and this check is what shows a change of it after runs were made.
 - *Fallback* (amendment 4, review fa12; review of Task 2, critical 1 and minor 2; review fa22):
   when no candidate is eligible with the three arms, (7, 20) and (6, 20) (amendment 5's order)
-  are visited again, in that order, for the primary pair alone, each selected over every record
-  at its batch (rounds made at the other U included), except those whose primary arms failed at
-  the numerical gate (a second check there would be a second allowance). A candidate whose
-  primary arms failed at discovery in pass 1 is visited again: with no new round beyond each
-  arm's once-only targeted and repair rounds per batch and U, it can only become feasible from
-  rates run since; a three-arm validation failure does not exclude a candidate either, since
-  the fallback's validation is amendment 3's primary-arm one; nor does the pre-warmed arm
-  failing alone, in its qualification or its validation: the primary comparison stays at
-  B = 20. A primary arm's
+  are visited again, in that order, for the primary pair alone, except those whose primary arms
+  failed at the numerical gate (a second check there would be a second allowance). The pair's
+  rates at a candidate are pinned (amendment 5, ``_pinned``): the primary arms' triples of the
+  three arms' visit there (their last selection, a re-solve included), with no round and no new
+  selection, so that no rate run at another U enters them. A primary arm without a feasible
+  triple at that visit fails the pair as it failed the three arms (blocks it when it was stopped
+  there by technical marks only), and so does a pinned triple holding a rate found unusable at
+  the batch since (by the marks' kind; an allowance owed there is not spent: no re-selection).
+  A three-arm validation failure does not exclude a candidate, since the fallback's validation
+  is amendment 3's primary-arm one; nor does the pre-warmed arm failing alone, in its
+  qualification or its validation: the primary comparison stays at B = 20. A primary arm's
   allowance spent in pass 1 at the candidate stays spent (*The search allowance*); one spent by
   the pre-warmed arm is not the primary arms'. Every record is reused (rounds, runs, the checks
   whose rates hold the request); in a three-arm check read again, only the primary arms' rates
@@ -300,8 +302,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   attempt's reasons and the ``feasibility`` report (``feasibility_report``): per candidate and
   arm, what failed and why, the scientific failures apart from the technical ones. The pair
   reuses every record of the three-arm visit at its U: after a three-arm validation its verdict
-  is a recomputation on the same runs; after a visit that stopped earlier it runs what is
-  missing, its own validation of 72 runs included.
+  is a recomputation on the same runs, with no new run; after a visit that stopped earlier it
+  runs only what is missing at that U: its check if none qualified its rates, and its own
+  validation (72 runs). A check of the pair that marks one of its rates unusable spends the
+  arm's search allowance as at any visit.
 - *Support*: the nearest bracketing pair is the largest K25 below K* and the smallest at or above
   it. An unsupported arm's cause is ``technical`` whenever one of its endpoints failed (the
   failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``. Beside
@@ -544,8 +548,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   of the changed candidate selection and its own record-only child, and it names the first
   (``supersedes``, path and sha256) with its ``reason``. A campaign is checked against the
   record it is written under, which its header names for the launcher's journal
-  (``issued_versions``); once a confirmation has started, its later blocks, its time course
-  and its looks are refused under any other record.
+  (``issued_versions``; a start whose header names none, as every campaign written at the
+  first record's commit, counts under the first record); once a confirmation has started, its
+  later blocks, its time course, its looks and the audit are refused under any other record.
+  A record checked must be one of ``VERSIONS_RECORDS``.
 """
 
 from __future__ import annotations
@@ -1705,8 +1711,9 @@ def selection(
     When no candidate (B = 20 only) is eligible with the three arms, the candidates of
     ``FALLBACK_CANDIDATES`` ((7, 20), then (6, 20); amendment 5) whose primary arms did not fail
     at the numerical gate are visited again for the primary pair alone (the pre-warmed arm
-    dropped, amendment 3's primary-arm validation),
-    reusing every record and keeping each primary arm's spent allowance; when none is eligible
+    dropped, amendment 3's primary-arm validation), its rates pinned to the three arms' triples
+    there (``_pinned``), reusing every record and keeping each primary arm's spent allowance;
+    when none is eligible
     either, the stage ends ``infeasible`` with ``scope`` "B=20", every attempt's reasons and its
     ``feasibility`` report (``feasibility_report``). ``numerical``: the
     verdict records by their path under $RUNS_DIR (``read_numerical``), None when not read;
@@ -1758,7 +1765,8 @@ def selection(
                         first["failed_arms"]) & set(PRIMARY_ARMS):  # fmt: skip
                     continue  # its primary arms failed their numerical gate: so they do alone
             # A primary arm's search allowance spent in pass 1 stays spent (``_Replay``).
-            attempt, step = _visit(replay, batch, upper, arms)
+            attempt, step = _visit(replay, batch, upper, arms,
+                                   pinned=first if arms == PRIMARY_ARMS else None)  # fmt: skip
             attempts.append(attempt)
             if step is not None or attempt["outcome"] == "eligible":
                 break
@@ -2000,7 +2008,12 @@ def _validation_feasibility(verdict: Mapping[str, Any], arm: str) -> dict[str, l
 
 
 def _visit(
-    replay: _Replay, batch: int, upper: float, arms: Sequence[str]
+    replay: _Replay,
+    batch: int,
+    upper: float,
+    arms: Sequence[str],
+    *,
+    pinned: Mapping[str, Any] | None = None,
 ) -> tuple[dict, dict | None]:
     """One visit of a candidate for ``arms`` (the three arms, or the primary pair alone in the
     fallback): discovery, the numerical gate, the validation gate. An arm whose search allowance
@@ -2008,7 +2021,10 @@ def _visit(
     ``allowance_carried`` (review of Task 2, critical 1; review fa22). Returns the attempt and the
     pending step, if any; the attempt's outcome is ``pending``, ``incomplete``, ``failed`` (with
     the arms it failed on: a scientific failure), ``blocked`` (technical marks only: the step is
-    the blocked one) or ``eligible`` (with the rates)."""
+    the blocked one) or ``eligible`` (with the rates).
+
+    The primary pair's visit takes its rates from ``pinned``, the three arms' attempt at the same
+    candidate, instead of a discovery (``_pinned``, amendment 5)."""
     replay.reached.add(batch)
     # Rates found unusable at this batch earlier in the replay (any U) are excluded up front.
     excluded = {arm: dict(replay.unusable[(arm, batch)]) for arm in arms}
@@ -2042,10 +2058,13 @@ def _visit(
     # An arm marked at an earlier visit by a check that stopped the candidate before its
     # re-solve owes its allowance: this visit's re-selection of it is that allowance (the
     # second re-review of fa22, minor 1), spent first; after it, the arm is carried.
+    # A pinned visit has no re-selection (amendment 5): its marked rates stop it in ``_pinned``.
     owed = [
         arm
         for arm in arms
-        if (arm, batch, upper) in replay.owed and (arm, batch, upper) not in replay.allowance
+        if (arm, batch, upper) in replay.owed
+        and (arm, batch, upper) not in replay.allowance
+        and pinned is None
     ]
     for check in sorted({replay.owed[(arm, batch, upper)]["check"] for arm in owed}):
         group = [arm for arm in owed if replay.owed[(arm, batch, upper)]["check"] == check]
@@ -2057,7 +2076,10 @@ def _visit(
         if stops:
             return attempt, step
     carried = [*carried, *owed]
-    selected, step = _discovery(replay, attempt, excluded, batch, upper, arms, carried)
+    if pinned is not None:
+        selected, step = _pinned(replay, attempt, excluded, pinned)
+    else:
+        selected, step = _discovery(replay, attempt, excluded, batch, upper, arms, carried)
     if selected is None:
         return attempt, step
     selected, controls, step = _numerical(replay, attempt, excluded, batch, upper, selected, arms)
@@ -2068,6 +2090,44 @@ def _visit(
     if step is None and attempt["outcome"] != "failed":
         attempt.update(outcome="eligible", rates=rates)
     return attempt, step
+
+
+def _pinned(replay, attempt, excluded, three) -> tuple[dict | None, dict | None]:
+    """Amendment 5: the primary pair's rates at a candidate are the primary arms' triples of the
+    three arms' visit there (``three``: their last selection, a re-solve included), with no
+    round and no new selection, so that no rate run at another U enters them. After a three-arm
+    validation the pair's verdict is then recomputed on the same runs; after a visit that stopped
+    earlier, the pair runs what is missing: its check if none qualified its rates, and its
+    validation. An arm without a feasible triple at that visit stops the candidate (failed when
+    it failed there, otherwise by its technical marks: ``_stop``), and so does an arm whose
+    triple holds a rate found unusable at the batch since (by the marks' kind). Returns the
+    selections, or None with the step (none when the attempt failed)."""
+    batch, selected, without, holding = attempt["batch"], {}, [], {}
+    for arm in PRIMARY_ARMS:
+        found = three["arms"][arm]["selections"]
+        if not (found and found[-1]["feasible"]):
+            without.append(arm)
+            continue
+        selected[arm] = {**found[-1], "pinned": {"U": three["U"], "batch": three["batch"]}}
+        attempt["arms"][arm]["selections"].append(selected[arm])
+        unusable = [lr for lr in selected[arm]["rates"] if lr in excluded[arm]]
+        if unusable:
+            holding[arm] = [replay.marks[(arm, batch)][lr] for lr in unusable]
+    if without:
+        causes = {arm: ("scientific" if arm in three["failed_arms"] else "technical",
+                        _technical_marks(replay, arm, batch)) for arm in without}  # fmt: skip
+        return None, _stop(replay, attempt, causes, f"{without} without a feasible triple at the "
+                           "three arms' visit of the candidate, to which the pair's rates are "
+                           "pinned", "discovery")  # fmt: skip
+    if holding:
+        causes = {arm: ("scientific" if any(_kind(m) == "scientific" for m in marks)
+                        else "technical", marks) for arm, marks in holding.items()}  # fmt: skip
+        shown = [f"{m['arm']} {m['lr']:g}: {m['why']}" for marks in holding.values()
+                 for m in marks]  # fmt: skip
+        return None, _stop(replay, attempt, causes, "the pinned triples hold rates found unusable "
+                           f"at the batch since the three arms' visit: {shown}",
+                           "numerical")  # fmt: skip
+    return selected, None
 
 
 def _causes(replay, batch, upper, arms, excluded) -> dict[str, tuple[str, list]]:
@@ -3967,9 +4027,11 @@ def versions_problems(
     - a later record (amendment 5) names the one before it, ``supersedes`` its path in the
       checkout and its sha256, which must be that file's, with the ``reason`` (a non-empty
       string): both or neither;
+    - ``path`` is one of ``VERSIONS_RECORDS``;
     - ``issued``: the versions records that the issued confirmation and time-course campaigns
-      named (``issued_versions``, by run label), each of which must be this one: a confirmation
-      runs, and its looks are read, under the record it started with.
+      named (``issued_versions``, by run label; a campaign written before the header named one
+      under the first record), each of which must be this one: a confirmation runs, and its
+      looks are read, under the record it started with.
     """
     path = Path(path)
     if not path.is_file():
@@ -3986,6 +4048,8 @@ def versions_problems(
     own = path.resolve().relative_to(repo.resolve()).as_posix() if inside else None
     if own is None:
         problems.append(f"{path} is not in the checkout {repo}: the record must be committed")
+    elif own not in VERSIONS_RECORDS:
+        problems.append(f"{own} is not one of the versions records {list(VERSIONS_RECORDS)}")
     elif not tracked(own, repo):
         problems.append(f"{path} is not committed: commit the versions record first")
     code = record.get("code") if isinstance(record.get("code"), dict) else {}
@@ -4038,13 +4102,22 @@ def versions_problems(
     own_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     others: dict[str, list[str]] = defaultdict(list)
     for label, named in sorted((issued or {}).items()):
-        if named.get("sha256") != own_digest:
-            others[f"{named.get('path')} (sha256 {named.get('sha256')})"].append(label)
+        for entry in named:
+            same = (entry["sha256"] == own_digest if entry["sha256"] is not None
+                    else entry["path"] == own)  # fmt: skip
+            if not same:
+                shown = (
+                    f"sha256 {entry['sha256']}"
+                    if entry["sha256"] is not None
+                    else "its header names none: a campaign written before the second record"
+                )
+                others[f"{entry['path']} ({shown})"].append(label)
     for named, labels in sorted(others.items()):
         more = f" and {len(labels) - 1} other run(s)" if len(labels) > 1 else ""
         problems.append(f"the issued confirmation campaign of {labels[0]}{more} was written under "
                         f"the versions record {named}, not {path}: a confirmation runs, and its "
-                        "looks are read, under the record it started with")  # fmt: skip
+                        "looks are read, under the record it started with, from that record's "
+                        "checkout")  # fmt: skip
     return problems
 
 
@@ -4062,9 +4135,35 @@ def _succession_problems(record: Mapping[str, Any], repo: Path) -> list[str]:
     earlier = repo / supersedes["path"]
     if not earlier.is_file():
         return [f"the record supersedes {supersedes['path']}, which the checkout does not hold"]
+    if not tracked(supersedes["path"], repo):
+        return [f"the record supersedes {supersedes['path']}, which is not committed"]
     if hashlib.sha256(earlier.read_bytes()).hexdigest() != supersedes["sha256"]:
         return [f"the record supersedes {supersedes['path']} at another sha256 than the file's"]
+    try:
+        read_versions_record(earlier)
+    except ValueError as exc:
+        return [f"the record supersedes {supersedes['path']}: {exc}"]
     return []
+
+
+VERSIONS_SECTIONS = ("code", "model", "judge", "fixation")  # a versions record's objects
+
+
+def read_versions_record(path: str | Path) -> dict[str, Any]:
+    """A versions record as ``scripts/study2_short_summary.py versions`` writes it, read for its
+    form only (``versions_problems`` checks it against the checkout): a JSON object whose
+    ``code`` names a commit, with its ``model``, ``judge`` and ``fixation`` objects.
+    ``ValueError`` otherwise."""
+    try:
+        record = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path} does not read as JSON: {exc}") from exc
+    if not (isinstance(record, dict)
+            and all(isinstance(record.get(key), dict) for key in VERSIONS_SECTIONS)
+            and isinstance(record["code"].get("commit"), str)):  # fmt: skip
+        raise ValueError(f"{path} is not a versions record: a JSON object with "
+                         f"{list(VERSIONS_SECTIONS)}, its code naming a commit")  # fmt: skip
+    return record
 
 
 _RUN_SEED = re.compile(r"/s(\d+)$")
@@ -4073,21 +4172,27 @@ _RUN_SEED = re.compile(r"/s(\d+)$")
 def issued_versions(
     records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
 ) -> dict[str, dict[str, Any]]:
-    """The versions record (``path`` and ``sha256``) that each issued confirmation and
-    time-course campaign's header named, by the label of each run the launcher started on a
-    confirmation seed (its journal's start record carries the header, ``launch.run_campaign``).
-    Starts whose header names none (written before the header held it) are left out: not
-    recorded, so nothing to compare."""
-    out = {}
+    """The versions records (``path`` and ``sha256``) that the issued confirmation and
+    time-course campaigns' headers named, by the label of each run the launcher started on a
+    confirmation seed (its journal's start record carries the header, ``launch.run_campaign``):
+    every distinct one of the label's starts, so that a retry under another record does not hide
+    the first. A start whose header names none was written before the header held it, at the
+    first record's commit: it counts under the first record (``VERSIONS_RECORDS[0]``, its sha256
+    None, compared by path)."""
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in records:
-        header = r.get("header")
+        header = r.get("header") if isinstance(r.get("header"), dict) else {}
         seed = _RUN_SEED.search(str(r.get("run", "")))
-        if (r.get("event") == "start" and r.get("experiment") == experiment
-                and isinstance(header, dict) and "versions_sha256" in header
+        if not (r.get("event") == "start" and r.get("experiment") == experiment
                 and seed and int(seed[1]) in CONFIRMATION_SEEDS):  # fmt: skip
-            out[str(r["run"])] = {"path": header.get("versions_record"),
-                                  "sha256": header["versions_sha256"]}  # fmt: skip
-    return out
+            continue
+        if "versions_sha256" in header:
+            entry = {"path": header.get("versions_record"), "sha256": header["versions_sha256"]}
+        else:  # written before the header named its record: under the first
+            entry = {"path": VERSIONS_RECORDS[0], "sha256": None}
+        if entry not in out[str(r["run"])]:
+            out[str(r["run"])].append(entry)
+    return dict(out)
 
 
 def run_facts(run_dir: str | Path) -> dict[str, Any]:
