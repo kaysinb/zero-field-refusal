@@ -1057,8 +1057,9 @@ remains of the budget; if it does not fit, stop with the price.
 **The power forecast at U = 7 or U = 6**, before that candidate's confirmation: the simulation's
 procedure at its rates with `--upper 7` or `--upper 6` (`scripts/study2_short_simulate.py`;
 K\* and the half-span only, 8 by default). Its `summary.json` records U, K\* and the
-half-span (`final` passes U to every part, records it in `final.json`, and refuses `--write`
-at any U but 8); archive it with an inventory. It is a report and decides nothing.
+half-span (`final` passes U to every part, records it in `final.json`, refuses `--write` at any
+U but 8, and skips the comparisons with the archived runs, which are at U = 8); archive it with
+an inventory. It is a report and decides nothing.
 
 **The pair's recomputation at U = 8**, read on K, numerics and utility only:
 

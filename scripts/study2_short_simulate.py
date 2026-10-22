@@ -81,7 +81,8 @@ measure support, and the nominal half-span ln √(U/5) of the endpoints, and not
 rates before its confirmation. Every summary.json records U in its settings (with K* and the
 half-span in its constants); ``final`` passes U to each of its runs and records it in
 final.json, and refuses --write at any U but 8: a forecast never writes mechanism.level or the
-inputs record.
+inputs record. At U ≠ 8 it skips the comparisons with amendment 3's archived runs, which are at
+U = 8, and records them in final.json as skipped.
 
 The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
 the selection's record; both roots, because a selected rate may be one of Stage A's grid rates,
@@ -945,7 +946,9 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
             primary.append("--conditional")
         main([mode, *primary, "--out", str(out / name)])
         archived = runs_root() / ARCHIVED[mode]
-        if archived.is_file():
+        if sim.U != sim.DEFAULT_UPPER:  # the archives are amendment 3's, at U = 8
+            comparisons[name] = {"skipped": "the archived runs are at U = 8"}
+        elif archived.is_file():
             target = out / f"compare-{name}"
             main(["compare", "--new", str(out / name / "summary.json"), "--old", str(archived),
                   "--upper", repr(sim.U), "--out", str(target)])  # fmt: skip
@@ -1551,6 +1554,10 @@ def secondary_results_table(summary: dict) -> str:
 def diagnostics_table(scenarios: list[dict]) -> str:
     rows = []
     for s in scenarios:
+        if "parameters" not in s:  # a prescreen that kept no study: its gate-fail share alone
+            rows.append([s["name"], *["–"] * 10, pp(s["diagnostics"].get("p_gate_fail")),
+                         *["–"] * 3])  # fmt: skip
+            continue
         d, p = s["diagnostics"], s["parameters"]
         block = d["unsupported_per_block"]
         arms = d["unsupported_per_arm"]

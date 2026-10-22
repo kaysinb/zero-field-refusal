@@ -530,10 +530,14 @@ def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
     """Amendment 5: ``final --upper 6`` (a forecast) runs every nested part at U = 6, each
     summary recording U = 6 and K* = √30, and so does final.json; with ``--write`` it is refused
     before anything runs, so that a forecast never writes mechanism.level or the inputs
-    record. Tiny replicates; the Markdown reports are not written here."""
+    record. Every part writes its Markdown report at U = 6. The archived runs it would be
+    compared with are amendment 3's, at U = 8: the comparisons are skipped and recorded so.
+    Tiny replicates."""
     script = load_script()
-    monkeypatch.setattr(script, "markdown", lambda summary: "")
     monkeypatch.setattr(script, "runs_root", lambda: tmp_path / "runs")
+    for path in script.ARCHIVED.values():  # present: only U ≠ 8 skips them
+        (tmp_path / "runs" / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "runs" / path).write_text("{}")
     monkeypatch.delenv(sim.UPPER_ENV, raising=False)
     out = tmp_path / "final"
     argv = ["final", "--inputs", str(RECORD), "--out", str(out), "--upper", "6", "--reps", "2",
@@ -553,9 +557,26 @@ def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
             assert summary["settings"]["upper"] == 6.0, name
             assert summary["settings"]["constants"]["k_star"] == math.sqrt(30), name
             assert summary["settings"]["constants"]["half_span"] == math.log(math.sqrt(1.2)), name
+            assert (out / name / "results.md").read_text().strip(), name
+        skipped = {"skipped": "the archived runs are at U = 8"}
+        assert final["comparisons"] == dict.fromkeys(script.FINAL_PRIMARY.values(), skipped)
+        assert not list(out.glob("compare-*"))
     finally:
         sim.set_upper(sim.DEFAULT_UPPER)
         monkeypatch.delenv(sim.UPPER_ENV, raising=False)
+
+
+def test_a_prescreened_scenario_without_a_study_has_a_short_diagnostics_row() -> None:
+    """A decided-gate scenario whose prescreen kept no study has no parameters in its summary
+    (``run_grid``): its diagnostics row shows its gate-fail share alone, "–" elsewhere."""
+    script = load_script()
+    short = {"name": "empty", "design": "interp", "settings": {}, "reps": 0, "results": [],
+             "diagnostics": {"p_gate_fail": 1.0, "se_gate_fail": 0.0, "gates_drawn": 40,
+                             "gates_passed": 0}, "calibration": None}  # fmt: skip
+    table = script.diagnostics_table([short])
+    (row,) = [line for line in table.splitlines() if "empty" in line]
+    cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+    assert cells == ["empty", *["–"] * 10, script.pp(1.0), *["–"] * 3]
 
 
 def test_the_fixation_level_is_written_alone(tmp_path: Path) -> None:
