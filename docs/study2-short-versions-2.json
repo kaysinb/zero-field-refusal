@@ -1,0 +1,29 @@
+{
+  "what": "The versions of study 2's short-regime validation and confirmation (amendment 3), written before the validation campaign.",
+  "written_at": "2026-10-22T19:28:09+00:00",
+  "code": {
+    "commit": "343b59d35e1e148d3fcc040c3fe8bf0755f2aad1",
+    "allow_descendants": false
+  },
+  "model": {
+    "name": "Qwen/Qwen2.5-1.5B-Instruct",
+    "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+  },
+  "judge": {
+    "config": "judge/wildguard",
+    "backend": "wildguard",
+    "prompt_version": "wildguard@cbba4823",
+    "judge_model": "allenai/wildguard",
+    "judge_revision": "cbba4823f3e8020e5a74a5e29bf85072def6f2ff",
+    "rubric_version": null
+  },
+  "fixation": {
+    "path": "docs/study2-short-fixation.json",
+    "sha256": "495f2c6e1fb0627666ed008ebfa7b564f4b2099a22d452c0d702c72429c631e1"
+  },
+  "supersedes": {
+    "path": "docs/study2-short-versions.json",
+    "sha256": "a346c7cc66e16143a630553e47174fdb5cbdad8fce58a38a1494f0b96de686d3"
+  },
+  "reason": "The candidate-selection code changed: the B = 20 order after U = 8 (amendment 5)."
+}
