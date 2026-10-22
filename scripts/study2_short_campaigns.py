@@ -19,8 +19,8 @@ driver of their prerequisites.
 
 KIND is the campaign the stage's state machine names (analysis.study2_short.progress), and each
 kind refuses when it names another step, or when the records are not whole. The candidates
-(U, B) come in amendment 4's order (8, 20), (7, 20), each for the three arms (B = 20 is the
-study's fixed scope, review fa22: no B = 5 candidate is ever prescribed):
+(U, B) come in amendment 5's order (8, 20), (7, 20), (6, 20), each for the three arms (B = 20 is
+the study's fixed scope: no B = 5 candidate is ever prescribed):
 ``discovery`` (the primary arms' targeted round on seeds 2000-2002, holding the pre-warmed arm's
 first round, at the union of the rates of the primary arms' targeted assignments, when it is
 due), ``repair`` (a repair round, of the primary arms or of the pre-warmed arm; or, after a
@@ -47,8 +47,9 @@ into and the selection's verdict there (verdicts/<digest>.json).
 It is the one kind written while the records are not whole, and only when every problem is a run
 made beyond a check that went stale (the selection's ``beyond_stale``): those runs wait for the
 check, which is run again.
-When no candidate is eligible with the three arms, the candidates are visited again for the
-primary arms alone, the pre-warmed arm dropped. When none is eligible either, the stage ends
+When no candidate is eligible with the three arms, (7, 20) and (6, 20) are visited again for the
+primary arms alone, the pre-warmed arm dropped (never (8, 20), which the three-arm validation's
+records decide: amendment 5). When none is eligible either, the stage ends
 ``infeasible``: every kind is refused, and the B = 20 feasibility report (JSON: per candidate and
 arm, the scientific failures apart from the technical ones) is printed; it is not a
 confirmation. A stage stopped by technical marks only (``blocked``: a rate not qualified after its
@@ -95,13 +96,18 @@ ones per seed and arm (``progress``'s ``timecourse``).
   under $RUNS_DIR outside the checkout and archived with an inventory); an attempt without either
   may still be running, and its run stays pending. The campaign's header records the abandonment
   record's path and sha256.
-- **The versions record** (--versions FILE, default docs/study2-short-versions.json, written by
-  ``scripts/study2_short_summary.py versions`` and committed): ``validation``, ``confirmation``
-  and ``timecourse`` refuse without it, or when the running commit, the model, the judge's
-  identity or the fixation record departs from it (``versions_problems``: the record tracked
-  and unchanged at HEAD; HEAD is the recorded commit or a child that adds the record alone, or
-  any descendant when the record allows it; no uncommitted change or untracked file, so campaign
-  files go under $RUNS_DIR). The discovery and numerical kinds (``discovery``, ``repair``,
+- **The versions record** (--versions FILE, default the current record,
+  docs/study2-short-versions-2.json; the first, docs/study2-short-versions.json, holds for its
+  own commit; written by ``scripts/study2_short_summary.py versions`` and committed):
+  ``validation``, ``confirmation`` and ``timecourse`` refuse without it, or when the running
+  commit, the model, the judge's identity or the fixation record departs from it
+  (``versions_problems``: the record tracked and unchanged at HEAD; HEAD is the recorded commit
+  or a child that adds the record alone, or any descendant when the record allows it; no
+  uncommitted change or untracked file, so campaign files go under $RUNS_DIR), or when an issued
+  confirmation or time-course campaign named another record (``issued_versions``, from the
+  launch journal: a confirmation keeps the record it started with). The campaign's YAML header
+  names its record (``versions_record``, ``versions_sha256``), which the launcher logs with every
+  start. The discovery and numerical kinds (``discovery``, ``repair``,
   ``prewarmed``, ``targeted``, ``numerical``) precede the record and do not read it.
 - **The confirmation loop** (``confirmation_guard``; cap 80). A block is started once it has runs
   or belongs to a range the launcher has started (its journal), even before the launcher reaches
@@ -197,6 +203,7 @@ from zero_field_refusal.analysis.study2_short import (
     confirmation_guard,
     exhausted_runs,
     issued_ranges,
+    issued_versions,
     issued_w_max,
     measures_rayleigh,
     progress,
@@ -704,8 +711,12 @@ def campaign(
                      "verdicts and the launch journal there")  # fmt: skip
     w_max, source = w_max_of(parser, args)
     notes, prerequisites = [], []
+    records = launch_records(args.runs_root)
     if args.kind in VERSIONED_KINDS:
-        problems = versions_problems(args.versions, fixation=args.fixation)
+        # The record this campaign is written under; a confirmation's earlier campaigns named
+        # theirs in the journal (amendment 5: two records, each for its own commit).
+        problems = versions_problems(args.versions, fixation=args.fixation,
+                                     issued=issued_versions(records))  # fmt: skip
         if problems:
             parser.error("the versions record does not hold: " + "; ".join(problems))
         notes.append(f"the versions record {args.versions}, sha256 {_sha256(args.versions)}")
@@ -726,7 +737,6 @@ def campaign(
     # The time course's runs, split once here: no campaign's bookkeeping ever counts one of them
     # as a run of its key (review of Task 5, I1).
     runs, courses = split_timecourse(loaded, facts)
-    records = launch_records(args.runs_root)
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
     except ValueError as exc:
@@ -856,6 +866,13 @@ def blocked_message(step: dict) -> str:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _in_checkout(path: Path) -> str:
+    """A path relative to the checkout when it is in it (a versions record always is)."""
+    resolved = path.resolve()
+    inside = resolved.is_relative_to(REPO_ROOT.resolve())
+    return resolved.relative_to(REPO_ROOT.resolve()).as_posix() if inside else str(path)
 
 
 def check_command(check: dict, selection: Path, checkout: str | None = None) -> list[str]:
@@ -991,8 +1008,13 @@ def main() -> None:
                          "Do not edit.")  # fmt: skip
         header += [line for text in prerequisites for line in comment(text)]
         # The final review of gate B, I4: the header's w_max, which the launcher logs with every
-        # start, so that a replay under another w_max is refused (``issued_w_max``)
-        recorded = {"header": {"w_max": w_max}, **written}
+        # start, so that a replay under another w_max is refused (``issued_w_max``); and the
+        # versions record a versioned campaign is written under (``issued_versions``)
+        values = {"w_max": w_max}
+        if args.kind in VERSIONED_KINDS:
+            values.update(versions_record=_in_checkout(args.versions),
+                          versions_sha256=_sha256(args.versions))  # fmt: skip
+        recorded = {"header": values, **written}
         text = "\n".join(header) + "\n" + yaml.safe_dump(recorded, sort_keys=False)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(text)

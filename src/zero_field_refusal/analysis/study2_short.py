@@ -19,8 +19,8 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``select_rates``: the rate-ordered triple of usable rates nearest the targets in ln K under the
   support, realized-width and coverage constraints, or the constraints no triple meets with the
   best unconstrained triple; ``repair_rates``: the one repair round from that triple.
-- ``candidate_order``: amendment 4's candidates (U, B) = (8, 20), (7, 20), in that fixed order
-  (B = 20 is the study's fixed scope, review fa22), with their costs for the report.
+- ``candidate_order``: the three-arm candidates (U, B) = (8, 20), (7, 20), (6, 20) (amendment 5),
+  in that fixed order (B = 20 is the study's fixed scope), with their costs for the report.
 - ``numerical_cases``, ``numerical_policy``, ``numerical_verdict`` and ``read_numerical``: the
   numerical qualification's cases on seeds 2200-2202, its frozen policy, and the verdict records
   of the numerical-check tool (scripts/numerical_check.py) under $RUNS_DIR/numerical/.
@@ -54,7 +54,8 @@ differences are fractions (1 pp = 0.01); utility losses are in percentage points
 - ``scalars_coverage``: the update scalars' coverage per regular run, reported, never gating.
 - ``utility_family`` and ``validation_verdict``: the simultaneous utility bounds and the verdict
   of the validation blocks, over the three arms (amendment 4) or the primary arms (amendment 3,
-  the fallback).
+  the fallback); ``pair_recomputation``: the primary pair's verdict recomputed on a three-arm
+  validation's runs (amendment 5, the pair at U = 8).
 - ``progress``: the stage as a whole for scripts/study2_short_campaigns.py and
   scripts/study2_short_summary.py: the records checked against the campaigns (``conformance``,
   one training stream per seed, one v₀ per seed and batch: ``preconditioner_pairing``), the
@@ -123,11 +124,14 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   round contributes its selected triple). Without that campaign, the pre-warmed arm's first
   round, when it has no feasible triple, is at the union of the selected AdamW and FA rates
   (``prewarmed``). Only rates not yet run at the batch are run; one first round per (B, U).
-- *Candidate order* (amendment 4, as amended by review fa22: B = 20 is the study's fixed scope):
-  the three arms at (U, B) = (8, 20), then at (7, 20); then the primary pair (AdamW-25, FA-25) at
-  (8, 20), then at (7, 20) (*Fallback*); if none qualifies, the stage ends ``infeasible`` with its
-  B = 20 feasibility report, not a confirmation. No B = 5 candidate is ever prescribed. The
-  costs below are kept for the report and decide nothing.
+- *Candidate order* (amendment 4 with B = 20 the study's fixed scope, as amendment 5 amends it):
+  the three arms at (U, B) = (8, 20), then at (7, 20), then at (6, 20) (``CANDIDATES``); then the
+  primary pair (AdamW-25, FA-25) at (7, 20), then at (6, 20) (``FALLBACK_CANDIDATES``,
+  *Fallback*); if none qualifies, the stage ends ``infeasible`` with its B = 20 feasibility
+  report, not a confirmation. The primary pair is not visited at (8, 20): the records of its
+  three-arm validation decide it (amendment 5: recomputed on them for the pair alone, FA fails
+  its MMLU bound). U = 6 is the floor (K* = √30, the twin bound 0.01 × K*); no B = 5 candidate
+  is ever prescribed. The costs below are kept for the report and decide nothing.
 - *Candidate cost*: per arm and target, the usable grid rate (``stage_a.SHORT_GRID``) nearest the
   target in ln median K25 (ties to the smaller rate); per seed the sum of those runs'
   ``training_seconds`` (a rate nearest two targets counts twice: a block runs three per arm),
@@ -276,15 +280,16 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``conformance``; the code that composes them (``run_prescription``) is outside the GPU-code
   identity, and this check is what shows a change of it after runs were made.
 - *Fallback* (amendment 4, review fa12; review of Task 2, critical 1 and minor 2; review fa22):
-  when no candidate is eligible with the three arms, (8, 20) and (7, 20) are visited again, in
-  that order, for the primary pair alone, each selected over every record at its batch (rounds
-  made at the other U included), except those whose primary arms failed at the numerical gate (a
-  second check there would be a second allowance). A candidate whose primary arms failed at
-  discovery in pass 1 is visited again: with no new round beyond each arm's once-only targeted
-  and repair rounds per batch and U, it can only become feasible from rates run since; a
-  three-arm validation failure does not exclude a candidate either, since the fallback's
-  validation is amendment 3's primary-arm one; nor does the pre-warmed arm failing alone, in its
-  qualification or its validation: the primary comparison stays at B = 20. A primary arm's
+  when no candidate is eligible with the three arms, (7, 20) and (6, 20) (amendment 5's order)
+  are visited again, in that order, for the primary pair alone, each selected over every record
+  at its batch (rounds made at the other U included), except those whose primary arms failed at
+  the numerical gate (a second check there would be a second allowance). A candidate whose
+  primary arms failed at discovery in pass 1 is visited again: with no new round beyond each
+  arm's once-only targeted and repair rounds per batch and U, it can only become feasible from
+  rates run since; a three-arm validation failure does not exclude a candidate either, since
+  the fallback's validation is amendment 3's primary-arm one; nor does the pre-warmed arm
+  failing alone, in its qualification or its validation: the primary comparison stays at
+  B = 20. A primary arm's
   allowance spent in pass 1 at the candidate stays spent (*The search allowance*); one spent by
   the pre-warmed arm is not the primary arms'. Every record is reused (rounds, runs, the checks
   whose rates hold the request); in a three-arm check read again, only the primary arms' rates
@@ -293,7 +298,10 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   cohort (the two-arm confirmation): the mechanism's results are not estimable. When no
   candidate is eligible even then, the stage ends ``infeasible``, with ``scope`` "B=20", every
   attempt's reasons and the ``feasibility`` report (``feasibility_report``): per candidate and
-  arm, what failed and why, the scientific failures apart from the technical ones.
+  arm, what failed and why, the scientific failures apart from the technical ones. The pair
+  reuses every record of the three-arm visit at its U: after a three-arm validation its verdict
+  is a recomputation on the same runs; after a visit that stopped earlier it runs what is
+  missing, its own validation of 72 runs included.
 - *Support*: the nearest bracketing pair is the largest K25 below K* and the smallest at or above
   it. An unsupported arm's cause is ``technical`` whenever one of its endpoints failed (the
   failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``. Beside
@@ -519,7 +527,7 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``missing_reference`` (``error``) and ``agreement_check_share`` (0.1), each equal to the
   code's, and the draw's ``seed``; and amendment 4's other values fixed before any harm label
   (``FIXED_KEYS``, ``fixed_values``), each an object equal to the code's: ``candidates`` (the
-  B = 20 order and its primary-pair fallback), ``numerical`` (the numerical policy),
+  B = 20 order and its primary-pair fallback order), ``numerical`` (the numerical policy),
   ``validation`` (the validation rule), ``timecourse`` (its seeds and steps), ``drift`` (its
   stream, batches and halves) and ``scalars`` (the departure steps). Each is required and none
   is defaulted, also when ``interval`` is ``t`` and the bootstrap's values go unused. A key
@@ -531,7 +539,13 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   ``prewarmed``, ``targeted``, ``numerical``) precede it and do not read it. Abandonment
   records and summary outputs live under ``$RUNS_DIR`` (ignored by Git), archived with an
   inventory, never committed: a commit after the record's own makes HEAD a descendant that the
-  record does not allow.
+  record does not allow. Amendment 5 adds a second record (``VERSIONS_RECORDS``): the first
+  holds for the commit it names and that commit's record-only child, the second for the commit
+  of the changed candidate selection and its own record-only child, and it names the first
+  (``supersedes``, path and sha256) with its ``reason``. A campaign is checked against the
+  record it is written under, which its header names for the launcher's journal
+  (``issued_versions``); once a confirmation has started, its later blocks, its time course
+  and its looks are refused under any other record.
 """
 
 from __future__ import annotations
@@ -594,9 +608,12 @@ PRECONDITIONER_BATCHES = 50  # v₀'s teacher batches at the selected B, per see
 NUMERICAL_SEEDS = (2200, 2201, 2202)  # amendment 4: the numerical acceptance's fresh seeds
 VALIDATION_SEEDS = tuple(range(2100, 2112))
 CONFIRMATION_SEEDS = tuple(range(3000, 3080))
-# (U, B): amendment 4's fixed order, B = 20 only (review fa22: the study's fixed scope); each for
-# the three arms, then (the fallback) for the primary pair
-CANDIDATES = ((8.0, 20), (7.0, 20))
+# (U, B): the fixed order, B = 20 only (the study's fixed scope), as amendment 5 amends it: the
+# three arms at each of ``CANDIDATES``, then (the fallback) the primary pair at each of
+# ``FALLBACK_CANDIDATES``. U = 6 is the floor. The primary pair is not visited at U = 8: the
+# three-arm validation's records there decide it (amendment 5).
+CANDIDATES = ((8.0, 20), (7.0, 20), (6.0, 20))
+FALLBACK_CANDIDATES = ((7.0, 20), (6.0, 20))
 SCOPE = "B=20"  # an ``infeasible`` stage's record: a B = 20 feasibility report
 # The unusable marks of a verdict (``_marks``' states) that are technical, never scientific
 TECHNICAL_MARKS = ("not_qualified", "control not_qualified")
@@ -656,7 +673,12 @@ CONTROL_REASON = "control: "  # a verdict's reason of a same-path control, under
 RAYLEIGH_BLOCKS = 10  # the first confirmation blocks: every endpoint measures R
 INTERVALS = ("bootstrap_t", "t")  # the primary interval at a look, and the secondary one
 SECONDARY_STATUSES = ("secondary", "exploratory")  # how the secondary contrasts are reported
-VERSIONS_RECORD = "docs/study2-short-versions.json"  # relative to the repository root
+# The versions records, relative to the repository root, in the order they were written: each
+# later one names the one before (``supersedes``) with its ``reason``. Each holds for its own
+# commit: a campaign is written under the record of its checkout, which its header names, and
+# the current one (``VERSIONS_RECORD``) is every caller's default.
+VERSIONS_RECORDS = ("docs/study2-short-versions.json", "docs/study2-short-versions-2.json")
+VERSIONS_RECORD = VERSIONS_RECORDS[-1]
 VERSIONS_CONFIG = ("experiments/study2_short", ["study2_short.role=confirmation"])  # its model
 # The missing-label sensitivities: the block fields of their lower and upper bounds.
 SENSITIVITIES = {
@@ -1032,11 +1054,11 @@ def candidate_order(
     grid: Sequence[float] = SHORT_GRID,
     seeds: Sequence[int] = DISCOVERY_SEEDS,
 ) -> list[dict[str, Any]]:
-    """The candidates in amendment 4's fixed order (``CANDIDATES``: (U, B) = (8, 20), (7, 20);
-    B = 20 only), each with its cost for the report, which no longer orders them: the median
-    over seeds of the summed training seconds of both primary arms' runs at the usable grid
-    rates nearest each target, plus the block's training stream and v₀'s preconditioner
-    stream."""
+    """The three-arm candidates in their fixed order (``CANDIDATES``: (U, B) = (8, 20), (7, 20),
+    (6, 20), amendment 5; B = 20 only), each with its cost for the report, which no longer
+    orders them: the median over seeds of the summed training seconds of both primary arms'
+    runs at the usable grid rates nearest each target, plus the block's training stream and
+    v₀'s preconditioner stream."""
     cells: dict[tuple[str, int, float], list[Trajectory]] = defaultdict(list)
     for run in runs:
         if run.arm in PRIMARY_ARMS and run.seed in seeds:
@@ -1680,9 +1702,10 @@ def selection(
     campaign (seeds 2100-2111) and the three-arm validation verdict. A scientific failure at any
     step takes the next candidate; an arm stopped by technical marks only ends the replay
     ``blocked`` (``next`` ``incomplete`` with ``blocked`` "technical", for a human decision).
-    When no candidate (B = 20 only) is eligible with the three arms, the candidates whose primary
-    arms did not fail at the numerical gate are visited again, in the same order, for the
-    primary pair alone (the pre-warmed arm dropped, amendment 3's primary-arm validation),
+    When no candidate (B = 20 only) is eligible with the three arms, the candidates of
+    ``FALLBACK_CANDIDATES`` ((7, 20), then (6, 20); amendment 5) whose primary arms did not fail
+    at the numerical gate are visited again for the primary pair alone (the pre-warmed arm
+    dropped, amendment 3's primary-arm validation),
     reusing every record and keeping each primary arm's spent allowance; when none is eligible
     either, the stage ends ``infeasible`` with ``scope`` "B=20", every attempt's reasons and its
     ``feasibility`` report (``feasibility_report``). ``numerical``: the
@@ -1725,8 +1748,10 @@ def selection(
     out["amendment3_controls"] = _amendment3_controls(controls, found)
     out["attempts"] = attempts = []
     step = None
-    for arms in (ARMS, PRIMARY_ARMS):  # the three arms; then the fallback, the primary pair
-        for upper, batch in CANDIDATES:
+    # The three arms at each of ``CANDIDATES``; then the fallback, the primary pair at each of
+    # ``FALLBACK_CANDIDATES`` (each visited by the three arms before).
+    for arms, order in ((ARMS, CANDIDATES), (PRIMARY_ARMS, FALLBACK_CANDIDATES)):
+        for upper, batch in order:
             if arms == PRIMARY_ARMS:
                 first = next(a for a in attempts if (a["batch"], a["U"]) == (batch, upper))
                 if first["failed_at"] == "numerical" and set(
@@ -1879,18 +1904,20 @@ def _stop(
 
 def feasibility_report(attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """The B = 20 feasibility report of a stage that ends ``infeasible`` (review fa22): no
-    confirmation. Every candidate of the fixed order, (8, 20) and (7, 20) for the three arms,
-    then for the primary pair, with its outcome and reasons and, per arm, what failed and why:
-    the ``scientific`` failures (a failing rate, a rejected same-path control, no admissible
-    triple, a validation failure and its findings: they moved the order on) apart from the
-    ``technical`` ones (rates not qualified and numerical runs given up, which spent an
-    allowance and decided nothing; and the validation's blocks and utility members lost by
-    technical causes, listed apart: a validation failing with them failed for another reason
-    too, since a failure they alone make blocks the stage), and the rates excluded up front at the
-    visit with their kind. A candidate the fallback skipped is named, with why."""
+    confirmation. Every candidate of the fixed order, (8, 20), (7, 20) and (6, 20) for the three
+    arms, then (7, 20) and (6, 20) for the primary pair (amendment 5), with its outcome and
+    reasons and, per arm, what failed and why: the ``scientific`` failures (a failing rate, a
+    rejected same-path control, no admissible triple, a validation failure and its findings:
+    they moved the order on) apart from the ``technical`` ones (rates not qualified and
+    numerical runs given up, which spent an allowance and decided nothing; and the validation's
+    blocks and utility members lost by technical causes, listed apart: a validation failing
+    with them failed for another reason too, since a failure they alone make blocks the stage),
+    and the rates excluded up front at the visit with their kind. A candidate the fallback
+    skipped is named, with why."""
     report = []
-    for scope, arms in (("three arms", ARMS), ("primary pair", PRIMARY_ARMS)):
-        for upper, batch in CANDIDATES:
+    for scope, arms, order in (("three arms", ARMS, CANDIDATES),
+                               ("primary pair", PRIMARY_ARMS, FALLBACK_CANDIDATES)):  # fmt: skip
+        for upper, batch in order:
             key = (batch, upper, arms == ARMS)
             found = next((a for a in attempts if (a["batch"], a["U"], a["three_arm"]) == key),
                          None)  # fmt: skip
@@ -2436,6 +2463,43 @@ def _validation(replay, attempt, batch, upper, rates, controls) -> dict | None:
                           "validation")  # fmt: skip
         _fail(attempt, arms, reason, "validation")
     return None
+
+
+def pair_recomputation(
+    attempt: Mapping[str, Any],
+    runs: Sequence[Trajectory],
+    theta0: Mapping[str, float],
+    w_max: float,
+    exhausted: Mapping[tuple, str] | None = None,
+) -> dict[str, Any]:
+    """The primary pair's validation verdict at a three-arm attempt's candidate, recomputed on
+    the runs its validation read (amendment 5: the pair at U = 8 is decided so, never visited):
+    ``validation_verdict`` over ``PRIMARY_ARMS`` at the primary arms' rates of the check that
+    qualified them (the attempt's last, complete with no unusable rate), with that check's FA
+    controls accepted, θ₀, K* of the attempt's U and ``w_max``, as ``_validation`` calls it; a
+    run the launcher gave up on (``exhausted``) is absent, a technical failure. ``ValueError``
+    unless the attempt is a three-arm one whose validation ran. Reads K, numerics and utility
+    only. Returns the verdict with the candidate, the rates and the controls."""
+    check = (attempt.get("numerical") or [None])[-1]
+    if not (attempt.get("three_arm") and attempt.get("validation") and check
+            and check["state"] == "complete" and not check["unusable"]):  # fmt: skip
+        where = f"U={attempt.get('U')!r}, B={attempt.get('batch')!r}"
+        raise ValueError(f"no three-arm validation at {where} to recompute for the primary pair")
+    batch, upper = attempt["batch"], attempt["U"]
+    rates = {arm: [rate(lr) for lr in check["request"][arm]] for arm in PRIMARY_ARMS}
+    controls = {lr: {"accepted": True, "verdict": check["verdict"]} for lr in rates[FA]}
+    keys = _keys(rates, batch, VALIDATION_SEEDS)
+    found, problems = index(r for r in runs if (r.arm, r.batch_size, rate(r.lr), r.seed) in keys)
+    verdict = validation_verdict(list(found.values()), rates, controls, theta0, k_star(upper),
+                                 w_max, arms=PRIMARY_ARMS)  # fmt: skip
+    if problems:  # a second run of a key: no conclusion
+        verdict.update(passes=None, reasons=["incomplete records"],
+                       problems=problems + verdict["problems"])  # fmt: skip
+    verdict["exhausted"] = {label: list(key) for key, label in sorted((exhausted or {}).items())
+                            if key in keys and key not in found}  # fmt: skip
+    return {"batch": batch, "U": upper, "K_star": k_star(upper), "rates": rates,
+            "controls": {f"{lr:g}": c for lr, c in controls.items()}, "check": check["verdict"],
+            "verdict": verdict}  # fmt: skip
 
 
 def _technical_shortfall(verdict: Mapping[str, Any]) -> tuple[dict[str, list], str] | None:
@@ -3628,15 +3692,15 @@ def read_fixation(path: str | Path) -> dict[str, Any]:
       ``missing_reference`` and ``agreement_check_share``, each equal to the code's
       (``AUDIT_FIXED``), and ``seed`` (an integer), the audit draw's;
     - amendment 4's other fixed values (``FIXED_KEYS``), each an object whose keys and values
-      are exactly the code's (``fixed_values``): ``candidates`` (the order, (U, B) = (8, 20) then
-      (7, 20), for the three arms, then for the primary pair, else ``infeasible`` with its
-      B = 20 report), ``numerical`` (the seeds, the cases, the norm, the survival share and its
-      retry, the bound's fraction of K*, the steps, the Gaussian directions' seeds, the
-      reference with its fallback and twin A's consistency rule), ``validation`` (the seeds, the
-      10 jointly supported blocks of 12, the three arms or, in the fallback, the primary pair,
-      and the simultaneous utility bounds), ``timecourse`` (its seeds and steps), ``drift`` (its
-      seed, batches, halves, optimizers and v₀'s batches) and ``scalars`` (the arms, and the
-      pre-warmed arm's departure steps).
+      are exactly the code's (``fixed_values``): ``candidates`` (the order, (U, B) = (8, 20),
+      (7, 20) then (6, 20), for the three arms, then (7, 20) then (6, 20) for the primary pair,
+      else ``infeasible`` with its B = 20 report; amendment 5), ``numerical`` (the seeds, the
+      cases, the norm, the survival share and its retry, the bound's fraction of K*, the steps,
+      the Gaussian directions' seeds, the reference with its fallback and twin A's consistency
+      rule), ``validation`` (the seeds, the 10 jointly supported blocks of 12, the three arms
+      or, in the fallback, the primary pair, and the simultaneous utility bounds),
+      ``timecourse`` (its seeds and steps), ``drift`` (its seed, batches, halves, optimizers and
+      v₀'s batches) and ``scalars`` (the arms, and the pre-warmed arm's departure steps).
 
     Each is required, the integers as JSON integers; a missing or malformed one raises
     ``ValueError``, and none is ever defaulted."""
@@ -3813,8 +3877,9 @@ def fixed_values() -> dict[str, dict[str, Any]]:
     a fixation record must hold each exactly (``fixed_problems``):
 
     - ``candidates``: the order of ``CANDIDATES`` as (U, B) objects, for ``arms`` (the three
-      arms), then for ``fallback_arms`` (the primary pair), else ``end`` ``infeasible`` with its
-      report of ``scope`` B=20 (review fa22: no B = 5 candidate);
+      arms), then ``fallback_order``, that of ``FALLBACK_CANDIDATES``, for ``fallback_arms`` (the
+      primary pair), else ``end`` ``infeasible`` with its report of ``scope`` B=20 (no B = 5
+      candidate; amendment 5's order);
     - ``numerical``: the seeds ``NUMERICAL_SEEDS``, the ``cases`` (every selected rate on the
       first seed, each arm's U-rate on the others: ``numerical_cases``), and the frozen policy
       of ``numerical_policy`` (the norm, the survival share, the retry scale, the bound's
@@ -3831,7 +3896,10 @@ def fixed_values() -> dict[str, dict[str, Any]]:
     tool, gpu = _tool_policy(), _gpu_fixed()
     return {
         "candidates": {"order": [{"U": upper, "B": batch} for upper, batch in CANDIDATES],
-                       "arms": list(ARMS), "fallback_arms": list(PRIMARY_ARMS),
+                       "arms": list(ARMS),
+                       "fallback_order": [{"U": upper, "B": batch}
+                                          for upper, batch in FALLBACK_CANDIDATES],
+                       "fallback_arms": list(PRIMARY_ARMS),
                        "end": "infeasible", "scope": SCOPE},
         "numerical": {"seeds": list(NUMERICAL_SEEDS),
                       "cases": {"every_rate": [NUMERICAL_SEEDS[0]],
@@ -3875,12 +3943,17 @@ def fixed_problems(key: str, value: Any, fixed: Mapping[str, Any]) -> list[str]:
 
 
 def versions_problems(
-    path: str | Path, *, fixation: str | Path, judge: str | None = None, repo: Path = REPO_ROOT
+    path: str | Path,
+    *,
+    fixation: str | Path,
+    judge: str | None = None,
+    repo: Path = REPO_ROOT,
+    issued: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[str]:
-    """How the running checkout and configs depart from the versions record at ``path``
-    (``VERSIONS_RECORD``, written by ``scripts/study2_short_summary.py versions``); none: they
-    agree. The record must exist and be committed: a file of the checkout ``repo`` that Git
-    tracks, unchanged at HEAD. And:
+    """How the running checkout and configs depart from the versions record at ``path`` (one of
+    ``VERSIONS_RECORDS``, by default the current ``VERSIONS_RECORD``, written by
+    ``scripts/study2_short_summary.py versions``); none: they agree. The record must exist and
+    be committed: a file of the checkout ``repo`` that Git tracks, unchanged at HEAD. And:
 
     - ``code.commit`` is the running HEAD, or an ancestor of it whose changes up to HEAD touch the
       versions record alone (committing the record makes such a child), or any ancestor when the
@@ -3890,7 +3963,13 @@ def versions_problems(
     - ``model`` is the name and revision of the stage's model (``VERSIONS_CONFIG``);
     - ``judge``'s identity is that of its config (``judge.judge_identity``), and the config is
       ``judge/<judge>`` when ``judge`` is given;
-    - ``fixation.sha256`` is the sha256 of the fixation record ``fixation``.
+    - ``fixation.sha256`` is the sha256 of the fixation record ``fixation``;
+    - a later record (amendment 5) names the one before it, ``supersedes`` its path in the
+      checkout and its sha256, which must be that file's, with the ``reason`` (a non-empty
+      string): both or neither;
+    - ``issued``: the versions records that the issued confirmation and time-course campaigns
+      named (``issued_versions``, by run label), each of which must be this one: a confirmation
+      runs, and its looks are read, under the record it started with.
     """
     path = Path(path)
     if not path.is_file():
@@ -3955,7 +4034,60 @@ def versions_problems(
     digest = hashlib.sha256(Path(fixation).read_bytes()).hexdigest()
     if (record.get("fixation") or {}).get("sha256") != digest:
         problems.append(f"the record's fixation sha256 is not that of {fixation}")
+    problems += _succession_problems(record, repo)
+    own_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    others: dict[str, list[str]] = defaultdict(list)
+    for label, named in sorted((issued or {}).items()):
+        if named.get("sha256") != own_digest:
+            others[f"{named.get('path')} (sha256 {named.get('sha256')})"].append(label)
+    for named, labels in sorted(others.items()):
+        more = f" and {len(labels) - 1} other run(s)" if len(labels) > 1 else ""
+        problems.append(f"the issued confirmation campaign of {labels[0]}{more} was written under "
+                        f"the versions record {named}, not {path}: a confirmation runs, and its "
+                        "looks are read, under the record it started with")  # fmt: skip
     return problems
+
+
+def _succession_problems(record: Mapping[str, Any], repo: Path) -> list[str]:
+    """How a later versions record's reference to the one before departs from what
+    ``versions_problems`` requires (none: it holds, or the record is the first)."""
+    supersedes, reason = record.get("supersedes"), record.get("reason")
+    if supersedes is None and reason is None:
+        return []
+    if not (isinstance(reason, str) and reason.strip()):
+        return [f"the record's reason {reason!r} is not a non-empty string"]
+    if not (isinstance(supersedes, dict) and set(supersedes) == {"path", "sha256"}
+            and all(isinstance(v, str) for v in supersedes.values())):  # fmt: skip
+        return [f"the record's supersedes {supersedes!r} is not an object with its path and sha256"]
+    earlier = repo / supersedes["path"]
+    if not earlier.is_file():
+        return [f"the record supersedes {supersedes['path']}, which the checkout does not hold"]
+    if hashlib.sha256(earlier.read_bytes()).hexdigest() != supersedes["sha256"]:
+        return [f"the record supersedes {supersedes['path']} at another sha256 than the file's"]
+    return []
+
+
+_RUN_SEED = re.compile(r"/s(\d+)$")
+
+
+def issued_versions(
+    records: Sequence[Mapping[str, Any]], experiment: str = "study2_short"
+) -> dict[str, dict[str, Any]]:
+    """The versions record (``path`` and ``sha256``) that each issued confirmation and
+    time-course campaign's header named, by the label of each run the launcher started on a
+    confirmation seed (its journal's start record carries the header, ``launch.run_campaign``).
+    Starts whose header names none (written before the header held it) are left out: not
+    recorded, so nothing to compare."""
+    out = {}
+    for r in records:
+        header = r.get("header")
+        seed = _RUN_SEED.search(str(r.get("run", "")))
+        if (r.get("event") == "start" and r.get("experiment") == experiment
+                and isinstance(header, dict) and "versions_sha256" in header
+                and seed and int(seed[1]) in CONFIRMATION_SEEDS):  # fmt: skip
+            out[str(r["run"])] = {"path": header.get("versions_record"),
+                                  "sha256": header["versions_sha256"]}  # fmt: skip
+    return out
 
 
 def run_facts(run_dir: str | Path) -> dict[str, Any]:

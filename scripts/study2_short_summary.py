@@ -6,7 +6,9 @@ analysis.
         (--w-max W | --fixation FILE) [--runs-root RUNS_DIR] [--abandoned FILE] \
         [--judge NAME [--versions FILE] [--sealed-dir DIR]] [--out OUT.json]
     python scripts/study2_short_summary.py versions --judge NAME --fixation FILE \
-        [--allow-descendants] [--out FILE]
+        [--allow-descendants] [--supersedes FILE --reason TEXT] [--out FILE]
+    python scripts/study2_short_summary.py pair-recheck --runs DIR [DIR ...] --theta0 RUN_DIR \
+        --fixation FILE --runs-root RUNS_DIR [--abandoned FILE] [--upper U] --out OUT.json
 
 --runs holds every run so far, Stage A's included (as for scripts/study2_short_campaigns.py),
 --theta0 the θ₀ run, the utility baseline, and --runs-root RUNS_DIR, whose numerical/ holds the
@@ -19,7 +21,7 @@ recovery round has ended, or that attempt is in the abandonment record --abandon
 under $RUNS_DIR outside the checkout's tracked tree and archived with an inventory); an attempt
 that may still be running keeps its run pending. The status is the stage's state
 machine (analysis.study2_short.progress), on K, numerics and utility only: the candidates (U, B)
-in amendment 4's order with their costs (B = 20 only, review fa22), every attempt (its
+in amendment 5's order with their costs (B = 20 only), every attempt (its
 selections, numerical checks and validation, its failures, its arms blocked by technical marks
 only, the kind of every rate excluded up front, and each arm's search allowance, spent there or
 carried) and round, amendment 3's FA controls (reported with their verdicts, never used), the
@@ -76,10 +78,12 @@ per-contrast 97.5 % intervals beside them, the readings, the attrition, the miss
 sensitivities, and each cohort block's harm and missing labels per arm) and the time course with its
 labels (harm per step of each run numerically consistent with its endpoint run: identical or
 consistent). Before, ``final`` says "not yet" with the reason, and no label is read for it.
---judge refuses without the committed versions record (--versions FILE, default
-docs/study2-short-versions.json), or when the running commit, the model, the judge's identity
-or the fixation record departs from it (analysis.study2_short.versions_problems); OUT.json then
-records the versions record's path and sha256. The looks need
+--judge refuses without the committed versions record (--versions FILE, default the current
+one, docs/study2-short-versions-2.json; the first, docs/study2-short-versions.json, holds for
+its own commit), or when the running commit, the model, the judge's identity or the fixation
+record departs from it, or when the issued confirmation campaigns named another record in
+their headers (analysis.study2_short.versions_problems, issued_versions; the launch journal
+under --runs-root); OUT.json then records the versions record's path and sha256. The looks need
 the simulation's fixation record (--fixation: w_max, the look levels, the SE floor, the bias
 allowance, the interval with its bootstrap resamples and seed, the look sizes and cap, the
 equivalence and direction minima, and the mechanism cohort's values;
@@ -95,12 +99,23 @@ Git) and archive it with an inventory, never commit it (a later commit would mak
 descendant of the versions record's commit).
 
 ``versions`` writes the versions record that amendment 3 requires before the validation campaign
-(default docs/study2-short-versions.json, which must not exist; it is then committed): the
-commit of this checkout, which must be clean (the commit the validation and confirmation run
-from), whether a later commit may run them (``allow_descendants``, false unless
+(default the current record, docs/study2-short-versions-2.json, which must not exist; it is then
+committed): the commit of this checkout, which must be clean (the commit the validation and
+confirmation run from), whether a later commit may run them (``allow_descendants``, false unless
 --allow-descendants is given; committing the record itself is always allowed), the model and its
 revision of experiments/study2_short, the identity that every label of judge NAME carries
-(judge.judge_identity), and the fixation record's path and sha256.
+(judge.judge_identity), and the fixation record's path and sha256. A later record (amendment 5:
+the candidate selection changed after the first was written) also names the committed record it
+follows, --supersedes FILE (its path in the checkout and its sha256), with --reason TEXT; the
+earlier record stays as it is, valid for its own commit.
+
+``pair-recheck`` recomputes the primary pair's validation verdict on a three-arm validation's runs
+(amendment 5: the pair at U = 8 is decided so, never visited): the replay as above, then
+analysis.study2_short.pair_recomputation at the three-arm attempt at (U, 20), --upper U (8 by
+default): the primary arms at the rates of the check that qualified them, with its FA controls,
+θ₀, K* and w_max as the selection reads them. It prints the rates, the controls, the three-arm
+verdict and the pair's (support, reasons and the six utility bounds) and writes the whole record
+to OUT.json, which must not exist (under $RUNS_DIR). K, numerics and utility only.
 """
 
 import argparse
@@ -140,11 +155,13 @@ from zero_field_refusal.analysis.study2_short import (
     continuation,
     exhausted_runs,
     issued_ranges,
+    issued_versions,
     issued_w_max,
     look_blocks,
     looks,
     mechanism_analysis,
     mechanism_blocks,
+    pair_recomputation,
     progress,
     read_abandonment,
     read_fixation,
@@ -533,14 +550,35 @@ def _coverage_shown(coverage: dict[str, Any]) -> dict[str, Any]:
 
 
 def versions_record(
-    judge: str, fixation: Path, *, allow_descendants: bool = False
+    judge: str,
+    fixation: Path,
+    *,
+    allow_descendants: bool = False,
+    supersedes: Path | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """The versions record (see the module docstring); ``ValueError`` unless the checkout is a
-    clean one of a known commit."""
+    clean one of a known commit. A later record names the one before it (``supersedes``: its
+    path in the checkout, which must hold it, and its sha256) with the ``reason``."""
     code = git_state()
     if not code.get("commit") or code.get("dirty") is not False:
         raise ValueError(f"the versions record needs a clean checkout of a known commit, not "
                          f"{code}")  # fmt: skip
+    if (supersedes is None) != (reason is None) or (reason is not None and not reason.strip()):
+        raise ValueError("a later versions record needs both --supersedes and a non-empty "
+                         "--reason")  # fmt: skip
+    succession = {}
+    if supersedes is not None:
+        earlier = supersedes.resolve()
+        if not (earlier.is_file() and earlier.is_relative_to(REPO_ROOT.resolve())):
+            raise ValueError(f"{supersedes} is not a file of the checkout {REPO_ROOT}")
+        succession = {
+            "supersedes": {
+                "path": earlier.relative_to(REPO_ROOT.resolve()).as_posix(),
+                "sha256": hashlib.sha256(earlier.read_bytes()).hexdigest(),
+            },
+            "reason": reason,
+        }
     cfg = load_config(*VERSIONS_CONFIG)
     return {
         "what": "The versions of study 2's short-regime validation and confirmation (amendment "
@@ -553,6 +591,7 @@ def versions_record(
             "path": str(fixation),
             "sha256": hashlib.sha256(fixation.read_bytes()).hexdigest(),
         },
+        **succession,
     }
 
 
@@ -563,6 +602,9 @@ def versions_main(argv: list[str]) -> None:
     parser.add_argument("--fixation", type=Path, required=True, help="the fixation record")
     parser.add_argument("--allow-descendants", action="store_true",
                         help="a later commit may run the validation and confirmation")  # fmt: skip
+    parser.add_argument("--supersedes", type=Path,
+                        help="a later record: the committed record it follows")  # fmt: skip
+    parser.add_argument("--reason", help="a later record: why it follows that one")
     parser.add_argument("--out", type=Path, default=Path(VERSIONS_RECORD),
                         help="must not exist")  # fmt: skip
     args = parser.parse_args(argv)
@@ -571,7 +613,8 @@ def versions_main(argv: list[str]) -> None:
     try:
         read_fixation(args.fixation)
         record = versions_record(args.judge, args.fixation,
-                                 allow_descendants=args.allow_descendants)  # fmt: skip
+                                 allow_descendants=args.allow_descendants,
+                                 supersedes=args.supersedes, reason=args.reason)  # fmt: skip
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -579,10 +622,76 @@ def versions_main(argv: list[str]) -> None:
     print(args.out)
 
 
+def pair_main(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(prog="study2_short_summary.py pair-recheck",
+                                     description="Recompute the primary pair's validation on a "
+                                                 "three-arm validation's runs.")  # fmt: skip
+    parser.add_argument("--runs", type=Path, nargs="+", required=True)
+    parser.add_argument("--theta0", type=Path, required=True)
+    parser.add_argument("--fixation", type=Path, required=True, help="the fixation record (w_max)")
+    parser.add_argument("--runs-root", type=Path, required=True,
+                        help="RUNS_DIR: its numerical/ verdicts and launch/ journal")  # fmt: skip
+    parser.add_argument("--abandoned", type=Path,
+                        help="the abandonment record of launcher attempts (JSON)")  # fmt: skip
+    parser.add_argument("--upper", type=float, default=8.0, help="the candidate's U (B = 20)")
+    parser.add_argument("--out", type=Path, required=True, help="the record (JSON); must not exist")
+    args = parser.parse_args(argv)
+    if args.out.exists():
+        parser.error(f"{args.out} exists")
+    try:
+        w_max = read_fixation(args.fixation)["w_max"]
+        abandoned = read_abandonment(args.abandoned) if args.abandoned is not None else {}
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    summary = json.loads((args.theta0 / "summary.json").read_text())
+    theta0 = {key: summary.get(key) for key in ("benchmark_accuracy", "factual_accuracy")}
+    if theta0_problems(theta0):
+        parser.error("; ".join(theta0_problems(theta0)))
+    loaded = load_trajectories(*args.runs)
+    facts = {r.run_id: run_facts(r.run_dir) for r in loaded if r.arm in (*ARMS, FA_CONTROL_ARM)}
+    runs, courses = split_timecourse(loaded, facts)
+    records = launch_records(args.runs_root)
+    try:
+        exhausted = exhausted_runs(records, abandoned=abandoned)
+    except ValueError as exc:
+        parser.error(str(exc))
+    state = progress(runs, theta0, w_max, facts=facts, exhausted=exhausted,
+                     numerical=read_numerical(args.runs_root), timecourse=courses,
+                     issued_w_max=issued_w_max(records))  # fmt: skip
+    attempts = (state.get("selection") or {}).get("attempts", [])
+    found = [a for a in attempts if (a["batch"], a["U"], a["three_arm"]) == (20, args.upper, True)]
+    if not found:
+        parser.error(f"the selection has no three-arm attempt at U={args.upper:g}, B=20; its "
+                     f"problems: {state['problems']}")  # fmt: skip
+    try:
+        recheck = pair_recomputation(found[0], runs, theta0, w_max, exhausted)
+    except ValueError as exc:
+        parser.error(str(exc))
+    verdict = recheck["verdict"]
+    shown = {**{k: v for k, v in recheck.items() if k != "verdict"},
+             "three_arm": {k: found[0]["validation"][k] for k in ("passes", "reasons")},
+             "pair": {"passes": verdict["passes"], "reasons": verdict["reasons"],
+                      "problems": verdict["problems"],
+                      "jointly_supported": len(verdict.get("jointly_supported", [])),
+                      "utility": _utility(verdict.get("utility"))}}  # fmt: skip
+    record = {"what": "The primary pair's validation verdict recomputed on the three-arm "
+                      "validation's runs (amendment 5): K, numerics and utility only.",
+              "command": sys.argv, "code": git_state(), "theta0": {"run": args.theta0.name,
+                                                                   **theta0},
+              "w_max": w_max, "abandoned": abandoned, "problems": state["problems"],
+              "shown": shown, "recheck": recheck}  # fmt: skip
+    print(json.dumps(shown, indent=1, default=str))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(record, indent=1, default=str) + "\n")
+
+
 def main() -> None:
     load_env()  # $RUNS_DIR of .env, for the sealed records' default directory
     if sys.argv[1:2] == ["versions"]:
         versions_main(sys.argv[2:])
+        return
+    if sys.argv[1:2] == ["pair-recheck"]:
+        pair_main(sys.argv[2:])
         return
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=Path, nargs="+", required=True)
@@ -616,8 +725,10 @@ def main() -> None:
         w_max = fixation["w_max"]
     if w_max is None or not w_max > 0:
         parser.error("w_max is needed: --w-max or --fixation")
-    if args.judge:  # the looks read labels: the versions record must hold
-        problems = versions_problems(args.versions, fixation=args.fixation, judge=args.judge)
+    records = launch_records(args.runs_root) if args.runs_root is not None else []
+    if args.judge:  # the looks read labels: the versions record must hold, the confirmation's
+        problems = versions_problems(args.versions, fixation=args.fixation, judge=args.judge,
+                                     issued=issued_versions(records))  # fmt: skip
         if problems:
             parser.error("the versions record does not hold: " + "; ".join(problems))
         try:
@@ -639,7 +750,6 @@ def main() -> None:
     # The time course's runs, split once here: the looks, their labels, the utility family, the
     # sensitivities and the contrasts read ``runs`` only (review of Task 5, C1).
     runs, courses = split_timecourse(loaded, facts)
-    records = launch_records(args.runs_root) if args.runs_root is not None else []
     try:
         exhausted = exhausted_runs(records, abandoned=abandoned)
     except ValueError as exc:

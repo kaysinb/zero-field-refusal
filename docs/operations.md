@@ -627,8 +627,11 @@ python scripts/study2_short_summary.py versions --judge wildguard --fixation $F 
   [--allow-descendants]
 ```
 
-It writes `docs/study2-short-versions.json`, a JSON object written once (the script refuses an
-existing file and a dirty checkout). Commit it, alone, before the validation campaign:
+It writes the current record (`--out`, by default `docs/study2-short-versions-2.json` since
+[amendment 5](#amendment-5-the-candidate-order-at-batch-20-after-u-8); the first record,
+`docs/study2-short-versions.json`, was written so at `4fbd19a`), a JSON object written once (the
+script refuses an existing file and a dirty checkout). Commit it, alone, before the validation
+campaign:
 
 - `code.commit`: the full commit hash of the checkout;
 - `code.allow_descendants`: whether a later commit may run the validation and confirmation
@@ -637,11 +640,14 @@ existing file and a dirty checkout). Commit it, alone, before the validation cam
 - `judge`: the judge config (`judge/wildguard`) and the identity every label carries:
   `backend`, `prompt_version`, `judge_model`, `judge_revision`, `rubric_version`;
 - `fixation`: the fixation record's path and sha256;
-- `what` and `written_at` (UTC).
+- `what` and `written_at` (UTC);
+- a later record only: `supersedes`, the path in the checkout and the sha256 of the record it
+  follows (`--supersedes FILE`), and `reason` (`--reason TEXT`), both or neither.
 
-**The record is enforced** (`analysis.study2_short.versions_problems`). The `validation` and
-`confirmation` campaigns, and the summary with `--judge`, refuse without it (`--versions FILE`,
-default `docs/study2-short-versions.json` in the checkout), and refuse when:
+**The record is enforced** (`analysis.study2_short.versions_problems`). The `validation`,
+`confirmation` and `timecourse` campaigns, the summary with `--judge` and the audit's draw refuse
+without it (`--versions FILE`, default the current record, `docs/study2-short-versions-2.json`,
+in the checkout), and refuse when:
 
 - the record is not committed: outside the checkout, not tracked by Git, or changed since HEAD;
 - the running HEAD is not `code.commit`, or a child of it that adds the record alone (the commit
@@ -655,11 +661,18 @@ default `docs/study2-short-versions.json` in the checkout), and refuse when:
 - `model` is not the model of `experiments/study2_short`;
 - the judge's identity is not that of its config, or (for the summary) the config is not
   `judge/NAME` of `--judge NAME`;
-- the fixation record given (`--fixation`) has another sha256.
+- the fixation record given (`--fixation`) has another sha256;
+- a later record's `supersedes` does not name a file of the checkout with that sha256, or its
+  `reason` is empty;
+- an issued confirmation or time-course campaign named another record in its header (the launch
+  journal under `--runs-root`; `issued_versions`): a confirmation keeps the record it started
+  with.
 
 The discovery campaigns (`targeted`, `repair`, `controls`, `prewarmed`) come before the record
 and run without it. The campaigns' headers and the summary's `--out` file (with `--judge`) record
-the versions record's path and sha256. Write campaigns, summaries and abandonment records under
+the versions record's path and sha256; a versioned campaign's YAML `header` holds them too
+(`versions_record`, `versions_sha256`), and the launcher logs them with every start. Write
+campaigns, summaries and abandonment records under
 `$RUNS_DIR` (ignored by Git), never into the checkout's tracked tree, and archive them with an
 inventory.
 
@@ -1016,6 +1029,53 @@ The prep generates the twelve seeds' streams; archive them before the runs read 
 campaign holds every arm at its three rates on the twelve seeds: 108 runs with three arms. The
 summary then gives the three-arm verdict and the next step: `confirmation`, the next candidate,
 or `blocked` (a technical shortfall) with its reasons.
+
+### Amendment 5: the candidate order at batch 20 after U 8
+
+[Amendment 5](study2-preregistration.md#amendment-5-the-candidate-order-at-batch-20-after-u-8)
+replaces the order after S3 failed on utility. The state machine visits, in this order:
+
+1. the three arms at (U, B) = (8, 20), (7, 20), (6, 20) (`CANDIDATES`);
+2. the primary pair at (7, 20), (6, 20) (`FALLBACK_CANDIDATES`); never at (8, 20), which S3's
+   records decide;
+3. otherwise `infeasible`, with the B = 20 feasibility report.
+
+Each candidate has its own discovery, numerical check (`numerical/b20-u{U}/`, the bound 0.01·K\*
+of its U; at U = 6, K\* = √30) and validation, and the procedure of S1–S3 holds at each, with
+`u7` or `u6` in the campaign names. The pair at a U reuses every record of the three arms' visit
+there: after a three-arm validation, its verdict is recomputed on the same runs; otherwise it runs
+its own check and validation (72 runs). A rate that U = 6's rounds added can enter the pair's
+selection at U = 7, with its own case, check and validation runs. Before a next candidate's
+campaigns, set its forecast (its checks and the confirmation) against what remains of the
+budget; if it does not fit, stop with the price. Before a U = 6 candidate is fixed, forecast its
+power and support with the simulation at its rates.
+
+**The pair's recomputation at U = 8**, read on K, numerics and utility only:
+
+```bash
+python scripts/study2_short_summary.py pair-recheck --runs $R --theta0 $THETA0 --fixation $F \
+  --runs-root runs --upper 8 --out runs/analysis/study2-short-pair-u8-recheck-20261022.json
+```
+
+**Which versions record a campaign uses.** There are two, each for its own commit:
+
+- `docs/study2-short-versions.json` holds for `6fb20a9` (its record-only child of `4fbd19a`).
+  Everything that runs on `6fb20a9`, the whole U = 7 candidate included, uses it: that checkout's
+  default.
+- `docs/study2-short-versions-2.json` holds for the commit of amendment 5's code and its
+  record-only child. Write it from a clean checkout of that commit, and commit it alone:
+
+  ```bash
+  python scripts/study2_short_summary.py versions --judge wildguard --fixation $F \
+    --supersedes docs/study2-short-versions.json \
+    --reason "the candidate-selection code changed (amendment 5)"
+  ```
+
+  Campaigns written from that commit use it: the new checkout's default.
+
+Run each campaign, summary and audit from the checkout of the record it is written under, and
+pass `--runs-root`: once a confirmation has started, its later ranges, its time course, its looks
+and the audit are refused under any other record than the one its issued campaigns named.
 
 ### S4: confirmation, the time course and the drift
 

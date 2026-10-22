@@ -138,8 +138,9 @@ FIXATION = {  # the decided values; the resamples, seed and bias allowance are p
         "agreement_check_share": 0.1,
     },  # fmt: skip
     # Amendment 4's other fixed values, as the tracked record holds them (the code's)
-    "candidates": {"order": [{"U": 8, "B": 20}, {"U": 7, "B": 20}],
+    "candidates": {"order": [{"U": 8, "B": 20}, {"U": 7, "B": 20}, {"U": 6, "B": 20}],
                    "arms": ["adamw_25", "frozen_adam_25", "prewarmed_adamw_25"],
+                   "fallback_order": [{"U": 7, "B": 20}, {"U": 6, "B": 20}],
                    "fallback_arms": ["adamw_25", "frozen_adam_25"], "end": "infeasible",
                    "scope": "B=20"},
     "numerical": {"seeds": [2200, 2201, 2202],
@@ -536,7 +537,8 @@ def test_later_runs_must_be_at_the_frozen_rates() -> None:
 
 def test_primary_only_fallback_reaches_confirmation_with_the_primary_arms() -> None:
     # The pre-warmed arm never brackets K*: every candidate fails it, and the fallback freezes
-    # the primary arms at (8, 20); their confirmation blocks hold no pre-warmed run.
+    # the primary arms at (7, 20), its first candidate (amendment 5); their confirmation blocks
+    # hold no pre-warmed run.
     runs = [*base()]
     real = SCALE.copy()
     try:
@@ -546,7 +548,7 @@ def test_primary_only_fallback_reaches_confirmation_with_the_primary_arms() -> N
     finally:
         SCALE.update(real)
     frozen = state["frozen"]
-    assert (frozen["batch"], frozen["U"], frozen["three_arm"]) == (20, 8.0, False)
+    assert (frozen["batch"], frozen["U"], frozen["three_arm"]) == (20, 7.0, False)
     assert frozen["prewarmed_dropped"] and set(frozen["rates"]) == {ADAMW, FA}
     assert state["validation"]["arms"] == [ADAMW, FA]
     runs += blocks_of(frozen["rates"], 20, CONFIRMATION_SEEDS[:2])
@@ -1000,7 +1002,10 @@ def test_fixation_requires_amendment_4s_fixed_values(tmp_path) -> None:
     assert {key: FIXATION[key] for key in FIXED_KEYS} == fixed
     # The code's values, from the constants the selection, the tools and the scalars use
     assert [(c["U"], c["B"]) for c in fixed["candidates"]["order"]] == list(study2_short.CANDIDATES)
-    assert all(c["B"] == 20 for c in fixed["candidates"]["order"])  # no B = 5 candidate
+    assert [(c["U"], c["B"]) for c in fixed["candidates"]["fallback_order"]] == list(
+        study2_short.FALLBACK_CANDIDATES)  # amendment 5: no pair at U = 8  # fmt: skip
+    assert all(c["B"] == 20 for key in ("order", "fallback_order")
+               for c in fixed["candidates"][key])  # no B = 5 candidate  # fmt: skip
     numerical = fixed["numerical"]
     policy = study2_short.numerical_policy(8)
     assert {k: numerical[k] for k in ("norm", "survival_share", "retry_scale", "steps",
@@ -1073,9 +1078,15 @@ def test_fixation_requires_amendment_4s_fixed_values(tmp_path) -> None:
             read_fixation(path)
     # The JSON numbers as numbers: U 8.0 or 8 alike; the record's own values are returned
     path.write_text(json.dumps({**FIXATION, "candidates": {**FIXATION["candidates"], "order": [
-        {"U": 8.0, "B": 20}, {"U": 7.0, "B": 20}]}}))  # fmt: skip
-    assert read_fixation(path)["candidates"]["order"] == [{"U": 8.0, "B": 20},
-                                                          {"U": 7.0, "B": 20}]  # fmt: skip
+        {"U": 8.0, "B": 20}, {"U": 7.0, "B": 20}, {"U": 6.0, "B": 20}]}}))  # fmt: skip
+    assert read_fixation(path)["candidates"]["order"] == [
+        {"U": 8.0, "B": 20}, {"U": 7.0, "B": 20}, {"U": 6.0, "B": 20}]  # fmt: skip
+    # Amendment 4's order, without U = 6 and with the pair at U = 8, is refused.
+    path.write_text(json.dumps({**FIXATION, "candidates": {**{
+        k: v for k, v in FIXATION["candidates"].items() if k != "fallback_order"},
+        "order": [{"U": 8, "B": 20}, {"U": 7, "B": 20}]}}))  # fmt: skip
+    with pytest.raises(ValueError, match="candidates lacks \\['fallback_order'\\]"):
+        read_fixation(path)
 
 
 # ------------------------------------------------------------------ the looks' blocks
@@ -1911,8 +1922,8 @@ def test_no_b20_candidate_prints_the_feasibility_report(monkeypatch, tmp_path, c
     report = json.loads(printed.out)
     assert (report["scope"], report["confirmation"]) == ("B=20", False)
     assert [(c["U"], c["scope"]) for c in report["candidates"]] == [
-        (8.0, "three arms"), (7.0, "three arms"), (8.0, "primary pair"),
-        (7.0, "primary pair")]  # fmt: skip
+        (8.0, "three arms"), (7.0, "three arms"), (6.0, "three arms"), (7.0, "primary pair"),
+        (6.0, "primary pair")]  # fmt: skip
     assert "the stage ended infeasible: no candidate at B = 20 qualifies" in printed.err
 
 
@@ -2041,6 +2052,49 @@ def test_validation_and_confirmation_need_the_versions_record(monkeypatch, tmp_p
     header = " ".join(line[2:] for line in out.read_text().splitlines() if line.startswith("#"))
     digest = hashlib.sha256(record.read_bytes()).hexdigest()
     assert f"under the versions record {record}, sha256 {digest}" in header
+    # The YAML header too, which the launcher logs with every start (``issued_versions``).
+    assert campaign_header(out) == {"w_max": W_MAX, "versions_record": str(record),
+                                    "versions_sha256": digest}  # fmt: skip
+
+
+def test_the_callers_check_the_record_the_running_confirmation_named(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Amendment 5: two versions records coexist. The campaigns and the summary's looks (the
+    audit's draw runs the summary's) check the record they are given against those that the
+    issued confirmation campaigns' headers named in the launch journal (``issued_versions``):
+    the starts of runs on a confirmation seed only, and only those whose header names one."""
+    from zero_field_refusal.analysis.study2_short import issued_versions
+
+    named = {"versions_record": "docs/study2-short-versions.json", "versions_sha256": "a" * 64}
+    records = [
+        {"event": "start", "experiment": "study2_short", "run": "x-blocks-1-2-rayleigh/s3000",
+         "header": {"w_max": W_MAX, **named}},
+        {"event": "start", "experiment": "study2_short", "run": "x-validation/s2100",
+         "header": {"w_max": W_MAX, **named}},
+        {"event": "start", "experiment": "study2_short", "run": "y-blocks-1-2/s3001",
+         "header": {"w_max": W_MAX}},
+        {"event": "end", "experiment": "study2_short", "run": "x-blocks-1-2/s3002",
+         "header": named},
+    ]  # fmt: skip
+    issued = {"x-blocks-1-2-rayleigh/s3000": {"path": named["versions_record"],
+                                              "sha256": named["versions_sha256"]}}  # fmt: skip
+    assert issued_versions(records) == issued
+    runs = base()
+    until(runs, "confirmation")
+    root = runs_root(tmp_path, records)
+    seen = []
+    for path, args in ((CAMPAIGNS, ("confirmation", "--blocks", "1", "2")),
+                       (SUMMARY, ("--judge", "wildguard"))):  # fmt: skip
+        monkeypatch.setattr("zero_field_refusal.analysis.study2_short.versions_problems",
+                            lambda path, **kwargs: seen.append(kwargs) or ["held"])  # fmt: skip
+        with pytest.raises(SystemExit):
+            script(monkeypatch, tmp_path, path, runs, *args, "--fixation", fixed(tmp_path),
+                   "--runs-root", root, "--versions", str(tmp_path / "v.json"),
+                   versions=False)  # fmt: skip
+        assert seen[-1]["issued"] == issued
+        assert "the versions record does not hold: held" in capsys.readouterr().err
+    assert len(seen) == 2
 
 
 def test_the_abandonment_record_lets_a_lost_attempt_be_given_up(monkeypatch, tmp_path, capsys):
@@ -2767,7 +2821,8 @@ def test_the_summary_prints_the_status_and_refuses_looks_without_a_fixation(
     shown = json.loads(capsys.readouterr().out)
     assert shown["next"]["campaign"] == "discovery" and len(shown["next"]["runs"]) == 36
     # B = 20 only (review fa22)
-    assert [[c["batch"], c["U"]] for c in shown["candidates"]] == [[20, 8.0], [20, 7.0]]
+    assert [[c["batch"], c["U"]] for c in shown["candidates"]] == [[20, 8.0], [20, 7.0],
+                                                                   [20, 6.0]]  # fmt: skip
     assert shown["attempts"][0]["arms"][ADAMW][0]["feasible"] is False
     assert shown["attempts"][0]["three_arm"] and shown["amendment3_controls"] == []
     assert shown["not_reached"] == []
@@ -3521,6 +3576,123 @@ def test_the_versions_record_and_the_runs_read_a_dirty_tree_alike(tmp_path) -> N
     assert both() == (True, True)
     (repo / "code.py").write_text("x = 1\n")
     assert both() == (False, False)
+
+
+def test_two_versions_records_each_hold_for_their_own_commit(tmp_path) -> None:
+    """Amendment 5: the first record holds for its commit and that commit's record-only child
+    (6fb20a9), the whole U = 7 candidate included; the second, written at the commit of the
+    changed candidate selection, holds for it and its own record-only child, and names the
+    first (path and sha256) with its reason. Neither holds at the other's commit; a campaign is
+    checked against the record it names, and a confirmation against the one it started with."""
+    from zero_field_refusal.analysis.study2_short import VERSIONS_RECORDS, versions_problems
+    from zero_field_refusal.judge import judge_identity
+
+    first, second = VERSIONS_RECORDS
+    assert (first, second) == ("docs/study2-short-versions.json",
+                               "docs/study2-short-versions-2.json")  # fmt: skip
+    assert second == study2_short.VERSIONS_RECORD  # the callers' default
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / "code.py").write_text("x = 1\n")
+    git(repo, "add", "code.py")
+    git(repo, "commit", "-qm", "code")
+    model = load_config("experiments/study2_short", ["study2_short.role=confirmation"]).model
+    judge = {"config": "judge/wildguard", **judge_identity(load_config("judge/wildguard"))}
+    fixations = [Path(fixation_file(tmp_path)), Path(fixation_file(tmp_path, w_max=0.4))]
+
+    def record(fixation: Path, **more) -> dict:
+        return {"code": {"commit": git(repo, "rev-parse", "HEAD"), "allow_descendants": False},
+                "model": {"name": model.name, "revision": model.revision}, "judge": judge,
+                "fixation": {"path": str(fixation),
+                             "sha256": hashlib.sha256(fixation.read_bytes()).hexdigest()},
+                **more}  # fmt: skip
+
+    old, new = repo / first, repo / second
+    old.parent.mkdir()
+    old.write_text(json.dumps(record(fixations[0])))
+    git(repo, "add", first)
+    git(repo, "commit", "-qm", "the versions record")
+    at_old = git(repo, "rev-parse", "HEAD")
+    assert versions_problems(old, fixation=fixations[0], repo=repo) == []
+    # The candidate selection changes; the first record no longer holds at the new commit.
+    (repo / "code.py").write_text("x = 2\n")
+    git(repo, "commit", "-qam", "the candidate selection")
+    (found,) = versions_problems(old, fixation=fixations[0], repo=repo)
+    assert "differs from the recorded commit" in found and "(first: code.py)" in found
+    digest = hashlib.sha256(old.read_bytes()).hexdigest()
+    reason = "the candidate-selection code changed (amendment 5)"
+    new.write_text(json.dumps(record(fixations[1], supersedes={"path": first, "sha256": digest},
+                                     reason=reason)))  # fmt: skip
+    git(repo, "add", second)
+    git(repo, "commit", "-qm", "the second versions record")
+    assert versions_problems(new, fixation=fixations[1], repo=repo) == []
+    own = hashlib.sha256(new.read_bytes()).hexdigest()
+    # A confirmation that started under the second record keeps it; under the first, refused.
+    assert versions_problems(new, fixation=fixations[1], repo=repo, issued={
+        "c-blocks-1-2-rayleigh/s3000": {"path": second, "sha256": own}}) == []  # fmt: skip
+    (found,) = versions_problems(new, fixation=fixations[1], repo=repo, issued={
+        "c-blocks-1-2-rayleigh/s3000": {"path": first, "sha256": digest},
+        "c-blocks-1-2/s3000": {"path": first, "sha256": digest}})  # fmt: skip
+    assert found.startswith("the issued confirmation campaign of c-blocks-1-2-rayleigh/s3000 "
+                            "and 1 other run(s) was written under the versions record "
+                            f"{first} (sha256 {digest})")  # fmt: skip
+    # The first record's checkout still holds it, and does not hold the second.
+    git(repo, "checkout", "-q", at_old)
+    assert versions_problems(old, fixation=fixations[0], repo=repo) == []
+    assert "is missing" in versions_problems(new, fixation=fixations[1], repo=repo)[0]
+    git(repo, "checkout", "-q", "-")
+    # The reference must be whole and true: both keys, the reason, the earlier file's sha256.
+    for change, message in (
+        ({"reason": ""}, "the record's reason '' is not a non-empty string"),
+        ({"supersedes": None, "reason": reason}, "the record's supersedes None is not an"),
+        ({"supersedes": {"path": first}}, "is not an object with its path and sha256"),
+        ({"supersedes": {"path": "docs/none.json", "sha256": digest}},
+         "the record supersedes docs/none.json, which the checkout does not hold"),
+        ({"supersedes": {"path": first, "sha256": "0" * 64}}, "at another sha256 than the file's"),
+    ):  # fmt: skip
+        held = json.loads(new.read_text())
+        new.write_text(json.dumps({**held, **change}))
+        found = versions_problems(new, fixation=fixations[1], repo=repo)
+        assert any(message in problem for problem in found), (message, found)
+        new.write_text(json.dumps(held))
+
+
+def test_the_second_versions_record_names_the_first(monkeypatch, tmp_path, capsys) -> None:
+    """``versions --supersedes FILE --reason TEXT`` writes a later record: the first's format
+    with the path in the checkout and the sha256 of the record it follows, and the reason; both
+    or neither, the earlier one a file of the checkout; the output is written once."""
+    module = summary_module()
+    fixation = Path(fixation_file(tmp_path))
+    first = REPO_ROOT / "docs" / "study2-short-versions.json"
+    out = tmp_path / "docs" / "versions-2.json"
+    reason = "the candidate-selection code changed (amendment 5)"
+    argv = [str(SUMMARY), "versions", "--judge", "wildguard", "--fixation", str(fixation),
+            "--supersedes", str(first), "--reason", reason, "--out", str(out)]  # fmt: skip
+    monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setattr(module, "git_state", lambda: {"commit": COMMIT, "dirty": False})
+    module.main()
+    record = json.loads(out.read_text())
+    assert record["supersedes"] == {
+        "path": "docs/study2-short-versions.json",
+        "sha256": hashlib.sha256(first.read_bytes()).hexdigest(),
+    }
+    assert record["reason"] == reason
+    assert set(record) == {"what", "written_at", "code", "model", "judge", "fixation",
+                           "supersedes", "reason"}  # fmt: skip
+    with pytest.raises(SystemExit):  # written once
+        module.main()
+    assert "the versions record is written once" in capsys.readouterr().err
+    out.unlink()
+    for bad in ([*argv[:6], *argv[8:]], [*argv[:8], "--reason", " ", *argv[10:]],
+                [*argv[:7], str(fixation), *argv[8:]]):  # fmt: skip
+        monkeypatch.setattr("sys.argv", bad)
+        with pytest.raises(SystemExit):
+            module.main()
+        assert not out.exists()
+    err = capsys.readouterr().err
+    assert "needs both --supersedes and a non-empty --reason" in err
+    assert f"{fixation} is not a file of the checkout" in err
 
 
 def test_the_summary_looks_need_the_versions_record(monkeypatch, tmp_path, capsys) -> None:

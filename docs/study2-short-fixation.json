@@ -35,8 +35,9 @@
     "agreement_check_share": 0.1
   },
   "candidates": {
-    "order": [{"U": 8, "B": 20}, {"U": 7, "B": 20}],
+    "order": [{"U": 8, "B": 20}, {"U": 7, "B": 20}, {"U": 6, "B": 20}],
     "arms": ["adamw_25", "frozen_adam_25", "prewarmed_adamw_25"],
+    "fallback_order": [{"U": 7, "B": 20}, {"U": 6, "B": 20}],
     "fallback_arms": ["adamw_25", "frozen_adam_25"],
     "end": "infeasible",
     "scope": "B=20"
