@@ -4212,12 +4212,28 @@ def unlaunched_runs(
     experiment: str = "study2_short",
 ) -> list[str]:
     """The confirmation and time-course runs among ``runs`` (an arm of the stage on a
-    confirmation seed) that no start record of the launch journal names (``run_id``): their
-    campaign, and so the versions record they were launched under, cannot be shown."""
-    started = {str(r.get("run_id")) for r in records
-               if r.get("event") == "start" and r.get("experiment") == experiment}  # fmt: skip
+    confirmation seed) without a start of their own in the launch journal (``run_starts``):
+    their campaign, and so the versions record they were launched under, cannot be shown."""
     return sorted(r.run_id for r in runs if r.arm in ARMS and r.seed in CONFIRMATION_SEEDS
-                  and r.run_id not in started)  # fmt: skip
+                  and not run_starts(records, r, experiment))  # fmt: skip
+
+
+def run_starts(
+    records: Sequence[Mapping[str, Any]], run: Trajectory, experiment: str = "study2_short"
+) -> list[Mapping[str, Any]]:
+    """A run's own starts in the launch journal: the start records naming its ``run_id`` whose
+    run label sits on the run's own seed (``.../s<seed>``). A record without a label, or with a
+    label on another seed, is not one of them. Each of them is among ``issued_versions``' starts,
+    which take its versions record from its header (none named: the first record)."""
+    found = []
+    for r in records:
+        if not (r.get("event") == "start" and r.get("experiment") == experiment
+                and str(r.get("run_id")) == run.run_id):  # fmt: skip
+            continue
+        seed = _RUN_SEED.search(str(r.get("run", "")))
+        if seed and int(seed[1]) == run.seed:
+            found.append(r)
+    return found
 
 
 def versions_evidence(

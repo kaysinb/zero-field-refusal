@@ -670,9 +670,12 @@ in the checkout), and refuse when:
 - an issued confirmation or time-course campaign named another record in its header (the launch
   journal under `--runs-root`; `issued_versions`; a header naming none counts under the first
   record): a confirmation keeps the record it started with;
-- a confirmation or time-course run of `--runs` has no start in the launch journal
-  (`unlaunched_runs`): its record cannot be shown, so the check fails closed until the journal
-  that started it is restored.
+- a confirmation or time-course run of `--runs` has no start of its own in the launch journal
+  (`unlaunched_runs`: a start naming its run id with its label on the run's seed): its record
+  cannot be shown, so the check fails closed until the journal that started it is restored.
+
+The launch journal is the evidence of which versions record a run started under: runs do not
+carry the campaign header. Archive it with an inventory and its sha256 at each stage's end.
 
 The discovery campaigns (`targeted`, `repair`, `controls`, `prewarmed`) come before the record
 and run without it. The campaigns' headers and the summary's `--out` file (with `--judge`) record
@@ -1063,9 +1066,10 @@ K\* and the half-span only, 8 by default). Its `summary.json` records U, K\* and
 half-span (`final` passes U to every part, records it in `final.json`, refuses `--write` at any
 U but 8, and skips the comparisons with the archived runs, which are at U = 8); archive it with
 an inventory. It reports at the committed level, the fixation record's `mechanism.level`
-(0.975): the readings and the stress results there (`forecast_level`), no check stream, and the
-level the calibration rule would imply at that U only as `recalibration_diagnostic`, never
-fixed. It is a report and decides nothing.
+(0.975): the readings and the stress results there (`forecast_level`), its main answer in
+`final.json`'s `forecast` (the required grid's `meets` and each cell's smallest coverage at that
+level), no check stream, and the level the calibration rule would imply at that U only as
+`recalibration_diagnostic`, never fixed. It is a report and decides nothing.
 
 **The pair's recomputation at U = 8**, read on K, numerics and utility only:
 

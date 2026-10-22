@@ -2053,5 +2053,9 @@ candidate.
     shown, and continuation, the looks and the audit are refused until the journal is restored.
     A later record that does not name the first, its exact path and sha256, with a non-empty
     reason, is refused both when it is written and when it is checked.
+  - **The launch journal is the evidence** of which record a run started under: a run counts
+    as launched only by a start of its own (its run id, its label on the run's seed). Runs do
+    not carry the campaign header, so the journal is archived with an inventory and its sha256
+    at each stage's end.
 - **No GPU path changes.** The qualification made on gate B's GPU code holds
   (`reuse_check(e380bcc, HEAD)`: no GPU path changed).

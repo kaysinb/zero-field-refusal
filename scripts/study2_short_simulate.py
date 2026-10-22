@@ -85,8 +85,9 @@ inputs record. At U ≠ 8 it skips the comparisons with amendment 3's archived r
 U = 8, and records them in final.json as skipped. A forecast at U ≠ 8 describes the frozen
 analysis: it reports coverage, power and stress at the committed level, the fixation record's
 mechanism.level (``--readings-at`` forwarded to the mechanism and stress runs), runs no binding
-check, fixes no level (final.json: ``fixed_level`` null, ``forecast_level`` the committed level),
-and keeps the level the calibration rule implies there only as ``recalibration_diagnostic``.
+check, fixes no level (final.json: ``fixed_level`` null, ``forecast_level`` the committed level,
+``forecast`` the required grid's verdict and each cell's smallest coverage at it), and keeps the
+level the calibration rule implies there only as ``recalibration_diagnostic``.
 
 The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
 the selection's record; both roots, because a selected rate may be one of Stage A's grid rates,
@@ -999,6 +1000,7 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         del final["level_on_calibration_stream"]
         final.update(
             forecast_level=committed,
+            forecast=forecast_answer(calibration, committed),
             recalibration_diagnostic={
                 "level": level,
                 "what": "the level the calibration rule would imply on the calibration stream at "
@@ -1024,6 +1026,18 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     write_inventory(out)
     shown = f"forecast at the committed level {committed}" if forecast else f"fixed level {fixed}"
     print(f"Wrote {out}: {shown}")
+
+
+def forecast_answer(path: Path, level: float) -> dict:
+    """A forecast's main answer at the committed ``level``, from its mechanism run's summary
+    (``path``): whether every required cell meets its coverage floor there, and each cell's
+    smallest simultaneous coverage, with its floor."""
+    per_level = json.loads(path.read_text())["checks"]["per_level"]
+    (entry,) = [e for e in per_level if e["level"] == level]
+    required = entry["required"]
+    return {"level": level, "required_meets": required["meets"],
+            "cells": [{k: c[k] for k in ("shape", "sd", "min_coverage", "mc_se", "floor", "meets")}
+                      for c in required["cells"]]}  # fmt: skip
 
 
 def committed_level() -> float:

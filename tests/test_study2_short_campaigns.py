@@ -3610,6 +3610,14 @@ def test_confirmation_runs_restored_without_their_journal_are_refused(
                 "run_id": r.run_id, "header": {"w_max": W_MAX}} for r in block]  # fmt: skip
     assert unlaunched_runs(started, runs) == []
     assert unlaunched_runs([{**s, "event": "end"} for s in started], runs) == ids
+    # A start of its own only: its run_id with a label on the run's own seed. A bare record
+    # (no label) and a label on a non-confirmation seed are no evidence.
+    bare = [{"event": "start", "experiment": "study2_short", "run_id": r.run_id} for r in block]
+    elsewhere = [{**s, "run": "c-validation/s2100"} for s in started]
+    swapped = [{**s, "run": f"c-blocks-1-1/s{s['run'].rsplit('/s', 1)[1]}0"} for s in started]
+    for forged in (bare, elsewhere, swapped):
+        assert unlaunched_runs(forged, runs) == ids
+    assert unlaunched_runs([*bare, *started], runs) == []
 
     def check(path, **kwargs):
         seen.append(kwargs)

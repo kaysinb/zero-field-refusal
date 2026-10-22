@@ -564,6 +564,15 @@ def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
         assert final["recalibration_diagnostic"]["level"] == 0.95
         assert "level_on_calibration_stream" not in final and "warning" not in final
         assert final["check"]["skipped"].startswith("nothing is fixed at U = 6")
+        # The forecast's main answer, at the committed level, from the mechanism run's summary
+        mechanism = json.loads((out / "mechanism" / "summary.json").read_text())
+        (at,) = [e for e in mechanism["checks"]["per_level"] if e["level"] == 0.975]
+        answer = final["forecast"]
+        assert (answer["level"], answer["required_meets"]) == (0.975, at["required"]["meets"])
+        assert [(c["shape"], c["sd"], c["min_coverage"], c["floor"], c["meets"])
+                for c in answer["cells"]] == [
+            (c["shape"], c["sd"], c["min_coverage"], c["floor"], c["meets"])
+            for c in at["required"]["cells"]] and answer["cells"]  # fmt: skip
         assert not (out / "check").exists()
         for name in ("mechanism", "stress"):
             summary = json.loads((out / name / "summary.json").read_text())
