@@ -618,6 +618,49 @@ def test_the_pair_after_a_visit_stopped_before_validation_runs_its_own() -> None
         (arm, lr) for arm in (ADAMW, FA) for lr in step["rates"][arm]}  # fmt: skip
 
 
+def test_a_mark_at_the_pinned_pairs_own_check_stops_it_without_repair() -> None:
+    """Amendment 5: the pinned pair has no repair. The pre-warmed arm has no triple at any U,
+    so the three arms' visits stop at discovery and the pair at (7, 20) runs its own check of
+    the three arms' U = 7 triples. That check marks AdamW's 1.48e-5: failing, the pair fails on
+    AdamW; not qualified, it blocks on it. Never a re-solve onto 1.43e-5, a rate U = 6's round
+    ran, nor a repair round."""
+    scale = {**SCALE, (PREWARMED, 20): 0.3, (PREWARMED, 5): 0.3}
+    for mark, outcome in (("failing", "failed"), ("not_qualified", "blocked")):
+
+        def judge(check, mark=mark):
+            if "adamw_prewarmed" in check["rates"] or check["U"] != 7:
+                return verdict_of(check)
+            return verdict_of(check, {("adamw", 1.48e-5): mark})
+
+        runs = grids(scale)
+        seen, result, verdicts = drive(runs, scale=scale, judge=judge)
+        three, pair = result["attempts"][:3], result["attempts"][3]
+        assert [(a["U"], a["three_arm"], a["failed_at"]) for a in three] == [
+            (8.0, True, "discovery"),
+            (7.0, True, "discovery"),
+            (6.0, True, "discovery"),
+        ]
+        assert 1.43e-5 in three[2]["arms"][ADAMW]["selections"][-1]["rates"]  # U = 6's round
+        assert (pair["U"], pair["three_arm"], pair["outcome"]) == (7.0, False, outcome)
+        assert pair["reasons"][0].startswith("unusable rates in the pinned triples, with no "
+                                             "repair: ['adamw_25 1.48e-05")  # fmt: skip
+        assert [s["rates"] for s in pair["arms"][ADAMW]["selections"]] == [
+            [1.27e-5, 1.48e-5, 1.5e-5]]  # fmt: skip
+        assert pair["allowance"] == {} and len(pair["numerical"]) == 1
+        assert f"{ADAMW}/B=20/U=7" not in result["rounds"] or study2_short.ALLOWANCE not in result[
+            "rounds"][f"{ADAMW}/B=20/U=7"]  # fmt: skip
+        assert [v for v in verdicts if v.startswith("numerical/b20-u7/")] == [
+            pair["numerical"][0]["verdict"]]  # fmt: skip
+        if outcome == "failed":
+            assert pair["failed_arms"] == [ADAMW]  # the order moves on to the pair at U = 6
+            done = result["next"]
+            assert (done["campaign"], done["U"], done["three_arm"]) == ("done", 6.0, False)
+            assert done["rates"][ADAMW] == three[2]["arms"][ADAMW]["selections"][-1]["rates"]
+        else:
+            step = result["next"]
+            assert (step["blocked"], step["U"], step["arms"]) == ("technical", 7.0, [ADAMW])
+
+
 def test_the_pair_after_a_full_three_arm_validation_only_recomputes() -> None:
     """Amendment 5: the pair's rates at a U are the three arms' triples at that U. The
     pre-warmed arm unsupported on the validation seeds fails the three arms' validation at
@@ -1078,8 +1121,8 @@ def test_the_fallback_carries_a_primary_re_solve_of_pass_1() -> None:
     assert fallback["resolve_carried"] is True and fallback["allowance_carried"] == [ADAMW]
     assert fallback["allowance"][ADAMW]["carried"] and fallback["allowance"][ADAMW]["three_arm"]
     assert (fallback["failed_at"], fallback["failed_arms"]) == ("numerical", [ADAMW])
-    assert fallback["reasons"] == [
-        "unusable rates after the search allowance (spent at an earlier visit: ['adamw_25']): "
+    assert fallback["reasons"] == [  # the pinned pair has no repair (amendment 5)
+        "unusable rates in the pinned triples, with no repair: "
         "['adamw_25 1.5e-05: failing: a pair exceeding the bound']"
     ]
     assert len(fallback["numerical"]) == 1  # no second re-solve at (8, 20)
@@ -1592,7 +1635,7 @@ def test_the_allowance_carries_into_the_primary_pair() -> None:
     assert (step["blocked"], step["U"], step["three_arm"], step["arms"]) == (
         "technical", 8.0, False, [ADAMW])  # fmt: skip
     assert [(r["lr"], r["state"]) for r in step["rates"]] == [(1.5e-5, "not_qualified")]
-    assert "spent at an earlier visit: ['adamw_25']" in step["reasons"][0]
+    assert step["reasons"][0].startswith("unusable rates in the pinned triples, with no repair")
     assert verdict_path(PRIMARY20 | {ADAMW: [1.27e-5, 1.5e-5, 1.74e-5]}) in verdicts
 
 

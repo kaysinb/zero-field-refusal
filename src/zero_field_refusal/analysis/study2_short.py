@@ -304,8 +304,9 @@ Blocks given to ``looks`` and ``secondary_contrasts`` are dicts in their preassi
   reuses every record of the three-arm visit at its U: after a three-arm validation its verdict
   is a recomputation on the same runs, with no new run; after a visit that stopped earlier it
   runs only what is missing at that U: its check if none qualified its rates, and its own
-  validation (72 runs). A check of the pair that marks one of its rates unusable spends the
-  arm's search allowance as at any visit.
+  validation (72 runs). The pinned pair has no repair: a check of its own that marks one of its
+  rates unusable stops that arm by the mark's kind (blocked when technical, failed when
+  scientific), with no allowance re-solve and no round, as a mark made before its visit does.
 - *Support*: the nearest bracketing pair is the largest K25 below K* and the smallest at or above
   it. An unsupported arm's cause is ``technical`` whenever one of its endpoints failed (the
   failed run may have been the bracketing one), otherwise ``bracketing`` or ``width``. Beside
@@ -2082,7 +2083,8 @@ def _visit(
         selected, step = _discovery(replay, attempt, excluded, batch, upper, arms, carried)
     if selected is None:
         return attempt, step
-    selected, controls, step = _numerical(replay, attempt, excluded, batch, upper, selected, arms)
+    selected, controls, step = _numerical(replay, attempt, excluded, batch, upper, selected, arms,
+                                          pinned=pinned is not None)  # fmt: skip
     if selected is None:
         return attempt, step
     rates = {arm: selected[arm]["rates"] for arm in arms}
@@ -2240,7 +2242,7 @@ def _discovery(
     return selected, None
 
 
-def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple:
+def _numerical(replay, attempt, excluded, batch, upper, selected, arms, *, pinned=False) -> tuple:
     """The numerical gate: the K-only regular runs of the selected rates' cases
     (``numerical_cases``; one the launcher gave up on lets the check go on, its case then not
     qualified), then the check's verdict (``numerical_verdict``). Unusable rates (failing, not
@@ -2251,8 +2253,10 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
     re-selection; every replacement is checked in a new check. An arm whose allowance is spent
     (here, or at an earlier visit of the candidate) and that holds an unusable rate, or that has
     no feasible triple after it, stops the candidate: failed when the cause is scientific,
-    blocked when it is technical only (``_stop``). Returns the selections and the FA rates'
-    accepted controls, or None with the pending step (none when the attempt failed)."""
+    blocked when it is technical only (``_stop``). At a pinned pair's visit (``pinned``,
+    amendment 5) an arm holding an unusable rate stops at once by its marks' kind, with no
+    re-solve and no round. Returns the selections and the FA rates' accepted controls, or None
+    with the pending step (none when the attempt failed)."""
 
     def stop(step: dict | None, outcome: str = "pending") -> tuple[None, None, dict | None]:
         attempt["outcome"] = outcome
@@ -2319,6 +2323,12 @@ def _numerical(replay, attempt, excluded, batch, upper, selected, arms) -> tuple
             shown[unusable["arm"]].append(f"{unusable['arm']} {unusable['lr']:g}: "
                                           f"{unusable['why']}")  # fmt: skip
         holders = [arm for arm in arms if arm in marks]
+        if pinned:  # amendment 5: no repair at a pinned pair, its arms stop by their marks
+            causes = {arm: ("scientific" if any(_kind(m) == "scientific" for m in marks[arm])
+                            else "technical", marks[arm]) for arm in holders}  # fmt: skip
+            listed = [s for arm in holders for s in shown[arm]]
+            return None, None, _stop(replay, attempt, causes, "unusable rates in the pinned "
+                                     f"triples, with no repair: {listed}", "numerical")  # fmt: skip
         spent = [arm for arm in holders if (arm, batch, upper) in replay.allowance]
         if spent:  # the allowance spent: the arm stops, by its marks' kind
             earlier = [arm for arm in spent if arm in attempt["allowance_carried"]]

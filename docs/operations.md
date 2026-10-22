@@ -1048,14 +1048,17 @@ of its U; at U = 6, K\* = √30) and validation, and the procedure of S1–S3 ho
 `u7` or `u6` in the campaign names. The pair at a U takes the three arms' triples there and
 reuses every record of their visit: after a three-arm validation, its verdict is recomputed on the
 same runs, with no campaign; otherwise it runs only what is missing at that U, its check if none
-qualified its rates and its validation (72 runs). No rate run at another U enters it. Before a
+qualified its rates and its validation (72 runs). No rate run at another U enters it, and the
+pair has no repair: a rate of its triples marked unusable (by its own check or before) stops
+that arm, blocked when the mark is technical, failed when scientific. Before a
 next candidate's campaigns, set its forecast (its checks and the confirmation) against what
 remains of the budget; if it does not fit, stop with the price.
 
 **The power forecast at U = 7 or U = 6**, before that candidate's confirmation: the simulation's
 procedure at its rates with `--upper 7` or `--upper 6` (`scripts/study2_short_simulate.py`;
 K\* and the half-span only, 8 by default). Its `summary.json` records U, K\* and the
-half-span; archive it with an inventory. It is a report and decides nothing.
+half-span (`final` passes U to every part, records it in `final.json`, and refuses `--write`
+at any U but 8); archive it with an inventory. It is a report and decides nothing.
 
 **The pair's recomputation at U = 8**, read on K, numerics and utility only:
 

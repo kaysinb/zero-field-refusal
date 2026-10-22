@@ -1941,7 +1941,8 @@ candidate.
    There is no candidate at U = 5.
 4. **Unchanged:**
    - B = 20 and 25 steps;
-   - the rate selection and the bounded repairs (the rounds and the search allowance);
+   - the rate selection and the bounded repairs (the rounds and the search allowance), except
+     the pair's rates and repairs (item 7);
    - a fresh numerical qualification at each candidate, under its own K\*;
    - support in ≥ 10 of 12 validation blocks;
    - the utility bounds (5 pp MMLU, 10 pp factual) and the ±5 pp equivalence margin;
@@ -1967,9 +1968,11 @@ candidate.
      check if none qualified its rates, and its own validation of 72 runs (two arms, three
      rates, twelve seeds).
    - A primary arm without a feasible triple at that visit fails the pair as it failed the three
-     arms (or blocks it, if it was stopped there by technical marks only). A triple holding a
-     rate found unusable at the batch since stops the pair by the kind of its mark, with no
-     re-selection.
+     arms (or blocks it, if it was stopped there by technical marks only).
+   - **The pinned pair has no repair**: no allowance re-solve and no round. A rate of its
+     triples marked unusable, by its own check or by one made before its visit, stops that arm
+     by the kind of its mark: blocked when technical, failed when scientific (the order then
+     moves on).
    - Amendment 4's re-selection of the pair over every record at the batch is withdrawn.
 
 #### What was known when it was decided
@@ -2020,7 +2023,9 @@ candidate.
   the pair's recomputation there (5.62 and 6.40 pp), and to the same next step: U = 7's
   discovery for the three arms, six FA runs at 1.52 and 1.75 · 10⁻⁵ on seeds 2000–2002.
 - **The simulation's U** (`analysis.study2_short_sim.set_upper`, `--upper`): K\* and the
-  half-span only, 8 by default; the forecast's `summary.json` records U, K\* and the half-span.
+  half-span only, 8 by default; the forecast's summaries record U, K\* and the half-span, and a
+  forecast at another U never writes `mechanism.level` or the inputs record (`--write` is
+  refused there).
 - **The fixation record's `candidates`** gains U = 6 in `order` and the pair's own
   `fallback_order`; it is read strictly against the code, as before. Nothing else in the fixation
   record changes: `mechanism.level` stays 0.975.

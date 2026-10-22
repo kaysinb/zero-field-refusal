@@ -524,6 +524,40 @@ def test_final_run_checks_a_raised_level_on_the_check_stream(tmp_path, monkeypat
         assert (out / "inventory.tsv").is_file()
 
 
+def test_a_final_run_at_another_upper_runs_every_part_there_and_writes_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    """Amendment 5: ``final --upper 6`` (a forecast) runs every nested part at U = 6, each
+    summary recording U = 6 and K* = √30, and so does final.json; with ``--write`` it is refused
+    before anything runs, so that a forecast never writes mechanism.level or the inputs
+    record. Tiny replicates; the Markdown reports are not written here."""
+    script = load_script()
+    monkeypatch.setattr(script, "markdown", lambda summary: "")
+    monkeypatch.setattr(script, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.delenv(sim.UPPER_ENV, raising=False)
+    out = tmp_path / "final"
+    argv = ["final", "--inputs", str(RECORD), "--out", str(out), "--upper", "6", "--reps", "2",
+            *TINY, "--scenarios", "mech_normal_sd5_r1-1_rho-0.5_c1+0_c2+0_none",
+            "--precision-reps", "2", "--stress-reps", "2"]  # fmt: skip
+    try:
+        with pytest.raises(SystemExit):
+            script.main([*argv, "--write"])
+        assert not out.exists()
+        script.main(argv)
+        final = json.loads((out / "final.json").read_text())
+        assert (final["upper"], final["k_star"]) == (6.0, math.sqrt(30)) and final["written"] == []
+        parts = sorted(p.parent.name for p in out.glob("*/summary.json"))
+        assert {"mechanism", "decided", "gate", "bias"} <= set(parts)
+        for name in parts:
+            summary = json.loads((out / name / "summary.json").read_text())
+            assert summary["settings"]["upper"] == 6.0, name
+            assert summary["settings"]["constants"]["k_star"] == math.sqrt(30), name
+            assert summary["settings"]["constants"]["half_span"] == math.log(math.sqrt(1.2)), name
+    finally:
+        sim.set_upper(sim.DEFAULT_UPPER)
+        monkeypatch.delenv(sim.UPPER_ENV, raising=False)
+
+
 def test_the_fixation_level_is_written_alone(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "fixation.json"

@@ -78,7 +78,10 @@ sha256 of every file it wrote.
 measure support, and the nominal half-span ln √(U/5) of the endpoints, and nothing else
 (``sim.set_upper``; the workers inherit it). The default, 8, gives every earlier run's constants
 (K* = √40, half-span 0.235). A candidate at U = 7 or U = 6 is forecast with --upper 7 or 6 at its
-rates before its confirmation. summary.json records U, K* and the half-span in its constants.
+rates before its confirmation. Every summary.json records U in its settings (with K* and the
+half-span in its constants); ``final`` passes U to each of its runs and records it in
+final.json, and refuses --write at any U but 8: a forecast never writes mechanism.level or the
+inputs record.
 
 The final run after S1, once S1's K-only data exist (the rates: each arm's selected triple, from
 the selection's record; both roots, because a selected rate may be one of Stage A's grid rates,
@@ -401,6 +404,7 @@ def main(argv: list[str] | None = None) -> None:
             "allowance": settings.allowance,
             "levels_from": None if args.levels_from is None else str(args.levels_from),
             "allowance_from": None if args.allowance_from is None else str(args.allowance_from),
+            "upper": sim.U,
             "constants": constants(),
         },
         "versions": versions,
@@ -714,6 +718,7 @@ def mechanism_main(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
             "groups": list(groups),
             "level_from": None if args.level_from is None else str(args.level_from),
             "readings_at": args.readings_at,
+            "upper": sim.U,
             "constants": mechanism_constants(),
         },
         "inputs": inputs.summary(),
@@ -892,6 +897,11 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     """The level-fixing run after S1 (module docstring, "The final run after S1")."""
     if bool(args.runs_root) != bool(args.rates):
         parser.error("final measures the inputs with both --runs-root and --rates, or neither")
+    sim.set_upper(args.upper)  # as main sets it; also when called on its own
+    if args.write and sim.U != sim.DEFAULT_UPPER:  # a forecast never writes the records
+        parser.error(f"--write fixes the level at U = {sim.DEFAULT_UPPER:g} only, not at "
+                     f"--upper {sim.U:g}: a forecast at another U writes neither "
+                     f"{INPUTS_RECORD.name} nor mechanism.level")  # fmt: skip
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or runs_root() / "analysis" / "study2_short_sim" / f"final-{stamp}"
     out.mkdir(parents=True, exist_ok=True)
@@ -901,7 +911,9 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     else:
         shutil.copyfile(args.inputs or INPUTS_RECORD, record)
     inputs = sim.read_inputs(record)
-    common = ["--inputs", str(record), "--workers", str(args.workers), "--seed", str(args.seed)]
+    # Every nested run at this run's U (each sets it anew from its own arguments)
+    common = ["--inputs", str(record), "--workers", str(args.workers), "--seed", str(args.seed),
+              "--upper", repr(sim.U)]  # fmt: skip
     if args.reps is not None:
         common += ["--reps", str(args.reps)]
     tuning = ["--bootstrap", str(args.bootstrap), "--spread-replicates",
@@ -936,7 +948,7 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
         if archived.is_file():
             target = out / f"compare-{name}"
             main(["compare", "--new", str(out / name / "summary.json"), "--old", str(archived),
-                  "--out", str(target)])  # fmt: skip
+                  "--upper", repr(sim.U), "--out", str(target)])  # fmt: skip
             found = json.loads((target / "comparison.json").read_text())
             comparisons[name] = {
                 k: found[k] for k in ("compared", "beyond_2se", "expected_by_chance", "max_abs_z")
@@ -952,6 +964,7 @@ def final_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Non
     if not args.scenarios or any(fnmatch.fnmatch(n, p) for n in names for p in args.scenarios):
         main(["mechanism", *stress])
     final = {
+        **upper(),
         "inputs": inputs.summary(),
         "level_on_calibration_stream": level,
         "check": check,
