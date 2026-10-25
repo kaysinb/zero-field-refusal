@@ -19,6 +19,9 @@ from zero_field_refusal.code_identity import (
         ("src/zero_field_refusal/analysis/stage_a.py", True),
         ("src/zero_field_refusal/analysis/study2_short.py", False),
         ("src/zero_field_refusal/analysis/study2_short_sim.py", False),
+        # Study 3's verdict rules are analysis; the harness that writes the records is not
+        ("src/zero_field_refusal/analysis/qualification_verdicts.py", False),
+        ("src/zero_field_refusal/qualification.py", True),
         ("scripts/launch.py", True),
         ("scripts/numerical_check.py", True),
         ("scripts/study2_short_summary.py", False),

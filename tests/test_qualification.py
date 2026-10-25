@@ -844,6 +844,19 @@ def test_a_stale_policy_does_not_count() -> None:
     assert rate(cases, launchers={**expected, 10201: IDENTITY})["state"] == "not_qualified"
 
 
+def test_a_rate_whose_launcher_runs_are_not_all_located_is_at_most_incomplete() -> None:
+    cases = case_verdicts()
+    expected = {s: {**IDENTITY, "run_id": f"r{s}"} for s in SEEDS}
+    out = rate(cases, launchers={**expected, 10201: None})
+    assert out["state"] == "incomplete" and out["counted"] == list(SEEDS)
+    assert "the launcher run of seed 10201 is not located" in out["reasons"]
+    assert rate(cases, launchers={10200: expected[10200]})["state"] == "incomplete"
+    failing = case_verdicts(("qualified", "failing", "qualified"))
+    assert rate(failing, launchers={**expected, 10201: None})["state"] == "failing"
+    technical = case_verdicts(("qualified", "not_qualified", "qualified"))
+    assert rate(technical, launchers={**expected, 10201: None})["state"] == "not_qualified"
+
+
 def stale_case(state, seed=10200):
     """A case of this rate written under other GPU code."""
     (verdict,) = case_verdicts((state,), seeds=(seed,))
@@ -913,6 +926,18 @@ def test_an_fa_rate_needs_its_accepted_control() -> None:
                   voided={accepted["record_sha256"]: "superseded"})  # fmt: skip
     assert voided["state"] == "not_qualified"  # a voided control is a missing one
     assert rate(case_verdicts())["control"] is None  # AdamW has none
+
+
+def test_a_voided_superseded_control_neither_counts_nor_blocks() -> None:
+    s = q.QualificationScope.of(REGISTERED)
+    cases = case_verdicts(optimizer="adam_frozen")
+    accepted = q.control_verdict(control_record(), s, 1)
+    old = q.control_verdict(control_record(0.1), s, 1)  # technical, superseded by a restart
+    out = rate(cases, optimizer="adam_frozen", control=accepted, superseded_controls=[old],
+               voided={old["record_sha256"]: "the Pod stopped"})  # fmt: skip
+    assert out["state"] == "qualified" and out["not_counted"] == []
+    assert out["voided"] == [{"case": "control", "record_sha256": old["record_sha256"],
+                              "reason": "the Pod stopped"}]  # fmt: skip
 
 
 def test_the_engineering_summary_on_synthetic_records() -> None:

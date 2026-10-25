@@ -7,6 +7,7 @@ replaced by a stub that publishes a record, and the verdicts read synthetic part
 """
 
 import copy
+import hashlib
 import importlib.util
 import json
 import re
@@ -291,8 +292,6 @@ def test_the_driver_validates_the_free_space(qualify, tmp_path) -> None:
 def test_the_driver_checks_its_campaign_and_the_gpu(qualify, tmp_path) -> None:
     path = campaign(tmp_path)
     text = driver_text(qualify, tmp_path, path)
-    import hashlib
-
     assert f"CAMPAIGN={path.resolve()}" in text
     assert hashlib.sha256(path.read_bytes()).hexdigest() in text
     positions(
@@ -434,6 +433,7 @@ def test_an_infrastructure_rerun_is_a_new_attempt_that_names_its_reason(
     assert record["infrastructure"] == {
         "reason": reason,
         "previous": [{"attempt": 1, "state": "interrupted"}],
+        "restarts": [],
     }
     qualify.main(part_args(path, tmp_path, "baseline", "--resume"))  # the latest is recorded
     assert len(stubbed) == 1
@@ -476,7 +476,8 @@ def test_the_verdict_shows_every_attempt(qualify, stubbed, tmp_path, monkeypatch
         (ADAMW.name, "baseline", 1)
     ]
     adamw = [c for c in record["cases"] if c["case"]["name"] == ADAMW.name]
-    assert [c.get("superseded") for c in adamw] == [None, {"part": "baseline", "attempt": 1}]
+    assert [c.get("superseded") for c in adamw] == [
+        None, {"part": "baseline", "attempt": 1, "restart": None}]  # fmt: skip
     assert record["states"][f"adamw-{ADAMW_LR:g}"] != "qualified"
 
 
@@ -508,6 +509,114 @@ def test_an_interrupted_attempt_recorded_technical(qualify, tmp_path) -> None:
     assert verdict["kind"] == "technical"
     with pytest.raises(SystemExit, match="not an interrupted attempt"):
         qualify.main(command)  # recorded now
+
+
+RESTART = "the Pod stopped during the case; its container disk is gone"
+
+
+def restart(path, case, *reason):
+    qualify_args = ["restart-case", *common(path), "--case", case.name]
+    return qualify_args + (["--infrastructure", *reason] if reason else [])
+
+
+def test_a_case_restart_lets_the_case_run_again(qualify, stubbed, tmp_path, monkeypatch) -> None:
+    """A Pod stop during a case: ``restart-case`` names the case's attempts (the recorded
+    baseline with its sha256, the interrupted rest); the case is then not complete, its parts
+    take their next attempts with the reason, and the verdict voids the named records."""
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    write_case(out, FA, rest=False, control=True)
+    q.publish(out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    with pytest.raises(SystemExit, match="recorded"):  # no rerun of a recorded attempt as such
+        qualify.main(part_args(path, tmp_path, "baseline", "--attempt", "2",
+                               "--infrastructure", RESTART))  # fmt: skip
+    qualify.main(restart(path, FA, RESTART))
+    folder = out / FA.attempt_path("baseline", 1).rsplit("/", 1)[0]
+    record = json.loads((folder / "restart-1.json").read_text())
+    assert record["reason"] == RESTART and record["case"] == FA.record()
+    baseline = json.loads((folder / "baseline-attempt-1.json").read_text())
+    control = json.loads((folder / "control-attempt-1.json").read_text())
+    assert [(a["part"], a["attempt"], a["state"], a["sha256"]) for a in record["attempts"]] == [
+        ("baseline", 1, "recorded", q.record_sha256(baseline)),
+        ("rest", 1, "interrupted", None),
+        ("control", 1, "recorded", q.record_sha256(control)),
+    ]
+    with pytest.raises(SystemExit, match="no attempt to restart"):  # every attempt named
+        qualify.main(restart(path, FA, RESTART))
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(["complete", *common(path), "--case", FA.name])
+    assert stop.value.code == qualify.NO
+    with pytest.raises(SystemExit) as stop:  # the driver's call: the rerun is by hand
+        qualify.main(part_args(path, tmp_path, "baseline", "--resume"))
+    assert stop.value.code == qualify.INTERRUPTED
+    with pytest.raises(SystemExit, match="baseline attempt runs first"):
+        qualify.main(part_args(path, tmp_path, "rest", "--attempt", "2",
+                               "--infrastructure", RESTART))  # fmt: skip
+    with pytest.raises(SystemExit, match="needs --infrastructure"):
+        qualify.main(part_args(path, tmp_path, "baseline", "--attempt", "2"))
+    assert stubbed == []
+    for name in ("baseline", "rest", "control"):
+        qualify.main(part_args(path, tmp_path, name, "--attempt", "2",
+                               "--infrastructure", RESTART))  # fmt: skip
+    assert stubbed == [(FA.name, name, 2) for name in ("baseline", "rest", "control")]
+    rerun = json.loads((folder / "baseline-attempt-2.json").read_text())
+    assert rerun["infrastructure"]["reason"] == RESTART
+    assert rerun["infrastructure"]["restarts"] == [
+        {
+            "path": str(folder / "restart-1.json"),
+            "sha256": hashlib.sha256((folder / "restart-1.json").read_bytes()).hexdigest(),
+        }
+    ]
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert [
+        (e["part"], e["attempt"], e["restart"])
+        for e in verdict["superseded"]
+        if e["case"] == FA.name
+    ] == [("baseline", 1, RESTART), ("control", 1, RESTART)]
+    shown = verdict["attempts"][FA.name]["baseline"]
+    assert [(a["attempt"], a["restart"]) for a in shown] == [(1, RESTART), (2, None)]
+    fa = verdict["rates"][f"adam_frozen-{FA_LR:g}"]
+    assert sorted(v["case"] for v in fa["voided"]) == ["control", FA.name]
+    assert {v["reason"] for v in fa["voided"]} == {RESTART}
+    # The old attempts neither count nor block: what blocks is the new attempts' case, which the
+    # stub wrote without a GPU-code identity
+    void = {v["record_sha256"] for v in fa["voided"]}
+    assert [e["why"] for e in fa["not_counted"]] == ["other GPU code"]
+    assert void.isdisjoint(e["record_sha256"] for e in fa["not_counted"])
+
+
+def test_a_restart_needs_its_reason_and_keeps_a_scientific_record_listed(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """A scientific record is voided only through a restart record with its reason; it stays
+    listed, with that reason, and stops making its rate failing."""
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    with pytest.raises(SystemExit, match="no attempt to restart"):  # nothing recorded yet
+        qualify.main(restart(path, ADAMW, RESTART))
+    write_case(out, ADAMW, decided=True)  # a scientific baseline
+    for reason in ((), ("",)):
+        with pytest.raises(SystemExit, match="needs --infrastructure REASON"):
+            qualify.main(restart(path, ADAMW, *reason))
+    folder = out / ADAMW.attempt_path("baseline", 1).rsplit("/", 1)[0]
+    assert not list(folder.glob("restart-*"))
+    key = f"adamw-{ADAMW_LR:g}"
+    qualify.main(["verdict", *common(path)])
+    assert json.loads((out / "c1" / "verdict.json").read_text())["states"][key] == "failing"
+    qualify.main(restart(path, ADAMW, RESTART))
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["states"][key] == "incomplete"
+    assert [(e["case"], e["part"], e["restart"]) for e in verdict["superseded"]] == [
+        (ADAMW.name, "baseline", RESTART)]  # fmt: skip
+    (old,) = [c for c in verdict["cases"] if c["case"]["name"] == ADAMW.name]
+    assert old["kind"] == "scientific" and old["superseded"]["restart"] == RESTART
+    assert verdict["rates"][key]["voided"] == [
+        {"case": ADAMW.name, "record_sha256": old["record_sha256"], "reason": RESTART}
+    ]
 
 
 def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:
@@ -631,7 +740,24 @@ def test_locate_prints_the_settled_launcher_run(qualify, tmp_path, capsys) -> No
 SEEDS = (10200, 10201, 10202)
 
 
-def verdict_world(qualify, tmp_path, monkeypatch, *, fa_control=True, failing=None):
+def launcher_dir(root, path, label, run_id):
+    """A settled launcher run of ``label`` (``located`` finds it), with its checkpoint record;
+    returns its identity as the records name it."""
+    from test_launch import make_run_dir
+
+    from zero_field_refusal.launch import load_campaign
+
+    run = next(r for r in load_campaign(path)[1] if r.label == label)
+    run_dir = make_run_dir(root, run, run_id)
+    summary = {"endpoint_checkpoint": IDENTITY["checkpoint"]}
+    (run_dir / "summary.json").write_text(json.dumps(summary))
+    return q.launcher_identity(run_dir)
+
+
+def verdict_world(qualify, tmp_path, monkeypatch, *, fa_control=True, failing=None,
+                  located=True):  # fmt: skip
+    """Every case of a campaign on SEEDS recorded qualified; with ``located``, each with its
+    settled launcher run under RUNS_DIR."""
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
     path = campaign(tmp_path, fa=SEEDS, adamw=SEEDS)
     out = tmp_path / "runs" / "qualification"
@@ -639,6 +765,9 @@ def verdict_world(qualify, tmp_path, monkeypatch, *, fa_control=True, failing=No
         for seed in SEEDS:
             case = q.QualificationCase(seed, optimizer, lr, 1, False)
             identity = {**copy.deepcopy(IDENTITY), "run": f"study3/r{seed}", "run_id": f"r{seed}"}
+            if located:
+                identity = launcher_dir(tmp_path / "runs", path, f"{optimizer}-{lr:g}/s{seed}",
+                                        f"r-{optimizer}-{seed}")  # fmt: skip
             baseline, rest = qualified_records(case, identity)
             if failing == (optimizer, seed):
                 rest["comparisons"]["baseline~s3"] = {"D_twin": 0.07}  # beyond 0.06
@@ -663,6 +792,18 @@ def test_the_verdict_writes_each_rates_state(qualify, tmp_path, monkeypatch, cap
     assert record["unassigned"] == []
     printed = capsys.readouterr().out
     assert f"adamw-{ADAMW_LR:g}: qualified" in printed
+
+
+def test_a_rate_without_its_launcher_runs_is_at_most_incomplete(qualify, tmp_path, monkeypatch):
+    path, out = verdict_world(qualify, tmp_path, monkeypatch, located=False)
+    qualify.main(["verdict", *common(path)])
+    record = json.loads((out / "c1" / "verdict.json").read_text())
+    assert record["states"] == {f"adam_frozen-{FA_LR:g}": "incomplete",
+                                f"adamw-{ADAMW_LR:g}": "incomplete"}  # fmt: skip
+    reasons = record["rates"][f"adamw-{ADAMW_LR:g}"]["reasons"]
+    assert [r for r in reasons if "not located" in r] == [
+        f"the launcher run of seed {s} is not located" for s in SEEDS]  # fmt: skip
+    assert any("at most incomplete" in w for w in record["warnings"])
 
 
 def test_the_verdict_of_a_failing_case_and_a_missing_control(qualify, tmp_path, monkeypatch):

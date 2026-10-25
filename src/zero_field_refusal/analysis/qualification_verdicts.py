@@ -3,7 +3,9 @@
 The rules are docs/study3-preregistration.md, "Numerical qualification" ("Qualification"),
 "Failure routes", "Voiding and supersession" and "Amendment 2" (the same-path control). The
 records are those ``qualification.run_part`` writes; nothing here runs a model, and
-``qualification`` re-exports every public name.
+``qualification`` re-exports every public name. The module belongs to the analysis package, so it
+is outside the GPU-code identity (``code_identity``): a change of a verdict rule moves no part's
+GPU code, and the records' GPU-code check stays on the identity of the code the parts ran.
 
 **A case** (``case_verdict``): the 13 comparisons at step 25 (``COMPARISONS``), each
 ``{"D", "within"}`` against 0.01·K*, its state, kind and reasons.
@@ -34,11 +36,12 @@ One counts under the expected GPU code and settings, at the protocol's batch and
 launcher run identity; one that does not is listed with why, and unless ``voided`` (its
 ``record_sha256`` → the reason of its supersession) it keeps the rate from ``qualified`` and, if
 scientific, makes it ``failing``. A case of another rate, arm, candidate or seed blocks
-``qualified`` too. ``failing`` > ``not_qualified`` (a technical case, an FA rate's control not
+``qualified`` too; so does a superseded control record of the rate (scientific: ``failing``)
+unless voided. ``failing`` > ``not_qualified`` (a technical case, an FA rate's control not
 accepted, an unresolved record) > ``qualified`` (exactly the prescribed seeds, one case each, all
-qualified, with the checkpoint) > ``incomplete``. The FA control is held to the same GPU code,
-settings and launcher run as the first seed's case. ``engineering_summary``: e_eng, the path
-maxima, the margins.
+qualified, with the checkpoint, every seed's launcher run located when they are checked) >
+``incomplete``. The FA control is held to the same GPU code, settings and launcher run as the
+first seed's case. ``engineering_summary``: e_eng, the path maxima, the margins.
 """
 
 from __future__ import annotations
@@ -49,10 +52,10 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from . import fa_control_diagnostic as fcd
+from .. import fa_control_diagnostic as fcd
 
 if TYPE_CHECKING:
-    from .qualification import QualificationScope
+    from ..qualification import QualificationScope
 
 BATCH, STEPS = 20, 25  # "Protocol": B = 20 and exactly 25 updates
 SCIENTIFIC, TECHNICAL = "scientific", "technical"
@@ -64,6 +67,7 @@ UNSHIFTED = ("baseline", "repeat")  # the trajectories the declared instability 
 REST = ("repeat", "reference", *SHIFTS)  # the rest part's trajectories, in order
 COMPARISONS = ("launcher~baseline",  # the 13 comparisons at step 25
                *(f"{t}~{name}" for name in REST for t in ("launcher", "baseline")))  # fmt: skip
+NOT_THIS_RATE = "the control is not this rate's"
 FAMILIES = ("launcher~baseline", "launcher~repeat", "baseline~repeat", "launcher~reference",
             "baseline~reference", "launcher~shift", "baseline~shift")  # fmt: skip
 
@@ -334,7 +338,8 @@ def _not_counted(
     launcher = verdict.get("launcher") or {}
     if not launcher.get("run_id"):
         return "no launcher run identity"
-    if launchers is not None and launchers.get(case.get("seed")) != launcher:
+    expected = None if launchers is None else launchers.get(case.get("seed"))
+    if expected is not None and expected != launcher:  # an unlocated run is checked by none
         return "another launcher run or checkpoint"
     return None
 
@@ -348,7 +353,7 @@ def _control_problem(
     rate = case.get("lr")
     if (checked.get("candidate") != candidate or case.get("seed") != first_seed
             or not (fcd._number(rate) and math.isclose(rate, lr, rel_tol=1e-9))):  # fmt: skip
-        return "the control is not this rate's"
+        return NOT_THIS_RATE
     if code is None or checked.get("gpu_code") != code.get("sha256"):
         return "the control was written under other GPU code"
     if policy is None or checked.get("settings") != policy:
@@ -368,18 +373,22 @@ def rate_verdict(
     code: Mapping[str, Any] | None,
     policy: Mapping[str, Any] | None,
     control: Mapping[str, Any] | None = None,
-    launchers: Mapping[int, Mapping[str, Any]] | None = None,
+    superseded_controls: Sequence[Mapping[str, Any]] = (),
+    launchers: Mapping[int, Mapping[str, Any] | None] | None = None,
     voided: Mapping[str, str] | None = None,
     batch: int = BATCH,
     steps: int = STEPS,
 ) -> dict[str, Any]:
     """An (arm, rate)'s verdict (module docstring) from its case verdicts (``case_verdict``)
-    and, for an FA rate, its same-path control's (``control_verdict``; None: missing). ``code``
-    is the expected GPU code (its ``sha256``), ``policy`` the expected settings
-    (``qualification.settings_record``), ``launchers`` the expected launcher run of each seed
-    when given, and ``voided`` the superseded records (``record_sha256`` → reason)."""
+    and, for an FA rate, its same-path control's (``control_verdict``; None: missing) and those
+    of its superseded control records (``superseded_controls``). ``code`` is the expected GPU
+    code (its ``sha256``), ``policy`` the expected settings (``qualification.settings_record``),
+    ``launchers`` the launcher run located for each seed when given (None, or a seed left out:
+    not located, and the rate is then at most ``incomplete``), and ``voided`` the superseded
+    records (``record_sha256`` → reason)."""
     seeds = list(scope.seeds(candidate))
     voided = dict(voided or {})
+    unlocated = [] if launchers is None else [s for s in seeds if launchers.get(s) is None]
     counted, not_counted, void, reasons = [], [], [], []
     for verdict in cases:
         name = (verdict.get("case") or {}).get("name")
@@ -422,6 +431,20 @@ def rate_verdict(
                 checked.update(state=NOT_QUALIFIED, kind=TECHNICAL,
                                reasons=[*checked.get("reasons", []), problem])  # fmt: skip
         reasons += [f"control: {r}" for r in checked.get("reasons") or []]
+    for old in superseded_controls:  # a superseded control counts as a superseded case does
+        key = old.get("record_sha256")
+        if key in voided:
+            void.append({"case": "control", "record_sha256": key, "reason": voided[key]})
+            continue
+        problem = _control_problem(old, candidate=candidate, lr=lr, first_seed=seeds[0],
+                                   code=None, policy=None, first_case=None)  # fmt: skip
+        mine = problem != NOT_THIS_RATE
+        not_counted.append({"case": "control", "record_sha256": key,
+                            "why": "a superseded same-path control" + ("" if mine else
+                                                                     f": {NOT_THIS_RATE}"),
+                            "kind": old.get("kind") if mine else None})  # fmt: skip
+        reasons.append("control: a superseded record, not counted and not voided")
+    stale_science = stale_science or any(e["kind"] == SCIENTIFIC for e in not_counted)
     missing = [s for s in seeds if s not in found]
     duplicated = sorted({s for s in found if found.count(s) > 1})
     if (SCIENTIFIC in kinds or stale_science
@@ -430,7 +453,7 @@ def rate_verdict(
     elif (TECHNICAL in kinds or not_counted
           or (checked is not None and checked.get("state") != ACCEPTED)):  # fmt: skip
         state = NOT_QUALIFIED
-    elif (not missing and not duplicated and len(found) == len(seeds)
+    elif (not missing and not duplicated and not unlocated and len(found) == len(seeds)
           and all(v.get("state") == QUALIFIED and v.get("complete")
                   and ((v.get("launcher") or {}).get("checkpoint") or {}).get("sha256")
                   for v in counted)):  # fmt: skip
@@ -439,6 +462,7 @@ def rate_verdict(
         state = INCOMPLETE
         reasons += [f"no counted case of seed {s}" for s in missing]
         reasons += [f"more than one case of seed {s}" for s in duplicated]
+        reasons += [f"the launcher run of seed {s} is not located" for s in unlocated]
     return {"candidate": candidate, "optimizer": optimizer, "lr": lr, "state": state,
             "seeds": seeds, "counted": sorted(found), "not_counted": not_counted,
             "voided": void, "reasons": reasons, "control": checked,

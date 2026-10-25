@@ -11,6 +11,8 @@
         --campaign FILE --candidate N [--engineering] --case NAME
     python scripts/qualify.py interrupted --campaign FILE --candidate N [--engineering]
         --case NAME --part baseline|rest|control --attempt N --technical REASON
+    python scripts/qualify.py restart-case --campaign FILE --candidate N [--engineering]
+        --case NAME --infrastructure REASON
     python scripts/qualify.py verdict --campaign FILE --candidate N [--engineering] [--e-eng X]
 
 Every command also takes ``--runs-root DIR`` (RUNS_DIR) and ``--out DIR`` (the part records,
@@ -80,17 +82,35 @@ clean checkout of a commit, sets the numerics up (``runtime.configure_numerics``
 CUDA work and builds the environment from the run's campaign config; the survival retry and the
 float64 fallback stay inside the part.
 
+**A case restart** (``restart-case --infrastructure REASON``; "Voiding and supersession": an
+infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop
+during a case loses the container disk, with the launcher run's checkpoint and the harness's:
+the case cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a
+clean checkout) ``restart-<n>.json`` in the case's folder, naming every attempt of the case's
+parts (the baseline, the rest and, for the case that holds it, the same-path control): each
+recorded one with its record's sha256, status and kind, each interrupted one by its number;
+the reason; and the launcher run located then. It is refused without a reason, and when every
+attempt is named already. The attempts it names are void: a part whose recorded attempts are
+all named is ``restarted``, so the case is not complete; ``part --resume`` exits 8 for it, and
+``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names
+the restart records); a rest waits for the baseline's new attempt. The case then starts again
+from a new launcher run (the launcher's recovery round with the same reason) and new attempts of
+its parts. The named records are kept, listed, and voided in the verdict (with the reason).
+
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
 ``rate_verdict`` under this checkout's GPU code and the tracked settings, with its cases' and its
 same-path control's verdicts (states, kinds, reasons, the 13 comparisons, warnings with
 ``--e-eng``), every case record of the candidate on disk shown (one of no campaign rate under
 ``unassigned``), every attempt of every part (``attempts``: recorded or interrupted, with each
-record's sha256, status and kind), and prints the states. A record under a later attempt (which
-these commands never write) is not hidden by it: it is listed under ``superseded`` and counted
-against its rate as a case of its own (a control's, as a warning). The launcher runs located now
-(one settled directory per run) are the expected ones; when a rate's are not all located, none
-is checked, with a warning.
+record's sha256, status, kind and the reason of the restart that names it), and prints the
+states. A record a case restart names is listed under ``superseded`` with that reason and
+passed to ``rate_verdict`` as voided (its record sha256 → the reason): it neither counts nor
+blocks. A record under a later attempt that no restart names (which these commands never write)
+is not hidden by it: it is listed under ``superseded`` and counted against its rate as a case of
+its own (a control's, as a warning). The launcher runs located now (one settled directory per
+run) are the expected ones; a rate one of whose launcher runs is not located is at most
+``incomplete``, with the reason and a warning.
 
 ``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the
 checkout and the campaign file's sha256, that nothing else uses the GPU, then runs each case in
@@ -130,6 +150,7 @@ from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 SETTINGS = CONFIG_ROOT / "experiments" / "qualification.yaml"  # the tracked settings, by path
 RUN = 'project-run "$SRC" python scripts/qualify.py'
+RESTART_FILE = re.compile(r"restart-(\d+)\.json")  # a case restart record, in the case's folder
 LAUNCH = 'project-run "$SRC" python scripts/launch.py'
 NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
@@ -246,8 +267,9 @@ def parse_steps(text: str | None) -> list[int]:
 @dataclass(frozen=True)
 class PartState:
     """A part's latest attempt on disk: ``due`` (none), ``recorded`` (with its record),
-    ``interrupted`` (started, no record) or ``invalid`` (a record that is unreadable, or not
-    that part's of that case). ``attempts`` maps every attempt to recorded or interrupted."""
+    ``interrupted`` (started, no record), ``restarted`` (every recorded attempt named by the
+    case's restart records) or ``invalid`` (a record that is unreadable, or not that part's of
+    that case). ``attempts`` maps every attempt to recorded or interrupted."""
 
     state: str
     attempt: int
@@ -268,13 +290,49 @@ def attempt_files(folder: Path, part: str) -> dict[int, str]:
             for n, kinds in sorted(seen.items())}  # fmt: skip
 
 
+def case_folder(out: Path, case: q.QualificationCase) -> Path:
+    """The folder of a case's attempt records and restart records."""
+    return (out / case.attempt_path("baseline", 1)).parent
+
+
+def file_sha256(path: Path) -> str | None:
+    """The sha256 of a record file's bytes (``record_sha256`` of a published record), or None."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def restart_records(folder: Path) -> list[tuple[Path, dict | None]]:
+    """The case's restart records (``restart-<n>.json``), in order, each with its record."""
+    found = [(int(m[1]), f) for f in (folder.glob("restart-*.json") if folder.is_dir() else [])
+             if (m := RESTART_FILE.fullmatch(f.name))]  # fmt: skip
+    return [(f, _read(f)) for _, f in sorted(found)]
+
+
+def restarted(folder: Path) -> dict[str, str]:
+    """The attempt records the case's restart records name: each record file's sha256 → the
+    restart's reason (module docstring, "A case restart")."""
+    named: dict[str, str] = {}
+    for _, record in restart_records(folder):
+        for entry in (record or {}).get("attempts") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("sha256"), str):
+                named.setdefault(entry["sha256"], str(record.get("reason")))
+    return named
+
+
 def part_state(out: Path, case: q.QualificationCase, part: str) -> PartState:
-    attempts = attempt_files((out / case.attempt_path(part, 1)).parent, part)
+    folder = case_folder(out, case)
+    attempts = attempt_files(folder, part)
     if not attempts:
         return PartState("due", 1, None, attempts)
     latest = max(attempts)
     if attempts[latest] == "interrupted":
         return PartState("interrupted", latest, None, attempts)
+    named = restarted(folder)
+    if all(file_sha256(folder / f"{part}-attempt-{n}.json") in named
+           for n, s in attempts.items() if s == "recorded"):  # fmt: skip
+        return PartState("restarted", latest, None, attempts)
     record = _read(out / case.attempt_path(part, latest))
     if record is None or record.get("part") != part or record.get("case") != case.record():
         return PartState("invalid", latest, None, attempts)
@@ -422,6 +480,11 @@ def part(args, planned: Planned, out: Path) -> None:
                   f"an interrupted attempt, rerun only as attempt {state.attempt + 1} with "
                   "--infrastructure REASON", file=sys.stderr)  # fmt: skip
             sys.exit(INTERRUPTED)
+        if state.state == "restarted":
+            print(f"{case.name} {name}: attempt {state.attempt} is named by the case's restart "
+                  f"record: its next attempt is run by hand, --attempt {state.attempt + 1} "
+                  "--infrastructure REASON", file=sys.stderr)  # fmt: skip
+            sys.exit(INTERRUPTED)
         if state.state == "invalid":
             sys.exit(f"{case.name} {name}: attempt {state.attempt}'s record is unreadable or "
                      "not this part's: nothing runs")  # fmt: skip
@@ -436,8 +499,11 @@ def part(args, planned: Planned, out: Path) -> None:
         if attempt != allowed:
             sys.exit(f"{case.name} {name}: the next attempt is {allowed}, not {attempt}")
         if (attempt > 1) != bool(reason):
-            sys.exit("an attempt above 1 reruns an interrupted one and needs --infrastructure "
-                     "REASON; attempt 1 takes none")  # fmt: skip
+            sys.exit("an attempt above 1 reruns an interrupted one, or one a case restart "
+                     "names, and needs --infrastructure REASON; attempt 1 takes none")  # fmt: skip
+    if name == "rest" and part_state(out, case, "baseline").state == "restarted":
+        sys.exit(f"{case.name} rest: the baseline's attempts are named by the case's restart "
+                 "record: its next baseline attempt runs first")  # fmt: skip
     if args.run_dir is None or args.checkpoints is None:
         sys.exit("part needs --run-dir and --checkpoints")
     require_clean()
@@ -455,7 +521,10 @@ def part(args, planned: Planned, out: Path) -> None:
                         diagnostic_steps=parse_steps(args.diagnostic_steps))  # fmt: skip
     if reason:  # the record carries its reason, before any later part reads it
         previous = [{"attempt": n, "state": s} for n, s in state.attempts.items() if n < attempt]
-        record = {**record, "infrastructure": {"reason": reason, "previous": previous}}
+        restarts = [{"path": str(f), "sha256": file_sha256(f)}
+                    for f, _ in restart_records(case_folder(out, case))]  # fmt: skip
+        record = {**record, "infrastructure": {"reason": reason, "previous": previous,
+                                               "restarts": restarts}}  # fmt: skip
         q.publish(path, record)
     print(json.dumps({key: record.get(key) for key in ("part", "attempt", "status", "kind",
                                                        "reasons")}))  # fmt: skip
@@ -518,25 +587,74 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
                                                    "reasons")}))  # fmt: skip
 
 
+def restart_case(args, planned: Planned, out: Path, root: Path) -> None:
+    """A case restart (module docstring, "A case restart"): a record, published atomically, that
+    names every attempt of the case's parts (the baseline, the rest and its control if it holds
+    one), each recorded one with its record's sha256, and the infrastructure reason; the
+    attempts it names are void. Refused without a reason, or with no attempt it does not name
+    already."""
+    case, reason = planned.case, args.infrastructure
+    if not reason:
+        sys.exit("restart-case needs --infrastructure REASON: the documented interruption")
+    folder = case_folder(out, case)
+    earlier = restart_records(folder)
+    listed = {(e.get("part"), e.get("attempt")) for _, r in earlier
+              for e in (r or {}).get("attempts") or [] if isinstance(e, dict)}  # fmt: skip
+    attempts = []
+    for name in ["baseline", "rest", *(["control"] if planned.control else [])]:
+        for n, state in attempt_files(folder, name).items():
+            path = folder / f"{name}-attempt-{n}.json"
+            record = _read(path) if state == "recorded" else None
+            attempts.append({"part": name, "attempt": n, "state": state, "path": str(path),
+                             "sha256": file_sha256(path) if state == "recorded" else None,
+                             "status": (record or {}).get("status"),
+                             "kind": (record or {}).get("kind")})  # fmt: skip
+    if not [a for a in attempts if (a["part"], a["attempt"]) not in listed]:
+        sys.exit(f"{case.name}: no attempt to restart (none, or every one is named by an "
+                 "earlier restart record)")  # fmt: skip
+    require_clean()
+    try:
+        run_dir = located(planned.run, root)
+        launcher = None if run_dir is None else q.launcher_identity(run_dir)
+    except Exception as exc:  # the record names what it can
+        launcher = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    number = max((int(RESTART_FILE.fullmatch(f.name)[1]) for f, _ in earlier), default=0) + 1
+    record = {"case": case.record(), "restart": number, "reason": reason, "attempts": attempts,
+              "launcher": launcher, "host": socket.gethostname(),
+              "restarted_at": datetime.now(UTC).isoformat(timespec="seconds"),
+              "provenance": q.qualification_provenance(load_settings())}  # fmt: skip
+    path = folder / f"restart-{number}.json"
+    q.publish(path, record)
+    print(json.dumps({"case": case.name, "restart": str(path), "reason": reason,
+                      "attempts": [(a["part"], a["attempt"]) for a in attempts]}))  # fmt: skip
+
+
 def clear_stale(planned: Planned, root: Path) -> None:
     keep = settled(planned.run, root)
     stale = [i for i in journal_run_ids(planned.run, root) if keep is None or i != keep.name]
     print(json.dumps({"case": planned.case.name, "removed": remove_checkpoints(planned, stale)}))
 
 
-def latest(folder: Path, part: str) -> dict | None:
+def latest(folder: Path, part: str, named: dict[str, str] | None = None) -> dict | None:
     """The record of a part's latest attempt in a case's folder, or None (none, interrupted,
-    or unreadable)."""
+    unreadable, or named by a restart record: ``named``)."""
     attempts = attempt_files(folder, part)
     if not attempts or attempts[max(attempts)] != "recorded":
         return None
-    return _read(folder / f"{part}-attempt-{max(attempts)}.json")
+    path = folder / f"{part}-attempt-{max(attempts)}.json"
+    if file_sha256(path) in (named or {}):
+        return None
+    return _read(path)
 
 
-def attempt_listing(folder: Path) -> tuple[dict[str, list], list[tuple[str, int, dict | None]]]:
+def attempt_listing(
+    folder: Path, named: dict[str, str]
+) -> tuple[dict[str, list], list[tuple[str, int, dict | None, str | None]]]:
     """Every attempt of every part in a case's folder (number, state, path, the record's sha256,
-    status and kind), and the superseded records: a record under a later attempt, which the
-    commands here never write, is not hidden by it."""
+    status, kind and, when a restart record names it, the restart's reason), and the superseded
+    records with that reason or None: a record a restart names (void), and one under a later
+    attempt that no restart names, which the commands here never write and which is not hidden
+    by it."""
     listing, superseded = {}, []
     for part in q.PARTS:
         attempts = attempt_files(folder, part)
@@ -544,12 +662,13 @@ def attempt_listing(folder: Path) -> tuple[dict[str, list], list[tuple[str, int,
         for n, state in attempts.items():
             path = folder / f"{part}-attempt-{n}.json"
             record = _read(path) if state == "recorded" else None
-            rows.append({"attempt": n, "state": state, "path": str(path),
-                         "sha256": q.record_sha256(record),
+            sha = file_sha256(path) if state == "recorded" else None
+            restart = named.get(sha) if sha is not None else None
+            rows.append({"attempt": n, "state": state, "path": str(path), "sha256": sha,
                          "status": (record or {}).get("status"),
-                         "kind": (record or {}).get("kind")})  # fmt: skip
-            if state == "recorded" and n < max(attempts):
-                superseded.append((part, n, record))
+                         "kind": (record or {}).get("kind"), "restart": restart})  # fmt: skip
+            if state == "recorded" and (restart is not None or n < max(attempts)):
+                superseded.append((part, n, record, restart))
         if rows:
             listing[part] = rows
     return listing, superseded
@@ -560,23 +679,40 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
     base = out / f"c{candidate}" / stage
     folders = sorted({f.parent for f in base.glob("s*/*/*-attempt-*")})
     cases, records, attempts, superseded = [], [], {}, []
+    old_controls: list[dict[str, Any]] = []  # restart-named controls: void
+    voided: dict[str, str] = {}  # a void record's verdict (record_sha256) → the restart's reason
     warnings: list[str] = []
     for folder in folders:
         name = str(folder.relative_to(base))
-        attempts[name], stale = attempt_listing(folder)
-        baseline, rest = latest(folder, "baseline"), latest(folder, "rest")
+        named = restarted(folder)
+        attempts[name], stale = attempt_listing(folder, named)
+        baseline, rest = latest(folder, "baseline", named), latest(folder, "rest", named)
         if baseline is not None or rest is not None:
             records += [r for r in (baseline, rest) if r is not None]
             cases.append(q.case_verdict(baseline, rest, scope, e_eng=args.e_eng))
-        for part, n, record in stale:  # shown, and counted against its rate as a case
+        for part, n, record, restart in stale:  # shown; void, or counted against its rate
             superseded.append({"case": name, "part": part, "attempt": n,
-                               "sha256": q.record_sha256(record)})  # fmt: skip
+                               "sha256": q.record_sha256(record), "restart": restart})  # fmt: skip
             if part == "control":
-                warnings.append(f"{name}: control attempt {n} is superseded by a later attempt")
+                if restart is None:
+                    warnings.append(f"{name}: control attempt {n} is superseded by a later "
+                                    "attempt")  # fmt: skip
+                    continue
+                checked = {
+                    **q.control_verdict(record, scope, candidate),
+                    "superseded": {"part": part, "attempt": n, "restart": restart},
+                }
+                old_controls.append(checked)  # fmt: skip
+                voided[checked["record_sha256"]] = restart
                 continue
             pair = (record, None) if part == "baseline" else (None, record)
-            cases.append({**q.case_verdict(*pair, scope, e_eng=args.e_eng),
-                          "superseded": {"part": part, "attempt": n}})  # fmt: skip
+            verdict_ = {
+                **q.case_verdict(*pair, scope, e_eng=args.e_eng),
+                "superseded": {"part": part, "attempt": n, "restart": restart},
+            }
+            cases.append(verdict_)  # fmt: skip
+            if restart is not None:
+                voided[verdict_["record_sha256"]] = restart
     campaign = {"path": str(args.campaign.resolve()),
                 "sha256": hashlib.sha256(args.campaign.read_bytes()).hexdigest()}  # fmt: skip
     body: dict[str, Any] = {"candidate": candidate, "stage": stage, "campaign": campaign,
@@ -605,22 +741,30 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
                 control = None if record is None else q.control_verdict(record, scope, candidate)
             runs = {p.case.seed: located(p.run, root) for p in planned
                     if (p.case.optimizer, p.case.lr) == (optimizer, lr)}  # fmt: skip
-            launchers = None
-            if all(d is not None for d in runs.values()):
-                launchers = {seed: q.launcher_identity(d) for seed, d in runs.items()}
-            else:
+            launchers = {seed: None if d is None else q.launcher_identity(d)
+                         for seed, d in runs.items()}  # fmt: skip
+            if any(identity is None for identity in launchers.values()):
                 warnings.append(f"{key}: launcher runs not located "
-                                f"({sorted(s for s, d in runs.items() if d is None)}): the "
-                                "records' launcher runs are not checked against them")  # fmt: skip
+                                f"({sorted(s for s, i in launchers.items() if i is None)}): "
+                                "the rate is at most incomplete")  # fmt: skip
+            olds = [c for c in old_controls if (c["case"] or {}).get("optimizer") == optimizer
+                    and math.isclose((c["case"] or {}).get("lr") or math.nan, lr,
+                                     rel_tol=1e-9)]  # fmt: skip
+            assigned |= {id(c) for c in olds}
             rates[key] = q.rate_verdict(mine, scope=scope, candidate=candidate,
                                         optimizer=optimizer, lr=lr, code=code, policy=policy,
-                                        control=control, launchers=launchers)  # fmt: skip
+                                        control=control, superseded_controls=olds,
+                                        launchers=launchers, voided=voided)  # fmt: skip
             states[key] = rates[key]["state"]
             warnings += [f"{key}: τ exceeded by {name}" for name in rates[key]["warnings"]]
         body.update(
             states=states,
             rates=rates,
-            unassigned=[v["case"].get("name") for v in cases if id(v) not in assigned],
+            unassigned=[
+                (v["case"] or {}).get("name")
+                for v in [*cases, *old_controls]
+                if id(v) not in assigned
+            ],
         )
         target = out / f"c{candidate}" / "verdict.json"
     body.update(warnings=warnings, provenance=q.qualification_provenance(settings))
@@ -747,6 +891,7 @@ def main(argv: list[str] | None = None) -> None:
             "finish",
             "verdict",
             "interrupted",
+            "restart-case",
         ],
     )
     parser.add_argument("--campaign", type=Path, required=True)
@@ -762,7 +907,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--infrastructure",
         metavar="REASON",
-        help="part: the documented interruption an attempt above 1 reruns",
+        help="part: the documented interruption an attempt above 1 reruns; restart-case: why "
+        "the case starts again",
     )
     parser.add_argument("--technical", metavar="REASON",
                         help="interrupted: why the attempt is recorded technical")  # fmt: skip
@@ -811,7 +957,7 @@ def main(argv: list[str] | None = None) -> None:
         print(args.out)
         return
     out = args.out or root / "qualification"
-    if args.command in ("part", "verdict", "interrupted") and problems:  # in scope only
+    if args.command in ("part", "verdict", "interrupted", "restart-case") and problems:
         sys.exit("\n".join(["The campaign is not a qualification campaign:", *problems]))
     if args.command == "verdict":
         require_clean()
@@ -838,6 +984,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.part is None or args.attempt is None or not args.technical:
             sys.exit("interrupted needs --part, --attempt N and --technical REASON")
         interrupted(args, chosen, out, scope)
+    elif args.command == "restart-case":
+        restart_case(args, chosen, out, root)
     elif args.command == "clear-stale":
         clear_stale(chosen, root)
     else:  # locate

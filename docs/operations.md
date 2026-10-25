@@ -1486,21 +1486,22 @@ docstring has every rule.
   `<record>.started` before it runs; a part whose latest attempt is recorded, technical and
   scientific records included, is never rerun, by the driver or by hand; one started without a
   record (the Pod, the network or the deadline stopped it) stops the driver with exit 8. Its
-  rerun is the next attempt, by hand, with its documented reason, which the record carries; an
-  interruption without a documented cause is recorded technical instead (`interrupted`). Then
-  run the driver again. A failed launcher run stops the driver too; its rerun is the launcher's
+  rerun is the next attempt, by hand, with its documented reason, which the record carries, while
+  the Pod and its container disk are the ones it started on (otherwise the case restarts,
+  below); an interruption without a documented cause is recorded technical instead
+  (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its rerun is the launcher's
   recovery round with the reason.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-5e-05 --part rest --attempt 2 \
-    --infrastructure "the Pod's deadline stopped attempt 1" \
+    --infrastructure "attempt 1's process was killed: <the documented cause>" \
     --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-5e-05
   project-run "$SRC" python scripts/qualify.py interrupted --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-5e-05 --part rest --attempt 1 \
     --technical "stopped without a documented cause"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
-    --only adamw-5e-05/s10200 --max-attempts 1 --recovery "the Pod's deadline stopped attempt 1"
+    --only adamw-5e-05/s10200 --max-attempts 1 --recovery "attempt 1 failed: <the fixed cause>"
   ```
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
@@ -1509,9 +1510,28 @@ docstring has every rule.
   ≈ 11 min more per same-path control, with an hour to spare
   (`python3 scripts/pod_deadline_watch.py --set EPOCH`). A case the deadline stops leaves an
   interrupted attempt (above) and its checkpoints on the container disk, which a stopped Pod
-  loses. The launcher run, whose checkpoint is gone, then cannot stand: move it aside (kept,
-  never deleted), rerun it through the recovery round with the reason, and rerun each part the
-  case had as its next attempt with the same reason.
+  loses: the case starts again as a whole (below).
+- **A case restart.** When the Pod stopped during a case, its recorded parts cannot go on (the
+  launcher's and the harness's checkpoints are gone). `restart-case` records it: a
+  `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
+  rest and the case's control), each recorded one with its record's sha256, and the reason;
+  those attempts are void, kept and listed in the verdict, and neither count nor block. A
+  restart without a reason is refused. Then the launcher run, whose checkpoint is gone, cannot
+  stand: move it out of the experiment (kept, never deleted) and rerun it through the
+  launcher's recovery round with the same reason; run each part the case needs as its next
+  attempt with the same reason, the baseline first (`part --resume` exits 8 for a part the
+  restart names); then run the driver again.
+
+  ```bash
+  project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
+    --candidate 1 --case s10200/adamw-5e-05 --infrastructure "the Pod stopped during the case"
+  project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
+    --only adamw-5e-05/s10200 --max-attempts 1 --recovery "the Pod stopped during the case"
+  project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
+    --candidate 1 --case s10200/adamw-5e-05 --part baseline --attempt 2 \
+    --infrastructure "the Pod stopped during the case" \
+    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-5e-05
+  ```
 - **The commands.** The campaign file and the driver are written on the Pod, from the source
   checkout of the commit; the driver embeds the campaign's absolute path and sha256.
 
@@ -1534,7 +1554,9 @@ docstring has every rule.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
-  same-path control, every attempt of every part, the warnings; `--e-eng X` sets τ), `c<N>/engineering/verdict.json` the
+  same-path control, every attempt of every part, the superseded records with the restart that
+  voids them, the warnings; `--e-eng X` sets τ; a rate whose launcher runs are not all located
+  is at most incomplete), `c<N>/engineering/verdict.json` the
   engineering stage's (e_eng, the path maxima, the margins), and the driver's logs. Download and
   archive them with an inventory before the Pod stops.
 

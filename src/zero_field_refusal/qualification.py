@@ -69,9 +69,9 @@ identity; v₀'s, θ₀'s and the trainable names' hashes; the optimizer section
 setup against the launcher run's ``inputs.numerics_setup``. Bitwise agreement of rows across
 processes is a diagnostic, not an acceptance condition.
 
-**Verdicts** are functions of the records alone, in ``qualification_verdicts`` (its docstring
-states the failure kinds) and re-exported here: ``case_verdict``, ``control_verdict``,
-``rate_verdict``, ``engineering_summary``.
+**Verdicts** are functions of the records alone, in ``analysis.qualification_verdicts`` (its
+docstring states the failure kinds; outside the GPU-code identity) and re-exported here:
+``case_verdict``, ``control_verdict``, ``rate_verdict``, ``engineering_summary``.
 
 **Blind to outcomes.** Only K, D, norms and training statistics leave this module; every prompt
 set whose name holds "harmful" is refused (``fa_control_diagnostic.guarded_prompt_sets``), and
@@ -98,9 +98,7 @@ from omegaconf import DictConfig, OmegaConf
 from . import code_identity, prechecks, runtime
 from . import fa_control_diagnostic as fcd
 from . import schedule as schedule_module
-from .config import apply_override, load_config
-from .optim import ADAM_MODES
-from .qualification_verdicts import (
+from .analysis.qualification_verdicts import (
     ACCEPTED,
     BATCH,
     COMPARISONS,
@@ -118,10 +116,12 @@ from .qualification_verdicts import (
     QualificationError,
     record_sha256,
 )
-from .qualification_verdicts import case_verdict as case_verdict
-from .qualification_verdicts import control_verdict as control_verdict
-from .qualification_verdicts import engineering_summary as engineering_summary
-from .qualification_verdicts import rate_verdict as rate_verdict
+from .analysis.qualification_verdicts import case_verdict as case_verdict
+from .analysis.qualification_verdicts import control_verdict as control_verdict
+from .analysis.qualification_verdicts import engineering_summary as engineering_summary
+from .analysis.qualification_verdicts import rate_verdict as rate_verdict
+from .config import apply_override, load_config
+from .optim import ADAM_MODES
 from .runtime import Environment
 from .schedule import INSTABILITY, InstabilityGuard, Schedule
 from .tensor_hash import file_sha256, tensors_sha256
