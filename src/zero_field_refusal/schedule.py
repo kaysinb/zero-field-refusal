@@ -580,7 +580,7 @@ def run_scheduled(
                                         "chunks": feed.extended_chunks}  # fmt: skip
         terminal["seconds"] = time.perf_counter() - started  # the run's time, up to its outcome
         run.record_inputs({"streams": {"training": feed.identity(loop.steps * size)}})
-        _publish(run.path("terminal.json"), terminal)  # the run's outcome, whatever follows
+        publish(run.path("terminal.json"), terminal)  # the run's outcome, whatever follows
         run.summarize({"terminal": terminal})
         if replayer is not None and replayer.records:
             run.summarize({"soft_targets_replay": {
@@ -841,7 +841,7 @@ class _Loop:
         return out
 
 
-def _publish(path: Path, record: dict[str, Any]) -> None:
+def publish(path: Path, record: dict[str, Any]) -> None:
     """Write a record atomically: a reader sees the whole record or none."""
     partial = path.with_name(f".{path.name}.partial")
     with partial.open("w") as f:
@@ -849,6 +849,9 @@ def _publish(path: Path, record: dict[str, Any]) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(partial, path)
+
+
+_publish = publish  # the former private name
 
 
 def _norm(tensors: Sequence[torch.Tensor | None]) -> float:

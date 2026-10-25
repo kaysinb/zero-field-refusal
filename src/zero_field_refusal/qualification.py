@@ -41,17 +41,27 @@ max(KL(A‖B), KL(B‖A)) on the scoring panel's responses, full vocabulary; no 
 stored. Intermediate D belongs to the engineering stage's diagnostics alone.
 
 **Order and state** (``run_part``). ``runtime.configure_numerics`` is called first, before any
-CUDA work and before ``prechecks.require_path_check``, and its record is kept. The launcher run is
-checked next (``launcher_problems``): its identity first (seed, arm, rate, batch, steps,
-``eval.k_only``, the numerics setup and the hashes of θ₀ and, for an arm that reads it, v₀; a
-completed run with a whole terminal record); a run that departs from it is technical, whatever
-stopped it. Then a conforming run stopped by an instability rule (``schedule.INSTABILITY``) is a
-scientific failure; one stopped otherwise, without its step-25 evaluation, or without a checkpoint
-whose file's sha256 is the recorded one, is technical; either way nothing runs. Every trajectory
-starts from θ₀ with no gradient, a fresh optimizer and the RNG seeded as ``run_twin`` seeds it;
-v₀ is never written (``v0_unchanged``). An AdamW case, whose run reads no v₀, sets the seed's F
-v₀ up for s1 and s2 alone, from the F optimizer group (``setup_config``). An exception is the
-part's record, ``failed``, with the trajectories done before it.
+CUDA work, and its record is kept; then the launcher run is checked (``launcher_problems``, file
+reads only), then ``prechecks.require_path_check``. The launcher run's identity comes first:
+seed, arm, rate, batch, steps, ``eval.k_only``; its ``train``, ``optimizer``, ``execution``,
+``data`` and ``seed`` equal to the confirmation config's ("Config agreement",
+``confirmation_config``); its recorded numerics setup equal to this process's; the hashes of θ₀
+and, for an arm that reads it, v₀; a completed run with a whole terminal record. A run that
+departs from it is technical, whatever stopped it. Then a conforming run stopped by an
+instability rule (``schedule.INSTABILITY``) is a scientific failure; one stopped otherwise,
+without its step-25 evaluation, or without a checkpoint whose file's sha256 is the recorded one,
+is technical; either way nothing runs, and the record still names the run
+(``launcher_identity``). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
+the RNG seeded as ``run_twin`` seeds it; v₀ is never written (``v0_unchanged``). An AdamW case,
+whose run reads no v₀, sets the seed's F v₀ up for s1 and s2 alone, from the F optimizer group
+(``setup_config``). An exception is the part's record, ``failed``, with the trajectories done
+before it.
+
+**Instability of the unshifted trajectories** (``harness_instability``). The baseline and the
+repeat read the monitor at the launcher's cadence, and the launcher's declared rules are applied
+to their rows and readings after the run: a non-finite loss, gradient or weight, the ×10 gradient
+rule (``schedule.InstabilityGuard``), a monitor K above its maximum; the rule that fired, its
+step and values are recorded. The reference and the shifts are held to non-finite values alone.
 
 **The bridge** (``bridge_checks``, each false one technical): each training row's ``tokens`` and
 ``denominator`` and the step indices exactly equal to the launcher run's; the training stream's
@@ -59,20 +69,9 @@ identity; v₀'s, θ₀'s and the trainable names' hashes; the optimizer section
 setup against the launcher run's ``inputs.numerics_setup``. Bitwise agreement of rows across
 processes is a diagnostic, not an acceptance condition.
 
-**Kinds** (``case_verdict``; the failure routes). Scientific: an instability stop of the launcher
-run, of the baseline or of the repeat; a non-finite loss, gradient or model in the reference or a
-shift; ``baseline~reference`` or ``baseline~sK`` beyond the bound. Technical: ``launcher~baseline``,
-``launcher~repeat`` or ``baseline~repeat`` beyond the bound; a launcher comparison beyond the bound
-whose baseline counterpart is not; a shift lost to fp32 rounding after its retry; a non-finite D
-between finite models; a failed bridge check; a ``rest`` that does not build on the baseline
-given; parts under other settings or GPU code; any exception or missing part. A case with both is
-scientific (no rerun passes it), its technical reasons kept. States: ``failing`` (scientific),
-``not_qualified`` (technical), ``qualified`` (all 13 within), else ``incomplete``. ``warning``
-when ``baseline~repeat`` exceeds τ: a prompt for diagnosis only. ``rate_verdict`` counts only the
-cases of the candidate's numerical seeds, arm and rate under the expected GPU code and settings:
-``failing`` if one is scientific, else ``not_qualified`` if one is technical (or an FA rate's
-same-path control is not accepted), else ``qualified`` when every prescribed seed has exactly one
-qualified case, else ``incomplete``. ``engineering_summary``: e_eng, the path maxima, the margins.
+**Verdicts** are functions of the records alone, in ``qualification_verdicts`` (its docstring
+states the failure kinds) and re-exported here: ``case_verdict``, ``control_verdict``,
+``rate_verdict``, ``engineering_summary``.
 
 **Blind to outcomes.** Only K, D, norms and training statistics leave this module; every prompt
 set whose name holds "harmful" is refused (``fa_control_diagnostic.guarded_prompt_sets``), and
@@ -97,32 +96,50 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from . import code_identity, prechecks, runtime
-from . import config as config_module
 from . import fa_control_diagnostic as fcd
+from . import schedule as schedule_module
+from .config import apply_override, load_config
 from .optim import ADAM_MODES
-from .paths import CONFIG_ROOT
+from .qualification_verdicts import (
+    ACCEPTED,
+    BATCH,
+    COMPARISONS,
+    FAILING,
+    FAMILIES,
+    INCOMPLETE,
+    NOT_QUALIFIED,
+    QUALIFIED,
+    REST,
+    SCIENTIFIC,
+    SHIFTS,
+    STEPS,
+    TECHNICAL,
+    UNSHIFTED,
+    QualificationError,
+    record_sha256,
+)
+from .qualification_verdicts import case_verdict as case_verdict
+from .qualification_verdicts import control_verdict as control_verdict
+from .qualification_verdicts import engineering_summary as engineering_summary
+from .qualification_verdicts import rate_verdict as rate_verdict
 from .runtime import Environment
-from .schedule import INSTABILITY, _publish
+from .schedule import INSTABILITY, InstabilityGuard, Schedule
 from .tensor_hash import file_sha256, tensors_sha256
 from .tracking import git_state, hardware, package_versions
 
-BATCH, STEPS = 20, 25  # "Protocol": B = 20 and exactly 25 updates
+__all__ = ["ACCEPTED", "BATCH", "COMPARISONS", "FAILING", "FAMILIES", "INCOMPLETE",
+           "NOT_QUALIFIED", "QUALIFIED", "REST", "SCIENTIFIC", "SHIFTS", "STEPS", "TECHNICAL",
+           "UNSHIFTED", "QualificationCase", "QualificationError", "QualificationScope",
+           "bridge_checks", "case_verdict", "control_verdict", "engineering_summary",
+           "harness_instability", "launcher_problems", "rate_verdict", "record_sha256",
+           "run_part", "settings_record"]  # fmt: skip
+
 PARTS = ("baseline", "rest", "control")
-SCIENTIFIC, TECHNICAL = "scientific", "technical"
-QUALIFIED, FAILING, INCOMPLETE = "qualified", "failing", "incomplete"  # a case, a rate
-NOT_QUALIFIED = "not_qualified"  # technical
-ACCEPTED = "accepted"  # a same-path control
-SHIFTS = {"s1": "p1", "s2": "p2", "s3": "s3", "s4": "s4"}  # a shift and its direction's key
-REST = ("repeat", "reference", *SHIFTS)  # the rest part's trajectories, in order
-COMPARISONS = ("launcher~baseline",  # the 13 comparisons at step 25
-               *(f"{t}~{name}" for name in REST for t in ("launcher", "baseline")))  # fmt: skip
 BASELINE_CHECKPOINT = "harness-baseline.pt"
 BASELINE_STATES = "baseline-states"  # the baseline's diagnostic states, A-step-<t>.pt
 CHECKPOINT_KEYS = ("path", "sha256", "step", "names_sha256")
-
-
-class QualificationError(ValueError):
-    """The qualification cannot run as registered (a scope or a request outside it)."""
+# "Config agreement": the launcher run's keys that must equal the confirmation config's
+CONFIG_AGREEMENT = ("train", "optimizer", "execution", "data", "seed")
 
 
 @dataclass(frozen=True)
@@ -239,15 +256,10 @@ def names_sha256(names: Sequence[str]) -> str:
     return hashlib.sha256(json.dumps(list(names)).encode()).hexdigest()
 
 
-def record_sha256(record: Mapping[str, Any]) -> str:
-    """The sha256 of a record file as ``publish`` writes it (so of the file read back, too)."""
-    return hashlib.sha256((json.dumps(record, indent=1) + "\n").encode()).hexdigest()
-
-
 def publish(path: Path, record: Mapping[str, Any]) -> None:
     """Write a record atomically and durably (temporary file, fsync, ``os.replace``)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    _publish(path, dict(record))
+    schedule_module.publish(path, dict(record))
 
 
 def settings_record(settings: DictConfig) -> dict[str, Any]:
@@ -277,7 +289,37 @@ def qualification_provenance(settings: DictConfig, **extra: Any) -> dict[str, An
 # ------------------------------------------------------------------------- the launcher run
 
 
-def _identity_problems(cfg: DictConfig, meta: Mapping[str, Any], case: QualificationCase) -> list:
+def confirmation_config(case: QualificationCase) -> DictConfig:
+    """The confirmation config of the case's arm, rate, seed, batch and steps
+    (experiments/study3, role confirmation): what "Config agreement" holds the launcher run to."""
+    overrides = ["study3.role=confirmation", f"optimizer={case.optimizer}",
+                 f"optimizer.lr={case.lr!r}", f"seed={case.seed}",
+                 f"train.batch_size={case.batch}", f"train.steps={case.steps}"]  # fmt: skip
+    return load_config("experiments/study3", overrides)
+
+
+def _plain(value: Any) -> Any:
+    return OmegaConf.to_container(value, resolve=True) if isinstance(value, DictConfig) else value
+
+
+def _agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
+    """The keys of ``CONFIG_AGREEMENT`` in which the launcher run's config departs from the
+    confirmation config (``confirmation_config``)."""
+    try:
+        reference = confirmation_config(case)
+    except Exception as exc:  # no confirmation config to agree with: not a conforming run
+        return [f"no confirmation config: {type(exc).__name__}: {str(exc)[:300]}"]
+    problems = []
+    for key in CONFIG_AGREEMENT:
+        mine, theirs = (_plain(OmegaConf.select(c, key)) for c in (cfg, reference))
+        if mine != theirs:
+            problems.append(f"{key} departs from the confirmation config's")
+    return problems
+
+
+def _identity_problems(
+    cfg: DictConfig, meta: Mapping[str, Any], case: QualificationCase, numerics: Any
+) -> list[str]:
     expected = {
         "seed": (cfg.get("seed"), case.seed),
         "optimizer.name": (OmegaConf.select(cfg, "optimizer.name"), case.optimizer),
@@ -290,9 +332,13 @@ def _identity_problems(cfg: DictConfig, meta: Mapping[str, Any], case: Qualifica
     lr = OmegaConf.select(cfg, "optimizer.lr")
     if not (fcd._number(lr) and math.isclose(float(lr), case.lr, rel_tol=1e-9)):
         problems.append(f"optimizer.lr is {lr!r}, not {case.lr:g}")
+    problems += _agreement_problems(cfg, case)
     inputs = meta.get("inputs") or {}
     if not isinstance(inputs.get("numerics_setup"), dict):
         problems.append("no numerics setup (inputs.numerics_setup)")
+    elif numerics is not None and inputs["numerics_setup"] != numerics:
+        problems.append(f"its numerics setup {inputs['numerics_setup']} is not this process's "
+                        f"{numerics}")  # fmt: skip
     if not isinstance(inputs.get("theta0_trainable_sha256"), str):
         problems.append("no hash of θ₀'s trainable parameters (inputs.theta0_trainable_sha256)")
     if reads_v0(case.optimizer) and not isinstance(inputs.get("v0_sha256"), str):
@@ -320,10 +366,13 @@ def _checkpoint_problems(meta: Mapping, summary: Mapping, case: QualificationCas
 
 
 def launcher_problems(
-    run_dir: Path, case: QualificationCase, *, checkpoint: bool = True
+    run_dir: Path, case: QualificationCase, *, checkpoint: bool = True, numerics: Any = None
 ) -> tuple[str | None, list[str]]:
     """The launcher run against the case (module docstring, "Order and state"): ``("technical",
-    reasons)`` for a run that departs from the case or is not a whole record, checked first;
+    reasons)`` for a run that departs from the case (its config against the confirmation
+    config's ``CONFIG_AGREEMENT`` keys; with ``numerics``, this process's
+    ``runtime.configure_numerics`` record, its numerics setup) or is not a whole record, checked
+    first;
     ``("scientific", [reason])`` for a conforming run stopped by an instability rule; technical
     again for any other stop, a missing step-25 evaluation, or (with ``checkpoint``) a missing
     checkpoint record or file, or one whose sha256 is not the recorded one; ``(None, [])`` when it
@@ -334,7 +383,7 @@ def launcher_problems(
     except (OSError, ValueError) as exc:
         return TECHNICAL, [f"the launcher run's records are unreadable: "
                            f"{type(exc).__name__}: {exc}"]  # fmt: skip
-    problems = _identity_problems(cfg, meta, case)
+    problems = _identity_problems(cfg, meta, case, numerics)
     terminal = fcd._read_object(run_dir / "terminal.json")
     summary = fcd._read_object(run_dir / "summary.json") or {}
     stop = (terminal or {}).get("stop")
@@ -360,6 +409,16 @@ def launcher_problems(
     return (TECHNICAL, problems) if problems else (None, [])
 
 
+def launcher_identity(run_dir: Path) -> dict[str, Any] | None:
+    """How a record names the launcher run, whatever its state: ``fa_control_diagnostic.
+    run_identity`` and its checkpoint record (None without one); None when it cannot be read."""
+    try:
+        summary = fcd._read_object(run_dir / "summary.json") or {}
+        return {**fcd.run_identity(run_dir), "checkpoint": summary.get("endpoint_checkpoint")}
+    except (OSError, ValueError):
+        return None
+
+
 def launcher_facts(run_dir: Path) -> dict[str, Any]:
     """What the bridge compares of the launcher run (``bridge_checks``) and how a record names it
     (``identity``: ``fa_control_diagnostic.run_identity``, and the checkpoint record)."""
@@ -371,7 +430,7 @@ def launcher_facts(run_dir: Path) -> dict[str, Any]:
     checkpoint = summary.get("endpoint_checkpoint")
     rows = [{k: v for k, v in r.items() if k != "time_s"}
             for r in fcd.read_jsonl(run_dir / "metrics.jsonl") if "loss" in r]  # fmt: skip
-    return {"identity": {**fcd.run_identity(run_dir), "checkpoint": checkpoint}, "rows": rows,
+    return {"identity": launcher_identity(run_dir), "rows": rows,
             "training_stream": streams.get("training"),
             "preconditioner_stream": streams.get("preconditioner"),
             "v0_sha256": inputs.get("v0_sha256"),
@@ -419,7 +478,7 @@ def setup_config(cfg: DictConfig, control_arm: str) -> DictConfig:
     run the run's own config."""
     if reads_v0(str(cfg.optimizer.name)):
         return cfg
-    out = config_module._apply_override(copy.deepcopy(cfg), f"optimizer={control_arm}", CONFIG_ROOT)
+    out = apply_override(copy.deepcopy(cfg), f"optimizer={control_arm}")
     out.optimizer.lr = cfg.optimizer.lr
     OmegaConf.resolve(out)
     return out
@@ -439,6 +498,41 @@ def _setup_facts(
 
 def _v0_sha256(twins: fcd.Twins) -> str:
     return tensors_sha256(list(zip(twins.names, twins.v0, strict=True)))
+
+
+def harness_instability(cfg: DictConfig, run: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The launcher's declared instability rules applied after the run to an unshifted harness
+    trajectory (the baseline, the repeat; "The execution path": a declared instability stop of an
+    unshifted harness trajectory), from its per-step rows and monitor readings, in the order the
+    launcher checks them (``schedule.run_scheduled``): before each update, a non-finite loss or
+    gradient and the gradient rule (``schedule.InstabilityGuard``: above ``grad_factor`` times
+    the median of up to ``grad_window`` preceding norms, from the step-0 norm on, a firing norm
+    kept out of the reference; under ``grad_rule: log`` recorded, not a stop); after the update,
+    a non-finite weight (``run_twin``'s stop), and at each monitor reading (every
+    ``eval.monitor.every`` steps) a non-finite K or one above ``k_max``. Returns the first rule
+    that fires, ``{"reason", "step", "detail"}`` (the step whose update the launcher would have
+    refused, or after which it would have stopped), or None."""
+    rules = Schedule.from_config(cfg)
+    guard = InstabilityGuard(rules.grad_factor, rules.grad_window, rules.k_max, rules.grad_rule)
+    readings = {r.get("step"): r.get("K_monitor") for r in run.get("monitor") or []}
+    for row in run.get("rows") or []:
+        step = row.get("step")
+        loss, norm = row.get("loss"), row.get("grad_norm")
+        values = {"loss": loss, "grad_norm": norm}
+        loss, norm = (v if fcd._number(v) else math.nan for v in (loss, norm))
+        reason = guard.gradient(loss, norm)
+        if reason is not None:
+            return {"reason": reason, "step": step, "detail": guard.detail or values}
+        if step + 1 in readings:
+            k = readings[step + 1]
+            reason = guard.monitor(k if fcd._number(k) else math.nan)
+            if reason is not None:
+                return {"reason": reason, "step": step + 1,
+                        "detail": guard.detail or {"K_monitor": k}}  # fmt: skip
+    if run.get("stop") is not None:  # the weights after an update (run_twin's other stop)
+        return {"reason": "nonfinite_weight", "step": run.get("steps"),
+                "detail": {"stop": run["stop"]}}  # fmt: skip
+    return None
 
 
 @torch.no_grad()
@@ -465,13 +559,17 @@ def run_trajectory(
     *,
     diagnostic_steps: Sequence[int] = (),
     states: Path | None = None,
+    monitor: Any = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """One trajectory of the rest part (``REST``), from θ₀ reset (``Twins.reset``: θ₀, no
     gradient; ``run_twin`` builds a fresh optimizer and seeds the RNG): ``repeat`` in fp32,
     ``reference`` by ``reference_twin`` (its fallback on out-of-memory alone), a shift after its
     perturbation of θ₀. With ``diagnostic_steps``, D against the baseline's ``states`` at those
-    steps. Returns the trajectory's record and, when it took every step, its D₂₅ against each of
-    ``targets`` (label → checkpoint). The student is at θ₀ afterwards."""
+    steps. The repeat, unshifted, reads ``monitor`` at the launcher's cadence and is held to the
+    declared instability rules (``harness_instability``); the reference and the shifts are not
+    (a non-finite value alone counts for them, as their stop). Returns the trajectory's record
+    and, when it took every step, its D₂₅ against each of ``targets`` (label → checkpoint). The
+    student is at θ₀ afterwards."""
     twins.reset()
     extra: dict[str, Any] = {}
     steps = list(diagnostic_steps)
@@ -489,8 +587,12 @@ def run_trajectory(
         extra["initial_difference"] = initial_difference(twins, cfg)
     if name == "reference":
         run = fcd.reference_twin(cfg, twins, steps, states if states is not None else Path())
-    elif name in ("repeat", *SHIFTS):
+    elif name in SHIFTS:
         run = fcd.run_twin(cfg, twins, eval_at=steps, compare_dir=states if steps else None)
+    elif name == "repeat":
+        run = fcd.run_twin(cfg, twins, eval_at=steps, monitor=monitor,
+                           compare_dir=states if steps else None)  # fmt: skip
+        run["instability"] = harness_instability(cfg, run)
     else:
         raise QualificationError(f"No trajectory {name!r} in the rest part")
     run = {**run, **extra}
@@ -519,6 +621,7 @@ def _baseline(
             cfg, twins, eval_at=list(steps), monitor=shared["monitor"],
             save_dir=states if steps else None,
         )  # fmt: skip
+        run["instability"] = harness_instability(cfg, run)
         setup = _setup_facts(cfg, twins, shared, numerics_setup, run["steps"])
         v0_stream = shared["v0_stream"] if reads_v0(case.optimizer) else None
         streams = {"training": setup["training_stream"], "preconditioner": v0_stream}
@@ -603,7 +706,7 @@ def _rest(
         for name in REST:
             trajectories[name], endpoint = run_trajectory(
                 name, cfg, twins, shared, scope, targets, diagnostic_steps=steps,
-                states=checkpoints / BASELINE_STATES,
+                states=checkpoints / BASELINE_STATES, monitor=shared["monitor"],
             )  # fmt: skip
             for label, measured in endpoint.items():
                 comparisons[f"{label}~{name}"] = measured
@@ -682,17 +785,20 @@ def run_part(
                               "K_star": scope.k_star(case.candidate),
                               "bound": scope.bound(case.candidate), "launcher_run": str(run_dir),
                               "diagnostic_steps": steps}  # fmt: skip
+    # The launcher run's name, whatever its state, so that a verdict counts every record of it
+    record["launcher"] = {"kind": None, "reasons": [], "identity": launcher_identity(run_dir)}
     progress: dict[str, Any] = {}
     failed = False
     try:
         cfg = fcd.run_config(run_dir)
         # First: no CUDA work before it, and the path check fingerprints its flags
         numerics_setup = record["numerics_setup"] = runtime.configure_numerics(cfg, env.device)
-        prechecks.require_path_check(env.data_root, cfg, env.device)
-        kind, reasons = launcher_problems(run_dir, case, checkpoint=part != "control")
+        kind, reasons = launcher_problems(run_dir, case, checkpoint=part != "control",
+                                          numerics=numerics_setup)  # file reads only  # fmt: skip
+        record["launcher"].update(kind=kind, reasons=reasons)
+        if kind is None:
+            prechecks.require_path_check(env.data_root, cfg, env.device)
         facts = launcher_facts(run_dir) if kind is None else None
-        record["launcher"] = {"kind": kind, "reasons": reasons,
-                              "identity": None if facts is None else facts["identity"]}  # fmt: skip
         guarded = fcd.guarded_prompt_sets(env, "harmful", "The qualification harness")
         if kind is not None:
             record.update(status="not_run", kind=kind, reasons=reasons)
@@ -717,330 +823,3 @@ def run_part(
                   provenance=qualification_provenance(settings))  # fmt: skip
     publish(out / case.attempt_path(part, attempt), record)
     return record
-
-
-# ------------------------------------------------------------------------------- verdicts
-
-
-def _within(d: Any, bound: float | None) -> bool | None:
-    return d <= bound if fcd._number(d) and bound is not None else None
-
-
-def _policy(record: Mapping[str, Any]) -> tuple[Any, Any]:
-    """A part record's settings and GPU code (its sha256)."""
-    provenance = record.get("provenance") or {}
-    return provenance.get("settings"), (provenance.get("gpu_code") or {}).get("sha256")
-
-
-def _part_reasons(record: Mapping[str, Any], technical: list[str], science: list[str]) -> None:
-    """A part that ran nothing or failed: its kind and reasons."""
-    reasons = [f"{record.get('part')}: {r}" for r in record.get("reasons") or []]
-    (science if record.get("kind") == SCIENTIFIC else technical).extend(reasons)
-
-
-def case_verdict(
-    baseline: Mapping[str, Any] | None,
-    rest: Mapping[str, Any] | None,
-    scope: QualificationScope,
-    *,
-    e_eng: float | None = None,
-) -> dict[str, Any]:
-    """A case's 13 comparisons at step 25 (``COMPARISONS``, each ``{"D", "within"}``), its state,
-    kind and reasons, by the registration's rules (module docstring, "Kinds"), from its baseline
-    and rest records (None: no record). With ``e_eng``, ``warning`` when ``baseline~repeat``
-    exceeds τ (``QualificationScope.warning``). The case's identity, launcher run, GPU code and
-    settings are kept for ``rate_verdict``."""
-    science: list[str] = []
-    technical: list[str] = []
-    measured: dict[str, Any] = dict.fromkeys(COMPARISONS)
-    head = baseline or rest or {}
-    case = head.get("case") or {}
-    try:
-        bound = scope.bound(case.get("candidate"))
-    except QualificationError as exc:
-        bound = None
-        technical.append(str(exc))
-    ended = False  # the baseline decided the case: the rest is not needed
-    if baseline is None:
-        technical.append("the baseline part has no record")
-    elif baseline.get("part") != "baseline":
-        technical.append("the baseline record is another part's")
-    elif baseline.get("status") != "complete":  # a failed baseline's trajectory still counts
-        _part_reasons(baseline, technical, science)
-        ended = True
-    run = ((baseline or {}).get("trajectories") or {}).get("baseline") or {}
-    if (baseline or {}).get("part") == "baseline" and run.get("stop") is not None:
-        science.append(f"instability: the harness baseline stopped: {run['stop']}")
-        ended = True
-    if (baseline or {}).get("part") == "baseline" and baseline.get("status") == "complete":
-        failed = [k for k, v in (baseline.get("bridge") or {}).items() if v is not True]
-        if failed or not baseline.get("bridge"):
-            technical.append(f"the bridge failed: {failed or 'no checks'}")
-        if baseline.get("v0_unchanged") is not True:
-            technical.append("v₀ changed during the baseline part")
-        measured["launcher~baseline"] = ((baseline.get("comparisons") or {})
-                                         .get("launcher~baseline") or {}).get("D_twin")  # fmt: skip
-    if not ended:
-        if rest is None:
-            technical.append("the rest part has no record")
-        else:
-            _rest_verdict(baseline, rest, measured, technical, science)
-    comparisons = {name: {"D": measured[name], "within": _within(measured[name], bound)}
-                   for name in COMPARISONS}  # fmt: skip
-    for name, c in comparisons.items():
-        target, trajectory = name.split("~")
-        if c["D"] is not None and not fcd._number(c["D"]):
-            technical.append(f"{name}: a non-finite D between finite models ({c['D']})")
-        elif c["within"] is not False:
-            continue
-        elif trajectory in ("baseline", "repeat"):
-            technical.append(f"{name}: D₂₅ {c['D']:.6g} beyond the bound {bound:.6g}")
-        elif target == "baseline":
-            science.append(f"{name}: D₂₅ {c['D']:.6g} beyond the bound {bound:.6g}")
-        elif comparisons[f"baseline~{trajectory}"]["within"] is not False:
-            technical.append(f"{name}: D₂₅ {c['D']:.6g} beyond the bound {bound:.6g}, its "
-                             "baseline counterpart not")  # fmt: skip
-    complete = all(c["within"] is not None for c in comparisons.values())
-    kind = SCIENTIFIC if science else TECHNICAL if technical else None
-    within = all(c["within"] for c in comparisons.values())
-    state = (FAILING if science else NOT_QUALIFIED if technical
-             else QUALIFIED if within else INCOMPLETE)  # fmt: skip
-    tau = warning = None
-    repeat = comparisons["baseline~repeat"]["D"]
-    if e_eng is not None and bound is not None:
-        tau = scope.warning(e_eng, case["candidate"])
-        warning = repeat > tau if fcd._number(repeat) else None
-    settings, code = _policy(head)
-    reference = ((rest or {}).get("trajectories") or {}).get("reference") or {}
-    return {"case": case, "state": state, "kind": kind, "reasons": science + technical,
-            "complete": complete, "comparisons": comparisons, "bound": bound, "tau": tau,
-            "warning": warning, "reference_mode": reference.get("mode"),
-            "fallback": reference.get("mode") == fcd.FLOAT64_ACCUMULATION,
-            "launcher": (head.get("launcher") or {}).get("identity"), "gpu_code": code,
-            "settings": settings}  # fmt: skip
-
-
-def _rest_verdict(
-    baseline: Mapping[str, Any] | None, rest: Mapping[str, Any], measured: dict[str, Any],
-    technical: list[str], science: list[str],
-) -> None:  # fmt: skip
-    """The rest record's part of ``case_verdict``."""
-    if rest.get("part") != "rest":
-        technical.append("the rest record is another part's")
-        return
-    base = baseline or {}
-    if rest.get("case") != base.get("case"):
-        technical.append("the rest record is another case's")
-        return
-    if (rest.get("launcher") or {}).get("identity") != (base.get("launcher") or {}).get("identity"):
-        technical.append("the rest part ran against another launcher run or checkpoint")
-    if _policy(rest) != _policy(base):
-        technical.append("the parts were written under other settings or GPU code")
-    if rest.get("status") == "not_run":
-        _part_reasons(rest, technical, science)
-        return
-    if (rest.get("baseline_record") or {}).get("sha256") != record_sha256(base) or rest.get(
-        "baseline_checkpoint_sha256"
-    ) != (base.get("checkpoint") or {}).get("sha256"):
-        technical.append("the rest part does not build on this baseline record and checkpoint")
-    if rest.get("status") != "complete":  # its trajectories before the failure still count
-        _part_reasons(rest, technical, science)
-    else:
-        failed = [k for k, v in (rest.get("bridge") or {}).items() if v is not True]
-        if failed or not rest.get("bridge"):
-            technical.append(f"the bridge failed in the rest part: {failed or 'no checks'}")
-        if rest.get("v0_unchanged") is not True:
-            technical.append("v₀ changed during the rest part")
-    trajectories = rest.get("trajectories") or {}
-    for name in REST:
-        run = trajectories.get(name)
-        if run is None:
-            if rest.get("status") == "complete":
-                technical.append(f"the rest part has no {name}")
-            continue
-        if run.get("not_run"):
-            technical.append(f"{name}: {run.get('stop')}")
-        elif run.get("stop") is not None:
-            what = "instability: the harness repeat stopped" if name == "repeat" else (
-                f"a non-finite loss, gradient or model in the {name}")  # fmt: skip
-            science.append(f"{what}: {run['stop']}")
-        if name in SHIFTS and "survived" in run and run["survived"] is not True:
-            technical.append(f"{name} was lost to fp32 rounding after its retry")
-    for name, value in (rest.get("comparisons") or {}).items():
-        if name in measured and name != "launcher~baseline":
-            measured[name] = (value or {}).get("D_twin")
-
-
-def control_verdict(
-    record: Mapping[str, Any] | None, scope: QualificationScope, candidate: int
-) -> dict[str, Any]:
-    """Amendment 2: the same-path control is ``accepted`` when its records are finite (no
-    divergence, every loss, gradient norm and K finite) and its K_scoring at step 25 is at most
-    0.01·K*; a missing or failed control (exceeding, non-finite, incomplete, its streams or v₀ not
-    the launcher run's, an error) is ``not_qualified`` (technical); one whose launcher run an
-    instability rule stopped is ``failing`` (scientific)."""
-    bound = scope.control_bound(candidate)
-    out: dict[str, Any] = {"state": NOT_QUALIFIED, "kind": TECHNICAL, "reasons": [],
-                           "K_scoring": None, "bound": bound, "candidate": candidate,
-                           "case": None if record is None else record.get("case")}  # fmt: skip
-    reasons = out["reasons"]
-    case = (record or {}).get("case") or {}
-    if record is None:
-        reasons.append("no same-path control record")
-    elif record.get("part") != "control" or case.get("candidate") != candidate:
-        reasons.append("the record is not this candidate's same-path control")
-    elif record.get("status") != "complete":
-        reasons += record.get("reasons") or [f"the control did not run ({record.get('status')})"]
-        if record.get("kind") == SCIENTIFIC:
-            out.update(state=FAILING, kind=SCIENTIFIC)
-    else:
-        control = record.get("control") or {}
-        state = fcd.control_state(control, k_at=[scope.control_steps], bound=bound)
-        k = {r.get("step"): r.get("K_scoring") for r in control.get("scoring") or []}.get(
-            scope.control_steps
-        )
-        out["K_scoring"] = k
-        unequal = [key for key, c in (record.get("shared_state") or {}).items() if not c["equal"]]
-        if unequal or not record.get("shared_state"):
-            reasons.append(f"the control's {unequal or 'shared state'} differ from the "
-                           "launcher run's")  # fmt: skip
-        if state["diverged"]:
-            reasons.append("a non-finite record in the control")
-        elif not state["complete"] or not fcd._number(k):
-            reasons.append(f"the control is incomplete: {control.get('stop')}")
-        elif k > bound:
-            reasons.append(f"K_scoring {k:.6g} at step {scope.control_steps} beyond {bound:.6g}")
-        if not reasons:
-            out.update(state=ACCEPTED, kind=None)
-    return out
-
-
-def _not_counted(
-    verdict: Mapping[str, Any], *, candidate: int, optimizer: str, lr: float, seeds: Sequence[int],
-    code: Mapping[str, Any] | None, policy: Mapping[str, Any] | None,
-    launchers: Mapping[int, Mapping[str, Any]] | None,
-) -> str | None:  # fmt: skip
-    """Why a case verdict is not one of this rate's cases under the expected policy, or None."""
-    case = verdict.get("case") or {}
-    lr_ = case.get("lr")
-    if case.get("candidate") != candidate or case.get("optimizer") != optimizer:
-        return "another candidate or arm"
-    if not (fcd._number(lr_) and math.isclose(lr_, lr, rel_tol=1e-9)):
-        return "another rate"
-    if case.get("engineering") is not False or case.get("seed") not in seeds:
-        return "not a numerical seed of the candidate"
-    if case.get("batch") != BATCH or case.get("steps") != STEPS:
-        return "not the protocol's batch and steps"
-    if code is None or verdict.get("gpu_code") != code.get("sha256"):
-        return "other GPU code"
-    if policy is None or verdict.get("settings") != policy:
-        return "other settings"
-    launcher = verdict.get("launcher") or {}
-    if not (launcher.get("run_id") and (launcher.get("checkpoint") or {}).get("sha256")):
-        return "no launcher run identity or checkpoint"
-    if launchers is not None and launchers.get(case.get("seed")) != launcher:
-        return "another launcher run or checkpoint"
-    return None
-
-
-def rate_verdict(
-    cases: Sequence[Mapping[str, Any]],
-    *,
-    scope: QualificationScope,
-    candidate: int,
-    optimizer: str,
-    lr: float,
-    code: Mapping[str, Any] | None,
-    policy: Mapping[str, Any] | None,
-    control: Mapping[str, Any] | None = None,
-    launchers: Mapping[int, Mapping[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """An (arm, rate)'s verdict from its case verdicts (``case_verdict``) and, for an FA rate, its
-    same-path control's (``control_verdict``; None: missing). A case counts only when it is this
-    candidate's, arm's and rate's, on one of its numerical seeds at the protocol's batch and
-    steps, under the expected GPU code (``code``: its ``sha256``) and settings (``policy``:
-    ``settings_record``), with a launcher run and checkpoint (equal to ``launchers[seed]`` when
-    given). ``failing`` if a counted case is scientific (or the control's launcher run stopped by
-    instability); else ``not_qualified`` if one is technical or an FA rate's control is not
-    accepted; else ``qualified`` when the counted cases are exactly the prescribed seeds, one
-    each, every one qualified with its 13 comparisons; else ``incomplete`` (an empty or partial
-    list included)."""
-    seeds = list(scope.seeds(candidate))
-    counted, reasons = [], []
-    for verdict in cases:
-        why = _not_counted(verdict, candidate=candidate, optimizer=optimizer, lr=lr, seeds=seeds,
-                           code=code, policy=policy, launchers=launchers)  # fmt: skip
-        if why is None:
-            counted.append(verdict)
-        else:
-            reasons.append(f"{(verdict.get('case') or {}).get('name')}: not counted: {why}")
-    for verdict in counted:
-        reasons += [f"{verdict['case']['name']}: {r}" for r in verdict.get("reasons") or []]
-    found = [verdict["case"]["seed"] for verdict in counted]
-    kinds = {verdict.get("kind") for verdict in counted}
-    checked = None
-    if optimizer == scope.control_arm:
-        checked = dict(control or control_verdict(None, scope, candidate))
-        rate = (checked.get("case") or {}).get("lr")
-        if checked.get("state") == ACCEPTED and not (
-            checked.get("candidate") == candidate and fcd._number(rate)
-            and math.isclose(rate, lr, rel_tol=1e-9)
-            and (checked.get("case") or {}).get("seed") == seeds[0]
-        ):  # fmt: skip
-            checked.update(state=NOT_QUALIFIED, kind=TECHNICAL,
-                           reasons=["the control is not this rate's"])  # fmt: skip
-        reasons += [f"control: {r}" for r in checked.get("reasons") or []]
-    missing = [s for s in seeds if s not in found]
-    duplicated = sorted({s for s in found if found.count(s) > 1})
-    if SCIENTIFIC in kinds or (checked is not None and checked.get("kind") == SCIENTIFIC):
-        state = FAILING
-    elif TECHNICAL in kinds or (checked is not None and checked.get("state") != ACCEPTED):
-        state = NOT_QUALIFIED
-    elif (not missing and not duplicated and len(found) == len(seeds)
-          and all(v.get("state") == QUALIFIED and v.get("complete") for v in counted)):  # fmt: skip
-        state = QUALIFIED
-    else:
-        state = INCOMPLETE
-        reasons += [f"no counted case of seed {s}" for s in missing]
-        reasons += [f"more than one case of seed {s}" for s in duplicated]
-    return {"candidate": candidate, "optimizer": optimizer, "lr": lr, "state": state,
-            "seeds": seeds, "counted": sorted(found), "reasons": reasons, "control": checked,
-            "warnings": [v["case"]["name"] for v in counted if v.get("warning")],
-            "fallbacks": [v["case"]["name"] for v in counted if v.get("fallback")]}  # fmt: skip
-
-
-FAMILIES = ("launcher~baseline", "launcher~repeat", "baseline~repeat", "launcher~reference",
-            "baseline~reference", "launcher~shift", "baseline~shift")  # fmt: skip
-
-
-def engineering_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The engineering stage's report from part records (baseline and rest): e_eng, the largest
-    D₂₅/K* over the unshifted repeats (``baseline~repeat``); the path maxima, the largest
-    D_t/K* at the diagnostic steps per trajectory (shifts pooled); and per comparison family the
-    margin, the smallest bound/D₂₅ over the records (∞ for a D of 0). Diagnostics: no verdict."""
-    repeats: list[float] = []
-    paths: dict[str, list[float]] = {}
-    ratios: dict[str, list[float]] = {family: [] for family in FAMILIES}
-    for record in records:
-        k_star, bound = record.get("K_star"), record.get("bound")
-        if not (fcd._number(k_star) and fcd._number(bound)):
-            continue
-        for name, value in (record.get("comparisons") or {}).items():
-            d = (value or {}).get("D_twin")
-            target, trajectory = name.split("~")
-            family = f"{target}~{'shift' if trajectory in SHIFTS else trajectory}"
-            if family not in ratios or d is None:
-                continue
-            ratios[family].append(bound / d if fcd._number(d) and d > 0 else
-                                  math.inf if d == 0 else 0.0)  # fmt: skip
-            if name == "baseline~repeat":
-                repeats.append(d / k_star if fcd._number(d) else math.inf)
-        if record.get("part") == "rest":
-            for name, run in (record.get("trajectories") or {}).items():
-                values = [r.get("D_twin") for r in run.get("D_twin") or []]
-                if values:
-                    family = "shift" if name in SHIFTS else name
-                    paths.setdefault(family, []).append(fcd._largest(values) / k_star)
-    return {"e_eng": max(repeats) if repeats else None, "repeats": len(repeats),
-            "path_maxima": {family: max(v) for family, v in paths.items()},
-            "margins": {family: min(v) if v else None for family, v in ratios.items()}}  # fmt: skip

@@ -17,13 +17,13 @@ import torch
 from conftest import tiny_model, tiny_tokenizer
 from omegaconf import OmegaConf
 from test_fa_control_diagnostic import forbid_outcomes
-from test_schedule import arm_config
+from test_schedule import ARMS, arm_config, scheduled
 from test_schedule import env as env  # noqa: F401  (the fixture)
 from test_train import pass_path_check, prepare, prompt_sets
 
+from zero_field_refusal import config, runtime, schedule
 from zero_field_refusal import fa_control_diagnostic as fcd
 from zero_field_refusal import qualification as q
-from zero_field_refusal import runtime, schedule
 from zero_field_refusal.config import load_config
 from zero_field_refusal.models import install_neutral_generation_config
 from zero_field_refusal.runtime import Environment
@@ -38,6 +38,24 @@ SCOPE = q.QualificationScope.of(SETTINGS)
 FA = q.QualificationCase(0, "adam_frozen", 1e-3, 1, False, batch=4)
 ADAMW = q.QualificationCase(1, "adamw", 1e-3, 1, False, batch=4)
 LAUNCHER = ("tracking.provenance_hashes=true", "+eval.k_only=true")
+CONFIRMATION = q.confirmation_config  # experiments/study3's, which no tiny run can agree with
+
+
+@pytest.fixture(scope="module", autouse=True)
+def tiny_confirmation(tmp_path_factory):
+    """The tiny runs' own confirmation config ("Config agreement"): the tiny schedule at the
+    case's arm, rate, seed, batch and steps, as ``arm_config`` makes the launcher runs. Module
+    scope, so that the module's own fixtures run under it too."""
+    base = tmp_path_factory.mktemp("confirmation")
+
+    def tiny(case):
+        return scheduled(base, f"train.steps={case.steps}", "schedule.evaluate_at=[25]",
+                         *ARMS[case.optimizer], f"optimizer.lr={case.lr!r}", f"seed={case.seed}",
+                         f"train.batch_size={case.batch}", policy="short")  # fmt: skip
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(q, "confirmation_config", tiny)
+        yield
 
 
 def launcher_run(env, base, arm, run_id, *overrides, seed=0):
@@ -48,16 +66,19 @@ def launcher_run(env, base, arm, run_id, *overrides, seed=0):
                          numerics_setup=runtime.configure_numerics(cfg, CPU))  # fmt: skip
 
 
-def spiked(monkeypatch):
-    """The gradient norms scripted to fire the ×10 rule at step 3; the weight check stays real."""
+def spiked(monkeypatch, module=schedule, name="_norm"):
+    """The gradient norms scripted to fire the ×10 rule at step 3 (then 1.0); the weight check
+    stays real."""
     norms = iter([1.0, 1.0, 1.0, 50.0])
-    real = schedule._norm
+    real = getattr(module, name)
 
     def norm(tensors):
         first = next(t for t in tensors if t is not None)
-        return next(norms) if first.requires_grad is False and first.grad is None else real(tensors)
+        if first.requires_grad is False and first.grad is None:
+            return next(norms, 1.0)
+        return real(tensors)
 
-    monkeypatch.setattr(schedule, "_norm", norm)
+    monkeypatch.setattr(module, name, norm)
 
 
 def build_world(base: Path):
@@ -254,17 +275,85 @@ def test_numerics_are_set_first(world, tmp_path, monkeypatch) -> None:
         calls.append("path check")
         return check(*args)
 
+    real, given = q.launcher_problems, []
+
     def problems(*args, **kwargs):
         calls.append("launcher")
-        return "technical", ["stop here"]
+        given.append(kwargs["numerics"])
+        return real(*args, **kwargs)
 
     monkeypatch.setattr(q.runtime, "configure_numerics", numerics)
     monkeypatch.setattr(q.prechecks, "require_path_check", path_check)
     monkeypatch.setattr(q, "launcher_problems", problems)
-    record = part(env, runs["fa"], tmp_path / "out", tmp_path / "ckpt", "rest")
-    assert calls == ["numerics", "path check", "launcher"]
-    assert record["numerics_setup"] == configure(fcd.run_config(runs["fa"]), CPU)
-    assert record["status"] == "not_run"
+    nothing_runs(monkeypatch)
+    record = part(env, runs["fa"], tmp_path / "out", tmp_path / "ckpt", "baseline")
+    assert calls == ["numerics", "launcher", "path check"]  # the launcher check reads files only
+    setup = configure(fcd.run_config(runs["fa"]), CPU)
+    assert record["numerics_setup"] == setup and given == [setup]
+    assert record["status"] == "failed" and "a trajectory ran" in record["reason"]
+    calls.clear()
+    part(env, runs["spiked"], tmp_path / "out", tmp_path / "ckpt", "baseline", attempt=2)
+    assert calls == ["numerics", "launcher"]  # nothing runs, so no path check is needed
+
+
+def edited(run_dir, target, name, change):
+    """A copy of a launcher run with one record changed."""
+    shutil.copytree(run_dir, target)
+    if name == "config.yaml":
+        cfg = OmegaConf.load(target / name)
+        change(cfg)
+        OmegaConf.save(cfg, target / name)
+    else:
+        record = json.loads((target / name).read_text())
+        change(record)
+        (target / name).write_text(json.dumps(record))
+    return target
+
+
+def test_the_launcher_run_must_agree_with_the_confirmation_config(world, tmp_path) -> None:
+    _, runs = world
+    for source in ("fa", "spiked"):  # an instability stop does not hide the departure
+        copied = edited(runs[source], tmp_path / source, "config.yaml",
+                        lambda cfg: cfg.execution.update(micro_batch_size=2))  # fmt: skip
+        kind, reasons = q.launcher_problems(copied, FA)
+        assert kind == "technical", source
+        assert reasons == ["the launcher run does not conform: execution departs from the "
+                           "confirmation config's"]  # fmt: skip
+
+
+def test_the_registered_confirmation_config_agrees_with_the_k_only_runs(monkeypatch) -> None:
+    monkeypatch.setattr(q, "confirmation_config", CONFIRMATION)
+    case = q.QualificationCase(10200, "adam_frozen", 1.83e-05, 1, False)
+    reference = q.confirmation_config(case)
+    assert reference.study3.role == "confirmation" and reference.train.batch_size == 20
+    assert (reference.optimizer.name, reference.optimizer.lr, reference.seed) == (
+        "adam_frozen", 1.83e-05, 10200)  # fmt: skip
+    for arm in ("adamw", "adam_frozen", "adamw_prewarmed"):
+        k_only = load_config("experiments/study3_k_only", [
+            "study3.role=numerical", f"optimizer={arm}", "optimizer.lr=1.83e-05", "seed=10200",
+            "train.batch_size=20", "tracking.endpoint_checkpoint=/x"])  # fmt: skip
+        mine = q.QualificationCase(10200, arm, 1.83e-05, 1, False)
+        assert q._agreement_problems(k_only, mine) == [], arm
+        k_only.execution.micro_batch_size = 2
+        assert q._agreement_problems(k_only, mine) == [
+            "execution departs from the confirmation config's"]  # fmt: skip
+
+
+def test_the_launcher_run_must_have_this_processs_numerics(world, tmp_path) -> None:
+    _, runs = world
+    setup = runtime.configure_numerics(fcd.run_config(runs["fa"]), CPU)
+    assert q.launcher_problems(runs["fa"], FA, numerics=setup) == (None, [])
+    for source in ("fa", "spiked"):
+        copied = edited(runs[source], tmp_path / source, "meta.json",
+                        lambda meta: meta["inputs"]["numerics_setup"].update(
+                            matmul_precision="high"))  # fmt: skip
+        kind, reasons = q.launcher_problems(copied, FA, numerics=setup)
+        assert kind == "technical" and "is not this process's" in reasons[0], source
+
+
+def test_the_public_names_keep_their_private_aliases() -> None:
+    assert config._apply_override is config.apply_override
+    assert schedule._publish is schedule.publish
 
 
 # ------------------------------------------------------------------------- the harness
@@ -347,6 +436,9 @@ def test_each_trajectory_starts_afresh(world, fa_parts, monkeypatch) -> None:
     endpoint = first["trajectories"]["repeat"]["endpoint_sha256"]
     for record in (later, fallback):
         assert record["status"] == "complete" and record["v0_unchanged"] is True
+        assert record["trajectories"]["repeat"]["monitor"] == first["trajectories"]["repeat"][
+            "monitor"]  # fmt: skip
+        assert record["trajectories"]["repeat"]["instability"] is None
         assert record["trajectories"]["repeat"]["endpoint_sha256"] == endpoint
         assert record["comparisons"]["baseline~repeat"]["D_twin"] == 0.0
     for name in ("s1", "s2", "s3", "s4"):  # the shifts are the same whatever came before
@@ -715,9 +807,19 @@ def test_a_duplicate_seed_is_incomplete() -> None:
 def test_a_case_of_another_seed_or_rate_does_not_count() -> None:
     cases = case_verdicts()
     stray = case_verdicts(("qualified",), seeds=(10210,))  # candidate 2's seed
-    out = rate([*cases[:2], *stray])
-    assert out["state"] == "incomplete" and out["counted"] == [10200, 10201]
-    assert rate(cases, optimizer="adamw_prewarmed")["state"] == "incomplete"
+    out = rate([*cases, *stray])  # an extra stray case: never qualified beside it
+    assert out["state"] == "not_qualified" and out["counted"] == [10200, 10201, 10202]
+    assert out["not_counted"] == [
+        {
+            "case": stray[0]["case"]["name"],
+            "record_sha256": stray[0]["record_sha256"],
+            "why": "another candidate, arm, rate or seed",
+            "kind": None,
+        }
+    ]
+    assert rate(cases, optimizer="adamw_prewarmed")["state"] == "not_qualified"
+    voided = {stray[0]["record_sha256"]: "superseded"}
+    assert rate([*cases, *stray], voided=voided)["state"] == "qualified"
 
 
 def test_swapped_parts_are_technical() -> None:
@@ -732,21 +834,47 @@ def test_swapped_parts_are_technical() -> None:
 def test_a_stale_policy_does_not_count() -> None:
     cases = case_verdicts()
     stale = {**SETTINGS_RECORD, "norm": 1e-4}
-    assert rate(cases, policy=stale)["state"] == "incomplete"
-    assert rate(cases, code={**CODE, "sha256": "o" * 64})["state"] == "incomplete"
-    assert rate(cases, code=None)["state"] == "incomplete"
+    out = rate(cases, policy=stale)  # every case shown, with why it does not count
+    assert out["state"] == "not_qualified" and out["counted"] == []
+    assert [entry["why"] for entry in out["not_counted"]] == ["other settings"] * 3
+    assert rate(cases, code={**CODE, "sha256": "o" * 64})["state"] == "not_qualified"
+    assert rate(cases, code=None)["state"] == "not_qualified"
     expected = {s: {**IDENTITY, "run_id": f"r{s}"} for s in SEEDS}
     assert rate(cases, launchers=expected)["state"] == "qualified"
-    assert rate(cases, launchers={**expected, 10201: IDENTITY})["state"] == "incomplete"
+    assert rate(cases, launchers={**expected, 10201: IDENTITY})["state"] == "not_qualified"
 
 
-def control_record(k=1e-12, *, diverged=False, equal=True, case=None):
+def stale_case(state, seed=10200):
+    """A case of this rate written under other GPU code."""
+    (verdict,) = case_verdicts((state,), seeds=(seed,))
+    return {**verdict, "gpu_code": "o" * 64}
+
+
+def test_a_stale_scientific_case_keeps_the_rate_failing_until_voided() -> None:
+    fresh = case_verdicts()
+    old = stale_case("failing")
+    out = rate([old, *fresh])
+    assert out["state"] == "failing" and out["counted"] == list(SEEDS)
+    assert out["not_counted"][0]["kind"] == "scientific"
+    voided = rate([old, *fresh], voided={old["record_sha256"]: "superseded by an engineering "
+                                         "cycle"})  # fmt: skip
+    assert voided["state"] == "qualified"
+    assert voided["voided"] == [{"case": old["case"]["name"], "record_sha256": old["record_sha256"],
+                                 "reason": "superseded by an engineering cycle"}]  # fmt: skip
+    assert rate([stale_case("qualified"), *fresh])["state"] == "not_qualified"
+
+
+def control_record(k=1e-12, *, diverged=False, equal=True, case=None, code=CODE,
+                   identity=None):  # fmt: skip
     case = case or q.QualificationCase(10200, "adam_frozen", 1.83e-05, 1, False)
     control = {"steps": 25, "stop": None, "diverged": diverged,
                "rows": [{"step": 0, "loss": 1.0, "grad_norm": 1.0}], "monitor": [],
                "scoring": [{"step": 25, "K_scoring": k}]}  # fmt: skip
+    identity = identity or {**IDENTITY, "run_id": "r10200"}  # the first seed's case's run
     return {"part": "control", "status": "complete", "case": case.record(), "control": control,
-            "shared_state": {"v0_sha256": {"equal": equal}}}  # fmt: skip
+            "shared_state": {"v0_sha256": {"equal": equal}},
+            "launcher": {"kind": None, "reasons": [], "identity": identity},
+            "provenance": {"settings": SETTINGS_RECORD, "gpu_code": code}}  # fmt: skip
 
 
 def test_control_verdicts() -> None:
@@ -771,6 +899,19 @@ def test_an_fa_rate_needs_its_accepted_control() -> None:
     other = q.control_verdict(control_record(case=q.QualificationCase(
         10200, "adam_frozen", 1.5e-05, 1, False)), s, 1)  # fmt: skip
     assert rate(cases, optimizer="adam_frozen", control=other)["state"] == "not_qualified"
+    stale = q.control_verdict(control_record(code={**CODE, "sha256": "o" * 64}), s, 1)
+    assert stale["state"] == "accepted"  # on its own; not under the expected GPU code
+    out = rate(cases, optimizer="adam_frozen", control=stale)
+    assert out["state"] == "not_qualified"
+    assert "control: the control was written under other GPU code" in out["reasons"]
+    elsewhere = q.control_verdict(control_record(identity={**IDENTITY, "run_id": "other"}), s, 1)
+    out = rate(cases, optimizer="adam_frozen", control=elsewhere)
+    assert out["state"] == "not_qualified"
+    assert "control: the control read another launcher run than the first seed's case" in (
+        out["reasons"])  # fmt: skip
+    voided = rate(cases, optimizer="adam_frozen", control=accepted,
+                  voided={accepted["record_sha256"]: "superseded"})  # fmt: skip
+    assert voided["state"] == "not_qualified"  # a voided control is a missing one
     assert rate(case_verdicts())["control"] is None  # AdamW has none
 
 
@@ -788,3 +929,150 @@ def test_the_engineering_summary_on_synthetic_records() -> None:
     assert summary["margins"]["baseline~repeat"] == pytest.approx(5.0)
     assert summary["margins"]["launcher~shift"] == pytest.approx(20.0)  # 0.06 / 0.003; 0 is ∞
     assert q.engineering_summary([])["e_eng"] is None
+
+
+def test_a_rest_not_bound_to_its_baseline_is_read_for_nothing() -> None:
+    """A rest under other GPU code, of another launcher run or not built on this baseline is
+    technical, and none of its measurements counts, a scientific one included."""
+
+    def other_launcher(baseline, rest):
+        rest["launcher"] = {**rest["launcher"], "identity": {**IDENTITY, "run_id": "other"}}
+
+    def unbound(baseline, rest):
+        baseline["checkpoint"] = {"sha256": "x" * 64}
+
+    for problem in (other_code, other_launcher, unbound):
+        baseline, rest = synthetic()
+        rest["comparisons"]["baseline~reference"]["D_twin"] = 0.5  # would be scientific
+        rest["trajectories"]["s2"]["stop"] = "non-finite loss or gradient at step 3"
+        problem(baseline, rest)
+        if problem is not unbound:
+            bind(rest, baseline)
+        v = q.case_verdict(baseline, rest, SCOPE)
+        assert (v["state"], v["kind"]) == ("not_qualified", "technical"), problem.__name__
+        assert not any("non-finite" in r or "baseline~reference" in r for r in v["reasons"])
+        assert all(c["D"] is None for n, c in v["comparisons"].items() if n != "launcher~baseline")
+
+
+# ------------------------------------------------- the declared instability rules, after the run
+
+
+def rows(norms, *, loss=1.0):
+    return [{"step": i, "loss": loss, "grad_norm": n} for i, n in enumerate(norms)]
+
+
+@pytest.fixture(scope="module")
+def run_cfg(world):
+    _, runs = world
+    cfg = fcd.run_config(runs["fa"])
+    rules = schedule.Schedule.from_config(cfg)
+    assert (rules.grad_factor, rules.grad_window, rules.k_max) == (10.0, 20, 16.0)
+    return cfg
+
+
+def test_the_gradient_rule_after_the_run(run_cfg) -> None:
+    def fired(norms, **kwargs):
+        return q.harness_instability(run_cfg, {"rows": rows(norms, **kwargs), "stop": None})
+
+    assert fired([1.0] * 25) is None
+    assert fired([5.0, 50.0]) is None  # exactly 10× the step-0 norm: not above
+    assert fired([5.0, 50.1]) == {
+        "reason": "gradient_spike",
+        "step": 1,
+        "detail": {"grad_norm": 50.1, "reference_median": 5.0},
+    }
+    # The reference is the last 20 norms: 80 < 10 × 9, though above 10 × the median of all 40
+    assert fired([1.0] * 20 + [9.0] * 20 + [80.0]) is None
+    assert fired([1.0] * 20 + [9.0] * 20 + [91.0])["step"] == 40
+    assert fired([1.0, math.nan])["reason"] == "nonfinite_gradient"
+    assert fired([1.0, 1.0], loss=math.inf)["reason"] == "nonfinite_loss"
+
+
+def test_the_monitor_rule_and_the_weights_after_the_run(run_cfg) -> None:
+    every = int(run_cfg.eval.monitor.every)
+
+    def fired(k, stop=None):
+        run = {"rows": rows([1.0] * 25), "stop": stop,
+               "monitor": [{"step": t, "K_monitor": 1.0 if t != 2 * every else k}
+                           for t in range(every, 26, every)]}  # fmt: skip
+        return q.harness_instability(run_cfg, run)
+
+    assert fired(16.0) is None  # at the bound: not above
+    assert fired(16.5) == {
+        "reason": "k_above_max",
+        "step": 2 * every,
+        "detail": {"K_monitor": 16.5, "k_max": 16.0},
+    }
+    assert fired(math.nan)["reason"] == "nonfinite_k"
+    stopped_ = fired(1.0, stop="non-finite weights after step 24")
+    assert stopped_["reason"] == "nonfinite_weight" and stopped_["step"] is None
+
+
+def test_the_rules_hold_for_the_unshifted_trajectories_alone() -> None:
+    spike = {"reason": "gradient_spike", "step": 3, "detail": {"grad_norm": 50.0}}
+    for name in ("baseline", "repeat"):
+        v = verdict_of(lambda b, r, n=name: (b if n == "baseline" else r)["trajectories"][n]
+                       .update(instability=spike))  # fmt: skip
+        assert (v["state"], v["kind"]) == ("failing", "scientific"), name
+        assert v["reasons"][0].startswith(f"instability: the harness {name}: 'gradient_spike' "
+                                          "at step 3")  # fmt: skip
+
+    def finite_spike(baseline, rest):  # a ×10 spike and a K above 16 in a shift and the reference
+        for name in ("s1", "reference"):
+            rest["trajectories"][name].update(
+                rows=rows([1.0, 1.0, 1.0, 50.0]), instability=spike,
+                monitor=[{"step": 5, "K_monitor": 20.0}])  # fmt: skip
+
+    v = verdict_of(finite_spike)
+    assert (v["state"], v["kind"], v["reasons"]) == ("qualified", None, [])
+
+
+def test_a_real_gradient_spike_of_the_harness_baseline(world, tmp_path, monkeypatch) -> None:
+    env, runs = world
+    spiked(monkeypatch, fcd, "grad_norm")  # the norms run_twin records, not its training
+    record = part(env, runs["fa"], tmp_path / "out", tmp_path / "ckpt", "baseline")
+    run = record["trajectories"]["baseline"]
+    assert run["stop"] is None and run["steps"] == 25
+    fired = run["instability"]  # the setup's residual took the first scripted norm
+    assert (fired["reason"], fired["detail"]) == (
+        "gradient_spike", {"grad_norm": 50.0, "reference_median": 1.0})  # fmt: skip
+    assert run["rows"][fired["step"]]["grad_norm"] == 50.0
+    launcher = [r["step"] for r in fcd.read_jsonl(runs["fa"] / "monitor.jsonl")]
+    assert [r["step"] for r in run["monitor"]] == launcher  # the launcher's cadence
+    v = q.case_verdict(record, None, SCOPE)
+    assert (v["state"], v["kind"]) == ("failing", "scientific")
+    assert v["reasons"][0].startswith("instability: the harness baseline: 'gradient_spike'")
+
+
+# ---------------------------------------------- rate verdicts from the records run_part writes
+
+
+def rate_of(records, case):
+    verdict = q.case_verdict(*records, SCOPE)
+    return q.rate_verdict([verdict], scope=SCOPE, candidate=1, optimizer=case.optimizer,
+                          lr=case.lr, code=q.code_identity.gpu_code_identity(),
+                          policy=q.settings_record(SETTINGS), batch=4,
+                          control=q.control_verdict(None, SCOPE, 1))  # fmt: skip
+
+
+def test_a_spiked_launcher_run_makes_its_rate_failing(world, tmp_path) -> None:
+    env, runs = world
+    record = part(env, runs["spiked"], tmp_path / "out", tmp_path / "ckpt", "baseline")
+    assert record["launcher"]["identity"]["run_id"] == runs["spiked"].name
+    assert record["launcher"]["identity"]["checkpoint"] is None
+    out = rate_of((record, None), FA)
+    assert out["state"] == "failing" and out["counted"] == [0], out["reasons"]
+
+
+def test_a_launcher_run_of_another_case_makes_its_rate_not_qualified(world, tmp_path) -> None:
+    env, runs = world
+    other = q.QualificationCase(0, "adam_frozen", 2e-3, 1, False, batch=4)
+    record = part(env, runs["spiked"], tmp_path / "out", tmp_path / "ckpt", "baseline",
+                  case=other)  # fmt: skip
+    assert (record["status"], record["kind"]) == ("not_run", "technical")
+    assert rate_of((record, None), other)["state"] == "not_qualified"
+    empty = tmp_path / "empty-run"
+    empty.mkdir()
+    failed = part(env, empty, tmp_path / "out", tmp_path / "ckpt", "baseline", attempt=2)
+    assert failed["status"] == "failed" and failed["launcher"]["identity"]["run_id"] == "empty-run"
+    assert rate_of((failed, None), FA)["state"] == "not_qualified"

@@ -59,7 +59,7 @@ def load_config(
     """Load a config (a file path or a name under ``root``) with its defaults and overrides."""
     cfg = _load(_locate(path, root), root)
     for item in overrides:
-        cfg = _apply_override(cfg, item, root)
+        cfg = apply_override(cfg, item, root)
     OmegaConf.resolve(cfg)
     return cfg
 
@@ -143,7 +143,8 @@ def _load(
     return OmegaConf.merge(merged, node)
 
 
-def _apply_override(cfg: DictConfig, item: str, root: Path) -> DictConfig:
+def apply_override(cfg: DictConfig, item: str, root: Path = CONFIG_ROOT) -> DictConfig:
+    """One override as ``load_config`` applies it (module docstring), unresolved."""
     key, sep, value = item.partition("=")
     if not sep or key.startswith("++") or not key.lstrip("+"):
         raise ValueError(f"Override must look like key=value or +key=value: {item!r}")
@@ -154,6 +155,9 @@ def _apply_override(cfg: DictConfig, item: str, root: Path) -> DictConfig:
     if not _exists(cfg, key):
         raise KeyError(f"Unknown config key {key!r}; use +{key}=... to add a new key")
     return OmegaConf.merge(cfg, OmegaConf.from_dotlist([item]))
+
+
+_apply_override = apply_override  # the former private name
 
 
 def _exists(cfg: DictConfig, key: str) -> bool:
