@@ -281,7 +281,7 @@ def run_campaign(
     runs: list[Run],
     runs_root: Path,
     *,
-    execute: Callable[[Run, str, Path], int] | None = None,
+    execute: Callable[[Run, str, Path, Mapping[str, Any]], int] | None = None,
     dry_run: bool = False,
     recovery: str | None = None,
     stop: Callable[[], bool] | None = None,
@@ -291,8 +291,10 @@ def run_campaign(
 
     Outcomes: skipped (a qualifying run exists), done, diverged, exhausted (no attempt left),
     stopped (``stop()`` was true before its next attempt; logged once) and, for a dry run,
-    pending. ``execute(run, run_id, output)`` runs one attempt under that run id and
-    returns its exit code (default: a subprocess). ``recovery`` names the fixed technical cause and
+    pending. ``execute(run, run_id, output, campaign)`` runs one attempt under that run id and
+    returns its exit code (default: a subprocess); ``campaign`` is the campaign's name, the run's
+    label, the attempt and the header, which the child reads from ``ZFR_CAMPAIGN``.
+    ``recovery`` names the fixed technical cause and
     opens the recovery round of every cell with an exhausted run that has not had one.
     ``header`` (``campaign_header``) goes into every start record. Raises ``CampaignError``
     before starting anything if a run's existing directories conflict, and stops at an attempt
@@ -341,7 +343,7 @@ def run_campaign(
                 outcome = "stopped"
                 break
             attempts += 1
-            outcome = _attempt(run, attempts, runs_root, out_dir, log, execute, header)
+            outcome = _attempt(run, attempts, runs_root, out_dir, log, execute, header, name)
             if outcome != "technical":
                 break
         if outcome == "stopped" and not result["stopped"]:
@@ -355,8 +357,8 @@ def _open(state: Assessment) -> bool:
 
 
 def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
-             execute: Callable[[Run, str, Path], int],
-             header: Mapping[str, Any] | None = None) -> str:  # fmt: skip
+             execute: Callable[[Run, str, Path, Mapping[str, Any]], int],
+             header: Mapping[str, Any] | None = None, name: str = "") -> str:  # fmt: skip
     """One attempt; returns done, diverged or technical; stops the campaign on a conflict."""
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -366,7 +368,9 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
                "experiment": run.experiment, "config_hash": run.config_hash,
                "command": run.command()[1:],
                **({"header": dict(header)} if header is not None else {})})  # fmt: skip
-    code = execute(run, run_id, output)
+    campaign = {"name": name, "label": run.label, "attempt": attempt,
+                "header": None if header is None else dict(header)}  # fmt: skip
+    code = execute(run, run_id, output, campaign)
     run_dir = Path(runs_root) / run.experiment / run_id
     meta = _read_json(run_dir / "meta.json")
     status = None if meta is None else meta.get("status")
@@ -435,8 +439,11 @@ def _run_id(stamp: str, run: Run, attempt: int) -> str:
     return f"{stamp}-{cell}-s{run.seed}-{run.config_hash[:8]}-a{attempt}"
 
 
-def _subprocess(run: Run, run_id: str, output: Path) -> int:
+def _subprocess(run: Run, run_id: str, output: Path,
+                campaign: Mapping[str, Any] | None = None) -> int:  # fmt: skip
     env = {**os.environ, "RUN_ID": run_id}
+    if campaign is not None:
+        env["ZFR_CAMPAIGN"] = json.dumps(campaign)
     with output.open("w") as f:
         return subprocess.run(run.command(), stdout=f, stderr=subprocess.STDOUT, cwd=REPO_ROOT,
                               env=env, check=False).returncode  # fmt: skip

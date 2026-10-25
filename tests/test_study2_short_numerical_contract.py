@@ -395,7 +395,7 @@ def test_after_void_a_fresh_numerical_campaign_has_every_attempt(
     fresh = assess(first, root, launch_records(root))
     assert fresh.technical == set() and fresh.done is None
 
-    def fails(run, run_id, output) -> int:  # a technical failure that leaves no run
+    def fails(run, run_id, output, campaign=None) -> int:  # a technical failure that leaves no run
         return 1
 
     header = {"w_max": W_MAX}

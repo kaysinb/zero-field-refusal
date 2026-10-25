@@ -75,7 +75,7 @@ class Executor:
     def __init__(self, root: Path, outcomes: dict[str, list[str]]) -> None:
         self.root, self.outcomes, self.calls = root, outcomes, []
 
-    def __call__(self, run, run_id: str, output: Path) -> int:
+    def __call__(self, run, run_id: str, output: Path, campaign=None) -> int:
         self.calls.append((run.label, run_id))
         output.write_text("run output\n")
         outcome = self.outcomes.get(run.label, ["completed"]).pop(0)
@@ -225,7 +225,7 @@ def test_an_attempt_that_completes_without_qualifying_stops_the_campaign(tmp_pat
     name, runs = load_campaign(campaign(tmp_path))
     root = tmp_path / "runs"
 
-    def execute(run, run_id, output):
+    def execute(run, run_id, output, campaign=None):
         make_run_dir(root, run, run_id, responses=False)
         return 0
 
@@ -281,7 +281,7 @@ def test_a_dry_run_starts_nothing(tmp_path) -> None:
     root = tmp_path / "runs"
     make_run_dir(root, runs[0], "done", k=0.0)
 
-    def execute(run, run_id, output):
+    def execute(run, run_id, output, campaign=None):
         raise AssertionError("a dry run must not start a run")
 
     result = run_campaign(name, runs, root, execute=execute, dry_run=True)
@@ -304,6 +304,36 @@ def test_each_attempt_runs_under_its_own_run_id(tmp_path, monkeypatch) -> None:
     _, runs = load_campaign(campaign(tmp_path))
     launch._subprocess(runs[1], "attempt-id", tmp_path / "out.log")
     assert seen["RUN_ID"] == "attempt-id"
+
+
+def test_the_child_gets_its_campaign_in_the_environment(tmp_path, monkeypatch) -> None:
+    """``execute`` receives the campaign's name, the run's label, the attempt and the header; the
+    default executor passes them to the child as JSON in ``ZFR_CAMPAIGN``."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, "header: {versions_record: docs/x.json}\n" + CELLS)
+    name, runs = load_campaign(path)
+    root, received = tmp_path / "runs", []
+
+    def spy(run, run_id, output, campaign):
+        received.append(campaign)
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen.update(kwargs["env"])
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(launch.subprocess, "run", fake_run)
+        launch._subprocess(run, run_id, output, campaign)
+        received.append(json.loads(seen["ZFR_CAMPAIGN"]))
+        return Executor(root, {})(run, run_id, output)
+
+    run_campaign(name, runs[1:2], root, execute=spy, header=campaign_header(path))
+    expected = {"name": name, "label": runs[1].label, "attempt": 1,
+                "header": {"versions_record": "docs/x.json"}}  # fmt: skip
+    assert received == [expected, expected]
+    run_campaign(name, runs[2:3], root, execute=lambda *a: received.append(a[3]) or 1, header=None)
+    assert received[-1]["header"] is None
 
 
 CAMPAIGNS = sorted((Path(__file__).resolve().parents[1] / "configs" / "campaigns").glob("*.yaml"))
@@ -465,7 +495,7 @@ def test_sigterm_reaches_only_the_launcher_and_the_child_finishes(tmp_path) -> N
     finished = tmp_path / "finished"
     calls = []
 
-    def execute(run, run_id, output):  # a child process that outlives the signal
+    def execute(run, run_id, output, campaign=None):  # a child process that outlives the signal
         calls.append(run.label)
         child = "import sys, time; time.sleep(1.0); open(sys.argv[1], 'a').write('x')"
         code = subprocess.run([sys.executable, "-c", child, str(finished)], check=False).returncode
