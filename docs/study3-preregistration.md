@@ -89,7 +89,7 @@ A block is one training seed with its stream and v₀.
   most 15 pp of MMLU. A larger loss is a gross collapse, decided on utility before any label.
 - A **K-only run** (search, numerical) is usable when it finished its 25 updates with finite
   records and a positive, finite step-25 K. The MMLU criterion does not apply to it, since it
-  measures no utility.
+  measures no utility. *Corrected by [amendment 1](#amendment-1-what-k-only-runs-measure).*
 
 ### The comparisons
 
@@ -756,6 +756,8 @@ decision rule, threshold or seed.
   and a positive, finite step-25 K, without the MMLU criterion. The search and the numerical
   qualification decide on K and numerics only.
 - **What is added.** The utility of search and numerical runs is recorded and reported with every
-  endpoint. It enters no decision.
+  endpoint. It enters no decision. Search and numerical-run utility is descriptive only: it
+  cannot reject a rate, trigger a repair or select a candidate. The >15 pp MMLU-loss exclusion
+  applies to regular validation and confirmation endpoints.
 - **What was known.** The registration, the study-2 code and study 2's K-only records; no study-3
   outcome.
