@@ -186,23 +186,106 @@ def test_the_driver_has_no_rerun_line(qualify, tmp_path) -> None:
     assert commands.count("--max-attempts 1") == 2
 
 
-def test_the_driver_skips_a_complete_case_and_the_rest_of_a_decided_one(qualify, tmp_path):
-    """Resume: the launcher and the parts sit inside the case's ``complete`` check (a complete
-    case runs neither); the rest and the control inside the baseline's ``decided`` check; the
-    deletion after both, for a complete or decided case too."""
+STUB = r"""#!/usr/bin/env bash
+# project-run "$SRC" python <script> <command> ...: logs the command, exits as STUB_<command> says
+if [ "$3" = -c ]; then exit 0; fi
+cmd="$4"
+if [ "$3" = scripts/launch.py ]; then cmd=launch; fi
+echo "$cmd ${*:5}" >> "$STUB_LOG"
+n=$(grep -c "^$cmd " "$STUB_LOG")
+var="STUB_${cmd//-/_}"
+read -r -a codes <<< "${!var:-0}"
+i=$(( n - 1 < ${#codes[@]} ? n - 1 : ${#codes[@]} - 1 ))
+if [ "$cmd" = locate ]; then echo /runs/study3/r1; fi
+exit "${codes[$i]}"
+"""
+
+
+def run_driver(qualify, tmp_path, monkeypatch, **exits):
+    """The generated driver run by bash against stubs: ``project-run`` (each qualify.py command
+    and the launcher logged, with the exit ``exits`` gives it: a code, or codes call by call),
+    ``git`` and ``nvidia-smi``; no Pod environment, and a disk need of 1 KB."""
+    commit = "a" * 40
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, text in (("project-run", STUB), ("git", f"#!/bin/sh\necho {commit}\n"),
+                       ("nvidia-smi", '#!/bin/sh\ncase "$*" in *compute-apps*) ;; '
+                                      "*) echo 0 ;; esac\n")):  # fmt: skip
+        (bin_dir / name).write_text(text)
+        (bin_dir / name).chmod(0o755)
+    (tmp_path / "code" / commit / "source").mkdir(parents=True)
+    monkeypatch.setattr(qualify, "POD_ENVIRONMENT", ())
+    monkeypatch.setattr(qualify, "SOURCES", str(tmp_path / "code"))
+    monkeypatch.setattr(qualify, "need_kb", lambda gb: 1)
+    out = tmp_path / "driver.sh"
+    qualify.main(["driver", *common(campaign(tmp_path)), "--commit", commit, "--out", str(out)])
+    log = tmp_path / "stub.log"
+    log.touch()
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "RUNS_DIR": str(tmp_path / "runs"),
+           "STUB_LOG": str(log), "STUB_complete": "3", "STUB_decided": "3",
+           **{f"STUB_{key}": str(value) for key, value in exits.items()}}  # fmt: skip
+    done = subprocess.run(["bash", str(out)], env=env, capture_output=True, text=True)
+    calls = [line.split(" ", 1)[0] + " " + " ".join(re.findall(r"--(?:part|case) (\S+)", line))
+             for line in log.read_text().splitlines()]  # fmt: skip
+    return done.returncode, [c.strip() for c in calls]
+
+
+def _with_case(steps, case):
+    """The stub's log lines of ``steps`` for ``case``: the command, then its ``--case`` and
+    ``--part`` values as they appear; the launcher's line names neither."""
+    named = {"launch": "launch"}
+    return [named.get(step) or (f"part {case.name} {step.split()[1]}" if step.startswith("part ")
+                                else f"{step} {case.name}") for step in steps]  # fmt: skip
+
+
+FULL = ["complete", "clear-stale", "launch", "locate", "part baseline", "decided", "part rest"]
+
+
+def test_the_driver_runs_every_part_of_each_case(qualify, tmp_path, monkeypatch) -> None:
+    code, calls = run_driver(qualify, tmp_path, monkeypatch)
+    assert code == 0
+    assert calls == [*_with_case([*FULL, "part control", "finish"], FA),
+                     *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
+
+
+def test_the_driver_resumes_past_a_complete_case(qualify, tmp_path, monkeypatch) -> None:
+    """A complete case (``complete`` exits 0) runs neither the launcher nor a part: only its
+    ``finish``, which deletes what is left."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, complete="0 3")
+    assert code == 0
+    assert calls == [f"complete {FA.name}", f"finish {FA.name}",
+                     *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
+
+
+def test_a_decided_case_skips_the_rest_but_not_its_control(qualify, tmp_path, monkeypatch):
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, decided="0 3")
+    assert code == 0
+    assert calls[: len(FULL) + 1] == _with_case([*FULL[:-1], "part control", "finish"], FA)
+    assert f"part {FA.name} rest" not in calls
+
+
+@pytest.mark.parametrize("command", ["complete", "decided"])
+def test_a_crashing_check_stops_the_driver(qualify, tmp_path, monkeypatch, command) -> None:
+    """``complete`` and ``decided`` say no with exit 3; any other non-zero exit is a failure
+    that stops the driver (its verdict still written)."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, **{command: 2})
+    assert code == 2
+    assert calls[-2:] == [f"{command} {FA.name}", "verdict"]
+    assert f"part {FA.name} rest" not in calls and f"finish {FA.name}" not in calls
+
+
+def test_the_driver_stops_after_a_technical_case(qualify, tmp_path, monkeypatch) -> None:
+    """``finish`` exits 9 for a technical case and keeps its checkpoints: the driver stops there,
+    before the next case."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, finish=qualify.TECHNICAL_CASE)
+    assert code == qualify.TECHNICAL_CASE
+    assert calls[-2:] == [f"finish {FA.name}", "verdict"]
+    assert not any(ADAMW.name in call for call in calls)
+
+
+def test_the_driver_validates_the_free_space(qualify, tmp_path) -> None:
     text = driver_text(qualify, tmp_path)
-    block = text[text.index("# ---- case 1/") : text.index("# ---- case 2/")]
-    lines = block.splitlines()
-    head = next(i for i, line in enumerate(lines) if "qualify.py complete" in line)
-    assert lines[head].startswith("if ") and lines[head + 2].strip() == "else"
-    closing = next(i for i, line in enumerate(lines) if line == "fi" and i > head)
-    for what in ("scripts/launch.py", "--part baseline", "--part rest", "--part control"):
-        assert head < next(i for i, line in enumerate(lines) if what in line) < closing
-    decided = next(i for i, line in enumerate(lines) if "qualify.py decided" in line)
-    assert lines[decided].strip().startswith("if ") and lines[decided + 2].strip() == "else"
-    rest = next(i for i, line in enumerate(lines) if "--part rest" in line)
-    assert decided < rest
-    assert "qualify.py finish" in lines[closing + 1]
+    positions(text, [r"free_kb=\$\(df -Pk", r"\*\[!0-9\]\*\) stop", r"-lt \d+ \]"])
 
 
 def test_the_driver_checks_its_campaign_and_the_gpu(qualify, tmp_path) -> None:
@@ -227,20 +310,64 @@ def test_complete_and_decided(qualify, tmp_path) -> None:
     path = campaign(tmp_path)
     out = tmp_path / "runs" / "qualification"
     run = lambda what, case: qualify.main([what, *common(path), "--case", case.name])  # noqa: E731
-    for what in ("complete", "decided"):
+
+    def no(what, case):
         with pytest.raises(SystemExit) as stop:
-            run(what, FA)
-        assert stop.value.code == 1
+            run(what, case)
+        assert stop.value.code == qualify.NO
+
+    no("complete", FA)
+    no("decided", FA)
     write_case(out, FA)  # no control yet
-    with pytest.raises(SystemExit):
-        run("complete", FA)
+    no("complete", FA)
     publish(out, FA, "control", control_record(case=FA))
     run("complete", FA)  # exit 0
-    with pytest.raises(SystemExit):
-        run("decided", FA)
+    no("decided", FA)
     write_case(out, ADAMW, decided=True)  # the baseline is a scientific failure: no rest
     run("decided", ADAMW)
     run("complete", ADAMW)
+
+
+def test_a_decided_fa_case_needs_its_control(qualify, tmp_path) -> None:
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    write_case(out, FA, decided=True)
+    qualify.main(["decided", *common(path), "--case", FA.name])
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(["complete", *common(path), "--case", FA.name])
+    assert stop.value.code == qualify.NO
+    publish(out, FA, "control", control_record(case=FA))
+    qualify.main(["complete", *common(path), "--case", FA.name])
+
+
+def test_a_rest_bound_to_another_baseline_keeps_the_case_open(qualify, tmp_path) -> None:
+    """A rest record counts only when it names the latest baseline record's sha256 (a rest that
+    ran nothing excepted): otherwise the case is not complete and keeps its checkpoints."""
+    path = campaign(tmp_path, fa=())
+    out = tmp_path / "runs" / "qualification"
+    journal(tmp_path / "runs", path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    (tmp_path / "ckpt").mkdir()
+    (tmp_path / "ckpt" / "r-a1.pt").write_bytes(b"w")
+    write_case(out, ADAMW)
+    baseline = json.loads((out / ADAMW.attempt_path("baseline", 1)).read_text())
+    publish(out, ADAMW, "baseline", {**baseline, "seconds": 1.0})  # another baseline record
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(["complete", *common(path), "--case", ADAMW.name])
+    assert stop.value.code == qualify.NO
+    with pytest.raises(SystemExit, match="not bound to the latest baseline record"):
+        qualify.main(["finish", *common(path), "--case", ADAMW.name])
+    assert (tmp_path / "ckpt" / "r-a1.pt").exists()
+    rest = json.loads((out / ADAMW.attempt_path("rest", 1)).read_text())
+    publish(out, ADAMW, "rest", {**rest, "status": "not_run", "kind": "technical",
+                                 "reasons": ["no readable baseline record"]})  # fmt: skip
+    qualify.main(["complete", *common(path), "--case", ADAMW.name])
+    failed = {k: v for k, v in rest.items() if k != "baseline_record"}  # failed before reading
+    publish(out, ADAMW, "rest", {**failed, "status": "failed", "kind": "technical",
+                                 "reasons": ["RuntimeError: before the baseline"]})  # fmt: skip
+    qualify.main(["complete", *common(path), "--case", ADAMW.name])
+    with pytest.raises(SystemExit) as stop:  # complete, and technical: its checkpoints stay
+        qualify.main(["finish", *common(path), "--case", ADAMW.name])
+    assert stop.value.code == qualify.TECHNICAL_CASE
 
 
 def fake_part(calls):
@@ -312,6 +439,96 @@ def test_an_infrastructure_rerun_is_a_new_attempt_that_names_its_reason(
     assert len(stubbed) == 1
 
 
+@pytest.mark.parametrize("kind", ["scientific", "technical"])
+def test_a_recorded_attempt_is_never_rerun(qualify, stubbed, tmp_path, kind) -> None:
+    """Whatever its kind, a recorded attempt has no infrastructure rerun: only an interrupted
+    one (started, no record) has."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    publish(out, FA, "baseline", {"part": "baseline", "attempt": 1, "case": FA.record(),
+                                  "status": "not_run", "kind": kind, "reasons": ["x"]})  # fmt: skip
+    with pytest.raises(SystemExit, match="recorded"):
+        qualify.main(part_args(path, tmp_path, "baseline", "--attempt", "2",
+                               "--infrastructure", "a reason"))  # fmt: skip
+    assert stubbed == []
+
+
+def test_the_verdict_shows_every_attempt(qualify, stubbed, tmp_path, monkeypatch) -> None:
+    """An interrupted attempt and its infrastructure rerun are both in the verdict record; a
+    record superseded by a later one (which the commands never write) is shown and counted
+    against its rate, never hidden."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    q.publish(out / (FA.attempt_path("baseline", 1) + ".started"), {"started_at": "t"})
+    qualify.main(part_args(path, tmp_path, "baseline", "--attempt", "2",
+                           "--infrastructure", "the Pod stopped"))  # fmt: skip
+    qualify.main(["verdict", *common(path)])
+    record = json.loads((out / "c1" / "verdict.json").read_text())
+    shown = record["attempts"][FA.name]["baseline"]
+    assert [(a["attempt"], a["state"]) for a in shown] == [(1, "interrupted"), (2, "recorded")]
+    assert record["superseded"] == []
+    # attempt 1 recorded under attempt 2: shown, and a case of its own against the rate
+    publish(out, ADAMW, "baseline", synthetic(ADAMW)[0], attempt=1)
+    publish(out, ADAMW, "baseline", synthetic(ADAMW)[0], attempt=2)
+    qualify.main(["verdict", *common(path)])
+    record = json.loads((out / "c1" / "verdict.json").read_text())
+    assert [(s["case"], s["part"], s["attempt"]) for s in record["superseded"]] == [
+        (ADAMW.name, "baseline", 1)
+    ]
+    adamw = [c for c in record["cases"] if c["case"]["name"] == ADAMW.name]
+    assert [c.get("superseded") for c in adamw] == [None, {"part": "baseline", "attempt": 1}]
+    assert record["states"][f"adamw-{ADAMW_LR:g}"] != "qualified"
+
+
+def test_an_interrupted_attempt_recorded_technical(qualify, tmp_path) -> None:
+    """``interrupted --technical REASON``: an interrupted attempt becomes a technical record that
+    carries the reason ("an unexplained incomplete record is technical"); refused for an attempt
+    with a record, or one never started."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    command = ["interrupted", *common(path), "--case", FA.name, "--part", "rest",
+               "--attempt", "1", "--technical", "no cause found"]  # fmt: skip
+    with pytest.raises(SystemExit, match="not an interrupted attempt"):
+        qualify.main(command)  # never started
+    write_case(out, FA, rest=False)
+    q.publish(out / (FA.attempt_path("rest", 1) + ".started"),
+              {"started_at": "t", "run_dir": str(tmp_path / "run")})  # fmt: skip
+    qualify.main(command)
+    record = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    assert (record["part"], record["attempt"], record["status"], record["kind"]) == (
+        "rest",
+        1,
+        "failed",
+        "technical",
+    )
+    assert record["interrupted"]["reason"] == "no cause found"
+    assert any("no cause found" in r for r in record["reasons"])
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    verdict = q.case_verdict(baseline, record, SCOPE)
+    assert verdict["kind"] == "technical"
+    with pytest.raises(SystemExit, match="not an interrupted attempt"):
+        qualify.main(command)  # recorded now
+
+
+def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:
+    """A case whose verdict is technical (or whose same-path control is) keeps its checkpoints
+    for the diagnosis: ``finish`` exits 9; ``--release`` deletes them once diagnosed."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    journal(tmp_path / "runs", path, f"adam_frozen-{FA_LR:g}/s10200", ["r-a1"])
+    (tmp_path / "ckpt").mkdir()
+    (tmp_path / "ckpt" / "r-a1.pt").write_bytes(b"w")
+    write_case(out, FA)
+    publish(out, FA, "control", control_record(0.1, case=FA))  # beyond 0.01·K*: technical
+    finish = ["finish", *common(path), "--case", FA.name]
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(finish)
+    assert stop.value.code == qualify.TECHNICAL_CASE
+    assert (tmp_path / "ckpt" / "r-a1.pt").exists()
+    qualify.main([*finish, "--release"])
+    assert not (tmp_path / "ckpt" / "r-a1.pt").exists()
+
+
 def test_a_part_needs_a_clean_checkout(qualify, stubbed, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(qualify, "git_state", lambda *a, **k: {"commit": "c", "dirty": True})
     with pytest.raises(SystemExit, match="not clean"):
@@ -371,7 +588,7 @@ def test_a_decided_case_loses_its_checkpoints_too(qualify, tmp_path) -> None:
     journal(root, path, f"adam_frozen-{FA_LR:g}/s10200", ["r-a1"])
     (tmp_path / "ckpt").mkdir()
     (tmp_path / "ckpt" / "r-a1.pt").write_bytes(b"w")
-    write_case(out, FA, decided=True)
+    write_case(out, FA, decided=True, control=True)
     qualify.main(["finish", *common(path), "--case", FA.name])
     assert not (tmp_path / "ckpt" / "r-a1.pt").exists()
 

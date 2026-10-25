@@ -7,8 +7,10 @@
     python scripts/qualify.py part --campaign FILE --candidate N [--engineering] --case NAME
         --part baseline|rest|control (--resume | --attempt N [--infrastructure REASON])
         --run-dir DIR --checkpoints DIR [--diagnostic-steps T1,T2,...] [--device D]
-    python scripts/qualify.py complete|decided|clear-stale|locate|finish --campaign FILE
-        --candidate N [--engineering] --case NAME
+    python scripts/qualify.py complete|decided|clear-stale|locate|finish [--release]
+        --campaign FILE --candidate N [--engineering] --case NAME
+    python scripts/qualify.py interrupted --campaign FILE --candidate N [--engineering]
+        --case NAME --part baseline|rest|control --attempt N --technical REASON
     python scripts/qualify.py verdict --campaign FILE --candidate N [--engineering] [--e-eng X]
 
 Every command also takes ``--runs-root DIR`` (RUNS_DIR) and ``--out DIR`` (the part records,
@@ -30,7 +32,9 @@ same-path control ≈ 11 min) and the disk need, and exits 1 on a campaign outsi
 
 **A case, in order** (one at a time, on one Pod; the driver):
 
-1. ``complete`` exits 0 when the case is done (below): then nothing of it runs again.
+1. ``complete`` exits 0 when the case is done (below): then nothing of it runs again; 3 when it
+   is not. ``complete`` and ``decided`` say no with exit 3 alone: any other non-zero exit is a
+   failure, and stops the driver.
 2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every earlier
    attempt of the case's launcher run in the launch journal but its settled one.
 3. The free disk of the checkpoint directory against the need (``disk_need_gb``: two endpoints,
@@ -41,29 +45,37 @@ same-path control ≈ 11 min) and the disk need, and exits 1 on a campaign outsi
    one attempt; a failed one stops the driver, and is attempted again only with
    ``--recovery REASON`` on that command (a recorded reason).
 5. ``locate`` prints the launcher run's directory (its settled run: done, or diverged).
-6. ``part --part baseline --resume``; then, unless ``decided`` (the baseline record is already a
-   scientific failure: a declared instability rule fired on the unshifted baseline, or the
-   launcher run was one; ``qualification.case_verdict`` of the baseline alone), ``part --part
-   rest --resume`` and, for an FA rate on the first numerical seed, ``part --part control
-   --resume``. A decided case is not measured further: its rate fails whatever the rest shows.
+6. ``part --part baseline --resume``; then, unless ``decided`` (exit 0: the baseline record is
+   already a scientific failure, a declared instability rule fired on the unshifted baseline or
+   the launcher run was one; ``qualification.case_verdict`` of the baseline alone), ``part
+   --part rest --resume``: a decided case is not measured further, its rate fails whatever the
+   rest shows. For an FA rate on the first numerical seed, ``part --part control --resume``
+   either way (the control reads no checkpoint).
 7. ``finish`` deletes the case's checkpoints (every ``<dir>/<run_id>.pt`` of its launcher run's
    attempts and the harness's directory ``<dir>/harness/<case>/``), only once its records are
-   published and valid.
+   published and valid; it exits 1 and keeps them for a case that is not complete. A case whose
+   verdict is technical (its own, or its same-path control's: ``technical_reasons``) keeps them
+   for the diagnosis, "Failure routes": ``finish`` exits 9, and the driver stops there, before
+   the next case. ``finish --release`` deletes them once the diagnosis is done.
 
 A case is **complete** when the latest attempt of each of its parts is recorded, is that part's
 of that case, and the verdicts read it without error (``case_verdict``, and ``control_verdict``
-for its control): the baseline and, unless decided, the rest and the due control. Records are
-published atomically and durably (``qualification.publish``).
+for its control): the baseline, the due control and, unless decided, the rest, which counts only
+when it names the latest baseline record's sha256 (``baseline_record``; a rest that read no
+baseline, having run nothing or failed before, excepted). Records are published atomically and
+durably (``qualification.publish``).
 
 **Attempts of a part** (``part``; "Failure routes": an infrastructure interruption is rerun under
 a new attempt id, a technical or scientific record never). Before ``run_part`` the part publishes
 ``<record>.started``; an attempt that has it and no record was interrupted. ``--resume`` (the
 driver's call) runs attempt 1 of a part without any attempt, does nothing for a part whose latest
 attempt is recorded (whatever its kind), and exits 8 for one whose latest attempt was interrupted.
-``--attempt N`` runs exactly the next attempt (one above the latest, recorded or interrupted);
-an attempt above 1 needs ``--infrastructure REASON``, the documented interruption, which its
-record carries (``infrastructure``: the reason and the earlier attempts). A rest built on an
-earlier baseline is not bound to a rerun baseline: rerun the rest after it. The part needs a
+``--attempt N`` runs attempt 1 of a part without any attempt, or the attempt after an
+interrupted one, which needs ``--infrastructure REASON``, the documented interruption, and its
+record carries it (``infrastructure``: the reason and the earlier attempts); a part whose latest
+attempt is recorded, whatever its kind, is refused. ``interrupted --technical REASON`` records an
+interrupted attempt, unexplained, as a technical part record carrying the reason ("an
+unexplained incomplete record is technical"); it refuses an attempt with a record. The part needs a
 clean checkout of a commit, sets the numerics up (``runtime.configure_numerics``) before any
 CUDA work and builds the environment from the run's campaign config; the survival retry and the
 float64 fallback stay inside the part.
@@ -73,13 +85,19 @@ float64 fallback stay inside the part.
 ``rate_verdict`` under this checkout's GPU code and the tracked settings, with its cases' and its
 same-path control's verdicts (states, kinds, reasons, the 13 comparisons, warnings with
 ``--e-eng``), every case record of the candidate on disk shown (one of no campaign rate under
-``unassigned``), and prints the states. The launcher runs located now (one settled directory per
-run) are the expected ones; when a rate's are not all located, none is checked, with a warning.
+``unassigned``), every attempt of every part (``attempts``: recorded or interrupted, with each
+record's sha256, status and kind), and prints the states. A record under a later attempt (which
+these commands never write) is not hidden by it: it is listed under ``superseded`` and counted
+against its rate as a case of its own (a control's, as a warning). The launcher runs located now
+(one settled directory per run) are the expected ones; when a rate's are not all located, none
+is checked, with a warning.
 
 ``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the
 checkout and the campaign file's sha256, that nothing else uses the GPU, then runs each case in
-order as above, and writes the verdict on every exit. Exits: 1 a precondition or the disk;
-the launcher's own when it stops; 8 an interrupted attempt; 0 when every case is complete. The
+order as above, and writes the verdict on every exit. Exits: 0 when every case is complete; 1
+a precondition, the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
+not complete; 8 an interrupted attempt; 9 a technical case; the launcher's own when it stops;
+any other, the failed command's. The
 driver never reruns a part or the launcher run: a rerun is a command of its own, with its reason.
 """
 
@@ -113,7 +131,12 @@ from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 SETTINGS = CONFIG_ROOT / "experiments" / "qualification.yaml"  # the tracked settings, by path
 RUN = 'project-run "$SRC" python scripts/qualify.py'
 LAUNCH = 'project-run "$SRC" python scripts/launch.py'
+NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
+TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
+# The Pod's environment and the source checkouts (the driver's preamble)
+POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
+SOURCES = "/workspace/code/zero-field-refusal"
 GPU_USED_MIB = 1000  # the driver starts only below this much GPU memory in use
 # The expected GPU minutes on one L40S at 1.5B: a launcher run (≈ 7.1 min, "Budget and timing"),
 # the baseline part (one trajectory with its setup), the rest (six) and a same-path control
@@ -232,16 +255,21 @@ class PartState:
     attempts: dict[int, str]
 
 
-def part_state(out: Path, case: q.QualificationCase, part: str) -> PartState:
-    folder = (out / case.attempt_path(part, 1)).parent
+def attempt_files(folder: Path, part: str) -> dict[int, str]:
+    """Every attempt of a part in a case's folder: recorded (its record exists) or interrupted
+    (only its ``.started`` file does), by attempt number."""
     pattern = re.compile(rf"{re.escape(part)}-attempt-(\d+)\.json(\.started)?")
     seen: dict[int, set[str]] = {}
     for file in folder.glob(f"{part}-attempt-*") if folder.is_dir() else []:
         match = pattern.fullmatch(file.name)
         if match:
             seen.setdefault(int(match[1]), set()).add("started" if match[2] else "record")
-    attempts = {n: "recorded" if "record" in kinds else "interrupted"
-                for n, kinds in sorted(seen.items())}  # fmt: skip
+    return {n: "recorded" if "record" in kinds else "interrupted"
+            for n, kinds in sorted(seen.items())}  # fmt: skip
+
+
+def part_state(out: Path, case: q.QualificationCase, part: str) -> PartState:
+    attempts = attempt_files((out / case.attempt_path(part, 1)).parent, part)
     if not attempts:
         return PartState("due", 1, None, attempts)
     latest = max(attempts)
@@ -262,7 +290,8 @@ def _read(path: Path) -> dict | None:
 
 
 def case_state(out: Path, p: Planned, scope: q.QualificationScope) -> tuple[bool, bool, str]:
-    """Whether the case is complete, whether its baseline decided it (scientific), and why."""
+    """Whether the case is complete, whether its baseline decided it (scientific), and why
+    (module docstring, "complete")."""
     baseline = part_state(out, p.case, "baseline")
     if baseline.state != "recorded":
         return False, False, f"baseline: {baseline.state} (attempt {baseline.attempt})"
@@ -270,21 +299,43 @@ def case_state(out: Path, p: Planned, scope: q.QualificationScope) -> tuple[bool
         decided = q.case_verdict(baseline.record, None, scope)["kind"] == q.SCIENTIFIC
     except Exception as exc:  # a record the verdict cannot read is not a valid one
         return False, False, f"the baseline record cannot be read: {type(exc).__name__}: {exc}"
-    if decided:
-        return True, True, "decided by the baseline: a scientific failure"
-    states = {"rest": part_state(out, p.case, "rest")}
-    if p.control:
-        states["control"] = part_state(out, p.case, "control")
+    needed = ([] if decided else ["rest"]) + (["control"] if p.control else [])
+    states = {part: part_state(out, p.case, part) for part in needed}
     for part, state in states.items():
         if state.state != "recorded":
-            return False, False, f"{part}: {state.state} (attempt {state.attempt})"
+            return False, decided, f"{part}: {state.state} (attempt {state.attempt})"
+    rest = states["rest"].record if "rest" in states else None
+    # A rest that read no baseline (it ran nothing, or failed before reading one) binds none:
+    # the verdict holds it technical
+    read_none = rest is not None and (rest.get("status") == "not_run" or (
+        rest.get("status") == "failed" and rest.get("baseline_record") is None))  # fmt: skip
+    if (rest is not None and not read_none
+            and (rest.get("baseline_record") or {}).get("sha256")
+            != q.record_sha256(baseline.record)):  # fmt: skip
+        return False, decided, ("the rest record is not bound to the latest baseline record: "
+                                "the case is not complete")  # fmt: skip
     try:
-        q.case_verdict(baseline.record, states["rest"].record, scope)
+        q.case_verdict(baseline.record, rest, scope)
         if p.control:
             q.control_verdict(states["control"].record, scope, p.case.candidate)
     except Exception as exc:
-        return False, False, f"the records cannot be read: {type(exc).__name__}: {exc}"
-    return True, False, "complete"
+        return False, decided, f"the records cannot be read: {type(exc).__name__}: {exc}"
+    return True, decided, "decided by the baseline: a scientific failure" if decided else "complete"
+
+
+def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
+    """Why a complete case's verdict is technical (its own, or its same-path control's), or
+    nothing: such a case keeps its checkpoints for the diagnosis ("Failure routes")."""
+    baseline = part_state(out, p.case, "baseline").record
+    rest = part_state(out, p.case, "rest").record
+    verdict = q.case_verdict(baseline, rest, scope)
+    reasons = list(verdict["reasons"]) if verdict["kind"] == q.TECHNICAL else []
+    if p.control:
+        control = q.control_verdict(part_state(out, p.case, "control").record, scope,
+                                    p.case.candidate)  # fmt: skip
+        if control["kind"] == q.TECHNICAL:
+            reasons += [f"control: {r}" for r in control["reasons"]]
+    return reasons
 
 
 # --------------------------------------------------------------- the launcher run's files
@@ -377,11 +428,15 @@ def part(args, planned: Planned, out: Path) -> None:
         attempt = 1
     else:
         attempt = args.attempt
-        latest = max(state.attempts, default=0)
-        if attempt != latest + 1:
-            sys.exit(f"{case.name} {name}: the next attempt is {latest + 1}, not {attempt}")
+        if state.state in ("recorded", "invalid"):
+            sys.exit(f"{case.name} {name}: attempt {state.attempt} is recorded (or its "
+                     "record unreadable): a recorded attempt, whatever its kind, is never "
+                     "rerun")  # fmt: skip
+        allowed = 1 if state.state == "due" else state.attempt + 1
+        if attempt != allowed:
+            sys.exit(f"{case.name} {name}: the next attempt is {allowed}, not {attempt}")
         if (attempt > 1) != bool(reason):
-            sys.exit("an attempt above 1 is an infrastructure rerun and needs --infrastructure "
+            sys.exit("an attempt above 1 reruns an interrupted one and needs --infrastructure "
                      "REASON; attempt 1 takes none")  # fmt: skip
     if args.run_dir is None or args.checkpoints is None:
         sys.exit("part needs --run-dir and --checkpoints")
@@ -406,15 +461,61 @@ def part(args, planned: Planned, out: Path) -> None:
                                                        "reasons")}))  # fmt: skip
 
 
-def finish(planned: Planned, out: Path, root: Path, scope: q.QualificationScope) -> None:
+def finish(
+    planned: Planned, out: Path, root: Path, scope: q.QualificationScope, *, release: bool
+) -> None:
     complete, _, why = case_state(out, planned, scope)
     if not complete:
         sys.exit(f"{planned.case.name}: {why}; its checkpoints are kept")
+    technical = technical_reasons(out, planned, scope)
+    if technical and not release:
+        print(f"{planned.case.name}: a technical verdict; its checkpoints are kept for the "
+              f"diagnosis: {technical}", file=sys.stderr)  # fmt: skip
+        sys.exit(TECHNICAL_CASE)
     removed = remove_checkpoints(planned, journal_run_ids(planned.run, root))
     if planned.harness.exists():
         shutil.rmtree(planned.harness)
         removed.append(str(planned.harness))
     print(json.dumps({"case": planned.case.name, "state": why, "removed": removed}))
+
+
+def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) -> None:
+    """An interrupted attempt recorded as a technical part record with ``--technical REASON``
+    ("Failure routes": an unexplained incomplete record is technical): the case, its launcher
+    run as the ``.started`` file names it, the policy, and for a rest the baseline record it was
+    built on (the latest baseline then); never over a record."""
+    case, name, attempt = planned.case, args.part, args.attempt
+    state = attempt_files((out / case.attempt_path(name, 1)).parent, name)
+    if state.get(attempt) != "interrupted" or attempt != max(state):
+        sys.exit(f"{case.name} {name}: attempt {attempt} is not an interrupted attempt (the "
+                 f"latest, started and without a record): {state}")  # fmt: skip
+    require_clean()
+    path = out / case.attempt_path(name, attempt)
+    started = _read(Path(f"{path}.started")) or {}
+    run_dir = started.get("run_dir")
+    reason = f"interrupted, recorded technical: {args.technical}"
+    record: dict[str, Any] = {
+        "part": name, "attempt": attempt, "case": case.record(),
+        "K_star": scope.k_star(case.candidate), "bound": scope.bound(case.candidate),
+        "launcher_run": run_dir, "status": "failed", "kind": q.TECHNICAL, "reasons": [reason],
+        "launcher": {"kind": None, "reasons": [],
+                     "identity": q.launcher_identity(Path(run_dir)) if run_dir else None},
+        "interrupted": {"reason": args.technical, "started": started},
+    }  # fmt: skip
+    if name == "rest":
+        base = (out / case.attempt_path("baseline", 1)).parent
+        found = max((n for n, s in attempt_files(base, "baseline").items() if s == "recorded"),
+                    default=None)  # fmt: skip
+        if found is not None:
+            source = out / case.attempt_path("baseline", found)
+            baseline = _read(source) or {}
+            record["baseline_record"] = {"path": str(source),
+                                         "sha256": q.record_sha256(baseline)}  # fmt: skip
+            record["baseline_checkpoint_sha256"] = (baseline.get("checkpoint") or {}).get("sha256")
+    record["provenance"] = q.qualification_provenance(load_settings())
+    q.publish(path, record)
+    print(json.dumps({key: record[key] for key in ("part", "attempt", "status", "kind",
+                                                   "reasons")}))  # fmt: skip
 
 
 def clear_stale(planned: Planned, root: Path) -> None:
@@ -424,29 +525,63 @@ def clear_stale(planned: Planned, root: Path) -> None:
 
 
 def latest(folder: Path, part: str) -> dict | None:
-    found = sorted(
-        (int(m[1]), f)
-        for f in folder.glob(f"{part}-attempt-*.json")
-        if (m := re.fullmatch(rf"{re.escape(part)}-attempt-(\d+)\.json", f.name))
-    )
-    return _read(found[-1][1]) if found else None  # fmt: skip
+    """The record of a part's latest attempt in a case's folder, or None (none, interrupted,
+    or unreadable)."""
+    attempts = attempt_files(folder, part)
+    if not attempts or attempts[max(attempts)] != "recorded":
+        return None
+    return _read(folder / f"{part}-attempt-{max(attempts)}.json")
+
+
+def attempt_listing(folder: Path) -> tuple[dict[str, list], list[tuple[str, int, dict | None]]]:
+    """Every attempt of every part in a case's folder (number, state, path, the record's sha256,
+    status and kind), and the superseded records: a record under a later attempt, which the
+    commands here never write, is not hidden by it."""
+    listing, superseded = {}, []
+    for part in q.PARTS:
+        attempts = attempt_files(folder, part)
+        rows = []
+        for n, state in attempts.items():
+            path = folder / f"{part}-attempt-{n}.json"
+            record = _read(path) if state == "recorded" else None
+            rows.append({"attempt": n, "state": state, "path": str(path),
+                         "sha256": q.record_sha256(record),
+                         "status": (record or {}).get("status"),
+                         "kind": (record or {}).get("kind")})  # fmt: skip
+            if state == "recorded" and n < max(attempts):
+                superseded.append((part, n, record))
+        if rows:
+            listing[part] = rows
+    return listing, superseded
 
 
 def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path) -> Path:
     candidate, stage = args.candidate, ROLES[args.engineering]
-    folders = sorted({f.parent for f in (out / f"c{candidate}" / stage).glob("s*/*/*.json")})
-    cases, records = [], []
+    base = out / f"c{candidate}" / stage
+    folders = sorted({f.parent for f in base.glob("s*/*/*-attempt-*")})
+    cases, records, attempts, superseded = [], [], {}, []
+    warnings: list[str] = []
     for folder in folders:
+        name = str(folder.relative_to(base))
+        attempts[name], stale = attempt_listing(folder)
         baseline, rest = latest(folder, "baseline"), latest(folder, "rest")
-        if baseline is None and rest is None:
-            continue
-        records += [r for r in (baseline, rest) if r is not None]
-        cases.append(q.case_verdict(baseline, rest, scope, e_eng=args.e_eng))
+        if baseline is not None or rest is not None:
+            records += [r for r in (baseline, rest) if r is not None]
+            cases.append(q.case_verdict(baseline, rest, scope, e_eng=args.e_eng))
+        for part, n, record in stale:  # shown, and counted against its rate as a case
+            superseded.append({"case": name, "part": part, "attempt": n,
+                               "sha256": q.record_sha256(record)})  # fmt: skip
+            if part == "control":
+                warnings.append(f"{name}: control attempt {n} is superseded by a later attempt")
+                continue
+            pair = (record, None) if part == "baseline" else (None, record)
+            cases.append({**q.case_verdict(*pair, scope, e_eng=args.e_eng),
+                          "superseded": {"part": part, "attempt": n}})  # fmt: skip
     campaign = {"path": str(args.campaign.resolve()),
                 "sha256": hashlib.sha256(args.campaign.read_bytes()).hexdigest()}  # fmt: skip
     body: dict[str, Any] = {"candidate": candidate, "stage": stage, "campaign": campaign,
-                            "e_eng": args.e_eng, "cases": cases}  # fmt: skip
-    warnings: list[str] = []
+                            "e_eng": args.e_eng, "cases": cases, "attempts": attempts,
+                            "superseded": superseded}  # fmt: skip
     if args.engineering:
         body["summary"] = q.engineering_summary(records)
         target = out / f"c{candidate}" / "engineering" / "verdict.json"
@@ -514,19 +649,24 @@ def driver_script(
         *comment(f"Study 3's numerical qualification ({stage}) of candidate {args.candidate} "
                  f"from commit {commit}: {len(planned)} cases of the campaign {campaign}, one at "
                  "a time: the launcher run alone (one attempt), the baseline part, then, unless "
-                 "the baseline is already a scientific failure, the rest and the FA rate's "
+                 "the baseline is already a scientific failure, the rest, and the FA rate's "
                  "same-path control, each in a fresh process; then the case's checkpoints are "
-                 "deleted. K-only and blind to outcomes."),
+                 "deleted, unless its verdict is technical: then the driver stops (exit "
+                 f"{TECHNICAL_CASE}) with them kept for the diagnosis. K-only and blind to "
+                 "outcomes."),
         *comment(f"A case needs {need:g} GB free under {endpoint} (the container disk). A "
                  "complete case is skipped, so the driver can be run again after a stop. It "
                  "never reruns a part or a launcher run: an interrupted part (exit "
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
                  "REASON, a failed launcher run with scripts/launch.py --only LABEL "
                  "--max-attempts 1 --recovery REASON. The verdict is written on every exit."),
+        *comment(f"Exits: 0 every case complete; 1 a precondition, the disk or a case finish "
+                 f"refuses (not complete); {INTERRUPTED} an interrupted attempt; "
+                 f"{TECHNICAL_CASE} a technical case; the launcher's own when it stops; another "
+                 "a failed command."),
         "set -euo pipefail",
-        ". /etc/rp_environment",
-        ". /root/zfr-env.sh",
-        f"SRC=/workspace/code/zero-field-refusal/{commit}/source",
+        *POD_ENVIRONMENT,
+        f"SRC={SOURCES}/{commit}/source",
         'cd "$SRC"',
         f'test "$(git rev-parse HEAD)" = {commit}',
         f'project-run "$SRC" python -c "{CLEAN_CHECKOUT}"',
@@ -556,25 +696,36 @@ def driver_script(
         parts = f'{common} {case} --run-dir "$RUN_DIR" --checkpoints {shlex.quote(str(p.harness))}'
         lines += [
             f"# ---- case {index}/{len(planned)}: {p.case.name}, launcher run {p.run.label}",
-            f"if {RUN} complete {common} {case}; then",
-            f'  echo "== {stamp} complete: {p.case.name} is skipped"',
-            "else",
-            f"  {RUN} clear-stale {common} {case}",
-            "  free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
-            f'  if [ "$free_kb" -lt {need_kb(need)} ]; then',
-            f'    stop "{need:g} GB free are needed under $CKPT, $free_kb KB are" 1',
-            "  fi",
-            f'  step {LAUNCH} "$CAMPAIGN" --only {shlex.quote(p.run.label)} --max-attempts 1',
-            f"  RUN_DIR=$({RUN} locate {common} {case})",
-            f"  step {RUN} part {parts} --part baseline --resume{diagnostic}",
-            f"  if {RUN} decided {common} {case}; then",
-            f'    echo "== {stamp} {p.case.name}: the baseline is a scientific failure; no rest'
-            + (', no control' if p.control else '') + '"',
-            "  else",
-            f"    step {RUN} part {parts} --part rest --resume{diagnostic}",
+            "rc=0",
+            f"{RUN} complete {common} {case} || rc=$?",
+            'case "$rc" in',
+            f'  0) echo "== {stamp} complete: {p.case.name} is skipped" ;;',
+            f"  {NO})",
+            f"    {RUN} clear-stale {common} {case}",
+            "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
+            "    case \"$free_kb\" in",
+            "      ''|*[!0-9]*) stop \"df gave no free space for $CKPT: '$free_kb'\" 1 ;;",
+            "    esac",
+            f'    if [ "$free_kb" -lt {need_kb(need)} ]; then',
+            f'      stop "{need:g} GB free are needed under $CKPT, $free_kb KB are" 1',
+            "    fi",
+            f'    step {LAUNCH} "$CAMPAIGN" --only {shlex.quote(p.run.label)} --max-attempts 1',
+            f"    RUN_DIR=$({RUN} locate {common} {case})",
+            f"    step {RUN} part {parts} --part baseline --resume{diagnostic}",
+            "    rc=0",
+            f"    {RUN} decided {common} {case} || rc=$?",
+            '    case "$rc" in',
+            f'      0) echo "== {stamp} {p.case.name}: the baseline is a scientific failure; '
+            'no rest" ;;',
+            f"      {NO}) step {RUN} part {parts} --part rest --resume{diagnostic} ;;",
+            '      *) stop "decided failed (exit $rc)" "$rc" ;;',
+            "    esac",
             *([f"    step {RUN} part {parts} --part control --resume"] if p.control else []),
-            "  fi",
-            "fi",
+            "    ;;",
+            '  *) stop "complete failed (exit $rc)" "$rc" ;;',
+            "esac",
+            f"# A technical case stops the driver here (exit {TECHNICAL_CASE}), its checkpoints "
+            "kept",
             f"step {RUN} finish {common} {case}",
         ]  # fmt: skip
     lines.append(f'echo "== {stamp} every case is complete"')
@@ -595,6 +746,7 @@ def main(argv: list[str] | None = None) -> None:
             "locate",
             "finish",
             "verdict",
+            "interrupted",
         ],
     )
     parser.add_argument("--campaign", type=Path, required=True)
@@ -611,6 +763,13 @@ def main(argv: list[str] | None = None) -> None:
         "--infrastructure",
         metavar="REASON",
         help="part: the documented interruption an attempt above 1 reruns",
+    )
+    parser.add_argument("--technical", metavar="REASON",
+                        help="interrupted: why the attempt is recorded technical")  # fmt: skip
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="finish: delete a technical case's checkpoints once diagnosed",
     )
     parser.add_argument("--run-dir", type=Path, help="part: the launcher run")
     parser.add_argument("--checkpoints", type=Path, help="part: the harness's checkpoints")
@@ -652,7 +811,7 @@ def main(argv: list[str] | None = None) -> None:
         print(args.out)
         return
     out = args.out or root / "qualification"
-    if args.command in ("part", "verdict") and problems:  # records only of a campaign in scope
+    if args.command in ("part", "verdict", "interrupted") and problems:  # in scope only
         sys.exit("\n".join(["The campaign is not a qualification campaign:", *problems]))
     if args.command == "verdict":
         require_clean()
@@ -672,9 +831,13 @@ def main(argv: list[str] | None = None) -> None:
         complete, decided, why = case_state(out, chosen, scope)
         print(f"{chosen.case.name}: {why}")
         if not (complete if args.command == "complete" else decided):
-            sys.exit(1)
+            sys.exit(NO)
     elif args.command == "finish":
-        finish(chosen, out, root, scope)
+        finish(chosen, out, root, scope, release=args.release)
+    elif args.command == "interrupted":
+        if args.part is None or args.attempt is None or not args.technical:
+            sys.exit("interrupted needs --part, --attempt N and --technical REASON")
+        interrupted(args, chosen, out, scope)
     elif args.command == "clear-stale":
         clear_stale(chosen, root)
     else:  # locate
