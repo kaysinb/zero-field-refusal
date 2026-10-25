@@ -1,0 +1,34 @@
+# Study 3 (docs/study3-preregistration.md, "Protocol"): the regular runs of AdamW-25, FA-25
+# (optimizer=adam_frozen) and pre-warmed AdamW-25 (optimizer=adamw_prewarmed), exactly study 2's
+# short regime: the same defaults, schedule, teacher and evaluation as experiments/study2_short,
+# composed here directly (not inherited) so that no study2_short section, and no unset study-2
+# role, remains. Differences from study 2: the experiment's name, the role key, the memory limit
+# of a run and the provenance hashes in meta.json (tests/test_study3_configs.py compares the
+# resolved configs with those dropped; none of them is in the config hash). The arm,
+# batch, rate, role and seed of each run come from the campaign; the role is `???`, so a run
+# without it fails at load.
+defaults:
+  - base
+  - protocol/zero_field
+  - model/qwen2.5-1.5b-instruct
+  - optimizer/adamw
+  - data/study2
+  - eval/study2
+  - schedule/short
+
+experiment: study3
+protocol_version: 2                 # decisions.md, "Protocol versions"
+study3:
+  role: ???                         # engineering, search, numerical (run with
+                                    # experiments/study3_k_only), validation or confirmation
+teacher:
+  stream: appendable
+  chunk_size: 1000
+eval:
+  projections: 0
+tracking:
+  require_clean_git: true
+  update_scalars: true              # schedule.UpdateScalars: update_scalars.jsonl
+  provenance_hashes: true           # meta.json records the checkpoint, data and code hashes
+execution:
+  memory_limit_gb: 46               # the registered limit of a run's GPU memory, in GB
