@@ -35,10 +35,12 @@ def final_models(monkeypatch) -> list:
     return kept
 
 
-def rng_state() -> dict:
+def rng_state(device: torch.device | None = None) -> dict:
+    """The generators a later step draws from; the CUDA one only for a run on a CUDA device (the
+    first run of a CPU world draws the stream's chunks and seeds every device, outside training)."""
     state = {"torch": torch.get_rng_state(), "numpy": np.random.get_state(),
              "python": random.getstate()}  # fmt: skip
-    if torch.cuda.is_available():
+    if device is not None and device.type == "cuda":
         state["cuda"] = torch.cuda.get_rng_state()
     return state
 
@@ -212,6 +214,8 @@ def test_study_2_configs_write_nothing(env, tmp_path) -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA RNG state needs a GPU")
 def test_the_checkpoint_leaves_the_cuda_rng_alone(env, tmp_path) -> None:
     states = []
+    warm = arm_config(env, tmp_path, "adamw", "train.steps=3", "schedule.evaluate_at=[3]")
+    run_scheduled(warm, env, run_id="cuda-warm")  # the stream's chunks are drawn (and seeded) here
     for ckpt in ("null", str(tmp_path / "ckpt")):
         cfg = arm_config(env, tmp_path, "adamw", f"tracking.endpoint_checkpoint={ckpt}",
                          "train.steps=3", "schedule.evaluate_at=[3]")  # fmt: skip
