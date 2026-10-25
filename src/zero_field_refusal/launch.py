@@ -63,6 +63,7 @@ from .analysis.stage_a import TrajectoryError, load_trajectory
 from .config import config_hash
 from .paths import REPO_ROOT
 from .protocol import load_run_config
+from .tensor_hash import file_sha256
 
 ENTRIES = {"train": "scripts/train.py", "theta0": "scripts/evaluate_theta0.py"}
 CELL_KEYS = {"name", "config", "entry", "overrides", "seeds"}
@@ -263,6 +264,9 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
             load_trajectory(run_dir)
         except TrajectoryError as exc:
             return f"a scheduled run's records are incomplete: {exc}"
+        problem = _checkpoint_problem(cfg, run_dir)
+        if problem is not None:
+            return problem
         if OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False):
             return _rayleigh_problem(_read_json(run_dir / "rayleigh.json"))
         return None
@@ -273,6 +277,26 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
         return f"summary.json lacks a finite, non-negative K_harmful ({k!r})"
     if not (run_dir / "responses" / f"{run.prompt_set}.jsonl").is_file():
         return f"responses/{run.prompt_set}.jsonl is missing"
+    return None
+
+
+def _checkpoint_problem(cfg: Any, run_dir: Path) -> str | None:
+    """A run whose config sets ``tracking.endpoint_checkpoint`` is done only if its summary holds
+    the checkpoint record and the file at the recorded path exists with the recorded sha256
+    (docs/study3-preregistration.md, "The execution path: harness and bridge"); anything else is
+    a conflict, never silently reused. The file's existence is not the run's success: the
+    terminal record is read separately."""
+    if OmegaConf.select(cfg, "tracking.endpoint_checkpoint", default=None) is None:
+        return None
+    summary = _read_json(run_dir / "summary.json") or {}
+    record = summary.get("endpoint_checkpoint")
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+        return "summary.json holds no endpoint-checkpoint record"
+    path = Path(record["path"])
+    if not path.is_file():
+        return f"the endpoint checkpoint {path} is missing"
+    if file_sha256(path) != record.get("sha256"):
+        return f"the endpoint checkpoint {path} does not match its recorded sha256"
     return None
 
 

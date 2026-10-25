@@ -44,10 +44,27 @@ and the scoring panel's K) and those missed.
 the regular study-2-short runs): after every update of an Adam arm, a read-only hook
 (``UpdateScalars``) writes a row to ``update_scalars.jsonl``. It changes no numerics, so it is
 not part of the config hash; a test pins the parameters bit for bit with it on and off.
+
+**Endpoint checkpoint and provenance hashes** (docs/study3-preregistration.md, "Numerical
+qualification", "The execution path: harness and bridge"; ``tracking.endpoint_checkpoint`` and
+``tracking.provenance_hashes``, both off in ``base``, neither in the config hash). With
+``provenance_hashes`` the run records, before its optimizer is built,
+``inputs.theta0_trainable_sha256`` (θ₀'s trainable tensors) and, for an arm that reads v₀,
+``inputs.v0_sha256`` (``tensor_hash``, the harness's own function). With
+``endpoint_checkpoint`` set to a directory, a run that takes all ``train.steps`` updates saves the
+trainable parameters to ``<dir>/<run_id>.pt`` right after the last update and before
+``_Loop.after_step`` (so before the step-25 evaluation), through a hidden ``.partial`` file and
+``os.replace``; an interrupted save removes its partial file, leaves no file at the final path and
+fails the run. The record ``{path, sha256, step, names_sha256}`` goes to ``summary.json`` and
+``meta.json`` (``inputs.endpoint_checkpoint``) at once; a run that stops before its last update,
+or on a non-finite weight, writes no file and records ``None``. The file's existence is not the
+run's success: the later evaluation and the terminal record decide that. The save only reads the
+parameters (host copies) and draws no random numbers.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -70,6 +87,7 @@ from .prechecks import check_run_chi_square, check_teacher_gap, require_path_che
 from .runtime import Environment, ReplayedSoftTargets, StreamPrefix, extend_stream
 from .seeding import derive_seed, seed_everything
 from .teacher import Sample
+from .tensor_hash import file_sha256, tensors_sha256
 from .tracking import Diverged, Run
 from .train import (
     Evaluator,
@@ -488,9 +506,16 @@ def run_scheduled(
                 feed.prefix, reference, env, on_record=lambda row: _append_jsonl(replay_log, [row])
             )
         directions = projection_directions(trainable, cfg.eval.projections)
+        provenance = bool(cfg.tracking.get("provenance_hashes", False))
+        if provenance:
+            run.record_inputs({"theta0_trainable_sha256": tensors_sha256(
+                [(name, theta0[name]) for name, _ in trainable])})  # fmt: skip
         second_moment = None
         if ADAM_MODES.get(cfg.optimizer.name, "adaptive") != "adaptive":
             second_moment = _theta0_second_moment(cfg, env, student, params, run)
+            if provenance:  # before the optimizer takes it
+                named = zip((name for name, _ in trainable), second_moment, strict=True)
+                run.record_inputs({"v0_sha256": tensors_sha256(list(named))})
         optimizer = build_optimizer(cfg.optimizer, params, second_moment=second_moment)
         del second_moment
         scalars = None  # read-only; the pre-warmed arm's v₀ goes to host memory now
@@ -506,6 +531,10 @@ def run_scheduled(
         if diagnostics is not None:  # the caches against uncached readings, at θ₀
             reason = loop.check_caches(student, scoring=diagnostics(student, cached=False))
         size = cfg.train.batch_size
+        checkpoint_dir = cfg.tracking.get("endpoint_checkpoint", None)
+        checkpoint = None if checkpoint_dir is None else (
+            Path(checkpoint_dir).expanduser().resolve() / f"{run.run_id}.pt")  # fmt: skip
+        recorded = False
         for step in range(schedule.steps if reason is None else 0):
             batch = feed.batch(step)
             optimizer.zero_grad(set_to_none=True)
@@ -527,6 +556,11 @@ def run_scheduled(
                 loop.rejected = {"step": step, "loss": stats["loss"],
                                  "grad_norm": stats["grad_norm"], "applied": True}  # fmt: skip
                 break
+            if checkpoint is not None and loop.steps == cfg.train.steps:
+                saved = {"endpoint_checkpoint": save_endpoint(trainable, checkpoint, loop.steps)}
+                run.summarize(saved)  # the record, not the outcome: the terminal record decides
+                run.record_inputs(saved)
+                recorded = True
             reason = loop.after_step(student, lambda: projection_stats(trainable, theta0,
                                                                        directions))  # fmt: skip
             if reason:
@@ -536,6 +570,9 @@ def run_scheduled(
                 reason = "t_max" if schedule.policy == "k_stopped" else "steps"
         for p in params:
             p.grad = None
+        if checkpoint is not None and not recorded:  # stopped before its last update
+            run.summarize({"endpoint_checkpoint": None})
+            run.record_inputs({"endpoint_checkpoint": None})
         terminal = loop.terminal(reason, size)
         terminal["stream_extension"] = {"seconds": feed.extension_seconds,
                                         "chunks": feed.extended_chunks}  # fmt: skip
@@ -557,6 +594,24 @@ def run_scheduled(
             del directions, student, trainable, params
             record_endpoint_rayleigh(cfg, env, run, reference, delta, *panel)
         return run.dir
+
+
+def save_endpoint(
+    trainable: Sequence[tuple[str, torch.nn.Parameter]], path: Path, step: int
+) -> dict[str, Any]:
+    """Save ``{name: tensor.detach().cpu()}`` as ``fa_control_diagnostic.save_trainable`` does,
+    atomically; returns the checkpoint record. A failed write removes its partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.partial")
+    try:
+        torch.save({name: p.detach().cpu() for name, p in trainable}, partial)
+        os.replace(partial, path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    names = json.dumps([name for name, _ in trainable])
+    return {"path": str(path), "sha256": file_sha256(path), "step": step,
+            "names_sha256": hashlib.sha256(names.encode()).hexdigest()}  # fmt: skip
 
 
 def _peak_memory() -> dict[str, float]:

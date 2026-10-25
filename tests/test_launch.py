@@ -405,6 +405,59 @@ def rayleigh_run_dir(root: Path, run) -> Path:
     return run_dir
 
 
+def checkpointed_run_dir(root: Path, run, tmp_path: Path, *, record: str = "ok") -> Path:
+    """A scheduled run of a config that sets ``tracking.endpoint_checkpoint``, with its file and
+    the record in its summary as the run leaves them (damaged as ``record`` says)."""
+    import hashlib
+
+    from omegaconf import OmegaConf
+
+    run_dir = scheduled_run_dir(root, run, "scheduled")
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    OmegaConf.update(cfg, "tracking.endpoint_checkpoint", str(tmp_path / "ckpt"), force_add=True)
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+    file = tmp_path / "ckpt" / "scheduled.pt"
+    file.parent.mkdir()
+    file.write_bytes(b"weights")
+    entry = {"path": str(file), "sha256": hashlib.sha256(b"weights").hexdigest(),
+             "step": 25, "names_sha256": "0" * 64}  # fmt: skip
+    summary = (
+        json.loads((run_dir / "summary.json").read_text())
+        if (run_dir / "summary.json").exists()
+        else {}
+    )
+    if record != "no_record":
+        summary["endpoint_checkpoint"] = entry
+    (run_dir / "summary.json").write_text(json.dumps(summary))
+    if record == "missing_file":
+        file.unlink()
+    elif record == "other_bytes":
+        file.write_bytes(b"other weights")
+    return run_dir
+
+
+def test_a_run_with_its_checkpoint_counts_as_done(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    checkpointed_run_dir(root, runs[1], tmp_path)
+    result = run_campaign(name, runs, root, execute=Executor(root, {}))
+    assert runs[1].label in result["skipped"]
+
+
+@pytest.mark.parametrize(
+    ("record", "problem"),
+    [("no_record", "holds no endpoint-checkpoint record"),
+     ("missing_file", "is missing"),
+     ("other_bytes", "does not match its recorded sha256")],
+)  # fmt: skip
+def test_a_run_without_a_sound_checkpoint_is_a_conflict(tmp_path, record, problem) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    checkpointed_run_dir(root, runs[1], tmp_path, record=record)
+    with pytest.raises(CampaignError, match=problem):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+
+
 @pytest.mark.parametrize(
     "record",
     [{"R": 12.5, "reason": None}, {"R": None, "reason": "zero displacement"},
