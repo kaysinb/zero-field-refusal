@@ -738,6 +738,32 @@ def test_a_rest_of_another_baseline_is_refused() -> None:
     assert v["kind"] == "technical" and "the rest record is another case's" in v["reasons"]
 
 
+def test_one_pod_per_case() -> None:
+    """The launcher run's and the parts' pod ids, where present, are one; a difference is
+    technical."""
+
+    def pods(launcher, baseline_pod, rest_pod):
+        def change(baseline, rest):
+            for record, pod in ((baseline, baseline_pod), (rest, rest_pod)):
+                record["launcher"]["pod_id"] = launcher
+                record["provenance"]["pod_id"] = pod
+
+        return change
+
+    assert verdict_of(pods("p1", "p1", "p1"))["state"] == "qualified"
+    assert verdict_of(pods(None, None, "p1"))["state"] == "qualified"
+    for case in (pods("p1", "p1", "p2"), pods(None, "p1", "p2"), pods("p0", "p1", "p1")):
+        v = verdict_of(case)
+        assert (v["state"], v["kind"]) == ("not_qualified", "technical")
+        assert any(r.startswith("the case ran on more than one Pod") for r in v["reasons"])
+    record = control_record()
+    record["launcher"]["pod_id"], record["provenance"]["pod_id"] = "p1", "p2"
+    v = q.control_verdict(record, SCOPE, 1)
+    assert (v["state"], v["kind"]) == ("not_qualified", "technical")
+    record["provenance"]["pod_id"] = "p1"
+    assert q.control_verdict(record, SCOPE, 1)["state"] == "accepted"
+
+
 def test_the_warning_is_a_diagnosis_only() -> None:
     v = verdict_of(lambda b, r: r["comparisons"]["baseline~repeat"].update(D_twin=0.01),
                    e_eng=0.0003)  # fmt: skip
@@ -1130,6 +1156,49 @@ def test_a_spiked_launcher_run_makes_its_rate_failing(world, tmp_path) -> None:
     assert record["launcher"]["identity"]["checkpoint"] is None
     out = rate_of((record, None), FA)
     assert out["state"] == "failing" and out["counted"] == [0], out["reasons"]
+
+
+def test_a_record_is_published_once_whatever_its_launcher_identity(world, tmp_path, monkeypatch):
+    """The infrastructure reason is in the record's one publish; an exception reading the
+    launcher run's identity leaves it missing, with the error, and the record is published."""
+    env, runs = world
+    published, real = [], q.publish
+
+    def spy(path, record):
+        published.append((path, copy.deepcopy(dict(record))))
+        real(path, record)
+
+    def unreadable(run_dir):
+        raise RuntimeError("an unreadable identity")
+
+    monkeypatch.setattr(q, "publish", spy)
+    monkeypatch.setattr(q, "launcher_identity", unreadable)
+    nothing_runs(monkeypatch)
+    reason = {"reason": "the Pod stopped", "previous": [{"attempt": 1, "state": "interrupted"}]}
+    record = part(env, runs["fa"], tmp_path / "out", tmp_path / "ckpt", "baseline", attempt=2,
+                  infrastructure=reason)  # fmt: skip
+    assert [path for path, _ in published] == [tmp_path / "out" / FA.attempt_path("baseline", 2)]
+    assert published[0][1]["infrastructure"] == reason == record["infrastructure"]
+    launcher = record["launcher"]
+    assert launcher["identity"] is None and launcher["pod_id"] is None
+    assert launcher["identity_error"] == "RuntimeError: an unreadable identity"
+    assert record["status"] == "failed" and record["kind"] == "technical"
+
+
+def test_publish_syncs_the_directory_after_the_rename(tmp_path, monkeypatch) -> None:
+    import os
+    import stat
+
+    synced, real = [], os.fsync
+
+    def fsync(fd):
+        synced.append((stat.S_ISDIR(os.fstat(fd).st_mode), (tmp_path / "r.json").exists()))
+        real(fd)
+
+    monkeypatch.setattr(q.os, "fsync", fsync)
+    q.publish(tmp_path / "r.json", {"a": 1})
+    assert synced[-1] == (True, True)  # the directory, once the record is in place
+    assert json.loads((tmp_path / "r.json").read_text()) == {"a": 1}
 
 
 def test_a_launcher_run_of_another_case_makes_its_rate_not_qualified(world, tmp_path) -> None:

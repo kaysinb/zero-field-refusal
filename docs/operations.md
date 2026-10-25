@@ -1462,9 +1462,13 @@ docstring has every rule.
   and the disk.
 - **Each case, in order, one at a time:**
   1. a complete case (below) is skipped: nothing of it runs again (`complete` exits 0; 3 says
-     no, and any other exit of `complete` or `decided` stops the driver);
-  2. the earlier, failed attempts' `<dir>/<run_id>.pt` of the case's launcher run are removed
-     (`clear-stale`, by the run ids in the launch journal), and the free disk is checked;
+     no, and any other exit of `complete` or `decided` stops the driver). A case whose recorded
+     parts were written under other GPU code or settings than the checkout's is stale: exit 10,
+     and the driver stops there, neither rerunning nor skipping it;
+  2. the `<dir>/<run_id>.pt` of the case's launcher run attempts that the launch journal shows
+     superseded (ended technical, or never ended) are removed (`clear-stale`); a settled run's
+     checkpoint (done, diverged, or completed but in conflict) stays. Then the free disk is
+     checked;
   3. the launcher run alone: `scripts/launch.py CAMPAIGN --only LABEL --max-attempts 1`;
   4. the baseline part, in a fresh process;
   5. unless the baseline is already a scientific failure (an instability rule fired on the
@@ -1549,11 +1553,14 @@ docstring has every rule.
 
   The engineering stage adds `--engineering` and, for its path diagnostics,
   `--diagnostic-steps 1,5,10,15,20`. The driver checks the checkout and the campaign's sha256,
-  that no process holds the GPU and under 1 000 MiB of it is in use, then runs the cases. It
-  writes the verdict on every exit. **Exits:** 0, every case complete; 1, a precondition, the
-  disk (or `df` giving no number) or a `finish` that refuses a case not complete; 8, an
-  interrupted attempt; 9, a technical case; the launcher's own exit when it stops; any other,
-  the exit of the command that failed.
+  that no process holds the GPU and under 1 000 MiB of it is in use, and that the free host
+  memory reaches `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the
+  host, ≈ 25-30 GB at 1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), then runs the
+  cases. It writes the verdict on every exit. **Exits:** 0, every case complete; 1, a
+  precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
+  that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
+  9, a technical case; 10, a stale case; the launcher's own exit when it stops; any other, the
+  exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its

@@ -174,6 +174,18 @@ def test_the_stage0_checks_call_the_setup_before_their_cuda_work(monkeypatch) ->
     assert calls == [("configure_numerics", "cuda"), ("environment", "cuda"), ("stage0",)]
 
 
+def test_the_theta0_evaluation_calls_the_setup_before_its_cuda_work(monkeypatch) -> None:
+    """θ₀'s utility check of study 3's engineering stage runs through this entry point."""
+    cfg = OmegaConf.create({"execution": {"device": "cuda"}})
+    calls, given = entry_point(monkeypatch, cfg), []
+    monkeypatch.setattr(config_module, "from_cli", lambda args=None: given.append(args) or cfg)
+    monkeypatch.setattr(train, "evaluate_theta0", lambda c, env: calls.append(("evaluate",)))
+    monkeypatch.setattr("sys.argv", ["evaluate_theta0.py", "cfg"])
+    runpy.run_path(str(SCRIPTS / "evaluate_theta0.py"), run_name="__main__")
+    assert calls == [("configure_numerics", "cuda"), ("environment", "cuda"), ("evaluate",)]
+    assert given == [["cfg", "run_type=theta0"]]
+
+
 # The stage-0 record's fingerprint: determinism and the cuBLAS setting enter it only when set,
 # so study 2's records keep matching study-2 configs and never match a deterministic run.
 

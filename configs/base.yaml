@@ -12,9 +12,10 @@ tracking:
                             # Gate 2 runs needs the frozen K* (scripts/build_analysis.py --k-star)
   update_scalars: false     # a scheduled Adam run's update scalars, update_scalars.jsonl
                             # (schedule.UpdateScalars); logging only, numerics unchanged
-  provenance_hashes: false  # true: meta.json records the hashes of the checkpoint, the data and
-                            # the code that produced the run (study 3)
-  endpoint_checkpoint: null # a path: the step-25 checkpoint is saved there (study 3's numerical runs)
+  provenance_hashes: false  # true: meta.json records the hashes of θ₀'s trainable parameters
+                            # and, for an arm that reads it, of v₀ (study 3)
+  endpoint_checkpoint: null # a path: the step-25 checkpoint is saved there (study 3's numerical
+                            # and engineering runs; protocol.check_run_config refuses it for others)
   wandb:
     enabled: true
     required: false         # true: a failure to start W&B stops the run
@@ -26,5 +27,6 @@ execution:                  # how a run executes, not what it computes; excluded
   micro_batch_size: 4       # gradient accumulation is exact with the constant denominator
   eval_batch_size: 32
   generation_batch_size: 32
-  deterministic: false      # true: deterministic kernels (study 3's numerical qualification)
+  deterministic: false      # true: deterministic kernels; study 3 keeps false (runtime.
+                            # configure_numerics records the setting as run)
   memory_limit_gb: null     # a number: the GPU memory a run may use, in GB (study 3)

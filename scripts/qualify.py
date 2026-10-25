@@ -30,15 +30,22 @@ on the candidate's numerical seeds (or the engineering seeds), with its endpoint
 arm) of a numerical campaign needs its case on the candidate's first numerical seed, which holds
 the rate's same-path control (amendment 2). ``plan`` lists the cases, the expected GPU time
 (``MINUTES``: a launcher run ≈ 7 min, a baseline part ≈ 7 min, a rest part ≈ 25 min, a
-same-path control ≈ 11 min) and the disk need, and exits 1 on a campaign outside this.
+same-path control ≈ 11 min), the disk need and the host memory, and exits 1 on a campaign
+outside this.
 
 **A case, in order** (one at a time, on one Pod; the driver):
 
 1. ``complete`` exits 0 when the case is done (below): then nothing of it runs again; 3 when it
    is not. ``complete`` and ``decided`` say no with exit 3 alone: any other non-zero exit is a
-   failure, and stops the driver.
-2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every earlier
-   attempt of the case's launcher run in the launch journal but its settled one.
+   failure, and stops the driver. First, both check the case's recorded parts (the latest
+   attempt of each) against this checkout's GPU code (``code_identity.gpu_code_identity``) and
+   the tracked settings: a record of other code or settings makes the case ``stale``, exit 10
+   (``STALE``), and the driver stops there: a stale case is never rerun by it, and never skipped
+   (its re-qualification is a decision of its own, "Voiding and supersession").
+2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every attempt of the
+   case's launcher run that the launch journal shows superseded (``superseded_run_ids``: ended
+   technical, or not ended, without a settled directory); the checkpoint of a settled run (done,
+   diverged, or completed but in conflict, kept for the diagnosis) stays.
 3. The free disk of the checkpoint directory against the need (``disk_need_gb``: two endpoints,
    the launcher's and the harness baseline's, ``checkpoint_gb`` each, one state per diagnostic
    step, one checkpoint of headroom for an atomic save, and ``disk_margin_gb``); below it the
@@ -74,7 +81,8 @@ driver's call) runs attempt 1 of a part without any attempt, does nothing for a 
 attempt is recorded (whatever its kind), and exits 8 for one whose latest attempt was interrupted.
 ``--attempt N`` runs attempt 1 of a part without any attempt, or the attempt after an
 interrupted one, which needs ``--infrastructure REASON``, the documented interruption, and its
-record carries it (``infrastructure``: the reason and the earlier attempts); a part whose latest
+record carries it from its one publish (``infrastructure``: the reason, the earlier attempts and
+the case's restart records); a part whose latest
 attempt is recorded, whatever its kind, is refused. ``interrupted --technical REASON`` records an
 interrupted attempt, unexplained, as a technical part record carrying the reason ("an
 unexplained incomplete record is technical"); it refuses an attempt with a record. The part needs a
@@ -114,12 +122,15 @@ run) are the expected ones; a rate one of whose launcher runs is not located is 
 ``incomplete``, with the reason and a warning.
 
 ``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the
-checkout and the campaign file's sha256, that nothing else uses the GPU, then runs each case in
-order as above, and writes the verdict on every exit. Exits: 0 when every case is complete; 1
-a precondition, the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
-not complete; 8 an interrupted attempt; 9 a technical case; the launcher's own when it stops;
-any other, the failed command's. The
-driver never reruns a part or the launcher run: a rerun is a command of its own, with its reason.
+checkout and the campaign file's sha256, that nothing else uses the GPU, and the free host
+memory (``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and
+the p1 direction on the host and a checkpoint save's transient), then runs each case in order as
+above, and writes the verdict on every exit. Exits: 0 when every case is complete; 1 a
+precondition (the host memory included), the disk (``df``'s answer must be a number) or a
+``finish`` that refuses a case not complete; 8 an interrupted attempt (or a part a case restart
+names); 9 a technical case; 10 a stale case; the launcher's own when it stops; any other, the
+failed command's. The driver never reruns a part or the launcher run: a rerun is a command of
+its own, with its reason.
 """
 
 from __future__ import annotations
@@ -156,10 +167,17 @@ LAUNCH = 'project-run "$SRC" python scripts/launch.py'
 NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
+STALE = 10  # ``complete`` and ``decided``: records of other GPU code or settings
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
 GPU_USED_MIB = 1000  # the driver starts only below this much GPU memory in use
+# Whether the free host memory (``drift.host_memory``: MemAvailable, or the cgroup's free memory
+# when smaller) reaches the settings' ``host_memory_gb`` (exit 0); run by the driver through
+# project-run. No $, backtick, backslash or double quote inside.
+HOST_FREE = ("import sys; from zero_field_refusal.drift import host_memory; m = host_memory(); "
+             "print('free host memory (GB):', m); "
+             "sys.exit(0 if (m['available_gb'] or 0) >= float(sys.argv[1]) else 1)")  # fmt: skip
 # The expected GPU minutes on one L40S at 1.5B: a launcher run (≈ 7.1 min, "Budget and timing"),
 # the baseline part (one trajectory with its setup), the rest (six) and a same-path control
 MINUTES = {"launcher": 7, "baseline": 7, "rest": 25, "control": 11}
@@ -382,6 +400,25 @@ def case_state(out: Path, p: Planned, scope: q.QualificationScope) -> tuple[bool
     return True, decided, "decided by the baseline: a scientific failure" if decided else "complete"
 
 
+def stale_records(
+    out: Path, p: Planned, code: dict[str, Any] | None, policy: dict[str, Any] | None
+) -> list[str]:
+    """The case's recorded parts (the latest attempt of each) written under other GPU code or
+    settings than this checkout's (``code``: ``code_identity.gpu_code_identity``; ``policy``:
+    the tracked settings' record): such a case is ``stale`` (module docstring, step 1)."""
+    stale = []
+    for part in ["baseline", "rest", *(["control"] if p.control else [])]:
+        state = part_state(out, p.case, part)
+        if state.state != "recorded":
+            continue
+        provenance = state.record.get("provenance") or {}
+        if code is None or (provenance.get("gpu_code") or {}).get("sha256") != code.get("sha256"):
+            stale.append(f"{part} attempt {state.attempt}: other GPU code")
+        elif provenance.get("settings") != policy:
+            stale.append(f"{part} attempt {state.attempt}: other settings")
+    return stale
+
+
 def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
     """Why a complete case's verdict is technical (its own, or its same-path control's), or
     nothing: such a case keeps its checkpoints for the diagnosis ("Failure routes")."""
@@ -463,6 +500,7 @@ def plan_text(name: str, planned: list[Planned], problems: list[str], settings, 
     lines.append(f"free disk per case: {need:g} GB ({2 + len(steps) + 1} checkpoints of "
                  f"{float(settings.checkpoint_gb):g} GB and {float(settings.disk_margin_gb):g} "
                  "GB of margin)")  # fmt: skip
+    lines.append(f"free host memory: {float(settings.host_memory_gb):g} GB")
     lines += [f"PROBLEM: {p}" for p in problems]
     return "\n".join(lines)
 
@@ -515,18 +553,18 @@ def part(args, planned: Planned, out: Path) -> None:
     path = out / case.attempt_path(name, attempt)
     q.publish(Path(f"{path}.started"), {
         "part": name, "attempt": attempt, "case": case.record(), "run_dir": str(args.run_dir),
-        "infrastructure": reason, "host": socket.gethostname(),
+        "infrastructure": reason, "host": socket.gethostname(), "pod_id": q.pod_id(),
         "started_at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
-    record = q.run_part(settings, env, case, args.run_dir, out, part=name, attempt=attempt,
-                        checkpoints=args.checkpoints,
-                        diagnostic_steps=parse_steps(args.diagnostic_steps))  # fmt: skip
-    if reason:  # the record carries its reason, before any later part reads it
+    infrastructure = None
+    if reason:  # the record carries its reason from its one publish, before any part reads it
         previous = [{"attempt": n, "state": s} for n, s in state.attempts.items() if n < attempt]
         restarts = [{"path": str(f), "sha256": file_sha256(f)}
                     for f, _ in restart_records(case_folder(out, case))]  # fmt: skip
-        record = {**record, "infrastructure": {"reason": reason, "previous": previous,
-                                               "restarts": restarts}}  # fmt: skip
-        q.publish(path, record)
+        infrastructure = {"reason": reason, "previous": previous, "restarts": restarts}
+    record = q.run_part(settings, env, case, args.run_dir, out, part=name, attempt=attempt,
+                        checkpoints=args.checkpoints,
+                        diagnostic_steps=parse_steps(args.diagnostic_steps),
+                        infrastructure=infrastructure)  # fmt: skip
     print(json.dumps({key: record.get(key) for key in ("part", "attempt", "status", "kind",
                                                        "reasons")}))  # fmt: skip
 
@@ -569,7 +607,8 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
         "K_star": scope.k_star(case.candidate), "bound": scope.bound(case.candidate),
         "launcher_run": run_dir, "status": "failed", "kind": q.TECHNICAL, "reasons": [reason],
         "launcher": {"kind": None, "reasons": [],
-                     "identity": q.launcher_identity(Path(run_dir)) if run_dir else None},
+                     **(q.launcher_record(Path(run_dir)) if run_dir
+                        else {"identity": None, "pod_id": None})},
         "interrupted": {"reason": args.technical, "started": started},
     }  # fmt: skip
     if name == "rest":
@@ -582,7 +621,9 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
             record["baseline_record"] = {"path": str(source),
                                          "sha256": q.record_sha256(baseline)}  # fmt: skip
             record["baseline_checkpoint_sha256"] = (baseline.get("checkpoint") or {}).get("sha256")
-    record["provenance"] = q.qualification_provenance(load_settings())
+    # The Pod is the one the attempt started on (its ``.started`` file), not this process's
+    record["provenance"] = q.qualification_provenance(load_settings(),
+                                                      pod_id=started.get("pod_id"))  # fmt: skip
     q.publish(path, record)
     print(json.dumps({key: record[key] for key in ("part", "attempt", "status", "kind",
                                                    "reasons")}))  # fmt: skip
@@ -630,9 +671,27 @@ def restart_case(args, planned: Planned, out: Path, root: Path) -> None:
                       "attempts": [(a["part"], a["attempt"]) for a in attempts]}))  # fmt: skip
 
 
+def superseded_run_ids(run: Run, root: Path) -> list[str]:
+    """The attempts of the run that the launch journal shows superseded: started, and ended
+    technical or not ended at all, with no settled directory (completed, whether it stands or is
+    in conflict, or diverged). A completed run that cannot stand keeps its checkpoint for the
+    diagnosis."""
+    settled_outcomes = {r.get("run_id") for r in launch_records(root)
+                        if r.get("event") == "end" and r.get("run") == run.label
+                        and r.get("outcome") in ("done", "diverged", "conflict")}  # fmt: skip
+    superseded = []
+    for run_id in journal_run_ids(run, root):
+        run_dir = root / run.experiment / run_id
+        meta = _read(run_dir / "meta.json") or {}
+        if (run_id in settled_outcomes or meta.get("status") in ("completed", "diverged")
+                or (run_dir / "terminal.json").is_file()):  # fmt: skip
+            continue
+        superseded.append(run_id)
+    return superseded
+
+
 def clear_stale(planned: Planned, root: Path) -> None:
-    keep = settled(planned.run, root)
-    stale = [i for i in journal_run_ids(planned.run, root) if keep is None or i != keep.name]
+    stale = superseded_run_ids(planned.run, root)
     print(json.dumps({"case": planned.case.name, "removed": remove_checkpoints(planned, stale)}))
 
 
@@ -780,6 +839,7 @@ def driver_script(
     stamp = "$(date -u +%FT%TZ)"
     sha = hashlib.sha256(campaign.read_bytes()).hexdigest()
     need = disk_need_gb(settings, steps)
+    host = float(settings.host_memory_gb)
     stage = ROLES[args.engineering]
     common = f"--campaign \"$CAMPAIGN\" --candidate {args.candidate}" + (
         " --engineering" if args.engineering else "")  # fmt: skip
@@ -802,10 +862,11 @@ def driver_script(
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
                  "REASON, a failed launcher run with scripts/launch.py --only LABEL "
                  "--max-attempts 1 --recovery REASON. The verdict is written on every exit."),
-        *comment(f"Exits: 0 every case complete; 1 a precondition, the disk or a case finish "
-                 f"refuses (not complete); {INTERRUPTED} an interrupted attempt; "
-                 f"{TECHNICAL_CASE} a technical case; the launcher's own when it stops; another "
-                 "a failed command."),
+        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory "
+                 f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
+                 f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
+                 f"technical case; {STALE} a stale case (records of other GPU code or settings); "
+                 "the launcher's own when it stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -832,6 +893,13 @@ def driver_script(
         f"if echo \"$used\" | awk '$1 + 0 >= {GPU_USED_MIB} {{busy = 1}} END {{exit !busy}}'; then",
         '  stop "GPU memory in use ($used MiB); the qualification does not start" 1',
         "fi",
+        *comment("The host holds θ₀, v₀, the second model and the p1 direction, and a "
+                 "checkpoint save's transient (host_memory_gb; the free memory: MemAvailable, "
+                 "or the cgroup's when smaller)"),
+        f'if ! project-run "$SRC" python -c "{HOST_FREE}" {host:g}; then',
+        f'  stop "{host:g} GB of free host memory are needed; the qualification does not '
+        'start" 1',
+        "fi",
     ]  # fmt: skip
     for index, p in enumerate(planned, 1):
         case = f"--case {shlex.quote(p.case.name)}"
@@ -842,6 +910,8 @@ def driver_script(
             f"{RUN} complete {common} {case} || rc=$?",
             'case "$rc" in',
             f'  0) echo "== {stamp} complete: {p.case.name} is skipped" ;;',
+            f'  {STALE}) stop "{p.case.name}: records of other GPU code or settings (stale); '
+            f'nothing is rerun or skipped" {STALE} ;;',
             f"  {NO})",
             f"    {RUN} clear-stale {common} {case}",
             "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
@@ -972,6 +1042,12 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(f"{chosen.case.name} holds no same-path control")
         part(args, chosen, out)
     elif args.command in ("complete", "decided"):
+        stale = stale_records(out, chosen, code_identity.gpu_code_identity(),
+                              q.settings_record(settings))  # fmt: skip
+        if stale:
+            print(f"{chosen.case.name}: stale, records of other GPU code or settings than this "
+                  f"checkout's: {stale}", file=sys.stderr)  # fmt: skip
+            sys.exit(STALE)
         complete, decided, why = case_state(out, chosen, scope)
         print(f"{chosen.case.name}: {why}")
         if not (complete if args.command == "complete" else decided):

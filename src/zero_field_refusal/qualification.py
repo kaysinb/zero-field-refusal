@@ -50,8 +50,9 @@ and, for an arm that reads it, v₀; a completed run with a whole terminal recor
 departs from it is technical, whatever stopped it. Then a conforming run stopped by an
 instability rule (``schedule.INSTABILITY``) is a scientific failure; one stopped otherwise,
 without its step-25 evaluation, or without a checkpoint whose file's sha256 is the recorded one,
-is technical; either way nothing runs, and the record still names the run
-(``launcher_identity``). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
+is technical; either way nothing runs, and the record still names the run and its Pod
+(``launcher_record``; when they cannot be read, as missing with the error, and the record is
+published all the same). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
 the RNG seeded as ``run_twin`` seeds it; v₀ is never written (``v0_unchanged``). An AdamW case,
 whose run reads no v₀, sets the seed's F v₀ up for s1 and s2 alone, from the F optimizer group
 (``setup_config``). An exception is the part's record, ``failed``, with the trajectories done
@@ -75,7 +76,8 @@ docstring states the failure kinds; outside the GPU-code identity) and re-export
 
 **Blind to outcomes.** Only K, D, norms and training statistics leave this module; every prompt
 set whose name holds "harmful" is refused (``fa_control_diagnostic.guarded_prompt_sets``), and
-nothing generates. Records carry their own policy identity (``qualification_provenance``).
+nothing generates. Records carry their own policy identity and Pod (``qualification_provenance``)
+and are published atomically and durably (``publish``).
 """
 
 from __future__ import annotations
@@ -85,6 +87,7 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -257,9 +260,15 @@ def names_sha256(names: Sequence[str]) -> str:
 
 
 def publish(path: Path, record: Mapping[str, Any]) -> None:
-    """Write a record atomically and durably (temporary file, fsync, ``os.replace``)."""
+    """Write a record atomically and durably (temporary file, fsync, ``os.replace``, then an
+    fsync of its directory, so that the rename itself survives a crash)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     schedule_module.publish(path, dict(record))
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def settings_record(settings: DictConfig) -> dict[str, Any]:
@@ -269,9 +278,9 @@ def settings_record(settings: DictConfig) -> dict[str, Any]:
 
 def qualification_provenance(settings: DictConfig, **extra: Any) -> dict[str, Any]:
     """A record's own policy identity: the registered spec and settings, the GPU code
-    (``code_identity.gpu_code_identity``), the checkout, the hardware, the packages and the host
-    memory. A value that cannot be read is recorded as its error: such a record then matches no
-    expected policy."""
+    (``code_identity.gpu_code_identity``), the checkout, the hardware, the packages, the host
+    memory and the Pod (``pod_id``). A value that cannot be read is recorded as its error: such a
+    record then matches no expected policy."""
 
     def read(what: Callable[[], Any]) -> Any:
         try:
@@ -283,7 +292,12 @@ def qualification_provenance(settings: DictConfig, **extra: Any) -> dict[str, An
             "gpu_code": read(code_identity.gpu_code_identity), "code": read(git_state),
             "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "hardware": read(hardware), "packages": read(package_versions),
-            "host_memory": read(fcd.host_record), **extra}  # fmt: skip
+            "host_memory": read(fcd.host_record), "pod_id": pod_id(), **extra}  # fmt: skip
+
+
+def pod_id() -> str | None:
+    """This process's Pod (``RUNPOD_POD_ID``, as ``tracking`` records a run's), or None."""
+    return os.environ.get("RUNPOD_POD_ID") or None
 
 
 # ------------------------------------------------------------------------- the launcher run
@@ -417,6 +431,24 @@ def launcher_identity(run_dir: Path) -> dict[str, Any] | None:
         return {**fcd.run_identity(run_dir), "checkpoint": summary.get("endpoint_checkpoint")}
     except (OSError, ValueError):
         return None
+
+
+def launcher_pod_id(run_dir: Path) -> str | None:
+    """The Pod the launcher run ran on (``meta.json``: ``launch.pod_id``), or None."""
+    meta = fcd._read_object(run_dir / "meta.json") or {}
+    pod = (meta.get("launch") or {}).get("pod_id")
+    return pod if isinstance(pod, str) and pod else None
+
+
+def launcher_record(run_dir: Path) -> dict[str, Any]:
+    """How a part record names its launcher run before anything is checked: ``identity``
+    (``launcher_identity``) and ``pod_id`` (``launcher_pod_id``). Whatever reading them raises,
+    the record keeps the run as missing (None) with ``identity_error``, and is still published."""
+    try:
+        return {"identity": launcher_identity(run_dir), "pod_id": launcher_pod_id(run_dir)}
+    except Exception as exc:  # the record is written whatever the launcher run's state
+        return {"identity": None, "pod_id": None,
+                "identity_error": f"{type(exc).__name__}: {str(exc)[:500]}"}  # fmt: skip
 
 
 def launcher_facts(run_dir: Path) -> dict[str, Any]:
@@ -758,14 +790,17 @@ def run_part(
     attempt: int,
     checkpoints: Path,
     diagnostic_steps: Sequence[int] = (),
+    infrastructure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One part of a case in this process (module docstring), written to
-    ``out / case.attempt_path(part, attempt)`` whatever happened, and returned. ``run_dir`` is the
-    case's launcher run; ``checkpoints`` holds the harness's checkpoints (``harness-baseline.pt``,
-    the baseline's diagnostic states). ``diagnostic_steps`` (engineering cases, baseline and rest
-    alone, steps before the last) are the steps of the intermediate D. Nothing runs when the
-    launcher run does not conform (``launcher_problems``): the record says why, and of what kind.
-    The control part's case is the candidate's first numerical seed at an FA rate."""
+    ``out / case.attempt_path(part, attempt)`` whatever happened, in one publish, and returned.
+    ``run_dir`` is the case's launcher run; ``checkpoints`` holds the harness's checkpoints
+    (``harness-baseline.pt``, the baseline's diagnostic states). ``diagnostic_steps``
+    (engineering cases, baseline and rest alone, steps before the last) are the steps of the
+    intermediate D. ``infrastructure`` (an attempt above 1: the documented interruption it
+    reruns) goes into the record as given. Nothing runs when the launcher run does not conform
+    (``launcher_problems``): the record says why, and of what kind. The control part's case is
+    the candidate's first numerical seed at an FA rate."""
     scope = QualificationScope.of(settings)
     steps = sorted({int(t) for t in diagnostic_steps})
     if part not in PARTS or not (isinstance(attempt, int) and attempt >= 1):
@@ -785,8 +820,10 @@ def run_part(
                               "K_star": scope.k_star(case.candidate),
                               "bound": scope.bound(case.candidate), "launcher_run": str(run_dir),
                               "diagnostic_steps": steps}  # fmt: skip
+    if infrastructure is not None:
+        record["infrastructure"] = dict(infrastructure)
     # The launcher run's name, whatever its state, so that a verdict counts every record of it
-    record["launcher"] = {"kind": None, "reasons": [], "identity": launcher_identity(run_dir)}
+    record["launcher"] = {"kind": None, "reasons": [], **launcher_record(run_dir)}
     progress: dict[str, Any] = {}
     failed = False
     try:

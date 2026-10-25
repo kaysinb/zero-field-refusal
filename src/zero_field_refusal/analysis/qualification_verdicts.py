@@ -19,17 +19,18 @@ GPU code, and the records' GPU-code check stays on the identity of the code the 
 - Technical: ``launcher~baseline``, ``launcher~repeat`` or ``baseline~repeat`` beyond the bound;
   a launcher comparison beyond the bound whose baseline counterpart is not; a shift lost to fp32
   rounding after its retry; a non-finite D between finite models; a failed bridge check; v₀
-  written; any exception or missing part. A ``rest`` record that is not bound to the baseline
-  given (another case, launcher run, settings or GPU code, or not built on that baseline record
-  and checkpoint) is technical and none of its measurements is read.
+  written; any exception or missing part; parts or a launcher run on more than one Pod (their
+  recorded pod ids, where present: one Pod per case). A ``rest`` record that is not bound to the
+  baseline given (another case, launcher run, settings or GPU code, or not built on that baseline
+  record and checkpoint) is technical and none of its measurements is read.
 - A case with both kinds, on bound records, is scientific (no rerun passes it), its technical
   reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (all 13 within), else
   ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
   prompt for diagnosis only. A case is named by ``record_sha256``, over its part records.
 
 **The same-path control** (``control_verdict``): accepted with finite records and K_scoring at
-step 25 at most 0.01·K*; missing or failed, ``not_qualified`` (technical); its launcher run
-stopped by instability, ``failing``.
+step 25 at most 0.01·K*; missing or failed (another Pod than its launcher run's included),
+``not_qualified`` (technical); its launcher run stopped by instability, ``failing``.
 
 **A rate** (``rate_verdict``): every case of this candidate, arm, rate and numerical seed is shown.
 One counts under the expected GPU code and settings, at the protocol's batch and steps, with a
@@ -99,6 +100,25 @@ def _identity(record: Mapping[str, Any] | None) -> Any:
     return ((record or {}).get("launcher") or {}).get("identity")
 
 
+def _pod_problem(*records: Mapping[str, Any] | None) -> str | None:
+    """One Pod per case: the launcher run's (``launcher.pod_id``) and each part's
+    (``provenance.pod_id``), where present, must be one; why not, or None."""
+    pods = {}
+    for record in records:
+        if record is None:
+            continue
+        part = record.get("part")
+        launcher = (record.get("launcher") or {}).get("pod_id")
+        own = (record.get("provenance") or {}).get("pod_id")
+        if launcher is not None:
+            pods[f"the launcher run (as the {part} read it)"] = launcher
+        if own is not None:
+            pods[f"the {part}"] = own
+    if len(set(pods.values())) > 1:
+        return f"the case ran on more than one Pod: {pods}"
+    return None
+
+
 def _part_reasons(record: Mapping[str, Any], technical: list[str], science: list[str]) -> None:
     """A part that ran nothing or failed: its kind and reasons."""
     reasons = [f"{record.get('part')}: {r}" for r in record.get("reasons") or []]
@@ -134,6 +154,9 @@ def case_verdict(
     technical: list[str] = []
     measured: dict[str, Any] = dict.fromkeys(COMPARISONS)
     head = baseline or rest or {}
+    pods = _pod_problem(baseline, rest)
+    if pods is not None:
+        technical.append(pods)
     case = head.get("case") or {}
     try:
         bound = scope.bound(case.get("candidate"))
@@ -302,6 +325,9 @@ def control_verdict(
         if unequal or not record.get("shared_state"):
             reasons.append(f"the control's {unequal or 'shared state'} differ from the "
                            "launcher run's")  # fmt: skip
+        pods = _pod_problem(record)
+        if pods is not None:
+            reasons.append(pods)
         if state["diverged"]:
             reasons.append("a non-finite record in the control")
         elif not state["complete"] or not fcd._number(k):

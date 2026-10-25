@@ -4,9 +4,9 @@
 # composed here directly (not inherited) so that no study2_short section, and no unset study-2
 # role, remains. Differences from study 2: the experiment's name, the role key, the memory limit
 # of a run and the provenance hashes in meta.json (tests/test_study3_configs.py compares the
-# resolved configs with those dropped; none of them is in the config hash). The arm,
-# batch, rate, role and seed of each run come from the campaign; the role is `???`, so a run
-# without it fails at load.
+# resolved configs with those dropped). The role is in the config hash; the name, the memory limit
+# and the provenance hashes are not. The arm, batch, rate, role and seed of each run come from the
+# campaign; the role is `???`, so a run without it fails at load.
 defaults:
   - base
   - protocol/zero_field
@@ -29,6 +29,7 @@ eval:
 tracking:
   require_clean_git: true
   update_scalars: true              # schedule.UpdateScalars: update_scalars.jsonl
-  provenance_hashes: true           # meta.json records the checkpoint, data and code hashes
+  provenance_hashes: true           # meta.json records the hashes of θ₀'s trainable
+                                    # parameters and, for an arm that reads it, of v₀
 execution:
   memory_limit_gb: 46               # the registered limit of a run's GPU memory, in GB

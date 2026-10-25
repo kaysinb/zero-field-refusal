@@ -44,6 +44,8 @@ def qualify(monkeypatch, tmp_path):
     module = load_script()
     monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(module, "git_state", lambda *a, **k: {"commit": "c" * 40, "dirty": False})
+    # This checkout's GPU code as the synthetic records have it (``complete``'s stale check)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
     return module
 
 
@@ -125,6 +127,7 @@ def test_the_plan_states_the_gpu_time_and_the_disk(qualify, tmp_path, capsys) ->
     # two cases at 7 + 7 + 25 min, one same-path control at 11 min
     assert "2 cases" in out and "≈ 89 GPU min" in out
     assert "23.5 GB" in out  # 2 endpoints + 1 of headroom at 6.5 GB, and 4 GB of margin
+    assert "free host memory: 60 GB" in out
 
 
 def test_the_disk_need_counts_the_diagnostic_steps(qualify, tmp_path) -> None:
@@ -294,9 +297,9 @@ def test_the_driver_checks_its_campaign_and_the_gpu(qualify, tmp_path) -> None:
     text = driver_text(qualify, tmp_path, path)
     assert f"CAMPAIGN={path.resolve()}" in text
     assert hashlib.sha256(path.read_bytes()).hexdigest() in text
-    positions(
-        text, [r"git rev-parse HEAD", r"sha256sum", r"trap .*verdict", r"nvidia-smi", r"--case "]
-    )
+    positions(text, [r"git rev-parse HEAD", r"sha256sum", r"trap .*verdict", r"nvidia-smi",
+                     r"drift import host_memory.*\" 60; then", r"60 GB of free host memory",
+                     r"--case "])  # fmt: skip
     with pytest.raises(SystemExit):  # an existing --out
         qualify.main(["driver", *common(path), "--commit", "a" * 40,
                       "--out", str(path)])  # fmt: skip
@@ -371,11 +374,12 @@ def test_a_rest_bound_to_another_baseline_keeps_the_case_open(qualify, tmp_path)
 
 def fake_part(calls):
     def run_part(settings, env, case, run_dir, out, *, part, attempt, checkpoints,
-                 diagnostic_steps=()):  # fmt: skip
+                 diagnostic_steps=(), infrastructure=None):  # fmt: skip
         calls.append((case.name, part, attempt))
         record = {"part": part, "attempt": attempt, "case": case.record(), "status": "failed",
-                  "kind": "technical", "reasons": ["RuntimeError: boom"]}  # fmt: skip
-        q.publish(out / case.attempt_path(part, attempt), record)
+                  "kind": "technical", "reasons": ["RuntimeError: boom"],
+                  **({"infrastructure": infrastructure} if infrastructure else {})}  # fmt: skip
+        q.publish(out / case.attempt_path(part, attempt), record)  # the one publish
         return record
 
     return run_part
@@ -657,6 +661,54 @@ def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:
     assert not (tmp_path / "ckpt" / "r-a1.pt").exists()
 
 
+def test_a_part_sets_the_numerics_before_its_environment(qualify, tmp_path, monkeypatch) -> None:
+    """The order of ``part``'s own calls: ``runtime.configure_numerics`` before
+    ``runtime.environment`` (before any CUDA work), then the harness."""
+    calls = []
+    monkeypatch.setattr(
+        qualify.runtime,
+        "configure_numerics",
+        lambda cfg, device: calls.append(("configure_numerics", device)) or {},
+    )
+    monkeypatch.setattr(
+        qualify.runtime,
+        "environment",
+        lambda cfg, device: calls.append(("environment", device)) or object(),
+    )
+    harness = fake_part([])
+
+    def run_part(*args, **kwargs):
+        calls.append(("run_part", kwargs["part"]))
+        return harness(*args, **kwargs)
+
+    monkeypatch.setattr(qualify.q, "run_part", run_part)
+    qualify.main(part_args(campaign(tmp_path), tmp_path, "baseline", "--resume"))
+    assert calls == [("configure_numerics", "cpu"), ("environment", "cpu"),
+                     ("run_part", "baseline")]  # fmt: skip
+
+
+def test_a_stale_case_stops_complete_and_the_driver(qualify, tmp_path, monkeypatch, capsys):
+    """Records of other GPU code or settings than this checkout's: ``complete`` and ``decided``
+    exit 10 (stale), and the driver stops there, rerunning and skipping nothing."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    write_case(out, FA, control=True)
+    qualify.main(["complete", *common(path), "--case", FA.name])  # this checkout's code
+    record = json.loads((out / FA.attempt_path("control", 1)).read_text())
+    for change, why in (({"gpu_code": {**CODE, "sha256": "o" * 64}}, "other GPU code"),
+                        ({"settings": {**q.settings_record(REGISTERED), "norm": 1e-4}},
+                         "other settings")):  # fmt: skip
+        publish(out, FA, "control", {**record, "provenance": {**record["provenance"], **change}})
+        for command in ("complete", "decided"):
+            with pytest.raises(SystemExit) as stop:
+                qualify.main([command, *common(path), "--case", FA.name])
+            assert stop.value.code == qualify.STALE
+        assert f"control attempt 1: {why}" in capsys.readouterr().err
+    (tmp_path / "d").mkdir()
+    code, calls = run_driver(qualify, tmp_path / "d", monkeypatch, complete=qualify.STALE)
+    assert code == qualify.STALE and calls == [f"complete {FA.name}", "verdict"]
+
+
 def test_a_part_needs_a_clean_checkout(qualify, stubbed, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(qualify, "git_state", lambda *a, **k: {"commit": "c", "dirty": True})
     with pytest.raises(SystemExit, match="not clean"):
@@ -734,6 +786,30 @@ def test_a_stale_checkpoint_of_the_case_is_cleared_before_its_launch(qualify, tm
     endpoint = tmp_path / "ckpt"
     endpoint.mkdir()
     for name in ("r-a1.pt", ".r-a1.pt.partial", "r-a2.pt"):
+        (endpoint / name).write_bytes(b"w")
+    qualify.main(["clear-stale", *common(path), "--case", FA.name])
+    assert sorted(p.name for p in endpoint.iterdir()) == ["r-a2.pt"]
+
+
+def test_clear_stale_keeps_a_completed_conflicted_runs_checkpoint(qualify, tmp_path) -> None:
+    """Only the checkpoints of attempts the journal shows superseded (ended technical, or not
+    ended) go: a completed run that cannot stand keeps its checkpoint for the diagnosis."""
+    from test_launch import make_run_dir
+
+    path = campaign(tmp_path)
+    root = tmp_path / "runs"
+    label = f"adam_frozen-{FA_LR:g}/s10200"
+    run = journal(root, path, label, ["r-a1", "r-a2", "r-a3"])
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    with log.open("a") as f:
+        for run_id, outcome in (("r-a1", "technical"), ("r-a2", "conflict")):
+            f.write(json.dumps({"event": "end", "run": label, "run_id": run_id,
+                                "outcome": outcome}) + "\n")  # fmt: skip
+    make_run_dir(root, run, "r-a1", "failed")
+    make_run_dir(root, run, "r-a2", "completed")  # its checkpoint does not match: a conflict
+    endpoint = tmp_path / "ckpt"
+    endpoint.mkdir()
+    for name in ("r-a1.pt", "r-a2.pt", ".r-a3.pt.partial"):  # r-a3: started, never ended
         (endpoint / name).write_bytes(b"w")
     qualify.main(["clear-stale", *common(path), "--case", FA.name])
     assert sorted(p.name for p in endpoint.iterdir()) == ["r-a2.pt"]
