@@ -1,6 +1,6 @@
 # Study 3 preregistration
 
-Status: `proposed` (2026-10-25). It binds once committed as `approved`, before any study-3 run.
+Status: `proposed` (2026-10-25). It binds once committed as `registered`, before any study-3 run.
 After that, a change goes through [Amendments](#amendments), with what was known when it was
 decided. No study-3 run, campaign or stream exists yet.
 
@@ -53,12 +53,13 @@ These settings are unchanged from study 2's short regime
   - a gradient norm above 10 times the median of the preceding (up to 20) step norms, the
     reference starting at the step-0 norm.
 
-  A stopped run has no endpoint.
+  A declared instability stop before step 25 is a **scientific endpoint failure**: the run has no
+  endpoint, and the [failure routes](#failure-routes) of its stage apply.
 - **Run types:**
   - **regular runs** (validation, confirmation) evaluate K, K_harmful, utility and the 521 sealed
     harmful responses at step 25;
-  - **K-only runs** (search, the numerical launcher runs) evaluate K alone and generate no harmful
-    response.
+  - **K-only runs** (search, the numerical launcher runs) evaluate K alone. They measure no
+    utility and generate no harmful response.
 
 ## Questions and estimands
 
@@ -70,6 +71,7 @@ A block is one training seed with its stream and v₀.
    They are the runs at η_l and η_u.
 2. **Support.** Arm a is supported in the block when:
    - both runs are usable (below);
+   - 0 < K_lo < K_hi < ∞ (tied endpoints are not a bracket);
    - K_lo ≤ K\* ≤ K_hi;
    - ln K_hi − ln K_lo ≤ 0.60.
 3. **Interpolation weight:** w = (ln K\* − ln K_lo) / (ln K_hi − ln K_lo).
@@ -78,10 +80,15 @@ A block is one training seed with its stream and v₀.
 
    Nothing is extrapolated.
 5. **Block differences:** d_AF = h_A(K\*) − h_F(K\*) on blocks where A and F are both supported,
-   and d_PF = h_P(K\*) − h_F(K\*) on blocks where P and F are both supported.
+   and d_PF = h_P(K\*) − h_F(K\*) on blocks where P and F are both supported. h is a proportion;
+   every difference, interval and SD is reported in pp, that is 100 times its value.
 
-A run is **usable** when it finished its 25 updates with finite records and lost at most 15 pp
-of MMLU. A larger loss is a gross collapse, decided on utility before any label.
+**Usable runs.**
+- A **regular run** is usable when it finished its 25 updates with finite records and lost at
+  most 15 pp of MMLU. A larger loss is a gross collapse, decided on utility before any label.
+- A **K-only run** (search, numerical) is usable when it finished its 25 updates with finite
+  records and a positive, finite step-25 K. The MMLU criterion does not apply to it, since it
+  measures no utility.
 
 ### The comparisons
 
@@ -90,14 +97,16 @@ of MMLU. A larger loss is a gross collapse, decided on utility before any label.
   - It asks what updating a shared starting v₀ does, at separately targeted rates.
   - It does not decompose A–F: A and F differ in their starting second moment as well.
 
-Each Δ is the mean interpolated difference over supported blocks, at frozen rates, on the fixed
-benign panel. It is not the pointwise difference of two curves at K\* for every model.
+**The estimand** of each comparison is the expected interpolated difference over fresh supported
+seed blocks, under the frozen rates, policy and panels. The analysis cohort's mean estimates it.
+It is not the pointwise difference of two curves at K\* for every model.
 
 ### Descriptive
 
 - **A − P,** on blocks where both are supported.
 - **Δ_AF at matched K_harmful.**
-  - The target K\*_h is fixed after the confirmation ends and before any label is opened: the
+  - The target K\*_h is fixed after the confirmation ends and before any confirmation label is
+    opened (validation's labels have been accessed only for the spread): the
     exponential of the mean, over the A–F analysis cohort and both arms, of ln K_harmful
     interpolated at K\*.
   - The same interpolation in ln K_harmful is then used, with no extrapolation. A block whose arm
@@ -109,15 +118,20 @@ benign panel. It is not the pointwise difference of two curves at K\* for every 
 
 ### Inference
 
+- **The level L.** L = 0.975 per comparison, Bonferroni over the two comparisons, unless the
+  [coverage check](#simulation-before-validation) fixes a higher L before validation. The frozen
+  L is used everywhere below. There is no hierarchy between the comparisons.
 - **The interval.** For each comparison separately, the paired studentized bootstrap-t over the
   cohort's blocks:
-  - n blocks, block differences d_b, mean d̄ and SE s/√n;
+  - n blocks, block differences d_b, mean d̄, sample SD s and SE s/√n;
   - 100 000 resamples of blocks with replacement and a fixed seed, recorded in the fixation
     record before confirmation;
   - t\* = (d̄\* − d̄) / (s\*/√n);
-  - the equal-tailed two-sided 97.5 % interval: [d̄ − t\*₀.₉₈₇₅·s/√n, d̄ − t\*₀.₀₁₂₅·s/√n].
-- The level 97.5 % per comparison is Bonferroni over the two comparisons. There is no hierarchy
-  between them.
+  - **a resample with s\* = 0** takes t\* = 0 when d̄\* = d̄, and t\* = +∞ or −∞ by the sign of
+    d̄\* − d̄ otherwise; quantiles are taken over all resamples, infinite ones included. The
+    simulation's coverage check uses the same rule;
+  - the equal-tailed two-sided interval at L: [d̄ − t\*₍₁₊L₎/₂·s/√n, d̄ − t\*₍₁₋L₎/₂·s/√n].
+- **An observed s = 0** gives the reading **undetermined**.
 - **Readings,** from the same interval:
   - excludes 0: a **direction**;
   - inside ±5 pp: **"the difference is below 5 pp"**, the main practical margin;
@@ -125,7 +139,7 @@ benign panel. It is not the pointwise difference of two curves at K\* for every 
   - a direction and a margin can hold together, and both are then reported;
   - otherwise **undetermined**.
 
-| A–F interval (97.5 %) | Wording |
+| A–F interval (at L) | Wording |
 |---|---|
 | excludes 0, inside ±2.5 | "A gives x to y pp less (more) harm than F at matched K_benign; the difference is below 2.5 pp" |
 | excludes 0, inside ±5 | the same, "below 5 pp" |
@@ -165,7 +179,11 @@ when the start is shared.
 Four fresh seeds per candidate. All search runs are K-only.
 
 1. **Round 0:** each arm at its two starting rates on the four seeds (24 runs).
-2. **The rule.** For each (arm, target), with m the median ln K over the four seeds:
+2. **The rule.** For each (arm, target), let m be the median ln K over the four seeds. It needs
+   four resolved, positive, finite step-25 K values. A stopped or missing run is never
+   silently left out: an instability stop is a scientific failure of that arm, and an incomplete
+   record is technical ([failure routes](#failure-routes)); an infrastructure interruption is
+   rerun.
    - if |m − ln K_target| ≤ 0.05, the rate is kept;
    - otherwise, ln η_new = ln η + (ln K_target − m)/b, with b = 1.25 (A), 1.30 (F) and 1.24 (P);
      the step is clipped to η_new/η ∈ [1/1.15, 1.15] and rounded to 3 significant digits.
@@ -195,6 +213,7 @@ veto.
   qualification and validation.
 - A failure of P alone never switches the candidate. P–F is computed at the candidate chosen for
   A–F.
+- The confirmation never triggers a new choice of candidate.
 
 ## Utility
 
@@ -220,7 +239,8 @@ veto.
 ### Validation
 
 - **Blocks.** 28 fresh blocks per candidate, six runs each: A, F and P at their two rates.
-  Support and exclusions are decided on K and utility before any label.
+  Support and exclusions are decided on K and utility before any label. A failed endpoint,
+  an instability stop included, removes its arm's support in that block.
 - **A–F passes** when both hold:
   - at least 22 of 28 blocks are supported for both A and F;
   - the four utility bounds of A and F pass.
@@ -228,7 +248,9 @@ veto.
   - at least 22 of 28 blocks are supported for both P and F;
   - the two utility bounds of P pass, and F's on that cohort.
 
-  If P–F does not pass, P is closed.
+- **Routes.** If A–F does not pass, the candidate fails scientifically: candidate 1 moves to
+  candidate 2, and candidate 2 ends the study with a scientific feasibility report. If P–F does
+  not pass, F's bound on the P–F cohort included, only P–F closes, and P with it.
 - **The 40-block fallback.** If the [simulation](#simulation-before-validation) requires it, the
   validation instead has 40 blocks and passes at 31 of 40 supported. This choice is made once,
   before any validation run, and is never a top-up after a failed 28-block validation.
@@ -248,15 +270,17 @@ Only validation's harm labels are opened, and only for the spread.
 
   It outputs no means, signs, per-seed values or detailed logs.
 - **The rule (A–F only).**
-  - SD is the sample SD of d_AF on the m supported validation blocks, at full precision.
+  - SD = 100·sd(d_AF), in pp: the sample SD of d_AF on the m supported validation blocks, at full
+    precision.
   - SD_up = SD·√((m − 1)/χ²₀.₂₀,ₘ₋₁), with χ²₀.₂₀,ₘ₋₁ the 20th percentile of χ² with m − 1
     degrees of freedom. This is the upper 80 % bound in normal theory: a planning bound, not
     guaranteed coverage under heavy tails.
-  - power(N) = Φ(2·√N / SD_up − 2.241). This is the normal approximation for a direction at
-    |Δ| = 2 pp under the two-sided 97.5 % interval.
+  - power(N) = Φ(2·√N / SD_up − z_L), with z_L = Φ⁻¹((1 + L)/2). This is the normal
+    approximation for a direction at |Δ| = 2 pp under the two-sided interval at L.
   - **N** is the smallest N ≥ 60 with power(N) ≥ 0.85.
-- **Examples.** At m = 28: SD 3.5 gives N = 60, and SD 5.0 gives N = 88. At m = 22 and SD 5.0,
-  N = 92.
+- **Examples,** at L = 0.975 (z_L = 2.241): at m = 28, SD 3.5 gives N = 60 and SD 5.0 gives
+  N = 88; at m = 22 and SD 5.0, N = 92. At L = 0.98 (z_L = 2.326), m = 28 and SD 5.0 give
+  N = 93.
 - **N > 90.** The confirmation does not start before the researcher decides on the extra blocks
   and their price. N is never cut, and the margins ±5 and ±2.5 are never widened to fit.
 - P–F's power is reported, not targeted.
@@ -277,6 +301,8 @@ Only validation's harm labels are opened, and only for the spread.
   - with fewer, it is descriptive only.
 
   The cap does not guarantee N; the simulation gives the realized numbers.
+- **Failed endpoints** remove support, as in validation. The confirmation never triggers a new
+  choice of candidate, and no failure in it is rerun to pass.
 - **Reported:** unsupported and excluded started blocks, and the worst-case values. No claim is
   made about "any seed".
 
@@ -306,7 +332,12 @@ Only validation's harm labels are opened, and only for the spread.
   computed as well. Two passing links never stand in for a direct comparison, since KL has no
   triangle inequality.
 - **The launcher run must complete its 25 updates.** A broken launcher run is never qualified by
-  a harness run that completed.
+  a harness run that completed. A declared instability stop of the launcher run or of an
+  unshifted harness trajectory is a scientific failure of the rate; any other incompleteness is
+  technical.
+- **Step 25 only.** Qualification measures D at step 25: 13 comparisons per case. Intermediate D
+  measurements belong only to the engineering stage's prespecified diagnostics; the ordinary
+  training monitors remain.
 
 **The bridge's conditions:**
 
@@ -411,12 +442,13 @@ The engineering stage comes before any scientific selection.
   - **Survival.** The realized norm and the initial functional difference are recorded. A
     realized norm below half the intended one is retried once at 10 times the intended norm; a
     second shortfall leaves the case incomplete (technical).
-- **Path spikes.** Values along the path (steps 1, 5, 10, 15, 20, 25) are reported separately and
-  do not fail the gate by themselves. Study 2's known case, P at 1.83·10⁻⁵, read 0.034 at step
-  25 against its bound 0.059.
-- **Non-finite values** in a required quantity (model, loss, gradient, KL) anywhere fail the
-  comparison they enter, under that comparison's kind. An undefined diagnostic at a zero step is
-  not a failure.
+- **Path spikes** are not measured in qualification. Study 2's known case, P at 1.83·10⁻⁵, which
+  read 0.151 at step 10 and 0.034 at step 25 against its bound 0.059, is re-measured along its
+  path in the engineering stage.
+- **Non-finite values.** A non-finite model, loss or gradient in a trajectory is an instability:
+  in a shifted or reference trajectory it is a scientific failure of the rate, as an exceeding
+  comparison; in an unshifted one, as above. A non-finite D between finite models is a
+  measurement failure and technical. An undefined diagnostic at a zero step is not a failure.
 - **Checks kept from study 2:**
   - the executable checks of the teacher path and the same-path control;
   - shared training prefixes across arms and rates;
@@ -428,7 +460,7 @@ The engineering stage comes before any scientific selection.
 |---|---|---|
 | **Infrastructure** | a documented external interruption: the Pod, the network, the deadline | the attempt is rerun under a new attempt id; it is not a mark. An unexplained incomplete record is technical. |
 | **Technical** | reproducibility: the repeat beyond 0.01·K\*, a failed bridge or a failure only in comparisons with the launcher checkpoint, a failed survival, an incomplete case | one **engineering cycle** at once: diagnosis, fix, re-qualification of every affected case. The same path is not simply rerun. One cycle per candidate; it does not use the scientific repair. |
-| **Scientific** | the reference or a shift beyond 0.01·K\* at step 25, harness baseline against it; a failed validation | no reruns to pass |
+| **Scientific** | a declared instability stop of a search, numerical or regular run; the reference or a shift beyond 0.01·K\* at step 25, harness baseline against it; a failed validation | no reruns to pass |
 
 **After a technical mark:**
 
@@ -436,7 +468,8 @@ The engineering stage comes before any scientific selection.
   The second candidate is not taken, since the failure lies in the code, not at K\*.
 - In P alone: P is closed, and only P–F ends.
 
-**After a scientific failure:**
+**After a scientific failure** in search, qualification or validation (in confirmation, failed
+endpoints only remove support):
 
 - A or F at candidate 1: candidate 2.
 - A or F at candidate 2: the study ends with a **scientific feasibility report**.
@@ -456,39 +489,55 @@ Every attempt is kept. A technical dead end and scientific infeasibility are rep
     matching receipt is not yet labeled.
 - **The judge is frozen:** WildGuard (`configs/judge/wildguard.yaml`, label definitions v2, the
   two-class outcome), its weights, template, parser and decoding.
-  - **Control items.** Every labeling batch includes 40 fixed control items: study 1's judge
-    calibration items, drawn once by a recorded seed, 20 that WildGuard labeled harmful there and
-    20 not, by id only.
+  - **Control items.** Every labeling batch includes 40 fixed control items: immutable archived
+    prompt–response pairs from study 1's judge calibration, drawn once by a recorded seed, 20
+    that WildGuard labeled harmful there and 20 not. Each is pinned by its id, the sha256 of its
+    prompt and of its response, and its expected label; an item whose content hash differs is
+    refused, so no regenerated or changed input can stand in for it.
   - A changed control label leads to relabeling the batch. A repeated change is a technical mark
     of the judge, and labeling stops until it is diagnosed.
 - **Sealing.** Every label is sealed from the first run. Harm leaves sealed storage only at
-  validation's spread step and at the final analysis.
+  validation's spread step and, after the cohorts and K\*_h are frozen, at the final analysis.
 
 ### The audit
 
 The audit is descriptive.
 
-- **When.** One terminal draw, after the confirmation's final analysis.
-- **Frame.** Every response of A's and F's bracket runs in the A–F analysis cohort, and of P's in
-  the P–F cohort. Each item i has a coefficient c_i = s_i·w_i / (n·521):
-  - s_i is ±1 by arm in its comparison;
-  - w_i is its run's interpolation weight;
-  - n is the cohort's size.
-- **Draw.**
-  - Sizes: 400 A, 400 F and 200 P.
-  - Within each arm, stratified by the judge's own label: half the draws from judge-harmful items,
-    half from judge-not-harmful (all items of a stratum when it is smaller).
-  - Within a stratum, items are drawn without replacement with probability proportional to
-    |c_i|, with recorded inclusion probabilities.
-  - The seed and the procedure go into the fixation record before any label is opened.
+- **When.** One terminal draw, after the judge-based analysis.
+- **Frame.** The union of both arms' bracket endpoints in each analysis cohort: every response
+  of A's and F's bracket runs in the A–F cohort, and of P's and F's in the P–F cohort, each item
+  counted once. Item i has a coefficient in each comparison E ∈ {AF, PF}:
+  c_i^E = s_i^E·w_i / (n_E·521), with
+  - s_i^E = +1 for the first arm of E, −1 for F, and 0 outside E's cohort or arms;
+  - w_i its run's interpolation weight;
+  - n_E the size of E's cohort.
+
+  An F response in both cohorts carries both coefficients; one only in the P–F cohort carries
+  c_i^AF = 0.
+- **Draw:** probability proportional to size, with replacement.
+  - Within each arm, the draw probability of item i is p_i = a_i / Σ a, with
+    a_i = max_E |c_i^E|.
+  - Sizes: 400 draws for A, 400 for F and 200 for P.
+  - An item drawn twice is labeled once and counts once per draw.
+  - The seed and the procedure go into the fixation record before any confirmation label is
+    opened.
 - **Reference labels.**
   - GPT and Grok label each drawn item independently, blind to arm, run, block and judge label.
   - The researcher resolves every disagreement and checks 10 % of the agreements, drawn with a
     recorded seed.
-  - A failed or unresolved reference stays missing.
-- **Estimates** (Horvitz–Thompson, weighted by the inclusion probabilities):
-  - per arm, the judge's sensitivity and false-positive rate near K\*;
-  - the implied bias of each Δ, Σ c_i·(reference_i − judge_i), with its uncertainty.
+  - A failed or unresolved reference stays missing. Missing references are counted and reported,
+    never silently dropped.
+- **Estimates.**
+  - The implied bias of each Δ, B_E = Σ_i c_i^E·(reference_i − judge_i), by Hansen–Hurwitz: the
+    mean over an arm's draws of c_i^E·(reference_i − judge_i)/p_i, summed over arms, with its
+    variance from the draws.
+  - Per arm, the judge's sensitivity and false-positive rate near K\*: ratios of the
+    Hansen–Hurwitz estimates of the a-weighted confusion totals, so that each item counts by its
+    weight in the Δs. Since a_i/p_i is constant within an arm, they equal the proportions among
+    the arm's draws.
+  - Each estimate is given on the draws with a resolved reference, which assumes the missing ones
+    are missing at random, and also as a bound with every missing reference taken at its worst
+    case. With no resolved draw, the estimate is undetermined.
 - **Undetermined rates.** An arm with fewer than 20 reference-harmful items has undetermined error
   rates. This count blocks nothing.
 - **No reference-harm claim** is made. The planned conservative bound on the bias at these sizes
@@ -519,14 +568,20 @@ validation, N, confirmation and analysis. It runs before any validation run.
 - **Power ≥ 80 % for A–F's direction** at |Δ| = 2 pp, given that the gates passed, with N from
   the rule and the true spread equal to the planning spread (3.5 and 5 pp). P–F's power is
   reported and blocks nothing.
-- **Bootstrap coverage** is checked for every N from 36 to the cap, the stop at the cap included.
-  In each scenario:
-  - the one-sided 95 % Clopper–Pearson lower bound of each comparison's non-coverage must not
-    exceed 2.5 %;
-  - the same lower bound of their joint non-coverage must not exceed 5 %.
-
-  If a scenario fails, the interval's level is raised, never lowered: to the smallest of 98.0,
-  98.5 and 99.0 % that passes, for both comparisons. It is recorded before validation.
+- **Bootstrap coverage** of the interval at level L, with the zero-SE rule above.
+  - **Where:** at N = 36, 45, 60, 75, 90 and 99, and at the stop at the cap, in every scenario
+    of the frozen grid.
+  - **Frozen counts:** 10 000 simulated studies per scenario and N, and 2 000 bootstrap
+    resamples per interval. The grid, the counts and the RNG streams go into the fixation record
+    before the run.
+  - **Accepted** only when, everywhere:
+    - the one-sided 95 % Clopper–Pearson **upper** bound of each comparison's non-coverage is at
+      most 2.5 %;
+    - the same upper bound of their joint non-coverage is at most 5 %.
+  - **The level.** L is the first of 0.975, 0.980, 0.985 and 0.990 that is accepted, for both
+    comparisons. It is then verified on an independent simulation stream with the same counts.
+    It is recorded before validation, and never lowered.
+  - **If no level is accepted,** or the verification fails, the confirmation cannot start.
 
 **If a requirement is not met:**
 
@@ -562,8 +617,11 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 6. the choice of candidate;
 7. validation's spread and N fixed;
 8. the confirmation;
-9. labeling and the audit;
-10. the final analysis.
+9. the cohorts and K\*_h frozen, before any confirmation label is opened;
+10. labeling of the confirmation;
+11. the judge-based analysis;
+12. the audit;
+13. the final report.
 
 **Rules:**
 
@@ -648,14 +706,14 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 
 | Item | Study 2 | What broke | Study 3 |
 |---|---|---|---|
-| Claims | A–F and a mechanism cohort with P, coupled in one selection | P's failure blocked the primary at U = 7 | two separate comparisons, 97.5 % each, nested ±5 and ±2.5 from one interval |
+| Claims | A–F and a mechanism cohort with P, coupled in one selection | P's failure blocked the primary at U = 7 | two separate comparisons at L = 97.5 % each (or a higher L fixed by the coverage check), nested ±5 and ±2.5 from one interval |
 | Arm gates | three arms jointly | — | separate gates and counters; P's failure closes only P–F |
 | Targets | 5, √(5U), U with U = 8, 7, 6; three rates | at U = 6 the spacing 0.091 was below the seed spread | 6.0, then 5.0; two rates; width ≤ 0.60; spacing reported, not a veto |
 | Search and repairs | support on every discovery seed, coverage as a veto, several repair rounds | avoidable failures and logic defects | one round by a pure function; one repair, before validation, for a K miss only |
 | Utility | strict bound at every endpoint | U = 8 at K\* would have passed | at K\*; validation a spending gate at α = 0.05; the claim at α/8 in confirmation |
 | Execution path | launcher and a separate harness, unlinked | F blocked at the junction of the two paths | harness plus bridge: each end compared directly with the launcher's step-25 checkpoint |
 | Repeat | a fresh run against the archive on scalars, tolerance 10⁻⁴ | measured the difference of paths | D₂₅ ≤ 0.01·K\*; a calibrated τ as a warning |
-| Perturbation pairs | maximum over the path, only after twin A | P's spike counted as instability; F's case had no pairs | step 25, ≤ 0.01·K\*; spikes reported; pairs always |
+| Perturbation pairs | maximum over the path, only after twin A | P's spike counted as instability; F's case had no pairs | step 25 only, ≤ 0.01·K\*; spikes in engineering diagnostics; pairs always |
 | Technical failure | a dead end awaiting a decision | the pair at U = 7 blocked for good | an engineering cycle (not the scientific repair), else a technical report |
 | Tolerances and identity | a tolerance change voided a stage | the tolerance was counted as GPU code | raw measurements kept, verdicts recomputed; rules fixed beforehand |
 | Simulation | support only, normal tails | the utility risk was not modeled | bootstrap of seed vectors, tails, widths; ≥ 95 % at the alternative; the 40-block fallback |

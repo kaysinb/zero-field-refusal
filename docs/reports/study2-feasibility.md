@@ -42,7 +42,7 @@ report.
 | S3, three-arm validation at (8, 20) (2026-10-22) | 108 runs on seeds 2100–2111. Support held in 12 of 12 blocks, and no run stopped by an instability rule. **Utility failed** (below). | scientific (utility gate) |
 | Three arms at (7, 20) (2026-10-22/23) | Discovery passed. At the numerical stage, **P at 1.83·10⁻⁵ failed** and **FA at 1.75·10⁻⁵ was not qualified (technical)** (both below). After the search allowance and its repair round, FA and P had no admissible triple. | scientific (P) and technical (FA) |
 | Three arms at (6, 20) (2026-10-23) | **No admissible FA triple** after discovery and its repair round (below). | scientific (selection) |
-| Primary pair at (7, 20) | `blocked`: the pinned pair takes the three arms' triples at U = 7, has no repair, and its FA rate 1.75·10⁻⁵ carries the technical mark. The pair at (6, 20) is ordered after it and was not visited. | technical |
+| Primary pair at (7, 20) | `blocked`: the pair inherits the latest three-arm selection at U = 7. After exclusion and repair, FA had no admissible triple; the exhausted rules and the unresolved technical mark of FA 1.75·10⁻⁵ blocked further selection. The pair at (6, 20) is ordered after it and was not visited. | technical |
 
 ## The block: FA at 1.75·10⁻⁵, U = 7
 
@@ -63,8 +63,9 @@ report.
 - **The consequence.** Under the rule the rate became unusable at B = 20, with a technical mark.
   The prescribed search allowance re-solved FA's selection without it. Its repair round, at
   1.96·10⁻⁵ on seeds 2000–2002 (step-25 K 7.43, 7.88 and 8.50), gave no triple that met the
-  selection's rules jointly. The pinned pair at U = 7 inherits the mark and has no repair, so it
-  is `blocked`.
+  selection's rules jointly. The pair inherits the latest three-arm selection. After exclusion
+  and repair, FA had no admissible triple; the exhausted rules and the unresolved technical mark
+  blocked further selection, so the pair is `blocked`.
 - **Execution paths.** The archived run came from the launcher, and twin A from the check's own
   training loop, the diagnostic's harness, which also serves the perturbation pairs. These paths
   differ in process and in loop code, though both accumulate gradients the same way over fixed
