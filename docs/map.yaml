@@ -294,6 +294,24 @@ topics:
   - tests/test_study2_audit.py
   - tests/test_study2_label_cli.py
   - tests/test_study2_short*.py
+- id: study3_qualification
+  title: Study 3's numerical qualification — campaigns, the driver per case, disk, reruns and the verdict
+  source: docs/operations.md#study-3-numerical-qualification
+  review:
+  - docs/study3-preregistration.md#numerical-qualification
+  - docs/study3-preregistration.md#failure-routes
+  - docs/operations.md#launching-runs
+  - docs/architecture.md#modules
+  - configs/experiments/qualification.yaml
+  - configs/experiments/study3_k_only.yaml
+  watch:
+  - src/zero_field_refusal/qualification*.py
+  - src/zero_field_refusal/launch.py
+  - scripts/qualify.py
+  - scripts/launch.py
+  - configs/experiments/qualification.yaml
+  - tests/test_qualify.py
+  - tests/test_qualification.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage

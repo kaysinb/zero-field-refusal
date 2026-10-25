@@ -40,6 +40,16 @@ per attempt start and end, per recovery round and per stop; each attempt's outpu
 ``RUNS_DIR/launch/<campaign name>/``. A start record carries the campaign's ``header`` when it
 has one (study 2's campaigns record the w_max they were written under, which the replay reads
 back: the final review of gate B, I4).
+
+**One label at a time** (``only=LABEL``; study 3's numerical qualification, which runs a case's
+launcher run, its harness parts and the deletion of its checkpoints before the next case): that
+run alone is assessed and attempted; every other run of the campaign is neither read nor started,
+so a finished case whose checkpoint was deleted is never assessed again. Its start and end
+records carry ``only``, and a recovery round opened under it is that run's own (once per run,
+logged with the label), never its cell's. ``max_attempts`` (default ``MAX_ATTEMPTS``) bounds the
+attempts of a run, and of a recovery round; the qualification passes 1, so that a failed launcher
+run is attempted again only after a recovery round with its recorded reason. A start record
+carries ``max_attempts`` when it is not the default.
 """
 
 from __future__ import annotations
@@ -242,8 +252,16 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
 
 
 def recovered_cells(records: Sequence[Mapping[str, Any]]) -> set[tuple[str, str]]:
-    """(experiment, cell) pairs that have had their recovery round."""
-    return {(r.get("experiment"), r.get("cell")) for r in records if r.get("event") == "recovery"}
+    """(experiment, cell) pairs that have had their recovery round (a run's own round, opened
+    under ``only``, is not its cell's)."""
+    return {(r.get("experiment"), r.get("cell")) for r in records
+            if r.get("event") == "recovery" and r.get("only") is None}  # fmt: skip
+
+
+def recovered_runs(records: Sequence[Mapping[str, Any]]) -> set[tuple[str, str]]:
+    """(experiment, label) pairs that have had a recovery round of their own (under ``only``)."""
+    return {(r.get("experiment"), r.get("only")) for r in records
+            if r.get("event") == "recovery" and r.get("only") is not None}  # fmt: skip
 
 
 def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str | None:
@@ -320,6 +338,8 @@ def run_campaign(
     recovery: str | None = None,
     stop: Callable[[], bool] | None = None,
     header: Mapping[str, Any] | None = None,
+    only: str | None = None,
+    max_attempts: int = MAX_ATTEMPTS,
 ) -> dict[str, list[str]]:
     """Run the missing runs in order; returns the labels by outcome.
 
@@ -330,11 +350,18 @@ def run_campaign(
     label, the attempt and the header, which the child reads from ``ZFR_CAMPAIGN``.
     ``recovery`` names the fixed technical cause and
     opens the recovery round of every cell with an exhausted run that has not had one.
-    ``header`` (``campaign_header``) goes into every start record. Raises ``CampaignError``
-    before starting anything if a run's existing directories conflict, and stops at an attempt
-    that completes without qualifying.
+    ``header`` (``campaign_header``) goes into every start record. ``only`` runs that label alone
+    and ``max_attempts`` bounds the attempts (module docstring). Raises ``CampaignError``
+    before starting anything if a run's existing directories conflict (or ``only`` names no run),
+    and stops at an attempt that completes without qualifying.
     """
     execute = execute or _subprocess
+    if not (isinstance(max_attempts, int) and max_attempts >= 1):
+        raise CampaignError(f"max_attempts must be a positive integer, not {max_attempts!r}")
+    if only is not None:
+        runs = [run for run in runs if run.label == only]
+        if not runs:
+            raise CampaignError(f"The campaign has no run labelled {only!r}")
     records = launch_records(runs_root)
     assessments = {run.label: assess(run, runs_root, records) for run in runs}
     conflicts = {f"{run.experiment}/{run_dir}": problem for run in runs
@@ -346,11 +373,26 @@ def run_campaign(
     out_dir = Path(runs_root) / "launch" / name
     log = Path(runs_root) / "launch" / f"{name}.jsonl"
     recovered = recovered_cells(records)
-    if recovery and not dry_run:
+    own = recovered_runs(records)  # the rounds opened under ``only``
+    extra = {"only": only} if only is not None else {}
+    if max_attempts != MAX_ATTEMPTS:
+        extra["max_attempts"] = max_attempts
+
+    def used_up(run: Run) -> bool:
+        state = assessments[run.label]
+        return _open(state) and len(state.technical) >= max_attempts
+
+    if recovery and not dry_run and only is not None:
+        run = runs[0]
+        if (used_up(run) and (run.experiment, run.cell) not in recovered
+                and (run.experiment, run.label) not in own):  # fmt: skip
+            _log(log, {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+                       "reason": recovery, "runs": [run.label], "only": only})  # fmt: skip
+            own.add((run.experiment, run.label))
+    elif recovery and not dry_run:
         for experiment, cell in sorted({(r.experiment, r.cell) for r in runs}):
             exhausted = [r for r in runs if (r.experiment, r.cell) == (experiment, cell)
-                         and _open(assessments[r.label]) and
-                         len(assessments[r.label].technical) >= MAX_ATTEMPTS]  # fmt: skip
+                         and used_up(r)]  # fmt: skip
             if exhausted and (experiment, cell) not in recovered:
                 _log(log, {"event": "recovery", "experiment": experiment, "cell": cell,
                            "reason": recovery, "runs": [r.label for r in exhausted]})  # fmt: skip
@@ -366,7 +408,9 @@ def run_campaign(
         if state.diverged is not None:
             result["diverged"].append(run.label)
             continue
-        limit = MAX_ATTEMPTS * (2 if (run.experiment, run.cell) in recovered else 1)
+        rounds = ((run.experiment, run.cell) in recovered
+                  or (run.experiment, run.label) in own)  # fmt: skip
+        limit = max_attempts * (2 if rounds else 1)
         attempts = len(state.technical)
         if dry_run:
             result["pending" if attempts < limit else "exhausted"].append(run.label)
@@ -377,11 +421,12 @@ def run_campaign(
                 outcome = "stopped"
                 break
             attempts += 1
-            outcome = _attempt(run, attempts, runs_root, out_dir, log, execute, header, name)
+            outcome = _attempt(run, attempts, runs_root, out_dir, log, execute, header, name,
+                               extra)  # fmt: skip
             if outcome != "technical":
                 break
         if outcome == "stopped" and not result["stopped"]:
-            _log(log, {"event": "stop", "run": run.label, "reason": "stop requested"})
+            _log(log, {"event": "stop", "run": run.label, "reason": "stop requested", **extra})
         result[outcome if outcome != "technical" else "exhausted"].append(run.label)
     return result
 
@@ -392,8 +437,12 @@ def _open(state: Assessment) -> bool:
 
 def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
              execute: Callable[[Run, str, Path, Mapping[str, Any]], int],
-             header: Mapping[str, Any] | None = None, name: str = "") -> str:  # fmt: skip
-    """One attempt; returns done, diverged or technical; stops the campaign on a conflict."""
+             header: Mapping[str, Any] | None, name: str,
+             extra: Mapping[str, Any] | None = None) -> str:  # fmt: skip
+    """One attempt; returns done, diverged or technical; stops the campaign on a conflict.
+    ``name`` is the campaign's (the child's ``ZFR_CAMPAIGN``); ``extra`` (``only``,
+    ``max_attempts``) goes into its start and end records."""
+    extra = dict(extra or {})
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_id = _run_id(stamp, run, attempt)
@@ -401,7 +450,7 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
     _log(log, {"event": "start", "run": run.label, "attempt": attempt, "run_id": run_id,
                "experiment": run.experiment, "config_hash": run.config_hash,
                "command": run.command()[1:],
-               **({"header": dict(header)} if header is not None else {})})  # fmt: skip
+               **({"header": dict(header)} if header is not None else {}), **extra})  # fmt: skip
     campaign = {"name": name, "label": run.label, "attempt": attempt,
                 "header": None if header is None else dict(header)}  # fmt: skip
     code = execute(run, run_id, output, campaign)
@@ -417,7 +466,8 @@ def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
     else:
         outcome, problem = "technical", f"status {status!r}"
     _log(log, {"event": "end", "run": run.label, "attempt": attempt, "run_id": run_id,
-               "returncode": code, "outcome": outcome, "problem": problem})  # fmt: skip
+               "returncode": code, "outcome": outcome, "problem": problem,
+               **({"only": extra["only"]} if "only" in extra else {})})  # fmt: skip
     if outcome == "conflict":
         raise CampaignError(f"{run.experiment}/{run_id} completed but cannot stand for "
                             f"{run.label}: {problem}; the campaign stops")  # fmt: skip
@@ -476,6 +526,7 @@ def _run_id(stamp: str, run: Run, attempt: int) -> str:
 def _subprocess(run: Run, run_id: str, output: Path,
                 campaign: Mapping[str, Any] | None = None) -> int:  # fmt: skip
     env = {**os.environ, "RUN_ID": run_id}
+    env.pop("ZFR_CAMPAIGN", None)  # a stale value of the launcher's own would be recorded
     if campaign is not None:
         env["ZFR_CAMPAIGN"] = json.dumps(campaign)
     with output.open("w") as f:

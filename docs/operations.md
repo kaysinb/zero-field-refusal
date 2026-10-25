@@ -1441,6 +1441,93 @@ python scripts/fa_control_diagnostic.py driver --commit SHA --out "$C/fa-control
 bash "$C/fa-control-diagnostic.sh"                               # on the Pod
 ```
 
+## Study 3: numerical qualification
+
+The registered rules are [the registration's](study3-preregistration.md#numerical-qualification)
+(with its [failure routes](study3-preregistration.md#failure-routes) and amendment 2, the
+same-path control); the settings are
+`configs/experiments/qualification.yaml`, and the harness and verdicts
+`qualification` ([modules](architecture.md#modules)). `scripts/qualify.py` drives it; its
+docstring has every rule.
+
+- **The campaign.** One launcher campaign per candidate and stage: one cell per arm and rate,
+  config `experiments/study3_k_only` with `study3.role=numerical` (or `engineering`), the arm,
+  the rate, `train.batch_size=20` and `tracking.endpoint_checkpoint` set to one absolute
+  directory on the Pod's container disk, and the candidate's numerical seeds (or the
+  engineering seeds). Each FA rate needs its case on the first numerical seed, which holds the
+  rate's same-path control. `plan` refuses any other campaign, and lists the cases, the GPU time
+  and the disk.
+- **Each case, in order, one at a time:**
+  1. a complete case (below) is skipped: nothing of it runs again;
+  2. the earlier, failed attempts' `<dir>/<run_id>.pt` of the case's launcher run are removed
+     (`clear-stale`, by the run ids in the launch journal), and the free disk is checked;
+  3. the launcher run alone: `scripts/launch.py CAMPAIGN --only LABEL --max-attempts 1`;
+  4. the baseline part, in a fresh process;
+  5. unless the baseline is already a scientific failure (an instability rule fired on the
+     unshifted baseline, or the launcher run stopped by one: the case is decided), the rest part
+     and, for an FA rate on the first numerical seed, the same-path control, each in a fresh
+     process;
+  6. the case's checkpoints are deleted (`finish`): every `<dir>/<run_id>.pt` of its launcher
+     run and `<dir>/harness/<case>/`, only once its records are published and read back by the
+     verdicts without error.
+
+  A case is complete when the latest attempt of each part it needs is recorded and readable:
+  the baseline and, unless decided, the rest and the due control.
+- **Disk.** A case needs two endpoints (the launcher's and the harness baseline's), one state
+  per engineering diagnostic step, one checkpoint of headroom for an atomic save, at
+  `checkpoint_gb` (6.5 GB at 1.5B) each, and `disk_margin_gb` (4 GB): 23.5 GB for a numerical
+  case. The driver checks it under the checkpoint directory before each launcher run and exits 1
+  below it.
+- **Attempts and reruns.** The driver never reruns anything. A part publishes
+  `<record>.started` before it runs; a part whose latest attempt is recorded, technical and
+  scientific records included, is never rerun; one started without a record (the Pod, the
+  network or the deadline stopped it) stops the driver with exit 8. Its rerun is the next
+  attempt, by hand, with its documented reason, which the record carries; then run the driver
+  again. A rerun baseline needs its rest again. A failed launcher run stops the driver too; its
+  rerun is the launcher's recovery round with the reason.
+
+  ```bash
+  Q="project-run $SRC python scripts/qualify.py"
+  $Q part --campaign "$C/qualification-c1.yaml" --candidate 1 --case s10200/adamw-5e-05 \
+    --part rest --attempt 2 --infrastructure "the Pod's deadline stopped attempt 1" \
+    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-5e-05
+  project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
+    --only adamw-5e-05/s10200 --max-attempts 1 --recovery "the Pod's deadline stopped attempt 1"
+  ```
+
+- **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
+  campaigns" [above](#study-2-stage-a)), its cap in `ZFR_DEADLINE_EPOCH`. Before the driver,
+  set the deadline in `/workspace/zfr-deadline` to cover the cases left, ≈ 39 min each and
+  ≈ 11 min more per same-path control, with an hour to spare
+  (`python3 scripts/pod_deadline_watch.py --set EPOCH`). A case the deadline stops leaves an
+  interrupted attempt (above) and its checkpoints on the container disk, which a stopped Pod
+  loses. The launcher run, whose checkpoint is gone, then cannot stand: move it aside (kept,
+  never deleted), rerun it through the recovery round with the reason, and rerun each part the
+  case had as its next attempt with the same reason.
+- **The commands.** The campaign file and the driver are written on the Pod, from the source
+  checkout of the commit; the driver embeds the campaign's absolute path and sha256.
+
+  ```bash
+  C="$RUNS_DIR/campaigns"
+  project-run "$SRC" python scripts/qualify.py plan --campaign "$C/qualification-c1.yaml" \
+    --candidate 1
+  project-run "$SRC" python scripts/qualify.py driver --campaign "$C/qualification-c1.yaml" \
+    --candidate 1 --commit SHA --out "$C/qualification-c1-driver.sh"
+  bash "$C/qualification-c1-driver.sh"   # detached
+  ```
+
+  The engineering stage adds `--engineering` and, for its path diagnostics,
+  `--diagnostic-steps 1,5,10,15,20`. The driver checks the checkout and the campaign's sha256,
+  that no process holds the GPU and under 1 000 MiB of it is in use, then runs the cases. It
+  writes the verdict on every exit. **Exits:** 1, a precondition or the disk; the launcher's
+  own exit when it stops; 8, an interrupted attempt; 0, every case complete.
+- **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
+  holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
+  verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
+  same-path control, the warnings; `--e-eng X` sets τ), `c<N>/engineering/verdict.json` the
+  engineering stage's (e_eng, the path maxima, the margins), and the driver's logs. Download and
+  archive them with an inventory before the Pod stops.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
@@ -1517,7 +1604,12 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
   `SIGTERM` to the launcher alone (not its process group) stops the campaign at a run boundary:
   the running attempt finishes and is recorded, a `stop` record is logged, and the launcher exits
-  non-zero without starting another; the same command carries on later. Send it to the
+  non-zero without starting another; the same command carries on later. `--only LABEL` (a run's
+  `<cell>/s<seed>`) assesses and runs that run alone, leaving every other run of the campaign
+  unread, and its start and end records carry the label; a recovery round under it is that run's
+  own. `--max-attempts N` replaces the three attempts (and the round's three more) with N; study
+  3's qualification driver passes `--only` and 1 ([below](#study-3-numerical-qualification)).
+  Send it to the
   launcher's PID only: Ctrl-C or a signal to the process group (`kill -TERM -PGID`) also reaches
   the running attempt and ends it. The boundary is where an attempt is admitted, not where its
   process starts: a signal that arrives while an admitted attempt is being logged does not keep

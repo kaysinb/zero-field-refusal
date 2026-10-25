@@ -607,3 +607,124 @@ def test_sigterm_reaches_only_the_launcher_and_the_child_finishes(tmp_path) -> N
     assert result["done"] == ["theta0/s0"] and len(result["stopped"]) == 3
     ends = [r for r in launch_log(root, name) if r["event"] == "end"]
     assert [(r["run"], r["returncode"], r["outcome"]) for r in ends] == [("theta0/s0", 0, "done")]
+
+
+# ------------------------------------------------------- one label at a time, and the attempts
+
+
+def test_only_runs_and_assesses_exactly_one_label(tmp_path, monkeypatch) -> None:
+    """``only``: that label alone is assessed and run; another run's conflict (a completed run
+    whose checkpoint was deleted, say) is neither read nor raised, and the journal records the
+    label with every start and end."""
+    from zero_field_refusal import launch
+
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    make_run_dir(root, runs[3], "conflicting", responses=False)  # sgd-0.1/s0 cannot stand
+    with pytest.raises(CampaignError, match="conflicting"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    assessed = []
+    real = launch.assess
+    monkeypatch.setattr(launch, "assess",
+                        lambda run, *a: assessed.append(run.label) or real(run, *a))  # fmt: skip
+    execute = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=execute, only="adamw-5e-5/s1")
+    assert assessed == ["adamw-5e-5/s1"]
+    assert [label for label, _ in execute.calls] == ["adamw-5e-5/s1"]
+    assert result["done"] == ["adamw-5e-5/s1"] and not result["skipped"]
+    assert sum(result.values(), []) == ["adamw-5e-5/s1"]
+    logged = [r for r in launch_log(root, name) if r["event"] in ("start", "end")]
+    assert [(r["event"], r["run"], r["only"]) for r in logged] == [
+        ("start", "adamw-5e-5/s1", "adamw-5e-5/s1"),
+        ("end", "adamw-5e-5/s1", "adamw-5e-5/s1"),
+    ]
+    with pytest.raises(CampaignError, match="no run labelled"):
+        run_campaign(name, runs, root, execute=execute, only="adamw-5e-5/s9")
+
+
+def test_max_attempts_one_stops_after_one_failed_attempt(tmp_path) -> None:
+    """``max_attempts=1`` (the qualification's launcher run): a failed attempt is not retried,
+    not in this invocation nor in the next; a recovery round with its reason gives that run
+    alone one more, and under ``only`` the round is the run's own, not its cell's."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    first, second = runs[1], runs[2]  # one cell, two seeds
+    broken = Executor(root, {first.label: ["failed"] * 3, second.label: ["failed"] * 3})
+    result = run_campaign(name, runs, root, execute=broken, only=first.label, max_attempts=1)
+    assert result["exhausted"] == [first.label] and len(broken.calls) == 1
+    again = run_campaign(name, runs, root, execute=broken, only=first.label, max_attempts=1)
+    assert again["exhausted"] == [first.label] and len(broken.calls) == 1
+    run_campaign(name, runs, root, execute=broken, only=first.label, max_attempts=1,
+                 recovery="the Pod's deadline stopped attempt 1")  # fmt: skip
+    assert [label for label, _ in broken.calls] == [first.label] * 2
+    # The other seed of the cell has no round of its own: one attempt, no retry
+    run_campaign(name, runs, root, execute=broken, only=second.label, max_attempts=1)
+    assert [label for label, _ in broken.calls] == [first.label] * 2 + [second.label]
+    recoveries = [r for r in launch_log(root, name) if r["event"] == "recovery"]
+    assert [(r["runs"], r["only"]) for r in recoveries] == [([first.label], first.label)]
+    starts = [r for r in launch_log(root, name) if r["event"] == "start"]
+    assert {r["max_attempts"] for r in starts} == {1}
+    with pytest.raises(CampaignError, match="max_attempts"):
+        run_campaign(name, runs, root, execute=broken, max_attempts=0)
+
+
+def test_the_default_attempts_and_records_are_unchanged(tmp_path) -> None:
+    """Without ``only`` and ``max_attempts``, the start and end records carry neither key."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_campaign(name, runs[1:2], root, execute=Executor(root, {}))
+    for record in launch_log(root, name):
+        assert "only" not in record and "max_attempts" not in record
+
+
+def test_the_launch_script_passes_only_and_max_attempts(tmp_path, monkeypatch) -> None:
+    import importlib.util
+
+    from zero_field_refusal import launch
+
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+
+    seen = {}
+
+    def fake(name, runs, root, **kwargs):
+        seen.update(kwargs)
+        return {key: [] for key in ("skipped", "done", "diverged", "exhausted", "stopped",
+                                    "pending")}  # fmt: skip
+
+    monkeypatch.setattr(script, "run_campaign", fake)
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
+    path = campaign(tmp_path)
+    script.main([str(path), "--only", "adamw-5e-5/s0", "--max-attempts", "1"])
+    assert seen["only"] == "adamw-5e-5/s0" and seen["max_attempts"] == 1
+    script.main([str(path)])
+    assert seen["only"] is None and seen["max_attempts"] == launch.MAX_ATTEMPTS
+
+
+def test_the_child_never_inherits_a_stale_campaign(tmp_path, monkeypatch) -> None:
+    """Without a campaign, a ``ZFR_CAMPAIGN`` of the launcher's own environment is removed from
+    the child's: the child would record a campaign it is not part of."""
+    from zero_field_refusal import launch
+
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("ZFR_CAMPAIGN", json.dumps({"name": "stale"}))
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    _, runs = load_campaign(campaign(tmp_path))
+    launch._subprocess(runs[1], "attempt-id", tmp_path / "out.log")
+    assert "ZFR_CAMPAIGN" not in seen and seen["RUN_ID"] == "attempt-id"
+
+
+def test_an_attempt_needs_its_campaigns_name() -> None:
+    import inspect
+
+    from zero_field_refusal import launch
+
+    parameter = inspect.signature(launch._attempt).parameters["name"]
+    assert parameter.default is inspect.Parameter.empty
