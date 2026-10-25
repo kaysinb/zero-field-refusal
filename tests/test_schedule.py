@@ -203,6 +203,20 @@ def test_a_slow_rise_stops_at_t_max(env, tmp_path, scripted) -> None:
     assert terminal["levels"]["missed"] == [1.0]
 
 
+def test_the_numerics_setup_is_recorded_with_the_inputs(env, tmp_path, scripted) -> None:
+    from zero_field_refusal.runtime import configure_numerics
+
+    cfg = scheduled(tmp_path, *K_RUN[:-1], "schedule.plateau.windows=6", "train.steps=5")
+    ready(env, cfg)
+    scripted(0.1)
+    setup = configure_numerics(cfg, env.device)
+    meta = json.loads((run_scheduled(cfg, env, run_id="setup", numerics_setup=setup)
+                       / "meta.json").read_text())  # fmt: skip
+    assert meta["inputs"]["numerics_setup"] == setup
+    unset = json.loads((run_scheduled(cfg, env, run_id="unset") / "meta.json").read_text())
+    assert "numerics_setup" not in unset["inputs"]  # callers without the setup record nothing
+
+
 @pytest.mark.parametrize(("value", "reason"), [(2.5, "k_above_max"), (math.nan, "nonfinite_k")])
 def test_the_monitor_stops_an_unstable_run(env, tmp_path, scripted, value, reason) -> None:
     cfg = scheduled(tmp_path, *K_RUN)  # K above 2 × 1.0

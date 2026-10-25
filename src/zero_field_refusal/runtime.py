@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -103,6 +104,66 @@ def environment(cfg: DictConfig, device: str | torch.device) -> Environment:
         data_root=data_root(),
         prompt_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
     )
+
+
+# The cuBLAS workspace of deterministic kernels: without it, cuBLAS has no deterministic GEMMs
+# and ``torch.use_deterministic_algorithms(True)`` refuses them on CUDA ≥ 10.2.
+DETERMINISTIC_CUBLAS_WORKSPACE = ":4096:8"
+
+
+def configure_numerics(cfg: DictConfig, device: str | torch.device) -> dict[str, Any]:
+    """Set this process's precision and backend flags from the config; return them as in force.
+
+    The one call of every entry point that computes (training, teacher generation, the stage-0
+    checks, the qualification harness), so that the launcher and the harness run under identical
+    flags (docs/study3-preregistration.md, "Numerical qualification" → "The bridge's
+    conditions": ``CUBLAS_WORKSPACE_CONFIG``, determinism, TF32, matmul precision, the same memory
+    limit or none). It runs before any CUDA work, since cuBLAS reads its workspace setting once:
+
+    - ``execution.deterministic``, read as given (never turned on here):
+      ``torch.use_deterministic_algorithms`` with it, and when true ``CUBLAS_WORKSPACE_CONFIG``
+      set to ``DETERMINISTIC_CUBLAS_WORKSPACE`` (refused once CUDA is initialized under another
+      value). When false the variable stays as the process found it, and is recorded;
+    - TF32 and the float32 matmul precision from ``model.tf32`` (``models.set_numerics``, which
+      ``models.load_model`` repeats with the same config);
+    - ``execution.memory_limit_gb``, unless null: the allocator cap of
+      ``fa_control_diagnostic.apply_memory_rule`` on the device's normalized index (a cap on what
+      the process may reserve, not a reservation; nothing on the CPU).
+
+    The returned record holds the settings read back from torch and the environment, not the
+    config's values: ``tf32_matmul``, ``tf32_cudnn``, ``matmul_precision``, ``deterministic``,
+    ``cublas_workspace_config``, ``memory_limit_gb`` and ``memory_fraction`` (None without a cap;
+    the fraction None on the CPU too) and ``device_index`` (None on the CPU).
+    """
+    from .fa_control_diagnostic import apply_memory_rule, cuda_index  # it imports this module
+
+    device = torch.device(device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable; check the NVIDIA driver (CUDA 13 needs >= 580)")
+    deterministic = bool(cfg.execution.deterministic)
+    workspace = DETERMINISTIC_CUBLAS_WORKSPACE
+    if deterministic and os.environ.get("CUBLAS_WORKSPACE_CONFIG") != workspace:
+        if torch.cuda.is_initialized():
+            raise RuntimeError("CUBLAS_WORKSPACE_CONFIG must be set before any CUDA work: call "
+                               "runtime.configure_numerics first in the process")  # fmt: skip
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = workspace
+    torch.use_deterministic_algorithms(deterministic)
+    models.set_numerics(cfg.model)
+    index = cuda_index(device) if device.type == "cuda" else None
+    limit = cfg.execution.memory_limit_gb
+    rule = None
+    if limit is not None:
+        rule = apply_memory_rule(device if index is None else torch.device("cuda", index), limit)
+    return {
+        "tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
+        "tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
+        "matmul_precision": torch.get_float32_matmul_precision(),
+        "deterministic": torch.are_deterministic_algorithms_enabled(),
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        "memory_limit_gb": None if rule is None else rule["limit_gb"],
+        "memory_fraction": None if rule is None else rule["fraction"],
+        "device_index": index,
+    }
 
 
 def prompt_set_of(cfg: DictConfig, kind: str) -> str:

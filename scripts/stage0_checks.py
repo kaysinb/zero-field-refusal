@@ -10,12 +10,13 @@ run directory and the environment's path-field record under ``DATA_DIR/checks/``
 from zero_field_refusal.checks import run_stage0_checks
 from zero_field_refusal.config import from_cli
 from zero_field_refusal.protocol import check_run_config
-from zero_field_refusal.runtime import environment
+from zero_field_refusal.runtime import configure_numerics, environment
 
 
 def main() -> None:
     cfg = from_cli()
     check_run_config(cfg)
+    configure_numerics(cfg, cfg.execution.device)  # the runs' flags, before any CUDA work
     run = run_stage0_checks(cfg, environment(cfg, cfg.execution.device))
     print(run.dir)
 

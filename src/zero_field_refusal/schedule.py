@@ -446,8 +446,19 @@ class _LogHistogram:
         return out
 
 
-def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = None) -> Path:
-    """One study-2 run under ``cfg.schedule``; returns the run directory."""
+def run_scheduled(
+    cfg: DictConfig,
+    env: Environment,
+    *,
+    run_id: str | None = None,
+    numerics_setup: dict[str, Any] | None = None,
+) -> Path:
+    """One study-2 run under ``cfg.schedule``; returns the run directory.
+
+    ``numerics_setup`` is the record of ``runtime.configure_numerics`` from the entry point
+    (scripts/train.py), kept in ``meta.json`` under ``inputs.numerics_setup``; callers that set
+    no flags pass nothing and record nothing.
+    """
     if cfg.run_type != "train":
         raise ValueError("run_scheduled needs run_type=train")
     schedule = Schedule.from_config(cfg)
@@ -458,6 +469,8 @@ def run_scheduled(cfg: DictConfig, env: Environment, *, run_id: str | None = Non
         run.record_inputs({"path_check": {"run_id": record["run_id"],
                                           "fingerprint": record["fingerprint"]},
                            "prompt_manifest_sha256": env.prompt_manifest_sha256})  # fmt: skip
+        if numerics_setup is not None:
+            run.record_inputs({"numerics_setup": numerics_setup})
         student, reference = env.new_model(), env.new_model()
         reference.requires_grad_(False)
         trainable = freeze(student, cfg.train.freeze)

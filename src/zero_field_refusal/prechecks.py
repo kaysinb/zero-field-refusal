@@ -7,9 +7,9 @@ Two checks therefore block training:
 - **Path field (invariant 8).** The stage-0 checks measure, per execution environment, the bound
   on the residual field that the path discrepancy creates and write a record under
   ``DATA_DIR/checks/``. A training run needs a passed record for its own environment (model
-  revision and numerics, device, library versions, execution batch sizes, and the check, sampler
-  and protocol versions) that covers its steps, batch size and response cap. A missing, failed or
-  out-of-scope record stops it.
+  revision and numerics, determinism and the cuBLAS workspace setting, device, library versions,
+  execution batch sizes, and the check, sampler and protocol versions) that covers its steps,
+  batch size and response cap. A missing, failed or out-of-scope record stops it.
 - **Teacher gap (invariant 1).** At step 0 the training path must reproduce the stored teacher
   log-probabilities of the run's whole stream within the preregistered thresholds.
 - **The run's own path field.** From the same step-0 differences Δ_t of the sampled tokens,
@@ -59,9 +59,17 @@ BOOTSTRAP_SEED = 0
 
 
 def environment_fingerprint(cfg: DictConfig, device: torch.device) -> dict[str, Any]:
-    """What determines the numerics of the generation and training paths, and the check's code."""
+    """What determines the numerics of the generation and training paths, and the check's code.
+
+    Determinism (``execution.deterministic``) and, on a GPU, the process's
+    ``CUBLAS_WORKSPACE_CONFIG`` (as ``runtime.configure_numerics`` left it) are numerics too
+    (docs/study3-preregistration.md, "The bridge's conditions"). Each enters the fingerprint only
+    when set, so the records of studies 1 and 2 (deterministic false, no cuBLAS setting) keep
+    their digests and keep matching their configs, and a record without them never matches a run
+    that sets them.
+    """
     packages = package_versions()
-    return {
+    fingerprint = {
         "check_version": CHECK_VERSION,
         "sampler_version": SAMPLER_VERSION,
         "protocol_version": cfg.protocol_version,
@@ -81,6 +89,12 @@ def environment_fingerprint(cfg: DictConfig, device: torch.device) -> dict[str, 
         "cuda": torch.version.cuda if device.type == "cuda" else None,
         "cudnn": torch.backends.cudnn.version() if device.type == "cuda" else None,
     }
+    if OmegaConf.select(cfg, "execution.deterministic", default=False):
+        fingerprint["deterministic"] = True
+    workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG") if device.type == "cuda" else None
+    if workspace is not None:
+        fingerprint["cublas_workspace_config"] = workspace
+    return fingerprint
 
 
 def record_path(root: Path, fingerprint: dict[str, Any]) -> Path:

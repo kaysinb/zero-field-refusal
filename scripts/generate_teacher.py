@@ -17,6 +17,7 @@ import argparse
 
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.runtime import (
+    configure_numerics,
     environment,
     extend_stream,
     generate_stream,
@@ -41,6 +42,7 @@ def main() -> None:
     if args.stream == "soft_targets" and stream_layout(cfg) == "appendable":
         parser.error("with appendable streams the soft-target control replays its targets from the "
                      "training stream; no soft-target stream is generated")  # fmt: skip
+    configure_numerics(cfg, cfg.execution.device)  # the runs' flags, before any CUDA work
     env = environment(cfg, cfg.execution.device)
     seeds = [None] if args.stream in INSTRUMENT_KINDS else args.seeds
     if not seeds:

@@ -317,7 +317,13 @@ evaluation: a repetition penalty would change greedy outputs too.
 ### Precision
 
 - Stages 0–2 run entirely in fp32: weights, compute, gradients and both Adam moments; TF32 is off
-  (`model.dtype`, `model.tf32`). Each larger model size fixes its storage, compute and
+  (`model.dtype`, `model.tf32`). Every entry point that computes (`train.py`,
+  `generate_teacher.py`, `stage0_checks.py`, the qualification harness) sets its precision and
+  backend flags by one call before any CUDA work, `runtime.configure_numerics`: TF32 and the
+  matmul precision, determinism as `execution.deterministic` gives it (with
+  `CUBLAS_WORKSPACE_CONFIG=:4096:8` when true) and the allocator cap `execution.memory_limit_gb`
+  (none when null). A scheduled run records the flags as read back from torch in `meta.json`
+  (`inputs.numerics_setup`). Each larger model size fixes its storage, compute and
   gradient-reduction dtypes; FSDP2 reduces gradients in fp32 (`reduce_dtype=float32`). Provenance
   records all of them.
 - Teacher log-probabilities come from the raw logits, not from scores after logits processors.

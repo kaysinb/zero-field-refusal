@@ -180,8 +180,9 @@ renaming a partial directory; after an interrupted generation, remove the leftov
 `generate_teacher.py ... --remove-partial` once nothing is generating.
 
 The stage-0 checks write a path-field record per execution environment under `DATA_DIR/checks/`:
-model numerics, GPU model, library versions, execution batch sizes and the check's version; an
-older record moves to `history/`. Training runs stop before their first optimizer step without a
+model numerics, GPU model, library versions, execution batch sizes and the check's version, and
+determinism and `CUBLAS_WORKSPACE_CONFIG` when set (records without them, studies 1 and 2, match
+only runs without them); an older record moves to `history/`. Training runs stop before their first optimizer step without a
 passed record for their own environment that covers their steps, batch size and response cap, so
 run the checks on each GPU type and execution setting used. Each run also checks its own stream
 against the path-field bound and the teacher-gap thresholds.
