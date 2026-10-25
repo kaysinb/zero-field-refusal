@@ -91,19 +91,22 @@ CUDA work and builds the environment from the run's campaign config; the surviva
 float64 fallback stay inside the part.
 
 **A case restart** (``restart-case --infrastructure REASON``; "Voiding and supersession": an
-infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop
-during a case loses the container disk, with the launcher run's checkpoint and the harness's:
-the case cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a
-clean checkout) ``restart-<n>.json`` in the case's folder, naming every attempt of the case's
-parts (the baseline, the rest and, for the case that holds it, the same-path control): each
-recorded one with its record's sha256, status and kind, each interrupted one by its number;
-the reason; and the launcher run located then. It is refused without a reason, and when every
-attempt is named already. The attempts it names are void: a part whose recorded attempts are
+infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop during
+a case loses the container disk, with the launcher run's checkpoint and the harness's: the case
+cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a clean checkout)
+``restart-<n>.json`` in the case's folder, naming every attempt of the case's parts (the baseline,
+the rest and, for the case that holds it, the same-path control): each recorded one with its
+record's sha256, status and kind, each interrupted one by its number; the reason; and the launcher
+run located then. It is refused without a reason, when every attempt is named already, for a
+complete case, and when any recorded attempt is scientific (its kind, or its verdict: a baseline
+decided by a declared instability rule, a scientific rest or control) or unreadable: the
+registration voids only an infrastructure-interrupted attempt, and a scientific record keeps
+counting ("no reruns to pass"). The attempts it names are void: a part whose recorded attempts are
 all named is ``restarted``, so the case is not complete; ``part --resume`` exits 8 for it, and
-``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names
-the restart records); a rest waits for the baseline's new attempt. The case then starts again
-from a new launcher run (the launcher's recovery round with the same reason) and new attempts of
-its parts. The named records are kept, listed, and voided in the verdict (with the reason).
+``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names the
+restart records); a rest waits for the baseline's new attempt. The case then starts again from a new
+launcher run (the launcher's recovery round with the same reason) and new attempts of its parts. The
+named records are kept, listed, and voided in the verdict (with the reason).
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -629,16 +632,64 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
                                                    "reasons")}))  # fmt: skip
 
 
-def restart_case(args, planned: Planned, out: Path, root: Path) -> None:
+def scientific_attempts(
+    folder: Path, p: Planned, scope: q.QualificationScope
+) -> list[str]:  # fmt: skip
+    """The case's recorded attempts that are scientific, or that the verdicts cannot read: a
+    record of kind scientific; a baseline the verdict alone calls scientific (a declared
+    instability rule, the launcher run's instability stop); a rest scientific with the baseline
+    record it names; a control whose verdict is scientific. None of them may be voided."""
+    found: list[str] = []
+    baselines = {}
+    for n, state in attempt_files(folder, "baseline").items():
+        if state == "recorded":
+            path = folder / f"baseline-attempt-{n}.json"
+            baselines[file_sha256(path)] = _read(path)
+    for name in ["baseline", "rest", *(["control"] if p.control else [])]:
+        for n, state in attempt_files(folder, name).items():
+            if state != "recorded":
+                continue
+            record = _read(folder / f"{name}-attempt-{n}.json")
+            label = f"{name} attempt {n}"
+            if record is None:
+                found.append(f"{label}: unreadable")
+                continue
+            try:
+                if name == "baseline":
+                    kind = q.case_verdict(record, None, scope)["kind"]
+                elif name == "rest":
+                    bound = baselines.get((record.get("baseline_record") or {}).get("sha256"))
+                    kind = q.case_verdict(bound, record, scope)["kind"] if bound else None
+                else:
+                    kind = q.control_verdict(record, scope, p.case.candidate)["kind"]
+            except Exception as exc:  # a record the verdicts cannot read is never voided
+                found.append(f"{label}: the verdicts cannot read it ({type(exc).__name__})")
+                continue
+            if q.SCIENTIFIC in (record.get("kind"), kind):
+                found.append(f"{label}: scientific")
+    return found
+
+
+def restart_case(
+    args, planned: Planned, out: Path, root: Path, scope: q.QualificationScope
+) -> None:
     """A case restart (module docstring, "A case restart"): a record, published atomically, that
     names every attempt of the case's parts (the baseline, the rest and its control if it holds
     one), each recorded one with its record's sha256, and the infrastructure reason; the
-    attempts it names are void. Refused without a reason, or with no attempt it does not name
-    already."""
+    attempts it names are void. Refused without a reason, with no attempt it does not name
+    already, for a complete case, and when any recorded attempt is scientific (or unreadable):
+    only an infrastructure-interrupted case is voided, and a scientific record keeps counting
+    ("no reruns to pass")."""
     case, reason = planned.case, args.infrastructure
     if not reason:
         sys.exit("restart-case needs --infrastructure REASON: the documented interruption")
     folder = case_folder(out, case)
+    if case_state(out, planned, scope)[0]:
+        sys.exit(f"{case.name}: the case is complete; a restart voids only an interrupted case")
+    science = scientific_attempts(folder, planned, scope)
+    if science:
+        sys.exit(f"{case.name}: no restart: a scientific record keeps counting and is never "
+                 f"voided (no reruns to pass): {science}")  # fmt: skip
     earlier = restart_records(folder)
     listed = {(e.get("part"), e.get("attempt")) for _, r in earlier
               for e in (r or {}).get("attempts") or [] if isinstance(e, dict)}  # fmt: skip
@@ -794,7 +845,8 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
             holder = next((p for p in planned if p.control and p.case.lr == lr
                            and p.case.optimizer == optimizer), None)  # fmt: skip
             if holder is not None:
-                record = latest((out / holder.case.attempt_path("control", 1)).parent, "control")
+                where = case_folder(out, holder.case)  # a restart-named control is not current
+                record = latest(where, "control", restarted(where))
                 control = None if record is None else q.control_verdict(record, scope, candidate)
             runs = {p.case.seed: located(p.run, root) for p in planned
                     if (p.case.optimizer, p.case.lr) == (optimizer, lr)}  # fmt: skip
@@ -1059,7 +1111,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit("interrupted needs --part, --attempt N and --technical REASON")
         interrupted(args, chosen, out, scope)
     elif args.command == "restart-case":
-        restart_case(args, chosen, out, root)
+        restart_case(args, chosen, out, root, scope)
     elif args.command == "clear-stale":
         clear_stale(chosen, root)
     else:  # locate

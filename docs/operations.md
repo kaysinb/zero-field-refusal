@@ -1523,7 +1523,10 @@ docstring has every rule.
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
   those attempts are void, kept and listed in the verdict, and neither count nor block. A
-  restart without a reason is refused. Then the launcher run, whose checkpoint is gone, cannot
+  restart without a reason is refused, and so is a restart of a complete case or of a case with
+  a scientific record (a baseline decided by a declared instability rule, a scientific rest or
+  control): only an infrastructure-interrupted attempt is void, and a scientific record keeps
+  counting. Then the launcher run, whose checkpoint is gone, cannot
   stand: move it out of the experiment (kept, never deleted) and rerun it through the
   launcher's recovery round with the same reason; run each part the case needs as its next
   attempt with the same reason, the baseline first (`part --resume` exits 8 for a part the

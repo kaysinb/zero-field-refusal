@@ -567,6 +567,10 @@ def test_a_case_restart_lets_the_case_run_again(qualify, stubbed, tmp_path, monk
     ]
     with pytest.raises(SystemExit, match="no attempt to restart"):  # every attempt named
         qualify.main(restart(path, FA, RESTART))
+    qualify.main(["verdict", *common(path)])  # the named control is not the rate's current one
+    fa = json.loads((out / "c1" / "verdict.json").read_text())["rates"][f"adam_frozen-{FA_LR:g}"]
+    assert [v["case"] for v in fa["voided"]] == [FA.name, "control"]
+    assert fa["control"]["reasons"] == ["no same-path control record"]
     with pytest.raises(SystemExit) as stop:
         qualify.main(["complete", *common(path), "--case", FA.name])
     assert stop.value.code == qualify.NO
@@ -610,36 +614,41 @@ def test_a_case_restart_lets_the_case_run_again(qualify, stubbed, tmp_path, monk
     assert void.isdisjoint(e["record_sha256"] for e in fa["not_counted"])
 
 
-def test_a_restart_needs_its_reason_and_keeps_a_scientific_record_listed(
-    qualify, tmp_path, monkeypatch
-) -> None:
-    """A scientific record is voided only through a restart record with its reason; it stays
-    listed, with that reason, and stops making its rate failing."""
-    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
+def test_a_restart_never_voids_a_scientific_record(qualify, tmp_path, monkeypatch) -> None:
+    """Only an infrastructure-interrupted case is voided: a restart over a scientific record (here
+    a baseline decided by a declared instability rule) is refused, and the rate stays failing; so
+    is a restart of a complete case, or one without a reason. A restart over the technical
+    attempts of an incomplete case still works."""
     path = campaign(tmp_path)
     out = tmp_path / "runs" / "qualification"
     with pytest.raises(SystemExit, match="no attempt to restart"):  # nothing recorded yet
         qualify.main(restart(path, ADAMW, RESTART))
-    write_case(out, ADAMW, decided=True)  # a scientific baseline
+    # A technical baseline and no rest: a case the Pod stop interrupted
+    lost = {"status": "failed", "kind": "technical", "reasons": ["OSError: lost"]}
+    publish(out, ADAMW, "baseline", {**synthetic(ADAMW)[0], **lost})
     for reason in ((), ("",)):
         with pytest.raises(SystemExit, match="needs --infrastructure REASON"):
             qualify.main(restart(path, ADAMW, *reason))
-    folder = out / ADAMW.attempt_path("baseline", 1).rsplit("/", 1)[0]
-    assert not list(folder.glob("restart-*"))
-    key = f"adamw-{ADAMW_LR:g}"
+    qualify.main(restart(path, ADAMW, RESTART))
+    assert (case_folder(out, ADAMW) / "restart-1.json").is_file()
+    # A scientific baseline (the FA case, its control not yet run: not complete)
+    write_case(out, FA, decided=True)
+    key = f"adam_frozen-{FA_LR:g}"
     qualify.main(["verdict", *common(path)])
     assert json.loads((out / "c1" / "verdict.json").read_text())["states"][key] == "failing"
-    qualify.main(restart(path, ADAMW, RESTART))
+    with pytest.raises(SystemExit, match=r"scientific record keeps counting.*baseline attempt 1"):
+        qualify.main(restart(path, FA, RESTART))
+    assert not list(case_folder(out, FA).glob("restart-*"))
     qualify.main(["verdict", *common(path)])
     verdict = json.loads((out / "c1" / "verdict.json").read_text())
-    assert verdict["states"][key] == "incomplete"
-    assert [(e["case"], e["part"], e["restart"]) for e in verdict["superseded"]] == [
-        (ADAMW.name, "baseline", RESTART)]  # fmt: skip
-    (old,) = [c for c in verdict["cases"] if c["case"]["name"] == ADAMW.name]
-    assert old["kind"] == "scientific" and old["superseded"]["restart"] == RESTART
-    assert verdict["rates"][key]["voided"] == [
-        {"case": ADAMW.name, "record_sha256": old["record_sha256"], "reason": RESTART}
-    ]
+    assert verdict["states"][key] == "failing" and verdict["rates"][key]["voided"] == []
+    publish(out, FA, "control", control_record(case=FA))  # now complete
+    with pytest.raises(SystemExit, match="the case is complete"):
+        qualify.main(restart(path, FA, RESTART))
+
+
+def case_folder(out, case):
+    return out / case.attempt_path("baseline", 1).rsplit("/", 1)[0]
 
 
 def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:
