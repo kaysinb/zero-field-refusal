@@ -59,7 +59,8 @@ These settings are unchanged from study 2's short regime
   - **regular runs** (validation, confirmation) evaluate K, K_harmful, utility and the 521 sealed
     harmful responses at step 25;
   - **K-only runs** (search, the numerical launcher runs) evaluate K alone. They measure no
-    utility and generate no harmful response.
+    utility and generate no harmful response. *Corrected by
+    [amendment 1](#amendment-1-what-k-only-runs-measure).*
 
 ## Questions and estimands
 
@@ -741,4 +742,20 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
 
 ## Amendments
 
-None yet.
+### Amendment 1: what K-only runs measure
+
+Decided on 2026-10-25 by the researcher, before any study-3 run, campaign or stream existed,
+while planning the code. It corrects a statement of fact about the instrument; it changes no
+decision rule, threshold or seed.
+
+- **The correction.** A K-only run (`eval.k_only`, study 2's numerical runs) measures K_benign on
+  the scoring panel, the monitor and utility (MMLU and the factual questions). It reads no harmful
+  prompt set, takes no K on the harmful K prompts and generates no response to a harmful prompt.
+  The registered text said that K-only runs measure no utility; that was wrong.
+- **What stays.** The definition of a usable K-only run is unchanged: 25 updates, finite records
+  and a positive, finite step-25 K, without the MMLU criterion. The search and the numerical
+  qualification decide on K and numerics only.
+- **What is added.** The utility of search and numerical runs is recorded and reported with every
+  endpoint. It enters no decision.
+- **What was known.** The registration, the study-2 code and study 2's K-only records; no study-3
+  outcome.
