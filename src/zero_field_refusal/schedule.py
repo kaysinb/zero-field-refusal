@@ -59,7 +59,8 @@ fails the run. The record ``{path, sha256, step, names_sha256}`` goes to ``summa
 ``meta.json`` (``inputs.endpoint_checkpoint``) at once; a run that stops before its last update,
 or on a non-finite weight, writes no file and records ``None``. The file's existence is not the
 run's success: the later evaluation and the terminal record decide that. The save only reads the
-parameters (host copies) and draws no random numbers.
+parameters (host copies) and draws no random numbers. A relative directory is read against the
+working directory; the strings "None" and "null" are refused (``_require_checkpoint_dir``).
 """
 
 from __future__ import annotations
@@ -480,6 +481,7 @@ def run_scheduled(
     if cfg.run_type != "train":
         raise ValueError("run_scheduled needs run_type=train")
     schedule = Schedule.from_config(cfg)
+    _require_checkpoint_dir(cfg.tracking.get("endpoint_checkpoint", None))
     seed_everything(derive_seed(cfg.seed, "torch"))
     started = time.perf_counter()
     with Run(cfg, run_id=run_id) as run:
@@ -594,6 +596,20 @@ def run_scheduled(
             del directions, student, trainable, params
             record_endpoint_rayleigh(cfg, env, run, reference, delta, *panel)
         return run.dir
+
+
+def _require_checkpoint_dir(directory: Any) -> None:
+    """``tracking.endpoint_checkpoint`` is null (off) or a directory. A string that spells null
+    (``key=None`` on a command line loads as the text "None") would save into a directory of that
+    name under the working directory and leave the switch on: refused. A relative path is read
+    against the working directory."""
+    if directory is None:
+        return
+    if not isinstance(directory, str) or directory.strip().lower() in ("", "none", "null", "~"):
+        raise ValueError(
+            f"tracking.endpoint_checkpoint is {directory!r}: give a directory, or null (YAML) to "
+            "switch the checkpoint off"
+        )
 
 
 def save_endpoint(

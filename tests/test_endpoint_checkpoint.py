@@ -58,9 +58,15 @@ def scientific(rows: list[dict]) -> list[dict]:
 def test_the_checkpoint_changes_no_training(env, tmp_path, monkeypatch) -> None:
     built, models = built_optimizers(monkeypatch), final_models(monkeypatch)
     out = {}
-    for name, ckpt in (("off", None), ("on", str(tmp_path / "ckpt"))):
-        cfg = arm_config(env, tmp_path, "adamw", f"tracking.endpoint_checkpoint={ckpt}")
+    ckpt = tmp_path / "ckpt"
+    for name, setting in (("off", "null"), ("on", str(ckpt))):
+        cfg = arm_config(env, tmp_path, "adamw", f"tracking.endpoint_checkpoint={setting}")
+        assert (cfg.tracking.endpoint_checkpoint is None) == (name == "off")
         run_dir = run_scheduled(cfg, env, run_id=f"bridge-{name}")
+        files = sorted(p.name for p in ckpt.glob("*")) if ckpt.exists() else []
+        assert files == ([] if name == "off" else ["bridge-on.pt"])  # the off run wrote none
+        summary = json.loads((run_dir / "summary.json").read_text())
+        assert (name == "on") == bool(summary.get("endpoint_checkpoint"))  # absent or null: off
         params = [p for g in built[-1].param_groups for p in g["params"]]
         out[name] = {
             "metrics": scientific(read_jsonl(run_dir / "metrics.jsonl")),
@@ -180,6 +186,15 @@ def test_the_hashes_are_independent_of_the_checkpoint_flag(env, tmp_path) -> Non
     assert len(inputs["theta0_trainable_sha256"]) == 64 and "v0_sha256" not in inputs  # AdamW
 
 
+@pytest.mark.parametrize("text", ["None", "null", "", "none"])
+def test_a_directory_that_spells_null_is_refused(env, tmp_path, monkeypatch, text) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = arm_config(env, tmp_path, "adamw", f"tracking.endpoint_checkpoint='{text}'")
+    with pytest.raises(ValueError, match="endpoint_checkpoint"):
+        run_scheduled(cfg, env, run_id="refused")
+    assert not (tmp_path / text).exists() if text else True
+
+
 def test_the_flag_is_outside_the_config_hash(env, tmp_path) -> None:
     plain = arm_config(env, tmp_path, "adamw")
     flagged = arm_config(env, tmp_path, "adamw", f"tracking.endpoint_checkpoint={tmp_path}",
@@ -197,9 +212,9 @@ def test_study_2_configs_write_nothing(env, tmp_path) -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA RNG state needs a GPU")
 def test_the_checkpoint_leaves_the_cuda_rng_alone(env, tmp_path) -> None:
     states = []
-    for ckpt in (None, str(tmp_path / "ckpt")):
+    for ckpt in ("null", str(tmp_path / "ckpt")):
         cfg = arm_config(env, tmp_path, "adamw", f"tracking.endpoint_checkpoint={ckpt}",
                          "train.steps=3", "schedule.evaluate_at=[3]")  # fmt: skip
-        run_scheduled(cfg, env, run_id=f"cuda-{ckpt is None}")
+        run_scheduled(cfg, env, run_id=f"cuda-{ckpt == 'null'}")
         states.append(torch.cuda.get_rng_state())
     assert torch.equal(*states)
