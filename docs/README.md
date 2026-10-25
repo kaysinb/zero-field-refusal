@@ -16,6 +16,7 @@ authoritative copies.
 | [docs/design.md](design.md) | Scientific rationale, evidence, controls and references |
 | [docs/preregistration.md](preregistration.md) | Authoritative hypotheses, analysis, gate criteria and amendments of study 1 (the pilot) |
 | [docs/study2-preregistration.md](study2-preregistration.md) | Study 2 question, arms, stages, gates, analysis and amendments |
+| [docs/study3-preregistration.md](study3-preregistration.md) | Study 3 question, comparisons, candidates, numerical qualification, analysis and failure routes (proposed) |
 | [docs/study2-pilot-momentum.md](study2-pilot-momentum.md) | Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch |
 | [docs/study2-stage-a-analysis.md](study2-stage-a-analysis.md) | Study 2 Stage A's K-only analyses and recorded predictions, outside the selection rule |
 | [docs/study2-fa-control-diagnostic.md](study2-fa-control-diagnostic.md) | Frozen specification of the outcome-blind diagnostic of the FA soft-control failure |

@@ -11,6 +11,8 @@ documents:
   purpose: Authoritative hypotheses, analysis, gate criteria and amendments of study 1 (the pilot)
 - path: docs/study2-preregistration.md
   purpose: Study 2 question, arms, stages, gates, analysis and amendments
+- path: docs/study3-preregistration.md
+  purpose: Study 3 question, comparisons, candidates, numerical qualification, analysis and failure routes (proposed)
 - path: docs/study2-pilot-momentum.md
   purpose: Proposed preregistration of study 2's SGD-momentum pilot, for the barrier branch
 - path: docs/study2-stage-a-analysis.md
