@@ -63,6 +63,7 @@ from .analysis.stage_a import TrajectoryError, load_trajectory
 from .config import config_hash
 from .paths import REPO_ROOT
 from .protocol import load_run_config
+from .schedule import INSTABILITY
 from .tensor_hash import file_sha256
 
 ENTRIES = {"train": "scripts/train.py", "theta0": "scripts/evaluate_theta0.py"}
@@ -284,11 +285,20 @@ def _checkpoint_problem(cfg: Any, run_dir: Path) -> str | None:
     """A run whose config sets ``tracking.endpoint_checkpoint`` is done only if its summary holds
     the checkpoint record and the file at the recorded path exists with the recorded sha256
     (docs/study3-preregistration.md, "The execution path: harness and bridge"); anything else is
-    a conflict, never silently reused. The file's existence is not the run's success: the
-    terminal record is read separately."""
+    a conflict, never silently reused.
+
+    The exception is a declared instability stop (``schedule.INSTABILITY`` in the published
+    terminal record): that is the run's scientific outcome, not a defect, and a rerun to replace
+    it is not allowed. Such a run is done whether its summary records no checkpoint (it stopped
+    before the last update, or on a non-finite weight at it) or a checkpoint (it stopped inside
+    the step-25 ``after_step``), and the file is not required. The file's existence is not the
+    run's success: the terminal record is read separately."""
     if OmegaConf.select(cfg, "tracking.endpoint_checkpoint", default=None) is None:
         return None
     summary = _read_json(run_dir / "summary.json") or {}
+    stop = ((_read_json(run_dir / "terminal.json") or {}).get("stop") or {}).get("reason")
+    if "endpoint_checkpoint" in summary and stop in INSTABILITY:
+        return None
     record = summary.get("endpoint_checkpoint")
     if not isinstance(record, dict) or not isinstance(record.get("path"), str):
         return "summary.json holds no endpoint-checkpoint record"

@@ -458,6 +458,48 @@ def test_a_run_without_a_sound_checkpoint_is_a_conflict(tmp_path, record, proble
         run_campaign(name, runs, root, execute=Executor(root, {}))
 
 
+def stopped_by(run_dir: Path, reason: str, *, record: str) -> None:
+    """Give a checkpointed run dir the terminal stop ``reason`` and, per ``record``, a null
+    checkpoint record (``null``) or a record whose file is gone (``missing_file``)."""
+    terminal = json.loads((run_dir / "terminal.json").read_text())
+    terminal["stop"] = {"reason": reason, "kind": "other"}
+    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    summary = json.loads((run_dir / "summary.json").read_text())
+    summary["terminal"] = terminal
+    if record == "null":
+        summary["endpoint_checkpoint"] = None
+    else:
+        Path(summary["endpoint_checkpoint"]["path"]).unlink()
+    (run_dir / "summary.json").write_text(json.dumps(summary))
+
+
+@pytest.mark.parametrize(
+    ("reason", "record"),
+    [("gradient_spike", "null"), ("nonfinite_weight", "null"), ("k_above_max", "missing_file")],
+)
+def test_an_instability_stop_is_the_outcome_not_a_conflict(
+    tmp_path, monkeypatch, reason, record
+) -> None:
+    monkeypatch.setattr("zero_field_refusal.launch.load_trajectory", lambda d: None)  # the rule
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    stopped_by(checkpointed_run_dir(root, runs[1], tmp_path), reason, record=record)
+    executor = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=executor)
+    assert runs[1].label in result["skipped"]
+    assert runs[1].label not in [label for label, _ in executor.calls]
+
+
+@pytest.mark.parametrize("reason", ["steps", "t_max"])
+def test_a_null_record_after_an_ordinary_stop_is_a_conflict(tmp_path, monkeypatch, reason) -> None:
+    monkeypatch.setattr("zero_field_refusal.launch.load_trajectory", lambda d: None)  # the rule
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    stopped_by(checkpointed_run_dir(root, runs[1], tmp_path), reason, record="null")
+    with pytest.raises(CampaignError, match="holds no endpoint-checkpoint record"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+
+
 @pytest.mark.parametrize(
     "record",
     [{"R": 12.5, "reason": None}, {"R": None, "reason": "zero displacement"},
