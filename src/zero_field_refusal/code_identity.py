@@ -36,6 +36,7 @@ ANALYSIS_SCRIPTS = frozenset(
         "archive.py",
         "build_analysis.py",
         "check_docs.py",
+        "check_theta0_utility.py",
         "gate1_report.py",
         "index_runs.py",
         "judge_check_qualify.py",

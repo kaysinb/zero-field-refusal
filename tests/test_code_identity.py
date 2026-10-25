@@ -22,6 +22,7 @@ from zero_field_refusal.code_identity import (
         ("scripts/launch.py", True),
         ("scripts/numerical_check.py", True),
         ("scripts/study2_short_summary.py", False),
+        ("scripts/check_theta0_utility.py", False),
         ("scripts/study2_short_campaigns.py", False),
         ("configs/experiments/study2_short.yaml", True),
         ("pyproject.toml", True),
