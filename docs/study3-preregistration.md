@@ -248,9 +248,12 @@ veto.
   - at least 22 of 28 blocks are supported for both P and F;
   - the two utility bounds of P pass, and F's on that cohort.
 
-- **Routes.** If A–F does not pass, the candidate fails scientifically: candidate 1 moves to
-  candidate 2, and candidate 2 ends the study with a scientific feasibility report. If P–F does
-  not pass, F's bound on the P–F cohort included, only P–F closes, and P with it.
+- **Routes.** Individual scientific endpoint failures in validation remove support; candidate
+  progression occurs only when the aggregate A–F validation gate fails: candidate 1 then moves to
+  candidate 2, and candidate 2 ends the study with a scientific feasibility report. Failure of
+  the P–F gate, F's bound on the P–F cohort included, closes only P–F, and P with it. Unresolved
+  technical failures retain the technical route and are not reclassified as scientific support
+  failures.
 - **The 40-block fallback.** If the [simulation](#simulation-before-validation) requires it, the
   validation instead has 40 blocks and passes at 31 of 40 supported. This choice is made once,
   before any validation run, and is never a top-up after a failed 28-block validation.
@@ -468,8 +471,8 @@ The engineering stage comes before any scientific selection.
   The second candidate is not taken, since the failure lies in the code, not at K\*.
 - In P alone: P is closed, and only P–F ends.
 
-**After a scientific failure** in search, qualification or validation (in confirmation, failed
-endpoints only remove support):
+**After a scientific failure** in search or qualification, or a failed aggregate validation gate
+(in validation and confirmation, an individual failed endpoint only removes support):
 
 - A or F at candidate 1: candidate 2.
 - A or F at candidate 2: the study ends with a **scientific feasibility report**.
@@ -568,20 +571,34 @@ validation, N, confirmation and analysis. It runs before any validation run.
 - **Power ≥ 80 % for A–F's direction** at |Δ| = 2 pp, given that the gates passed, with N from
   the rule and the true spread equal to the planning spread (3.5 and 5 pp). P–F's power is
   reported and blocks nothing.
-- **Bootstrap coverage** of the interval at level L, with the zero-SE rule above.
+- **Bootstrap coverage** of the interval at level L, with the zero-SE rule above. Coverage is
+  screened for statistically detectable excess non-coverage, not certified to be exactly
+  nominal.
   - **Where:** at N = 36, 45, 60, 75, 90 and 99, and at the stop at the cap, in every scenario
-    of the frozen grid.
-  - **Frozen counts:** 10 000 simulated studies per scenario and N, and 2 000 bootstrap
-    resamples per interval. The grid, the counts and the RNG streams go into the fixation record
-    before the run.
-  - **Accepted** only when, everywhere:
-    - the one-sided 95 % Clopper–Pearson **upper** bound of each comparison's non-coverage is at
-      most 2.5 %;
-    - the same upper bound of their joint non-coverage is at most 5 %.
-  - **The level.** L is the first of 0.975, 0.980, 0.985 and 0.990 that is accepted, for both
-    comparisons. It is then verified on an independent simulation stream with the same counts.
-    It is recorded before validation, and never lowered.
-  - **If no level is accepted,** or the verification fails, the confirmation cannot start.
+    of the frozen grid, for each candidate level 0.975, 0.980, 0.985 and 0.990.
+  - **Frozen before the simulation:** the grid, the counts (M = 10 000 simulated studies per test,
+    2 000 bootstrap resamples per interval in the screen), the RNG streams and J, the total
+    number of coverage tests across the planned grid, levels and the calibration and
+    verification streams.
+  - **The test.** For M = 10 000 simulated studies, let X be the non-coverage count, with
+    p₀ = 0.025 per comparison and 0.05 jointly. The threshold is
+    c = BinomQuantile(1 − 0.05/J; M, p₀), and a test passes when X ≤ c. This limits the false
+    rejection of a correctly calibrated procedure to at most 5 % across the frozen tests, with no
+    independence assumed between them. For example, at J = 1 000, c = 313 per comparison and
+    587 jointly; true non-coverage of 3.5 % per comparison is then detected with probability
+    97.8 %, and 6.5 % jointly with 99.5 %. The detection power at the actual J is frozen and
+    reported. Smaller departures are harder to detect: this is a diagnostic screen, not proof of
+    exact coverage.
+  - **The level.** L is the first level whose tests all pass, for both comparisons. It is then
+    verified on an independent stream, which is never rerolled. It is recorded before
+    validation, and never lowered.
+  - **Reported:** the observed non-coverage and its ordinary 95 % binomial interval, for every
+    test.
+  - **Fidelity.** The 2 000-resample simulation is a screening approximation. Binding
+    verification targets the actual 100 000-resample procedure, or a separately validated
+    approximation with its error quantified. Full-procedure verification uses the actual
+    attained sample sizes and caps, including values beyond 99.
+  - **If no level passes,** or the verification fails, the confirmation cannot start.
 
 **If a requirement is not met:**
 
