@@ -3,12 +3,16 @@
     bash -c "python3 - <<'PY' &\\n<this file>\\nPY\\nexec vllm serve ..."
 
 The deadline is a file on the volume, ZFR_DEADLINE_FILE (default /workspace/zfr-deadline), holding
-one integer, Unix seconds. The loop re-reads it every 20 s, so the deadline changes without a
-container restart; ZFR_DEADLINE_EPOCH (Unix seconds, in the Pod's environment) is only the upper
-limit: a file value above it is ignored (logged "zfr-deadline file above cap") and the cap applies.
-Before any valid read, an absent, empty or unparsable file means the cap; after one, it keeps the
-last valid deadline. Each change prints "zfr-deadline <ISO time> source <file|last|env>".
-Update the file atomically (temp file in the same directory, then os.replace), from an SSH session:
+one integer, Unix seconds (ASCII digits only). The loop re-reads it every 20 s, so the deadline
+changes without a container restart; ZFR_DEADLINE_EPOCH (Unix seconds, in the Pod's environment)
+is only the upper limit: a file value above it is ignored (logged "zfr-deadline file above cap")
+and the cap applies. A file value already past when the watcher started (a deadline left from an
+earlier start) is ignored too (logged "zfr-deadline file stale"), and the cap applies; each of
+these states is logged when it begins. Before any valid read, an absent, empty or unparsable file
+means the cap; after one, it keeps the last valid deadline. Each change prints
+"zfr-deadline <ISO time> source <file|last|env>". When the deadline fires, the file is renamed to
+<file>.fired-<epoch>, so that the next start cannot read it. Update the file atomically (temp file
+in the same directory, then os.replace), from an SSH session:
 `python3 scripts/pod_deadline_watch.py --set EPOCH [--file PATH]`.
 
 At start it checks the Pod's own key with a read of its Pod (GraphQL, Bearer RUNPOD_API_KEY) and
@@ -51,18 +55,27 @@ def iso(epoch: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
-def effective_deadline(cap: int, text: str | None, last: int | None) -> tuple[int, str]:
-    """The deadline and its source: the file's integer when it is at most `cap` ("file"); `cap`
-    ("env") when it is above it (logged) or when there was no valid read yet; the last valid
+def parse_epoch(text: str | None) -> int | None:
+    """The integer of ASCII digits the text holds (surrounding whitespace aside), or None."""
+    stripped = (text or "").strip()
+    return int(stripped) if stripped.isascii() and stripped.isdigit() else None
+
+
+def effective_deadline(
+    cap: int, text: str | None, last: int | None, started: int | None = None
+) -> tuple[int, str, str | None]:
+    """The deadline, its source and why the file was ignored: the file's integer when it is at
+    most `cap` and after `started` ("file"); `cap` ("env") when it is above the cap ("above
+    cap"), at or before `started` ("stale"), or when there was no valid read yet; the last valid
     deadline ("last") when the file is absent, empty or unparsable after a valid read."""
-    try:
-        value = int((text or "").strip())
-    except ValueError:
-        return (cap, "env") if last is None else (last, "last")
+    value = parse_epoch(text)
+    if value is None:
+        return ((cap, "env") if last is None else (last, "last")) + (None,)
     if value > cap:
-        print("zfr-deadline file above cap", flush=True)
-        return cap, "env"
-    return value, "file"
+        return cap, "env", "above cap"
+    if started is not None and value <= started:
+        return cap, "env", "stale"
+    return value, "file", None
 
 
 def read_file(path: str) -> str | None:
@@ -87,8 +100,20 @@ def write_deadline(path: str, epoch: int) -> None:
         raise
 
 
+def retire(path: str, epoch: int) -> None:
+    """Rename the deadline file once it fired (<file>.fired-<epoch>), so no later start reads it."""
+    try:
+        os.replace(path, f"{path}.fired-{epoch}")
+        print("zfr-deadline file retired", f"{path}.fired-{epoch}", flush=True)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        print("zfr-deadline file not retired", type(error).__name__, flush=True)
+
+
 def main(*, clock=time.time, sleep=time.sleep, read=read_file, call=call) -> None:
     cap = int(os.environ["ZFR_DEADLINE_EPOCH"])
+    started = int(clock())
     path = os.environ.get("ZFR_DEADLINE_FILE", DEFAULT_FILE)
     pod, key = os.environ.get("RUNPOD_POD_ID", ""), os.environ.get("RUNPOD_API_KEY", "")
     try:
@@ -98,8 +123,13 @@ def main(*, clock=time.time, sleep=time.sleep, read=read_file, call=call) -> Non
     print("zfr-deadline", iso(cap), "pod", pod, "auth", auth, flush=True)
     last: int | None = None
     shown: tuple[int, str] | None = None
+    ignored: str | None = None
     while True:
-        deadline, source = effective_deadline(cap, read(path), last)
+        deadline, source, why = effective_deadline(cap, read(path), last, started)
+        if why != ignored:  # each state once, when it begins
+            ignored = why
+            if why is not None:
+                print("zfr-deadline file", why, flush=True)
         if source == "file":
             last = deadline
         if (deadline, source) != shown:
@@ -108,6 +138,7 @@ def main(*, clock=time.time, sleep=time.sleep, read=read_file, call=call) -> Non
         if clock() >= deadline:
             break
         sleep(POLL)
+    retire(path, int(clock()))
     for _ in range(5):
         try:
             print("zfr-deadline stop", call(STOP, pod, key).get("data"), flush=True)
@@ -117,16 +148,22 @@ def main(*, clock=time.time, sleep=time.sleep, read=read_file, call=call) -> Non
             sleep(30)
 
 
-if __name__ == "__main__":
-    args = sys.argv[1:]
-    if args[:1] == ["--set"] and len(args) in (2, 4):
-        target = (
-            args[3]
-            if args[2:3] == ["--file"]
-            else os.environ.get("ZFR_DEADLINE_FILE", DEFAULT_FILE)
-        )
-        write_deadline(target, int(args[1]))
-    elif args:
-        sys.exit("usage: pod_deadline_watch.py [--set EPOCH [--file PATH]]")
-    else:
+USAGE = "usage: pod_deadline_watch.py [--set EPOCH [--file PATH]]"
+
+
+def cli(args: list[str]) -> None:
+    """The watcher without arguments; `--set EPOCH [--file PATH]` writes the deadline file."""
+    if not args:
         main()
+        return
+    epoch = parse_epoch(args[1]) if len(args) >= 2 else None
+    if args[0] != "--set" or epoch is None or len(args) not in (2, 4):
+        sys.exit(USAGE)
+    if len(args) == 4 and args[2] != "--file":
+        sys.exit(USAGE)
+    default = os.environ.get("ZFR_DEADLINE_FILE", DEFAULT_FILE)
+    write_deadline(args[3] if len(args) == 4 else default, epoch)
+
+
+if __name__ == "__main__":
+    cli(sys.argv[1:])

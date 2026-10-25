@@ -323,8 +323,11 @@ inventories again. For study 2's short regime the prerequisites' driver did all 
 **Deadlines between campaigns.** A Pod started with the file-reading watcher changes its deadline
 without a restart: the deadline is the integer in `/workspace/zfr-deadline` (`ZFR_DEADLINE_FILE`
 overrides the path), re-read every 20 s, and `ZFR_DEADLINE_EPOCH` is only its upper limit (a file
-value above it is ignored and logged `zfr-deadline file above cap`). Set it atomically from an SSH
-session with `python3 scripts/pod_deadline_watch.py --set EPOCH [--file PATH]`; the log shows
+value above it is ignored and logged `zfr-deadline file above cap`). A file value already past when
+the watcher starts, left from an earlier start, is ignored too (`zfr-deadline file stale`) and the
+cap applies; once the deadline fires, the file is renamed `<file>.fired-<epoch>`, so the next start
+cannot read it. Set it atomically from an SSH session with
+`python3 scripts/pod_deadline_watch.py --set EPOCH [--file PATH]` (ASCII digits only); the log shows
 `zfr-deadline <time> source <file|last|env>` on each change. A missing or malformed file keeps the
 last valid deadline, and before any valid read the cap applies. To go beyond the cap, change
 `ZFR_DEADLINE_EPOCH` with `update-pod` first. That restarts the container: the running run stops and
