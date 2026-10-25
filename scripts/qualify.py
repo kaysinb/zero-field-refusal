@@ -108,7 +108,8 @@ states. A record a case restart names is listed under ``superseded`` with that r
 passed to ``rate_verdict`` as voided (its record sha256 → the reason): it neither counts nor
 blocks. A record under a later attempt that no restart names (which these commands never write)
 is not hidden by it: it is listed under ``superseded`` and counted against its rate as a case of
-its own (a control's, as a warning). The launcher runs located now (one settled directory per
+its own (a control's as a superseded control of its rate). The launcher runs located now (one
+settled directory per
 run) are the expected ones; a rate one of whose launcher runs is not located is at most
 ``incomplete``, with the reason and a warning.
 
@@ -679,7 +680,7 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
     base = out / f"c{candidate}" / stage
     folders = sorted({f.parent for f in base.glob("s*/*/*-attempt-*")})
     cases, records, attempts, superseded = [], [], {}, []
-    old_controls: list[dict[str, Any]] = []  # restart-named controls: void
+    old_controls: list[dict[str, Any]] = []  # the superseded controls' verdicts
     voided: dict[str, str] = {}  # a void record's verdict (record_sha256) → the restart's reason
     warnings: list[str] = []
     for folder in folders:
@@ -693,24 +694,21 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
         for part, n, record, restart in stale:  # shown; void, or counted against its rate
             superseded.append({"case": name, "part": part, "attempt": n,
                                "sha256": q.record_sha256(record), "restart": restart})  # fmt: skip
-            if part == "control":
-                if restart is None:
-                    warnings.append(f"{name}: control attempt {n} is superseded by a later "
-                                    "attempt")  # fmt: skip
-                    continue
+            if part == "control":  # counted against its rate as a superseded case is
                 checked = {
                     **q.control_verdict(record, scope, candidate),
                     "superseded": {"part": part, "attempt": n, "restart": restart},
                 }
-                old_controls.append(checked)  # fmt: skip
-                voided[checked["record_sha256"]] = restart
+                old_controls.append(checked)
+                if restart is not None and checked["record_sha256"] is not None:
+                    voided[checked["record_sha256"]] = restart
                 continue
             pair = (record, None) if part == "baseline" else (None, record)
             verdict_ = {
                 **q.case_verdict(*pair, scope, e_eng=args.e_eng),
                 "superseded": {"part": part, "attempt": n, "restart": restart},
             }
-            cases.append(verdict_)  # fmt: skip
+            cases.append(verdict_)
             if restart is not None:
                 voided[verdict_["record_sha256"]] = restart
     campaign = {"path": str(args.campaign.resolve()),

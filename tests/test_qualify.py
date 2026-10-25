@@ -481,6 +481,25 @@ def test_the_verdict_shows_every_attempt(qualify, stubbed, tmp_path, monkeypatch
     assert record["states"][f"adamw-{ADAMW_LR:g}"] != "qualified"
 
 
+def test_a_superseded_control_blocks_its_rate(qualify, tmp_path, monkeypatch) -> None:
+    """A control record under a later attempt that no restart names is counted against its
+    rate, as a superseded case is: the rate is not qualified (scientific: failing)."""
+    path, out = verdict_world(qualify, tmp_path, monkeypatch)
+    key = f"adam_frozen-{FA_LR:g}"
+    record = json.loads((out / FA.attempt_path("control", 1)).read_text())
+    publish(out, FA, "control", record, attempt=2)  # attempt 1 is now superseded
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert [(e["part"], e["attempt"]) for e in verdict["superseded"]] == [("control", 1)]
+    assert verdict["states"][key] == "not_qualified"
+    assert [e["why"] for e in verdict["rates"][key]["not_counted"]] == [
+        "a superseded same-path control"]  # fmt: skip
+    science = {**record, "status": "not_run", "kind": "scientific", "reasons": ["instability"]}
+    publish(out, FA, "control", science, attempt=1)
+    qualify.main(["verdict", *common(path)])
+    assert json.loads((out / "c1" / "verdict.json").read_text())["states"][key] == "failing"
+
+
 def test_an_interrupted_attempt_recorded_technical(qualify, tmp_path) -> None:
     """``interrupted --technical REASON``: an interrupted attempt becomes a technical record that
     carries the reason ("an unexplained incomplete record is technical"); refused for an attempt

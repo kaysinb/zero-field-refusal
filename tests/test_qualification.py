@@ -928,6 +928,49 @@ def test_an_fa_rate_needs_its_accepted_control() -> None:
     assert rate(case_verdicts())["control"] is None  # AdamW has none
 
 
+def scientific_control(**kwargs):
+    """A control record whose launcher run an instability rule stopped."""
+    return {**control_record(**kwargs), "status": "not_run", "kind": "scientific",
+            "reasons": ["instability: the launcher run stopped by 'gradient_spike'"]}  # fmt: skip
+
+
+def test_another_rates_scientific_control_is_not_this_rates_evidence() -> None:
+    s = q.QualificationScope.of(REGISTERED)
+    cases = case_verdicts(optimizer="adam_frozen")
+    other = q.control_verdict(scientific_control(case=q.QualificationCase(
+        10200, "adam_frozen", 1.5e-05, 1, False)), s, 1)  # fmt: skip
+    assert other["state"] == "failing"  # on its own, for its own rate
+    out = rate(cases, optimizer="adam_frozen", control=other)
+    assert (out["state"], out["control"]["kind"]) == ("not_qualified", "technical")
+    assert "control: the control is not this rate's" in out["reasons"]
+    stale = q.control_verdict(scientific_control(code={**CODE, "sha256": "o" * 64}), s, 1)
+    assert rate(cases, optimizer="adam_frozen", control=stale)["state"] == "failing"
+
+
+def test_a_superseded_control_counts_as_a_superseded_case_does() -> None:
+    """A superseded control record that no restart voids keeps the rate from ``qualified``;
+    a scientific one makes it ``failing``; another rate's is never this rate's science."""
+    s = q.QualificationScope.of(REGISTERED)
+    cases = case_verdicts(optimizer="adam_frozen")
+    accepted = q.control_verdict(control_record(), s, 1)
+    technical = q.control_verdict(control_record(0.1), s, 1)
+    out = rate(cases, optimizer="adam_frozen", control=accepted, superseded_controls=[technical])
+    assert out["state"] == "not_qualified"
+    assert out["not_counted"] == [{"case": "control", "record_sha256": technical["record_sha256"],
+                                   "why": "a superseded same-path control",
+                                   "kind": "technical"}]  # fmt: skip
+    science = q.control_verdict(scientific_control(), s, 1)
+    out = rate(cases, optimizer="adam_frozen", control=accepted, superseded_controls=[science])
+    assert out["state"] == "failing"
+    voided = rate(cases, optimizer="adam_frozen", control=accepted, superseded_controls=[science],
+                  voided={science["record_sha256"]: "an engineering cycle"})  # fmt: skip
+    assert voided["state"] == "qualified"
+    elsewhere = q.control_verdict(scientific_control(case=q.QualificationCase(
+        10200, "adam_frozen", 1.5e-05, 1, False)), s, 1)  # fmt: skip
+    out = rate(cases, optimizer="adam_frozen", control=accepted, superseded_controls=[elsewhere])
+    assert out["state"] == "not_qualified" and out["not_counted"][0]["kind"] is None
+
+
 def test_a_voided_superseded_control_neither_counts_nor_blocks() -> None:
     s = q.QualificationScope.of(REGISTERED)
     cases = case_verdicts(optimizer="adam_frozen")

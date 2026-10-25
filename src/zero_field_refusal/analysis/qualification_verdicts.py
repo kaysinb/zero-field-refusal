@@ -37,7 +37,8 @@ launcher run identity; one that does not is listed with why, and unless ``voided
 ``record_sha256`` → the reason of its supersession) it keeps the rate from ``qualified`` and, if
 scientific, makes it ``failing``. A case of another rate, arm, candidate or seed blocks
 ``qualified`` too; so does a superseded control record of the rate (scientific: ``failing``)
-unless voided. ``failing`` > ``not_qualified`` (a technical case, an FA rate's control not
+unless voided. A control record of another rate or seed is technical here, never this rate's
+scientific evidence. ``failing`` > ``not_qualified`` (a technical case, an FA rate's control not
 accepted, an unresolved record) > ``qualified`` (exactly the prescribed seeds, one case each, all
 qualified, with the checkpoint, every seed's launcher run located when they are checked) >
 ``incomplete``. The FA control is held to the same GPU code, settings and launcher run as the
@@ -424,8 +425,11 @@ def rate_verdict(
             first = next((v for v in counted if v["case"]["seed"] == seeds[0]), None)
             problem = _control_problem(checked, candidate=candidate, lr=lr, first_seed=seeds[0],
                                        code=code, policy=policy, first_case=first)  # fmt: skip
-            if problem is not None and checked.get("kind") == SCIENTIFIC:
-                stale_science = True  # a scientific control record holds until it is voided
+            if problem not in (None, NOT_THIS_RATE) and checked.get("kind") == SCIENTIFIC:
+                # this rate's scientific control record, under other code or settings or of
+                # another launcher run, holds until it is voided; another rate's never is this
+                # rate's scientific evidence
+                stale_science = True
                 checked.setdefault("reasons", []).append(problem)
             elif problem is not None:
                 checked.update(state=NOT_QUALIFIED, kind=TECHNICAL,
