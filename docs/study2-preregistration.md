@@ -23,6 +23,10 @@ three arms at U = 7, then at U = 6, then the primary pair at U = 7 and at U = 6,
 feasibility report; the pair is not visited at U = 8, and its rates at each U are the three
 arms' triples there. It was decided before any outcome of the U = 7 candidate.
 
+**Closed** (2026-10-25): the study stopped at a technical numerical-qualification block at the
+primary pair at (7, 20), and the primary comparison was not performed
+([feasibility report](reports/study2-feasibility.md), [decision](decisions.md#study-decisions)).
+
 Study 2 follows the stopped pilot (study 1: [preregistration](preregistration.md),
 [decision](decisions.md#study-decisions), [short report](reports/gate-1.md)). It is a new
 preregistered study on fresh seeds, with its own run, config and stream names in the namespace

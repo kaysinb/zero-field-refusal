@@ -19,9 +19,10 @@ Study 1, the pilot, ran stages 0 and 1 and stopped at Gate 1
 ([decision](docs/decisions.md#study-decisions), [short report](docs/reports/gate-1.md)). Its
 preregistration stays in [preregistration.md](docs/preregistration.md).
 
-Study 2 compares long AdamW with long SGD at equal KL on benign instructions. Its
-[preregistration](docs/study2-preregistration.md) is approved, and its first stage, Stage A, is
-planned in [plan.md](docs/plan.md#study-2).
+Study 2 ([preregistration](docs/study2-preregistration.md)) compared optimizers at equal KL on
+benign instructions, redirected after Stage A to AdamW-25 against frozen Adam-25. It stopped on
+2026-10-25 at a technical numerical-qualification block, before its primary comparison
+([feasibility report](docs/reports/study2-feasibility.md)).
 
 ## Quick start
 

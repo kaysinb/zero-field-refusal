@@ -9,7 +9,9 @@ corresponding runs. Gate decisions are logged in [decisions.md](decisions.md), w
 
 Stages 0–5 below are study 1, the pilot. It stopped at Gate 1
 ([decision](decisions.md#study-decisions)), and its design is not continued. Study 2 follows under
-its own [preregistration](study2-preregistration.md) and is planned in [Study 2](#study-2).
+its own [preregistration](study2-preregistration.md) and is planned in [Study 2](#study-2). Study 2
+stopped on 2026-10-25 before its primary comparison
+([feasibility report](reports/study2-feasibility.md)).
 
 ## Stage 0 — Setup
 
@@ -163,6 +165,10 @@ Study 2 compares long AdamW with long SGD at equal K_benign, under a common batc
 appendable stream prefix and a common step limit. Its rules, gates and outcomes are stated in
 the [study-2 preregistration](study2-preregistration.md); this section gives the order of work
 and its cost.
+
+**Closed on 2026-10-25** ([feasibility report](reports/study2-feasibility.md)): the selection
+stopped at a technical numerical-qualification block at the primary pair at (7, 20); the primary
+comparison was not performed.
 
 **Redirected on 2026-10-16** ([amendment 3](study2-preregistration.md#amendment-3-redirection-to-the-short-regime)):
 the primary contrast is now AdamW-25 against frozen Adam-25, exactly 25 steps, at three targeted
