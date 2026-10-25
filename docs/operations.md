@@ -319,9 +319,16 @@ delete the distributions and put the archived manifest back, so that `DATA_DIR` 
 inventories again. For study 2's short regime the prerequisites' driver did all of this once, on
 2026-10-16 ([its record](#study-2-short-regime-amendment-3)); it is not run again.
 
-**Deadlines between campaigns.** A Pod's deadline changes only through its environment
-(`ZFR_DEADLINE_EPOCH`, with `update-pod`), which restarts the container: the running run stops and
-the container disk loses the archive key and the Google Cloud CLI. Change it only between
+**Deadlines between campaigns.** A Pod started with the file-reading watcher changes its deadline
+without a restart: the deadline is the integer in `/workspace/zfr-deadline` (`ZFR_DEADLINE_FILE`
+overrides the path), re-read every 20 s, and `ZFR_DEADLINE_EPOCH` is only its upper limit (a file
+value above it is ignored and logged `zfr-deadline file above cap`). Set it atomically from an SSH
+session with `python3 scripts/pod_deadline_watch.py --set EPOCH [--file PATH]`; the log shows
+`zfr-deadline <time> source <file|last|env>` on each change. A missing or malformed file keeps the
+last valid deadline, and before any valid read the cap applies. To go beyond the cap, change
+`ZFR_DEADLINE_EPOCH` with `update-pod` first. That restarts the container: the running run stops and
+the container disk loses the archive key and the Google Cloud CLI. A Pod whose watcher predates the
+file (Stage A of study 2) changes its deadline only that way, and only between
 campaigns. Before that, archive the seed's training stream and every finished run directory with
 their own inventories, so that the full `pod_setup.sh`, given those inventories as well, verifies
 `DATA_DIR` after the restart. A campaign that cannot end before the deadline with an hour to
@@ -816,7 +823,8 @@ only; judge labels are read by the looks, the final analyses and the audit alone
 - **Created by the coordinator on request:** L40S, minCuda 13.0, not OC-AU-1, the dependency image
   of [containers](#containers), a volume at `/workspace` (150 GB for S1 and S2), host RAM of at
   least 64 GB (80 GB preferred), and `scripts/pod_deadline_watch.py` in the start command with
-  `ZFR_DEADLINE_EPOCH`. Right after the start, check the watcher's log line
+  `ZFR_DEADLINE_EPOCH` as the cap and the deadline in `/workspace/zfr-deadline` (see
+  "Deadlines between campaigns" above). Right after the start, check the watcher's log line
   `zfr-deadline … auth True`, the GPU and its driver, and the host memory the container may use
   (the cgroup's limit, which can be below the machine's).
 - **The Pod's environment.** An SSH session does not see the Pod's environment variables: source
@@ -1473,7 +1481,8 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   labels and their raw outputs stay local next to the sample or in the run directories.
 - **Deadline without SSH.** When a hard stop is needed (the user away), the start command is
   `bash -c` running [`scripts/pod_deadline_watch.py`](../scripts/pod_deadline_watch.py) in the
-  background before `exec vllm serve …`, with `ZFR_DEADLINE_EPOCH` in the environment. Check
+  background before `exec vllm serve …`, with `ZFR_DEADLINE_EPOCH` in the environment as the cap
+  (without a deadline file the cap is the deadline). Check
   its log line `zfr-deadline … auth True` and the variable (get-pod) right after the start; stop
   the Pod by hand after labeling, without waiting for the deadline.
 - The Runpod proxy answers 403 to the `Python-urllib` User-Agent; send another one when probing
