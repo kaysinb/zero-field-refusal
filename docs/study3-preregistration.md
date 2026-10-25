@@ -1,8 +1,8 @@
 # Study 3 preregistration
 
-Status: `proposed` (2026-10-25). It binds once committed as `registered`, before any study-3 run.
-After that, a change goes through [Amendments](#amendments), with what was known when it was
-decided. No study-3 run, campaign or stream exists yet.
+Status: `registered` (2026-10-25), before any study-3 run. It binds from this commit: a change
+goes through [Amendments](#amendments), with what was known when it was decided. No study-3 run,
+campaign or stream existed when it was registered.
 
 Study 3 follows study 2, which stopped before its primary comparison
 ([feasibility report](reports/study2-feasibility.md)). It is a new preregistered study, on fresh
