@@ -16,10 +16,12 @@ from zero_field_refusal.launch import (
     CampaignError,
     StopRequest,
     campaign_header,
+    expected_numerics,
     load_campaign,
     run_campaign,
+    supersede,
 )
-from zero_field_refusal.protocol import ProtocolError
+from zero_field_refusal.protocol import ProtocolError, load_run_config
 from zero_field_refusal.tracking import _RUN_ID as RUN_ID
 
 CELLS = """
@@ -429,6 +431,11 @@ def checkpointed_run_dir(root: Path, run, tmp_path: Path, *, record: str = "ok")
     if record != "no_record":
         summary["endpoint_checkpoint"] = entry
     (run_dir / "summary.json").write_text(json.dumps(summary))
+    meta = json.loads((run_dir / "meta.json").read_text())  # the numerics its campaign asks for
+    meta.setdefault("inputs", {})["numerics_setup"] = {
+        **expected_numerics(load_run_config(run.config, run.overrides)),
+        "cublas_workspace_config": None, "memory_fraction": None, "device_index": 0}  # fmt: skip
+    (run_dir / "meta.json").write_text(json.dumps(meta))
     if record == "missing_file":
         file.unlink()
     elif record == "other_bytes":
@@ -456,6 +463,85 @@ def test_a_run_without_a_sound_checkpoint_is_a_conflict(tmp_path, record, proble
     checkpointed_run_dir(root, runs[1], tmp_path, record=record)
     with pytest.raises(CampaignError, match=problem):
         run_campaign(name, runs, root, execute=Executor(root, {}))
+
+
+@pytest.mark.parametrize(
+    "departure",
+    [{"deterministic": True}, {"tf32_matmul": True}, {"matmul_precision": "high"},
+     {"memory_limit_gb": 46.0}, None],
+)  # fmt: skip
+def test_a_checkpoint_run_under_other_numerics_is_a_conflict(tmp_path, departure) -> None:
+    """The recorded numerics setup against what the campaign's config asks for, read without
+    CUDA: determinism, TF32 and its matmul precision, the memory limit; none recorded at all is a
+    conflict too. The device-dependent values (fraction, index) are not compared here."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = checkpointed_run_dir(root, runs[1], tmp_path)
+    meta = json.loads((run_dir / "meta.json").read_text())
+    if departure is None:
+        del meta["inputs"]["numerics_setup"]
+    else:
+        meta["inputs"]["numerics_setup"].update(departure)
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    match = "records no numerics setup" if departure is None else "numerics setup departs"
+    with pytest.raises(CampaignError, match=match):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [[], ["model.tf32=true"], ["execution.deterministic=true"], ["execution.memory_limit_gb=3"]],
+)
+def test_the_expected_numerics_are_what_the_setup_records(overrides) -> None:
+    """``expected_numerics`` reads the config as ``runtime.configure_numerics`` sets it (on the
+    CPU here: the device-independent fields)."""
+    import torch
+
+    from zero_field_refusal import runtime
+    from zero_field_refusal.config import load_config
+
+    cfg = load_config("experiments/smoke", overrides)  # TF32 on departs from the protocol
+    before = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32,
+              torch.get_float32_matmul_precision(), torch.are_deterministic_algorithms_enabled(),
+              os.environ.get("CUBLAS_WORKSPACE_CONFIG"))  # fmt: skip
+    try:
+        setup = runtime.configure_numerics(cfg, "cpu")
+    finally:  # leave this process's flags as they were
+        torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = before[:2]
+        torch.set_float32_matmul_precision(before[2])
+        torch.use_deterministic_algorithms(before[3])
+        if before[4] is None:
+            os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+        else:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = before[4]
+    wanted = expected_numerics(cfg)
+    assert {key: setup[key] for key in wanted} == wanted
+
+
+def test_a_superseded_run_no_longer_counts_and_its_recovery_starts_anew(tmp_path) -> None:
+    """A completed run named superseded in the journal (a case restart after its checkpoint was
+    lost) stays on disk and in the journal, is a used attempt, and is neither done nor a
+    conflict: the run's recovery round starts a new attempt."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = checkpointed_run_dir(root, runs[1], tmp_path, record="missing_file")
+    log = root / "launch" / f"{name}.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps({"event": "start", "run": runs[1].label, "run_id": run_dir.name,
+                               "experiment": runs[1].experiment,
+                               "config_hash": runs[1].config_hash}) + "\n")  # fmt: skip
+    only = {"only": runs[1].label, "max_attempts": 1}
+    with pytest.raises(CampaignError, match="is missing"):  # the lost checkpoint: a conflict
+        run_campaign(name, runs, root, execute=Executor(root, {}), **only)
+    supersede(root, name, runs[1], run_dir.name, reason="the Pod stopped", record="restart-1")
+    executor = Executor(root, {})
+    result = run_campaign(name, runs, root, execute=executor, **only)
+    assert result["exhausted"] == [runs[1].label] and executor.calls == []  # one attempt used
+    result = run_campaign(name, runs, root, execute=executor, recovery="the Pod stopped", **only)
+    assert result["done"] == [runs[1].label] and len(executor.calls) == 1
+    assert run_dir.is_dir()  # kept
+    events = [json.loads(line)["event"] for line in log.read_text().splitlines()]
+    assert events[:3] == ["start", "superseded", "recovery"]
 
 
 def stopped_by(run_dir: Path, reason: str, *, record: str) -> None:

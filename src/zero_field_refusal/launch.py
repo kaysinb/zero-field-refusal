@@ -50,6 +50,14 @@ logged with the label), never its cell's. ``max_attempts`` (default ``MAX_ATTEMP
 attempts of a run, and of a recovery round; the qualification passes 1, so that a failed launcher
 run is attempted again only after a recovery round with its recorded reason. A start record
 carries ``max_attempts`` when it is not the default.
+
+**Superseded attempts** (``supersede``). A ``superseded`` record in the journal (written for study
+3's qualification by a case restart or an engineering cycle's supersession) names an attempt
+that no longer counts for its label: its directory and records stay, it is a used attempt (a
+technical one), and it is neither done, diverged nor a conflict; the run is then attempted again
+through its recovery round. A checkpoint run (``tracking.endpoint_checkpoint``) is done only if
+its recorded numerics setup is what the campaign's config asks for (``expected_numerics``:
+determinism, TF32 and the matmul precision, the memory limit; read without touching CUDA).
 """
 
 from __future__ import annotations
@@ -135,6 +143,7 @@ class Assessment:
     diverged: Path | None = None
     technical: set[str] = field(default_factory=set)  # ids of technical attempts so far
     conflicts: dict[str, str] = field(default_factory=dict)  # run dir -> why it cannot stand
+    superseded: set[str] = field(default_factory=set)  # ids a supersession record names
 
 
 def load_campaign(path: str | Path) -> tuple[str, list[Run]]:
@@ -212,10 +221,32 @@ def launch_records(runs_root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def superseded_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The run ids of this run that the journal's ``superseded`` records name (``supersede``),
+    with their reasons."""
+    return {r["run_id"]: str(r.get("reason")) for r in records
+            if r.get("event") == "superseded" and r.get("run") == run.label
+            and r.get("experiment") == run.experiment and r.get("config_hash") == run.config_hash
+            and isinstance(r.get("run_id"), str)}  # fmt: skip
+
+
+def supersede(
+    runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
+) -> None:
+    """Log that an attempt of ``run`` no longer counts for its label (module docstring,
+    "Superseded attempts"): its directory and its records stay, and ``record`` (the path of the
+    record that decided it, a case restart or an engineering cycle's supersession) says why."""
+    _log(Path(runs_root) / "launch" / f"{campaign}.jsonl",
+         {"event": "superseded", "run": run.label, "run_id": run_id,
+          "experiment": run.experiment, "config_hash": run.config_hash, "reason": reason,
+          "record": record})  # fmt: skip
+
+
 def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ()) -> Assessment:
     """What the run directories and the logged attempts say about this run."""
     result = Assessment()
     completed = []
+    result.superseded = set(superseded_runs(run, records))
     experiment_dir = Path(runs_root) / run.experiment
     for run_dir in sorted(p for p in experiment_dir.glob("*") if p.is_dir()):
         meta = _read_json(run_dir / "meta.json")
@@ -224,6 +255,9 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
                 result.technical.add(run_dir.name)  # killed before its metadata was written
             continue
         if meta.get("config_hash") != run.config_hash:
+            continue
+        if run_dir.name in result.superseded:  # kept, and a used attempt; it no longer counts
+            result.technical.add(run_dir.name)
             continue
         status = meta.get("status")
         if status == "completed" or _published(run_dir):
@@ -283,7 +317,7 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
             load_trajectory(run_dir)
         except TrajectoryError as exc:
             return f"a scheduled run's records are incomplete: {exc}"
-        problem = _checkpoint_problem(cfg, run_dir)
+        problem = _checkpoint_problem(cfg, run_dir) or _numerics_problem(run, cfg, meta)
         if problem is not None:
             return problem
         if OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False):
@@ -325,6 +359,41 @@ def _checkpoint_problem(cfg: Any, run_dir: Path) -> str | None:
         return f"the endpoint checkpoint {path} is missing"
     if file_sha256(path) != record.get("sha256"):
         return f"the endpoint checkpoint {path} does not match its recorded sha256"
+    return None
+
+
+def expected_numerics(cfg: Any) -> dict[str, Any]:
+    """What ``runtime.configure_numerics`` records for ``cfg``, its device-independent part, read
+    from the config without touching CUDA: determinism (``execution.deterministic``), TF32 and
+    the float32 matmul precision it implies (``model.tf32``, as ``models.set_numerics`` sets
+    them) and the memory-limit policy (``execution.memory_limit_gb``). The memory fraction and
+    the device index depend on the device: the child process checks them."""
+    tf32 = bool(OmegaConf.select(cfg, "model.tf32", default=False))
+    limit = OmegaConf.select(cfg, "execution.memory_limit_gb", default=None)
+    return {"deterministic": bool(OmegaConf.select(cfg, "execution.deterministic", default=False)),
+            "tf32_matmul": tf32, "tf32_cudnn": tf32,
+            "matmul_precision": "high" if tf32 else "highest",
+            "memory_limit_gb": None if limit is None else float(limit)}  # fmt: skip
+
+
+def _numerics_problem(run: Run, cfg: Any, meta: Mapping[str, Any]) -> str | None:
+    """A checkpoint run (``tracking.endpoint_checkpoint``) is done only if its recorded numerics
+    setup (``meta.json``: ``inputs.numerics_setup``) is what the campaign's config asks for
+    (``expected_numerics``; ``execution`` is outside the config hash, so the campaign's config is
+    read, not the run's); a departure is a conflict, found before the harness would find it."""
+    if OmegaConf.select(cfg, "tracking.endpoint_checkpoint", default=None) is None:
+        return None
+    recorded = (meta.get("inputs") or {}).get("numerics_setup")
+    if not isinstance(recorded, Mapping):
+        return "meta.json records no numerics setup (inputs.numerics_setup)"
+    try:
+        wanted = expected_numerics(load_run_config(run.config, run.overrides))
+    except Exception as exc:  # no config to compare with: it cannot stand
+        return f"the campaign's config cannot be read: {type(exc).__name__}: {exc}"
+    departs = {key: {"recorded": recorded.get(key), "config": value}
+               for key, value in wanted.items() if recorded.get(key) != value}  # fmt: skip
+    if departs:
+        return f"its numerics setup departs from the campaign's config: {departs}"
     return None
 
 
