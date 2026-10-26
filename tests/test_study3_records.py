@@ -108,16 +108,19 @@ def write_run(
     jsonl(run_dir / "monitor.jsonl", readings)
     training = [{"step": s, "loss": 1.0, "grad_norm": 1.0} for s in range(steps)]
     logged = [{"step": r["step"] - 1, "K_monitor": r["K_monitor"]} for r in readings]
-    jsonl(run_dir / "metrics.jsonl", training + logged)
     evaluations = []
     if stop == "steps":
-        row = {"step": 25, "condition": "step-25", "levels": [], "K_monitor": k, "K_benign": k,
-               "benchmark_accuracy": THETA0["benchmark_accuracy"] - mmlu / 100,
+        out = {"K_benign": k, "heldout_nll_per_token": 1.2,
                "factual_accuracy": THETA0["factual_accuracy"] - factual / 100,
-               "heldout_nll_per_token": 1.2}  # fmt: skip
+               "benchmark_accuracy": THETA0["benchmark_accuracy"] - mmlu / 100,
+               "K_monitor_primary": k, "K_monitor_full": k}  # fmt: skip
         if not k_only:
-            row["K_harmful"] = k_harmful
-        evaluations.append(row)
+            out["K_harmful"] = k_harmful
+        evaluations.append({"step": 25, "condition": "step-25", "levels": [], "K_monitor": k,
+                            **out})  # fmt: skip
+        # the schedule logs every value of the evaluation, one step back
+        logged.append({"step": 24, "time_s": 400.0, **{f"eval/{key}": v for key, v in out.items()}})
+    jsonl(run_dir / "metrics.jsonl", training + logged)
     jsonl(run_dir / "evaluations.jsonl", evaluations)
     observations = [{"condition": "step-25", "measure": "factual_qa", "item_id": "f:0",
                      "value": 1.0, "text": SENTINEL}]  # fmt: skip
@@ -224,6 +227,19 @@ def refused(problems, run_id, *words) -> bool:
     return any(run_id in p and all(w in p for w in words) for p in problems)
 
 
+def states(found) -> dict:
+    return {e.run_id: e.state for e in found}
+
+
+def listed_refused(found, problems, run_id, *words) -> bool:
+    """The attempt is listed as refused, with its refusal as its reason, and named in the
+    problems."""
+    mine = [e for e in found if e.run_id == run_id]
+    return (bool(mine) and all(e.state == "refused" and not e.counts for e in mine)
+            and any(all(w in r for w in words) for e in mine for r in e.reasons)
+            and refused(problems, run_id, *words))  # fmt: skip
+
+
 # ------------------------------------------------------------------ registered values
 
 
@@ -309,18 +325,46 @@ def test_a_usable_k_only_run_has_no_mmlu_criterion(world) -> None:
     assert e.cell.key == "c1/search/r0"
 
 
-def test_a_k_only_runs_utility_decides_nothing(world) -> None:
+def nan_factual(run_dir: Path, *, appended: bool) -> None:
+    """A NaN factual accuracy in the step-25 evaluation and in the row the schedule logs from it
+    (``eval/factual_accuracy`` at step 24); ``appended``: as a second such row."""
+    edit_jsonl(run_dir / "evaluations.jsonl",
+               lambda rows: [{**rows[0], "factual_accuracy": float("nan")}])  # fmt: skip
+    row = json.loads((run_dir / "evaluations.jsonl").read_text().splitlines()[0])
+    nan = {f"eval/{k}": v for k, v in row.items()
+           if k not in ("step", "condition", "levels", "K_monitor")}  # fmt: skip
+
+    def change(rows):
+        if appended:
+            return [*rows, {"step": 24, **nan}]
+        return [{**r, **nan} if "eval/K_benign" in r else r for r in rows]
+
+    edit_jsonl(run_dir / "metrics.jsonl", change)
+
+
+@pytest.mark.parametrize("appended", [False, True])
+def test_a_k_only_runs_utility_decides_nothing(world, appended) -> None:
     run_id = world.run("A", 1.45e-5, 10100, role="search")
-    path = world.root / "study3" / run_id / "evaluations.jsonl"
-    edit_jsonl(path, lambda rows: [{**rows[0], "factual_accuracy": float("nan")}])
+    run_dir = world.root / "study3" / run_id
+    assert '"eval/factual_accuracy"' in (run_dir / "metrics.jsonl").read_text()
+    nan_factual(run_dir, appended=appended)
     [e], problems = world.read()
-    assert (e.state, problems, e.factual_loss_pp) == ("usable", [], None)
+    assert (e.state, problems, e.factual_loss_pp, e.K) == ("usable", [], None, 6.0)
+
+
+def test_a_regular_runs_utility_must_be_finite(world) -> None:
+    run_id = world.run("A", 1.45e-5, 10300)
+    nan_factual(world.root / "study3" / run_id, appended=False)
+    [e], _ = world.read()
+    assert e.state == "technical"
+    assert any(r.startswith("logged metrics: a non-finite number at step 24") for r in e.reasons)
 
 
 def test_a_k_only_run_needs_a_positive_k(world) -> None:
     world.run("A", 1.45e-5, 10100, role="search", k=0.0)
     [e], _ = world.read()
-    assert e.state == "unusable" and any("positive" in r for r in e.reasons)
+    assert (e.state, e.unusable_reason) == ("unusable", "nonpositive_k")
+    assert any("positive" in r for r in e.reasons)
 
 
 def test_a_gross_collapse_is_unusable_at_more_than_15_pp(world) -> None:
@@ -330,8 +374,9 @@ def test_a_gross_collapse_is_unusable_at_more_than_15_pp(world) -> None:
     found, problems = world.read()
     found = by_id(found)
     assert problems == []
-    assert found[over].state == "unusable"
+    assert (found[over].state, found[over].unusable_reason) == ("unusable", "gross_collapse")
     assert any("gross collapse" in r for r in found[over].reasons)
+    assert found[at].unusable_reason is None
     assert found[over].counts  # it removes support; it is no route by itself
     assert found[at].state == "usable"
     assert found[k_only].state == "usable"
@@ -361,6 +406,18 @@ def test_a_run_without_its_terminal_record_is_pending(world) -> None:
     assert {e.run_id: e.state for e in found} == {running: "pending", starting: "pending",
                                                   stopped: "pending"}  # fmt: skip
     assert by_id(found)[starting].run_dir == world.root / "study3" / starting
+
+
+def test_a_published_record_waits_for_the_launchers_end(world) -> None:
+    unended = world.run("A", 1.45e-5, 10300, end=None)
+    stopped = world.run("A", 2.11e-5, 10300, end="stopped")
+    failed = world.run("F", 1.3e-5, 10300, end=None, status="failed")
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {unended: "pending", stopped: "pending", failed: "pending"}
+    found = by_id(found)
+    assert found[unended].reasons == ("the launcher has not ended it",)
+    assert (found[unended].K, found[unended].steps) == (None, None)  # nothing read yet
 
 
 def test_an_unexplained_failure_is_technical(world) -> None:
@@ -474,7 +531,7 @@ def test_a_recovery_round_never_replaces_a_published_outcome(world) -> None:
     world.recovery("study3-c1", "A-1.45e-05/s10300")
     second = world.run("A", 1.45e-5, 10300, attempt=2)
     found, problems = world.read()
-    assert found == []
+    assert states(found) == {first: "refused", second: "refused"}
     assert refused(problems, first, second)
 
 
@@ -482,8 +539,17 @@ def test_a_retry_without_a_recorded_reason_leaves_two_attempts_counting(world) -
     first = world.run("A", 1.45e-5, 10300, end="technical", terminal=False, status="failed")
     second = world.run("A", 1.45e-5, 10300, attempt=2)
     found, problems = world.read()
-    assert found == []
+    assert states(found) == {first: "refused", second: "refused"}
     assert refused(problems, first, second)
+
+
+def test_two_usable_runs_of_one_label_are_refused(world) -> None:
+    first = world.run("A", 1.45e-5, 10300)
+    second = world.run("A", 1.45e-5, 10300, attempt=2)
+    found, problems = world.read()
+    assert states(found) == {first: "refused", second: "refused"}
+    assert len(problems) == 2 and refused(problems, first, second, "2 attempts count")
+    assert all(any(first in r and second in r for r in e.reasons) for e in found)
 
 
 def test_two_counting_runs_of_one_scientific_cell_are_refused(world) -> None:
@@ -491,8 +557,18 @@ def test_two_counting_runs_of_one_scientific_cell_are_refused(world) -> None:
     other = world.run("F", 1.3e-5, 10301, campaign="study3-c1-validation-again")
     kept = world.run("A", 1.45e-5, 10301, campaign="study3-c1-validation")
     found, problems = world.read()
-    assert [e.run_id for e in found] == [kept]
-    assert len(problems) == 1 and refused(problems, one, other)
+    assert states(found) == {one: "refused", other: "refused", kept: "usable"}
+    assert len(problems) == 2 and refused(problems, one, other, "one cell")
+
+
+def test_the_scientific_cell_is_the_prescribed_one_matched(world) -> None:
+    one = world.run("A", 1.45e-5, 10301, prescribe=False)
+    other = world.run("A", 1.4500000000001e-5, 10301, campaign="again", prescribe=False)
+    found, problems = world.read({"c1/validation": {("A", 1.45e-5, 10301)}})
+    assert states(found) == {one: "refused", other: "refused"}
+    assert len(problems) == 2 and refused(problems, one, other, "one cell")
+    assert {e.cell.prescribed for e in found} == {("A", 1.45e-5, 10301)}
+    assert {e.lr for e in found} == {1.45e-5, 1.4500000000001e-5}
 
 
 def test_the_same_cell_in_two_rounds_is_two_cells(world) -> None:
@@ -552,7 +628,8 @@ def test_two_starts_of_one_run_id_are_both_refused(world) -> None:
     journal = world.root / "launch/study3-c1.jsonl"
     edit_jsonl(journal, lambda rows: [*rows, rows[0]])
     found, problems = world.read()
-    assert found == [] and any(run_id in p and "own run id" in p for p in problems)
+    assert [e.state for e in found] == ["refused", "refused"]
+    assert listed_refused(found, problems, run_id, "more than once")
 
 
 def test_an_unreadable_voiding_record_is_refused(world) -> None:
@@ -571,10 +648,10 @@ def test_a_seed_outside_its_role_is_refused(world) -> None:
     confirmation_seed = world.run("A", 2.11e-5, 10450, role="validation")
     other_candidate = world.run("A", 1.45e-5, 10350, role="validation")
     found, problems = world.read()
-    assert found == []
     for run_id, seed in ((search_seed, 10100), (confirmation_seed, 10450),
                          (other_candidate, 10350)):  # fmt: skip
-        assert refused(problems, run_id, str(seed), "outside")
+        assert listed_refused(found, problems, run_id, str(seed), "outside")
+    assert by_id(found)[search_seed].seed == 10100  # what could be bound is listed
 
 
 def test_a_confirmation_seed_is_bound_by_its_header(world) -> None:
@@ -589,11 +666,11 @@ def test_a_rate_not_prescribed_is_refused(world) -> None:
     run_id = world.run("A", 1.5e-5, 10100, role="search", round_=1, prescribe=False)
     world.prescribed["c1/search/r1"].add(("A", 1.52e-5, 10100))
     found, problems = world.read()
-    assert found == [] and refused(problems, run_id, "not prescribed", "c1/search/r1")
+    assert listed_refused(found, problems, run_id, "not prescribed", "c1/search/r1")
     no_step = World(world.root.parent / "other")
     run_id = no_step.run("A", 1.45e-5, 10300, prescribe=False)
     found, problems = no_step.read()
-    assert found == [] and refused(problems, run_id, "c1/validation")
+    assert listed_refused(found, problems, run_id, "c1/validation")
 
 
 def test_prescribed_rates_compare_as_numbers(world) -> None:
@@ -615,7 +692,8 @@ def test_an_unknown_arm_is_refused(world) -> None:
     edit_jsonl(journal, lambda rows: [{**r, "config_hash": chash} if r["event"] == "start" else r
                                       for r in rows])  # fmt: skip
     found, problems = world.read()
-    assert found == [] and refused(problems, run_id, "unknown arm", "sgd")
+    assert listed_refused(found, problems, run_id, "unknown arm", "sgd")
+    assert by_id(found)[run_id].arm is None
 
 
 def test_a_run_without_an_issued_cell_is_refused(world) -> None:
@@ -625,9 +703,10 @@ def test_a_run_without_an_issued_cell_is_refused(world) -> None:
     (stray / "meta.json").write_text(json.dumps({"campaign": None}))
     no_header = world.run("A", 2.11e-5, 10300, head={}, prescribe=False)
     found, problems = world.read()
-    assert [e.run_id for e in found] == [started]
-    assert refused(problems, stray.name, "no start")
-    assert refused(problems, no_header, "header")
+    assert states(found) == {started: "usable", stray.name: "refused", no_header: "refused"}
+    assert listed_refused(found, problems, stray.name, "no start")
+    assert listed_refused(found, problems, no_header, "header")
+    assert by_id(found)[stray.name].cell.campaign is None
 
 
 @pytest.mark.parametrize(
@@ -638,12 +717,13 @@ def test_a_run_without_an_issued_cell_is_refused(world) -> None:
         (header(1, "discovery", None), "step"),
         ({"study": 3, "candidate": 1, "step": "validation", "round": None}, "versions record"),
         (header(1, "search", None), "role"),  # a validation config under a search step
+        ({k: v for k, v in header(1, "validation", None).items() if k != "round"}, "round"),
     ],
 )
 def test_a_header_that_issues_no_such_cell_is_refused(world, head, why) -> None:
     run_id = world.run("A", 1.45e-5, 10300, head=head)
     found, problems = world.read()
-    assert found == [] and refused(problems, run_id, why)
+    assert listed_refused(found, problems, run_id, why)
 
 
 def test_the_recorded_campaign_must_be_the_journals(world) -> None:
@@ -653,7 +733,7 @@ def test_the_recorded_campaign_must_be_the_journals(world) -> None:
     meta["campaign"]["label"] = "A-1.45e-05/s10301"
     path.write_text(json.dumps(meta))
     found, problems = world.read()
-    assert found == [] and refused(problems, run_id, "campaign")
+    assert listed_refused(found, problems, run_id, "campaign")
 
 
 def test_a_config_hash_that_is_not_the_cells_is_refused(world) -> None:
@@ -662,21 +742,36 @@ def test_a_config_hash_that_is_not_the_cells_is_refused(world) -> None:
     edit_jsonl(journal, lambda rows: [{**r, "config_hash": "0" * 12} if r["event"] == "start"
                                       else r for r in rows])  # fmt: skip
     found, problems = world.read()
-    assert found == [] and refused(problems, run_id, "config hash")
+    assert listed_refused(found, problems, run_id, "config hash")
     run_dir = world.root / "study3" / run_id
     meta = json.loads((run_dir / "meta.json").read_text())
     (run_dir / "meta.json").write_text(json.dumps({**meta, "config_hash": "0" * 12}))
     found, problems = world.read()  # meta and journal agree, the config does not
-    assert found == [] and refused(problems, run_id, "config hash")
+    assert listed_refused(found, problems, run_id, "config hash")
+    assert by_id(found)[run_id].arm is None  # an unbound config gives no fact
 
 
-def test_a_start_without_a_directory_is_bound_by_its_command(world) -> None:
+def test_a_start_whose_command_no_longer_binds_is_technical(world) -> None:
     run_id = world.run("A", 1.45e-5, 10300, end=None, directory=False)
     journal = world.root / "launch/study3-c1.jsonl"
     edit_jsonl(journal, lambda rows: [{**r, "command": r["command"][:2]} if r["event"] == "start"
                                       else r for r in rows])  # fmt: skip
+    [e], problems = world.read()
+    assert (e.run_id, e.state, e.counts, problems) == (run_id, "technical", True, [])
+    assert any("config hash" in r for r in e.reasons)
+    assert (e.label, e.attempt, e.cell.key, e.arm, e.lr) == (
+        "A-1.45e-05/s10300",
+        1,
+        "c1/validation",
+        None,
+        None,
+    )
+    # a recovery round clears it: the next attempt decides
+    world.recovery("study3-c1", "A-1.45e-05/s10300")
+    second = world.run("A", 1.45e-5, 10300, attempt=2)
     found, problems = world.read()
-    assert found == [] and refused(problems, run_id, "config hash")
+    assert problems == []
+    assert states(found) == {run_id: "recovered", second: "usable"}
 
 
 # ------------------------------------------------------------------ the sealing boundary
@@ -734,7 +829,10 @@ def test_the_reader_never_opens_responses_or_observations(world, monkeypatch) ->
     sealed = seal(monkeypatch)
     found, problems = world.read()
     assert sealed == []
-    assert len(found) == 8 and len(problems) == 1
+    assert len(found) == 9 and len(problems) == 1
+    assert sorted(e.state for e in found) == sorted(
+        ["usable", "unusable", "scientific", "pending", "technical", "technical", "usable",
+         "refused", "technical"])  # fmt: skip
     assert SENTINEL not in repr((found, problems))
     # the guard is live: a sealed file cannot be read under it
     with pytest.raises(AssertionError):

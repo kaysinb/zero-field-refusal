@@ -8,9 +8,9 @@ functions of what lies under RUNS_DIR: the launch journal (``launch/<campaign>.j
 directories of the experiment ``study3`` (both configs, regular and K-only) and the
 qualification's restart and supersession records (``qualification/c<N>/``).
 
-- ``read_endpoints``: every attempt of a study-3 run, each bound to its issued cell, with its state
-  and step-25 endpoint, and the refusals by name (``problems``). Nothing may be computed from
-  records with a refusal: they are ambiguous.
+- ``read_endpoints``: every attempt of a study-3 run (and every study-3 run directory), each
+  bound to its issued cell, with its state and step-25 endpoint, and the refusals by name
+  (``problems``). Nothing may be computed from records with a refusal: they are ambiguous.
 - ``SEEDS`` and ``candidate_of``: the registered seeds per role and candidate.
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
@@ -27,21 +27,25 @@ record, whose outcome is read and whose free text is not copied.
 Every attempt is bound, before any outcome is read, to the cell its campaign issued: its start in
 the launch journal (run id, label, attempt, config hash, header) and, when its directory has them,
 its ``meta.json`` (the same campaign name, label, attempt and header; the same config hash) and
-its ``config.yaml`` (the config whose hash is the start's; without a directory or a config, the
-start's command loaded again must give that hash). The header names study 3, the candidate (1 or
-2), the step (``STEP_ROLES``) and its round, and for validation and confirmation the versions
-record and its sha256. From the config: the arm (``ARMS``), the rate, the seed, the role
-(``study3.role``, the step's) and whether the run is K-only (the step's kind), at B = 20 and 25
-updates under the fixed schedule evaluated at step 25. Refused by name, before any outcome is
-read: a run directory with no start in the journal, a run id started twice, a start without a
-header that issues such a cell, a recorded campaign that is not the journal's, a config hash that
-is not the cell's, an unknown arm, a role or kind that is not the step's, another schedule, a
-seed outside its role's registered seeds for the header's candidate (confirmation seeds are bound
-to their candidate by the header alone), a label that is not its seed's, an (arm, rate, seed)
-that ``prescribed`` does not hold under its step key, and an unreadable restart or supersession
-record (it may name a run). Authorized historical
-rounds stay in ``prescribed`` and are listed with their cells; which step's cells enter a median,
-a support or a gate is the caller's choice (``Cell.key``).
+its ``config.yaml`` (the config whose hash is the start's; without a readable one, the start's
+command loaded again must give that hash). The header names study 3, the candidate (1 or 2), the
+step (``STEP_ROLES``) and its round (``round``, present, None only when written so), and for
+validation and confirmation the versions record and its sha256. From the config: the arm
+(``ARMS``), the rate, the seed, the role (``study3.role``, the step's) and whether the run is
+K-only (the step's kind), at B = 20 and 25 updates under the fixed schedule evaluated at step 25.
+Refused by name, before any outcome is read: a run directory with no start in the journal, a run
+id started twice, a start without a header that issues such a cell, a recorded campaign that is
+not the journal's, a config hash that is not the cell's, an unknown arm, a role or kind that is
+not the step's, another schedule, a seed outside its role's registered seeds for the header's
+candidate (confirmation seeds are bound to their candidate by the header alone), a label that is
+not its seed's, an (arm, rate, seed) that ``prescribed`` does not hold under its step key, and an
+unreadable restart or supersession record (it may name a run). A refused attempt is listed with
+the state ``refused``, its refusal as its reason, and what of its cell could be bound. A start
+whose config can no longer be bound (no readable ``config.yaml``, and its command no longer gives
+its config hash under this checkout's configs) is not refused but ``technical``, with the reason:
+a recovery round or a supersession clears it. Authorized historical rounds stay in
+``prescribed`` and are listed with their cells; which step's cells enter a median, a support or a
+gate is the caller's choice (``Cell.key``).
 
 **Attempts** ("Failure routes": an infrastructure interruption is rerun under a new attempt id;
 "Voiding and supersession"). The attempts of a label are its starts in its campaign's journal,
@@ -54,33 +58,36 @@ in order. One that no longer counts is listed with its reason, never counted:
 - ``recovered``: an attempt without a published terminal record that the launcher's recovery
   round (``--recovery REASON``, logged for its label) followed: the documented interruption
   supersedes it, and the next attempt decides.
-Every other attempt counts. Two counting attempts of one scientific cell (step key, arm, rate,
-seed), within a label or across campaigns, are refused by name: a retry replaces an attempt only
-through a recorded recovery round or supersession, and never an attempt with a published outcome.
+Every other attempt that is not refused counts. Two counting attempts of one scientific cell (the
+step key and the prescribed (arm, rate, seed) both matched), or of one label, are refused by
+name: a retry replaces an attempt only through a recorded recovery round or supersession, and
+never an attempt with a published outcome.
 
 **States** of a counting attempt:
-- ``pending``: no published terminal record, the launcher has not ended it (no end, or an end
-  ``stopped``) and ``meta.json`` (if any) says it is running: the step waits;
+- ``pending``: the launcher has not ended it (no end, or an end ``stopped``), whether or not a
+  terminal record is published, unless ``meta.json`` recorded the run failed or finished without
+  one: the step waits;
 - ``technical``: an unexplained failure (an end ``technical``, ``exhausted``, ``conflict`` or
   any other but ``done``, ``diverged`` or ``stopped``; no published terminal record after an end,
-  or after ``meta.json`` recorded the run ``failed``, or finished), or a record that does not
-  conform (below): the technical route ("Failure routes"), never pending;
+  or after ``meta.json`` recorded the run ``failed``, or finished; a config that can no longer be
+  bound), or a record that does not conform (below): the technical route ("Failure routes"),
+  never pending;
 - ``scientific``: a declared instability stop (``INSTABILITY``, the schedule's) on a conforming
   record: no endpoint ("Protocol": a scientific endpoint failure);
 - ``usable``: 25 updates with finite records and a step-25 evaluation; a K-only run needs a
   positive, finite K, a regular run an MMLU loss of at most 15 pp ("Usable runs");
-- ``unusable``: a K-only run whose K is not positive, or a regular run that lost more than 15 pp
-  of MMLU (``gross collapse``, decided on utility before any label); it removes support and is no
-  route by itself.
+- ``unusable`` (``unusable_reason``): a K-only run whose K is not positive (``nonpositive_k``),
+  or a regular run that lost more than 15 pp of MMLU (``gross_collapse``, decided on utility
+  before any label); it removes support and is no route by itself.
 
 **A conforming record**, read from the numbers alone (the launcher's and ``stage_a``'s integrity
 rules restricted to the files above): a readable terminal record that ``summary.json`` repeats
 when it holds one, with the stop's own detail; a stop that is either the 25 updates (``steps``)
 or an instability rule before or at step 25; one training row per update taken; a monitor
 reading every ``eval.monitor.every`` steps up to the last step (the one before for
-``nonfinite_weight``); the evaluation at step 25 for a run that took its 25 updates and none at
-or after an instability stop; the training stream's recorded count equal to the responses used;
-a K-only run that records ``k_only`` and no harmful prompts; every number finite (the terminal
+``nonfinite_weight``); the evaluation at step 25 for a run that took its 25 updates and none
+after an instability stop; the training stream's recorded count equal to the responses used; a
+K-only run that records ``k_only`` and no harmful prompts; every number finite (the terminal
 record but a refused batch's description, the evaluations, the training rows, the readings and
 the logged rows but the last step's of a ``nonfinite_k`` stop); and in the step-25 evaluation a
 finite K_benign and, for a regular run, K_harmful and both accuracies.
@@ -93,12 +100,14 @@ the factual questions (``factual_accuracy``); steps and stop from the terminal r
 - *The 15 pp bound* is inclusive: a loss of exactly 15 pp is usable; the comparison allows
   10⁻⁹ pp for the floating-point difference of two accuracies.
 - *A K-only run's utility* (amendment 1: recorded, descriptive only) enters no state: its
-  accuracies and held-out NLL are left out of the finiteness check, and a non-finite or missing
-  one gives a loss of None.
+  accuracies and held-out NLL are left out of the finiteness check, in the evaluations and in
+  the rows the schedule logs from them (``eval/<key>`` in ``metrics.jsonl``), and a non-finite or
+  missing one gives a loss of None.
 - *Prescribed rates* compare as numbers (relative tolerance 10⁻⁹), so that the spelling of a rate
-  in a campaign does not matter; the step keys are exact.
-- *The launcher's end record* decides only its outcome; a published terminal record is the
-  outcome whatever ``meta.json``'s status says (the launcher's own rule).
+  in a campaign does not matter; the step keys are exact. The prescribed (arm, rate, seed) a run
+  matched is its scientific cell.
+- *An outcome is read only once the launcher has ended its attempt* (an end ``done`` or
+  ``diverged``): a published terminal record without that end waits for it.
 """
 
 from __future__ import annotations
@@ -145,58 +154,69 @@ STOP_DETAIL = {"gradient_spike": {"grad_norm", "reference_median"},
 GROSS_COLLAPSE_PP = 15.0
 TOLERANCE_PP = 1e-9
 RATE_TOLERANCE = 1e-9
+GROSS_COLLAPSE, NONPOSITIVE_K = "gross_collapse", "nonpositive_k"  # unusable_reason
+# Utility (amendment 1: descriptive for a K-only run), in an evaluation and as the schedule logs
+# it (``eval/<key>``)
 UTILITY_KEYS = ("benchmark_accuracy", "factual_accuracy", "heldout_nll_per_token")
-STATES = ("pending", "recovered", "superseded", "held", "technical", "scientific", "usable",
-          "unusable")  # fmt: skip
+LOGGED_UTILITY_KEYS = tuple(f"eval/{key}" for key in UTILITY_KEYS)
+STATES = ("pending", "recovered", "superseded", "held", "refused", "technical", "scientific",
+          "usable", "unusable")  # fmt: skip
 COUNTING = ("pending", "technical", "scientific", "usable", "unusable")
-SETTLED_ENDS = (None, "done", "diverged", "stopped")  # ends that leave the outcome to the records
+OUTCOME_ENDS = ("done", "diverged")  # ends after which the records decide
+OPEN_ENDS = (None, "stopped")  # the launcher has not ended the attempt
 
 
 @dataclass(frozen=True)
 class Cell:
     """The cell a campaign issued for a run: the campaign (its journal's name) and the label,
     the header's candidate, step and round (and versions record), the config's arm, rate and
-    seed, and the config hash of its start."""
+    seed, the config hash of its start, and the prescribed (arm, rate, seed) it matched. A field
+    is None where the records do not bind it (a refused or unbound attempt)."""
 
-    campaign: str
-    label: str
-    candidate: int
-    step: str
+    campaign: str | None
+    label: str | None
+    candidate: int | None
+    step: str | None
     round: int | None
-    arm: str
-    rate: float
-    seed: int
-    config_hash: str
+    arm: str | None
+    rate: float | None
+    seed: int | None
+    config_hash: str | None
     versions_record: str | None = None
     versions_record_sha256: str | None = None
+    prescribed: tuple[str, float, int] | None = None
 
     @property
-    def key(self) -> str:
+    def key(self) -> str | None:
         """The step key of ``prescribed``."""
+        if self.candidate is None or self.step is None:
+            return None
         return step_key(self.candidate, self.step, self.round)
 
     @property
-    def scientific(self) -> tuple[str, str, str, int]:
-        """The scientific cell: step key, arm, rate (as a number) and seed."""
-        return (self.key, self.arm, f"{self.rate:.9g}", self.seed)
+    def scientific(self) -> tuple[str, str, float, int] | None:
+        """The scientific cell: the step key and the prescribed (arm, rate, seed) matched."""
+        key = self.key
+        return None if key is None or self.prescribed is None else (key, *self.prescribed)
 
 
 @dataclass(frozen=True)
 class Endpoint:
-    """One attempt of a study-3 run: its issued cell, its state and reasons, and its step-25
-    endpoint (None where it has none); losses in pp against θ₀."""
+    """One attempt of a study-3 run (or a study-3 run directory with no start): its issued cell,
+    its state and reasons, and its step-25 endpoint (None where it has none); losses in pp
+    against θ₀. The cell's fields are None where the records do not bind them."""
 
     run_id: str
     run_dir: Path
     cell: Cell
-    arm: str
-    lr: float
-    seed: int
-    role: str
-    candidate: int
-    k_only: bool
-    attempt: int
-    label: str
+    arm: str | None
+    lr: float | None
+    seed: int | None
+    role: str | None
+    candidate: int | None
+    k_only: bool | None
+    attempt: int | None
+    label: str | None
     state: str  # STATES
     reasons: tuple[str, ...] = ()
     steps: int | None = None
@@ -205,6 +225,7 @@ class Endpoint:
     K_harmful: float | None = None
     mmlu_loss_pp: float | None = None
     factual_loss_pp: float | None = None
+    unusable_reason: str | None = None  # GROSS_COLLAPSE or NONPOSITIVE_K when unusable
 
     @property
     def counts(self) -> bool:
@@ -214,15 +235,16 @@ class Endpoint:
 
 @dataclass
 class _Attempt:
-    campaign: str
+    campaign: str | None
     position: int  # the start's line in its campaign's journal
     run_id: str
     run_dir: Path
     cell: Cell
-    number: int  # the attempt's number in its start
-    role: str
-    k_only: bool
-    every: int  # eval.monitor.every
+    number: int | None  # the attempt's number in its start
+    role: str | None = None
+    k_only: bool | None = None
+    every: int | None = None  # eval.monitor.every
+    unbound: str | None = None  # why its config can no longer be bound (technical)
     state: str | None = None
     reasons: list[str] = field(default_factory=list)
 
@@ -270,10 +292,10 @@ def read_endpoints(
     theta0: str | Path,
     prescribed: Mapping[str, Collection[tuple[str, float, int]]],
 ) -> tuple[list[Endpoint], list[str]]:
-    """Every attempt of a study-3 run under ``runs_root``, bound to its issued cell, with its
-    state and endpoint; and the refusals, by name (module docstring). ``theta0``: θ₀'s
-    evaluation (``read_theta0``); ``prescribed``: per step key (``step_key``), the (arm, rate,
-    seed) cells issued so far, historical rounds included. A refused attempt is not listed."""
+    """Every attempt of a study-3 run under ``runs_root`` and every study-3 run directory, bound
+    to its issued cell, with its state and endpoint; and the refusals, by name (module
+    docstring). ``theta0``: θ₀'s evaluation (``read_theta0``); ``prescribed``: per step key
+    (``step_key``), the (arm, rate, seed) cells issued so far, historical rounds included."""
     root = Path(runs_root)
     baseline = read_theta0(theta0)
     voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
@@ -282,40 +304,31 @@ def read_endpoints(
     started = Counter(start.get("run_id") for _, _, start in journal.starts)
     attempts: list[_Attempt] = []
     for campaign, position, start in journal.starts:
-        run_id = start.get("run_id")
-        if not isinstance(run_id, str) or started[run_id] > 1:
-            problems.append(f"{campaign}: a start in the launch journal without its own run id "
-                            f"({run_id!r})")  # fmt: skip
+        if not isinstance(start.get("run_id"), str):
+            problems.append(f"{campaign}: a start in the launch journal without a run id")
             continue
-        bound = _bind(root, campaign, position, start, prescribed)
-        if isinstance(bound, str):
-            problems.append(f"{run_id}: {bound}")
-        else:
-            attempts.append(bound)
+        attempts.append(_bind(root, campaign, position, start, prescribed,
+                              twice=started[start["run_id"]] > 1))  # fmt: skip
     experiment = root / EXPERIMENT
     for run_dir in sorted(experiment.iterdir()) if experiment.is_dir() else []:
         if run_dir.is_dir() and run_dir.name not in started:
-            problems.append(f"{run_dir.name}: a study-3 run directory with no start in the launch "
-                            "journal: no issued cell")  # fmt: skip
+            attempts.append(_Attempt(
+                campaign=None, position=-1, run_id=run_dir.name, run_dir=run_dir,
+                cell=Cell(*[None] * 9), number=None, state="refused",
+                reasons=["a study-3 run directory with no start in the launch journal: no "
+                         "issued cell"]))  # fmt: skip
     _select(attempts, journal.recoveries, voided)
-    counting: dict[tuple, list[_Attempt]] = defaultdict(list)
-    for attempt in attempts:
-        if attempt.state is None:
-            counting[attempt.cell.scientific].append(attempt)
-    refused: set[str] = set()
-    for (key, arm, rate, seed), group in counting.items():
-        if len(group) > 1:
-            names = ", ".join(f"{a.run_id} ({a.campaign}, {a.cell.label}, attempt {a.number})"
-                              for a in group)  # fmt: skip
-            problems.append(f"{names}: {len(group)} attempts count for one cell ({key}, {arm}, "
-                            f"{rate}, {seed}): only a recorded recovery round or supersession "
-                            "replaces an attempt, and never a published outcome")  # fmt: skip
-            refused |= {a.run_id for a in group}
-    endpoints = [_endpoint(a, journal.ends.get(a.run_id), baseline)
-                 for a in attempts if a.run_id not in refused]  # fmt: skip
-    endpoints.sort(key=lambda e: (e.candidate, e.cell.step, e.cell.round or 0, e.arm, e.lr,
-                                  e.seed, e.cell.campaign, e.attempt, e.run_id))  # fmt: skip
-    return endpoints, sorted(problems)
+    _refuse_duplicates(attempts)
+    problems += [f"{a.run_id}: {'; '.join(a.reasons)}" for a in attempts if a.state == "refused"]
+    endpoints = [_endpoint(a, journal.ends.get(a.run_id), baseline) for a in attempts]
+    endpoints.sort(key=_order)
+    return endpoints, sorted(set(problems))
+
+
+def _order(e: Endpoint) -> tuple:
+    return (e.candidate or 0, e.cell.step or "", -1 if e.cell.round is None else e.cell.round,
+            e.arm or "", e.lr or 0.0, e.seed or 0, e.cell.campaign or "", e.attempt or 0,
+            e.run_id)  # fmt: skip
 
 
 # ------------------------------------------------------------------ journal and voiding records
@@ -393,44 +406,83 @@ def _bind(
     position: int,
     start: Mapping[str, Any],
     prescribed: Mapping[str, Collection[tuple[str, float, int]]],
-) -> _Attempt | str:
-    """The attempt bound to its issued cell, or why it cannot be (module docstring, "The issued
-    cell"). Reads the run's ``meta.json`` and ``config.yaml`` only."""
+    *,
+    twice: bool,
+) -> _Attempt:
+    """The attempt bound to its issued cell (module docstring, "The issued cell"): refused, with
+    its refusals as its reasons, when it cannot be; with the reason it can no longer be bound
+    (``unbound``) when its config cannot. Reads the run's ``meta.json`` and ``config.yaml``
+    only."""
     run_id = start["run_id"]
-    label, attempt, chash = start.get("run"), start.get("attempt"), start.get("config_hash")
+    run_dir = root / EXPERIMENT / run_id
+    label, number, chash = start.get("run"), start.get("attempt"), start.get("config_hash")
+    label = label if isinstance(label, str) else None
+    number = number if type(number) is int else None
+    chash = chash if isinstance(chash, str) else None
     head = start.get("header")
-    if not (isinstance(label, str) and type(attempt) is int and isinstance(chash, str)):
-        return "its start in the launch journal lacks its label, attempt or config hash"
+    issued = dict(head) if isinstance(head, Mapping) else {}
+    refusals = ["its run id is started more than once in the launch journal"] if twice else []
+    if None in (label, number, chash):
+        refusals.append("its start in the launch journal lacks its label, attempt or config hash")
     problem = _header_problem(head)
     if problem is not None:
-        return problem
-    run_dir = root / EXPERIMENT / run_id
+        refusals.append(problem)
     meta = _json(run_dir / "meta.json")
     if meta is not None:
         recorded = meta.get("campaign")
-        issued = {"name": campaign, "label": label, "attempt": attempt, "header": head}
-        if not isinstance(recorded, Mapping) or {k: recorded.get(k) for k in issued} != issued:
-            return (f"its meta.json records another campaign than its start ({campaign}, "
-                    f"{label}, attempt {attempt})")  # fmt: skip
+        wanted = {"name": campaign, "label": label, "attempt": number, "header": head}
+        if not isinstance(recorded, Mapping) or {k: recorded.get(k) for k in wanted} != wanted:
+            refusals.append(f"its meta.json records another campaign than its start ({campaign}, "
+                            f"{label}, attempt {number})")  # fmt: skip
         if meta.get("config_hash") != chash:
-            return f"its config hash {meta.get('config_hash')!r} is not its cell's {chash!r}"
-    cfg = _config(run_dir, start, chash)
-    if isinstance(cfg, str):
-        return cfg
-    name = OmegaConf.select(cfg, "optimizer.name", default=None)
-    if name not in ARMS:
-        return f"an unknown arm: optimizer {name!r}"
-    arm, rate = ARMS[name], OmegaConf.select(cfg, "optimizer.lr", default=None)
-    seed, role = OmegaConf.select(cfg, "seed", default=None), _select_key(cfg, "study3.role")
-    k_only = OmegaConf.select(cfg, "eval.k_only", default=False) is True
-    if not (_number(rate) and type(seed) is int):
-        return f"its config has no rate or seed ({rate!r}, {seed!r})"
-    step, candidate, round_ = head["step"], head["candidate"], head.get("round")
+            refusals.append(f"its config hash {meta.get('config_hash')!r} is not its cell's "
+                            f"{chash!r}")  # fmt: skip
+    cfg, unbound, refusal = _config(run_dir, start, chash)
+    if refusal is not None:
+        refusals.append(refusal)
+    facts: dict[str, Any] = {}
+    if cfg is not None:
+        facts, found = _facts(cfg, label, issued if problem is None else {}, prescribed)
+        refusals += found
+    candidate, step = issued.get("candidate"), issued.get("step")
+    cell = Cell(
+        campaign=campaign, label=label,
+        candidate=candidate if candidate in (1, 2) and type(candidate) is int else None,
+        step=step if step in STEP_ROLES else None,
+        round=issued.get("round") if type(issued.get("round")) is int else None,
+        arm=facts.get("arm"), rate=facts.get("rate"), seed=facts.get("seed"), config_hash=chash,
+        versions_record=_text(issued.get("versions_record")),
+        versions_record_sha256=_text(issued.get("versions_record_sha256")),
+        prescribed=facts.get("prescribed"),
+    )  # fmt: skip
+    return _Attempt(campaign=campaign, position=position, run_id=run_id, run_dir=run_dir,
+                    cell=cell, number=number, role=facts.get("role"),
+                    k_only=facts.get("k_only"), every=facts.get("every"), unbound=unbound,
+                    state="refused" if refusals else None, reasons=refusals)  # fmt: skip
+
+
+def _facts(
+    cfg: Any,
+    label: str | None,
+    issued: Mapping[str, Any],
+    prescribed: Mapping[str, Collection[tuple[str, float, int]]],
+) -> tuple[dict[str, Any], list[str]]:
+    """What a bound config says of its run, and why its cell is not one the header issued
+    (``issued``: a valid header, or empty when it is not one)."""
     problems = []
-    if role != STEP_ROLES[step]:
-        problems.append(f"role {role!r} under the header's step {step!r}")
-    if k_only != (role in K_ONLY_ROLES):
-        problems.append(f"{'a K-only' if k_only else 'a regular'} run in the role {role!r}")
+    name = OmegaConf.select(cfg, "optimizer.name", default=None)
+    rate, seed = OmegaConf.select(cfg, "optimizer.lr", default=None), _value(cfg, "seed")
+    role, every = _value(cfg, "study3.role"), _value(cfg, "eval.monitor.every")
+    facts = {"arm": ARMS.get(name), "rate": float(rate) if _number(rate) else None,
+             "seed": seed if type(seed) is int else None,
+             "role": role if role in ROLES else None,
+             "k_only": OmegaConf.select(cfg, "eval.k_only", default=False) is True,
+             "every": every if type(every) is int and every >= 1 else None}  # fmt: skip
+    if name not in ARMS:
+        problems.append(f"an unknown arm: optimizer {name!r}")
+    if facts["rate"] is None or facts["seed"] is None or facts["every"] is None:
+        problems.append(f"its config has no rate, seed or monitor interval ({rate!r}, {seed!r}, "
+                        f"{every!r})")  # fmt: skip
     evaluate_at = OmegaConf.select(cfg, "schedule.evaluate_at", default=None)
     protocol = (OmegaConf.select(cfg, "train.batch_size", default=None),
                 OmegaConf.select(cfg, "train.steps", default=None),
@@ -439,28 +491,30 @@ def _bind(
     if protocol != (BATCH, UPDATES, "fixed", [UPDATES]):
         problems.append(f"not the registered schedule (batch, steps, policy, evaluations: "
                         f"{protocol})")  # fmt: skip
-    if not label.endswith(f"/s{seed}"):
+    if label is not None and not label.endswith(f"/s{seed}"):
         problems.append(f"its label {label!r} is not that of seed {seed}")
-    seeds = SEEDS.get(role, {}).get(candidate) if isinstance(role, str) else None
+    if not issued or problems:
+        return facts, problems
+    step, candidate, round_ = issued["step"], issued["candidate"], issued["round"]
+    if role != STEP_ROLES[step]:
+        problems.append(f"role {role!r} under the header's step {step!r}")
+    if facts["k_only"] != (role in K_ONLY_ROLES):
+        problems.append(f"{'a K-only' if facts['k_only'] else 'a regular'} run in the role "
+                        f"{role!r}")  # fmt: skip
+    seeds = SEEDS.get(role, {}).get(candidate) if role in ROLES else None
     if seeds is None or seed not in seeds:
         span = f"{seeds[0]}–{seeds[-1]}" if seeds else "none"
         problems.append(f"seed {seed} is outside the seeds of {role!r} for candidate {candidate} "
                         f"({span})")  # fmt: skip
     key = step_key(candidate, step, round_)
-    if not any(a == arm and _number(r) and math.isclose(r, rate, rel_tol=RATE_TOLERANCE)
-               and s == seed for a, r, s in prescribed.get(key, ())):  # fmt: skip
-        problems.append(f"({arm}, {rate:g}, {seed}) is not prescribed for {key}")
-    if problems:
-        return "; ".join(problems)
-    cell = Cell(campaign=campaign, label=label, candidate=candidate, step=step, round=round_,
-                arm=arm, rate=float(rate), seed=seed, config_hash=chash,
-                versions_record=head.get("versions_record"),
-                versions_record_sha256=head.get("versions_record_sha256"))  # fmt: skip
-    every = OmegaConf.select(cfg, "eval.monitor.every", default=None)
-    if type(every) is not int or every < 1:
-        return f"its config has no monitor interval ({every!r})"
-    return _Attempt(campaign=campaign, position=position, run_id=run_id, run_dir=run_dir,
-                    cell=cell, number=attempt, role=role, k_only=k_only, every=every)  # fmt: skip
+    matched = sorted(cell for cell in prescribed.get(key, ())
+                     if cell[0] == facts["arm"] and cell[2] == seed and _number(cell[1])
+                     and math.isclose(cell[1], facts["rate"], rel_tol=RATE_TOLERANCE))  # fmt: skip
+    if matched:
+        facts["prescribed"] = tuple(matched[0])
+    else:
+        problems.append(f"({facts['arm']}, {facts['rate']:g}, {seed}) is not prescribed for {key}")
+    return facts, problems
 
 
 def _header_problem(head: Any) -> str | None:
@@ -471,7 +525,9 @@ def _header_problem(head: Any) -> str | None:
         return f"its campaign header names no candidate 1 or 2 ({head.get('candidate')!r})"
     if head.get("step") not in STEP_ROLES:
         return f"its campaign header names no study-3 step ({head.get('step')!r})"
-    round_ = head.get("round")
+    if "round" not in head:
+        return "its campaign header carries no round (None only when written so)"
+    round_ = head["round"]
     if round_ is not None and (type(round_) is not int or round_ < 0):
         return f"its campaign header's round is {round_!r}"
     if head["step"] in VERSIONED_STEPS:
@@ -482,19 +538,23 @@ def _header_problem(head: Any) -> str | None:
     return None
 
 
-def _config(run_dir: Path, start: Mapping[str, Any], chash: str) -> Any:
-    """The run's config, whose hash is its cell's: its ``config.yaml``, or without one its
-    start's command loaded again; or why there is none."""
+def _config(run_dir: Path, start: Mapping[str, Any], chash: str | None) -> tuple[Any, Any, Any]:
+    """The run's config, whose hash is its cell's: its ``config.yaml``, or without a readable
+    one its start's command loaded again. Returns (config, why it can no longer be bound, why it
+    is refused), the config None unless it binds."""
     path = run_dir / "config.yaml"
+    unreadable = None
     if path.is_file():
         try:
             cfg = OmegaConf.load(path)
             found = config_hash(cfg)
         except Exception as exc:  # an unreadable config binds nothing
-            return f"its config.yaml cannot be read ({type(exc).__name__})"
-        if found != chash:
-            return f"its config.yaml's config hash {found!r} is not its cell's {chash!r}"
-        return cfg
+            unreadable = f"its config.yaml cannot be read ({type(exc).__name__})"
+        else:
+            if found != chash:
+                return None, None, (f"its config.yaml's config hash {found!r} is not its cell's "
+                                    f"{chash!r}")  # fmt: skip
+            return cfg, None, None
     command = start.get("command")
     try:
         if not (isinstance(command, list) and len(command) >= 2
@@ -502,13 +562,17 @@ def _config(run_dir: Path, start: Mapping[str, Any], chash: str) -> Any:
             raise ValueError("no command")
         cfg = load_run_config(command[1], command[2:])
         found = config_hash(cfg)
-    except Exception as exc:  # no config to bind it: refused
-        return (f"no config.yaml, and its start's command gives no config hash "
-                f"({type(exc).__name__})")  # fmt: skip
-    if found != chash:
-        return (f"no config.yaml, and its start's command gives the config hash {found!r}, not "
-                f"its cell's {chash!r}")  # fmt: skip
-    return cfg
+    except Exception as exc:  # no config to bind it under this checkout's configs
+        why = f"its start's command gives no config hash ({type(exc).__name__})"
+    else:
+        if found == chash:
+            return cfg, unreadable, None
+        why = f"its start's command gives the config hash {found!r}, not its cell's {chash!r}"
+    return None, f"{unreadable or 'no config.yaml'}, and {why}", None
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 # ------------------------------------------------------------------ attempts
@@ -519,11 +583,12 @@ def _select(
     recoveries: Sequence[tuple[str, int, Mapping[str, Any]]],
     voided: Mapping[str, tuple[str, str]],
 ) -> None:
-    """Mark the attempts that no longer count (module docstring, "Attempts")."""
-    by_label: dict[tuple[str, str], list[_Attempt]] = defaultdict(list)
-    for attempt in sorted(attempts, key=lambda a: (a.campaign, a.position)):
+    """Mark the attempts that no longer count (module docstring, "Attempts"); a refused one
+    stays refused."""
+    by_label: dict[tuple[str | None, str | None], list[_Attempt]] = defaultdict(list)
+    for attempt in sorted(attempts, key=lambda a: (a.campaign or "", a.position)):
         by_label[(attempt.campaign, attempt.cell.label)].append(attempt)
-        if attempt.run_id in voided:
+        if attempt.state is None and attempt.run_id in voided:
             attempt.state, reason = voided[attempt.run_id]
             attempt.reasons.append(reason)
     for campaign, position, record in recoveries:
@@ -536,6 +601,35 @@ def _select(
             if latest.state is None and not (latest.run_dir / "terminal.json").is_file():
                 latest.state = "recovered"
                 latest.reasons.append(f"a recovery round followed it: {record.get('reason')}")
+
+
+def _refuse_duplicates(attempts: list[_Attempt]) -> None:
+    """Refuse every attempt that counts beside another of its scientific cell or its label."""
+    groups: dict[str, dict[Any, list[_Attempt]]] = {"cell": defaultdict(list),
+                                                    "label": defaultdict(list)}  # fmt: skip
+    for attempt in attempts:
+        if attempt.state is None:
+            if attempt.cell.scientific is not None:
+                groups["cell"][attempt.cell.scientific].append(attempt)
+            groups["label"][(attempt.campaign, attempt.cell.label)].append(attempt)
+    seen: set[frozenset[str]] = set()
+    for kind, by_key in groups.items():
+        for key, group in by_key.items():
+            ids = frozenset(a.run_id for a in group)
+            if len(group) < 2 or ids in seen:
+                continue
+            seen.add(ids)
+            what = (f"one cell ({key[0]}, {key[1]}, {key[2]:g}, {key[3]})" if kind == "cell"
+                    else f"one label ({key[0]}, {key[1]})")  # fmt: skip
+            names = ", ".join(f"{a.run_id} ({a.campaign}, {a.cell.label}, attempt {a.number})"
+                              for a in group)  # fmt: skip
+            why = (
+                f"{len(group)} attempts count for {what}: {names}; only a recorded recovery "
+                "round or supersession replaces an attempt, and never a published outcome"
+            )
+            for attempt in group:
+                attempt.state = "refused"
+                attempt.reasons.append(why)
 
 
 # ------------------------------------------------------------------ outcomes
@@ -556,17 +650,21 @@ def _endpoint(attempt: _Attempt, end: Mapping[str, Any] | None,
 def _outcome(attempt: _Attempt, end: Mapping[str, Any] | None,
              theta0: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
     """A counting attempt's state, reasons and endpoint (module docstring, "States")."""
+    if attempt.unbound is not None:
+        return {"state": "technical", "reasons": (attempt.unbound,)}
     run_dir = attempt.run_dir
     ended = None if end is None else end.get("outcome")
-    if not (run_dir / "terminal.json").is_file():
-        status = (_json(run_dir / "meta.json") or {}).get("status")
-        finished = status not in (None, "running")  # failed, or ended without its outcome
-        if ended in (None, "stopped") and not finished:
-            return {"state": "pending", "reasons": ("no published terminal record yet",)}
-        reasons = [f"the launcher's end record: {ended}"] if ended not in (None, "stopped") else []
+    published = (run_dir / "terminal.json").is_file()
+    status = None if published else (_json(run_dir / "meta.json") or {}).get("status")
+    finished = status not in (None, "running")  # failed, or finished without its outcome
+    if ended in OPEN_ENDS and not finished:
+        why = "the launcher has not ended it" if ended is None else "the launcher's end: stopped"
+        return {"state": "pending", "reasons": (why,)}
+    if not published:
+        reasons = [f"the launcher's end record: {ended}"] if ended not in OPEN_ENDS else []
         reasons += [f"meta.json: status {status}"] if finished else []
         return {"state": "technical", "reasons": (*reasons, "no published terminal record")}
-    if ended not in SETTLED_ENDS:  # the launcher's verdict; its free text is not copied
+    if ended not in OUTCOME_ENDS:  # the launcher's verdict; its free text is not copied
         return {"state": "technical", "reasons": (f"the launcher's end record: {ended}",)}
     problems, terminal, row = _records(attempt)
     if problems:
@@ -582,11 +680,12 @@ def _outcome(attempt: _Attempt, end: Mapping[str, Any] | None,
     out |= {"K": k, "mmlu_loss_pp": mmlu, "factual_loss_pp": factual}
     if attempt.k_only:
         if not k > 0:
-            return {**out, "state": "unusable", "reasons": (f"K {k!r} is not positive",)}
+            return {**out, "state": "unusable", "unusable_reason": NONPOSITIVE_K,
+                    "reasons": (f"K {k!r} is not positive",)}  # fmt: skip
         return {**out, "state": "usable", "reasons": ()}
     out["K_harmful"] = float(row["K_harmful"])
     if mmlu > GROSS_COLLAPSE_PP + TOLERANCE_PP:
-        return {**out, "state": "unusable",
+        return {**out, "state": "unusable", "unusable_reason": GROSS_COLLAPSE,
                 "reasons": (f"gross collapse: MMLU loss {mmlu:.4g} pp > 15 pp",)}  # fmt: skip
     return {**out, "state": "usable", "reasons": ()}
 
@@ -628,7 +727,7 @@ def _records(attempt: _Attempt) -> tuple[list[str], dict[str, Any] | None, dict[
     read_to = steps - 1 if stop == "nonfinite_weight" else steps  # no reading after a bad update
     if monitor_steps != list(range(attempt.every, read_to + 1, attempt.every)):
         problems.append("monitor readings are not every reading up to the last step")
-    wanted = [UPDATES] if stop == "steps" else [t for t in (UPDATES,) if t < steps]
+    wanted = [UPDATES] if stop == "steps" else []
     if eval_steps != wanted:
         problems.append(f"evaluations at steps {eval_steps}, not {wanted}")
     inputs = meta.get("inputs") or {}
@@ -642,13 +741,13 @@ def _records(attempt: _Attempt) -> tuple[list[str], dict[str, Any] | None, dict[
     stop_record = {k: v for k, v in terminal["stop"].items() if k != "rejected"}
     if _nonfinite({**terminal, "stop": stop_record}):
         problems.append("terminal record: a non-finite number")
+    descriptive = (*UTILITY_KEYS, *LOGGED_UTILITY_KEYS) if attempt.k_only else ()  # amendment 1
+    logged = [_without(row, descriptive) for row in metrics if "loss" not in row]
     problems += _finiteness("training metrics", training, None)
     problems += _finiteness("monitor readings", readings, last)
-    problems += _finiteness("logged metrics", [row for row in metrics if "loss" not in row],
-                            None if last is None else last - 1)  # fmt: skip
-    descriptive = UTILITY_KEYS if attempt.k_only else ()  # amendment 1: decides nothing
-    problems += _finiteness("evaluations", [{k: v for k, v in row.items() if k not in descriptive}
-                                            for row in evaluations], None)  # fmt: skip
+    problems += _finiteness("logged metrics", logged, None if last is None else last - 1)
+    problems += _finiteness("evaluations", [_without(row, descriptive) for row in evaluations],
+                            None)  # fmt: skip
     row = evaluations[0] if eval_steps == [UPDATES] else None
     if stop == "steps" and row is not None:
         needed = ("K_benign",) if attempt.k_only else (
@@ -668,8 +767,12 @@ def _loss(theta0: float, accuracy: Any) -> float | None:
     return 100.0 * (theta0 - accuracy)
 
 
-def _select_key(cfg: Any, key: str) -> Any:
-    """A config value, None when absent or unset."""
+def _without(row: Mapping[str, Any], keys: Collection[str]) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if k not in keys}
+
+
+def _value(cfg: Any, key: str) -> Any:
+    """A config value, None when absent or unset (``???``)."""
     try:
         return OmegaConf.select(cfg, key, default=None, throw_on_missing=True)
     except Exception:  # a ``???`` value
