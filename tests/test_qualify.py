@@ -856,6 +856,107 @@ def test_the_cycle_covers_every_stage_and_old_code_launcher_run(qualify, tmp_pat
     assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-b1"]
 
 
+THIRD = {**CODE, "commit": "0" * 40, "sha256": "3" * 64}  # a launcher run's earlier code
+
+
+def codes(commit="HEAD", *args, **kwargs):
+    """The GPU code of each commit: this checkout's is the fix's; the records' (abc123, the
+    launcher runs' default) the old one; any other commit, a third code."""
+    return dict(FIX if commit == "HEAD" else CODE if commit == "abc123" else THIRD)
+
+
+def at_commit(run_dir, commit):
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta["git"] = {"commit": commit, "dirty": False}
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+
+
+def test_the_cycle_supersedes_every_launcher_run_not_of_the_fix(qualify, tmp_path, monkeypatch):
+    """A requalified case's launcher run at a third code (reused from earlier code, its baseline
+    recorded technical under the old one): the cycle supersedes it too, as any run not of the
+    fix's code, so its recovery round starts a run under the fix."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    at_commit(settled_launcher(root, run, "r-a1"), "h0")  # a third code
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    qualify.main(supersede_args(path, ADAMW, record))
+    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
+    assert [r["run_id"] for r in cycle["launchers"]] == ["r-a1"]
+    assert qualify.located(run, root) is None  # superseded: the recovery round starts a new one
+
+
+def test_the_cycle_keeps_cases_its_records_or_launcher_runs_show_scientific(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """Kept whole: another stage's case whose baseline fired a declared harness instability rule
+    (a complete record with no kind of its own, read with the verdicts), and a case without any
+    part whose launcher run its own instability rule stopped (its run is not superseded)."""
+    path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    stopped = journal(root, path, f"adamw-{ADAMW_LR:g}/s10201", ["r-b1"])
+    settled_launcher(root, stopped, "r-b1", stop="gradient_spike", steps=3)
+    engineering = q.QualificationCase(10000, "adamw", ADAMW_LR, 1, True)
+    spiked = synthetic(engineering)[0]
+    spiked["trajectories"]["baseline"]["instability"] = {"reason": "gradient_spike", "step": 3,
+                                                        "detail": {}}  # fmt: skip
+    assert "kind" not in spiked and spiked["status"] == "complete"
+    publish(out, engineering, "baseline", spiked)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    qualify.main(supersede_args(path, ADAMW, record))
+    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
+    kept = {(k["case"], k["stage"]) for k in cycle["kept_cases"]}
+    assert kept == {(engineering.name, "engineering"), ("s10201/adamw-5e-05", "numerical")}
+    why = {k["case"]: k["why"] for k in cycle["kept_cases"]}
+    assert "the launcher run r-b1" in why["s10201/adamw-5e-05"]
+    assert [r["run_id"] for r in cycle["launchers"]] == []  # r-b1 keeps counting
+    assert {(c["case"], c["stage"]) for c in cycle["cases_requalified"]} == {
+        (ADAMW.name, "numerical")}  # fmt: skip
+    assert qualify.located(stopped, root) == root / stopped.experiment / "r-b1"
+
+
+def test_a_cycle_cannot_start_from_a_case_it_keeps_whole(qualify, tmp_path, monkeypatch) -> None:
+    path = campaign(tmp_path, adamw=())
+    out = tmp_path / "runs" / "qualification"
+    write_case(out, FA, decided=True)  # scientific
+    publish(out, FA, "control", control_record(0.1, case=FA))  # technical
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    record = case_folder(out, FA) / "control-attempt-1.json"
+    with pytest.raises(SystemExit, match="keeps the case whole"):
+        qualify.main(supersede_args(path, FA, record))
+    assert not (out / "c1" / "supersede-1.json").exists()
+
+
+def test_a_checkpoint_finish_removed_is_no_evidence_of_an_interruption(qualify, tmp_path) -> None:
+    """``finish`` records the checkpoints it removes; a restart does not take their absence for
+    a lost container disk."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    launcher = settled_launcher(root, run, "r-a1")
+    checkpoint = tmp_path / "ckpt" / "r-a1.pt"
+    checkpoint.parent.mkdir()
+    checkpoint.write_bytes(b"w")
+    for name in ("meta.json", "summary.json"):
+        text = (launcher / name).read_text().replace('"/x.pt"', json.dumps(str(checkpoint)))
+        (launcher / name).write_text(text)
+    baseline, rest = synthetic(ADAMW, identity=q.launcher_identity(launcher))
+    publish(out, ADAMW, "baseline", baseline)
+    rest["baseline_record"]["sha256"] = q.record_sha256(baseline)
+    publish(out, ADAMW, "rest", rest)
+    qualify.main(["finish", *common(path), "--case", ADAMW.name])
+    assert not checkpoint.exists()
+    (marker,) = case_folder(out, ADAMW).glob("checkpoints-removed-*.json")
+    assert str(checkpoint) in json.loads(marker.read_text())["removed"]
+    assert qualify.checkpoint_missing(launcher) is True  # gone from disk,
+    assert qualify.checkpoint_missing(launcher, case_folder(out, ADAMW)) is False  # on purpose
+    (out / ADAMW.attempt_path("rest", 1)).unlink()  # the case no longer complete
+    with pytest.raises(SystemExit, match="no evidence of an interruption"):
+        qualify.main(restart(path, ADAMW, RESTART))
+
+
 def test_a_lost_checkpoint_restarts_a_case_before_any_attempt(qualify, tmp_path) -> None:
     """The Pod stopped between a finished launch and the baseline's start: no attempt, and the
     launcher run's checkpoint is gone. The restart supersedes the launcher run, so the recovery

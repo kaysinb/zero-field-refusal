@@ -109,17 +109,18 @@ and the launcher's recovery round with the same reason starts a new run; run aga
 attempt is named, the command only completes that journal line. Only an interrupted case is
 restarted: it is refused without a reason, when every attempt is named already, for a complete case,
 without evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
-from disk), when the launcher run itself is a completed failure (its declared instability stop,
-scientific, or another stop or a departing run, technical: ``launcher_problems`` without the
-comparison with this process's environment), and when any attempt is a completed failure
-(``attempt_failures``): a scientific one, which keeps counting ("no reruns to pass"), a technical
-one (the engineering cycle lifts it: below), or an unreadable record; an interrupted rest attempt
-counts by its trajectory results. A recorded attempt that passes so far (the baseline, a control)
-depends on the lost run or checkpoint and is named with the others. The attempts it names are void:
-a part whose recorded attempts are all named is ``voided``, so the case is not complete; ``part
---resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt with ``--infrastructure
-REASON`` (its record names the restart records); a rest waits for the baseline's new attempt. The
-named records are kept, listed, and voided in the verdict (with the reason, under ``restart``).
+from disk, unless ``finish`` removed it on purpose: its ``checkpoints-removed-<n>.json`` records),
+when the launcher run itself is a completed failure (its declared instability stop, scientific, or
+another stop or a departing run, technical: ``launcher_problems`` without the comparison with this
+process's environment), and when any attempt is a completed failure (``attempt_failures``): a
+scientific one, which keeps counting ("no reruns to pass"), a technical one (the engineering cycle
+lifts it: below), or an unreadable record; an interrupted rest attempt counts by its trajectory
+results. A recorded attempt that passes so far (the baseline, a control) depends on the lost run or
+checkpoint and is named with the others. The attempts it names are void: a part whose recorded
+attempts are all named is ``voided``, so the case is not complete; ``part --resume`` exits 8 for it,
+and ``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names
+the restart records); a rest waits for the baseline's new attempt. The named records are kept,
+listed, and voided in the verdict (with the reason, under ``restart``).
 
 **Supersession** (``supersede --record PATH --diagnosis TEXT --fix TEXT``; "Failure routes": one
 engineering cycle per candidate; "Voiding and supersession"). A completed technical failure stops
@@ -127,20 +128,23 @@ counting only through the candidate's supersession record, ``c<N>/supersede-1.js
 technical record that started the cycle (its path and sha256), the diagnosis and the fix, the GPU
 code of the fix (this clean checkout's) and the old one, every record of the candidate made under
 the old GPU code in all its stage folders, passed ones included, with the cases re-qualified, and
-every old-code launcher run of the candidate in the launch journal (the runs its records name and
-those of the campaign's cases, a case with no part attempt yet included), which it then logs
-superseded. A case that holds a scientific failure is kept whole: none of its records (its parts,
-its control, its trajectory results) nor its launcher run is voided, it is listed as kept with why,
-and the driver's stale check passes it; the failure keeps counting (no reruns to pass). The cycle is
-refused a second time for the candidate (a technical failure left unresolved after it routes to the
-technical feasibility report), for a record that is not a completed technical failure of the case,
-and when the fix's GPU code is the old one (the same path is not simply rerun); run again with the
-same record, it only writes the journal's lines that are missing. Each case it names re-qualifies
-under the new code from a new launcher run (the recovery round) and new attempts of its parts: the
-attempt after one the cycle named carries ``--engineering-cycle`` (its record:
-``engineering_cycle``, the supersession's path and sha256) instead of ``--infrastructure``; a later
-interruption of a new-code attempt is rerun with ``--infrastructure REASON``, as any other. The
-verdict lists the records it voids under ``supersession``.
+every launcher run of the candidate in the launch journal not of the fix's GPU code (the runs its
+records name and those of the campaign's cases, a case with no part attempt yet included; another or
+an unknown code included, since a re-qualification under the fix could not use it), which it then
+logs superseded. A case that holds a scientific failure (its records read with the verdicts, another
+stage's included, or its launcher run stopped by its own declared instability rule) is kept whole:
+none of its records (its parts, its control, its trajectory results) nor its launcher run is voided,
+it is listed as kept with why, and the driver's stale check passes it; the failure keeps counting
+(no reruns to pass). The cycle is refused a second time for the candidate (a technical failure left
+unresolved after it routes to the technical feasibility report), for a record that is not a
+completed technical failure of the case or that belongs to a case the cycle keeps whole, and when
+the fix's GPU code is the old one (the same path is not simply rerun); run again with the same
+record, it only writes the journal's lines that are missing. Each case it names re-qualifies under
+the new code from a new launcher run (the recovery round) and new attempts of its parts: the attempt
+after one the cycle named carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the
+supersession's path and sha256) instead of ``--infrastructure``; a later interruption of a new-code
+attempt is rerun with ``--infrastructure REASON``, as any other. The verdict lists the records it
+voids under ``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -172,6 +176,7 @@ reason."""
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -737,6 +742,12 @@ def finish(
     if planned.harness.exists():
         shutil.rmtree(planned.harness)
         removed.append(str(planned.harness))
+    if removed:  # removed on purpose: never evidence of an interruption (``restart-case``)
+        folder = case_folder(out, planned.case)
+        q.publish(folder / f"{RELEASED}-{len(list(folder.glob(f'{RELEASED}-*.json'))) + 1}.json",
+                  {"case": planned.case.record(), "removed": removed, "release": release,
+                   "technical": technical,
+                   "at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
     print(json.dumps({"case": planned.case.name, "state": why, "removed": removed}))
 
 
@@ -904,12 +915,26 @@ def log_superseded(
         supersede(root, campaign, planned.run, run_dir.name, reason=reason, record=str(record))
 
 
-def checkpoint_missing(run_dir: Path | None) -> bool:
-    """Whether the launcher run's recorded step-25 checkpoint is gone from disk."""
+RELEASED = "checkpoints-removed"  # ``finish``'s record of the checkpoints it removed
+
+
+def released(folder: Path) -> set[str]:
+    """Every path ``finish`` (``--release`` included) removed for the case, on purpose."""
+    paths: set[str] = set()
+    for file in sorted(folder.glob(f"{RELEASED}-*.json")) if folder.is_dir() else []:
+        paths |= {str(x) for x in (_read(file) or {}).get("removed") or []}
+    return paths
+
+
+def checkpoint_missing(run_dir: Path | None, folder: Path | None = None) -> bool:
+    """Whether the launcher run's recorded step-25 checkpoint is gone from disk, and not
+    because ``finish`` removed it on purpose (the case's ``checkpoints-removed`` records)."""
     if run_dir is None:
         return False
     record = (_read(run_dir / "summary.json") or {}).get("endpoint_checkpoint")
-    return isinstance(record, dict) and not Path(str(record.get("path"))).is_file()
+    if not isinstance(record, dict) or Path(str(record.get("path"))).is_file():
+        return False
+    return folder is None or str(record.get("path")) not in released(folder)
 
 
 def next_number(folder: Path, kind: str) -> int:
@@ -949,7 +974,7 @@ def restart_case(
         sys.exit(f"{case.name}: the restart is recorded ({path.name}); the launch journal now "
                  "names its launcher run")  # fmt: skip
     run_dir, launcher = launcher_to_supersede(planned, root)
-    missing = checkpoint_missing(run_dir)
+    missing = checkpoint_missing(run_dir, folder)  # a checkpoint finish removed is no evidence
     if not fresh and not missing:  # a lost checkpoint alone is evidence, before any attempt
         sys.exit(f"{case.name}: no attempt to restart (none recorded or started, or every one "
                  "named by an earlier restart or supersession record), and the launcher run's "
@@ -989,20 +1014,14 @@ def scientific_attempts(
 ) -> set[tuple[str, int]]:
     """The case's attempts an engineering cycle keeps: every scientific failure (a record, or an
     interrupted rest's trajectory results; ``attempt_failures``), and the baseline record a kept
-    rest is bound to, without which it could not be read. Only a record's own kind is read for a
-    case of no campaign run."""
+    rest is bound to, without which it could not be read. A case of no campaign run (another
+    stage's) is read the same way, from the case its records name (``record_case``)."""
     keep: set[tuple[str, int]] = set()
-    if p is None:
-        for part_name in q.PARTS:
-            for n, state in attempt_files(folder, part_name).items():
-                record = _read(folder / f"{part_name}-attempt-{n}.json") or {}
-                if state == "recorded" and record.get("kind") == q.SCIENTIFIC:
-                    keep.add((part_name, n))
-    else:
-        for label, kind in attempt_failures(folder, p, scope):
-            if kind == q.SCIENTIFIC:
-                part_name, _, n = label.split(" (")[0].split(" ")
-                keep.add((part_name, int(n)))
+    p = p if p is not None else record_case(folder)
+    for label, kind in attempt_failures(folder, p, scope) if p is not None else []:
+        if kind == q.SCIENTIFIC:
+            part_name, _, n = label.split(" (")[0].split(" ")
+            keep.add((part_name, int(n)))
     for part_name, n in list(keep):
         if part_name != "rest":
             continue
@@ -1014,6 +1033,26 @@ def scientific_attempts(
             if state == "recorded" and file_sha256(folder / f"baseline-attempt-{m}.json") == named:
                 keep.add(("baseline", m))
     return keep
+
+
+def record_case(folder: Path) -> SimpleNamespace | None:
+    """The case the records in ``folder`` name, as ``attempt_failures`` reads a campaign case
+    (its ``case``, and ``control`` when the folder holds a control attempt); None without a
+    readable record of it."""
+    fields = {f.name for f in dataclasses.fields(q.QualificationCase)}
+    for part_name in q.PARTS:
+        for n, state in attempt_files(folder, part_name).items():
+            record = (
+                _read(folder / f"{part_name}-attempt-{n}.json") if state == "recorded" else None
+            )
+            named = (record or {}).get("case")
+            if isinstance(named, dict):
+                try:
+                    case = q.QualificationCase(**{k: v for k, v in named.items() if k in fields})
+                except TypeError:
+                    continue
+                return SimpleNamespace(case=case, control=bool(attempt_files(folder, "control")))
+    return None
 
 
 def kept_records(folder: Path) -> set[str]:
@@ -1100,6 +1139,11 @@ def supersede_case(
     if dict(map(tuple, failures)).get(label) != q.TECHNICAL:
         sys.exit(f"{case.name}: {path.name} is not a completed technical failure: an "
                  "engineering cycle supersedes only one")  # fmt: skip
+    science = scientific_attempts(folder, chosen, scope, candidate=case.candidate)
+    if science:
+        sys.exit(f"{case.name}: the case holds a scientific failure ({sorted(science)}), which "
+                 "keeps counting: an engineering cycle keeps the case whole, so it cannot start "
+                 "from one of its records")  # fmt: skip
     old = ((_read(path) or {}).get("provenance") or {}).get("gpu_code") or {}
     require_clean()
     fix = code_identity.gpu_code_identity()
@@ -1152,8 +1196,31 @@ def supersede_case(
                 run_ids |= {e["launcher_run_id"] for e in mine if e["launcher_run_id"]}
     kept_names = {(k["case"], k["stage"]) for k in kept_cases}
     for (name, stage_name), p in by_name.items():  # every campaign case: its launcher runs
-        if (name, stage_name) not in kept_names:
-            run_ids |= set(journal_run_ids(p.run, root))
+        if (name, stage_name) in kept_names:
+            continue
+        ids = set(journal_run_ids(p.run, root))
+        stopped = []  # a launcher run its own declared instability stopped keeps its case whole
+        for run_id in sorted(ids):
+            run_dir = root / p.run.experiment / run_id
+            if run_dir.is_dir():
+                kind, why = q.launcher_problems(run_dir, p.case, checkpoint=False,
+                                                environment=False)  # fmt: skip
+                if kind == q.SCIENTIFIC:
+                    stopped.append(f"the launcher run {run_id}: {why}")
+        if stopped:
+            kept_cases.append(
+                {
+                    "case": name,
+                    "stage": stage_name,
+                    "why": f"a scientific failure keeps counting: {stopped}",
+                }
+            )
+            kept_runs |= ids
+            continue
+        run_ids |= ids
+    kept_names = {(k["case"], k["stage"]) for k in kept_cases}
+    requalified = [c for c in requalified if (c["case"], c["stage"]) not in kept_names]
+    attempts = [e for e in attempts if (e["case"], e["stage"]) not in kept_names]
     starts = journal_starts(root)
     launchers = []
     for run_id in sorted(run_ids - kept_runs):
@@ -1161,7 +1228,9 @@ def supersede_case(
             continue
         campaign_name, start = starts[run_id]
         run_dir = root / str(start.get("experiment")) / run_id
-        if run_dir.is_dir() and run_gpu_code(run_dir) == old["sha256"]:
+        # Every launcher run not of the fix's code (another code, or none to be told): a
+        # re-qualification under the fix cannot use it
+        if run_dir.is_dir() and run_gpu_code(run_dir) != fix.get("sha256"):
             launchers.append({"run_id": run_id, "campaign": campaign_name,
                               "run": start.get("run"), "experiment": start.get("experiment"),
                               "config_hash": start.get("config_hash"),
