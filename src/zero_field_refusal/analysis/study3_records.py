@@ -49,13 +49,15 @@ gate is the caller's choice (``Cell.key``).
 
 **Attempts** ("Failure routes": an infrastructure interruption is rerun under a new attempt id;
 "Voiding and supersession"). The journal is every log under ``launch/`` read as one: no rule
-depends on a log's name or a line's place in it. An attempt is a start; its campaign is the log
-that holds its start, and the attempts of a label are its starts in any log, in the order of
-their attempt numbers (then of their starts' time stamps). Ends, ``superseded`` and ``held``
-lines name their attempt by run id, in any log: the end the launcher writes after the fact for
-a start it found without one (``"settled": true``) included, and an end ``done`` is the outcome
-whatever stop its terminal record holds. An attempt that no longer counts is listed with its
-reason, never counted:
+depends on a log's name or a line's place in it, but for a line that cannot be parsed: it is
+skipped silently only as the last line of its log (cut short by a crash, the launcher's rule),
+and before the last it is a problem, named by its log and line number. An attempt is a start;
+its campaign is the log that holds its start, and the attempts of a label are its starts in any
+log, in the order of their attempt numbers (then of their starts' time stamps). Ends,
+``superseded`` and ``held`` lines name their attempt by run id, in any log: the end the
+launcher writes after the fact for a start it found without one (``"settled": true``) included,
+and an end ``done`` is the outcome whatever stop its terminal record holds. An attempt that no
+longer counts is listed with its reason, never counted:
 - ``superseded``: named by a ``superseded`` line, by a case restart
   (``c<N>/<stage>/<case>/restart-<n>.json``, its ``launcher``) or by an engineering cycle's
   supersession (``c<N>/supersede-<n>.json``, its ``launchers``);
@@ -270,6 +272,7 @@ class _Journal:
     starts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # campaign, start
     ends: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
     recoveries: list[dict[str, Any]] = field(default_factory=list)
+    corrupt: list[str] = field(default_factory=list)  # "<log> line <n>": an unparseable line
 
 
 def step_key(candidate: int, step: str, round_: int | None = None) -> str:
@@ -317,6 +320,8 @@ def read_endpoints(
     voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
     journal = _read_journal(root, voided)
     problems = _voiding_records(root, voided)
+    problems += [f"{where}: not valid JSON, and not the last line of its log (only a line cut "
+                 "short by a crash is skipped)" for where in journal.corrupt]  # fmt: skip
     started = Counter(start.get("run_id") for _, start in journal.starts)
     attempts: list[_Attempt] = []
     for campaign, start in journal.starts:
@@ -355,15 +360,22 @@ def _order(e: Endpoint) -> tuple:
 def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
     """The launch journal's study-3 records from every log: the starts with their campaign (the
     log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
-    lines into ``voided`` by run id; a line cut short by a crash is skipped (the launcher's
-    rule)."""
+    lines into ``voided`` by run id. A line cut short by a crash is skipped only as the last line
+    of its log (the launcher's rule); an unparseable line before the last is skipped too but
+    listed in ``corrupt`` with its log's name and its number, never its content."""
     journal = _Journal()
     for log in sorted((root / "launch").glob("*.jsonl")):
         campaign = log.stem
-        for line in log.read_text().splitlines():
+        lines = log.read_text(encoding="utf-8").splitlines()
+        last = max((i for i, line in enumerate(lines) if line.strip()), default=-1)
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
             try:
                 record = json.loads(line)
             except ValueError:
+                if i != last:
+                    journal.corrupt.append(f"launch/{log.name} line {i + 1}")
                 continue
             if not isinstance(record, dict):
                 continue

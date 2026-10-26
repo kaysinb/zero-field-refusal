@@ -765,6 +765,44 @@ def test_an_unreadable_voiding_record_is_refused(world) -> None:
     assert any("supersede-1.json" in p for p in problems)
 
 
+CUT_LINE = '{"event": "start", "experiment": "study3", "run_id": "JOURNAL-SECRET-8d1'
+
+
+def test_an_unparseable_journal_line_before_the_last_is_a_problem_by_log_and_line(world) -> None:
+    run_id = world.run("A", 1.45e-5, 10300)
+    log = world.root / "launch" / "study3-c1.jsonl"
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2  # the start and the end
+    log.write_text("\n".join([lines[0], CUT_LINE, lines[1]]) + "\n")
+    found, problems = world.read()
+    assert [p for p in problems if "launch/study3-c1.jsonl line 2" in p] != []
+    assert all("JOURNAL-SECRET" not in p for p in problems)
+    assert len(problems) == 1
+    # the rest of the journal is read as before
+    assert by_id(found)[run_id].state == "usable"
+
+
+def test_a_line_cut_short_as_the_last_of_its_log_is_skipped_silently(world) -> None:
+    world.run("A", 1.45e-5, 10300)
+    other = world.run("F", 1.3e-5, 10300, campaign="study3-c1-other")
+    for name in ("study3-c1", "study3-c1-other"):  # the last line of each log is cut short
+        with (world.root / "launch" / f"{name}.jsonl").open("a") as f:
+            f.write(CUT_LINE + "\n\n   \n")  # and blank lines are no line
+    found, problems = world.read()
+    assert problems == [] and by_id(found)[other].state == "usable"
+
+
+def test_every_log_is_checked_for_its_own_last_line(world) -> None:
+    world.run("A", 1.45e-5, 10300)
+    world.run("F", 1.3e-5, 10300, campaign="study3-c1-other")
+    with (world.root / "launch" / "study3-c1.jsonl").open("a") as f:
+        f.write(CUT_LINE + "\n")  # the last of its own log, though another log follows it
+    other = world.root / "launch" / "study3-c1-other.jsonl"
+    other.write_text(CUT_LINE + "\n" + other.read_text())  # but not the last of this one
+    found, problems = world.read()
+    assert len(problems) == 1 and "launch/study3-c1-other.jsonl line 1" in problems[0]
+
+
 # ------------------------------------------------------------------ refusals: the issued cell
 
 
