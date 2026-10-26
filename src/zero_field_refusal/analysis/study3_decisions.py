@@ -175,7 +175,7 @@ _INPUT_NAME = re.compile(r"[a-z](?:[a-z_]{0,38}[a-z])?")  # letters and undersco
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
 # Words that mark a field as one no record carries (the hint on an unknown field)
 _HIDDEN = re.compile(
-    r"mean|(^|_)sign(ed)?($|_)|per[_-]?seed|(^|_)sd($|_)|std|e_eng|path_max|unrounded|spread"
+    r"mean|(?<!de)sign|per[_-]?seed|(^|_)sd($|_)|std|e_eng|path_max|unrounded|spread"
 )
 
 

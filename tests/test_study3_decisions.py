@@ -962,7 +962,8 @@ def test_a_reported_gate_has_no_requirement(world, name) -> None:
 @pytest.mark.parametrize(
     "name",
     ["mean_spread_4.37", "mean_spread", "per_seed_vectors", "sd_inputs", "spread_input", "e_eng",
-     "path_max", "unrounded_values", "signed_diff", "sign", "Upper", "digit1", "_lead", "trail_",
+     "path_max", "unrounded_values", "signed_diff", "sign", "signs", "signs_af", "signflip",
+     "dsign", "unsigned", "signum", "Upper", "digit1", "_lead", "trail_",
      "has space", "a-b", "", "x" * 41, "caf\u00e9"],
 )  # fmt: skip
 def test_an_input_name_is_a_plain_word_that_marks_no_hidden_value(world, name) -> None:
