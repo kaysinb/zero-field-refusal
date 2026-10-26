@@ -1557,7 +1557,9 @@ docstring has every rule.
   from the record's: the same path is not simply rerun), every record of the candidate made
   under the old GPU code in all its stages, passed ones included, with the cases re-qualified,
   and every launcher run of the candidate in the journal not of the fix's GPU code (another or an
-  unknown code included), which it then logs superseded
+  unknown code included; a case's runs are found by its label, `<cell>/s<seed>` in its
+  experiment, in every journal whatever their config hash, so a fix that changes a hashed config
+  key hides no earlier attempt), which it then logs superseded
   (run again with the same record, it only writes the lines that are missing). A second cycle
   for the candidate is refused: a technical failure left unresolved routes to the technical
   feasibility report. A part record classifies its launcher run only when it says so

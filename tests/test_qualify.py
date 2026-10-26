@@ -1186,6 +1186,58 @@ def test_a_stop_is_judged_against_the_configs_of_its_commit(
         assert qualify.located(run, root) is None
 
 
+def test_a_stop_under_an_earlier_config_hash_is_still_found_and_kept(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """The fix changed a hashed config key (the teacher's chunk size): s10201's launcher run
+    r-old, a conforming gradient_spike issued at commit abc123 under the earlier configs, has
+    another config hash than the campaign's cell now. The cycle finds it by its label, resolves
+    it against the configs of its own commit (scientific) and keeps its case whole: r-old is not
+    superseded, and the case is decided."""
+    from omegaconf import OmegaConf
+
+    from zero_field_refusal.config import config_hash
+    from zero_field_refusal.launch import load_campaign
+
+    then = tmp_path / "configs-of-the-commit"
+    shutil.copytree(CONFIG_ROOT, then)
+    study3 = then / "experiments" / "study3.yaml"
+    assert study3.read_text().count("  chunk_size: 1000\n") == 1
+    study3.write_text(study3.read_text().replace("  chunk_size: 1000\n", "  chunk_size: 500\n"))
+    monkeypatch.setattr(qualify, "configs_at", commit_configs({"abc123": then}))
+    path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    name, runs = load_campaign(path)
+    run = next(r for r in runs if r.label == f"adamw-{ADAMW_LR:g}/s10201")
+    issued = load_config(then / "experiments" / "study3_k_only.yaml", run.overrides, root=then)
+    old_hash = config_hash(issued)
+    assert old_hash != run.config_hash  # the cell's hash now
+    run_dir = settled_launcher(root, run, "r-old", stop="gradient_spike", steps=3)
+    OmegaConf.save(issued, run_dir / "config.yaml")
+    edited_meta(lambda meta: meta.update(config_hash=old_hash))(run_dir)
+    start = {"event": "start", "run": run.label, "attempt": 1, "run_id": "r-old",
+             "experiment": run.experiment, "config_hash": old_hash,
+             "command": run.command()[1:]}  # fmt: skip
+    log = root / "launch" / f"{name}.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps(start) + "\n")
+    assert qualify.journal_run_ids(run, root) == []  # not the cell's config hash
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    qualify.main(supersede_args(path, ADAMW, record))
+    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["resolution"]["run_id"], kept["resolution"]["outcome"]) == (
+        STOPPED.name, "r-old", "scientific")  # fmt: skip
+    assert cycle["launchers"] == [] and cycle["held"] == []
+    assert cycle["cases_requalified"] == [{"case": ADAMW.name, "stage": "numerical"}]
+    assert [json.loads(line)["event"] for line in log.read_text().splitlines()] == ["start"]
+    qualify.main(["complete", *common(path), "--case", STOPPED.name])  # decided: complete
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "failing"
+
+
 def test_configs_at_reads_a_commit_from_git_not_the_working_tree(tmp_path) -> None:
     """``configs_at`` unpacks the committed configs of a commit (here HEAD's, as git has them)
     into a temporary folder it removes on exit; a commit not in the clone, or no commit id,

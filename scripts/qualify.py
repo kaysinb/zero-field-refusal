@@ -129,12 +129,14 @@ technical record that started the cycle (its path and sha256), the diagnosis and
 code of the fix (this clean checkout's) and the old one, every record of the candidate made under
 the old GPU code in all its stage folders, passed ones included, with the cases re-qualified, and
 every launcher run of the candidate in the launch journal not of the fix's GPU code (the runs its
-records name and those of the campaign's cases, a case with no part attempt yet included; another or
-an unknown code included, since a re-qualification under the fix could not use it), which it then
-logs superseded; a case whose run is superseded is re-qualified, whether or not it had a part
-record. A case that holds a scientific failure, as its bound, valid part records read with the
-verdicts show it (another stage's included; a launcher run's declared stop counts only when such a
-record classified it scientific), is kept whole: none of its records (its parts, its control, its
+records name and those of the campaign's cases, a case with no part attempt yet included, found by
+the case's label, its experiment and ``<cell>/s<seed>``, in every journal whatever their config
+hash, so that a fix that changes a hashed config key hides none; another or an unknown code
+included, since a re-qualification under the fix could not use it), which it then logs superseded;
+a case whose run is superseded is re-qualified, whether or not it had a part record. A case that
+holds a scientific failure, as its bound, valid part records read with the verdicts show it
+(another stage's included; a launcher run's declared stop counts only when such a record
+classified it scientific), is kept whole: none of its records (its parts, its control, its
 trajectory results) nor its launcher run is voided, it is listed as kept with why, and the driver's
 stale check passes it; the failure keeps counting (no reruns to pass). A record classified its
 launcher run only when it says so (``launcher.classified``, true once ``launcher_problems``
@@ -619,6 +621,18 @@ def journal_run_ids(run: Run, root: Path) -> list[str]:
     attempt order (``launch.label_starts``: the attempt number, then the start's time, never the
     journal file's name)."""
     return list(dict.fromkeys(r["run_id"] for r in label_starts(run, launch_records(root))))
+
+
+def label_run_ids(run: Run, root: Path) -> list[str]:
+    """The run ids of every logged attempt of the run's label (its experiment and
+    ``<cell>/s<seed>``), whatever their config hash, in attempt order (``launch.attempt_key``),
+    across all journals: how an engineering cycle finds a case's launcher runs, so that a fix
+    that changes a hashed config key does not hide an attempt issued before it."""
+    starts = [r for r in launch_records(root)
+              if r.get("event") == "start" and r.get("run") == run.label
+              and r.get("experiment") == run.experiment
+              and isinstance(r.get("run_id"), str)]  # fmt: skip
+    return list(dict.fromkeys(r["run_id"] for r in sorted(starts, key=attempt_key)))
 
 
 def settled(run: Run, root: Path) -> Path | None:
@@ -1359,7 +1373,8 @@ def supersede_case(
     its stage folders, passed ones included, with the cases re-qualified, and every launcher run of
     the candidate in the launch journal that is not of the fix's GPU code (another or an unknown
     code included: the runs its records name and those of the campaign's cases, a case without any
-    part attempt included), which it then logs superseded; a case whose run is superseded is
+    part attempt included, found by the case's label whatever their config hash:
+    ``label_run_ids``), which it then logs superseded; a case whose run is superseded is
     re-qualified. A case that holds a scientific failure, as its bound, valid part records read with
     the verdicts show it (``scientific_attempts``; a launcher run's declared stop counts only when
     such a record classified it scientific), is kept whole: none of its records, nor its launcher
@@ -1465,7 +1480,7 @@ def supersede_case(
                 )
                 kept_runs |= {e["launcher_run_id"] for e in entries if e["launcher_run_id"]}
                 if p is not None:
-                    kept_runs |= set(journal_run_ids(p.run, root))
+                    kept_runs |= set(label_run_ids(p.run, root))
                 continue
             if any(e["state"] == "recorded" for e in mine):
                 attempts += mine
@@ -1473,7 +1488,8 @@ def supersede_case(
                 run_ids |= {e["launcher_run_id"] for e in mine if e["launcher_run_id"]}
     kept_names = {(k["case"], k["stage"]) for k in kept_cases}
     # Every case not kept, of the campaign or with an attempt in a stage folder: its launcher
-    # runs (its campaign run's attempts in the journal, and the runs its records name). A run a
+    # runs (its campaign run's attempts in the journals, found by its label whatever their config
+    # hash, and the runs its records name), each judged by its own issued config. A run a
     # part record classified (``launcher.classified``) is judged by that record (scientific: the
     # case is kept above). One no part record classified (none names it, or each that does
     # raised before its check returned) is resolved against what it was issued
@@ -1492,7 +1508,7 @@ def supersede_case(
         if (name, stage_name) in kept_names:
             continue
         p = by_name.get((name, stage_name))
-        ids = set(journal_run_ids(p.run, root)) if p is not None else set()
+        ids = set(label_run_ids(p.run, root)) if p is not None else set()  # any config hash
         mentioned = {e["launcher_run_id"] for e in entries_of.get((name, stage_name), [])
                      if e["state"] == "recorded" and e["launcher_run_id"]}  # fmt: skip
         outcomes = {}  # in attempt order, never by journal file or run id
