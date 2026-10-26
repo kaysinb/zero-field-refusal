@@ -28,9 +28,12 @@ kinds and states, ``record_sha256``) is ``qualification_constants``', inside the
   record and checkpoint) is technical and none of its measurements is read.
 - **Identity first** (``identity_problems``): the baseline record, one Pod, every part's bridge
   checks (all true, none missing from a complete part), v₀ unchanged and the rest's binding to
-  the baseline hold before any measurement is read; any failure makes the case technical, with
-  no measurement read and no scientific reason, whatever the records show. A part that failed
-  before establishing its bridge checks has no measurement read either.
+  the baseline hold before any measurement is read. A failure holds back the measurements of
+  the record it belongs to: one of the baseline makes the case technical, nothing read and no
+  scientific reason, whatever the records show; one of the rest (unbound, its own checks, a
+  second Pod) makes it technical too, unless the bound, verified baseline decided the case: that
+  scientific failure stands, the rest's problem is listed and nothing of the rest is read. A
+  part that failed before establishing its bridge checks has no measurement read either.
 - A case with both kinds, on bound and verified records, is scientific (no rerun passes it), its
   technical reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (all 13 within),
   else ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
@@ -136,10 +139,53 @@ def _verified(record: Mapping[str, Any] | None) -> bool:
     return record is not None and _bridge_failures(record) == []
 
 
+def _record_problems(record: Mapping[str, Any], label: str) -> list[str]:
+    """A part record's own bridge checks (all true, none missing from a complete part) and v₀."""
+    problems = []
+    failed = _bridge_failures(record)
+    if failed:
+        problems.append(f"{label}: {failed}")
+    elif failed is None and record.get("status") == "complete":
+        problems.append(f"{label}: no checks")
+    unchanged = record.get("v0_unchanged")
+    if unchanged is False or (record.get("status") == "complete" and unchanged is not True):
+        problems.append(f"v₀ changed during the {record.get('part')} part")
+    return problems
+
+
+def _gates(
+    baseline: Mapping[str, Any] | None, rest: Mapping[str, Any] | None
+) -> tuple[list[str], list[str]]:
+    """``identity_problems`` split by the record whose measurements they hold back: the
+    baseline's (its record present and the baseline's, one Pod for it and its launcher run, its
+    bridge checks and v₀), and the rest's (its bridge checks and v₀, one Pod with the baseline
+    and the launcher run, its binding to the baseline)."""
+    base: list[str] = []
+    if baseline is None:
+        base.append("the baseline part has no record")
+    elif baseline.get("part") != "baseline":
+        base.append("the baseline record is another part's")
+    else:
+        pods = _pod_problem(baseline)
+        if pods is not None:
+            base.append(pods)
+        base += _record_problems(baseline, "the bridge failed")
+    other: list[str] = []
+    if rest is not None:
+        pods = _pod_problem(baseline, rest)
+        if pods is not None and not base:
+            other.append(pods)
+        other += _record_problems(rest, "the bridge failed in the rest part")
+        problem = _binding_problem(baseline, rest)
+        if problem is not None:
+            other.append(problem)
+    return base, other
+
+
 def identity_problems(
     baseline: Mapping[str, Any] | None, rest: Mapping[str, Any] | None
 ) -> list[str]:
-    """The identity and bridge checks every measurement of a case waits on (module docstring):
+    """The identity and bridge checks the measurements of a case wait on (module docstring):
     the baseline record present and the baseline's; one Pod for the launcher run and the parts;
     each part's bridge checks (the steps, tokens and denominators, the training stream, v₀'s,
     θ₀'s and the names' hashes, the optimizer, the numerics setup), all true, and none missing
@@ -147,32 +193,11 @@ def identity_problems(
     and checkpoint, the settings and GPU code, the baseline record and checkpoint). The launcher
     run's own identity, config agreement, numerics, code and environment are checked before
     the part runs (``qualification.launcher_problems``), its record then holding nothing
-    measured. Any problem here makes the case technical, and no measurement of it is read."""
-    problems: list[str] = []
-    if baseline is None:
-        problems.append("the baseline part has no record")
-    elif baseline.get("part") != "baseline":
-        problems.append("the baseline record is another part's")
-    pods = _pod_problem(baseline, rest)
-    if pods is not None:
-        problems.append(pods)
-    for record, label in ((baseline, "the bridge failed"),
-                          (rest, "the bridge failed in the rest part")):  # fmt: skip
-        if record is None:
-            continue
-        failed = _bridge_failures(record)
-        if failed:
-            problems.append(f"{label}: {failed}")
-        elif failed is None and record.get("status") == "complete":
-            problems.append(f"{label}: no checks")
-        unchanged = record.get("v0_unchanged")
-        if unchanged is False or (record.get("status") == "complete" and unchanged is not True):
-            problems.append(f"v₀ changed during the {record.get('part')} part")
-    if rest is not None:
-        problem = _binding_problem(baseline, rest)
-        if problem is not None:
-            problems.append(problem)
-    return problems
+    measured. A problem holds back the measurements of the record it belongs to: one of the
+    baseline makes the case technical, nothing read; one of the rest makes it technical unless a
+    bound baseline decided the case (scientific), and nothing of the rest is read either way."""
+    base, other = _gates(baseline, rest)
+    return base + other
 
 
 def _part_reasons(record: Mapping[str, Any], technical: list[str], science: list[str]) -> None:
@@ -216,7 +241,7 @@ def case_verdict(
     except QualificationError as exc:
         bound = None
         technical.append(str(exc))
-    gate = identity_problems(baseline, rest)  # first: nothing is read unless it holds
+    gate, held = _gates(baseline, rest)  # first: nothing is read unless it holds
     technical += gate
     if not gate:
         ended = False  # the baseline decided the case: the rest is not needed
@@ -229,7 +254,12 @@ def case_verdict(
         if baseline.get("status") == "complete":
             first = (baseline.get("comparisons") or {}).get("launcher~baseline") or {}
             measured["launcher~baseline"] = first.get("D_twin")
-        if not ended:
+        # A problem of the rest record is listed and holds back its own measurements; it never
+        # hides a scientific failure a bound baseline decided
+        technical += held
+        if held and not science:
+            measured = dict.fromkeys(COMPARISONS)  # a technical case: nothing of it is read
+        elif not ended and not held:
             if rest is None:
                 technical.append(REST_MISSING)
             else:

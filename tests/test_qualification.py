@@ -885,13 +885,16 @@ def test_no_scientific_verdict_on_a_failed_identity_or_bridge_check() -> None:
     def pods(baseline, rest):
         baseline["provenance"]["pod_id"], rest["provenance"]["pod_id"] = "p1", "p2"
 
+    def baseline_pods(baseline, rest):  # the baseline on another Pod than its launcher run
+        baseline["launcher"]["pod_id"], baseline["provenance"]["pod_id"] = "p0", "p1"
+
     probes = {
         "a false training-stream check and an excessive D": both(
             false("rest", "training_stream"), beyond("baseline~reference", 0.5)),
         "a false θ₀ hash and a gradient spike": both(
             false("baseline", "theta0_trainable_sha256"), spike),
         "a second Pod and an excessive D": both(pods, beyond("baseline~s2", 0.5)),
-        "a second Pod and a gradient spike": both(pods, spike),
+        "the baseline's second Pod and a gradient spike": both(baseline_pods, spike),
     }  # fmt: skip
     for name, change in probes.items():
         v = verdict_of(change)
@@ -901,6 +904,55 @@ def test_no_scientific_verdict_on_a_failed_identity_or_bridge_check() -> None:
     # Without the false check, the same evidence is scientific
     for change in (beyond("baseline~reference", 0.5), spike):
         assert verdict_of(change)["kind"] == "scientific"
+
+
+def test_an_unbound_rest_never_hides_a_decided_baseline() -> None:
+    """A baseline that is a scientific failure on bound, verified records decides the case: an
+    unbound rest (another baseline record, other GPU code, a second Pod, a false check of its
+    own) is listed as that record's technical problem, none of its measurements is read, and the
+    case and its rate stay failing."""
+
+    def spike(baseline, rest):
+        baseline["trajectories"]["baseline"]["instability"] = {
+            "reason": "gradient_spike", "step": 3, "detail": {"grad_norm": 50.0}}  # fmt: skip
+
+    def other_baseline(baseline, rest):
+        rest["baseline_record"]["sha256"] = "x" * 64
+
+    def other_code(baseline, rest):
+        rest["provenance"]["gpu_code"] = {"sha256": "o" * 64}
+
+    def second_pod(baseline, rest):
+        rest["provenance"]["pod_id"] = "p2"  # the baseline ran on p1
+
+    def false_check(baseline, rest):
+        rest["bridge"]["tokens"] = False
+
+    problems = {other_baseline: "the rest part does not build on this baseline record",
+                other_code: "the parts were written under other settings or GPU code",
+                second_pod: "the case ran on more than one Pod",
+                false_check: "the bridge failed in the rest part"}  # fmt: skip
+    for change, problem in problems.items():
+        baseline, rest = synthetic()
+        spike(baseline, rest)
+        baseline["provenance"]["pod_id"] = "p1"
+        bind(rest, baseline)  # bound to this baseline record, unless the change unbinds it
+        rest["comparisons"]["baseline~reference"]["D_twin"] = 0.5  # would be scientific
+        change(baseline, rest)
+        v = q.case_verdict(baseline, rest, SCOPE)
+        assert (v["state"], v["kind"]) == ("failing", "scientific"), (change.__name__, v)
+        assert v["reasons"][0].startswith("instability: the harness baseline")
+        assert v["reasons"][1:] == [r for r in v["reasons"][1:] if r.startswith(problem)]
+        assert any(r.startswith(problem) for r in v["reasons"]), (change.__name__, v["reasons"])
+        assert not any("baseline~reference" in r for r in v["reasons"])  # nothing of it read
+        assert all(c["D"] is None for n, c in v["comparisons"].items() if n != "launcher~baseline")
+        out = rate([v], optimizer=CASE.optimizer)  # the registered seeds, CASE's rate
+        assert out["state"] == "failing" and out["counted"] == [CASE.seed], change.__name__
+    # Without the decided baseline, the same unbound rest makes the case technical
+    baseline, rest = synthetic()
+    rest["comparisons"]["baseline~reference"]["D_twin"] = 0.5
+    other_baseline(baseline, rest)
+    assert q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
 
 
 def test_a_part_that_failed_before_its_bridge_has_nothing_read() -> None:
