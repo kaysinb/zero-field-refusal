@@ -723,15 +723,51 @@ def test_the_engineering_cycle_requalifies_the_candidates_old_code(
     assert "infrastructure" not in record2
 
 
-def test_no_engineering_cycle_voids_a_scientific_failure(qualify, tmp_path, monkeypatch) -> None:
-    path = campaign(tmp_path)
+P_LR = 1.0e-05
+P = q.QualificationCase(10200, "adamw_prewarmed", P_LR, 1, False)
+
+
+def test_an_engineering_cycle_keeps_the_candidates_scientific_failures(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """P failing scientifically and F technical: the cycle for F goes ahead. P's scientific
+    record is kept (listed with its sha256), keeps counting, and P stays failing (closed), its
+    case complete and not stale; F's records are voided and F re-qualifies."""
+    endpoint = tmp_path / "ckpt"
+    path = tmp_path / "study3-qualification-c1.yaml"
+    path.write_text("name: study3-qualification-c1\ncells:\n"
+                    + cell(f"adam_frozen-{FA_LR:g}", "adam_frozen", FA_LR, (10200,), endpoint)
+                    + cell(f"adamw_prewarmed-{P_LR:g}", "adamw_prewarmed", P_LR, (10200,),
+                           endpoint))  # fmt: skip
     out = tmp_path / "runs" / "qualification"
-    _, record = technical_adamw(out, tmp_path)
-    write_case(out, FA, decided=True)  # a scientific failure under the old code
+    write_case(out, P, decided=True)  # P: a declared instability rule fired on its baseline
+    baseline = synthetic(FA)[0]
+    baseline["comparisons"]["launcher~baseline"]["D_twin"] = 0.07  # F: technical
+    publish(out, FA, "baseline", baseline)
+    q.publish(out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    p_record = case_folder(out, P) / "baseline-attempt-1.json"
+    key = f"adamw_prewarmed-{P_LR:g}"
+    qualify.main(["verdict", *common(path)])
+    assert json.loads((out / "c1" / "verdict.json").read_text())["states"][key] == "failing"
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(FIX))
-    with pytest.raises(SystemExit, match="scientific failure keeps counting"):
-        qualify.main(supersede_args(path, ADAMW, record))
-    assert not list((out / "c1" / "numerical").glob("supersede-*"))
+    qualify.main(supersede_args(path, FA, case_folder(out, FA) / "baseline-attempt-1.json"))
+    cycle = json.loads((out / "c1" / "numerical" / "supersede-1.json").read_text())
+    assert [(e["case"], e["part"], e["attempt"], e["sha256"]) for e in cycle["kept"]] == [
+        (P.name, "baseline", 1, hashlib.sha256(p_record.read_bytes()).hexdigest())]  # fmt: skip
+    assert cycle["cases_requalified"] == [FA.name]
+    assert {e["case"] for e in cycle["attempts"]} == {FA.name}
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["states"][key] == "failing"  # P stays closed
+    assert [(e["case"], e["part"]) for e in verdict["superseded"]] == [(FA.name, "baseline")]
+    assert verdict["superseded"][0]["supersession"].startswith("superseded by an engineering")
+    (p_case,) = [c for c in verdict["cases"] if c["case"]["name"] == P.name]
+    assert p_case["kind"] == "scientific" and "superseded" not in p_case
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(FIX))
+    qualify.main(["complete", *common(path), "--case", P.name])  # kept: complete, not stale
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(["complete", *common(path), "--case", FA.name])
+    assert stop.value.code == qualify.NO  # F re-qualifies
 
 
 def test_a_supersession_needs_a_technical_failure(qualify, tmp_path) -> None:

@@ -1555,11 +1555,14 @@ docstring has every rule.
   differ from the record's: the same path is not simply rerun) and every record of the candidate
   made under the old GPU code, in every case, passed ones included, with the cases re-qualified;
   it then logs their launcher runs superseded. A second cycle for the candidate is refused: a
-  technical failure left unresolved routes to the technical feasibility report. A cycle that
-  would void a scientific failure is refused too. Every case it names re-qualifies under the new
-  code: the launcher's recovery round, then each part as its next attempt with
-  `--engineering-cycle` (its record names the supersession's path and sha256), not
+  technical failure left unresolved routes to the technical feasibility report. The candidate's
+  scientific failures are not voided: they keep counting (listed as `kept` with their sha256,
+  with the baseline a kept rest is bound to), so a scientific failure of P, which closes P–F
+  alone, never blocks the cycle of a technical failure of A or F. Every case it names
+  re-qualifies under the new code: the launcher's recovery round, then each part as its next
+  attempt with `--engineering-cycle` (its record names the supersession's path and sha256), not
   `--infrastructure`; the verdict lists the voided records under `supersession`.
+
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-5e-05 \
