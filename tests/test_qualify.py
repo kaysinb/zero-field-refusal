@@ -1595,6 +1595,18 @@ def journal(root, path, label, run_ids):
     return run
 
 
+def test_a_runs_attempts_are_read_in_attempt_order_across_journals(qualify, tmp_path) -> None:
+    """Attempt 2 of a launcher run logged in a journal whose name sorts before attempt 1's (its
+    recovery under another campaign name): the run's attempts are read by their number."""
+    path = campaign(tmp_path, fa=())
+    root = tmp_path / "runs"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    recovery = {"event": "start", "run": run.label, "attempt": 2, "run_id": "r-a2",
+                "experiment": run.experiment, "config_hash": run.config_hash}  # fmt: skip
+    (root / "launch" / "a-recovery.jsonl").write_text(json.dumps(recovery) + "\n")
+    assert qualify.journal_run_ids(run, root) == ["r-a1", "r-a2"]
+
+
 def test_the_checkpoints_go_only_after_published_valid_records(qualify, tmp_path) -> None:
     path = campaign(tmp_path)
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"

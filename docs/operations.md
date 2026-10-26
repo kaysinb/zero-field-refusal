@@ -1708,7 +1708,12 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   return code, `"settled": true` and the outcome its run directory gives (`done`, `diverged`,
   `conflict` with the problem, or `technical` when the directory is missing or unfinished). An
   existing end is never rewritten; a run that is not assessed (another label under `--only`) and
-  a `--dry-run` get nothing written. Attempts are still counted from the starts.
+  a `--dry-run` get nothing written. Attempts are still counted from the starts. Ends,
+  `superseded` and `held` records are matched to their starts by run id, and a run's attempts
+  are ordered by their attempt number, then the start's time, whichever journal file holds them
+  (a recovery logged under another campaign name included): the start ended is the latest one
+  no such record names. A settled `done` keeps the launcher's meaning (a valid terminal outcome,
+  a declared instability stop included), never a qualification.
   `SIGTERM` to the launcher alone (not its process group) stops the campaign at a run boundary:
   the running attempt finishes and is recorded, a `stop` record is logged, and the launcher exits
   non-zero without starting another; the same command carries on later. `--only LABEL` (a run's

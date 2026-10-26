@@ -41,6 +41,9 @@ per attempt start and end, per recovery round and per stop; each attempt's outpu
 has one (study 2's campaigns record the w_max they were written under, which the replay reads
 back: the final review of gate B, I4). An end the launcher writes after the fact, for a start it
 finds without one, carries ``"settled": true`` (``run_campaign``, "A start found without its end").
+Ends, ``superseded`` and ``held`` records are matched to their starts by run id, and a label's
+attempts are ordered by their attempt number, then the start's time (``label_starts``), never by
+the journal file that holds them.
 
 **One label at a time** (``only=LABEL``; study 3's numerical qualification, which runs a case's
 launcher run, its harness parts and the deletion of its checkpoints before the next case): that
@@ -246,21 +249,35 @@ def held_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
             and isinstance(r.get("run_id"), str)}  # fmt: skip
 
 
+def attempt_key(record: Mapping[str, Any]) -> tuple[int, str]:
+    """How a start record sorts among its label's attempts: by its attempt number, then by its
+    time (``_log``'s ISO stamp), never by the journal file that holds it. A start without an
+    attempt number sorts first."""
+    attempt = record.get("attempt")
+    number = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else -1
+    return number, str(record.get("time") or "")
+
+
+def label_starts(run: Run, records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The start records of the run's attempts (its label, experiment and config hash, with a
+    run id), in attempt order (``attempt_key``). ``launch_records`` reads the journals in file
+    name order, so a later attempt logged under another campaign's name may come first there."""
+    starts = [r for r in records
+              if r.get("event") == "start" and r.get("run") == run.label
+              and r.get("experiment") == run.experiment
+              and r.get("config_hash") == run.config_hash
+              and isinstance(r.get("run_id"), str)]  # fmt: skip
+    return sorted(starts, key=attempt_key)
+
+
 def open_start(run: Run, records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    """The run's latest journal event, if it is a start that no end record names by its run id
-    (``run_campaign``, "A start found without its end"); else None. The events of a label are
-    ``start``, ``end``, ``stop``, ``superseded`` and ``held``; an end or a stop record carries no
-    experiment or config hash, so for those the label decides."""
-    mine = [r for r in records
-            if r.get("event") in ("start", "end", "stop", "superseded", "held")
-            and r.get("run") == run.label
-            and r.get("experiment", run.experiment) == run.experiment
-            and r.get("config_hash", run.config_hash) == run.config_hash]  # fmt: skip
-    last = mine[-1] if mine else None
-    if last is None or last.get("event") != "start" or not isinstance(last.get("run_id"), str):
-        return None
-    ended = {r.get("run_id") for r in records if r.get("event") == "end"}
-    return None if last["run_id"] in ended else last
+    """The start of the run's latest attempt that no ``end``, ``superseded`` or ``held`` record
+    names by its run id (``run_campaign``, "A start found without its end"), or None. Attempts
+    are ordered by their number, then the start's time (``label_starts``), whatever journal file
+    holds each record; a record closes the start whose run id it names, wherever it is."""
+    closed = {r.get("run_id") for r in records if r.get("event") in ("end", "superseded", "held")}
+    pending = [r for r in label_starts(run, records) if r["run_id"] not in closed]
+    return pending[-1] if pending else None
 
 
 def hold(
@@ -479,14 +496,17 @@ def run_campaign(
     and stops at an attempt that completes without qualifying.
 
     **A start found without its end** (the launcher died while its child ran, or after the child
-    published and before it judged the run). When the latest journal event of an assessed run's
-    label is a start that no end names by its run id (``open_start``), the launcher writes that
-    end first, before it skips the run, raises a conflict or starts a new attempt: the same run
-    id and attempt, ``returncode`` null, ``"settled": true`` (judged after the fact, not when
-    the process ended), ``only`` as any end carries it, and the outcome ``assess`` gives the
-    attempt's directory (``Assessment.outcomes``): ``done``, ``diverged``, ``conflict`` with the
-    problem that stops the campaign, or ``technical`` (no directory, a missing or unreadable
-    ``meta.json``, a superseded attempt, any other status). An end that exists is never
+    published and before it judged the run). When an assessed run has a start that no ``end``,
+    ``superseded`` or ``held`` record names by its run id (``open_start``: the latest such
+    attempt, the attempts ordered by their number and then the start's time, whatever journal
+    file holds each record), the launcher writes that end first, before it skips the run,
+    raises a conflict or starts a new attempt: the same run id and attempt, ``returncode`` null,
+    ``"settled": true`` (judged after the fact, not when the process ended), ``only`` as any end
+    carries it, and the outcome ``assess`` gives the attempt's directory
+    (``Assessment.outcomes``): ``done``, ``diverged``, ``conflict`` with the problem that stops
+    the campaign, or ``technical`` (no directory, a missing or unreadable ``meta.json``, any
+    other status). A ``done`` end keeps the launcher's meaning, a valid terminal outcome (a
+    declared instability stop included), never a qualification. An end that exists is never
     rewritten. Nothing is written for a run that is not assessed (another label under ``only``,
     a run left out of ``runs``) and nothing in a dry run; the end goes to this campaign's log.
     Attempts are counted from the starts, as before, so the new end changes no count.

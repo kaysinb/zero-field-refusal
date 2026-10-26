@@ -17,7 +17,10 @@ from zero_field_refusal.launch import (
     StopRequest,
     campaign_header,
     expected_numerics,
+    label_starts,
+    launch_records,
     load_campaign,
+    open_start,
     run_campaign,
     supersede,
 )
@@ -945,9 +948,8 @@ def test_an_existing_end_is_never_rewritten(tmp_path) -> None:
 
 
 def test_a_start_that_a_later_record_of_its_label_follows_is_not_ended(tmp_path) -> None:
-    """The rule is about the label's latest event: a start followed by its attempt's
-    ``superseded`` record gets no settled end; the run's next attempt is a start and an end of
-    its own."""
+    """A start that its attempt's ``superseded`` record names (by its run id) gets no settled
+    end; the run's next attempt is a start and an end of its own."""
     name, runs = load_campaign(campaign(tmp_path))
     run, root = runs[1], tmp_path / "runs"
     run_id = f"x-{run.config_hash[:8]}-a1"
@@ -957,6 +959,56 @@ def test_a_start_that_a_later_record_of_its_label_follows_is_not_ended(tmp_path)
     assert result["done"] == [run.label]
     assert [(r["event"], r.get("settled")) for r in launch_log(root, name)] == [
         ("start", None), ("superseded", None), ("start", None), ("end", None)]  # fmt: skip
+
+
+@pytest.mark.parametrize(("first", "second"), [("z-original", "a-recovery"),
+                                               ("a-original", "z-recovery")])  # fmt: skip
+def test_a_start_in_another_journal_is_settled_whatever_the_file_names(
+    tmp_path, first, second
+) -> None:
+    """Attempt 1's start and end are in one journal, attempt 2's start, without its end, in
+    another (its recovery, logged under another campaign name). Whichever name sorts first, the
+    end is matched to attempt 1 by its run id and attempt 2 is the open start: the launcher
+    writes its settled end (``done``: it completed) and skips the run."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    one, two = (f"x-{run.config_hash[:8]}-a{n}" for n in (1, 2))
+    make_run_dir(root, run, one, "failed")
+    log_start(root, first, run, one)
+    end = {"event": "end", "run": run.label, "attempt": 1, "run_id": one, "returncode": 1,
+           "outcome": "technical", "problem": "status 'failed'"}  # fmt: skip
+    with (root / "launch" / f"{first}.jsonl").open("a") as f:
+        f.write(json.dumps(end) + "\n")
+    make_run_dir(root, run, two)  # completed, and it qualifies
+    log_start(root, second, run, two, attempt=2)
+    assert open_start(run, launch_records(root))["run_id"] == two
+    executor = Executor(root, {})
+    result = run_campaign(second, [run], root, execute=executor)
+    assert result["skipped"] == [run.label] and executor.calls == []
+    (settled,) = [r for r in launch_records(root) if r.get("settled")]
+    assert (settled["run_id"], settled["attempt"], settled["outcome"]) == (two, 2, "done")
+    assert open_start(run, launch_records(root)) is None
+
+
+def test_a_labels_attempts_are_ordered_by_number_then_time(tmp_path) -> None:
+    """``label_starts`` orders a label's starts by attempt number, then time, whatever their
+    order in the records; ``open_start`` is the latest one that no end, ``superseded`` or
+    ``held`` record names (an earlier attempt left open included)."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run = runs[1]
+
+    def start(attempt, time, run_id):
+        return {"event": "start", "run": run.label, "attempt": attempt, "run_id": run_id,
+                "experiment": run.experiment, "config_hash": run.config_hash,
+                "time": time}  # fmt: skip
+
+    records = [start(2, "2026-10-26T10:00:00+00:00", "b"), start(1, "2026-10-26T09:00:00+00:00",
+               "a2"), start(1, "2026-10-26T08:00:00+00:00", "a1")]  # fmt: skip
+    assert [r["run_id"] for r in label_starts(run, records)] == ["a1", "a2", "b"]
+    assert open_start(run, records)["run_id"] == "b"
+    closed = [*records, {"event": "end", "run_id": "b"}, {"event": "held", "run_id": "a2"}]
+    assert open_start(run, closed)["run_id"] == "a1"
+    assert open_start(run, [*closed, {"event": "superseded", "run_id": "a1"}]) is None
 
 
 def test_under_only_the_open_starts_of_other_labels_are_untouched(tmp_path) -> None:

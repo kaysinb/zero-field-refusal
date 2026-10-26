@@ -227,9 +227,11 @@ from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import (
     Run,
     assess,
+    attempt_key,
     expected_numerics,
     held_runs,
     hold,
+    label_starts,
     launch_records,
     load_campaign,
     supersede,
@@ -613,12 +615,10 @@ def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> lis
 
 
 def journal_run_ids(run: Run, root: Path) -> list[str]:
-    """The run ids of every logged attempt of the run (launch journal, start records)."""
-    return list(dict.fromkeys(
-        r["run_id"] for r in launch_records(root)
-        if r.get("event") == "start" and r.get("run") == run.label
-        and r.get("experiment") == run.experiment and r.get("config_hash") == run.config_hash
-        and isinstance(r.get("run_id"), str)))  # fmt: skip
+    """The run ids of every logged attempt of the run (launch journal, start records), in
+    attempt order (``launch.label_starts``: the attempt number, then the start's time, never the
+    journal file's name)."""
+    return list(dict.fromkeys(r["run_id"] for r in label_starts(run, launch_records(root))))
 
 
 def settled(run: Run, root: Path) -> Path | None:
@@ -1329,6 +1329,13 @@ def journal_starts(root: Path) -> dict[str, tuple[str, dict]]:
     return starts
 
 
+def in_attempt_order(run_ids: set[str], starts: Mapping[str, tuple[str, dict]]) -> list[str]:
+    """Run ids ordered as their journal starts' attempts (``launch.attempt_key``: the attempt
+    number, then the start's time; the run id breaks a tie), whatever journal file holds them;
+    an id without a start comes first."""
+    return sorted(run_ids, key=lambda r: (*attempt_key(starts.get(r, ("", {}))[1]), r))
+
+
 def run_gpu_code(run_dir: Path) -> str | None:
     """The GPU-code identity (sha256) of the commit a launcher run recorded, from a clean
     checkout; None when it cannot be told."""
@@ -1488,8 +1495,8 @@ def supersede_case(
         ids = set(journal_run_ids(p.run, root)) if p is not None else set()
         mentioned = {e["launcher_run_id"] for e in entries_of.get((name, stage_name), [])
                      if e["state"] == "recorded" and e["launcher_run_id"]}  # fmt: skip
-        outcomes = {}
-        for run_id in sorted((ids | mentioned) - classified):
+        outcomes = {}  # in attempt order, never by journal file or run id
+        for run_id in in_attempt_order((ids | mentioned) - classified, starts):
             if run_id not in starts:
                 continue
             run_dir = root / str(starts[run_id][1].get("experiment")) / run_id
@@ -1498,7 +1505,7 @@ def supersede_case(
         found = [k for k in (q.SCIENTIFIC, UNRESOLVED) if any(o == k for o, _ in outcomes.values())]
         if found:
             outcome = found[0]
-            run_id = next(r for r, (o, _) in sorted(outcomes.items()) if o == outcome)
+            run_id = next(r for r, (o, _) in outcomes.items() if o == outcome)  # the earliest
             campaign_name, start = starts[run_id]
             run_dir = root / str(start.get("experiment")) / run_id
             resolution = {"run_id": run_id, "outcome": outcome, "reasons": outcomes[run_id][1],
