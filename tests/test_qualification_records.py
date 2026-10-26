@@ -4,10 +4,12 @@ each rate's state recomputed from the qualification's records, verdict.json comp
 supersession", "Amendment 2").
 
 Each world is a qualification of candidate 1 in the formats of scripts/qualify.py: a campaign
-with its study-3 header, the launch journal, settled launcher runs and the part records, the
-restarts and the engineering cycle written by the script itself. The script's own ``verdict``
-runs on the same world, and the recomputation must give its rate verdicts, case verdicts and
-attempt listing. Nothing here runs a model.
+with its study-3 header, the launch journal, settled launcher runs (their meta.json recording the
+campaign's launch as the launcher passes it) and the part records, the restarts and the
+engineering cycle written by the script itself. The script's own ``verdict`` (and, where a world
+asks, ``supersede``, ``restart-case``, ``complete`` and the launcher's ``held_runs``) runs on the
+same world, and the recomputation must give its rate verdicts, case verdicts and attempt listing.
+Nothing here runs a model.
 """
 
 import ast
@@ -22,24 +24,31 @@ import shutil
 from pathlib import Path
 
 import pytest
+from omegaconf import OmegaConf
 from test_qualification import CODE, IDENTITY, control_record, synthetic
 from test_qualify import (
     ADAMW_LR,
     FA_LR,
     FIX,
     RESTART,
+    UNRESOLVABLE,
     cell,
     codes,
+    commit_configs,
     load_script,
+    raised_before_the_check,
     settled_launcher,
     trajectory_result,
 )
 
 from zero_field_refusal import code_identity
+from zero_field_refusal import launch as launcher
 from zero_field_refusal import qualification as q
 from zero_field_refusal.analysis import qualification_records as qr
-from zero_field_refusal.config import load_config
+from zero_field_refusal.analysis.study3_records import read_holds
+from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import load_campaign
+from zero_field_refusal.paths import CONFIG_ROOT
 
 REGISTERED = load_config("experiments/qualification")
 SEEDS = (10200, 10201, 10202)
@@ -50,11 +59,13 @@ BOTH = ((("adam_frozen", FA_LR), SEEDS), (("adamw", ADAMW_LR), SEEDS))
 
 @pytest.fixture
 def qualify(monkeypatch, tmp_path):
-    """scripts/qualify.py, from a clean checkout whose GPU code is the records' (``CODE``)."""
+    """scripts/qualify.py, from a clean checkout whose GPU code is the records' (``CODE``); the
+    launcher runs' commit abc123 has this checkout's configs (``configs_at``)."""
     module = load_script()
     monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(module, "git_state", lambda *a, **k: {"commit": "c" * 40, "dirty": False})
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
+    monkeypatch.setattr(module, "configs_at", commit_configs({"abc123": CONFIG_ROOT}))
     return module
 
 
@@ -78,37 +89,52 @@ class World:
     def run(self, case):
         return next(r for r in self.runs if r.label == f"{case.optimizer}-{case.lr:g}/s{case.seed}")
 
-    def log(self, record):
-        path = self.root / "launch" / f"{self.name}.jsonl"
+    def log(self, record, campaign=None):
+        path = self.root / "launch" / f"{campaign or self.name}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as f:
             f.write(json.dumps({"time": "2026-10-26T00:00:00+00:00", **record}) + "\n")
 
-    def launch(self, case, **settled):
+    def launch(self, case, *, campaign=None, issued=None, commit="abc123", **settled):
         """One launcher attempt of the case's run, as ``launch.py --only LABEL --max-attempts 1``
-        logs and leaves it (settled); its identity as the records name it."""
+        logs and leaves it (settled, its meta.json recording the campaign's launch, the label,
+        the attempt and the header, and its commit), in ``campaign``'s log (the world's own by
+        default); its identity as the records name it. ``issued``: the config it was issued
+        under the configs of its commit, when they are not this checkout's (its config hash is
+        then that config's)."""
         run = self.run(case)
         n = self.attempts[run.label] = self.attempts.get(run.label, 0) + 1
         run_id = f"r{case.seed}-{case.optimizer}-a{n}"
+        chash = run.config_hash if issued is None else config_hash(issued)
         common = {"run": run.label, "attempt": n, "run_id": run_id, "only": run.label}
         self.log({"event": "start", **common, "experiment": run.experiment,
-                  "config_hash": run.config_hash, "command": run.command()[1:],
-                  "header": self.header, "max_attempts": 1})  # fmt: skip
+                  "config_hash": chash, "command": run.command()[1:],
+                  "header": self.header, "max_attempts": 1}, campaign)  # fmt: skip
         run_dir = settled_launcher(self.root, run, run_id, **settled)
+        if issued is not None:
+            OmegaConf.save(issued, run_dir / "config.yaml")
+        meta = json.loads((run_dir / "meta.json").read_text())
+        meta["config_hash"] = chash
+        meta["git"] = {"commit": commit, "dirty": False}
+        meta["campaign"] = {"name": campaign or self.name, "label": run.label, "attempt": n,
+                            "header": self.header}  # fmt: skip
         if q.reads_v0(case.optimizer):  # an FA run records v₀'s hash
-            meta = json.loads((run_dir / "meta.json").read_text())
             meta["inputs"]["v0_sha256"] = "v" * 64
-            (run_dir / "meta.json").write_text(json.dumps(meta))
-        self.log({"event": "end", **common, "returncode": 0, "outcome": "done", "problem": None})
+        (run_dir / "meta.json").write_text(json.dumps(meta))
+        self.log({"event": "end", **common, "returncode": 0, "outcome": "done", "problem": None},
+                 campaign)  # fmt: skip
         return q.launcher_identity(run_dir)
 
     def publish(self, case, part, record, attempt=1):
         q.publish(self.out / case.attempt_path(part, attempt), record)
 
     def records(self, case, identity, *, code=CODE, change=None):
+        """A case's part records as ``run_part`` writes them once its launcher check returned
+        (``launcher.classified``), qualified unless ``change``."""
         baseline, rest = synthetic(case, identity=identity)
         for record in (baseline, rest):
             record["provenance"]["gpu_code"] = code
+            record["launcher"]["classified"] = True
         if change is not None:
             change(baseline, rest)
         rest["baseline_record"]["sha256"] = q.record_sha256(baseline)
@@ -333,6 +359,27 @@ def test_a_missing_control_makes_an_fa_rate_technical(qualify, tmp_path) -> None
     assert fa["verdict"]["control"]["kind"] == "technical"
 
 
+@pytest.mark.parametrize(("k", "diverged", "state"), [(0.06, False, "qualified"),
+                                                      (0.0601, False, "not_qualified"),
+                                                      (1e-12, True, "not_qualified")])  # fmt: skip
+def test_the_same_path_controls_rule(qualify, tmp_path, k, diverged, state) -> None:
+    """Amendment 2: an FA rate's same-path control, on the candidate's first numerical seed for
+    25 steps, needs finite records and an endpoint K at most 0.01·K* (0.06 for candidate 1). At
+    the bound the rate qualifies; beyond it, or with a non-finite record, the control fails and
+    blocks its rate (not qualified, technical), the reading as the verdict."""
+    world = World(tmp_path)
+    world.full(control=False)
+    identity = q.launcher_identity(world.root / "study3" / "r10200-adam_frozen-a1")
+    world.publish(FA, "control", control_record(k, diverged=diverged, case=FA, identity=identity))
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {FA_KEY: state, ADAMW_KEY: "qualified"}
+    control = reading["rates"][FA_KEY]["verdict"]["control"]
+    assert (control["bound"], control["kind"]) == (0.06, None if state == "qualified" else
+                                                   "technical")  # fmt: skip
+
+
 # ------------------------------------------------------------------ voiding and supersession
 
 
@@ -441,38 +488,261 @@ def test_an_engineering_cycle_voids_old_code_and_keeps_a_scientific_case(
     assert run["located"] == "r10201-adam_frozen-a1" and run["superseded"] == {}
 
 
-def test_a_held_run(qualify, monkeypatch, tmp_path) -> None:
-    """A launcher run its declared rule stopped, no part record of its case, and no recorded
-    commit: the engineering cycle cannot resolve it, keeps the case as it is and holds the run.
-    The held run is listed for its rate, from the journal and the supersession record, and its
-    unresolved outcome keeps the rate from qualified."""
-    world = World(tmp_path, ((("adamw", ADAMW_LR), (10200, 10201)),))
+STOPPED = qcase(10201, "adamw", ADAMW_LR)
+ADAMW_ONLY = ((("adamw", ADAMW_LR), (10200, 10201)),)
+
+
+def cycle_on_a_stop(qualify, monkeypatch, tmp_path, change=None, *, setup_raised=False):
+    """AdamW on 10200 and 10201: 10200's baseline technical (launcher~baseline beyond 0.06);
+    10201's launcher run stopped on its declared gradient_spike rule, no part record of its case
+    classified it, and ``change`` edits its records first; with ``setup_raised``, its baseline
+    as ``run_part`` publishes it when the numerics setup raises before the launcher check
+    (failed, technical, naming the run without classifying it). Then the engineering cycle,
+    opened by 10200's technical baseline under the fix's GPU code. Returns the world, the
+    stopped run's identity and the cycle's record."""
+    world = World(tmp_path, ADAMW_ONLY)
     world.qualified(ADAMW, world.launch(ADAMW), change=beyond("baseline", "launcher~baseline"))
-    stopped = qcase(10201, "adamw", ADAMW_LR)
-    identity = world.launch(stopped, stop="gradient_spike", steps=3)
+    identity = world.launch(STOPPED, stop="gradient_spike", steps=3)
     run_dir = world.root / "study3" / identity["run_id"]
-    meta = json.loads((run_dir / "meta.json").read_text())
-    del meta["git"]
-    (run_dir / "meta.json").write_text(json.dumps(meta))
+    if change is not None:
+        change(run_dir)
+    if setup_raised:
+        raised_before_the_check(qualify, world.out, run_dir, monkeypatch, STOPPED)
     monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
     world.command(qualify, "supersede", "--case", ADAMW.name, "--record",
                   str(world.folder(ADAMW) / "baseline-attempt-1.json"),
                   "--diagnosis", "d", "--fix", "f")  # fmt: skip
+    return world, identity, json.loads((world.out / "c1" / "supersede-1.json").read_text())
+
+
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("missing", list(UNRESOLVABLE))
+def test_a_held_run(qualify, monkeypatch, tmp_path, missing) -> None:
+    """A launcher run its declared rule stopped, conforming to its journal start (its meta.json
+    records the campaign's header and label), no part record of its case, and its provenance
+    incomplete (no recorded commit; a commit not in this clone; no campaign header in its
+    meta.json; a saved config that does not read): the engineering cycle cannot resolve it
+    against what it was issued, keeps the case as it is and holds the run. The held run is
+    listed for its rate and its label, from the journal and the supersession record, each with
+    its sha256 (the journal line's log and number), and its unresolved outcome keeps the rate
+    from qualified: ``not_qualified``, as the verdict gives it (10200's case, re-qualified, has
+    no record under the fix)."""
+    change, why = UNRESOLVABLE[missing]
+    world, identity, cycle = cycle_on_a_stop(qualify, monkeypatch, tmp_path, change)
+    assert [h["run_id"] for h in cycle["held"]] == [identity["run_id"]]
     cached = world.verdict(qualify)
     reading = world.read(expected_code=FIX["sha256"])
     assert_as_the_verdict(reading, cached)
     assert reading["states"] == {ADAMW_KEY: "not_qualified"}
     (held,) = reading["held"]
-    assert held["run_id"] == identity["run_id"] and "no recorded commit" in held["reason"]
-    assert held["sources"] == [f"journal {world.name}",
-                               str(world.out / "c1" / "supersede-1.json")]  # fmt: skip
+    assert held["run_id"] == identity["run_id"] and why in held["reason"]
+    cycle_path = world.out / "c1" / "supersede-1.json"
+    assert held["sources"] == [f"journal {world.name}", str(cycle_path)]
+    log = world.root / "launch" / f"{world.name}.jsonl"
+    lines = log.read_text().splitlines()
+    (number,) = [n for n, line in enumerate(lines, start=1) if json.loads(line)["event"] == "held"]
+    line_sha256 = hashlib.sha256(lines[number - 1].encode()).hexdigest()
+    assert held["records"] == [
+        {"kind": "journal", "path": f"launch/{world.name}.jsonl", "root": "runs",
+         "line": number, "line_sha256": line_sha256, "sha256": file_sha256(log)},
+        {"kind": "supersession", "path": "qualification/c1/supersede-1.json", "root": "runs",
+         "sha256": file_sha256(cycle_path)}]  # fmt: skip
+    assert held["case"] == {"arm": "A", "optimizer": "adamw", "lr": ADAMW_LR, "seed": 10201}
+    assert (held["run"], held["experiment"]) == (world.run(STOPPED).label, "study3")
     rate = reading["rates"][ADAMW_KEY]
     assert rate["held"] == [held]
-    (run,) = [r for r in rate["runs"] if r["seed"] == stopped.seed]
+    (run,) = [r for r in rate["runs"] if r["seed"] == STOPPED.seed]
     assert list(run["held"]) == [identity["run_id"]]
+    records = launcher.launch_records(world.root)
+    assert run["held"] == launcher.held_runs(world.run(STOPPED), records)
     (resolved,) = [c for c in reading["cases"] if c.get("resolution")]
-    assert (resolved["case"]["name"], resolved["state"]) == (stopped.name, "incomplete")
+    assert (resolved["case"]["name"], resolved["state"]) == (STOPPED.name, "incomplete")
     assert resolved["resolution"]["outcome"] == "unresolved"
+
+
+def test_a_stop_whose_meta_departs_from_its_start_is_superseded(qualify, monkeypatch, tmp_path):
+    """The world the held-run test had before the cycle resolved a run against what it was
+    issued: 10201's stopped launcher run records no commit, and its meta.json records the
+    campaign's launch with no header while its journal start carries the study-3 header. Its
+    records depart from what it was issued (technical, whatever is missing), so the cycle
+    supersedes it and re-qualifies its case: nothing is held, no case is kept, and the rate is
+    ``incomplete`` (no record under the fix, no launcher run located), the reading as the
+    verdict."""
+
+    def departs(run_dir):
+        meta = json.loads((run_dir / "meta.json").read_text())
+        del meta["git"]
+        meta["campaign"]["header"] = None
+        (run_dir / "meta.json").write_text(json.dumps(meta))
+
+    world, identity, cycle = cycle_on_a_stop(qualify, monkeypatch, tmp_path, departs)
+    assert (cycle["held"], cycle["kept_cases"]) == ([], [])
+    assert identity["run_id"] in [r["run_id"] for r in cycle["launchers"]]
+    cached = world.verdict(qualify)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {ADAMW_KEY: "incomplete"}
+    assert reading["held"] == [] and [c for c in reading["cases"] if c.get("resolution")] == []
+    (run,) = [r for r in reading["rates"][ADAMW_KEY]["runs"] if r["seed"] == STOPPED.seed]
+    assert run["located"] is None and identity["run_id"] in run["superseded"]
+
+
+def test_a_resolved_stop_counts_beside_a_record_that_did_not_classify_it(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """A part record classifies its launcher run only once its launcher check returned
+    (``launcher.classified``): 10201's baseline raised in its numerics setup first, so it names
+    the run without classifying it, and the cycle resolves the run on its own: a conforming
+    declared stop, scientific; the case is kept whole, its record included. The verdict counts
+    the resolution beside that record's own verdict, and so does the reading: the rate fails."""
+    world, identity, cycle = cycle_on_a_stop(qualify, monkeypatch, tmp_path, setup_raised=True)
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "scientific")
+    assert [(e["case"], e["part"]) for e in cycle["kept"]] == [(STOPPED.name, "baseline")]
+    cached = world.verdict(qualify)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {ADAMW_KEY: "failing"}
+    (case,) = [c for c in reading["rates"][ADAMW_KEY]["cases"] if c["seed"] == STOPPED.seed]
+    assert (case["verdict"]["kind"], case["parts"]["baseline"]["counts"]) == ("technical", 1)
+    (resolved,) = [c for c in reading["cases"] if c.get("resolution")]
+    assert (resolved["case"]["name"], resolved["kind"]) == (STOPPED.name, "scientific")
+    assert reading["held"] == []
+
+
+def test_a_runs_attempts_are_read_in_attempt_order_across_journals(qualify, tmp_path) -> None:
+    """FA's 10200 restarted after the Pod stopped during its rest; the recovery round's attempt
+    2 is logged under a campaign name that sorts before the first's. The issued run's attempts
+    are read by their number, as ``label_run_ids`` and ``journal_run_ids`` read them, whatever
+    journal file holds them, and the second is located."""
+    world = World(tmp_path)
+    world.full(skip=(FA,))
+    identity = world.launch(FA)
+    world.qualified(FA, identity, control=True)
+    (world.folder(FA) / "rest-attempt-1.json").unlink()
+    q.publish(world.out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    world.command(qualify, "restart-case", "--case", FA.name, "--infrastructure", RESTART)
+    world.qualified(FA, world.launch(FA, campaign="a-recovery"), attempt=2)
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert_as_the_verdict(reading, cached)
+    run = world.run(FA)
+    order = qualify.label_run_ids(run, world.root)
+    assert order == qualify.journal_run_ids(run, world.root) == [
+        "r10200-adam_frozen-a1", "r10200-adam_frozen-a2"]  # fmt: skip
+    (issued,) = [r for r in reading["rates"][FA_KEY]["runs"] if r["seed"] == FA.seed]
+    assert issued["run_ids"] == order and issued["campaigns"] == ["a-recovery", world.name]
+    assert issued["located"] == qualify.located(run, world.root).name == "r10200-adam_frozen-a2"
+
+
+EARLIER = "e0e0e0"  # the commit the earlier configs are of
+
+
+def issued_earlier(world, case, configs):
+    """The case's config as ``configs`` (an earlier commit's configs folder) composes its
+    command: what a launcher run of that commit was issued."""
+    run = world.run(case)
+    return load_config(configs / f"{run.config}.yaml", run.overrides, root=configs)
+
+
+def earlier_configs(qualify, monkeypatch, tmp_path):
+    """The configs of commit ``EARLIER``: this checkout's with another teacher chunk size, a
+    hashed key the fix changed; ``configs_at`` knows that commit and abc123 (this checkout's)."""
+    then = tmp_path / "configs-of-the-commit"
+    shutil.copytree(CONFIG_ROOT, then)
+    study3 = then / "experiments" / "study3.yaml"
+    assert study3.read_text().count("  chunk_size: 1000\n") == 1
+    study3.write_text(study3.read_text().replace("  chunk_size: 1000\n", "  chunk_size: 500\n"))
+    monkeypatch.setattr(qualify, "configs_at",
+                        commit_configs({"abc123": CONFIG_ROOT, EARLIER: then}))  # fmt: skip
+    return then
+
+
+def cycle_across_a_config_change(qualify, monkeypatch, tmp_path, change=None):
+    """AdamW on 10200 and 10201, both first issued at commit ``EARLIER`` under its configs (an
+    earlier config hash than the cells' now): 10200's baseline technical; 10201's launcher run
+    stopped on its declared gradient_spike rule, no part record of its case, ``change`` editing
+    its records first. The cycle, opened by 10200's baseline under the fix, finds each case's
+    runs by its label; 10200 is re-qualified under the fix from a recovery attempt issued under
+    the cells' config hash now. Returns the world, the identities of 10200's first run and of the
+    stopped run, and the cycle."""
+    then = earlier_configs(qualify, monkeypatch, tmp_path)
+    world = World(tmp_path, ADAMW_ONLY)
+    first = world.launch(ADAMW, issued=issued_earlier(world, ADAMW, then), commit=EARLIER)
+    world.qualified(ADAMW, first, change=beyond("baseline", "launcher~baseline"))
+    stopped = world.launch(STOPPED, issued=issued_earlier(world, STOPPED, then), commit=EARLIER,
+                           stop="gradient_spike", steps=3)  # fmt: skip
+    assert stopped["config_hash"] != world.run(STOPPED).config_hash  # not the cell's hash now
+    if change is not None:
+        change(world.root / "study3" / stopped["run_id"])
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    world.command(qualify, "supersede", "--case", ADAMW.name, "--record",
+                  str(world.folder(ADAMW) / "baseline-attempt-1.json"),
+                  "--diagnosis", "d", "--fix", "f")  # fmt: skip
+    world.qualified(ADAMW, world.launch(ADAMW), attempt=2, code=FIX)  # the recovery round
+    return world, first, stopped, json.loads((world.out / "c1" / "supersede-1.json").read_text())
+
+
+def test_a_label_is_one_launcher_run_whatever_its_config_hash(qualify, monkeypatch, tmp_path):
+    """The cycle finds a case's launcher runs by its label, whatever their config hash: 10201's
+    conforming stop, issued under the earlier configs, keeps its case whole (scientific); 10200's
+    earlier run is superseded and its recovery attempt runs under the cell's hash now. Each label
+    is one issued run with its attempts under both hashes (no two runs of one case), located
+    under the cell's hash now: 10200's recovery attempt, and for 10201 none, as the verdict,
+    given the campaign under the fix, locates them. The rate fails."""
+    world, first, stopped, cycle = cycle_across_a_config_change(qualify, monkeypatch, tmp_path)
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "scientific")
+    assert [r["run_id"] for r in cycle["launchers"]] == ["r10200-adamw-a1"]
+    cached = world.verdict(qualify)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {ADAMW_KEY: "failing"}
+    runs = {r["seed"]: r for r in reading["rates"][ADAMW_KEY]["runs"]}
+    now = {seed: world.run(qcase(seed, "adamw", ADAMW_LR)) for seed in (10200, 10201)}
+    for seed, run in now.items():
+        assert runs[seed]["run_ids"] == qualify.label_run_ids(run, world.root)
+        assert runs[seed]["config_hash"] == run.config_hash
+        located = qualify.located(run, world.root)
+        assert runs[seed]["located"] == (None if located is None else located.name)
+    assert runs[10200]["config_hashes"] == [first["config_hash"], now[10200].config_hash]
+    assert (runs[10200]["located"], runs[10201]["located"]) == ("r10200-adamw-a2", None)
+    assert runs[10201]["config_hashes"] == [stopped["config_hash"]]
+
+
+def test_a_hold_under_an_earlier_config_hash_holds_its_label(qualify, monkeypatch, tmp_path):
+    """10201's stopped run, issued under the earlier configs, records no commit: the cycle holds
+    it under its earlier config hash. The hold applies to its label whatever the hash: the
+    reading lists it for the rate and the label (``launch.held_runs`` of the cell under its hash
+    now gives the same run and reason, and ``complete`` exits HELD for the case), with the
+    records that hold it and their sha256 (``read_holds``), and the rate is as the verdict
+    gives it."""
+    no_commit = UNRESOLVABLE["no commit"][0]
+    world, _, stopped, cycle = cycle_across_a_config_change(qualify, monkeypatch, tmp_path,
+                                                            no_commit)  # fmt: skip
+    assert [(h["run_id"], h["config_hash"]) for h in cycle["held"]] == [
+        (stopped["run_id"], stopped["config_hash"])]  # fmt: skip
+    cached = world.verdict(qualify)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert_as_the_verdict(reading, cached)
+    run = world.run(STOPPED)
+    held_now = launcher.held_runs(run, launcher.launch_records(world.root))
+    assert list(held_now) == [stopped["run_id"]]
+    (held,) = reading["rates"][ADAMW_KEY]["held"]
+    assert {held["run_id"]: held["reason"]} == held_now
+    (listed,) = [r for r in reading["rates"][ADAMW_KEY]["runs"] if r["seed"] == STOPPED.seed]
+    assert listed["held"] == held_now
+    with pytest.raises(SystemExit) as stop:
+        world.command(qualify, "complete", "--case", STOPPED.name)
+    assert stop.value.code == qualify.HELD
+    holds, problems = read_holds(world.root)
+    assert problems == [] and [h["run_id"] for h in holds] == [stopped["run_id"]]
+    assert holds[0]["records"] == held["records"]
+    for record in held["records"]:
+        assert record["sha256"] == file_sha256(world.root / record["path"])
 
 
 # ------------------------------------------------------------------ the cache
@@ -816,6 +1086,45 @@ def test_every_start_of_an_issued_run_is_bound(tmp_path) -> None:
     assert run["run_ids"] == ["r10200-adam_frozen-a1", second]
 
 
+def test_a_labels_starts_bind_one_case_and_its_cell_composes(tmp_path) -> None:
+    """The starts of one label are the attempts of one launcher run, whatever their config hash:
+    a second start whose own config (of its own hash) is of another rate binds another case, a
+    problem, and the run is no case's. A label whose latest start's command no longer composes
+    under this checkout's configs has no config hash now to locate its run under: a problem, and
+    none is located."""
+    (tmp_path / "two").mkdir()
+    world = World(tmp_path / "two")
+    world.launch(FA)
+    run = world.run(FA)
+    cfg = OmegaConf.load(world.root / "study3" / "r10200-adam_frozen-a1" / "config.yaml")
+    OmegaConf.update(cfg, "optimizer.lr", 9.0e-05)
+    other = config_hash(cfg)
+    (world.root / "study3" / "x2").mkdir()
+    OmegaConf.save(cfg, world.root / "study3" / "x2" / "config.yaml")
+    world.log({"event": "start", "run": run.label, "attempt": 2, "run_id": "x2",
+               "experiment": "study3", "config_hash": other, "command": run.command()[1:],
+               "header": HEADER})  # fmt: skip
+    reading = world.read()
+    (problem,) = reading["problems"]
+    assert problem.startswith(f"{run.label} ({run.config_hash}, {other}): the starts of one "
+                              "label bind different cases: ['r10200-adam_frozen-a1'] "
+                              "('adam_frozen', 1.83e-05, 10200); ['x2'] ")  # fmt: skip
+    assert [r["optimizer"] for r in reading["issued"]] == [None] and FA_KEY not in reading["rates"]
+    (tmp_path / "gone").mkdir()
+    world = World(tmp_path / "gone")
+    world.launch(FA)
+    log = world.root / "launch" / f"{world.name}.jsonl"
+    lines = [json.loads(line) for line in log.read_text().splitlines()]
+    lines[0]["command"][1] = "experiments/no_such_config"  # its config.yaml still binds
+    log.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    reading = world.read()
+    assert reading["problems"] == [
+        f"{run.label} ({run.config_hash}): its latest start's command does not compose under "
+        "this checkout's configs (FileNotFoundError): its launcher run cannot be located"
+    ]
+    assert reading["rates"][FA_KEY]["launchers"] == {10200: None}
+
+
 def cycle_record(world, **fields):
     """A supersession record of candidate 1 with every field the registration asks for, as
     ``qualify.py supersede`` writes one, and ``fields`` over it."""
@@ -829,13 +1138,12 @@ def cycle_record(world, **fields):
     return path
 
 
-@pytest.mark.parametrize("what", ["trajectory comparisons", "kept reasons", "kept case name",
+@pytest.mark.parametrize("what", ["trajectory comparisons", "kept reasons",
                                   "restart entry"])  # fmt: skip
 def test_a_malformed_record_is_a_problem_not_an_exception(qualify, tmp_path, what) -> None:
     """A record whose shape the verdicts cannot read (an interrupted rest's trajectory result
-    whose comparisons are a list; a kept case's resolution whose reasons cannot be iterated, or
-    whose case name is a list; a restart naming a part by a list) is a problem naming it; the
-    reading goes on."""
+    whose comparisons are a list; a kept case's resolution whose reasons cannot be iterated; a
+    restart naming a part by a list) is a problem naming it; the reading goes on."""
     world = World(tmp_path)
     world.full()
     folder = world.folder(ADAMW)
@@ -854,15 +1162,29 @@ def test_a_malformed_record_is_a_problem_not_an_exception(qualify, tmp_path, wha
                       "case_record": qcase(10201, "adamw", ADAMW_LR).record()}  # fmt: skip
         kept = {"case": "s10299/adamw-5e-05", "stage": "numerical", "why": "w",
                 "resolution": resolution}  # fmt: skip
-        if what == "kept reasons":
-            resolution["reasons"] = 5
-        else:
-            kept["case"] = ["s10201", "adamw"]
+        resolution["reasons"] = 5
         prefix = f"{cycle_record(world, kept_cases=[kept])}: a kept case the verdicts cannot read: "
     reading = world.read()
     assert [p for p in reading["problems"] if p.startswith(prefix + "TypeError")], (
         reading["problems"])  # fmt: skip
     assert reading["states"][FA_KEY] == "qualified"
+
+
+def test_a_kept_case_counts_by_its_resolution_whatever_its_name(qualify, tmp_path) -> None:
+    """The verdict counts a kept case's resolution by its stage alone, beside the case's own
+    records, never looking its name up among them: a kept case whose name is a list is no
+    malformed record. The reading counts it as the verdict does, with no problem; the unresolved
+    outcome keeps the rate from qualified (``not_qualified``, as the verdict gives it)."""
+    world = World(tmp_path)
+    world.full()
+    resolution = {"run_id": "r10201-adamw-a1", "outcome": "unresolved", "reasons": ["why"],
+                  "case_record": qcase(10201, "adamw", ADAMW_LR).record()}  # fmt: skip
+    cycle_record(world, kept_cases=[{"case": ["s10201", "adamw"], "stage": "numerical",
+                                     "why": "w", "resolution": resolution}])  # fmt: skip
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {FA_KEY: "qualified", ADAMW_KEY: "not_qualified"}
 
 
 def test_a_supersession_record_without_its_fields_is_a_problem_and_still_voids(qualify, tmp_path):

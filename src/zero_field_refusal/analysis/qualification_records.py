@@ -10,9 +10,10 @@ read here, and the verdict rules are called where they live, in ``qualification_
 - ``read_qualification``: for each rate (arm, rate) of the candidate's numerical qualification,
   its cases (each part's attempts, the one that counts and the earlier ones), the records the
   case restarts and the engineering cycle void, with their reasons, the launcher runs issued,
-  located, superseded and held, the same-path control and the rate's state, recomputed with
-  ``rate_verdict`` from inputs assembled as ``qualify.py verdict`` assembles them;
-  ``verdict.json`` read as a cache and compared with it; and the ``problems``.
+  located, superseded and held (each hold with the records that hold it and their sha256), the
+  same-path control and the rate's state, recomputed with ``rate_verdict`` from inputs
+  assembled as ``qualify.py verdict`` assembles them; ``verdict.json`` read as a cache and
+  compared with it; and the ``problems``.
 - ``rate_of``: one rate of a reading, by arm (or optimizer) and rate.
 - ``Scope``, ``settings_record``, ``launcher_identity`` and ``resolved_verdict``: what
   ``qualification.QualificationScope``, ``qualification.settings_record``,
@@ -29,26 +30,44 @@ read here, and the verdict rules are called where they live, in ``qualification_
   attempt. Every other recorded attempt is a superseded record: void when named, with the
   restart's reason or the cycle's diagnosis and fix, and otherwise counted against its rate as a
   case of its own (a control as a superseded control);
-- *the cases the engineering cycle kept on their launcher run's resolved outcome* with no part
-  record of their own (``kept_cases`` with a ``resolution``): that outcome as a case verdict;
+- *the cases the engineering cycle kept on their launcher run's resolved outcome* (``kept_cases``
+  with a ``resolution``: no part record classified that run, ``launcher.classified``; none names
+  it, or each that does raised before its launcher check): that outcome as a case verdict, beside
+  the verdicts of the case's own records, which stay;
 - *the control* of an FA rate (the control arm): the latest control attempt of the rate's case on
   the candidate's first numerical seed, unless named;
 - *the launcher runs* located now, one per seed of the rate (``located``: the one settled
-  directory of the issued run's config hash that no ``superseded`` line of the journal names), as
-  the records name them (``launcher_identity``);
+  directory of the cell's config hash now that no ``superseded`` line of the journal names for
+  that hash), as the records name them (``launcher_identity``). The cell's config hash now is the
+  campaign's, which the verdict is given: its label's latest start's command (its config and
+  overrides) composed under this checkout's configs, as ``launch.load_campaign`` composes a
+  cell. It is that start's own hash unless a fix changed a hashed config key since; then it is
+  the fix's, and a run of the earlier hash (kept or held, never attempted again) is not
+  located, as the verdict has it;
 - the expected GPU code (``expected_code``, from the fixation record) and the settings as a record
   holds them (``settings_record``).
 
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
 ``numerical`` or ``repair`` (a repaired rate is qualified as numerical runs) issued a case: its
-label, experiment and config hash make the run ``located`` looks for, and its config (its run's
-``config.yaml``, or its start's command loaded again, bound by its config hash as
-``study3_records`` binds a start) gives the case's arm, rate and seed. Starts of one label,
-experiment and config hash are attempts of one run; every start is bound, and one refused (its
-``config.yaml`` of another config hash) is a problem whatever the others. Every case record (a
-part record, an interrupted rest's trajectory results, a kept case's resolution) must name a
-numerical case of the candidate that an issued start names: the run bound to an issued cell.
+config (its run's ``config.yaml``, or its start's command loaded again, bound by the start's
+config hash as ``study3_records`` binds a start) gives the case's arm, rate and seed. The starts
+of one label and experiment are the attempts of one launcher run whatever their config hash (a
+fix may change a hashed config key: ``qualify.py``'s ``label_run_ids``), in attempt order: the
+attempt number, then the start's time stamp, never the journal file that holds it
+(``launch.attempt_key``). Every start is bound by its own config hash, one refused (its
+``config.yaml`` of another config hash) is a problem whatever the others, and starts of one label
+that bind different cases are a problem. Every case record (a part record, an interrupted rest's
+trajectory results, a kept case's resolution) must name a numerical case of the candidate that an
+issued start names: the run bound to an issued cell.
+
+**Held runs** (``held``; ``study3_records.read_holds``): every hold of an issued label, whatever
+the config hash it was written with (``launch.held_runs``), or of an issued run id, or named by
+the candidate's supersession records; each with ``sources`` (``journal <campaign>`` for each
+``held`` line, the supersession record's path) and ``records``, the same records as evidence
+references with their sha256 (a journal line with its log's path and the line's number), and the
+issued ``case`` it holds (arm, optimizer, rate, seed; None for a label no issued start binds). A
+rate lists the holds of its labels, an issued run those of its label.
 
 **The rates** are those the issued runs, the case records and ``verdict.json`` name, one rate per
 optimizer and rate (relative tolerance 10⁻⁹); each is recomputed from the records, whoever names
@@ -67,15 +86,17 @@ cannot read (a case, an interrupted rest's trajectory results, a kept case, a ra
 script would raise, the record is named and left out); a supersession record without its
 diagnosis, fix, old record (path and sha256) or cases re-qualified ("Voiding and supersession":
 it still voids what it names, as the script reads it); a start of the qualification refused or
-that cannot be bound to its case, two issued runs of one case, and a case record no issued start
-names; and every disagreement with the cache: a rate's state, the cache written for another
-candidate or stage, under another GPU code or other settings than expected. The states are
-always the recomputation's.
+that cannot be bound to its case, starts of one label bound to different cases, two issued runs
+(labels) of one case, a cell whose config this checkout's configs cannot compose, and a case
+record no issued start names; and every disagreement with the cache: a rate's state, the cache
+written for another candidate or stage, under another GPU code or other settings than expected.
+The states are always the recomputation's.
 
 **Pure reading.** No file is written. Of a launcher run, ``meta.json``, ``summary.json`` and the
 files of its identity (``config.yaml``, ``metrics.jsonl``, ``monitor.jsonl``, ``terminal.json``)
-are read; nothing under a run's ``responses/`` or ``observations/`` is opened. The GPU code
-identity is not computed here: it is an argument. No GPU path is imported here;
+are read; nothing under a run's ``responses/`` or ``observations/`` is opened. This checkout's
+``configs/`` are read to compose a cell's config. The GPU code identity is not computed here: it
+is an argument. No GPU path is imported here;
 ``qualification_verdicts`` itself imports ``fa_control_diagnostic`` (and with it torch).
 
 **Rulings** where the verdict's command line leaves an input open:
@@ -98,6 +119,8 @@ from typing import Any
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from ..config import config_hash
+from ..protocol import load_run_config
 from ..qualification_constants import (
     FAILING,
     INCOMPLETE,
@@ -108,7 +131,7 @@ from ..qualification_constants import (
     record_sha256,
 )
 from . import qualification_verdicts as verdicts
-from .study3_records import ARMS, RATE_TOLERANCE
+from .study3_records import ARMS, RATE_TOLERANCE, read_holds
 from .study3_records import _config as _start_config
 
 STAGE = "numerical"  # the stage folder of the numerical qualification, c<N>/numerical/
@@ -325,29 +348,36 @@ def _void_reason(path: Path, record: Mapping[str, Any] | None) -> str:
 
 @dataclass
 class _Issued:
-    """A launcher run the candidate's qualification campaigns issued: one label, experiment and
-    config hash, with its attempts' run ids, and the case its config binds (None: unbound)."""
+    """A launcher run the candidate's qualification campaigns issued: one label and experiment,
+    its attempts (their run ids and starts, in attempt order, under any config hash), the case
+    its config binds (None: unbound) and the cell's config hash now (``located``'s; None until
+    composed)."""
 
     label: str
     experiment: str
-    config_hash: str
     run_ids: list[str] = field(default_factory=list)
     campaigns: list[str] = field(default_factory=list)
     starts: list[dict[str, Any]] = field(default_factory=list)
+    config_hash: str | None = None
     optimizer: str | None = None
     lr: float | None = None
     seed: int | None = None
     ambiguous: bool = False
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        return self.label, self.experiment, self.config_hash
+    def key(self) -> tuple[str, str]:
+        return self.label, self.experiment
+
+    @property
+    def config_hashes(self) -> list[str]:
+        """The config hashes of its starts, in attempt order, each once."""
+        return list(dict.fromkeys(start["config_hash"] for start in self.starts))
 
     def record(self) -> dict[str, Any]:
         return {"label": self.label, "experiment": self.experiment,
-                "config_hash": self.config_hash, "campaigns": sorted(set(self.campaigns)),
-                "run_ids": list(self.run_ids), "optimizer": self.optimizer, "lr": self.lr,
-                "seed": self.seed}  # fmt: skip
+                "config_hash": self.config_hash, "config_hashes": self.config_hashes,
+                "campaigns": sorted(set(self.campaigns)), "run_ids": list(self.run_ids),
+                "optimizer": self.optimizer, "lr": self.lr, "seed": self.seed}  # fmt: skip
 
 
 def _journal(root: Path, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
@@ -379,16 +409,42 @@ def _issues_case(record: Mapping[str, Any], candidate: int) -> bool:
             and head.get("step") in STEPS)  # fmt: skip
 
 
+def _attempt_key(record: Mapping[str, Any]) -> tuple[int, str]:
+    """How a start sorts among its label's attempts (``launch.attempt_key``): by its attempt
+    number (a start without one first), then by its time stamp, never by the journal file that
+    holds it."""
+    attempt = record.get("attempt")
+    number = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else -1
+    return number, str(record.get("time") or "")
+
+
+def _composed_hash(command: Any) -> str:
+    """The config hash a journal start's command (script, config, overrides) gives under this
+    checkout's configs, as ``launch.load_campaign`` composes a cell; raises when it does not."""
+    if not (isinstance(command, list) and len(command) >= 2
+            and all(isinstance(c, str) for c in command)):  # fmt: skip
+        raise ValueError("its start records no command")
+    return config_hash(load_run_config(command[1], command[2:]))
+
+
+def _named(run: _Issued) -> str:
+    """A run as a problem names it: its label and its starts' config hashes."""
+    return f"{run.label} ({', '.join(run.config_hashes)})"
+
+
 def _issued(
     root: Path, journal: Sequence[tuple[str, Mapping[str, Any]]], candidate: int,
     problems: list[str],
 ) -> list[_Issued]:  # fmt: skip
-    """The launcher runs the candidate's qualification campaigns issued, each bound to its case
-    (module docstring, "The issued runs"); an unbound one and two of one case are problems."""
-    runs: dict[tuple[str, str, str], _Issued] = {}
-    for campaign, record in journal:
-        if not _issues_case(record, candidate):
-            continue
+    """The launcher runs the candidate's qualification campaigns issued, one per label whatever
+    its starts' config hashes, its attempts in attempt order, each bound to its case, with the
+    cell's config hash now (module docstring, "The issued runs"); an unbound one, starts of one
+    label bound to different cases, two runs of one case and a cell that does not compose are
+    problems."""
+    runs: dict[tuple[str, str], _Issued] = {}
+    mine = [(campaign, record) for campaign, record in journal if _issues_case(record, candidate)]
+    # attempt order; a stable sort, so equal keys keep the journal's order, as ``label_run_ids``
+    for campaign, record in sorted(mine, key=lambda item: _attempt_key(item[1])):
         run_id, label = record.get("run_id"), record.get("run")
         experiment, chash = record.get("experiment"), record.get("config_hash")
         if not (_plain_name(run_id) and _plain_name(experiment) and isinstance(label, str)
@@ -397,43 +453,55 @@ def _issued(
                             f"without a run id, label, experiment or config hash: "
                             f"{run_id!r}, {label!r}, {experiment!r}, {chash!r}")  # fmt: skip
             continue
-        run = runs.setdefault((label, experiment, chash), _Issued(label, experiment, chash))
+        run = runs.setdefault((label, experiment), _Issued(label, experiment))
         run.run_ids.append(run_id)
         run.campaigns.append(campaign)
         run.starts.append(dict(record))
     for run in runs.values():
-        cfg, why = None, []
-        for start in run.starts:  # every start: one refused is a problem whatever the others
+        cases: dict[str, tuple[tuple[Any, ...], list[str]]] = {}  # by repr: a value may be a list
+        why = []
+        for start in run.starts:  # every start, by its own config hash
             found, unbound, refusal = _start_config(root / run.experiment / start["run_id"],
-                                                    start, run.config_hash)  # fmt: skip
+                                                    start, start["config_hash"])  # fmt: skip
             if refusal is not None:
                 problems.append(f"{start['run_id']} ({run.label}): a start of candidate "
                                 f"{candidate}'s qualification refused: {refusal}")  # fmt: skip
             elif found is None:
                 why.append(f"{start['run_id']}: {unbound}")
-            elif cfg is None:
-                cfg = found
-        if cfg is None:
+            else:
+                case = tuple(OmegaConf.select(found, key, default=None)
+                             for key in ("optimizer.name", "optimizer.lr", "seed"))  # fmt: skip
+                cases.setdefault(repr(case), (case, []))[1].append(start["run_id"])
+        if not cases:
             if why:
-                problems.append(f"{run.label} ({run.config_hash}): an issued run of candidate "
-                                f"{candidate}'s qualification whose case cannot be bound: "
+                problems.append(f"{_named(run)}: an issued run of candidate {candidate}'s "
+                                f"qualification whose case cannot be bound: "
                                 f"{'; '.join(why)}")  # fmt: skip
             continue
-        optimizer = OmegaConf.select(cfg, "optimizer.name", default=None)
-        lr = OmegaConf.select(cfg, "optimizer.lr", default=None)
-        seed = OmegaConf.select(cfg, "seed", default=None)
+        if len(cases) > 1:
+            listed = "; ".join(f"{ids} {key}" for key, (_, ids) in cases.items())
+            problems.append(f"{_named(run)}: the starts of one label bind different cases: "
+                            f"{listed}")  # fmt: skip
+            continue
+        (optimizer, lr, seed), _ = next(iter(cases.values()))
         if not (isinstance(optimizer, str) and _number(lr) and type(seed) is int):
-            problems.append(f"{run.label} ({run.config_hash}): its config names no arm, rate "
-                            f"and seed ({optimizer!r}, {lr!r}, {seed!r})")  # fmt: skip
+            problems.append(f"{_named(run)}: its config names no arm, rate and seed "
+                            f"({optimizer!r}, {lr!r}, {seed!r})")  # fmt: skip
             continue
         run.optimizer, run.lr, run.seed = optimizer, float(lr), seed
+        try:  # the campaign's cell now: its latest start's command under this checkout
+            run.config_hash = _composed_hash(run.starts[-1].get("command"))
+        except Exception as exc:  # nothing to locate under: the verdict could not run either
+            problems.append(f"{_named(run)}: its latest start's command does not compose under "
+                            f"this checkout's configs ({type(exc).__name__}): its launcher run "
+                            "cannot be located")  # fmt: skip
     bound = [r for r in runs.values() if r.optimizer is not None]
     for run in bound:
         same = [o for o in bound if (o.optimizer, o.seed) == (run.optimizer, run.seed)
                 and math.isclose(o.lr, run.lr, rel_tol=RATE_TOLERANCE)]  # fmt: skip
         if len(same) > 1:
             run.ambiguous = True
-            names = ", ".join(sorted(f"{o.label} ({o.config_hash})" for o in same))
+            names = ", ".join(sorted(_named(o) for o in same))
             problems.append(f"two issued runs are case s{run.seed}/{run.optimizer}-{run.lr:g} "
                             f"of candidate {candidate}: {names}")  # fmt: skip
     return list(runs.values())
@@ -497,7 +565,8 @@ class _Reading:
 
     def read(self, issued: Sequence[tuple[str, float, int]] = ()) -> None:
         """Every case folder, then the cases the engineering cycle kept on a resolved launcher
-        run; ``issued``: the (optimizer, rate, seed) the issued starts name."""
+        run, beside their records' own verdicts (no record classified that run);
+        ``issued``: the (optimizer, rate, seed) the issued starts name."""
         self.issued = list(issued)
         for folder in sorted({f.parent for f in self.base.glob("s*/*/*-attempt-*")}):
             try:
@@ -505,8 +574,6 @@ class _Reading:
             except Exception as exc:  # a malformed record no rule below names
                 self.problems.append(f"{folder}: its records cannot be read: "
                                      f"{type(exc).__name__}: {exc}")  # fmt: skip
-        live = {name for v in self.cases
-                if "superseded" not in v and isinstance(name := _case_name(v), str)}  # fmt: skip
         for path, record in self.supersessions:  # cases kept on a resolved launcher run
             kept_cases = (record or {}).get("kept_cases") or []
             if not isinstance(kept_cases, list):
@@ -516,8 +583,7 @@ class _Reading:
                 try:
                     resolution = kept.get("resolution") if isinstance(kept, Mapping) else None
                     if (isinstance(resolution, Mapping) and resolution
-                            and kept.get("stage") == STAGE
-                            and kept.get("case") not in live):  # fmt: skip
+                            and kept.get("stage") == STAGE):  # fmt: skip
                         verdict = resolved_verdict(resolution)
                         self._issued_case(path, verdict["case"])
                         self.cases.append(verdict)
@@ -697,15 +763,18 @@ class _Reading:
 
 
 class _Located:
-    """``qualify.py``'s ``located`` for the issued runs: the one directory of the run's config
-    hash, settled (completed or diverged, or with a terminal record), that no ``superseded`` line
-    of the journal names for its label; each experiment's ``meta.json`` files read once."""
+    """``qualify.py``'s ``located`` for the issued runs: the one directory of the cell's config
+    hash now, settled (completed or diverged, or with a terminal record), that no ``superseded``
+    line of the journal names for its label and that hash; each experiment's ``meta.json`` files
+    read once."""
 
     def __init__(self, root: Path, superseded: Sequence[Mapping[str, Any]]) -> None:
         self.root, self.superseded = root, superseded
         self.metas: dict[str, list[tuple[Path, dict[str, Any] | None]]] = {}
 
     def __call__(self, run: _Issued) -> Path | None:
+        if run.config_hash is None:  # its cell does not compose: nothing to locate under
+            return None
         if run.experiment not in self.metas:
             directory = self.root / run.experiment
             self.metas[run.experiment] = [(d, _object(d / "meta.json"))
@@ -833,7 +902,8 @@ def read_qualification(
     problems = reading.problems
     journal = _journal(root, problems)
     issued = _issued(root, journal, candidate, problems)
-    superseded_lines, held_lines = _named_runs(journal, "superseded"), _named_runs(journal, "held")
+    superseded_lines = _named_runs(journal, "superseded")
+    holds, _ = read_holds(root)  # an unreadable log or cycle record: named by the reading's own
     reading.read([(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None])
     cache = _cache(reading.candidate_dir / VERDICT, problems)
     order: list[tuple[str, float]] = []
@@ -845,7 +915,7 @@ def read_qualification(
     for optimizer, lr in (cache or {}).get("rates", {}).values():
         _add_rate(order, optimizer, lr)
     located = _Located(root, superseded_lines)
-    held = _held(reading, held_lines, issued)
+    held = _held(root, candidate, holds, issued)
     inputs = {"scope": scope, "candidate": candidate, "code": {"sha256": expected_code},
               "policy": policy}  # fmt: skip
     rates: dict[str, dict[str, Any]] = {}
@@ -894,7 +964,6 @@ def _rate(
         read_control = {"folder": str(where), "attempt": attempt, "verdict": control}
     runs = [r for r in issued if r.optimizer == optimizer
             and math.isclose(r.lr, lr, rel_tol=RATE_TOLERANCE)]  # fmt: skip
-    ids = {i for run in runs for i in run.run_ids}
     launchers: dict[int, dict[str, Any] | None] = {}
     listed = []
     for run in runs:  # one per seed, unless two issued runs are one case (none located then)
@@ -905,7 +974,7 @@ def _rate(
                        "superseded": {r["run_id"]: r.get("reason") for r in superseded_lines
                                       if r["run_id"] in own},
                        "held": {h["run_id"]: h["reason"] for h in held
-                                if h["run_id"] in own}})  # fmt: skip
+                                if _holds(h, run)}})  # fmt: skip
     try:
         verdict = verdicts.rate_verdict(
             mine, scope=scope, candidate=candidate, optimizer=optimizer, lr=lr, code=code,
@@ -920,7 +989,8 @@ def _rate(
             "state": None if verdict is None else verdict["state"], "verdict": verdict,
             "cases": [f for f in reading.folders if f["key"] == key],
             "control": read_control, "runs": listed, "launchers": launchers,
-            "held": [h for h in held if h["run_id"] in ids], "_inputs": [*mine, *olds]}  # fmt: skip
+            "held": [h for h in held if any(_holds(h, run) for run in runs)],
+            "_inputs": [*mine, *olds]}  # fmt: skip
 
 
 def _case_name(verdict: Mapping[str, Any]) -> Any:
@@ -929,30 +999,37 @@ def _case_name(verdict: Mapping[str, Any]) -> Any:
 
 
 def _held(
-    reading: _Reading, lines: Sequence[Mapping[str, Any]], issued: Sequence[_Issued]
+    root: Path, candidate: int, holds: Sequence[Mapping[str, Any]], issued: Sequence[_Issued]
 ) -> list[dict[str, Any]]:
-    """The held launcher runs of the candidate's qualification: the journal's ``held`` lines of
-    its issued runs, and the ``held`` entries of its supersession records, by run id."""
-    ids = {i for run in issued for i in run.run_ids}
-    keys = {run.key for run in issued}
-    held: dict[str, dict[str, Any]] = {}
+    """The held launcher runs of the candidate's qualification (module docstring, "Held
+    runs"), from ``study3_records.read_holds``: a hold of an issued label (whatever the config
+    hash it was written with) or of an issued run id, or one the candidate's supersession
+    records name; each with its ``sources``, its ``records`` (evidence with their sha256) and
+    the issued ``case`` it holds."""
+    cycles = f"qualification/c{candidate}/"
+    held = []
+    for hold in holds:
+        run = next((r for r in issued if _holds(hold, r)), None)
+        records = [dict(r) for r in hold["records"]]
+        if run is None and not any(r["kind"] == "supersession" and r["path"].startswith(cycles)
+                                   for r in records):  # fmt: skip
+            continue
+        sources = [f"journal {Path(r['path']).stem}" if r["kind"] == "journal"
+                   else str(root / r["path"]) for r in records]  # fmt: skip
+        case = None if run is None or run.optimizer is None else {
+            "arm": ARMS.get(run.optimizer), "optimizer": run.optimizer, "lr": run.lr,
+            "seed": run.seed}  # fmt: skip
+        held.append({"run_id": hold["run_id"], "run": hold["run"],
+                     "experiment": hold["experiment"], "config_hash": hold["config_hash"],
+                     "reason": hold["reason"], "case": case, "sources": sources,
+                     "records": records})  # fmt: skip
+    return held
 
-    def add(entry: Mapping[str, Any], source: str) -> None:
-        run_id = entry["run_id"]
-        if run_id not in held:
-            held[run_id] = {"run_id": run_id, "run": entry.get("run"),
-                            "reason": entry.get("reason"), "sources": []}  # fmt: skip
-        held[run_id]["sources"].append(source)
 
-    for line in lines:
-        if line["run_id"] in ids or (line.get("run"), line.get("experiment"),
-                                     line.get("config_hash")) in keys:  # fmt: skip
-            add(line, f"journal {line['campaign']}")
-    for path, record in reading.supersessions:
-        for entry in (record or {}).get("held") or []:
-            if isinstance(entry, Mapping) and isinstance(entry.get("run_id"), str):
-                add(entry, str(path))
-    return list(held.values())
+def _holds(hold: Mapping[str, Any], run: _Issued) -> bool:
+    """Whether a hold applies to an issued run: it names the run's label in its experiment,
+    under any config hash (``launch.held_runs``), or one of its attempts."""
+    return (hold.get("run"), hold.get("experiment")) == run.key or hold["run_id"] in run.run_ids
 
 
 def _restarts(reading: _Reading) -> list[dict[str, Any]]:

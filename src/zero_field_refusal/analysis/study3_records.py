@@ -11,6 +11,8 @@ qualification's restart and supersession records (``qualification/c<N>/``).
 - ``read_endpoints``: every attempt of a study-3 run (and every study-3 run directory), each
   bound to its issued cell, with its state and step-25 endpoint, and the refusals by name
   (``problems``). Nothing may be computed from records with a refusal: they are ambiguous.
+- ``read_holds``: every held launcher run, by its label under any config hash, with the records
+  that hold it and their sha256 (what a closure record cites).
 - ``SEEDS`` and ``candidate_of``: the registered seeds per role and candidate.
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
@@ -62,7 +64,8 @@ longer counts is listed with its reason, never counted:
   (``c<N>/<stage>/<case>/restart-<n>.json``, its ``launcher``) or by an engineering cycle's
   supersession (``c<N>/supersede-<n>.json``, its ``launchers``);
 - ``held``: named by a ``held`` line or by a supersession's ``held``: an outcome the engineering
-  cycle could not resolve, never attempted again;
+  cycle could not resolve, never attempted again (the launcher refuses its label under any
+  config hash: ``read_holds``);
 - ``recovered``: an attempt without a published terminal record before a recovery round of its
   label (``--recovery REASON``, its ``runs``, in any log): the documented interruption
   supersedes it, and a later attempt decides. Before the round are the label's attempts numbered
@@ -126,6 +129,7 @@ the factual questions (``factual_accuracy``); steps and stop from the terminal r
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import Counter, defaultdict
@@ -426,6 +430,72 @@ def _void(voided: dict[str, tuple[str, str]], run_id: str, state: str, reason: s
     """Record that an attempt no longer counts: superseded, or held, which prevails."""
     if voided.get(run_id, ("",))[0] != "held":
         voided[run_id] = (state, reason)
+
+
+def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every held launcher run (``launch.hold``: an outcome an engineering cycle could not
+    resolve, kept as it is and never attempted again), once per run id, with every record that
+    holds it. A hold applies to its label, its ``experiment`` and ``run`` (``<cell>/s<seed>``),
+    whatever the config hash it was written with: the launcher refuses that label under any
+    config hash (``launch.held_runs``), so a caller lists a cell's holds by its label and
+    experiment, never by its config hash.
+
+    Each hold: ``run_id``; ``run``, ``experiment``, ``config_hash`` and ``reason`` as the first
+    record that names it gives them; and ``records``, each an evidence reference (``path``
+    relative to RUNS_DIR, ``root`` ``"runs"``, the file's ``sha256`` as it is now) with its
+    ``kind``: ``journal``, a ``held`` line of a launch log (``line``: its number in the log,
+    from 1; ``line_sha256``: the sha256 of the line's UTF-8 text, which stays when the log
+    grows, as a log's own sha256 does not), and ``supersession``, an engineering cycle's record
+    (``qualification/c<N>/supersede-<n>.json``) whose ``held`` names the run. Journal lines come
+    first, by log name and line, then supersession records by path. The second value names the
+    records that cannot be read (a log or a supersession record): a hold they hold cannot be
+    listed. Of a record only its numbers, ids, paths, hashes and the hold's reason are kept."""
+    root = Path(runs_root)
+    holds: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+
+    def add(entry: Mapping[str, Any], reference: dict[str, Any]) -> None:
+        run_id = entry["run_id"]
+        hold = holds.setdefault(run_id, {
+            "run_id": run_id, "run": entry.get("run"), "experiment": entry.get("experiment"),
+            "config_hash": entry.get("config_hash"), "reason": entry.get("reason"),
+            "records": []})  # fmt: skip
+        hold["records"].append(reference)
+
+    for log in sorted((root / "launch").glob("*.jsonl")):
+        where = log.relative_to(root).as_posix()
+        try:
+            data = log.read_bytes()
+            lines = data.decode("utf-8").splitlines()
+        except (OSError, ValueError):
+            problems.append(f"{where}: an unreadable launch journal")
+            continue
+        sha = hashlib.sha256(data).hexdigest()
+        for number, line in enumerate(lines, start=1):
+            try:
+                record = json.loads(line)
+            except ValueError:  # read_endpoints names such a line, unless it is the last
+                continue
+            if (isinstance(record, dict) and record.get("event") == "held"
+                    and isinstance(record.get("run_id"), str)):  # fmt: skip
+                add(record, {"kind": "journal", "path": where, "root": "runs", "line": number,
+                             "line_sha256": hashlib.sha256(line.encode()).hexdigest(),
+                             "sha256": sha})  # fmt: skip
+    for path in sorted((root / "qualification").glob("c*/supersede-*.json")):
+        where = path.relative_to(root).as_posix()
+        try:
+            data = path.read_bytes()
+            record = json.loads(data)
+        except (OSError, ValueError):
+            problems.append(f"{where}: an unreadable supersession record")
+            continue
+        entries = record.get("held") if isinstance(record, dict) else None
+        reference = {"kind": "supersession", "path": where, "root": "runs",
+                     "sha256": hashlib.sha256(data).hexdigest()}  # fmt: skip
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("run_id"), str):
+                add(entry, dict(reference))
+    return list(holds.values()), problems
 
 
 # ------------------------------------------------------------------ the issued cell
