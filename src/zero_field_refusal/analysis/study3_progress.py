@@ -19,7 +19,7 @@ or a judge output: the result holds numbers, ids, paths and hashes only.
 **The result.** ``stage``: ``engineering``, ``simulation``, ``search``, ``numerical``, ``repair``,
 ``validation``, ``choice`` (validation passed, the ``n-c<N>`` record is to be written), ``n`` (an
 ``n-c<N>`` record that cannot be accepted), ``budget``, ``confirmation``, ``done``, or a terminal
-report, ``scientific_feasibility_report`` or ``technical_feasibility_report``. ``candidate``.
+outcome (``TERMINAL``, below). ``candidate``.
 ``step``, one of:
 - ``campaign``: the campaign kind (``search-round0``, ``search-round1``, ``numerical``,
   ``repair``, ``validation``, ``confirmation``), its candidate, the header's step and round, and
@@ -28,11 +28,24 @@ report, ``scientific_feasibility_report`` or ``technical_feasibility_report``. `
   ``n-c<N>``, ``budget-c<N>`` or closure record the fields the route fixes;
 - ``pending``: what the step waits for (runs that have not ended, rates whose qualification has
   no record yet);
-- ``blocked``: the reasons; ``technical`` when it waits for a diagnosis;
-- ``report`` or ``done``: the outcome.
-``outcome`` (a terminal stage): ``scientific_feasibility_report``, ``technical_feasibility_report``,
-or at ``done`` ``confirmed`` (A–F's reading is confirmatory) or ``descriptive``, with the readings
-of every active comparison (``readings``); ``reasons`` names why a report ends the study.
+- ``blocked``: the reasons; ``technical`` when it waits for a diagnosis, with ``ways_out`` for a
+  technical run outside the qualification (below);
+- ``report`` or ``done``: the outcome and its reason.
+``outcome`` (a terminal stage), each with its ``reason`` id and the ``reasons`` that name why:
+- ``scientific_feasibility_report``: A or F failed scientifically at candidate 2
+  (``scientific_failure``);
+- ``technical_feasibility_report``: a dead end in the code: a failed engineering record
+  (``engineering_failed``), an unresolved technical mark in A or F: a held run closed
+  (``held_run``), a technical run outside the qualification closed (``technical_end``), a
+  qualification technical after the candidate's engineering cycle (``unresolved_after_cycle``);
+- ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
+  level passed, or its verification failed: ``simulation_failed``), or the n record failed, its
+  cap beyond the reserved confirmation seeds (``cap_beyond_reserved_seeds``);
+- ``budget_stop``: the budget record's decision is stop (``budget_stop``);
+- at ``done``, ``confirmed`` (A–F's reading is confirmatory) or ``descriptive``, with the
+  readings of every active comparison (``readings``), its reason the stop's (``n_reached``,
+  ``cap_reached``).
+A chain of engineering cycles that is broken is a problem, never an outcome.
 ``active``: the arms and comparisons still open. ``rates``: the candidate's selected (or repaired)
 rates. ``route``: the decisions taken on the way (a candidate left, P–F closed, the candidate
 chosen). ``closures``: the closure records written. ``validation`` and ``confirmation``: the
@@ -49,16 +62,18 @@ candidate; the ``n-c<N>`` record; the ``budget-c<N>`` record when ``budget_reaso
 (or one is written); the confirmation; done. A missing decision record stops the route at the step
 that needs it (a ``decision`` step, not a problem).
 
-**A stage's decision**, the same at the search, the qualification, the repair and the validation
-(the arms are the active ones; a terminal or route decision is taken only on settled evidence, so
-that no later record of the stage can reverse it):
-1. A or F held (below), or technical after the candidate's engineering cycle: the technical
-   feasibility report, and candidate 2 is not taken ("the failure lies in the code").
-2. P held, or technical after the cycle: P–F closes (P with it, for the rest of the study), and
-   A–F goes on.
-3. A run technical, awaiting its diagnosis (the registered engineering cycle), in any active arm:
-   the stage stays at its step, ``technical``, with the case named. A failed arm is failed
-   whatever else, but the route waits: the diagnosis may end in the technical report.
+**A stage's decision**, the same at the search, the qualification, the repair, the validation
+and (for its technical marks) the confirmation (the arms are the active ones; a terminal or route
+decision is taken only on settled evidence, so that no later record of the stage can reverse it):
+1. A or F with an unresolved technical mark ("After a technical mark"): a held run or a technical
+   run outside the qualification with its closure record, or a qualification technical after the
+   candidate's engineering cycle: the technical feasibility report, and candidate 2 is not taken
+   ("the failure lies in the code"). A held run without its closure: the step names it.
+2. P with such a mark: P–F closes (P with it, for the rest of the study), and A–F goes on.
+3. A run technical, awaiting its diagnosis, in any active arm: the stage stays at its step,
+   ``technical``, with the case named (in the qualification, the registered engineering cycle;
+   outside it, its two ways out, below). A failed arm is failed whatever else, but the route
+   waits: the diagnosis may end in the technical report.
 4. A run that has not ended (``pending``, or ``recovered`` with no later attempt), or a rate whose
    qualification has no record yet: the step waits.
 5. A or F failed scientifically: candidate 1 moves to candidate 2, candidate 2 ends the study
@@ -102,18 +117,21 @@ record passed, for the chosen candidate, with its rates the validated ones, its 
 active ones, its cohort's seeds the validation blocks supported for A and F, and its cohort's run
 ids counting validation runs of its candidate at those seeds (the runs ``read_endpoints`` lists
 as counting). A failed n record (its cap beyond the 200 reserved confirmation seeds) means the
-confirmation cannot start: the technical feasibility report, with the reason; N is never cut. A
-power shortfall needs the budget record (``budget_reason``); a budget decision to stop ends the
-study before the confirmation (the technical feasibility report, with the reason). Whether the
+confirmation cannot start: the design stop, with the reason; N is never cut. A power shortfall
+needs the budget record (``budget_reason``); a budget decision to stop ends the study before the
+confirmation (the budget stop). Whether the
 simulation's J is the one its fixation froze is checked by the simulation package (package 3),
 which writes both; it is not checked here.
 
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap N + max(10, ⌈0.12·N⌉) (the cells of every seed up to the cap are prescribed, no further). The
 next block is issued while ``confirmation_state`` allows it; a started block with a never-issued
-cell is completed first. Once stopped, every comparison's reading needs its blocks resolved (a
-technical block waits for its diagnosis). The confirmation never moves the candidate and never
-closes P: its failed endpoints remove support only.
+cell is completed first. A technical run in a started block holds the confirmation (the step is
+blocked, and ``confirmation_state`` lets no block start) until its way out: a recovery round, or
+a closure record, whose route is any technical mark's (A or F: the technical feasibility report;
+P: P–F closes and the blocks go on with A and F). Once stopped, every comparison's reading needs
+its blocks resolved. The confirmation never moves the candidate: its failed endpoints (a
+scientific failure) remove support only, and P is closed in it only by a technical mark.
 
 **The hold route** (a held launcher run: an outcome the candidate's engineering cycle could not
 resolve, kept as it is and never attempted again). It is unresolved technical evidence, neither a
@@ -122,24 +140,46 @@ outcome, never as a pending step: held in A or F, the stage is the technical fea
 (candidate 2 is not taken); held in P alone, P–F closes and A–F goes on. A cell with only a held
 attempt is unresolved technical. Until the closure record exists (``closure-c<N>-<arm>``,
 ``study3_decisions``), the step names the closure record to write, with the candidate, the arm,
-rate and seed, the run id, the hold line and the cycle record with their hashes (from
-``read_holds``) and the ids of the reasons the hold line states. Once a closure record exists and
-is valid, the outcome follows its decision; the hold and its evidence stay as they are. A closure
-record must name a held run of its candidate's arm at the search, the qualification or the
-validation (P is closed only by its validation gate or its qualification, never by a
-confirmation run); a hold that no supersession record or no journal line names cannot be closed,
-and blocks.
+rate and seed, the run id, its held line (``line``, kind ``held``) and the cycle record with their
+hashes (from ``read_holds``) and the ids of the reasons the held line states. Once a closure
+record exists and is valid, the outcome follows its decision; the hold and its evidence stay as
+they are. A hold that no supersession record or no journal line names cannot be closed, and
+blocks.
+
+**Technical marks outside the qualification** (a search, validation or confirmation run that
+ended technical: "Failure routes", "Technical"). The engineering cycle of ``qualify.py`` is the
+qualification's; a code fix for a run outside it has no tooling in this package (a limit of
+package 2). Such a run has two ways out, and the step stays ``blocked``, ``technical``, naming the
+run and both (``ways_out``) until one is taken: a recovery round of its label with its documented
+cause (an infrastructure interruption: the attempt is ``recovered`` and its next attempt decides),
+or a closure record citing its last ``end`` line (kind ``end``, no cycle; the fields are given
+when that line is a technical end). The closure must name a run ``read_endpoints`` lists as
+technical, of its candidate's arm, outside the qualification; its route is "After a technical
+mark", wherever the run was. A closure record that names no such run, and no held run of its
+route, is a problem.
 
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
 problem, the step is ``blocked`` with them, and the stage is the last one the decision records
 establish (engineering, simulation, or the search, where the route starts to rest on the run
 records); the qualification's problems block from the numerical stage on; an invalid decision
 record blocks the stage that rests on it, and a record rests on the ones before it (an invalid
-simulation record invalidates the n records, an invalid n record its budget record). The
-``code`` of every decision record must carry ``expected_code`` as its GPU code
-(``gpu_code_sha256``): a record of another GPU code is invalid. A search run started before the
-engineering record was written, an n or budget record the route has not reached, and a closure
-record that names no held run of its route are problems too.
+simulation record invalidates the n records, an invalid n record its budget record). A search
+start whose campaign header does not name the engineering record by its path and its sha256 now
+(``engineering_record`` and ``engineering_record_sha256``, the flat form ``immutable`` protects:
+that shows the record existed before the search started), an n or budget record the route has not
+reached, and a closure record that names no mark of its route are problems too.
+
+**Code agreement** (the chain of engineering cycles). A GPU code is admissible when it lies on the
+chain: it starts at the engineering record's ``code.gpu_code_sha256``, and each supersession
+record (``qualification/c<N>/supersede-<n>.json`` as ``read_qualification`` lists it; candidate
+1's before candidate 2's) moves it from its old code to its fix's. A supersession whose old code
+is not the chain's is a break, and ``expected_code`` must be the chain's end: each is a problem.
+Per record: the engineering record is the chain's start (it stays valid across cycles: a cycle's
+re-qualification certifies its fix); the simulation record may carry any code on the chain (it
+runs no GPU code); ``n-c<N>``, ``budget-c<N>`` and ``closure-c<N>-<arm>`` carry the code in force
+for candidate N's runs, the chain's after candidate N's own cycle (or before it, when N had
+none). A record of another code is invalid. The records' commits may differ (a change of analysis
+code moves no run).
 
 **The cells** (``prescribed``). ``read_endpoints`` binds every run to a cell the route issued, so
 the reader first derives the cells: it reads the runs under every cell they bind, runs the core
@@ -150,28 +190,23 @@ the rule never issued is then refused by name, and blocks.
 **Rulings** where the registration and the plan leave a detail open, fixed here before any study-3
 record:
 - *A failed engineering or simulation record* is final (a record is written once): the technical
-  feasibility report, with the reason. A failed simulation record means the confirmation cannot
+  feasibility report, or the design stop. A failed simulation record means the confirmation cannot
   start ("If no level passes, or the verification fails"), so nothing after it is run.
-- *Code agreement* is on the GPU code (``gpu_code_sha256``), the identity every run and record
-  rests on; the commits of the records may differ (a change of analysis code moves no run).
 - *P closed* is closed for the rest of the study: P–F ends ("only P–F ends"), and candidate 2
   issues no P cell.
 - *Waiting before routing*: a stage's route decision waits for its runs to end and for its
   technical marks' diagnoses, in every active arm (rule 3 and 4 above), so that a decision once
   shown cannot be reversed by a record of that stage written later.
-- *The decision records' folder* (``RUNS_DIR/study3/decisions/``) lies in the experiment's folder,
-  where ``read_endpoints`` takes every folder for a run directory: the reader leaves that one
-  folder's refusal out, by its path, and every other folder stays as ``read_endpoints`` reads it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..config import load_config
@@ -188,11 +223,14 @@ from .study3_blocks import (
 )
 from .study3_decisions import (
     DIRECTORY,
+    END_REASONS,
     SUPPORTED_AT,
     budget_reason,
     cap_of,
     closures,
+    decision_path,
     decisions,
+    end_lines,
     hold_reasons,
     kind_of,
 )
@@ -203,7 +241,6 @@ from .study3_records import (
     SEEDS,
     Endpoint,
     _read_journal,
-    _time,
     read_endpoints,
     read_holds,
     read_theta0,
@@ -215,8 +252,11 @@ from .study3_search import ARM_ORDER, CANDIDATES, LABELS, repair_state, search_s
 THETA0_RUN = Path("study2_stage_a") / "20261014T192927Z-theta0-s2000-abb703a1-a1"
 STAGES = ("engineering", "simulation", "search", "numerical", "repair", "validation", "choice",
           "n", "budget", "confirmation", "done")  # fmt: skip
-SCIENTIFIC_REPORT = "scientific_feasibility_report"
-TECHNICAL_REPORT = "technical_feasibility_report"
+SCIENTIFIC_REPORT = "scientific_feasibility_report"  # no K* where A and F hold, at candidate 2
+TECHNICAL_REPORT = "technical_feasibility_report"  # a dead end in the code
+DESIGN_STOP = "design_stop"  # the confirmation cannot start: simulation failed, cap beyond seeds
+BUDGET_STOP = "budget_stop"  # the researcher's budget decision is stop
+TERMINAL = (SCIENTIFIC_REPORT, TECHNICAL_REPORT, DESIGN_STOP, BUDGET_STOP)
 CONFIRMED, DESCRIPTIVE = "confirmed", "descriptive"  # the outcome at done: A–F's reading
 CONFIRMATORY = "confirmatory"
 CONFIRMATORY_AT = 36  # "Confirmation": at the cap, confirmatory with at least 36 supported blocks
@@ -224,7 +264,8 @@ COMPARISONS = {"A-F": "AF", "P-F": "PF"}  # the n record's names of the comparis
 ACTIVE = (["A-F"], ["A-F", "P-F"])
 CAMPAIGNS = ("search-round0", "search-round1", "numerical", "repair", "validation",
              "confirmation")  # the campaign kinds, in the order a step issues them  # fmt: skip
-ROUTED = ("search", "numerical", "repair", "validation")  # the steps where a hold routes
+ROUTED = ("search", "numerical", "repair", "validation", "confirmation")  # a mark routes there
+OUTSIDE = ("search", "validation", "confirmation")  # the steps outside the qualification
 ENDED = ("usable", "unusable", "scientific")  # a run whose records are published and read
 
 
@@ -233,7 +274,9 @@ class Records:
     """What the readers give, the input of ``advance``: the endpoints and refusals of
     ``read_endpoints``, the holds and problems of ``read_holds``, per candidate the entries of
     ``study3_decisions.decisions`` and the reading of ``read_qualification``, the entries of
-    ``study3_decisions.closures`` by kind, and each run's start time in the launch journal."""
+    ``study3_decisions.closures`` by kind, each run's campaign header from its start in the
+    launch journal (``headers``), the sha256 of each valid decision record's file now
+    (``digests``), and each run's last end line (``study3_decisions.end_lines``)."""
 
     endpoints: Sequence[Endpoint] = ()
     problems: Sequence[str] = ()
@@ -242,7 +285,9 @@ class Records:
     decisions: Mapping[int, Mapping[str, Mapping[str, Any]]] = field(default_factory=dict)
     closures: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     qualification: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
-    starts: Mapping[str, datetime | None] = field(default_factory=dict)
+    headers: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    digests: Mapping[str, str] = field(default_factory=dict)
+    ends: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ the reader
@@ -269,18 +314,26 @@ def progress(
     theta0 = root / THETA0_RUN if theta0 is None else Path(theta0)
     settings = load_config("experiments/qualification") if settings is None else settings
     holds, hold_problems = read_holds(root)
+    entries = {c: decisions(root, c, repo=repo) for c in (1, 2)}
+    found = {k: v for c in (1, 2) for k, v in closures(root, c, repo=repo).items()}
+    valid = {k for found_ in (*entries.values(), found) for k, e in found_.items()
+             if e["state"] in ("passed", "failed")}  # read already: no sealed path  # fmt: skip
     fixed = {
         "holds": tuple(holds), "hold_problems": tuple(hold_problems),
-        "decisions": {c: decisions(root, c, repo=repo) for c in (1, 2)},
-        "closures": {k: v for c in (1, 2) for k, v in closures(root, c, repo=repo).items()},
+        "decisions": entries, "closures": found,
         "qualification": {c: qualification_records.read_qualification(
             root, c, expected_code=expected_code, settings=settings) for c in (1, 2)},
-        "starts": _start_times(root),
+        "headers": _headers(root),
+        "digests": {k: hashlib.sha256(decision_path(root, k).read_bytes()).hexdigest()
+                    for k in valid},
+        "ends": end_lines(root),
     }  # fmt: skip
     try:
         read_theta0(theta0)
     except ValueError as exc:
-        return advance(Records(problems=(str(exc),), **fixed), expected_code=expected_code)
+        why = (f"{exc}: θ₀'s evaluation is the utility losses' baseline, and no run record is "
+               "read without it")  # fmt: skip
+        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
     every = _bound(_read(root, theta0, {})[0])  # every cell a run binds: each outcome is read
     endpoints, problems = _read(root, theta0, every)
     derived = advance(Records(tuple(endpoints), tuple(problems), **fixed),
@@ -291,23 +344,11 @@ def progress(
 
 def _read(root: Path, theta0: Path, prescribed: Mapping[str, Any]) -> tuple[list, list[str]]:
     """``read_endpoints`` under the cells ``prescribed``; records it cannot read at all (a launch
-    log that is not text) are a problem, not an exception. The decision records' folder,
-    ``RUNS_DIR/study3/decisions/``, lies in the experiment's folder, where ``read_endpoints``
-    takes every folder for a run directory: that folder is no run, and its refusal (a folder with
-    no start in the journal) is left out, by its path; every other folder stays as the reader
-    reads it."""
+    log that is not text) are a problem, not an exception."""
     try:
-        endpoints, problems = read_endpoints(root, theta0=theta0, prescribed=prescribed)
+        return read_endpoints(root, theta0=theta0, prescribed=prescribed)
     except (OSError, ValueError) as exc:
         return [], [f"{root}: the run records cannot be read ({type(exc).__name__})"]
-    folder = root.joinpath(*DIRECTORY)
-    ours = {
-        e.run_id: f"{e.run_id}: {'; '.join(e.reasons)}"
-        for e in endpoints
-        if e.run_dir == folder and e.state == "refused" and e.cell.campaign is None
-    }
-    return ([e for e in endpoints if e.run_id not in ours],
-            [p for p in problems if p not in ours.values()])  # fmt: skip
 
 
 def _bound(endpoints: Iterable[Endpoint]) -> dict[str, set[tuple[str, float, int]]]:
@@ -319,15 +360,17 @@ def _bound(endpoints: Iterable[Endpoint]) -> dict[str, set[tuple[str, float, int
     return out
 
 
-def _start_times(root: Path) -> dict[str, datetime | None]:
-    """Each start's time stamp in the launch journal, by run id (``study3_records``' reading of
-    it); none when the journal cannot be read (``read_endpoints`` and ``read_holds`` say why)."""
+def _headers(root: Path) -> dict[str, Mapping[str, Any]]:
+    """Each start's campaign header in the launch journal, by run id (``study3_records``'
+    reading of it); none when the journal cannot be read (``read_endpoints`` and ``read_holds``
+    say why)."""
     try:
         journal = _read_journal(root, {})
     except (OSError, ValueError):
         return {}
-    return {start["run_id"]: _time(start.get("time")) for _, start in journal.starts
-            if isinstance(start.get("run_id"), str)}  # fmt: skip
+    return {start["run_id"]: start["header"] for _, start in journal.starts
+            if isinstance(start.get("run_id"), str)
+            and isinstance(start.get("header"), Mapping)}  # fmt: skip
 
 
 # ------------------------------------------------------------------ the core
@@ -366,6 +409,7 @@ class _Arm:
     pending: list[str] = field(default_factory=list)
     scientific: list[str] = field(default_factory=list)
     issue: list[tuple[str, str, int | None, tuple[str, float, int]]] = field(default_factory=list)
+    closable: list[dict[str, Any]] = field(default_factory=list)  # technical outside the qual.
 
 
 class _Walk:
@@ -390,6 +434,9 @@ class _Walk:
         self.extra: dict[str, Any] = {}
         self.consumed: set[str] = set()
         self.blocks = 0
+        self.codes: list[str] = []  # the chain of GPU codes, from the engineering record's
+        self.in_force: dict[int, str] = {}  # candidate -> the code its runs are under
+        self.chain_problems: list[str] = []
         self.entries = self._entries()
         self.placed, self.unplaced = self._place_holds()
 
@@ -408,7 +455,12 @@ class _Walk:
             (arm, start[arm][label], seed) for arm in ARM_ORDER for label in LABELS
             for seed in SEEDS["engineering"][1]])  # fmt: skip
         engineering, simulation = self.entry("engineering"), self.entry("simulation")
-        found = [*self.records.problems, *self.records.hold_problems, *self.unplaced]
+        found = [
+            *self.records.problems,
+            *self.records.hold_problems,
+            *self.unplaced,
+            *self.chain_problems,
+        ]
         if found:  # the stage the decision records establish, where the run records come in
             stage = ("engineering" if engineering["state"] != "passed" else
                      "simulation" if simulation["state"] != "passed" else "search")  # fmt: skip
@@ -421,7 +473,7 @@ class _Walk:
         self._gate("simulation", simulation, "the simulation's level L and validation size, "
                    "before the search")  # fmt: skip
         self.blocks = simulation["record"]["validation_blocks"]
-        self._started_after(engineering)
+        self._search_after_engineering()
         for candidate in (1, 2):
             self.candidate = candidate
             self.rates, self.extra = {}, {}
@@ -430,7 +482,7 @@ class _Walk:
             except _Move as move:
                 self.route.append(move.event)
                 if candidate == 2:
-                    raise _Stop(self._report(SCIENTIFIC_REPORT, [
+                    raise _Stop(self._report(SCIENTIFIC_REPORT, "scientific_failure", [
                         f"candidate 1 and candidate 2 failed: candidate 2 at its "
                         f"{move.event['stage']}: {move.event['why']}"])) from None  # fmt: skip
 
@@ -451,32 +503,38 @@ class _Walk:
             raise _Stop(self._blocked(kind, entry["problems"]))
         if entry["state"] == "missing":
             raise _Stop(self._result(kind, self._decision(kind, why)))
+        if entry["state"] == "failed" and kind == "simulation":
+            raise _Stop(self._report(DESIGN_STOP, "simulation_failed", [
+                "simulation: the record failed: no level passed the coverage screen or its "
+                "verification failed, and the confirmation cannot start"]))  # fmt: skip
         if entry["state"] == "failed":
-            what = ("no level passed the coverage screen or its verification failed: the "
-                    "confirmation cannot start" if kind == "simulation" else
-                    "the engineering stage did not pass")  # fmt: skip
-            raise _Stop(self._report(TECHNICAL_REPORT, [f"{kind}: the record failed: {what}"]))
+            raise _Stop(
+                self._report(
+                    TECHNICAL_REPORT,
+                    "engineering_failed",
+                    ["engineering: the record failed: the engineering stage did not pass"],
+                )
+            )
 
-    def _started_after(self, engineering: Mapping[str, Any]) -> None:
-        """The search starts after the engineering record passed: a search run whose start in
-        the journal precedes the record's ``written_at`` is a problem."""
-        written = _time(engineering["record"].get("written_at"))
-        if written is None:
-            return
-        starts = self.records.starts
-        early = sorted(
-            {
-                e.run_id
-                for e in self.endpoints
-                if e.cell.step == "search"
-                and starts.get(e.run_id) is not None
-                and starts[e.run_id] < written
-            }
-        )
-        self._block_on("search", [
-            f"{run_id}: a search run started before the engineering record was written "
-            f"({engineering['record']['written_at']}): the search starts once the engineering "
-            "stage passed" for run_id in early])  # fmt: skip
+    def _search_after_engineering(self) -> None:
+        """The engineering record existed before the search started: every search start's
+        campaign header names it by its path and its sha256 now (``engineering_record``,
+        ``engineering_record_sha256``; ``immutable`` keeps the record as named)."""
+        digest = self.records.digests.get("engineering")
+        wanted = (*DIRECTORY, "engineering.json")
+        found = []
+        for e in self.endpoints:
+            if e.cell.step != "search" or e.cell.campaign is None:
+                continue
+            header = self.records.headers.get(e.run_id) or {}
+            named = header.get("engineering_record")
+            if not (isinstance(named, str)
+                    and PurePosixPath(named.replace("\\", "/")).parts[-3:] == wanted
+                    and header.get("engineering_record_sha256") == digest):  # fmt: skip
+                found.append(f"{e.run_id}: its search campaign's header does not name the "
+                             f"engineering record with its sha256 now ({digest}): the search "
+                             "starts once the engineering record exists")  # fmt: skip
+        self._block_on("search", found)
 
     # -- the search
 
@@ -499,8 +557,11 @@ class _Walk:
             found = state["arms"][arm]
             c = _Arm(hold=self._holds_at(candidate, arm, ("search",)))
             c.scientific = [e.run_id for e in found["failed"]]
-            c.technical = [f"{e.run_id}: {e.state}" for e in found["technical"]
-                           if e.state != "held"]  # fmt: skip
+            for e in found["technical"]:
+                if e.state == "technical":
+                    self._technical_run(c, e)
+                elif e.state != "held":  # held: the hold route
+                    c.technical.append(f"{e.run_id}: {e.state}")
             for target in found["targets"].values():
                 for round_ in (0, 1):
                     rounds = target[f"round{round_}"]
@@ -657,7 +718,11 @@ class _Walk:
             for arm in self.arms:
                 support, c = block["arms"][arm], conditions[arm]
                 if support["state"] == UNRESOLVED:
-                    c.technical += [f"{e.run_id}: {e.state}" for e in support["technical"]]
+                    for e in support["technical"]:
+                        if e.state == "technical":
+                            self._technical_run(c, e)
+                        else:
+                            c.technical.append(f"{e.run_id}: {e.state}")
                 elif support["state"] == OPEN:
                     c.pending += [e.run_id for e in support["pending"]]
                     c.issue += [
@@ -748,7 +813,7 @@ class _Walk:
         record = entry["record"]
         self._block_on("n", self._against_n(kind, record, fields))
         if record["state"] == "failed":
-            raise _Stop(self._report(TECHNICAL_REPORT, [
+            raise _Stop(self._report(DESIGN_STOP, "cap_beyond_reserved_seeds", [
                 f"{kind}: N = {record['N']} needs the cap {record['cap']}, beyond the "
                 f"{len(SEEDS['confirmation'][candidate])} confirmation seeds reserved: the "
                 "confirmation cannot start, and N is never cut"]))  # fmt: skip
@@ -765,7 +830,7 @@ class _Walk:
                 f"{reason}", {"candidate": candidate, "N": record["N"], "cap": record["cap"],
                               "why": reason})))  # fmt: skip
         if budget["state"] == "failed":
-            raise _Stop(self._report(TECHNICAL_REPORT, [
+            raise _Stop(self._report(BUDGET_STOP, "budget_stop", [
                 f"{budget_kind}: the decision on N = {record['N']} and its cap {record['cap']} "
                 "is stop: the confirmation does not start"]))  # fmt: skip
         return record
@@ -809,9 +874,24 @@ class _Walk:
         self._prescribe(candidate, "confirmation", None, [
             (arm, final[arm][label], seed) for arm in self.arms for label in LABELS
             for seed in seeds])  # fmt: skip
-        state = confirmation_state(self.endpoints, candidate, n["N"], self._comparisons())
-        self.extra["confirmation"] = state
-        self._block_on(stage, state["problems"])
+        while True:  # once more when a closure closed P: the blocks are A–F's alone
+            arms = list(self.arms)
+            state = confirmation_state(self.endpoints, candidate, n["N"], self._comparisons())
+            self.extra["confirmation"] = state
+            self._block_on(stage, state["problems"])
+            conditions = {arm: _Arm(hold=self._holds_at(candidate, arm, ("confirmation",)))
+                          for arm in self.arms}  # fmt: skip
+            for run_id in sorted({run for block in state["technical"] for run in block["runs"]}):
+                e = self.by_id.get(run_id)
+                if e is not None and e.state == "held" and e.arm in conditions:
+                    continue  # the hold route
+                if e is not None and e.state == "technical" and e.arm in conditions:
+                    self._technical_run(conditions[e.arm], e)
+                else:
+                    conditions[self.arms[0]].technical.append(f"{run_id}: unresolved")
+            self._decide(stage, conditions)
+            if self.arms == arms:
+                break
         key = step_key(candidate, "confirmation")
         missing = [
             ("confirmation", "confirmation", None, cell)
@@ -821,24 +901,21 @@ class _Walk:
         ]
         if missing:  # a started block's cells are issued with it
             raise _Stop(self._campaign(stage, missing))
-        diagnosis = sorted(run for block in state["technical"] for run in block["runs"])
         if not state["stop"]["stopped"]:
             if not state["may_start_next"]:
                 raise _Stop(self._blocked(stage, ["the reserved confirmation seeds are used up"]))
             seed = state["next_seed"]
             raise _Stop(self._campaign(stage, [
                 ("confirmation", "confirmation", None, (arm, final[arm][label], seed))
-                for arm in self.arms for label in LABELS], diagnosis=diagnosis))  # fmt: skip
+                for arm in self.arms for label in LABELS]))  # fmt: skip
         readings = state["readings"]
         if any(reading is None for reading in readings.values()):
-            if diagnosis:
-                raise _Stop(self._result(stage, {"kind": "blocked", "technical": True,
-                                                 "reasons": diagnosis}))  # fmt: skip
             waiting = sorted(run for block in state["open"] for run in block["runs"])
             raise _Stop(self._result(stage, {"kind": "pending", "waiting": waiting}))
         outcome = CONFIRMED if readings["A-F"] == CONFIRMATORY else DESCRIPTIVE
-        raise _Stop(self._result("done", {"kind": "done", "outcome": outcome}, outcome=outcome,
-                                 readings=readings))  # fmt: skip
+        reason = "n_reached" if state["stop"]["why"] == "counters" else "cap_reached"
+        raise _Stop(self._result("done", {"kind": "done", "outcome": outcome, "reason": reason},
+                                 outcome=outcome, reason=reason, readings=readings))  # fmt: skip
 
     # -- a stage's decision
 
@@ -847,27 +924,26 @@ class _Walk:
         candidate or a report; returns when every active arm is through the stage."""
         primary = [arm for arm in ("A", "F") if arm in conditions]
         for arm in primary:
-            if conditions[arm].hold:
-                self._closure(stage, arm, conditions[arm].hold)
+            self._close(stage, arm, conditions[arm])
         for arm in primary:
             if conditions[arm].unresolved:
                 why = "; ".join(conditions[arm].unresolved)
                 self.route.append(self._event(stage, "report", [arm], why))
-                raise _Stop(self._report(TECHNICAL_REPORT, [
+                raise _Stop(self._report(TECHNICAL_REPORT, "unresolved_after_cycle", [
                     f"candidate {self.candidate}, {arm}: {why}: unresolved after the candidate's "
                     "engineering cycle"]))  # fmt: skip
         p = conditions.get("P")
-        if p is not None and (p.hold or p.unresolved):
-            if p.hold:
-                self._closure(stage, "P", p.hold)
-            else:
-                self._close_p(stage, "unresolved after the candidate's engineering cycle: "
-                              + "; ".join(p.unresolved))  # fmt: skip
+        if p is not None and self._close(stage, "P", p):
+            del conditions["P"]
+        elif p is not None and p.unresolved:
+            self._close_p(stage, "unresolved after the candidate's engineering cycle: "
+                          + "; ".join(p.unresolved))  # fmt: skip
             del conditions["P"]
         technical = [x for c in conditions.values() for x in c.technical]
         if technical:
-            raise _Stop(self._result(stage, {"kind": "blocked", "technical": True,
-                                             "reasons": technical}))  # fmt: skip
+            step = {"kind": "blocked", "technical": True, "reasons": technical}
+            ways = [self._way_out(run) for c in conditions.values() for run in c.closable]
+            raise _Stop(self._result(stage, {**step, "ways_out": ways} if ways else step))
         pending = [x for c in conditions.values() for x in c.pending]
         if pending:
             raise _Stop(self._result(stage, {"kind": "pending", "waiting": pending}))
@@ -883,19 +959,63 @@ class _Walk:
         if issue:
             raise _Stop(self._campaign(stage, issue))
 
-    # -- the hold route
+    # -- technical marks: holds, technical runs outside the qualification, their closures
 
-    def _closure(self, stage: str, arm: str, holds: Sequence[Mapping[str, Any]]) -> None:
-        """A held run of ``arm`` (module docstring, "The hold route"): the closure record to
-        write, or, once it is valid, its decision. Raises for A and F (the technical feasibility
-        report) and until P's closure is written; returns once P is closed."""
+    def _technical_run(self, c: _Arm, e: Endpoint) -> None:
+        """A run outside the qualification that ended technical: no engineering cycle applies,
+        and it waits for one of its two ways out (module docstring, "Technical marks outside the
+        qualification")."""
+        kind = f"closure-c{self.candidate}-{e.arm}"
+        end = self.records.ends.get(e.run_id) or {}
+        c.closable.append(
+            {
+                "run_id": e.run_id,
+                "label": e.label,
+                "candidate": e.candidate,
+                "step": e.cell.step,
+                "arm": e.arm,
+                "rate": e.lr,
+                "seed": e.seed,
+                "end": end if end.get("outcome") in END_REASONS else None,
+            }
+        )
+        c.technical.append(f"{e.run_id}: technical, outside the qualification: a recovery round "
+                           f"of {e.label} with its documented cause reruns it, or a closure "
+                           f"record ({kind}) closes it")  # fmt: skip
+
+    def _way_out(self, run: Mapping[str, Any]) -> dict[str, Any]:
+        """A technical run's ways out: a recovery round of its label, or a closure record citing
+        its last end line (none when that line is no technical end)."""
+        kind = f"closure-c{run['candidate']}-{run['arm']}"
+        end, closure = run["end"], None
+        if end is not None:
+            closure = {"record": kind, "path": _path(kind), "fields": {
+                "candidate": run["candidate"], "arm": run["arm"], "rate": run["rate"],
+                "seed": run["seed"], "run_id": run["run_id"],
+                "line": {"kind": "end", **{k: end[k] for k in ("path", "line", "line_sha256")}},
+                "cycle": None, "reason": END_REASONS[end["outcome"]],
+                "decision": "close_pf" if run["arm"] == "P" else TECHNICAL_REPORT}}  # fmt: skip
+        return {"run_id": run["run_id"], "label": run["label"],
+                "recovery": f"a recovery round of {run['label']} with its documented cause: "
+                            "its next attempt decides", "closure": closure}  # fmt: skip
+
+    def _close(self, stage: str, arm: str, c: _Arm) -> bool:
+        """The closure of an arm's unresolved technical mark at this stage (module docstring,
+        "The hold route", "Technical marks outside the qualification"): True once P's is valid
+        (P closed); raises once A's or F's is (the technical feasibility report), for a held run
+        until its closure is written, and for a closure that names none of the marks; False when
+        there is no mark, or technical runs wait for their way out."""
+        if not (c.hold or c.closable):
+            return False
         kind = f"closure-c{self.candidate}-{arm}"
         shown = TECHNICAL_REPORT if arm in ("A", "F") else stage
         entry = self.entry(kind)
         if entry["state"] == "invalid":
             raise _Stop(self._blocked(shown, entry["problems"]))
         if entry["state"] == "missing":
-            hold = holds[0]
+            if not c.hold:
+                return False
+            hold = c.hold[0]
             lacking = [what for what, value in (
                 ("a held line in the launch journal", hold["hold"]),
                 (f"candidate {self.candidate}'s supersession record (its engineering cycle)",
@@ -906,9 +1026,9 @@ class _Walk:
                     f"{hold['run_id']}: a held run with no {' and no '.join(lacking)}: a closure "
                     "record cannot cite it"]))  # fmt: skip
             fields = {"candidate": self.candidate, "arm": arm, "rate": hold["rate"],
-                      "seed": hold["seed"], "run_id": hold["run_id"], "hold": hold["hold"],
-                      "cycle": hold["cycle"], "reason": hold["reasons"][0],
-                      "reasons": hold["reasons"],
+                      "seed": hold["seed"], "run_id": hold["run_id"],
+                      "line": {"kind": "held", **hold["hold"]}, "cycle": hold["cycle"],
+                      "reason": hold["reasons"][0], "reasons": hold["reasons"],
                       "decision": "close_pf" if arm == "P" else TECHNICAL_REPORT}  # fmt: skip
             raise _Stop(
                 self._result(
@@ -922,7 +1042,10 @@ class _Walk:
                 )
             )
         record = entry["record"]
-        match = next((h for h in holds if h["run_id"] == record.get("run_id")), None)
+        line = record.get("line") if isinstance(record.get("line"), Mapping) else {}
+        marks = [*(("held", h) for h in c.hold), *(("end", r) for r in c.closable)]
+        match = next((m for kind_, m in marks if kind_ == line.get("kind")
+                      and m["run_id"] == record.get("run_id")), None)  # fmt: skip
         if match is None or not (
             record.get("seed") == match["seed"]
             and record.get("arm") == match["arm"]
@@ -930,19 +1053,26 @@ class _Walk:
             and isinstance(record.get("rate"), int | float)
             and math.isclose(record["rate"], match["rate"], rel_tol=RATE_TOLERANCE)
         ):
-            raise _Stop(self._blocked(shown, [
-                f"{entry['path']}: it names {record.get('run_id')} ({record.get('arm')}, "
-                f"{record.get('rate')}, {record.get('seed')}), not a held run of candidate "
-                f"{self.candidate}'s {arm} at its {stage}: "
-                f"{[(h['run_id'], h['rate'], h['seed']) for h in holds]}"]))  # fmt: skip
+            raise _Stop(
+                self._blocked(
+                    shown,
+                    [
+                        f"{entry['path']}: it names {record.get('run_id')} ({record.get('arm')}, "
+                        f"{record.get('rate')}, {record.get('seed')}, its {line.get('kind')} "
+                        f"line), not a mark of candidate {self.candidate}'s {arm} at its {stage}: "
+                        f"{[(kind_, m['run_id'], m['rate'], m['seed']) for kind_, m in marks]}"
+                    ],
+                )
+            )
         self.consumed.add(kind)
         if arm == "P":
             self._close_p(stage, kind)
-            return
+            return True
+        reason = "held_run" if line.get("kind") == "held" else "technical_end"
         self.route.append(self._event(stage, "report", [arm], kind))
-        raise _Stop(self._report(TECHNICAL_REPORT, [
-            f"{kind}: {record['run_id']} held, unresolved after candidate {self.candidate}'s "
-            "engineering cycle"]))  # fmt: skip
+        raise _Stop(self._report(TECHNICAL_REPORT, reason, [
+            f"{kind}: {record['run_id']} ({line.get('kind')} line): an unresolved technical mark "
+            f"of {arm} at candidate {self.candidate}'s {stage}"]))  # fmt: skip
 
     def _place_holds(self) -> tuple[list[dict[str, Any]], list[str]]:
         """Every held run placed on its cell, by its run id (an attempt ``read_endpoints`` lists
@@ -982,19 +1112,26 @@ class _Walk:
     # -- the decision records
 
     def _entries(self) -> dict[str, dict[str, Any]]:
-        """The decision records by kind, a record of another GPU code than the expected one
-        invalid, and a record invalid when one it rests on is."""
+        """The decision records by kind, each checked against the chain of GPU codes (module
+        docstring, "Code agreement"), and a record invalid when one it rests on is."""
         entries: dict[str, dict[str, Any]] = {}
         for found in (*self.records.decisions.values(), self.records.closures):
             for kind, value in found.items():
                 entries[kind] = {**value, "problems": list(value.get("problems") or [])}
-        for entry in entries.values():
+        self._chain(entries.get("engineering") or {})
+        for kind, entry in entries.items():
             record = entry.get("record")
-            if entry.get("state") in ("passed", "failed") and isinstance(record, Mapping):
-                code = (record.get("code") or {}).get("gpu_code_sha256")
-                if code != self.expected:
-                    _invalidate(entry, f"its GPU code {code} is not the expected {self.expected}: "
-                                "the records rest on one GPU code")  # fmt: skip
+            if entry.get("state") not in ("passed", "failed") or not isinstance(record, Mapping):
+                continue
+            family, candidate = kind_of(kind)
+            code = (record.get("code") or {}).get("gpu_code_sha256")
+            if family == "simulation" and self.codes and code not in self.codes:
+                _invalidate(entry, f"its GPU code {code} is not on the chain of engineering "
+                            f"cycles {self.codes}")  # fmt: skip
+            elif (family in ("n", "budget", "closure") and candidate in self.in_force
+                  and code != self.in_force[candidate]):  # fmt: skip
+                _invalidate(entry, f"its GPU code {code} is not {self.in_force[candidate]}, the "
+                            f"code in force for candidate {candidate}'s runs")  # fmt: skip
         simulation = entries.get("simulation", {})
         for candidate in (1, 2):
             n, budget = entries.get(f"n-c{candidate}"), entries.get(f"budget-c{candidate}")
@@ -1003,6 +1140,32 @@ class _Walk:
             if budget and n and n["state"] == "invalid" and budget["state"] in ("passed", "failed"):
                 _invalidate(budget, f"the n-c{candidate} record it answers is invalid")
         return entries
+
+    def _chain(self, engineering: Mapping[str, Any]) -> None:
+        """The chain of engineering cycles: it starts at the engineering record's GPU code, and
+        each supersession record (candidate 1's, then candidate 2's) moves it from its old code to
+        its fix's. A record whose old code is not the chain's is a break, and ``expected_code``
+        must be the chain's end: each is a problem. Without an engineering record there is no
+        chain yet."""
+        record = engineering.get("record")
+        if not isinstance(record, Mapping):
+            return
+        current = (record.get("code") or {}).get("gpu_code_sha256")
+        self.codes = [current]
+        for candidate in (1, 2):
+            reading = self.records.qualification.get(candidate) or {}
+            for cycle in reading.get("supersessions") or []:
+                old, fix = cycle.get("old_gpu_code"), cycle.get("fix_gpu_code")
+                if old != current:
+                    self.chain_problems.append(
+                        f"{cycle.get('path')}: its old GPU code {old} is not the chain's "
+                        f"{current}: a break in the chain of engineering cycles")  # fmt: skip
+                current = fix
+                self.codes.append(fix)
+            self.in_force[candidate] = current
+        if current != self.expected:
+            self.chain_problems.append(f"expected_code {self.expected} is not the end of the "
+                                       f"chain of engineering cycles, {current}")  # fmt: skip
 
     def entry(self, kind: str) -> dict[str, Any]:
         return self.entries.get(kind) or {"kind": kind, "path": _path(kind), "state": "missing",
@@ -1029,16 +1192,27 @@ class _Walk:
                 found += entry["problems"]
             elif family == "closure":
                 record, arm = entry["record"], kind.rsplit("-", 1)[1]
-                if not any(
+                line = (record.get("line") or {}).get("kind")
+                run = self.by_id.get(record.get("run_id"))
+                held = any(
                     h["run_id"] == record.get("run_id")
                     and h["candidate"] == candidate
                     and h["arm"] == arm
                     and h["step"] in ROUTED
                     for h in self.placed
-                ):
-                    found.append(f"{entry['path']}: it names {record.get('run_id')}, which is no "
-                                 f"held run of candidate {candidate}'s {arm} at its search, "
-                                 "qualification or validation")  # fmt: skip
+                )
+                ended = (
+                    run is not None
+                    and run.state == "technical"
+                    and run.arm == arm
+                    and run.candidate == candidate
+                    and run.cell.step in OUTSIDE
+                )
+                if not (held if line == "held" else ended):
+                    found.append(f"{entry['path']}: it names {record.get('run_id')}, which is "
+                                 f"neither a held run of candidate {candidate}'s {arm} on the "
+                                 "route nor a technical run of it outside the qualification "
+                                 "(its end line)")  # fmt: skip
         found = [p for p in found if p not in self.problems]
         if not found:
             return result
@@ -1076,19 +1250,21 @@ class _Walk:
                                     "candidate": self.candidate, "step": step, "round": round_,
                                     "cells": cells, **extra})  # fmt: skip
 
-    def _report(self, outcome: str, reasons: Sequence[str]) -> dict[str, Any]:
-        return self._result(outcome, {"kind": "report", "outcome": outcome}, outcome=outcome,
-                            reasons=reasons)  # fmt: skip
+    def _report(self, outcome: str, reason: str, reasons: Sequence[str]) -> dict[str, Any]:
+        """A terminal outcome (``TERMINAL``) with its reason id and why."""
+        return self._result(outcome, {"kind": "report", "outcome": outcome, "reason": reason},
+                            outcome=outcome, reason=reason, reasons=reasons)  # fmt: skip
 
     def _event(self, stage: str, event: str, arms: Sequence[str], why: str) -> dict[str, Any]:
         return {"candidate": self.candidate, "stage": stage, "event": event, "arms": list(arms),
                 "why": why}  # fmt: skip
 
     def _result(self, stage: str, step: dict[str, Any], *, outcome: str | None = None,
-                reasons: Sequence[str] = (), **extra: Any) -> dict[str, Any]:  # fmt: skip
+                reason: str | None = None, reasons: Sequence[str] = (),
+                **extra: Any) -> dict[str, Any]:  # fmt: skip
         return {
             "stage": stage, "candidate": self.candidate, "step": step, "outcome": outcome,
-            "reasons": list(reasons),
+            "reason": reason, "reasons": list(reasons),
             "active": {"arms": list(self.arms), "comparisons": self._comparisons()},
             "rates": {arm: dict(r) for arm, r in self.rates.items() if arm in self.arms},
             "route": list(self.route),
@@ -1215,8 +1391,9 @@ def confirmation_state(
     ``descriptive`` with fewer; None while a block it needs is unfinished) and ``analysis``, the
     blocks each is read on (its cohort, or at the cap all its supported blocks); ``technical``
     and ``open`` (the unfinished blocks and their runs); ``problems`` (blocks started out of seed
-    order or beyond the cap); ``may_start_next`` (False once stopped, with a problem, or once the
-    reserved seeds are used up) and ``next_seed``. ``ValueError`` for another candidate, an N
+    order or beyond the cap); ``may_start_next`` (False once stopped, with a problem, while a
+    started block holds a technical mark awaiting its way out, or once the reserved seeds are
+    used up) and ``next_seed``. ``ValueError`` for another candidate, an N
     that is not a positive integer, or other comparisons."""
     if candidate not in CANDIDATES or isinstance(candidate, bool):
         raise ValueError(f"no candidate {candidate!r} (registered: {sorted(CANDIDATES)})")
@@ -1288,7 +1465,7 @@ def confirmation_state(
             runs = {e.run_id for arm in arms for e in b["arms"][arm]["pending"]}
             waiting.append({"seed": s, "runs": sorted(runs)})
     room = len(started) < min(cap, len(reserved))
-    may = why is None and not problems and room
+    may = why is None and not problems and not technical and room
     return {
         "candidate": candidate, "N": N, "cap": cap, "active": comparisons, "started": started,
         "blocks": {s: {"state": b["state"], **{c: b[COMPARISONS[c]]["state"]
