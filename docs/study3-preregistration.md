@@ -198,7 +198,7 @@ veto.
 
 ### Scientific repair
 
-- **When.** At most one per arm and candidate, before validation, and only for a **K miss**: the
+- **When** (as clarified by [amendment 3](#amendment-3-one-repair-round-per-arm)). At most one per arm and candidate, before validation, and only for a **K miss**: the
   median ln K of a selected rate over its search and numerical seeds together (4 + 3) lies more
   than 0.05 from its target.
 - **How.** The rule above is applied to that median. The repaired rate gets its own numerical
@@ -454,7 +454,8 @@ The engineering stage comes before any scientific selection.
   comparison; in an unshifted one, as above. A non-finite D between finite models is a
   measurement failure and technical. An undefined diagnostic at a zero step is not a failure.
 - **Checks kept from study 2:**
-  - the executable checks of the teacher path and the same-path control;
+  - the executable checks of the teacher path and the same-path control (its rule:
+    [amendment 2](#amendment-2-the-same-path-control));
   - shared training prefixes across arms and rates;
   - the shared v₀ of F and P.
 
@@ -761,3 +762,39 @@ decision rule, threshold or seed.
   applies to regular validation and confirmation endpoints.
 - **What was known.** The registration, the study-2 code and study 2's K-only records; no study-3
   outcome.
+
+### Amendment 2: the same-path control
+
+Decided on 2026-10-25 by the researcher, before any study-3 run, campaign or stream existed,
+while planning the code. The registration kept study 2's same-path control among the checks of
+qualification without stating its rule; this amendment states it prospectively. No threshold of
+the comparisons and no route changes.
+
+- **The control.** One same-path FA control per selected FA rate, on the first numerical seed of
+  the candidate, for 25 steps: the training path's own θ₀ distributions as targets, with a float64
+  loss and accumulation, as in [study 2](study2-preregistration.md#1-numerical-qualification-replaces-amendment-3s-fa-soft-control-rule).
+- **The rule.** It requires finite records and an endpoint K_benign ≤ 0.01·K\*. A missing or
+  failed control blocks the qualification of its rate for technical diagnosis
+  ([failure routes](#failure-routes): technical).
+- **What it is.** An implementation-integrity check, not evidence of an optimizer effect. It
+  cannot establish a zero field; the independent checks of the teacher path stay.
+- **What was known.** The registration, study 2's controls (their K was 0 at every reading) and
+  the study-2 code; no study-3 outcome.
+
+### Amendment 3: one repair round per arm
+
+Decided on 2026-10-26 by the researcher, before any study-3 run, campaign or stream existed,
+while writing the selection code. The registration says "at most one [repair] per arm and
+candidate" and "the repaired rate" in the singular, which allows two readings when both selected
+rates of an arm miss; repairing only one of them would leave undefined which. This amendment
+states the rule; no threshold, tolerance or route changes.
+
+- **The rule.** At most one repair round per arm and candidate. It repairs every selected rate of
+  that arm with a K miss, each by the rule applied to its own median, each with its own numerical
+  qualification.
+- **The order.** A repair follows a passed numerical qualification of the arm's selected rates:
+  a failed reference, shift or bridge is never repaired this way (the registration's "What it
+  cannot repair").
+- **Unchanged.** A repair follows only a K miss; a rate whose change would be under 2 % is not
+  repaired; a second miss after the repair is reported, not repaired again.
+- **What was known.** The registration and the study-2 records; no study-3 outcome.

@@ -44,7 +44,11 @@ outside this.
    attempt of each) against this checkout's GPU code (``code_identity.gpu_code_identity``) and
    the tracked settings: a record of other code or settings makes the case ``stale``, exit 10
    (``STALE``), and the driver stops there: a stale case is never rerun by it, and never skipped
-   (its re-qualification is a decision of its own, "Voiding and supersession").
+   (its re-qualification is a decision of its own, "Voiding and supersession"). Then, before the
+   launcher can be reached: a launcher run of the case's label (its experiment and
+   ``<cell>/s<seed>``) held in any launch journal, whatever its config hash (``launch.hold``: an
+   outcome the engineering cycle could not resolve), exits 11 (``HELD``) naming the run and the
+   hold's reason, and the driver stops there; nothing here lifts a hold.
 2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every attempt of the
    case's launcher run that the launch journal shows superseded (``superseded_run_ids``: ended
    technical, or not ended, without a settled directory); the checkpoint of a settled run (done,
@@ -129,33 +133,43 @@ technical record that started the cycle (its path and sha256), the diagnosis and
 code of the fix (this clean checkout's) and the old one, every record of the candidate made under
 the old GPU code in all its stage folders, passed ones included, with the cases re-qualified, and
 every launcher run of the candidate in the launch journal not of the fix's GPU code (the runs its
-records name and those of the campaign's cases, a case with no part attempt yet included; another or
-an unknown code included, since a re-qualification under the fix could not use it), which it then
-logs superseded; a case whose run is superseded is re-qualified, whether or not it had a part
-record. A case that holds a scientific failure, as its bound, valid part records read with the
-verdicts show it (another stage's included; a launcher run's declared stop counts only when such a
-record classified it scientific), is kept whole: none of its records (its parts, its control, its
+records name and those of the campaign's cases, a case with no part attempt yet included, found by
+the case's label, its experiment and ``<cell>/s<seed>``, in every journal whatever their config
+hash, so that a fix that changes a hashed config key hides none; another or an unknown code
+included, since a re-qualification under the fix could not use it), which it then logs superseded;
+a case whose run is superseded is re-qualified, whether or not it had a part record. A case that
+holds a scientific failure, as its bound, valid part records read with the verdicts show it
+(another stage's included; a launcher run's declared stop counts only when such a record
+classified it scientific), is kept whole: none of its records (its parts, its control, its
 trajectory results) nor its launcher run is voided, it is listed as kept with why, and the driver's
-stale check passes it; the failure keeps counting (no reruns to pass). A launcher run no part record
-names (the Pod stopped before its baseline, say) is first resolved against its original issued
-policy and provenance, without this process's code or environment (``resolve_launcher_run``: its
-campaign cell, its identity, config agreement, its numerics against its config, its own commit):
-conforming and stopped by its declared instability rule, a scientific failure (the case is kept
-whole and decided, and no part runs for it); departing from its cell on readable records, or
-completed, superseded as any run; unresolvable (records unreadable, a needed field missing, the
-commit unknown), the case is kept as it is, listed unresolved, and the run held in the journal
-(``launch.hold``), so that neither a part nor the launcher's recovery round reruns it. The verdict
-counts a resolved outcome as the case's (``resolved_verdict``). The cycle is refused a second time
-for the candidate (a technical failure left unresolved after it routes to the technical feasibility
-report), for a record that is not a completed technical failure of the case or that belongs to a
-case the cycle keeps whole (by its records or its launcher run), and when the fix's GPU code is the
-old one (the same path is not simply rerun); run again with the same record, it only writes the
-journal's lines that are missing. Each case it names re-qualifies under the new code from a new
-launcher run (the recovery round) and new attempts of its parts: the attempt after one the cycle
-named carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path
-and sha256) instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun
-with ``--infrastructure REASON``, as any other. The verdict lists the records it voids under
-``supersession``.
+stale check passes it; the failure keeps counting (no reruns to pass). A record classified its
+launcher run only when it says so (``launcher.classified``, true once ``launcher_problems``
+returned): naming the run is not enough. A launcher run no part record classified (none names it:
+the Pod stopped before its baseline, say; or each that does raised before its check returned, in
+the numerics setup or the check itself; a campaign case's or another stage's, as its records
+name the case) is first resolved against what it was issued and its own provenance, never this
+checkout's configs, code or environment (``resolve_launcher_run``): its journal start (label,
+config hash, header, command), its saved config and meta.json (config hash, the campaign's header,
+commit, numerics setup) and the configs of its own commit, read from git (``configs_at``), from
+which its command and the case's confirmation config are composed; its identity, config agreement
+and numerics are checked against those. Conforming and stopped by its declared instability rule,
+a scientific failure (the case is kept whole and decided, and no part runs for it); departing from
+what it was issued on readable records, or completed, superseded as any run; unresolvable (records
+unreadable, a needed field missing, no commit or one not in this clone, configs that do not
+compose or do not give the start's config hash), the case is kept as it is, listed unresolved,
+and the run held in the journal (``launch.hold``), so that neither a part nor the launcher's
+recovery round reruns it. The verdict counts a resolved outcome as the case's
+(``resolved_verdict``), beside the verdicts of any records that did not classify the run. The
+cycle is refused a second time for the candidate (a technical failure left unresolved after it
+routes to the technical feasibility report), for a record that is not a completed technical
+failure of the case or that belongs to a case the cycle keeps whole (by its records or its
+launcher run), and when the fix's GPU code is the old one (the same path is not simply rerun); run
+again with the same record, it only writes the journal's lines that are missing. Each case it
+names re-qualifies under the new code from a new launcher run (the recovery round) and new
+attempts of its parts: the attempt after one the cycle named carries ``--engineering-cycle`` (its
+record: ``engineering_cycle``, the supersession's path and sha256) instead of
+``--infrastructure``; a later interruption of a new-code attempt is rerun with ``--infrastructure
+REASON``, as any other. The verdict lists the records it voids under ``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -180,7 +194,8 @@ direction on the host and a checkpoint save's transient), then runs each case in
 writes the verdict on every exit. Exits: 0 when every case is complete; 1 a precondition (the host
 memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
 not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
-technical case; 10 a stale case; the launcher's own when it stops; any other, the failed command's.
+technical case; 10 a stale case; 11 a case whose label has a held launcher run; the launcher's own
+when it stops; any other, the failed command's.
 The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
 reason."""
 
@@ -189,41 +204,47 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import io
 import json
 import math
 import re
 import shlex
 import shutil
 import socket
+import subprocess
 import sys
+import tarfile
+import tempfile
 import textwrap
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from zero_field_refusal import code_identity, runtime
 from zero_field_refusal import fa_control_diagnostic as fcd
 from zero_field_refusal import qualification as q
 from zero_field_refusal.analysis.qualification_verdicts import REST_MISSING
-from zero_field_refusal.config import load_config
+from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import (
     Run,
     assess,
-    campaign_header,
+    attempt_key,
     expected_numerics,
     held_runs,
     hold,
+    label_starts,
     launch_records,
     load_campaign,
     supersede,
     superseded_runs,
 )
-from zero_field_refusal.paths import CONFIG_ROOT, load_env, runs_root
+from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT, load_env, runs_root
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.schedule import INSTABILITY
 from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
@@ -237,6 +258,7 @@ NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
 STALE = 10  # ``complete`` and ``decided``: records of other GPU code or settings
+HELD = 11  # ``complete`` and ``decided``: the case's label has a held launcher run
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
@@ -601,12 +623,22 @@ def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> lis
 
 
 def journal_run_ids(run: Run, root: Path) -> list[str]:
-    """The run ids of every logged attempt of the run (launch journal, start records)."""
-    return list(dict.fromkeys(
-        r["run_id"] for r in launch_records(root)
-        if r.get("event") == "start" and r.get("run") == run.label
-        and r.get("experiment") == run.experiment and r.get("config_hash") == run.config_hash
-        and isinstance(r.get("run_id"), str)))  # fmt: skip
+    """The run ids of every logged attempt of the run (launch journal, start records), in
+    attempt order (``launch.label_starts``: the attempt number, then the start's time, never the
+    journal file's name)."""
+    return list(dict.fromkeys(r["run_id"] for r in label_starts(run, launch_records(root))))
+
+
+def label_run_ids(run: Run, root: Path) -> list[str]:
+    """The run ids of every logged attempt of the run's label (its experiment and
+    ``<cell>/s<seed>``), whatever their config hash, in attempt order (``launch.attempt_key``),
+    across all journals: how an engineering cycle finds a case's launcher runs, so that a fix
+    that changes a hashed config key does not hide an attempt issued before it."""
+    starts = [r for r in launch_records(root)
+              if r.get("event") == "start" and r.get("run") == run.label
+              and r.get("experiment") == run.experiment
+              and isinstance(r.get("run_id"), str)]  # fmt: skip
+    return list(dict.fromkeys(r["run_id"] for r in sorted(starts, key=attempt_key)))
 
 
 def settled(run: Run, root: Path) -> Path | None:
@@ -1114,46 +1146,91 @@ def kept_records(folder: Path) -> set[str]:
 COMPLETED, UNRESOLVED = "completed", "unresolved"  # a launcher run's resolved outcome
 
 
+@contextmanager
+def configs_at(commit: str) -> Iterator[Path]:
+    """The tracked ``configs/`` of ``commit`` as committed, never the working tree's: ``git
+    archive`` in this clone, unpacked into a temporary directory that is removed on exit; yields
+    its ``configs`` folder. Raises when the commit is not in this clone or is no commit id."""
+    if not re.fullmatch(r"[0-9a-f]{4,64}", commit):
+        raise ValueError(f"{commit!r} is not a commit id")
+    resolved = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+                              cwd=REPO_ROOT, capture_output=True, text=True,
+                              check=True).stdout.strip()  # fmt: skip
+    data = subprocess.run(["git", "archive", "--format=tar", resolved, "configs"], cwd=REPO_ROOT,
+                          capture_output=True, check=True).stdout  # fmt: skip
+    with tempfile.TemporaryDirectory(prefix="zfr-configs-") as tmp:
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            archive.extractall(tmp, filter="data")
+        yield Path(tmp) / "configs"
+
+
+def issued_config(root: Path, command: Any) -> Any:
+    """The config a launcher run was issued: its journal start's command (``launch.Run.command``
+    without the interpreter: the script, the config's name under ``configs/``, its overrides)
+    composed from ``root`` alone (the configs of the run's own commit, ``configs_at``). Raises
+    when the command is not one, or names a config outside ``root``."""
+    if not (isinstance(command, list) and len(command) >= 2
+            and all(isinstance(c, str) for c in command)):  # fmt: skip
+        raise ValueError(f"its journal start records no command ({command!r})")
+    name, overrides = command[1], command[2:]
+    if Path(name).is_absolute() or ".." in Path(name).parts:
+        raise ValueError(f"its issued config {name!r} is not a name under configs/")
+    path = root / (name if name.endswith((".yaml", ".yml")) else f"{name}.yaml")
+    if not path.is_file():
+        raise FileNotFoundError(f"its issued config {name!r} is not among its commit's configs")
+    return load_config(path, overrides, root=root)
+
+
 def resolve_launcher_run(
-    run_dir: Path, p: Planned, start: Mapping[str, Any], header: Any
+    run_dir: Path, case: q.QualificationCase, start: Mapping[str, Any]
 ) -> tuple[str, list[str]]:
-    """A launcher run no part record classified, against its original issued policy and
-    provenance, without this process's code or environment (module docstring,
-    "Supersession"): its campaign cell (the journal start's label, config hash and header), its
-    identity as ``launcher_problems`` checks it (seed, arm, rate, batch, steps, ``eval.k_only``,
-    the endpoint checkpoint's directory), config agreement with the case's confirmation
-    config, its recorded numerics setup against ``launch.expected_numerics`` of its cell's
-    config (the device-independent fields), and its own commit (recorded, clean, its GPU-code
-    identity computable). Returns the outcome and why: ``scientific`` (it conforms, and its
-    declared instability rule stopped it), ``completed`` (it conforms and took its steps),
-    ``technical`` (a check fails on readable records, or another stop, or an attempt the
-    launcher never settled) or ``unresolved`` (records unreadable, a needed field missing, the
-    commit unknown)."""
-    case, departs, missing = p.case, [], []
+    """A launcher run no part record classified, against what it was issued and its own
+    provenance, never this checkout's configs, code or environment (module docstring,
+    "Supersession"). What it was issued: its journal start (``start``: label, config hash,
+    header, command) and its own records (``config.yaml``; ``meta.json``: config hash, the
+    campaign's record of its launch with the header, commit, ``inputs.numerics_setup``), with
+    the configs of its own commit (``configs_at``): the command composed from them
+    (``issued_config``) must give the start's config hash, and the case's confirmation config
+    is composed from them too. The checks: its records agree with its start (config hash,
+    label, header); its identity as ``launcher_problems`` checks it (seed, arm, rate, batch,
+    steps, ``eval.k_only``), and the endpoint checkpoint's directory the issued one; config
+    agreement with that confirmation config; its recorded numerics setup against
+    ``launch.expected_numerics`` of the issued config (the device-independent fields); its
+    commit recorded, clean, its GPU-code identity computable. Returns the outcome and why:
+    ``scientific`` (it conforms, and its declared instability rule stopped it), ``completed``
+    (it conforms and took its steps), ``technical`` (a check fails on readable records, or
+    another stop, or an attempt the launcher never settled) or ``unresolved`` (records
+    unreadable, a needed field missing, no commit or one not in this clone, configs that do not
+    compose or do not give the recorded hash)."""
+    departs, missing = [], []
     try:
         cfg = fcd.run_config(run_dir)
         meta = json.loads((run_dir / "meta.json").read_text())
-        if not isinstance(meta, dict):
-            raise ValueError("meta.json is not an object")
-    except (OSError, ValueError) as exc:
-        return UNRESOLVED, [f"its records are unreadable: {type(exc).__name__}: {exc}"]
+        if not isinstance(cfg, DictConfig) or not isinstance(meta, dict):
+            raise ValueError("config.yaml or meta.json is not a mapping")
+    except Exception as exc:  # a saved config or meta.json that does not read: nothing to judge
+        return UNRESOLVED, [f"its records are unreadable: {type(exc).__name__}: "
+                            f"{str(exc)[:300]}"]  # fmt: skip
     terminal = fcd._read_object(run_dir / "terminal.json")
     if meta.get("status") not in ("completed", "diverged") and terminal is None:
         return q.TECHNICAL, [f"an attempt the launcher never settled (status "
                              f"{meta.get('status')!r})"]  # fmt: skip
-    if start.get("run") != p.run.label:
-        departs.append(f"its journal start names {start.get('run')!r}, not {p.run.label!r}")
-    for where, value in (("journal start", start.get("config_hash")),
-                         ("meta.json", meta.get("config_hash"))):  # fmt: skip
-        if value != p.run.config_hash:
-            departs.append(f"its {where} has config hash {value!r}, not the cell's "
-                           f"{p.run.config_hash!r}")  # fmt: skip
-    if start.get("header") != header:
-        departs.append(f"its journal start's header {start.get('header')!r} is not the "
-                       f"campaign's {header!r}")  # fmt: skip
+    if meta.get("config_hash") != start.get("config_hash"):
+        departs.append(f"its meta.json has config hash {meta.get('config_hash')!r}, its journal "
+                       f"start {start.get('config_hash')!r}")  # fmt: skip
+    launched = meta.get("campaign")
+    if not isinstance(launched, dict) or "header" not in launched:
+        missing.append("no campaign header in its meta.json (campaign.header)")
+    else:
+        if launched.get("label") != start.get("run"):
+            departs.append(f"its meta.json names the label {launched.get('label')!r}, its "
+                           f"journal start {start.get('run')!r}")  # fmt: skip
+        if launched["header"] != start.get("header"):
+            departs.append(f"its meta.json's header {launched['header']!r} is not its journal "
+                           f"start's {start.get('header')!r}")  # fmt: skip
     expected = {"seed": case.seed, "optimizer.name": case.optimizer,
-                "train.batch_size": case.batch, "train.steps": case.steps, "eval.k_only": True,
-                "tracking.endpoint_checkpoint": str(p.endpoint)}  # fmt: skip
+                "train.batch_size": case.batch, "train.steps": case.steps,
+                "eval.k_only": True}  # fmt: skip
     for key, want in expected.items():
         have = OmegaConf.select(cfg, key, default=None)
         if have != want:
@@ -1161,18 +1238,10 @@ def resolve_launcher_run(
     lr = OmegaConf.select(cfg, "optimizer.lr", default=None)
     if not (isinstance(lr, int | float) and math.isclose(float(lr), case.lr, rel_tol=1e-9)):
         departs.append(f"optimizer.lr is {lr!r}, not {case.lr:g}")
-    departs += q.agreement_problems(cfg, case)
     inputs = meta.get("inputs") if isinstance(meta.get("inputs"), dict) else {}
     recorded = inputs.get("numerics_setup")
     if not isinstance(recorded, dict):
         missing.append("no numerics setup (inputs.numerics_setup)")
-    else:
-        for key, want in expected_numerics(load_run_config(p.run.config, p.run.overrides)).items():
-            if key not in recorded:
-                missing.append(f"no numerics_setup.{key}")
-            elif recorded[key] != want:
-                departs.append(f"numerics_setup.{key} is {recorded[key]!r}, its cell's config "
-                               f"asks {want!r}")  # fmt: skip
     if not isinstance(inputs.get("theta0_trainable_sha256"), str):
         missing.append("no hash of θ₀'s trainable parameters")
     if q.reads_v0(case.optimizer) and not isinstance(inputs.get("v0_sha256"), str):
@@ -1182,8 +1251,36 @@ def resolve_launcher_run(
         missing.append(f"no recorded commit (git: {git})")
     elif git["dirty"]:
         departs.append(f"made from a dirty checkout of {git['commit']}")
-    elif run_gpu_code(run_dir) is None:
-        missing.append(f"the GPU code of its commit {git['commit']} cannot be told")
+    else:
+        if run_gpu_code(run_dir) is None:
+            missing.append(f"the GPU code of its commit {git['commit']} cannot be told")
+        try:  # what it was issued, from the configs of its own commit
+            with configs_at(str(git["commit"])) as root:
+                issued = issued_config(root, start.get("command"))
+                reference = q.confirmation_config(case, root=root)
+            issued_hash = config_hash(issued)
+        except Exception as exc:
+            missing.append(f"what it was issued cannot be composed from the configs of its "
+                           f"commit {git['commit']}: {type(exc).__name__}: "
+                           f"{str(exc)[:300]}")  # fmt: skip
+        else:
+            if issued_hash != start.get("config_hash"):
+                missing.append(f"its issued config, composed from the configs of its commit, "
+                               f"has config hash {issued_hash!r}, not its journal start's "
+                               f"{start.get('config_hash')!r}")  # fmt: skip
+            key = "tracking.endpoint_checkpoint"
+            have, want = (OmegaConf.select(c, key, default=None) for c in (cfg, issued))
+            if have != want:
+                departs.append(f"{key} is {have!r}, its issued config's {want!r}")
+            departs += q.config_departures(cfg, reference)
+            for key, want in expected_numerics(issued).items():
+                if not isinstance(recorded, dict):
+                    break
+                if key not in recorded:
+                    missing.append(f"no numerics_setup.{key}")
+                elif recorded[key] != want:
+                    departs.append(f"numerics_setup.{key} is {recorded[key]!r}, its issued "
+                                   f"config asks {want!r}")  # fmt: skip
     if departs:
         return q.TECHNICAL, departs
     stop = (terminal or {}).get("stop")
@@ -1194,8 +1291,8 @@ def resolve_launcher_run(
         return UNRESOLVED, missing
     reason, steps = stop["reason"], terminal["steps"]
     if reason in INSTABILITY:
-        return q.SCIENTIFIC, [f"the launcher run {run_dir.name}, conforming to its issued cell, "
-                              f"stopped by its declared rule {reason!r} after {steps} "
+        return q.SCIENTIFIC, [f"the launcher run {run_dir.name}, conforming to what it was "
+                              f"issued, stopped by its declared rule {reason!r} after {steps} "
                               "steps"]  # fmt: skip
     if reason == "steps" and steps == case.steps:
         return COMPLETED, [f"the launcher run {run_dir.name} took its {steps} steps"]
@@ -1218,10 +1315,11 @@ def resolution_of(out: Path, case: q.QualificationCase) -> dict | None:
 
 def resolved_verdict(resolution: Mapping[str, Any]) -> dict[str, Any]:
     """A case verdict of a launcher run's resolved outcome (``resolve_launcher_run``), for a
-    case with no part record: ``failing`` and scientific for a conforming declared stop, an
-    ``incomplete`` case of no kind for an unresolved one. Its GPU code is the run's, never the
-    current one, so ``rate_verdict`` does not count it as a qualified case: a scientific one
-    keeps the rate failing, an unresolved one keeps it from ``qualified``."""
+    case no part record of which classified that run (records that raised before their check
+    keep their own verdicts beside it): ``failing`` and scientific for a conforming declared
+    stop, an ``incomplete`` case of no kind for an unresolved one. Its GPU code is the run's,
+    never the current one, so ``rate_verdict`` does not count it as a qualified case: a
+    scientific one keeps the rate failing, an unresolved one keeps it from ``qualified``."""
     scientific = resolution.get("outcome") == q.SCIENTIFIC
     return {"case": resolution.get("case_record"),
             "state": q.FAILING if scientific else q.INCOMPLETE,
@@ -1251,6 +1349,13 @@ def journal_starts(root: Path) -> dict[str, tuple[str, dict]]:
     return starts
 
 
+def in_attempt_order(run_ids: set[str], starts: Mapping[str, tuple[str, dict]]) -> list[str]:
+    """Run ids ordered as their journal starts' attempts (``launch.attempt_key``: the attempt
+    number, then the start's time; the run id breaks a tie), whatever journal file holds them;
+    an id without a start comes first."""
+    return sorted(run_ids, key=lambda r: (*attempt_key(starts.get(r, ("", {}))[1]), r))
+
+
 def run_gpu_code(run_dir: Path) -> str | None:
     """The GPU-code identity (sha256) of the commit a launcher run recorded, from a clean
     checkout; None when it cannot be told."""
@@ -1274,12 +1379,16 @@ def supersede_case(
     its stage folders, passed ones included, with the cases re-qualified, and every launcher run of
     the candidate in the launch journal that is not of the fix's GPU code (another or an unknown
     code included: the runs its records name and those of the campaign's cases, a case without any
-    part attempt included), which it then logs superseded; a case whose run is superseded is
+    part attempt included, found by the case's label whatever their config hash:
+    ``label_run_ids``), which it then logs superseded; a case whose run is superseded is
     re-qualified. A case that holds a scientific failure, as its bound, valid part records read with
     the verdicts show it (``scientific_attempts``; a launcher run's declared stop counts only when
     such a record classified it scientific), is kept whole: none of its records, nor its launcher
-    run, is voided, and it is listed as kept, with why. A launcher run no part record names is
-    resolved against its issued policy first (``resolve_launcher_run``): a conforming declared stop
+    run, is voided, and it is listed as kept, with why. A launcher run no part record classified
+    (``launcher.classified``: a record that names it without it raised before its check) is
+    resolved against what it was issued first (``resolve_launcher_run``, ``configs_at``: the
+    configs of its own commit; a case of another stage as its records name it): a conforming
+    declared stop
     keeps its case whole (scientific); an unresolvable one keeps it as it is, listed unresolved, the
     run held (no rerun opened); a departing or completed run is superseded. Refused: a second time
     for the candidate (one cycle per candidate: an unresolved technical failure then routes to the
@@ -1330,7 +1439,11 @@ def supersede_case(
     by_name = {(p.case.name, ROLES[p.case.engineering]): p for p in planned}
     attempts, requalified, kept, kept_cases, run_ids, kept_runs = [], [], [], [], set(), set()
     entries_of: dict[tuple[str, str], list[dict]] = {}  # every attempt of a case, as named
-    classified: set[str] = set()  # the launcher runs a part record names (and so classified)
+    folder_of: dict[tuple[str, str], Path] = {}  # every case with an attempt: its folder
+    # The launcher runs a part record classified: it names the run and says so explicitly
+    # (``launcher.classified``, written once ``launcher_problems`` returned); a record whose setup
+    # or check raised first names the run without classifying it
+    classified: set[str] = set()
     for stage in sorted(d for d in candidate_dir.iterdir() if d.is_dir()):
         for case_dir in sorted({f.parent for f in stage.glob("s*/*/*-attempt-*")}):
             name = case_name_of(case_dir)
@@ -1341,7 +1454,8 @@ def supersede_case(
                 for n, state in attempt_files(case_dir, part_name).items():
                     file = case_dir / f"{part_name}-attempt-{n}.json"
                     record = _read(file) if state == "recorded" else None
-                    identity = ((record or {}).get("launcher") or {}).get("identity") or {}
+                    launcher = (record or {}).get("launcher") or {}
+                    identity = launcher.get("identity") or {}
                     entry = {"case": name, "stage": stage.name, "part": part_name,
                              "attempt": n, "state": state, "path": str(file),
                              "sha256": file_sha256(file) if state == "recorded" else None,
@@ -1349,7 +1463,8 @@ def supersede_case(
                              "kind": (record or {}).get("kind"),
                              "launcher_run_id": identity.get("run_id")}  # fmt: skip
                     entries.append(entry)
-                    if state == "recorded" and entry["launcher_run_id"]:
+                    if (state == "recorded" and entry["launcher_run_id"]
+                            and launcher.get("classified") is True):  # fmt: skip
                         classified.add(entry["launcher_run_id"])
                     if state == "recorded" and (entry["sha256"] in named or (
                             ((record or {}).get("provenance") or {}).get("gpu_code") or {}
@@ -1357,6 +1472,7 @@ def supersede_case(
                         continue  # void already, or not of the old code
                     mine.append(entry)
             entries_of[(name, stage.name)] = entries
+            folder_of[(name, stage.name)] = case_dir
             keep = scientific_attempts(case_dir, p, scope, candidate=case.candidate)
             if keep:  # a scientific failure keeps the case whole, its launcher run included
                 kept += entries
@@ -1370,39 +1486,52 @@ def supersede_case(
                 )
                 kept_runs |= {e["launcher_run_id"] for e in entries if e["launcher_run_id"]}
                 if p is not None:
-                    kept_runs |= set(journal_run_ids(p.run, root))
+                    kept_runs |= set(label_run_ids(p.run, root))
                 continue
             if any(e["state"] == "recorded" for e in mine):
                 attempts += mine
                 requalified.append({"case": name, "stage": stage.name})
                 run_ids |= {e["launcher_run_id"] for e in mine if e["launcher_run_id"]}
     kept_names = {(k["case"], k["stage"]) for k in kept_cases}
-    # Every campaign case not kept: its launcher runs. A run a part record names is classified
-    # by it (scientific: the case is kept above). One no part record names is resolved against
-    # its issued policy (``resolve_launcher_run``): a conforming declared stop keeps the case
-    # whole (scientific); an outcome nobody can resolve keeps it as it is and holds the run (no
-    # rerun opened); a nonconforming or completed run is superseded below, as any run not of
-    # the fix's code
+    # Every case not kept, of the campaign or with an attempt in a stage folder: its launcher
+    # runs (its campaign run's attempts in the journals, found by its label whatever their config
+    # hash, and the runs its records name), each judged by its own issued config. A run a
+    # part record classified (``launcher.classified``) is judged by that record (scientific: the
+    # case is kept above). One no part record classified (none names it, or each that does
+    # raised before its check returned) is resolved against what it was issued
+    # (``resolve_launcher_run``): a conforming declared stop keeps the case whole (scientific);
+    # an outcome nobody can resolve keeps it as it is and holds the run (no rerun opened); a
+    # nonconforming or completed run is superseded below, as any run not of the fix's code
     starts = journal_starts(root)
-    header = campaign_header(args.campaign)
+    subjects = {key: p.case for key, p in by_name.items()}
+    for key, case_dir in folder_of.items():  # another stage's case: as its records name it
+        named_case = record_case(case_dir) if key not in subjects else None
+        if named_case is not None:
+            subjects[key] = named_case.case
     by_case: dict[tuple[str, str], set[str]] = {}
     held: list[dict] = []
-    for (name, stage_name), p in by_name.items():
+    for (name, stage_name), subject in subjects.items():
         if (name, stage_name) in kept_names:
             continue
-        ids = set(journal_run_ids(p.run, root))
-        outcomes = {}
-        for run_id in sorted(ids - classified):
-            run_dir = root / p.run.experiment / run_id
-            if run_dir.is_dir() and run_id in starts:
-                outcomes[run_id] = resolve_launcher_run(run_dir, p, starts[run_id][1], header)
+        p = by_name.get((name, stage_name))
+        ids = set(label_run_ids(p.run, root)) if p is not None else set()  # any config hash
+        mentioned = {e["launcher_run_id"] for e in entries_of.get((name, stage_name), [])
+                     if e["state"] == "recorded" and e["launcher_run_id"]}  # fmt: skip
+        outcomes = {}  # in attempt order, never by journal file or run id
+        for run_id in in_attempt_order((ids | mentioned) - classified, starts):
+            if run_id not in starts:
+                continue
+            run_dir = root / str(starts[run_id][1].get("experiment")) / run_id
+            if run_dir.is_dir():
+                outcomes[run_id] = resolve_launcher_run(run_dir, subject, starts[run_id][1])
         found = [k for k in (q.SCIENTIFIC, UNRESOLVED) if any(o == k for o, _ in outcomes.values())]
         if found:
             outcome = found[0]
-            run_id = next(r for r, (o, _) in sorted(outcomes.items()) if o == outcome)
-            run_dir = root / p.run.experiment / run_id
+            run_id = next(r for r, (o, _) in outcomes.items() if o == outcome)  # the earliest
+            campaign_name, start = starts[run_id]
+            run_dir = root / str(start.get("experiment")) / run_id
             resolution = {"run_id": run_id, "outcome": outcome, "reasons": outcomes[run_id][1],
-                          "case_record": p.case.record(), "gpu_code": run_gpu_code(run_dir),
+                          "case_record": subject.record(), "gpu_code": run_gpu_code(run_dir),
                           "identity": q.launcher_identity(run_dir)}  # fmt: skip
             why = (
                 "a scientific failure keeps counting: "
@@ -1413,15 +1542,16 @@ def supersede_case(
                                "why": why + "; ".join(outcomes[run_id][1]),
                                "resolution": resolution})  # fmt: skip
             kept += entries_of.get((name, stage_name), [])
-            kept_runs |= ids
+            kept_runs |= ids | mentioned
             if outcome == UNRESOLVED:
-                held.append({"run_id": run_id, "campaign": starts[run_id][0],
-                             "run": p.run.label, "experiment": p.run.experiment,
-                             "config_hash": p.run.config_hash,
+                held.append({"run_id": run_id, "campaign": campaign_name,
+                             "run": start.get("run"), "experiment": start.get("experiment"),
+                             "config_hash": start.get("config_hash"),
                              "reason": "; ".join(outcomes[run_id][1])})  # fmt: skip
             continue
-        by_case[(name, stage_name)] = ids
-        run_ids |= ids
+        if p is not None:
+            by_case[(name, stage_name)] = ids
+            run_ids |= ids
     if (case.name, stage_folder(folder).name) in {(k["case"], k["stage"]) for k in kept_cases}:
         sys.exit(f"{case.name}: the cycle would keep this case whole (its launcher run's "
                  "declared stop, or an outcome nobody can resolve): a cycle cannot start from "
@@ -1595,15 +1725,15 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
             cases.append(verdict_)
             if void is not None:
                 voided[verdict_["record_sha256"]] = void
-    # A case the engineering cycle kept on its launcher run's resolved outcome, with no part
-    # record of its own: its verdict is that outcome (``resolved_verdict``)
-    live = {(v["case"] or {}).get("name") for v in cases if "superseded" not in v}
+    # A case the engineering cycle kept on its launcher run's resolved outcome (no part record
+    # classified that run: none names it, or each that does raised before its check): its
+    # verdict is that outcome too (``resolved_verdict``), beside its records' own
     for _, cycle in [
         (f, _read(f)) for f in sorted((out / f"c{candidate}").glob("supersede-*.json"))
     ]:
         for kept_case in (cycle or {}).get("kept_cases") or []:
             resolution = kept_case.get("resolution")
-            if resolution and kept_case.get("stage") == stage and kept_case["case"] not in live:
+            if resolution and kept_case.get("stage") == stage:
                 cases.append(resolved_verdict(resolution))
                 if resolution["outcome"] == UNRESOLVED:
                     warnings.append(f"{kept_case['case']}: its launcher run "
@@ -1705,7 +1835,8 @@ def driver_script(
                  f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
                  f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
                  f"technical case; {STALE} a stale case (records of other GPU code or settings); "
-                 "the launcher's own when it stops; another a failed command."),
+                 f"{HELD} a case whose label has a held launcher run; the launcher's own when it "
+                 "stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -1751,6 +1882,8 @@ def driver_script(
             f'  0) echo "== {stamp} complete: {p.case.name} is skipped" ;;',
             f'  {STALE}) stop "{p.case.name}: records of other GPU code or settings (stale); '
             f'nothing is rerun or skipped" {STALE} ;;',
+            f'  {HELD}) stop "{p.case.name}: its label has a held launcher run (an outcome '
+            f'nobody could resolve); the launcher is not called" {HELD} ;;',
             f"  {NO})",
             f"    {RUN} clear-stale {common} {case}",
             "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
@@ -1901,6 +2034,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{chosen.case.name}: stale, records of other GPU code or settings than this "
                   f"checkout's: {stale}", file=sys.stderr)  # fmt: skip
             sys.exit(STALE)
+        held = held_runs(chosen.run, launch_records(root))  # any config hash of the label
+        if held:
+            print(f"{chosen.case.name}: its label {chosen.run.label} has a held launcher run, an "
+                  f"outcome nobody could resolve, and nothing of it runs: {held}",
+                  file=sys.stderr)  # fmt: skip
+            sys.exit(HELD)
         complete, decided, why = case_state(out, chosen, scope)
         print(f"{chosen.case.name}: {why}")
         if not (complete if args.command == "complete" else decided):

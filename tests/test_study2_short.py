@@ -2657,14 +2657,37 @@ S2_REPEAT_RUNS = (
 )
 S2_REPEAT_COMMIT = "aa4c007c333ef62f7b34b64a3f3c51cee35fa1f9"  # the runs' and the check's commit
 S2_REPEAT_VERDICT = "numerical/b20-u8/verdicts/f7cf42e3f76f.json"
+# Study 2's last commit (its versions record after amendment 5), as in tests/test_gate_c.py: the
+# replays check a verdict's GPU code as of it, not at HEAD, because later studies change GPU paths
+# on purpose, and the selection's own check against HEAD then, rightly, finds study 2's
+# qualification stale.
+STUDY2_LAST = "028b953"
 
 
-def test_replay_after_the_s2_repeat_prescribes_the_three_arm_validation(archived) -> None:
-    """The selection at HEAD, replayed on the archived records up to the S2 repeat (the 155 runs
-    before S1, S1's 33 and the repeat's 15, read by their recorded run ids; K, numerics and
-    utility only) with the repeat's verdict, prescribes the three-arm validation at (U, B) =
-    (8, 20) with the frozen rates (the final review of gate B, M12). Skipped where the records,
-    the verdict or the runs' commit are absent."""
+@pytest.fixture
+def as_of_study2_last(monkeypatch) -> None:
+    """The selection's default ``reuse_check`` compares a verdict's GPU code with ``"HEAD"``;
+    here that head is study 2's last commit. Skipped where the commit is not in this clone."""
+    probe = subprocess.run(["git", "cat-file", "-e", f"{STUDY2_LAST}^{{commit}}"],
+                           cwd=REPO_ROOT, capture_output=True)  # fmt: skip
+    if probe.returncode != 0:
+        pytest.skip(f"study 2's last commit {STUDY2_LAST} is not in this clone")
+    reuse = study2_short._reuse_check
+    monkeypatch.setattr(
+        study2_short,
+        "_reuse_check",
+        lambda base, head: reuse(base, STUDY2_LAST if head == "HEAD" else head),
+    )
+
+
+def test_replay_after_the_s2_repeat_prescribes_the_three_arm_validation(
+        archived, as_of_study2_last) -> None:  # fmt: skip
+    """The selection, replayed on the archived records up to the S2 repeat (the 155 runs before
+    S1, S1's 33 and the repeat's 15, read by their recorded run ids; K, numerics and utility
+    only) with the repeat's verdict, prescribes the three-arm validation at (U, B) = (8, 20)
+    with the frozen rates (the final review of gate B, M12). The replay checks the verdict's GPU
+    code as of study 2's last commit 028b953, because later studies change GPU paths. Skipped
+    where the records, the verdict or the commits are absent."""
     runs, theta0 = archived
     names = (*S1_RUNS, *S2_REPEAT_RUNS)
     dirs = [RUNS / "study2_short" / name for name in names]
@@ -2717,13 +2740,15 @@ def u8_verdicts() -> dict:
             if path.startswith(f"{study2_short.NUMERICAL_DIR}/b20-u8/")}  # fmt: skip
 
 
-def test_replay_after_s3_prescribes_u7_discovery_for_the_three_arms(archived) -> None:
-    """The selection at HEAD (amendment 5's order), replayed on the archived records up to S3
-    (K, numerics and utility only) with the S2 repeat's verdict, reaches S3's verdict at
-    (8, 20): the three-arm validation fails on utility, FA's MMLU bounds 5.79 and 6.59 pp and
-    the pre-warmed arm's 6.26 pp at 1.62e-5 above 5 pp, support in 12 of 12 blocks. The next
-    step stays U = 7's discovery for the three arms, with the same runs: FA at 1.52e-5 and
-    1.75e-5 on seeds 2000-2002. Skipped where the records, the verdict or the commit are
+def test_replay_after_s3_prescribes_u7_discovery_for_the_three_arms(
+        archived, as_of_study2_last) -> None:  # fmt: skip
+    """The selection (amendment 5's order), replayed on the archived records up to S3 (K,
+    numerics and utility only) with the S2 repeat's verdict, checking the verdict's GPU code as
+    of study 2's last commit 028b953 because later studies change GPU paths, reaches S3's
+    verdict at (8, 20): the three-arm validation fails on utility, FA's MMLU bounds 5.79 and
+    6.59 pp and the pre-warmed arm's 6.26 pp at 1.62e-5 above 5 pp, support in 12 of 12 blocks.
+    The next step stays U = 7's discovery for the three arms, with the same runs: FA at 1.52e-5
+    and 1.75e-5 on seeds 2000-2002. Skipped where the records, the verdict or the commits are
     absent."""
     runs, theta0 = archived
     names = (*S1_RUNS, *S2_REPEAT_RUNS)

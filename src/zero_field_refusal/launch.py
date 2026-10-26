@@ -39,7 +39,11 @@ carries on from there. The launch log ``RUNS_DIR/launch/<campaign name>.jsonl`` 
 per attempt start and end, per recovery round and per stop; each attempt's output goes to
 ``RUNS_DIR/launch/<campaign name>/``. A start record carries the campaign's ``header`` when it
 has one (study 2's campaigns record the w_max they were written under, which the replay reads
-back: the final review of gate B, I4).
+back: the final review of gate B, I4). An end the launcher writes after the fact, for a start it
+finds without one, carries ``"settled": true`` (``run_campaign``, "A start found without its end").
+Ends, ``superseded`` and ``held`` records are matched to their starts by run id, and a label's
+attempts are ordered by their attempt number, then the start's time (``label_starts``), never by
+the journal file that holds them.
 
 **One label at a time** (``only=LABEL``; study 3's numerical qualification, which runs a case's
 launcher run, its harness parts and the deletion of its checkpoints before the next case): that
@@ -57,9 +61,12 @@ that no longer counts for its label: its directory and records stay, it is a use
 technical one), and it is neither done, diverged nor a conflict; the run is then attempted again
 through its recovery round. A ``held`` record (``hold``: an outcome a study-3 engineering cycle
 could not resolve) makes the run a conflict: nothing of the campaign starts, its recovery round
-included. A checkpoint run (``tracking.endpoint_checkpoint``) is done only if
-its recorded numerics setup is what the campaign's config asks for (``expected_numerics``:
-determinism, TF32 and the matmul precision, the memory limit; read without touching CUDA).
+included, in a dry run too. The hold applies to the run's label (its experiment and
+``<cell>/s<seed>``) whatever the config hash it was written with, so a campaign whose cell now
+has another config hash is refused it as well; nothing here lifts a hold. A checkpoint run
+(``tracking.endpoint_checkpoint``) is done only if its recorded numerics setup is what the
+campaign's config asks for (``expected_numerics``: determinism, TF32 and the matmul precision,
+the memory limit; read without touching CUDA).
 """
 
 from __future__ import annotations
@@ -78,6 +85,7 @@ from pathlib import Path
 from typing import Any
 
 from omegaconf import OmegaConf
+from yaml import YAMLError
 
 from .analysis.stage_a import TrajectoryError, load_trajectory
 from .config import config_hash
@@ -146,6 +154,9 @@ class Assessment:
     technical: set[str] = field(default_factory=set)  # ids of technical attempts so far
     conflicts: dict[str, str] = field(default_factory=dict)  # run dir -> why it cannot stand
     superseded: set[str] = field(default_factory=set)  # ids a supersession record names
+    # run dir -> (outcome, problem) as the launcher ends that attempt: done, diverged, conflict
+    # (the problem is why it cannot stand) or technical; an attempt without a directory is absent
+    outcomes: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
 
 def load_campaign(path: str | Path) -> tuple[str, list[Run]]:
@@ -233,20 +244,53 @@ def superseded_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str,
 
 
 def held_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    """The run ids of this run that the journal's ``held`` records name (``hold``), with their
-    reasons."""
+    """The run ids of this run's label (its experiment and ``<cell>/s<seed>``) that the
+    journal's ``held`` records name (``hold``), with their reasons, whatever their config hash:
+    a hold applies to the label, so a campaign whose cell now has another config hash (a fix
+    that changed a hashed key) is refused it too."""
     return {r["run_id"]: str(r.get("reason")) for r in records
             if r.get("event") == "held" and r.get("run") == run.label
-            and r.get("experiment") == run.experiment and r.get("config_hash") == run.config_hash
+            and r.get("experiment") == run.experiment
             and isinstance(r.get("run_id"), str)}  # fmt: skip
+
+
+def attempt_key(record: Mapping[str, Any]) -> tuple[int, str]:
+    """How a start record sorts among its label's attempts: by its attempt number, then by its
+    time (``_log``'s ISO stamp), never by the journal file that holds it. A start without an
+    attempt number sorts first."""
+    attempt = record.get("attempt")
+    number = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else -1
+    return number, str(record.get("time") or "")
+
+
+def label_starts(run: Run, records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The start records of the run's attempts (its label, experiment and config hash, with a
+    run id), in attempt order (``attempt_key``). ``launch_records`` reads the journals in file
+    name order, so a later attempt logged under another campaign's name may come first there."""
+    starts = [r for r in records
+              if r.get("event") == "start" and r.get("run") == run.label
+              and r.get("experiment") == run.experiment
+              and r.get("config_hash") == run.config_hash
+              and isinstance(r.get("run_id"), str)]  # fmt: skip
+    return sorted(starts, key=attempt_key)
+
+
+def open_start(run: Run, records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The start of the run's latest attempt that no ``end``, ``superseded`` or ``held`` record
+    names by its run id (``run_campaign``, "A start found without its end"), or None. Attempts
+    are ordered by their number, then the start's time (``label_starts``), whatever journal file
+    holds each record; a record closes the start whose run id it names, wherever it is."""
+    closed = {r.get("run_id") for r in records if r.get("event") in ("end", "superseded", "held")}
+    pending = [r for r in label_starts(run, records) if r["run_id"] not in closed]
+    return pending[-1] if pending else None
 
 
 def hold(
     runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
 ) -> None:
     """Log that an attempt of ``run`` has an outcome nobody could resolve (module docstring,
-    "Superseded attempts"): it is kept as it is, and the run is never attempted again, its
-    recovery round included, while the record stands."""
+    "Superseded attempts"): it is kept as it is, and the run's label is never attempted again,
+    under any config hash, its recovery round included, while the record stands."""
     _log(Path(runs_root) / "launch" / f"{campaign}.jsonl",
          {"event": "held", "run": run.label, "run_id": run_id, "experiment": run.experiment,
           "config_hash": run.config_hash, "reason": reason, "record": record})  # fmt: skip
@@ -268,26 +312,32 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
     """What the run directories and the logged attempts say about this run."""
     result = Assessment()
     completed = []
-    result.superseded = set(superseded_runs(run, records))
+    named = superseded_runs(run, records)
+    result.superseded = set(named)
     experiment_dir = Path(runs_root) / run.experiment
     for run_dir in sorted(p for p in experiment_dir.glob("*") if p.is_dir()):
         meta = _read_json(run_dir / "meta.json")
         if meta is None:
             if run.config_hash[:8] in run_dir.name:
                 result.technical.add(run_dir.name)  # killed before its metadata was written
+                result.outcomes[run_dir.name] = ("technical", "meta.json is missing or unreadable")
             continue
         if meta.get("config_hash") != run.config_hash:
             continue
         if run_dir.name in result.superseded:  # kept, and a used attempt; it no longer counts
             result.technical.add(run_dir.name)
+            result.outcomes[run_dir.name] = (
+                "technical", f"named superseded in the journal: {named[run_dir.name]}")  # fmt: skip
             continue
         status = meta.get("status")
         if status == "completed" or _published(run_dir):
             completed.append(run_dir)
         elif status == "diverged":
             result.diverged = result.diverged or run_dir
+            result.outcomes[run_dir.name] = ("diverged", None)
         else:
             result.technical.add(run_dir.name)
+            result.outcomes[run_dir.name] = ("technical", f"status {status!r}")
     for run_dir in completed:
         problem = _disqualification(run, run_dir, _read_json(run_dir / "meta.json") or {})
         if problem is not None:
@@ -300,6 +350,8 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
         result.done = qualifying[0]
     for run_id, reason in held_runs(run, records).items():  # never attempted again
         result.conflicts[run_id] = f"held, its outcome unresolved: {reason}"
+    result.outcomes |= {run_dir.name: ("done", None) for run_dir in completed}
+    result.outcomes |= {name: ("conflict", why) for name, why in result.conflicts.items()}
     settled = {d.name for d in completed} | ({result.diverged.name} if result.diverged else set())
     for record in records:  # starts that left no directory, e.g. a crash before the tracker ran
         if (record.get("event") == "start" and record.get("experiment") == run.experiment
@@ -326,7 +378,7 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
     """Why a completed run cannot stand for this campaign run (None: it can)."""
     try:
         cfg = OmegaConf.load(run_dir / "config.yaml")
-    except (OSError, ValueError):
+    except (OSError, ValueError, YAMLError):
         return "config.yaml is missing or unreadable"
     gate = OmegaConf.select(cfg, "tracking.gate", default=None)
     if gate != run.gate:
@@ -445,8 +497,26 @@ def run_campaign(
     opens the recovery round of every cell with an exhausted run that has not had one.
     ``header`` (``campaign_header``) goes into every start record. ``only`` runs that label alone
     and ``max_attempts`` bounds the attempts (module docstring). Raises ``CampaignError``
-    before starting anything if a run's existing directories conflict (or ``only`` names no run),
-    and stops at an attempt that completes without qualifying.
+    before starting anything, its recovery round included and in a dry run too, if a run's
+    existing directories conflict or its label has a ``held`` run in any journal, whatever that
+    run's config hash (the conflict names it and the hold's reason), or if ``only`` names no
+    run; and stops at an attempt that completes without qualifying.
+
+    **A start found without its end** (the launcher died while its child ran, or after the child
+    published and before it judged the run). When an assessed run has a start that no ``end``,
+    ``superseded`` or ``held`` record names by its run id (``open_start``: the latest such
+    attempt, the attempts ordered by their number and then the start's time, whatever journal
+    file holds each record), the launcher writes that end first, before it skips the run,
+    raises a conflict or starts a new attempt: the same run id and attempt, ``returncode`` null,
+    ``"settled": true`` (judged after the fact, not when the process ended), ``only`` as any end
+    carries it, and the outcome ``assess`` gives the attempt's directory
+    (``Assessment.outcomes``): ``done``, ``diverged``, ``conflict`` with the problem that stops
+    the campaign, or ``technical`` (no directory, a missing or unreadable ``meta.json``, any
+    other status). A ``done`` end keeps the launcher's meaning, a valid terminal outcome (a
+    declared instability stop included), never a qualification. An end that exists is never
+    rewritten. Nothing is written for a run that is not assessed (another label under ``only``,
+    a run left out of ``runs``) and nothing in a dry run; the end goes to this campaign's log.
+    Attempts are counted from the starts, as before, so the new end changes no count.
     """
     execute = execute or _subprocess
     if not (isinstance(max_attempts, int) and max_attempts >= 1):
@@ -457,19 +527,22 @@ def run_campaign(
             raise CampaignError(f"The campaign has no run labelled {only!r}")
     records = launch_records(runs_root)
     assessments = {run.label: assess(run, runs_root, records) for run in runs}
+    out_dir = Path(runs_root) / "launch" / name
+    log = Path(runs_root) / "launch" / f"{name}.jsonl"
+    extra = {"only": only} if only is not None else {}
+    if max_attempts != MAX_ATTEMPTS:
+        extra["max_attempts"] = max_attempts
+    if not dry_run:  # before a run is skipped, a conflict raised or an attempt started
+        for run in runs:
+            _settle(run, assessments[run.label], records, log, extra)
     conflicts = {f"{run.experiment}/{run_dir}": problem for run in runs
                  for run_dir, problem in assessments[run.label].conflicts.items()}  # fmt: skip
     if conflicts:
         lines = "\n".join(f"- {where}: {problem}" for where, problem in sorted(conflicts.items()))
         raise CampaignError(f"Completed runs that cannot stand for this campaign; move them out "
                             f"of the experiment or fix them first:\n{lines}")  # fmt: skip
-    out_dir = Path(runs_root) / "launch" / name
-    log = Path(runs_root) / "launch" / f"{name}.jsonl"
     recovered = recovered_cells(records)
     own = recovered_runs(records)  # the rounds opened under ``only``
-    extra = {"only": only} if only is not None else {}
-    if max_attempts != MAX_ATTEMPTS:
-        extra["max_attempts"] = max_attempts
 
     def used_up(run: Run) -> bool:
         state = assessments[run.label]
@@ -526,6 +599,22 @@ def run_campaign(
 
 def _open(state: Assessment) -> bool:
     return state.done is None and state.diverged is None
+
+
+def _settle(run: Run, state: Assessment, records: Sequence[Mapping[str, Any]], log: Path,
+            extra: Mapping[str, Any]) -> None:  # fmt: skip
+    """Write the end of the run's start that has none (``open_start``), as ``run_campaign``
+    says: the attempt's own run id and number, no return code (the launcher did not see the
+    process end), the outcome and problem ``assess`` read for its directory (technical, with
+    the directory missing, when it has none) and ``"settled": true``."""
+    start = open_start(run, records)
+    if start is None:
+        return
+    outcome, problem = state.outcomes.get(start["run_id"], ("technical", "no run directory"))
+    _log(log, {"event": "end", "run": run.label, "attempt": start.get("attempt"),
+               "run_id": start["run_id"], "returncode": None, "outcome": outcome,
+               "problem": problem, "settled": True,
+               **({"only": extra["only"]} if "only" in extra else {})})  # fmt: skip
 
 
 def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
@@ -601,7 +690,7 @@ def _published(run_dir: Path) -> bool:
     try:
         if not _scheduled_training(OmegaConf.load(run_dir / "config.yaml")):
             return False
-    except (OSError, ValueError):
+    except (OSError, ValueError, YAMLError):
         return False
     try:
         load_trajectory(run_dir)

@@ -1536,6 +1536,35 @@ def test_a_record_is_published_once_whatever_its_launcher_identity(world, tmp_pa
     assert record["status"] == "failed" and record["kind"] == "technical"
 
 
+@pytest.mark.parametrize("raises", [None, "numerics", "check"])
+def test_a_record_classifies_its_launcher_run_once_the_check_returned(
+    world, tmp_path, monkeypatch, raises
+) -> None:
+    """``launcher.classified`` turns true only once ``launcher_problems`` returned, with its
+    kind (here the spiked run's declared stop, scientific); an exception in the numerics setup,
+    or in the check itself, publishes a technical record that names the run without classifying
+    it (``classified`` false, ``kind`` None)."""
+    env, runs = world
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("it raised")
+
+    nothing_runs(monkeypatch)
+    if raises == "numerics":
+        monkeypatch.setattr(q.runtime, "configure_numerics", broken)
+    elif raises == "check":
+        monkeypatch.setattr(q, "launcher_problems", broken)
+    record = part(env, runs["spiked"], tmp_path / "out", tmp_path / "ckpt", "baseline")
+    launcher = record["launcher"]
+    assert launcher["identity"]["run_id"] == runs["spiked"].name
+    if raises is None:
+        assert (launcher["classified"], launcher["kind"], record["kind"]) == (
+            True, "scientific", "scientific")  # fmt: skip
+    else:
+        assert (launcher["classified"], launcher["kind"], launcher["reasons"]) == (False, None, [])
+        assert (record["status"], record["kind"]) == ("failed", "technical")
+
+
 def test_publish_syncs_the_directory_after_the_rename(tmp_path, monkeypatch) -> None:
     import os
     import stat

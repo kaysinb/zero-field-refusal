@@ -55,7 +55,11 @@ instability rule (``schedule.INSTABILITY``) is a scientific failure; one stopped
 without its step-25 evaluation, or without a checkpoint whose file's sha256 is the recorded one,
 is technical; either way nothing runs, and the record still names the run and its Pod
 (``launcher_record``; when they cannot be read, as missing with the error, and the record is
-published all the same). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
+published all the same). The record's ``launcher.classified`` is true only once
+``launcher_problems`` has returned (its ``kind`` and ``reasons`` are then the check's); a record
+whose setup or check raised first names the run without classifying it (``classified`` false,
+``kind`` None), and an engineering cycle then resolves that run on its own (scripts/qualify.py,
+"Supersession"). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
 the RNG seeded as ``run_twin`` seeds it; v₀ is never written (``v0_unchanged``). An AdamW case,
 whose run reads no v₀, sets the seed's F v₀ up for s1 and s2 alone, from the F optimizer group
 (``setup_config``). An exception is the part's record, ``failed``, with the trajectories done
@@ -125,6 +129,7 @@ from .analysis.qualification_verdicts import rate_verdict as rate_verdict
 from .analysis.qualification_verdicts import rest_from_trajectories as rest_from_trajectories
 from .config import apply_override, load_config
 from .optim import ADAM_MODES
+from .paths import CONFIG_ROOT
 from .qualification_constants import (
     ACCEPTED,
     BATCH,
@@ -327,17 +332,30 @@ def pod_id() -> str | None:
 # ------------------------------------------------------------------------- the launcher run
 
 
-def confirmation_config(case: QualificationCase) -> DictConfig:
+def confirmation_config(case: QualificationCase, *, root: Path = CONFIG_ROOT) -> DictConfig:
     """The confirmation config of the case's arm, rate, seed, batch and steps
-    (experiments/study3, role confirmation): what "Config agreement" holds the launcher run to."""
+    (experiments/study3, role confirmation): what "Config agreement" holds the launcher run to.
+    ``root`` is the configs folder it is composed from (default this checkout's; the configs of
+    a launcher run's own commit when an engineering cycle resolves that run)."""
     overrides = ["study3.role=confirmation", f"optimizer={case.optimizer}",
                  f"optimizer.lr={case.lr!r}", f"seed={case.seed}",
                  f"train.batch_size={case.batch}", f"train.steps={case.steps}"]  # fmt: skip
-    return load_config("experiments/study3", overrides)
+    return load_config(root / "experiments" / "study3.yaml", overrides, root=root)
 
 
 def _plain(value: Any) -> Any:
     return OmegaConf.to_container(value, resolve=True) if isinstance(value, DictConfig) else value
+
+
+def config_departures(cfg: DictConfig, reference: DictConfig) -> list[str]:
+    """The keys of ``CONFIG_AGREEMENT`` in which ``cfg`` departs from ``reference`` (a
+    confirmation config)."""
+    problems = []
+    for key in CONFIG_AGREEMENT:
+        mine, theirs = (_plain(OmegaConf.select(c, key)) for c in (cfg, reference))
+        if mine != theirs:
+            problems.append(f"{key} departs from the confirmation config's")
+    return problems
 
 
 def _agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
@@ -347,12 +365,7 @@ def _agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
         reference = confirmation_config(case)
     except Exception as exc:  # no confirmation config to agree with: not a conforming run
         return [f"no confirmation config: {type(exc).__name__}: {str(exc)[:300]}"]
-    problems = []
-    for key in CONFIG_AGREEMENT:
-        mine, theirs = (_plain(OmegaConf.select(c, key)) for c in (cfg, reference))
-        if mine != theirs:
-            problems.append(f"{key} departs from the confirmation config's")
-    return problems
+    return config_departures(cfg, reference)
 
 
 def code_environment_problems(run_dir: Path) -> list[str]:
@@ -934,7 +947,10 @@ def run_part(
     reruns) and ``engineering_cycle`` (a rerun after the candidate's engineering cycle: its
     supersession record's path and sha256) go into the record as given. Nothing runs when the
     launcher run does not conform (``launcher_problems``): the record says why, and of what
-    kind. The control part's case is the candidate's first numerical seed at an FA rate."""
+    kind. ``launcher.classified`` is true only once that check has returned (module docstring,
+    "Order and state"): an exception in the numerics setup or the check leaves it false, the
+    run named but not classified. The control part's case is the candidate's first numerical
+    seed at an FA rate."""
     scope = QualificationScope.of(settings)
     steps = sorted({int(t) for t in diagnostic_steps})
     if part not in PARTS or not (isinstance(attempt, int) and attempt >= 1):
@@ -958,8 +974,10 @@ def run_part(
         record["infrastructure"] = dict(infrastructure)
     if engineering_cycle is not None:
         record["engineering_cycle"] = dict(engineering_cycle)
-    # The launcher run's name, whatever its state, so that a verdict counts every record of it
-    record["launcher"] = {"kind": None, "reasons": [], **launcher_record(run_dir)}
+    # The launcher run's name, whatever its state, so that a verdict counts every record of it;
+    # ``classified`` turns true only once ``launcher_problems`` has returned its kind
+    record["launcher"] = {"kind": None, "reasons": [], "classified": False,
+                          **launcher_record(run_dir)}  # fmt: skip
     progress: dict[str, Any] = {}
     failed = False
     try:
@@ -968,7 +986,7 @@ def run_part(
         numerics_setup = record["numerics_setup"] = runtime.configure_numerics(cfg, env.device)
         kind, reasons = launcher_problems(run_dir, case, checkpoint=part != "control",
                                           numerics=numerics_setup)  # file reads only  # fmt: skip
-        record["launcher"].update(kind=kind, reasons=reasons)
+        record["launcher"].update(kind=kind, reasons=reasons, classified=True)
         if kind is None:
             prechecks.require_path_check(env.data_root, cfg, env.device)
         facts = launcher_facts(run_dir) if kind is None else None
