@@ -51,6 +51,14 @@ ANALYSIS_SCRIPTS = frozenset(
         "study2_short_campaigns.py",
         "study2_short_simulate.py",
         "study2_short_summary.py",
+        # Study 3's analysis entry points, listed before they exist: adding a name later would
+        # change this file, which is inside the identity (a name matters once its file exists)
+        "study3_analysis.py",
+        "study3_audit.py",
+        "study3_campaigns.py",
+        "study3_simulate.py",
+        "study3_spread.py",
+        "study3_summary.py",
     )
 )
 

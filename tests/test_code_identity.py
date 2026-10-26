@@ -150,3 +150,40 @@ def test_nothing_a_qualification_part_executes_is_defined_under_analysis() -> No
     for path, gpu in ((qualification_constants.__file__, True), (qualification.__file__, True),
                       (qualification_verdicts.__file__, False)):  # fmt: skip
         assert is_gpu_path(str(Path(path).resolve().relative_to(root))) is gpu, path
+
+
+STUDY3_ANALYSIS = ("study3_analysis.py", "study3_audit.py", "study3_campaigns.py",
+                   "study3_simulate.py", "study3_spread.py", "study3_summary.py",
+                   "check_theta0_utility.py")  # fmt: skip
+GPU_MODULES = ("qualification", "schedule", "train", "launch", "runtime", "fa_control_diagnostic")
+
+
+def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work() -> None:
+    """Study 3's analysis entry points are outside the identity from the start; each either does
+    not exist yet or imports nothing that runs on a GPU."""
+    import ast
+
+    from zero_field_refusal.code_identity import ANALYSIS_SCRIPTS
+    from zero_field_refusal.paths import REPO_ROOT
+
+    assert {f"scripts/{n}" for n in STUDY3_ANALYSIS} <= ANALYSIS_SCRIPTS
+    assert {p for p in ANALYSIS_SCRIPTS if "study3" in p} == {
+        f"scripts/{n}" for n in STUDY3_ANALYSIS if "study3" in n}  # fmt: skip
+    for name in STUDY3_ANALYSIS:
+        path = REPO_ROOT / "scripts" / name
+        assert is_gpu_path(f"scripts/{name}") is False
+        if not path.exists():
+            continue
+        imported = set()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom):
+                imported |= {node.module or "", *(f"{node.module}.{a.name}" for a in node.names)}
+            elif isinstance(node, ast.Import):
+                imported |= {a.name for a in node.names}
+        gpu = {
+            i
+            for i in imported
+            for m in GPU_MODULES
+            if i == f"zero_field_refusal.{m}" or i.startswith(f"zero_field_refusal.{m}.")
+        }
+        assert not gpu, (name, gpu)  # fmt: skip
