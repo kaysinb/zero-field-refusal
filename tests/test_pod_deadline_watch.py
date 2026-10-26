@@ -72,9 +72,12 @@ def test_write_deadline_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert [p.name for p in tmp_path.iterdir()] == ["zfr-deadline"]
 
 
+CONFIRMED = {"data": {"podStop": {"id": "pod1", "desiredStatus": "EXITED"}}}
+
+
 def run_loop(
     monkeypatch: pytest.MonkeyPatch, files, cap: int = 1000, start: int = 0, *, path=None,
-    read=None,
+    read=None, answers=None,
 ) -> tuple[list[int], list[str]]:  # fmt: skip
     monkeypatch.setenv("ZFR_DEADLINE_EPOCH", str(cap))
     monkeypatch.setenv("ZFR_DEADLINE_FILE", str(path or "/nonexistent/zfr-deadline"))
@@ -86,7 +89,10 @@ def run_loop(
     def call(query: str, pod: str, key: str) -> dict:
         if query == watch.STOP:
             stops.append(now[0])
-            return {"data": {"podStop": {"id": pod}}}
+            answer = answers.pop(0) if answers else CONFIRMED
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
         return {"data": {"pod": {"id": pod}}}
 
     def sleep(seconds: float) -> None:
@@ -160,3 +166,48 @@ def test_a_fired_deadline_file_is_retired(
     stops, _ = run_loop(monkeypatch, None, path=target, read=watch.read_file)
     assert 1000 <= stops[0] < 1020
     assert "source env" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"errors": [{"message": "unauthorized"}], "data": None},
+     {"data": {"podStop": {"id": "pod1", "desiredStatus": "RUNNING"}}},
+     {"data": {"podStop": {"id": "other", "desiredStatus": "EXITED"}}},
+     {"data": {"podStop": None}}, {}, [], OSError("network")],
+)  # fmt: skip
+def test_an_unconfirmed_stop_is_retried_and_keeps_the_file(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path, answer
+) -> None:
+    """A GraphQL errors response (or a stop not naming this Pod as EXITED, or a failure) is not
+    a stop: it is retried, bounded, with a doubling wait, and the deadline file is kept."""
+    target = tmp_path / "zfr-deadline"
+    target.write_text("900\n")
+    answers = [answer] * watch.STOP_ATTEMPTS
+    stops, _ = run_loop(monkeypatch, None, path=target, read=watch.read_file, answers=answers)
+    out = capsys.readouterr().out
+    assert len(stops) == watch.STOP_ATTEMPTS
+    assert [b - a for a, b in zip(stops, stops[1:], strict=False)] == [30, 60, 120, 240, 240]
+    assert target.read_text() == "900\n" and not list(tmp_path.glob("*.fired-*"))
+    assert "zfr-deadline stop not confirmed after 6 attempts" in out
+    assert "unauthorized" not in out and KEY not in out
+
+
+def test_a_confirmed_stop_after_an_error_retires_the_file(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    target = tmp_path / "zfr-deadline"
+    target.write_text("900\n")
+    answers = [{"errors": [{"message": "busy"}], "data": None}, CONFIRMED]
+    stops, _ = run_loop(monkeypatch, None, path=target, read=watch.read_file, answers=answers)
+    out = capsys.readouterr().out
+    assert len(stops) == 2 and stops[1] - stops[0] == 30
+    assert "zfr-deadline stop unconfirmed errors 1" in out
+    assert "zfr-deadline stop confirmed" in out
+    assert not target.exists() and len(list(tmp_path.glob("zfr-deadline.fired-*"))) == 1
+
+
+def test_stop_confirmed_rule() -> None:
+    assert watch.stop_confirmed(CONFIRMED, "pod1")
+    assert not watch.stop_confirmed({**CONFIRMED, "errors": [{}]}, "pod1")
+    assert not watch.stop_confirmed(CONFIRMED, "pod2")
+    assert not watch.stop_confirmed({"errors": [], "data": None}, "pod1")
