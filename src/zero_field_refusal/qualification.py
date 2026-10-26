@@ -55,7 +55,11 @@ instability rule (``schedule.INSTABILITY``) is a scientific failure; one stopped
 without its step-25 evaluation, or without a checkpoint whose file's sha256 is the recorded one,
 is technical; either way nothing runs, and the record still names the run and its Pod
 (``launcher_record``; when they cannot be read, as missing with the error, and the record is
-published all the same). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
+published all the same). The record's ``launcher.classified`` is true only once
+``launcher_problems`` has returned (its ``kind`` and ``reasons`` are then the check's); a record
+whose setup or check raised first names the run without classifying it (``classified`` false,
+``kind`` None), and an engineering cycle then resolves that run on its own (scripts/qualify.py,
+"Supersession"). Every trajectory starts from θ₀ with no gradient, a fresh optimizer and
 the RNG seeded as ``run_twin`` seeds it; v₀ is never written (``v0_unchanged``). An AdamW case,
 whose run reads no v₀, sets the seed's F v₀ up for s1 and s2 alone, from the F optimizer group
 (``setup_config``). An exception is the part's record, ``failed``, with the trajectories done
@@ -934,7 +938,10 @@ def run_part(
     reruns) and ``engineering_cycle`` (a rerun after the candidate's engineering cycle: its
     supersession record's path and sha256) go into the record as given. Nothing runs when the
     launcher run does not conform (``launcher_problems``): the record says why, and of what
-    kind. The control part's case is the candidate's first numerical seed at an FA rate."""
+    kind. ``launcher.classified`` is true only once that check has returned (module docstring,
+    "Order and state"): an exception in the numerics setup or the check leaves it false, the
+    run named but not classified. The control part's case is the candidate's first numerical
+    seed at an FA rate."""
     scope = QualificationScope.of(settings)
     steps = sorted({int(t) for t in diagnostic_steps})
     if part not in PARTS or not (isinstance(attempt, int) and attempt >= 1):
@@ -958,8 +965,10 @@ def run_part(
         record["infrastructure"] = dict(infrastructure)
     if engineering_cycle is not None:
         record["engineering_cycle"] = dict(engineering_cycle)
-    # The launcher run's name, whatever its state, so that a verdict counts every record of it
-    record["launcher"] = {"kind": None, "reasons": [], **launcher_record(run_dir)}
+    # The launcher run's name, whatever its state, so that a verdict counts every record of it;
+    # ``classified`` turns true only once ``launcher_problems`` has returned its kind
+    record["launcher"] = {"kind": None, "reasons": [], "classified": False,
+                          **launcher_record(run_dir)}  # fmt: skip
     progress: dict[str, Any] = {}
     failed = False
     try:
@@ -968,7 +977,7 @@ def run_part(
         numerics_setup = record["numerics_setup"] = runtime.configure_numerics(cfg, env.device)
         kind, reasons = launcher_problems(run_dir, case, checkpoint=part != "control",
                                           numerics=numerics_setup)  # file reads only  # fmt: skip
-        record["launcher"].update(kind=kind, reasons=reasons)
+        record["launcher"].update(kind=kind, reasons=reasons, classified=True)
         if kind is None:
             prechecks.require_path_check(env.data_root, cfg, env.device)
         facts = launcher_facts(run_dir) if kind is None else None

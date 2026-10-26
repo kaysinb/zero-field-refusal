@@ -1560,7 +1560,10 @@ docstring has every rule.
   unknown code included), which it then logs superseded
   (run again with the same record, it only writes the lines that are missing). A second cycle
   for the candidate is refused: a technical failure left unresolved routes to the technical
-  feasibility report. A launcher run no part record names (the Pod stopped before its baseline)
+  feasibility report. A part record classifies its launcher run only when it says so
+  (`launcher.classified: true`, written once the launcher check returned); naming the run is not
+  enough. A launcher run no part record classified (none names it: the Pod stopped before its
+  baseline; or each that does raised before its launcher check, in the numerics setup, say)
   is first resolved against its issued cell, config, numerics and commit, without the current
   code or environment: a conforming run its declared rule stopped is a scientific failure (its
   case kept whole and decided); one that departs from its cell, or completed, is superseded; one

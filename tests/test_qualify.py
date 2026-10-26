@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_qualification import CODE, IDENTITY, control_record, synthetic
@@ -920,11 +921,12 @@ def test_the_cycle_keeps_a_case_its_records_show_scientific(qualify, tmp_path, m
     assert qualify.located(run, root) == launcher
 
 
-def unclassified_stop(qualify, tmp_path, monkeypatch, change=None):
+def unclassified_stop(qualify, tmp_path, monkeypatch, change=None, *, setup_raised=False):
     """A's technical baseline opens the cycle; s10201's launcher run r-b1 stopped on its declared
-    gradient_spike rule and no part record of its case classified it (the Pod stopped before its
-    baseline). ``change`` edits r-b1's records first. Returns the paths, the run and the
-    cycle's record."""
+    gradient_spike rule and no part record of its case classified it: the Pod stopped before its
+    baseline, or (``setup_raised``) the baseline's numerics setup raised before the launcher
+    check, and its record, technical, names r-b1 without classifying it. ``change`` edits r-b1's
+    records first. Returns the paths, the run and the cycle's record."""
     path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     _, record = technical_adamw(out, tmp_path)
@@ -932,12 +934,35 @@ def unclassified_stop(qualify, tmp_path, monkeypatch, change=None):
     run_dir = settled_launcher(root, run, "r-b1", stop="gradient_spike", steps=3)
     if change is not None:
         change(run_dir)
+    if setup_raised:
+        raised_before_the_check(qualify, out, run_dir, monkeypatch)
     monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
     qualify.main(supersede_args(path, ADAMW, record))
     return path, root, out, run, json.loads((out / "c1" / "supersede-1.json").read_text())
 
 
 STOPPED = q.QualificationCase(10201, "adamw", ADAMW_LR, 1, False)
+
+
+def raised_before_the_check(qualify, out, run_dir, monkeypatch):
+    """STOPPED's baseline as ``run_part`` publishes it when its numerics setup raises, before
+    the launcher check: failed, technical, under the records' code, naming the launcher run
+    without classifying it. Nothing loads a model."""
+    import torch
+
+    def broken(cfg, device):
+        raise RuntimeError("the numerics setup failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(q.runtime, "configure_numerics", broken)
+        record = q.run_part(qualify.load_settings(), SimpleNamespace(device=torch.device("cpu")),
+                            STOPPED, run_dir, out, part="baseline", attempt=1,
+                            checkpoints=out / "harness")  # fmt: skip
+    launcher = record["launcher"]
+    assert (record["status"], record["kind"]) == ("failed", "technical")
+    assert (launcher["identity"]["run_id"], launcher["kind"], launcher["classified"]) == (
+        run_dir.name, None, False)  # fmt: skip
+    return record
 
 
 def test_a_conforming_unclassified_stop_is_kept_scientific(qualify, tmp_path, monkeypatch):
@@ -959,6 +984,33 @@ def test_a_conforming_unclassified_stop_is_kept_scientific(qualify, tmp_path, mo
     qualify.main(["verdict", *common(path)])
     verdict = json.loads((out / "c1" / "verdict.json").read_text())
     assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "failing"
+    (resolved,) = [c for c in verdict["cases"] if c.get("resolution")]
+    assert (resolved["case"]["name"], resolved["kind"]) == (STOPPED.name, "scientific")
+
+
+def test_a_record_that_raised_before_its_check_leaves_the_stop_to_the_resolver(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """s10201's baseline raised in its numerics setup, before the launcher check: its record
+    (technical, of the old code) names r-b1 but did not classify it, so the cycle resolves r-b1
+    on its own. A conforming gradient_spike stop: scientific. The case is kept whole, its
+    record included, r-b1 keeps counting, the case is decided and the rate fails."""
+    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch,
+                                                    setup_raised=True)  # fmt: skip
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "scientific")
+    assert "stopped by its declared rule 'gradient_spike'" in kept["why"]
+    assert [(e["case"], e["part"], e["attempt"]) for e in cycle["kept"]] == [
+        (STOPPED.name, "baseline", 1)]  # fmt: skip
+    assert cycle["launchers"] == [] and cycle["held"] == []
+    assert cycle["cases_requalified"] == [{"case": ADAMW.name, "stage": "numerical"}]
+    assert {e["case"] for e in cycle["attempts"]} == {ADAMW.name}
+    assert qualify.located(run, root) == root / run.experiment / "r-b1"
+    qualify.main(["complete", *common(path), "--case", STOPPED.name])  # decided: complete
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "failing"
+    assert STOPPED.name not in {e["case"] for e in verdict["superseded"]}
     (resolved,) = [c for c in verdict["cases"] if c.get("resolution")]
     assert (resolved["case"]["name"], resolved["kind"]) == (STOPPED.name, "scientific")
 

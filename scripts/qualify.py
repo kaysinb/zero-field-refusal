@@ -136,21 +136,25 @@ record. A case that holds a scientific failure, as its bound, valid part records
 verdicts show it (another stage's included; a launcher run's declared stop counts only when such a
 record classified it scientific), is kept whole: none of its records (its parts, its control, its
 trajectory results) nor its launcher run is voided, it is listed as kept with why, and the driver's
-stale check passes it; the failure keeps counting (no reruns to pass). A launcher run no part record
-names (the Pod stopped before its baseline, say) is first resolved against its original issued
-policy and provenance, without this process's code or environment (``resolve_launcher_run``: its
+stale check passes it; the failure keeps counting (no reruns to pass). A record classified its
+launcher run only when it says so (``launcher.classified``, true once ``launcher_problems``
+returned): naming the run is not enough. A launcher run no part record classified (none names it:
+the Pod stopped before its baseline, say; or each that does raised before its check returned, in
+the numerics setup or the check itself) is first resolved against its original issued policy and
+provenance, without this process's code or environment (``resolve_launcher_run``: its
 campaign cell, its identity, config agreement, its numerics against its config, its own commit):
 conforming and stopped by its declared instability rule, a scientific failure (the case is kept
 whole and decided, and no part runs for it); departing from its cell on readable records, or
 completed, superseded as any run; unresolvable (records unreadable, a needed field missing, the
 commit unknown), the case is kept as it is, listed unresolved, and the run held in the journal
 (``launch.hold``), so that neither a part nor the launcher's recovery round reruns it. The verdict
-counts a resolved outcome as the case's (``resolved_verdict``). The cycle is refused a second time
-for the candidate (a technical failure left unresolved after it routes to the technical feasibility
-report), for a record that is not a completed technical failure of the case or that belongs to a
-case the cycle keeps whole (by its records or its launcher run), and when the fix's GPU code is the
-old one (the same path is not simply rerun); run again with the same record, it only writes the
-journal's lines that are missing. Each case it names re-qualifies under the new code from a new
+counts a resolved outcome as the case's (``resolved_verdict``), beside the verdicts of any records
+that did not classify the run. The cycle is refused a second time for the candidate (a technical
+failure left unresolved after it routes to the technical feasibility report), for a record that is
+not a completed technical failure of the case or that belongs to a case the cycle keeps whole (by
+its records or its launcher run), and when the fix's GPU code is the old one (the same path is not
+simply rerun); run again with the same record, it only writes the journal's lines that are
+missing. Each case it names re-qualifies under the new code from a new
 launcher run (the recovery round) and new attempts of its parts: the attempt after one the cycle
 named carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path
 and sha256) instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun
@@ -1218,10 +1222,11 @@ def resolution_of(out: Path, case: q.QualificationCase) -> dict | None:
 
 def resolved_verdict(resolution: Mapping[str, Any]) -> dict[str, Any]:
     """A case verdict of a launcher run's resolved outcome (``resolve_launcher_run``), for a
-    case with no part record: ``failing`` and scientific for a conforming declared stop, an
-    ``incomplete`` case of no kind for an unresolved one. Its GPU code is the run's, never the
-    current one, so ``rate_verdict`` does not count it as a qualified case: a scientific one
-    keeps the rate failing, an unresolved one keeps it from ``qualified``."""
+    case no part record of which classified that run (records that raised before their check
+    keep their own verdicts beside it): ``failing`` and scientific for a conforming declared
+    stop, an ``incomplete`` case of no kind for an unresolved one. Its GPU code is the run's,
+    never the current one, so ``rate_verdict`` does not count it as a qualified case: a
+    scientific one keeps the rate failing, an unresolved one keeps it from ``qualified``."""
     scientific = resolution.get("outcome") == q.SCIENTIFIC
     return {"case": resolution.get("case_record"),
             "state": q.FAILING if scientific else q.INCOMPLETE,
@@ -1278,7 +1283,8 @@ def supersede_case(
     re-qualified. A case that holds a scientific failure, as its bound, valid part records read with
     the verdicts show it (``scientific_attempts``; a launcher run's declared stop counts only when
     such a record classified it scientific), is kept whole: none of its records, nor its launcher
-    run, is voided, and it is listed as kept, with why. A launcher run no part record names is
+    run, is voided, and it is listed as kept, with why. A launcher run no part record classified
+    (``launcher.classified``: a record that names it without it raised before its check) is
     resolved against its issued policy first (``resolve_launcher_run``): a conforming declared stop
     keeps its case whole (scientific); an unresolvable one keeps it as it is, listed unresolved, the
     run held (no rerun opened); a departing or completed run is superseded. Refused: a second time
@@ -1330,7 +1336,10 @@ def supersede_case(
     by_name = {(p.case.name, ROLES[p.case.engineering]): p for p in planned}
     attempts, requalified, kept, kept_cases, run_ids, kept_runs = [], [], [], [], set(), set()
     entries_of: dict[tuple[str, str], list[dict]] = {}  # every attempt of a case, as named
-    classified: set[str] = set()  # the launcher runs a part record names (and so classified)
+    # The launcher runs a part record classified: it names the run and says so explicitly
+    # (``launcher.classified``, written once ``launcher_problems`` returned); a record whose setup
+    # or check raised first names the run without classifying it
+    classified: set[str] = set()
     for stage in sorted(d for d in candidate_dir.iterdir() if d.is_dir()):
         for case_dir in sorted({f.parent for f in stage.glob("s*/*/*-attempt-*")}):
             name = case_name_of(case_dir)
@@ -1341,7 +1350,8 @@ def supersede_case(
                 for n, state in attempt_files(case_dir, part_name).items():
                     file = case_dir / f"{part_name}-attempt-{n}.json"
                     record = _read(file) if state == "recorded" else None
-                    identity = ((record or {}).get("launcher") or {}).get("identity") or {}
+                    launcher = (record or {}).get("launcher") or {}
+                    identity = launcher.get("identity") or {}
                     entry = {"case": name, "stage": stage.name, "part": part_name,
                              "attempt": n, "state": state, "path": str(file),
                              "sha256": file_sha256(file) if state == "recorded" else None,
@@ -1349,7 +1359,8 @@ def supersede_case(
                              "kind": (record or {}).get("kind"),
                              "launcher_run_id": identity.get("run_id")}  # fmt: skip
                     entries.append(entry)
-                    if state == "recorded" and entry["launcher_run_id"]:
+                    if (state == "recorded" and entry["launcher_run_id"]
+                            and launcher.get("classified") is True):  # fmt: skip
                         classified.add(entry["launcher_run_id"])
                     if state == "recorded" and (entry["sha256"] in named or (
                             ((record or {}).get("provenance") or {}).get("gpu_code") or {}
@@ -1377,12 +1388,13 @@ def supersede_case(
                 requalified.append({"case": name, "stage": stage.name})
                 run_ids |= {e["launcher_run_id"] for e in mine if e["launcher_run_id"]}
     kept_names = {(k["case"], k["stage"]) for k in kept_cases}
-    # Every campaign case not kept: its launcher runs. A run a part record names is classified
-    # by it (scientific: the case is kept above). One no part record names is resolved against
-    # its issued policy (``resolve_launcher_run``): a conforming declared stop keeps the case
-    # whole (scientific); an outcome nobody can resolve keeps it as it is and holds the run (no
-    # rerun opened); a nonconforming or completed run is superseded below, as any run not of
-    # the fix's code
+    # Every campaign case not kept: its launcher runs. A run a part record classified
+    # (``launcher.classified``) is judged by that record (scientific: the case is kept above).
+    # One no part record classified (none names it, or each that does raised before its check
+    # returned) is resolved against its issued policy (``resolve_launcher_run``): a conforming
+    # declared stop keeps the case whole (scientific); an outcome nobody can resolve keeps it as
+    # it is and holds the run (no rerun opened); a nonconforming or completed run is superseded
+    # below, as any run not of the fix's code
     starts = journal_starts(root)
     header = campaign_header(args.campaign)
     by_case: dict[tuple[str, str], set[str]] = {}
@@ -1595,15 +1607,15 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
             cases.append(verdict_)
             if void is not None:
                 voided[verdict_["record_sha256"]] = void
-    # A case the engineering cycle kept on its launcher run's resolved outcome, with no part
-    # record of its own: its verdict is that outcome (``resolved_verdict``)
-    live = {(v["case"] or {}).get("name") for v in cases if "superseded" not in v}
+    # A case the engineering cycle kept on its launcher run's resolved outcome (no part record
+    # classified that run: none names it, or each that does raised before its check): its
+    # verdict is that outcome too (``resolved_verdict``), beside its records' own
     for _, cycle in [
         (f, _read(f)) for f in sorted((out / f"c{candidate}").glob("supersede-*.json"))
     ]:
         for kept_case in (cycle or {}).get("kept_cases") or []:
             resolution = kept_case.get("resolution")
-            if resolution and kept_case.get("stage") == stage and kept_case["case"] not in live:
+            if resolution and kept_case.get("stage") == stage:
                 cases.append(resolved_verdict(resolution))
                 if resolution["outcome"] == UNRESOLVED:
                     warnings.append(f"{kept_case['case']}: its launcher run "
