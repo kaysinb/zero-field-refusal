@@ -6,18 +6,22 @@ the launch journal does not count until the journal is restored; harm labels nev
 selection: after the fixation there are no new candidates, rates or K*), "Simulation before
 validation" (L and the validation size, recorded before validation), "Validation", "Sample size
 from validation" (the candidate, the rates, the numerical policy and the judge sealed; N, the cap
-and the decision on the money), "Confirmation" and "Voiding and supersession" (a validation or
-confirmation run under a commit other than the pinned one does not count). Study 2's versions
-record (``study2_short.versions_problems`` and ``read_versions_record``,
-docs/study2-short-versions*.json) is the model. Study 3 fixes in two stages: a record before a
-candidate's validation, and before its confirmation a supplement that names the first.
+and the decision on the money), "Inference" (the bootstrap's fixed seed, recorded in the fixation
+record before confirmation), "The audit" (the draw's seed and procedure, in the fixation record
+before any confirmation label is opened; the agreements checked on a draw with a recorded seed),
+"Confirmation" and "Voiding and supersession" (a validation or confirmation run under a commit
+other than the pinned one does not count). Study 2's versions record
+(``study2_short.versions_problems`` and ``read_versions_record``, docs/study2-short-versions*.json)
+is the model. Study 3 fixes in two stages: a record before a candidate's validation, and before
+its confirmation a supplement that names the first.
 
 - ``validation_fixation``, ``confirmation_fixation`` and ``versions_record``: the builders. Each
-  returns a record from records already written: the decision records through
-  ``study3_decisions.read_decision``, the numerical qualification through
-  ``qualification_records.read_qualification`` (recomputed from its records), the checkout
-  through Git. A built record is checked as its reader checks it, and ``RecordRefused`` names
-  every problem. No builder writes a file (``scripts/study3_summary.py`` does).
+  returns a record from records already written: the stage and its rates through
+  ``study3_progress.progress``, the decision records through ``study3_decisions.read_decision``, the
+  numerical qualification through ``qualification_records.read_qualification`` (recomputed from
+  its records), the checkout through Git. A built record is checked as its reader checks it, and
+  ``RecordRefused`` names every problem. No builder writes a file (``scripts/study3_summary.py``
+  does).
 - ``read_validation_fixation``, ``read_confirmation_fixation`` and ``read_versions``: a record
   and its problems, ``(record | None, problems)`` as ``study3_decisions.read_decision`` gives
   them: an absent record is (None, []); with any problem the record is None.
@@ -29,36 +33,45 @@ candidate's validation, and before its confirmation a supplement that names the 
 - ``fixation_name`` and ``versions_name``: the records' paths in the checkout.
 
 **The records** lie in the checkout (``docs/``). Their schemas are closed: a field the schema does
-not name is refused, and they hold numbers, ids, paths and hashes only. Evidence under RUNS_DIR is
-named as ``study3_decisions`` names it, ``{"path", "sha256"}`` with the path relative to RUNS_DIR
-(``"root": "repo"`` for a path relative to the checkout), and checked against the file as it is
-now, byte for byte, whenever the record is read; a file under a ``responses/`` or
-``observations/`` folder is refused and never opened. ``written_at`` is ISO 8601 in UTC; ``code``
-is ``commit`` (40 hexadecimal digits) and ``gpu_code_sha256`` (``code_identity.gpu_code_identity``
-of that commit); ``model`` is the model's ``name`` and ``revision`` and ``judge`` the judge's
-``config`` and identity (``judge.IDENTITY_FIELDS``), as study 2's records give them, equal to this
-checkout's configs (``experiments/study3`` and ``judge/wildguard``, the frozen judge).
+not name is refused, and they hold numbers, ids, paths and hashes only (the model's and the
+judge's names and revisions are repository ids: letters, digits and ``._@+-/``, no space). Evidence
+under RUNS_DIR is named as ``study3_decisions`` names it, ``{"path", "sha256"}`` with the path
+relative to RUNS_DIR (``"root": "repo"`` for a path relative to the checkout), and checked against
+the file as it is now, byte for byte, whenever the record is read; a file under a ``responses/``
+or ``observations/`` folder is refused and never opened. ``written_at`` is ISO 8601 in UTC;
+``code`` is ``commit`` (40 hexadecimal digits) and ``gpu_code_sha256``
+(``code_identity.gpu_code_identity`` of that commit); ``model`` is the model's ``name`` and
+``revision`` and ``judge`` the judge's ``config`` and identity (``judge.IDENTITY_FIELDS``), as
+study 2's records give them, equal to this checkout's configs (``experiments/study3`` and
+``judge/wildguard``, the frozen judge).
 
 1. **The validation fixation**, ``docs/study3-fixation-validation-c<N>.json``, written once before
    candidate N's validation: ``kind`` (``fixation-validation``) and ``candidate``;
    ``written_at``; ``policy``: the registration (``path``, docs/study3-preregistration.md), the
    ``commit`` it is read at, the file's ``sha256`` at that commit and its ``amendments``, the
-   numbers of all its "Amendment <n>" headings there; ``rates``: the selected (or repaired) rates
-   per active arm, A, F and, while P–F is active, P, each ``lr_l`` and ``lr_u``;
-   ``qualification``: the evidence of the numerical verdict file (``verdict``,
-   ``qualification/c<N>/verdict.json``) and of every launch log the qualification rests on
-   (``logs``, ``qualification_logs``, in the order of their paths), and the ``states`` of the
-   fixed rates (per arm, ``lr_l`` and ``lr_u``), each ``qualified``; ``simulation`` and
-   ``engineering``: the evidence of the decision records ``study3/decisions/simulation.json`` and
-   ``study3/decisions/engineering.json``; ``validation_blocks`` (28 or 40) and ``level`` (L), the
-   simulation record's; ``model``, ``judge`` and ``code``.
+   numbers of all its "Amendment <n>" headings there; ``rates``: the active arms of candidate N's
+   validation step (A, F and, while P–F is open, P) and their ``lr_l`` and ``lr_u``, as
+   ``study3_progress`` gives them; ``qualification``: ``logs``, the evidence of every launch log
+   the qualification rests on (``qualification_logs``), ``ledger``, the evidence of every record
+   file ``read_qualification`` takes as an input for the candidate (its ``inputs``: the part
+   attempt records, the trajectory results, the case restart and supersession records; never the
+   verdict cache, which package 1 rewrites, nor a ``checkpoints-removed`` record), both in the
+   order of their paths, and the ``states`` of the fixed rates (per arm, ``lr_l`` and ``lr_u``),
+   each ``qualified``; ``simulation`` and ``engineering``: the evidence of the decision records
+   ``study3/decisions/simulation.json`` and ``study3/decisions/engineering.json``;
+   ``validation_blocks`` (28 or 40) and ``level`` (L), the simulation record's; ``model``,
+   ``judge`` and ``code``.
 2. **The confirmation supplement**, ``docs/study3-fixation-confirmation-c<N>.json``, written once
    before candidate N's confirmation: ``kind`` (``fixation-confirmation``) and ``candidate``;
    ``written_at``; ``validation_fixation``: the first record's evidence (``"root": "repo"``);
    ``n``: the evidence of ``study3/decisions/n-c<N>.json``; ``N`` and ``cap``, the n record's;
    ``budget``: the evidence of ``study3/decisions/budget-c<N>.json`` when
    ``study3_decisions.budget_reason`` says N needs a budget decision (its decision proceed), else
-   null; ``code``.
+   null; ``bootstrap``: the interval's fixed ``seed`` and its ``resamples`` (100 000);
+   ``audit``: the draw's ``seed``, the ``agreement_seed`` of the draw of agreements the researcher
+   checks, and the ``procedure``, the fixed id ``AUDIT_PROCEDURE`` that names the registration's
+   "Draw" (probability proportional to size, with replacement; 400 A, 400 F and 200 P draws), run
+   by the pinned ``code``; seeds are integers in [0, 2³²); ``code``.
 3. **The versions record**, ``docs/study3-versions.json`` and any later one
    ``docs/study3-versions-<k>.json`` (k = 2, 3, …): ``what`` (the fixed text ``WHAT``),
    ``written_at``, ``code`` (its ``commit`` alone), ``model``, ``judge``, ``fixation`` (the
@@ -68,17 +81,21 @@ checkout's configs (``experiments/study3`` and ``judge/wildguard``, the frozen j
    digits or underscores, at most 64). A later record is a new file; nothing is overwritten.
 
 **What each reader checks.**
-- The validation fixation: its schema; its evidence now; the policy at its commit, which HEAD
-  descends from; that the qualification rests now on exactly the logs it pins; the simulation
-  record valid and passed, of the fixed L and size; the engineering record valid and passed; the
-  model and the judge; the code: a commit HEAD descends from, whose GPU code is
-  ``gpu_code_sha256``, the code in force for the candidate's runs (the chain of engineering cycles
-  from the engineering record, ``study3_progress.code_chain``).
+- The validation fixation: its schema; its evidence now (the logs and the ledger included, each
+  unchanged); the policy at its commit, which HEAD descends from; that the qualification rests
+  now on exactly the logs it pins; the simulation record valid and passed, of the fixed L and
+  size; the engineering record valid and passed; the model and the judge; the code: a commit HEAD
+  descends from, whose GPU code is ``gpu_code_sha256``, the code in force for the candidate's runs
+  (the chain of engineering cycles from the engineering record, ``study3_progress.code_chain``);
+  and the qualification recomputed under the code in force (``read_qualification``), without a
+  problem, its fixed rates' states the pinned ones and its inputs the pinned ledger, none added. A
+  later restart or supersession so shows as a changed state, a new input or a changed code in
+  force; a rewritten verdict cache or a new ``checkpoints-removed`` record changes nothing.
 - The confirmation supplement: its schema; its evidence now; its candidate's validation fixation
-  valid; the n record valid and passed, of its N and cap, of the fixed L, of the fixed rates for
-  the arms it names and of the fixation's GPU code; the budget record named exactly when N needs
-  one, valid, its decision proceed; its code, checked as the validation fixation's is (so both
-  carry the code in force: one GPU code).
+  valid (its full reader); the n record valid and passed, of its N and cap, of the fixed L, of the
+  fixed rates for the arms it names and of the fixation's GPU code; the budget record named
+  exactly when N needs one, valid, its decision proceed; the seeds' form; its code, checked as the
+  validation fixation's is (so both carry the code in force: one GPU code).
 - The versions record: its schema and the evidence it names now (its fixation, the record it
   supersedes).
 
@@ -89,11 +106,11 @@ checkout's configs (``experiments/study3`` and ``judge/wildguard``, the frozen j
   whose changes from the recorded commit touch the record alone; no tracked file has an
   uncommitted change, and no file is untracked unless the checkout's ``.gitignore`` ignores it;
 - its model and judge are this checkout's configs'; its fixation, when it names one, is committed,
-  of the named sha256 now and at the recorded commit, valid (its reader), and of the recorded
+  of the named sha256 now and at the recorded commit, valid (its full reader), and of the recorded
   commit's GPU code;
 - the succession: the first record names none; every later one names the one before it, by path,
   sha256 and reason; each earlier record is read from Git at the commit that added it, and a
-  record added more than once, or changed since, is a problem;
+  record added more than once, changed since or deleted is a problem;
 - every validation and confirmation run (a study-3 start of the launch journal whose campaign
   header names that step) started under a campaign whose header names this record or one it
   supersedes (``versions_record``: its path, or a path from another checkout that ends with it),
@@ -103,8 +120,12 @@ checkout's configs (``experiments/study3`` and ``judge/wildguard``, the frozen j
   study-3 step: whether it is a validation or confirmation run cannot be shown;
 - the record each run is under stands for it: a validation run's record names its candidate's
   validation fixation, a confirmation run's its candidate's confirmation supplement; a record whose
-  fixation is null stands for none. The fixation of each record a run is under is checked as the
-  record's own is;
+  fixation is null stands for none. For an earlier record, as study 2 checks it, that fixation
+  file is committed and of the sha256 the record pins (its full reader runs for the record checked
+  only);
+- each such run's arm is active in its fixation and its rate one of the two the fixation fixes for
+  that arm (a validation fixation's ``rates``; for a supplement, the rates of the n record it pins:
+  the arms still open at confirmation), read from the run's cell as ``study3_records`` binds it;
 - a missing launch journal, a log that cannot be read, an unparseable line before the last of its
   log, and a study-3 run directory without a start in the journal that is a validation or
   confirmation run (its ``config.yaml``'s role, else its ``meta.json``'s campaign header), or whose
@@ -112,9 +133,11 @@ checkout's configs (``experiments/study3`` and ``judge/wildguard``, the frozen j
 With ``step`` and ``candidate``, the record must also stand for a run of that step and candidate:
 the check before a campaign is written under it.
 
-**The sealing boundary.** Of a run directory only ``config.yaml`` and ``meta.json`` are read, and
-only for a directory with no start in the journal; a file that resolves under a ``responses/`` or
-``observations/`` folder is never opened. No response text, harm label or judge output is read.
+**The sealing boundary.** Of a run directory only ``config.yaml`` and ``meta.json`` are read (a
+directory with no start in the journal here; a started run's cell through ``study3_records``); a
+file that resolves under a ``responses/`` or ``observations/`` folder is checked for that before
+any read or hash of a record path, and never opened. No response text, harm label or judge output
+is read.
 
 **Rulings** where the registration leaves a detail open:
 - *The registration's commit* is, by default, the last commit that changed the registration, which
@@ -122,11 +145,11 @@ only for a directory with no start in the journal; a file that resolves under a 
 - *The logs the qualification rests on* are every launch log that holds one of its lines: a start
   of a ``numerical`` or ``repair`` campaign of the candidate, or a line naming one of those runs (an
   ``end``, ``superseded`` or ``held`` line by run id, a ``superseded`` or ``held`` line by label, a
-  recovery round naming a label). They are pinned whole, by sha256: a later line in any of them, or
-  a new log naming a run of the qualification, changes the evidence.
-- *The reader does not recompute the qualification*; the builder does (``read_qualification``,
-  under the code in force). The record is bound to the verdict file and the logs by their bytes,
-  and the state machine recomputes the qualification at every step.
+  recovery round naming a label). They are pinned whole, by sha256: no registered route writes to
+  them after the fixation (the campaign writer refuses a reused campaign name).
+- *The fixed rates* are the stage's: the validation step's cells when it carries them, each at one
+  of the arm's two rates, and otherwise the rates of the reading the cells come from (``progress``'
+  ``rates`` and ``active``); P is fixed exactly while P–F is open.
 - *The two reasons*: ``reason`` says why the record is written (the stage it serves, for example
   ``validation_c1``), ``supersedes.reason`` why the record before it no longer serves.
 - *A run's own commit* (``meta.json``'s ``git``) is not compared with the record's commit here: the
@@ -178,9 +201,11 @@ from .study3_records import (
     RATE_TOLERANCE,
     STEP_ROLES,
     VERSIONED_STEPS,
-    JournalLog,
+    _bind,
+    _Files,
     _read_journal,
     journal_lines,
+    parse_journal_lines,
 )
 
 REGISTRATION = "docs/study3-preregistration.md"
@@ -194,16 +219,21 @@ WHAT = ("The versions of study 3's validation and confirmation runs: the commit,
         "judge and the fixation they run under.")  # fmt: skip
 QUALIFIED = "qualified"
 LABELS = ("lr_l", "lr_u")
+ARMS = ("A", "F", "P")
 # The campaign steps whose runs are qualification cases (qualification_records.STEPS; that module
 # loads torch, and is imported only where it is read)
 QUALIFICATION_STEPS = ("numerical", "repair")
 ENGINEERING_RECORD = "/".join((*DIRECTORY, "engineering.json"))
+# "Inference": 100 000 resamples of blocks; "The audit", "Draw": the registered procedure
+BOOTSTRAP_RESAMPLES = 100_000
+AUDIT_PROCEDURE = "pps-with-replacement-400-400-200"
+SEED_LIMIT = 2**32  # a seed is an integer in [0, 2³²)
 FIELDS = {
     "validation": ("kind", "candidate", "written_at", "policy", "rates", "qualification",
                    "simulation", "validation_blocks", "level", "engineering", "model", "judge",
                    "code"),
     "confirmation": ("kind", "candidate", "written_at", "validation_fixation", "n", "N", "cap",
-                     "budget", "code"),
+                     "budget", "bootstrap", "audit", "code"),
     "versions": ("what", "written_at", "code", "model", "judge", "fixation", "supersedes",
                  "reason"),
 }  # fmt: skip
@@ -213,6 +243,9 @@ _FIXATION_NAME = re.compile(r"docs/study3-fixation-(validation|confirmation)-c([
 _LOG = re.compile(r"launch/[^/\\]+\.jsonl")
 _AMENDMENT = re.compile(r"^### Amendment (\d+)\b", re.MULTILINE)
 _ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
+# A repository id or revision (a model's or judge's name, a revision, a prompt version)
+_PART = r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}"
+_NAME = re.compile(rf"{_PART}(?:/{_PART}){{0,3}}")
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
 
 
@@ -304,10 +337,15 @@ def _gpu_code(repo: Path, commit: str) -> str | None:
 
 def _in_checkout(path: str | Path, repo: Path) -> str | None:
     """A path relative to the checkout (a relative path is read from it); None outside it."""
-    path = Path(path)
-    resolved = (path if path.is_absolute() else repo / path).resolve()
+    resolved = _from(path, repo).resolve()
     root = repo.resolve()
     return resolved.relative_to(root).as_posix() if resolved.is_relative_to(root) else None
+
+
+def _from(path: str | Path, repo: Path) -> Path:
+    """``path``, a relative one read from the checkout ``repo``."""
+    path = Path(path)
+    return path if path.is_absolute() else repo / path
 
 
 def registered_policy(repo: str | Path = REPO_ROOT, commit: str | None = None) -> dict[str, Any]:
@@ -363,7 +401,8 @@ def qualification_logs(
     """The launch logs a candidate's numerical qualification rests on (module docstring,
     "Rulings"), in the order of their paths, each ``{"path", "sha256"}`` with its path under
     RUNS_DIR and its sha256 now; and the problems: a log that cannot be read, or an unparseable
-    line before the last of its log (it may be a line of the qualification)."""
+    line before the last of its log (``study3_records.parse_journal_lines``: it may be a line of
+    the qualification)."""
     _candidate(candidate)
     logs, unreadable = journal_lines(runs_root)
     problems = [f"{problem}: it may hold a line of the qualification" for problem in unreadable]
@@ -379,9 +418,10 @@ def qualification_logs(
                     labels.add(key)
     pinned = []
     for log in logs:
+        corrupt = parse_journal_lines([line.text for line in log.lines])[1]
         problems += [f"{log.path} line {number}: not valid JSON, and not the last line of its "
                      "log: it may be a line of the qualification"
-                     for number in _corrupt(log)]  # fmt: skip
+                     for number in corrupt]  # fmt: skip
         if any(line.record is not None and _of_qualification(line.record, candidate, ids, labels)
                for line in log.lines):  # fmt: skip
             pinned.append({"path": log.path, "sha256": log.sha256})
@@ -418,20 +458,6 @@ def _of_qualification(record: Mapping[str, Any], candidate: int, ids: set[str],
                     for label in runs))  # fmt: skip
 
 
-def _corrupt(log: JournalLog) -> list[int]:
-    """The numbers of a log's unparseable lines before its last (a last line cut short by a
-    crash is skipped, the launcher's rule)."""
-    last = max((line.line for line in log.lines if line.text.strip()), default=0)
-    out = []
-    for line in log.lines:
-        if line.text.strip() and line.line != last:
-            try:
-                json.loads(line.text)
-            except ValueError:
-                out.append(line.line)
-    return out
-
-
 # ------------------------------------------------------------------ the schemas
 
 
@@ -452,6 +478,14 @@ class _Check(_Schema):
     def ident(self, where: str, value: Any) -> None:
         self.pattern(where, value, _ID, "an id (a lowercase letter, then lowercase letters, digits "
                      "or underscores, at most 64)")  # fmt: skip
+
+    def name(self, where: str, value: Any) -> None:
+        self.pattern(where, value, _NAME, "a repository id or revision (letters, digits and "
+                     "._@+-/, no space)")  # fmt: skip
+
+    def seed(self, where: str, value: Any) -> None:
+        if not (type(value) is int and 0 <= value < SEED_LIMIT):
+            self.add(where, f"is {value!r}, not a seed (an integer in [0, 2³²))")
 
     def repo_ref(self, where: str, value: Any, extra: Sequence[str] = ()) -> dict[str, Any] | None:
         """Evidence relative to the checkout, ``{"path", "sha256"}`` (and ``extra``)."""
@@ -475,13 +509,13 @@ class _Check(_Schema):
     def instruments(self, top: Mapping[str, Any]) -> None:
         model = self.object("model", top["model"], ("name", "revision"))
         for key in ("name", "revision") if model is not None else ():
-            self.text(f"model.{key}", model[key])
+            self.name(f"model.{key}", model[key])
         judge = self.object("judge", top["judge"], ("config", *IDENTITY_FIELDS))
         if judge is not None:
-            self.text("judge.config", judge["config"])
+            self.name("judge.config", judge["config"])
             for key in IDENTITY_FIELDS:
-                if not (judge[key] is None or isinstance(judge[key], str)):
-                    self.add(f"judge.{key}", f"is {judge[key]!r}, not a string or null")
+                if judge[key] is not None:
+                    self.name(f"judge.{key}", judge[key])
 
     def common(self, top: Mapping[str, Any]) -> None:
         if top["kind"] != self.kind:
@@ -491,12 +525,32 @@ class _Check(_Schema):
         self._when(top["written_at"])
 
     def rates(self, value: Any) -> tuple[str, ...] | None:
-        """The fixed rates, per active arm (A and F, and P while P–F is active); their arms, or
+        """The fixed rates, per active arm (A and F, and P while P–F is open); their arms, or
         None when they are not well formed."""
         before = len(self.problems)
         with_p = isinstance(value, dict) and "P" in value
         self._rates(value, with_p)
         return (("A", "F", "P") if with_p else ("A", "F")) if len(self.problems) == before else None
+
+    def refs_list(self, where: str, value: Any, path: re.Pattern, what: str) -> None:
+        """A non-empty list of evidence under the runs directory, each path ``path``'s, in the
+        order of its paths, each once."""
+        if not isinstance(value, list) or not value:
+            self.add(where, f"is not a non-empty list of {what}")
+            return
+        paths = []
+        for i, entry in enumerate(value):
+            entry = self.ref(f"{where}[{i}]", entry)
+            if entry is None:
+                continue
+            named = entry["path"]
+            if entry.get("root", "runs") != "runs" or not (
+                    isinstance(named, str) and path.fullmatch(named)):  # fmt: skip
+                self.add(f"{where}[{i}]", f"is {named!r}, not one of the {what} under the runs "
+                         "directory")  # fmt: skip
+            paths.append(named)
+        if all(isinstance(p, str) for p in paths) and paths != sorted(set(paths)):
+            self.add(where, "is not in the order of its paths, each once")
 
     # -- the validation fixation
 
@@ -532,29 +586,13 @@ class _Check(_Schema):
                      "ascending order, each once")  # fmt: skip
 
     def qualification(self, value: Any, arms: tuple[str, ...] | None) -> None:
-        found = self.object("qualification", value, ("verdict", "logs", "states"))
+        found = self.object("qualification", value, ("logs", "ledger", "states"))
         if found is None:
             return
-        verdict = f"qualification/c{self.candidate}/verdict.json"
-        self._exact_ref("qualification.verdict", found["verdict"], verdict)
-        logs = found["logs"]
-        if not isinstance(logs, list) or not logs:
-            self.add("qualification.logs", "is not a non-empty list of launch logs")
-        else:
-            paths = []
-            for i, entry in enumerate(logs):
-                where = f"qualification.logs[{i}]"
-                entry = self.ref(where, entry)
-                if entry is None:
-                    continue
-                path = entry["path"]
-                if entry.get("root", "runs") != "runs" or not (
-                        isinstance(path, str) and _LOG.fullmatch(path)):  # fmt: skip
-                    self.add(where, f"is {path!r}, not a launch log launch/<log>.jsonl under the "
-                             "runs directory")  # fmt: skip
-                paths.append(path)
-            if all(isinstance(p, str) for p in paths) and paths != sorted(set(paths)):
-                self.add("qualification.logs", "is not in the order of its paths, each once")
+        self.refs_list("qualification.logs", found["logs"], _LOG, "launch logs launch/<log>.jsonl")
+        self.refs_list("qualification.ledger", found["ledger"], _ledger_path(self.candidate),
+                       f"records of candidate {self.candidate}'s qualification (no verdict cache, "
+                       "no checkpoints-removed record)")  # fmt: skip
         if arms is None:
             return  # the rates' problems are named
         states = self.object("qualification.states", found["states"], arms)
@@ -575,11 +613,9 @@ class _Check(_Schema):
         name = fixation_name("validation", self.candidate)
         entry = self.ref("validation_fixation", top["validation_fixation"])
         if entry is not None and (entry["path"] != name or entry.get("root", "runs") != "repo"):
-            self.add(
-                "validation_fixation",
-                f"is {entry['path']!r} under "
-                f"{entry.get('root', 'runs')!r}, not {name!r} under 'repo', the checkout",
-            )
+            self.add("validation_fixation", f"is {entry['path']!r} under "
+                     f"{entry.get('root', 'runs')!r}, not {name!r} under 'repo', the "
+                     "checkout")  # fmt: skip
         self._exact_ref("n", top["n"], "/".join((*DIRECTORY, f"n-c{self.candidate}.json")))
         if self.integer("N", top["N"], MIN_N):
             cap = cap_of(top["N"])
@@ -590,6 +626,20 @@ class _Check(_Schema):
         if top["budget"] is not None:
             budget = "/".join((*DIRECTORY, f"budget-c{self.candidate}.json"))
             self._exact_ref("budget", top["budget"], budget)
+        bootstrap = self.object("bootstrap", top["bootstrap"], ("seed", "resamples"))
+        if bootstrap is not None:
+            self.seed("bootstrap.seed", bootstrap["seed"])
+            resamples = bootstrap["resamples"]
+            if type(resamples) is not int or resamples != BOOTSTRAP_RESAMPLES:
+                self.add("bootstrap.resamples", f"is {resamples!r}, not the registered "
+                         f"{BOOTSTRAP_RESAMPLES}")  # fmt: skip
+        audit = self.object("audit", top["audit"], ("seed", "agreement_seed", "procedure"))
+        if audit is not None:
+            self.seed("audit.seed", audit["seed"])
+            self.seed("audit.agreement_seed", audit["agreement_seed"])
+            if audit["procedure"] != AUDIT_PROCEDURE:
+                self.add("audit.procedure", f"is {audit['procedure']!r}, not the registered "
+                         f"draw {AUDIT_PROCEDURE!r}")  # fmt: skip
         self.code(top["code"])
 
     # -- the versions record
@@ -618,28 +668,49 @@ class _Check(_Schema):
         self.ident("reason", top["reason"])
 
 
+def _ledger_path(candidate: int | None) -> re.Pattern:
+    """A record file of the candidate's qualification as the ledger names it: under
+    ``qualification/c<N>/``, a JSON file that is neither the verdict cache nor a
+    ``checkpoints-removed`` record."""
+    return re.compile(rf"qualification/c{candidate}/(?:[^/\\]+/)*"
+                      r"(?!verdict\.json$)(?!checkpoints-removed-)[^/\\]+\.json")  # fmt: skip
+
+
 # ------------------------------------------------------------------ reading the fixations
 
 
 def read_validation_fixation(
-    candidate: int, *, runs_root: str | Path, repo: str | Path = REPO_ROOT
+    candidate: int,
+    *,
+    runs_root: str | Path,
+    repo: str | Path = REPO_ROOT,
+    settings: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Candidate N's validation fixation (``docs/study3-fixation-validation-c<N>.json`` in the
     checkout ``repo``) if it is present and valid, and its problems; absent: (None, []). Its
-    evidence under RUNS_DIR is read from ``runs_root``."""
-    return _read_fixation("validation", candidate, Path(runs_root), Path(repo))
+    evidence under RUNS_DIR is read from ``runs_root``; ``settings``:
+    configs/experiments/qualification.yaml as loaded (by default this checkout's), under which the
+    qualification is recomputed."""
+    return _read_fixation("validation", candidate, Path(runs_root), Path(repo), settings)
 
 
 def read_confirmation_fixation(
-    candidate: int, *, runs_root: str | Path, repo: str | Path = REPO_ROOT
+    candidate: int,
+    *,
+    runs_root: str | Path,
+    repo: str | Path = REPO_ROOT,
+    settings: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Candidate N's confirmation supplement (``docs/study3-fixation-confirmation-c<N>.json``),
-    as ``read_validation_fixation`` reads the first."""
-    return _read_fixation("confirmation", candidate, Path(runs_root), Path(repo))
+    as ``read_validation_fixation`` reads the first (which it reads in full)."""
+    return _read_fixation("confirmation", candidate, Path(runs_root), Path(repo), settings)
 
 
-def _read_fixation(step: str, candidate: int, root: Path,
-                   repo: Path) -> tuple[dict[str, Any] | None, list[str]]:  # fmt: skip
+Reading = tuple[dict[str, Any] | None, list[str]]  # a record (None with a problem), its problems
+
+
+def _read_fixation(step: str, candidate: int, root: Path, repo: Path,
+                   settings: Mapping[str, Any] | None) -> Reading:  # fmt: skip
     path = repo / fixation_name(step, candidate)
     if not (path.exists() or path.is_symlink()):
         return None, []
@@ -650,11 +721,12 @@ def _read_fixation(step: str, candidate: int, root: Path,
     except (OSError, ValueError) as exc:
         return None, [f"{path}: unreadable ({type(exc).__name__})"]
     check = _validation_problems if step == "validation" else _confirmation_problems
-    problems = check(record, candidate, root, repo)
+    problems = check(record, candidate, root, repo, settings)
     return (None, [f"{path}: {p}" for p in problems]) if problems else (record, [])
 
 
-def _validation_problems(record: Any, candidate: int, root: Path, repo: Path) -> list[str]:
+def _validation_problems(record: Any, candidate: int, root: Path, repo: Path,
+                         settings: Mapping[str, Any] | None) -> list[str]:  # fmt: skip
     """Every problem of a validation fixation (module docstring, "What each reader checks")."""
     check = _Check(KINDS["validation"], candidate)
     check.validation(record)
@@ -676,6 +748,37 @@ def _validation_problems(record: Any, candidate: int, root: Path, repo: Path) ->
     problems += [f"engineering: {p}" for p in _passed("engineering", engineering, found)]
     problems += _instrument_problems(record)
     problems += _code_problems(record["code"], candidate, root, repo, engineering)
+    if engineering is not None:
+        problems += _recomputed(record, candidate, root, engineering, settings)
+    return problems
+
+
+def _recomputed(record: Mapping[str, Any], candidate: int, root: Path,
+                engineering: Mapping[str, Any],
+                settings: Mapping[str, Any] | None) -> list[str]:  # fmt: skip
+    """The qualification recomputed under the code in force for the candidate: without a
+    problem, the fixed rates' states the pinned ones, its inputs the pinned ledger (none
+    added)."""
+    in_force, _ = _in_force(root, candidate, engineering)
+    if in_force is None:
+        return []  # no code in force: named with the code
+    reading, problems = _reading(root, candidate, in_force, settings)
+    if reading is None:
+        return problems
+    pinned = record["qualification"]
+    for arm, pair in _states(reading, record["rates"]).items():
+        for label, state in pair.items():
+            if state != pinned["states"][arm][label]:
+                problems.append(f"qualification.states.{arm}.{label}: the qualification "
+                                f"recomputed under the code in force gives "
+                                f"{state or 'no such rate'}, not the pinned "
+                                f"{pinned['states'][arm][label]}")  # fmt: skip
+    entries, found = _ledger(reading, root)
+    problems += found
+    added = sorted({e["path"] for e in entries} - {e["path"] for e in pinned["ledger"]})
+    if added:
+        problems.append(f"qualification.ledger: the qualification takes now as inputs {added}, "
+                        "which the record does not pin")  # fmt: skip
     return problems
 
 
@@ -771,7 +874,58 @@ def _in_force(root: Path, candidate: int,
     return in_force.get(candidate), breaks
 
 
-def _confirmation_problems(record: Any, candidate: int, root: Path, repo: Path) -> list[str]:
+def _reading(root: Path, candidate: int, expected_code: str,
+             settings: Mapping[str, Any] | None) -> Reading:  # fmt: skip
+    """The candidate's qualification recomputed from its records under ``expected_code``
+    (``read_qualification``), and its problems (a reading with a problem decides nothing)."""
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+
+    if settings is None:
+        settings = load_config("experiments/qualification")
+    try:
+        reading = qualification_records.read_qualification(
+            root, candidate, expected_code=expected_code, settings=settings)  # fmt: skip
+    except (OSError, ValueError) as exc:
+        return None, [f"qualification: it cannot be read ({type(exc).__name__}: {exc})"]
+    return reading, [f"qualification: {p}" for p in reading["problems"]]
+
+
+def _states(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]]) -> dict:
+    """The fixed rates' states in a qualification reading (None for a rate it does not name)."""
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+
+    states: dict[str, dict[str, Any]] = {}
+    for arm, pair in rates.items():
+        states[arm] = {}
+        for label in LABELS:
+            rate = qualification_records.rate_of(reading, arm, float(pair[label]))
+            states[arm][label] = None if rate is None else rate["state"]
+    return states
+
+
+def _ledger(reading: Mapping[str, Any], root: Path) -> tuple[list[dict[str, str]], list[str]]:
+    """The record files the reading took as inputs (``inputs``), each ``{"path", "sha256"}``
+    under the runs directory with its sha256 now, in the order of their paths."""
+    entries, problems = [], []
+    for name in reading.get("inputs") or []:
+        path = Path(name)
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            problems.append(f"qualification.ledger: {path} is not under the runs directory")
+            continue
+        if _under_sealed(path, root):
+            problems.append(f"qualification.ledger: {_sealed_problem(path)}")
+            continue
+        try:
+            entries.append({"path": relative.as_posix(), "sha256": _digest(path)})
+        except OSError as exc:
+            problems.append(f"qualification.ledger: {path} is unreadable ({type(exc).__name__})")
+    return sorted(entries, key=lambda e: e["path"]), problems
+
+
+def _confirmation_problems(record: Any, candidate: int, root: Path, repo: Path,
+                           settings: Mapping[str, Any] | None) -> list[str]:  # fmt: skip
     """Every problem of a confirmation supplement (module docstring, "What each reader
     checks")."""
     check = _Check(KINDS["confirmation"], candidate)
@@ -779,7 +933,8 @@ def _confirmation_problems(record: Any, candidate: int, root: Path, repo: Path) 
     if check.problems:
         return check.problems
     problems = _evidence(check.refs, root, repo)
-    fixation, found = read_validation_fixation(candidate, runs_root=root, repo=repo)
+    fixation, found = read_validation_fixation(candidate, runs_root=root, repo=repo,
+                                               settings=settings)  # fmt: skip
     if fixation is None:
         problems.append(_no_fixation(candidate, found))
     kind = f"n-c{candidate}"
@@ -830,11 +985,9 @@ def _budget_problems(record: Mapping[str, Any], n: Mapping[str, Any],
     kind = f"budget-c{candidate}"
     reason = budget_reason(n["N"], simulation) if n["state"] == "passed" else None
     if reason is None:
-        return (
-            []
-            if record["budget"] is None
-            else [f"budget: is named, but N = {n['N']} needs no budget decision: it is null"]
-        )
+        if record["budget"] is None:
+            return []
+        return [f"budget: is named, but N = {n['N']} needs no budget decision: it is null"]
     if record["budget"] is None:
         return [f"budget: is null, but a budget decision is needed ({reason}): the {kind} record"]
     budget, found = read_decision(root, kind, repo=repo)
@@ -853,22 +1006,25 @@ def validation_fixation(
     runs_root: str | Path,
     candidate: int,
     *,
-    rates: Mapping[str, Mapping[str, float]],
     code: Mapping[str, str],
     repo: str | Path = REPO_ROOT,
+    theta0: str | Path | None = None,
     settings: Mapping[str, Any] | None = None,
     policy_commit: str | None = None,
     written_at: str | None = None,
 ) -> dict[str, Any]:
     """Candidate N's validation fixation (module docstring) from the records under ``runs_root``
-    and the checkout ``repo``. ``rates``: the selected (or repaired) rates per active arm, as the
-    search and repair state gives them; ``code``: the ``commit`` it is written at and that commit's
-    GPU code (``gpu_code_sha256``), the code in force for the candidate's runs, under which the
-    qualification is recomputed (``read_qualification``; ``settings``:
+    and the checkout ``repo``. The active arms and their rates are the stage's: ``progress``
+    (``theta0`` and ``settings`` passed to it) at candidate N's validation, the step's cells when
+    it carries them; ``code``: the ``commit`` it is written at and that commit's GPU code
+    (``gpu_code_sha256``), the code in force for the candidate's runs, under which the stage is read
+    and the qualification recomputed (``read_qualification``; ``settings``:
     configs/experiments/qualification.yaml as loaded, by default this checkout's);
     ``policy_commit``: the registration's commit (``registered_policy``). ``RecordRefused`` while
-    a fixed rate is not qualified, the simulation or engineering record is not there, not valid
-    or not passed, or for any problem its reader would name; and once the record is written."""
+    the study is not at candidate N's validation, P is fixed while P–F is closed or not fixed while
+    it is open, a cell's rate is not the stage's, a fixed rate is not qualified, the simulation or
+    engineering record is not there, not valid or not passed, or for any problem its reader would
+    name; and once the record is written."""
     _candidate(candidate)
     root, repo = Path(runs_root), Path(repo)
     _not_written(repo / fixation_name("validation", candidate))
@@ -877,9 +1033,13 @@ def validation_fixation(
     engineering, found = read_decision(root, "engineering", repo=repo)
     problems += _passed("engineering", engineering, found)
     check = _Check(KINDS["validation"], candidate)
-    arms = check.rates(rates)
     check.code(code)
     problems += check.problems
+    if problems:  # no stage is read without its decision records and a code
+        raise RecordRefused(_refusal(KINDS["validation"], candidate, problems))
+    if settings is None:
+        settings = load_config("experiments/qualification")
+    rates, problems = _stage_rates(root, candidate, code, repo, theta0, settings)
     policy = None
     try:
         policy = registered_policy(repo, policy_commit)
@@ -890,23 +1050,28 @@ def validation_fixation(
     if not logs:
         problems.append(f"qualification.logs: no launch log holds candidate {candidate}'s "
                         "qualification")  # fmt: skip
-    verdict = root / "qualification" / f"c{candidate}" / "verdict.json"
-    if not verdict.is_file():
-        problems.append(f"qualification.verdict: {verdict} is missing")
     states: dict[str, dict[str, Any]] = {}
-    if arms is not None and not check.problems:
-        states, found = _qualified(root, candidate, rates, arms, code["gpu_code_sha256"], settings)
+    ledger: list[dict[str, str]] = []
+    if rates is not None:
+        reading, found = _reading(root, candidate, code["gpu_code_sha256"], settings)
         problems += found
+        if reading is not None:
+            states = _states(reading, rates)
+            problems += [f"qualification: {arm}'s {label} {rates[arm][label]:g} is "
+                         f"{state or 'not in the qualification'}, not qualified"
+                         for arm, pair in states.items() for label, state in pair.items()
+                         if state != QUALIFIED]  # fmt: skip
+            ledger, found = _ledger(reading, root)
+            problems += found
+            if not ledger:
+                problems.append("qualification.ledger: the qualification took no record as input")
     if problems:
         raise RecordRefused(_refusal(KINDS["validation"], candidate, problems))
     model, judge = instruments()
     record = {
         "kind": KINDS["validation"], "candidate": candidate, "written_at": written_at or _now(),
-        "policy": policy,
-        "rates": {arm: {label: float(rates[arm][label]) for label in LABELS} for arm in arms},
-        "qualification": {"verdict": {"path": verdict.relative_to(root).as_posix(),
-                                      "sha256": _digest(verdict)},
-                          "logs": logs, "states": states},
+        "policy": policy, "rates": rates,
+        "qualification": {"logs": logs, "ledger": ledger, "states": states},
         "simulation": {"path": SIMULATION_RECORD,
                        "sha256": _digest(decision_path(root, "simulation"))},
         "validation_blocks": simulation["validation_blocks"], "level": simulation["level"],
@@ -916,45 +1081,69 @@ def validation_fixation(
         "code": {"commit": code["commit"], "gpu_code_sha256": code["gpu_code_sha256"]},
     }  # fmt: skip
     record = _plain(record, KINDS["validation"], candidate)
-    problems = _validation_problems(record, candidate, root, repo)
+    problems = _validation_problems(record, candidate, root, repo, settings)
     if problems:
         raise RecordRefused(_refusal(KINDS["validation"], candidate, problems))
     return record
 
 
-def _qualified(
-    root: Path,
-    candidate: int,
-    rates: Mapping[str, Mapping[str, float]],
-    arms: Sequence[str],
-    expected_code: str,
-    settings: Mapping[str, Any] | None,
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """The fixed rates' states, recomputed from the qualification's records under the code in
-    force (``read_qualification``), and why a rate is not qualified (a reading with a problem
-    decides nothing)."""
-    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+Fixed = tuple[dict[str, dict[str, float]] | None, list[str]]  # fixed rates (None: none), problems
 
-    if settings is None:
-        settings = load_config("experiments/qualification")
+
+def _stage_rates(root: Path, candidate: int, code: Mapping[str, str], repo: Path,
+                 theta0: str | Path | None, settings: Mapping[str, Any]) -> Fixed:  # fmt: skip
+    """The active arms and their rates at candidate N's validation, as ``progress`` gives them
+    (module docstring, "Rulings"), or why there are none."""
+    from . import study3_progress
+
     try:
-        reading = qualification_records.read_qualification(
-            root, candidate, expected_code=expected_code, settings=settings)  # fmt: skip
+        state = study3_progress.progress(root, repo=repo, expected_code=code["gpu_code_sha256"],
+                                         theta0=theta0, settings=settings)  # fmt: skip
     except (OSError, ValueError) as exc:
-        return {}, [f"qualification: it cannot be read ({type(exc).__name__}: {exc})"]
-    problems = [f"qualification: {p}" for p in reading["problems"]]
-    states: dict[str, dict[str, Any]] = {}
-    for arm in arms:
-        states[arm] = {}
-        for label in LABELS:
-            lr = float(rates[arm][label])
-            rate = qualification_records.rate_of(reading, arm, lr)
-            state = None if rate is None else rate["state"]
-            states[arm][label] = state
-            if state != QUALIFIED:
-                shown = state or "not in the qualification"
-                problems.append(f"qualification: {arm}'s {label} {lr:g} is {shown}, not qualified")
-    return states, problems
+        return None, [f"stage: the study's state cannot be read ({type(exc).__name__}: {exc})"]
+    if state["problems"]:
+        return None, [f"stage: {p}" for p in state["problems"]]
+    if (state["stage"], state["candidate"]) != ("validation", candidate):
+        return None, [f"stage: the study is at {state['stage']!r} of candidate "
+                      f"{state['candidate']} ({state['step'].get('kind')}), not at candidate "
+                      f"{candidate}'s validation, where its validation fixation is "
+                      "written"]  # fmt: skip
+    return _fixed_rates(state)
+
+
+def _fixed_rates(state: Mapping[str, Any]) -> Fixed:
+    """The fixed rates of a stage at validation: its active arms and their two rates; the step's
+    cells, when it carries them, each at one of its arm's two rates."""
+    active, rates = state["active"], state["rates"]
+    arms, open_pf = list(active["arms"]), "P-F" in active["comparisons"]
+    problems = []
+    if "P" in arms and not open_pf:
+        problems.append("stage: P is active while P–F is closed: P is fixed only while P–F is open")
+    if "P" not in arms and open_pf:
+        problems.append("stage: P–F is open and P is not active: P is fixed while P–F is open")
+    if not {"A", "F"} <= set(arms) or not set(arms) <= set(ARMS):
+        problems.append(f"stage: the active arms {arms} are not A and F (and P)")
+    fixed: dict[str, dict[str, float]] = {}
+    for arm in (a for a in ARMS if a in arms):
+        pair = rates.get(arm) or {}
+        values = [pair.get(k) for k in ("l", "u")]
+        if not all(isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+                   and v > 0 for v in values):  # fmt: skip
+            problems.append(f"stage: {arm}'s rates {pair} are not its two rates")
+            continue
+        fixed[arm] = {"lr_l": float(values[0]), "lr_u": float(values[1])}
+    step = state["step"]
+    if step.get("kind") == "campaign" and step.get("campaign") == "validation":
+        for arm, rate, seed in step.get("cells") or []:
+            pair = fixed.get(arm)
+            if pair is None:
+                problems.append(f"stage: the validation step issues {arm} at {rate:g} on {seed}, "
+                                "an arm that is not fixed")  # fmt: skip
+            elif not any(math.isclose(rate, pair[k], rel_tol=RATE_TOLERANCE) for k in LABELS):
+                problems.append(f"stage: the validation step issues {arm} at {rate:g} on {seed}, "
+                                f"not one of the stage's rates of {arm} "
+                                f"({pair['lr_l']:g}, {pair['lr_u']:g})")  # fmt: skip
+    return (None if problems else fixed), problems
 
 
 def confirmation_fixation(
@@ -962,25 +1151,35 @@ def confirmation_fixation(
     candidate: int,
     *,
     code: Mapping[str, str],
+    bootstrap_seed: int,
+    audit_seed: int,
+    agreement_seed: int,
     repo: str | Path = REPO_ROOT,
+    settings: Mapping[str, Any] | None = None,
     written_at: str | None = None,
 ) -> dict[str, Any]:
     """Candidate N's confirmation supplement (module docstring): its validation fixation, its n
     record and, when N needs one, its budget record, from the records under ``runs_root`` and the
-    checkout ``repo``; ``code``: the commit it is written at and that commit's GPU code.
-    ``RecordRefused`` while the validation fixation is not valid, the n record is not there, not
-    valid or not passed, a needed budget record is not there or does not proceed, or for any
-    problem its reader would name; and once the record is written."""
+    checkout ``repo``; the bootstrap's seed, the audit draw's seed and the seed of the draw of
+    agreements the researcher checks (integers in [0, 2³²)), with the registered resamples and
+    draw; ``code``: the commit it is written at and that commit's GPU code. ``RecordRefused``
+    while the validation fixation is not valid, the n record is not there, not valid or not passed,
+    a needed budget record is not there or does not proceed, a seed is not one, or for any problem
+    its reader would name; and once the record is written."""
     _candidate(candidate)
     root, repo = Path(runs_root), Path(repo)
     _not_written(repo / fixation_name("confirmation", candidate))
-    fixation, found = read_validation_fixation(candidate, runs_root=root, repo=repo)
+    fixation, found = read_validation_fixation(candidate, runs_root=root, repo=repo,
+                                               settings=settings)  # fmt: skip
     problems = [] if fixation is not None else [_no_fixation(candidate, found)]
     kind = f"n-c{candidate}"
     n, found = read_decision(root, kind, repo=repo)
     problems += [f"n: {p}" for p in _passed(kind, n, found)]
     check = _Check(KINDS["confirmation"], candidate)
     check.code(code)
+    for where, seed in (("bootstrap.seed", bootstrap_seed), ("audit.seed", audit_seed),
+                        ("audit.agreement_seed", agreement_seed)):  # fmt: skip
+        check.seed(where, seed)
     problems += check.problems
     budget = None
     if n is not None and n["state"] == "passed":
@@ -1007,10 +1206,13 @@ def confirmation_fixation(
         "n": {"path": "/".join((*DIRECTORY, f"{kind}.json")),
               "sha256": _digest(decision_path(root, kind))},
         "N": n["N"], "cap": n["cap"], "budget": budget,
+        "bootstrap": {"seed": bootstrap_seed, "resamples": BOOTSTRAP_RESAMPLES},
+        "audit": {"seed": audit_seed, "agreement_seed": agreement_seed,
+                  "procedure": AUDIT_PROCEDURE},
         "code": {"commit": code["commit"], "gpu_code_sha256": code["gpu_code_sha256"]},
     }  # fmt: skip
     record = _plain(record, KINDS["confirmation"], candidate)
-    problems = _confirmation_problems(record, candidate, root, repo)
+    problems = _confirmation_problems(record, candidate, root, repo, settings)
     if problems:
         raise RecordRefused(_refusal(KINDS["confirmation"], candidate, problems))
     return record
@@ -1024,6 +1226,7 @@ def versions_record(
     reason: str,
     supersedes_reason: str | None = None,
     repo: str | Path = REPO_ROOT,
+    settings: Mapping[str, Any] | None = None,
     written_at: str | None = None,
 ) -> dict[str, Any]:
     """The versions record to be written at ``path`` (a versions record's name in the checkout
@@ -1051,6 +1254,8 @@ def versions_record(
     elif supersedes_reason is None:
         problems.append(f"{own} is a later versions record: it supersedes {previous}, with the "
                         "reason (supersedes_reason)")  # fmt: skip
+    elif _under_sealed(repo / previous, repo):
+        problems.append(f"{own} supersedes {previous}: {_sealed_problem(repo / previous)}")
     elif not ((repo / previous).is_file() and tracked(previous, repo)):
         problems.append(f"{own} supersedes {previous}, which is not a committed file of the "
                         "checkout")  # fmt: skip
@@ -1063,6 +1268,8 @@ def versions_record(
         if name is None or not _FIXATION_NAME.fullmatch(name):
             problems.append(f"fixation: {fixation} is not a fixation record of the checkout "
                             "(docs/study3-fixation-<step>-c<N>.json)")  # fmt: skip
+        elif _under_sealed(repo / name, repo):
+            problems.append(f"fixation: {_sealed_problem(repo / name)}")
         elif not ((repo / name).is_file() and tracked(name, repo)):
             problems.append(f"fixation: {name} is not a committed file of the checkout")
         else:
@@ -1080,7 +1287,7 @@ def versions_record(
     if not problems and supersedes is not None:
         problems = read_versions(repo / previous, repo=repo)[1]
     if not problems:
-        problems = _pins(record, repo, _Fixations(root, repo))
+        problems = _pins(record, repo, _Fixations(root, repo, settings))
     if problems:
         raise RecordRefused(_refusal("versions", None, problems))
     return record
@@ -1121,9 +1328,10 @@ def read_versions(
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """A versions record if it is present and well formed, and its problems: its schema and the
     files it names (its fixation, the record it supersedes) as they are now in the checkout
-    ``repo``; absent: (None, []). ``versions_problems`` checks it against the checkout and the
-    journal."""
-    path, repo = Path(path), Path(repo)
+    ``repo`` (a relative ``path`` is read from it); absent: (None, []). ``versions_problems``
+    checks it against the checkout and the journal."""
+    repo = Path(repo)
+    path = _from(path, repo)
     if not (path.exists() or path.is_symlink()):
         return None, []
     if _under_sealed(path, repo):
@@ -1149,43 +1357,99 @@ class _Link:
 
 
 class _Fixations:
-    """The fixation records a check names, each read once by its reader: the record, and its
-    problems as named (committed, its sha256 now, valid)."""
+    """The fixation records a check names, each read once: in full by its reader (the record
+    checked), or as study 2 checks an earlier record's (committed, of the pinned sha256); and the
+    rates each fixes."""
 
-    def __init__(self, root: Path, repo: Path) -> None:
-        self.root, self.repo = root, repo
-        self.seen: dict[tuple[str, str], tuple[dict[str, Any] | None, list[str]]] = {}
+    def __init__(self, root: Path, repo: Path, settings: Mapping[str, Any] | None = None) -> None:
+        self.root, self.repo, self.settings = root, repo, settings
+        self.full_seen: dict[tuple[str, str], tuple[dict[str, Any] | None, list[str]]] = {}
+        self.rates_seen: dict[tuple[str, str], tuple[dict[str, Any] | None, list[str]]] = {}
 
-    def get(self, ref: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-        key = (ref["path"], ref["sha256"])
-        if key not in self.seen:
-            self.seen[key] = self._read(ref)
-        return self.seen[key]
-
-    def _read(self, ref: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    def light(self, ref: Mapping[str, Any]) -> list[str]:
+        """The fixation file committed, and of the sha256 the record pins (study 2's check of a
+        record's fixation)."""
         name = ref["path"]
-        step, candidate = _FIXATION_NAME.fullmatch(name).groups()
         path, where = self.repo / name, f"fixation {name}"
         if _under_sealed(path, self.repo):
-            return None, [_sealed_problem(path)]
+            return [_sealed_problem(path)]
         if not path.is_file():
-            return None, [f"{where} is missing"]
+            return [f"{where} is missing"]
         problems = [] if tracked(name, self.repo) else [f"{where} is not committed"]
         now = _digest(path)
         if now != ref["sha256"]:
             problems.append(f"{where} has sha256 {now} now, not the named {ref['sha256']}")
-        record, found = _read_fixation(step, int(candidate), self.root, self.repo)
-        problems += found
-        return (None if problems else record), problems
+        return problems
+
+    def full(self, ref: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+        """The fixation as its reader reads it, after the light check."""
+        key = (ref["path"], ref["sha256"])
+        if key not in self.full_seen:
+            step, candidate = _FIXATION_NAME.fullmatch(ref["path"]).groups()
+            problems = self.light(ref)
+            record, found = _read_fixation(step, int(candidate), self.root, self.repo,
+                                           self.settings)  # fmt: skip
+            problems += found
+            self.full_seen[key] = ((None if problems else record), problems)
+        return self.full_seen[key]
+
+    def rates(self, ref: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+        """The rates the fixation fixes, per active arm: a validation fixation's ``rates``; a
+        supplement's, those of the n record it pins (the arms open at confirmation). None, with
+        why, when they cannot be shown; nothing is said of a fixation file that is not the pinned
+        one (``light`` names it)."""
+        key = (ref["path"], ref["sha256"])
+        if key not in self.rates_seen:
+            self.rates_seen[key] = self._rates(ref)
+        return self.rates_seen[key]
+
+    def _rates(self, ref: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+        step = _FIXATION_NAME.fullmatch(ref["path"]).group(1)
+        data = _pinned_json(self.repo / ref["path"], self.repo, ref["sha256"])
+        if data is None:
+            return None, []
+        where = f"fixation {ref['path']}"
+        if step == "confirmation":
+            n = data.get("n") if isinstance(data, dict) else None
+            if not (isinstance(n, Mapping) and isinstance(n.get("path"), str)
+                    and isinstance(n.get("sha256"), str)):  # fmt: skip
+                return None, [f"{where}: its n record cannot be read: its fixed arms cannot be "
+                              "shown"]  # fmt: skip
+            data = _pinned_json(self.root / n["path"], self.root, n["sha256"])
+            if data is None:
+                return None, [f"{where}: the n record {n['path']} it pins is not as pinned: its "
+                              "fixed arms cannot be shown"]  # fmt: skip
+        rates = data.get("rates") if isinstance(data, dict) else None
+        check = _Check("rates")
+        if check.rates(rates) is None:
+            return None, [f"{where}: its fixed rates cannot be read"]
+        return rates, []
+
+
+def _pinned_json(path: Path, base: Path, sha256: str) -> Any:
+    """The JSON content of ``path`` when its bytes are the pinned ones; None otherwise (sealed,
+    missing, another sha256, unreadable)."""
+    if _under_sealed(path, base) or not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(data).hexdigest() != sha256:
+        return None
+    try:
+        return json.loads(data)
+    except ValueError:
+        return None
 
 
 def _pins(record: Mapping[str, Any], repo: Path, fixations: _Fixations) -> list[str]:
     """A versions record's fixation: committed, of the named sha256 now and at the recorded
-    commit, valid, and of the recorded commit's GPU code."""
+    commit, valid (its full reader), and of the recorded commit's GPU code."""
     ref = record["fixation"]
     if ref is None:
         return []
-    fixation, found = fixations.get(ref)
+    fixation, found = fixations.full(ref)
     found = list(found)
     commit = record["code"]["commit"]
     blob = _blob(repo, commit, ref["path"])
@@ -1208,15 +1472,20 @@ def versions_problems(
     repo: str | Path = REPO_ROOT,
     step: str | None = None,
     candidate: int | None = None,
+    settings: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """How the checkout ``repo`` and the launch journal under ``runs_root`` depart from the
-    versions record at ``path`` (module docstring, "The journal check"); none: it holds. With
-    ``step`` (validation or confirmation) and ``candidate``, the record must also stand for a run
-    of that step and candidate; ``ValueError`` for another step or candidate."""
+    versions record at ``path`` (a relative path is read from the checkout; module docstring,
+    "The journal check"); none: it holds. With ``step`` (validation or confirmation) and
+    ``candidate``, the record must also stand for a run of that step and candidate; ``ValueError``
+    for another step or candidate. ``settings``: configs/experiments/qualification.yaml as loaded
+    (by default this checkout's), under which the record's fixation recomputes the
+    qualification."""
     if step is not None or candidate is not None:
         _stage(step)
         _candidate(candidate)
-    path, repo, root = Path(path), Path(repo), Path(runs_root)
+    repo, root = Path(repo), Path(runs_root)
+    path = _from(path, repo)
     if not path.is_file():
         return [f"{path} is missing: write the versions record (scripts/study3_summary.py "
                 "versions) and commit it first"]  # fmt: skip
@@ -1239,11 +1508,11 @@ def versions_problems(
         return [*problems, *(f"{own}: {p}" for p in check.problems)]
     problems += _checkout_problems(record, own, path, repo, committed)
     problems += [f"{own}: {p}" for p in _instrument_problems(record)]
-    fixations = _Fixations(root, repo)
+    fixations = _Fixations(root, repo, settings)
     problems += [f"{own}: {p}" for p in _pins(record, repo, fixations)]
     chain, found = _chain(own, record, hashlib.sha256(data).hexdigest(), repo)
     problems += found
-    problems += _runs_problems(root, repo, chain, fixations)
+    problems += _runs_problems(root, chain, fixations)
     if step is not None:
         why = _stands_for(record["fixation"], step, candidate)
         if why is not None:
@@ -1286,10 +1555,9 @@ def _checkout_problems(record: Mapping[str, Any], own: str, path: Path, repo: Pa
         if added is None:
             problems.append(why)
         elif _blob(repo, "HEAD", own) not in (None, _blob(repo, added, own)):
-            problems.append(
-                f"{own} changed after it was added at {added}: a versions record is "
-                "never overwritten (a later one is a new file that supersedes it)"
-            )
+            problems.append(f"{own} changed after it was added at {added}: a versions record is "
+                            "never overwritten (a later one is a new file that supersedes "
+                            "it)")  # fmt: skip
     return problems
 
 
@@ -1324,7 +1592,12 @@ def _chain(own: str, record: Mapping[str, Any], digest: str,
                             f"that record as added at {added} has {then}")  # fmt: skip
             return chain, problems
         now = repo / previous
-        if not now.is_file() or _digest(now) != then:
+        if _under_sealed(now, repo):
+            problems.append(f"{previous}: {_sealed_problem(now)}")
+        elif not (now.exists() or now.is_symlink()):
+            problems.append(f"{previous} was deleted after it was added at {added}: a versions "
+                            "record is kept as it was written")  # fmt: skip
+        elif not now.is_file() or _digest(now) != then:
             problems.append(f"{previous} changed after it was added at {added}: a versions record "
                             "is never overwritten (a later one is a new file that supersedes "
                             "it)")  # fmt: skip
@@ -1342,8 +1615,7 @@ def _chain(own: str, record: Mapping[str, Any], digest: str,
         name, current = previous, earlier
 
 
-def _runs_problems(root: Path, repo: Path, chain: Sequence[_Link],
-                   fixations: _Fixations) -> list[str]:  # fmt: skip
+def _runs_problems(root: Path, chain: Sequence[_Link], fixations: _Fixations) -> list[str]:
     """The validation and confirmation runs of the launch journal against the chain, and the run
     directories the journal does not show (module docstring, "The journal check")."""
     launch, journal, problems = root / "launch", None, []
@@ -1360,17 +1632,18 @@ def _runs_problems(root: Path, repo: Path, chain: Sequence[_Link],
                             "under cannot be shown (fails closed)")  # fmt: skip
     started: set[str] = set()
     named: dict[tuple[str, str], list[str]] = defaultdict(list)
-    pinned = {chain[0].name: []}  # the record's own fixation is checked already
+    pinned = {chain[0].name: []}  # the record's own fixation is read in full already
     if journal is not None:
         if journal.corrupt:
             problems.append(f"the launch journal has an unparseable line that is not the last of "
                             f"its log ({', '.join(journal.corrupt)}): a start it held cannot be "
                             "shown (fails closed)")  # fmt: skip
+        files = _Files()
         for campaign, start in journal.starts:
             run_id = start.get("run_id")
             if isinstance(run_id, str):
                 started.add(run_id)
-            why = _start_problem(start, chain, repo, fixations, pinned)
+            why = _start_problem(root, campaign, start, chain, fixations, pinned, files)
             if why is not None:
                 named[(campaign, why)].append(f"{start.get('run')} ({run_id})")
     for (campaign, why), runs in sorted(named.items()):
@@ -1381,11 +1654,12 @@ def _runs_problems(root: Path, repo: Path, chain: Sequence[_Link],
     return problems + _unstarted(root, started)
 
 
-def _start_problem(start: Mapping[str, Any], chain: Sequence[_Link], repo: Path,
-                   fixations: _Fixations, pinned: dict[str, list[str]]) -> str | None:  # fmt: skip
-    """Why a study-3 start is not a run of the chain's records that its record stands for (None:
-    it is, or it is no validation or confirmation run). The fixation of each record a run is under
-    is checked once, into ``pinned``."""
+def _start_problem(root: Path, campaign: str, start: Mapping[str, Any], chain: Sequence[_Link],
+                   fixations: _Fixations, pinned: dict[str, list[str]],
+                   files: _Files) -> str | None:  # fmt: skip
+    """Why a study-3 start is not a run of the chain's records that its record stands for, at a
+    rate its fixation fixes (None: it is, or it is no validation or confirmation run). The
+    fixation of each earlier record a run is under is checked once, into ``pinned``."""
     header = start.get("header")
     if not (isinstance(header, Mapping) and header.get("study") == 3
             and header.get("step") in STEP_ROLES):  # fmt: skip
@@ -1407,11 +1681,29 @@ def _start_problem(start: Mapping[str, Any], chain: Sequence[_Link], repo: Path,
     if sha != link.sha256:
         return (f"its campaign header names {link.name} with sha256 {sha}, not that record's "
                 f"{link.sha256} as it was added")  # fmt: skip
-    why = _stands_for(link.record["fixation"], step, candidate)
+    ref = link.record["fixation"]
+    why = _stands_for(ref, step, candidate)
     if why is not None:
         return f"its record {link.name}: {why}"
-    if link.name not in pinned:
-        pinned[link.name] = _pins(link.record, repo, fixations)
+    if link.name not in pinned:  # an earlier record: as study 2 checks it
+        pinned[link.name] = fixations.light(ref)
+    fixed, found = fixations.rates(ref)
+    pinned[link.name] += [p for p in found if p not in pinned[link.name]]
+    if fixed is None:
+        return None  # why its rates cannot be shown is named with its record
+    if not isinstance(start.get("run_id"), str):
+        return "its start names no run id: its arm and rate cannot be bound"
+    cell = _bind(root, campaign, start, {}, twice=False, files=files).cell
+    if cell.arm is None or cell.rate is None:
+        return ("its arm and rate cannot be bound from its records: whether its fixation fixes "
+                "them cannot be shown")  # fmt: skip
+    if cell.arm not in fixed:
+        return (f"its arm {cell.arm} is not active in its fixation {ref['path']} (active: "
+                f"{sorted(fixed)})")  # fmt: skip
+    pair = fixed[cell.arm]
+    if not any(math.isclose(cell.rate, pair[k], rel_tol=RATE_TOLERANCE) for k in LABELS):
+        return (f"its rate {cell.rate:g} of {cell.arm} is not one of the two its fixation "
+                f"{ref['path']} fixes ({pair['lr_l']:g}, {pair['lr_u']:g})")  # fmt: skip
     return None
 
 
