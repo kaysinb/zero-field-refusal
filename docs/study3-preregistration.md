@@ -783,7 +783,7 @@ the comparisons and no route changes.
 
 ### Amendment 3: one repair round per arm
 
-Decided on 2026-10-27 by the researcher, before any study-3 run, campaign or stream existed,
+Decided on 2026-10-26 by the researcher, before any study-3 run, campaign or stream existed,
 while writing the selection code. The registration says "at most one [repair] per arm and
 candidate" and "the repaired rate" in the singular, which allows two readings when both selected
 rates of an arm miss; repairing only one of them would leave undefined which. This amendment
