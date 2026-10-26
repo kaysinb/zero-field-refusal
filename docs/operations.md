@@ -1693,6 +1693,13 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   REASON` opens one recovery round per cell (three more attempts), logged with its reason.
   Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
+  A start the launcher finds without an end (it died while the attempt ran, or after the child
+  published its outcome) is ended when its run is assessed, before the run is skipped, a conflict
+  raised or a new attempt started: an `end` record with the attempt's run id and number, no
+  return code, `"settled": true` and the outcome its run directory gives (`done`, `diverged`,
+  `conflict` with the problem, or `technical` when the directory is missing or unfinished). An
+  existing end is never rewritten; a run that is not assessed (another label under `--only`) and
+  a `--dry-run` get nothing written. Attempts are still counted from the starts.
   `SIGTERM` to the launcher alone (not its process group) stops the campaign at a run boundary:
   the running attempt finishes and is recorded, a `stop` record is logged, and the launcher exits
   non-zero without starting another; the same command carries on later. `--only LABEL` (a run's

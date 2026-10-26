@@ -540,7 +540,7 @@ def test_a_superseded_run_no_longer_counts_and_its_recovery_starts_anew(tmp_path
     assert result["done"] == [runs[1].label] and len(executor.calls) == 1
     assert run_dir.is_dir()  # kept
     events = [json.loads(line)["event"] for line in log.read_text().splitlines()]
-    assert events[:3] == ["start", "superseded", "recovery"]
+    assert events[:4] == ["start", "end", "superseded", "recovery"]  # the conflict was ended
 
 
 def stopped_by(run_dir: Path, reason: str, *, record: str) -> None:
@@ -813,3 +813,171 @@ def test_an_attempt_needs_its_campaigns_name() -> None:
 
     parameter = inspect.signature(launch._attempt).parameters["name"]
     assert parameter.default is inspect.Parameter.empty
+
+
+# ------------------------------------------- a start found without its end gets the launcher's end
+
+
+def log_start(root: Path, name: str, run, run_id: str, attempt: int = 1, **extra) -> dict:
+    """Log a start of ``run`` as the launcher writes it, with nothing after it (it died)."""
+    record = {"event": "start", "run": run.label, "attempt": attempt, "run_id": run_id,
+              "experiment": run.experiment, "config_hash": run.config_hash,
+              "command": run.command()[1:], **extra}  # fmt: skip
+    log = root / "launch" / f"{name}.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a") as f:
+        f.write(json.dumps(record) + "\n")
+    return record
+
+
+def ends(root: Path, name: str) -> list[dict]:
+    return [r for r in launch_log(root, name) if r["event"] == "end"]
+
+
+def test_a_published_run_found_without_its_end_gets_a_settled_done_and_is_skipped(
+    tmp_path,
+) -> None:
+    """The launcher died after its child published: the relaunch writes the attempt's end
+    (same run id and attempt, no return code, ``settled``, the outcome ``done``) and skips the
+    run; a third invocation finds the end and writes nothing."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    make_run_dir(root, run, run_id)
+    log_start(root, name, run, run_id)
+    executor = Executor(root, {})
+    result = run_campaign(name, [run], root, execute=executor)
+    assert result["skipped"] == [run.label] and executor.calls == []
+    assert [(r["event"], r["run_id"]) for r in launch_log(root, name)] == [
+        ("start", run_id), ("end", run_id)]  # fmt: skip
+    (end,) = ends(root, name)
+    assert (end["run"], end["attempt"], end["returncode"], end["outcome"], end["problem"],
+            end["settled"]) == (run.label, 1, None, "done", None, True)  # fmt: skip
+    assert "only" not in end
+    run_campaign(name, [run], root, execute=executor)
+    assert len(launch_log(root, name)) == 2
+
+
+def test_a_diverged_run_found_without_its_end_gets_a_settled_diverged(tmp_path) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    make_run_dir(root, run, run_id, "diverged", k=None)
+    log_start(root, name, run, run_id)
+    result = run_campaign(name, [run], root, execute=Executor(root, {}))
+    assert result["diverged"] == [run.label]
+    assert [(r["outcome"], r["settled"]) for r in ends(root, name)] == [("diverged", True)]
+
+
+def test_a_non_conforming_run_found_without_its_end_gets_a_settled_conflict_first(tmp_path) -> None:
+    """The end, with the problem that stops the campaign, is written before ``CampaignError`` is
+    raised, and nothing starts."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    make_run_dir(root, run, run_id, responses=False)
+    log_start(root, name, run, run_id)
+    executor = Executor(root, {})
+    with pytest.raises(CampaignError, match="responses/harmful_judged.jsonl is missing"):
+        run_campaign(name, [run], root, execute=executor)
+    assert executor.calls == []
+    (end,) = ends(root, name)
+    assert (end["run_id"], end["attempt"], end["outcome"], end["settled"]) == (
+        run_id, 1, "conflict", True)  # fmt: skip
+    assert "responses/harmful_judged.jsonl is missing" in end["problem"]
+    assert launch_log(root, name)[-1] == end
+
+
+def test_every_assessed_start_is_ended_before_a_conflict_is_raised(tmp_path) -> None:
+    """The ends of all the assessed runs are written before the conflict of one is raised."""
+    name, runs = load_campaign(campaign(tmp_path))
+    broken, fine, root = runs[1], runs[2], tmp_path / "runs"
+    for run, damage in ((broken, {"responses": False}), (fine, {})):
+        run_id = f"x-{run.config_hash[:8]}-a1"
+        make_run_dir(root, run, run_id, **damage)
+        log_start(root, name, run, run_id)
+    with pytest.raises(CampaignError, match="cannot stand"):
+        run_campaign(name, [broken, fine], root, execute=Executor(root, {}))
+    assert [(r["run"], r["outcome"]) for r in ends(root, name)] == [
+        (broken.label, "conflict"), (fine.label, "done")]  # fmt: skip
+
+
+@pytest.mark.parametrize("directory", ["none", "failed", "running"])
+def test_a_start_without_a_directory_or_a_finished_run_gets_a_settled_technical_end(
+    tmp_path, directory
+) -> None:
+    """No run directory, or one whose status says it did not finish: a technical end, then a new
+    attempt (the second), which the technical attempt had already used."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    if directory != "none":
+        make_run_dir(root, run, run_id, directory)
+    log_start(root, name, run, run_id)
+    executor = Executor(root, {})
+    result = run_campaign(name, [run], root, execute=executor)
+    assert result["done"] == [run.label] and len(executor.calls) == 1
+    first, second = ends(root, name)
+    assert (first["run_id"], first["attempt"], first["outcome"], first["settled"]) == (
+        run_id, 1, "technical", True)  # fmt: skip
+    assert first["returncode"] is None and first["problem"]
+    assert (second["attempt"], second["outcome"], "settled" in second) == (2, "done", False)
+    assert [(r["event"], r["attempt"]) for r in launch_log(root, name)] == [
+        ("start", 1), ("end", 1), ("start", 2), ("end", 2)]  # fmt: skip
+
+
+def test_an_existing_end_is_never_rewritten(tmp_path) -> None:
+    """An attempt with its end is left as it is, whatever its directory says now: the journal is
+    the same, byte for byte, after the run is skipped."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    make_run_dir(root, run, run_id)  # it qualifies now; its end says it failed
+    log_start(root, name, run, run_id)
+    end = {"event": "end", "run": run.label, "attempt": 1, "run_id": run_id, "returncode": 1,
+           "outcome": "technical", "problem": "status 'failed'"}  # fmt: skip
+    log = root / "launch" / f"{name}.jsonl"
+    with log.open("a") as f:
+        f.write(json.dumps(end) + "\n")
+    before = log.read_text()
+    result = run_campaign(name, [run], root, execute=Executor(root, {}))
+    assert result["skipped"] == [run.label] and log.read_text() == before
+
+
+def test_a_start_that_a_later_record_of_its_label_follows_is_not_ended(tmp_path) -> None:
+    """The rule is about the label's latest event: a start followed by its attempt's
+    ``superseded`` record gets no settled end; the run's next attempt is a start and an end of
+    its own."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    log_start(root, name, run, run_id)
+    supersede(root, name, run, run_id, reason="a restart", record="restart-1")
+    result = run_campaign(name, [run], root, execute=Executor(root, {}))
+    assert result["done"] == [run.label]
+    assert [(r["event"], r.get("settled")) for r in launch_log(root, name)] == [
+        ("start", None), ("superseded", None), ("start", None), ("end", None)]  # fmt: skip
+
+
+def test_under_only_the_open_starts_of_other_labels_are_untouched(tmp_path) -> None:
+    """The label alone is assessed and ended, and its settled end carries ``only``; a dry run
+    assesses and writes nothing."""
+    name, runs = load_campaign(campaign(tmp_path))
+    mine, other, root = runs[1], runs[2], tmp_path / "runs"
+    for run in (mine, other):
+        run_id = f"x-{run.config_hash[:8]}-a1"
+        make_run_dir(root, run, run_id)
+        log_start(root, name, run, run_id)
+    log = root / "launch" / f"{name}.jsonl"
+    before = log.read_text()
+    run_campaign(name, runs, root, execute=Executor(root, {}), only=mine.label, dry_run=True)
+    assert log.read_text() == before
+    result = run_campaign(name, runs, root, execute=Executor(root, {}), only=mine.label)
+    assert result["skipped"] == [mine.label]
+    (end,) = ends(root, name)
+    assert (end["run"], end["outcome"], end["only"], end["settled"]) == (
+        mine.label, "done", mine.label, True)  # fmt: skip
+    opened = {r["run"] for r in launch_log(root, name) if r["event"] == "start"} - {mine.label}
+    assert opened == {other.label} and len(launch_log(root, name)) == 3
+    run_campaign(name, [mine], root, execute=Executor(root, {}))  # a run left out is not assessed
+    assert len(launch_log(root, name)) == 3

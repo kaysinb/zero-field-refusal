@@ -39,7 +39,8 @@ carries on from there. The launch log ``RUNS_DIR/launch/<campaign name>.jsonl`` 
 per attempt start and end, per recovery round and per stop; each attempt's output goes to
 ``RUNS_DIR/launch/<campaign name>/``. A start record carries the campaign's ``header`` when it
 has one (study 2's campaigns record the w_max they were written under, which the replay reads
-back: the final review of gate B, I4).
+back: the final review of gate B, I4). An end the launcher writes after the fact, for a start it
+finds without one, carries ``"settled": true`` (``run_campaign``, "A start found without its end").
 
 **One label at a time** (``only=LABEL``; study 3's numerical qualification, which runs a case's
 launcher run, its harness parts and the deletion of its checkpoints before the next case): that
@@ -146,6 +147,9 @@ class Assessment:
     technical: set[str] = field(default_factory=set)  # ids of technical attempts so far
     conflicts: dict[str, str] = field(default_factory=dict)  # run dir -> why it cannot stand
     superseded: set[str] = field(default_factory=set)  # ids a supersession record names
+    # run dir -> (outcome, problem) as the launcher ends that attempt: done, diverged, conflict
+    # (the problem is why it cannot stand) or technical; an attempt without a directory is absent
+    outcomes: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
 
 def load_campaign(path: str | Path) -> tuple[str, list[Run]]:
@@ -241,6 +245,23 @@ def held_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
             and isinstance(r.get("run_id"), str)}  # fmt: skip
 
 
+def open_start(run: Run, records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The run's latest journal event, if it is a start that no end record names by its run id
+    (``run_campaign``, "A start found without its end"); else None. The events of a label are
+    ``start``, ``end``, ``stop``, ``superseded`` and ``held``; an end or a stop record carries no
+    experiment or config hash, so for those the label decides."""
+    mine = [r for r in records
+            if r.get("event") in ("start", "end", "stop", "superseded", "held")
+            and r.get("run") == run.label
+            and r.get("experiment", run.experiment) == run.experiment
+            and r.get("config_hash", run.config_hash) == run.config_hash]  # fmt: skip
+    last = mine[-1] if mine else None
+    if last is None or last.get("event") != "start" or not isinstance(last.get("run_id"), str):
+        return None
+    ended = {r.get("run_id") for r in records if r.get("event") == "end"}
+    return None if last["run_id"] in ended else last
+
+
 def hold(
     runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
 ) -> None:
@@ -268,26 +289,32 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
     """What the run directories and the logged attempts say about this run."""
     result = Assessment()
     completed = []
-    result.superseded = set(superseded_runs(run, records))
+    named = superseded_runs(run, records)
+    result.superseded = set(named)
     experiment_dir = Path(runs_root) / run.experiment
     for run_dir in sorted(p for p in experiment_dir.glob("*") if p.is_dir()):
         meta = _read_json(run_dir / "meta.json")
         if meta is None:
             if run.config_hash[:8] in run_dir.name:
                 result.technical.add(run_dir.name)  # killed before its metadata was written
+                result.outcomes[run_dir.name] = ("technical", "meta.json is missing or unreadable")
             continue
         if meta.get("config_hash") != run.config_hash:
             continue
         if run_dir.name in result.superseded:  # kept, and a used attempt; it no longer counts
             result.technical.add(run_dir.name)
+            result.outcomes[run_dir.name] = (
+                "technical", f"named superseded in the journal: {named[run_dir.name]}")  # fmt: skip
             continue
         status = meta.get("status")
         if status == "completed" or _published(run_dir):
             completed.append(run_dir)
         elif status == "diverged":
             result.diverged = result.diverged or run_dir
+            result.outcomes[run_dir.name] = ("diverged", None)
         else:
             result.technical.add(run_dir.name)
+            result.outcomes[run_dir.name] = ("technical", f"status {status!r}")
     for run_dir in completed:
         problem = _disqualification(run, run_dir, _read_json(run_dir / "meta.json") or {})
         if problem is not None:
@@ -300,6 +327,8 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
         result.done = qualifying[0]
     for run_id, reason in held_runs(run, records).items():  # never attempted again
         result.conflicts[run_id] = f"held, its outcome unresolved: {reason}"
+    result.outcomes |= {run_dir.name: ("done", None) for run_dir in completed}
+    result.outcomes |= {name: ("conflict", why) for name, why in result.conflicts.items()}
     settled = {d.name for d in completed} | ({result.diverged.name} if result.diverged else set())
     for record in records:  # starts that left no directory, e.g. a crash before the tracker ran
         if (record.get("event") == "start" and record.get("experiment") == run.experiment
@@ -447,6 +476,19 @@ def run_campaign(
     and ``max_attempts`` bounds the attempts (module docstring). Raises ``CampaignError``
     before starting anything if a run's existing directories conflict (or ``only`` names no run),
     and stops at an attempt that completes without qualifying.
+
+    **A start found without its end** (the launcher died while its child ran, or after the child
+    published and before it judged the run). When the latest journal event of an assessed run's
+    label is a start that no end names by its run id (``open_start``), the launcher writes that
+    end first, before it skips the run, raises a conflict or starts a new attempt: the same run
+    id and attempt, ``returncode`` null, ``"settled": true`` (judged after the fact, not when
+    the process ended), ``only`` as any end carries it, and the outcome ``assess`` gives the
+    attempt's directory (``Assessment.outcomes``): ``done``, ``diverged``, ``conflict`` with the
+    problem that stops the campaign, or ``technical`` (no directory, a missing or unreadable
+    ``meta.json``, a superseded attempt, any other status). An end that exists is never
+    rewritten. Nothing is written for a run that is not assessed (another label under ``only``,
+    a run left out of ``runs``) and nothing in a dry run; the end goes to this campaign's log.
+    Attempts are counted from the starts, as before, so the new end changes no count.
     """
     execute = execute or _subprocess
     if not (isinstance(max_attempts, int) and max_attempts >= 1):
@@ -457,19 +499,22 @@ def run_campaign(
             raise CampaignError(f"The campaign has no run labelled {only!r}")
     records = launch_records(runs_root)
     assessments = {run.label: assess(run, runs_root, records) for run in runs}
+    out_dir = Path(runs_root) / "launch" / name
+    log = Path(runs_root) / "launch" / f"{name}.jsonl"
+    extra = {"only": only} if only is not None else {}
+    if max_attempts != MAX_ATTEMPTS:
+        extra["max_attempts"] = max_attempts
+    if not dry_run:  # before a run is skipped, a conflict raised or an attempt started
+        for run in runs:
+            _settle(run, assessments[run.label], records, log, extra)
     conflicts = {f"{run.experiment}/{run_dir}": problem for run in runs
                  for run_dir, problem in assessments[run.label].conflicts.items()}  # fmt: skip
     if conflicts:
         lines = "\n".join(f"- {where}: {problem}" for where, problem in sorted(conflicts.items()))
         raise CampaignError(f"Completed runs that cannot stand for this campaign; move them out "
                             f"of the experiment or fix them first:\n{lines}")  # fmt: skip
-    out_dir = Path(runs_root) / "launch" / name
-    log = Path(runs_root) / "launch" / f"{name}.jsonl"
     recovered = recovered_cells(records)
     own = recovered_runs(records)  # the rounds opened under ``only``
-    extra = {"only": only} if only is not None else {}
-    if max_attempts != MAX_ATTEMPTS:
-        extra["max_attempts"] = max_attempts
 
     def used_up(run: Run) -> bool:
         state = assessments[run.label]
@@ -526,6 +571,22 @@ def run_campaign(
 
 def _open(state: Assessment) -> bool:
     return state.done is None and state.diverged is None
+
+
+def _settle(run: Run, state: Assessment, records: Sequence[Mapping[str, Any]], log: Path,
+            extra: Mapping[str, Any]) -> None:  # fmt: skip
+    """Write the end of the run's start that has none (``open_start``), as ``run_campaign``
+    says: the attempt's own run id and number, no return code (the launcher did not see the
+    process end), the outcome and problem ``assess`` read for its directory (technical, with
+    the directory missing, when it has none) and ``"settled": true``."""
+    start = open_start(run, records)
+    if start is None:
+        return
+    outcome, problem = state.outcomes.get(start["run_id"], ("technical", "no run directory"))
+    _log(log, {"event": "end", "run": run.label, "attempt": start.get("attempt"),
+               "run_id": start["run_id"], "returncode": None, "outcome": outcome,
+               "problem": problem, "settled": True,
+               **({"only": extra["only"]} if "only" in extra else {})})  # fmt: skip
 
 
 def _attempt(run: Run, attempt: int, runs_root: Path, out_dir: Path, log: Path,
