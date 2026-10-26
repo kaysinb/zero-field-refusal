@@ -48,30 +48,40 @@ a recovery round or a supersession clears it. Authorized historical rounds stay 
 gate is the caller's choice (``Cell.key``).
 
 **Attempts** ("Failure routes": an infrastructure interruption is rerun under a new attempt id;
-"Voiding and supersession"). The attempts of a label are its starts in its campaign's journal,
-in order. One that no longer counts is listed with its reason, never counted:
-- ``superseded``: named by a ``superseded`` line of the journal, by a case restart
+"Voiding and supersession"). The journal is every log under ``launch/`` read as one: no rule
+depends on a log's name or a line's place in it. An attempt is a start; its campaign is the log
+that holds its start, and the attempts of a label are its starts in any log, in the order of
+their attempt numbers (then of their starts' time stamps). Ends, ``superseded`` and ``held``
+lines name their attempt by run id, in any log: the end the launcher writes after the fact for
+a start it found without one (``"settled": true``) included, and an end ``done`` is the outcome
+whatever stop its terminal record holds. An attempt that no longer counts is listed with its
+reason, never counted:
+- ``superseded``: named by a ``superseded`` line, by a case restart
   (``c<N>/<stage>/<case>/restart-<n>.json``, its ``launcher``) or by an engineering cycle's
   supersession (``c<N>/supersede-<n>.json``, its ``launchers``);
-- ``held``: named by a ``held`` line of the journal or by a supersession's ``held``: an outcome
-  the engineering cycle could not resolve, never attempted again;
-- ``recovered``: an attempt without a published terminal record that the launcher's recovery
-  round (``--recovery REASON``, logged for its label) followed: the documented interruption
-  supersedes it, and the next attempt decides.
+- ``held``: named by a ``held`` line or by a supersession's ``held``: an outcome the engineering
+  cycle could not resolve, never attempted again;
+- ``recovered``: an attempt without a published terminal record before a recovery round of its
+  label (``--recovery REASON``, its ``runs``, in any log): the documented interruption
+  supersedes it, and a later attempt decides. Before the round are the label's attempts numbered
+  up to the highest number started before the round's time stamp (the launcher numbers a run's
+  attempts in order, and logs a round before the attempt it allows).
 Every other attempt that is not refused counts. Two counting attempts of one scientific cell (the
-step key and the prescribed (arm, rate, seed) both matched), or of one label, are refused by
-name: a retry replaces an attempt only through a recorded recovery round or supersession, and
-never an attempt with a published outcome.
+step key and the prescribed (arm, rate, seed) both matched), or of one launcher run (one config
+hash, whatever its campaign or label), are refused by name: a retry replaces an attempt only
+through a recorded recovery round or supersession, and never an attempt with a published
+outcome. A start without a readable time stamp is refused; a recovery round without one is a
+problem of its own (its attempts cannot be placed).
 
 **States** of a counting attempt:
 - ``pending``: the launcher has not ended it (no end, or an end ``stopped``), whether or not a
   terminal record is published, unless ``meta.json`` recorded the run failed or finished without
   one: the step waits;
 - ``technical``: an unexplained failure (an end ``technical``, ``exhausted``, ``conflict`` or
-  any other but ``done``, ``diverged`` or ``stopped``; no published terminal record after an end,
-  or after ``meta.json`` recorded the run ``failed``, or finished; a config that can no longer be
-  bound), or a record that does not conform (below): the technical route ("Failure routes"),
-  never pending;
+  any other but ``done``, ``diverged`` or ``stopped``; ends that disagree; no published terminal
+  record after an end, or after ``meta.json`` recorded the run ``failed``, or finished; a config
+  that can no longer be bound), or a record that does not conform (below): the technical route
+  ("Failure routes"), never pending;
 - ``scientific``: a declared instability stop (``INSTABILITY``, the schedule's) on a conforming
   record: no endpoint ("Protocol": a scientific endpoint failure);
 - ``usable``: 25 updates with finite records and a step-25 evaluation; a K-only run needs a
@@ -108,6 +118,8 @@ the factual questions (``factual_accuracy``); steps and stop from the terminal r
   matched is its scientific cell.
 - *An outcome is read only once the launcher has ended its attempt* (an end ``done`` or
   ``diverged``): a published terminal record without that end waits for it.
+- *A recovery round and a start in the same second* (the journal's stamps are in seconds): the
+  start is taken to follow the round, as the launcher logs a round before the attempt it allows.
 """
 
 from __future__ import annotations
@@ -117,6 +129,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -236,7 +249,7 @@ class Endpoint:
 @dataclass
 class _Attempt:
     campaign: str | None
-    position: int  # the start's line in its campaign's journal
+    started: datetime | None  # its start's time stamp
     run_id: str
     run_dir: Path
     cell: Cell
@@ -251,9 +264,12 @@ class _Attempt:
 
 @dataclass
 class _Journal:
-    starts: list[tuple[str, int, dict[str, Any]]] = field(default_factory=list)
-    ends: dict[str, dict[str, Any]] = field(default_factory=dict)  # run id -> its last end
-    recoveries: list[tuple[str, int, dict[str, Any]]] = field(default_factory=list)
+    """The study-3 records of every log; nothing here depends on a log's name or a line's
+    place."""
+
+    starts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # campaign, start
+    ends: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    recoveries: list[dict[str, Any]] = field(default_factory=list)
 
 
 def step_key(candidate: int, step: str, round_: int | None = None) -> str:
@@ -301,33 +317,35 @@ def read_endpoints(
     voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
     journal = _read_journal(root, voided)
     problems = _voiding_records(root, voided)
-    started = Counter(start.get("run_id") for _, _, start in journal.starts)
+    started = Counter(start.get("run_id") for _, start in journal.starts)
     attempts: list[_Attempt] = []
-    for campaign, position, start in journal.starts:
+    for campaign, start in journal.starts:
         if not isinstance(start.get("run_id"), str):
             problems.append(f"{campaign}: a start in the launch journal without a run id")
             continue
-        attempts.append(_bind(root, campaign, position, start, prescribed,
+        attempts.append(_bind(root, campaign, start, prescribed,
                               twice=started[start["run_id"]] > 1))  # fmt: skip
     experiment = root / EXPERIMENT
     for run_dir in sorted(experiment.iterdir()) if experiment.is_dir() else []:
         if run_dir.is_dir() and run_dir.name not in started:
             attempts.append(_Attempt(
-                campaign=None, position=-1, run_id=run_dir.name, run_dir=run_dir,
+                campaign=None, started=None, run_id=run_dir.name, run_dir=run_dir,
                 cell=Cell(*[None] * 9), number=None, state="refused",
                 reasons=["a study-3 run directory with no start in the launch journal: no "
                          "issued cell"]))  # fmt: skip
-    _select(attempts, journal.recoveries, voided)
+    problems += _select(attempts, journal.recoveries, voided)
     _refuse_duplicates(attempts)
     problems += [f"{a.run_id}: {'; '.join(a.reasons)}" for a in attempts if a.state == "refused"]
-    endpoints = [_endpoint(a, journal.ends.get(a.run_id), baseline) for a in attempts]
+    endpoints = [_endpoint(a, journal.ends.get(a.run_id, []), baseline) for a in attempts]
     endpoints.sort(key=_order)
     return endpoints, sorted(set(problems))
 
 
 def _order(e: Endpoint) -> tuple:
+    """The listing's order: by cell, then by attempt number (the campaign's name only breaks
+    ties)."""
     return (e.candidate or 0, e.cell.step or "", -1 if e.cell.round is None else e.cell.round,
-            e.arm or "", e.lr or 0.0, e.seed or 0, e.cell.campaign or "", e.attempt or 0,
+            e.arm or "", e.lr or 0.0, e.seed or 0, e.attempt or 0, e.cell.campaign or "",
             e.run_id)  # fmt: skip
 
 
@@ -335,13 +353,14 @@ def _order(e: Endpoint) -> tuple:
 
 
 def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
-    """The launch journal's study-3 records, per campaign in order, its ``superseded`` and
-    ``held`` lines into ``voided``; a line cut short by a crash is skipped (the launcher's
+    """The launch journal's study-3 records from every log: the starts with their campaign (the
+    log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
+    lines into ``voided`` by run id; a line cut short by a crash is skipped (the launcher's
     rule)."""
     journal = _Journal()
     for log in sorted((root / "launch").glob("*.jsonl")):
         campaign = log.stem
-        for position, line in enumerate(log.read_text().splitlines()):
+        for line in log.read_text().splitlines():
             try:
                 record = json.loads(line)
             except ValueError:
@@ -350,11 +369,11 @@ def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
                 continue
             event, run_id = record.get("event"), record.get("run_id")
             if event == "start" and record.get("experiment") == EXPERIMENT:
-                journal.starts.append((campaign, position, record))
+                journal.starts.append((campaign, record))
             elif event == "end" and isinstance(run_id, str):
-                journal.ends[run_id] = record
+                journal.ends[run_id].append(record)
             elif event == "recovery" and record.get("experiment") == EXPERIMENT:
-                journal.recoveries.append((campaign, position, record))
+                journal.recoveries.append(record)
             elif event in ("superseded", "held") and isinstance(run_id, str):
                 _void(voided, run_id, event,
                       f"{event} in the launch journal: {record.get('reason')}")  # fmt: skip
@@ -403,7 +422,6 @@ def _void(voided: dict[str, tuple[str, str]], run_id: str, state: str, reason: s
 def _bind(
     root: Path,
     campaign: str,
-    position: int,
     start: Mapping[str, Any],
     prescribed: Mapping[str, Collection[tuple[str, float, int]]],
     *,
@@ -424,6 +442,11 @@ def _bind(
     refusals = ["its run id is started more than once in the launch journal"] if twice else []
     if None in (label, number, chash):
         refusals.append("its start in the launch journal lacks its label, attempt or config hash")
+    started = _time(start.get("time"))
+    if started is None:
+        refusals.append(
+            f"its start in the launch journal has no time stamp ({start.get('time')!r})"
+        )
     problem = _header_problem(head)
     if problem is not None:
         refusals.append(problem)
@@ -455,7 +478,7 @@ def _bind(
         versions_record_sha256=_text(issued.get("versions_record_sha256")),
         prescribed=facts.get("prescribed"),
     )  # fmt: skip
-    return _Attempt(campaign=campaign, position=position, run_id=run_id, run_dir=run_dir,
+    return _Attempt(campaign=campaign, started=started, run_id=run_id, run_dir=run_dir,
                     cell=cell, number=number, role=facts.get("role"),
                     k_only=facts.get("k_only"), every=facts.get("every"), unbound=unbound,
                     state="refused" if refusals else None, reasons=refusals)  # fmt: skip
@@ -575,43 +598,63 @@ def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _time(value: Any) -> datetime | None:
+    """A journal record's time stamp (the launcher's: ISO 8601, UTC, seconds), None without a
+    readable one."""
+    try:
+        when = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return when if when.tzinfo is not None else None
+
+
 # ------------------------------------------------------------------ attempts
 
 
 def _select(
     attempts: list[_Attempt],
-    recoveries: Sequence[tuple[str, int, Mapping[str, Any]]],
+    recoveries: Sequence[Mapping[str, Any]],
     voided: Mapping[str, tuple[str, str]],
-) -> None:
+) -> list[str]:
     """Mark the attempts that no longer count (module docstring, "Attempts"); a refused one
-    stays refused."""
-    by_label: dict[tuple[str | None, str | None], list[_Attempt]] = defaultdict(list)
-    for attempt in sorted(attempts, key=lambda a: (a.campaign or "", a.position)):
-        by_label[(attempt.campaign, attempt.cell.label)].append(attempt)
+    stays refused. Returns the recovery rounds that cannot be placed (no time stamp)."""
+    by_label: dict[str, list[_Attempt]] = defaultdict(list)  # across every log
+    for attempt in attempts:
+        if attempt.cell.label is not None and attempt.number is not None:
+            by_label[attempt.cell.label].append(attempt)
         if attempt.state is None and attempt.run_id in voided:
             attempt.state, reason = voided[attempt.run_id]
             attempt.reasons.append(reason)
-    for campaign, position, record in recoveries:
+    problems = []
+    for record in recoveries:
+        when = _time(record.get("time"))
         labels = record.get("runs")
+        if when is None:
+            problems.append(f"a recovery round of {labels!r} without a time stamp "
+                            f"({record.get('time')!r}): its attempts cannot be placed")  # fmt: skip
+            continue
         for label in labels if isinstance(labels, list) else []:
-            earlier = [a for a in by_label.get((campaign, label), []) if a.position < position]
-            if not earlier:
-                continue
-            latest = earlier[-1]  # a round reruns the label's latest attempt
-            if latest.state is None and not (latest.run_dir / "terminal.json").is_file():
-                latest.state = "recovered"
-                latest.reasons.append(f"a recovery round followed it: {record.get('reason')}")
+            mine = by_label.get(label, [])
+            # the attempts before the round: numbered up to the last one started before it
+            before = [a.number for a in mine if a.started is not None and a.started < when]
+            for attempt in (a for a in mine if before and a.number <= max(before)):
+                if attempt.state is None and not (attempt.run_dir / "terminal.json").is_file():
+                    attempt.state = "recovered"
+                    attempt.reasons.append(f"a recovery round followed it: {record.get('reason')}")
+    return problems
 
 
 def _refuse_duplicates(attempts: list[_Attempt]) -> None:
-    """Refuse every attempt that counts beside another of its scientific cell or its label."""
+    """Refuse every attempt that counts beside another of its scientific cell or of its launcher
+    run (its config hash, whatever the campaign or label: the launcher's run), in any log."""
     groups: dict[str, dict[Any, list[_Attempt]]] = {"cell": defaultdict(list),
-                                                    "label": defaultdict(list)}  # fmt: skip
+                                                    "run": defaultdict(list)}  # fmt: skip
     for attempt in attempts:
         if attempt.state is None:
             if attempt.cell.scientific is not None:
                 groups["cell"][attempt.cell.scientific].append(attempt)
-            groups["label"][(attempt.campaign, attempt.cell.label)].append(attempt)
+            if attempt.cell.config_hash is not None:
+                groups["run"][attempt.cell.config_hash].append(attempt)
     seen: set[frozenset[str]] = set()
     for kind, by_key in groups.items():
         for key, group in by_key.items():
@@ -620,7 +663,8 @@ def _refuse_duplicates(attempts: list[_Attempt]) -> None:
                 continue
             seen.add(ids)
             what = (f"one cell ({key[0]}, {key[1]}, {key[2]:g}, {key[3]})" if kind == "cell"
-                    else f"one label ({key[0]}, {key[1]})")  # fmt: skip
+                    else f"one launcher run (config hash {key})")  # fmt: skip
+            group.sort(key=lambda a: (a.number or 0, a.started or datetime.min, a.run_id))
             names = ", ".join(f"{a.run_id} ({a.campaign}, {a.cell.label}, attempt {a.number})"
                               for a in group)  # fmt: skip
             why = (
@@ -635,7 +679,7 @@ def _refuse_duplicates(attempts: list[_Attempt]) -> None:
 # ------------------------------------------------------------------ outcomes
 
 
-def _endpoint(attempt: _Attempt, end: Mapping[str, Any] | None,
+def _endpoint(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
               theta0: Mapping[str, float]) -> Endpoint:  # fmt: skip
     cell = attempt.cell
     common = {"run_id": attempt.run_id, "run_dir": attempt.run_dir, "cell": cell,
@@ -644,16 +688,21 @@ def _endpoint(attempt: _Attempt, end: Mapping[str, Any] | None,
               "attempt": attempt.number, "label": cell.label}  # fmt: skip
     if attempt.state is not None:
         return Endpoint(**common, state=attempt.state, reasons=tuple(attempt.reasons))
-    return Endpoint(**common, **_outcome(attempt, end, theta0))
+    return Endpoint(**common, **_outcome(attempt, ends, theta0))
 
 
-def _outcome(attempt: _Attempt, end: Mapping[str, Any] | None,
+def _outcome(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
              theta0: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
-    """A counting attempt's state, reasons and endpoint (module docstring, "States")."""
+    """A counting attempt's state, reasons and endpoint (module docstring, "States"); ``ends``:
+    its end records, from any log."""
     if attempt.unbound is not None:
         return {"state": "technical", "reasons": (attempt.unbound,)}
+    outcomes = sorted({str(end.get("outcome")) for end in ends})
+    if len(outcomes) > 1:  # an end is never rewritten: two verdicts cannot both stand
+        why = f"the launch journal holds ends that disagree: {outcomes}"
+        return {"state": "technical", "reasons": (why,)}
     run_dir = attempt.run_dir
-    ended = None if end is None else end.get("outcome")
+    ended = ends[0].get("outcome") if ends else None
     published = (run_dir / "terminal.json").is_file()
     status = None if published else (_json(run_dir / "meta.json") or {}).get("status")
     finished = status not in (None, "running")  # failed, or finished without its outcome

@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -147,15 +148,18 @@ class World:
         self.root = root
         self.prescribed: dict[str, set] = defaultdict(set)
         self.ids = itertools.count()
+        self.clock = itertools.count()  # the journal's time stamps, one second apart
         self.theta0 = root / "theta0"
         self.theta0.mkdir(parents=True)
         (self.theta0 / "summary.json").write_text(json.dumps({**THETA0, "K_benign": 0.0}))
 
     def log(self, campaign: str, record: dict) -> None:
+        """A journal record, stamped as the launcher stamps them (seconds, UTC)."""
         path = self.root / "launch" / f"{campaign}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
+        when = datetime(2026, 10, 26, tzinfo=UTC) + timedelta(seconds=next(self.clock))
         with path.open("a") as f:
-            f.write(json.dumps({"time": "2026-10-26T00:00:00+00:00", **record}) + "\n")
+            f.write(json.dumps({"time": when.isoformat(timespec="seconds"), **record}) + "\n")
 
     def run(
         self,
@@ -197,9 +201,16 @@ class World:
             self.prescribed[step_key(candidate, step, round_)].add((arm, lr, seed))
         return run_id
 
-    def end(self, campaign, label, attempt, run_id, outcome, problem=None) -> None:
+    def end(self, campaign, label, attempt, run_id, outcome, problem=None, **extra) -> None:
         self.log(campaign, {"event": "end", "run": label, "attempt": attempt, "run_id": run_id,
-                            "returncode": 0, "outcome": outcome, "problem": problem})  # fmt: skip
+                            "returncode": 0, "outcome": outcome, "problem": problem,
+                            **extra})  # fmt: skip
+
+    def settle(self, campaign, label, attempt, run_id, outcome, problem=None) -> None:
+        """The end the launcher writes after the fact for a start it found without one, to the
+        log of the campaign it is running (package 1's ``_settle``)."""
+        self.end(campaign, label, attempt, run_id, outcome, problem, returncode=None,
+                 settled=True)  # fmt: skip
 
     def recovery(self, campaign: str, label: str, reason: str = "the Pod stopped") -> None:
         cell = label.split("/")[0]
@@ -571,12 +582,22 @@ def test_the_scientific_cell_is_the_prescribed_one_matched(world) -> None:
     assert {e.lr for e in found} == {1.45e-5, 1.4500000000001e-5}
 
 
-def test_the_same_cell_in_two_rounds_is_two_cells(world) -> None:
+def test_two_rounds_are_two_cells(world) -> None:
     zero = world.run("A", 1.45e-5, 10100, role="search", round_=0)
-    one = world.run("A", 1.45e-5, 10100, role="search", round_=1, campaign="study3-c1-r1")
+    one = world.run("A", 1.52e-5, 10100, role="search", round_=1, campaign="study3-c1-r1")
     found, problems = world.read()
     assert problems == []
     assert {e.run_id: e.cell.key for e in found} == {zero: "c1/search/r0", one: "c1/search/r1"}
+
+
+def test_one_config_run_twice_is_refused_whatever_its_header(world) -> None:
+    # the launcher's run is its config: a second counting run of it, under another header
+    # (round 1 at the round-0 rate), is a second outcome of one run
+    zero = world.run("A", 1.45e-5, 10100, role="search", round_=0)
+    one = world.run("A", 1.45e-5, 10100, role="search", round_=1, campaign="study3-c1-r1")
+    found, problems = world.read()
+    assert states(found) == {zero: "refused", one: "refused"}
+    assert refused(problems, zero, one, "one launcher run")
 
 
 def test_a_journal_superseded_or_held_run_does_not_count(world) -> None:
@@ -600,6 +621,110 @@ def test_a_journal_superseded_or_held_run_does_not_count(world) -> None:
     assert (found[second].state, found[second].counts) == ("usable", True)
     assert (found[held].state, found[held].counts) == ("held", False)
     assert any("no commit recorded" in r for r in found[held].reasons)
+
+
+LABEL = "A-1.45e-05/s10300"
+
+
+@pytest.mark.parametrize("original, again", [("z-original", "a-recovery"),
+                                             ("a-original", "z-recovery")])  # fmt: skip
+def test_a_recovery_round_in_another_campaigns_log(world, original, again) -> None:
+    first = world.run(campaign=original, end="technical", terminal=False, status="failed")
+    world.recovery(again, LABEL)
+    second = world.run(campaign=again, attempt=2)
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {first: "recovered", second: "usable"}
+    assert [e.attempt for e in found] == [1, 2]  # by attempt number, whatever the file names
+
+
+@pytest.mark.parametrize("original, again", [("z-original", "a-recovery"),
+                                             ("a-original", "z-recovery")])  # fmt: skip
+def test_a_round_recovers_every_earlier_attempt_of_its_label(world, original, again) -> None:
+    first = world.run(campaign=original, end="technical", terminal=False, status="failed")
+    second = world.run(campaign=original, attempt=2, end="technical", terminal=False)
+    world.recovery(again, LABEL)
+    third = world.run(campaign=again, attempt=3)
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {first: "recovered", second: "recovered", third: "usable"}
+
+
+def test_a_start_in_the_same_second_as_a_round_follows_it(world) -> None:
+    first = world.run(campaign="z-original", end="technical", terminal=False, status="failed")
+    world.recovery("a-recovery", LABEL)
+    second = world.run(campaign="a-recovery", attempt=2, end=None, terminal=False)  # running
+    journal = world.root / "launch/a-recovery.jsonl"
+    stamp = json.loads(journal.read_text().splitlines()[0])["time"]  # the round's
+    edit_jsonl(journal, lambda rows: [{**r, "time": stamp} for r in rows])
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {first: "recovered", second: "pending"}  # not recovered by it
+
+
+def test_a_round_without_a_time_stamp_cannot_be_placed(world) -> None:
+    first = world.run(campaign="z-original", end="technical", terminal=False, status="failed")
+    world.recovery("a-recovery", LABEL)
+    second = world.run(campaign="a-recovery", attempt=2)
+    journal = world.root / "launch/a-recovery.jsonl"
+    untimed = [
+        {k: v for k, v in r.items() if k != "time"} if r["event"] == "recovery" else r
+        for r in json.loads("[" + ",".join(journal.read_text().splitlines()) + "]")
+    ]
+    jsonl(journal, untimed)
+    found, problems = world.read()
+    assert states(found) == {first: "refused", second: "refused"}  # both count
+    assert any("recovery round" in p and "time stamp" in p for p in problems)
+
+
+def test_a_round_never_recovers_a_later_attempt(world) -> None:
+    world.recovery("a-early", LABEL)  # a round before any attempt of its label
+    first = world.run(campaign="z-c", end="technical", terminal=False, status="failed")
+    [e], problems = world.read()
+    assert (e.run_id, e.state, problems) == (first, "technical", [])
+
+
+def test_ends_holds_and_supersessions_in_another_log(world) -> None:
+    ended = world.run(campaign="z-c", end=None)
+    world.end("a-other", LABEL, 1, ended, "done")
+    held = world.run("F", 1.3e-5, campaign="z-c", stop="gradient_spike", steps=3)
+    world.log("a-other", {"event": "held", "run": "F-1.3e-05/s10300", "run_id": held,
+                          "experiment": "study3", "config_hash": "x", "reason": "unresolved",
+                          "record": "supersede-1.json"})  # fmt: skip
+    superseded = world.run("P", 1.3e-5, campaign="a-c")
+    world.log("z-other", {"event": "superseded", "run": "P-1.3e-05/s10300",
+                          "run_id": superseded, "experiment": "study3", "config_hash": "x",
+                          "reason": "lost disk", "record": "restart-1.json"})  # fmt: skip
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {ended: "usable", held: "held", superseded: "superseded"}
+
+
+@pytest.mark.parametrize("stop, steps, state", [("gradient_spike", 12, "scientific"),
+                                                ("steps", 25, "usable")])  # fmt: skip
+def test_a_settled_end_is_an_outcome(world, stop, steps, state) -> None:
+    run_id = world.run(campaign="z-c", end=None, stop=stop, steps=steps)
+    assert world.read()[0][0].state == "pending"  # not ended yet
+    world.settle("a-later", LABEL, 1, run_id, "done")  # judged after the fact, in another log
+    [e], problems = world.read()
+    assert (e.state, e.stop, e.steps, problems) == (state, stop, steps, [])
+
+
+def test_ends_that_disagree_are_technical(world) -> None:
+    run_id = world.run(campaign="z-c")  # ended done
+    world.settle("a-later", LABEL, 1, run_id, "technical", problem="no run directory")
+    [e], problems = world.read()
+    assert (e.state, problems) == ("technical", [])
+    assert any("ends" in r for r in e.reasons)
+
+
+def test_a_start_without_a_time_stamp_is_refused(world) -> None:
+    run_id = world.run()
+    journal = world.root / "launch/study3-c1.jsonl"
+    edit_jsonl(journal, lambda rows: [{k: v for k, v in r.items() if k != "time"}
+                                      if r["event"] == "start" else r for r in rows])  # fmt: skip
+    found, problems = world.read()
+    assert listed_refused(found, problems, run_id, "time")
 
 
 def test_qualification_records_supersede_launcher_runs(world) -> None:
