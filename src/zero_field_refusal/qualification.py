@@ -72,7 +72,9 @@ processes is a diagnostic, not an acceptance condition.
 
 **Verdicts** are functions of the records alone, in ``analysis.qualification_verdicts`` (its
 docstring states the failure kinds; outside the GPU-code identity) and re-exported here:
-``case_verdict``, ``control_verdict``, ``rate_verdict``, ``engineering_summary``.
+``case_verdict``, ``control_verdict``, ``rate_verdict``, ``engineering_summary``. Every constant a
+part executes or records (``SHIFTS``, ``REST``, ``STEPS``, the kinds, ``record_sha256``) is
+``qualification_constants``', inside the identity, and re-exported here too.
 
 **Blind to outcomes.** Only K, D, norms and training statistics leave this module; every prompt
 set whose name holds "harmful" is refused (``fa_control_diagnostic.guarded_prompt_sets``), and
@@ -101,7 +103,13 @@ from omegaconf import DictConfig, OmegaConf
 from . import code_identity, prechecks, runtime
 from . import fa_control_diagnostic as fcd
 from . import schedule as schedule_module
-from .analysis.qualification_verdicts import (
+from .analysis.qualification_verdicts import case_verdict as case_verdict
+from .analysis.qualification_verdicts import control_verdict as control_verdict
+from .analysis.qualification_verdicts import engineering_summary as engineering_summary
+from .analysis.qualification_verdicts import rate_verdict as rate_verdict
+from .config import apply_override, load_config
+from .optim import ADAM_MODES
+from .qualification_constants import (
     ACCEPTED,
     BATCH,
     COMPARISONS,
@@ -109,6 +117,7 @@ from .analysis.qualification_verdicts import (
     FAMILIES,
     INCOMPLETE,
     NOT_QUALIFIED,
+    PARTS,
     QUALIFIED,
     REST,
     SCIENTIFIC,
@@ -119,12 +128,6 @@ from .analysis.qualification_verdicts import (
     QualificationError,
     record_sha256,
 )
-from .analysis.qualification_verdicts import case_verdict as case_verdict
-from .analysis.qualification_verdicts import control_verdict as control_verdict
-from .analysis.qualification_verdicts import engineering_summary as engineering_summary
-from .analysis.qualification_verdicts import rate_verdict as rate_verdict
-from .config import apply_override, load_config
-from .optim import ADAM_MODES
 from .runtime import Environment
 from .schedule import INSTABILITY, InstabilityGuard, Schedule
 from .tensor_hash import file_sha256, tensors_sha256
@@ -137,7 +140,6 @@ __all__ = ["ACCEPTED", "BATCH", "COMPARISONS", "FAILING", "FAMILIES", "INCOMPLET
            "harness_instability", "launcher_problems", "rate_verdict", "record_sha256",
            "run_part", "settings_record"]  # fmt: skip
 
-PARTS = ("baseline", "rest", "control")
 BASELINE_CHECKPOINT = "harness-baseline.pt"
 BASELINE_STATES = "baseline-states"  # the baseline's diagnostic states, A-step-<t>.pt
 CHECKPOINT_KEYS = ("path", "sha256", "step", "names_sha256")

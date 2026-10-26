@@ -22,6 +22,7 @@ from zero_field_refusal.code_identity import (
         # Study 3's verdict rules are analysis; the harness that writes the records is not
         ("src/zero_field_refusal/analysis/qualification_verdicts.py", False),
         ("src/zero_field_refusal/qualification.py", True),
+        ("src/zero_field_refusal/qualification_constants.py", True),
         ("scripts/launch.py", True),
         ("scripts/numerical_check.py", True),
         ("scripts/study2_short_summary.py", False),
@@ -116,3 +117,36 @@ def test_an_image_change_voids_the_qualification(repo: Path) -> None:
         check = reuse_check(gate_b, later, repo)
         assert check["reusable"] is False and check["changed"] == [name], name
         gate_b = later
+
+
+def test_nothing_a_qualification_part_executes_is_defined_under_analysis() -> None:
+    """Study 3's harness takes from the analysis package (outside the GPU identity) the four
+    verdict functions alone, which it re-exports and never calls; every constant it executes or
+    records is ``qualification_constants``', a GPU path."""
+    import ast
+
+    from zero_field_refusal import qualification, qualification_constants
+    from zero_field_refusal.analysis import qualification_verdicts
+
+    root = Path(qualification.__file__).resolve().parents[2]
+    tree = ast.parse(Path(qualification.__file__).read_text())
+    from_analysis = {alias.asname or alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and "analysis" in (node.module or "")
+                     for alias in node.names}  # fmt: skip
+    verdicts = {"case_verdict", "control_verdict", "rate_verdict", "engineering_summary"}
+    assert from_analysis == verdicts
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.ClassDef):
+            used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            assert not used & verdicts, node.name
+    # The verdict module defines no constant the harness has: its own are verdict reasons
+    module = ast.parse(Path(qualification_verdicts.__file__).read_text())
+    defined = {t.id for node in module.body if isinstance(node, ast.Assign)
+               for t in node.targets if isinstance(t, ast.Name)}  # fmt: skip
+    assert not defined & set(vars(qualification)), defined & set(vars(qualification))
+    for name in ("SHIFTS", "REST", "STEPS", "BATCH", "COMPARISONS", "SCIENTIFIC", "TECHNICAL",
+                 "PARTS", "record_sha256", "QualificationError"):  # fmt: skip
+        assert getattr(qualification, name) is getattr(qualification_constants, name), name
+    for path, gpu in ((qualification_constants.__file__, True), (qualification.__file__, True),
+                      (qualification_verdicts.__file__, False)):  # fmt: skip
+        assert is_gpu_path(str(Path(path).resolve().relative_to(root))) is gpu, path
