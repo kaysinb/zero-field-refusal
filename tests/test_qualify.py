@@ -6,6 +6,7 @@ Nothing here runs a model or touches a GPU: the parts' harness (``qualification.
 replaced by a stub that publishes a record, and the verdicts read synthetic part records.
 """
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -23,6 +24,7 @@ from test_qualification import CODE, IDENTITY, control_record, synthetic
 from zero_field_refusal import code_identity
 from zero_field_refusal import qualification as q
 from zero_field_refusal.config import load_config
+from zero_field_refusal.paths import CONFIG_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTERED = load_config("experiments/qualification")
@@ -40,6 +42,19 @@ def load_script():
     return module
 
 
+def commit_configs(known):
+    """``configs_at`` for the synthetic commits: the configs folder of each commit in ``known``;
+    any other commit is not in the clone."""
+
+    @contextlib.contextmanager
+    def configs_at(commit):
+        if commit not in known:
+            raise subprocess.CalledProcessError(1, ["git", "rev-parse", "--verify", commit])
+        yield known[commit]
+
+    return configs_at
+
+
 @pytest.fixture
 def qualify(monkeypatch, tmp_path):
     module = load_script()
@@ -47,6 +62,8 @@ def qualify(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "git_state", lambda *a, **k: {"commit": "c" * 40, "dirty": False})
     # This checkout's GPU code as the synthetic records have it (``complete``'s stale check)
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
+    # The launcher runs' synthetic commit abc123 has this checkout's configs
+    monkeypatch.setattr(module, "configs_at", commit_configs({"abc123": CONFIG_ROOT}))
     return module
 
 
@@ -881,8 +898,10 @@ def test_the_cycle_supersedes_every_launcher_run_not_of_the_fix(qualify, tmp_pat
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     _, record = technical_adamw(out, tmp_path)
     run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
-    at_commit(settled_launcher(root, run, "r-a1"), "h0")  # a third code
+    at_commit(settled_launcher(root, run, "r-a1"), "d0d0d0")  # a third code
     monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    monkeypatch.setattr(qualify, "configs_at", commit_configs({"abc123": CONFIG_ROOT,
+                                                               "d0d0d0": CONFIG_ROOT}))  # fmt: skip
     qualify.main(supersede_args(path, ADAMW, record))
     cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
     assert [r["run_id"] for r in cycle["launchers"]] == ["r-a1"]
@@ -944,8 +963,8 @@ def unclassified_stop(qualify, tmp_path, monkeypatch, change=None, *, setup_rais
 STOPPED = q.QualificationCase(10201, "adamw", ADAMW_LR, 1, False)
 
 
-def raised_before_the_check(qualify, out, run_dir, monkeypatch):
-    """STOPPED's baseline as ``run_part`` publishes it when its numerics setup raises, before
+def raised_before_the_check(qualify, out, run_dir, monkeypatch, case=STOPPED):
+    """The case's baseline as ``run_part`` publishes it when its numerics setup raises, before
     the launcher check: failed, technical, under the records' code, naming the launcher run
     without classifying it. Nothing loads a model."""
     import torch
@@ -956,7 +975,7 @@ def raised_before_the_check(qualify, out, run_dir, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(q.runtime, "configure_numerics", broken)
         record = q.run_part(qualify.load_settings(), SimpleNamespace(device=torch.device("cpu")),
-                            STOPPED, run_dir, out, part="baseline", attempt=1,
+                            case, run_dir, out, part="baseline", attempt=1,
                             checkpoints=out / "harness")  # fmt: skip
     launcher = record["launcher"]
     assert (record["status"], record["kind"]) == ("failed", "technical")
@@ -1015,6 +1034,33 @@ def test_a_record_that_raised_before_its_check_leaves_the_stop_to_the_resolver(
     assert (resolved["case"]["name"], resolved["kind"]) == (STOPPED.name, "scientific")
 
 
+def test_another_stages_unclassified_stop_is_resolved_too(qualify, tmp_path, monkeypatch):
+    """An engineering case, of a stage the numerical campaign does not hold, whose baseline
+    raised before the launcher check: the numerical cycle resolves its launcher run r-e1 from
+    the case its record names and the run's journal start. A conforming gradient_spike keeps
+    the case whole (scientific), and r-e1 is not superseded."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    engineering = q.QualificationCase(10000, "adamw", ADAMW_LR, 1, True)
+    stage = campaign(tmp_path, fa=(), adamw=(10000,), name="study3-engineering-c1",
+                     role="engineering")  # fmt: skip
+    run = journal(root, stage, f"adamw-{ADAMW_LR:g}/s10000", ["r-e1"])
+    run_dir = settled_launcher(root, run, "r-e1", stop="gradient_spike", steps=3)
+    raised_before_the_check(qualify, out, run_dir, monkeypatch, engineering)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    qualify.main(supersede_args(path, ADAMW, record))
+    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["stage"], kept["resolution"]["outcome"]) == (
+        engineering.name, "engineering", "scientific")  # fmt: skip
+    assert [(e["case"], e["part"]) for e in cycle["kept"]] == [(engineering.name, "baseline")]
+    assert cycle["launchers"] == [] and cycle["held"] == []
+    assert cycle["cases_requalified"] == [{"case": ADAMW.name, "stage": "numerical"}]
+    log = root / "launch" / "study3-engineering-c1.jsonl"
+    assert [json.loads(line)["event"] for line in log.read_text().splitlines()] == ["start"]
+
+
 def other_rate(run_dir):
     from omegaconf import OmegaConf
 
@@ -1041,21 +1087,42 @@ def test_a_nonconforming_unclassified_stop_is_superseded(qualify, tmp_path, monk
     assert qualify.located(run, root) is None
 
 
-def test_an_unresolvable_stop_is_kept_and_held(qualify, tmp_path, monkeypatch) -> None:
-    """A run whose meta.json records no commit cannot be resolved: the case is kept as it is,
-    listed unresolved, its run held, and no rerun is opened: no part runs, and the launcher's
-    recovery round refuses the run."""
-    from zero_field_refusal import launch
-
-    def no_commit(run_dir):
+def edited_meta(change):
+    def edit(run_dir):
         meta = json.loads((run_dir / "meta.json").read_text())
-        del meta["git"]
+        change(meta)
         (run_dir / "meta.json").write_text(json.dumps(meta))
 
-    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch, no_commit)
+    return edit
+
+
+def unreadable_config(run_dir):
+    (run_dir / "config.yaml").write_text("seed: [10201\n")
+
+
+UNKNOWN_COMMIT = {"commit": "0" * 40, "dirty": False}  # a commit not in the clone
+NOT_COMPOSED = "cannot be composed from the configs of its commit"
+UNRESOLVABLE = {  # what is missing → why the cycle says so
+    "no commit": (edited_meta(lambda meta: meta.pop("git")), "no recorded commit"),
+    "an unknown commit": (edited_meta(lambda meta: meta.update(git=UNKNOWN_COMMIT)), NOT_COMPOSED),
+    "no header": (edited_meta(lambda meta: meta.pop("campaign")), "no campaign header"),
+    "an unreadable config": (unreadable_config, "its records are unreadable"),
+}
+
+
+@pytest.mark.parametrize("missing", list(UNRESOLVABLE))
+def test_an_unresolvable_stop_is_kept_and_held(qualify, tmp_path, monkeypatch, missing) -> None:
+    """A run whose provenance is incomplete cannot be resolved against what it was issued (no
+    commit in its meta.json, a commit not in this clone, no campaign header, a saved config that
+    does not read): the case is kept as it is, listed unresolved, its run held, and no rerun is
+    opened: no part runs, and the launcher's recovery round refuses the run."""
+    from zero_field_refusal import launch
+
+    change, why = UNRESOLVABLE[missing]
+    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch, change)
     (kept,) = cycle["kept_cases"]
     assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "unresolved")
-    assert "no recorded commit" in kept["why"]
+    assert why in kept["why"]
     assert [h["run_id"] for h in cycle["held"]] == ["r-b1"] and cycle["launchers"] == []
     log = root / "launch" / "study3-qualification-c1.jsonl"
     assert [json.loads(line)["event"] for line in log.read_text().splitlines()][-1] == "held"
@@ -1076,6 +1143,66 @@ def test_an_unresolvable_stop_is_kept_and_held(qualify, tmp_path, monkeypatch) -
     verdict = json.loads((out / "c1" / "verdict.json").read_text())
     assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "not_qualified"
     assert any("outcome is unresolved" in w for w in verdict["warnings"])
+
+
+@pytest.mark.parametrize(("issued_gb", "outcome"), [(45, "scientific"), (46, "technical")])
+def test_a_stop_is_judged_against_the_configs_of_its_commit(
+    qualify, tmp_path, monkeypatch, issued_gb, outcome
+) -> None:
+    """The configs of the run's commit asked for a 45 GB memory limit, this checkout's ask for
+    46 (the memory limit is outside the config hash). A run made with 45 GB, as its commit
+    issued it, conforms: its declared stop is scientific, kept, whatever this checkout says. A
+    run made with 46 GB departs from what it was issued: superseded."""
+    from omegaconf import OmegaConf
+
+    from zero_field_refusal.launch import expected_numerics
+    from zero_field_refusal.protocol import load_run_config
+
+    then = tmp_path / "configs-of-the-commit"
+    shutil.copytree(CONFIG_ROOT, then)
+    study3 = then / "experiments" / "study3.yaml"
+    assert "memory_limit_gb: 46 " in study3.read_text()
+    study3.write_text(study3.read_text().replace("memory_limit_gb: 46 ", "memory_limit_gb: 45 "))
+    monkeypatch.setattr(qualify, "configs_at", commit_configs({"abc123": then}))
+
+    def made_with(run_dir):
+        cfg = OmegaConf.load(run_dir / "config.yaml")
+        OmegaConf.update(cfg, "execution.memory_limit_gb", issued_gb)
+        OmegaConf.save(cfg, run_dir / "config.yaml")
+        edited_meta(lambda meta: meta["inputs"]["numerics_setup"].update(
+            memory_limit_gb=float(issued_gb)))(run_dir)  # fmt: skip
+
+    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch, made_with)
+    now = expected_numerics(load_run_config(run.config, run.overrides))
+    assert now["memory_limit_gb"] == 46.0  # this checkout's
+    if outcome == "scientific":
+        (kept,) = cycle["kept_cases"]
+        assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "scientific")
+        assert cycle["launchers"] == [] and cycle["held"] == []
+        assert qualify.located(run, root) == root / run.experiment / "r-b1"
+    else:
+        assert cycle["kept_cases"] == [] and cycle["held"] == []
+        assert [r["run_id"] for r in cycle["launchers"]] == ["r-b1"]
+        assert qualify.located(run, root) is None
+
+
+def test_configs_at_reads_a_commit_from_git_not_the_working_tree(tmp_path) -> None:
+    """``configs_at`` unpacks the committed configs of a commit (here HEAD's, as git has them)
+    into a temporary folder it removes on exit; a commit not in the clone, or no commit id,
+    raises."""
+    configs_at = load_script().configs_at
+    committed = subprocess.run(["git", "show", "HEAD:configs/experiments/study3.yaml"], cwd=ROOT,
+                               capture_output=True, text=True, check=True).stdout  # fmt: skip
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                          check=True).stdout.strip()  # fmt: skip
+    with configs_at(head) as root:
+        assert root.parent != CONFIG_ROOT.parent and root.name == "configs"
+        assert (root / "experiments" / "study3.yaml").read_text() == committed
+    assert not root.exists()
+    with pytest.raises(subprocess.CalledProcessError), configs_at("0" * 40):
+        pass
+    with pytest.raises(ValueError, match="not a commit id"), configs_at("HEAD; rm -rf /"):
+        pass
 
 
 def test_a_cycle_cannot_start_from_a_case_its_launcher_stop_keeps(qualify, tmp_path, monkeypatch):
@@ -1232,6 +1359,8 @@ def settled_launcher(root, run, run_id, *, stop="steps", steps=25):
     }
     meta["inputs"] = {"numerics_setup": numerics, "theta0_trainable_sha256": "t" * 64,
                       "endpoint_checkpoint": IDENTITY["checkpoint"]}  # fmt: skip
+    meta["campaign"] = {"name": "study3-qualification-c1", "label": run.label, "attempt": 1,
+                        "header": None}  # fmt: skip
     (run_dir / "meta.json").write_text(json.dumps(meta))
     terminal = {"stop": {"reason": stop, "detail": {}}, "steps": steps, "evaluations": [25]}
     (run_dir / "terminal.json").write_text(json.dumps(terminal))
@@ -1454,11 +1583,15 @@ def journal(root, path, label, run_ids):
     run = next(r for r in runs if r.label == label)
     log = root / "launch" / f"{name}.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
+    before = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    attempt = sum(r.get("event") == "start" and r.get("run") == label for r in before)
     with log.open("a") as f:
         for run_id in run_ids:
-            f.write(json.dumps({"event": "start", "run": label, "run_id": run_id,
-                                "experiment": run.experiment,
-                                "config_hash": run.config_hash}) + "\n")  # fmt: skip
+            attempt += 1
+            f.write(json.dumps({"event": "start", "run": label, "attempt": attempt,
+                                "run_id": run_id, "experiment": run.experiment,
+                                "config_hash": run.config_hash,
+                                "command": run.command()[1:]}) + "\n")  # fmt: skip
     return run
 
 

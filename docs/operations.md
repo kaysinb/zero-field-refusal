@@ -1563,13 +1563,19 @@ docstring has every rule.
   feasibility report. A part record classifies its launcher run only when it says so
   (`launcher.classified: true`, written once the launcher check returned); naming the run is not
   enough. A launcher run no part record classified (none names it: the Pod stopped before its
-  baseline; or each that does raised before its launcher check, in the numerics setup, say)
-  is first resolved against its issued cell, config, numerics and commit, without the current
-  code or environment: a conforming run its declared rule stopped is a scientific failure (its
-  case kept whole and decided); one that departs from its cell, or completed, is superseded; one
-  nobody can resolve (a record unreadable or missing a field, an unknown commit) keeps its case
-  as it is, listed unresolved, and the run is held in the journal, so that no part and no
-  recovery round reruns it. A case that holds a scientific failure (as its bound, valid part
+  baseline; or each that does raised before its launcher check, in the numerics setup, say;
+  in any stage) is first resolved against what it was issued, never the current checkout's
+  configs, code or environment: its journal start (label, config hash, header, command), its
+  own `config.yaml` and `meta.json` (config hash, the campaign's header, commit, numerics setup)
+  and the configs of its own commit, read from git (`git archive`, not the working tree), from
+  which its command and the case's confirmation config are composed; its identity, config
+  agreement and numerics are checked against those. A conforming run its declared rule stopped
+  is a scientific failure (its case kept whole and decided); one that departs from what it was
+  issued, or completed, is superseded; one nobody can resolve (a record unreadable or missing a
+  field, no commit or one not in the clone, configs that do not give the start's config hash)
+  keeps its case as it is, listed unresolved, and the run is held in the journal, so that no
+  part and no recovery round reruns it. A change of the current configs after the run (the
+  memory limit, say, outside the config hash) never changes how it is judged. A case that holds a scientific failure (as its bound, valid part
   records of any stage show it, or its resolved launcher run) is kept whole, its records and its launcher run (listed as kept, with why), and
   a cycle cannot start from one of its records:
   the failure keeps counting, so a scientific failure of P, which closes P–F alone, never blocks

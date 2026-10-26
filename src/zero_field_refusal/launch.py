@@ -79,6 +79,7 @@ from pathlib import Path
 from typing import Any
 
 from omegaconf import OmegaConf
+from yaml import YAMLError
 
 from .analysis.stage_a import TrajectoryError, load_trajectory
 from .config import config_hash
@@ -355,7 +356,7 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
     """Why a completed run cannot stand for this campaign run (None: it can)."""
     try:
         cfg = OmegaConf.load(run_dir / "config.yaml")
-    except (OSError, ValueError):
+    except (OSError, ValueError, YAMLError):
         return "config.yaml is missing or unreadable"
     gate = OmegaConf.select(cfg, "tracking.gate", default=None)
     if gate != run.gate:
@@ -662,7 +663,7 @@ def _published(run_dir: Path) -> bool:
     try:
         if not _scheduled_training(OmegaConf.load(run_dir / "config.yaml")):
             return False
-    except (OSError, ValueError):
+    except (OSError, ValueError, YAMLError):
         return False
     try:
         load_trajectory(run_dir)

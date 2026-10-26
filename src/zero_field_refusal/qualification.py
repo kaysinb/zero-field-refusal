@@ -129,6 +129,7 @@ from .analysis.qualification_verdicts import rate_verdict as rate_verdict
 from .analysis.qualification_verdicts import rest_from_trajectories as rest_from_trajectories
 from .config import apply_override, load_config
 from .optim import ADAM_MODES
+from .paths import CONFIG_ROOT
 from .qualification_constants import (
     ACCEPTED,
     BATCH,
@@ -331,17 +332,30 @@ def pod_id() -> str | None:
 # ------------------------------------------------------------------------- the launcher run
 
 
-def confirmation_config(case: QualificationCase) -> DictConfig:
+def confirmation_config(case: QualificationCase, *, root: Path = CONFIG_ROOT) -> DictConfig:
     """The confirmation config of the case's arm, rate, seed, batch and steps
-    (experiments/study3, role confirmation): what "Config agreement" holds the launcher run to."""
+    (experiments/study3, role confirmation): what "Config agreement" holds the launcher run to.
+    ``root`` is the configs folder it is composed from (default this checkout's; the configs of
+    a launcher run's own commit when an engineering cycle resolves that run)."""
     overrides = ["study3.role=confirmation", f"optimizer={case.optimizer}",
                  f"optimizer.lr={case.lr!r}", f"seed={case.seed}",
                  f"train.batch_size={case.batch}", f"train.steps={case.steps}"]  # fmt: skip
-    return load_config("experiments/study3", overrides)
+    return load_config(root / "experiments" / "study3.yaml", overrides, root=root)
 
 
 def _plain(value: Any) -> Any:
     return OmegaConf.to_container(value, resolve=True) if isinstance(value, DictConfig) else value
+
+
+def config_departures(cfg: DictConfig, reference: DictConfig) -> list[str]:
+    """The keys of ``CONFIG_AGREEMENT`` in which ``cfg`` departs from ``reference`` (a
+    confirmation config)."""
+    problems = []
+    for key in CONFIG_AGREEMENT:
+        mine, theirs = (_plain(OmegaConf.select(c, key)) for c in (cfg, reference))
+        if mine != theirs:
+            problems.append(f"{key} departs from the confirmation config's")
+    return problems
 
 
 def _agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
@@ -351,12 +365,7 @@ def _agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
         reference = confirmation_config(case)
     except Exception as exc:  # no confirmation config to agree with: not a conforming run
         return [f"no confirmation config: {type(exc).__name__}: {str(exc)[:300]}"]
-    problems = []
-    for key in CONFIG_AGREEMENT:
-        mine, theirs = (_plain(OmegaConf.select(c, key)) for c in (cfg, reference))
-        if mine != theirs:
-            problems.append(f"{key} departs from the confirmation config's")
-    return problems
+    return config_departures(cfg, reference)
 
 
 def code_environment_problems(run_dir: Path) -> list[str]:
