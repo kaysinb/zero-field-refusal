@@ -46,8 +46,11 @@ reads only), then ``prechecks.require_path_check``. The launcher run's identity 
 seed, arm, rate, batch, steps, ``eval.k_only``; its ``train``, ``optimizer``, ``execution``,
 ``data`` and ``seed`` equal to the confirmation config's ("Config agreement",
 ``confirmation_config``); its recorded numerics setup equal to this process's; the hashes of θ₀
-and, for an arm that reads it, v₀; a completed run with a whole terminal record. A run that
-departs from it is technical, whatever stopped it. Then a conforming run stopped by an
+and, for an arm that reads it, v₀; the run's commit (clean) with this checkout's GPU-code
+identity, and its recorded GPU, driver, CUDA, Python, packages and container image this
+process's (``code_environment_problems``: study 2's ``code_check`` and ``environment_check``); a
+completed run with a whole terminal record. A run that departs from it is technical, whatever
+stopped it. Then a conforming run stopped by an
 instability rule (``schedule.INSTABILITY``) is a scientific failure; one stopped otherwise,
 without its step-25 evaluation, or without a checkpoint whose file's sha256 is the recorded one,
 is technical; either way nothing runs, and the record still names the run and its Pod
@@ -333,6 +336,25 @@ def _agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
     return problems
 
 
+def code_environment_problems(run_dir: Path) -> list[str]:
+    """The launcher run against this process's code and run environment, with study 2's checks
+    (``fa_control_diagnostic.code_check``, ``environment_check``): the run was made from a clean
+    checkout of a commit whose GPU-code identity is this checkout's (a clean one), and its
+    recorded GPU, driver, CUDA, Python, packages and container image are this process's. A
+    launcher run of an earlier GPU implementation or another environment is not the run the
+    harness can bridge, however small its D. Git and ``nvidia-smi`` alone: no CUDA work."""
+    try:
+        here = git_state()
+        tool = here.get("commit") if here.get("dirty") is False else None
+        code = fcd.code_check([run_dir], tool)
+        environment = fcd.environment_check([run_dir])
+    except Exception as exc:  # unreadable: the run cannot be shown to conform
+        return [f"its code and environment cannot be checked: {type(exc).__name__}: "
+                f"{str(exc)[:300]}"]  # fmt: skip
+    return ([f"code: {p}" for p in code["problems"]]
+            + [f"environment: {p}" for p in environment["problems"]])  # fmt: skip
+
+
 def _identity_problems(
     cfg: DictConfig, meta: Mapping[str, Any], case: QualificationCase, numerics: Any
 ) -> list[str]:
@@ -387,7 +409,8 @@ def launcher_problems(
     """The launcher run against the case (module docstring, "Order and state"): ``("technical",
     reasons)`` for a run that departs from the case (its config against the confirmation
     config's ``CONFIG_AGREEMENT`` keys; with ``numerics``, this process's
-    ``runtime.configure_numerics`` record, its numerics setup) or is not a whole record, checked
+    ``runtime.configure_numerics`` record, its numerics setup; its GPU code and run environment
+    against this process's, ``code_environment_problems``) or is not a whole record, checked
     first;
     ``("scientific", [reason])`` for a conforming run stopped by an instability rule; technical
     again for any other stop, a missing step-25 evaluation, or (with ``checkpoint``) a missing
@@ -400,6 +423,7 @@ def launcher_problems(
         return TECHNICAL, [f"the launcher run's records are unreadable: "
                            f"{type(exc).__name__}: {exc}"]  # fmt: skip
     problems = _identity_problems(cfg, meta, case, numerics)
+    problems += code_environment_problems(run_dir)
     terminal = fcd._read_object(run_dir / "terminal.json")
     summary = fcd._read_object(run_dir / "summary.json") or {}
     stop = (terminal or {}).get("stop")

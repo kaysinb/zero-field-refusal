@@ -20,6 +20,7 @@ import torch
 from test_endpoint_checkpoint import final_models, rng_state, same_rng, scientific
 from test_qualification import FA, SCOPE, part, spiked
 from test_qualification import fa_parts as fa_parts  # noqa: F401  (the fixtures)
+from test_qualification import harness_code_environment as harness_code_environment  # noqa: F401
 from test_qualification import tiny_confirmation as tiny_confirmation  # noqa: F401
 from test_qualification import world as world  # noqa: F401
 from test_schedule import arm_config, built_optimizers, read_jsonl

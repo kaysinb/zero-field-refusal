@@ -41,6 +41,19 @@ LAUNCHER = ("tracking.provenance_hashes=true", "+eval.k_only=true")
 CONFIRMATION = q.confirmation_config  # experiments/study3's, which no tiny run can agree with
 
 
+CODE_ENVIRONMENT = q.code_environment_problems  # the real check, before the fixture below
+
+
+@pytest.fixture(scope="module", autouse=True)
+def harness_code_environment():
+    """The tiny launcher runs are made by this process from this checkout, which may hold
+    uncommitted work under test: the code and environment check is tested on its own
+    (``test_the_launcher_run_needs_the_harness_code_and_environment``)."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(q, "code_environment_problems", lambda run_dir: [])
+        yield
+
+
 @pytest.fixture(scope="module", autouse=True)
 def tiny_confirmation(tmp_path_factory):
     """The tiny runs' own confirmation config ("Config agreement"): the tiny schedule at the
@@ -337,6 +350,45 @@ def test_the_registered_confirmation_config_agrees_with_the_k_only_runs(monkeypa
         k_only.execution.micro_batch_size = 2
         assert q._agreement_problems(k_only, mine) == [
             "execution departs from the confirmation config's"]  # fmt: skip
+
+
+def test_the_launcher_run_needs_the_harness_code_and_environment(world, tmp_path, monkeypatch):
+    """A launcher run made at a commit whose GPU code is not this checkout's, from a dirty
+    checkout, or in another environment (packages, GPU, Python, image) is technical before
+    anything runs or is classified: here even a run its instability rule stopped."""
+    _, runs = world
+    head = q.code_identity.gpu_code_identity()["commit"]
+    monkeypatch.setattr(q, "git_state", lambda *a, **k: {"commit": head, "dirty": False})
+    here = fcd.current_environment()
+    environment = {"hardware": {"gpus": here["hardware.gpus"], "driver": here["hardware.driver"],
+                                "torch_cuda": here["hardware.torch_cuda"]},
+                   "python": here["python"], "packages": here["packages"]}  # fmt: skip
+
+    def with_meta(name, **change):
+        copied = tmp_path / name
+        shutil.copytree(runs["spiked"], copied)
+        meta = json.loads((copied / "meta.json").read_text())
+        meta.update({"git": {"commit": head, "dirty": False}, **copy.deepcopy(environment)})
+        meta.update(change)
+        (copied / "meta.json").write_text(json.dumps(meta))
+        return copied
+
+    assert CODE_ENVIRONMENT(with_meta("same")) == []
+    old_code = with_meta("old-code", git={"commit": "028b953", "dirty": False})
+    assert any(p.startswith("code: ") and "GPU code differs" in p
+               for p in CODE_ENVIRONMENT(old_code))  # fmt: skip
+    dirty = with_meta("dirty", git={"commit": head, "dirty": True})
+    assert any("not a clean checkout" in p for p in CODE_ENVIRONMENT(dirty))
+    packages = {**environment["packages"], "torch": "0.0.0"}
+    other = with_meta("other-packages", packages=packages)
+    assert any(p.startswith("environment: packages.torch") for p in CODE_ENVIRONMENT(other))
+    image = with_meta("other-image", launch={"container_image": "another:image"})
+    monkeypatch.delenv("CONTAINER_IMAGE", raising=False)
+    assert any("container_image" in p for p in CODE_ENVIRONMENT(image))
+    monkeypatch.setattr(q, "code_environment_problems", CODE_ENVIRONMENT)
+    kind, reasons = q.launcher_problems(old_code, FA)  # stopped by its instability rule
+    assert kind == "technical" and any("code: " in r for r in reasons), reasons
+    assert q.launcher_problems(with_meta("again"), FA)[0] == "scientific"
 
 
 def test_the_launcher_run_must_have_this_processs_numerics(world, tmp_path) -> None:
