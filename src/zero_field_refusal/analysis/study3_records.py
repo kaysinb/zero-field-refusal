@@ -11,8 +11,12 @@ qualification's restart and supersession records (``qualification/c<N>/``).
 - ``read_endpoints``: every attempt of a study-3 run (and every study-3 run directory), each
   bound to its issued cell, with its state and step-25 endpoint, and the refusals by name
   (``problems``). Nothing may be computed from records with a refusal: they are ambiguous.
+- ``EndpointReader``: one snapshot of the same records, read under any number of prescriptions
+  (``read_endpoints`` is one reading of a fresh snapshot): every file is read once.
 - ``read_holds``: every held launcher run, by its label under any config hash, with the records
   that hold it and their sha256 (what a closure record cites).
+- ``journal_lines``: every launch log, line by line, each line with its own sha256: the one
+  reading of a cited journal line (``read_holds``, the closure records of ``study3_decisions``).
 - ``SEEDS`` and ``candidate_of``: the registered seeds per role and candidate.
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
@@ -324,35 +328,85 @@ def read_endpoints(
     to its issued cell, with its state and endpoint; and the refusals, by name (module
     docstring). ``theta0``: θ₀'s evaluation (``read_theta0``); ``prescribed``: per step key
     (``step_key``), the (arm, rate, seed) cells issued so far, historical rounds included."""
-    root = Path(runs_root)
-    baseline = read_theta0(theta0)
-    voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
-    journal = _read_journal(root, voided)
-    problems = _voiding_records(root, voided)
-    problems += [f"{where}: not valid JSON, and not the last line of its log (only a line cut "
-                 "short by a crash is skipped)" for where in journal.corrupt]  # fmt: skip
-    started = Counter(start.get("run_id") for _, start in journal.starts)
-    attempts: list[_Attempt] = []
-    for campaign, start in journal.starts:
-        if not isinstance(start.get("run_id"), str):
-            problems.append(f"{campaign}: a start in the launch journal without a run id")
-            continue
-        attempts.append(_bind(root, campaign, start, prescribed,
-                              twice=started[start["run_id"]] > 1))  # fmt: skip
-    experiment = root / EXPERIMENT
-    for run_dir in sorted(experiment.iterdir()) if experiment.is_dir() else []:
-        if run_dir.is_dir() and run_dir.name not in started and run_dir.name != DECISIONS:
-            attempts.append(_Attempt(
-                campaign=None, started=None, run_id=run_dir.name, run_dir=run_dir,
-                cell=Cell(*[None] * 9), number=None, state="refused",
-                reasons=["a study-3 run directory with no start in the launch journal: no "
-                         "issued cell"]))  # fmt: skip
-    problems += _select(attempts, journal.recoveries, voided)
-    _refuse_duplicates(attempts)
-    problems += [f"{a.run_id}: {'; '.join(a.reasons)}" for a in attempts if a.state == "refused"]
-    endpoints = [_endpoint(a, journal.ends.get(a.run_id, []), baseline) for a in attempts]
-    endpoints.sort(key=_order)
-    return endpoints, sorted(set(problems))
+    return EndpointReader(runs_root, theta0=theta0).read(prescribed)
+
+
+class EndpointReader:
+    """One snapshot of the run records under ``runs_root``: θ₀'s evaluation, the launch journal,
+    the qualification's restart and supersession records, the experiment's folders and, as they
+    are first needed, each run's files. ``read(prescribed)`` gives what ``read_endpoints`` gives
+    under ``prescribed``; any number of readings read every file once (a caller that derives the
+    cells to prescribe from the records reads them once)."""
+
+    def __init__(self, runs_root: str | Path, *, theta0: str | Path) -> None:
+        self.root = Path(runs_root)
+        self.baseline = read_theta0(theta0)
+        self.voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
+        self.journal = _read_journal(self.root, self.voided)
+        self.problems = _voiding_records(self.root, self.voided)
+        self.problems += [
+            f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
+            "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
+        experiment = self.root / EXPERIMENT
+        self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
+                        if d.is_dir() and d.name != DECISIONS]  # fmt: skip
+        self.files = _Files()
+
+    def read(
+        self, prescribed: Mapping[str, Collection[tuple[str, float, int]]]
+    ) -> tuple[list[Endpoint], list[str]]:
+        """``read_endpoints`` under ``prescribed``, from this snapshot."""
+        problems = list(self.problems)
+        started = Counter(start.get("run_id") for _, start in self.journal.starts)
+        attempts: list[_Attempt] = []
+        for campaign, start in self.journal.starts:
+            if not isinstance(start.get("run_id"), str):
+                problems.append(f"{campaign}: a start in the launch journal without a run id")
+                continue
+            attempts.append(_bind(self.root, campaign, start, prescribed,
+                                  twice=started[start["run_id"]] > 1,
+                                  files=self.files))  # fmt: skip
+        for run_dir in self.folders:
+            if run_dir.name not in started:
+                attempts.append(_Attempt(
+                    campaign=None, started=None, run_id=run_dir.name, run_dir=run_dir,
+                    cell=Cell(*[None] * 9), number=None, state="refused",
+                    reasons=["a study-3 run directory with no start in the launch journal: no "
+                             "issued cell"]))  # fmt: skip
+        problems += _select(attempts, self.journal.recoveries, self.voided)
+        _refuse_duplicates(attempts)
+        problems += [f"{a.run_id}: {'; '.join(a.reasons)}" for a in attempts
+                     if a.state == "refused"]  # fmt: skip
+        endpoints = [_endpoint(a, self.journal.ends.get(a.run_id, []), self.baseline,
+                               self.files) for a in attempts]  # fmt: skip
+        endpoints.sort(key=_order)
+        return endpoints, sorted(set(problems))
+
+
+class _Files:
+    """The run files a snapshot has read: each file's text (or the error reading it raised) and
+    each run's bound config, read once."""
+
+    def __init__(self) -> None:
+        self.texts: dict[Path, str | Exception] = {}
+        self.configs: dict[tuple, tuple[Any, Any, Any]] = {}
+
+    def read_text(self, path: Path) -> str:
+        if path not in self.texts:
+            try:
+                self.texts[path] = path.read_text()
+            except (OSError, ValueError) as exc:
+                self.texts[path] = exc
+        found = self.texts[path]
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+    def config(self, run_dir: Path, start: Mapping[str, Any], chash: str | None) -> tuple:
+        key = (run_dir, chash, json.dumps(start.get("command"), sort_keys=True, default=str))
+        if key not in self.configs:
+            self.configs[key] = _config(run_dir, start, chash)
+        return self.configs[key]
 
 
 def _order(e: Endpoint) -> tuple:
@@ -457,7 +511,6 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
     listed. Of a record only its numbers, ids, paths, hashes and the hold's reason are kept."""
     root = Path(runs_root)
     holds: dict[str, dict[str, Any]] = {}
-    problems: list[str] = []
 
     def add(entry: Mapping[str, Any], reference: dict[str, Any]) -> None:
         run_id = entry["run_id"]
@@ -467,25 +520,15 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
             "records": []})  # fmt: skip
         hold["records"].append(reference)
 
-    for log in sorted((root / "launch").glob("*.jsonl")):
-        where = log.relative_to(root).as_posix()
-        try:
-            data = log.read_bytes()
-            lines = data.decode("utf-8").splitlines()
-        except (OSError, ValueError):
-            problems.append(f"{where}: an unreadable launch journal")
-            continue
-        sha = hashlib.sha256(data).hexdigest()
-        for number, line in enumerate(lines, start=1):
-            try:
-                record = json.loads(line)
-            except ValueError:  # read_endpoints names such a line, unless it is the last
-                continue
-            if (isinstance(record, dict) and record.get("event") == "held"
+    logs, problems = journal_lines(root)
+    for log in logs:
+        for line in log.lines:
+            record = line.record  # an unparseable line: read_endpoints names it, unless last
+            if (record is not None and record.get("event") == "held"
                     and isinstance(record.get("run_id"), str)):  # fmt: skip
-                add(record, {"kind": "journal", "path": where, "root": "runs", "line": number,
-                             "line_sha256": hashlib.sha256(line.encode()).hexdigest(),
-                             "sha256": sha})  # fmt: skip
+                add(record, {"kind": "journal", "path": log.path, "root": "runs",
+                             "line": line.line, "line_sha256": line.line_sha256,
+                             "sha256": log.sha256})  # fmt: skip
     for path in sorted((root / "qualification").glob("c*/supersede-*.json")):
         where = path.relative_to(root).as_posix()
         try:
@@ -503,6 +546,52 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
     return list(holds.values()), problems
 
 
+@dataclass(frozen=True)
+class JournalLine:
+    """One line of a launch log: its number from 1, its text, the sha256 of its UTF-8 text (its
+    own bytes, which stay when the log grows) and its record (None unless a JSON object)."""
+
+    line: int
+    text: str
+    line_sha256: str
+    record: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class JournalLog:
+    """A launch log: its path under RUNS_DIR, its sha256 now and its lines."""
+
+    path: str
+    sha256: str
+    lines: tuple[JournalLine, ...]
+
+
+def journal_lines(runs_root: str | Path) -> tuple[list[JournalLog], list[str]]:
+    """Every launch log under ``runs_root/launch/``, by its name, line by line, each line with
+    its own sha256 and its record; and the logs that cannot be read (UTF-8 text), named. The
+    one reading of a cited journal line."""
+    root = Path(runs_root)
+    logs, problems = [], []
+    for log in sorted((root / "launch").glob("*.jsonl")):
+        where = log.relative_to(root).as_posix()
+        try:
+            data = log.read_bytes()
+            texts = data.decode("utf-8").splitlines()
+        except (OSError, ValueError):
+            problems.append(f"{where}: an unreadable launch journal")
+            continue
+        lines = []
+        for number, text in enumerate(texts, start=1):
+            try:
+                record = json.loads(text)
+            except ValueError:
+                record = None
+            lines.append(JournalLine(number, text, hashlib.sha256(text.encode()).hexdigest(),
+                                     record if isinstance(record, dict) else None))  # fmt: skip
+        logs.append(JournalLog(where, hashlib.sha256(data).hexdigest(), tuple(lines)))
+    return logs, problems
+
+
 # ------------------------------------------------------------------ the issued cell
 
 
@@ -513,6 +602,7 @@ def _bind(
     prescribed: Mapping[str, Collection[tuple[str, float, int]]],
     *,
     twice: bool,
+    files: _Files | None = None,
 ) -> _Attempt:
     """The attempt bound to its issued cell (module docstring, "The issued cell"): refused, with
     its refusals as its reasons, when it cannot be; with the reason it can no longer be bound
@@ -537,7 +627,8 @@ def _bind(
     problem = _header_problem(head)
     if problem is not None:
         refusals.append(problem)
-    meta = _json(run_dir / "meta.json")
+    files = files or _Files()
+    meta = _json(run_dir / "meta.json", files)
     if meta is not None:
         recorded = meta.get("campaign")
         wanted = {"name": campaign, "label": label, "attempt": number, "header": head}
@@ -547,7 +638,7 @@ def _bind(
         if meta.get("config_hash") != chash:
             refusals.append(f"its config hash {meta.get('config_hash')!r} is not its cell's "
                             f"{chash!r}")  # fmt: skip
-    cfg, unbound, refusal = _config(run_dir, start, chash)
+    cfg, unbound, refusal = files.config(run_dir, start, chash)
     if refusal is not None:
         refusals.append(refusal)
     facts: dict[str, Any] = {}
@@ -773,7 +864,7 @@ def _refuse_duplicates(attempts: list[_Attempt]) -> None:
 
 
 def _endpoint(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
-              theta0: Mapping[str, float]) -> Endpoint:  # fmt: skip
+              theta0: Mapping[str, float], files: _Files | None = None) -> Endpoint:  # fmt: skip
     cell = attempt.cell
     common = {"run_id": attempt.run_id, "run_dir": attempt.run_dir, "cell": cell,
               "arm": cell.arm, "lr": cell.rate, "seed": cell.seed, "role": attempt.role,
@@ -781,11 +872,11 @@ def _endpoint(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
               "attempt": attempt.number, "label": cell.label}  # fmt: skip
     if attempt.state is not None:
         return Endpoint(**common, state=attempt.state, reasons=tuple(attempt.reasons))
-    return Endpoint(**common, **_outcome(attempt, ends, theta0))
+    return Endpoint(**common, **_outcome(attempt, ends, theta0, files or _Files()))
 
 
 def _outcome(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
-             theta0: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
+             theta0: Mapping[str, float], files: _Files) -> dict[str, Any]:  # fmt: skip
     """A counting attempt's state, reasons and endpoint (module docstring, "States"); ``ends``:
     its end records, from any log."""
     if attempt.unbound is not None:
@@ -797,7 +888,7 @@ def _outcome(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
     run_dir = attempt.run_dir
     ended = ends[0].get("outcome") if ends else None
     published = (run_dir / "terminal.json").is_file()
-    status = None if published else (_json(run_dir / "meta.json") or {}).get("status")
+    status = None if published else (_json(run_dir / "meta.json", files) or {}).get("status")
     finished = status not in (None, "running")  # failed, or finished without its outcome
     if ended in OPEN_ENDS and not finished:
         why = "the launcher has not ended it" if ended is None else "the launcher's end: stopped"
@@ -808,7 +899,7 @@ def _outcome(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
         return {"state": "technical", "reasons": (*reasons, "no published terminal record")}
     if ended not in OUTCOME_ENDS:  # the launcher's verdict; its free text is not copied
         return {"state": "technical", "reasons": (f"the launcher's end record: {ended}",)}
-    problems, terminal, row = _records(attempt)
+    problems, terminal, row = _records(attempt, files)
     if problems:
         return {"state": "technical", "reasons": tuple(problems)}
     steps, stop = terminal["steps"], terminal["stop"]["reason"]
@@ -832,18 +923,22 @@ def _outcome(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
     return {**out, "state": "usable", "reasons": ()}
 
 
-def _records(attempt: _Attempt) -> tuple[list[str], dict[str, Any] | None, dict[str, Any] | None]:
+def _records(
+    attempt: _Attempt, files: _Files | None = None
+) -> tuple[list[str], dict[str, Any] | None, dict[str, Any] | None]:
     """A run's records with a published terminal record, checked from their numbers (module
     docstring, "A conforming record"): the problems, the terminal record and the step-25
     evaluation (None without one)."""
     run_dir = attempt.run_dir
+    files = files or _Files()
     try:
-        meta = _load(run_dir / "meta.json")
-        terminal = _load(run_dir / "terminal.json")
-        summary = _load(run_dir / "summary.json") if (run_dir / "summary.json").is_file() else {}
-        evaluations = _jsonl(run_dir / "evaluations.jsonl")
-        metrics = _jsonl(run_dir / "metrics.jsonl")
-        readings = _jsonl(run_dir / "monitor.jsonl")
+        meta = _load(run_dir / "meta.json", files)
+        terminal = _load(run_dir / "terminal.json", files)
+        summary = (_load(run_dir / "summary.json", files)
+                   if (run_dir / "summary.json").is_file() else {})  # fmt: skip
+        evaluations = _jsonl(run_dir / "evaluations.jsonl", files)
+        metrics = _jsonl(run_dir / "metrics.jsonl", files)
+        readings = _jsonl(run_dir / "monitor.jsonl", files)
         stop, steps = terminal["stop"]["reason"], terminal["steps"]
         eval_steps = [row["step"] for row in evaluations]
         monitor_steps = [row["step"] for row in readings]
@@ -944,25 +1039,26 @@ def _finiteness(table: str, rows: Sequence[Mapping[str, Any]], allowed: int | No
     return [f"{table}: a non-finite number at step {b}" for b in bad]
 
 
-def _load(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text())
+def _load(path: Path, files: _Files | None = None) -> dict[str, Any]:
+    data = json.loads(path.read_text() if files is None else files.read_text(path))
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} is not a JSON object")
     return data
 
 
-def _json(path: Path) -> dict[str, Any] | None:
+def _json(path: Path, files: _Files | None = None) -> dict[str, Any] | None:
     try:
-        return _load(path)
+        return _load(path, files)
     except (OSError, ValueError):
         return None
 
 
-def _jsonl(path: Path) -> list[dict[str, Any]]:
+def _jsonl(path: Path, files: _Files | None = None) -> list[dict[str, Any]]:
     """The rows of a JSON-lines record; none when it is absent."""
     if not path.is_file():
         return []
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    text = path.read_text() if files is None else files.read_text(path)
+    rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     if not all(isinstance(row, dict) for row in rows):
         raise ValueError(f"{path.name} holds a row that is not a JSON object")
     return rows

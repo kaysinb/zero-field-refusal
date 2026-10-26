@@ -30,7 +30,9 @@ from zero_field_refusal.analysis.study3_records import (
     INSTABILITY,
     ROLES,
     SEEDS,
+    EndpointReader,
     candidate_of,
+    journal_lines,
     read_endpoints,
     read_holds,
     read_theta0,
@@ -768,6 +770,46 @@ def test_the_decision_records_folder_is_reserved_and_no_run_directory(world) -> 
     stray.mkdir()
     found, problems = world.read()
     assert listed_refused(found, problems, stray.name, "no start")
+
+
+def test_one_reader_reads_each_run_file_once_across_its_readings(world, monkeypatch) -> None:
+    """``EndpointReader`` holds one snapshot of the records: its readings under several cells
+    each equal ``read_endpoints``', and every file of a run is opened once."""
+    world.run("A", 1.45e-5, 10300)
+    world.run("F", 1.3e-5, 10300, stop="gradient_spike", steps=4)
+    world.run("A", 1.45e-5, 10100, role="search")
+    world.run("P", 1.3e-5, 10300, end=None, terminal=False)
+    full = {key: set(cells) for key, cells in world.prescribed.items()}
+    part = {"c1/validation": {("A", 1.45e-5, 10300)}}
+    expected = [world.read(prescribed=p) for p in ({}, part, full)]
+    opened: dict[str, int] = defaultdict(int)
+    real_open = builtins.open
+
+    def counting_open(file, *args, **kwargs):  # Path.read_text and read_bytes open through it
+        if "study3" in str(file):
+            opened[str(file)] += 1
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    monkeypatch.setattr(io, "open", counting_open)
+    reader = EndpointReader(world.root, theta0=world.theta0)
+    assert [reader.read(p) for p in ({}, part, full)] == expected
+    assert opened and max(opened.values()) == 1, {k: v for k, v in opened.items() if v > 1}
+
+
+def test_journal_lines_give_each_logs_lines_by_their_own_bytes(world) -> None:
+    world.run()
+    (world.root / "launch" / "b-cut.jsonl").write_text('{"event": "start"}\n{"event": "st')
+    (world.root / "launch" / "c-bad.jsonl").write_bytes(b"\xff\xfe not text")
+    logs, problems = journal_lines(world.root)
+    assert problems == ["launch/c-bad.jsonl: an unreadable launch journal"]
+    by_path = {log.path: log for log in logs}
+    cut = by_path["launch/b-cut.jsonl"]
+    assert [(line.line, line.record) for line in cut.lines] == [
+        (1, {"event": "start"}), (2, None)]  # fmt: skip
+    data = (world.root / "launch" / "b-cut.jsonl").read_bytes()
+    assert cut.sha256 == hashlib.sha256(data).hexdigest()
+    assert cut.lines[1].line_sha256 == hashlib.sha256(data.split(b"\n")[1]).hexdigest()
 
 
 def test_two_starts_of_one_run_id_are_both_refused(world) -> None:

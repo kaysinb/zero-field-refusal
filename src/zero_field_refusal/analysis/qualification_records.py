@@ -15,6 +15,8 @@ read here, and the verdict rules are called where they live, in ``qualification_
   assembled as ``qualify.py verdict`` assembles them; ``verdict.json`` read as a cache and
   compared with it; and the ``problems``.
 - ``rate_of``: one rate of a reading, by arm (or optimizer) and rate.
+- ``supersessions``: the candidate's engineering-cycle records as ``read_qualification`` lists
+  them (old and fix GPU codes included), read alone: they do not depend on the expected code.
 - ``Scope``, ``settings_record``, ``launcher_identity`` and ``resolved_verdict``: what
   ``qualification.QualificationScope``, ``qualification.settings_record``,
   ``qualification.launcher_identity`` and ``qualify.py``'s ``resolved_verdict`` give, from the
@@ -1070,6 +1072,14 @@ def _supersession(path: Path, record: Mapping[str, Any] | None) -> dict[str, Any
             "kept_cases": record.get("kept_cases"),
             "launchers": [e.get("run_id") for e in record.get("launchers") or []
                           if isinstance(e, Mapping)]}  # fmt: skip
+
+
+def supersessions(runs_root: str | Path, candidate: int) -> list[dict[str, Any]]:
+    """The candidate's supersession records (``c<N>/supersede-<n>.json``) as
+    ``read_qualification`` lists them, in their order; an unreadable one is listed with its
+    fields None (``read_qualification`` names it a problem)."""
+    folder = Path(runs_root) / "qualification" / f"c{candidate}"
+    return [_supersession(path, _object(path)) for path in sorted(folder.glob("supersede-*.json"))]
 
 
 def rate_of(reading: Mapping[str, Any], arm: str, lr: float) -> dict[str, Any] | None:
