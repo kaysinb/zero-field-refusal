@@ -19,9 +19,14 @@ from zero_field_refusal.code_identity import (
         ("src/zero_field_refusal/analysis/stage_a.py", True),
         ("src/zero_field_refusal/analysis/study2_short.py", False),
         ("src/zero_field_refusal/analysis/study2_short_sim.py", False),
+        # Study 3's verdict rules are analysis; the harness that writes the records is not
+        ("src/zero_field_refusal/analysis/qualification_verdicts.py", False),
+        ("src/zero_field_refusal/qualification.py", True),
+        ("src/zero_field_refusal/qualification_constants.py", True),
         ("scripts/launch.py", True),
         ("scripts/numerical_check.py", True),
         ("scripts/study2_short_summary.py", False),
+        ("scripts/check_theta0_utility.py", False),
         ("scripts/study2_short_campaigns.py", False),
         ("configs/experiments/study2_short.yaml", True),
         ("pyproject.toml", True),
@@ -112,3 +117,91 @@ def test_an_image_change_voids_the_qualification(repo: Path) -> None:
         check = reuse_check(gate_b, later, repo)
         assert check["reusable"] is False and check["changed"] == [name], name
         gate_b = later
+
+
+def test_nothing_a_qualification_part_executes_is_defined_under_analysis() -> None:
+    """Study 3's harness takes from the analysis package (outside the GPU identity) the four
+    verdict functions alone, which it re-exports and never calls; every constant it executes or
+    records is ``qualification_constants``', a GPU path."""
+    import ast
+
+    from zero_field_refusal import qualification, qualification_constants
+    from zero_field_refusal.analysis import qualification_verdicts
+
+    root = Path(qualification.__file__).resolve().parents[2]
+    tree = ast.parse(Path(qualification.__file__).read_text())
+    from_analysis = {alias.asname or alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and "analysis" in (node.module or "")
+                     for alias in node.names}  # fmt: skip
+    verdicts = {"case_verdict", "control_verdict", "rate_verdict", "engineering_summary",
+                "rest_from_trajectories"}  # fmt: skip
+    assert from_analysis == verdicts
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.ClassDef):
+            used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            assert not used & verdicts, node.name
+    # The verdict module defines no constant the harness has: its own are verdict reasons
+    module = ast.parse(Path(qualification_verdicts.__file__).read_text())
+    defined = {t.id for node in module.body if isinstance(node, ast.Assign)
+               for t in node.targets if isinstance(t, ast.Name)}  # fmt: skip
+    assert not defined & set(vars(qualification)), defined & set(vars(qualification))
+    for name in ("SHIFTS", "REST", "STEPS", "BATCH", "COMPARISONS", "SCIENTIFIC", "TECHNICAL",
+                 "PARTS", "record_sha256", "QualificationError"):  # fmt: skip
+        assert getattr(qualification, name) is getattr(qualification_constants, name), name
+    for path, gpu in ((qualification_constants.__file__, True), (qualification.__file__, True),
+                      (qualification_verdicts.__file__, False)):  # fmt: skip
+        assert is_gpu_path(str(Path(path).resolve().relative_to(root))) is gpu, path
+
+
+STUDY3_ANALYSIS = ("study3_analysis.py", "study3_audit.py", "study3_campaigns.py",
+                   "study3_simulate.py", "study3_spread.py", "study3_summary.py",
+                   "check_theta0_utility.py")  # fmt: skip
+GPU_MODULES = ("qualification", "schedule", "train", "launch", "runtime", "fa_control_diagnostic")
+
+
+def gpu_uses(path: Path) -> set[str]:
+    """What a script imports that runs on a GPU (the GPU modules, torch) or uses of CUDA."""
+    import ast
+
+    text = path.read_text()
+    imported = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.ImportFrom):
+            imported |= {node.module or "", *(f"{node.module}.{a.name}" for a in node.names)}
+        elif isinstance(node, ast.Import):
+            imported |= {a.name for a in node.names}
+    found = {
+        i
+        for i in imported
+        for m in GPU_MODULES
+        if i == f"zero_field_refusal.{m}" or i.startswith(f"zero_field_refusal.{m}.")
+    }
+    found |= {i for i in imported if i == "torch" or i.startswith("torch.")}
+    return found | {use for use in ("torch.cuda", ".cuda(") if use in text}  # fmt: skip
+
+
+def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work(tmp_path) -> None:
+    """Study 3's analysis entry points are outside the identity from the start; each either does
+    not exist yet or imports nothing that runs on a GPU (the GPU modules, torch) and uses no
+    CUDA. The check is shown to catch such a script."""
+    from zero_field_refusal.code_identity import ANALYSIS_SCRIPTS
+    from zero_field_refusal.paths import REPO_ROOT
+
+    assert {f"scripts/{n}" for n in STUDY3_ANALYSIS} <= ANALYSIS_SCRIPTS
+    assert {p for p in ANALYSIS_SCRIPTS if "study3" in p} == {
+        f"scripts/{n}" for n in STUDY3_ANALYSIS if "study3" in n}  # fmt: skip
+    for name in STUDY3_ANALYSIS:
+        path = REPO_ROOT / "scripts" / name
+        assert is_gpu_path(f"scripts/{name}") is False
+        if path.exists():
+            assert not gpu_uses(path), (name, gpu_uses(path))
+    for text, found in (("import torch\n", {"torch"}),
+                        ("x = 1\ntorch.cuda.synchronize()\n", {"torch.cuda"}),
+                        ("from zero_field_refusal import qualification\n",
+                         {"zero_field_refusal.qualification"}),
+                        ("from zero_field_refusal.schedule import run_scheduled\n",
+                         {"zero_field_refusal.schedule",
+                          "zero_field_refusal.schedule.run_scheduled"})):  # fmt: skip
+        sample = tmp_path / "sample.py"
+        sample.write_text(text)
+        assert gpu_uses(sample) >= found, text

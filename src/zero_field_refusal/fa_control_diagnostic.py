@@ -181,6 +181,7 @@ from .schedule import INSTABILITY as RUN_INSTABILITY
 from .schedule import _norm as grad_norm
 from .seeding import derive_seed, seed_everything
 from .teacher import MANIFEST_FILE, Sample, published_chunks
+from .tensor_hash import tensors_sha256
 from .tracking import LAUNCH_ENV, git_state, hardware, package_versions
 from .train import _theta0_second_moment, accumulate_gradient
 
@@ -484,16 +485,6 @@ def group_keys(name: str) -> tuple[str, str]:
     """The aggregate group (kind) and the per-layer group (kind.layer) of a parameter."""
     kind, layer = module_group(name)
     return kind, kind if layer is None else f"{kind}.{layer}"
-
-
-def tensors_sha256(named: Sequence[tuple[str, torch.Tensor]]) -> str:
-    """sha256 over names, shapes, dtypes and bytes, in order."""
-    digest = hashlib.sha256()
-    for name, tensor in named:
-        t = tensor.detach().contiguous().cpu()
-        digest.update(f"{name}|{tuple(t.shape)}|{t.dtype}|".encode())
-        digest.update(t.view(torch.uint8).numpy() if t.numel() else b"")
-    return digest.hexdigest()
 
 
 def preconditioner(v: torch.Tensor, eps: float) -> torch.Tensor:

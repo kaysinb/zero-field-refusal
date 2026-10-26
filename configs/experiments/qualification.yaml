@@ -1,0 +1,36 @@
+# Study 3 ("Numerical qualification"): the registered scope of the qualification, read by the
+# qualification code and scripts: the bound, the two candidate K*, the norm, the Gaussian
+# seeds, the survival share, the rounding scale, the warning rule, the seeds of the engineering
+# and numerical runs, the same-path control (amendment 2), the disk and host-memory needs. Not a
+# run config.
+experiment: qualification
+spec: "study 3, numerical qualification (docs/study3-preregistration.md)"
+bound_fraction: 0.01
+k_star:                             # candidate 1, candidate 2
+  1: 6.0
+  2: 5.0
+norm: 5.0e-05
+gaussian:
+  s3: 3
+  s4: 4
+survival_share: 0.5
+rounding_scale: 10
+warning:
+  floor: 0.001
+  factor: 3
+seeds:
+  engineering: [10000, 10001, 10002, 10003]
+  numerical:
+    1: [10200, 10201, 10202]
+    2: [10210, 10211, 10212]
+control:                            # amendment 2: the same-path control
+  arm: adam_frozen
+  steps: 25
+  bound_fraction: 0.01
+checkpoint_gb: 6.5
+disk_margin_gb: 4
+# The free host memory a part needs, in GB of 1e9 bytes (scripts/qualify.py's driver refuses to
+# start below it): the harness holds θ₀, v₀, the second model and the p1 direction on the host
+# (≈ 25-30 GB at 1.5B, as study 2's numerical check did) and a checkpoint save's transient
+# (≈ 5 GB); × 1.5 is 52.5, rounded up to 60
+host_memory_gb: 60

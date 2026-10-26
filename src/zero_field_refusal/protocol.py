@@ -41,6 +41,8 @@ PATH_FIELD_BOUND = 0.01
 # One-sided confidence of the upper bound on the path discrepancy's χ² checked against it.
 PATH_FIELD_LEVEL = 0.975
 ATTENTION = ("sdpa", "eager")
+# Study 3's roles whose runs may save the step-25 checkpoint (tracking.endpoint_checkpoint)
+STUDY3_CHECKPOINT_ROLES = ("numerical", "engineering")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 REQUIRED = (
@@ -218,9 +220,11 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
                     )
                 key = "schedule.instability.contamination_k"
                 bound = None
-                if not OmegaConf.is_missing(cfg.schedule, "instability") and (
-                    OmegaConf.select(cfg, "schedule.instability", default=None) is not None
-                ) and not OmegaConf.is_missing(cfg.schedule.instability, "contamination_k"):
+                if (
+                    not OmegaConf.is_missing(cfg.schedule, "instability")
+                    and (OmegaConf.select(cfg, "schedule.instability", default=None) is not None)
+                    and not OmegaConf.is_missing(cfg.schedule.instability, "contamination_k")
+                ):
                     bound = OmegaConf.select(cfg, key, default=None)
                 if not (isinstance(bound, int | float) and not isinstance(bound, bool)
                         and bound > 0):  # fmt: skip
@@ -257,6 +261,17 @@ def protocol_problems(cfg: DictConfig) -> list[str]:
         problems.append(
             f"model.end_tokens: expected a non-empty list of token strings, got {end_tokens!r}"
         )
+
+    # Study 3: the step-25 checkpoint belongs to the numerical and engineering runs alone; a
+    # search, validation or confirmation run never saves it (an unset role neither)
+    if OmegaConf.select(cfg, "study3", default=None) is not None:
+        role = OmegaConf.select(cfg, "study3.role", default=None)
+        checkpoint = OmegaConf.select(cfg, "tracking.endpoint_checkpoint", default=None)
+        if role not in STUDY3_CHECKPOINT_ROLES and checkpoint is not None:
+            problems.append(
+                f"tracking.endpoint_checkpoint: a study-3 run of role {role!r} saves no "
+                f"endpoint checkpoint (only {STUDY3_CHECKPOINT_ROLES} do), got {checkpoint!r}"
+            )
     return problems
 
 

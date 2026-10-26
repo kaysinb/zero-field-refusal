@@ -4,9 +4,10 @@ Each run owns ``<runs root>/<experiment>/<run id>/``:
 
 - ``config.yaml``: the resolved config;
 - ``meta.json``: identity and provenance (config hash, command-line arguments, git commit, lockfile
-  hash, package versions, GPUs, source snapshot and container image, input hashes, W&B run,
-  status: ``running``, ``completed``, ``failed``, or ``diverged`` when training stopped on a
-  non-finite loss);
+  hash, package versions, GPUs, host name, source snapshot, container image, Pod and data center,
+  the launching campaign (name, run label, attempt and header, from ``ZFR_CAMPAIGN``), input
+  hashes, W&B run, status: ``running``, ``completed``, ``failed``, or ``diverged`` when training
+  stopped on a non-finite loss);
 - ``git.diff``: uncommitted changes and untracked files, when the working tree is dirty;
 - ``metrics.jsonl``: one JSON object per ``log`` call;
 - ``summary.json``: final values;
@@ -55,7 +56,14 @@ TRACKED_PACKAGES = ("torch", "transformers", "peft", "datasets", "accelerate", "
 
 # Launcher-provided identities of the executed source and environment. A development run on a Pod
 # executes a source snapshot without Git metadata; its snapshot ID is the code provenance.
-LAUNCH_ENV = {"source_snapshot_id": "SOURCE_SNAPSHOT_ID", "container_image": "CONTAINER_IMAGE"}
+LAUNCH_ENV = {
+    "source_snapshot_id": "SOURCE_SNAPSHOT_ID",
+    "container_image": "CONTAINER_IMAGE",
+    "pod_id": "RUNPOD_POD_ID",
+    "data_center": "RUNPOD_DC_ID",
+}
+# The campaign launcher's JSON object (name, run label, attempt, header) for a child run.
+CAMPAIGN_ENV = "ZFR_CAMPAIGN"
 
 # Keys every metrics.jsonl record has; a metric must not shadow them.
 RESERVED_KEYS = ("step", "time_s")
@@ -71,6 +79,21 @@ class Diverged(RuntimeError):
     """
 
     run_status = "diverged"
+
+
+def _campaign() -> dict[str, Any] | None:
+    """The launching campaign from ``ZFR_CAMPAIGN`` (a JSON object), None when unset; anything
+    else raises ``ValueError``."""
+    text = os.environ.get(CAMPAIGN_ENV)
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError as error:
+        raise ValueError(f"{CAMPAIGN_ENV} is not valid JSON: {text!r}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{CAMPAIGN_ENV} must be a JSON object: {text!r}")
+    return value
 
 
 class Run:
@@ -96,6 +119,7 @@ class Run:
         git = git_state()
         if tracking.get("require_clean_git") and (git["commit"] is None or git["dirty"]):
             raise RuntimeError("tracking.require_clean_git is set: commit all changes first")
+        campaign = _campaign()
         if not self.is_main:
             return
 
@@ -114,6 +138,8 @@ class Run:
             "argv": sys.argv[1:],
             "git": git,
             "launch": {key: os.environ.get(var) or None for key, var in LAUNCH_ENV.items()},
+            "campaign": campaign,
+            "host": {"hostname": platform.node()},
             "uv_lock_sha256": _sha256(REPO_ROOT / "uv.lock"),
             "python": platform.python_version(),
             "packages": package_versions(),

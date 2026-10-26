@@ -1786,7 +1786,7 @@ def test_a_replay_under_another_w_max_is_refused(monkeypatch, tmp_path, capsys) 
     assert campaign_header(out) == {"w_max": W_MAX}
     name, found = load_campaign(out)
     root = Path(runs_root(tmp_path))
-    started = run_campaign(name, found[:1], root, execute=lambda run, run_id, output: 1,
+    started = run_campaign(name, found[:1], root, execute=lambda run, run_id, output, campaign: 1,
                            header=campaign_header(out))  # fmt: skip
     assert started["exhausted"] == [found[0].label]
     journal = launch_records(root)

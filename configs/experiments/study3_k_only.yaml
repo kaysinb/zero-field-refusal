@@ -1,0 +1,9 @@
+# Study 3 ("Numerical qualification", "The bridge's conditions"): the numerical runs, with a
+# K-only evaluation (the scoring panel's K, the monitor and utility, no response to a harmful
+# prompt). Training, optimizer, execution and data are those of experiments/study3, so that a
+# K-only run and a regular run of the same seed, optimizer and rate agree in every key of
+# `train`, `optimizer`, `execution`, `data` and in `seed` (tests/test_study3_configs.py).
+defaults:
+  - experiments/study3
+eval:
+  k_only: true

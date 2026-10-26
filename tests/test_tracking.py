@@ -80,9 +80,16 @@ def test_meta_records_the_launched_snapshot_and_image(
 ) -> None:
     monkeypatch.setenv("SOURCE_SNAPSHOT_ID", "snap-1")
     monkeypatch.delenv("CONTAINER_IMAGE", raising=False)
+    monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
+    monkeypatch.delenv("RUNPOD_DC_ID", raising=False)
     Run(make_cfg(), run_id="s").finish()
     meta = json.loads((runs_dir / "unit" / "s" / "meta.json").read_text())
-    assert meta["launch"] == {"source_snapshot_id": "snap-1", "container_image": None}
+    assert meta["launch"] == {
+        "source_snapshot_id": "snap-1",
+        "container_image": None,
+        "pod_id": None,
+        "data_center": None,
+    }
 
 
 def test_wandb_receives_lists_as_indexed_series() -> None:
