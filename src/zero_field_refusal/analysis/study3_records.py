@@ -17,6 +17,8 @@ qualification's restart and supersession records (``qualification/c<N>/``).
   that hold it and their sha256 (what a closure record cites).
 - ``journal_lines``: every launch log, line by line, each line with its own sha256: the one
   reading of a cited journal line (``read_holds``, the closure records of ``study3_decisions``).
+- ``parse_journal_lines``: a log's lines parsed, and its corrupt ones (an unparseable line before
+  the last): the one rule for what is corrupt.
 - ``SEEDS`` and ``candidate_of``: the registered seeds per role and candidate.
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
@@ -445,17 +447,9 @@ def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
     journal = _Journal()
     for log in sorted((root / "launch").glob("*.jsonl")):
         campaign = log.stem
-        lines = log.read_text(encoding="utf-8").splitlines()
-        last = max((i for i, line in enumerate(lines) if line.strip()), default=-1)
-        for i, line in enumerate(lines):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                if i != last:
-                    journal.corrupt.append(f"launch/{log.name} line {i + 1}")
-                continue
+        values, corrupt = parse_journal_lines(log.read_text(encoding="utf-8").splitlines())
+        journal.corrupt += [f"launch/{log.name} line {number}" for number in corrupt]
+        for record in values:
             if not isinstance(record, dict):
                 continue
             event, run_id = record.get("event"), record.get("run_id")
@@ -469,6 +463,27 @@ def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
                 _void(voided, run_id, event,
                       f"{event} in the launch journal: {record.get('reason')}")  # fmt: skip
     return journal
+
+
+def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
+    """A launch log's lines (``texts``, in order) as the readers of the journal read them: each
+    line's JSON value (None for a blank line or one that cannot be parsed), and the numbers (from
+    1) of the unparseable lines before the last non-blank one. A last line cut short by a crash is
+    skipped silently (the launcher's rule); an unparseable line before it is corrupt. The one rule
+    for every reader of the journal."""
+    last = max((i for i, text in enumerate(texts) if text.strip()), default=-1)
+    values: list[Any] = []
+    corrupt: list[int] = []
+    for i, text in enumerate(texts):
+        value = None
+        if text.strip():
+            try:
+                value = json.loads(text)
+            except ValueError:
+                if i != last:
+                    corrupt.append(i + 1)
+        values.append(value)
+    return values, corrupt
 
 
 def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str]:

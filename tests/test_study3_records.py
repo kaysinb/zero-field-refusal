@@ -33,6 +33,7 @@ from zero_field_refusal.analysis.study3_records import (
     EndpointReader,
     candidate_of,
     journal_lines,
+    parse_journal_lines,
     read_endpoints,
     read_holds,
     read_theta0,
@@ -854,6 +855,18 @@ def test_a_line_cut_short_as_the_last_of_its_log_is_skipped_silently(world) -> N
             f.write(CUT_LINE + "\n\n   \n")  # and blank lines are no line
     found, problems = world.read()
     assert problems == [] and by_id(found)[other].state == "usable"
+
+
+def test_one_rule_names_a_logs_corrupt_lines() -> None:
+    """``parse_journal_lines``: each line's value (None for a blank or unparseable one), and the
+    unparseable lines before the last non-blank one, by number; a last line cut short is
+    skipped."""
+    texts = ['{"event": "start"}', "", "{cut", "[1]", '{"event": "end"}', "{cut again", "  "]
+    values, corrupt = parse_journal_lines(texts)
+    assert values == [{"event": "start"}, None, None, [1], {"event": "end"}, None, None]
+    assert corrupt == [3]
+    assert parse_journal_lines([]) == ([], [])
+    assert parse_journal_lines(["{cut"]) == ([None], [])
 
 
 def test_every_log_is_checked_for_its_own_last_line(world) -> None:

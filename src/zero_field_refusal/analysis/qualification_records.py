@@ -13,7 +13,7 @@ read here, and the verdict rules are called where they live, in ``qualification_
   located, superseded and held (each hold with the records that hold it and their sha256), the
   same-path control and the rate's state, recomputed with ``rate_verdict`` from inputs
   assembled as ``qualify.py verdict`` assembles them; ``verdict.json`` read as a cache and
-  compared with it; and the ``problems``.
+  compared with it; the record files it took as inputs (``inputs``); and the ``problems``.
 - ``rate_of``: one rate of a reading, by arm (or optimizer) and rate.
 - ``supersessions``: the candidate's engineering-cycle records as ``read_qualification`` lists
   them (old and fix GPU codes included), read alone: they do not depend on the expected code.
@@ -143,6 +143,7 @@ STEPS = ("numerical", "repair")  # the campaign steps whose runs are qualificati
 VERDICT = "verdict.json"
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
 RELEASED = "checkpoints-removed"  # ``finish``'s record of the checkpoints it removed
+RELEASE_RECORD = "release record"  # what a release record is, among the records read
 IDENTITY_FILES = ("config.yaml", "metrics.jsonl", "monitor.jsonl", "terminal.json")
 SETTLED = ("completed", "diverged")  # a launcher run's settled statuses (``located``)
 
@@ -522,6 +523,7 @@ class _Reading:
         self.candidate_dir = root / "qualification" / f"c{candidate}"
         self.base = self.candidate_dir / STAGE
         self.problems: list[str] = []
+        self.inputs: dict[Path, str] = {}  # every record file read, and what it is
         self.cases: list[dict[str, Any]] = []  # the case verdicts, superseded ones included
         self.old_controls: list[dict[str, Any]] = []  # the superseded controls' verdicts
         self.voided: dict[str, str] = {}  # a void record's verdict (record_sha256) -> why
@@ -538,6 +540,7 @@ class _Reading:
                              key=lambda t: (t[0], t[1]))  # fmt: skip
 
     def _flagged(self, path: Path, what: str) -> dict[str, Any] | None:
+        self.inputs.setdefault(path, what)
         record = _object(path)
         if record is None:
             self.problems.append(f"{path}: an unreadable {what}")
@@ -747,7 +750,7 @@ class _Reading:
         """The case's records of the checkpoints ``finish`` removed on purpose."""
         out = []
         for path in sorted(folder.glob(f"{RELEASED}-*.json")):
-            record = self._flagged(path, "release record") or {}
+            record = self._flagged(path, RELEASE_RECORD) or {}
             out.append({"path": str(path), "removed": record.get("removed"),
                         "release": record.get("release"),
                         "technical": record.get("technical")})  # fmt: skip
@@ -884,11 +887,14 @@ def read_qualification(
     ``runs`` with the one ``located``, the ``superseded`` and the ``held`` ones, and its
     ``launchers``; the rates' ``states``; every case verdict (``cases``), the ``superseded``
     records, the ``restarts`` and ``supersessions``, the ``held`` runs, the cases of no rate
-    (``unassigned``); the ``cache`` and the rates it does not name (``uncached``); and the
-    ``problems``, sorted. ``expected_code`` is the GPU code's sha256 the qualification must carry
-    (the fixation record's); ``settings`` configs/experiments/qualification.yaml as loaded.
-    ``QualificationError`` (a ``ValueError``) for settings that are not the qualification's or a
-    candidate outside them."""
+    (``unassigned``); the ``cache`` and the rates it does not name (``uncached``); the
+    ``inputs``, the record files of the candidate's qualification the reading took as inputs,
+    sorted (the part attempt records, the interrupted rests' trajectory results, the case
+    restart and supersession records; not the cache, nor ``finish``'s release records, which
+    decide no state); and the ``problems``, sorted. ``expected_code`` is the GPU code's sha256
+    the qualification must carry (the fixation record's); ``settings``
+    configs/experiments/qualification.yaml as loaded. ``QualificationError`` (a ``ValueError``)
+    for settings that are not the qualification's or a candidate outside them."""
     if not (isinstance(expected_code, str) and expected_code):
         raise ValueError(f"expected_code is the GPU code's sha256, not {expected_code!r}")
     scope = Scope.of(settings)
@@ -936,7 +942,9 @@ def read_qualification(
         "held": held, "issued": [r.record() for r in issued],
         "unassigned": [_case_name(v) for v in [*reading.cases, *reading.old_controls]
                        if id(v) not in assigned],
-        "cache": cache, "uncached": uncached, "problems": sorted(set(problems)),
+        "cache": cache, "uncached": uncached,
+        "inputs": sorted(str(p) for p, what in reading.inputs.items() if what != RELEASE_RECORD),
+        "problems": sorted(set(problems)),
     }  # fmt: skip
 
 
