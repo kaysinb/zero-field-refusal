@@ -133,7 +133,8 @@ def test_nothing_a_qualification_part_executes_is_defined_under_analysis() -> No
     from_analysis = {alias.asname or alias.name for node in ast.walk(tree)
                      if isinstance(node, ast.ImportFrom) and "analysis" in (node.module or "")
                      for alias in node.names}  # fmt: skip
-    verdicts = {"case_verdict", "control_verdict", "rate_verdict", "engineering_summary"}
+    verdicts = {"case_verdict", "control_verdict", "rate_verdict", "engineering_summary",
+                "rest_from_trajectories"}  # fmt: skip
     assert from_analysis == verdicts
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef | ast.ClassDef):

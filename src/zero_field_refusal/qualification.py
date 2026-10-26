@@ -61,6 +61,16 @@ whose run reads no v₀, sets the seed's F v₀ up for s1 and s2 alone, from the
 (``setup_config``). An exception is the part's record, ``failed``, with the trajectories done
 before it.
 
+**Trajectory results** (``QualificationCase.trajectory_path``). Each rest trajectory's result
+(its run, its comparisons, the bridge checks as of then, v₀ unchanged) is published as soon as it
+is done, before the next one starts, atomically and durably (``publish``), bound to its inputs:
+the case, the attempt, the launcher run (identity and Pod), the baseline record's sha256, the
+baseline and launcher checkpoints' sha256, the numerics setup, the GPU code and the settings. An
+interruption keeps what was done. When the bridge checks hold and a result is a scientific
+failure (``scientific_result``: the declared rules on the repeat, a non-finite reference or
+shift, the baseline's D₂₅ against the reference or a shift beyond the bound), the part publishes
+its record at once, ``status: "decided"`` and kind scientific, and runs no further trajectory.
+
 **Instability of the unshifted trajectories** (``harness_instability``). The baseline and the
 repeat read the monitor at the launcher's cadence, and the launcher's declared rules are applied
 to their rows and readings after the run: a non-finite loss, gradient or weight, the ×10 gradient
@@ -75,7 +85,8 @@ processes is a diagnostic, not an acceptance condition.
 
 **Verdicts** are functions of the records alone, in ``analysis.qualification_verdicts`` (its
 docstring states the failure kinds; outside the GPU-code identity) and re-exported here:
-``case_verdict``, ``control_verdict``, ``rate_verdict``, ``engineering_summary``. Every constant a
+``case_verdict``, ``control_verdict``, ``rate_verdict``, ``engineering_summary``,
+``rest_from_trajectories``. Every constant a
 part executes or records (``SHIFTS``, ``REST``, ``STEPS``, the kinds, ``record_sha256``) is
 ``qualification_constants``', inside the identity, and re-exported here too.
 
@@ -110,6 +121,7 @@ from .analysis.qualification_verdicts import case_verdict as case_verdict
 from .analysis.qualification_verdicts import control_verdict as control_verdict
 from .analysis.qualification_verdicts import engineering_summary as engineering_summary
 from .analysis.qualification_verdicts import rate_verdict as rate_verdict
+from .analysis.qualification_verdicts import rest_from_trajectories as rest_from_trajectories
 from .config import apply_override, load_config
 from .optim import ADAM_MODES
 from .qualification_constants import (
@@ -249,6 +261,11 @@ class QualificationCase:
         """A part's attempt record, relative to the output directory."""
         stage = "engineering" if self.engineering else "numerical"
         return f"c{self.candidate}/{stage}/{self.name}/{part}-attempt-{attempt}.json"
+
+    def trajectory_path(self, attempt: int, trajectory: str) -> str:
+        """A rest trajectory's result, published as soon as the trajectory is done (module
+        docstring, "Trajectory results"), relative to the output directory."""
+        return self.attempt_path("rest", attempt).replace(".json", f".trajectory-{trajectory}.json")
 
     def record(self) -> dict[str, Any]:
         return {"name": self.name, **dataclasses.asdict(self)}
@@ -739,10 +756,36 @@ def _baseline_problems(
     return problems
 
 
+def scientific_result(
+    name: str, run: Mapping[str, Any], endpoint: Mapping[str, Any], bound: float
+) -> str | None:
+    """The rest part's stopping rule on a completed trajectory (module docstring, "Trajectory
+    results"): the declared instability rules on the repeat (``harness_instability``, or its
+    stop), a non-finite loss, gradient or model in the reference or a shift, or D₂₅ of the
+    harness baseline against the reference or a shift beyond 0.01·K*; why, or None. It applies
+    only once the bridge checks hold (``_rest``)."""
+    if run.get("not_run"):
+        return None
+    if name == "repeat":
+        fired = run.get("instability")
+        if fired is not None:
+            return (f"instability: the harness repeat: {fired.get('reason')!r} at step "
+                    f"{fired.get('step')}")  # fmt: skip
+        stop = run.get("stop")
+        return None if stop is None else f"instability: the harness repeat stopped: {stop}"
+    if run.get("stop") is not None:
+        return f"a non-finite loss, gradient or model in the {name}: {run['stop']}"
+    d = (endpoint.get("baseline") or {}).get("D_twin")
+    if fcd._number(d) and d > bound:
+        return f"baseline~{name}: D₂₅ {d:.6g} beyond the bound {bound:.6g}"
+    return None
+
+
 def _rest(
     scope: QualificationScope, env: Environment, cfg: DictConfig, case: QualificationCase,
     facts: Mapping[str, Any], out: Path, *, checkpoints: Path, steps: Sequence[int],
     numerics_setup: Any, progress: dict[str, Any],
+    keep: Callable[[str, Mapping[str, Any]], None] = lambda name, result: None,
 ) -> dict[str, Any]:  # fmt: skip
     path, baseline = latest_record(out, case, "baseline")
     reference = {"path": None if path is None else str(path),
@@ -764,6 +807,7 @@ def _rest(
         v0_before = _v0_sha256(twins)
         directions = fcd.seed_directions(scope, twins, shared, float(setup_cfg.optimizer.eps))
         progress["directions"] = directions
+        decided = None
         for name in REST:
             trajectories[name], endpoint = run_trajectory(
                 name, cfg, twins, shared, scope, targets, diagnostic_steps=steps,
@@ -771,14 +815,32 @@ def _rest(
             )  # fmt: skip
             for label, measured in endpoint.items():
                 comparisons[f"{label}~{name}"] = measured
-        repeat = trajectories["repeat"]
-        setup = _setup_facts(cfg, twins, shared, numerics_setup, repeat["steps"])
-        body = {"status": "complete", **head, "setup": setup, "directions": directions,
-                "bridge": bridge_checks(facts, repeat["rows"], setup),
-                "v0_sha256": shared["v0_sha256"], "v0_unchanged": _v0_sha256(twins) == v0_before,
-                "reference_mode": trajectories["reference"].get("mode"),
-                "fallback_reason": trajectories["reference"].get("fallback_reason"),
+            if name == "repeat":  # the bridge, from the repeat's rows, before anything else
+                setup = _setup_facts(cfg, twins, shared, numerics_setup,
+                                     trajectories["repeat"]["steps"])  # fmt: skip
+                progress.update(
+                    setup=setup, bridge=bridge_checks(facts, trajectories["repeat"]["rows"], setup)
+                )
+            progress["v0_unchanged"] = _v0_sha256(twins) == v0_before
+            bridge = progress.get("bridge")  # none before the repeat has run
+            keep(name, {"run": trajectories[name],
+                        "comparisons": {f"{label}~{name}": m for label, m in endpoint.items()},
+                        "bridge": bridge, "v0_unchanged": progress["v0_unchanged"]})  # fmt: skip
+            bridged = (bool(bridge) and all(v is True for v in bridge.values())
+                       and progress["v0_unchanged"])  # fmt: skip
+            decided = bridged and scientific_result(name, trajectories[name], endpoint,
+                                                    scope.bound(case.candidate))  # fmt: skip
+            if decided:  # a valid scientific failure: published at once, the part stops here
+                break
+        body = {"status": "decided" if decided else "complete", **head,
+                "setup": progress["setup"], "directions": directions,
+                "bridge": progress["bridge"], "v0_sha256": shared["v0_sha256"],
+                "v0_unchanged": progress["v0_unchanged"],
+                "reference_mode": (trajectories.get("reference") or {}).get("mode"),
+                "fallback_reason": (trajectories.get("reference") or {}).get("fallback_reason"),
                 "trajectories": trajectories, "comparisons": comparisons}  # fmt: skip
+        if decided:
+            body.update(kind=SCIENTIFIC, reasons=[decided])
     return body
 
 
@@ -873,9 +935,21 @@ def run_part(
                                     checkpoints=checkpoints, steps=steps,
                                     numerics_setup=numerics_setup, progress=progress))  # fmt: skip
         elif part == "rest":
+
+            def keep(name: str, result: Mapping[str, Any]) -> None:
+                """A trajectory's result, durable and bound to its inputs, before the next."""
+                publish(out / case.trajectory_path(attempt, name), {
+                    "part": "rest", "attempt": attempt, "case": case.record(),
+                    "trajectory": name, "K_star": record["K_star"], "bound": record["bound"],
+                    "launcher": record["launcher"], "numerics_setup": numerics_setup,
+                    "baseline_record": progress.get("baseline_record"),
+                    "baseline_checkpoint_sha256": progress.get("baseline_checkpoint_sha256"),
+                    "launcher_checkpoint_sha256": facts["identity"]["checkpoint"]["sha256"],
+                    **result, "provenance": qualification_provenance(settings)})  # fmt: skip
+
             record.update(_rest(scope, guarded, cfg, case, facts, out, checkpoints=checkpoints,
                                 steps=steps, numerics_setup=numerics_setup,
-                                progress=progress))  # fmt: skip
+                                progress=progress, keep=keep))  # fmt: skip
         else:
             record.update(_control(scope, guarded, cfg, case, run_dir, progress))
     except Exception as exc:  # the part's record: technical, with what was done before it

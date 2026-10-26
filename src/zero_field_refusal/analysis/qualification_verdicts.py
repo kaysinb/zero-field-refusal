@@ -322,6 +322,43 @@ def _rest_verdict(
             measured[name] = (value or {}).get("D_twin")
 
 
+TRAJECTORY_BINDING = ("part", "attempt", "case", "launcher", "baseline_record",
+                      "baseline_checkpoint_sha256", "launcher_checkpoint_sha256",
+                      "numerics_setup", "K_star", "bound")  # fmt: skip
+
+
+def rest_from_trajectories(results: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """An interrupted rest attempt as a record (None without any result), from the trajectory
+    results it published before the interruption (``qualification``, "Trajectory results"):
+    the trajectories done and their comparisons, the bridge checks and v₀'s state as of the last
+    one, bound to the inputs the results name; ``status: "interrupted"``. ``case_verdict``
+    reads it as any rest record: what the results show counts, a scientific failure included.
+    Results bound to different inputs make a record without bridge checks, technical, of which
+    nothing is read."""
+    if not results:
+        return None
+    first = results[0]
+    record: dict[str, Any] = {key: first.get(key) for key in TRAJECTORY_BINDING}
+    record.update(status="interrupted", kind=None, reasons=[], provenance=first.get("provenance"),
+                  trajectories={}, comparisons={},
+                  from_trajectories=[r.get("trajectory") for r in results])  # fmt: skip
+    if any({k: r.get(k) for k in TRAJECTORY_BINDING} != {k: first.get(k)
+                                                         for k in TRAJECTORY_BINDING}
+           or _policy(r) != _policy(first) or r.get("trajectory") not in REST
+           for r in results):  # fmt: skip
+        record.update(
+            kind=TECHNICAL, reasons=["the trajectory results are bound to different inputs"]
+        )
+        return record
+    ordered = sorted(results, key=lambda r: REST.index(r["trajectory"]))
+    record["from_trajectories"] = [r["trajectory"] for r in ordered]
+    for result in ordered:
+        record["trajectories"][result["trajectory"]] = result.get("run")
+        record["comparisons"].update(result.get("comparisons") or {})
+    record.update(bridge=ordered[-1].get("bridge"), v0_unchanged=ordered[-1].get("v0_unchanged"))
+    return record
+
+
 def control_verdict(
     record: Mapping[str, Any] | None, scope: QualificationScope, candidate: int
 ) -> dict[str, Any]:

@@ -465,6 +465,83 @@ def test_the_rest(world, fa_parts) -> None:
     assert verdict["fallback"] is False and verdict["launcher"] == baseline["launcher"]["identity"]
 
 
+def rest_copy(fa_parts, tmp_path):
+    """The FA case's records in a folder of their own (its checkpoints read where they are)."""
+    out, ckpt, baseline, _ = fa_parts
+    shutil.copytree(out, tmp_path / "out")
+    return tmp_path / "out", ckpt, baseline
+
+
+def test_a_scientific_trajectory_result_stops_the_rest_at_once(world, fa_parts, tmp_path,
+                                                              monkeypatch) -> None:  # fmt: skip
+    """Each trajectory's result is published, bound to its inputs, before the next starts; a
+    valid scientific failure (here the baseline's D₂₅ against the reference) publishes the part
+    at once, decided, and runs no further trajectory."""
+    env, runs = world
+    out, ckpt, baseline = rest_copy(fa_parts, tmp_path)
+    real, ran = q.run_trajectory, []
+
+    def trajectory(name, *args, **kwargs):
+        ran.append(name)
+        run, endpoint = real(name, *args, **kwargs)
+        if name == "reference":
+            endpoint = {**endpoint, "baseline": {**endpoint["baseline"], "D_twin": 0.5}}
+        return run, endpoint
+
+    monkeypatch.setattr(q, "run_trajectory", trajectory)
+    record = part(env, runs["fa"], out, ckpt, "rest", attempt=2)
+    assert ran == ["repeat", "reference"]
+    assert (record["status"], record["kind"]) == ("decided", "scientific")
+    assert record["reasons"][0].startswith("baseline~reference: D₂₅ 0.5")
+    assert list(record["trajectories"]) == ["repeat", "reference"]
+    folder = out / FA.attempt_path("rest", 2).rsplit("/", 1)[0]
+    files = sorted(f.name for f in folder.glob("rest-attempt-2.trajectory-*.json"))
+    assert files == ["rest-attempt-2.trajectory-reference.json",
+                     "rest-attempt-2.trajectory-repeat.json"]  # fmt: skip
+    result = json.loads((folder / files[0]).read_text())
+    baseline_file = out / FA.attempt_path("baseline", 1)
+    assert result["baseline_record"]["sha256"] == file_sha256(baseline_file)
+    assert result["baseline_checkpoint_sha256"] == baseline["checkpoint"]["sha256"]
+    assert result["launcher"]["identity"] == baseline["launcher"]["identity"]
+    assert result["launcher_checkpoint_sha256"] == baseline["launcher"]["identity"]["checkpoint"][
+        "sha256"]  # fmt: skip
+    assert result["provenance"]["settings"] == q.settings_record(SETTINGS)
+    assert all(result["bridge"].values()) and result["v0_unchanged"] is True
+    v = q.case_verdict(json.loads(baseline_file.read_text()), record, SCOPE)
+    assert (v["state"], v["kind"]) == ("failing", "scientific")
+
+
+def test_an_interruption_keeps_the_trajectory_results(world, fa_parts, tmp_path,
+                                                      monkeypatch) -> None:  # fmt: skip
+    """A part killed after its third trajectory leaves no record but the three results, durable
+    and bound: as a record (``rest_from_trajectories``) they are read as any rest."""
+    env, runs = world
+    out, ckpt, _ = rest_copy(fa_parts, tmp_path)
+    real = q.publish
+
+    def publish(path, record):
+        real(path, record)
+        if path.name.endswith("trajectory-s1.json"):
+            raise KeyboardInterrupt  # the process stops: no exception handler runs
+
+    monkeypatch.setattr(q, "publish", publish)
+    with pytest.raises(KeyboardInterrupt):
+        part(env, runs["fa"], out, ckpt, "rest", attempt=2)
+    assert not (out / FA.attempt_path("rest", 2)).exists()
+    folder = out / FA.attempt_path("rest", 2).rsplit("/", 1)[0]
+    results = [json.loads(f.read_text()) for f in folder.glob("rest-attempt-2.trajectory-*")]
+    record = q.rest_from_trajectories(results)
+    assert record["from_trajectories"] == ["repeat", "reference", "s1"]
+    assert record["status"] == "interrupted" and all(record["bridge"].values())
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    v = q.case_verdict(baseline, record, SCOPE)
+    assert v["kind"] is None and v["state"] == "incomplete"
+    assert v["comparisons"]["baseline~s1"]["D"] is not None
+    assert v["comparisons"]["baseline~s2"]["D"] is None
+    mixed = [results[0], {**results[1], "baseline_checkpoint_sha256": "x" * 64}]
+    assert q.case_verdict(baseline, q.rest_from_trajectories(mixed), SCOPE)["kind"] == "technical"
+
+
 def test_each_trajectory_starts_afresh(world, fa_parts, monkeypatch) -> None:
     """The repeat after the reference and the shifts, and after a forced out-of-memory fallback
     of the reference, ends where a repeat run first ends, bit for bit on the CPU."""
