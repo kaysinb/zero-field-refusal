@@ -1303,8 +1303,10 @@ def _start_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any],
 def _followed(event: Mapping[str, Any], record: Mapping[str, Any],
               logs: Sequence[Any]) -> list[str]:  # fmt: skip
     """What in the journal makes a run no technical mark the readers list: a later attempt of
-    its label, a recovery round of its label at or after the cited line, a ``superseded`` or a
-    ``held`` line naming the run."""
+    its label, a recovery round of its label after the run's start (the order of
+    ``study3_records``: a round recovers the attempts started before its time stamp, and a start
+    in a round's second follows the round), a ``superseded`` or a ``held`` line naming the
+    run."""
     run_id, label, attempt = record["run_id"], event.get("run"), event.get("attempt")
     lines = [line.record for log in logs for line in log.lines if line.record is not None]
     found = []
@@ -1317,9 +1319,17 @@ def _followed(event: Mapping[str, Any], record: Mapping[str, Any],
     for name in ("superseded", "held"):
         if any(r.get("event") == name and r.get("run_id") == run_id for r in lines):
             found.append(f"run_id: a {name} line of the launch journal names {run_id}")
-    cited = _time(event.get("time"))
+    start = (
+        event
+        if event.get("event") == "start"
+        else next(
+            (r for r in lines if r.get("event") == "start" and r.get("run_id") == run_id), event
+        )
+    )
+    started = _time(start.get("time"))
     if any(r.get("event") == "recovery" and label in (r.get("runs") or [])
-           and (cited is None or _time(r.get("time")) is None or _time(r.get("time")) >= cited)
+           and (started is None or _time(r.get("time")) is None
+                or started < _time(r.get("time")))
            for r in lines):  # fmt: skip
         found.append(f"line: a recovery round of its label {label} followed it: the next "
                      "attempt decides")  # fmt: skip

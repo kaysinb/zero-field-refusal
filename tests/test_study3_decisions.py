@@ -2262,6 +2262,18 @@ def test_a_start_closure_for_a_run_something_followed_is_refused(world, follow, 
     refused(world, "closure-c1-P", record, why)
 
 
+def test_a_start_in_the_same_second_as_a_recovery_round_follows_it(world) -> None:
+    """As the records reader places them (the launcher logs a round before the attempt it
+    allows): a round in the start's second precedes it, and its start closure is accepted."""
+    (world.runs / "launch").mkdir(parents=True, exist_ok=True)
+    journal(world, {"time": "2026-10-26T10:00:00+00:00", "event": "recovery",
+                    "experiment": "study3", "reason": "the Pod stopped",
+                    "runs": ["P-1.85e-05/s10301"]})  # fmt: skip
+    record = started(world)  # its start at 10:00:00 as well
+    world.write("closure-c1-P", record)
+    assert world.read("closure-c1-P") == (record, [])
+
+
 def test_a_start_closure_names_its_reason_and_no_cycle(world) -> None:
     record = started(world)
     refused(world, "closure-c1-P", {**record, "reason": "launcher_technical"}, "reason")

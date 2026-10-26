@@ -382,6 +382,22 @@ class EndpointReader:
         endpoints.sort(key=_order)
         return endpoints, sorted(set(problems))
 
+    def meta_status(self, run_dir: Path) -> Any:
+        """A run's status as its ``meta.json`` records it (None without a readable one), from
+        this snapshot."""
+        return (_json(run_dir / "meta.json", self.files) or {}).get("status")
+
+    def recovery_rounds(self) -> tuple[set[tuple[Any, Any]], set[tuple[Any, Any]]]:
+        """The recovery rounds of the journal as the launcher counts them: the (experiment, cell)
+        pairs that have had their cell's round (``launch.recovered_cells``) and the (experiment,
+        label) pairs that have had a round of their own, under ``only``
+        (``launch.recovered_runs``)."""
+        rounds = self.journal.recoveries
+        cells = {(r.get("experiment"), r.get("cell")) for r in rounds if r.get("only") is None}
+        runs = {(r.get("experiment"), r.get("only")) for r in rounds
+                if r.get("only") is not None}  # fmt: skip
+        return cells, runs
+
 
 class _Files:
     """The run files a snapshot has read: each file's text (or the error reading it raised) and

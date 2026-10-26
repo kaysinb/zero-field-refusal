@@ -105,7 +105,7 @@ class Study:
         self.digests: dict[str, str] = {}
         self.ends: dict[str, dict] = {}  # run id -> its last end line
         self.starts: dict[str, dict] = {}  # run id -> its start line
-        self.published: set[str] = set()  # runs whose terminal record is published
+        self.recoverable: set[str] = set()  # runs the launcher would open a recovery round for
         self.cycles: dict[int, list[dict]] = {1: [], 2: []}  # each candidate's cycle records
         self.expected = EXPECTED  # the chain of engineering cycles' end
 
@@ -262,8 +262,8 @@ class Study:
         terminal record published or not."""
         found = self.change(run_id, **(fields or {"state": "technical", "K": None,
                                                   "steps": None}))  # fmt: skip
-        if published:
-            self.published.add(run_id)
+        if not published:  # the reader's conditions: no terminal record, the cell's round unused
+            self.recoverable.add(run_id)
         self.ends[run_id] = {
             "path": log,
             "line": line,
@@ -372,7 +372,7 @@ class Study:
                        decisions=decisions, closures=closures, qualification=self.readings,
                        headers=self.headers, digests=self.digests, ends=self.ends,
                        starts=self.starts, cycles=self.cycles,
-                       published=frozenset(self.published))  # fmt: skip
+                       recoverable=frozenset(self.recoverable))  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
@@ -873,6 +873,7 @@ def test_a_technical_run_with_no_journal_line_known_has_no_closure_way_out() -> 
     study = Study()
     study.through_validation()
     broken = study.change(run_of(study, "validation", "F", "u", 10304), state="technical", K=None)
+    study.recoverable.add(broken.run_id)
     (way,) = study.advance()["step"]["ways_out"]
     assert (way["run_id"], "closure" in way, "recovery" in way) == (broken.run_id, False, True)
 
@@ -962,7 +963,6 @@ def test_a_validation_run_its_block_cannot_place_is_a_mark_with_its_ways_out() -
         "attempt": 1,
         "run": stray.label,
     }
-    study.published.add(stray.run_id)
     result = study.advance()
     assert (result["stage"], result["step"]["kind"]) == ("validation", "blocked")
     assert [w["run_id"] for w in result["step"]["ways_out"]] == ["stray-r1"]
@@ -1137,6 +1137,26 @@ def test_a_closure_citing_another_kind_of_line_than_its_runs_mark_is_a_problem()
     result = study.advance()
     assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
     assert any("closure-c1-F" in p and "end line" in p for p in result["problems"])
+
+
+@pytest.mark.parametrize("arm, kind", [("P", "end"), ("F", "end"), ("F", "held")])
+def test_a_closure_of_a_mark_the_walk_has_not_reached_is_no_problem(arm, kind) -> None:
+    """A valid closure, then a reader problem stops the walk at the search: the closure is not
+    judged against a stage the walk did not reach; the reader's problem alone blocks."""
+    study = Study()
+    study.through_validation()
+    if kind == "held":
+        study.cycle(1)
+        run_id = study.hold(run_of(study, "numerical", arm, "l", 10201))
+    else:
+        run_id = run_of(study, "validation", arm, "u", 10304)
+        study.technical(run_id)
+    study.closure(run_id)
+    assert study.advance()["problems"] == []
+    study.problems.append("run-x: refused: a seed outside its role")
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("search", "blocked")
+    assert result["problems"] == ["run-x: refused: a seed outside its role"]
 
 
 def test_a_closure_whose_run_is_no_hold_is_a_problem() -> None:
@@ -1905,6 +1925,104 @@ def test_the_reader_reads_the_engineering_record_from_the_search_header(worlds) 
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"]) == ("search", "blocked")
     assert any(bare in p and "engineering record" in p for p in result["problems"])
+
+
+def test_run_records_that_cannot_be_read_block_and_raise_nothing(worlds) -> None:
+    """A run id longer than a file name, and a run directory the reader may not search: the
+    step is blocked, "the run records cannot be read"."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    long_id = "2" * 300
+    runs.log("study3-c1-search-r0", {"event": "start", "run": "A-1.45e-05/s10100", "attempt": 1,
+                                     "run_id": long_id, "experiment": "study3",
+                                     "config_hash": "c" * 12,
+                                     "header": named(records)})  # fmt: skip
+    result = read(records, runs)
+    assert result["step"]["kind"] == "blocked"
+    assert any("the run records cannot be read (OSError)" in r for r in result["step"]["reasons"])
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="permissions bind no superuser")
+def test_a_run_directory_the_reader_may_not_search_blocks(worlds) -> None:
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    run_id = runs.run("A", START["A"]["l"], 10100, role="search", round_=0, prescribe=False,
+                      campaign="study3-c1-search-r0", head=named(records))  # fmt: skip
+    folder = runs.root / "study3" / run_id
+    folder.chmod(0o600)  # readable listing, no search
+    try:
+        result = read(records, runs)
+    finally:
+        folder.chmod(0o755)
+    assert result["step"]["kind"] == "blocked"
+    assert any("the run records cannot be read (PermissionError)" in r
+               for r in result["step"]["reasons"])  # fmt: skip
+
+
+def technical_search_run(records, runs, *, status="failed", end="technical", recover_first=None):
+    """Candidate 1's search with F's lower rate on 10101 a technical mark: an attempt the launcher
+    ended ``end``, its meta.json recording ``status``, no terminal record; with
+    ``recover_first``, a recovery round already spent on an earlier attempt: the run's own
+    (``"own"``, under ``only``) or its cell's (``"cell"``)."""
+    spec = CANDIDATES[1]
+    for arm in ARMS:
+        for label in LABELS:
+            for seed in SEEDS["search"][1]:
+                if (arm, label, seed) == ("F", "l", 10101):
+                    continue
+                runs.run(arm, spec["start"][arm][label], seed, role="search", round_=0,
+                         k=spec["targets"][label], prescribe=False,
+                         campaign="study3-c1-search-r0", head=named(records))  # fmt: skip
+    rate, attempt = spec["start"]["F"]["l"], 1
+    common = {"role": "search", "round_": 0, "prescribe": False,
+              "campaign": "study3-c1-search-r0", "head": named(records)}  # fmt: skip
+    if recover_first:
+        label = f"F-{rate:g}/s10101"
+        runs.run("F", rate, 10101, end="technical", terminal=False, status="failed", **common)
+        if recover_first == "own":
+            runs.recovery("study3-c1-search-r0", label)
+        else:  # the cell's round, as the launcher opens it without ``only``
+            runs.log(
+                "study3-c1-search-r0",
+                {
+                    "event": "recovery",
+                    "experiment": "study3",
+                    "cell": label.split("/")[0],
+                    "reason": "the Pod stopped",
+                    "runs": [label],
+                },
+            )
+        attempt = 2
+    run_id = runs.run("F", rate, 10101, end=end, terminal=False, attempt=attempt, **common)
+    meta = runs.root / "study3" / run_id / "meta.json"  # its status as the tracker left it
+    meta.write_text(json.dumps({**json.loads(meta.read_text()), "status": status}))
+    return run_id
+
+
+@pytest.mark.parametrize("case, status, end, first, recovery", [
+    ("failed, no round spent", "failed", "technical", None, True),
+    ("its own round spent on an earlier attempt", "failed", "technical", "own", False),
+    ("its cell's round spent on an earlier attempt", "failed", "technical", "cell", False),
+    ("diverged", "diverged", "diverged", None, False),
+    ("completed with no terminal record", "completed", "done", None, False),
+])  # fmt: skip
+def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
+    worlds, case, status, end, first, recovery
+) -> None:
+    """The launcher opens a cell's recovery round once, and never for a diverged run or a
+    completed one: otherwise only the closure is listed."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    run_id = technical_search_run(records, runs, status=status, end=end, recover_first=first)
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["problems"]) == (
+        "search", "blocked", [])  # fmt: skip
+    (way,) = result["step"]["ways_out"]
+    assert way["run_id"] == run_id and way["closure"]["record"] == "closure-c1-F"
+    assert ("recovery" in way) is recovery, case
 
 
 def test_the_reader_blocks_on_a_refused_run(worlds) -> None:

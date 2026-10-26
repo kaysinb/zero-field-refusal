@@ -158,14 +158,19 @@ in the confirmation, every run its blocks list as unresolved. The engineering cy
 package (a limit of package 2). Such a run has two ways out, and the step stays ``blocked``,
 ``technical``, naming the run and the ways that apply (``ways_out``) until one is taken: a
 recovery round of its label with its documented cause (an infrastructure interruption: the
-attempt is ``recovered`` and its next attempt decides), only when no terminal record was
-published (the launcher opens one only then); and a closure record citing the run's last ``end``
+attempt is ``recovered`` and its next attempt decides), only where the launcher would open one
+(``launch.run_campaign``: no published terminal record, a ``meta.json`` that records the run
+neither diverged nor completed, and its cell's round, or its own, not yet spent); and a closure
+record citing the run's last ``end``
 line whatever its outcome, or its start line when the launcher never ended it (kind ``end`` or
 ``start``, no cycle; the step gives its fields exactly as the closure schema takes them). Its
 route is "After a technical mark", wherever the run was. Two attempts that count for one cell, a
 refused run or a state no reader defines are no technical mark but a problem of the records'
 integrity: they block, with no way out. A closure record that names no mark the route met, and no
-held run of its route, is a problem.
+held run of its route, is a problem, unless the walk stopped before the stage of the run it
+names (it is then judged once the walk reaches it). Run records the reader cannot read at all
+(a run id longer than a file name, a run directory it may not search) block the step: "the run
+records cannot be read".
 
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
 problem, the step is ``blocked`` with them, and the stage is the last one the decision records
@@ -295,8 +300,8 @@ class Records:
     (``cycles``: ``qualification_records.supersessions``), each run's campaign header from its
     start in the launch journal (``headers``), the sha256 of each valid decision record's file
     now (``digests``), each run's last end line and its start line
-    (``study3_decisions.end_lines``, ``start_lines``) and the runs whose terminal record is
-    published (``published``)."""
+    (``study3_decisions.end_lines``, ``start_lines``) and the runs the launcher would open a
+    recovery round for (``recoverable``)."""
 
     endpoints: Sequence[Endpoint] = ()
     problems: Sequence[str] = ()
@@ -310,7 +315,7 @@ class Records:
     ends: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     starts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     cycles: Mapping[int, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
-    published: Collection[str] = frozenset()
+    recoverable: Collection[str] = frozenset()
 
 
 # ------------------------------------------------------------------ the reader
@@ -369,14 +374,37 @@ def progress(
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
         return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
-    every = _bound(reader.read({})[0])  # every cell a run binds: each outcome is read
-    endpoints, problems = reader.read(every)
-    derived = advance(Records(tuple(endpoints), tuple(problems), **fixed),
-                      expected_code=expected_code, lenient=True)["prescribed"]  # fmt: skip
-    endpoints, problems = reader.read(derived)
-    published = frozenset(e.run_id for e in endpoints if (e.run_dir / "terminal.json").is_file())
-    return advance(Records(tuple(endpoints), tuple(problems), published=published, **fixed),
+    try:
+        every = _bound(reader.read({})[0])  # every cell a run binds: each outcome is read
+        endpoints, problems = reader.read(every)
+        derived = advance(Records(tuple(endpoints), tuple(problems), **fixed),
+                          expected_code=expected_code, lenient=True)["prescribed"]  # fmt: skip
+        endpoints, problems = reader.read(derived)
+        recoverable = _recoverable(reader, endpoints)
+    except (OSError, ValueError) as exc:
+        why = f"{root}: the run records cannot be read ({type(exc).__name__})"
+        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+    return advance(Records(tuple(endpoints), tuple(problems), recoverable=recoverable, **fixed),
                    expected_code=expected_code)  # fmt: skip
+
+
+def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> frozenset[str]:
+    """The runs the launcher would open a recovery round for (``launch.run_campaign``): a run
+    with no published terminal record whose ``meta.json`` records it neither diverged nor
+    completed (the launcher reads those as outcomes, never reruns), its cell's round not yet
+    spent (once per cell, ``launch.recovered_cells``) nor its own (``recovered_runs``)."""
+    cells, runs = reader.recovery_rounds()
+    found = set()
+    for e in endpoints:
+        if e.label is None or "/s" not in e.label:
+            continue
+        cell = e.label.rsplit("/s", 1)[0]
+        if ((EXPERIMENT, cell) in cells or (EXPERIMENT, e.label) in runs
+                or (e.run_dir / "terminal.json").is_file()
+                or reader.meta_status(e.run_dir) in ("diverged", "completed")):  # fmt: skip
+            continue
+        found.add(e.run_id)
+    return frozenset(found)
 
 
 def _engineering_code(entry: Mapping[str, Any]) -> str | None:
@@ -494,6 +522,7 @@ class _Walk:
         self.extra: dict[str, Any] = {}
         self.consumed: set[str] = set()
         self.marks: set[str] = set()  # the technical marks outside the qualification met
+        self.reached: set[tuple[int, str]] = set()  # (candidate, stage) whose marks were read
         self.blocks = 0
         self.codes: list[str] = []  # the chain of GPU codes, from the engineering record's
         self.in_force: dict[int, str] = {}  # candidate -> the code its runs are under
@@ -630,7 +659,7 @@ class _Walk:
                         for seed in rounds["missing"]
                     ]
             conditions[arm] = c
-        self._block_on(stage, self._unresolved(conditions, [
+        self._block_on(stage, self._unresolved(stage, conditions, [
             e for arm in self.arms for e in state["arms"][arm]["technical"]]))  # fmt: skip
         self._decide(stage, conditions)
         return {arm: {label: state["arms"][arm]["targets"][label]["selected_rate"]
@@ -782,7 +811,7 @@ class _Walk:
                         ("validation", "validation", None, cell)
                         for cell in self._missing(key, arm, final[arm], seed)
                     ]
-        self._block_on(stage, self._unresolved(conditions, unresolved))
+        self._block_on(stage, self._unresolved(stage, conditions, unresolved))
         self._decide(stage, conditions)
         minimum = SUPPORTED_AT[count]
         gates, short = {}, {}
@@ -950,8 +979,8 @@ class _Walk:
             listed = sorted({run for block in state["technical"] for run in block["runs"]})
             unknown = [f"{run_id}: a run the confirmation's blocks list and the readers do not"
                        for run_id in listed if run_id not in self.by_id]  # fmt: skip
-            self._block_on(stage, [*unknown, *self._unresolved(
-                conditions, [self.by_id[r] for r in listed if r in self.by_id])])  # fmt: skip
+            found = [self.by_id[r] for r in listed if r in self.by_id]
+            self._block_on(stage, [*unknown, *self._unresolved(stage, conditions, found)])
             self._decide(stage, conditions)
             if self.arms == arms:
                 break
@@ -1024,12 +1053,15 @@ class _Walk:
 
     # -- technical marks: holds, technical runs outside the qualification, their closures
 
-    def _unresolved(self, conditions: dict[str, _Arm], runs: Iterable[Endpoint]) -> list[str]:
+    def _unresolved(
+        self, stage: str, conditions: dict[str, _Arm], runs: Iterable[Endpoint]
+    ) -> list[str]:
         """The unresolved runs of a stage outside the qualification, sorted into ``conditions``
         (module docstring, "Technical marks outside the qualification"): a held run is the hold
         route's; a run that has not ended waits; every other is a technical mark with its ways
         out. Returns the records-integrity problems, which block with no way out: two attempts
         that count for one cell, a refused run, a state no reader defines."""
+        self.reached.add((self.candidate, stage))
         runs = list({e.run_id: e for e in runs}.values())
         cells: dict[tuple, list[Endpoint]] = defaultdict(list)
         for e in runs:
@@ -1059,7 +1091,7 @@ class _Walk:
         "Technical marks outside the qualification")."""
         mark = {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
                 "step": e.cell.step, "arm": e.arm, "rate": e.lr, "seed": e.seed,
-                "recovery": e.run_id not in self.records.published}  # fmt: skip
+                "recovery": e.run_id in self.records.recoverable}  # fmt: skip
         mark["closure"] = self._closure_of(mark)
         self.marks.add(e.run_id)
         c.closable.append(mark)
@@ -1261,7 +1293,8 @@ class _Walk:
     def _final(self, result: dict[str, Any]) -> dict[str, Any]:
         """The records the route does not rest on: an n or budget record it has not reached
         (unless problems keep the route from showing where it is), and a closure record that
-        names no held run of its route. Each is a problem, and blocks."""
+        names neither a held run of its route nor a mark the walk met (unless the walk stopped
+        before the stage of the run it names). Each is a problem, and blocks."""
         if self.lenient:
             return result
         step = result["step"]
@@ -1290,7 +1323,9 @@ class _Walk:
                 )
                 ended = (run is not None and run.run_id in self.marks and run.arm == arm
                          and run.candidate == candidate)  # fmt: skip
-                if not (held if line == "held" else ended):
+                unreached = (line != "held" and run is not None
+                             and (run.candidate, run.cell.step) not in self.reached)  # fmt: skip
+                if not (held if line == "held" else ended) and not unreached:
                     found.append(f"{entry['path']}: it names {record.get('run_id')}, which is "
                                  f"neither a held run of candidate {candidate}'s {arm} on the "
                                  "route nor a technical run of it outside the qualification "
