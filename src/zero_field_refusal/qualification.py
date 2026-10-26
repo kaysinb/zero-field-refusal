@@ -422,14 +422,15 @@ def _checkpoint_problems(meta: Mapping, summary: Mapping, case: QualificationCas
 
 
 def launcher_problems(
-    run_dir: Path, case: QualificationCase, *, checkpoint: bool = True, numerics: Any = None
-) -> tuple[str | None, list[str]]:
+    run_dir: Path, case: QualificationCase, *, checkpoint: bool = True, numerics: Any = None,
+    environment: bool = True,
+) -> tuple[str | None, list[str]]:  # fmt: skip
     """The launcher run against the case (module docstring, "Order and state"): ``("technical",
     reasons)`` for a run that departs from the case (its config against the confirmation
     config's ``CONFIG_AGREEMENT`` keys; with ``numerics``, this process's
     ``runtime.configure_numerics`` record, its numerics setup; its GPU code and run environment
-    against this process's, ``code_environment_problems``) or is not a whole record, checked
-    first;
+    against this process's, ``code_environment_problems``, unless ``environment`` is false) or
+    is not a whole record, checked first;
     ``("scientific", [reason])`` for a conforming run stopped by an instability rule; technical
     again for any other stop, a missing step-25 evaluation, or (with ``checkpoint``) a missing
     checkpoint record or file, or one whose sha256 is not the recorded one; ``(None, [])`` when it
@@ -441,7 +442,8 @@ def launcher_problems(
         return TECHNICAL, [f"the launcher run's records are unreadable: "
                            f"{type(exc).__name__}: {exc}"]  # fmt: skip
     problems = _identity_problems(cfg, meta, case, numerics)
-    problems += code_environment_problems(run_dir)
+    if environment:  # against this process's code and environment (not a fact of the run's)
+        problems += code_environment_problems(run_dir)
     terminal = fcd._read_object(run_dir / "terminal.json")
     summary = fcd._read_object(run_dir / "summary.json") or {}
     stop = (terminal or {}).get("stop")
@@ -909,6 +911,7 @@ def run_part(
     checkpoints: Path,
     diagnostic_steps: Sequence[int] = (),
     infrastructure: Mapping[str, Any] | None = None,
+    engineering_cycle: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One part of a case in this process (module docstring), written to
     ``out / case.attempt_path(part, attempt)`` whatever happened, in one publish, and returned.
@@ -916,9 +919,10 @@ def run_part(
     (``harness-baseline.pt``, the baseline's diagnostic states). ``diagnostic_steps``
     (engineering cases, baseline and rest alone, steps before the last) are the steps of the
     intermediate D. ``infrastructure`` (an attempt above 1: the documented interruption it
-    reruns) goes into the record as given. Nothing runs when the launcher run does not conform
-    (``launcher_problems``): the record says why, and of what kind. The control part's case is
-    the candidate's first numerical seed at an FA rate."""
+    reruns) and ``engineering_cycle`` (a rerun after the candidate's engineering cycle: its
+    supersession record's path and sha256) go into the record as given. Nothing runs when the
+    launcher run does not conform (``launcher_problems``): the record says why, and of what
+    kind. The control part's case is the candidate's first numerical seed at an FA rate."""
     scope = QualificationScope.of(settings)
     steps = sorted({int(t) for t in diagnostic_steps})
     if part not in PARTS or not (isinstance(attempt, int) and attempt >= 1):
@@ -940,6 +944,8 @@ def run_part(
                               "diagnostic_steps": steps}  # fmt: skip
     if infrastructure is not None:
         record["infrastructure"] = dict(infrastructure)
+    if engineering_cycle is not None:
+        record["engineering_cycle"] = dict(engineering_cycle)
     # The launcher run's name, whatever its state, so that a verdict counts every record of it
     record["launcher"] = {"kind": None, "reasons": [], **launcher_record(run_dir)}
     progress: dict[str, Any] = {}

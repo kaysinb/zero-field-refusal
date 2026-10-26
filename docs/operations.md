@@ -1524,16 +1524,19 @@ docstring has every rule.
   launcher's and the harness's checkpoints are gone). `restart-case` records it: a
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
-  those attempts are void, kept and listed in the verdict, and neither count nor block. It also
-  logs the case's launcher run superseded in the launch journal: the run stays on disk and in
-  the journal, no longer counts for its label, and the launcher's recovery round with the same
-  reason starts a new one. Only an interrupted case is restarted: a restart without a reason is
-  refused, and so is one of a complete case or of a case with a completed failure, scientific
-  (it keeps counting: no reruns to pass) or technical (an engineering cycle lifts it, below),
-  an interrupted rest's trajectory results included. Then rerun the launcher run through its
-  recovery round, run each part the case needs as its next attempt with the same reason, the
-  baseline first (`part --resume` exits 8 for a part the restart names), and run the driver
-  again.
+  those attempts are void, kept and listed in the verdict, and neither count nor block. Once the
+  record is published, it logs the case's launcher run superseded in the launch journal: the run
+  stays on disk and in the journal, no longer counts for its label, and the launcher's recovery
+  round with the same reason starts a new one (if the command stopped between the two, running
+  it again writes the journal's line). Only an interrupted case is restarted: a restart is
+  refused without a reason, for a complete case, without evidence of an interruption (an
+  interrupted attempt, or the launcher run's checkpoint gone from disk), when the launcher run
+  itself is a completed failure (its declared instability stop, scientific; another stop,
+  technical), and for a case with a completed failure, scientific (it keeps counting: no reruns
+  to pass) or technical (the engineering cycle lifts it, below), an interrupted rest's
+  trajectory results included. Then rerun the launcher run through its recovery round, run each
+  part the case needs as its next attempt with the same reason, the baseline first
+  (`part --resume` exits 8 for a part the restart names), and run the driver again.
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-5e-05 --infrastructure "the Pod stopped during the case"
@@ -1546,13 +1549,17 @@ docstring has every rule.
   ```
 - **A technical failure and its engineering cycle.** A completed technical failure (the
   repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
-  rerun as it stands. After the cycle's diagnosis and fix, committed, `supersede` records the
-  supersession: `supersede-<n>.json` names the old record's path and sha256, the diagnosis, the
-  fix, the GPU code of the fix and the case re-qualified, voids every attempt of the case and
-  logs its launcher run superseded. The case then re-qualifies: the launcher's recovery round,
-  then each part as its next attempt (`--infrastructure` naming the supersession). A scientific
-  failure is never superseded.
-
+  rerun as it stands. Each candidate has one engineering cycle. After its diagnosis and fix,
+  committed, `supersede` records it: `c<N>/<stage>/supersede-1.json` names the technical record
+  that started it (path and sha256), the diagnosis, the fix, the fix's GPU code (which must
+  differ from the record's: the same path is not simply rerun) and every record of the candidate
+  made under the old GPU code, in every case, passed ones included, with the cases re-qualified;
+  it then logs their launcher runs superseded. A second cycle for the candidate is refused: a
+  technical failure left unresolved routes to the technical feasibility report. A cycle that
+  would void a scientific failure is refused too. Every case it names re-qualifies under the new
+  code: the launcher's recovery round, then each part as its next attempt with
+  `--engineering-cycle` (its record names the supersession's path and sha256), not
+  `--infrastructure`; the verdict lists the voided records under `supersession`.
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-5e-05 \

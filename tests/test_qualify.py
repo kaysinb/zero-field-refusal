@@ -374,11 +374,18 @@ def test_a_rest_bound_to_another_baseline_keeps_the_case_open(qualify, tmp_path)
 
 def fake_part(calls):
     def run_part(settings, env, case, run_dir, out, *, part, attempt, checkpoints,
-                 diagnostic_steps=(), infrastructure=None):  # fmt: skip
+                 diagnostic_steps=(), infrastructure=None, engineering_cycle=None):  # fmt: skip
         calls.append((case.name, part, attempt))
-        record = {"part": part, "attempt": attempt, "case": case.record(), "status": "failed",
-                  "kind": "technical", "reasons": ["RuntimeError: boom"],
-                  **({"infrastructure": infrastructure} if infrastructure else {})}  # fmt: skip
+        record = {
+            "part": part,
+            "attempt": attempt,
+            "case": case.record(),
+            "status": "failed",
+            "kind": "technical",
+            "reasons": ["RuntimeError: boom"],
+            **({"infrastructure": infrastructure} if infrastructure else {}),
+            **({"engineering_cycle": engineering_cycle} if engineering_cycle else {}),
+        }
         q.publish(out / case.attempt_path(part, attempt), record)  # the one publish
         return record
 
@@ -438,7 +445,6 @@ def test_an_infrastructure_rerun_is_a_new_attempt_that_names_its_reason(
         "reason": reason,
         "previous": [{"attempt": 1, "state": "interrupted"}],
         "restarts": [],
-        "supersessions": [],
     }
     qualify.main(part_args(path, tmp_path, "baseline", "--resume"))  # the latest is recorded
     assert len(stubbed) == 1
@@ -481,8 +487,8 @@ def test_the_verdict_shows_every_attempt(qualify, stubbed, tmp_path, monkeypatch
         (ADAMW.name, "baseline", 1)
     ]
     adamw = [c for c in record["cases"] if c["case"]["name"] == ADAMW.name]
-    assert [c.get("superseded") for c in adamw] == [
-        None, {"part": "baseline", "attempt": 1, "restart": None}]  # fmt: skip
+    mark = {"part": "baseline", "attempt": 1, "restart": None, "supersession": None}
+    assert [c.get("superseded") for c in adamw] == [None, mark]
     assert record["states"][f"adamw-{ADAMW_LR:g}"] != "qualified"
 
 
@@ -615,77 +621,117 @@ def test_a_case_restart_lets_the_case_run_again(qualify, stubbed, tmp_path, monk
     assert void.isdisjoint(e["record_sha256"] for e in fa["not_counted"])
 
 
-def test_a_restart_never_voids_a_completed_failure(qualify, stubbed, tmp_path) -> None:
-    """Only an interrupted case is restarted. A completed technical failure (here the baseline's
-    launcher~baseline beyond 0.01·K*, the rest then interrupted) is refused, as a scientific one
-    is, and so is a complete case and a restart without a reason. The technical failure is
-    lifted by an engineering cycle's supersession record alone, and the case then re-qualifies;
-    no supersession lifts a scientific failure."""
-    path = campaign(tmp_path)
-    out = tmp_path / "runs" / "qualification"
-    with pytest.raises(SystemExit, match="no attempt to restart"):  # nothing recorded yet
-        qualify.main(restart(path, ADAMW, RESTART))
+def technical_adamw(out, tmp_path):
+    """The reviewer's case: a completed baseline with launcher~baseline beyond 0.01·K*
+    (technical), and its rest interrupted."""
     baseline = synthetic(ADAMW)[0]
     baseline["comparisons"]["launcher~baseline"]["D_twin"] = 0.07  # beyond 0.06: technical
     publish(out, ADAMW, "baseline", baseline)
     q.publish(out / (ADAMW.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    return baseline, case_folder(out, ADAMW) / "baseline-attempt-1.json"
+
+
+def supersede_args(path, case, record):
+    return ["supersede", *common(path), "--case", case.name, "--record", str(record),
+            "--diagnosis", "the launcher and the harness disagreed: a stale kernel cache",
+            "--fix", "the cache is cleared at the part's start"]  # fmt: skip
+
+
+FIX = {**CODE, "commit": "f" * 40, "sha256": "f" * 64}  # the fix's GPU code
+
+
+def test_a_restart_never_voids_a_completed_failure(qualify, tmp_path) -> None:
+    """Only an interrupted case is restarted: a completed technical failure (the baseline's
+    launcher~baseline beyond 0.01·K*, the rest then interrupted) is refused, as a scientific one
+    is, and so is a complete case and a restart without a reason."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    with pytest.raises(SystemExit, match="no attempt to restart"):  # nothing recorded yet
+        qualify.main(restart(path, ADAMW, RESTART))
+    technical_adamw(out, tmp_path)
     for reason in ((), ("",)):
         with pytest.raises(SystemExit, match="needs --infrastructure REASON"):
             qualify.main(restart(path, ADAMW, *reason))
     with pytest.raises(SystemExit, match=r"completed failure.*baseline attempt 1.*technical"):
         qualify.main(restart(path, ADAMW, RESTART))
     assert not list(case_folder(out, ADAMW).glob("restart-*"))
-    record = case_folder(out, ADAMW) / "baseline-attempt-1.json"
-    supersede = ["supersede", *common(path), "--case", ADAMW.name, "--record", str(record),
-                 "--diagnosis", "the launcher and the harness disagreed: a stale kernel cache",
-                 "--fix", "the cache is cleared at the part's start"]  # fmt: skip
-    for missing in ("--diagnosis", "--fix", "--record"):
-        i = supersede.index(missing)
-        with pytest.raises(SystemExit, match="supersede needs"):
-            qualify.main(supersede[:i] + supersede[i + 2 :])
-    qualify.main(supersede)
-    cycle = json.loads((case_folder(out, ADAMW) / "supersede-1.json").read_text())
-    assert cycle["old_record"] == {"path": str(record), "sha256": q.record_sha256(baseline),
-                                   "part": "baseline", "attempt": 1}  # fmt: skip
-    assert cycle["fix_gpu_code"] == CODE and cycle["cases_requalified"] == [ADAMW.name]
-    assert cycle["diagnosis"].startswith("the launcher and the harness disagreed")
-    with pytest.raises(SystemExit, match="void already"):
-        qualify.main(supersede)
-    qualify.main(["verdict", *common(path)])
-    verdict = json.loads((out / "c1" / "verdict.json").read_text())
-    (entry,) = [e for e in verdict["superseded"] if e["case"] == ADAMW.name]
-    assert entry["restart"].startswith("superseded by an engineering cycle (supersede-1.json)")
-    assert [v["case"] for v in verdict["rates"][f"adamw-{ADAMW_LR:g}"]["voided"]] == [ADAMW.name]
-    adamw_args = ["--case", ADAMW.name, "--run-dir", str(tmp_path / "run"),
-                  "--checkpoints", str(tmp_path / "h"), "--device", "cpu"]  # fmt: skip
-    qualify.main(
-        [
-            "part",
-            *common(path),
-            "--part",
-            "baseline",
-            "--attempt",
-            "2",
-            "--infrastructure",
-            "re-qualified after supersede-1",
-            *adamw_args,
-        ]
-    )
-    assert stubbed == [(ADAMW.name, "baseline", 2)]  # the case re-qualifies
-    rerun = json.loads((case_folder(out, ADAMW) / "baseline-attempt-2.json").read_text())
-    assert rerun["infrastructure"]["supersessions"][0]["path"].endswith("supersede-1.json")
-    # A scientific failure: no restart, and no supersession
-    write_case(out, FA, decided=True)
+    write_case(out, FA, decided=True)  # a scientific failure
+    q.publish(out / (FA.attempt_path("control", 1) + ".started"), {"started_at": "t"})
     with pytest.raises(SystemExit, match=r"completed failure.*scientific"):
         qualify.main(restart(path, FA, RESTART))
-    fa_record = case_folder(out, FA) / "baseline-attempt-1.json"
-    with pytest.raises(SystemExit, match="scientific failure keeps counting"):
-        qualify.main(
-            [*supersede[:5], "--case", FA.name, "--record", str(fa_record), *supersede[9:]]
-        )
+    (out / (FA.attempt_path("control", 1) + ".started")).unlink()
     publish(out, FA, "control", control_record(case=FA))  # now complete
     with pytest.raises(SystemExit, match="the case is complete"):
         qualify.main(restart(path, FA, RESTART))
+
+
+def test_the_engineering_cycle_requalifies_the_candidates_old_code(
+    qualify, stubbed, tmp_path, monkeypatch
+) -> None:
+    """The candidate's one supersession: it names the technical record that started it, the
+    diagnosis, the fix and its GPU code, and voids every record of the candidate made under the
+    old code, a passed case's included; refused with the old code, and a second time. Its reruns
+    carry --engineering-cycle, not --infrastructure."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    baseline, record = technical_adamw(out, tmp_path)
+    write_case(out, FA, control=True)  # a passed case of the candidate, under the old code
+    args = supersede_args(path, ADAMW, record)
+    for missing in ("--diagnosis", "--fix", "--record"):
+        i = args.index(missing)
+        with pytest.raises(SystemExit, match="supersede needs"):
+            qualify.main(args[:i] + args[i + 2 :])
+    with pytest.raises(SystemExit, match="the same path is not simply rerun"):
+        qualify.main(args)  # this checkout's GPU code is the record's
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(FIX))
+    qualify.main(args)
+    stage = out / "c1" / "numerical"
+    cycle = json.loads((stage / "supersede-1.json").read_text())
+    assert cycle["old_record"] == {"case": ADAMW.name, "path": str(record),
+                                   "sha256": q.record_sha256(baseline), "part": "baseline",
+                                   "attempt": 1}  # fmt: skip
+    assert cycle["fix_gpu_code"] == FIX and cycle["old_gpu_code"] == CODE
+    assert sorted(cycle["cases_requalified"]) == sorted([FA.name, ADAMW.name])
+    named = {(e["case"], e["part"], e["attempt"], e["state"]) for e in cycle["attempts"]}
+    assert named == {(FA.name, "baseline", 1, "recorded"), (FA.name, "rest", 1, "recorded"),
+                     (FA.name, "control", 1, "recorded"), (ADAMW.name, "baseline", 1, "recorded"),
+                     (ADAMW.name, "rest", 1, "interrupted")}  # fmt: skip
+    with pytest.raises(SystemExit, match="one cycle per candidate"):
+        qualify.main(args)
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    void = {(e["case"], e["part"]) for e in verdict["superseded"]
+            if e["supersession"] and e["restart"] is None}  # fmt: skip
+    assert void == {(FA.name, "baseline"), (FA.name, "rest"), (FA.name, "control"),
+                    (ADAMW.name, "baseline")}  # fmt: skip
+    assert all(e["supersession"].startswith("superseded by an engineering cycle")
+               for e in verdict["superseded"])  # fmt: skip
+    fa = verdict["rates"][f"adam_frozen-{FA_LR:g}"]
+    assert sorted(v["case"] for v in fa["voided"]) == sorted([FA.name, FA.name, "control"])
+    rerun = ["part", *common(path), "--case", ADAMW.name, "--part", "baseline", "--attempt", "2",
+             "--run-dir", str(tmp_path / "run"), "--checkpoints", str(tmp_path / "h"),
+             "--device", "cpu"]  # fmt: skip
+    for mark in ([], ["--infrastructure", "a reason"]):
+        with pytest.raises(SystemExit, match="carries --engineering-cycle"):
+            qualify.main([*rerun, *mark])
+    qualify.main([*rerun, "--engineering-cycle"])
+    assert stubbed == [(ADAMW.name, "baseline", 2)]  # the case re-qualifies
+    record2 = json.loads((case_folder(out, ADAMW) / "baseline-attempt-2.json").read_text())
+    assert record2["engineering_cycle"]["path"] == str(stage / "supersede-1.json")
+    assert record2["engineering_cycle"]["sha256"] == hashlib.sha256(
+        (stage / "supersede-1.json").read_bytes()).hexdigest()  # fmt: skip
+    assert "infrastructure" not in record2
+
+
+def test_no_engineering_cycle_voids_a_scientific_failure(qualify, tmp_path, monkeypatch) -> None:
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    write_case(out, FA, decided=True)  # a scientific failure under the old code
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(FIX))
+    with pytest.raises(SystemExit, match="scientific failure keeps counting"):
+        qualify.main(supersede_args(path, ADAMW, record))
+    assert not list((out / "c1" / "numerical").glob("supersede-*"))
 
 
 def test_a_supersession_needs_a_technical_failure(qualify, tmp_path) -> None:
@@ -751,6 +797,99 @@ def test_a_scientific_trajectory_result_survives_an_interruption(qualify, stubbe
     assert json.loads((out / "c1" / "verdict.json").read_text())["states"][key] == "failing"
 
 
+def settled_launcher(root, run, run_id, *, stop="steps", steps=25):
+    """A settled launcher run of ``run`` as ``launcher_problems`` reads it (its config, identity
+    inputs, terminal record and checkpoint record; the checkpoint file itself, /x.pt, is gone)."""
+    from test_launch import make_run_dir
+
+    run_dir = make_run_dir(root, run, run_id, "completed")
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta["inputs"] = {"numerics_setup": {}, "theta0_trainable_sha256": "t" * 64,
+                      "endpoint_checkpoint": IDENTITY["checkpoint"]}  # fmt: skip
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    terminal = {"stop": {"reason": stop, "detail": {}}, "steps": steps, "evaluations": [25]}
+    (run_dir / "terminal.json").write_text(json.dumps(terminal))
+    (run_dir / "summary.json").write_text(json.dumps(
+        {"endpoint_checkpoint": IDENTITY["checkpoint"], "terminal": terminal}))  # fmt: skip
+    return run_dir
+
+
+@pytest.mark.parametrize(("stop", "kind"), [("gradient_spike", "scientific"),
+                                            ("t_max", "technical")])  # fmt: skip
+def test_a_restart_never_voids_a_failed_launcher_run(qualify, tmp_path, stop, kind) -> None:
+    """The launcher run stopped by its declared instability rule (a scientific failure), or by
+    another stop (technical), its baseline interrupted before it published: no restart."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    settled_launcher(root, run, "r-a1", stop=stop, steps=3)
+    q.publish(out / (ADAMW.attempt_path("baseline", 1) + ".started"), {"started_at": "t"})
+    with pytest.raises(SystemExit, match=f"is itself a completed {kind} failure"):
+        qualify.main(restart(path, ADAMW, RESTART))
+    assert not list(case_folder(out, ADAMW).glob("restart-*"))
+
+
+def test_a_restart_needs_evidence_of_an_interruption(qualify, tmp_path, monkeypatch) -> None:
+    """Passing recorded attempts, none interrupted, the launcher run's checkpoint on disk: there
+    is nothing to restart from; with the checkpoint gone, there is."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    launcher = settled_launcher(root, run, "r-a1")
+    checkpoint = tmp_path / "ckpt.pt"
+    checkpoint.write_bytes(b"w")
+    for name in ("meta.json", "summary.json"):  # its checkpoint on disk
+        text = (launcher / name).read_text().replace('"/x.pt"', json.dumps(str(checkpoint)))
+        (launcher / name).write_text(text)
+    baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(launcher))
+    publish(out, ADAMW, "baseline", baseline)
+    with pytest.raises(SystemExit, match="no evidence of an interruption"):
+        qualify.main(restart(path, ADAMW, RESTART))
+    checkpoint.unlink()  # the container disk lost
+    seen = []
+    real = qualify.supersede
+
+    def supersede(*args, **kwargs):  # the journal's line comes after the record it points to
+        seen.append(Path(kwargs["record"]).is_file())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(qualify, "supersede", supersede)
+    qualify.main(restart(path, ADAMW, RESTART))
+    record = json.loads((case_folder(out, ADAMW) / "restart-1.json").read_text())
+    assert record["checkpoint_missing"] is True and record["launcher"]["run_id"] == "r-a1"
+    assert seen == [True]
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    lines = log.read_text().splitlines()
+    assert json.loads(lines[-1])["event"] == "superseded"
+    log.write_text("\n".join(lines[:-1]) + "\n")  # stopped between the record and its line
+    with pytest.raises(SystemExit, match="the launch journal names its launcher run"):
+        qualify.main(restart(path, ADAMW, RESTART))  # it completes the journal only
+    assert json.loads(log.read_text().splitlines()[-1])["run_id"] == "r-a1"
+    assert seen == [True, True] and not (case_folder(out, ADAMW) / "restart-2.json").exists()
+
+
+def test_mixed_trajectory_results_are_recorded_technical(qualify, tmp_path) -> None:
+    """Results of one interrupted attempt bound to different inputs: ``interrupted`` records
+    the attempt technical, with nothing of them to read."""
+    path = campaign(tmp_path, adamw=())
+    out = tmp_path / "runs" / "qualification"
+    baseline, rest = synthetic(FA)
+    publish(out, FA, "baseline", baseline)
+    rest["baseline_record"]["sha256"] = q.record_sha256(baseline)
+    q.publish(out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    q.publish(out / FA.trajectory_path(1, "repeat"), trajectory_result(FA, rest, "repeat"))
+    other = {**trajectory_result(FA, rest, "reference"), "baseline_checkpoint_sha256": "x" * 64}
+    q.publish(out / FA.trajectory_path(1, "reference"), other)
+    qualify.main(["interrupted", *common(path), "--case", FA.name, "--part", "rest",
+                  "--attempt", "1", "--technical", "the process was killed"])  # fmt: skip
+    record = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    assert record["kind"] == "technical" and record["bridge"] is None
+    assert "the trajectory results are bound to different inputs" in record["reasons"]
+    v = q.case_verdict(baseline, record, SCOPE)
+    assert v["kind"] == "technical" and all(c["D"] is None for n, c in v["comparisons"].items()
+                                            if n != "launcher~baseline")  # fmt: skip
+
+
 def test_a_lost_checkpoint_restarts_the_launcher_run(
     qualify, stubbed, tmp_path, monkeypatch
 ) -> None:
@@ -766,8 +905,7 @@ def test_a_lost_checkpoint_restarts_the_launcher_run(
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     label = f"adamw-{ADAMW_LR:g}/s10200"
     run = journal(root, path, label, ["r-a1"])
-    old = make_run_dir(root, run, "r-a1", "completed")
-    (old / "summary.json").write_text(json.dumps({"endpoint_checkpoint": IDENTITY["checkpoint"]}))
+    old = settled_launcher(root, run, "r-a1")
     identity = q.launcher_identity(old)  # its checkpoint, /x.pt, is gone
     baseline, _ = synthetic(ADAMW, identity=identity)
     publish(out, ADAMW, "baseline", baseline)
