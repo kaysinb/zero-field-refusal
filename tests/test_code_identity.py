@@ -159,11 +159,31 @@ STUDY3_ANALYSIS = ("study3_analysis.py", "study3_audit.py", "study3_campaigns.py
 GPU_MODULES = ("qualification", "schedule", "train", "launch", "runtime", "fa_control_diagnostic")
 
 
-def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work() -> None:
-    """Study 3's analysis entry points are outside the identity from the start; each either does
-    not exist yet or imports nothing that runs on a GPU."""
+def gpu_uses(path: Path) -> set[str]:
+    """What a script imports that runs on a GPU (the GPU modules, torch) or uses of CUDA."""
     import ast
 
+    text = path.read_text()
+    imported = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.ImportFrom):
+            imported |= {node.module or "", *(f"{node.module}.{a.name}" for a in node.names)}
+        elif isinstance(node, ast.Import):
+            imported |= {a.name for a in node.names}
+    found = {
+        i
+        for i in imported
+        for m in GPU_MODULES
+        if i == f"zero_field_refusal.{m}" or i.startswith(f"zero_field_refusal.{m}.")
+    }
+    found |= {i for i in imported if i == "torch" or i.startswith("torch.")}
+    return found | {use for use in ("torch.cuda", ".cuda(") if use in text}  # fmt: skip
+
+
+def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work(tmp_path) -> None:
+    """Study 3's analysis entry points are outside the identity from the start; each either does
+    not exist yet or imports nothing that runs on a GPU (the GPU modules, torch) and uses no
+    CUDA. The check is shown to catch such a script."""
     from zero_field_refusal.code_identity import ANALYSIS_SCRIPTS
     from zero_field_refusal.paths import REPO_ROOT
 
@@ -173,18 +193,15 @@ def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work() -> None:
     for name in STUDY3_ANALYSIS:
         path = REPO_ROOT / "scripts" / name
         assert is_gpu_path(f"scripts/{name}") is False
-        if not path.exists():
-            continue
-        imported = set()
-        for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.ImportFrom):
-                imported |= {node.module or "", *(f"{node.module}.{a.name}" for a in node.names)}
-            elif isinstance(node, ast.Import):
-                imported |= {a.name for a in node.names}
-        gpu = {
-            i
-            for i in imported
-            for m in GPU_MODULES
-            if i == f"zero_field_refusal.{m}" or i.startswith(f"zero_field_refusal.{m}.")
-        }
-        assert not gpu, (name, gpu)  # fmt: skip
+        if path.exists():
+            assert not gpu_uses(path), (name, gpu_uses(path))
+    for text, found in (("import torch\n", {"torch"}),
+                        ("x = 1\ntorch.cuda.synchronize()\n", {"torch.cuda"}),
+                        ("from zero_field_refusal import qualification\n",
+                         {"zero_field_refusal.qualification"}),
+                        ("from zero_field_refusal.schedule import run_scheduled\n",
+                         {"zero_field_refusal.schedule",
+                          "zero_field_refusal.schedule.run_scheduled"})):  # fmt: skip
+        sample = tmp_path / "sample.py"
+        sample.write_text(text)
+        assert gpu_uses(sample) >= found, text
