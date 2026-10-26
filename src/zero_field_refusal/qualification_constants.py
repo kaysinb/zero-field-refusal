@@ -3,7 +3,8 @@ records say, with the record hash (docs/study3-preregistration.md, "Numerical qu
 
 They live here, inside the GPU-code identity (``code_identity``): the protocol's batch and steps,
 the shifts and the directions they read, the rest part's trajectories and their order, the
-comparisons at step 25, the failure kinds and states a record carries, and ``record_sha256``,
+comparisons at step 25, the bridge's registered checks (``BRIDGE_KEYS``), the failure kinds
+and states a record carries, and ``record_sha256``,
 which binds a rest record to its baseline record. ``analysis.qualification_verdicts``, outside
 the identity, imports them from here and holds only functions of the records; ``qualification``
 re-exports every name.
@@ -29,6 +30,20 @@ COMPARISONS = ("launcher~baseline",  # the 13 comparisons at step 25
 FAMILIES = ("launcher~baseline", "launcher~repeat", "baseline~repeat", "launcher~reference",
             "baseline~reference", "launcher~shift", "baseline~shift")  # fmt: skip
 PARTS = ("baseline", "rest", "control")
+# The bridge's registered checks, every one of them in every part record that holds a bridge
+# (``qualification.bridge_checks`` produces exactly these; a bridge missing one is not
+# established, and nothing it would bind is read)
+BRIDGE_KEYS = (
+    "steps",
+    "tokens",
+    "denominator",
+    "training_stream",
+    "v0_sha256",
+    "theta0_trainable_sha256",
+    "names_sha256",
+    "optimizer",
+    "numerics_setup",
+)
 
 
 class QualificationError(ValueError):

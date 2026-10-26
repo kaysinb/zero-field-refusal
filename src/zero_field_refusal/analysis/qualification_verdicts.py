@@ -27,13 +27,14 @@ kinds and states, ``record_sha256``) is ``qualification_constants``', inside the
   baseline given (another case, launcher run, settings or GPU code, or not built on that baseline
   record and checkpoint) is technical and none of its measurements is read.
 - **Identity first** (``identity_problems``): the baseline record, one Pod, every part's bridge
-  checks (all true, none missing from a complete part), v₀ unchanged and the rest's binding to
-  the baseline hold before any measurement is read. A failure holds back the measurements of
-  the record it belongs to: one of the baseline makes the case technical, nothing read and no
-  scientific reason, whatever the records show; one of the rest (unbound, its own checks, a
-  second Pod) makes it technical too, unless the bound, verified baseline decided the case: that
-  scientific failure stands, the rest's problem is listed and nothing of the rest is read. A
-  part that failed before establishing its bridge checks has no measurement read either.
+  checks (every registered one, ``BRIDGE_KEYS``, present and true; none missing from a complete
+  part), v₀ unchanged and the rest's binding to the baseline hold before any measurement is read. A
+  failure holds back the measurements of the record it belongs to: one of the baseline makes the
+  case technical, nothing read and no scientific reason, whatever the records show; one of the rest
+  (unbound, its own checks, a second Pod) makes it technical too, unless the bound, verified
+  baseline decided the case: that scientific failure stands, the rest's problem is listed and
+  nothing of the rest is read. A part that failed before establishing its bridge checks has no
+  measurement read either.
 - A case with both kinds, on bound and verified records, is scientific (no rerun passes it), its
   technical reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (all 13 within),
   else ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
@@ -68,6 +69,7 @@ from typing import TYPE_CHECKING, Any
 from .. import fa_control_diagnostic as fcd
 from ..qualification_constants import (
     ACCEPTED,
+    BRIDGE_KEYS,
     COMPARISONS,
     FAILING,
     FAMILIES,
@@ -126,16 +128,19 @@ def _pod_problem(*records: Mapping[str, Any] | None) -> str | None:
 
 
 def _bridge_failures(record: Mapping[str, Any]) -> list[str] | None:
-    """The bridge checks of a part record that are not true; None when it holds none."""
+    """The registered bridge checks (``BRIDGE_KEYS``) of a part record that are not true, a
+    missing one included (``"<key> (missing)"``); None when it holds no bridge at all."""
     bridge = record.get("bridge")
     if not isinstance(bridge, Mapping) or not bridge:
         return None
-    return [k for k, v in bridge.items() if v is not True]
+    return [key if key in bridge else f"{key} (missing)" for key in BRIDGE_KEYS
+            if bridge.get(key) is not True]  # fmt: skip
 
 
 def _verified(record: Mapping[str, Any] | None) -> bool:
-    """Whether a part record's measurements may be read: it holds its bridge checks, all true
-    (a part that failed before establishing them has measurements no check bound)."""
+    """Whether a part record's measurements may be read: it holds every registered bridge
+    check, each true (a part that failed before establishing them, or a bridge missing one, has
+    measurements no check bound)."""
     return record is not None and _bridge_failures(record) == []
 
 

@@ -128,6 +128,7 @@ from .optim import ADAM_MODES
 from .qualification_constants import (
     ACCEPTED,
     BATCH,
+    BRIDGE_KEYS,
     COMPARISONS,
     FAILING,
     FAMILIES,
@@ -526,7 +527,8 @@ def bridge_checks(
     ``tokens`` and ``denominator``, the training stream's identity, v₀'s hash (None on both sides
     for an arm that reads none), θ₀'s and the names' hashes, the optimizer section and the
     numerics setup. ``launcher`` is ``launcher_facts``; ``setup`` the harness's side
-    (``_setup_facts``). A trajectory that ``stopped`` (a non-finite loss, gradient or weight:
+    (``_setup_facts``). The checks are exactly ``BRIDGE_KEYS``, in that order. A trajectory that
+    ``stopped`` (a non-finite loss, gradient or weight:
     ``run_twin`` ends there) is held to the launcher run's rows of the same length: the steps,
     tokens and denominators of that prefix, exactly, and the stream chunks it read the launcher
     run's first ones."""
@@ -552,7 +554,7 @@ def bridge_checks(
                 and (ours.get("count") or 0) <= (full.get("count") or 0))  # fmt: skip
 
     training = stream_prefix() if stopped else present_and_equal("training_stream")
-    return {"steps": steps, "tokens": rows_equal("tokens"),
+    checks = {"steps": steps, "tokens": rows_equal("tokens"),
             "denominator": rows_equal("denominator"),
             "training_stream": training,
             "v0_sha256": launcher.get("v0_sha256") == setup.get("v0_sha256"),
@@ -560,6 +562,10 @@ def bridge_checks(
             "names_sha256": present_and_equal("names_sha256"),
             "optimizer": present_and_equal("optimizer"),
             "numerics_setup": present_and_equal("numerics_setup")}  # fmt: skip
+    if set(checks) != set(BRIDGE_KEYS):  # the registered set, and no other
+        raise QualificationError(f"The bridge's checks {sorted(checks)} are not the registered "
+                                 f"{list(BRIDGE_KEYS)}")  # fmt: skip
+    return {key: checks[key] for key in BRIDGE_KEYS}
 
 
 # ------------------------------------------------------------------------------ the harness

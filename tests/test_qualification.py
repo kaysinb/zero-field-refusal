@@ -774,7 +774,7 @@ def synthetic(case=CASE, d=0.001, identity=IDENTITY):
     launcher = {"kind": None, "reasons": [], "identity": identity}
     common = {"case": case.record(), "launcher": launcher, "provenance": provenance,
               "v0_unchanged": True,
-              "bridge": dict.fromkeys(("steps", "tokens", "denominator"), True)}  # fmt: skip
+              "bridge": dict.fromkeys(q.BRIDGE_KEYS, True)}  # fmt: skip
     baseline = {"part": "baseline", "status": "complete", **copy.deepcopy(common),
                 "checkpoint": {"sha256": "b" * 64}, "trajectories": {"baseline": {"stop": None}},
                 "comparisons": {"launcher~baseline": {"D_twin": d}}}  # fmt: skip
@@ -1029,6 +1029,46 @@ def test_an_unbound_rest_never_hides_a_decided_baseline() -> None:
     rest["comparisons"]["baseline~reference"]["D_twin"] = 0.5
     other_baseline(baseline, rest)
     assert q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
+
+
+def test_the_bridge_checks_are_the_registered_set() -> None:
+    """``bridge_checks`` produces exactly ``BRIDGE_KEYS``, the set the verdicts require."""
+    rows = [{"step": t, "tokens": 1, "denominator": 1} for t in range(25)]
+    facts = {"rows": rows, "training_stream": {"path": "p"}, "v0_sha256": None,
+             "theta0_trainable_sha256": "t", "names_sha256": "n", "optimizer": {"o": 1},
+             "numerics_setup": {"x": 1}}  # fmt: skip
+    setup = {k: v for k, v in facts.items() if k != "rows"}
+    checks = q.bridge_checks(facts, rows, setup)
+    assert tuple(checks) == q.BRIDGE_KEYS and all(checks.values())
+    assert set(q.BRIDGE_KEYS) == {"steps", "tokens", "denominator", "training_stream",
+                                  "v0_sha256", "theta0_trainable_sha256", "names_sha256",
+                                  "optimizer", "numerics_setup"}  # fmt: skip
+
+
+@pytest.mark.parametrize("missing", ["all but steps", *q.BRIDGE_KEYS])
+def test_an_incomplete_bridge_is_not_established(missing) -> None:
+    """A bridge missing a registered check (``{"steps": True}`` alone, or any single key) is
+    not established: the case is technical and no measurement of that record is read, even
+    evidence that would be scientific."""
+    for where in ("baseline", "rest"):
+        baseline, rest = synthetic()
+        record = baseline if where == "baseline" else rest
+        if missing == "all but steps":
+            record["bridge"] = {"steps": True}
+        else:
+            del record["bridge"][missing]
+        rest["comparisons"]["baseline~reference"]["D_twin"] = 0.5  # would be scientific
+        baseline["trajectories"]["baseline"]["instability"] = (
+            {"reason": "gradient_spike", "step": 3, "detail": {}} if where == "baseline" else None
+        )
+        bind(rest, baseline)
+        v = q.case_verdict(baseline, rest, SCOPE)
+        assert (v["state"], v["kind"]) == ("not_qualified", "technical"), (missing, where)
+        label = "the bridge failed" if where == "baseline" else "the bridge failed in the rest"
+        assert any(r.startswith(label) and "(missing)" in r for r in v["reasons"]), v["reasons"]
+        assert not any("instability" in r or "D₂₅" in r for r in v["reasons"])
+        assert all(c["D"] is None for n, c in v["comparisons"].items()
+                   if where == "baseline" or n != "launcher~baseline")  # fmt: skip
 
 
 def test_a_part_that_failed_before_its_bridge_has_nothing_read() -> None:
