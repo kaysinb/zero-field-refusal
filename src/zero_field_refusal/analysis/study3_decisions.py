@@ -21,7 +21,9 @@ records; the state machine consumes only what this module accepts.
   at all) N asks for a budget decision.
 - ``closures``: the closure records of a candidate's arms, each with its state and problems, as
   ``decisions`` lists the others; ``hold_reasons``: the ids of the reasons a hold line states;
-  ``end_lines``: each run's last ``end`` line in the launch journal, as a closure cites it.
+  ``end_lines`` and ``start_lines``: each run's last ``end`` line and its start line in the
+  launch journal, as a closure cites them; ``end_reason``: the reason id of an end's outcome;
+  ``invalidate``: an entry made invalid, with why.
 
 **Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate), ``budget-c<N>`` and
 ``closure-c<N>-<arm>`` (one per candidate and arm A, F or P).
@@ -98,8 +100,8 @@ on is a response or an observation, and this module opens none.
 - ``closure-c<N>-<arm>``: an unresolved technical failure of the arm closed as the terminal
   technical outcome it is ("Failure routes", "After a technical mark"): a launcher run that the
   candidate's engineering cycle held (an outcome nobody could resolve, never attempted again), or a
-  run outside the qualification (search, validation, confirmation) whose launcher ended it
-  technical and that no recovery round reran. ``candidate`` and ``arm`` (the kind's), ``rate``,
+  run outside the qualification (search, validation, confirmation) that the readers count as a
+  technical mark and that no recovery round reran. ``candidate`` and ``arm`` (the kind's), ``rate``,
   ``seed`` (a registered seed of the candidate, the one the cited line's label names),
   ``run_id``, ``line`` (the launch-journal line that shows the failure: ``kind``, ``path``,
   ``launch/<log>.jsonl`` under the runs directory, ``line``, its number from 1, and
@@ -113,15 +115,18 @@ on is a response or an observation, and this module opens none.
     evidence of the candidate's supersession record (``qualification/c<N>/supersede-<n>.json``
     under the runs directory), whose ``held`` names the run.
   - ``kind: "end"``: the run's last ``end`` line in the journal (by its time stamp, in any log),
-    with a technical outcome (``END_REASONS``: technical, exhausted, conflict, or diverged with no
-    published terminal record), its ``reason`` the one that outcome gives; ``cycle`` is null. It
-    is refused for a run that a later attempt of its label, a recovery round of its label after
-    that end, a ``superseded`` line or a ``held`` line followed: the readers do not list such a
-    run as technical. That the run lies outside the qualification and that ``read_endpoints``
-    lists it as technical is the state machine's to check.
-  It is checked against the files as they are now: the line's bytes, the supersession record's
-  bytes, and the run id both name. The failure's evidence stays as it is; a closure removes
-  nothing.
+    whatever its outcome, its ``reason`` the one that outcome gives (``end_reason``:
+    ``launcher_<outcome>``); ``cycle`` is null.
+  - ``kind: "start"``: the run's start line, when the journal holds no end line of the run; its
+    ``reason`` ``no_end_line`` (``START_REASON``); ``cycle`` is null.
+  An end or start closure is refused for a run that a later attempt of its label, a recovery
+  round of its label at or after the cited line, a ``superseded`` line or a ``held`` line
+  followed: the readers would not count it as a technical mark. That the run lies outside the
+  qualification and that the readers count it as a technical mark is the state machine's to
+  check. The record is checked against the files as they are now, through ``journal_lines`` (the
+  one reading of a cited journal line; a launch log that cannot be read fails the check closed):
+  the line's bytes, the supersession record's bytes, and the run id both name. The failure's
+  evidence stays as it is; a closure removes nothing.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
@@ -172,9 +177,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
 from ..paths import REPO_ROOT
-from .study3_records import DECISIONS, EXPERIMENT, SEEDS, _read_journal, _time
+from .study3_records import DECISIONS as DECISIONS_FOLDER
+from .study3_records import EXPERIMENT, SEEDS, _read_journal, _time, journal_lines
 
-DIRECTORY = (EXPERIMENT, DECISIONS)  # reserved in the experiment's folder (study3_records)
+DIRECTORY = (EXPERIMENT, DECISIONS_FOLDER)  # reserved in the experiment's folder
 STATES = ("passed", "failed")
 SEALED = ("responses", "observations")  # a run's folders no decision rests on
 
@@ -216,11 +222,11 @@ HOLD_REASONS = {
     "numerics_setup_key_missing": "no numerics_setup.",
     "no_terminal_record": "no whole terminal record",
 }
-# The launcher's technical ends of a run (as ``study3_records`` classifies them), by the id a
-# closure record names: diverged only without a published terminal record
-END_REASONS = {"technical": "launcher_technical", "exhausted": "launcher_exhausted",
-               "conflict": "launcher_conflict", "diverged": "diverged_without_record"}  # fmt: skip
-LINE_KINDS = ("held", "end")
+# The line a closure cites: a held line, the run's last end line, or its start line when the
+# launcher never ended it; an end line's reason is its outcome's (``end_reason``)
+LINE_KINDS = ("held", "end", "start")
+START_REASON = "no_end_line"  # a start line's reason: the launcher never ended the run
+_OUTCOME = re.compile(r"[a-z][a-z_]{0,40}")
 COMMON = ("kind", "state", "written_at", "code")
 FIELDS = {
     "engineering": ("checks",),
@@ -272,6 +278,14 @@ def kind_of(kind: str) -> tuple[str, int | None]:
     if found.group(3):
         return "closure", int(found.group(3))
     return (kind.split("-")[0], int(found.group(2))) if found.group(2) else (kind, None)
+
+
+def end_reason(outcome: Any) -> str | None:
+    """The reason id a closure names for an end line with the launcher's ``outcome``
+    (``launcher_<outcome>``), None for an outcome that names none."""
+    return (
+        f"launcher_{outcome}" if isinstance(outcome, str) and _OUTCOME.fullmatch(outcome) else None
+    )
 
 
 def hold_reasons(text: Any) -> list[str]:
@@ -362,14 +376,14 @@ def decisions(
            for kind in ("engineering", "simulation", kind_n)}  # fmt: skip
     simulation, n = out["simulation"], out[kind_n]
     if simulation["state"] == "invalid" and n["state"] in STATES:
-        _invalidate(n, f"the simulation record it rests on is invalid ({simulation['path']})")
+        invalidate(n, f"the simulation record it rests on is invalid ({simulation['path']})")
     reason = None
     if n["record"] is not None and n["record"]["state"] == "passed":
         reason = budget_reason(n["record"]["N"], simulation["record"])
     if reason is not None or n["state"] == "invalid" or decision_path(root, budget).exists():
         out[budget] = _entry(root, budget, starts, corrupt, repo)
         if n["state"] == "invalid":
-            _invalidate(out[budget], f"the n-c{candidate} record it answers is invalid "
+            invalidate(out[budget], f"the n-c{candidate} record it answers is invalid "
                                      f"({n['path']})")  # fmt: skip
         elif reason is not None and out[budget]["state"] == "missing":
             out[budget]["problems"] = [f"{out[budget]['path']}: a budget decision answering the "
@@ -393,7 +407,8 @@ def closures(
             for kind in (f"closure-c{candidate}-{arm}" for arm in CLOSURE_DECISIONS)}  # fmt: skip
 
 
-def _invalidate(entry: dict[str, Any], why: str) -> None:
+def invalidate(entry: dict[str, Any], why: str) -> None:
+    """Mark a ``decisions`` entry invalid, with why: its record is no longer consumed."""
     entry.update(state="invalid", record=None,
                  problems=[*entry["problems"], f"{entry['path']}: {why}"])  # fmt: skip
 
@@ -1054,8 +1069,8 @@ class _Schema:
                 and PurePosixPath(run_id).name == run_id and "\\" not in run_id):  # fmt: skip
             self.add("run_id", f"is {run_id!r}, not a run id")
         kind = self._line(r["line"])
-        if kind == "end" and r["cycle"] is not None:
-            self.add("cycle", f"is {r['cycle']!r}: the closure of a run's end line cites no "
+        if kind in ("end", "start") and r["cycle"] is not None:
+            self.add("cycle", f"is {r['cycle']!r}: the closure of a run's {kind} line cites no "
                      "cycle (null)")  # fmt: skip
         if kind == "held" and r["cycle"] is None:
             self.add("cycle", "is null: the closure of a held line cites the candidate's "
@@ -1069,13 +1084,20 @@ class _Schema:
                      f"qualification/c{self.candidate}/supersede-<n>.json under the runs "
                      "directory")  # fmt: skip
         reason = r["reason"]
-        known = {"held": set(HOLD_REASONS), "end": set(END_REASONS.values())}.get(
-            kind, {*HOLD_REASONS, *END_REASONS.values()}
-        )
-        if not (isinstance(reason, str) and _REASON_ID.fullmatch(reason) and reason in known):
-            what = "a technical end gives" if kind == "end" else "a hold states"
-            self.add("reason", f"is {reason!r}, not the id of a reason {what} "
-                     f"({sorted(known)})")  # fmt: skip
+        if kind == "held" and not (isinstance(reason, str) and reason in HOLD_REASONS):
+            self.add("reason", f"is {reason!r}, not the id of a reason a hold states "
+                     f"({sorted(HOLD_REASONS)})")  # fmt: skip
+        elif kind == "end" and not (
+            isinstance(reason, str)
+            and reason.startswith("launcher_")
+            and end_reason(reason[len("launcher_") :]) == reason
+        ):
+            self.add("reason", f"is {reason!r}, not the id of an end's outcome "
+                     "(launcher_<outcome>)")  # fmt: skip
+        elif kind == "start" and reason != START_REASON:
+            self.add("reason", f"is {reason!r}, not {START_REASON!r}, the reason of a start line")
+        elif kind is None and not (isinstance(reason, str) and _REASON_ID.fullmatch(reason)):
+            self.add("reason", f"is {reason!r}, not an id")
         if r["decision"] != CLOSURE_DECISIONS[arm]:
             self.add("decision", f"is {r['decision']!r}: a closure of {arm} decides "
                      f"{CLOSURE_DECISIONS[arm]!r}")  # fmt: skip
@@ -1170,36 +1192,34 @@ def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
 
 
 def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list[str]:
-    """A ``closure-c<N>-<arm>`` record against the files as they are now: the cited line (its
-    bytes; a ``held`` line or the run's last technical ``end``, of the record's run and seed,
-    stating the record's reason) and, for a held line, the supersession record (its ``held``
-    naming the run). The cycle's sha256 is checked with the other evidence."""
-    found = []
+    """A ``closure-c<N>-<arm>`` record against the files as they are now (``journal_lines``,
+    the one reading of a cited line): the cited line's bytes and what it is (a held line, the
+    run's last end, or its start when it has no end; of the record's run and seed, stating the
+    record's reason), nothing in the journal after it that the readers would read as the run's
+    next attempt, and, for a held line, the supersession record (its ``held`` naming the run).
+    A launch log that cannot be read fails closed: what it holds cannot be shown. The cycle's
+    sha256 is checked with the other evidence."""
     run_id, cited = record["run_id"], record["line"]
     path = root / cited["path"]
-    where = f"line: line {cited['line']} of {path}"
     if _under_sealed(path, root, Path(cited["path"])):
         return [f"line: {path} is under a responses or observations folder: never opened"]
-    try:
-        lines = path.read_bytes().decode("utf-8").splitlines()
-    except (OSError, ValueError) as exc:
-        lines = None
-        found.append(f"line: the launch log {path} cannot be read ({type(exc).__name__})")
-    if lines is not None and cited["line"] > len(lines):
+    logs, unreadable = journal_lines(root)
+    found = [f"line: {problem}: the journal cannot show what follows the run"
+             for problem in unreadable]  # fmt: skip
+    log = next((log for log in logs if log.path == cited["path"]), None)
+    where = f"line: line {cited['line']} of {path}"
+    if log is None:
+        found.append(f"line: the launch log {path} cannot be read")
+    elif cited["line"] > len(log.lines):
         found.append(f"line: the launch log {path} has no line {cited['line']}")
-    elif lines is not None:
-        text = lines[cited["line"] - 1]
-        now = hashlib.sha256(text.encode()).hexdigest()
-        if now != cited["line_sha256"]:
-            found.append(f"{where} has line_sha256 {now} now, not the recorded "
+    else:
+        line = log.lines[cited["line"] - 1]
+        if line.line_sha256 != cited["line_sha256"]:
+            found.append(f"{where} has line_sha256 {line.line_sha256} now, not the recorded "
                          f"{cited['line_sha256']}")  # fmt: skip
         else:
-            try:
-                event = json.loads(text)
-            except ValueError:
-                event = None
-            check = _held_line if cited["kind"] == "held" else _end_line
-            found += check(root, event if isinstance(event, dict) else {}, record, where)
+            check = {"held": _held_line, "end": _end_line, "start": _start_line}[cited["kind"]]
+            found += check(root, line.record or {}, record, where, logs)
     if cited["kind"] != "held":
         return found
     cycle = root / record["cycle"]["path"]
@@ -1230,8 +1250,8 @@ def _of_run(event: Mapping[str, Any], record: Mapping[str, Any]) -> list[str]:
     return found
 
 
-def _held_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any],
-               where: str) -> list[str]:  # fmt: skip
+def _held_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], where: str,
+               logs: Sequence[Any]) -> list[str]:  # fmt: skip
     """A cited held line: the ``held`` event of the record's run, its label the record's seed's,
     stating the record's reason."""
     if event.get("event") != "held":
@@ -1244,110 +1264,109 @@ def _held_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any],
     return found
 
 
-def _end_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any],
-              where: str) -> list[str]:  # fmt: skip
-    """A cited end line: the run's last ``end`` in the journal, a technical one (``END_REASONS``;
-    diverged only with no published terminal record), giving the record's reason, of a run no
-    later attempt, recovery round, supersession or hold followed."""
+def _end_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], where: str,
+              logs: Sequence[Any]) -> list[str]:  # fmt: skip
+    """A cited end line: the run's last ``end`` in the journal, whatever its outcome, giving
+    the record's reason, of a run nothing followed (``_followed``)."""
     if event.get("event") != "end":
         return [f"{where} is not an end line of the launch journal"]
     found = _of_run(event, record)
-    run_id, label, attempt = record["run_id"], event.get("run"), event.get("attempt")
     outcome = event.get("outcome")
-    if outcome not in END_REASONS:
-        found.append(f"line: its end's outcome {outcome!r} is no technical end "
-                     f"({sorted(END_REASONS)}, diverged with no terminal record)")  # fmt: skip
-    elif record["reason"] != END_REASONS[outcome]:
-        found.append(f"reason: is {record['reason']!r}, not {END_REASONS[outcome]!r}, the one its "
+    if end_reason(outcome) is None:
+        found.append(f"line: its end's outcome {outcome!r} names no reason")
+    elif record["reason"] != end_reason(outcome):
+        found.append(f"reason: is {record['reason']!r}, not {end_reason(outcome)!r}, the one its "
                      f"end's outcome {outcome!r} gives")  # fmt: skip
-    journal = _journal_lines(root)
-    last = end_lines(root, journal).get(run_id)
+    last = end_lines(root, logs).get(record["run_id"])
     if last is None or (last["path"], last["line"]) != (
         record["line"]["path"],
         record["line"]["line"],
     ):
         found.append(f"line: it is not the run's last end line in the launch journal "
                      f"({None if last is None else (last['path'], last['line'])})")  # fmt: skip
-    starts = [r for _, _, _, r in journal if r.get("event") == "start"]
-    if outcome == "diverged":
-        start = next((r for r in starts if r.get("run_id") == run_id), None)
-        experiment = None if start is None else start.get("experiment")
-        if not (isinstance(experiment, str) and PurePosixPath(experiment).name == experiment):
-            found.append(f"line: {run_id} has no start in the launch journal naming its run "
-                         "directory")  # fmt: skip
-        elif (root / experiment / run_id / "terminal.json").is_file():
-            found.append(f"line: {run_id} has a published terminal record: a diverged end with "
-                         "one is read from its records, no technical end")  # fmt: skip
-    later = sorted({r.get("run_id") for r in starts if r.get("run") == label
-                    and type(r.get("attempt")) is int and type(attempt) is int
-                    and r["attempt"] > attempt})  # fmt: skip
+    return found + _followed(event, record, logs)
+
+
+def _start_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], where: str,
+                logs: Sequence[Any]) -> list[str]:  # fmt: skip
+    """A cited start line: the ``start`` of the record's run, which has no end line in the
+    journal, nothing following it (``_followed``)."""
+    if event.get("event") != "start":
+        return [f"{where} is not a start line of the launch journal"]
+    found = _of_run(event, record)
+    if record["run_id"] in end_lines(root, logs):
+        found.append(f"line: {record['run_id']} has an end line in the launch journal: its "
+                     "closure cites its last end line")  # fmt: skip
+    return found + _followed(event, record, logs)
+
+
+def _followed(event: Mapping[str, Any], record: Mapping[str, Any],
+              logs: Sequence[Any]) -> list[str]:  # fmt: skip
+    """What in the journal makes a run no technical mark the readers list: a later attempt of
+    its label, a recovery round of its label at or after the cited line, a ``superseded`` or a
+    ``held`` line naming the run."""
+    run_id, label, attempt = record["run_id"], event.get("run"), event.get("attempt")
+    lines = [line.record for log in logs for line in log.lines if line.record is not None]
+    found = []
+    later = sorted({r.get("run_id") for r in lines if r.get("event") == "start"
+                    and r.get("run") == label and type(r.get("attempt")) is int
+                    and type(attempt) is int and r["attempt"] > attempt})  # fmt: skip
     if later:
         found.append(f"line: a later attempt of its label {label} was started ({later}): the "
                      "next attempt decides")  # fmt: skip
-    for event_name in ("superseded", "held"):
-        if any(r.get("event") == event_name and r.get("run_id") == run_id for *_, r in journal):
-            found.append(f"run_id: a {event_name} line of the launch journal names {run_id}")
-    ended = _time(event.get("time"))
-    rounds = [
-        r
-        for *_, r in journal
-        if r.get("event") == "recovery"
-        and label in (r.get("runs") or [])
-        and (ended is None or _time(r.get("time")) is None or _time(r.get("time")) >= ended)
-    ]
-    if rounds:
+    for name in ("superseded", "held"):
+        if any(r.get("event") == name and r.get("run_id") == run_id for r in lines):
+            found.append(f"run_id: a {name} line of the launch journal names {run_id}")
+    cited = _time(event.get("time"))
+    if any(r.get("event") == "recovery" and label in (r.get("runs") or [])
+           and (cited is None or _time(r.get("time")) is None or _time(r.get("time")) >= cited)
+           for r in lines):  # fmt: skip
         found.append(f"line: a recovery round of its label {label} followed it: the next "
                      "attempt decides")  # fmt: skip
     return found
 
 
-Lines = list[
-    tuple[str, int, str, dict[str, Any]]
-]  # (log path under RUNS_DIR, number, text, record)
-
-
-def _journal_lines(root: Path) -> Lines:
-    """Every parseable object line of every launch log, with its log's path under the runs
-    directory and its number from 1 (a log that is not UTF-8 text is left out: its readers name
-    it)."""
-    out: Lines = []
-    for log in sorted((root / "launch").glob("*.jsonl")):
-        try:
-            lines = log.read_bytes().decode("utf-8").splitlines()
-        except (OSError, ValueError):
-            continue
-        where = log.relative_to(root).as_posix()
-        for number, text in enumerate(lines, start=1):
-            try:
-                record = json.loads(text)
-            except ValueError:
-                continue
-            if isinstance(record, dict):
-                out.append((where, number, text, record))
-    return out
-
-
-def end_lines(runs_root: str | Path, journal: Lines | None = None) -> dict[str, dict[str, Any]]:
+def end_lines(runs_root: str | Path, logs: Sequence[Any] | None = None) -> dict[str, dict]:
     """Each run's last ``end`` line in the launch journal (by its time stamp, then its log and
     its number), as a closure record cites it: ``path`` (under RUNS_DIR), ``line``,
     ``line_sha256`` (the line's own bytes), and its ``outcome``, ``attempt`` and ``run`` (the
-    label); never the launcher's free text."""
+    label); never the launcher's free text. ``logs``: ``journal_lines``' logs, when read
+    already."""
     found: dict[str, tuple[tuple, dict[str, Any]]] = {}
-    for where, number, text, record in (
-        _journal_lines(Path(runs_root)) if journal is None else journal
-    ):
-        run_id = record.get("run_id")
-        if record.get("event") != "end" or not isinstance(run_id, str):
-            continue
-        when = _time(record.get("time"))
-        key = (when is not None, when.isoformat() if when else "", where, number)
-        if run_id not in found or key > found[run_id][0]:
-            found[run_id] = (key, {
-                "path": where, "line": number,
-                "line_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "outcome": record.get("outcome"), "attempt": record.get("attempt"),
-                "run": record.get("run")})  # fmt: skip
+    for log in journal_lines(runs_root)[0] if logs is None else logs:
+        for line in log.lines:
+            record = line.record or {}
+            run_id = record.get("run_id")
+            if record.get("event") != "end" or not isinstance(run_id, str):
+                continue
+            when = _time(record.get("time"))
+            key = (when is not None, when.isoformat() if when else "", log.path, line.line)
+            if run_id not in found or key > found[run_id][0]:
+                found[run_id] = (key, {
+                    "path": log.path, "line": line.line, "line_sha256": line.line_sha256,
+                    "outcome": record.get("outcome"), "attempt": record.get("attempt"),
+                    "run": record.get("run")})  # fmt: skip
     return {run_id: value for run_id, (_, value) in found.items()}
+
+
+def start_lines(runs_root: str | Path, logs: Sequence[Any] | None = None) -> dict[str, dict]:
+    """Each run's start line in the launch journal (its first), as a closure record cites it
+    when the launcher never ended the run: ``path``, ``line``, ``line_sha256``, ``attempt`` and
+    ``run`` (the label)."""
+    found: dict[str, dict[str, Any]] = {}
+    for log in journal_lines(runs_root)[0] if logs is None else logs:
+        for line in log.lines:
+            record = line.record or {}
+            run_id = record.get("run_id")
+            if record.get("event") == "start" and isinstance(run_id, str) and run_id not in found:
+                found[run_id] = {
+                    "path": log.path,
+                    "line": line.line,
+                    "line_sha256": line.line_sha256,
+                    "attempt": record.get("attempt"),
+                    "run": record.get("run"),
+                }
+    return found
 
 
 def _against_n(root: Path, kind: str, record: Mapping[str, Any], candidate: int,

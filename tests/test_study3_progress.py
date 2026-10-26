@@ -7,21 +7,25 @@ launch journal, run directories whose regular runs hold a harmful-response file 
 observations file with a sentinel text (never opened), and decision records with their evidence.
 The registered K* of candidate 1 is 6.00; runs at K_l and K_u bracket it with the weight 1/2."""
 
+import builtins
+import io
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
 from test_study3_decisions import World as DecisionWorld
 from test_study3_decisions import held as decision_hold
 from test_study3_records import SENTINEL, seal
 from test_study3_records import World as RunWorld
 
 from zero_field_refusal.analysis import study3_progress
-from zero_field_refusal.analysis.study3_decisions import END_REASONS, cap_of
+from zero_field_refusal.analysis.study3_decisions import START_REASON, cap_of, end_reason
 from zero_field_refusal.analysis.study3_progress import (
     Records,
     advance,
@@ -100,6 +104,9 @@ class Study:
         self.headers: dict[str, dict] = {}  # run id -> its campaign's header
         self.digests: dict[str, str] = {}
         self.ends: dict[str, dict] = {}  # run id -> its last end line
+        self.starts: dict[str, dict] = {}  # run id -> its start line
+        self.published: set[str] = set()  # runs whose terminal record is published
+        self.cycles: dict[int, list[dict]] = {1: [], 2: []}  # each candidate's cycle records
         self.expected = EXPECTED  # the chain of engineering cycles' end
 
     # -- decision records
@@ -242,17 +249,21 @@ class Study:
         """The candidate's engineering cycle is recorded: its supersession record moves the
         chain of GPU codes from ``old`` (the chain's end by default) to ``fix``."""
         fix = fix or ("f" if candidate == 1 else "9") * 64
-        self.readings[candidate]["supersessions"].append(
+        self.cycles[candidate].append(
             {"path": f"/runs/qualification/c{candidate}/supersede-1.json", "sha256": "9" * 64,
              "old_gpu_code": old or self.expected, "fix_gpu_code": fix})  # fmt: skip
         self.expected = fix
         return fix
 
     def technical(self, run_id, outcome="technical", *, log="launch/study3-c1-validation.jsonl",
-                  line=7) -> Endpoint:  # fmt: skip
-        """A run the launcher ended technical (``outcome``): its endpoint technical, its last
-        end line as ``end_lines`` gives it."""
-        found = self.change(run_id, state="technical", K=None, steps=None)
+                  line=7, published=False, **fields) -> Endpoint:  # fmt: skip
+        """A run the launcher ended (``outcome``) that the readers count as a technical mark:
+        its endpoint technical (or ``fields``), its last end line as ``end_lines`` gives it, its
+        terminal record published or not."""
+        found = self.change(run_id, **(fields or {"state": "technical", "K": None,
+                                                  "steps": None}))  # fmt: skip
+        if published:
+            self.published.add(run_id)
         self.ends[run_id] = {
             "path": log,
             "line": line,
@@ -333,10 +344,14 @@ class Study:
             line = {"kind": "held", "path": journal["path"], "line": journal["line"],
                     "line_sha256": journal["line_sha256"]}  # fmt: skip
             cycle, reason = {"path": cycle["path"], "sha256": cycle["sha256"]}, "no_recorded_commit"
-        else:
+        elif run_id in self.ends:
             end = self.ends[run_id]
             line = {"kind": "end", **{k: end[k] for k in ("path", "line", "line_sha256")}}
-            cycle, reason = None, END_REASONS[end["outcome"]]
+            cycle, reason = None, end_reason(end["outcome"])
+        else:
+            start = self.starts[run_id]
+            line = {"kind": "start", **{k: start[k] for k in ("path", "line", "line_sha256")}}
+            cycle, reason = None, START_REASON
         record = {
             "candidate": found.candidate, "arm": found.arm, "rate": found.lr, "seed": found.seed,
             "run_id": run_id, "line": line, "cycle": cycle, "reason": reason,
@@ -355,7 +370,9 @@ class Study:
         return Records(endpoints=tuple(self.endpoints), problems=tuple(self.problems),
                        holds=tuple(self.holds), hold_problems=tuple(self.hold_problems),
                        decisions=decisions, closures=closures, qualification=self.readings,
-                       headers=self.headers, digests=self.digests, ends=self.ends)  # fmt: skip
+                       headers=self.headers, digests=self.digests, ends=self.ends,
+                       starts=self.starts, cycles=self.cycles,
+                       published=frozenset(self.published))  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
@@ -852,12 +869,146 @@ def test_an_end_closure_of_a_run_that_is_not_technical_is_a_problem() -> None:
     assert any("closure-c1-F" in p for p in result["problems"])
 
 
-def test_a_technical_run_whose_last_end_is_no_technical_end_has_no_closure_way_out() -> None:
+def test_a_technical_run_with_no_journal_line_known_has_no_closure_way_out() -> None:
     study = Study()
     study.through_validation()
     broken = study.change(run_of(study, "validation", "F", "u", 10304), state="technical", K=None)
     (way,) = study.advance()["step"]["ways_out"]
-    assert (way["run_id"], way["closure"]) == (broken.run_id, None)
+    assert (way["run_id"], "closure" in way, "recovery" in way) == (broken.run_id, False, True)
+
+
+def test_a_technical_run_the_launcher_never_ended_is_closed_by_its_start_line() -> None:
+    study = Study()
+    study.through_validation()
+    broken = study.change(run_of(study, "validation", "P", "u", 10304), state="technical", K=None)
+    study.starts[broken.run_id] = {
+        "path": "launch/study3-c1-validation.jsonl",
+        "line": 4,
+        "line_sha256": "b" * 64,
+        "attempt": 1,
+        "run": broken.label,
+    }
+    (way,) = study.advance()["step"]["ways_out"]
+    fields = way["closure"]["fields"]
+    assert (fields["line"]["kind"], fields["reason"], fields["cycle"]) == (
+        "start", "no_end_line", None)  # fmt: skip
+    study.closure(broken.run_id)
+    result = study.advance()
+    assert (result["stage"], result["active"]["comparisons"]) == ("choice", ["A-F"])
+
+
+def test_a_mark_whose_terminal_record_is_published_has_no_recovery_round() -> None:
+    """The launcher opens a recovery round only for an attempt with no published terminal record:
+    only the closure applies."""
+    study = Study()
+    study.through_validation()
+    run_id = run_of(study, "validation", "F", "u", 10304)
+    study.technical(run_id, outcome="done", published=True, state="usable", K=None)
+    result = study.advance()
+    (way,) = result["step"]["ways_out"]
+    assert "recovery" not in way and way["closure"]["fields"]["reason"] == "launcher_done"
+    assert not any("recovery round" in r for r in result["step"]["reasons"])
+
+
+@pytest.mark.parametrize("fields", [{"state": "unusable", "K": 0.0},
+                                    {"state": "usable", "K": 0.0}])  # fmt: skip
+def test_a_search_run_the_search_counts_as_technical_is_a_mark_with_its_ways_out(fields) -> None:
+    """A K-only run whose K is not positive (unusable), or a usable one without a positive K."""
+    study = Study()
+    study.ready()
+    study.search()
+    run_id = run_of(study, "search", "F", "l", 10101)
+    study.technical(run_id, outcome="done", published=True, **fields)
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"], result["step"]["technical"]) == (
+        "search", "blocked", True)  # fmt: skip
+    assert [w["run_id"] for w in result["step"]["ways_out"]] == [run_id]
+    study.closure(run_id)
+    result = study.advance()
+    assert (result["stage"], result["outcome"], result["reason"]) == (
+        "technical_feasibility_report",
+        "technical_feasibility_report",
+        "technical_end",
+    )
+
+
+@pytest.mark.parametrize("fields", [{"state": "usable", "K": None},
+                                    {"state": "usable", "mmlu_loss_pp": None}])  # fmt: skip
+def test_a_usable_validation_run_lacking_a_number_is_a_mark_with_its_ways_out(fields) -> None:
+    study = Study()
+    study.through_validation()
+    run_id = run_of(study, "validation", "P", "l", 10305)
+    study.technical(run_id, outcome="done", published=True, **fields)
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("validation", "blocked")
+    assert [w["run_id"] for w in result["step"]["ways_out"]] == [run_id]
+    study.closure(run_id)
+    assert study.advance()["active"]["comparisons"] == ["A-F"]  # P closed, A–F goes on
+
+
+def test_a_validation_run_its_block_cannot_place_is_a_mark_with_its_ways_out() -> None:
+    """A run of the block's step and seed under another key (a round): the block cannot place
+    it, and it is a technical mark of its arm."""
+    study = Study()
+    study.through_validation()
+    stray = ep("F", START["F"]["u"], 10306, step="validation", round_=1, K=7.5,
+               run_id="stray-r1")  # fmt: skip
+    study.add(stray)
+    study.ends[stray.run_id] = {
+        "path": "launch/x.jsonl",
+        "line": 2,
+        "line_sha256": "c" * 64,
+        "outcome": "done",
+        "attempt": 1,
+        "run": stray.label,
+    }
+    study.published.add(stray.run_id)
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("validation", "blocked")
+    assert [w["run_id"] for w in result["step"]["ways_out"]] == ["stray-r1"]
+    study.closure("stray-r1")
+    assert study.advance()["outcome"] == "technical_feasibility_report"
+
+
+def test_an_unplaceable_run_that_has_not_ended_waits_and_is_no_mark() -> None:
+    study = Study()
+    study.through_validation()
+    study.add(ep("F", START["F"]["u"], 10306, step="validation", round_=1, state="pending",
+                 run_id="stray-r1"))  # fmt: skip
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("validation", "pending")
+    assert "stray-r1" in result["step"]["waiting"]
+
+
+def test_a_confirmation_run_listed_as_unresolved_is_a_mark_with_its_ways_out() -> None:
+    study = Study()
+    study.through_validation()
+    study.n(N=60)
+    study.confirmation(count=5)
+    run_id = run_of(study, "confirmation", "A", "u", 10402)
+    study.technical(run_id, outcome="done", published=True, state="usable", factual_loss_pp=None,
+                    log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("confirmation", "blocked")
+    assert [w["run_id"] for w in result["step"]["ways_out"]] == [run_id]
+    study.closure(run_id)
+    assert study.advance()["reason"] == "technical_end"
+
+
+@pytest.mark.parametrize("step", ["search", "validation"])
+def test_two_counting_attempts_of_one_cell_are_a_problem_with_no_way_out(step) -> None:
+    study = Study()
+    study.through_validation()
+    seed = 10102 if step == "search" else 10304
+    found = next(e for e in study.endpoints if e.cell.step == step and e.arm == "F"
+                 and e.seed == seed and math.isclose(e.lr, START["F"]["u"]))  # fmt: skip
+    study.add(Endpoint(**{**found.__dict__, "run_id": "twice-a2", "attempt": 2}))
+    if found.run_id in study.headers:  # a search start: its campaign names the engineering record
+        study.headers["twice-a2"] = study.headers[found.run_id]
+    result = study.advance()
+    step_ = result["step"]
+    assert (step_["kind"], step_["technical"], "ways_out" in step_) == ("blocked", False, False)
+    assert any("twice-a2" in p and "one cell" in p for p in result["problems"])
 
 
 # ------------------------------------------------------------------ the hold route
@@ -889,8 +1040,9 @@ def test_a_held_f_names_its_closure_record_then_ends_with_the_technical_report()
         "line": {"kind": "held", "path": "launch/study3-c1-numerical.jsonl", "line": 3,
                  "line_sha256": "e" * 64},
         "cycle": {"path": "qualification/c1/supersede-1.json", "sha256": "9" * 64},
-        "reason": "no_recorded_commit", "reasons": ["no_recorded_commit"],
-        "decision": "technical_feasibility_report"}  # fmt: skip
+        "reason": "no_recorded_commit",
+        "decision": "technical_feasibility_report"}  # exactly the closure schema's  # fmt: skip
+    assert step["hold_reasons"] == ["no_recorded_commit"]
     study.closure(run_id)
     result = study.advance()
     assert (result["stage"], result["outcome"], result["reason"], result["step"]) == (
@@ -938,7 +1090,7 @@ def test_a_hold_of_a_label_alone_is_placed_on_its_cell() -> None:
                              "sha256": "9" * 64}]})  # fmt: skip
     result = study.advance()
     assert (result["step"]["record"], result["step"]["fields"]["seed"]) == ("closure-c1-P", 10202)
-    assert result["step"]["fields"]["reasons"] == ["no_v0_hash"]
+    assert result["step"]["hold_reasons"] == ["no_v0_hash"]
     # a study-3 hold that no start places is a problem
     study.holds[-1]["run"] = "Q-1e-05/s1"
     result = study.advance()
@@ -1260,6 +1412,36 @@ def test_a_cycle_at_each_candidate_chains_the_codes() -> None:
     assert (result["stage"], result["candidate"], result["problems"]) == ("confirmation", 2, [])
     study.entries["n-c2"]["record"]["code"]["gpu_code_sha256"] = first
     assert study.advance()["stage"] == "n"
+
+
+def test_a_closure_may_carry_any_code_on_the_chain() -> None:
+    """A closure is a record about a run, bound to its line's hash: one written under the code
+    of its time stays valid when a later cycle moves the chain."""
+    study = Study()
+    study.ready()
+    study.search()
+    run_id = run_of(study, "search", "P", "u", 10101)
+    study.technical(run_id, outcome="technical", log="launch/study3-c1-search-r0.jsonl")
+    study.closure(run_id)  # under the chain's start
+    assert study.advance()["active"]["comparisons"] == ["A-F"]
+    study.numerical(arms=("A", "F"), states={("A", "l"): "not_qualified"})
+    study.rate(1, "A", START["A"]["l"], "not_qualified", technical=True)
+    assert study.advance()["step"]["technical"] is True  # its engineering cycle in progress
+    study.cycle(1)  # the cycle moves the chain; the case re-qualifies under the fix
+    study.rate(1, "A", START["A"]["l"])
+    study.readings[1]["cases"] = []
+    result = study.advance()
+    assert (result["stage"], result["problems"]) == ("validation", [])
+    assert study.entries["closure-c1-P"]["record"]["code"]["gpu_code_sha256"] == EXPECTED
+    assert study.expected != EXPECTED
+
+
+def test_a_closure_off_the_chain_is_invalid() -> None:
+    study, run_id = held_numerical("F")
+    study.closure(run_id, code="7" * 64)
+    result = study.advance()
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+    assert any("closure-c1-F" in p and "7" * 64 in p for p in result["problems"])
 
 
 def test_a_break_in_the_chain_of_cycles_is_a_problem() -> None:
@@ -1631,26 +1813,39 @@ def worlds(tmp_path):
     return records, runs
 
 
-def read(records, runs, **kw) -> dict:
-    return progress(runs.root, repo=records.repo, expected_code=EXPECTED, theta0=runs.theta0, **kw)
+def read(records, runs, expected_code=EXPECTED, **kw) -> dict:
+    return progress(runs.root, repo=records.repo, expected_code=expected_code,
+                    theta0=runs.theta0, **kw)  # fmt: skip
 
 
-def named(records, round_=0) -> dict:
+def named(records, round_=0, candidate=1) -> dict:
     """A search campaign's header naming the engineering record by its path and its sha256."""
-    return {"study": 3, "candidate": 1, "step": "search", "round": round_,
+    return {"study": 3, "candidate": candidate, "step": "search", "round": round_,
             "engineering_record": "study3/decisions/engineering.json",
             "engineering_record_sha256": records.digest("engineering")}  # fmt: skip
 
 
-def search_round0(records, runs, offsets=None) -> None:
-    spec = CANDIDATES[1]
+def search_round0(records, runs, offsets=None, candidate=1) -> None:
+    spec = CANDIDATES[candidate]
     for arm in ARMS:
         for label in LABELS:
-            for seed in SEEDS["search"][1]:
+            for seed in SEEDS["search"][candidate]:
                 k = spec["targets"][label] * math.exp((offsets or {}).get((arm, label), 0.0))
                 runs.run(arm, spec["start"][arm][label], seed, role="search", round_=0, k=k,
-                         prescribe=False, campaign="study3-c1-search-r0",
-                         head=named(records))  # fmt: skip
+                         prescribe=False, campaign=f"study3-c{candidate}-search-r0",
+                         candidate=candidate, head=named(records, 0, candidate))  # fmt: skip
+
+
+def numerical_runs(runs, candidate=1) -> None:
+    """The launcher runs of the candidate's numerical qualification, at its starting rates."""
+    spec = CANDIDATES[candidate]
+    for arm in ARMS:
+        for label in LABELS:
+            for seed in SEEDS["numerical"][candidate]:
+                runs.run(arm, spec["start"][arm][label], seed, role="numerical",
+                         candidate=candidate, prescribe=False,
+                         campaign=f"study3-c{candidate}-numerical",
+                         k=spec["targets"][label])  # fmt: skip
 
 
 def test_the_reader_reads_an_empty_study_at_its_first_step(worlds) -> None:
@@ -1774,12 +1969,157 @@ def test_the_reader_reads_a_closure_record_from_its_files(worlds, monkeypatch) -
             "state": "failed",
             "written_at": "2026-10-26T13:00:00Z",
             "code": CODE,
-            **{k: v for k, v in fields.items() if k != "reasons"},
+            **fields,  # exactly what the closure schema accepts
         },
     )
     result = read(records, runs, settings={})
     assert (result["stage"], result["outcome"]) == (
         "technical_feasibility_report", "technical_feasibility_report")  # fmt: skip
+
+
+def rates_reading(candidate, states=None) -> dict:
+    """A qualification reading of the candidate's starting rates (qualified unless ``states``
+    says: arm -> state)."""
+    out = reading()
+    for arm in ARMS:
+        for label in LABELS:
+            lr = CANDIDATES[candidate]["start"][arm][label]
+            key = f"{OPT[arm]}-{lr:g}"
+            state = (states or {}).get(arm, "qualified")
+            out["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
+                                 "state": state, "runs": [], "held": [],
+                                 "verdict": {"state": state, "control": None,
+                                             "not_counted": []}}  # fmt: skip
+    return out
+
+
+def test_each_candidates_qualification_is_read_under_its_own_code(worlds, monkeypatch) -> None:
+    """A cycle at candidate 2 (Y → Z): candidate 1's qualification stays read under Y, its own
+    runs' code, and candidate 2's under Z; the route reaches candidate 2's numerical stage, then
+    its validation."""
+    from zero_field_refusal.analysis import qualification_records
+
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    old, fix = CODE["gpu_code_sha256"], "9" * 64
+    search_round0(records, runs)
+    search_round0(records, runs, candidate=2)
+    cycle = runs.root / "qualification" / "c2" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True)
+    cycle.write_text(json.dumps({"candidate": 2, "supersession": 1, "diagnosis": "d", "fix": "f",
+                                 "old_gpu_code": {"sha256": old}, "fix_gpu_code": {"sha256": fix},
+                                 "held": [], "launchers": []}))  # fmt: skip
+    read_under: dict[int, str] = {}
+
+    def recording(root, candidate, *, expected_code, settings):
+        read_under[candidate] = expected_code
+        out = rates_reading(candidate, {"F": "failing"} if candidate == 1 else None)
+        under = {1: old, 2: fix}[candidate]  # the code its records were written under
+        if expected_code != under:
+            out["problems"] = [
+                f"c{candidate}/verdict.json: written under {under}, not {expected_code}"
+            ]
+        return out
+
+    monkeypatch.setattr(qualification_records, "read_qualification", recording)
+    result = read(records, runs, expected_code=fix, settings={})
+    assert read_under == {1: old, 2: fix}
+    assert (result["stage"], result["candidate"], result["problems"]) == ("numerical", 2, [])
+    assert result["step"]["campaign"] == "numerical"
+    numerical_runs(runs, candidate=2)
+    result = read(records, runs, expected_code=fix, settings={})
+    assert (result["stage"], result["candidate"], result["problems"]) == ("validation", 2, [])
+    assert result["step"]["campaign"] == "validation"
+
+
+# one selected rate per arm, as package 1's test world names its launcher runs (by optimizer)
+QUALIFIED = tuple(((OPT[arm], START[arm][label]), (10200, 10201, 10202))
+                  for arm, label in (("A", "l"), ("F", "u"), ("P", "l")))  # fmt: skip
+
+
+def test_the_reader_reads_a_real_qualification_through_its_engineering_cycle(
+    worlds, qualify, monkeypatch, tmp_path
+) -> None:
+    """Candidate 1's numerical qualification as package 1's ``qualify.py`` writes it, the
+    reading not replaced, one selected rate per arm (the others not yet issued): AdamW's lower
+    rate technical (its cycle in progress), F's upper rate failing on a scientific case. The
+    cycle moves the code; under the fix the re-qualified cases pass, and the case it kept whole
+    still fails F's rate, as the script's verdict has it: F fails, and candidate 2 follows."""
+    from test_qualification import CODE as RECORDS_CODE
+    from test_qualification_records import World as QualificationWorld
+    from test_qualification_records import beyond, qcase
+
+    from zero_field_refusal import code_identity
+
+    # the GPU codes as sha256 a decision record can carry: the records' (the launcher runs'
+    # commit abc123) and the fix's (this checkout's after the cycle)
+    old = {**RECORDS_CODE, "sha256": "e" * 64}
+    fix = {**RECORDS_CODE, "commit": "f" * 40, "sha256": "f" * 64}
+
+    def gpu_code(commit="HEAD", *args, **kwargs):
+        return dict(fix if commit == "HEAD" else old if commit == "abc123" else
+                    {**old, "sha256": "3" * 64})  # fmt: skip
+
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(old))
+    records, runs = worlds
+    code = {"commit": "a" * 40, "gpu_code_sha256": old["sha256"]}
+    records.write("engineering", records.engineering(code=code))
+    records.write("simulation", records.simulation(code=code))
+    search_round0(records, runs)
+    world = QualificationWorld(tmp_path, QUALIFIED)
+    kept = qcase(10201, "adam_frozen", START["F"]["u"])
+    broken = qcase(10200, "adamw", START["A"]["l"])
+    world.full(QUALIFIED, skip=(broken,), changes={kept: beyond("rest", "baseline~s3")},
+               code=old)  # a scientific case  # fmt: skip
+    world.qualified(broken, world.launch(broken), code=old,
+                    change=beyond("baseline", "launcher~baseline"))  # technical  # fmt: skip
+    cached = world.verdict(qualify)
+    result = read(records, runs, expected_code=old["sha256"])
+    assert result["problems"] == []
+    assert (result["stage"], result["step"]["kind"], result["step"]["technical"]) == (
+        "numerical", "blocked", True)  # fmt: skip
+    a_key, f_key = f"adamw-{START['A']['l']:g}", f"adam_frozen-{START['F']['u']:g}"
+    assert (cached["states"][a_key], cached["states"][f_key]) == ("not_qualified", "failing")
+    assert any(a_key in r for r in result["step"]["reasons"])
+    monkeypatch.setattr(code_identity, "gpu_code_identity", gpu_code)  # this checkout: the fix
+    world.command(qualify, "supersede", "--case", broken.name, "--record",
+                  str(world.folder(broken) / "baseline-attempt-1.json"),
+                  "--diagnosis", "d", "--fix", "f")  # fmt: skip
+    world.full(QUALIFIED, skip=(kept,), attempt=2, code=fix)  # the others re-qualify under the fix
+    cached = world.verdict(qualify)
+    assert cached["states"][f_key] == "failing" and cached["states"][a_key] == "qualified"
+    result = read(records, runs, expected_code=fix["sha256"])
+    assert result["problems"] == []
+    (move,) = [e for e in result["route"] if e["event"] == "candidate"]
+    assert (move["candidate"], move["stage"], move["arms"]) == (1, "numerical", ["F"])
+    assert f"{f_key}: failing" in move["why"]
+    assert (result["stage"], result["candidate"]) == ("search", 2)
+    stale = read(records, runs, expected_code=old["sha256"])  # not the chain's end
+    assert stale["step"]["kind"] == "blocked"
+    assert any("chain" in p for p in stale["problems"])
+
+
+def test_the_reader_reads_each_run_file_once(worlds, monkeypatch) -> None:
+    """The between-block guard calls the reader before every block: it derives the cells and
+    reads the run records under them from one snapshot."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs, {("F", "u"): 0.2})
+    opened: dict[str, int] = {}
+    real_open = builtins.open
+
+    def counting(file, *args, **kwargs):
+        if f"{os.sep}study3{os.sep}" in str(file) and "decisions" not in str(file):
+            opened[str(file)] = opened.get(str(file), 0) + 1
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    monkeypatch.setattr(io, "open", counting)
+    result = read(records, runs)
+    assert result["step"]["campaign"] == "search-round1"
+    assert opened and max(opened.values()) == 1, {k: v for k, v in opened.items() if v > 1}
 
 
 def test_the_reader_never_opens_responses_or_observations(worlds, monkeypatch) -> None:
