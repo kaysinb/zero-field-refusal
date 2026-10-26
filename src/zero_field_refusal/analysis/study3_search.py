@@ -2,8 +2,8 @@
 
 docs/study3-preregistration.md: "Candidates and rate search" ("Search", "Scientific repair"),
 "Failure routes" and amendment 1 (what K-only runs measure). The inputs are the ``Endpoint`` records
-of ``study3_records.read_endpoints`` and its refusals (``problems``); nothing here reads a file, a
-response, a harm label or a judge output.
+of ``study3_records.read_endpoints`` and its refusals (``problems``, a required argument of both
+functions); nothing here reads a file, a response, a harm label or a judge output.
 
 - ``CANDIDATES``, ``SLOPES``: the registered targets, starting rates and slopes.
 - ``adjusted_rate``: the rule's step, clipped and rounded.
@@ -37,11 +37,16 @@ out:
 A failed arm is ``failed`` even when another of its runs is technical. Two counting attempts of a
 cell cannot arise (``read_endpoints`` refuses them), and are ``technical`` here if they do.
 
-**Refusals block.** Any refusal of ``read_endpoints`` (the ``problems`` argument), and any endpoint
-of the candidate's search or repair step that matches none of the rule's cells (a rate that is not
-the starting or the adjusted rate, a round 1 for a kept rate, a seed outside the cell's seeds, a
-round 2), makes the state ``blocked`` with the problems named: ambiguous records are never read
-as if they were not.
+**Refusals block.** The state is ``blocked``, with the problems named and nothing computed, for:
+- any refusal of ``read_endpoints`` (the ``problems`` argument, however it is passed);
+- an endpoint of the candidate in state ``refused`` (its run id and reasons are named, whether or
+  not ``problems`` lists it), an endpoint with no candidate (a run directory with no start), and
+  an endpoint of the candidate in a state the reader does not define;
+- an endpoint of the candidate's search, numerical or repair step that cannot be assigned to an
+  arm, a rate and a seed (an unbound attempt: its fields are None), and one that matches none of
+  the rule's cells (a rate that is not the starting or the adjusted rate, a round 1 for a kept
+  rate, a seed outside the cell's seeds, a round 2, a repair run at another rate).
+Ambiguous records are never read as if they were not: a refused attempt is no missing cell.
 
 **What the search state says.** ``next`` is, in order: ``blocked`` (a refusal); ``failures`` (an
 arm is ``failed`` or ``technical``: the failure route, "Failure routes", comes before anything
@@ -68,6 +73,14 @@ rate by less than 2 % the repair is impossible and the old rate stays, for valid
   otherwise). Nothing is repaired again: the repaired rate's own median over its repair
   qualification's numerical seeds (the only seeds it runs on) is reported under ``second`` with
   ``missed``, and no further rate is derived from it.
+- *What the repair state says.* ``next`` is, in order: ``blocked``; ``repair`` (the runs of a
+  repaired rate's qualification are to be issued: some cell of the rate's ``c<N>/repair`` step has
+  no attempt); ``repair_pending`` (they are issued, and a run has not finished); ``undecided`` (an
+  arm has no decision: not qualified, a median missing, or no selected rates, ``unselected``;
+  ``undecided`` names each arm and why); ``repaired`` (every repaired rate's runs have finished:
+  ``second`` reports each one's median and miss, or the failure of a run, whose route is the
+  qualification's); ``none`` (no repair). An arm absent from ``selected`` is reported as
+  ``unselected``, never skipped.
 - *Where the rule is idle.* A miss above 0.05 moves the rate by at least 1 − e^(−0.05/1.30) ≈ 3.8 %
   before rounding and by at least 3.2 % after it, so the registered slopes never make a repair
   impossible; the 2 % test is kept as registered and is tested with a slope that would.
@@ -88,7 +101,7 @@ import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .study3_records import COUNTING, RATE_TOLERANCE, SEEDS, Endpoint, step_key
+from .study3_records import COUNTING, RATE_TOLERANCE, SEEDS, STATES, Endpoint, step_key
 
 ARM_ORDER = ("A", "F", "P")
 LABELS = ("l", "u")  # η_l targets K_l, η_u targets K_u
@@ -113,6 +126,7 @@ QUALIFIED = "qualified"  # the numerical qualification's rate state that passes 
 REPAIR_STEP = "repair"
 # a round's or a cell's state, worst first
 ROUND_STATES = ("scientific", "technical", "pending", "missing", "usable")
+REPAIRED_STEPS = ("search", "numerical")  # the steps whose runs enter a repaired rate's median
 
 
 def adjusted_rate(rate: float, median_ln_k: float, target: float, slope: float) -> float:
@@ -126,16 +140,21 @@ def adjusted_rate(rate: float, median_ln_k: float, target: float, slope: float) 
 def search_state(
     endpoints: Iterable[Endpoint],
     candidate: int,
-    problems: Sequence[str] = (),
+    *,
+    problems: Sequence[str],
 ) -> dict[str, Any]:
     """The candidate's search (module docstring): ``arms`` (per arm its ``status``: ``failed``,
     ``technical``, ``pending``, ``round0``, ``round1`` or ``ready``; its ``targets`` ``l`` and
     ``u``, each with its starting rate, ``round0`` (rate, runs, cells, ``median_ln_k``, ``miss``),
     ``decision`` (``kept``, or the round-1 rate), ``round1``, ``selected_rate`` and ``complete``;
     the ``failed`` and ``technical`` runs), the ``selected`` rates of the ready arms, the
-    ``failures`` (arm → status) and ``next``. ``problems``: the refusals of ``read_endpoints``."""
+    ``failures`` (arm → status) and ``next``. ``problems``: the refusals of ``read_endpoints``
+    (required: pass ``()`` only for records that had none)."""
     spec = _spec(candidate)
     seeds = SEEDS["search"][candidate]
+    endpoints = list(endpoints)
+    if blockers := _blockers(endpoints, candidate, problems):
+        return _blocked(candidate, blockers)
     mine = [e for e in endpoints if e.candidate == candidate and e.cell.step == "search"]
     arms: dict[str, Any] = {}
     claimed: set[str] = set()
@@ -148,10 +167,10 @@ def search_state(
         technical = tuple(e for r in rounds for e in r["technical"])
         arms[arm] = {"status": _search_status(targets, failed, technical), "targets": targets,
                      "failed": failed, "technical": technical}  # fmt: skip
-    stray = [f"{e.run_id}: a search run outside the rule's cells ({e.cell.key}, {e.arm}, "
-             f"{e.lr:g}, seed {e.seed})" for e in mine if e.run_id not in claimed]  # fmt: skip
-    if problems or stray:
-        return _blocked(candidate, [*problems, *stray])
+    stray = [f"{e.run_id}: a search run {_why_stray(e)} ({_cell_name(e)})"
+             for e in mine if e.run_id not in claimed]  # fmt: skip
+    if stray:
+        return _blocked(candidate, stray)
     failures = {
         arm: a["status"] for arm, a in arms.items() if a["status"] in ("failed", "technical")
     }
@@ -172,7 +191,8 @@ def repair_state(
     candidate: int,
     selected: Mapping[str, Mapping[str, float]],
     qualified: Mapping[str, Mapping[float, str]],
-    problems: Sequence[str] = (),
+    *,
+    problems: Sequence[str],
 ) -> dict[str, Any]:
     """The scientific repair of a candidate's arms (module docstring). ``selected``: arm → ``l`` /
     ``u`` → the search's selected rate (``search_state``'s ``selected``); ``qualified``: arm →
@@ -182,18 +202,24 @@ def repair_state(
     numerical runs, ``miss``, ``missed``, ``repaired_rate``, ``change``, ``impossible``,
     ``action``: ``none``, ``repair``, ``impossible`` or ``incomplete``, and for a repair
     ``second``: the repaired rate's own median and miss, reported and never repaired) and
-    ``repairs`` (label → repaired rate). ``next``: ``blocked``, ``repair``, ``undecided`` (an arm
-    without a decision) or ``none``."""
+    ``repairs`` (label → repaired rate); an arm absent from ``selected`` is ``unselected``.
+    ``undecided``: arm → status of each arm without a decision. ``next``: ``blocked``,
+    ``repair``, ``repair_pending``, ``undecided``, ``repaired`` or ``none`` (module docstring).
+    ``problems``: the refusals of ``read_endpoints`` (required)."""
     spec = _spec(candidate)
     for arm, rates in selected.items():
         if arm not in ARM_ORDER or set(rates) != set(LABELS):
             raise ValueError(f"selected rates of {arm!r} must name arms {ARM_ORDER} and rates "
                              f"{LABELS}")  # fmt: skip
+    endpoints = list(endpoints)
+    if blockers := _blockers(endpoints, candidate, problems):
+        return _blocked(candidate, blockers)
     mine = [e for e in endpoints if e.candidate == candidate]
     arms: dict[str, Any] = {}
     claimed: set[str] = set()
     for arm in ARM_ORDER:
         if arm not in selected:
+            arms[arm] = {"status": "unselected", "rates": {}, "repairs": {}}
             continue
         states = {label: _lookup(qualified.get(arm, {}), selected[arm][label]) or "not reported"
                   for label in LABELS}  # fmt: skip
@@ -208,16 +234,25 @@ def repair_state(
         repairs = {label: r["repaired_rate"] for label, r in rates.items()
                    if r["action"] == "repair" and status != "incomplete"}  # fmt: skip
         arms[arm] = {"status": status, "rates": rates, "repairs": repairs}
-    stray = [f"{e.run_id}: a repair run outside the repaired rates' cells ({e.arm}, {e.lr:g}, "
-             f"seed {e.seed})" for e in mine
-             if e.cell.step == REPAIR_STEP and e.run_id not in claimed]  # fmt: skip
-    if problems or stray:
-        return _blocked(candidate, [*problems, *stray])
+    stray = [f"{e.run_id}: a {e.cell.step} run {_why_stray(e)} ({_cell_name(e)})"
+             for e in mine if _repair_stray(e, claimed)]  # fmt: skip
+    if stray:
+        return _blocked(candidate, stray)
     repairs = {arm: a["repairs"] for arm, a in arms.items() if a["repairs"]}
-    undecided = any(a["status"] in ("not_qualified", "incomplete") for a in arms.values())
-    following = "repair" if repairs else "undecided" if undecided else "none"
+    undecided = {arm: a["status"] for arm, a in arms.items()
+                 if a["status"] in ("not_qualified", "incomplete", "unselected")}  # fmt: skip
+    seconds = [r["second"] for a in arms.values() for r in a["rates"].values()
+               if r["action"] == "repair" and a["repairs"]]  # fmt: skip
+    if any(second["missing"] for second in seconds):
+        following = "repair"
+    elif any(second["pending"] for second in seconds):
+        following = "repair_pending"
+    elif undecided:
+        following = "undecided"
+    else:
+        following = "repaired" if seconds else "none"
     return {"candidate": candidate, "problems": [], "arms": arms, "repairs": repairs,
-            "next": following}  # fmt: skip
+            "undecided": undecided, "next": following}  # fmt: skip
 
 
 # ------------------------------------------------------------------ the search
@@ -232,7 +267,47 @@ def _spec(candidate: int) -> dict[str, Any]:
 def _blocked(candidate: int, problems: Sequence[str]) -> dict[str, Any]:
     """The state of records with a refusal: nothing is computed from them."""
     return {"candidate": candidate, "problems": list(problems), "arms": {}, "selected": {},
-            "failures": {}, "repairs": {}, "next": "blocked"}  # fmt: skip
+            "failures": {}, "repairs": {}, "undecided": {}, "next": "blocked"}  # fmt: skip
+
+
+def _blockers(endpoints: Sequence[Endpoint], candidate: int, problems: Sequence[str]) -> list[str]:
+    """Why the records cannot be read (module docstring, "Refusals block"): the reader's refusals,
+    and the endpoints of this candidate that are refused, have no candidate or are in a state the
+    reader does not define, each named by its run id (once, when ``problems`` names it too)."""
+    out = [*problems]
+    named = {problem.split(":", 1)[0] for problem in problems}
+    for e in endpoints:
+        if e.candidate not in (None, candidate) or e.run_id in named:
+            continue
+        if e.state == "refused":
+            out.append(f"{e.run_id}: refused: {'; '.join(e.reasons) or 'no reason recorded'}")
+        elif e.candidate is None:
+            out.append(f"{e.run_id}: an attempt that no candidate owns")
+        elif e.state not in STATES:
+            out.append(f"{e.run_id}: a state the reader does not define ({e.state!r})")
+    return out
+
+
+def _unassigned(e: Endpoint) -> bool:
+    """Whether an endpoint cannot be assigned to an arm, a rate and a seed (an unbound attempt)."""
+    return e.arm is None or e.lr is None or e.seed is None
+
+
+def _repair_stray(e: Endpoint, claimed: set[str]) -> bool:
+    """Whether an endpoint of the repair's inputs has no cell: it is bound to no arm, rate and
+    seed, or it is a repair run no repaired rate's cells claim."""
+    if e.cell.step not in (*REPAIRED_STEPS, REPAIR_STEP):
+        return False
+    return _unassigned(e) or (e.cell.step == REPAIR_STEP and e.run_id not in claimed)
+
+
+def _why_stray(e: Endpoint) -> str:
+    return "bound to no arm, rate and seed" if _unassigned(e) else "outside the rule's cells"
+
+
+def _cell_name(e: Endpoint) -> str:
+    rate = "no rate" if e.lr is None else f"{e.lr:g}"
+    return f"{e.cell.key}, arm {e.arm}, rate {rate}, seed {e.seed}"
 
 
 def _search_target(mine: Sequence[Endpoint], candidate: int, spec: Mapping[str, Any], arm: str,
@@ -321,8 +396,8 @@ def _lookup(states: Mapping[float, str], rate: float) -> str | None:
 # ------------------------------------------------------------------ rounds and cells
 
 
-def _same(a: float, b: float) -> bool:
-    return math.isclose(a, b, rel_tol=RATE_TOLERANCE)
+def _same(a: float | None, b: float | None) -> bool:
+    return a is not None and b is not None and math.isclose(a, b, rel_tol=RATE_TOLERANCE)
 
 
 def _round(endpoints: Sequence[Endpoint], keys: tuple[str, ...], arm: str, rate: float,
@@ -334,7 +409,7 @@ def _round(endpoints: Sequence[Endpoint], keys: tuple[str, ...], arm: str, rate:
     never computed)."""
     runs = sorted((e for e in endpoints if e.cell.key in keys and e.arm == arm
                    and _same(e.lr, rate) and e.seed in seeds),
-                  key=lambda e: (e.seed, e.attempt, e.run_id))  # fmt: skip
+                  key=lambda e: (e.seed, e.attempt or 0, e.run_id))  # fmt: skip
     cells: dict[int, str] = {}
     deciding: dict[str, list[Endpoint]] = {"scientific": [], "technical": []}
     waiting: list[int] = []
