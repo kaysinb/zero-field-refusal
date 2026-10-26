@@ -1068,6 +1068,12 @@ def unparseable_config(world, run_id) -> None:
     (world.root / "study3" / run_id / "config.yaml").write_text("seed: [10300\n")
 
 
+def diverged(world, run_id) -> None:
+    """The run's meta.json as the tracker finalizes a diverged run."""
+    path = world.root / "study3" / run_id / "meta.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "status": "diverged"}))
+
+
 # the run as the launcher finds it (its records, the check's problem, a change) → the reader's
 # state before the end, the end's outcome, the reader's state after it
 SETTLED = {
@@ -1076,9 +1082,20 @@ SETTLED = {
                         "scientific"),
     "records the check refuses": ({}, "a response file is cut short", None, "pending",
                                   "conflict", "technical"),
+    # A known divergence: the reader calls the run technical before the launcher's end (it
+    # cannot read the run's config), while the launcher still finds the start open
     "a config.yaml that does not parse": ({}, None, unparseable_config, "technical", "conflict",
                                           "technical"),
     "no run directory": ({"directory": False}, None, None, "pending", "technical", "technical"),
+    # diverged: meta.json says so and the launcher cannot take its records as published (its
+    # check refuses them, or there is no terminal record); the reader then reads the numbers
+    "diverged, its records published": ({"stop": "nonfinite_loss", "steps": 7},
+                                        "a response file is cut short", diverged, "pending",
+                                        "diverged", "scientific"),
+    # The same known divergence: meta.json recorded the run finished without its outcome, so the
+    # reader calls it technical before the launcher's end
+    "diverged, no terminal record": ({"terminal": False}, None, diverged, "technical",
+                                     "diverged", "technical"),
 }  # fmt: skip
 
 
@@ -1086,11 +1103,13 @@ SETTLED = {
 def test_the_launchers_settled_end_decides_as_the_reader_reads_it(world, monkeypatch, found):
     """A start without its end (the launcher died while its child ran, or after the child
     published): the reader waits (pending), as the launcher finds that start open
-    (``open_start``), unless it cannot read the run's config (technical whatever the end). Run
+    (``open_start``), unless it cannot read the run's config or meta.json recorded the run
+    finished without its outcome (technical whatever the end: a known divergence). Run
     once more, the launcher writes the settled end, in another campaign's log, with the outcome
-    its run directory gives; the reader then reads the run by that end: a done run by its records
-    (usable, or scientific for a declared stop), a conflict (records the launcher's check
-    refuses, a config.yaml that does not parse) or a run with no directory as technical."""
+    its run directory gives; the reader then reads the run by that end: a done or diverged run by
+    its records (usable, or scientific for a declared stop; technical without a terminal record),
+    a conflict (records the launcher's check refuses, a config.yaml that does not parse) or a run
+    with no directory as technical."""
     records, problem, change, before, outcome, state = SETTLED[found]
     run_id = world.run(campaign="z-c", end=None, **records)
     if records.get("directory", True):
@@ -1169,7 +1188,7 @@ def test_a_hold_is_listed_for_its_label_whatever_its_config_hash(world) -> None:
     def sha(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    line = hashlib.sha256(log.read_text().splitlines()[0].encode()).hexdigest()
+    line = hashlib.sha256(log.read_bytes().split(b"\n")[0]).hexdigest()  # the log's own bytes
     assert hold["records"] == [
         {"kind": "journal", "path": "launch/a-cycle.jsonl", "root": "runs", "line": 1,
          "line_sha256": line, "sha256": sha(log)},

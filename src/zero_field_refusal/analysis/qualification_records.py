@@ -87,8 +87,10 @@ script would raise, the record is named and left out); a supersession record wit
 diagnosis, fix, old record (path and sha256) or cases re-qualified ("Voiding and supersession":
 it still voids what it names, as the script reads it); a start of the qualification refused or
 that cannot be bound to its case, starts of one label bound to different cases, two issued runs
-(labels) of one case, a cell whose config this checkout's configs cannot compose, and a case
-record no issued start names; and every disagreement with the cache: a rate's state, the cache
+(labels) of one case, a cell whose config this checkout's configs cannot compose, a case record
+no issued start names, and a record that may hold a run (a launch log, the candidate's
+supersession record) that ``read_holds`` cannot read; and every disagreement with the cache: a
+rate's state, the cache
 written for another candidate or stage, under another GPU code or other settings than expected.
 The states are always the recomputation's.
 
@@ -120,7 +122,6 @@ from typing import Any
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from ..config import config_hash
-from ..protocol import load_run_config
 from ..qualification_constants import (
     FAILING,
     INCOMPLETE,
@@ -131,7 +132,7 @@ from ..qualification_constants import (
     record_sha256,
 )
 from . import qualification_verdicts as verdicts
-from .study3_records import ARMS, RATE_TOLERANCE, read_holds
+from .study3_records import ARMS, RATE_TOLERANCE, _command_config, read_holds
 from .study3_records import _config as _start_config
 
 STAGE = "numerical"  # the stage folder of the numerical qualification, c<N>/numerical/
@@ -381,12 +382,12 @@ class _Issued:
 
 
 def _journal(root: Path, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
-    """Every record of every launch log, with its campaign; a line cut short by a crash is
-    skipped (the launcher's rule)."""
+    """Every record of every launch log (UTF-8, as ``study3_records`` reads it), with its
+    campaign; a line cut short by a crash is skipped (the launcher's rule)."""
     records = []
     for log in sorted((root / "launch").glob("*.jsonl")):
         try:
-            lines = log.read_text().splitlines()
+            lines = log.read_text(encoding="utf-8").splitlines()
         except (OSError, ValueError):
             problems.append(f"{log}: an unreadable launch journal")
             continue
@@ -416,15 +417,6 @@ def _attempt_key(record: Mapping[str, Any]) -> tuple[int, str]:
     attempt = record.get("attempt")
     number = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else -1
     return number, str(record.get("time") or "")
-
-
-def _composed_hash(command: Any) -> str:
-    """The config hash a journal start's command (script, config, overrides) gives under this
-    checkout's configs, as ``launch.load_campaign`` composes a cell; raises when it does not."""
-    if not (isinstance(command, list) and len(command) >= 2
-            and all(isinstance(c, str) for c in command)):  # fmt: skip
-        raise ValueError("its start records no command")
-    return config_hash(load_run_config(command[1], command[2:]))
 
 
 def _named(run: _Issued) -> str:
@@ -490,7 +482,7 @@ def _issued(
             continue
         run.optimizer, run.lr, run.seed = optimizer, float(lr), seed
         try:  # the campaign's cell now: its latest start's command under this checkout
-            run.config_hash = _composed_hash(run.starts[-1].get("command"))
+            run.config_hash = config_hash(_command_config(run.starts[-1].get("command")))
         except Exception as exc:  # nothing to locate under: the verdict could not run either
             problems.append(f"{_named(run)}: its latest start's command does not compose under "
                             f"this checkout's configs ({type(exc).__name__}): its launcher run "
@@ -903,7 +895,8 @@ def read_qualification(
     journal = _journal(root, problems)
     issued = _issued(root, journal, candidate, problems)
     superseded_lines = _named_runs(journal, "superseded")
-    holds, _ = read_holds(root)  # an unreadable log or cycle record: named by the reading's own
+    holds, unreadable = read_holds(root)
+    problems += _hold_problems(root, candidate, unreadable)
     reading.read([(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None])
     cache = _cache(reading.candidate_dir / VERDICT, problems)
     order: list[tuple[str, float]] = []
@@ -1024,6 +1017,19 @@ def _held(
                      "reason": hold["reason"], "case": case, "sources": sources,
                      "records": records})  # fmt: skip
     return held
+
+
+def _hold_problems(root: Path, candidate: int, unreadable: Sequence[str]) -> list[str]:
+    """The records ``read_holds`` could not read that may hold a run of the candidate's
+    qualification (any launch log, the candidate's supersession records), named as the reading
+    names its own unreadable records, so that one record is one problem: a hold it holds would
+    otherwise be missing from ``held`` without a word."""
+    out = []
+    for problem in unreadable:
+        where, _, what = problem.partition(": ")
+        if where.startswith(("launch/", f"qualification/c{candidate}/")):
+            out.append(f"{root / where}: {what}")
+    return out
 
 
 def _holds(hold: Mapping[str, Any], run: _Issued) -> bool:

@@ -660,12 +660,8 @@ def _config(run_dir: Path, start: Mapping[str, Any], chash: str | None) -> tuple
                 return None, None, (f"its config.yaml's config hash {found!r} is not its cell's "
                                     f"{chash!r}")  # fmt: skip
             return cfg, None, None
-    command = start.get("command")
     try:
-        if not (isinstance(command, list) and len(command) >= 2
-                and all(isinstance(c, str) for c in command)):  # fmt: skip
-            raise ValueError("no command")
-        cfg = load_run_config(command[1], command[2:])
+        cfg = _command_config(start.get("command"))
         found = config_hash(cfg)
     except Exception as exc:  # no config to bind it under this checkout's configs
         why = f"its start's command gives no config hash ({type(exc).__name__})"
@@ -674,6 +670,16 @@ def _config(run_dir: Path, start: Mapping[str, Any], chash: str | None) -> tuple
             return cfg, unreadable, None
         why = f"its start's command gives the config hash {found!r}, not its cell's {chash!r}"
     return None, f"{unreadable or 'no config.yaml'}, and {why}", None
+
+
+def _command_config(command: Any) -> Any:
+    """The config a journal start's command (the script, the config's name, its overrides)
+    composes under this checkout's configs, as the launcher composes a campaign's cell; raises
+    ``ValueError`` for what is no command, and whatever the composition raises."""
+    if not (isinstance(command, list) and len(command) >= 2
+            and all(isinstance(c, str) for c in command)):  # fmt: skip
+        raise ValueError("no command")
+    return load_run_config(command[1], command[2:])
 
 
 def _text(value: Any) -> str | None:

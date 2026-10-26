@@ -542,9 +542,10 @@ def test_a_held_run(qualify, monkeypatch, tmp_path, missing) -> None:
     cycle_path = world.out / "c1" / "supersede-1.json"
     assert held["sources"] == [f"journal {world.name}", str(cycle_path)]
     log = world.root / "launch" / f"{world.name}.jsonl"
-    lines = log.read_text().splitlines()
-    (number,) = [n for n, line in enumerate(lines, start=1) if json.loads(line)["event"] == "held"]
-    line_sha256 = hashlib.sha256(lines[number - 1].encode()).hexdigest()
+    lines = log.read_bytes().split(b"\n")  # the log's own bytes, line by line
+    (number,) = [n for n, line in enumerate(lines, start=1)
+                 if line and json.loads(line)["event"] == "held"]  # fmt: skip
+    line_sha256 = hashlib.sha256(lines[number - 1]).hexdigest()
     assert held["records"] == [
         {"kind": "journal", "path": f"launch/{world.name}.jsonl", "root": "runs",
          "line": number, "line_sha256": line_sha256, "sha256": file_sha256(log)},
@@ -743,6 +744,77 @@ def test_a_hold_under_an_earlier_config_hash_holds_its_label(qualify, monkeypatc
     assert holds[0]["records"] == held["records"]
     for record in held["records"]:
         assert record["sha256"] == file_sha256(world.root / record["path"])
+
+
+def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """A record that holds a run and cannot be read is a problem naming it, once, whichever
+    reader finds it so (the reading's own, ``read_holds``): never a hold silently missing from
+    ``held``. The candidate's supersession record cut short: the hold is listed from its journal
+    line alone, beside the problem. Then the launch log that holds the line, its bytes not UTF-8:
+    no hold is listed, beside the problem. Another candidate's cycle record that cannot be read is
+    not this candidate's problem; a log that only ``read_holds`` reports is."""
+    no_commit = UNRESOLVABLE["no commit"][0]
+    world, identity, _ = cycle_on_a_stop(qualify, monkeypatch, tmp_path, no_commit)
+    cycle = world.out / "c1" / "supersede-1.json"
+    other = world.out / "c2" / "supersede-1.json"
+    other.parent.mkdir()
+    corrupt(other)
+    corrupt(cycle)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert [p for p in reading["problems"] if "supersede-1.json" in p] == [
+        f"{cycle}: an unreadable supersession record"]  # fmt: skip
+    (held,) = reading["held"]
+    assert held["run_id"] == identity["run_id"]
+    assert [r["kind"] for r in held["records"]] == ["journal"]
+    log = world.root / "launch" / f"{world.name}.jsonl"
+    log.write_bytes(log.read_bytes() + b"\xff\xfe\n")
+    reading = world.read(expected_code=FIX["sha256"])
+    assert [p for p in reading["problems"] if str(log) in p] == [
+        f"{log}: an unreadable launch journal"]  # fmt: skip
+    assert reading["held"] == []
+    assert not [p for p in reading["problems"] if "c2" in p]
+    found = qr.read_holds  # a log only read_holds failed on: still the reading's problem
+
+    def failing(root):
+        holds, problems = found(root)
+        return holds, [*problems, "launch/z-only.jsonl: an unreadable launch journal"]
+
+    monkeypatch.setattr(qr, "read_holds", failing)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert f"{world.root / 'launch' / 'z-only.jsonl'}: an unreadable launch journal" in (
+        reading["problems"])  # fmt: skip
+
+
+def test_a_hold_applies_to_its_label_whatever_run_id_it_names(qualify, tmp_path) -> None:
+    """A ``held`` line names FA's 10201 label with a run id that no start of it names and another
+    config hash: the hold applies to the label (``launch.held_runs``), so the reading lists it for
+    the rate and the label, the issued run's attempts unchanged, and ``complete`` exits HELD for
+    the case. The verdict reads no hold; the reading's states are its, both rates qualified."""
+    world = World(tmp_path)
+    world.full()
+    case = qcase(10201, "adam_frozen", FA_LR)
+    run = world.run(case)
+    elsewhere = dataclasses.replace(run, config_hash="0" * 12)
+    launcher.hold(world.root, "a-other", elsewhere, "r-unstarted", reason="unresolved elsewhere",
+                  record="qualification/c1/supersede-1.json")  # fmt: skip
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {FA_KEY: "qualified", ADAMW_KEY: "qualified"}
+    held_now = launcher.held_runs(run, launcher.launch_records(world.root))
+    assert held_now == {"r-unstarted": "unresolved elsewhere"}
+    (listed,) = [r for r in reading["rates"][FA_KEY]["runs"] if r["seed"] == case.seed]
+    assert listed["held"] == held_now and "r-unstarted" not in listed["run_ids"]
+    (held,) = reading["rates"][FA_KEY]["held"]
+    assert (held["run_id"], held["config_hash"], held["case"]) == (
+        "r-unstarted", "0" * 12,
+        {"arm": "F", "optimizer": "adam_frozen", "lr": FA_LR, "seed": 10201})  # fmt: skip
+    assert reading["rates"][ADAMW_KEY]["held"] == []
+    with pytest.raises(SystemExit) as stop:
+        world.command(qualify, "complete", "--case", case.name)
+    assert stop.value.code == qualify.HELD
 
 
 # ------------------------------------------------------------------ the cache
