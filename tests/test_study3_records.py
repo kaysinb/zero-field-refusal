@@ -3,9 +3,12 @@ built as the launcher, ``schedule.run_scheduled`` and the qualification commands
 launch journal, the run directories (configs loaded from the study-3 experiment configs and
 hashed as the launcher does) and the restart and supersession records. Every regular run also
 holds a harmful-response file and an observations file with a sentinel text; the reader opens
-neither."""
+neither. Where package 1's launcher (``launch.run_campaign``, ``open_start``, ``label_starts``,
+``held_runs``) reads or settles the same journal, the reader agrees with it."""
 
 import builtins
+import contextlib
+import hashlib
 import io
 import itertools
 import json
@@ -21,12 +24,15 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
+from zero_field_refusal import launch
+from zero_field_refusal.analysis.stage_a import TrajectoryError
 from zero_field_refusal.analysis.study3_records import (
     INSTABILITY,
     ROLES,
     SEEDS,
     candidate_of,
     read_endpoints,
+    read_holds,
     read_theta0,
     step_key,
 )
@@ -989,9 +995,14 @@ def test_the_reader_never_opens_responses_or_observations(world, monkeypatch) ->
     world.run("A", 1.45e-5, 10120, role="validation")  # refused: outside its role's seeds
     broken = world.run("A", 1.45e-5, 10301)
     (world.root / "study3" / broken / "terminal.json").write_text("{")
+    world.log("study3-c1", {"event": "held", "run": "F-1.3e-05/s10300", "run_id": "h",
+                            "experiment": "study3", "config_hash": "x", "reason": "unresolved",
+                            "record": "supersede-1.json"})  # fmt: skip
     sealed = seal(monkeypatch)
     found, problems = world.read()
-    assert sealed == []
+    holds, unreadable = read_holds(world.root)
+    assert sealed == [] and unreadable == [] and [h["run_id"] for h in holds] == ["h"]
+    assert SENTINEL not in repr(holds)
     assert len(found) == 9 and len(problems) == 1
     assert sorted(e.state for e in found) == sorted(
         ["usable", "unusable", "scientific", "pending", "technical", "technical", "usable",
@@ -1000,6 +1011,180 @@ def test_the_reader_never_opens_responses_or_observations(world, monkeypatch) ->
     # the guard is live: a sealed file cannot be read under it
     with pytest.raises(AssertionError):
         next((world.root / "study3").glob("*/responses/*.jsonl")).read_text()
+
+
+# ------------------------------------------------------------------ the launcher's own reading
+
+
+def launcher_run(world, arm="A", lr=1.45e-5, seed=10300, role="validation") -> launch.Run:
+    """The launcher's run of the cell ``World.run`` issues (its campaign file: the same config and
+    overrides, so the same label and config hash)."""
+    path = world.root.parent / f"campaign-{arm}-{lr:g}-{seed}.yaml"
+    config = "experiments/study3_k_only" if role in K_ONLY else "experiments/study3"
+    path.write_text(f"name: c\ncells:\n  - name: {arm}-{lr:g}\n    config: {config}\n"
+                    f"    overrides: [optimizer={OPTIMIZER[arm]}, optimizer.lr={lr}, "
+                    f"study3.role={role}]\n    seeds: [{seed}]\n")  # fmt: skip
+    _, (run,) = launch.load_campaign(path)
+    return run
+
+
+def from_a_clean_commit(world, run_id) -> None:
+    """The run's meta.json as the tracker writes it from a clean checkout (the study-3 configs
+    require one)."""
+    path = world.root / "study3" / run_id / "meta.json"
+    meta = json.loads(path.read_text())
+    path.write_text(json.dumps({**meta, "git": {"commit": "abc123", "dirty": False}}))
+
+
+def structural_check(monkeypatch, problem=None) -> None:
+    """The launcher's structural check of a scheduled run's records (``stage_a.load_trajectory``,
+    responses included, which the reader never repeats): it passes, or raises ``problem``."""
+
+    def check(run_dir):
+        if problem is not None:
+            raise TrajectoryError(problem)
+
+    monkeypatch.setattr(launch, "load_trajectory", check)
+
+
+def settle(world, run, campaign="a-later") -> dict:
+    """Package 1's launcher run once more under ``--only`` with one attempt, as the
+    qualification driver runs it, in a campaign whose log sorts before the start's: it settles
+    the start it finds without an end, then skips the run, refuses it, or finds it exhausted;
+    nothing is executed. Returns the end it wrote."""
+
+    def execute(*args):
+        raise AssertionError("an attempt was started")
+
+    with contextlib.suppress(launch.CampaignError):  # a conflict: raised after the end is written
+        launch.run_campaign(campaign, [run], world.root, execute=execute, only=run.label,
+                            max_attempts=1)  # fmt: skip
+    log = world.root / "launch" / f"{campaign}.jsonl"
+    (end,) = [json.loads(line) for line in log.read_text().splitlines()]
+    return end
+
+
+def unparseable_config(world, run_id) -> None:
+    (world.root / "study3" / run_id / "config.yaml").write_text("seed: [10300\n")
+
+
+# the run as the launcher finds it (its records, the check's problem, a change) → the reader's
+# state before the end, the end's outcome, the reader's state after it
+SETTLED = {
+    "whole": ({}, None, None, "pending", "done", "usable"),
+    "a declared stop": ({"stop": "gradient_spike", "steps": 12}, None, None, "pending", "done",
+                        "scientific"),
+    "records the check refuses": ({}, "a response file is cut short", None, "pending",
+                                  "conflict", "technical"),
+    "a config.yaml that does not parse": ({}, None, unparseable_config, "technical", "conflict",
+                                          "technical"),
+    "no run directory": ({"directory": False}, None, None, "pending", "technical", "technical"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("found", list(SETTLED))
+def test_the_launchers_settled_end_decides_as_the_reader_reads_it(world, monkeypatch, found):
+    """A start without its end (the launcher died while its child ran, or after the child
+    published): the reader waits (pending), as the launcher finds that start open
+    (``open_start``), unless it cannot read the run's config (technical whatever the end). Run
+    once more, the launcher writes the settled end, in another campaign's log, with the outcome
+    its run directory gives; the reader then reads the run by that end: a done run by its records
+    (usable, or scientific for a declared stop), a conflict (records the launcher's check
+    refuses, a config.yaml that does not parse) or a run with no directory as technical."""
+    records, problem, change, before, outcome, state = SETTLED[found]
+    run_id = world.run(campaign="z-c", end=None, **records)
+    if records.get("directory", True):
+        from_a_clean_commit(world, run_id)
+    if change is not None:
+        change(world, run_id)
+    structural_check(monkeypatch, problem)
+    run = launcher_run(world)
+    assert launch.open_start(run, launch.launch_records(world.root))["run_id"] == run_id
+    [e], problems = world.read()
+    assert (e.run_id, e.state, problems) == (run_id, before, [])
+    end = settle(world, run)
+    assert (end["run_id"], end["attempt"], end["settled"], end["outcome"]) == (
+        run_id, 1, True, outcome)  # fmt: skip
+    assert launch.open_start(run, launch.launch_records(world.root)) is None
+    [e], problems = world.read()
+    assert (e.state, problems) == (state, [])
+
+
+@pytest.mark.parametrize("original, again", [("z-original", "a-recovery"),
+                                             ("a-original", "z-recovery")])  # fmt: skip
+def test_attempts_in_two_logs_are_ordered_and_ended_as_the_launcher_orders_them(
+    world, monkeypatch, original, again
+) -> None:
+    """Attempt 1 ended technical in one log; the recovery round and attempt 2, published but not
+    ended, in another, whichever sorts first. The reader orders the label's attempts as the
+    launcher does (``label_starts``: by number, then time) and waits for the one it finds open
+    (``open_start``, the latest no end names by run id); once the launcher settles that one, in a
+    third log, the reader reads it, the first recovered."""
+    first = world.run(campaign=original, end="technical", terminal=False, status="failed")
+    world.recovery(again, LABEL)
+    second = world.run(campaign=again, attempt=2, end=None)
+    from_a_clean_commit(world, second)
+    structural_check(monkeypatch)
+    run = launcher_run(world)
+    records = launch.launch_records(world.root)
+    found, problems = world.read()
+    assert problems == []
+    assert [e.run_id for e in found] == [r["run_id"] for r in launch.label_starts(run, records)]
+    assert [e.run_id for e in found] == [first, second]
+    assert launch.open_start(run, records)["run_id"] == second
+    assert states(found) == {first: "recovered", second: "pending"}
+    end = settle(world, run, campaign="m-settle")
+    assert (end["run_id"], end["attempt"], end["outcome"]) == (second, 2, "done")
+    found, problems = world.read()
+    assert (states(found), problems) == ({first: "recovered", second: "usable"}, [])
+
+
+def test_a_hold_is_listed_for_its_label_whatever_its_config_hash(world) -> None:
+    """A run held under the config hash it was issued with (the launcher's ``hold``, and the
+    cycle's supersession record naming it), its cell's config hash since another: the launcher
+    refuses the label under its hash now (``held_runs``), and ``read_holds`` lists the hold for
+    that label, with each record that holds it and its sha256; the attempt itself is held."""
+    held = world.run("F", 1.3e-5, 10200, role="numerical", stop="gradient_spike", steps=3,
+                     campaign="z-c")  # fmt: skip
+    run = launcher_run(world, "F", 1.3e-5, 10200, role="numerical")
+    earlier = launch.Run(run.cell, run.entry, run.config, run.overrides, run.seed,
+                         run.experiment, "0" * 12)  # fmt: skip
+    cycle = world.root / "qualification" / "c1" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True)
+    cycle.write_text(json.dumps({"candidate": 1, "held": [
+        {"run_id": held, "campaign": "z-c", "run": run.label, "experiment": "study3",
+         "config_hash": "0" * 12, "reason": "no recorded commit"}]}))  # fmt: skip
+    launch.hold(world.root, "a-cycle", earlier, held, reason="no recorded commit",
+                record=str(cycle))  # fmt: skip
+    (world.root / "launch" / "b-cut.jsonl").write_text('{"event": "held", "run_id": "x", "run')
+    holds, problems = read_holds(world.root)
+    assert problems == []
+    assert {h["run_id"]: h["reason"] for h in holds} == launch.held_runs(
+        run, launch.launch_records(world.root))  # fmt: skip
+    (hold,) = holds
+    assert (hold["run"], hold["experiment"], hold["config_hash"]) == (run.label, "study3",
+                                                                      "0" * 12)  # fmt: skip
+    log = world.root / "launch" / "a-cycle.jsonl"
+
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    line = hashlib.sha256(log.read_text().splitlines()[0].encode()).hexdigest()
+    assert hold["records"] == [
+        {"kind": "journal", "path": "launch/a-cycle.jsonl", "root": "runs", "line": 1,
+         "line_sha256": line, "sha256": sha(log)},
+        {"kind": "supersession", "path": "qualification/c1/supersede-1.json", "root": "runs",
+         "sha256": sha(cycle)}]  # fmt: skip
+    [e], problems = world.read()
+    assert (e.run_id, e.state, problems) == (held, "held", [])
+    (world.root / "launch" / "c-bad.jsonl").write_bytes(b"\xff\xfe not text")
+    cycle.write_text("{")
+    holds, problems = read_holds(world.root)
+    assert problems == [
+        "launch/c-bad.jsonl: an unreadable launch journal",
+        "qualification/c1/supersede-1.json: an unreadable supersession record",
+    ]
+    assert [r["kind"] for r in holds[0]["records"]] == ["journal"]
 
 
 def test_the_reader_imports_no_gpu_path() -> None:

@@ -1,7 +1,8 @@
 """Study 3's rate search and its scientific repair, as pure functions of endpoints.
 
 docs/study3-preregistration.md: "Candidates and rate search" ("Search", "Scientific repair"),
-"Failure routes" and amendment 1 (what K-only runs measure). The inputs are the ``Endpoint`` records
+"Failure routes", amendment 1 (what K-only runs measure) and amendment 3 (one repair round per
+arm, after a passed numerical qualification). The inputs are the ``Endpoint`` records
 of ``study3_records.read_endpoints`` and its refusals (``problems``, a required argument of both
 functions); nothing here reads a file, a response, a harm label or a judge output.
 
