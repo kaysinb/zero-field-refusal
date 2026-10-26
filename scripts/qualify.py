@@ -13,6 +13,8 @@
         --case NAME --part baseline|rest|control --attempt N --technical REASON
     python scripts/qualify.py restart-case --campaign FILE --candidate N [--engineering]
         --case NAME --infrastructure REASON
+    python scripts/qualify.py supersede --campaign FILE --candidate N [--engineering]
+        --case NAME --record PATH --diagnosis TEXT --fix TEXT
     python scripts/qualify.py verdict --campaign FILE --candidate N [--engineering] [--e-eng X]
 
 Every command also takes ``--runs-root DIR`` (RUNS_DIR) and ``--out DIR`` (the part records,
@@ -74,39 +76,57 @@ when it names the latest baseline record's sha256 (``baseline_record``; a rest t
 baseline, having run nothing or failed before, excepted). Records are published atomically and
 durably (``qualification.publish``).
 
-**Attempts of a part** (``part``; "Failure routes": an infrastructure interruption is rerun under
-a new attempt id, a technical or scientific record never). Before ``run_part`` the part publishes
+**Attempts of a part** (``part``; "Failure routes": an infrastructure interruption is rerun under a
+new attempt id, a technical or scientific record never). Before ``run_part`` the part publishes
 ``<record>.started``; an attempt that has it and no record was interrupted. ``--resume`` (the
 driver's call) runs attempt 1 of a part without any attempt, does nothing for a part whose latest
 attempt is recorded (whatever its kind), and exits 8 for one whose latest attempt was interrupted.
-``--attempt N`` runs attempt 1 of a part without any attempt, or the attempt after an
-interrupted one, which needs ``--infrastructure REASON``, the documented interruption, and its
-record carries it from its one publish (``infrastructure``: the reason, the earlier attempts and
-the case's restart records); a part whose latest
-attempt is recorded, whatever its kind, is refused. ``interrupted --technical REASON`` records an
-interrupted attempt, unexplained, as a technical part record carrying the reason ("an
-unexplained incomplete record is technical"); it refuses an attempt with a record. The part needs a
-clean checkout of a commit, sets the numerics up (``runtime.configure_numerics``) before any
-CUDA work and builds the environment from the run's campaign config; the survival retry and the
-float64 fallback stay inside the part.
+``--attempt N`` runs attempt 1 of a part without any attempt, or the attempt after an interrupted
+one, which needs ``--infrastructure REASON``, the documented interruption, and its record carries it
+from its one publish (``infrastructure``: the reason, the earlier attempts and the case's restart
+records); a part whose latest attempt is recorded, whatever its kind, is refused. ``interrupted
+--technical REASON`` records an interrupted attempt, unexplained, as a technical part record
+carrying the reason ("an unexplained incomplete record is technical"); it refuses an attempt with a
+record. A rest attempt publishes each trajectory's result as soon as it is done (``qualification``,
+"Trajectory results"): when its attempt is interrupted, the verdict reads them as its record
+(``rest_from_trajectories``), ``interrupted`` records them in the part's record, and ``part
+--attempt N`` refuses to rerun an attempt whose results hold a failure, scientific or technical
+(they keep counting). The part needs a clean checkout of a commit, sets the numerics up
+(``runtime.configure_numerics``) before any CUDA work and builds the environment from the run's
+campaign config; the survival retry and the float64 fallback stay inside the part.
 
 **A case restart** (``restart-case --infrastructure REASON``; "Voiding and supersession": an
-infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop during
-a case loses the container disk, with the launcher run's checkpoint and the harness's: the case
-cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a clean checkout)
-``restart-<n>.json`` in the case's folder, naming every attempt of the case's parts (the baseline,
-the rest and, for the case that holds it, the same-path control): each recorded one with its
-record's sha256, status and kind, each interrupted one by its number; the reason; and the launcher
-run located then. It is refused without a reason, when every attempt is named already, for a
-complete case, and when any recorded attempt is scientific (its kind, or its verdict: a baseline
-decided by a declared instability rule, a scientific rest or control) or unreadable: the
-registration voids only an infrastructure-interrupted attempt, and a scientific record keeps
-counting ("no reruns to pass"). The attempts it names are void: a part whose recorded attempts are
-all named is ``restarted``, so the case is not complete; ``part --resume`` exits 8 for it, and
-``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names the
-restart records); a rest waits for the baseline's new attempt. The case then starts again from a new
-launcher run (the launcher's recovery round with the same reason) and new attempts of its parts. The
-named records are kept, listed, and voided in the verdict (with the reason).
+infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop
+during a case loses the container disk, with the launcher run's checkpoint and the harness's:
+the case cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a
+clean checkout) ``restart-<n>.json`` in the case's folder, naming every attempt of the case's
+parts (the baseline, the rest and, for the case that holds it, the same-path control): each
+recorded one with its record's sha256, status and kind, each interrupted one by its number; the
+reason; and the case's launcher run, which it logs superseded in the launch journal
+(``launch.supersede``): the run is kept, no longer counts for its label (``assess``,
+``located``), and the launcher's recovery round with the same reason starts a new run. Only an
+interrupted case is restarted: it is refused without a reason, when every attempt is named
+already, for a complete case, and when any attempt is a completed failure (``attempt_failures``):
+a scientific one, which keeps counting ("no reruns to pass"), a technical one (an engineering
+cycle lifts it: below), or an unreadable record; an interrupted rest attempt counts by its
+trajectory results. A recorded attempt that passes so far (the baseline, a control) depends on
+the lost run or checkpoint and is named with the others. The attempts it names are void: a part
+whose recorded attempts are all named is ``voided``, so the case is not complete; ``part
+--resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt with
+``--infrastructure REASON`` (its record names the restart records); a rest waits for the
+baseline's new attempt. The named records are kept, listed, and voided in the verdict (with the
+reason).
+
+**Supersession** (``supersede --record PATH --diagnosis TEXT --fix TEXT``; "Voiding and
+supersession", "Failure routes": a technical mark is lifted by one engineering cycle). A
+completed technical failure stops counting only through a supersession record:
+``supersede-<n>.json`` names the old record (its path and sha256), the cycle's diagnosis and
+fix, the GPU code of the fix (this clean checkout's), the case re-qualified and every attempt of
+its parts, and logs the case's launcher run superseded, as a restart does. It is refused for a
+record that is not a completed technical failure of the case, and for a case with a scientific
+failure (no supersession lifts one). The attempts it names are void, as a restart's are, and the
+case re-qualifies from a new launcher run and new attempts of its parts (``--infrastructure``
+naming the supersession).
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -114,27 +134,26 @@ named records are kept, listed, and voided in the verdict (with the reason).
 same-path control's verdicts (states, kinds, reasons, the 13 comparisons, warnings with
 ``--e-eng``), every case record of the candidate on disk shown (one of no campaign rate under
 ``unassigned``), every attempt of every part (``attempts``: recorded or interrupted, with each
-record's sha256, status, kind and the reason of the restart that names it), and prints the
-states. A record a case restart names is listed under ``superseded`` with that reason and
-passed to ``rate_verdict`` as voided (its record sha256 → the reason): it neither counts nor
-blocks. A record under a later attempt that no restart names (which these commands never write)
-is not hidden by it: it is listed under ``superseded`` and counted against its rate as a case of
-its own (a control's as a superseded control of its rate). The launcher runs located now (one
-settled directory per
-run) are the expected ones; a rate one of whose launcher runs is not located is at most
-``incomplete``, with the reason and a warning.
+record's sha256, status, kind and the reason of the restart or supersession that names it, as
+``restart``), and prints the states. A record a case restart or supersession names is listed under
+``superseded`` with that reason and passed to ``rate_verdict`` as voided (its record sha256 → the
+reason): it neither counts nor blocks. A rest whose latest attempt was interrupted is read from its
+trajectory results. A record under a later attempt that no restart names (which these commands never
+write) is not hidden by it: it is listed under ``superseded`` and counted against its rate as a case
+of its own (a control's as a superseded control of its rate). The launcher runs located now (one
+settled directory per run) are the expected ones; a rate one of whose launcher runs is not located
+is at most ``incomplete``, with the reason and a warning.
 
-``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the
-checkout and the campaign file's sha256, that nothing else uses the GPU, and the free host
-memory (``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and
-the p1 direction on the host and a checkpoint save's transient), then runs each case in order as
-above, and writes the verdict on every exit. Exits: 0 when every case is complete; 1 a
-precondition (the host memory included), the disk (``df``'s answer must be a number) or a
-``finish`` that refuses a case not complete; 8 an interrupted attempt (or a part a case restart
-names); 9 a technical case; 10 a stale case; the launcher's own when it stops; any other, the
-failed command's. The driver never reruns a part or the launcher run: a rerun is a command of
-its own, with its reason.
-"""
+``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the checkout
+and the campaign file's sha256, that nothing else uses the GPU, and the free host memory
+(``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and the p1
+direction on the host and a checkpoint save's transient), then runs each case in order as above, and
+writes the verdict on every exit. Exits: 0 when every case is complete; 1 a precondition (the host
+memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
+not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
+technical case; 10 a stale case; the launcher's own when it stops; any other, the failed command's.
+The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
+reason."""
 
 from __future__ import annotations
 
@@ -157,15 +176,24 @@ from omegaconf import OmegaConf
 
 from zero_field_refusal import code_identity, runtime
 from zero_field_refusal import qualification as q
+from zero_field_refusal.analysis.qualification_verdicts import REST_MISSING
 from zero_field_refusal.config import load_config
-from zero_field_refusal.launch import Run, assess, launch_records, load_campaign
+from zero_field_refusal.launch import (
+    Run,
+    assess,
+    launch_records,
+    load_campaign,
+    supersede,
+    superseded_runs,
+)
 from zero_field_refusal.paths import CONFIG_ROOT, load_env, runs_root
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 SETTINGS = CONFIG_ROOT / "experiments" / "qualification.yaml"  # the tracked settings, by path
 RUN = 'project-run "$SRC" python scripts/qualify.py'
-RESTART_FILE = re.compile(r"restart-(\d+)\.json")  # a case restart record, in the case's folder
+# A case restart or an engineering cycle's supersession record, in the case's folder
+VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
 LAUNCH = 'project-run "$SRC" python scripts/launch.py'
 NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
@@ -289,9 +317,9 @@ def parse_steps(text: str | None) -> list[int]:
 @dataclass(frozen=True)
 class PartState:
     """A part's latest attempt on disk: ``due`` (none), ``recorded`` (with its record),
-    ``interrupted`` (started, no record), ``restarted`` (every recorded attempt named by the
-    case's restart records) or ``invalid`` (a record that is unreadable, or not that part's of
-    that case). ``attempts`` maps every attempt to recorded or interrupted."""
+    ``interrupted`` (started, no record), ``voided`` (every recorded attempt named by the case's
+    restart or supersession records) or ``invalid`` (a record that is unreadable, or not that
+    part's of that case). ``attempts`` maps every attempt to recorded or interrupted."""
 
     state: str
     attempt: int
@@ -325,22 +353,57 @@ def file_sha256(path: Path) -> str | None:
         return None
 
 
+def voiding_records(folder: Path, kind: str | None = None) -> list[tuple[Path, dict | None]]:
+    """The case's restart and supersession records (``restart-<n>.json``, ``supersede-<n>.json``;
+    ``kind``: one of them alone), in order, each with its record."""
+    found = [(m[1], int(m[2]), f)
+             for f in (folder.glob("*-*.json") if folder.is_dir() else [])
+             if (m := VOIDING_FILE.fullmatch(f.name)) and kind in (None, m[1])]  # fmt: skip
+    return [(f, _read(f)) for _, _, f in sorted(found)]
+
+
 def restart_records(folder: Path) -> list[tuple[Path, dict | None]]:
-    """The case's restart records (``restart-<n>.json``), in order, each with its record."""
-    found = [(int(m[1]), f) for f in (folder.glob("restart-*.json") if folder.is_dir() else [])
-             if (m := RESTART_FILE.fullmatch(f.name))]  # fmt: skip
-    return [(f, _read(f)) for _, f in sorted(found)]
+    return voiding_records(folder, "restart")
 
 
-def restarted(folder: Path) -> dict[str, str]:
-    """The attempt records the case's restart records name: each record file's sha256 → the
-    restart's reason (module docstring, "A case restart")."""
+def void_reason(path: Path, record: dict | None) -> str:
+    """Why the attempts a voiding record names are void: a restart's reason, or the
+    supersession's diagnosis and fix."""
+    record = record or {}
+    if path.name.startswith("supersede-"):
+        return (f"superseded by an engineering cycle ({path.name}): {record.get('diagnosis')}; "
+                f"fix: {record.get('fix')}")  # fmt: skip
+    return str(record.get("reason"))
+
+
+def named_records(folder: Path) -> dict[str, str]:
+    """The attempt records the case's restart and supersession records name: each record
+    file's sha256 → why it is void (module docstring, "A case restart", "Supersession")."""
     named: dict[str, str] = {}
-    for _, record in restart_records(folder):
+    for path, record in voiding_records(folder):
         for entry in (record or {}).get("attempts") or []:
             if isinstance(entry, dict) and isinstance(entry.get("sha256"), str):
-                named.setdefault(entry["sha256"], str(record.get("reason")))
+                named.setdefault(entry["sha256"], void_reason(path, record))
     return named
+
+
+def named_attempts(folder: Path) -> set[tuple[str, int]]:
+    """Every (part, attempt) a restart or supersession record names, recorded or interrupted."""
+    return {(e.get("part"), e.get("attempt")) for _, r in voiding_records(folder)
+            for e in (r or {}).get("attempts") or [] if isinstance(e, dict)}  # fmt: skip
+
+
+def trajectory_results(folder: Path, attempt: int) -> list[dict]:
+    """The trajectory results a rest attempt published (``qualification``, "Trajectory
+    results")."""
+    found = [_read(f) for f in sorted(folder.glob(f"rest-attempt-{attempt}.trajectory-*.json"))]
+    return [r for r in found if r is not None]
+
+
+def interrupted_rest(folder: Path, attempt: int) -> dict | None:
+    """An interrupted rest attempt as a record, from its trajectory results
+    (``rest_from_trajectories``), or None without any."""
+    return q.rest_from_trajectories(trajectory_results(folder, attempt))
 
 
 def part_state(out: Path, case: q.QualificationCase, part: str) -> PartState:
@@ -351,10 +414,10 @@ def part_state(out: Path, case: q.QualificationCase, part: str) -> PartState:
     latest = max(attempts)
     if attempts[latest] == "interrupted":
         return PartState("interrupted", latest, None, attempts)
-    named = restarted(folder)
+    named = named_records(folder)
     if all(file_sha256(folder / f"{part}-attempt-{n}.json") in named
            for n, s in attempts.items() if s == "recorded"):  # fmt: skip
-        return PartState("restarted", latest, None, attempts)
+        return PartState("voided", latest, None, attempts)
     record = _read(out / case.attempt_path(part, latest))
     if record is None or record.get("part") != part or record.get("case") != case.record():
         return PartState("invalid", latest, None, attempts)
@@ -467,11 +530,15 @@ def remove_checkpoints(p: Planned, run_ids: list[str]) -> list[str]:
 
 def located(run: Run, root: Path) -> Path | None:
     """For the verdict, after the checkpoints are gone (``assess`` would call such a run a
-    conflict): the one directory of the run's config whose outcome is settled, or None."""
+    conflict): the one directory of the run's config whose outcome is settled, or None. A run a
+    case restart or supersession named superseded in the journal is not one."""
     found = []
+    superseded = superseded_runs(run, launch_records(root))
     for run_dir in sorted((root / run.experiment).glob("*")):
         meta = _read(run_dir / "meta.json")
         if meta is None or meta.get("config_hash") != run.config_hash:
+            continue
+        if run_dir.name in superseded:
             continue
         if meta.get("status") in ("completed", "diverged") or (run_dir / "terminal.json").is_file():
             found.append(run_dir)
@@ -522,10 +589,10 @@ def part(args, planned: Planned, out: Path) -> None:
                   f"an interrupted attempt, rerun only as attempt {state.attempt + 1} with "
                   "--infrastructure REASON", file=sys.stderr)  # fmt: skip
             sys.exit(INTERRUPTED)
-        if state.state == "restarted":
-            print(f"{case.name} {name}: attempt {state.attempt} is named by the case's restart "
-                  f"record: its next attempt is run by hand, --attempt {state.attempt + 1} "
-                  "--infrastructure REASON", file=sys.stderr)  # fmt: skip
+        if state.state == "voided":
+            print(f"{case.name} {name}: attempt {state.attempt} is named by the case's restart or "
+                  f"supersession record: its next attempt is run by hand, --attempt "
+                  f"{state.attempt + 1} --infrastructure REASON", file=sys.stderr)  # fmt: skip
             sys.exit(INTERRUPTED)
         if state.state == "invalid":
             sys.exit(f"{case.name} {name}: attempt {state.attempt}'s record is unreadable or "
@@ -541,11 +608,27 @@ def part(args, planned: Planned, out: Path) -> None:
         if attempt != allowed:
             sys.exit(f"{case.name} {name}: the next attempt is {allowed}, not {attempt}")
         if (attempt > 1) != bool(reason):
-            sys.exit("an attempt above 1 reruns an interrupted one, or one a case restart "
-                     "names, and needs --infrastructure REASON; attempt 1 takes none")  # fmt: skip
-    if name == "rest" and part_state(out, case, "baseline").state == "restarted":
-        sys.exit(f"{case.name} rest: the baseline's attempts are named by the case's restart "
-                 "record: its next baseline attempt runs first")  # fmt: skip
+            sys.exit("an attempt above 1 reruns an interrupted one, or one a case restart or "
+                     "supersession names, and needs --infrastructure REASON; attempt 1 takes "
+                     "none")  # fmt: skip
+        folder = case_folder(out, case)
+        if (name == "rest" and state.state == "interrupted"
+                and ("rest", state.attempt) not in named_attempts(folder)):  # fmt: skip
+            results = interrupted_rest(folder, state.attempt)
+            kind = (
+                None
+                if results is None
+                else failure_kind(
+                    "rest", results, recorded_baselines(folder), scope_of(), case.candidate
+                )
+            )
+            if kind is not None:
+                sys.exit(f"{case.name} rest: attempt {state.attempt}'s trajectory results hold a "
+                         f"{kind} failure, which keeps counting: it is never rerun; record the "
+                         "attempt with interrupted --technical REASON")  # fmt: skip
+    if name == "rest" and part_state(out, case, "baseline").state == "voided":
+        sys.exit(f"{case.name} rest: the baseline's attempts are named by the case's restart or "
+                 "supersession record: its next baseline attempt runs first")  # fmt: skip
     if args.run_dir is None or args.checkpoints is None:
         sys.exit("part needs --run-dir and --checkpoints")
     require_clean()
@@ -561,9 +644,13 @@ def part(args, planned: Planned, out: Path) -> None:
     infrastructure = None
     if reason:  # the record carries its reason from its one publish, before any part reads it
         previous = [{"attempt": n, "state": s} for n, s in state.attempts.items() if n < attempt]
+        folder = case_folder(out, case)
         restarts = [{"path": str(f), "sha256": file_sha256(f)}
-                    for f, _ in restart_records(case_folder(out, case))]  # fmt: skip
-        infrastructure = {"reason": reason, "previous": previous, "restarts": restarts}
+                    for f, _ in restart_records(folder)]  # fmt: skip
+        supersessions = [{"path": str(f), "sha256": file_sha256(f)}
+                         for f, _ in voiding_records(folder, "supersede")]  # fmt: skip
+        infrastructure = {"reason": reason, "previous": previous, "restarts": restarts,
+                          "supersessions": supersessions}  # fmt: skip
     record = q.run_part(settings, env, case, args.run_dir, out, part=name, attempt=attempt,
                         checkpoints=args.checkpoints,
                         diagnostic_steps=parse_steps(args.diagnostic_steps),
@@ -594,7 +681,10 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
     """An interrupted attempt recorded as a technical part record with ``--technical REASON``
     ("Failure routes": an unexplained incomplete record is technical): the case, its launcher
     run as the ``.started`` file names it, the policy, and for a rest the baseline record it was
-    built on (the latest baseline then); never over a record."""
+    built on (the latest baseline then); never over a record. A rest attempt that published
+    trajectory results carries them, bound as they were (their launcher run, baseline record,
+    bridge checks, code and settings): what they show keeps counting, a scientific failure
+    included."""
     case, name, attempt = planned.case, args.part, args.attempt
     state = attempt_files((out / case.attempt_path(name, 1)).parent, name)
     if state.get(attempt) != "interrupted" or attempt != max(state):
@@ -614,7 +704,18 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
                         else {"identity": None, "pod_id": None})},
         "interrupted": {"reason": args.technical, "started": started},
     }  # fmt: skip
-    if name == "rest":
+    # The Pod is the one the attempt started on (its ``.started`` file), not this process's
+    record["provenance"] = q.qualification_provenance(load_settings(),
+                                                      pod_id=started.get("pod_id"))  # fmt: skip
+    results = interrupted_rest(case_folder(out, case), attempt) if name == "rest" else None
+    if results is not None:  # what the attempt published keeps counting, bound as it was
+        record.update({key: results[key] for key in (
+            "launcher", "baseline_record", "baseline_checkpoint_sha256", "bridge",
+            "v0_unchanged", "trajectories", "comparisons", "from_trajectories",
+            "provenance")})  # fmt: skip
+        record["provenance"] = {**(results.get("provenance") or {}),
+                                "pod_id": started.get("pod_id")}  # fmt: skip
+    elif name == "rest":
         base = (out / case.attempt_path("baseline", 1)).parent
         found = max((n for n, s in attempt_files(base, "baseline").items() if s == "recorded"),
                     default=None)  # fmt: skip
@@ -624,77 +725,88 @@ def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) 
             record["baseline_record"] = {"path": str(source),
                                          "sha256": q.record_sha256(baseline)}  # fmt: skip
             record["baseline_checkpoint_sha256"] = (baseline.get("checkpoint") or {}).get("sha256")
-    # The Pod is the one the attempt started on (its ``.started`` file), not this process's
-    record["provenance"] = q.qualification_provenance(load_settings(),
-                                                      pod_id=started.get("pod_id"))  # fmt: skip
     q.publish(path, record)
     print(json.dumps({key: record[key] for key in ("part", "attempt", "status", "kind",
                                                    "reasons")}))  # fmt: skip
 
 
-def scientific_attempts(
-    folder: Path, p: Planned, scope: q.QualificationScope
-) -> list[str]:  # fmt: skip
-    """The case's recorded attempts that are scientific, or that the verdicts cannot read: a
-    record of kind scientific; a baseline the verdict alone calls scientific (a declared
-    instability rule, the launcher run's instability stop); a rest scientific with the baseline
-    record it names; a control whose verdict is scientific. None of them may be voided."""
-    found: list[str] = []
-    baselines = {}
+def scope_of() -> q.QualificationScope:
+    return q.QualificationScope.of(load_settings())
+
+
+def recorded_baselines(folder: Path) -> dict[str | None, dict | None]:
+    """The case's recorded baseline attempts, by their record's sha256."""
+    out: dict[str | None, dict | None] = {}
     for n, state in attempt_files(folder, "baseline").items():
         if state == "recorded":
             path = folder / f"baseline-attempt-{n}.json"
-            baselines[file_sha256(path)] = _read(path)
+            out[file_sha256(path)] = _read(path)
+    return out
+
+
+def failure_kind(
+    part: str, record: dict, baselines: dict, scope: q.QualificationScope, candidate: int
+) -> str | None:
+    """Whether a part's record (or an interrupted rest's trajectory results) is a completed
+    failure, and of which kind: a baseline its verdict alone fails (scientific: a declared
+    instability rule, the launcher run's instability stop; technical: any reason but the rest
+    still to come); a rest failing with the baseline record it names, or technical when it names
+    none recorded; a control not accepted. None for a record that passes so far."""
+    if part == "baseline":
+        verdict = q.case_verdict(record, None, scope)
+        if verdict["kind"] == q.SCIENTIFIC:
+            return q.SCIENTIFIC
+        return q.TECHNICAL if [r for r in verdict["reasons"] if r != REST_MISSING] else None
+    if part == "rest":
+        bound = baselines.get((record.get("baseline_record") or {}).get("sha256"))
+        if bound is None:
+            return q.SCIENTIFIC if record.get("kind") == q.SCIENTIFIC else q.TECHNICAL
+        return q.case_verdict(bound, record, scope)["kind"]
+    verdict = q.control_verdict(record, scope, candidate)
+    return None if verdict["state"] == q.ACCEPTED else verdict["kind"]
+
+
+def attempt_failures(folder: Path, p: Planned, scope: q.QualificationScope) -> list[list[str]]:
+    """The case's attempts no restart may name (module docstring, "A case restart"), as
+    [label, kind]: every recorded attempt that is a completed failure, scientific or technical
+    (``failure_kind``), or that the verdicts cannot read, and every interrupted rest attempt
+    whose trajectory results are one; attempts a restart or supersession names already are
+    void and left out."""
+    named, listed = named_records(folder), named_attempts(folder)
+    baselines = recorded_baselines(folder)
+    found: list[list[str]] = []
     for name in ["baseline", "rest", *(["control"] if p.control else [])]:
         for n, state in attempt_files(folder, name).items():
-            if state != "recorded":
-                continue
-            record = _read(folder / f"{name}-attempt-{n}.json")
+            path = folder / f"{name}-attempt-{n}.json"
             label = f"{name} attempt {n}"
+            if state == "recorded":
+                if file_sha256(path) in named:
+                    continue
+                record = _read(path)
+            elif name == "rest" and (name, n) not in listed:
+                record = interrupted_rest(folder, n)
+                if record is None:
+                    continue
+                label += " (its trajectory results)"
+            else:
+                continue
             if record is None:
-                found.append(f"{label}: unreadable")
+                found.append([label, "unreadable"])
                 continue
             try:
-                if name == "baseline":
-                    kind = q.case_verdict(record, None, scope)["kind"]
-                elif name == "rest":
-                    bound = baselines.get((record.get("baseline_record") or {}).get("sha256"))
-                    kind = q.case_verdict(bound, record, scope)["kind"] if bound else None
-                else:
-                    kind = q.control_verdict(record, scope, p.case.candidate)["kind"]
+                kind = failure_kind(name, record, baselines, scope, p.case.candidate)
             except Exception as exc:  # a record the verdicts cannot read is never voided
-                found.append(f"{label}: the verdicts cannot read it ({type(exc).__name__})")
+                found.append([label, f"unreadable ({type(exc).__name__})"])
                 continue
-            if q.SCIENTIFIC in (record.get("kind"), kind):
-                found.append(f"{label}: scientific")
+            if kind is not None:
+                found.append([label, kind])
     return found
 
 
-def restart_case(
-    args, planned: Planned, out: Path, root: Path, scope: q.QualificationScope
-) -> None:
-    """A case restart (module docstring, "A case restart"): a record, published atomically, that
-    names every attempt of the case's parts (the baseline, the rest and its control if it holds
-    one), each recorded one with its record's sha256, and the infrastructure reason; the
-    attempts it names are void. Refused without a reason, with no attempt it does not name
-    already, for a complete case, and when any recorded attempt is scientific (or unreadable):
-    only an infrastructure-interrupted case is voided, and a scientific record keeps counting
-    ("no reruns to pass")."""
-    case, reason = planned.case, args.infrastructure
-    if not reason:
-        sys.exit("restart-case needs --infrastructure REASON: the documented interruption")
-    folder = case_folder(out, case)
-    if case_state(out, planned, scope)[0]:
-        sys.exit(f"{case.name}: the case is complete; a restart voids only an interrupted case")
-    science = scientific_attempts(folder, planned, scope)
-    if science:
-        sys.exit(f"{case.name}: no restart: a scientific record keeps counting and is never "
-                 f"voided (no reruns to pass): {science}")  # fmt: skip
-    earlier = restart_records(folder)
-    listed = {(e.get("part"), e.get("attempt")) for _, r in earlier
-              for e in (r or {}).get("attempts") or [] if isinstance(e, dict)}  # fmt: skip
+def case_attempts(folder: Path, p: Planned) -> list[dict[str, Any]]:
+    """Every attempt of the case's parts as a voiding record names it."""
     attempts = []
-    for name in ["baseline", "rest", *(["control"] if planned.control else [])]:
+    for name in ["baseline", "rest", *(["control"] if p.control else [])]:
         for n, state in attempt_files(folder, name).items():
             path = folder / f"{name}-attempt-{n}.json"
             record = _read(path) if state == "recorded" else None
@@ -702,36 +814,133 @@ def restart_case(
                              "sha256": file_sha256(path) if state == "recorded" else None,
                              "status": (record or {}).get("status"),
                              "kind": (record or {}).get("kind")})  # fmt: skip
-    if not [a for a in attempts if (a["part"], a["attempt"]) not in listed]:
-        sys.exit(f"{case.name}: no attempt to restart (none, or every one is named by an "
-                 "earlier restart record)")  # fmt: skip
-    require_clean()
+    return attempts
+
+
+def supersede_launcher(
+    planned: Planned, root: Path, campaign: str, *, reason: str, record: Path
+) -> dict[str, Any] | None:
+    """The case's settled launcher run (``located``), logged superseded in the launch journal
+    (``launch.supersede``): it is kept, no longer counts for its label, and the launcher's
+    recovery round starts a new attempt. Returns how the voiding record names it."""
     try:
         run_dir = located(planned.run, root)
-        launcher = None if run_dir is None else q.launcher_identity(run_dir)
+        if run_dir is None:
+            return None
+        identity = q.launcher_identity(run_dir)
     except Exception as exc:  # the record names what it can
-        launcher = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
-    number = max((int(RESTART_FILE.fullmatch(f.name)[1]) for f, _ in earlier), default=0) + 1
+        return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    supersede(root, campaign, planned.run, run_dir.name, reason=reason, record=str(record))
+    return {"run_id": run_dir.name, "identity": identity}
+
+
+def next_number(folder: Path, kind: str) -> int:
+    return max((int(VOIDING_FILE.fullmatch(f.name)[2]) for f, _ in voiding_records(folder, kind)),
+               default=0) + 1  # fmt: skip
+
+
+def restart_case(
+    args, planned: Planned, out: Path, root: Path, scope: q.QualificationScope, campaign: str
+) -> None:
+    """A case restart (module docstring, "A case restart"): a record, published atomically, that
+    names every attempt of the case's parts (the baseline, the rest and its control if it holds
+    one), each recorded one with its record's sha256, and the infrastructure reason; the
+    attempts it names are void, and the case's launcher run is logged superseded. Refused
+    without a reason, for a complete case, with no attempt it does not name already, and when
+    any attempt is a completed failure, scientific or technical, or unreadable
+    (``attempt_failures``): only an interrupted case is restarted."""
+    case, reason = planned.case, args.infrastructure
+    if not reason:
+        sys.exit("restart-case needs --infrastructure REASON: the documented interruption")
+    folder = case_folder(out, case)
+    if case_state(out, planned, scope)[0]:
+        sys.exit(f"{case.name}: the case is complete; a restart voids only an interrupted case")
+    failures = attempt_failures(folder, planned, scope)
+    if failures:
+        sys.exit(f"{case.name}: no restart: a completed failure keeps counting: {failures}. A "
+                 "scientific one is never rerun (no reruns to pass); a technical one is lifted "
+                 "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
+    attempts, listed = case_attempts(folder, planned), named_attempts(folder)
+    if not [a for a in attempts if (a["part"], a["attempt"]) not in listed]:
+        sys.exit(f"{case.name}: no attempt to restart (none, or every one is named by an "
+                 "earlier restart or supersession record)")  # fmt: skip
+    require_clean()
+    number = next_number(folder, "restart")
+    path = folder / f"restart-{number}.json"
+    launcher = supersede_launcher(planned, root, campaign, reason=reason, record=path)
     record = {"case": case.record(), "restart": number, "reason": reason, "attempts": attempts,
               "launcher": launcher, "host": socket.gethostname(),
               "restarted_at": datetime.now(UTC).isoformat(timespec="seconds"),
               "provenance": q.qualification_provenance(load_settings())}  # fmt: skip
-    path = folder / f"restart-{number}.json"
     q.publish(path, record)
     print(json.dumps({"case": case.name, "restart": str(path), "reason": reason,
-                      "attempts": [(a["part"], a["attempt"]) for a in attempts]}))  # fmt: skip
+                      "attempts": [(a["part"], a["attempt"]) for a in attempts],
+                      "launcher": launcher}))  # fmt: skip
+
+
+def supersede_case(
+    args, planned: Planned, out: Path, root: Path, scope: q.QualificationScope, campaign: str
+) -> None:
+    """An engineering cycle's supersession record (module docstring, "Supersession";
+    "Voiding and supersession"): it names the old record (its path and sha256), the cycle's
+    diagnosis and fix, the GPU code of the fix (this checkout's), the case re-qualified, and
+    every attempt of the case's parts; those attempts are void, and the case's launcher run is
+    logged superseded. Only a completed technical failure is superseded: refused for a record
+    that passes, for a scientific failure anywhere in the case (no reruns to pass), and from a
+    checkout that is not clean."""
+    case = planned.case
+    if args.record is None or not args.diagnosis or not args.fix:
+        sys.exit("supersede needs --record PATH, --diagnosis TEXT and --fix TEXT")
+    folder = case_folder(out, case)
+    path = args.record.resolve()
+    match = re.fullmatch(r"(baseline|rest|control)-attempt-(\d+)\.json", path.name)
+    if (not match or path.parent != folder.resolve()
+            or attempt_files(folder, match[1]).get(int(match[2])) != "recorded"):  # fmt: skip
+        sys.exit(f"{case.name}: {args.record} is not a recorded attempt of this case")
+    sha = file_sha256(path)
+    if sha in named_records(folder):
+        sys.exit(f"{case.name}: {path.name} is void already")
+    failures = attempt_failures(folder, planned, scope)
+    if any(kind == q.SCIENTIFIC for _, kind in failures):
+        sys.exit(f"{case.name}: a scientific failure keeps counting, and no supersession lifts "
+                 f"it (no reruns to pass): {failures}")  # fmt: skip
+    label = f"{match[1]} attempt {match[2]}"
+    if dict(map(tuple, failures)).get(label) != q.TECHNICAL:
+        sys.exit(f"{case.name}: {path.name} is not a completed technical failure: an "
+                 "engineering cycle supersedes only one")  # fmt: skip
+    require_clean()
+    number = next_number(folder, "supersede")
+    record_path = folder / f"supersede-{number}.json"
+    reason = f"superseded by an engineering cycle: {args.diagnosis}; fix: {args.fix}"
+    launcher = supersede_launcher(planned, root, campaign, reason=reason, record=record_path)
+    record = {"case": case.record(), "supersession": number,
+              "old_record": {"path": str(path), "sha256": sha, "part": match[1],
+                             "attempt": int(match[2])},
+              "diagnosis": args.diagnosis, "fix": args.fix,
+              "fix_gpu_code": code_identity.gpu_code_identity(),
+              "cases_requalified": [case.name], "attempts": case_attempts(folder, planned),
+              "launcher": launcher, "host": socket.gethostname(),
+              "superseded_at": datetime.now(UTC).isoformat(timespec="seconds"),
+              "provenance": q.qualification_provenance(load_settings())}  # fmt: skip
+    q.publish(record_path, record)
+    print(json.dumps({"case": case.name, "supersession": str(record_path),
+                      "old_record": record["old_record"], "launcher": launcher}))  # fmt: skip
 
 
 def superseded_run_ids(run: Run, root: Path) -> list[str]:
-    """The attempts of the run that the launch journal shows superseded: started, and ended
-    technical or not ended at all, with no settled directory (completed, whether it stands or is
-    in conflict, or diverged). A completed run that cannot stand keeps its checkpoint for the
-    diagnosis."""
+    """The attempts of the run that the launch journal shows superseded: named so by a case
+    restart or supersession (``launch.supersede``), or started, and ended technical or not ended
+    at all, with no settled directory (completed, whether it stands or is in conflict, or
+    diverged). A completed run that cannot stand keeps its checkpoint for the diagnosis."""
     settled_outcomes = {r.get("run_id") for r in launch_records(root)
                         if r.get("event") == "end" and r.get("run") == run.label
                         and r.get("outcome") in ("done", "diverged", "conflict")}  # fmt: skip
     superseded = []
+    named = superseded_runs(run, launch_records(root))  # a restart or supersession names them
     for run_id in journal_run_ids(run, root):
+        if run_id in named:
+            superseded.append(run_id)
+            continue
         run_dir = root / run.experiment / run_id
         meta = _read(run_dir / "meta.json") or {}
         if (run_id in settled_outcomes or meta.get("status") in ("completed", "diverged")
@@ -795,9 +1004,13 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
     warnings: list[str] = []
     for folder in folders:
         name = str(folder.relative_to(base))
-        named = restarted(folder)
+        named = named_records(folder)
         attempts[name], stale = attempt_listing(folder, named)
         baseline, rest = latest(folder, "baseline", named), latest(folder, "rest", named)
+        rests = attempt_files(folder, "rest")
+        if (rests and rests[max(rests)] == "interrupted"
+                and ("rest", max(rests)) not in named_attempts(folder)):  # fmt: skip
+            rest = interrupted_rest(folder, max(rests))  # its trajectory results count
         if baseline is not None or rest is not None:
             records += [r for r in (baseline, rest) if r is not None]
             cases.append(q.case_verdict(baseline, rest, scope, e_eng=args.e_eng))
@@ -846,7 +1059,7 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
                            and p.case.optimizer == optimizer), None)  # fmt: skip
             if holder is not None:
                 where = case_folder(out, holder.case)  # a restart-named control is not current
-                record = latest(where, "control", restarted(where))
+                record = latest(where, "control", named_records(where))
                 control = None if record is None else q.control_verdict(record, scope, candidate)
             runs = {p.case.seed: located(p.run, root) for p in planned
                     if (p.case.optimizer, p.case.lr) == (optimizer, lr)}  # fmt: skip
@@ -1012,6 +1225,7 @@ def main(argv: list[str] | None = None) -> None:
             "verdict",
             "interrupted",
             "restart-case",
+            "supersede",
         ],
     )
     parser.add_argument("--campaign", type=Path, required=True)
@@ -1032,6 +1246,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--technical", metavar="REASON",
                         help="interrupted: why the attempt is recorded technical")  # fmt: skip
+    parser.add_argument(
+        "--record",
+        type=Path,
+        metavar="PATH",
+        help="supersede: the technical record the engineering cycle supersedes",
+    )
+    parser.add_argument("--diagnosis", metavar="TEXT", help="supersede: the cycle's diagnosis")
+    parser.add_argument("--fix", metavar="TEXT", help="supersede: the cycle's fix")
     parser.add_argument(
         "--release",
         action="store_true",
@@ -1077,7 +1299,7 @@ def main(argv: list[str] | None = None) -> None:
         print(args.out)
         return
     out = args.out or root / "qualification"
-    if args.command in ("part", "verdict", "interrupted", "restart-case") and problems:
+    if args.command in ("part", "verdict", "interrupted", "restart-case", "supersede") and problems:
         sys.exit("\n".join(["The campaign is not a qualification campaign:", *problems]))
     if args.command == "verdict":
         require_clean()
@@ -1111,7 +1333,9 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit("interrupted needs --part, --attempt N and --technical REASON")
         interrupted(args, chosen, out, scope)
     elif args.command == "restart-case":
-        restart_case(args, chosen, out, root, scope)
+        restart_case(args, chosen, out, root, scope, name)
+    elif args.command == "supersede":
+        supersede_case(args, chosen, out, root, scope, name)
     elif args.command == "clear-stale":
         clear_stale(chosen, root)
     else:  # locate

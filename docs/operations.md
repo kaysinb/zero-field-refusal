@@ -1496,8 +1496,8 @@ docstring has every rule.
   rerun is the next attempt, by hand, with its documented reason, which the record carries, while
   the Pod and its container disk are the ones it started on (otherwise the case restarts,
   below); an interruption without a documented cause is recorded technical instead
-  (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its rerun is the launcher's
-  recovery round with the reason.
+  (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its
+  rerun is the launcher's recovery round with the reason.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
@@ -1522,16 +1522,16 @@ docstring has every rule.
   launcher's and the harness's checkpoints are gone). `restart-case` records it: a
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
-  those attempts are void, kept and listed in the verdict, and neither count nor block. A
-  restart without a reason is refused, and so is a restart of a complete case or of a case with
-  a scientific record (a baseline decided by a declared instability rule, a scientific rest or
-  control): only an infrastructure-interrupted attempt is void, and a scientific record keeps
-  counting. Then the launcher run, whose checkpoint is gone, cannot
-  stand: move it out of the experiment (kept, never deleted) and rerun it through the
-  launcher's recovery round with the same reason; run each part the case needs as its next
-  attempt with the same reason, the baseline first (`part --resume` exits 8 for a part the
-  restart names); then run the driver again.
-
+  those attempts are void, kept and listed in the verdict, and neither count nor block. It also
+  logs the case's launcher run superseded in the launch journal: the run stays on disk and in
+  the journal, no longer counts for its label, and the launcher's recovery round with the same
+  reason starts a new one. Only an interrupted case is restarted: a restart without a reason is
+  refused, and so is one of a complete case or of a case with a completed failure, scientific
+  (it keeps counting: no reruns to pass) or technical (an engineering cycle lifts it, below),
+  an interrupted rest's trajectory results included. Then rerun the launcher run through its
+  recovery round, run each part the case needs as its next attempt with the same reason, the
+  baseline first (`part --resume` exits 8 for a part the restart names), and run the driver
+  again.
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-5e-05 --infrastructure "the Pod stopped during the case"
@@ -1542,6 +1542,27 @@ docstring has every rule.
     --infrastructure "the Pod stopped during the case" \
     --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-5e-05
   ```
+- **A technical failure and its engineering cycle.** A completed technical failure (the
+  repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
+  rerun as it stands. After the cycle's diagnosis and fix, committed, `supersede` records the
+  supersession: `supersede-<n>.json` names the old record's path and sha256, the diagnosis, the
+  fix, the GPU code of the fix and the case re-qualified, voids every attempt of the case and
+  logs its launcher run superseded. The case then re-qualifies: the launcher's recovery round,
+  then each part as its next attempt (`--infrastructure` naming the supersession). A scientific
+  failure is never superseded.
+
+  ```bash
+  project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
+    --candidate 1 --case s10200/adamw-5e-05 \
+    --record "$RUNS_DIR/qualification/c1/numerical/s10200/adamw-5e-05/baseline-attempt-1.json" \
+    --diagnosis "<the cycle's diagnosis>" --fix "<the fix, at commit SHA>"
+  ```
+- **Trajectory results.** A rest part publishes each trajectory's result as soon as it is done
+  (`rest-attempt-<n>.trajectory-<name>.json`, bound to the case, the attempt, the launcher run,
+  the baseline record and both checkpoints, the code and the settings), and stops at once,
+  decided, on a valid scientific failure. When a rest attempt is interrupted, its results count:
+  the verdict reads them, a rerun or a restart is refused when they hold a failure, and
+  `interrupted --technical REASON` records the attempt with them.
 - **The commands.** The campaign file and the driver are written on the Pod, from the source
   checkout of the commit; the driver embeds the campaign's absolute path and sha256.
 
@@ -1654,6 +1675,11 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   unread, and its start and end records carry the label; a recovery round under it is that run's
   own. `--max-attempts N` replaces the three attempts (and the round's three more) with N; study
   3's qualification driver passes `--only` and 1 ([below](#study-3-numerical-qualification)).
+  A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
+  no longer count for its label: kept, a used attempt, neither done nor a conflict, so its
+  recovery round starts a new one. A checkpoint run (`tracking.endpoint_checkpoint`) is done
+  only if its recorded numerics setup is what the campaign's config asks for (determinism, TF32
+  and the matmul precision, the memory limit), read without CUDA.
   Send it to the
   launcher's PID only: Ctrl-C or a signal to the process group (`kill -TERM -PGID`) also reaches
   the running attempt and ends it. The boundary is where an attempt is admitted, not where its
