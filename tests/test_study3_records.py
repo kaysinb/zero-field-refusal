@@ -754,6 +754,22 @@ def test_qualification_records_supersede_launcher_runs(world) -> None:
     assert "Pod stopped" in reasons[restarted] and "a stale cache" in reasons[cycled]
 
 
+def test_the_decision_records_folder_is_reserved_and_no_run_directory(world) -> None:
+    """``RUNS_DIR/study3/decisions/`` holds the decision records: no run is ever named so
+    (``launch._run_id``), and the reader skips it; any other folder with no start stays
+    refused."""
+    decisions = world.root / "study3" / "decisions"
+    decisions.mkdir(parents=True)
+    (decisions / "engineering.json").write_text("{}")
+    usable = world.run()
+    found, problems = world.read()
+    assert problems == [] and [e.run_id for e in found] == [usable]
+    stray = world.root / "study3" / "20261026T999999Z-A-1.45e-05-s10300-abcdef12-a1"
+    stray.mkdir()
+    found, problems = world.read()
+    assert listed_refused(found, problems, stray.name, "no start")
+
+
 def test_two_starts_of_one_run_id_are_both_refused(world) -> None:
     run_id = world.run("A", 1.45e-5, 10300)
     journal = world.root / "launch/study3-c1.jsonl"

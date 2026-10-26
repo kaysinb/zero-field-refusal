@@ -17,6 +17,10 @@ qualification's restart and supersession records (``qualification/c<N>/``).
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
 
+**The decision records' folder** (``RUNS_DIR/study3/decisions/``, ``DECISIONS``) lies in the
+experiment's folder and is reserved: it is no run directory (no run id is ever named so: they are
+``<stamp>-<cell>-s<seed>-<hash>-a<attempt>``), and every walk of the experiment's folder skips it.
+
 **The sealing boundary.** Of a run directory only ``config.yaml``, ``meta.json``,
 ``terminal.json``, ``summary.json``, ``evaluations.jsonl``, ``metrics.jsonl`` and
 ``monitor.jsonl`` are read; nothing under ``responses/`` or ``observations/`` is ever opened, so
@@ -145,6 +149,7 @@ from ..config import config_hash
 from ..protocol import load_run_config
 
 EXPERIMENT = "study3"
+DECISIONS = "decisions"  # RUNS_DIR/study3/decisions/: the decision records, reserved, no run
 ROLES = ("engineering", "search", "numerical", "validation", "confirmation")
 K_ONLY_ROLES = ("engineering", "search", "numerical")
 # "Seeds and order": validation to 10339 / 10379 with 40 blocks; confirmation in order, its
@@ -336,7 +341,7 @@ def read_endpoints(
                               twice=started[start["run_id"]] > 1))  # fmt: skip
     experiment = root / EXPERIMENT
     for run_dir in sorted(experiment.iterdir()) if experiment.is_dir() else []:
-        if run_dir.is_dir() and run_dir.name not in started:
+        if run_dir.is_dir() and run_dir.name not in started and run_dir.name != DECISIONS:
             attempts.append(_Attempt(
                 campaign=None, started=None, run_id=run_dir.name, run_dir=run_dir,
                 cell=Cell(*[None] * 9), number=None, state="refused",

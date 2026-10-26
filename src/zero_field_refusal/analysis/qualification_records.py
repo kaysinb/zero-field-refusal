@@ -97,8 +97,9 @@ The states are always the recomputation's.
 **Pure reading.** No file is written. Of a launcher run, ``meta.json``, ``summary.json`` and the
 files of its identity (``config.yaml``, ``metrics.jsonl``, ``monitor.jsonl``, ``terminal.json``)
 are read; nothing under a run's ``responses/`` or ``observations/`` is opened. This checkout's
-``configs/`` are read to compose a cell's config. The GPU code identity is not computed here: it
-is an argument. No GPU path is imported here;
+``configs/`` are read to compose a cell's config. The decision records' folder in the
+experiment's folder (``study3_records.DECISIONS``) is no run and is never walked. The GPU code
+identity is not computed here: it is an argument. No GPU path is imported here;
 ``qualification_verdicts`` itself imports ``fa_control_diagnostic`` (and with it torch).
 
 **Rulings** where the verdict's command line leaves an input open:
@@ -132,7 +133,7 @@ from ..qualification_constants import (
     record_sha256,
 )
 from . import qualification_verdicts as verdicts
-from .study3_records import ARMS, RATE_TOLERANCE, _command_config, read_holds
+from .study3_records import ARMS, DECISIONS, RATE_TOLERANCE, _command_config, read_holds
 from .study3_records import _config as _start_config
 
 STAGE = "numerical"  # the stage folder of the numerical qualification, c<N>/numerical/
@@ -769,8 +770,10 @@ class _Located:
             return None
         if run.experiment not in self.metas:
             directory = self.root / run.experiment
+            # the decision records' folder is no run (study3_records.DECISIONS)
             self.metas[run.experiment] = [(d, _object(d / "meta.json"))
-                                          for d in sorted(directory.glob("*"))]  # fmt: skip
+                                          for d in sorted(directory.glob("*"))
+                                          if d.name != DECISIONS]  # fmt: skip
         named = {r["run_id"] for r in self.superseded if r.get("run") == run.label
                  and r.get("experiment") == run.experiment
                  and r.get("config_hash") == run.config_hash}  # fmt: skip
