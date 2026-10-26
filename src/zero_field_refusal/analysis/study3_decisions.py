@@ -2,7 +2,7 @@
 
 docs/study3-preregistration.md: "Simulation before validation" (the coverage screen, the level L
 and the validation size), "Validation, confirmation and stopping" ("Sample size from validation":
-N, the cap, the budget above 90) and "Seeds and order" (harm labels never enter a selection; the
+N, the cap, the budget decision) and "Seeds and order" (harm labels never enter a selection; the
 order of the stages). The records are small JSON files under
 ``RUNS_DIR/study3/decisions/<kind>.json``; this module fixes their schemas, reads them and
 checks them, and writes them once. Later packages (the simulation, the spread script) write the
@@ -13,12 +13,12 @@ records; the state machine consumes only what this module accepts.
   an unrounded spread, a record that contradicts the one it answers. A record with any problem
   is not returned.
 - ``decisions``: the records a candidate's route needs (engineering, simulation, ``n-c<N>`` and,
-  when N is above 90, ``budget-c<N>``), each with its state and problems, the immutability check
+  when N asks for one, ``budget-c<N>``), each with its state and problems, the immutability check
   of ``immutable`` included.
 - ``immutable``: a record whose sha256 differs from the one a started campaign's header named.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
-- ``cap_of`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉) and whether N asks for a budget
-  decision.
+- ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
+  at all) N asks for a budget decision.
 
 **Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate) and ``budget-c<N>``.
 Every record carries ``kind`` (equal to its file's), ``state`` (``passed`` or ``failed``),
@@ -43,34 +43,46 @@ on is a response or an observation, and this module opens none.
 - ``simulation``: ``fixation`` (the simulation's fixation) and ``inputs`` (name → evidence), the
   commit and GPU code in ``code``; ``gates`` (name → ``value``, ``requirement``, ``passed``; a
   gate that is only reported has null for both of the last two), which must include
-  ``safe_pass_rate`` (required ≥ 0.95) and ``power_af`` (the lower of the A–F powers at the two
-  planning spreads, required ≥ 0.80), the requirement no lower than the registered one;
-  ``coverage``: one entry per level tested, in ascending order, with ``level``, ``tests``, ``J``,
-  ``M`` (at least 10 000), ``counts`` and ``thresholds`` (each ``comparison`` and ``joint``, the
-  non-coverage counts X and the thresholds c) and ``passed``; ``level`` (L, one of 0.975, 0.980,
-  0.985, 0.990, or null when no level passed) and ``validation_blocks`` (28 or 40);
-  ``verification`` (``level``, ``passed``, the ``calibration_stream`` and ``verification_stream``,
-  two different integers). A ``passed`` record has every gate with a requirement passed, L the
-  first level whose tests passed (the levels below it tested and failed), the validation size
-  chosen, and the verification of L passed. A ``failed`` record may have a null L (every level
-  tested and failed) or a null size.
+  ``safe_pass_rate`` (the pass rate at the safe alternative of the 28-block validation, required
+  ≥ 0.95) and ``power_af`` (the lower of the A–F powers at the two planning spreads, required
+  ≥ 0.80), the requirement no lower than the registered one and ``passed`` equal to value ≥
+  requirement; ``power_af`` also has ``power_short`` (true when its requirement is not met) and
+  ``n_min``, the smallest N at which the simulated power reaches the requirement (an integer, at
+  least 60, when the power is short; else null); ``coverage``: one entry per level tested, in
+  ascending order, with ``level``, ``tests``, ``J``, ``M`` (at least 10 000), ``counts`` and
+  ``thresholds`` (each ``comparison`` and ``joint``, the non-coverage counts X and the thresholds
+  c) and ``passed``; ``level`` (L, one of 0.975, 0.980, 0.985, 0.990, or null when no level
+  passed) and ``validation_blocks`` (28 or 40); ``verification`` (``level``, ``passed``, the
+  ``calibration_stream`` and ``verification_stream``, two different integers). L is the first
+  level whose tests passed (the levels below it tested and failed); a null L means every level
+  was tested and failed.
+  **The state follows the coverage screen and its independent verification, and nothing else**:
+  ``passed`` exactly when a level passed and its verification passed ("If no level passes, or the
+  verification fails, the confirmation cannot start"). A pass rate below its requirement is not a
+  failure but the 40-block validation, chosen once: ``validation_blocks`` is 40 when
+  ``safe_pass_rate`` is below 0.95 and 28 otherwise. A power shortfall is not a failure either: it
+  is recorded (``power_short``, ``n_min``) and N and the cap are raised, with a decision on the
+  money (see ``n-c<N>`` and ``budget-c<N>``). A failed record may have a null L or a null size.
 - ``n-c<N>``: ``candidate`` (N of the kind), ``rates`` (per arm A, F and, when P–F is active, P:
   ``lr_l`` and ``lr_u``), ``active`` (``["A-F"]`` or ``["A-F", "P-F"]``), ``level`` (the
   simulation record's), ``cohort`` (the validation block ``seeds`` and the ``run_ids`` used, at
   least four per block: A and F at both rates), ``spread`` (the evidence of the precommitted
   spread script, ``script``, and of its ``output`` record), ``spread_pp`` (the A–F spread
-  rounded to 0.5 pp, and nothing else about it), ``N`` (an integer, at least 60) and ``cap``
-  (N + max(10, ⌈0.12·N⌉)).
+  rounded to 0.5 pp, and nothing else about it), ``N`` (an integer, at least 60, and at least the
+  simulation record's ``n_min`` when its power is short) and ``cap`` (N + max(10, ⌈0.12·N⌉)).
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
   ``answers``, the evidence of the ``n-c<N>`` record itself (so its sha256 is the recorded one).
-  It is needed only when N is above 90 (the extra blocks are the researcher's decision); one for
-  a smaller N is valid and read as written.
+  It is needed when N is above 90 and when N is raised for power (the simulation record's
+  ``power_short``), even if N is 90 or less: the extra blocks are the researcher's decision;
+  ``decisions`` lists the record as ``missing``, with that as its problem, until it is written. One
+  for an N that needs none is valid and read as written.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
   that passed, of the same L, whose validation size its cohort fits (seeds among the first 28 or
-  40 of the candidate's validation seeds, at least 22 or 31 of them: the gate's minimum); a
+  40 of the candidate's validation seeds, at least 22 or 31 of them: the gate's minimum) and whose
+  ``n_min``, when its power is short, N reaches; a
   ``budget-c<N>`` record only with a valid ``n-c<N>`` of its N and cap.
 - *The thresholds of the coverage screen* are recomputed, c = BinomQuantile(1 − 0.05/J; M, p₀)
   with p₀ = 0.025 per comparison and 0.05 jointly, and a record whose c is another is refused (a
@@ -83,7 +95,8 @@ on is a response or an observation, and this module opens none.
   (``study3/decisions/<kind>.json``), so a record named from another machine's root is found. A
   record named with a sha256 other than its own now, or named without a readable one, or no
   longer there, is a problem; a missing journal fails closed. The journal is read as
-  ``study3_records`` reads it.
+  ``study3_records`` reads it: through its private ``_read_journal``, which this module keeps
+  importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the
   record to the file's bytes and does not read the evidence's meaning.
 """
@@ -176,9 +189,22 @@ def cap_of(n: int) -> int:
     return n + max(CAP_FLOOR, -(-CAP_SHARE_PERCENT * n // 100))
 
 
-def budget_needed(n: int) -> bool:
-    """Whether N asks for the researcher's decision on the extra blocks and their price."""
-    return n > BUDGET_ABOVE
+def budget_reason(n: int, simulation: Mapping[str, Any] | None = None) -> str | None:
+    """Why N asks for the researcher's decision on the extra blocks and their price: N above 90,
+    or N raised for power (the simulation record's ``power_af`` is short, so N is at least its
+    ``n_min``), even when N is 90 or less. None: no budget decision is needed."""
+    reasons = []
+    if n > BUDGET_ABOVE:
+        reasons.append(f"N = {n} is above {BUDGET_ABOVE}")
+    gate = ((simulation or {}).get("gates") or {}).get("power_af")
+    if isinstance(gate, Mapping) and gate.get("power_short") is True:
+        reasons.append(f"N is raised to at least {gate.get('n_min')} for the simulated power")
+    return "; ".join(reasons) or None
+
+
+def budget_needed(n: int, simulation: Mapping[str, Any] | None = None) -> bool:
+    """Whether a budget decision must answer N (``budget_reason``)."""
+    return budget_reason(n, simulation) is not None
 
 
 # ------------------------------------------------------------------ reading
@@ -206,7 +232,8 @@ def decisions(
 ) -> dict[str, dict[str, Any]]:
     """The decision records of a candidate's route, by kind: ``engineering``, ``simulation``,
     ``n-c<candidate>`` and ``budget-c<candidate>`` (when the valid ``n`` record asks for a
-    budget decision, or one is written). Each is ``{"kind", "path", "state", "record",
+    budget decision, ``budget_reason``, or one is written; a needed one that is not written is
+    ``missing`` with that as its problem). Each is ``{"kind", "path", "state", "record",
     "problems"}``: the state is ``passed`` or ``failed`` for a valid record, ``missing`` for none,
     ``invalid`` for one with a problem (its record None), the immutability check against the
     launch journal included."""
@@ -217,8 +244,13 @@ def decisions(
            for kind in ("engineering", "simulation", f"n-c{candidate}")}  # fmt: skip
     budget = f"budget-c{candidate}"
     n = out[f"n-c{candidate}"]["record"]
-    if (n is not None and budget_needed(n["N"])) or decision_path(root, budget).exists():
+    reason = budget_reason(n["N"], out["simulation"]["record"]) if n is not None else None
+    if reason is not None or decision_path(root, budget).exists():
         out[budget] = _entry(root, budget, starts, Path(repo))
+        if reason is not None and out[budget]["state"] == "missing":
+            out[budget]["problems"] = [f"{out[budget]['path']}: a budget decision answering the "
+                                       f"n-c{candidate} record is needed ({reason}) and is not "
+                                       "written"]  # fmt: skip
     return out
 
 
@@ -525,38 +557,51 @@ class _Schema:
             for name, value in inputs.items():
                 self.text("inputs name", name)
                 self.ref(f"inputs.{name}", value)
-        gates_ok = self._gates(r)
+        safe = self._gates(r)
         entries = self._coverage(r)
         level = self.level("level", r["level"], null=True)
         blocks, failed = r["validation_blocks"], r["state"] == "failed"
         if not (blocks in VALIDATION_BLOCKS and type(blocks) is int or blocks is None and failed):
             self.add("validation_blocks", f"is {blocks!r}, not one of {list(VALIDATION_BLOCKS)}"
                      + (" or null in a failed record" if failed else ""))  # fmt: skip
+        if safe is not None and blocks in VALIDATION_BLOCKS and type(blocks) is int:
+            wanted = VALIDATION_BLOCKS[0] if safe["passed"] else VALIDATION_BLOCKS[1]
+            if blocks != wanted:
+                self.add("validation_blocks", f"is {blocks}, but the pass rate {safe['value']} at "
+                         f"the safe alternative {'meets' if safe['passed'] else 'is below'} "
+                         f"{safe['requirement']}: the validation has {wanted} blocks")  # fmt: skip
         verified = self._verification(r, level)
         if entries is not None:
             self._ladder(level, entries)
+        # The state follows the coverage screen and its verification, and nothing else: a pass rate
+        # below its requirement sets the validation size, a power shortfall is recorded (power_af)
         if r["state"] == "passed":
-            if not gates_ok:
-                self.add("gates", "a required gate did not pass, and the record says it passed")
             if level is None:
                 self.add("level", "is null in a passed record")
             if verified is not True:
                 self.add("verification", "did not pass, and the record says it passed")
+        elif level is not None and verified is True:
+            self.add("state", f"is {r['state']!r}, but the coverage screen passed at {level} and "
+                     "so did its verification: the state follows both, and no gate")  # fmt: skip
 
-    def _gates(self, r: dict[str, Any]) -> bool:
-        """Whether every gate with a requirement passed; checks the gates' entries."""
-        gates, passing = r["gates"], True
+    def _gates(self, r: dict[str, Any]) -> dict[str, Any] | None:
+        """Checks the gates' entries; returns the ``safe_pass_rate`` entry if it is well formed.
+        A gate has ``value``, ``requirement`` and ``passed`` (null for both of the last two when
+        it is only reported); ``power_af`` also records ``power_short`` (its requirement not met)
+        and, then, ``n_min``, the smallest N at which the simulated power reaches the
+        requirement."""
+        gates, safe = r["gates"], None
         if not isinstance(gates, dict):
             self.add("gates", "is not an object")
-            return False
+            return None
         for name in REQUIRED_GATES:
             if name not in gates:
                 self.add("gates", f"has no gate `{name}`")
         for name, gate in gates.items():
             where = f"gates.{name}"
-            gate = self.object(where, gate, ("value", "requirement", "passed"))
+            extra = ("power_short", "n_min") if name == "power_af" else ()
+            gate = self.object(where, gate, ("value", "requirement", "passed", *extra))
             if gate is None:
-                passing = False
                 continue
             value_ok = self.real(f"{where}.value", gate["value"])
             required = gate["requirement"]
@@ -568,7 +613,6 @@ class _Schema:
                 continue
             if not (self.real(f"{where}.requirement", required)
                     and self.boolean(f"{where}.passed", gate["passed"]) and value_ok):  # fmt: skip
-                passing = False
                 continue
             if name in REQUIRED_GATES and required < REQUIRED_GATES[name]:
                 self.add(f"{where}.requirement", f"is {required}, below the registered "
@@ -576,8 +620,25 @@ class _Schema:
             if gate["passed"] != (gate["value"] >= required):
                 self.add(where, f"says passed={gate['passed']} for {gate['value']} against "
                          f"{required}")  # fmt: skip
-            passing = passing and gate["passed"]
-        return passing
+            if name == "power_af":
+                self._power(where, gate)
+            if name == "safe_pass_rate":
+                safe = gate
+        return safe
+
+    def _power(self, where: str, gate: dict[str, Any]) -> None:
+        """``power_short`` is the requirement not met; ``n_min`` is then an N (at least 60)."""
+        short = gate["power_short"]
+        if not self.boolean(f"{where}.power_short", short):
+            return
+        if short == gate["passed"]:
+            self.add(f"{where}.power_short", f"is {short}, but passed is {gate['passed']}: the "
+                     "power is short when its requirement is not met")  # fmt: skip
+        if short:
+            self.integer(f"{where}.n_min", gate["n_min"], MIN_N)
+        elif gate["n_min"] is not None:
+            self.add(f"{where}.n_min", f"is {gate['n_min']!r}: it is null when the power is not "
+                     "short")  # fmt: skip
 
     def _coverage(self, r: dict[str, Any]) -> list[dict[str, Any]] | None:
         """The coverage entries, or None when one is not well formed or its thresholds are not
@@ -805,6 +866,10 @@ def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
     if simulation["level"] is None or not math.isclose(simulation["level"], record["level"],
                                                        rel_tol=1e-12):  # fmt: skip
         found.append(f"L is {record['level']}, not the simulation record's {simulation['level']}")
+    power = simulation["gates"]["power_af"]
+    if power["power_short"] and record["N"] < power["n_min"]:
+        found.append(f"N is {record['N']}, below n_min {power['n_min']}, the smallest N at which "
+                     f"the simulated power reaches {power['requirement']}")  # fmt: skip
     blocks = simulation["validation_blocks"]
     seeds = record["cohort"]["seeds"]
     if blocks in SUPPORTED_AT:

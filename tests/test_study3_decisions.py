@@ -18,6 +18,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     LEVELS,
     DecisionRefused,
     budget_needed,
+    budget_reason,
     cap_of,
     coverage_threshold,
     decision_path,
@@ -82,10 +83,7 @@ class World:
             "fixation": self.ref("simulation-fixation.json"),
             "inputs": {"seed_vectors": self.ref("seed-vectors.json"),
                        "design": self.ref("design.json")},
-            "gates": {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
-                      "power_af": {"value": 0.86, "requirement": 0.80, "passed": True},
-                      "empirical_pass_rate": {"value": 0.6, "requirement": None,
-                                              "passed": None}},
+            "gates": default_gates(),
             "coverage": [coverage_row(0.975)], "level": 0.975, "validation_blocks": 28,
             "verification": {"level": 0.975, "passed": True, "calibration_stream": 11,
                              "verification_stream": 12},
@@ -130,10 +128,11 @@ class World:
     def read(self, kind: str):
         return read_decision(self.runs, kind, repo=self.repo)
 
-    def chain(self, candidate: int = 1, N: int = 75, *, through: str = "n") -> None:
-        """The valid records a later one answers: engineering, simulation, n (and budget)."""
+    def chain(self, candidate: int = 1, N: int = 75, *, through: str = "n", **simulation) -> None:
+        """The valid records a later one answers: engineering, simulation (with the fields
+        ``simulation`` replaces), n (and budget)."""
         self.write("engineering", self.engineering())
-        self.write("simulation", self.simulation())
+        self.write("simulation", self.simulation(**simulation))
         if through in ("n", "budget"):
             self.write(f"n-c{candidate}", self.n(candidate, N))
         if through == "budget":
@@ -186,7 +185,33 @@ class World:
 
 
 # the cap N + max(10, ⌈0.12·N⌉) by hand
-CAPS = {60: 70, 75: 85, 90: 101, 99: 111, 100: 112, 120: 135}
+CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135}
+
+
+def power_gate(value: float, n_min: int | None = None) -> dict:
+    """The A-F power gate: short of its requirement 0.80 when ``value`` is below it, and then
+    ``n_min`` is the smallest N at which the simulated power reaches it."""
+    short = value < 0.80
+    return {"value": value, "requirement": 0.80, "passed": not short, "power_short": short,
+            "n_min": n_min if short else None}  # fmt: skip
+
+
+def default_gates() -> dict:
+    """The gates of a simulation that passed them all: a pass rate at the safe alternative of
+    0.982, the power of 0.86 and the pass rate at study 2's empirical point, reported only."""
+    return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
+            "power_af": power_gate(0.86),
+            "empirical_pass_rate": {"value": 0.6, "requirement": None, "passed": None}}  # fmt: skip
+
+
+def gates_with(**gates) -> dict:
+    """The default gates with some replaced (a gate as ``name=entry``)."""
+    return {**default_gates(), **gates}
+
+
+def pass_rate(value: float) -> dict:
+    """The gate of the pass rate at the safe alternative (requirement 0.95)."""
+    return {"value": value, "requirement": 0.95, "passed": value >= 0.95}
 
 
 def coverage_row(level: float, *, passed: bool = True, J: int = 1000, M: int = 10_000) -> dict:
@@ -287,10 +312,12 @@ def test_a_simulation_that_passed_a_later_level_and_chose_40_blocks(world) -> No
     rows = [coverage_row(0.975, passed=False), coverage_row(0.980)]
     verification = {"level": 0.98, "passed": True, "calibration_stream": 1,
                     "verification_stream": 2}  # fmt: skip
+    gates = gates_with(safe_pass_rate=pass_rate(0.93))
     world.write("simulation", world.simulation(coverage=rows, level=0.98, validation_blocks=40,
-                                               verification=verification))  # fmt: skip
+                                               verification=verification, gates=gates))  # fmt: skip
     record, problems = world.read("simulation")
     assert problems == [] and record["level"] == 0.98 and record["validation_blocks"] == 40
+    assert record["state"] == "passed"  # the pass rate set the size; it did not fail the record
 
 
 def test_a_simulation_where_no_level_passed_is_a_failed_record_with_a_null_level(world) -> None:
@@ -689,26 +716,84 @@ def test_a_passed_engineering_record_rests_on_every_check(world) -> None:
 # ------------------------------------------------------------------ the simulation record
 
 
-def test_a_gate_below_its_registered_requirement_or_failed_is_refused(world) -> None:
-    gates = world.simulation()["gates"]
-
-    def gate(name, value, requirement, passed) -> dict:
-        return {**gates, name: {"value": value, "requirement": requirement, "passed": passed}}
-
-    weak = gate("safe_pass_rate", 0.96, 0.90, True)
+def test_a_gate_below_its_registered_requirement_or_inconsistent_is_refused(world) -> None:
+    weak = gates_with(safe_pass_rate={"value": 0.96, "requirement": 0.90, "passed": True})
     sim_refused(world, "safe_pass_rate", "0.95", gates=weak)
-    weak = gate("power_af", 0.80, 0.70, True)
+    weak = gates_with(power_af={**power_gate(0.80), "requirement": 0.70})
     sim_refused(world, "power_af", "0.8", gates=weak)
-    short = gate("power_af", 0.75, 0.80, False)
-    sim_refused(world, "gates", "passed", gates=short)
-    sim_refused(world, "power_af", "passed=True", gates=gate("power_af", 0.75, 0.80, True))
-    world.write("simulation", world.simulation(state="failed", gates=short))  # a failed record
-    decision_path(world.runs, "simulation").unlink()
-    sim_refused(world, "power_af", gates={k: v for k, v in gates.items() if k != "power_af"})
-    sim_refused(world, "safe_pass_rate", gates=gate("safe_pass_rate", 0.99, None, None))
-    sim_refused(world, "empirical_pass_rate", "null",
-                gates=gate("empirical_pass_rate", 0.6, None, True))  # fmt: skip
+    lying = gates_with(power_af={**power_gate(0.75, 80), "passed": True})
+    sim_refused(world, "power_af", "passed=True", gates=lying)
+    lying = gates_with(safe_pass_rate={"value": 0.94, "requirement": 0.95, "passed": True})
+    sim_refused(world, "safe_pass_rate", "passed=True", gates=lying)
+    sim_refused(world, "power_af", gates={k: v for k, v in default_gates().items()
+                                          if k != "power_af"})  # fmt: skip
+    sim_refused(world, "safe_pass_rate", gates=gates_with(
+        safe_pass_rate={"value": 0.99, "requirement": None, "passed": None}))  # fmt: skip
+    sim_refused(world, "empirical_pass_rate", "null", gates=gates_with(
+        empirical_pass_rate={"value": 0.6, "requirement": None, "passed": True}))  # fmt: skip
     sim_refused(world, "gates", gates=[])
+    sim_refused(world, "gates.safe_pass_rate", "power_short",
+                gates=gates_with(safe_pass_rate={**pass_rate(0.97), "power_short": False,
+                                                 "n_min": None}))  # fmt: skip
+
+
+def test_a_power_shortfall_is_recorded_and_the_record_still_passes(world) -> None:
+    gates = gates_with(power_af=power_gate(0.74, 84))
+    world.write("simulation", world.simulation(gates=gates))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["state"] == "passed"
+    power = record["gates"]["power_af"]
+    assert power["power_short"] is True and power["n_min"] == 84 and power["passed"] is False
+    assert record["validation_blocks"] == 28  # the pass rate decided that, not the power
+
+
+@pytest.mark.parametrize(
+    ("power", "words"),
+    [
+        ({**power_gate(0.74, 84), "power_short": False}, ("power_short", "requirement is not met")),
+        ({**power_gate(0.86), "power_short": True, "n_min": 84}, ("power_short",)),
+        ({**power_gate(0.74, 84), "n_min": None}, ("n_min",)),
+        ({**power_gate(0.74, 84), "n_min": 59}, ("n_min", "at least 60")),
+        ({**power_gate(0.74, 84), "n_min": 84.0}, ("n_min",)),
+        ({**power_gate(0.74, 84), "n_min": True}, ("n_min",)),
+        ({**power_gate(0.86), "n_min": 84}, ("n_min", "null")),
+        ({**power_gate(0.74, 84), "power_short": "yes"}, ("power_short",)),
+        ({"value": 0.74, "requirement": 0.80, "passed": False}, ("power_short",)),
+        ({"value": 0.74, "requirement": 0.80, "passed": False, "power_short": True}, ("n_min",)),
+    ],
+)
+def test_a_power_shortfall_is_recorded_consistently(world, power, words) -> None:
+    sim_refused(world, "gates.power_af", *words, gates=gates_with(power_af=power))
+
+
+def test_a_pass_rate_below_its_requirement_sets_the_40_block_validation(world) -> None:
+    low = gates_with(safe_pass_rate=pass_rate(0.93))
+    # 28 blocks with a pass rate below 0.95 is refused; 40 blocks is the record, still passed
+    sim_refused(world, "validation_blocks", "40", gates=low, validation_blocks=28)
+    world.write("simulation", world.simulation(gates=low, validation_blocks=40))
+    assert world.read("simulation")[0]["state"] == "passed"
+    decision_path(world.runs, "simulation").unlink()
+    # 40 blocks with a pass rate that meets it (0.95 exactly does) is refused: 28 otherwise
+    for rate in (0.95, 0.982):
+        high = gates_with(safe_pass_rate=pass_rate(rate))
+        sim_refused(world, "validation_blocks", "28", gates=high, validation_blocks=40)
+    world.write("simulation", world.simulation(gates=gates_with(safe_pass_rate=pass_rate(0.95))))
+    assert world.read("simulation")[0]["validation_blocks"] == 28
+
+
+def test_the_simulation_state_follows_the_coverage_screen_and_its_verification_only(world) -> None:
+    # a power shortfall and a pass rate below 0.95 do not make a failed record
+    gates = gates_with(power_af=power_gate(0.74, 84), safe_pass_rate=pass_rate(0.93))
+    sim_refused(world, "state", "coverage screen", state="failed", gates=gates,
+                validation_blocks=40)  # fmt: skip
+    sim_refused(world, "state", "coverage screen", state="failed")
+    # a failed screen or verification is a failed record whatever the gates say
+    rows = [coverage_row(level, passed=False) for level in LEVELS]
+    world.write("simulation", world.simulation(state="failed", coverage=rows, level=None,
+                                               validation_blocks=None, verification=verified(
+                                                   None, False)))  # fmt: skip
+    decision_path(world.runs, "simulation").unlink()
+    world.write("simulation", world.simulation(state="failed", verification=verified(passed=False)))
 
 
 def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
@@ -827,9 +912,8 @@ def test_the_cohort_fits_the_validation_size_the_simulation_chose(world) -> None
     refused(world, "n-c1", world.n(cohort=cohort(range(first + 8, first + 8 + 21))), "beyond")
     # a 40-block validation reaches seed first + 39 and needs 31 supported
     decision_path(world.runs, "simulation").unlink()
-    verification = {"level": 0.975, "passed": True, "calibration_stream": 1,
-                    "verification_stream": 2}  # fmt: skip
-    world.write("simulation", world.simulation(validation_blocks=40, verification=verification))
+    low = gates_with(safe_pass_rate=pass_rate(0.93))
+    world.write("simulation", world.simulation(gates=low, validation_blocks=40))
     refused(world, "n-c1", world.n(cohort=cohort(range(first, first + 30))), "31")
     world.write("n-c1", world.n(cohort=cohort(range(first + 9, first + 40))))
     assert world.read("n-c1")[1] == []
@@ -864,6 +948,56 @@ def test_a_budget_record_goes_stale_when_the_n_record_it_answers_changes(world) 
     world.change("n-c1", spread_pp=5.0)
     found, problems = world.read("budget-c1")
     assert found is None and any("answers" in p and "sha256" in p for p in problems)
+
+
+SHORT = gates_with(power_af=power_gate(0.74, 84))  # the power is short; N of 84 reaches it
+
+
+def test_an_n_record_below_n_min_is_refused_and_one_at_or_above_it_is_accepted(world) -> None:
+    world.write("simulation", world.simulation(gates=SHORT))
+    refused(world, "n-c1", world.n(N=75), "N is 75", "n_min 84")
+    refused(world, "n-c1", world.n(N=83, cap=93), "N is 83", "n_min 84")
+    refused(world, "n-c1", world.n(N=60), "n_min 84")
+    world.write("n-c1", world.n(N=84, cap=cap_of(84)))
+    decision_path(world.runs, "n-c1").unlink()
+    world.write("n-c1", world.n(N=90))
+    assert world.read("n-c1")[1] == []
+
+
+def test_a_simulation_whose_power_is_not_short_has_no_floor_on_n(world) -> None:
+    world.write("simulation", world.simulation())
+    world.write("n-c1", world.n(N=60))
+    assert world.read("n-c1")[1] == []
+
+
+def test_the_budget_reason_is_n_above_ninety_or_n_raised_for_power() -> None:
+    assert budget_reason(90) is None and budget_reason(60, {"gates": default_gates()}) is None
+    assert "above 90" in budget_reason(91)
+    short = {"gates": SHORT}
+    assert "84" in budget_reason(84, short) and "above" not in budget_reason(84, short)
+    both = budget_reason(99, short)
+    assert "above 90" in both and "84" in both
+    assert budget_needed(84, short) and not budget_needed(84) and budget_needed(91)
+    assert budget_reason(84, {}) is None and budget_reason(84, {"gates": {}}) is None
+
+
+def test_an_n_raised_for_power_needs_a_budget_record_even_at_or_below_ninety(world) -> None:
+    world.chain(N=84, through="n", gates=SHORT)
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert list(found) == ["engineering", "simulation", "n-c1", "budget-c1"]
+    assert found["n-c1"]["state"] == "passed" and found["n-c1"]["problems"] == []
+    assert found["budget-c1"]["state"] == "missing" and found["budget-c1"]["record"] is None
+    [problem] = found["budget-c1"]["problems"]
+    assert "budget decision" in problem and "n-c1" in problem and "84" in problem
+    world.write("budget-c1", world.budget(N=84, cap=cap_of(84)))
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["budget-c1"]["state"] == "passed" and found["budget-c1"]["problems"] == []
+    # without the shortfall the same N needs none
+    other = World(world.runs.parent / "other")
+    other.chain(N=84)
+    other.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    assert list(decisions(other.runs, 1, repo=other.repo)) == ["engineering", "simulation", "n-c1"]
 
 
 def test_a_budget_record_for_a_small_n_is_valid_and_not_needed(world) -> None:
@@ -1105,6 +1239,8 @@ def test_decisions_lists_the_budget_record_when_n_is_above_ninety(world) -> None
     found = decisions(world.runs, 1, repo=world.repo)
     assert list(found) == ["engineering", "simulation", "n-c1", "budget-c1"]
     assert found["budget-c1"]["state"] == "missing"
+    [problem] = found["budget-c1"]["problems"]
+    assert "budget decision" in problem and "above 90" in problem
     world.write("budget-c1", world.budget(N=99, decision="stop", state="failed"))
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["budget-c1"]["state"] == "failed" and found["budget-c1"]["problems"] == []
