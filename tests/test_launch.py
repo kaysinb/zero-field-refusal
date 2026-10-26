@@ -494,26 +494,25 @@ def test_a_checkpoint_run_under_other_numerics_is_a_conflict(tmp_path, departure
 )
 def test_the_expected_numerics_are_what_the_setup_records(overrides) -> None:
     """``expected_numerics`` reads the config as ``runtime.configure_numerics`` sets it (on the
-    CPU here: the device-independent fields)."""
-    import torch
-
-    from zero_field_refusal import runtime
+    CPU here: the device-independent fields). The setup runs in a fresh process: with
+    determinism on it needs the cuBLAS workspace set before any CUDA work, which earlier tests of
+    this process may have done, and it leaves this process's flags alone."""
     from zero_field_refusal.config import load_config
+    from zero_field_refusal.paths import REPO_ROOT
 
+    program = (
+        "import json, sys\n"
+        "from zero_field_refusal import runtime\n"
+        "from zero_field_refusal.config import load_config\n"
+        "cfg = load_config('experiments/smoke', json.loads(sys.argv[1]))\n"
+        "print(json.dumps(runtime.configure_numerics(cfg, 'cpu')))\n"
+    )
+    env = {key: value for key, value in os.environ.items() if key != "CUBLAS_WORKSPACE_CONFIG"}
+    done = subprocess.run([sys.executable, "-c", program, json.dumps(overrides)], cwd=REPO_ROOT,
+                          capture_output=True, text=True, env=env)  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    setup = json.loads(done.stdout.splitlines()[-1])
     cfg = load_config("experiments/smoke", overrides)  # TF32 on departs from the protocol
-    before = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32,
-              torch.get_float32_matmul_precision(), torch.are_deterministic_algorithms_enabled(),
-              os.environ.get("CUBLAS_WORKSPACE_CONFIG"))  # fmt: skip
-    try:
-        setup = runtime.configure_numerics(cfg, "cpu")
-    finally:  # leave this process's flags as they were
-        torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = before[:2]
-        torch.set_float32_matmul_precision(before[2])
-        torch.use_deterministic_algorithms(before[3])
-        if before[4] is None:
-            os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
-        else:
-            os.environ["CUBLAS_WORKSPACE_CONFIG"] = before[4]
     wanted = expected_numerics(cfg)
     assert {key: setup[key] for key in wanted} == wanted
 
