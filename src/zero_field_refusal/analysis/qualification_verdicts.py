@@ -26,9 +26,14 @@ kinds and states, ``record_sha256``) is ``qualification_constants``', inside the
   recorded pod ids, where present: one Pod per case). A ``rest`` record that is not bound to the
   baseline given (another case, launcher run, settings or GPU code, or not built on that baseline
   record and checkpoint) is technical and none of its measurements is read.
-- A case with both kinds, on bound records, is scientific (no rerun passes it), its technical
-  reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (all 13 within), else
-  ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
+- **Identity first** (``identity_problems``): the baseline record, one Pod, every part's bridge
+  checks (all true, none missing from a complete part), v₀ unchanged and the rest's binding to
+  the baseline hold before any measurement is read; any failure makes the case technical, with
+  no measurement read and no scientific reason, whatever the records show. A part that failed
+  before establishing its bridge checks has no measurement read either.
+- A case with both kinds, on bound and verified records, is scientific (no rerun passes it), its
+  technical reasons kept. States: ``failing``, ``not_qualified``, ``qualified`` (all 13 within),
+  else ``incomplete``. ``warning`` when ``baseline~repeat`` exceeds τ = K*·max(0.001, 3·e_eng): a
   prompt for diagnosis only. A case is named by ``record_sha256``, over its part records.
 
 **The same-path control** (``control_verdict``): accepted with finite records and K_scoring at
@@ -117,6 +122,59 @@ def _pod_problem(*records: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def _bridge_failures(record: Mapping[str, Any]) -> list[str] | None:
+    """The bridge checks of a part record that are not true; None when it holds none."""
+    bridge = record.get("bridge")
+    if not isinstance(bridge, Mapping) or not bridge:
+        return None
+    return [k for k, v in bridge.items() if v is not True]
+
+
+def _verified(record: Mapping[str, Any] | None) -> bool:
+    """Whether a part record's measurements may be read: it holds its bridge checks, all true
+    (a part that failed before establishing them has measurements no check bound)."""
+    return record is not None and _bridge_failures(record) == []
+
+
+def identity_problems(
+    baseline: Mapping[str, Any] | None, rest: Mapping[str, Any] | None
+) -> list[str]:
+    """The identity and bridge checks every measurement of a case waits on (module docstring):
+    the baseline record present and the baseline's; one Pod for the launcher run and the parts;
+    each part's bridge checks (the steps, tokens and denominators, the training stream, v₀'s,
+    θ₀'s and the names' hashes, the optimizer, the numerics setup), all true, and none missing
+    from a complete part; v₀ unchanged; a rest bound to this baseline (the case, the launcher run
+    and checkpoint, the settings and GPU code, the baseline record and checkpoint). The launcher
+    run's own identity, config agreement, numerics, code and environment are checked before
+    the part runs (``qualification.launcher_problems``), its record then holding nothing
+    measured. Any problem here makes the case technical, and no measurement of it is read."""
+    problems: list[str] = []
+    if baseline is None:
+        problems.append("the baseline part has no record")
+    elif baseline.get("part") != "baseline":
+        problems.append("the baseline record is another part's")
+    pods = _pod_problem(baseline, rest)
+    if pods is not None:
+        problems.append(pods)
+    for record, label in ((baseline, "the bridge failed"),
+                          (rest, "the bridge failed in the rest part")):  # fmt: skip
+        if record is None:
+            continue
+        failed = _bridge_failures(record)
+        if failed:
+            problems.append(f"{label}: {failed}")
+        elif failed is None and record.get("status") == "complete":
+            problems.append(f"{label}: no checks")
+        unchanged = record.get("v0_unchanged")
+        if unchanged is False or (record.get("status") == "complete" and unchanged is not True):
+            problems.append(f"v₀ changed during the {record.get('part')} part")
+    if rest is not None:
+        problem = _binding_problem(baseline, rest)
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
 def _part_reasons(record: Mapping[str, Any], technical: list[str], science: list[str]) -> None:
     """A part that ran nothing or failed: its kind and reasons."""
     reasons = [f"{record.get('part')}: {r}" for r in record.get("reasons") or []]
@@ -152,41 +210,30 @@ def case_verdict(
     technical: list[str] = []
     measured: dict[str, Any] = dict.fromkeys(COMPARISONS)
     head = baseline or rest or {}
-    pods = _pod_problem(baseline, rest)
-    if pods is not None:
-        technical.append(pods)
     case = head.get("case") or {}
     try:
         bound = scope.bound(case.get("candidate"))
     except QualificationError as exc:
         bound = None
         technical.append(str(exc))
-    ended = False  # the baseline decided the case: the rest is not needed
-    if baseline is None:
-        technical.append("the baseline part has no record")
-    elif baseline.get("part") != "baseline":
-        technical.append("the baseline record is another part's")
-        baseline = None
-    else:
+    gate = identity_problems(baseline, rest)  # first: nothing is read unless it holds
+    technical += gate
+    if not gate:
+        ended = False  # the baseline decided the case: the rest is not needed
         if baseline.get("status") != "complete":  # a failed baseline's trajectory still counts
-            _part_reasons(baseline, technical, science)
+            _part_reasons(baseline, technical, science)  # when its bridge was established
             ended = True
         run = (baseline.get("trajectories") or {}).get("baseline")
-        if run is not None and _unstable("baseline", run, science):
+        if run is not None and _verified(baseline) and _unstable("baseline", run, science):
             ended = True
         if baseline.get("status") == "complete":
-            failed = [k for k, v in (baseline.get("bridge") or {}).items() if v is not True]
-            if failed or not baseline.get("bridge"):
-                technical.append(f"the bridge failed: {failed or 'no checks'}")
-            if baseline.get("v0_unchanged") is not True:
-                technical.append("v₀ changed during the baseline part")
             first = (baseline.get("comparisons") or {}).get("launcher~baseline") or {}
             measured["launcher~baseline"] = first.get("D_twin")
-    if not ended:
-        if rest is None:
-            technical.append(REST_MISSING)
-        else:
-            _rest_verdict(baseline, rest, measured, technical, science)
+        if not ended:
+            if rest is None:
+                technical.append(REST_MISSING)
+            else:
+                _rest_verdict(rest, measured, technical, science)
     comparisons = {name: {"D": measured[name], "within": _within(measured[name], bound)}
                    for name in COMPARISONS}  # fmt: skip
     for name, c in comparisons.items():
@@ -247,25 +294,14 @@ def _binding_problem(baseline: Mapping[str, Any] | None, rest: Mapping[str, Any]
 
 
 def _rest_verdict(
-    baseline: Mapping[str, Any] | None, rest: Mapping[str, Any], measured: dict[str, Any],
-    technical: list[str], science: list[str],
-) -> None:  # fmt: skip
-    """The rest record's part of ``case_verdict``: nothing of it is read unless it is bound."""
-    problem = _binding_problem(baseline, rest)
-    if problem is not None:
-        technical.append(problem)
-        return
-    if rest.get("status") == "not_run":
-        _part_reasons(rest, technical, science)
-        return
+    rest: Mapping[str, Any], measured: dict[str, Any], technical: list[str], science: list[str]
+) -> None:
+    """The rest record's part of ``case_verdict``, once ``identity_problems`` holds: its
+    trajectories are read only when its bridge checks were established (all true)."""
     if rest.get("status") != "complete":  # its trajectories before the failure still count
         _part_reasons(rest, technical, science)
-    else:
-        failed = [k for k, v in (rest.get("bridge") or {}).items() if v is not True]
-        if failed or not rest.get("bridge"):
-            technical.append(f"the bridge failed in the rest part: {failed or 'no checks'}")
-        if rest.get("v0_unchanged") is not True:
-            technical.append("v₀ changed during the rest part")
+    if rest.get("status") == "not_run" or not _verified(rest):
+        return
     trajectories = rest.get("trajectories") or {}
     for name in REST:
         run = trajectories.get(name)
@@ -297,6 +333,7 @@ def control_verdict(
     are kept for ``rate_verdict``."""
     bound = scope.control_bound(candidate)
     settings, code = _policy(record or {})
+    pods = None if record is None else _pod_problem(record)
     out: dict[str, Any] = {"state": NOT_QUALIFIED, "kind": TECHNICAL, "reasons": [],
                            "K_scoring": None, "bound": bound, "candidate": candidate,
                            "case": None if record is None else record.get("case"),
@@ -306,6 +343,8 @@ def control_verdict(
     case = (record or {}).get("case") or {}
     if record is None:
         reasons.append("no same-path control record")
+    elif pods is not None:  # before anything it measured or its kind: technical
+        reasons.append(pods)
     elif record.get("part") != "control" or case.get("candidate") != candidate:
         reasons.append("the record is not this candidate's same-path control")
     elif record.get("status") != "complete":
@@ -323,9 +362,6 @@ def control_verdict(
         if unequal or not record.get("shared_state"):
             reasons.append(f"the control's {unequal or 'shared state'} differ from the "
                            "launcher run's")  # fmt: skip
-        pods = _pod_problem(record)
-        if pods is not None:
-            reasons.append(pods)
         if state["diverged"]:
             reasons.append("a non-finite record in the control")
         elif not state["complete"] or not fcd._number(k):

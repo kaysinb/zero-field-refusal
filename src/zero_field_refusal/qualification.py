@@ -657,6 +657,9 @@ def _baseline(
         )  # fmt: skip
         run["instability"] = harness_instability(cfg, run)
         setup = _setup_facts(cfg, twins, shared, numerics_setup, run["steps"])
+        # The bridge as soon as the trajectory is done: a failure after it keeps its checks, so
+        # the verdict may read the trajectory (and reads nothing of a part without them)
+        progress.update(setup=setup, bridge=bridge_checks(facts, run["rows"], setup))
         v0_stream = shared["v0_stream"] if reads_v0(case.optimizer) else None
         streams = {"training": setup["training_stream"], "preconditioner": v0_stream}
         archive = fcd.compare_archive(run["rows"], run["monitor"], run_dir, end=run,

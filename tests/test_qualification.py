@@ -738,6 +738,60 @@ def test_a_rest_of_another_baseline_is_refused() -> None:
     assert v["kind"] == "technical" and "the rest record is another case's" in v["reasons"]
 
 
+def test_no_scientific_verdict_on_a_failed_identity_or_bridge_check() -> None:
+    """The identity and bridge checks hold before any measurement is read: a false check (here
+    the training stream, or θ₀'s hash) or a second Pod makes the case technical, whatever
+    scientific evidence its records show, and no measurement of it is read."""
+
+    def false(where, key):
+        def change(baseline, rest):
+            (baseline if where == "baseline" else rest)["bridge"][key] = False
+
+        return change
+
+    def spike(baseline, rest):
+        baseline["trajectories"]["baseline"]["instability"] = {
+            "reason": "gradient_spike", "step": 3, "detail": {"grad_norm": 50.0}}  # fmt: skip
+
+    def pods(baseline, rest):
+        baseline["provenance"]["pod_id"], rest["provenance"]["pod_id"] = "p1", "p2"
+
+    probes = {
+        "a false training-stream check and an excessive D": both(
+            false("rest", "training_stream"), beyond("baseline~reference", 0.5)),
+        "a false θ₀ hash and a gradient spike": both(
+            false("baseline", "theta0_trainable_sha256"), spike),
+        "a second Pod and an excessive D": both(pods, beyond("baseline~s2", 0.5)),
+        "a second Pod and a gradient spike": both(pods, spike),
+    }  # fmt: skip
+    for name, change in probes.items():
+        v = verdict_of(change)
+        assert (v["state"], v["kind"]) == ("not_qualified", "technical"), (name, v["reasons"])
+        assert not any("instability" in r or "D₂₅" in r for r in v["reasons"]), name
+        assert all(c["D"] is None for c in v["comparisons"].values()), name
+    # Without the false check, the same evidence is scientific
+    for change in (beyond("baseline~reference", 0.5), spike):
+        assert verdict_of(change)["kind"] == "scientific"
+
+
+def test_a_part_that_failed_before_its_bridge_has_nothing_read() -> None:
+    """A baseline whose part failed before its bridge checks were established: its trajectory's
+    instability is not read (the case is technical); with the checks recorded, it is."""
+
+    def failed(baseline, rest):
+        baseline["trajectories"]["baseline"]["instability"] = {
+            "reason": "gradient_spike",
+            "step": 3,
+            "detail": {},
+        }
+        baseline.update(status="failed", kind="technical", reasons=["error: OSError: full"])
+        del baseline["bridge"]  # fmt: skip
+
+    v = verdict_of(failed)
+    assert (v["state"], v["kind"]) == ("not_qualified", "technical")
+    assert v["reasons"] == ["baseline: error: OSError: full"]
+
+
 def test_one_pod_per_case() -> None:
     """The launcher run's and the parts' pod ids, where present, are one; a difference is
     technical."""
