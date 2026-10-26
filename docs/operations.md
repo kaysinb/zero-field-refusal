@@ -1466,7 +1466,10 @@ docstring has every rule.
   1. a complete case (below) is skipped: nothing of it runs again (`complete` exits 0; 3 says
      no, and any other exit of `complete` or `decided` stops the driver). A case whose recorded
      parts were written under other GPU code or settings than the checkout's is stale: exit 10,
-     and the driver stops there, neither rerunning nor skipping it;
+     and the driver stops there, neither rerunning nor skipping it. A case whose label
+     (`<cell>/s<seed>` in its experiment) has a launcher run held in any launch journal, whatever
+     its config hash, stops the driver with exit 11 naming the hold, before the launcher is
+     called; nothing lifts a hold;
   2. the `<dir>/<run_id>.pt` of the case's launcher run attempts that the launch journal shows
      superseded (ended technical, or never ended) are removed (`clear-stale`); a settled run's
      checkpoint (done, diverged, or completed but in conflict) stays. Then the free disk is
@@ -1576,7 +1579,9 @@ docstring has every rule.
   issued, or completed, is superseded; one nobody can resolve (a record unreadable or missing a
   field, no commit or one not in the clone, configs that do not give the start's config hash)
   keeps its case as it is, listed unresolved, and the run is held in the journal, so that no
-  part and no recovery round reruns it. A change of the current configs after the run (the
+  part and no recovery round reruns it: the hold applies to the run's label whatever the config
+  hash, so a later campaign whose cell has another hash (a fix that changed a hashed key) starts
+  nothing of it either. A change of the current configs after the run (the
   memory limit, say, outside the config hash) never changes how it is judged. A case that holds a scientific failure (as its bound, valid part
   records of any stage show it, or its resolved launcher run) is kept whole, its records and its launcher run (listed as kept, with why), and
   a cycle cannot start from one of its records:
@@ -1619,8 +1624,8 @@ docstring has every rule.
   cases. It writes the verdict on every exit. **Exits:** 0, every case complete; 1, a
   precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
   that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
-  9, a technical case; 10, a stale case; the launcher's own exit when it stops; any other, the
-  exit of the command that failed.
+  9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; the
+  launcher's own exit when it stops; any other, the exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
@@ -1726,7 +1731,10 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
   no longer count for its label: kept, a used attempt, neither done nor a conflict, so its
   recovery round starts a new one. A `held` record (an outcome a study-3 engineering cycle could
-  not resolve) makes the run a conflict: nothing starts, its recovery round included. A checkpoint run (`tracking.endpoint_checkpoint`) is done
+  not resolve) makes the run a conflict: nothing starts, its recovery round included, and a
+  `--dry-run` reports the same conflict. The hold applies to the run's label (`<cell>/s<seed>` in
+  its experiment) in every journal, whatever the config hash it was written with, with or
+  without `--only`; the launcher never lifts it. A checkpoint run (`tracking.endpoint_checkpoint`) is done
   only if its recorded numerics setup is what the campaign's config asks for (determinism, TF32
   and the matmul precision, the memory limit), read without CUDA.
   Send it to the

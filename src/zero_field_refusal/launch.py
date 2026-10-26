@@ -61,9 +61,12 @@ that no longer counts for its label: its directory and records stay, it is a use
 technical one), and it is neither done, diverged nor a conflict; the run is then attempted again
 through its recovery round. A ``held`` record (``hold``: an outcome a study-3 engineering cycle
 could not resolve) makes the run a conflict: nothing of the campaign starts, its recovery round
-included. A checkpoint run (``tracking.endpoint_checkpoint``) is done only if
-its recorded numerics setup is what the campaign's config asks for (``expected_numerics``:
-determinism, TF32 and the matmul precision, the memory limit; read without touching CUDA).
+included, in a dry run too. The hold applies to the run's label (its experiment and
+``<cell>/s<seed>``) whatever the config hash it was written with, so a campaign whose cell now
+has another config hash is refused it as well; nothing here lifts a hold. A checkpoint run
+(``tracking.endpoint_checkpoint``) is done only if its recorded numerics setup is what the
+campaign's config asks for (``expected_numerics``: determinism, TF32 and the matmul precision,
+the memory limit; read without touching CUDA).
 """
 
 from __future__ import annotations
@@ -241,11 +244,13 @@ def superseded_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str,
 
 
 def held_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    """The run ids of this run that the journal's ``held`` records name (``hold``), with their
-    reasons."""
+    """The run ids of this run's label (its experiment and ``<cell>/s<seed>``) that the
+    journal's ``held`` records name (``hold``), with their reasons, whatever their config hash:
+    a hold applies to the label, so a campaign whose cell now has another config hash (a fix
+    that changed a hashed key) is refused it too."""
     return {r["run_id"]: str(r.get("reason")) for r in records
             if r.get("event") == "held" and r.get("run") == run.label
-            and r.get("experiment") == run.experiment and r.get("config_hash") == run.config_hash
+            and r.get("experiment") == run.experiment
             and isinstance(r.get("run_id"), str)}  # fmt: skip
 
 
@@ -284,8 +289,8 @@ def hold(
     runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
 ) -> None:
     """Log that an attempt of ``run`` has an outcome nobody could resolve (module docstring,
-    "Superseded attempts"): it is kept as it is, and the run is never attempted again, its
-    recovery round included, while the record stands."""
+    "Superseded attempts"): it is kept as it is, and the run's label is never attempted again,
+    under any config hash, its recovery round included, while the record stands."""
     _log(Path(runs_root) / "launch" / f"{campaign}.jsonl",
          {"event": "held", "run": run.label, "run_id": run_id, "experiment": run.experiment,
           "config_hash": run.config_hash, "reason": reason, "record": record})  # fmt: skip
@@ -492,8 +497,10 @@ def run_campaign(
     opens the recovery round of every cell with an exhausted run that has not had one.
     ``header`` (``campaign_header``) goes into every start record. ``only`` runs that label alone
     and ``max_attempts`` bounds the attempts (module docstring). Raises ``CampaignError``
-    before starting anything if a run's existing directories conflict (or ``only`` names no run),
-    and stops at an attempt that completes without qualifying.
+    before starting anything, its recovery round included and in a dry run too, if a run's
+    existing directories conflict or its label has a ``held`` run in any journal, whatever that
+    run's config hash (the conflict names it and the hold's reason), or if ``only`` names no
+    run; and stops at an attempt that completes without qualifying.
 
     **A start found without its end** (the launcher died while its child ran, or after the child
     published and before it judged the run). When an assessed run has a start that no ``end``,

@@ -17,6 +17,7 @@ from zero_field_refusal.launch import (
     StopRequest,
     campaign_header,
     expected_numerics,
+    hold,
     label_starts,
     launch_records,
     load_campaign,
@@ -1009,6 +1010,28 @@ def test_a_labels_attempts_are_ordered_by_number_then_time(tmp_path) -> None:
     closed = [*records, {"event": "end", "run_id": "b"}, {"event": "held", "run_id": "a2"}]
     assert open_start(run, closed)["run_id"] == "a1"
     assert open_start(run, [*closed, {"event": "superseded", "run_id": "a1"}]) is None
+
+
+def test_a_hold_under_another_config_hash_refuses_its_label(tmp_path) -> None:
+    """A ``held`` record of the label written under another config hash (the cell's config has
+    changed since): the label is a conflict naming the held run and the reason, with or without
+    ``only``, its recovery round included and in a dry run; no attempt starts and nothing is
+    written."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    earlier = SimpleNamespace(label=run.label, experiment=run.experiment, config_hash="0" * 12)
+    hold(root, name, earlier, "r-old", reason="no recorded commit", record="supersede-1.json")
+    log = root / "launch" / f"{name}.jsonl"
+    before, executor = log.read_text(), Executor(root, {})
+    for kwargs in ({}, {"only": run.label}, {"only": run.label, "max_attempts": 1,
+                                             "recovery": "the cause is fixed"},
+                   {"dry_run": True}, {"only": run.label, "dry_run": True}):  # fmt: skip
+        with pytest.raises(CampaignError, match="r-old: held, its outcome unresolved: no "
+                                                "recorded commit"):  # fmt: skip
+            run_campaign(name, runs, root, execute=executor, **kwargs)
+    assert executor.calls == [] and log.read_text() == before
+    other = runs[2]  # another label of the campaign is not held
+    assert run_campaign(name, [other], root, execute=executor)["done"] == [other.label]
 
 
 def test_under_only_the_open_starts_of_other_labels_are_untouched(tmp_path) -> None:

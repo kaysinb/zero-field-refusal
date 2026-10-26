@@ -1138,7 +1138,7 @@ def test_an_unresolvable_stop_is_kept_and_held(qualify, tmp_path, monkeypatch, m
                             only=run.label, max_attempts=1)  # fmt: skip
     with pytest.raises(SystemExit) as stop:
         qualify.main(["complete", *common(path), "--case", STOPPED.name])
-    assert stop.value.code == qualify.NO
+    assert stop.value.code == qualify.HELD  # the driver stops before the launcher
     qualify.main(["verdict", *common(path)])
     verdict = json.loads((out / "c1" / "verdict.json").read_text())
     assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "not_qualified"
@@ -1186,14 +1186,12 @@ def test_a_stop_is_judged_against_the_configs_of_its_commit(
         assert qualify.located(run, root) is None
 
 
-def test_a_stop_under_an_earlier_config_hash_is_still_found_and_kept(
-    qualify, tmp_path, monkeypatch
-) -> None:
+def issued_earlier(qualify, tmp_path, monkeypatch, change=None):
     """The fix changed a hashed config key (the teacher's chunk size): s10201's launcher run
-    r-old, a conforming gradient_spike issued at commit abc123 under the earlier configs, has
-    another config hash than the campaign's cell now. The cycle finds it by its label, resolves
-    it against the configs of its own commit (scientific) and keeps its case whole: r-old is not
-    superseded, and the case is decided."""
+    r-old, a gradient_spike issued at commit abc123 under the earlier configs, has another config
+    hash than the campaign's cell now; A's technical baseline opens the cycle. ``change`` edits
+    r-old's records first. Returns the campaign, the roots, the run, the campaign's name, the
+    technical record and the journal."""
     from omegaconf import OmegaConf
 
     from zero_field_refusal.config import config_hash
@@ -1216,6 +1214,8 @@ def test_a_stop_under_an_earlier_config_hash_is_still_found_and_kept(
     run_dir = settled_launcher(root, run, "r-old", stop="gradient_spike", steps=3)
     OmegaConf.save(issued, run_dir / "config.yaml")
     edited_meta(lambda meta: meta.update(config_hash=old_hash))(run_dir)
+    if change is not None:
+        change(run_dir)
     start = {"event": "start", "run": run.label, "attempt": 1, "run_id": "r-old",
              "experiment": run.experiment, "config_hash": old_hash,
              "command": run.command()[1:]}  # fmt: skip
@@ -1224,6 +1224,16 @@ def test_a_stop_under_an_earlier_config_hash_is_still_found_and_kept(
     log.write_text(json.dumps(start) + "\n")
     assert qualify.journal_run_ids(run, root) == []  # not the cell's config hash
     monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    return path, root, out, run, name, record, log
+
+
+def test_a_stop_under_an_earlier_config_hash_is_still_found_and_kept(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """r-old (``issued_earlier``) conforms to what it was issued. The cycle finds it by its
+    label, resolves it against the configs of its own commit (scientific) and keeps its case
+    whole: r-old is not superseded, and the case is decided."""
+    path, root, out, run, name, record, log = issued_earlier(qualify, tmp_path, monkeypatch)
     qualify.main(supersede_args(path, ADAMW, record))
     cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
     (kept,) = cycle["kept_cases"]
@@ -1236,6 +1246,53 @@ def test_a_stop_under_an_earlier_config_hash_is_still_found_and_kept(
     qualify.main(["verdict", *common(path)])
     verdict = json.loads((out / "c1" / "verdict.json").read_text())
     assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "failing"
+
+
+def test_a_hold_under_an_earlier_config_hash_stops_its_label(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """r-old (``issued_earlier``) records no commit: the cycle holds it, under its earlier
+    config hash. The hold applies to its label: under the cell's hash now, the recovery round
+    (``--only``), a whole campaign and a dry run are refused before anything starts, naming
+    r-old and the hold's reason, and no child process starts; ``complete`` exits ``HELD``
+    naming the hold, so the driver stops before the launcher."""
+    from zero_field_refusal import launch
+
+    no_commit = edited_meta(lambda meta: meta.pop("git"))
+    path, root, out, run, name, record, log = issued_earlier(qualify, tmp_path, monkeypatch,
+                                                             no_commit)  # fmt: skip
+    qualify.main(supersede_args(path, ADAMW, record))
+    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
+    assert [(h["run_id"], h["config_hash"] != run.config_hash) for h in cycle["held"]] == [
+        ("r-old", True)]  # fmt: skip
+    assert [json.loads(line)["event"] for line in log.read_text().splitlines()] == [
+        "start", "held"]  # fmt: skip
+    _, runs = launch.load_campaign(path)
+    before, children = log.read_text(), []
+
+    def execute(*args):
+        children.append(args)
+        return 0
+
+    refused = r"r-old: held, its outcome unresolved: no recorded commit"
+    for kwargs in ({"recovery": "a reason", "only": run.label, "max_attempts": 1}, {},
+                   {"dry_run": True}, {"dry_run": True, "only": run.label}):  # fmt: skip
+        with pytest.raises(launch.CampaignError, match=refused):
+            launch.run_campaign(name, runs, root, execute=execute, **kwargs)
+    assert children == [] and log.read_text() == before
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(["complete", *common(path), "--case", STOPPED.name])
+    assert stop.value.code == qualify.HELD
+    assert "r-old" in capsys.readouterr().err
+
+
+def test_the_driver_stops_at_a_held_label_before_the_launcher(qualify, tmp_path, monkeypatch):
+    """``complete`` exits ``HELD`` for the first case: the driver stops there, its verdict
+    written, and neither the launcher nor a part is called."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, complete=qualify.HELD)
+    assert code == qualify.HELD
+    assert calls == [f"complete {FA.name}", "verdict"]
 
 
 def test_configs_at_reads_a_commit_from_git_not_the_working_tree(tmp_path) -> None:

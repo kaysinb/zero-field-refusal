@@ -44,7 +44,11 @@ outside this.
    attempt of each) against this checkout's GPU code (``code_identity.gpu_code_identity``) and
    the tracked settings: a record of other code or settings makes the case ``stale``, exit 10
    (``STALE``), and the driver stops there: a stale case is never rerun by it, and never skipped
-   (its re-qualification is a decision of its own, "Voiding and supersession").
+   (its re-qualification is a decision of its own, "Voiding and supersession"). Then, before the
+   launcher can be reached: a launcher run of the case's label (its experiment and
+   ``<cell>/s<seed>``) held in any launch journal, whatever its config hash (``launch.hold``: an
+   outcome the engineering cycle could not resolve), exits 11 (``HELD``) naming the run and the
+   hold's reason, and the driver stops there; nothing here lifts a hold.
 2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every attempt of the
    case's launcher run that the launch journal shows superseded (``superseded_run_ids``: ended
    technical, or not ended, without a settled directory); the checkpoint of a settled run (done,
@@ -190,7 +194,8 @@ direction on the host and a checkpoint save's transient), then runs each case in
 writes the verdict on every exit. Exits: 0 when every case is complete; 1 a precondition (the host
 memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
 not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
-technical case; 10 a stale case; the launcher's own when it stops; any other, the failed command's.
+technical case; 10 a stale case; 11 a case whose label has a held launcher run; the launcher's own
+when it stops; any other, the failed command's.
 The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
 reason."""
 
@@ -253,6 +258,7 @@ NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
 STALE = 10  # ``complete`` and ``decided``: records of other GPU code or settings
+HELD = 11  # ``complete`` and ``decided``: the case's label has a held launcher run
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
@@ -1829,7 +1835,8 @@ def driver_script(
                  f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
                  f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
                  f"technical case; {STALE} a stale case (records of other GPU code or settings); "
-                 "the launcher's own when it stops; another a failed command."),
+                 f"{HELD} a case whose label has a held launcher run; the launcher's own when it "
+                 "stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -1875,6 +1882,8 @@ def driver_script(
             f'  0) echo "== {stamp} complete: {p.case.name} is skipped" ;;',
             f'  {STALE}) stop "{p.case.name}: records of other GPU code or settings (stale); '
             f'nothing is rerun or skipped" {STALE} ;;',
+            f'  {HELD}) stop "{p.case.name}: its label has a held launcher run (an outcome '
+            f'nobody could resolve); the launcher is not called" {HELD} ;;',
             f"  {NO})",
             f"    {RUN} clear-stale {common} {case}",
             "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
@@ -2025,6 +2034,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{chosen.case.name}: stale, records of other GPU code or settings than this "
                   f"checkout's: {stale}", file=sys.stderr)  # fmt: skip
             sys.exit(STALE)
+        held = held_runs(chosen.run, launch_records(root))  # any config hash of the label
+        if held:
+            print(f"{chosen.case.name}: its label {chosen.run.label} has a held launcher run, an "
+                  f"outcome nobody could resolve, and nothing of it runs: {held}",
+                  file=sys.stderr)  # fmt: skip
+            sys.exit(HELD)
         complete, decided, why = case_state(out, chosen, scope)
         print(f"{chosen.case.name}: {why}")
         if not (complete if args.command == "complete" else decided):
