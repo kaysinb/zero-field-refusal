@@ -3,6 +3,7 @@ records under ``study3/decisions/``, the evidence files they name (in the runs d
 checkout), and launch journals whose headers name a record. The run folders hold a harmful-response
 file and an observations file with a sentinel text; nothing here opens either."""
 
+import ast
 import builtins
 import hashlib
 import io
@@ -15,20 +16,24 @@ from pathlib import Path
 import pytest
 
 from zero_field_refusal.analysis.study3_decisions import (
+    HOLD_REASONS,
     LEVELS,
     DecisionRefused,
     budget_needed,
     budget_reason,
     cap_of,
+    closures,
     coverage_threshold,
     decision_path,
     decisions,
+    hold_reasons,
     immutable,
     kind_of,
     read_decision,
     write_decision,
 )
 from zero_field_refusal.analysis.study3_records import SEEDS
+from zero_field_refusal.paths import REPO_ROOT
 
 SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
@@ -1729,3 +1734,302 @@ def test_the_module_imports_no_gpu_path() -> None:
             "if m in sys.modules])")  # fmt: skip
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "[]"
+
+
+# ------------------------------------------------------------------ the closure of a held run
+
+HELD = "20261026T000001Z-F-1.83e-05-s10200-0123abcd-a1"
+STATED = "no recorded commit (git: {}); no numerics setup (inputs.numerics_setup)"
+
+
+def held(world: World, *, arm="F", rate=1.83e-5, seed=10200, run_id=HELD, candidate=1,
+         reason=STATED, log="study3-c1-numerical", cycle_holds=None) -> dict:  # fmt: skip
+    """A launcher run the candidate's engineering cycle held, as package 1 records it: the
+    supersession record names it under ``held`` (or ``cycle_holds``), and a launch log holds its
+    ``held`` line after another run's start. Returns the closure record that cites both: the
+    line by its log, number and own sha256, the cycle by its sha256."""
+    label = f"{arm}-{rate:g}/s{seed}"
+    cycle = world.runs / "qualification" / f"c{candidate}" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"run_id": run_id, "campaign": log, "run": label, "experiment": "study3",
+             "config_hash": "c" * 12, "reason": reason}  # fmt: skip
+    cycle.write_text(
+        json.dumps(
+            {
+                "candidate": candidate,
+                "supersession": 1,
+                "held": [entry] if cycle_holds is None else cycle_holds,
+            }
+        )
+    )
+    path = world.runs / "launch" / f"{log}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"time": "2026-10-26T12:00:00+00:00", "event": "held", "run": label,
+                       "run_id": run_id, "experiment": "study3", "config_hash": "c" * 12,
+                       "reason": reason, "record": str(cycle)})  # fmt: skip
+    with path.open("a") as f:
+        f.write(json.dumps({"event": "start", "run": "x/s1", "run_id": "other"}) + "\n")
+        f.write(line + "\n")
+    return {
+        "kind": f"closure-c{candidate}-{arm}", "state": "failed", "written_at": WHEN,
+        "code": CODE, "candidate": candidate, "arm": arm, "rate": rate, "seed": seed,
+        "run_id": run_id,
+        "hold": {"path": f"launch/{log}.jsonl", "line": len(path.read_text().splitlines()),
+                 "line_sha256": hashlib.sha256(line.encode()).hexdigest()},
+        "cycle": {"path": f"qualification/c{candidate}/supersede-1.json", "sha256": sha256(cycle)},
+        "reason": "no_recorded_commit",
+        "decision": "close_pf" if arm == "P" else "technical_feasibility_report",
+    }  # fmt: skip
+
+
+def test_the_closure_kinds_and_their_files(world) -> None:
+    assert kind_of("closure-c1-A") == ("closure", 1)
+    assert kind_of("closure-c2-P") == ("closure", 2)
+    for bad in ("closure", "closure-c1", "closure-c3-A", "closure-c1-Q", "closure-c1-a",
+                "closure-c1-AF", "closure-c1-A.json"):  # fmt: skip
+        with pytest.raises(ValueError):
+            kind_of(bad)
+    assert decision_path(world.runs, "closure-c1-F") == (
+        world.runs / "study3" / "decisions" / "closure-c1-F.json")  # fmt: skip
+
+
+@pytest.mark.parametrize("arm, rate, seed", [("A", 2.11e-5, 10201), ("F", 1.83e-5, 10200),
+                                             ("P", 1.85e-5, 10202)])  # fmt: skip
+def test_a_closure_record_cites_its_hold_line_and_its_cycle_and_is_failed(
+    world, arm, rate, seed
+) -> None:
+    record = held(world, arm=arm, rate=rate, seed=seed)
+    world.write(f"closure-c1-{arm}", record)
+    found, problems = world.read(f"closure-c1-{arm}")
+    assert problems == [] and found == record and found["state"] == "failed"
+    entry = closures(world.runs, 1, repo=world.repo)[f"closure-c1-{arm}"]
+    assert (entry["state"], entry["problems"], entry["record"]) == ("failed", [], record)
+
+
+@pytest.mark.parametrize("arm, decision", [("F", "close_pf"), ("A", "close_pf"),
+                                           ("P", "technical_feasibility_report"),
+                                           ("F", "scientific_feasibility_report"),
+                                           ("F", "stop"), ("P", None)])  # fmt: skip
+def test_a_closure_for_any_other_pairing_of_arm_and_decision_is_refused(
+    world, arm, decision
+) -> None:
+    record = held(world, arm=arm)
+    refused(world, f"closure-c1-{arm}", {**record, "decision": decision}, "decision")
+
+
+def test_a_closure_is_a_terminal_technical_outcome_never_passed(world) -> None:
+    record = held(world)
+    refused(world, "closure-c1-F", {**record, "state": "passed"}, "state", "failed")
+
+
+def test_a_closure_stays_valid_while_its_log_grows(world) -> None:
+    """The hold is cited by its line's own bytes: a log's sha256 changes whenever the launcher
+    appends to it, the line's does not."""
+    record = held(world)
+    world.write("closure-c1-F", record)
+    log = world.runs / record["hold"]["path"]
+    before = sha256(log)
+    with log.open("a") as f:
+        f.write(json.dumps({"event": "start", "run": "y/s2", "run_id": "later"}) + "\n")
+    assert sha256(log) != before
+    assert world.read("closure-c1-F") == (record, [])
+
+
+def test_a_stale_hold_line_is_a_problem(world) -> None:
+    record = held(world)
+    refused(world, "closure-c1-F", {**record, "hold": {**record["hold"], "line_sha256": "e" * 64}},
+            "line_sha256")  # fmt: skip
+    refused(world, "closure-c1-F", {**record, "hold": {**record["hold"], "line": 1}}, "hold")
+    world.write("closure-c1-F", record)
+    log = world.runs / record["hold"]["path"]
+    lines = log.read_text().splitlines()
+    lines[-1] = lines[-1].replace("no recorded commit", "no recorded  commit")
+    log.write_text("\n".join(lines) + "\n")
+    found, problems = world.read("closure-c1-F")
+    assert found is None and any("hold" in p and "sha256" in p for p in problems), problems
+    assert closures(world.runs, 1, repo=world.repo)["closure-c1-F"]["state"] == "invalid"
+
+
+def test_a_stale_cycle_record_is_a_problem(world) -> None:
+    record = held(world)
+    refused(world, "closure-c1-F", {**record, "cycle": {**record["cycle"], "sha256": "e" * 64}},
+            "cycle")  # fmt: skip
+    world.write("closure-c1-F", record)
+    cycle = world.runs / record["cycle"]["path"]
+    cycle.write_text(cycle.read_text() + " ")
+    found, problems = world.read("closure-c1-F")
+    assert found is None and any("cycle" in p and "sha256" in p for p in problems), problems
+
+
+def test_a_run_id_the_hold_line_or_the_cycle_does_not_name_is_refused(world) -> None:
+    record = held(world)
+    refused(world, "closure-c1-F", {**record, "run_id": "20261026T000002Z-other-a1"},
+            "run_id", "hold line")  # fmt: skip
+    # the cycle holds another run: the line names this one, the cycle does not
+    record = held(world, cycle_holds=[{"run_id": "20261026T000002Z-other-a1", "reason": STATED}])
+    refused(world, "closure-c1-F", record, "run_id", "cycle")
+
+
+@pytest.mark.parametrize("reason, ok", [("no_recorded_commit", True), ("no_numerics_setup", True),
+                                        ("no_v0_hash", False), ("no recorded commit", False),
+                                        ("unknown_reason", False), ("", False), (3, False),
+                                        ("No_recorded_commit", False)])  # fmt: skip
+def test_the_reason_is_an_id_of_one_of_the_reasons_the_hold_line_states(world, reason, ok) -> None:
+    record = {**held(world), "reason": reason}
+    if ok:
+        world.write("closure-c1-F", record)
+        assert world.read("closure-c1-F") == (record, [])
+    else:
+        refused(world, "closure-c1-F", record, "reason")
+
+
+@pytest.mark.parametrize("hold, why", [
+    ({"path": "../launch/study3-c1-numerical.jsonl"}, "hold.path"),
+    ({"path": "qualification/c1/supersede-1.json"}, "hold.path"),
+    ({"path": "/abs/launch/study3-c1-numerical.jsonl"}, "hold.path"),
+    ({"path": "launch/sub/../study3-c1-numerical.jsonl"}, "hold.path"),
+    ({"line": 0}, "hold.line"), ({"line": True}, "hold.line"), ({"line": 9}, "no line 9"),
+    ({"line_sha256": "x"}, "hold.line_sha256"),
+])  # fmt: skip
+def test_the_hold_is_a_line_of_a_launch_log(world, hold, why) -> None:
+    record = held(world)
+    refused(world, "closure-c1-F", {**record, "hold": {**record["hold"], **hold}}, why)
+
+
+def test_the_cited_line_must_be_the_runs_held_line(world) -> None:
+    """The line before the held one is the start of another run: no hold at all."""
+    record = held(world)
+    log = world.runs / record["hold"]["path"]
+    first = log.read_text().splitlines()[0]
+    hold = {**record["hold"], "line": 1, "line_sha256": hashlib.sha256(first.encode()).hexdigest()}
+    refused(world, "closure-c1-F", {**record, "hold": hold}, "held")
+
+
+@pytest.mark.parametrize("field, value", [("candidate", 2), ("candidate", True), ("arm", "P"),
+                                          ("seed", 2201), ("seed", 10200.0), ("rate", 0.0),
+                                          ("rate", "1.83e-5"), ("run_id", "a/b"),
+                                          ("run_id", ""), ("note", "free text")])  # fmt: skip
+def test_a_closure_names_its_kinds_candidate_arm_a_registered_seed_and_nothing_else(
+    world, field, value
+) -> None:
+    refused(world, "closure-c1-F", {**held(world), field: value}, field)
+
+
+def test_a_closure_seed_must_be_the_hold_lines(world) -> None:
+    refused(world, "closure-c1-F", {**held(world), "seed": 10201}, "seed")
+
+
+def test_a_closure_seed_must_be_a_registered_seed_of_its_candidate(world) -> None:
+    """A hold line of a run on another seed (study 2's 2201, say) closes nothing of study 3."""
+    refused(world, "closure-c1-F", held(world, seed=2201), "seed", "registered")
+
+
+def test_a_reason_that_is_no_id_of_a_hold_reason_is_refused_by_the_schema(world) -> None:
+    refused(world, "closure-c1-F", {**held(world), "reason": "unknown_reason"},
+            "the id of a reason a hold states")  # fmt: skip
+
+
+def test_a_copy_of_the_launch_log_elsewhere_is_no_hold_line(world) -> None:
+    record = held(world)
+    copy = world.runs / "elsewhere" / "study3-c1-numerical.jsonl"
+    copy.parent.mkdir()
+    copy.write_bytes((world.runs / record["hold"]["path"]).read_bytes())
+    hold = {**record["hold"], "path": "elsewhere/study3-c1-numerical.jsonl"}
+    refused(world, "closure-c1-F", {**record, "hold": hold}, "hold.path")
+
+
+def test_another_candidates_supersession_record_is_no_cycle_of_this_one(world) -> None:
+    """Its path names the candidate: candidate 2's record, even one that holds the run and
+    names no candidate, is not candidate 1's cycle."""
+    record = held(world)
+    other = world.runs / "qualification" / "c2" / "supersede-1.json"
+    other.parent.mkdir(parents=True)
+    other.write_text(json.dumps({"held": [{"run_id": HELD, "reason": STATED}]}))
+    cycle = {"path": "qualification/c2/supersede-1.json", "sha256": sha256(other)}
+    refused(world, "closure-c1-F", {**record, "cycle": cycle}, "cycle", "candidate 1's")
+
+
+@pytest.mark.parametrize("cycle, why", [
+    ({"path": "qualification/c2/supersede-1.json"}, "cycle"),
+    ({"root": "repo"}, "cycle"),
+    ({"path": "launch/study3-c1-numerical.jsonl"}, "cycle"),
+])  # fmt: skip
+def test_the_cycle_is_the_candidates_supersession_record(world, cycle, why) -> None:
+    record = held(world)
+    refused(world, "closure-c1-F", {**record, "cycle": {**record["cycle"], **cycle}}, why)
+
+
+def test_a_second_closure_is_refused(world) -> None:
+    record = held(world)
+    world.write("closure-c1-F", record)
+    with pytest.raises(DecisionRefused, match="already written"):
+        world.write("closure-c1-F", {**record, "reason": "no_numerics_setup"})
+    assert world.read("closure-c1-F") == (record, [])
+
+
+def test_closures_lists_each_arm_of_a_candidate_with_its_state(world) -> None:
+    world.write("closure-c1-P", held(world, arm="P", rate=1.85e-5))
+    world.raw("closure-c1-A", {"kind": "closure-c1-A"})
+    found = closures(world.runs, 1, repo=world.repo)
+    assert {k: v["state"] for k, v in found.items()} == {
+        "closure-c1-A": "invalid",
+        "closure-c1-F": "missing",
+        "closure-c1-P": "failed",
+    }
+    assert closures(world.runs, 2, repo=world.repo)["closure-c2-F"]["state"] == "missing"
+    with pytest.raises(ValueError):
+        closures(world.runs, 3)
+
+
+def test_hold_reasons_reads_the_ids_a_hold_line_states_in_order() -> None:
+    assert hold_reasons(STATED) == ["no_recorded_commit", "no_numerics_setup"]
+    assert hold_reasons("no numerics_setup.deterministic; its records are unreadable: OSError") == [
+        "numerics_setup_key_missing",
+        "records_unreadable",
+    ]
+    assert hold_reasons("lost the pod") == [] and hold_reasons(None) == []
+
+
+def unresolved_reasons() -> list[str]:
+    """The literal starts of every reason ``scripts/qualify.py``'s ``resolve_launcher_run``
+    gives an unresolved launcher run (the reasons a hold line joins with "; "), read from its
+    source: the module runs on a GPU and is not imported."""
+    tree = ast.parse((REPO_ROOT / "scripts" / "qualify.py").read_text())
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_launcher_run"
+    )
+    found = []
+
+    def start(node) -> str:
+        if isinstance(node, ast.Constant):
+            return node.value
+        first = node.values[0]  # an f-string
+        return first.value if isinstance(first, ast.Constant) else ""
+
+    for node in ast.walk(function):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "missing"):  # fmt: skip
+            found.append(start(node.args[0]))
+        if (
+            isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Tuple)
+            and isinstance(node.value.elts[0], ast.Name)
+            and node.value.elts[0].id == "UNRESOLVED"
+            and isinstance(node.value.elts[1], ast.List)
+        ):  # ``return UNRESOLVED, missing``
+            found += [start(item) for item in node.value.elts[1].elts]
+    return found
+
+
+def test_the_hold_reasons_are_the_unresolved_reasons_the_cycle_gives() -> None:
+    """Every reason an unresolved launcher run is held with has exactly one id, and every id
+    names one of them."""
+    starts = unresolved_reasons()
+    assert len(starts) >= len(HOLD_REASONS)
+    for text in starts:
+        assert len(hold_reasons(text)) == 1, text
+    assert {key for text in starts for key in hold_reasons(text)} == set(HOLD_REASONS)
+    assert all(key.replace("_", "").isalnum() and key == key.lower() for key in HOLD_REASONS)

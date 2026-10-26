@@ -19,8 +19,11 @@ records; the state machine consumes only what this module accepts.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
 - ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
   at all) N asks for a budget decision.
+- ``closures``: the closure records of a candidate's arms, each with its state and problems, as
+  ``decisions`` lists the others; ``hold_reasons``: the ids of the reasons a hold line states.
 
-**Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate) and ``budget-c<N>``.
+**Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate), ``budget-c<N>`` and
+``closure-c<N>-<arm>`` (one per candidate and arm A, F or P).
 Every record carries ``kind`` (equal to its file's), ``state`` (``passed`` or ``failed``),
 ``written_at`` (ISO 8601 with a UTC offset) and ``code``: ``commit`` (40 hexadecimal digits) and
 ``gpu_code_sha256`` (the sha256 of ``code_identity.gpu_code_identity`` at that commit). The
@@ -91,6 +94,23 @@ on is a response or an observation, and this module opens none.
   researcher's decision; ``decisions`` lists the record as ``missing``, with that as its problem,
   until it is written. A failed ``n`` record needs none. One for an N that needs none is valid
   and read as written.
+- ``closure-c<N>-<arm>``: a held launcher run of the arm ("Failure routes": an unresolved technical
+  failure after the candidate's engineering cycle, the run held by the cycle and never attempted
+  again) closed as the terminal technical outcome it is. ``candidate`` and ``arm`` (the kind's),
+  ``rate``, ``seed`` (a registered seed of the candidate, the one the hold line's label names),
+  ``run_id`` (the held run), ``hold`` (the launch log's ``held`` line that holds it: ``path``,
+  ``launch/<log>.jsonl`` under the runs directory, ``line``, its number from 1, and
+  ``line_sha256``, the sha256 of the line's UTF-8 text: the line's own bytes, which stay when the
+  launcher appends to the log, as the log's sha256 does not), ``cycle`` (the evidence of the
+  candidate's supersession record, ``qualification/c<N>/supersede-<n>.json`` under the runs
+  directory), ``reason`` (the id of one of the reasons the hold line states, ``HOLD_REASONS``:
+  never the evidence's free text) and ``decision``: ``technical_feasibility_report`` for A or F
+  (the study ends with the technical feasibility report, and candidate 2 is not taken),
+  ``close_pf`` for P (P–F closes, and A–F goes on); any other pairing is refused. The state is
+  ``failed``: a terminal technical outcome. It is checked against the files as they are now: the
+  hold line's bytes, the supersession record's bytes, and the run id both name (the hold line a
+  ``held`` event of that run whose reasons state ``reason``, the record's ``held`` naming that
+  run). The hold and its evidence stay as they are; a closure removes nothing.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
@@ -118,7 +138,13 @@ on is a response or an observation, and this module opens none.
   ``study3_records`` reads it: through its private ``_read_journal``, which this module keeps
   importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the
-  record to the file's bytes and does not read the evidence's meaning.
+  record to the file's bytes and does not read the evidence's meaning. The closure is the one
+  exception: the hold line and the supersession record are read for the run id they name and the
+  reasons the line states, as ids, and nothing else.
+- *The reasons of a hold* are those ``scripts/qualify.py`` gives an unresolved launcher run
+  (``resolve_launcher_run``), joined with "; " in the hold line: each has an id here, by the text
+  it starts with (``HOLD_REASONS``); a test reads the script's source so that the two stay one
+  list.
 """
 
 from __future__ import annotations
@@ -160,6 +186,24 @@ ACTIVE = (["A-F"], ["A-F", "P-F"])
 SPREAD_STEP_PP = 0.5
 CHECKS = ("dry_run", "bridge", "theta0_utility", "stage0")
 DECISIONS = ("proceed", "stop")
+# The closure of a held run: the terminal decision that applies to each arm ("Failure routes")
+CLOSURE_DECISIONS = {"A": "technical_feasibility_report", "F": "technical_feasibility_report",
+                     "P": "close_pf"}  # fmt: skip
+# The reasons ``qualify.py`` holds an unresolved launcher run with (``resolve_launcher_run``), each
+# by its id and the text the hold line states it with (the start of one "; "-joined reason)
+HOLD_REASONS = {
+    "records_unreadable": "its records are unreadable",
+    "no_campaign_header": "no campaign header in its meta.json",
+    "no_numerics_setup": "no numerics setup",
+    "no_theta0_hash": "no hash of θ₀'s trainable parameters",
+    "no_v0_hash": "no hash of v₀",
+    "no_recorded_commit": "no recorded commit",
+    "gpu_code_unknown": "the GPU code of its commit",
+    "issued_config_not_composed": "what it was issued cannot be composed",
+    "issued_config_hash_differs": "its issued config, composed from the configs of its commit",
+    "numerics_setup_key_missing": "no numerics_setup.",
+    "no_terminal_record": "no whole terminal record",
+}
 COMMON = ("kind", "state", "written_at", "code")
 FIELDS = {
     "engineering": ("checks",),
@@ -168,9 +212,13 @@ FIELDS = {
     "n": ("candidate", "rates", "active", "level", "cohort", "spread", "spread_pp", "N", "cap",
           "simulation"),
     "budget": ("candidate", "N", "cap", "decision", "answers"),
+    "closure": ("candidate", "arm", "rate", "seed", "run_id", "hold", "cycle", "reason",
+                "decision"),
 }  # fmt: skip
 
-_KIND = re.compile(r"(engineering|simulation|(?:n|budget)-c([12]))")
+_KIND = re.compile(r"(engineering|simulation|(?:n|budget)-c([12])|closure-c([12])-([AFP]))")
+_REASON_ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_CYCLE = re.compile(r"qualification/c([12])/supersede-\d+\.json")
 _INPUT_NAME = re.compile(r"[a-z](?:[a-z_]{0,38}[a-z])?")  # letters and underscores, no digits
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
 # Words that mark a field as one no record carries (the hint on an unknown field)
@@ -198,13 +246,28 @@ SIMULATION_RECORD = "/".join((*DIRECTORY, "simulation.json"))  # an n record's r
 
 
 def kind_of(kind: str) -> tuple[str, int | None]:
-    """(``engineering``, ``simulation``, ``n`` or ``budget``, the candidate) of a kind;
-    ``ValueError`` for another name."""
+    """(``engineering``, ``simulation``, ``n``, ``budget`` or ``closure``, the candidate) of a
+    kind; ``ValueError`` for another name."""
     found = _KIND.fullmatch(kind) if isinstance(kind, str) else None
     if found is None:
         raise ValueError(f"{kind!r} is not a decision kind (engineering, simulation, n-c<N>, "
-                         "budget-c<N>, N = 1 or 2)")  # fmt: skip
+                         "budget-c<N>, closure-c<N>-<arm>, N = 1 or 2, arm A, F or P)")  # fmt: skip
+    if found.group(3):
+        return "closure", int(found.group(3))
     return (kind.split("-")[0], int(found.group(2))) if found.group(2) else (kind, None)
+
+
+def hold_reasons(text: Any) -> list[str]:
+    """The ids (``HOLD_REASONS``) of the reasons a hold line states, in the order it states them:
+    its reasons are joined with "; ", and each is known by the text it starts with."""
+    if not isinstance(text, str):
+        return []
+    out: list[str] = []
+    for item in text.split("; "):
+        for key, start in HOLD_REASONS.items():
+            if item.startswith(start) and key not in out:
+                out.append(key)
+    return out
 
 
 def decision_path(runs_root: str | Path, kind: str) -> Path:
@@ -296,6 +359,21 @@ def decisions(
                                        f"n-c{candidate} record is needed ({reason}) and is not "
                                        "written"]  # fmt: skip
     return out
+
+
+def closures(
+    runs_root: str | Path, candidate: int, *, repo: str | Path = REPO_ROOT
+) -> dict[str, dict[str, Any]]:
+    """The closure records of a candidate, one per arm (``closure-c<N>-A``, ``-F``, ``-P``),
+    each ``{"kind", "path", "state", "record", "problems"}`` as ``decisions`` lists the others:
+    ``failed`` for a valid record (a closure is a terminal technical outcome), ``missing`` for none,
+    ``invalid`` for one with a problem, the immutability check included."""
+    if candidate not in (1, 2) or isinstance(candidate, bool):
+        raise ValueError(f"candidate {candidate!r} is not 1 or 2")
+    root, repo = Path(runs_root), Path(repo)
+    starts, corrupt = _starts(root)
+    return {kind: _entry(root, kind, starts, corrupt, repo)
+            for kind in (f"closure-c{candidate}-{arm}" for arm in CLOSURE_DECISIONS)}  # fmt: skip
 
 
 def _invalidate(entry: dict[str, Any], why: str) -> None:
@@ -471,6 +549,8 @@ def _problems(root: Path, kind: str, record: Any, repo: Path) -> list[str]:
         problems += _against_simulation(root, record, candidate, repo)
     elif family == "budget":
         problems += _against_n(root, kind, record, candidate, repo)
+    elif family == "closure":
+        problems += _against_hold(root, record, candidate)
     return problems
 
 
@@ -936,6 +1016,60 @@ class _Schema:
             "answers", r["answers"], "/".join((*DIRECTORY, f"n-c{self.candidate}.json"))
         )
 
+    # -- closure
+
+    def _closure(self, r: dict[str, Any]) -> None:
+        arm = self.kind.rsplit("-", 1)[1]
+        if r["candidate"] != self.candidate or type(r["candidate"]) is not int:
+            self.add("candidate", f"is {r['candidate']!r}, not {self.candidate}")
+        if r["arm"] != arm:
+            self.add("arm", f"is {r['arm']!r}, not the kind's {arm}")
+        if r["state"] != "failed":
+            self.add("state", f"is {r['state']!r}: a closure is a terminal technical outcome, "
+                     "failed")  # fmt: skip
+        self.real("rate", r["rate"], positive=True)
+        seeds = {s for role in SEEDS.values() for s in role.get(self.candidate, ())}
+        if type(r["seed"]) is not int or r["seed"] not in seeds:
+            self.add("seed", f"is {r['seed']!r}, not a registered seed of candidate "
+                     f"{self.candidate}")  # fmt: skip
+        run_id = r["run_id"]
+        if not (isinstance(run_id, str) and run_id not in ("", ".", "..")
+                and PurePosixPath(run_id).name == run_id and "\\" not in run_id):  # fmt: skip
+            self.add("run_id", f"is {run_id!r}, not a run id")
+        self._hold(r["hold"])
+        cycle = self.ref("cycle", r["cycle"])
+        if cycle is not None and (cycle.get("root", "runs") != "runs" or not (
+                isinstance(cycle["path"], str) and _CYCLE.fullmatch(cycle["path"])
+                and _CYCLE.fullmatch(cycle["path"]).group(1) == str(self.candidate))):  # fmt: skip
+            self.add("cycle", f"is {cycle['path']!r} under {cycle.get('root', 'runs')!r}, not "
+                     f"candidate {self.candidate}'s supersession record "
+                     f"qualification/c{self.candidate}/supersede-<n>.json under the runs "
+                     "directory")  # fmt: skip
+        reason = r["reason"]
+        if not (isinstance(reason, str) and _REASON_ID.fullmatch(reason)
+                and reason in HOLD_REASONS):  # fmt: skip
+            self.add("reason", f"is {reason!r}, not the id of a reason a hold states "
+                     f"({sorted(HOLD_REASONS)})")  # fmt: skip
+        if r["decision"] != CLOSURE_DECISIONS[arm]:
+            self.add("decision", f"is {r['decision']!r}: a closure of {arm} decides "
+                     f"{CLOSURE_DECISIONS[arm]!r}")  # fmt: skip
+
+    def _hold(self, value: Any) -> None:
+        """The hold line: ``launch/<log>.jsonl`` under the runs directory, its number and its
+        own sha256."""
+        hold = self.object("hold", value, ("path", "line", "line_sha256"))
+        if hold is None:
+            return
+        path = hold["path"]
+        parts = PurePosixPath(path).parts if isinstance(path, str) else ()
+        if not (len(parts) == 2 and parts[0] == "launch" and parts[1].endswith(".jsonl")
+                and "\\" not in path and parts[1] not in (".", "..")):  # fmt: skip
+            self.add("hold.path", f"is {path!r}, not a launch log launch/<log>.jsonl under the "
+                     "runs directory")  # fmt: skip
+        self.integer("hold.line", hold["line"], 1)
+        if not (isinstance(hold["line_sha256"], str) and _SHA256.fullmatch(hold["line_sha256"])):
+            self.add("hold.line_sha256", f"is {hold['line_sha256']!r}, not a sha256")
+
 
 def coverage_threshold(tests: int, runs: int, p0: float) -> int:
     """c = BinomQuantile(1 − 0.05/J; M, p₀): the largest non-coverage count that a correctly
@@ -1001,6 +1135,70 @@ def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
         if len(seeds) < SUPPORTED_AT[blocks]:
             found.append(f"the cohort has {len(seeds)} blocks, below the {SUPPORTED_AT[blocks]} "
                          f"supported that the {blocks}-block validation needs")  # fmt: skip
+    return found
+
+
+def _against_hold(root: Path, record: Mapping[str, Any], candidate: int) -> list[str]:
+    """A ``closure-c<N>-<arm>`` record against the files as they are now: the hold line (its
+    bytes, a ``held`` event of the record's run whose reasons state the record's reason, its label
+    of the record's seed) and the supersession record (its ``held`` naming the run). Its sha256 is
+    checked with the other evidence."""
+    found = []
+    run_id, hold = record["run_id"], record["hold"]
+    path = root / hold["path"]
+    if _under_sealed(path, root, Path(hold["path"])):
+        return [f"hold: {path} is under a responses or observations folder: never opened"]
+    try:
+        lines = path.read_bytes().decode("utf-8").splitlines()
+    except (OSError, ValueError) as exc:
+        lines = None
+        found.append(f"hold: the launch log {path} cannot be read ({type(exc).__name__})")
+    if lines is not None and hold["line"] > len(lines):
+        found.append(f"hold: the launch log {path} has no line {hold['line']}")
+    elif lines is not None:
+        line = lines[hold["line"] - 1]
+        now = hashlib.sha256(line.encode()).hexdigest()
+        if now != hold["line_sha256"]:
+            found.append(f"hold: line {hold['line']} of {path} has line_sha256 {now} now, not the "
+                         f"recorded {hold['line_sha256']}")  # fmt: skip
+        else:
+            found += _held_line(line, record, f"hold: line {hold['line']} of {path}")
+    cycle = root / record["cycle"]["path"]
+    if not _under_sealed(cycle, root) and cycle.is_file():
+        try:
+            data = json.loads(cycle.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        entries = data.get("held") if isinstance(data, dict) else None
+        if not isinstance(entries, list) or not any(
+                isinstance(e, Mapping) and e.get("run_id") == run_id for e in entries):  # fmt: skip
+            found.append(f"run_id: the cycle record {cycle} holds no run {run_id}")
+        elif isinstance(data, dict) and data.get("candidate", candidate) != candidate:
+            found.append(f"cycle: the record {cycle} is candidate {data.get('candidate')!r}'s, "
+                         f"not {candidate}'s")  # fmt: skip
+    return found
+
+
+def _held_line(line: str, record: Mapping[str, Any], where: str) -> list[str]:
+    """What a cited line must be: the ``held`` event of the record's run, its label the record's
+    seed's, stating the record's reason."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        event = None
+    if not (isinstance(event, dict) and event.get("event") == "held"):
+        return [f"{where} is not a held line of the launch journal"]
+    found = []
+    if event.get("run_id") != record["run_id"]:
+        found.append(f"run_id: is {record['run_id']!r}, not the run the hold line names "
+                     f"({event.get('run_id')!r})")  # fmt: skip
+    label = event.get("run")
+    if not (isinstance(label, str) and label.endswith(f"/s{record['seed']}")):
+        found.append(f"seed: {record['seed']} is not the seed of the hold line's run")
+    stated = hold_reasons(event.get("reason"))
+    if record["reason"] not in stated:
+        found.append(f"reason: {record['reason']} is not one of the reasons the hold line "
+                     f"states ({stated})")  # fmt: skip
     return found
 
 
