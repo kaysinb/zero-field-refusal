@@ -198,7 +198,7 @@ veto.
 
 ### Scientific repair
 
-- **When.** At most one per arm and candidate, before validation, and only for a **K miss**: the
+- **When** (as clarified by [amendment 3](#amendment-3-one-repair-round-per-arm)). At most one per arm and candidate, before validation, and only for a **K miss**: the
   median ln K of a selected rate over its search and numerical seeds together (4 + 3) lies more
   than 0.05 from its target.
 - **How.** The rule above is applied to that median. The repaired rate gets its own numerical
@@ -780,3 +780,19 @@ the comparisons and no route changes.
   cannot establish a zero field; the independent checks of the teacher path stay.
 - **What was known.** The registration, study 2's controls (their K was 0 at every reading) and
   the study-2 code; no study-3 outcome.
+
+### Amendment 3: one repair round per arm
+
+Decided on 2026-10-27 by the researcher, before any study-3 run, campaign or stream existed,
+while writing the selection code. The registration says "at most one [repair] per arm and
+candidate" and "the repaired rate" in the singular, which allows two readings when both selected
+rates of an arm miss; repairing only one of them would leave undefined which. This amendment
+states the rule; no threshold, tolerance or route changes.
+
+- **The rule.** At most one repair round per arm and candidate. It repairs every selected rate of
+  that arm with a K miss, each by the rule applied to its own median, each with its own numerical
+  qualification.
+- **Unchanged.** A repair follows only a K miss and a passed numerical qualification of the arm's
+  selected rates; a rate whose change would be under 2 % is not repaired; a second miss after the
+  repair is reported, not repaired again.
+- **What was known.** The registration and the study-2 records; no study-3 outcome.
