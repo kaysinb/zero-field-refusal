@@ -12,6 +12,7 @@ are bound by ``study3_records`` without a problem."""
 
 import builtins
 import copy
+import dataclasses
 import functools
 import hashlib
 import importlib.util
@@ -20,6 +21,7 @@ import itertools
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,9 +38,9 @@ from test_study3_progress import Study
 from test_study3_records import SEALED, SENTINEL, write_run
 from test_study3_records import World as RunWorld
 
-from zero_field_refusal import code_identity
+from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import campaign_prep, qualification_records
-from zero_field_refusal.analysis.study3_decisions import decisions
+from zero_field_refusal.analysis.study3_decisions import decision_path, decisions
 from zero_field_refusal.analysis.study3_progress import progress
 from zero_field_refusal.analysis.study3_records import SEEDS, read_endpoints
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
@@ -68,16 +70,16 @@ def sha256(path: Path) -> str:
 
 
 def sealed_reads(monkeypatch) -> list[str]:
-    """From now on a read of any file under a ``responses/`` or ``observations/`` folder fails
-    (``open``, ``io.open`` and ``Path.open`` for reading, ``Path.read_text`` and ``read_bytes``),
-    while the tests still write them as the tracker does (``test_study3_records.seal``, for
-    reads); the list holds every such attempt."""
+    """From now on a read of any file that resolves (links followed) under a ``responses/`` or
+    ``observations/`` folder fails (``open``, ``io.open`` and ``Path.open`` for reading,
+    ``Path.read_text`` and ``read_bytes``), while the tests still write them as the tracker does
+    (``test_study3_records.seal``, for reads); the list holds every such attempt."""
     attempts: list[str] = []
 
     def guard(path, mode="r") -> None:
         if isinstance(path, int) or any(flag in mode for flag in "wax"):
             return
-        if any(part in SEALED for part in Path(os.fsdecode(path)).parts):
+        if any(part in SEALED for part in Path(os.path.realpath(os.fsdecode(path))).parts):
             attempts.append(str(path))
             raise AssertionError(f"a sealed file was opened: {path}")
 
@@ -538,6 +540,16 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
     assert state["problems"] == [] and state["confirmation"]["started"] == [10400, 10401, 10402]
     assert (state["step"]["campaign"], state["step"]["cells"][0][2]) == ("confirmation", 10403)
     world.bound(state)
+    # one launcher cell per run, its name fixed by the run: unique across the files and the steps
+    names: dict[str, tuple] = {}
+    for path in world.out.rglob("*.yaml"):
+        campaign = campaign_of(path)
+        for cell in campaign["cells"]:
+            (seed,) = cell["seeds"]
+            run = (campaign["header"]["step"], campaign["header"]["round"], cell["config"],
+                   tuple(cell["overrides"]), seed)  # fmt: skip
+            assert cell["name"].endswith(f"-s{seed}") and names.setdefault(cell["name"], run) == run
+    assert len(names) == len(set(names.values())) == 24 + 24 + 4 + 18 + 168 + 18
 
     assert sealed == []
     written = [p.read_text() for p in world.out.rglob("*") if p.is_file()]
@@ -594,6 +606,15 @@ def test_qualify_reads_the_engineering_and_numerical_campaigns_and_their_checkpo
     sets it), each FA rate's case on the first numerical seed."""
     out = world.write("engineering")
     assert qualify_cases(out, engineering=True) == []
+    # each case's launcher run is found by its label: the writer's, one cell per run
+    from test_qualify import SCOPE
+    from test_qualify import load_script as load_qualify
+
+    planned = load_qualify().campaign_cases(out, SCOPE, 1, True)[1]
+    assert sorted(p.run.label for p in planned) == sorted(
+        f"c1-engineering-{OPT[arm]}-{START[arm][label]:g}-s{seed}/s{seed}" for arm in OPT
+        for label in LABELS for seed in SEEDS["engineering"][1])  # fmt: skip
+    assert all(p.run.label.startswith(p.run.cell + "/") for p in planned)
     world.ready()
     world.launched(world.write("search-round0"))
     elsewhere = world.write("numerical", "--checkpoints", "/mnt/ckpt")
@@ -734,7 +755,7 @@ def test_seeds_select_the_steps_first_blocks_and_never_add_skip_or_reorder(world
     _, runs = load_campaign(world.write("search-round0", "--seeds", "10100"))
     assert {run.seed for run in runs} == {10100} and len(runs) == 6
     _, runs = load_campaign(world.write("search-round0", "--seeds", "10100", "10101"))
-    assert [run.seed for run in runs][:2] == [10100, 10101] and len(runs) == 12
+    assert [run.seed for run in runs] == [10100] * 6 + [10101] * 6  # block by block
     assert "skips" in world.refused("search-round0", "--seeds", "10101")
     assert "skips" in world.refused("search-round0", "--seeds", "10100", "10102")
     assert "never reorders" in world.refused("search-round0", "--seeds", "10101", "10100")
@@ -839,6 +860,85 @@ def test_the_confirmation_names_its_budget_record_when_n_needs_one(world) -> Non
     assert header["n_record_sha256"] == world.records.digest("n-c1")
 
 
+def test_the_confirmation_names_a_budget_record_written_though_n_needs_none(world) -> None:
+    """The confirmation rests on every record the route read: a budget record written for an N
+    that needs none is named too, so that ``immutable`` protects it."""
+    confirmation_study(world, N=75, budget=True)
+    (only,) = world.write("confirmation").glob("*.yaml")
+    header = campaign_of(only)["header"]
+    assert (header["budget_record"], header["budget_record_sha256"]) == (
+        "study3/decisions/budget-c1.json", world.records.digest("budget-c1"))  # fmt: skip
+
+
+def test_a_confirmation_with_a_versions_problem_is_refused(world) -> None:
+    confirmation_study(world)
+    world.versions(["docs/study3-versions.json: HEAD is not the recorded commit"])
+    error = world.refused("confirmation")
+    assert "the versions record does not hold" in error
+    assert "HEAD is not the recorded commit" in error
+    assert [kw["step"] for _, kw in world.checked] == ["confirmation"]
+
+
+def test_a_recovery_round_of_one_block_gives_a_later_block_no_second_attempt(world) -> None:
+    """The launcher's recovery round is per cell name, read from every log. Each run has a cell
+    of its own, so a round for a block's run (as ``--recovery`` opens it for a cell) leaves the
+    run of the same arm and rate in a later block one attempt at --max-attempts 1 (the real
+    launcher, dry run). A cell shared across the blocks would have given it two."""
+    confirmation_study(world)
+    out = world.write("confirmation", "--blocks", "10400", "10401")
+    (name1, runs1), (name2, runs2) = (load_campaign(f) for f in sorted(out.glob("*.yaml")))
+    header1, header2 = (campaign_header(f) for f in sorted(out.glob("*.yaml")))
+    (first,) = [r for r in runs1 if cells_of([r])[0][:2] == ("A", START["A"]["l"])]
+    (later,) = [r for r in runs2 if cells_of([r])[0][:2] == ("A", START["A"]["l"])]
+    assert first.cell != later.cell and first.label != later.label
+
+    def failed(campaign, header, run, run_id):  # a technical attempt, no directory
+        world.runs.log(campaign, {"event": "start", "run": run.label, "attempt": 1,
+                                  "run_id": run_id, "experiment": run.experiment,
+                                  "config_hash": run.config_hash, "command": run.command()[1:],
+                                  "header": header, "max_attempts": 1})  # fmt: skip
+        world.runs.end(campaign, run.label, 1, run_id, "technical")
+
+    failed(name1, header1, first, "first-a1")
+    failed(name2, header2, later, "later-a1")
+    world.runs.log(name1, {"event": "recovery", "experiment": first.experiment,
+                           "cell": first.cell, "reason": "the Pod stopped",
+                           "runs": [first.label]})  # fmt: skip
+    found = launch.run_campaign(name1, [first], world.root, dry_run=True, max_attempts=1)
+    assert found["pending"] == [first.label]  # its own round: one more attempt
+    found = launch.run_campaign(name2, [later], world.root, dry_run=True, max_attempts=1)
+    assert found["exhausted"] == [later.label] and found["pending"] == []
+    # the same run under a cell name shared by the blocks (its attempts count by config hash)
+    shared = dataclasses.replace(later, cell=first.cell)
+    found = launch.run_campaign(name2, [shared], world.root, dry_run=True, max_attempts=1)
+    assert found["pending"] == [shared.label]  # what one name per cell would have allowed
+
+
+def test_a_record_linked_under_responses_is_refused_unopened(world, monkeypatch) -> None:
+    """A versions record or a decision record whose name links to a file under a run's
+    ``responses/`` folder is refused, and neither is opened (reads guarded through links)."""
+    confirmation_study(world)
+    sealed_file = world.root / "study3" / "20261026T000000Z-x-s10300-abcd1234-a1" / "responses"
+    sealed_file.mkdir(parents=True)
+    sealed_file = sealed_file / "harmful_evaluation.jsonl"
+    sealed_file.write_text(SENTINEL + "\n")
+    versions = world.repo / VERSIONS
+    kept = versions.read_text()
+    versions.unlink()
+    versions.symlink_to(sealed_file)
+    attempts = sealed_reads(monkeypatch)
+    error = world.refused("confirmation")
+    assert "responses/ or observations/" in error and SENTINEL not in error
+    versions.unlink()
+    versions.write_text(kept)
+    record = decision_path(world.root, "n-c1")
+    record.unlink()
+    record.symlink_to(sealed_file)
+    error = world.refused("confirmation")
+    assert "n-c1" in error and "responses" in error and SENTINEL not in error
+    assert attempts == []
+
+
 def test_a_started_blocks_missing_cells_are_issued_alone(world) -> None:
     """A started block with a never-issued cell is completed first: the step's cells, nothing
     else, and no later block with them."""
@@ -854,52 +954,111 @@ def test_a_started_blocks_missing_cells_are_issued_alone(world) -> None:
     assert "completed first" in error
 
 
+class StandIn:
+    """A stand-in ``python`` on PATH for running run.sh: it records each call (its working
+    directory, ``RUNS_DIR`` and its arguments, one per line) and exits 3 for the guard of the
+    seed ``REFUSE`` names, 1 for the launch of a file whose name ``FAIL`` holds, 0 otherwise.
+    Nothing real runs."""
+
+    def __init__(self, folder: Path) -> None:
+        self.bin, self.log = folder / "bin", folder / "calls.txt"
+        self.bin.mkdir(parents=True)
+        (self.bin / "python").write_text(
+            "#!/usr/bin/env bash\n"
+            'printf \'%s\\n\' "PWD=$PWD" "RUNS_DIR=${RUNS_DIR:-}" "$@" "--end--" '
+            f">> {shlex.quote(str(self.log))}\n"
+            'case "$*" in\n'
+            '  *"guard"*"--seed $REFUSE "*) exit 3 ;;\n'
+            '  *"launch.py"*"$FAIL"*) exit 1 ;;\n'
+            "esac\n")  # fmt: skip
+        (self.bin / "python").chmod(0o755)
+
+    def run(self, driver: Path, cwd: Path, refuse="none", fail="none"):
+        """run.sh run by bash in ``cwd``: the completed process and the calls, each (working
+        directory, RUNS_DIR, arguments)."""
+        self.log.write_text("")
+        env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "REFUSE": refuse,
+               "FAIL": fail}  # fmt: skip
+        done = subprocess.run(["bash", str(driver)], env=env, cwd=cwd, capture_output=True,
+                              text=True)  # fmt: skip
+        calls, current = [], []
+        for line in self.log.read_text().splitlines():
+            if line == "--end--":
+                calls.append((current[0][4:], current[1][9:], current[2:]))
+                current = []
+            else:
+                current.append(line)
+        return done, calls
+
+
 def test_the_driver_runs_the_guard_before_each_block_and_stops_at_its_refusal(world, tmp_path):
-    """run.sh with stand-ins for the guard and the launcher on PATH: the guard of each block
-    before its launch with --max-attempts 1, one block at a time in seed order; the first guard
-    that refuses (or a launch that fails) stops it."""
+    """run.sh with stand-ins for the guard and the launcher on PATH: each block's file checked
+    against its sha256, then its guard (which reads the block's file), then its launch with
+    --max-attempts 1, one block at a time in seed order; the first guard that refuses, a launch
+    that fails or an edited block file stops it. The launcher writes where the guard reads."""
     confirmation_study(world)
     out = world.write("confirmation", "--blocks", "10400", "10402")
     driver = out / "run.sh"
     text = driver.read_text()
     subprocess.run(["bash", "-n", str(driver)], check=True)
     assert "&" not in re.sub(r"&&|>&2|2>&1", "", text)  # nothing runs in the background
+    assert "if [ -f /etc/rp_environment ]; then . /etc/rp_environment; fi" in text
+    assert "if [ -f /root/zfr-env.sh ]; then . /root/zfr-env.sh; fi" in text
     files = {campaign_of(f)["name"].split("-s")[-1].split("-")[0]: f for f in out.glob("*.yaml")}
-    bin_ = tmp_path / "bin"
-    bin_.mkdir()
-    calls = tmp_path / "calls.txt"
-    (bin_ / "python").write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "$*" >> {calls}\n'
-        'case "$*" in\n'
-        '  *"guard"*"--seed $REFUSE"*) exit 3 ;;\n'
-        '  *"launch.py"*"$FAIL"*) exit 1 ;;\n'
-        "esac\n")  # fmt: skip
-    (bin_ / "python").chmod(0o755)
+    stand_in = StandIn(tmp_path / "stand-in")
 
-    def run(refuse="none", fail="none"):
-        calls.write_text("")
-        env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "REFUSE": refuse,
-               "FAIL": fail}  # fmt: skip
-        done = subprocess.run(["bash", str(driver)], env=env, capture_output=True, text=True)
-        return done, calls.read_text().splitlines()
+    def calls(done_calls):
+        assert {(pwd, runs) for pwd, runs, _ in done_calls} <= {(str(world.repo), str(world.root))}
+        return [" ".join(args) for _, _, args in done_calls]
 
-    guard = f"scripts/study3_summary.py guard --runs-root {world.root} --candidate 1 --seed"
-    done, lines = run()
+    def guard(seed):
+        return (f"scripts/study3_summary.py guard --runs-root {world.root} --candidate 1 --seed "
+                f"{seed} --campaign {files[seed]}")  # fmt: skip
+
+    def launch_(seed):
+        return f"scripts/launch.py {files[seed]} --max-attempts 1"
+
+    done, found = stand_in.run(driver, tmp_path)
     assert done.returncode == 0, done.stderr
-    assert lines == [line for seed in ("10400", "10401", "10402") for line in (
-        f"{guard} {seed}", f"scripts/launch.py {files[seed]} --max-attempts 1")]  # fmt: skip
-    done, lines = run(refuse="10401")
+    assert calls(found) == [line for seed in ("10400", "10401", "10402")
+                            for line in (guard(seed), launch_(seed))]  # fmt: skip
+    done, found = stand_in.run(driver, tmp_path, refuse="10401")
     assert done.returncode == 3 and "the guard refused block 10401" in done.stderr
-    assert lines == [f"{guard} 10400", f"scripts/launch.py {files['10400']} --max-attempts 1",
-                     f"{guard} 10401"]  # fmt: skip
-    done, lines = run(fail=files["10400"].name)
+    assert calls(found) == [guard("10400"), launch_("10400"), guard("10401")]
+    done, found = stand_in.run(driver, tmp_path, fail=files["10400"].name)
     assert done.returncode == 1
-    assert lines == [f"{guard} 10400", f"scripts/launch.py {files['10400']} --max-attempts 1"]
+    assert calls(found) == [guard("10400"), launch_("10400")]
     files["10401"].write_text(files["10401"].read_text() + "# edited\n")
-    done, lines = run()
+    done, found = stand_in.run(driver, tmp_path)
     assert done.returncode != 0 and "is not the file written for block 10401" in done.stderr
-    assert f"scripts/launch.py {files['10401']} --max-attempts 1" not in lines
+    assert calls(found) == [guard("10400"), launch_("10400")]  # neither its guard nor its launch
+
+
+def test_the_driver_quotes_paths_with_spaces_and_shell_text(tmp_path, monkeypatch, capsys):
+    """A runs directory, a checkout and an output folder whose paths hold a space, ``$(...)``
+    and a non-ASCII letter: run.sh, run by bash in another folder with stand-ins on PATH, passes
+    each path whole and runs no text of them; the printed command is quoted."""
+    base = tmp_path / "a b $(touch PWNED) θ"
+    world = World(base, monkeypatch, capsys)
+    confirmation_study(world)
+    out = world.write("confirmation", "--blocks", "10400", "10401",
+                      out=base / "out $(touch PWNED) dir")  # fmt: skip
+    printed_ = capsys.readouterr().out
+    driver = out / "run.sh"
+    (run_line,) = [line for line in printed_.splitlines() if line.startswith("Run: ")]
+    assert shlex.split(run_line[len("Run: ") :]) == ["bash", str(driver.absolute())]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    done, found = StandIn(tmp_path / "stand-in").run(driver, elsewhere)
+    assert done.returncode == 0, done.stderr
+    files = sorted(out.glob("*.yaml"))
+    assert [args for _, _, args in found] == [
+        arguments for path, seed in zip(files, ("10400", "10401"), strict=True)
+        for arguments in (["scripts/study3_summary.py", "guard", "--runs-root", str(world.root),
+                           "--candidate", "1", "--seed", seed, "--campaign", str(path)],
+                          ["scripts/launch.py", str(path), "--max-attempts", "1"])]  # fmt: skip
+    assert {(pwd, runs) for pwd, runs, _ in found} == {(str(world.repo), str(world.root))}
+    assert not list(tmp_path.rglob("PWNED")) and not (elsewhere / "PWNED").exists()
 
 
 def test_a_held_or_closed_label_is_never_issued_again(world) -> None:
@@ -910,7 +1069,7 @@ def test_a_held_or_closed_label_is_never_issued_again(world) -> None:
     study.search()
     world.ready()
     world.core(study)
-    label = "c1-numerical-adam_frozen-1.83e-05/s10200"
+    label = "c1-numerical-adam_frozen-1.83e-05-s10200/s10200"
     world.runs.log("held", {"event": "held", "run": label, "run_id": "20261026T000001Z-x-a1",
                             "experiment": "study3", "config_hash": "c" * 12,
                             "reason": "no recorded commit"})  # fmt: skip

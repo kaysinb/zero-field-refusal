@@ -22,22 +22,25 @@ campaign's runs. Anything else is refused, non-zero, with the step the state nam
 another kind or candidate, a blocked, pending or decision step, a terminal stage.
 
 **Cells.** Exactly the step's cells (the engineering stage's: those the route prescribes, every arm
-at candidate 1's two starting rates on 10000-10003), one launcher cell per arm and rate over its
-seeds. --seeds takes the step's first blocks (a block is a seed), in order: it never adds a block,
-skips one or reorders them, so a block of the validation or the confirmation is issued whole (six
-cells, four once P is closed; for a block already started, the cells it still lacks, as the step
-names them). A label that a ``held`` line of the launch journal or a supersession record holds
-(``study3_records.read_holds``), or a cell whose run a closure record closed
+at candidate 1's two starting rates on 10000-10003), one launcher cell per run, block by block
+in seed order. --seeds takes the step's first blocks (a block is a seed), in order: it never adds
+a block, skips one or reorders them, so a block of the validation or the confirmation is issued
+whole (six cells, four once P is closed; for a block already started, the cells it still lacks,
+as the step names them). A label that a ``held`` line of the launch journal or a supersession
+record holds (``study3_records.read_holds``), or a cell whose run a closure record closed
 (``study3_decisions.closures``), is never issued again: a step naming one is refused.
 
 **Names.** The launcher keeps one log per campaign name (``RUNS_DIR/launch/<name>.jsonl``), and
 the validation fixation pins the numerical and repair logs by sha256, so that a later line breaks
 it for good. Each file therefore gets a name no campaign used, ``study3-c<N>-<kind>-<UTC stamp>``
 (a confirmation block's ``study3-c<N>-confirmation-s<seed>-<UTC stamp>``), and a name whose log
-exists is refused. A cell's name is fixed by the cell,
-``c<N>-<step>[-r<round>]-<optimizer>-<rate>``, so that a label (``<cell>/s<seed>``) means one
-cell whatever file issued it: the launcher's one recovery round per cell and a hold by label keep
-their meaning across files.
+exists is refused. A launcher cell holds one run, and its name is fixed by that run,
+``c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>``: no two runs of the study share a cell name,
+and a run gets the same name, and the same label (``<cell>/s<seed>``), whatever file issues it.
+The launcher grants a recovery round once per cell name, read from every log, so a round opened
+for one run never gives another run, in a later file of the step, a second attempt at
+--max-attempts 1 (which the readers would refuse as two attempts of one cell); and a hold by
+label keeps its meaning across files.
 
 **The header** (flat and plain, as the launcher logs it with every start, and as
 ``study3_records`` binds a run by it): ``study`` 3, ``candidate``, ``step`` and ``round`` (0 or 1
@@ -45,12 +48,12 @@ for the search, null otherwise); the decision records the campaign rests on, eac
 under RUNS_DIR and the sha256 of its file now (``<key>`` and ``<key>_sha256``, which
 ``study3_decisions.immutable`` protects): the search names the engineering record
 (``engineering_record``), the validation the simulation record (``simulation_record``), the
-confirmation the n record (``n_record``) and, when ``budget_reason`` says N needs one, the budget
-record (``budget_record``); each must be valid and passed. The validation and the confirmation
-also name the versions record that stands (the last of docs/study3-versions.json,
-docs/study3-versions-2.json, ...: ``versions_record`` and ``versions_record_sha256``), once
-``study3_versions.versions_problems`` with the step and the candidate finds no problem in it; a
-problem refuses, printed.
+confirmation the n record (``n_record``) and the budget record (``budget_record``) whenever one
+is written, as it must be when ``budget_reason`` says N needs one; each must be valid and
+passed. The validation and the confirmation also name the versions record that stands (the last
+of docs/study3-versions.json, docs/study3-versions-2.json, ...: ``versions_record`` and
+``versions_record_sha256``), once ``study3_versions.versions_problems`` with the step and the
+candidate finds no problem in it; a problem refuses, printed.
 
 **Configs.** Every run at B = 20. Search: experiments/study3_k_only, ``study3.role=search``.
 Engineering, numerical and repair: experiments/study3_k_only, ``study3.role=engineering`` or
@@ -68,15 +71,19 @@ belong outside the checkout (under $RUNS_DIR/campaigns/, say): the versions reco
 a clean checkout.
 
 **The confirmation** is written into --out DIR: one campaign file per block, in seed order, and
-the driver ``run.sh``. Before each block, the driver runs the between-block guard, ``python
-scripts/study3_summary.py guard --runs-root DIR --candidate N --seed S``, and stops at its first
-non-zero exit; otherwise it checks that the block's file is the one written (its sha256) and runs
-``python scripts/launch.py FILE --max-attempts 1``, stopping when the launcher fails. It never
-runs two blocks at once. Its blocks: the step's (the next block, or the cells a started block
+the driver ``run.sh``. Before each block, the driver checks that the block's file is the one
+written (its sha256), then runs the between-block guard, ``python scripts/study3_summary.py guard
+--runs-root DIR --candidate N --seed S --campaign FILE`` (the guard reads the versions record the
+block's header names), and stops at its first non-zero exit; otherwise it runs ``python
+scripts/launch.py FILE --max-attempts 1``, stopping when the launcher fails. It never runs two
+blocks at once. Its blocks: the step's (the next block, or the cells a started block
 still lacks: those are completed first, alone); with --blocks FIRST LAST (seeds) or --seeds, the
 step's next block and those after it in seed order up to the cap N + max(10, ⌈0.12·N⌉), each
-whole, every one started only when its guard allows it. The driver runs ``python`` from the
-environment it is started in (on a Pod: ``project-run "$SRC" bash DIR/run.sh``).
+whole, every one started only when its guard allows it. The driver sources the Pod's
+environment (``/etc/rp_environment``, ``/root/zfr-env.sh``) where those files exist, as the other
+Pod drivers do, pins ``RUNS_DIR`` to the runs directory the guard reads, so that the launcher
+writes where the guard looks, and runs ``python`` from the environment it is started in (on a
+Pod: ``project-run "$SRC" bash DIR/run.sh``).
 
 **prep** writes the bash driver that generates the training and preconditioner streams of fresh
 study-3 seeds at B = 20 (``analysis.campaign_prep.streams_driver``) from the source checkout of
@@ -84,8 +91,10 @@ commit SHA on a Pod, each seed's under the config its runs locate them with (its
 experiments/study3_k_only for engineering, search and numerical seeds, experiments/study3 for
 validation and confirmation seeds). The seeds are registered study-3 seeds, each named once.
 
-FILE and DIR must not exist. Nothing here opens a response, a harm label or a judge output: the
-state holds numbers, ids, paths and hashes, and only those are printed.
+FILE and DIR must not exist; every file is written in UTF-8. Nothing here opens a response, a
+harm label or a judge output: the state holds numbers, ids, paths and hashes, and only those are
+printed; a record that resolves under a ``responses/`` or ``observations/`` folder is refused
+before it is hashed.
 """
 
 import argparse
@@ -146,6 +155,7 @@ RECORDS = {"search": {"engineering_record": "engineering"},
 REGULAR, K_ONLY = "experiments/study3", "experiments/study3_k_only"
 OPTIMIZERS = {arm: name for name, arm in ARMS.items()}
 STAMP = "$(date -u +%FT%TZ)"
+SEALED = {"responses", "observations"}  # a run's folders, where no record a campaign names lies
 WRITER = "scripts/study3_campaigns.py"
 
 Cell = tuple[str, float]  # an arm and its rate
@@ -296,7 +306,7 @@ def forbidden(root: Path, candidate: int, step: str, round_: int | None,
     found = []
     for seed, cells in blocks:
         for arm, rate in cells:
-            label = f"{cell_name(candidate, step, round_, arm, rate)}/s{seed}"
+            label = f"{cell_name(candidate, step, round_, arm, rate, seed)}/s{seed}"
             if label in held:
                 found.append(f"{label}: held in the launch journal (run {held[label]}, an "
                              "outcome the engineering cycle could not resolve): never issued "
@@ -315,34 +325,37 @@ def forbidden(root: Path, candidate: int, step: str, round_: int | None,
 # ------------------------------------------------------------------ the campaign
 
 
-def cell_name(candidate: int, step: str, round_: int | None, arm: str, rate: float) -> str:
-    """A launcher cell's name, fixed by the cell (module docstring, "Names")."""
+def cell_name(candidate: int, step: str, round_: int | None, arm: str, rate: float,
+              seed: int) -> str:  # fmt: skip
+    """A launcher cell's name, fixed by its one run (module docstring, "Names")."""
     tag = "" if round_ is None else f"-r{round_}"
-    return f"c{candidate}-{step}{tag}-{OPTIMIZERS[arm]}-{rate:g}"
+    return f"c{candidate}-{step}{tag}-{OPTIMIZERS[arm]}-{rate:g}-s{seed}"
 
 
 def launcher_cells(candidate: int, step: str, round_: int | None, blocks: list[Block],
                    checkpoints: Path | None) -> list[dict[str, Any]]:  # fmt: skip
-    """One launcher cell per arm and rate, over its seeds in order (module docstring,
+    """One launcher cell per run, block by block in seed order (module docstring, "Names",
     "Configs")."""
-    seeds: dict[Cell, list[int]] = {}
-    for seed, cells in blocks:
-        for cell in cells:
-            seeds.setdefault(cell, []).append(seed)
     role = STEP_ROLES[step]
     config = K_ONLY if role in K_ONLY_ROLES else REGULAR
     out = []
-    for (arm, rate), listed in seeds.items():
-        overrides = [f"optimizer={OPTIMIZERS[arm]}", f"train.batch_size={BATCH}",
-                     f"optimizer.lr={float(rate)!r}", f"study3.role={role}"]  # fmt: skip
-        if checkpoints is not None:
-            overrides.append(f"tracking.endpoint_checkpoint={checkpoints}")
-        out.append({"name": cell_name(candidate, step, round_, arm, rate), "config": config,
-                    "overrides": overrides, "seeds": listed})  # fmt: skip
+    for seed, cells in blocks:
+        for arm, rate in cells:
+            overrides = [f"optimizer={OPTIMIZERS[arm]}", f"train.batch_size={BATCH}",
+                         f"optimizer.lr={float(rate)!r}", f"study3.role={role}"]  # fmt: skip
+            if checkpoints is not None:
+                overrides.append(f"tracking.endpoint_checkpoint={checkpoints}")
+            out.append({"name": cell_name(candidate, step, round_, arm, rate, seed),
+                        "config": config, "overrides": overrides, "seeds": [seed]})  # fmt: skip
     return out
 
 
-def sha256(path: Path) -> str:
+def sha256(kind: str, path: Path) -> str:
+    """The sha256 of a record file the header names; refused, unopened, when it resolves under a
+    ``responses/`` or ``observations/`` folder."""
+    if SEALED & set(path.resolve().parts):
+        refuse(kind, f"{path} resolves under a responses/ or observations/ folder: no record a "
+               "campaign rests on is one, and it is not opened")  # fmt: skip
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -369,7 +382,8 @@ def decision(kind: str, root: Path, record_kind: str, key: str) -> tuple[dict, d
         refuse(kind, f"the {record_kind} record the campaign rests on is not valid and passed: "
                f"{why}")  # fmt: skip
     path = decision_path(root, record_kind)
-    return record, {key: decision_path(".", record_kind).as_posix(), f"{key}_sha256": sha256(path)}
+    named = {key: decision_path(".", record_kind).as_posix(), f"{key}_sha256": sha256(kind, path)}
+    return record, named
 
 
 def header_of(kind: str, candidate: int, root: Path) -> dict[str, Any]:
@@ -383,15 +397,17 @@ def header_of(kind: str, candidate: int, root: Path) -> dict[str, Any]:
         if problems:
             refuse(kind, "the versions record does not hold: " + "; ".join(problems))
         header.update(versions_record=path.relative_to(REPO).as_posix(),
-                      versions_record_sha256=sha256(path))  # fmt: skip
+                      versions_record_sha256=sha256(kind, path))  # fmt: skip
     for key, record_kind in RECORDS.get(step, {}).items():
         header.update(decision(kind, root, record_kind, key)[1])
     if step == "confirmation":
         simulation, _ = read_decision(root, "simulation", repo=REPO)
         n, named = decision(kind, root, f"n-c{candidate}", "n_record")
         header.update(named)
-        if budget_reason(n["N"], simulation) is not None:
-            header.update(decision(kind, root, f"budget-c{candidate}", "budget_record")[1])
+        budget = f"budget-c{candidate}"
+        if (budget_reason(n["N"], simulation) is not None
+                or decision_path(root, budget).exists()):  # fmt: skip
+            header.update(decision(kind, root, budget, "budget_record")[1])
     return header
 
 
@@ -427,28 +443,35 @@ def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
                  "in all), one campaign file each, one block at a time in seed order. Before "
                  "each block the between-block guard (scripts/study3_summary.py guard) reads the "
                  "records again and refuses a block that may not start (every active counter at "
-                 "N, the cap used up, a technical mark, another step or seed, a versions "
-                 "problem): the driver stops at its first non-zero exit, and when the launcher "
-                 "fails. Each block's file is checked against its sha256 and runs with "
-                 "--max-attempts 1."),
-        *comment('It runs python from the environment it is started in: on a Pod, '
-                 'project-run "$SRC" bash run.sh. After a stop, the blocks left are written '
-                 f"again ({WRITER} confirmation), under new names."),
+                 "N, the cap used up, a technical mark, another step or seed, a problem in the "
+                 "versions record the block's header names): the driver stops at its first "
+                 "non-zero exit, and when the launcher fails. Each block's file is checked "
+                 "against its sha256 before its guard, and runs with --max-attempts 1. The "
+                 "driver pins RUNS_DIR to the runs directory the guard reads."),
+        *comment("It sources the Pod's environment where there is one, and runs python from "
+                 'the environment it is started in: on a Pod, project-run "$SRC" bash run.sh. '
+                 f"After a stop, the blocks left are written again ({WRITER} confirmation), "
+                 "under new names."),
         "set -euo pipefail",
+        "# The Pod's environment, where there is one (an SSH session does not see it)",
+        "if [ -f /etc/rp_environment ]; then . /etc/rp_environment; fi",
+        "if [ -f /root/zfr-env.sh ]; then . /root/zfr-env.sh; fi",
         f"cd {shlex.quote(str(REPO.absolute()))}",
         f"RUNS_ROOT={shlex.quote(str(root.absolute()))}",
+        "# The launcher writes where the guard reads",
+        'export RUNS_DIR="$RUNS_ROOT"',
         "block() {",
         '  local seed="$1" campaign="$2" sha="$3" rc=0',
-        '  python scripts/study3_summary.py guard --runs-root "$RUNS_ROOT" '
-        f'--candidate {candidate} --seed "$seed" || rc=$?',
-        '  if [ "$rc" -ne 0 ]; then',
-        f'    echo "== {STAMP} the guard refused block $seed (exit $rc): the driver stops" >&2',
-        '    exit "$rc"',
-        "  fi",
         '  if [ "$(sha256sum "$campaign" | cut -d " " -f 1)" != "$sha" ]; then',
         f'    echo "== {STAMP} $campaign is not the file written for block $seed: the driver '
         'stops" >&2',
         "    exit 1",
+        "  fi",
+        '  python scripts/study3_summary.py guard --runs-root "$RUNS_ROOT" '
+        f'--candidate {candidate} --seed "$seed" --campaign "$campaign" || rc=$?',
+        '  if [ "$rc" -ne 0 ]; then',
+        f'    echo "== {STAMP} the guard refused block $seed (exit $rc): the driver stops" >&2',
+        '    exit "$rc"',
         "  fi",
         f'  echo "== {STAMP} block $seed: $campaign"',
         '  python scripts/launch.py "$campaign" --max-attempts 1',
@@ -459,12 +482,14 @@ def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
     return "\n".join(lines) + "\n"
 
 
-def write_new(path: Path, text: str) -> None:
-    """Write ``path`` whole or not at all."""
+def write_new(path: Path, text: str) -> str:
+    """Write ``path`` whole or not at all, in UTF-8; the sha256 of the bytes written."""
+    data = text.encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f".{path.name}.partial")
-    partial.write_text(text)
+    partial.write_bytes(data)
     partial.replace(path)
+    return hashlib.sha256(data).hexdigest()
 
 
 def campaign(args: argparse.Namespace) -> None:
@@ -509,15 +534,14 @@ def campaign(args: argparse.Namespace) -> None:
                          "guard.")  # fmt: skip
         text = campaign_text(name, header, launcher_cells(candidate, step, round_, chosen,
                                                           checkpoints), notes)  # fmt: skip
-        write_new(path, text)
-        written.append((seed, path.absolute(), hashlib.sha256(text.encode()).hexdigest()))
+        written.append((seed, path.absolute(), write_new(path, text)))
         print(path)
     if kind == "confirmation":
         driver = args.out / "run.sh"
         write_new(driver, driver_text(candidate, root, written, written_at))
         driver.chmod(0o755)
         print(driver)
-        print(f"Run: bash {driver.absolute()}")
+        print(f"Run: bash {shlex.quote(str(driver.absolute()))}")
     else:
         print(f"Run: {run_command(kind, candidate, args.out.absolute())}")
 
