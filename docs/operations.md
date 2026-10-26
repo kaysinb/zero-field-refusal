@@ -1560,9 +1560,14 @@ docstring has every rule.
   unknown code included), which it then logs superseded
   (run again with the same record, it only writes the lines that are missing). A second cycle
   for the candidate is refused: a technical failure left unresolved routes to the technical
-  feasibility report. A case that holds a scientific failure (as its bound, valid part records
-  of any stage show it; a launcher run's declared stop counts only when such a record classified
-  it scientific) is kept whole, its records and its launcher run (listed as kept, with why), and
+  feasibility report. A launcher run no part record names (the Pod stopped before its baseline)
+  is first resolved against its issued cell, config, numerics and commit, without the current
+  code or environment: a conforming run its declared rule stopped is a scientific failure (its
+  case kept whole and decided); one that departs from its cell, or completed, is superseded; one
+  nobody can resolve (a record unreadable or missing a field, an unknown commit) keeps its case
+  as it is, listed unresolved, and the run is held in the journal, so that no part and no
+  recovery round reruns it. A case that holds a scientific failure (as its bound, valid part
+  records of any stage show it, or its resolved launcher run) is kept whole, its records and its launcher run (listed as kept, with why), and
   a cycle cannot start from one of its records:
   the failure keeps counting, so a scientific failure of P, which closes P–F alone, never blocks
   the cycle of a technical failure of A or F. Every case
@@ -1697,7 +1702,8 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   3's qualification driver passes `--only` and 1 ([below](#study-3-numerical-qualification)).
   A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
   no longer count for its label: kept, a used attempt, neither done nor a conflict, so its
-  recovery round starts a new one. A checkpoint run (`tracking.endpoint_checkpoint`) is done
+  recovery round starts a new one. A `held` record (an outcome a study-3 engineering cycle could
+  not resolve) makes the run a conflict: nothing starts, its recovery round included. A checkpoint run (`tracking.endpoint_checkpoint`) is done
   only if its recorded numerics setup is what the campaign's config asks for (determinism, TF32
   and the matmul precision, the memory limit), read without CUDA.
   Send it to the

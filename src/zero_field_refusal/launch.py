@@ -55,7 +55,9 @@ carries ``max_attempts`` when it is not the default.
 3's qualification by a case restart or an engineering cycle's supersession) names an attempt
 that no longer counts for its label: its directory and records stay, it is a used attempt (a
 technical one), and it is neither done, diverged nor a conflict; the run is then attempted again
-through its recovery round. A checkpoint run (``tracking.endpoint_checkpoint``) is done only if
+through its recovery round. A ``held`` record (``hold``: an outcome a study-3 engineering cycle
+could not resolve) makes the run a conflict: nothing of the campaign starts, its recovery round
+included. A checkpoint run (``tracking.endpoint_checkpoint``) is done only if
 its recorded numerics setup is what the campaign's config asks for (``expected_numerics``:
 determinism, TF32 and the matmul precision, the memory limit; read without touching CUDA).
 """
@@ -230,6 +232,26 @@ def superseded_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str,
             and isinstance(r.get("run_id"), str)}  # fmt: skip
 
 
+def held_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The run ids of this run that the journal's ``held`` records name (``hold``), with their
+    reasons."""
+    return {r["run_id"]: str(r.get("reason")) for r in records
+            if r.get("event") == "held" and r.get("run") == run.label
+            and r.get("experiment") == run.experiment and r.get("config_hash") == run.config_hash
+            and isinstance(r.get("run_id"), str)}  # fmt: skip
+
+
+def hold(
+    runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
+) -> None:
+    """Log that an attempt of ``run`` has an outcome nobody could resolve (module docstring,
+    "Superseded attempts"): it is kept as it is, and the run is never attempted again, its
+    recovery round included, while the record stands."""
+    _log(Path(runs_root) / "launch" / f"{campaign}.jsonl",
+         {"event": "held", "run": run.label, "run_id": run_id, "experiment": run.experiment,
+          "config_hash": run.config_hash, "reason": reason, "record": record})  # fmt: skip
+
+
 def supersede(
     runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
 ) -> None:
@@ -276,6 +298,8 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
             result.conflicts[run_dir.name] = "one of several completed runs of this config"
     elif qualifying and not result.conflicts:
         result.done = qualifying[0]
+    for run_id, reason in held_runs(run, records).items():  # never attempted again
+        result.conflicts[run_id] = f"held, its outcome unresolved: {reason}"
     settled = {d.name for d in completed} | ({result.diverged.name} if result.diverged else set())
     for record in records:  # starts that left no directory, e.g. a crash before the tracker ran
         if (record.get("event") == "start" and record.get("experiment") == run.experiment

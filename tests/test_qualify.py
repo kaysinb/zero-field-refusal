@@ -920,30 +920,125 @@ def test_the_cycle_keeps_a_case_its_records_show_scientific(qualify, tmp_path, m
     assert qualify.located(run, root) == launcher
 
 
-def test_a_launcher_stop_no_record_classified_scientific_is_superseded(
-    qualify, tmp_path, monkeypatch
-) -> None:
-    """A launcher run that stopped on its declared rule but that no valid part record of its
-    case classified scientific is no mark: the case whose baseline was recorded technical (the
-    cycle starts from it) and a case without any part attempt are both re-qualified, their old
-    runs superseded and the baseline voided."""
+def unclassified_stop(qualify, tmp_path, monkeypatch, change=None):
+    """A's technical baseline opens the cycle; s10201's launcher run r-b1 stopped on its declared
+    gradient_spike rule and no part record of its case classified it (the Pod stopped before its
+    baseline). ``change`` edits r-b1's records first. Returns the paths, the run and the
+    cycle's record."""
     path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     _, record = technical_adamw(out, tmp_path)
-    runs = {}
-    for seed, run_id in ((10200, "r-a1"), (10201, "r-b1")):
-        runs[run_id] = journal(root, path, f"adamw-{ADAMW_LR:g}/s{seed}", [run_id])
-        settled_launcher(root, runs[run_id], run_id, stop="gradient_spike", steps=3)
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10201", ["r-b1"])
+    run_dir = settled_launcher(root, run, "r-b1", stop="gradient_spike", steps=3)
+    if change is not None:
+        change(run_dir)
     monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
     qualify.main(supersede_args(path, ADAMW, record))
-    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
-    assert cycle["kept_cases"] == [] and cycle["kept"] == []
-    assert [(a["case"], a["part"], a["attempt"]) for a in cycle["attempts"]] == [
-        (ADAMW.name, "baseline", 1), (ADAMW.name, "rest", 1)]  # fmt: skip
-    assert [r["run_id"] for r in cycle["launchers"]] == ["r-a1", "r-b1"]
-    assert sorted(c["case"] for c in cycle["cases_requalified"]) == [
-        ADAMW.name, "s10201/adamw-5e-05"]  # fmt: skip
-    assert all(qualify.located(run, root) is None for run in runs.values())
+    return path, root, out, run, json.loads((out / "c1" / "supersede-1.json").read_text())
+
+
+STOPPED = q.QualificationCase(10201, "adamw", ADAMW_LR, 1, False)
+
+
+def test_a_conforming_unclassified_stop_is_kept_scientific(qualify, tmp_path, monkeypatch):
+    """Resolved against its issued cell, its config, numerics and commit, the run conforms and
+    its declared rule stopped it: a scientific failure. The case is kept whole and decided, the
+    run keeps counting, no part runs for it, and the rate fails."""
+    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch)
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "scientific")
+    assert "stopped by its declared rule 'gradient_spike'" in kept["why"]
+    assert cycle["launchers"] == [] and cycle["held"] == []
+    assert cycle["cases_requalified"] == [{"case": ADAMW.name, "stage": "numerical"}]
+    assert qualify.located(run, root) == root / run.experiment / "r-b1"
+    qualify.main(["complete", *common(path), "--case", STOPPED.name])  # decided: complete
+    with pytest.raises(SystemExit, match="no part runs"):
+        qualify.main(["part", *common(path), "--case", STOPPED.name, "--part", "baseline",
+                      "--resume", "--run-dir", str(tmp_path / "run"), "--checkpoints",
+                      str(tmp_path / "h"), "--device", "cpu"])  # fmt: skip
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "failing"
+    (resolved,) = [c for c in verdict["cases"] if c.get("resolution")]
+    assert (resolved["case"]["name"], resolved["kind"]) == (STOPPED.name, "scientific")
+
+
+def other_rate(run_dir):
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.load(run_dir / "config.yaml")
+    OmegaConf.update(cfg, "optimizer.lr", 9.0e-05)
+    OmegaConf.save(cfg, run_dir / "config.yaml")
+
+
+def other_numerics(run_dir):
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta["inputs"]["numerics_setup"]["deterministic"] = True
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+
+
+@pytest.mark.parametrize("change", [other_rate, other_numerics])
+def test_a_nonconforming_unclassified_stop_is_superseded(qualify, tmp_path, monkeypatch, change):
+    """The run departs from its issued cell on readable records (another rate in its config,
+    or numerics its config does not ask for): its stop is no registered outcome. It is
+    superseded with the cycle and its case re-qualified."""
+    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch, change)
+    assert cycle["kept_cases"] == [] and cycle["held"] == []
+    assert [r["run_id"] for r in cycle["launchers"]] == ["r-b1"]
+    assert {c["case"] for c in cycle["cases_requalified"]} == {ADAMW.name, STOPPED.name}
+    assert qualify.located(run, root) is None
+
+
+def test_an_unresolvable_stop_is_kept_and_held(qualify, tmp_path, monkeypatch) -> None:
+    """A run whose meta.json records no commit cannot be resolved: the case is kept as it is,
+    listed unresolved, its run held, and no rerun is opened: no part runs, and the launcher's
+    recovery round refuses the run."""
+    from zero_field_refusal import launch
+
+    def no_commit(run_dir):
+        meta = json.loads((run_dir / "meta.json").read_text())
+        del meta["git"]
+        (run_dir / "meta.json").write_text(json.dumps(meta))
+
+    path, root, out, run, cycle = unclassified_stop(qualify, tmp_path, monkeypatch, no_commit)
+    (kept,) = cycle["kept_cases"]
+    assert (kept["case"], kept["resolution"]["outcome"]) == (STOPPED.name, "unresolved")
+    assert "no recorded commit" in kept["why"]
+    assert [h["run_id"] for h in cycle["held"]] == ["r-b1"] and cycle["launchers"] == []
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    assert [json.loads(line)["event"] for line in log.read_text().splitlines()][-1] == "held"
+    with pytest.raises(SystemExit, match="no part runs"):
+        qualify.main(["part", *common(path), "--case", STOPPED.name, "--part", "baseline",
+                      "--attempt", "1", "--run-dir", str(tmp_path / "run"), "--checkpoints",
+                      str(tmp_path / "h"), "--device", "cpu"])  # fmt: skip
+    with pytest.raises(SystemExit, match="no rerun is opened"):
+        qualify.main(restart(path, STOPPED, RESTART))
+    name, runs = launch.load_campaign(path)
+    with pytest.raises(launch.CampaignError, match="held, its outcome unresolved"):
+        launch.run_campaign(name, runs, root, execute=lambda *a: 0, recovery="a reason",
+                            only=run.label, max_attempts=1)  # fmt: skip
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(["complete", *common(path), "--case", STOPPED.name])
+    assert stop.value.code == qualify.NO
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["states"][f"adamw-{ADAMW_LR:g}"] == "not_qualified"
+    assert any("outcome is unresolved" in w for w in verdict["warnings"])
+
+
+def test_a_cycle_cannot_start_from_a_case_its_launcher_stop_keeps(qualify, tmp_path, monkeypatch):
+    """The technical record's own case has a conforming launcher run its declared rule stopped,
+    which no part record classified: the cycle would keep that case whole, so it cannot start
+    from it."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)  # its records name another run (r1)
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    settled_launcher(root, run, "r-a1", stop="gradient_spike", steps=3)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    with pytest.raises(SystemExit, match="the cycle would keep this case whole"):
+        qualify.main(supersede_args(path, ADAMW, record))
+    assert not (out / "c1" / "supersede-1.json").exists()
 
 
 def test_a_cycle_cannot_start_from_a_case_it_keeps_whole(qualify, tmp_path, monkeypatch) -> None:
@@ -1072,9 +1167,18 @@ def settled_launcher(root, run, run_id, *, stop="steps", steps=25):
     inputs, terminal record and checkpoint record; the checkpoint file itself, /x.pt, is gone)."""
     from test_launch import make_run_dir
 
+    from zero_field_refusal.launch import expected_numerics
+    from zero_field_refusal.protocol import load_run_config
+
     run_dir = make_run_dir(root, run, run_id, "completed")
     meta = json.loads((run_dir / "meta.json").read_text())
-    meta["inputs"] = {"numerics_setup": {}, "theta0_trainable_sha256": "t" * 64,
+    numerics = {
+        **expected_numerics(load_run_config(run.config, run.overrides)),
+        "cublas_workspace_config": None,
+        "memory_fraction": None,
+        "device_index": 0,
+    }
+    meta["inputs"] = {"numerics_setup": numerics, "theta0_trainable_sha256": "t" * 64,
                       "endpoint_checkpoint": IDENTITY["checkpoint"]}  # fmt: skip
     (run_dir / "meta.json").write_text(json.dumps(meta))
     terminal = {"stop": {"reason": stop, "detail": {}}, "steps": steps, "evaluations": [25]}

@@ -374,6 +374,12 @@ def code_environment_problems(run_dir: Path) -> list[str]:
             + [f"environment: {p}" for p in environment["problems"]])  # fmt: skip
 
 
+def agreement_problems(cfg: DictConfig, case: QualificationCase) -> list[str]:
+    """The keys of ``CONFIG_AGREEMENT`` in which a launcher run's config departs from the case's
+    confirmation config ("Config agreement")."""
+    return _agreement_problems(cfg, case)
+
+
 def _identity_problems(
     cfg: DictConfig, meta: Mapping[str, Any], case: QualificationCase, numerics: Any
 ) -> list[str]:
