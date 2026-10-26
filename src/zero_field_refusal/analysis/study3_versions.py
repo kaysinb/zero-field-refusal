@@ -88,9 +88,12 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
   descends from, whose GPU code is ``gpu_code_sha256``, the code in force for the candidate's runs
   (the chain of engineering cycles from the engineering record, ``study3_progress.code_chain``);
   and the qualification recomputed under the code in force (``read_qualification``), without a
-  problem, its fixed rates' states the pinned ones and its inputs the pinned ledger, none added. A
+  problem, its fixed rates' states the pinned ones and no input added that bears on them (a record
+  of a fixed rate's case, or one of the candidate's in no case, as a supersession record is). A
   later restart or supersession so shows as a changed state, a new input or a changed code in
-  force; a rewritten verdict cache or a new ``checkpoints-removed`` record changes nothing.
+  force; a rewritten verdict cache, a new ``checkpoints-removed`` record or a record added to the
+  case of a rate the fixation does not fix (a closed arm's) changes nothing. Every pinned file
+  stays unchanged, whatever its case.
 - The confirmation supplement: its schema; its evidence now; its candidate's validation fixation
   valid (its full reader); the n record valid and passed, of its N and cap, of the fixed L, of the
   fixed rates for the arms it names and of the fixation's GPU code; the budget record named
@@ -757,8 +760,8 @@ def _recomputed(record: Mapping[str, Any], candidate: int, root: Path,
                 engineering: Mapping[str, Any],
                 settings: Mapping[str, Any] | None) -> list[str]:  # fmt: skip
     """The qualification recomputed under the code in force for the candidate: without a
-    problem, the fixed rates' states the pinned ones, its inputs the pinned ledger (none
-    added)."""
+    problem, the fixed rates' states the pinned ones, and no input that the ledger does not pin
+    bearing on the fixed rates (``_bears_on``)."""
     in_force, _ = _in_force(root, candidate, engineering)
     if in_force is None:
         return []  # no code in force: named with the code
@@ -775,11 +778,43 @@ def _recomputed(record: Mapping[str, Any], candidate: int, root: Path,
                                 f"{pinned['states'][arm][label]}")  # fmt: skip
     entries, found = _ledger(reading, root)
     problems += found
-    added = sorted({e["path"] for e in entries} - {e["path"] for e in pinned["ledger"]})
+    new = {e["path"] for e in entries} - {e["path"] for e in pinned["ledger"]}
+    fixed = _fixed_folders(reading, record["rates"], root)
+    added = sorted(path for path in new if _bears_on(path, candidate, fixed))
     if added:
         problems.append(f"qualification.ledger: the qualification takes now as inputs {added}, "
                         "which the record does not pin")  # fmt: skip
     return problems
+
+
+def _fixed_folders(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]],
+                   root: Path) -> set[str]:  # fmt: skip
+    """The case folders of the fixed rates in a qualification reading, under the runs
+    directory."""
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+
+    folders = set()
+    for arm, pair in rates.items():
+        for label in LABELS:
+            rate = qualification_records.rate_of(reading, arm, float(pair[label]))
+            for case in (rate or {}).get("cases") or []:
+                try:
+                    folders.add(Path(case["folder"]).relative_to(root).as_posix())
+                except (KeyError, TypeError, ValueError):
+                    continue
+    return folders
+
+
+def _bears_on(path: str, candidate: int, fixed: set[str]) -> bool:
+    """Whether a record the fixation does not pin bears on the fixed rates: a record of one of
+    their cases (in its folder, ``qualification/c<N>/numerical/s<seed>/<case>/``), or one of
+    the candidate's that lies in no case (a supersession record: it touches every case). A
+    record of another rate's case (a closed arm's, an unfixed rate's) does not."""
+    parts = PurePosixPath(path).parts
+    stage = ("qualification", f"c{candidate}", "numerical")
+    if len(parts) >= 6 and parts[:3] == stage:
+        return PurePosixPath(*parts[:5]).as_posix() in fixed
+    return True
 
 
 def _passed(kind: str, record: Mapping[str, Any] | None, problems: Sequence[str]) -> list[str]:

@@ -156,8 +156,11 @@ class Study:
             return out
         for (arm, lr), state in self.states.items():
             key = f"{OPT[arm]}-{lr:g}"
+            folders = sorted({str(p.parent) for p in self.inputs[candidate]
+                              if p.parent.name == key})  # fmt: skip
             out["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
                                  "state": state, "runs": [], "held": [],
+                                 "cases": [{"folder": f, "key": key} for f in folders],
                                  "verdict": {"state": state, "control": None,
                                              "not_counted": []}}  # fmt: skip
         out["states"] = {k: r["state"] for k, r in out["rates"].items()}
@@ -1200,11 +1203,12 @@ def test_the_logs_a_qualification_rests_on(study) -> None:
 # ------------------------------------------------------------------ a real qualification
 
 
-def real_qualification(qualify, monkeypatch, tmp_path, changes=None):
+def real_qualification(qualify, monkeypatch, tmp_path, changes=None, closed=()):
     """Candidate 1's numerical qualification as package 1's ``qualify.py`` writes it (its verdict
     cache written by ``qualify.py verdict``), the reading not replaced, and the stage at its
-    validation given: A and F, P closed. Package 1's test world names its launcher runs by seed
-    and optimizer, so each arm has one rate here, fixed as both its lower and its upper rate."""
+    validation given: A and F, P closed (``closed``: the cells of P's qualification, if any).
+    Package 1's test world names its launcher runs by seed and optimizer, so each arm has one rate
+    here, fixed as both its lower and its upper rate."""
     from test_qualification import CODE as RECORDS_CODE
     from test_qualification_records import World as QualificationWorld
 
@@ -1212,6 +1216,7 @@ def real_qualification(qualify, monkeypatch, tmp_path, changes=None):
     monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(code))
     rates = {arm: {"lr_l": RATES[arm]["lr_u"], "lr_u": RATES[arm]["lr_u"]} for arm in ("A", "F")}
     cells = tuple(((OPT[arm], rates[arm]["lr_u"]), SEEDS["numerical"][1]) for arm in rates)
+    cells += tuple((cell, SEEDS["numerical"][1]) for cell in closed)
     study = Study(tmp_path / "study", monkeypatch)
     monkeypatch.setattr(qr, "read_qualification", REAL_READ)
     study.code = {"commit": study.head(), "gpu_code_sha256": code["sha256"]}
@@ -1294,6 +1299,50 @@ def test_the_ledger_pins_the_qualifications_inputs_and_not_its_cache(
     found, problems = study.read_validation()
     assert found is None and has(problems, "qualification.states.F", "recomputed"), problems
     assert has(problems, "restart-1.json", "does not pin"), problems
+
+
+def test_a_record_added_to_an_unfixed_rates_case_leaves_the_fixation_valid(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """P closed, its rate failing on a scientific case: P's case records are pinned with the
+    rest, but a record added later to one of P's cases (a driver re-run completing it) bears on
+    no fixed rate and leaves the fixation valid; the same record added to a fixed rate's case
+    breaks it, and so does a pinned record of P's that changes."""
+    from test_qualification_records import beyond, qcase
+
+    p_rate = RATES["P"]["lr_u"]
+    failing = qcase(10201, "adamw_prewarmed", p_rate)
+    study, world, rates = real_qualification(qualify, monkeypatch, tmp_path,
+                                             {failing: beyond("rest", "baseline~s3")},
+                                             closed=(("adamw_prewarmed", p_rate),))  # fmt: skip
+    record = study.fixation()
+    assert set(record["rates"]) == {"A", "F"}
+    ledger = [entry["path"] for entry in record["qualification"]["ledger"]]
+    assert sum(f"/adamw_prewarmed-{p_rate:g}/" in path for path in ledger) == 6  # pinned too
+    study.put(VALIDATION_C1, record, commit=False)
+    assert study.read_validation() == (record, [])
+    # a restart record naming no attempt: read as an input, voiding nothing
+    p_case = qcase(10200, "adamw_prewarmed", p_rate)
+    added = {"case": p_case.record(), "restart": 1, "reason": "the Pod stopped", "attempts": [],
+             "launcher": None}  # fmt: skip
+    (world.folder(p_case) / "restart-1.json").write_text(json.dumps(added))
+    assert study.read_validation() == (record, [])
+    a_case = qcase(10200, "adamw", rates["A"]["lr_u"])
+    in_fixed = world.folder(a_case) / "restart-1.json"
+    in_fixed.write_text(json.dumps({**added, "case": a_case.record()}))
+    found, problems = study.read_validation()
+    name = in_fixed.relative_to(study.root).as_posix()
+    assert found is None and problems == [
+        f"{study.repo / VALIDATION_C1}: qualification.ledger: the qualification takes now as "
+        f"inputs {[name]}, which the record does not pin"]  # fmt: skip
+    in_fixed.unlink()
+    assert study.read_validation() == (record, [])
+    # a pinned record of P's changed
+    pinned = world.folder(p_case) / "baseline-attempt-1.json"
+    pinned.write_bytes(pinned.read_bytes() + b" ")
+    found, problems = study.read_validation()
+    assert found is None and has(problems, "qualification.ledger", "adamw_prewarmed",
+                                 "baseline-attempt-1.json", "sha256"), problems  # fmt: skip
 
 
 # ------------------------------------------------------------------ the sealing boundary
