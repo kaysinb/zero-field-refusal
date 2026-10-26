@@ -511,6 +511,82 @@ def test_a_scientific_trajectory_result_stops_the_rest_at_once(world, fa_parts, 
     assert (v["state"], v["kind"]) == ("failing", "scientific")
 
 
+def nan_gradient(patch, at: int) -> None:
+    """The ``at``-th gradient norm ``run_twin`` reads is NaN (the weight norms stay real): the
+    trajectory stops there, non-finite, as a real divergence stops it."""
+    real, count = fcd.grad_norm, [0]
+
+    def norm(tensors):
+        first = next(t for t in tensors if t is not None)
+        if first.requires_grad is False and first.grad is None:  # gradients, not weights
+            count[0] += 1
+            if count[0] == at:
+                return math.nan
+        return real(tensors)
+
+    patch.setattr(fcd, "grad_norm", norm)
+
+
+def test_a_non_finite_baseline_is_scientific(world, tmp_path, monkeypatch) -> None:
+    """A NaN at a step of the harness baseline stops it there (``run_twin``): its bridge holds on
+    the launcher run's rows of the same length, and the case is a scientific failure."""
+    env, runs = world
+    nan_gradient(monkeypatch, at=4)
+    record = part(env, runs["fa"], tmp_path / "out", tmp_path / "ckpt", "baseline")
+    run = record["trajectories"]["baseline"]
+    assert run["stop"].startswith("non-finite loss or gradient at step"), run["stop"]
+    assert record["status"] == "complete", record.get("reason")
+    assert 0 < len(run["rows"]) < 25 and record["checkpoint"] is None
+    assert all(record["bridge"].values()), record["bridge"]
+    v = q.case_verdict(record, None, SCOPE)
+    assert (v["state"], v["kind"]) == ("failing", "scientific"), v["reasons"]
+    assert v["reasons"][0].startswith("instability: the harness baseline")
+
+
+def test_a_non_finite_repeat_is_scientific(world, fa_parts, tmp_path, monkeypatch) -> None:
+    """A NaN at a step of the repeat: the part stops there, decided, and the case fails."""
+    env, runs = world
+    out, ckpt, baseline = rest_copy(fa_parts, tmp_path)
+    real = q.run_trajectory
+
+    def trajectory(name, *args, **kwargs):
+        if name != "repeat":
+            return real(name, *args, **kwargs)
+        with pytest.MonkeyPatch.context() as patch:
+            nan_gradient(patch, at=6)
+            return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(q, "run_trajectory", trajectory)
+    record = part(env, runs["fa"], out, ckpt, "rest", attempt=2)
+    repeat = record["trajectories"]["repeat"]
+    assert repeat["stop"].startswith("non-finite loss or gradient at step")
+    assert all(record["bridge"].values()), record["bridge"]
+    assert (record["status"], record["kind"]) == ("decided", "scientific")
+    assert list(record["trajectories"]) == ["repeat"]
+    v = q.case_verdict(json.loads((out / FA.attempt_path("baseline", 1)).read_text()), record,
+                       SCOPE)  # fmt: skip
+    assert (v["state"], v["kind"]) == ("failing", "scientific"), v["reasons"]
+    assert any(r.startswith("instability: the harness repeat") for r in v["reasons"])
+
+
+def test_a_stopped_trajectory_is_bridged_on_the_launchers_prefix() -> None:
+    rows = [{"step": t, "tokens": 10 + t, "denominator": 5} for t in range(25)]
+    full = {"path": "p", "count": 100, "chunks": ["a", "b", "c", "d"], "sha256": "s"}
+    facts = {"rows": rows, "training_stream": full, "v0_sha256": None,
+             "theta0_trainable_sha256": "t", "names_sha256": "n", "optimizer": {"o": 1},
+             "numerics_setup": {"x": 1}}  # fmt: skip
+    setup = {k: v for k, v in facts.items() if k != "rows"}
+    read = {"path": "p", "count": 28, "chunks": ["a", "b"], "sha256": "t"}  # 7 steps of 4
+    assert all(q.bridge_checks(facts, rows[:7], {**setup, "training_stream": read},
+                               stopped=True).values())  # fmt: skip
+    assert not q.bridge_checks(facts, rows[:7], setup)["steps"]  # not stopped: all 25 rows
+    other = [*rows[:6], {**rows[6], "tokens": 0}]
+    assert not q.bridge_checks(facts, other, setup, stopped=True)["tokens"]
+    elsewhere = {**read, "chunks": ["a", "x"]}
+    assert not q.bridge_checks(facts, rows[:7], {**setup, "training_stream": elsewhere},
+                               stopped=True)["training_stream"]  # fmt: skip
+
+
 def test_an_interruption_keeps_the_trajectory_results(world, fa_parts, tmp_path,
                                                       monkeypatch) -> None:  # fmt: skip
     """A part killed after its third trajectory leaves no record but the three results, durable

@@ -78,10 +78,11 @@ rule (``schedule.InstabilityGuard``), a monitor K above its maximum; the rule th
 step and values are recorded. The reference and the shifts are held to non-finite values alone.
 
 **The bridge** (``bridge_checks``, each false one technical): each training row's ``tokens`` and
-``denominator`` and the step indices exactly equal to the launcher run's; the training stream's
-identity; v₀'s, θ₀'s and the trainable names' hashes; the optimizer section; and the numerics
-setup against the launcher run's ``inputs.numerics_setup``. Bitwise agreement of rows across
-processes is a diagnostic, not an acceptance condition.
+``denominator`` and the step indices exactly equal to the launcher run's (a trajectory a non-finite
+value stopped, a scientific failure, against the launcher's rows of its length); the training
+stream's identity; v₀'s, θ₀'s and the trainable names' hashes; the optimizer section; and the
+numerics setup against the launcher run's ``inputs.numerics_setup``. Bitwise agreement of rows
+across processes is a diagnostic, not an acceptance condition.
 
 **Verdicts** are functions of the records alone, in ``analysis.qualification_verdicts`` (its
 docstring states the failure kinds; outside the GPU-code identity) and re-exported here:
@@ -516,14 +517,20 @@ def launcher_facts(run_dir: Path) -> dict[str, Any]:
 
 
 def bridge_checks(
-    launcher: Mapping[str, Any], harness_rows: Sequence[Mapping[str, Any]], setup: Mapping[str, Any]
-) -> dict[str, bool]:
+    launcher: Mapping[str, Any], harness_rows: Sequence[Mapping[str, Any]],
+    setup: Mapping[str, Any], *, stopped: bool = False,
+) -> dict[str, bool]:  # fmt: skip
     """The bridge's conditions, exactly (module docstring): the step indices, each row's
     ``tokens`` and ``denominator``, the training stream's identity, v₀'s hash (None on both sides
     for an arm that reads none), θ₀'s and the names' hashes, the optimizer section and the
     numerics setup. ``launcher`` is ``launcher_facts``; ``setup`` the harness's side
-    (``_setup_facts``)."""
+    (``_setup_facts``). A trajectory that ``stopped`` (a non-finite loss, gradient or weight:
+    ``run_twin`` ends there) is held to the launcher run's rows of the same length: the steps,
+    tokens and denominators of that prefix, exactly, and the stream chunks it read the launcher
+    run's first ones."""
     mine, theirs = list(harness_rows), list(launcher.get("rows") or [])
+    if stopped and len(mine) <= len(theirs):
+        theirs = theirs[: len(mine)]
     steps = [r.get("step") for r in mine] == [r.get("step") for r in theirs] and bool(mine)
 
     def rows_equal(key: str) -> bool:
@@ -533,9 +540,19 @@ def bridge_checks(
     def present_and_equal(key: str) -> bool:
         return launcher.get(key) is not None and launcher.get(key) == setup.get(key)
 
+    def stream_prefix() -> bool:  # the stopped trajectory's chunks: the launcher's first ones
+        ours, full = setup.get("training_stream"), launcher.get("training_stream")
+        if not (isinstance(ours, Mapping) and isinstance(full, Mapping)):
+            return False
+        chunks, all_chunks = list(ours.get("chunks") or []), list(full.get("chunks") or [])
+        return (ours.get("path") == full.get("path") and bool(chunks)
+                and chunks == all_chunks[: len(chunks)]
+                and (ours.get("count") or 0) <= (full.get("count") or 0))  # fmt: skip
+
+    training = stream_prefix() if stopped else present_and_equal("training_stream")
     return {"steps": steps, "tokens": rows_equal("tokens"),
             "denominator": rows_equal("denominator"),
-            "training_stream": present_and_equal("training_stream"),
+            "training_stream": training,
             "v0_sha256": launcher.get("v0_sha256") == setup.get("v0_sha256"),
             "theta0_trainable_sha256": present_and_equal("theta0_trainable_sha256"),
             "names_sha256": present_and_equal("names_sha256"),
@@ -697,10 +714,14 @@ def _baseline(
             save_dir=states if steps else None,
         )  # fmt: skip
         run["instability"] = harness_instability(cfg, run)
-        setup = _setup_facts(cfg, twins, shared, numerics_setup, run["steps"])
+        # The stream the trajectory read: a stopped one, the batches of its rows
+        setup = _setup_facts(cfg, twins, shared, numerics_setup, len(run["rows"]))
         # The bridge as soon as the trajectory is done: a failure after it keeps its checks, so
         # the verdict may read the trajectory (and reads nothing of a part without them)
-        progress.update(setup=setup, bridge=bridge_checks(facts, run["rows"], setup))
+        stopped = run["stop"] is not None
+        progress.update(
+            setup=setup, bridge=bridge_checks(facts, run["rows"], setup, stopped=stopped)
+        )
         v0_stream = shared["v0_stream"] if reads_v0(case.optimizer) else None
         streams = {"training": setup["training_stream"], "preconditioner": v0_stream}
         archive = fcd.compare_archive(run["rows"], run["monitor"], run_dir, end=run,
@@ -717,7 +738,7 @@ def _baseline(
                 Path(facts["identity"]["checkpoint"]["path"]), cfg)  # fmt: skip
         twins.reset()
         body = {"status": "complete", "checkpoint": checkpoint, "setup": setup,
-                "bridge": bridge_checks(facts, run["rows"], setup),
+                "bridge": progress["bridge"],
                 "v0_sha256": shared["v0_sha256"], "v0_unchanged": _v0_sha256(twins) == v0_before,
                 "trajectories": trajectories, "comparisons": comparisons}  # fmt: skip
     return body
@@ -817,9 +838,15 @@ def _rest(
                 comparisons[f"{label}~{name}"] = measured
             if name == "repeat":  # the bridge, from the repeat's rows, before anything else
                 setup = _setup_facts(cfg, twins, shared, numerics_setup,
-                                     trajectories["repeat"]["steps"])  # fmt: skip
+                                     len(trajectories["repeat"]["rows"]))  # fmt: skip
                 progress.update(
-                    setup=setup, bridge=bridge_checks(facts, trajectories["repeat"]["rows"], setup)
+                    setup=setup,
+                    bridge=bridge_checks(
+                        facts,
+                        trajectories["repeat"]["rows"],
+                        setup,
+                        stopped=trajectories["repeat"]["stop"] is not None,
+                    ),
                 )
             progress["v0_unchanged"] = _v0_sha256(twins) == v0_before
             bridge = progress.get("bridge")  # none before the repeat has run
