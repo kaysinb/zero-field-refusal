@@ -964,7 +964,7 @@ def test_no_scientific_verdict_on_a_failed_identity_or_bridge_check() -> None:
     def baseline_pods(baseline, rest):  # the baseline on another Pod than its launcher run
         baseline["launcher"]["pod_id"], baseline["provenance"]["pod_id"] = "p0", "p1"
 
-    probes = {
+    evidence = {
         "a false training-stream check and an excessive D": both(
             false("rest", "training_stream"), beyond("baseline~reference", 0.5)),
         "a false θ₀ hash and a gradient spike": both(
@@ -972,7 +972,7 @@ def test_no_scientific_verdict_on_a_failed_identity_or_bridge_check() -> None:
         "a second Pod and an excessive D": both(pods, beyond("baseline~s2", 0.5)),
         "the baseline's second Pod and a gradient spike": both(baseline_pods, spike),
     }  # fmt: skip
-    for name, change in probes.items():
+    for name, change in evidence.items():
         v = verdict_of(change)
         assert (v["state"], v["kind"]) == ("not_qualified", "technical"), (name, v["reasons"])
         assert not any("instability" in r or "D₂₅" in r for r in v["reasons"]), name

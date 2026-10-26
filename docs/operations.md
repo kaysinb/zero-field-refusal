@@ -1530,7 +1530,8 @@ docstring has every rule.
   round with the same reason starts a new one (if the command stopped between the two, running
   it again writes the journal's line). Only an interrupted case is restarted: a restart is
   refused without a reason, for a complete case, without evidence of an interruption (an
-  interrupted attempt, or the launcher run's checkpoint gone from disk), when the launcher run
+  interrupted attempt, or the launcher run's checkpoint gone from disk, which is enough even
+  before the baseline started), when the launcher run
   itself is a completed failure (its declared instability stop, scientific; another stop,
   technical), and for a case with a completed failure, scientific (it keeps counting: no reruns
   to pass) or technical (the engineering cycle lifts it, below), an interrupted rest's
@@ -1550,18 +1551,20 @@ docstring has every rule.
 - **A technical failure and its engineering cycle.** A completed technical failure (the
   repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
   rerun as it stands. Each candidate has one engineering cycle. After its diagnosis and fix,
-  committed, `supersede` records it: `c<N>/<stage>/supersede-1.json` names the technical record
-  that started it (path and sha256), the diagnosis, the fix, the fix's GPU code (which must
-  differ from the record's: the same path is not simply rerun) and every record of the candidate
-  made under the old GPU code, in every case, passed ones included, with the cases re-qualified;
-  it then logs their launcher runs superseded. A second cycle for the candidate is refused: a
-  technical failure left unresolved routes to the technical feasibility report. The candidate's
-  scientific failures are not voided: they keep counting (listed as `kept` with their sha256,
-  with the baseline a kept rest is bound to), so a scientific failure of P, which closes P–F
-  alone, never blocks the cycle of a technical failure of A or F. Every case it names
-  re-qualifies under the new code: the launcher's recovery round, then each part as its next
-  attempt with `--engineering-cycle` (its record names the supersession's path and sha256), not
-  `--infrastructure`; the verdict lists the voided records under `supersession`.
+  committed, `supersede` records it: `c<N>/supersede-1.json` names the technical record that
+  started it (path and sha256), the diagnosis, the fix, the fix's GPU code (which must differ
+  from the record's: the same path is not simply rerun), every record of the candidate made
+  under the old GPU code in all its stages, passed ones included, with the cases re-qualified,
+  and every old-code launcher run of the candidate in the journal, which it then logs superseded
+  (run again with the same record, it only writes the lines that are missing). A second cycle
+  for the candidate is refused: a technical failure left unresolved routes to the technical
+  feasibility report. A case that holds a scientific failure is kept whole, its records and its
+  launcher run (listed as kept, with why): the failure keeps counting, so a scientific failure of
+  P, which closes P–F alone, never blocks the cycle of a technical failure of A or F. Every case
+  the cycle names re-qualifies under the new code: the launcher's recovery round, then each part
+  as its next attempt with `--engineering-cycle` (its record names the supersession's path and
+  sha256), not `--infrastructure`; a later interruption of a new-code attempt is rerun with
+  `--infrastructure REASON`. The verdict lists the voided records under `supersession`.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \

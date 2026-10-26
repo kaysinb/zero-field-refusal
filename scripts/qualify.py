@@ -123,21 +123,24 @@ named records are kept, listed, and voided in the verdict (with the reason, unde
 
 **Supersession** (``supersede --record PATH --diagnosis TEXT --fix TEXT``; "Failure routes": one
 engineering cycle per candidate; "Voiding and supersession"). A completed technical failure stops
-counting only through the candidate's supersession record, ``supersede-1.json`` in its stage folder
-(``c<N>/<stage>/``): it names the technical record that started the cycle (its path and sha256), the
-diagnosis and the fix, the GPU code of the fix (this clean checkout's) and the old one, and every
-record of the candidate made under the old GPU code, in every case, passed ones included, with the
-cases re-qualified and their launcher runs, which it then logs superseded. It is refused a second
-time for the candidate (one cycle per candidate: a technical failure left unresolved after it routes
-to the technical feasibility report), for a record that is not a completed technical failure of the
-case, and when the fix's GPU code is the old one (the same path is not simply rerun). The
-candidate's scientific failures are not voided: they keep counting (no reruns to pass), with the
-baseline record a kept rest is bound to, listed as ``kept`` with their sha256; a case holding one
-keeps its launcher run, and the driver's stale check passes them. Each case it names re-qualifies
-under the new code from a new launcher run (the recovery round) and new attempts of its parts, which
-carry ``--engineering-cycle`` (their record: ``engineering_cycle``, the supersession's path and
-sha256) instead of ``--infrastructure``. The verdict lists the records it voids under
-``supersession``.
+counting only through the candidate's supersession record, ``c<N>/supersede-1.json``: it names the
+technical record that started the cycle (its path and sha256), the diagnosis and the fix, the GPU
+code of the fix (this clean checkout's) and the old one, every record of the candidate made under
+the old GPU code in all its stage folders, passed ones included, with the cases re-qualified, and
+every old-code launcher run of the candidate in the launch journal (the runs its records name and
+those of the campaign's cases, a case with no part attempt yet included), which it then logs
+superseded. A case that holds a scientific failure is kept whole: none of its records (its parts,
+its control, its trajectory results) nor its launcher run is voided, it is listed as kept with why,
+and the driver's stale check passes it; the failure keeps counting (no reruns to pass). The cycle is
+refused a second time for the candidate (a technical failure left unresolved after it routes to the
+technical feasibility report), for a record that is not a completed technical failure of the case,
+and when the fix's GPU code is the old one (the same path is not simply rerun); run again with the
+same record, it only writes the journal's lines that are missing. Each case it names re-qualifies
+under the new code from a new launcher run (the recovery round) and new attempts of its parts: the
+attempt after one the cycle named carries ``--engineering-cycle`` (its record:
+``engineering_cycle``, the supersession's path and sha256) instead of ``--infrastructure``; a later
+interruption of a new-code attempt is rerun with ``--infrastructure REASON``, as any other. The
+verdict lists the records it voids under ``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -181,6 +184,7 @@ import textwrap
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from omegaconf import OmegaConf
@@ -374,13 +378,18 @@ def stage_folder(folder: Path) -> Path:
     return folder.parent.parent
 
 
+def candidate_folder(folder: Path) -> Path:
+    """The candidate's folder (``c<N>/``) above a case's folder: it holds the supersession."""
+    return folder.parent.parent.parent
+
+
 def voiding_records(folder: Path, kind: str | None = None) -> list[tuple[Path, dict | None]]:
     """The records that void attempts of the case in ``folder``: its restart records
     (``restart-<n>.json``, in the folder) and the candidate's supersession record
-    (``supersede-<n>.json``, in the stage folder above it); ``kind``: one of them alone. In
-    order, each with its record."""
+    (``supersede-<n>.json``, in the candidate's folder, ``c<N>/``); ``kind``: one of them alone.
+    In order, each with its record."""
     found = []
-    for where, wanted in ((folder, "restart"), (stage_folder(folder), "supersede")):
+    for where, wanted in ((folder, "restart"), (candidate_folder(folder), "supersede")):
         if kind not in (None, wanted) or not where.is_dir():
             continue
         found += [(wanted, int(m[2]), f) for f in where.glob(f"{wanted}-*.json")
@@ -405,10 +414,11 @@ def void_reason(path: Path, record: dict | None) -> str:
 def _entries(folder: Path, kind: str | None = None):
     """(voiding record path, its record, an attempt entry of this case) for every attempt the
     voiding records name (a supersession's entries name their case)."""
-    case = case_name_of(folder)
+    case, stage = case_name_of(folder), stage_folder(folder).name
     for path, record in voiding_records(folder, kind):
         for entry in (record or {}).get("attempts") or []:
-            if isinstance(entry, dict) and entry.get("case", case) == case:
+            if (isinstance(entry, dict) and entry.get("case", case) == case
+                    and entry.get("stage", stage) == stage):  # fmt: skip
                 yield path, record, entry
 
 
@@ -427,11 +437,12 @@ def named_attempts(folder: Path, kind: str | None = None) -> set[tuple[str, int]
     return {(e.get("part"), e.get("attempt")) for _, _, e in _entries(folder, kind)}
 
 
-def cycle_of(folder: Path, part: str) -> tuple[Path, dict | None] | None:
-    """The supersession record that names attempts of this part of the case, or None: its
-    reruns carry ``--engineering-cycle``."""
+def cycle_of(folder: Path, part: str, attempt: int) -> tuple[Path, dict | None] | None:
+    """The supersession record that names this attempt of this part of the case (its latest),
+    or None: the rerun after it carries ``--engineering-cycle``; a later interruption of a
+    new-code attempt is rerun with ``--infrastructure`` as any other."""
     for path, record, entry in _entries(folder, "supersede"):
-        if entry.get("part") == part:
+        if entry.get("part") == part and entry.get("attempt") == attempt:
             return path, record
     return None
 
@@ -625,22 +636,19 @@ def part(args, planned: Planned, out: Path) -> None:
     case, name = planned.case, args.part
     state = part_state(out, case, name)
     reason = args.infrastructure
-    cycle = cycle_of(case_folder(out, case), name)  # its attempts were superseded
+    # The engineering cycle named its latest attempt: the rerun after it carries the mark
+    cycle = None if state.state == "due" else cycle_of(case_folder(out, case), name, state.attempt)
     if args.resume:
         if state.state == "recorded":
             print(f"{case.name} {name}: attempt {state.attempt} is recorded "
                   f"({state.record.get('status')}); nothing runs")  # fmt: skip
             return
-        if state.state == "interrupted":
-            print(f"{case.name} {name}: attempt {state.attempt} was started and left no record: "
-                  f"an interrupted attempt, rerun only as attempt {state.attempt + 1} with "
-                  "--infrastructure REASON", file=sys.stderr)  # fmt: skip
-            sys.exit(INTERRUPTED)
-        if state.state == "voided" or (cycle is not None and state.state == "interrupted"):
+        if state.state in ("interrupted", "voided"):
             mark = "--engineering-cycle" if cycle is not None else "--infrastructure REASON"
-            print(f"{case.name} {name}: attempt {state.attempt} is named by the case's restart or "
-                  f"supersession record: its next attempt is run by hand, --attempt "
-                  f"{state.attempt + 1} {mark}", file=sys.stderr)  # fmt: skip
+            why = ("was started and left no record" if state.state == "interrupted"
+                   else "is named by the case's restart or supersession record")  # fmt: skip
+            print(f"{case.name} {name}: attempt {state.attempt} {why}: its next attempt is run "
+                  f"by hand, --attempt {state.attempt + 1} {mark}", file=sys.stderr)  # fmt: skip
             sys.exit(INTERRUPTED)
         if state.state == "invalid":
             sys.exit(f"{case.name} {name}: attempt {state.attempt}'s record is unreadable or "
@@ -921,8 +929,10 @@ def restart_case(
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
     its declared instability stop, scientific; another stop or a departing run, technical), and
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``): only an interrupted case is restarted. Run again when every attempt
-    is named, it only completes the journal's record of the launcher run."""
+    (``attempt_failures``): only an interrupted case is restarted. A launcher run whose
+    checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
+    Pod stopped between the launch and the baseline). Run again after a stop between the record
+    and the journal's line, it only writes that line."""
     case, reason = planned.case, args.infrastructure
     if not reason:
         sys.exit("restart-case needs --infrastructure REASON: the documented interruption")
@@ -930,19 +940,20 @@ def restart_case(
     attempts, listed = case_attempts(folder, planned), named_attempts(folder)
     fresh = [a for a in attempts if (a["part"], a["attempt"]) not in listed]
     earlier = restart_records(folder)
-    if not fresh and earlier:  # every attempt named: the journal's line, if it is missing
+    superseded = superseded_runs(planned.run, launch_records(root))
+    named_run = ((earlier[-1][1] or {}).get("launcher") or {}).get("run_id") if earlier else None
+    if named_run and named_run not in superseded:  # stopped before the journal's line
         path, record = earlier[-1]
-        launcher = (record or {}).get("launcher") or {}
-        if launcher.get("run_id"):
-            run_dir = root / planned.run.experiment / launcher["run_id"]
-            log_superseded(planned, root, campaign, run_dir,
-                           reason=str((record or {}).get("reason")), record=path)  # fmt: skip
-        sys.exit(
-            f"{case.name}: no attempt to restart (every one is named by an earlier restart "
-            "or supersession record); the launch journal names its launcher run"
-        )
-    if not fresh:
-        sys.exit(f"{case.name}: no attempt to restart (none recorded or started)")
+        log_superseded(planned, root, campaign, root / planned.run.experiment / named_run,
+                       reason=str((record or {}).get("reason")), record=path)  # fmt: skip
+        sys.exit(f"{case.name}: the restart is recorded ({path.name}); the launch journal now "
+                 "names its launcher run")  # fmt: skip
+    run_dir, launcher = launcher_to_supersede(planned, root)
+    missing = checkpoint_missing(run_dir)
+    if not fresh and not missing:  # a lost checkpoint alone is evidence, before any attempt
+        sys.exit(f"{case.name}: no attempt to restart (none recorded or started, or every one "
+                 "named by an earlier restart or supersession record), and the launcher run's "
+                 "checkpoint is not lost")  # fmt: skip
     if case_state(out, planned, scope)[0]:
         sys.exit(f"{case.name}: the case is complete; a restart voids only an interrupted case")
     failures = attempt_failures(folder, planned, scope)
@@ -950,20 +961,19 @@ def restart_case(
         sys.exit(f"{case.name}: no restart: a completed failure keeps counting: {failures}. A "
                  "scientific one is never rerun (no reruns to pass); a technical one is lifted "
                  "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
-    run_dir, launcher = launcher_to_supersede(planned, root)
     if run_dir is not None:
         kind, why = q.launcher_problems(run_dir, case, checkpoint=False, environment=False)
         if kind is not None:
             sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} is itself a "
                      f"completed {kind} failure, which keeps counting: {why}")  # fmt: skip
-    if not any(a["state"] == "interrupted" for a in fresh) and not checkpoint_missing(run_dir):
+    if not any(a["state"] == "interrupted" for a in fresh) and not missing:
         sys.exit(f"{case.name}: no restart: no evidence of an interruption (no interrupted "
                  "attempt, and the launcher run's checkpoint is on disk)")  # fmt: skip
     require_clean()
     number = next_number(folder, "restart")
     path = folder / f"restart-{number}.json"
     record = {"case": case.record(), "restart": number, "reason": reason, "attempts": attempts,
-              "launcher": launcher, "checkpoint_missing": checkpoint_missing(run_dir),
+              "launcher": launcher, "checkpoint_missing": missing,
               "host": socket.gethostname(),
               "restarted_at": datetime.now(UTC).isoformat(timespec="seconds"),
               "provenance": q.qualification_provenance(load_settings())}  # fmt: skip
@@ -1007,12 +1017,40 @@ def scientific_attempts(
 
 
 def kept_records(folder: Path) -> set[str]:
-    """The sha256 of the case's records the candidate's engineering cycle kept (its scientific
-    failures and the baselines they are bound to)."""
-    case = case_name_of(folder)
+    """The sha256 of the case's records the candidate's engineering cycle kept: every record of
+    a case that holds a scientific failure, which it keeps whole."""
+    case, stage = case_name_of(folder), stage_folder(folder).name
     return {e["sha256"] for _, r in voiding_records(folder, "supersede")
             for e in (r or {}).get("kept") or []
-            if isinstance(e, dict) and e.get("case") == case and e.get("sha256")}  # fmt: skip
+            if isinstance(e, dict) and e.get("case") == case and e.get("stage", stage) == stage
+            and e.get("sha256")}  # fmt: skip
+
+
+def journal_starts(root: Path) -> dict[str, tuple[str, dict]]:
+    """Every launcher attempt in the launch journals, by run id: (campaign, its start record)."""
+    starts: dict[str, tuple[str, dict]] = {}
+    for log in sorted((root / "launch").glob("*.jsonl")):
+        for line in log.read_text().splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("event") == "start" and isinstance(
+                    record.get("run_id"), str):  # fmt: skip
+                starts.setdefault(record["run_id"], (log.stem, record))
+    return starts
+
+
+def run_gpu_code(run_dir: Path) -> str | None:
+    """The GPU-code identity (sha256) of the commit a launcher run recorded, from a clean
+    checkout; None when it cannot be told."""
+    git = (_read(run_dir / "meta.json") or {}).get("git") or {}
+    if not git.get("commit") or git.get("dirty") is not False:
+        return None
+    try:
+        return code_identity.gpu_code_identity(git["commit"]).get("sha256")
+    except Exception:  # an unknown commit: its code cannot be told
+        return None
 
 
 def supersede_case(
@@ -1020,34 +1058,41 @@ def supersede_case(
     scope: q.QualificationScope, campaign: str,
 ) -> None:  # fmt: skip
     """The candidate's engineering cycle, recorded (module docstring, "Supersession"; "Failure
-    routes", "Voiding and supersession"): ``supersede-1.json`` in the candidate's stage folder
-    names the technical record that started it (its path and sha256), the diagnosis and the
-    fix, the GPU code of the fix (this clean checkout's) and the old one, and every record of
-    the candidate made under the old GPU code, in every case, passed ones included, with the
-    cases re-qualified and their launcher runs, which it then logs superseded. Refused: a second
-    time for the candidate (one cycle per candidate: an unresolved technical failure then routes
-    to the technical feasibility report); for a record that is not a completed technical failure
-    of the case; when the fix's GPU code is the old one (the same path is not simply rerun);
-    from a checkout that is not clean. The candidate's scientific failures are not voided: they keep
-    counting (no reruns to pass), each with the baseline record a kept rest is bound to, and are
-    listed as ``kept`` with their sha256; a case with one keeps its launcher run, and is still
-    re-qualified in its other records."""
+    routes", "Voiding and supersession"): ``c<N>/supersede-1.json`` names the technical record
+    that started it (its path and sha256), the diagnosis and the fix, the GPU code of the fix
+    (this clean checkout's) and the old one, and every record of the candidate made under the
+    old GPU code, in all its stage folders, passed ones included, with the cases re-qualified,
+    and every old-code launcher run of the candidate in the launch journal (the runs its
+    records name and those of the campaign's cases, a case without any part attempt included),
+    which it then logs superseded. A case that holds a scientific failure is kept whole (none of
+    its records, nor its launcher run, is voided: the failure keeps counting, no reruns to pass)
+    and listed as kept, with why. Refused: a second time for the candidate (one cycle per
+    candidate: an unresolved technical failure then routes to the technical feasibility report);
+    for a record that is not a completed technical failure of the case; when the fix's GPU code
+    is the old one (the same path is not simply rerun); from a checkout that is not clean. Run
+    again with the same record, it only writes the journal's lines that are missing."""
     case = chosen.case
     if args.record is None or not args.diagnosis or not args.fix:
         sys.exit("supersede needs --record PATH, --diagnosis TEXT and --fix TEXT")
     folder = case_folder(out, case)
-    stage = stage_folder(folder)
-    cycles = sorted(stage.parent.glob("*/supersede-*.json"))
+    candidate_dir = candidate_folder(folder)
+    path = args.record.resolve()
+    sha = file_sha256(path)
+    cycles = sorted(candidate_dir.glob("supersede-*.json"))
     if cycles:
+        published = _read(cycles[0]) or {}
+        old_record = published.get("old_record") or {}
+        if old_record.get("path") == str(path) and old_record.get("sha256") == sha:
+            repaired = repair_cycle_journal(cycles[0], published, root)
+            print(json.dumps({"supersession": str(cycles[0]), "journal_lines_written": repaired}))
+            return
         sys.exit(f"candidate {case.candidate}: its engineering cycle is recorded already "
                  f"({cycles[0]}): one cycle per candidate, and a technical failure left "
                  "unresolved after it routes to the technical feasibility report")  # fmt: skip
-    path = args.record.resolve()
     match = re.fullmatch(r"(baseline|rest|control)-attempt-(\d+)\.json", path.name)
     if (not match or path.parent != folder.resolve()
             or attempt_files(folder, match[1]).get(int(match[2])) != "recorded"):  # fmt: skip
         sys.exit(f"{case.name}: {args.record} is not a recorded attempt of this case")
-    sha = file_sha256(path)
     if sha in named_records(folder):
         sys.exit(f"{case.name}: {path.name} is void already")
     failures = attempt_failures(folder, chosen, scope)
@@ -1061,55 +1106,100 @@ def supersede_case(
     if not old.get("sha256") or fix.get("sha256") == old.get("sha256"):
         sys.exit(f"{case.name}: the fix's GPU code is the superseded record's "
                  f"({old.get('sha256')}): the same path is not simply rerun")  # fmt: skip
-    attempts, requalified, kept = [], [], []
-    by_name = {p.case.name: p for p in planned}
-    for case_dir in sorted({f.parent for f in stage.glob("s*/*/*-attempt-*")}):
-        name = case_name_of(case_dir)
-        keep = scientific_attempts(case_dir, by_name.get(name), scope, candidate=case.candidate)
-        named = named_records(case_dir)
-        mine = []
-        for part_name in q.PARTS:
-            for n, state in attempt_files(case_dir, part_name).items():
-                file = case_dir / f"{part_name}-attempt-{n}.json"
-                record = _read(file) if state == "recorded" else None
-                entry = {"case": name, "part": part_name, "attempt": n, "state": state,
-                         "path": str(file),
-                         "sha256": file_sha256(file) if state == "recorded" else None,
-                         "status": (record or {}).get("status"),
-                         "kind": (record or {}).get("kind")}  # fmt: skip
-                if (part_name, n) in keep:
-                    kept.append(entry)  # a scientific failure keeps counting
-                    continue
-                if state == "recorded" and (file_sha256(file) in named or (
-                        ((record or {}).get("provenance") or {}).get("gpu_code") or {}
-                ).get("sha256") != old["sha256"]):  # fmt: skip
-                    continue  # void already, or not of the old code
-                mine.append(entry)
-        if any(e["state"] == "recorded" for e in mine):
-            attempts += mine
-            requalified.append(name)
-    launchers = {}  # a case with a kept record keeps the launcher run that record names
-    for name in requalified:
-        if name in by_name and not any(e["case"] == name for e in kept):
-            launchers[name] = launcher_to_supersede(by_name[name], root)
-    record_path = stage / "supersede-1.json"
-    reason = f"superseded by an engineering cycle: {args.diagnosis}; fix: {args.fix}"
-    record = {"candidate": case.candidate, "stage": stage.name, "supersession": 1,
-              "old_record": {"case": case.name, "path": str(path), "sha256": sha,
-                             "part": match[1], "attempt": int(match[2])},
+    by_name = {(p.case.name, ROLES[p.case.engineering]): p for p in planned}
+    attempts, requalified, kept, kept_cases, run_ids, kept_runs = [], [], [], [], set(), set()
+    for stage in sorted(d for d in candidate_dir.iterdir() if d.is_dir()):
+        for case_dir in sorted({f.parent for f in stage.glob("s*/*/*-attempt-*")}):
+            name = case_name_of(case_dir)
+            p = by_name.get((name, stage.name))
+            entries, mine = [], []
+            named = named_records(case_dir)
+            for part_name in q.PARTS:
+                for n, state in attempt_files(case_dir, part_name).items():
+                    file = case_dir / f"{part_name}-attempt-{n}.json"
+                    record = _read(file) if state == "recorded" else None
+                    identity = ((record or {}).get("launcher") or {}).get("identity") or {}
+                    entry = {"case": name, "stage": stage.name, "part": part_name,
+                             "attempt": n, "state": state, "path": str(file),
+                             "sha256": file_sha256(file) if state == "recorded" else None,
+                             "status": (record or {}).get("status"),
+                             "kind": (record or {}).get("kind"),
+                             "launcher_run_id": identity.get("run_id")}  # fmt: skip
+                    entries.append(entry)
+                    if state == "recorded" and (entry["sha256"] in named or (
+                            ((record or {}).get("provenance") or {}).get("gpu_code") or {}
+                    ).get("sha256") != old["sha256"]):  # fmt: skip
+                        continue  # void already, or not of the old code
+                    mine.append(entry)
+            keep = scientific_attempts(case_dir, p, scope, candidate=case.candidate)
+            if keep:  # a scientific failure keeps the case whole, its launcher run included
+                kept += entries
+                why = sorted(f"{part_name} attempt {n}" for part_name, n in keep)
+                kept_cases.append(
+                    {
+                        "case": name,
+                        "stage": stage.name,
+                        "why": f"a scientific failure keeps counting: {why}",
+                    }
+                )
+                kept_runs |= {e["launcher_run_id"] for e in entries if e["launcher_run_id"]}
+                if p is not None:
+                    kept_runs |= set(journal_run_ids(p.run, root))
+                continue
+            if any(e["state"] == "recorded" for e in mine):
+                attempts += mine
+                requalified.append({"case": name, "stage": stage.name})
+                run_ids |= {e["launcher_run_id"] for e in mine if e["launcher_run_id"]}
+    kept_names = {(k["case"], k["stage"]) for k in kept_cases}
+    for (name, stage_name), p in by_name.items():  # every campaign case: its launcher runs
+        if (name, stage_name) not in kept_names:
+            run_ids |= set(journal_run_ids(p.run, root))
+    starts = journal_starts(root)
+    launchers = []
+    for run_id in sorted(run_ids - kept_runs):
+        if run_id not in starts:
+            continue
+        campaign_name, start = starts[run_id]
+        run_dir = root / str(start.get("experiment")) / run_id
+        if run_dir.is_dir() and run_gpu_code(run_dir) == old["sha256"]:
+            launchers.append({"run_id": run_id, "campaign": campaign_name,
+                              "run": start.get("run"), "experiment": start.get("experiment"),
+                              "config_hash": start.get("config_hash"),
+                              "identity": q.launcher_identity(run_dir)})  # fmt: skip
+    record_path = candidate_dir / "supersede-1.json"
+    record = {"candidate": case.candidate, "supersession": 1,
+              "old_record": {"case": case.name, "stage": stage_folder(folder).name,
+                             "path": str(path), "sha256": sha, "part": match[1],
+                             "attempt": int(match[2])},
               "diagnosis": args.diagnosis, "fix": args.fix, "old_gpu_code": old,
               "fix_gpu_code": fix, "cases_requalified": requalified, "attempts": attempts,
-              "kept": kept,
-              "launchers": {n: entry for n, (_, entry) in launchers.items()},
+              "kept_cases": kept_cases, "kept": kept, "launchers": launchers,
               "host": socket.gethostname(),
               "superseded_at": datetime.now(UTC).isoformat(timespec="seconds"),
               "provenance": q.qualification_provenance(load_settings())}  # fmt: skip
     q.publish(record_path, record)  # first the record, then the journal's lines
-    for name, (run_dir, _) in launchers.items():
-        log_superseded(by_name[name], root, campaign, run_dir, reason=reason, record=record_path)
+    repair_cycle_journal(record_path, record, root)
     print(json.dumps({"candidate": case.candidate, "supersession": str(record_path),
                       "old_record": record["old_record"], "cases_requalified": requalified,
-                      "kept": [(e["case"], e["part"], e["attempt"]) for e in kept]}))  # fmt: skip
+                      "kept_cases": kept_cases,
+                      "launchers": [r["run_id"] for r in launchers]}))  # fmt: skip
+
+
+def repair_cycle_journal(path: Path, record: dict, root: Path) -> list[str]:
+    """The journal's ``superseded`` line of every launcher run the supersession names, where it
+    is missing; returns the run ids written."""
+    reason = (
+        f"superseded by an engineering cycle: {record.get('diagnosis')}; fix: {record.get('fix')}"
+    )
+    written = []
+    for entry in record.get("launchers") or []:
+        run = SimpleNamespace(label=entry.get("run"), experiment=entry.get("experiment"),
+                              config_hash=entry.get("config_hash"))  # fmt: skip
+        if entry["run_id"] not in superseded_runs(run, launch_records(root)):
+            supersede(root, entry["campaign"], run, entry["run_id"], reason=reason,
+                      record=str(path))  # fmt: skip
+            written.append(entry["run_id"])
+    return written
 
 
 def superseded_run_ids(run: Run, root: Path) -> list[str]:
