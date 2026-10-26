@@ -14,7 +14,7 @@ records; the state machine consumes only what this module accepts.
   is not returned.
 - ``decisions``: the records a candidate's route needs (engineering, simulation, ``n-c<N>`` and,
   when N asks for one, ``budget-c<N>``), each with its state and problems, the immutability check
-  of ``immutable`` included.
+  of ``immutable`` included; a record is invalid when one it rests on is.
 - ``immutable``: a record whose sha256 differs from the one a started campaign's header named.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
 - ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
@@ -24,9 +24,10 @@ records; the state machine consumes only what this module accepts.
 Every record carries ``kind`` (equal to its file's), ``state`` (``passed`` or ``failed``),
 ``written_at`` (ISO 8601 with a UTC offset) and ``code``: ``commit`` (40 hexadecimal digits) and
 ``gpu_code_sha256`` (the sha256 of ``code_identity.gpu_code_identity`` at that commit). The
-schemas are closed: a field the schema does not name is refused, so that no mean, sign, per-seed
-value, unrounded spread or exploratory engineering diagnostic (e_eng, path maxima) can ride in a
-record or gate anything.
+schemas are closed: a field the schema does not name is refused, and so is a simulation gate or
+input whose name is not one of the fixed gate names or a plain lowercase word, so that no mean,
+sign, per-seed value, unrounded spread or exploratory engineering diagnostic (e_eng, path
+maxima) can ride in a record or gate anything.
 
 **Evidence** is a reference ``{"path", "sha256"}`` (and, for a path that is not absolute,
 ``"root"``: ``"runs"``, the default, for a path relative to RUNS_DIR, or ``"repo"`` for one
@@ -40,22 +41,28 @@ on is a response or an observation, and this module opens none.
   ``theta0_utility`` (``scripts/check_theta0_utility.py``'s output) and ``stage0``, each the
   evidence of the record it rests on and ``passed``; a ``passed`` record needs all four, with a
   record each and each passed. In a ``failed`` record a check that left no record is null.
-- ``simulation``: ``fixation`` (the simulation's fixation) and ``inputs`` (name → evidence), the
-  commit and GPU code in ``code``; ``gates`` (name → ``value``, ``requirement``, ``passed``; a
-  gate that is only reported has null for both of the last two), which must include
+- ``simulation``: ``fixation`` (the simulation's fixation) and ``inputs`` (name → evidence; a
+  name is a lowercase word of letters and underscores, at most 40, no digits, and holds none of
+  the words that mark a mean, a sign, a per-seed value, a spread or an e_eng), the commit and GPU
+  code in ``code``; ``gates`` (name → ``value``, ``requirement``, ``passed``), closed to
   ``safe_pass_rate`` (the pass rate at the safe alternative of the 28-block validation, required
   ≥ 0.95) and ``power_af`` (the lower of the A–F powers at the two planning spreads, required
-  ≥ 0.80), the requirement no lower than the registered one and ``passed`` equal to value ≥
-  requirement; ``power_af`` also has ``power_short`` (true when its requirement is not met) and
+  ≥ 0.80), both present, the requirement no lower than the registered one and ``passed`` equal
+  to value ≥ requirement, and four gates that are only reported, with a null requirement and a
+  null ``passed``: ``empirical_pass_rate`` (study 2's empirical point), ``power_pf``,
+  ``detection_power_comparison`` and ``detection_power_joint`` (the detection power at the
+  actual J); ``power_af`` also has ``power_short`` (true when its requirement is not met) and
   ``n_min``, the smallest N at which the simulated power reaches the requirement (an integer, at
   least 60, when the power is short; else null); ``coverage``: one entry per level tested, in
-  ascending order, with ``level``, ``tests``, ``J``, ``M`` (at least 10 000), ``counts`` and
+  ascending order, with ``level``, ``tests``, ``J``, ``M`` (exactly 10 000), ``counts`` and
   ``thresholds`` (each ``comparison`` and ``joint``, the non-coverage counts X and the thresholds
-  c) and ``passed``; ``level`` (L, one of 0.975, 0.980, 0.985, 0.990, or null when no level
-  passed) and ``validation_blocks`` (28 or 40); ``verification`` (``level``, ``passed``, the
-  ``calibration_stream`` and ``verification_stream``, two different integers). L is the first
-  level whose tests passed (the levels below it tested and failed); a null L means every level
-  was tested and failed.
+  c) and ``passed``, all with the same J, the one frozen number of coverage tests across the
+  grid, the levels and the calibration and verification streams: the ``tests`` of every level
+  and of the verification add up to at most J; ``level`` (L, one of 0.975, 0.980, 0.985, 0.990,
+  or null when no level passed) and ``validation_blocks`` (28 or 40); ``verification``
+  (``level``, ``passed``, its ``tests``, the ``calibration_stream`` and ``verification_stream``,
+  two different integers). L is the first level whose tests passed (the levels below it tested
+  and failed); a null L means every level was tested and failed.
   **The state follows the coverage screen and its independent verification, and nothing else**:
   ``passed`` exactly when a level passed and its verification passed ("If no level passes, or the
   verification fails, the confirmation cannot start"). A pass rate below its requirement is not a
@@ -68,15 +75,22 @@ on is a response or an observation, and this module opens none.
   simulation record's), ``cohort`` (the validation block ``seeds`` and the ``run_ids`` used, at
   least four per block: A and F at both rates), ``spread`` (the evidence of the precommitted
   spread script, ``script``, and of its ``output`` record), ``spread_pp`` (the A–F spread
-  rounded to 0.5 pp, and nothing else about it), ``N`` (an integer, at least 60, and at least the
-  simulation record's ``n_min`` when its power is short) and ``cap`` (N + max(10, ⌈0.12·N⌉)).
+  rounded to 0.5 pp, and nothing else about it), ``simulation`` (the evidence of the simulation
+  record itself, at ``study3/decisions/simulation.json`` under the runs directory, so the n
+  record rests on the exact simulation it follows), ``N`` (an integer, at least 60, and at least
+  the simulation record's ``n_min`` when its power is short) and ``cap`` (N + max(10,
+  ⌈0.12·N⌉)). N is never cut: a cap beyond the 200 reserved confirmation seeds (10400–10599) is
+  recorded, with state ``failed`` (the confirmation cannot start within the registered seeds); the
+  state is ``passed`` otherwise.
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
-  ``answers``, the evidence of the ``n-c<N>`` record itself (so its sha256 is the recorded one).
-  It is needed when N is above 90 and when N is raised for power (the simulation record's
-  ``power_short``), even if N is 90 or less: the extra blocks are the researcher's decision;
-  ``decisions`` lists the record as ``missing``, with that as its problem, until it is written. One
-  for an N that needs none is valid and read as written.
+  ``answers``, the evidence of the ``n-c<N>`` record itself, at ``study3/decisions/n-c<N>.json``
+  under the runs directory and no other file (so its sha256 is the recorded one).
+  It is needed when a passed ``n`` record has N above 90 and when N is raised for power (the
+  simulation record's ``power_short``), even if N is 90 or less: the extra blocks are the
+  researcher's decision; ``decisions`` lists the record as ``missing``, with that as its problem,
+  until it is written. A failed ``n`` record needs none. One for an N that needs none is valid
+  and read as written.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
@@ -85,16 +99,22 @@ on is a response or an observation, and this module opens none.
   ``n_min``, when its power is short, N reaches; a
   ``budget-c<N>`` record only with a valid ``n-c<N>`` of its N and cap.
 - *The thresholds of the coverage screen* are recomputed, c = BinomQuantile(1 − 0.05/J; M, p₀)
-  with p₀ = 0.025 per comparison and 0.05 jointly, and a record whose c is another is refused (a
-  weaker threshold is never accepted); a level's ``passed`` must agree with its counts and
-  thresholds.
-- *The cap* may not exceed the 200 reserved confirmation seeds.
+  with p₀ = 0.025 per comparison and 0.05 jointly, and a record whose c is another is refused; J
+  is one number for all levels, and the tests of the levels and the verification fit within it,
+  so a level cannot pass on a J raised for it; a level's ``passed`` must agree with its counts and
+  thresholds. Whether that J is the one the simulation's fixation froze would need the fixation's
+  content, which is not read here.
+- *The reserved seeds*: the cap of an ``n-c<N>`` record is within the 200 confirmation seeds
+  exactly when its state is ``passed``.
 - *Immutability* (``immutable``): a campaign's header names a record by a reference
   ``{"path", "sha256"}`` anywhere in it, or by a string path with a sibling ``<key>_sha256``
-  (the form ``versions_record`` takes); paths compare by their last three components
-  (``study3/decisions/<kind>.json``), so a record named from another machine's root is found. A
+  (the form ``versions_record`` takes; the launcher's headers are flat); paths compare by their
+  last three components (``study3/decisions/<kind>.json``), so a record named from another
+  machine's root is found, and a path among the items of a list is named without a sha256. A
   record named with a sha256 other than its own now, or named without a readable one, or no
-  longer there, is a problem; a missing journal fails closed. The journal is read as
+  longer there, is a problem; a missing journal, or one with an unparseable line that is not the
+  last of its log, fails closed. A record that resolves (a link, say) under a ``responses/`` or
+  ``observations/`` folder is a problem and is never opened. The journal is read as
   ``study3_records`` reads it: through its private ``_read_journal``, which this module keeps
   importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the
@@ -125,7 +145,11 @@ LEVELS = (0.975, 0.980, 0.985, 0.990)
 VALIDATION_BLOCKS = (28, 40)
 SUPPORTED_AT = {28: 22, 40: 31}  # the validation gate's minimum of supported blocks
 REQUIRED_GATES = {"safe_pass_rate": 0.95, "power_af": 0.80}
-MIN_COVERAGE_RUNS = 10_000  # M
+# Gates that are only reported: the pass rate at study 2's empirical point, P-F's power, and the
+# detection power of the coverage screen at the actual J (per comparison and joint)
+REPORTED_GATES = ("empirical_pass_rate", "power_pf", "detection_power_comparison",
+                  "detection_power_joint")  # fmt: skip
+COVERAGE_RUNS = 10_000  # M, simulated studies per coverage test
 FAMILY_ALPHA = 0.05
 COVERAGE_P0 = {"comparison": 0.025, "joint": 0.05}
 # "Sample size from validation"
@@ -141,14 +165,18 @@ FIELDS = {
     "engineering": ("checks",),
     "simulation": ("fixation", "inputs", "gates", "coverage", "level", "validation_blocks",
                    "verification"),
-    "n": ("candidate", "rates", "active", "level", "cohort", "spread", "spread_pp", "N", "cap"),
+    "n": ("candidate", "rates", "active", "level", "cohort", "spread", "spread_pp", "N", "cap",
+          "simulation"),
     "budget": ("candidate", "N", "cap", "decision", "answers"),
 }  # fmt: skip
 
 _KIND = re.compile(r"(engineering|simulation|(?:n|budget)-c([12]))")
+_INPUT_NAME = re.compile(r"[a-z](?:[a-z_]{0,38}[a-z])?")  # letters and underscores, no digits
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
 # Words that mark a field as one no record carries (the hint on an unknown field)
-_HIDDEN = re.compile(r"mean|sign|per[_-]?seed|(^|_)sd($|_)|std|e_eng|path_max|unrounded|spread")
+_HIDDEN = re.compile(
+    r"mean|(^|_)sign(ed)?($|_)|per[_-]?seed|(^|_)sd($|_)|std|e_eng|path_max|unrounded|spread"
+)
 
 
 class DecisionRefused(ValueError):
@@ -163,6 +191,7 @@ class _Ref(NamedTuple):
 
 
 Starts = Sequence[tuple[str, Mapping[str, Any]]]  # the journal's starts: (campaign, record)
+SIMULATION_RECORD = "/".join((*DIRECTORY, "simulation.json"))  # an n record's reference to it
 
 
 # ------------------------------------------------------------------ the kinds and their files
@@ -219,8 +248,10 @@ def read_decision(
     path = decision_path(runs_root, kind)
     if not path.exists():
         return None, []
+    if _under_sealed(path, Path(runs_root)):
+        return None, [_sealed_problem(path)]
     try:
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, [f"{path}: unreadable ({type(exc).__name__})"]
     problems = _problems(Path(runs_root), kind, record, Path(repo))
@@ -231,61 +262,91 @@ def decisions(
     runs_root: str | Path, candidate: int, *, repo: str | Path = REPO_ROOT
 ) -> dict[str, dict[str, Any]]:
     """The decision records of a candidate's route, by kind: ``engineering``, ``simulation``,
-    ``n-c<candidate>`` and ``budget-c<candidate>`` (when the valid ``n`` record asks for a
-    budget decision, ``budget_reason``, or one is written; a needed one that is not written is
-    ``missing`` with that as its problem). Each is ``{"kind", "path", "state", "record",
-    "problems"}``: the state is ``passed`` or ``failed`` for a valid record, ``missing`` for none,
-    ``invalid`` for one with a problem (its record None), the immutability check against the
-    launch journal included."""
+    ``n-c<candidate>`` and ``budget-c<candidate>``. Each is ``{"kind", "path", "state",
+    "record", "problems"}``: the state is ``passed`` or ``failed`` for a valid record,
+    ``missing`` for none, ``invalid`` for one with a problem (its record None), the immutability
+    check against the launch journal included.
+
+    A record rests on the ones before it: the ``n`` entry is ``invalid`` when the simulation entry
+    is, and the budget entry when the ``n`` entry is (a budget decision that the ``n`` record
+    would have asked for cannot then be told, so it is listed, invalid, rather than dropped). The
+    budget entry is listed when a passed ``n`` record asks for a budget decision
+    (``budget_reason``), or one is written; a needed one that is not written is ``missing`` with
+    that as its problem. A failed ``n`` record (its cap beyond the reserved seeds) needs none."""
     if candidate not in (1, 2) or isinstance(candidate, bool):
         raise ValueError(f"candidate {candidate!r} is not 1 or 2")
-    root, starts = Path(runs_root), _starts(Path(runs_root))
-    out = {kind: _entry(root, kind, starts, Path(repo))
-           for kind in ("engineering", "simulation", f"n-c{candidate}")}  # fmt: skip
-    budget = f"budget-c{candidate}"
-    n = out[f"n-c{candidate}"]["record"]
-    reason = budget_reason(n["N"], out["simulation"]["record"]) if n is not None else None
-    if reason is not None or decision_path(root, budget).exists():
-        out[budget] = _entry(root, budget, starts, Path(repo))
-        if reason is not None and out[budget]["state"] == "missing":
+    root, repo = Path(runs_root), Path(repo)
+    starts, corrupt = _starts(root)
+    kind_n, budget = f"n-c{candidate}", f"budget-c{candidate}"
+    out = {kind: _entry(root, kind, starts, corrupt, repo)
+           for kind in ("engineering", "simulation", kind_n)}  # fmt: skip
+    simulation, n = out["simulation"], out[kind_n]
+    if simulation["state"] == "invalid" and n["state"] in STATES:
+        _invalidate(n, f"the simulation record it rests on is invalid ({simulation['path']})")
+    reason = None
+    if n["record"] is not None and n["record"]["state"] == "passed":
+        reason = budget_reason(n["record"]["N"], simulation["record"])
+    if reason is not None or n["state"] == "invalid" or decision_path(root, budget).exists():
+        out[budget] = _entry(root, budget, starts, corrupt, repo)
+        if n["state"] == "invalid":
+            _invalidate(out[budget], f"the n-c{candidate} record it answers is invalid "
+                                     f"({n['path']})")  # fmt: skip
+        elif reason is not None and out[budget]["state"] == "missing":
             out[budget]["problems"] = [f"{out[budget]['path']}: a budget decision answering the "
                                        f"n-c{candidate} record is needed ({reason}) and is not "
                                        "written"]  # fmt: skip
     return out
 
 
-def _entry(root: Path, kind: str, starts: Starts | None, repo: Path) -> dict[str, Any]:
+def _invalidate(entry: dict[str, Any], why: str) -> None:
+    entry.update(state="invalid", record=None,
+                 problems=[*entry["problems"], f"{entry['path']}: {why}"])  # fmt: skip
+
+
+def _entry(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
+           repo: Path) -> dict[str, Any]:  # fmt: skip
     path = decision_path(root, kind)
     record, problems = read_decision(root, kind, repo=repo)
-    problems = problems + immutable(path, starts)
+    problems = problems + [p for p in immutable(path, starts, corrupt=corrupt) if p not in problems]
     state = "invalid" if problems else "missing" if record is None else record["state"]
     return {"kind": kind, "path": str(path), "state": state,
             "record": None if problems else record, "problems": problems}  # fmt: skip
 
 
-def _starts(root: Path) -> Starts | None:
-    """The launch journal's study-3 starts (``study3_records``' reading of it), None when there
-    is no journal or it cannot be read."""
+def _starts(root: Path) -> tuple[Starts | None, list[str]]:
+    """The launch journal's study-3 starts and its corrupt lines (``study3_records``' reading of
+    it); (None, []) when there is no journal or it cannot be read."""
     if not any((root / "launch").glob("*.jsonl")):
-        return None
+        return None, []
     try:
-        return _read_journal(root, {}).starts
+        journal = _read_journal(root, {})
     except (OSError, ValueError):
-        return None
+        return None, []
+    return journal.starts, journal.corrupt
 
 
-def immutable(record_path: str | Path, journal: Starts | None) -> list[str]:
+def immutable(
+    record_path: str | Path, journal: Starts | None, *, corrupt: Sequence[str] = ()
+) -> list[str]:
     """Problems with a record that a started campaign named and that has since changed: the
     campaign's header named the record (module docstring) with a sha256 that is not the file's
     now, or with none that can be read, or the file is gone. A record no campaign named is free
     of problems. ``journal``: the launch journal's starts, ``(campaign, start record)``; None
-    (a missing or unreadable journal) fails closed for a record that exists."""
+    (a missing or unreadable journal) fails closed for a record that exists, and so do
+    ``corrupt`` lines (``"<log> line <n>"``, the journal's unparseable lines before the last of
+    their log): a campaign that named the record may be what they lost."""
     path = Path(record_path)
+    if path.exists() and _under_sealed(path, _runs_of(path)):
+        return [_sealed_problem(path)]
     if journal is None:
         return ([f"{path}: the launch journal is missing or unreadable, so whether a campaign "
                  "has named this record cannot be shown"] if path.exists() else [])  # fmt: skip
-    now = _digest(path) if path.is_file() else None
     problems = set()
+    if corrupt and path.exists():
+        problems.add(f"{path}: the launch journal has an unparseable line that is not the last "
+                     f"of its log ({', '.join(corrupt)}), so whether a campaign has named this "
+                     "record cannot be shown")  # fmt: skip
+    now = _digest(path) if path.is_file() else None
     for campaign, start in journal:
         header = start.get("header") if isinstance(start, Mapping) else None
         for _, sha in _named(header, path):
@@ -304,7 +365,8 @@ def immutable(record_path: str | Path, journal: Starts | None) -> list[str]:
 def _named(header: Any, path: Path) -> list[tuple[str, Any]]:
     """The references to ``path`` in a campaign header, anywhere in it: (path as named, sha256
     as named or None). A reference is a string path with its sha256 beside it, in ``sha256`` when
-    the key is ``path`` and in ``<key>_sha256`` otherwise."""
+    the key is ``path`` and in ``<key>_sha256`` otherwise; a path among a list's items has none
+    (so it is named without a readable sha256)."""
     found: list[tuple[str, Any]] = []
 
     def walk(node: Any) -> None:
@@ -316,7 +378,10 @@ def _named(header: Any, path: Path) -> list[tuple[str, Any]]:
                     walk(value)
         elif isinstance(node, list | tuple):
             for value in node:
-                walk(value)
+                if isinstance(value, str) and _same(value, path):
+                    found.append((value, None))  # a list holds no sha256 beside its strings
+                else:
+                    walk(value)
 
     walk(header)
     return found
@@ -339,6 +404,8 @@ def write_decision(
     (its problems named) or for one already written: a second version is never written. Returns
     the path."""
     path = decision_path(runs_root, kind)
+    if _under_sealed(path, Path(runs_root)):
+        raise DecisionRefused(_sealed_problem(path))
     if path.exists():
         raise DecisionRefused(f"{path} is already written: a decision record is never rewritten")
     try:
@@ -350,7 +417,7 @@ def write_decision(
         raise DecisionRefused(f"{kind}: not written, {len(problems)} problem(s): "
                               + "; ".join(problems))  # fmt: skip
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
+    data = (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
     _publish(path, data)
     return path
 
@@ -555,7 +622,10 @@ class _Schema:
             self.add("inputs", "is not a non-empty object of evidence")
         else:
             for name, value in inputs.items():
-                self.text("inputs name", name)
+                if not _INPUT_NAME.fullmatch(name) or _HIDDEN.search(name):
+                    self.add("inputs", f"the name {name!r} is not a lowercase word of letters "
+                             "and underscores (at most 40, no digits) that names an input and "
+                             "no mean, sign, per-seed value, spread or diagnostic")  # fmt: skip
                 self.ref(f"inputs.{name}", value)
         safe = self._gates(r)
         entries = self._coverage(r)
@@ -573,6 +643,7 @@ class _Schema:
         verified = self._verification(r, level)
         if entries is not None:
             self._ladder(level, entries)
+            self._tests(entries, r["verification"])
         # The state follows the coverage screen and its verification, and nothing else: a pass rate
         # below its requirement sets the validation size, a power shortfall is recorded (power_af)
         if r["state"] == "passed":
@@ -583,6 +654,18 @@ class _Schema:
         elif level is not None and verified is True:
             self.add("state", f"is {r['state']!r}, but the coverage screen passed at {level} and "
                      "so did its verification: the state follows both, and no gate")  # fmt: skip
+
+    def _tests(self, entries: list[dict[str, Any]], verification: Any) -> None:
+        """The coverage tests of every level and of the verification are among the J frozen
+        tests."""
+        tests = verification.get("tests") if isinstance(verification, dict) else None
+        if type(tests) is not int or tests < 1:
+            return
+        used = sum(e["tests"] for e in entries)
+        if used + tests > entries[0]["J"]:
+            self.add("coverage", f"the tests of the levels ({used}) and of the verification "
+                     f"({tests}) add up to {used + tests}, above the frozen J = "
+                     f"{entries[0]['J']}")  # fmt: skip
 
     def _gates(self, r: dict[str, Any]) -> dict[str, Any] | None:
         """Checks the gates' entries; returns the ``safe_pass_rate`` entry if it is well formed.
@@ -599,6 +682,10 @@ class _Schema:
                 self.add("gates", f"has no gate `{name}`")
         for name, gate in gates.items():
             where = f"gates.{name}"
+            if name not in REQUIRED_GATES and name not in REPORTED_GATES:
+                self.add(where, f"is not a gate of the simulation record (the gates are "
+                         f"{[*REQUIRED_GATES, *REPORTED_GATES]})")  # fmt: skip
+                continue
             extra = ("power_short", "n_min") if name == "power_af" else ()
             gate = self.object(where, gate, ("value", "requirement", "passed", *extra))
             if gate is None:
@@ -610,6 +697,10 @@ class _Schema:
                     self.add(f"{where}.passed", "must be null for a gate that is only reported")
                 if name in REQUIRED_GATES:
                     self.add(where, "is only reported, and a required gate has its requirement")
+                continue
+            if name in REPORTED_GATES:
+                self.add(f"{where}.requirement", f"is {required!r}: this gate is only reported, "
+                         "its requirement is null")  # fmt: skip
                 continue
             if not (self.real(f"{where}.requirement", required)
                     and self.boolean(f"{where}.passed", gate["passed"]) and value_ok):  # fmt: skip
@@ -647,7 +738,7 @@ class _Schema:
         if not isinstance(rows, list) or not rows:
             self.add("coverage", "is not a non-empty list of levels tested")
             return None
-        ok, before = True, None
+        ok, before, frozen = True, None, None
         for i, row in enumerate(rows):
             where = f"coverage[{i}]"
             row = self.object(where, row, ("level", "tests", "J", "M", "counts", "thresholds",
@@ -663,8 +754,18 @@ class _Schema:
             good = [level is not None,
                     self.integer(f"{where}.tests", row["tests"], 1),
                     self.integer(f"{where}.J", row["J"], 1),
-                    self.integer(f"{where}.M", row["M"], MIN_COVERAGE_RUNS),
+                    self.integer(f"{where}.M", row["M"]),
                     self.boolean(f"{where}.passed", row["passed"])]  # fmt: skip
+            if good[3] and row["M"] != COVERAGE_RUNS:
+                self.add(f"{where}.M", f"is {row['M']}, not the registered {COVERAGE_RUNS} "
+                         "simulated studies per test")  # fmt: skip
+                good[3] = False
+            if good[2]:
+                frozen = row["J"] if frozen is None else frozen
+                if row["J"] != frozen:
+                    self.add(f"{where}.J", f"is {row['J']}, not {frozen} of the first level: J is "
+                             "one frozen number for the whole screen")  # fmt: skip
+                    good[2] = False
             counts = self.object(f"{where}.counts", row["counts"], tuple(COVERAGE_P0))
             thresholds = self.object(f"{where}.thresholds", row["thresholds"], tuple(COVERAGE_P0))
             if not all(good) or counts is None or thresholds is None:
@@ -711,10 +812,11 @@ class _Schema:
 
     def _verification(self, r: dict[str, Any], level: float | None) -> bool | None:
         """Whether the verification passed (None when it is not well formed)."""
-        fields = ("level", "passed", "calibration_stream", "verification_stream")
+        fields = ("level", "passed", "tests", "calibration_stream", "verification_stream")
         v = self.object("verification", r["verification"], fields)
         if v is None:
             return None
+        self.integer("verification.tests", v["tests"], 1)
         found = self.level("verification.level", v["level"], null=True)
         valid = self.boolean("verification.passed", v["passed"])
         if (found is None) != (level is None) or (
@@ -747,15 +849,37 @@ class _Schema:
         for name in ("script", "output") if spread is not None else ():
             self.ref(f"spread.{name}", spread[name])
         self._spread_pp(r["spread_pp"])
+        self._exact_ref("simulation", r["simulation"], SIMULATION_RECORD)
         if self.integer("N", r["N"], MIN_N):
             cap = cap_of(r["N"])
             if r["cap"] != cap or type(r["cap"]) is not int:
                 self.add("cap", f"is {r['cap']!r}, not N + max({CAP_FLOOR}, ⌈0.12·N⌉) = {cap}")
-            elif cap > len(SEEDS["confirmation"][self.candidate]):
-                self.add("cap", f"{cap} exceeds the {len(SEEDS['confirmation'][self.candidate])} "
-                         "confirmation seeds reserved")  # fmt: skip
+            else:
+                self._cap_state(r["state"], cap)
         else:
             self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+
+    def _cap_state(self, state: Any, cap: int) -> None:
+        """The state is ``passed`` when the cap fits the reserved confirmation seeds and
+        ``failed`` when it does not: the confirmation cannot start within them, and N is never
+        cut."""
+        reserved = len(SEEDS["confirmation"][self.candidate])
+        expected = "passed" if cap <= reserved else "failed"
+        if state in STATES and state != expected:
+            self.add("state", f"is {state!r}, but the cap {cap} "
+                     f"{'fits' if cap <= reserved else 'exceeds'} the {reserved} confirmation "
+                     f"seeds reserved, so it is {expected!r}"
+                     + ("" if cap <= reserved else ": the confirmation cannot start within the "
+                        "registered seeds, and N is not cut"))  # fmt: skip
+
+    def _exact_ref(self, where: str, value: Any, path: str) -> None:
+        """Evidence of the record at ``path`` under the runs directory, and no other file."""
+        entry = self.ref(where, value)
+        if entry is None:
+            return
+        if entry["path"] != path or entry.get("root", "runs") != "runs":
+            self.add(where, f"is {entry['path']!r} under {entry.get('root', 'runs')!r}, not the "
+                     f"record {path!r} under the runs directory")  # fmt: skip
 
     def _rates(self, rates: Any, with_p: bool) -> None:
         arms = ("A", "F", "P") if with_p else ("A", "F")
@@ -808,10 +932,9 @@ class _Schema:
         elif (decision == "proceed") != (r["state"] == "passed"):
             self.add("state", f"is {r['state']!r} for the decision {decision!r} (proceed is "
                      "passed, stop is failed)")  # fmt: skip
-        answers = self.ref("answers", r["answers"])
-        wanted = Path(*DIRECTORY, f"n-c{self.candidate}.json")
-        if answers is not None and not _same(answers["path"], wanted):
-            self.add("answers.path", f"is {answers['path']!r}, not the n-c{self.candidate} record")
+        self._exact_ref(
+            "answers", r["answers"], "/".join((*DIRECTORY, f"n-c{self.candidate}.json"))
+        )
 
 
 def coverage_threshold(tests: int, runs: int, p0: float) -> int:
@@ -832,10 +955,7 @@ def _evidence(refs: Sequence[_Ref], root: Path, repo: Path) -> list[str]:
         named = Path(ref.path)
         base = repo if ref.root == "repo" else root
         path = named if named.is_absolute() else base / named
-        resolved = path.resolve()
-        below = resolved.relative_to(base.resolve()) if resolved.is_relative_to(base.resolve()) \
-            else resolved  # fmt: skip
-        if any(part in SEALED for part in (*named.parts, *below.parts)):
+        if _under_sealed(path, base, named):
             problems.append(f"{ref.where}: {path} is under a responses or observations folder: "
                             "never evidence, never opened")  # fmt: skip
         elif not path.is_file():
@@ -897,6 +1017,25 @@ def _against_n(root: Path, kind: str, record: Mapping[str, Any], candidate: int,
 
 
 # ------------------------------------------------------------------ small helpers
+
+
+def _under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
+    """Whether ``path`` (as written, ``named``, or where its links lead) is under a ``responses``
+    or ``observations`` folder, below ``base`` (a folder of the base itself does not count).
+    Decided from the names alone: nothing is opened."""
+    resolved, root = path.resolve(), base.resolve()
+    below = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
+    return any(part in SEALED for part in (*(named.parts if named else ()), *below.parts))
+
+
+def _runs_of(record_path: Path) -> Path:
+    """The runs directory of a record at ``RUNS_DIR/study3/decisions/<kind>.json``."""
+    parents = record_path.parents
+    return parents[2] if len(parents) > 2 else Path(record_path.anchor or ".")
+
+
+def _sealed_problem(path: Path) -> str:
+    return f"{path}: resolves under a responses or observations folder: never opened"
 
 
 def _level(value: Any) -> float | None:

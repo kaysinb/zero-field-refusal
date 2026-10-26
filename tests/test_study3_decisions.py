@@ -85,8 +85,7 @@ class World:
                        "design": self.ref("design.json")},
             "gates": default_gates(),
             "coverage": [coverage_row(0.975)], "level": 0.975, "validation_blocks": 28,
-            "verification": {"level": 0.975, "passed": True, "calibration_stream": 11,
-                             "verification_stream": 12},
+            "verification": verified(calibration_stream=11, verification_stream=12),
         }  # fmt: skip
         return {**record, **over}
 
@@ -105,6 +104,8 @@ class World:
             "spread": {"script": self.ref("study3_spread.py", root="repo"),
                        "output": self.ref("spread-output.json")},
             "spread_pp": 4.5, "N": N, "cap": CAPS.get(N),
+            "simulation": {"path": "study3/decisions/simulation.json",
+                           "sha256": self.digest("simulation"), "root": "runs"},
         }  # fmt: skip
         return {**record, **over}
 
@@ -185,7 +186,8 @@ class World:
 
 
 # the cap N + max(10, ⌈0.12·N⌉) by hand
-CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135}
+CAPS = {60: 70, 75: 85, 83: 93, 84: 95, 90: 101, 99: 111, 100: 112, 120: 135, 178: 200,
+        179: 201}  # fmt: skip
 
 
 def power_gate(value: float, n_min: int | None = None) -> dict:
@@ -214,12 +216,13 @@ def pass_rate(value: float) -> dict:
     return {"value": value, "requirement": 0.95, "passed": value >= 0.95}
 
 
-def coverage_row(level: float, *, passed: bool = True, J: int = 1000, M: int = 10_000) -> dict:
+def coverage_row(level: float, *, passed: bool = True, J: int = 1000, M: int = 10_000,
+                 tests: int = 60) -> dict:  # fmt: skip
     c, j = coverage_threshold(J, M, 0.025), coverage_threshold(J, M, 0.05)
     counts = {"comparison": c - 20, "joint": j - 20}
     if not passed:
         counts["comparison"] = c + 1
-    return {"level": level, "tests": 60, "J": J, "M": M, "counts": counts,
+    return {"level": level, "tests": tests, "J": J, "M": M, "counts": counts,
             "thresholds": {"comparison": c, "joint": j}, "passed": passed}  # fmt: skip
 
 
@@ -243,8 +246,8 @@ def refused(world: World, kind: str, record: dict, *words: str) -> None:
 
 def verified(level=0.975, passed=True, **kw) -> dict:
     """A simulation's independent verification."""
-    return {"level": level, "passed": passed, "calibration_stream": 1, "verification_stream": 2,
-            **kw}  # fmt: skip
+    return {"level": level, "passed": passed, "tests": 20, "calibration_stream": 1,
+            "verification_stream": 2, **kw}  # fmt: skip
 
 
 def sim_refused(world: World, *words: str, **over) -> None:
@@ -310,8 +313,7 @@ def test_the_simulation_record_is_accepted(world) -> None:
 
 def test_a_simulation_that_passed_a_later_level_and_chose_40_blocks(world) -> None:
     rows = [coverage_row(0.975, passed=False), coverage_row(0.980)]
-    verification = {"level": 0.98, "passed": True, "calibration_stream": 1,
-                    "verification_stream": 2}  # fmt: skip
+    verification = verified(0.98)
     gates = gates_with(safe_pass_rate=pass_rate(0.93))
     world.write("simulation", world.simulation(coverage=rows, level=0.98, validation_blocks=40,
                                                verification=verification, gates=gates))  # fmt: skip
@@ -322,8 +324,7 @@ def test_a_simulation_that_passed_a_later_level_and_chose_40_blocks(world) -> No
 
 def test_a_simulation_where_no_level_passed_is_a_failed_record_with_a_null_level(world) -> None:
     rows = [coverage_row(level, passed=False) for level in LEVELS]
-    verification = {"level": None, "passed": False, "calibration_stream": 1,
-                    "verification_stream": 2}  # fmt: skip
+    verification = verified(None, False)
     world.write("simulation", world.simulation(state="failed", coverage=rows, level=None,
                                                validation_blocks=None,
                                                verification=verification))  # fmt: skip
@@ -332,8 +333,7 @@ def test_a_simulation_where_no_level_passed_is_a_failed_record_with_a_null_level
 
 
 def test_a_failed_verification_is_a_failed_record(world) -> None:
-    verification = {"level": 0.975, "passed": False, "calibration_stream": 1,
-                    "verification_stream": 2}  # fmt: skip
+    verification = verified(passed=False)
     world.write("simulation", world.simulation(state="failed", verification=verification))
     assert world.read("simulation")[0]["state"] == "failed"
 
@@ -545,12 +545,33 @@ def test_the_registered_caps_are_accepted(world, n) -> None:
     assert world.read("n-c1")[0]["cap"] == CAPS[n]
 
 
-def test_a_cap_beyond_the_reserved_confirmation_seeds_is_refused(world) -> None:
+def test_a_cap_within_the_reserved_confirmation_seeds_is_a_passed_record(world) -> None:
     world.chain(through="simulation")
-    # N = 178 -> cap 200, the last seed 10599; N = 179 -> cap 201
-    world.write("n-c1", world.n(N=178, cap=200))
+    # N = 178 -> cap 200: the last reserved seed is 10599, 200 seeds from 10400
+    world.write("n-c1", world.n(N=178))
+    record, problems = world.read("n-c1")
+    assert problems == [] and record["cap"] == 200 and record["state"] == "passed"
     decision_path(world.runs, "n-c1").unlink()
-    refused(world, "n-c1", world.n(N=179, cap=201), "cap", "200")
+    refused(world, "n-c1", world.n(N=178, state="failed"), "state", "fits", "200")
+
+
+def test_a_cap_beyond_the_reserved_seeds_is_recorded_as_a_failed_record(world) -> None:
+    world.chain(through="simulation")
+    # N = 179 -> cap 201: the confirmation cannot start within 10400-10599, and N is not cut
+    refused(world, "n-c1", world.n(N=179), "state", "exceeds", "201", "N is not cut")
+    world.write("n-c1", world.n(N=179, state="failed"))
+    record, problems = world.read("n-c1")
+    assert problems == [] and record["N"] == 179 and record["cap"] == 201
+    assert record["state"] == "failed"
+
+
+def test_a_failed_n_record_needs_no_budget_entry(world) -> None:
+    world.chain(through="simulation")
+    world.write("n-c1", world.n(N=179, state="failed"))
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["n-c1"]["state"] == "failed" and found["n-c1"]["problems"] == []
+    assert "budget-c1" not in found  # N is above 90, but nothing is to be confirmed
 
 
 def test_the_candidate_of_the_record_is_the_kinds(world) -> None:
@@ -844,6 +865,119 @@ def test_the_level_is_the_first_whose_tests_passed_and_the_levels_below_were_tes
     sim_refused(world, "coverage", coverage=[])
 
 
+def test_one_j_is_frozen_for_every_level_so_a_level_cannot_pass_on_a_raised_j(world) -> None:
+    # 0.975 fails at J = 1000; 0.980 passes with a count of 314, which fails at J = 1000 (c = 313),
+    # under a J declared as 10**6 (c = 333)
+    late = coverage_row(0.980, J=10**6)
+    late["counts"] = {"comparison": 314, "joint": 100}
+    assert coverage_threshold(1000, 10_000, 0.025) == 313 < 314 <= late["thresholds"]["comparison"]
+    rows = [coverage_row(0.975, passed=False), late]
+    sim_refused(world, "coverage[1].J", "one frozen number", coverage=rows, level=0.98,
+                verification=verified(0.98))  # fmt: skip
+    # the same level at the J of the first: it fails, as it should
+    sim_refused(world, "coverage[1].passed", coverage=[rows[0], {**late, "J": 1000,
+                "thresholds": {"comparison": 313, "joint": 587}}], level=0.98,
+                verification=verified(0.98))  # fmt: skip
+
+
+def test_the_tests_of_the_levels_and_the_verification_fit_within_the_frozen_j(world) -> None:
+    # four levels of 900 tests each under J = 1000
+    rows = [coverage_row(level, passed=level == 0.990, tests=900) for level in LEVELS]
+    sim_refused(world, "coverage", "add up", "J = 1000", coverage=rows, level=0.99,
+                verification=verified(0.99))  # fmt: skip
+    # the sum equal to J is accepted, one more is not
+    one = [coverage_row(0.975, tests=980)]
+    world.write("simulation", world.simulation(coverage=one, verification=verified(tests=20)))
+    assert world.read("simulation")[1] == []
+    decision_path(world.runs, "simulation").unlink()
+    sim_refused(world, "coverage", "1001", "J = 1000", coverage=one,
+                verification=verified(tests=21))  # fmt: skip
+    sim_refused(world, "verification.tests", verification=verified(tests=0))
+    sim_refused(world, "verification.tests", verification=verified(tests=1.5))
+    sim_refused(world, "verification", "tests",
+                verification={"level": 0.975, "passed": True, "calibration_stream": 1,
+                              "verification_stream": 2})  # fmt: skip
+
+
+@pytest.mark.parametrize("m", [9999, 10_001, 20_000, 100, 10_000.0, True, None])
+def test_m_is_exactly_ten_thousand_on_every_row(world, m) -> None:
+    rows = [coverage_row(0.975, passed=False), {**coverage_row(0.980), "M": m}]
+    sim_refused(world, "coverage[1].M", coverage=rows, level=0.98, verification=verified(0.98))
+    if isinstance(m, int) and not isinstance(m, bool):
+        sim_refused(world, "coverage[0].M", coverage=[{**coverage_row(0.975), "M": m}])
+
+
+def test_the_reported_gates_are_accepted_and_no_other_gate_is_a_name(world) -> None:
+    reported = {"value": 0.7, "requirement": None, "passed": None}
+    gates = gates_with(power_pf=reported, detection_power_comparison=reported,
+                       detection_power_joint=reported)  # fmt: skip
+    world.write("simulation", world.simulation(gates=gates))
+    assert set(world.read("simulation")[0]["gates"]) == {
+        "safe_pass_rate", "power_af", "empirical_pass_rate", "power_pf",
+        "detection_power_comparison", "detection_power_joint"}  # fmt: skip
+
+
+GATE_NAMES = [
+    "mean_af",
+    "per_seed_d",
+    "e_eng",
+    "sign_af",
+    "path_max",
+    "power_ap",
+    "Power_pf",
+    "empirical_pass_rate_2",
+    "",
+    "gates.x",
+]
+
+
+@pytest.mark.parametrize("name", GATE_NAMES)
+def test_a_gate_with_another_name_is_refused(world, name) -> None:
+    free = {"value": 0.1, "requirement": None, "passed": None}
+    sim_refused(world, f"gates.{name}", "not a gate", gates=gates_with(**{name: free}))
+    with_requirement = {"value": 0.9, "requirement": 0.1, "passed": True}  # a gate that gates
+    sim_refused(world, f"gates.{name}", "not a gate", gates=gates_with(**{name: with_requirement}))
+
+
+@pytest.mark.parametrize("name", ["empirical_pass_rate", "power_pf", "detection_power_comparison",
+                                  "detection_power_joint"])  # fmt: skip
+def test_a_reported_gate_has_no_requirement(world, name) -> None:
+    sim_refused(
+        world,
+        f"gates.{name}.requirement",
+        "only reported",
+        gates=gates_with(**{name: {"value": 0.9, "requirement": 0.5, "passed": True}}),
+    )
+    sim_refused(
+        world,
+        f"gates.{name}.passed",
+        "null",
+        gates=gates_with(**{name: {"value": 0.9, "requirement": None, "passed": False}}),
+    )
+    sim_refused(world, f"gates.{name}", "power_short",
+                gates=gates_with(**{name: {**power_gate(0.7, 80), "requirement": None,
+                                           "passed": None}}))  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["mean_spread_4.37", "mean_spread", "per_seed_vectors", "sd_inputs", "spread_input", "e_eng",
+     "path_max", "unrounded_values", "signed_diff", "sign", "Upper", "digit1", "_lead", "trail_",
+     "has space", "a-b", "", "x" * 41, "caf\u00e9"],
+)  # fmt: skip
+def test_an_input_name_is_a_plain_word_that_marks_no_hidden_value(world, name) -> None:
+    inputs = {"seed_vectors": world.ref("seed-vectors.json"), name: world.ref("extra.json")}
+    sim_refused(world, "inputs", "is not a lowercase word", inputs=inputs)
+
+
+@pytest.mark.parametrize("name", ["a", "ab", "seed_vectors", "design", "grid_of_levels", "x" * 40,
+                                  "a_" * 19 + "ab"])  # fmt: skip
+def test_the_input_names_of_a_simulation_that_are_plain_words_are_accepted(world, name) -> None:
+    inputs = {"seed_vectors": world.ref("seed-vectors.json"), name: world.ref("extra.json")}
+    world.write("simulation", world.simulation(inputs=inputs))
+    assert name in world.read("simulation")[0]["inputs"]
+
+
 def test_a_passed_simulation_needs_a_passed_verification_of_its_level(world) -> None:
     sim_refused(world, "verification", "did not pass", verification=verified(passed=False))
     sim_refused(world, "verification.level", verification=verified(0.98))
@@ -857,7 +991,12 @@ def test_a_passed_simulation_needs_a_passed_verification_of_its_level(world) -> 
         world,
         "verification",
         "passed",
-        verification={"level": 0.975, "calibration_stream": 1, "verification_stream": 2},
+        verification={
+            "level": 0.975,
+            "tests": 20,
+            "calibration_stream": 1,
+            "verification_stream": 2,
+        },
     )
     sim_refused(world, "calibration_stream", state="failed",
                 verification=verified(calibration_stream=1.5))  # fmt: skip
@@ -891,8 +1030,7 @@ def test_an_n_record_needs_a_valid_passed_simulation_of_its_level(world) -> None
 
 
 def test_an_n_record_after_a_failed_simulation_is_refused(world) -> None:
-    verification = {"level": 0.975, "passed": False, "calibration_stream": 1,
-                    "verification_stream": 2}  # fmt: skip
+    verification = verified(passed=False)
     world.write("simulation", world.simulation(state="failed", verification=verification))
     refused(world, "n-c1", world.n(), "simulation record did not pass")
 
@@ -934,7 +1072,7 @@ def test_a_budget_record_answers_the_n_and_cap_of_its_n_record(world) -> None:
     budget_refused("state", "stop", decision="stop")
     budget_refused("state", decision="proceed", state="failed")
     other = {"path": "study3/decisions/n-c2.json", "sha256": "a" * 64}
-    budget_refused("answers.path", "n-c1 record", answers=other)
+    budget_refused("answers", "n-c1.json", answers=other)
     stale = {"path": "study3/decisions/n-c1.json", "sha256": "0" * 64}
     budget_refused("answers", "sha256", answers=stale)
 
@@ -998,6 +1136,69 @@ def test_an_n_raised_for_power_needs_a_budget_record_even_at_or_below_ninety(wor
     other.chain(N=84)
     other.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
     assert list(decisions(other.runs, 1, repo=other.repo)) == ["engineering", "simulation", "n-c1"]
+
+
+def test_the_answers_reference_is_the_n_record_under_the_runs_directory_and_no_other(world) -> None:
+    world.chain(N=99)
+    n_path = decision_path(world.runs, "n-c1")
+    digest = sha256(n_path)
+    # the same bytes, kept elsewhere, or named by an absolute path or another root
+    copy = world.runs / "evidence" / "n-c1.json"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_bytes(n_path.read_bytes())
+    in_repo = world.repo / "study3" / "decisions" / "n-c1.json"  # the same file, in the checkout
+    in_repo.parent.mkdir(parents=True)
+    in_repo.write_bytes(n_path.read_bytes())
+    wrong = [
+        {"path": "evidence/n-c1.json", "sha256": digest},
+        {"path": "study3/decisions/n-c1.json", "sha256": digest, "root": "repo"},
+        {"path": str(n_path), "sha256": digest},
+        {"path": "other/study3/decisions/n-c1.json", "sha256": digest},
+        {"path": "study3/decisions/../decisions/n-c1.json", "sha256": digest},
+    ]
+    for answers in wrong:
+        refused(world, "budget-c1", world.budget(answers=answers), "answers", "n-c1.json")
+    for root in ({}, {"root": "runs"}):
+        record = world.budget(answers={"path": "study3/decisions/n-c1.json", "sha256": digest,
+                                       **root})  # fmt: skip
+        world.write("budget-c1", record)
+        assert world.read("budget-c1")[1] == []
+        decision_path(world.runs, "budget-c1").unlink()
+
+
+def test_an_n_record_rests_on_the_exact_simulation_record(world) -> None:
+    world.chain(through="simulation")
+    sim = decision_path(world.runs, "simulation")
+    digest = sha256(sim)
+    copy = world.runs / "evidence" / "simulation.json"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_bytes(sim.read_bytes())
+    in_repo = world.repo / "study3" / "decisions" / "simulation.json"  # the same, in the checkout
+    in_repo.parent.mkdir(parents=True)
+    in_repo.write_bytes(sim.read_bytes())
+    wrong = [
+        {"path": "evidence/simulation.json", "sha256": digest, "root": "runs"},
+        {"path": "study3/decisions/simulation.json", "sha256": digest, "root": "repo"},
+        {"path": str(sim), "sha256": digest, "root": "runs"},
+        {"path": "study3/decisions/simulation.json", "sha256": "0" * 64, "root": "runs"},
+    ]
+    for reference in wrong:
+        refused(world, "n-c1", world.n(simulation=reference), "simulation")
+    for reference in ({"path": "study3/decisions/simulation.json", "sha256": digest},
+                      {"path": "study3/decisions/simulation.json", "sha256": digest,
+                       "root": "runs"}):  # fmt: skip
+        world.write("n-c1", world.n(simulation=reference))
+        decision_path(world.runs, "n-c1").unlink()
+    refused(world, "n-c1", {k: v for k, v in world.n().items() if k != "simulation"}, "simulation")
+
+
+def test_an_n_record_goes_stale_when_the_simulation_it_rests_on_changes(world) -> None:
+    world.chain(through="n")
+    assert world.read("n-c1")[1] == []
+    world.change("simulation", written_at="2026-10-26T13:00:00Z")  # still a valid record
+    assert world.read("simulation")[1] == []
+    found, problems = world.read("n-c1")
+    assert found is None and any("simulation" in p and "sha256" in p for p in problems)
 
 
 def test_a_budget_record_for_a_small_n_is_valid_and_not_needed(world) -> None:
@@ -1216,6 +1417,66 @@ def test_two_campaigns_with_two_names_are_each_a_problem_once(world) -> None:
     assert len(problems) == 2 and "campaign-0" in problems[0] and "campaign-1" in problems[1]
 
 
+def test_a_path_among_the_items_of_a_list_is_named_without_a_sha256(world) -> None:
+    world.write("engineering", world.engineering())
+    path = decision_path(world.runs, "engineering")
+    named = "study3/decisions/engineering.json"
+    for header in ({"records": [named]}, {"records": ["other.json", named]},
+                   {"nested": {"records": [["deeper", named]]}},
+                   {"records": [named], "sha256": sha256(path)}):  # fmt: skip
+        problems = immutable(path, [("study3-c1", {"header": header})])
+        assert len(problems) == 1 and "without a readable sha256" in problems[0]
+    # a list of other paths, or the mapping and the flat forms, are as before
+    header = {"records": ["study3/decisions/simulation.json", 3, None, {"x": [named + ".bak"]}]}
+    assert immutable(path, [("study3-c1", {"header": header})]) == []
+
+
+def journal_line(world: World, campaign: str, text: str) -> None:
+    """A raw line (as a crash or a bad write leaves it) at the end of a campaign's log."""
+    log = world.runs / "launch" / f"{campaign}.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a") as f:
+        f.write(text + "\n")
+
+
+CUT = '{"event": "start", "experiment": "study3", "header": {"CORRUPT-SECRET-3c'
+
+
+def test_an_unparseable_journal_line_that_is_not_the_last_fails_closed(world) -> None:
+    world.write("engineering", world.engineering())
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    journal_line(world, "study3-c1-validation", CUT)  # a line in the middle, once another follows
+    world.start({"study": 3, "candidate": 1, "step": "search", "round": 0})
+    found = decisions(world.runs, 1, repo=world.repo)
+    entry = found["engineering"]
+    assert entry["state"] == "invalid" and entry["record"] is None
+    [problem] = entry["problems"]
+    assert "study3-c1-validation.jsonl line 2" in problem and "launch/" in problem
+    assert "CORRUPT-SECRET" not in json.dumps(found)
+    assert found["simulation"]["state"] == "missing"  # nothing to protect where nothing is written
+    path = decision_path(world.runs, "engineering")
+    assert immutable(path, [], corrupt=["launch/x.jsonl line 4"])
+    assert "launch/x.jsonl line 4" in immutable(path, [], corrupt=["launch/x.jsonl line 4"])[0]
+    assert immutable(path, []) == []
+    missing = decision_path(world.runs, "simulation")
+    assert immutable(missing, [], corrupt=["launch/x.jsonl line 4"]) == []
+
+
+def test_a_line_cut_short_as_the_last_of_its_log_is_the_launchers_rule_and_no_problem(
+    world,
+) -> None:
+    world.write("engineering", world.engineering())
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    journal_line(world, "study3-c1-validation", CUT)  # the last line of its log
+    journal_line(world, "study3-c1-validation", "")  # blank lines are no line
+    journal_line(world, "study3-c1-validation", "   ")
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["engineering"]["state"] == "passed" and found["engineering"]["problems"] == []
+    journal_line(world, "other-log", CUT)  # the last of its own log, though another log follows
+    world.start({"study": 3, "candidate": 1, "step": "search", "round": 0}, "zzz-last-log")
+    assert decisions(world.runs, 1, repo=world.repo)["engineering"]["state"] == "passed"
+
+
 # ------------------------------------------------------------------ decisions for a candidate
 
 
@@ -1268,6 +1529,61 @@ def test_decisions_does_not_consume_an_n_record_whose_simulation_changed(world) 
     assert found["n-c1"]["state"] == "invalid" and found["budget-c1"]["state"] == "invalid"
 
 
+def test_a_simulation_named_by_a_campaign_and_then_changed_invalidates_what_rests_on_it(
+    world,
+) -> None:
+    world.chain(N=99, through="budget")
+    world.names("simulation")
+    world.change("simulation", written_at="2026-10-26T13:00:00Z")  # a valid record, another one
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["engineering"]["state"] == "passed"
+    for kind in ("simulation", "n-c1", "budget-c1"):
+        assert found[kind]["state"] == "invalid" and found[kind]["record"] is None, kind
+        assert found[kind]["problems"], kind
+
+
+def test_an_n_entry_is_invalid_when_the_simulation_entry_is_by_its_own_name(world) -> None:
+    # the simulation file is as the n record bound it: only a campaign named another version of it
+    world.chain(N=99, through="budget")
+    path = decision_path(world.runs, "simulation")
+    other = "0" * 64
+    named = "study3/decisions/simulation.json"
+    world.start({"study": 3, "candidate": 1, "step": "validation", "round": None,
+                 "decision_record": named, "decision_record_sha256": other})  # fmt: skip
+    assert world.read("n-c1")[1] == [] and sha256(path) != other
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["simulation"]["state"] == "invalid"
+    n = found["n-c1"]
+    assert n["state"] == "invalid" and n["record"] is None
+    assert any("simulation record it rests on is invalid" in p and str(path) in p
+               for p in n["problems"])  # fmt: skip
+    budget = found["budget-c1"]
+    assert budget["state"] == "invalid" and budget["record"] is None
+    assert any("n-c1 record it answers is invalid" in p for p in budget["problems"])
+
+
+def test_the_budget_a_power_short_n_needs_does_not_vanish_when_its_n_record_is_invalid(
+    world,
+) -> None:
+    world.chain(N=84, through="n", gates=SHORT)
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    assert list(decisions(world.runs, 1, repo=world.repo))[-1] == "budget-c1"
+    world.file(world.n()["spread"]["output"]).write_text("changed\n")  # n is now invalid
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert found["n-c1"]["state"] == "invalid" and found["budget-c1"]["state"] == "invalid"
+    assert any("n-c1 record it answers is invalid" in p for p in found["budget-c1"]["problems"])
+
+
+def test_a_missing_n_record_lists_no_budget_entry_and_a_missing_simulation_no_invalid_n(
+    world,
+) -> None:
+    world.write("engineering", world.engineering())
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    found = decisions(world.runs, 1, repo=world.repo)
+    assert list(found) == ["engineering", "simulation", "n-c1"]
+    assert found["n-c1"]["state"] == "missing" and found["simulation"]["state"] == "missing"
+
+
 def test_decisions_prints_only_the_rounded_spread(world) -> None:
     world.chain(N=75)
     world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
@@ -1302,7 +1618,9 @@ def seal(monkeypatch) -> list[str]:
     def guard(path) -> None:
         if isinstance(path, int):
             return
-        if any(part in SEALED for part in Path(os.fsdecode(path)).parts):
+        named = os.fsdecode(path)
+        parts = (*Path(named).parts, *Path(os.path.realpath(named)).parts)
+        if any(part in SEALED for part in parts):
             attempts.append(str(path))
             raise AssertionError(f"a sealed file was opened: {path}")
 
@@ -1343,6 +1661,63 @@ def test_no_record_is_read_or_written_with_a_response_or_observation_opened(
     with pytest.raises(AssertionError):
         (world.run / "responses" / "harmful_evaluation.jsonl").read_text()
     assert len(attempts) == 1
+
+
+def test_a_record_that_resolves_into_responses_is_refused_and_never_opened(
+    world, monkeypatch
+) -> None:
+    sealed = world.run / "responses" / "keys.json"
+    sealed.write_text(json.dumps({"LEAKY_KEY_NAME": 1, "kind": "engineering"}))
+    decisions_dir = world.runs / "study3" / "decisions"
+    decisions_dir.mkdir(parents=True)
+    (decisions_dir / "engineering.json").symlink_to(sealed)
+    world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
+    attempts = seal(monkeypatch)
+    found, problems = world.read("engineering")
+    assert found is None and len(problems) == 1 and "never opened" in problems[0]
+    assert "LEAKY_KEY_NAME" not in problems[0]
+    everything = decisions(world.runs, 1, repo=world.repo)
+    assert everything["engineering"]["state"] == "invalid"
+    assert "LEAKY_KEY_NAME" not in json.dumps(everything)
+    assert immutable(decisions_dir / "engineering.json", [])
+    assert all("never opened" in p for p in everything["engineering"]["problems"])
+    assert len(everything["engineering"]["problems"]) == 1  # said once
+    assert attempts == []
+    with pytest.raises(AssertionError):  # the guard follows the link
+        (decisions_dir / "engineering.json").read_text()
+    assert len(attempts) == 1
+
+
+def test_a_decisions_folder_linked_into_observations_is_never_written_to(
+    world, monkeypatch
+) -> None:
+    sealed = world.run / "observations"
+    (world.runs / "study3").mkdir(parents=True, exist_ok=True)
+    (world.runs / "study3" / "decisions").symlink_to(sealed)
+    attempts = seal(monkeypatch)
+    with pytest.raises(DecisionRefused, match="never opened"):
+        world.write("engineering", world.engineering())
+    assert sorted(p.name for p in sealed.iterdir()) == ["measurements.jsonl"]
+    assert world.read("engineering")[0] is None
+    assert attempts == []
+
+
+def test_a_decision_record_is_read_as_utf_8(world, monkeypatch) -> None:
+    world.write("engineering", world.engineering(checks={
+        **world.engineering()["checks"],
+        "bridge": {**world.ref("pont-\u00e9t\u00e9.json"), "passed": True}}))  # fmt: skip
+    seen = []
+    real = Path.read_text
+
+    def recording(self, *args, **kwargs):
+        if self.suffix == ".json" and self.parent.name == "decisions":
+            seen.append(kwargs.get("encoding", args[0] if args else None))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording)
+    assert world.read("engineering")[1] == []
+    decisions(world.runs, 1, repo=world.repo)
+    assert seen and set(seen) == {"utf-8"}
 
 
 def test_the_module_imports_no_gpu_path() -> None:
