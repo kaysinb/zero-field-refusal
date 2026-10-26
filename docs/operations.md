@@ -1560,9 +1560,10 @@ docstring has every rule.
   unknown code included), which it then logs superseded
   (run again with the same record, it only writes the lines that are missing). A second cycle
   for the candidate is refused: a technical failure left unresolved routes to the technical
-  feasibility report. A case that holds a scientific failure (in its records, of any stage, or
-  its launcher run stopped by its own declared instability rule) is kept whole, its records and
-  its launcher run (listed as kept, with why), and a cycle cannot start from one of its records:
+  feasibility report. A case that holds a scientific failure (as its bound, valid part records
+  of any stage show it; a launcher run's declared stop counts only when such a record classified
+  it scientific) is kept whole, its records and its launcher run (listed as kept, with why), and
+  a cycle cannot start from one of its records:
   the failure keeps counting, so a scientific failure of P, which closes P–F alone, never blocks
   the cycle of a technical failure of A or F. Every case
   the cycle names re-qualifies under the new code: the launcher's recovery round, then each part

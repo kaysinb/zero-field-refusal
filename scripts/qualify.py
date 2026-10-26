@@ -131,20 +131,22 @@ the old GPU code in all its stage folders, passed ones included, with the cases 
 every launcher run of the candidate in the launch journal not of the fix's GPU code (the runs its
 records name and those of the campaign's cases, a case with no part attempt yet included; another or
 an unknown code included, since a re-qualification under the fix could not use it), which it then
-logs superseded. A case that holds a scientific failure (its records read with the verdicts, another
-stage's included, or its launcher run stopped by its own declared instability rule) is kept whole:
-none of its records (its parts, its control, its trajectory results) nor its launcher run is voided,
-it is listed as kept with why, and the driver's stale check passes it; the failure keeps counting
-(no reruns to pass). The cycle is refused a second time for the candidate (a technical failure left
-unresolved after it routes to the technical feasibility report), for a record that is not a
-completed technical failure of the case or that belongs to a case the cycle keeps whole, and when
-the fix's GPU code is the old one (the same path is not simply rerun); run again with the same
-record, it only writes the journal's lines that are missing. Each case it names re-qualifies under
-the new code from a new launcher run (the recovery round) and new attempts of its parts: the attempt
-after one the cycle named carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the
-supersession's path and sha256) instead of ``--infrastructure``; a later interruption of a new-code
-attempt is rerun with ``--infrastructure REASON``, as any other. The verdict lists the records it
-voids under ``supersession``.
+logs superseded; a case whose run is superseded is re-qualified, whether or not it had a part
+record. A case that holds a scientific failure, as its bound, valid part records read with the
+verdicts show it (another stage's included; a launcher run's declared stop counts only when such a
+record classified it scientific), is kept whole: none of its records (its parts, its control, its
+trajectory results) nor its launcher run is voided, it is listed as kept with why, and the driver's
+stale check passes it; the failure keeps counting (no reruns to pass). The cycle is refused a second
+time for the candidate (a technical failure left unresolved after it routes to the technical
+feasibility report), for a record that is not a completed technical failure of the case or that
+belongs to a case the cycle keeps whole, and when the fix's GPU code is the old one (the same path
+is not simply rerun); run again with the same record, it only writes the journal's lines that are
+missing. Each case it names re-qualifies under the new code from a new launcher run (the recovery
+round) and new attempts of its parts: the attempt after one the cycle named carries
+``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path and sha256)
+instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun with
+``--infrastructure REASON``, as any other. The verdict lists the records it voids under
+``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -1099,17 +1101,21 @@ def supersede_case(
     """The candidate's engineering cycle, recorded (module docstring, "Supersession"; "Failure
     routes", "Voiding and supersession"): ``c<N>/supersede-1.json`` names the technical record
     that started it (its path and sha256), the diagnosis and the fix, the GPU code of the fix
-    (this clean checkout's) and the old one, and every record of the candidate made under the
-    old GPU code, in all its stage folders, passed ones included, with the cases re-qualified,
-    and every old-code launcher run of the candidate in the launch journal (the runs its
-    records name and those of the campaign's cases, a case without any part attempt included),
-    which it then logs superseded. A case that holds a scientific failure is kept whole (none of
-    its records, nor its launcher run, is voided: the failure keeps counting, no reruns to pass)
-    and listed as kept, with why. Refused: a second time for the candidate (one cycle per
-    candidate: an unresolved technical failure then routes to the technical feasibility report);
-    for a record that is not a completed technical failure of the case; when the fix's GPU code
-    is the old one (the same path is not simply rerun); from a checkout that is not clean. Run
-    again with the same record, it only writes the journal's lines that are missing."""
+    (this clean checkout's) and the old one, every record of the candidate made under the old
+    GPU code, in all its stage folders, passed ones included, with the cases re-qualified, and
+    every launcher run of the candidate in the launch journal that is not of the fix's GPU code
+    (another or an unknown code included: the runs its records name and those of the campaign's
+    cases, a case without any part attempt included), which it then logs superseded; a case
+    whose run is superseded is re-qualified. A case that holds a scientific failure, as its
+    bound, valid part records read with the verdicts show it (``scientific_attempts``; a
+    launcher run's declared stop counts only when such a record classified it scientific), is
+    kept whole: none of its records, nor its launcher run, is voided, and it is listed as kept,
+    with why. Refused: a second time for the candidate (one cycle per candidate: an unresolved
+    technical failure then routes to the technical feasibility report); for a record that is not
+    a completed technical failure of the case, or that belongs to a case the cycle keeps whole;
+    when the fix's GPU code is the old one (the same path is not simply rerun); from a checkout
+    that is not clean. Run again with the same record, it only writes the journal's lines that
+    are missing."""
     case = chosen.case
     if args.record is None or not args.diagnosis or not args.fix:
         sys.exit("supersede needs --record PATH, --diagnosis TEXT and --fix TEXT")
@@ -1195,29 +1201,14 @@ def supersede_case(
                 requalified.append({"case": name, "stage": stage.name})
                 run_ids |= {e["launcher_run_id"] for e in mine if e["launcher_run_id"]}
     kept_names = {(k["case"], k["stage"]) for k in kept_cases}
-    for (name, stage_name), p in by_name.items():  # every campaign case: its launcher runs
-        if (name, stage_name) in kept_names:
-            continue
-        ids = set(journal_run_ids(p.run, root))
-        stopped = []  # a launcher run its own declared instability stopped keeps its case whole
-        for run_id in sorted(ids):
-            run_dir = root / p.run.experiment / run_id
-            if run_dir.is_dir():
-                kind, why = q.launcher_problems(run_dir, p.case, checkpoint=False,
-                                                environment=False)  # fmt: skip
-                if kind == q.SCIENTIFIC:
-                    stopped.append(f"the launcher run {run_id}: {why}")
-        if stopped:
-            kept_cases.append(
-                {
-                    "case": name,
-                    "stage": stage_name,
-                    "why": f"a scientific failure keeps counting: {stopped}",
-                }
-            )
-            kept_runs |= ids
-            continue
-        run_ids |= ids
+    # Every campaign case not kept: its launcher runs. A launcher run's own stop is a mark only
+    # when a bound, valid part record of its case classified it scientific (the case is then
+    # kept whole above); without one it is a run like any other, superseded below
+    by_case: dict[tuple[str, str], set[str]] = {}
+    for (name, stage_name), p in by_name.items():
+        if (name, stage_name) not in kept_names:
+            by_case[(name, stage_name)] = set(journal_run_ids(p.run, root))
+            run_ids |= by_case[(name, stage_name)]
     kept_names = {(k["case"], k["stage"]) for k in kept_cases}
     requalified = [c for c in requalified if (c["case"], c["stage"]) not in kept_names]
     attempts = [e for e in attempts if (e["case"], e["stage"]) not in kept_names]
@@ -1235,6 +1226,10 @@ def supersede_case(
                               "run": start.get("run"), "experiment": start.get("experiment"),
                               "config_hash": start.get("config_hash"),
                               "identity": q.launcher_identity(run_dir)})  # fmt: skip
+            for (name, stage_name), ids in by_case.items():  # its case re-qualifies, records
+                entry = {"case": name, "stage": stage_name}  # or none
+                if run_id in ids and entry not in requalified:
+                    requalified.append(entry)
     record_path = candidate_dir / "supersede-1.json"
     record = {"candidate": case.candidate, "supersession": 1,
               "old_record": {"case": case.name, "stage": stage_folder(folder).name,

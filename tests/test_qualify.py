@@ -841,7 +841,8 @@ def test_the_cycle_covers_every_stage_and_old_code_launcher_run(qualify, tmp_pat
     cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
     assert [r["run_id"] for r in cycle["launchers"]] == ["r-a1", "r-b1"]
     assert {(c["case"], c["stage"]) for c in cycle["cases_requalified"]} == {
-        (ADAMW.name, "numerical"), (engineering.name, "engineering")}  # fmt: skip
+        (ADAMW.name, "numerical"), ("s10201/adamw-5e-05", "numerical"),
+        (engineering.name, "engineering")}  # fmt: skip
     log = root / "launch" / "study3-qualification-c1.jsonl"
     lines = [json.loads(line) for line in log.read_text().splitlines()]
     assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-b1"]
@@ -887,17 +888,22 @@ def test_the_cycle_supersedes_every_launcher_run_not_of_the_fix(qualify, tmp_pat
     assert qualify.located(run, root) is None  # superseded: the recovery round starts a new one
 
 
-def test_the_cycle_keeps_cases_its_records_or_launcher_runs_show_scientific(
-    qualify, tmp_path, monkeypatch
-) -> None:
+def test_the_cycle_keeps_a_case_its_records_show_scientific(qualify, tmp_path, monkeypatch):
     """Kept whole: another stage's case whose baseline fired a declared harness instability rule
-    (a complete record with no kind of its own, read with the verdicts), and a case without any
-    part whose launcher run its own instability rule stopped (its run is not superseded)."""
+    (a complete record with no kind of its own, read with the verdicts), and a case whose
+    baseline record classified its launcher run's declared stop scientific (its run is not
+    superseded)."""
     path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     _, record = technical_adamw(out, tmp_path)
-    stopped = journal(root, path, f"adamw-{ADAMW_LR:g}/s10201", ["r-b1"])
-    settled_launcher(root, stopped, "r-b1", stop="gradient_spike", steps=3)
+    stopped_case = q.QualificationCase(10201, "adamw", ADAMW_LR, 1, False)
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10201", ["r-b1"])
+    launcher = settled_launcher(root, run, "r-b1", stop="gradient_spike", steps=3)
+    baseline = synthetic(stopped_case, identity=q.launcher_identity(launcher))[0]
+    reason = "instability: the launcher run stopped by 'gradient_spike' after 3 steps"
+    baseline.update(status="not_run", kind="scientific", reasons=[reason])
+    baseline["launcher"].update(kind="scientific", reasons=[reason])
+    publish(out, stopped_case, "baseline", baseline)
     engineering = q.QualificationCase(10000, "adamw", ADAMW_LR, 1, True)
     spiked = synthetic(engineering)[0]
     spiked["trajectories"]["baseline"]["instability"] = {"reason": "gradient_spike", "step": 3,
@@ -908,13 +914,36 @@ def test_the_cycle_keeps_cases_its_records_or_launcher_runs_show_scientific(
     qualify.main(supersede_args(path, ADAMW, record))
     cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
     kept = {(k["case"], k["stage"]) for k in cycle["kept_cases"]}
-    assert kept == {(engineering.name, "engineering"), ("s10201/adamw-5e-05", "numerical")}
-    why = {k["case"]: k["why"] for k in cycle["kept_cases"]}
-    assert "the launcher run r-b1" in why["s10201/adamw-5e-05"]
+    assert kept == {(engineering.name, "engineering"), (stopped_case.name, "numerical")}
     assert [r["run_id"] for r in cycle["launchers"]] == []  # r-b1 keeps counting
-    assert {(c["case"], c["stage"]) for c in cycle["cases_requalified"]} == {
-        (ADAMW.name, "numerical")}  # fmt: skip
-    assert qualify.located(stopped, root) == root / stopped.experiment / "r-b1"
+    assert cycle["cases_requalified"] == [{"case": ADAMW.name, "stage": "numerical"}]
+    assert qualify.located(run, root) == launcher
+
+
+def test_a_launcher_stop_no_record_classified_scientific_is_superseded(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """A launcher run that stopped on its declared rule but that no valid part record of its
+    case classified scientific is no mark: the case whose baseline was recorded technical (the
+    cycle starts from it) and a case without any part attempt are both re-qualified, their old
+    runs superseded and the baseline voided."""
+    path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    runs = {}
+    for seed, run_id in ((10200, "r-a1"), (10201, "r-b1")):
+        runs[run_id] = journal(root, path, f"adamw-{ADAMW_LR:g}/s{seed}", [run_id])
+        settled_launcher(root, runs[run_id], run_id, stop="gradient_spike", steps=3)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    qualify.main(supersede_args(path, ADAMW, record))
+    cycle = json.loads((out / "c1" / "supersede-1.json").read_text())
+    assert cycle["kept_cases"] == [] and cycle["kept"] == []
+    assert [(a["case"], a["part"], a["attempt"]) for a in cycle["attempts"]] == [
+        (ADAMW.name, "baseline", 1), (ADAMW.name, "rest", 1)]  # fmt: skip
+    assert [r["run_id"] for r in cycle["launchers"]] == ["r-a1", "r-b1"]
+    assert sorted(c["case"] for c in cycle["cases_requalified"]) == [
+        ADAMW.name, "s10201/adamw-5e-05"]  # fmt: skip
+    assert all(qualify.located(run, root) is None for run in runs.values())
 
 
 def test_a_cycle_cannot_start_from_a_case_it_keeps_whole(qualify, tmp_path, monkeypatch) -> None:
