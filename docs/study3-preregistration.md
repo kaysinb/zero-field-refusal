@@ -792,7 +792,9 @@ states the rule; no threshold, tolerance or route changes.
 - **The rule.** At most one repair round per arm and candidate. It repairs every selected rate of
   that arm with a K miss, each by the rule applied to its own median, each with its own numerical
   qualification.
-- **Unchanged.** A repair follows only a K miss and a passed numerical qualification of the arm's
-  selected rates; a rate whose change would be under 2 % is not repaired; a second miss after the
-  repair is reported, not repaired again.
+- **The order.** A repair follows a passed numerical qualification of the arm's selected rates:
+  a failed reference, shift or bridge is never repaired this way (the registration's "What it
+  cannot repair").
+- **Unchanged.** A repair follows only a K miss; a rate whose change would be under 2 % is not
+  repaired; a second miss after the repair is reported, not repaired again.
 - **What was known.** The registration and the study-2 records; no study-3 outcome.
