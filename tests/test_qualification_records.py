@@ -760,17 +760,134 @@ def test_no_gpu_module_is_imported() -> None:
                for n in ast.walk(tree))  # fmt: skip
 
 
-def test_a_case_of_a_rate_no_campaign_issued_is_a_rate_of_its_own(qualify, tmp_path) -> None:
-    """A case record of a rate no campaign issued (the script's verdict lists it as unassigned)
-    is a rate of its own, recomputed (here incomplete: no issued run is located), and changes
-    no issued rate."""
+def test_a_case_record_no_issued_start_names_is_a_problem(qualify, tmp_path) -> None:
+    """Every run is bound to an issued cell: a case record of a rate no campaign issued (the
+    script's verdict lists it as unassigned) is a problem, and a rate of its own, recomputed
+    (here incomplete: no issued run is located), that changes no issued rate; so is a record of
+    another candidate in the candidate's folder."""
     world = World(tmp_path)
     world.full()
+    assert world.read()["problems"] == []
     stray = qcase(10200, "adamw_prewarmed", 1.0e-05)
     world.qualified(stray, dict(IDENTITY))
     reading = world.read()
+    assert reading["problems"] == [
+        f"{world.folder(stray)}: case s10200/adamw_prewarmed-1e-05, which no issued start of "
+        "candidate 1's qualification names"]  # fmt: skip
     assert reading["states"][FA_KEY] == reading["states"][ADAMW_KEY] == "qualified"
     assert reading["states"]["adamw_prewarmed-1e-05"] == "incomplete"
     assert reading["rates"]["adamw_prewarmed-1e-05"]["arm"] == "P"
     shutil.rmtree(world.folder(stray))
     assert "adamw_prewarmed-1e-05" not in world.read()["rates"]
+    resolution = {"run_id": "r", "outcome": "scientific", "reasons": ["why"],
+                  "case_record": stray.record()}  # fmt: skip
+    path = cycle_record(world, kept_cases=[{"case": stray.name, "stage": "numerical",
+                                            "why": "w", "resolution": resolution}])  # fmt: skip
+    assert world.read()["problems"] == [
+        f"{path}: case s10200/adamw_prewarmed-1e-05, which no issued start of candidate 1's "
+        "qualification names"]  # fmt: skip
+    path.unlink()
+    other = q.QualificationCase(10201, "adamw", ADAMW_LR, 2, False)
+    folder = world.folder(qcase(10201, "adamw", ADAMW_LR))
+    q.publish(folder / "baseline-attempt-2.json", synthetic(other)[0])
+    assert f"{folder}: a record of no numerical case of candidate 1: {other.record()!r}" in (
+        world.read()["problems"])  # fmt: skip
+
+
+def test_every_start_of_an_issued_run_is_bound(tmp_path) -> None:
+    """A run's starts are all bound, not only the first that binds: a later attempt whose
+    config.yaml has another config hash is refused, a problem naming it, while the run keeps
+    the case its other start binds."""
+    from omegaconf import OmegaConf
+
+    world = World(tmp_path)
+    world.launch(FA)
+    second = world.launch(FA)["run_id"]
+    path = world.root / "study3" / second / "config.yaml"
+    cfg = OmegaConf.load(path)
+    OmegaConf.update(cfg, "optimizer.lr", 9.0e-05)
+    OmegaConf.save(cfg, path)
+    reading = world.read()
+    (problem,) = reading["problems"]
+    assert problem.startswith(f"{second} ({world.run(FA).label}): a start of candidate 1's "
+                              "qualification refused: its config.yaml's config hash")  # fmt: skip
+    (run,) = reading["issued"]
+    assert (run["optimizer"], run["lr"], run["seed"]) == ("adam_frozen", FA_LR, 10200)
+    assert run["run_ids"] == ["r10200-adam_frozen-a1", second]
+
+
+def cycle_record(world, **fields):
+    """A supersession record of candidate 1 with every field the registration asks for, as
+    ``qualify.py supersede`` writes one, and ``fields`` over it."""
+    record = {"candidate": 1, "supersession": 1,
+              "old_record": {"case": ADAMW.name, "stage": "numerical", "path": "/x.json",
+                             "sha256": "0" * 64, "part": "baseline", "attempt": 1},
+              "diagnosis": "d", "fix": "f", "cases_requalified": [], "attempts": [],
+              "kept_cases": [], "kept": [], "launchers": [], "held": [], **fields}  # fmt: skip
+    path = world.out / "c1" / "supersede-1.json"
+    q.publish(path, record)
+    return path
+
+
+@pytest.mark.parametrize("what", ["trajectory comparisons", "kept reasons", "kept case name",
+                                  "restart entry"])  # fmt: skip
+def test_a_malformed_record_is_a_problem_not_an_exception(qualify, tmp_path, what) -> None:
+    """A record whose shape the verdicts cannot read (an interrupted rest's trajectory result
+    whose comparisons are a list; a kept case's resolution whose reasons cannot be iterated, or
+    whose case name is a list; a restart naming a part by a list) is a problem naming it; the
+    reading goes on."""
+    world = World(tmp_path)
+    world.full()
+    folder = world.folder(ADAMW)
+    if what == "restart entry":
+        entry = {"part": ["baseline"], "attempt": 1, "state": "recorded", "sha256": None}
+        q.publish(folder / "restart-1.json", {"reason": "r", "attempts": [entry]})
+        prefix = f"{folder}: its records cannot be read: "
+    elif what == "trajectory comparisons":
+        q.publish(folder / "rest-attempt-2.json.started", {"started_at": "t"})
+        rest = json.loads((folder / "rest-attempt-1.json").read_text())
+        result = {**trajectory_result(ADAMW, rest, "repeat", attempt=2), "comparisons": [1, 2]}
+        q.publish(folder / "rest-attempt-2.trajectory-repeat.json", result)
+        prefix = f"{folder}: the verdicts cannot read its trajectory results: "
+    else:
+        resolution = {"run_id": "r", "outcome": "unresolved", "reasons": ["why"],
+                      "case_record": qcase(10201, "adamw", ADAMW_LR).record()}  # fmt: skip
+        kept = {"case": "s10299/adamw-5e-05", "stage": "numerical", "why": "w",
+                "resolution": resolution}  # fmt: skip
+        if what == "kept reasons":
+            resolution["reasons"] = 5
+        else:
+            kept["case"] = ["s10201", "adamw"]
+        prefix = f"{cycle_record(world, kept_cases=[kept])}: a kept case the verdicts cannot read: "
+    reading = world.read()
+    assert [p for p in reading["problems"] if p.startswith(prefix + "TypeError")], (
+        reading["problems"])  # fmt: skip
+    assert reading["states"][FA_KEY] == "qualified"
+
+
+def test_a_supersession_record_without_its_fields_is_a_problem_and_still_voids(qualify, tmp_path):
+    """A supersession record must name the old record (path and sha256), the diagnosis, the fix
+    and the cases re-qualified; one that lacks any is a problem, and still voids the attempts it
+    names, as the script's verdict reads it."""
+    world = World(tmp_path)
+    world.full()
+    record = world.folder(ADAMW) / "baseline-attempt-1.json"
+    entry = {"case": ADAMW.name, "stage": "numerical", "part": "baseline", "attempt": 1,
+             "state": "recorded",
+             "sha256": hashlib.sha256(record.read_bytes()).hexdigest()}  # fmt: skip
+    path = world.out / "c1" / "supersede-1.json"
+    q.publish(path, {"attempts": [entry]})
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert reading["problems"] == [f"{path}: a supersession record without its diagnosis, fix, "
+                                   "old_record, cases_requalified"]  # fmt: skip
+    got = plain(reading)
+    assert {key: got["rates"][key]["verdict"] for key in cached["rates"]} == cached["rates"]
+    assert got["superseded"] == cached["superseded"]
+    assert [(e["case"], e["part"], e["supersession"]) for e in reading["superseded"]] == [
+        (ADAMW.name, "baseline", "superseded by an engineering cycle (supersede-1.json): None; "
+         "fix: None")]  # fmt: skip
+    assert reading["states"][ADAMW_KEY] == "not_qualified"
+    old = {"case": ADAMW.name, "stage": "numerical", "path": str(record)}  # no sha256
+    cycle_record(world, attempts=[entry], old_record=old)
+    assert world.read()["problems"] == [f"{path}: a supersession record without its old_record"]

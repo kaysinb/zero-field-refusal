@@ -45,12 +45,16 @@ stands for it. A start of a campaign whose header names study 3, the candidate a
 label, experiment and config hash make the run ``located`` looks for, and its config (its run's
 ``config.yaml``, or its start's command loaded again, bound by its config hash as
 ``study3_records`` binds a start) gives the case's arm, rate and seed. Starts of one label,
-experiment and config hash are attempts of one run.
+experiment and config hash are attempts of one run; every start is bound, and one refused (its
+``config.yaml`` of another config hash) is a problem whatever the others. Every case record (a
+part record, an interrupted rest's trajectory results, a kept case's resolution) must name a
+numerical case of the candidate that an issued start names: the run bound to an issued cell.
 
 **The rates** are those the issued runs, the case records and ``verdict.json`` name, one rate per
 optimizer and rate (relative tolerance 10⁻⁹); each is recomputed from the records, whoever names
-it. A rate named by the cache alone has no case and no located run. The key of a rate is
-``<optimizer>-<rate:g>``, the verdict's.
+it. A rate named by the cache alone has no case and no located run; one named by case records
+alone is a rate of its own, and each of its records a problem (no issued start). The key of a
+rate is ``<optimizer>-<rate:g>``, the verdict's.
 
 **The cache** (``c<N>/verdict.json``, when it exists): its rate states, each compared with the
 recomputation. A rate it does not name is listed under ``uncached``: each qualification campaign
@@ -58,11 +62,15 @@ of the candidate (the repair's included) rewrites the file with its own rates.
 
 **Problems** (each blocks every decision that rests on the qualification): an unreadable record
 (a part attempt, a trajectory result, a restart, supersession or release record, the journal, the
-cache, or a cache without its rates); a record the verdicts cannot read (where the script would
-raise, the case or rate is named and left out); a start of the qualification that cannot be
-bound to its case, and two issued runs of one case; and every disagreement with the cache: a
-rate's state, the cache written for another candidate or stage, under another GPU code or other
-settings than expected. The states are always the recomputation's.
+cache, or a cache without its rates); a malformed record, never an exception: one the verdicts
+cannot read (a case, an interrupted rest's trajectory results, a kept case, a rate; where the
+script would raise, the record is named and left out); a supersession record without its
+diagnosis, fix, old record (path and sha256) or cases re-qualified ("Voiding and supersession":
+it still voids what it names, as the script reads it); a start of the qualification refused or
+that cannot be bound to its case, two issued runs of one case, and a case record no issued start
+names; and every disagreement with the cache: a rate's state, the cache written for another
+candidate or stage, under another GPU code or other settings than expected. The states are
+always the recomputation's.
 
 **Pure reading.** No file is written. Of a launcher run, ``meta.json``, ``summary.json`` and the
 files of its identity (``config.yaml``, ``metrics.jsonl``, ``monitor.jsonl``, ``terminal.json``)
@@ -240,6 +248,11 @@ def _number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def _given(value: Any) -> bool:
+    """A non-empty string."""
+    return isinstance(value, str) and bool(value)
+
+
 def _plain_name(value: Any) -> bool:
     """A single path component (a run id, an experiment): nothing it names lies elsewhere."""
     return isinstance(value, str) and value not in ("", ".", "..") and Path(value).name == value
@@ -389,17 +402,22 @@ def _issued(
         run.campaigns.append(campaign)
         run.starts.append(dict(record))
     for run in runs.values():
-        why = []
-        for start in run.starts:
-            cfg, unbound, refusal = _start_config(root / run.experiment / start["run_id"], start,
-                                                  run.config_hash)  # fmt: skip
-            if cfg is not None:
-                break
-            why.append(f"{start['run_id']}: {refusal or unbound}")
-        else:
-            problems.append(f"{run.label} ({run.config_hash}): an issued run of candidate "
-                            f"{candidate}'s qualification whose case cannot be bound: "
-                            f"{'; '.join(why)}")  # fmt: skip
+        cfg, why = None, []
+        for start in run.starts:  # every start: one refused is a problem whatever the others
+            found, unbound, refusal = _start_config(root / run.experiment / start["run_id"],
+                                                    start, run.config_hash)  # fmt: skip
+            if refusal is not None:
+                problems.append(f"{start['run_id']} ({run.label}): a start of candidate "
+                                f"{candidate}'s qualification refused: {refusal}")  # fmt: skip
+            elif found is None:
+                why.append(f"{start['run_id']}: {unbound}")
+            elif cfg is None:
+                cfg = found
+        if cfg is None:
+            if why:
+                problems.append(f"{run.label} ({run.config_hash}): an issued run of candidate "
+                                f"{candidate}'s qualification whose case cannot be bound: "
+                                f"{'; '.join(why)}")  # fmt: skip
             continue
         optimizer = OmegaConf.select(cfg, "optimizer.name", default=None)
         lr = OmegaConf.select(cfg, "optimizer.lr", default=None)
@@ -446,8 +464,12 @@ class _Reading:
         self.voided: dict[str, str] = {}  # a void record's verdict (record_sha256) -> why
         self.superseded: list[dict[str, Any]] = []
         self.folders: list[dict[str, Any]] = []
+        self.issued: list[tuple[str, float, int]] = []  # the issued cases (``read``)
         found = sorted(self.candidate_dir.glob("supersede-*.json"))
         self.supersessions = [(p, self._flagged(p, "supersession record")) for p in found]
+        for path, record in self.supersessions:
+            if record is not None:
+                self._cycle_record(path, record)
         self.cycles = sorted(((int(m[2]), p, r) for p, r in self.supersessions
                               if (m := VOIDING_FILE.fullmatch(p.name))),
                              key=lambda t: (t[0], t[1]))  # fmt: skip
@@ -458,16 +480,66 @@ class _Reading:
             self.problems.append(f"{path}: an unreadable {what}")
         return record
 
-    def read(self) -> None:
+    def _cycle_record(self, path: Path, record: Mapping[str, Any]) -> None:
+        """A supersession record names the old record (its path and sha256), the diagnosis, the
+        fix and the cases re-qualified ("Voiding and supersession"); one that lacks any is a
+        problem, and still voids what it names, as the script reads it."""
+        old = record.get("old_record")
+        requalified = record.get("cases_requalified")
+        given = {"diagnosis": _given(record.get("diagnosis")), "fix": _given(record.get("fix")),
+                 "old_record": isinstance(old, Mapping) and _given(old.get("path"))
+                 and _given(old.get("sha256")),
+                 "cases_requalified": isinstance(requalified, list)}  # fmt: skip
+        missing = [key for key, ok in given.items() if not ok]
+        if missing:
+            self.problems.append(f"{path}: a supersession record without its "
+                                 f"{', '.join(missing)}")  # fmt: skip
+
+    def read(self, issued: Sequence[tuple[str, float, int]] = ()) -> None:
+        """Every case folder, then the cases the engineering cycle kept on a resolved launcher
+        run; ``issued``: the (optimizer, rate, seed) the issued starts name."""
+        self.issued = list(issued)
         for folder in sorted({f.parent for f in self.base.glob("s*/*/*-attempt-*")}):
-            self._folder(folder)
-        live = {_case_name(v) for v in self.cases if "superseded" not in v}
-        for _, record in self.supersessions:  # cases kept on a resolved launcher run
-            for kept in (record or {}).get("kept_cases") or []:
-                resolution = kept.get("resolution") if isinstance(kept, Mapping) else None
-                if (isinstance(resolution, Mapping) and resolution and kept.get("stage") == STAGE
-                        and kept.get("case") not in live):  # fmt: skip
-                    self.cases.append(resolved_verdict(resolution))
+            try:
+                self._folder(folder)
+            except Exception as exc:  # a malformed record no rule below names
+                self.problems.append(f"{folder}: its records cannot be read: "
+                                     f"{type(exc).__name__}: {exc}")  # fmt: skip
+        live = {name for v in self.cases
+                if "superseded" not in v and isinstance(name := _case_name(v), str)}  # fmt: skip
+        for path, record in self.supersessions:  # cases kept on a resolved launcher run
+            kept_cases = (record or {}).get("kept_cases") or []
+            if not isinstance(kept_cases, list):
+                self.problems.append(f"{path}: its kept cases are not a list")
+                continue
+            for kept in kept_cases:
+                try:
+                    resolution = kept.get("resolution") if isinstance(kept, Mapping) else None
+                    if (isinstance(resolution, Mapping) and resolution
+                            and kept.get("stage") == STAGE
+                            and kept.get("case") not in live):  # fmt: skip
+                        verdict = resolved_verdict(resolution)
+                        self._issued_case(path, verdict["case"])
+                        self.cases.append(verdict)
+                except Exception as exc:  # as a case record the verdicts cannot read
+                    self.problems.append(f"{path}: a kept case the verdicts cannot read: "
+                                         f"{type(exc).__name__}: {exc}")  # fmt: skip
+
+    def _issued_case(self, where: Path, case: Any) -> None:
+        """A record's case must be one an issued start of the candidate's qualification names
+        (every run bound to an issued cell): a problem otherwise."""
+        if not (isinstance(case, Mapping) and case.get("candidate") == self.candidate
+                and case.get("engineering") is False and isinstance(case.get("optimizer"), str)
+                and _number(case.get("lr")) and type(case.get("seed")) is int):  # fmt: skip
+            self.problems.append(f"{where}: a record of no numerical case of candidate "
+                                 f"{self.candidate}: {case!r}")  # fmt: skip
+            return
+        optimizer, lr, seed = case["optimizer"], case["lr"], case["seed"]
+        if not any(o == optimizer and s == seed and math.isclose(r, lr, rel_tol=RATE_TOLERANCE)
+                   for o, r, s in self.issued):  # fmt: skip
+            self.problems.append(f"{where}: case s{seed}/{optimizer}-{lr:g}, which no issued "
+                                 f"start of candidate {self.candidate}'s qualification "
+                                 "names")  # fmt: skip
 
     def _entries(self, folder: Path, name: str) -> Iterator[tuple[Path, dict | None, dict]]:
         """(voiding record, its record, an attempt entry of this case) for every attempt the
@@ -537,8 +609,18 @@ class _Reading:
         if (rests and rests[-1]["state"] == "interrupted"
                 and ("rest", rests[-1]["attempt"]) not in named_attempts):  # fmt: skip
             interrupted = rests[-1]["attempt"]
-            rest = verdicts.rest_from_trajectories(self._trajectories(folder, interrupted))
+            try:
+                rest = verdicts.rest_from_trajectories(self._trajectories(folder, interrupted))
+            except Exception as exc:  # as a record the verdicts cannot read
+                self.problems.append(f"{folder}: the verdicts cannot read its trajectory results: "
+                                     f"{type(exc).__name__}: {exc}")  # fmt: skip
+                rest = None
             counts["rest"] = None if rest is None else interrupted
+        named_cases = [r.get("case") for r in records.values() if r is not None]
+        if interrupted is not None and rest is not None:
+            named_cases.append(rest.get("case"))
+        for case in {json.dumps(c, sort_keys=True, default=str): c for c in named_cases}.values():
+            self._issued_case(folder, case)
         verdict = None
         if baseline is not None or rest is not None:
             verdict = self._case_verdict(name, baseline, rest)
@@ -752,7 +834,7 @@ def read_qualification(
     journal = _journal(root, problems)
     issued = _issued(root, journal, candidate, problems)
     superseded_lines, held_lines = _named_runs(journal, "superseded"), _named_runs(journal, "held")
-    reading.read()
+    reading.read([(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None])
     cache = _cache(reading.candidate_dir / VERDICT, problems)
     order: list[tuple[str, float]] = []
     for run in issued:
