@@ -1621,7 +1621,9 @@ docstring has every rule.
   that no process holds the GPU and under 1 000 MiB of it is in use, and that the free host
   memory reaches `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the
   host, ≈ 25-30 GB at 1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), then runs the
-  cases. It writes the verdict on every exit. **Exits:** 0, every case complete; 1, a
+  cases. It writes the verdict on every exit but one: over an unresolved torn line in a launch
+  journal `verdict` refuses too (exit 12), so no `verdict.json` is written then and an older one
+  stays on disk. **Exits:** 0, every case complete; 1, a
   precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
   that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
   9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; 12, a

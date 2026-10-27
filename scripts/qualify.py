@@ -203,7 +203,9 @@ two, a new cycle or a new restart, is refused as the rest.
 and the campaign file's sha256, that nothing else uses the GPU, and the free host memory
 (``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and the p1
 direction on the host and a checkpoint save's transient), then runs each case in order as above, and
-writes the verdict on every exit. Exits: 0 when every case is complete; 1 a precondition (the host
+writes the verdict on every exit, but one: over an unresolved torn launch-journal line ``verdict``
+refuses too (exit 12), so no verdict.json is written then and an older one stays on disk.
+Exits: 0 when every case is complete; 1 a precondition (the host
 memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
 not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
 technical case; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn line in
@@ -658,6 +660,19 @@ def label_run_ids(run: Run, root: Path) -> list[str]:
     return list(dict.fromkeys(r["run_id"] for r in sorted(starts, key=attempt_key)))
 
 
+def label_superseded(run: Run, root: Path) -> set[str]:
+    """The run ids of the run's label (its experiment and ``<cell>/s<seed>``) that the launch
+    journal names superseded, whatever their config hash, as ``launch.supersede`` judges a line
+    it would write: the one check of the commands that decide whether a ``superseded`` line is
+    missing before writing it (``restart_line_to_repair``, ``log_superseded``,
+    ``repair_cycle_journal``). What a campaign under the current config hash counts stays
+    ``launch.superseded_runs``."""
+    return {r["run_id"] for r in launch_records(root)
+            if r.get("event") == "superseded" and r.get("run") == run.label
+            and r.get("experiment") == run.experiment
+            and isinstance(r.get("run_id"), str)}  # fmt: skip
+
+
 def settled(run: Run, root: Path) -> Path | None:
     """The run's settled launcher directory (``launch.assess``: done, or diverged), or None."""
     state = assess(run, root, launch_records(root))
@@ -1001,7 +1016,7 @@ def log_superseded(
     launcher's recovery round starts a new attempt. Done once."""
     if run_dir is None:
         return
-    if run_dir.name not in superseded_runs(planned.run, launch_records(root)):
+    if run_dir.name not in label_superseded(planned.run, root):
         supersede(root, campaign, planned.run, run_dir.name, reason=reason, record=str(record))
 
 
@@ -1107,7 +1122,7 @@ def restart_line_to_repair(
     of the two journal repairs allowed over an unresolved torn line (module docstring)."""
     earlier = restart_records(case_folder(out, planned.case))
     named_run = ((earlier[-1][1] or {}).get("launcher") or {}).get("run_id") if earlier else None
-    if named_run and named_run not in superseded_runs(planned.run, launch_records(root)):
+    if named_run and named_run not in label_superseded(planned.run, root):
         return earlier[-1][0], earlier[-1][1], named_run
     return None
 
@@ -1689,7 +1704,7 @@ def repair_cycle_journal(path: Path, record: dict, root: Path) -> list[str]:
     for entry in record.get("launchers") or []:
         run = SimpleNamespace(label=entry.get("run"), experiment=entry.get("experiment"),
                               config_hash=entry.get("config_hash"))  # fmt: skip
-        if entry["run_id"] not in superseded_runs(run, launch_records(root)) and supersede(
+        if entry["run_id"] not in label_superseded(run, root) and supersede(
                 root, entry["campaign"], run, entry["run_id"], reason=reason,
                 record=str(path)):  # fmt: skip
             written.append(entry["run_id"])
@@ -1907,13 +1922,17 @@ def driver_script(
                  "never reruns a part or a launcher run: an interrupted part (exit "
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
                  "REASON, a failed launcher run with scripts/launch.py --only LABEL "
-                 "--max-attempts 1 --recovery REASON. The verdict is written on every exit."),
+                 "--max-attempts 1 --recovery REASON. The verdict is written on every exit, "
+                 "but over an unresolved torn launch-journal line, which verdict refuses too "
+                 f"(exit {TORN_JOURNAL}): no verdict.json is written then, and an older one "
+                 "stays on disk."),
         *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory "
                  f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
                  f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
                  f"technical case; {STALE} a stale case (records of other GPU code or settings); "
-                 f"{HELD} a case whose label has a held launcher run; the launcher's own when it "
-                 "stops; another a failed command."),
+                 f"{HELD} a case whose label has a held launcher run; {TORN_JOURNAL} a torn line "
+                 "in a launch journal (complete's refusal, or the launcher's); the launcher's "
+                 "own when it stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -1929,7 +1948,7 @@ def driver_script(
         " 2>&1",
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
         f'stop() {{ echo "== {stamp} $1" >&2; exit "$2"; }}',
-        "# The verdict on every exit, whatever stopped the driver",
+        "# The verdict on every exit, whatever stopped the driver (it refuses a torn journal line)",
         f"trap 'rc=$?; {RUN} verdict {common} || true; exit $rc' EXIT",
         "# No GPU job beside the qualification: no compute process, and (as a container may not",
         "# see other processes) no GPU memory in use",

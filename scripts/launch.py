@@ -22,13 +22,16 @@ launcher exits non-zero without starting another. Started again, the campaign ca
 
     python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT
 
-While any launch log under RUNS_DIR/launch/ holds a torn line (a crash in the middle of an append)
-that no torn_resolved record names, the launcher starts nothing, settles nothing and opens no
-recovery round: it prints each such line (log, offset, length, kind, sha256) and exits 12
-(TORN_JOURNAL). Once what the line's kind lost is restored (docs/operations.md, "Launching runs"),
---resolve-torn, with no campaign file, records the resolution in that log (LOG: its file name, as
-printed): it refuses an offset and sha256 that name no torn line of the log, a line already
-resolved and an empty reason (zero_field_refusal.launch, "The journal").
+A torn line is any line of a launch log that is not a JSON object, a blank line included; the
+tail a crash leaves in the middle of an append is one case of it. While any log under
+RUNS_DIR/launch/ holds a torn line that no torn_resolved record names, the launcher starts
+nothing, settles nothing and opens no recovery round: it prints each such line (log, offset,
+length, kind, sha256) and exits 12 (TORN_JOURNAL). Once what the line's kind lost is restored
+(docs/operations.md, "Launching runs"), --resolve-torn, with no campaign file, records the
+resolution in that log (LOG: its file name, as printed): it first writes the line's torn record
+if none names it, then the torn_resolved record. It refuses an offset and sha256 that name no
+torn line of the log, a line already resolved and an empty reason (zero_field_refusal.launch,
+"The journal").
 """
 
 import argparse

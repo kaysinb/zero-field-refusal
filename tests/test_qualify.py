@@ -1689,6 +1689,37 @@ def test_a_restart_rewrites_its_lost_journal_line_over_a_torn_line(
     assert launch.run_campaign(name, runs, root, dry_run=True)["pending"] == [runs[0].label]
 
 
+def test_a_restart_after_a_config_hash_change_is_recorded(qualify, tmp_path, capsys) -> None:
+    """A restart's ``superseded`` line written under the label's earlier config hash still names
+    its run (by label, experiment and run id, as ``launch.supersede`` judges a line): a new
+    ``restart-case`` is no journal repair and records the new restart as the normal flow does;
+    a published restart whose line really is missing is still repaired."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    label = f"adamw-{ADAMW_LR:g}/s10200"
+    run = journal(root, path, label, ["r-a1"])
+    launcher = settled_launcher(root, run, "r-a1")
+    publish(out, ADAMW, "baseline", synthetic(ADAMW, identity=q.launcher_identity(launcher))[0])
+    qualify.main(restart(path, ADAMW, RESTART))
+    earlier = "0" * 12  # the label's config hash before a fix that changed a hashed key
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    log.write_text(log.read_text().replace(run.config_hash, earlier))
+    meta = json.loads((launcher / "meta.json").read_text())
+    (launcher / "meta.json").write_text(json.dumps({**meta, "config_hash": earlier}))
+    settled_launcher(root, journal(root, path, label, ["r-a2"]), "r-a2")  # under the new hash
+    qualify.main(restart(path, ADAMW, RESTART))
+    second = json.loads((case_folder(out, ADAMW) / "restart-2.json").read_text())
+    assert second["launcher"]["run_id"] == "r-a2"
+    lines = [json.loads(x) for x in log.read_text().splitlines()]
+    assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-a2"]
+    log.write_text("".join(x + "\n" for x in log.read_text().splitlines()[:-1]))  # r-a2's lost
+    with pytest.raises(SystemExit, match=r"recorded \(restart-2\.json\); the launch journal now"):
+        qualify.main(restart(path, ADAMW, RESTART))
+    lines = [json.loads(x) for x in log.read_text().splitlines()]
+    assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-a2"]
+    assert not (case_folder(out, ADAMW) / "restart-3.json").exists()
+
+
 TORN_BYTES = b'{"time": "2026-10-27T10:00:00+00:00", "event": "held", "run": "\xff'
 
 
@@ -1741,12 +1772,17 @@ def test_plan_and_driver_read_no_runs_and_are_not_refused(qualify, tmp_path, cap
 
 
 def test_the_driver_stops_at_a_torn_journal_line(qualify, tmp_path, monkeypatch) -> None:
-    """``complete`` exits 12 over an unresolved torn line: the driver stops there with 12, its
-    verdict written, and calls neither the launcher nor a part; the launcher's own 12 passes
-    through the same way."""
+    """``complete`` exits 12 over an unresolved torn line: the driver stops there with 12 and
+    calls neither the launcher nor a part; its EXIT trap still calls ``verdict``, which over a
+    real torn line refuses too, so no ``verdict.json`` is written then and an older one stays.
+    The launcher's own 12 passes through the same way. The driver's exits comment lists 12."""
     code, calls = run_driver(qualify, tmp_path, monkeypatch, complete=qualify.TORN_JOURNAL)
     assert code == qualify.TORN_JOURNAL
     assert calls == [f"complete {FA.name}", "verdict"]
+    header = " ".join(x[2:] for x in (tmp_path / "driver.sh").read_text().splitlines()
+                      if x.startswith("# "))  # fmt: skip
+    assert f"{qualify.TORN_JOURNAL} a torn line in a launch journal" in header
+    assert "verdict.json is written then" in header
     text = (tmp_path / "driver.sh").read_text()
     assert f"  {qualify.TORN_JOURNAL}) stop " in text and "--resolve-torn" in text
     (tmp_path / "again").mkdir()
