@@ -1859,12 +1859,18 @@ before each command below.
   cannot be shown. For a qualification log the validation fixation pins, any edit of the log
   breaks the fixation for good. The repair belongs to a later change of the launcher: a fresh
   line when the log does not end with a newline.
-- **Holds and closures.** Two kinds of run are unresolved technical marks: a run a candidate's
+- **A technical mark outside the qualification.** A technical mark of a search, validation or
+  confirmation run, in any arm, stops the route: the step is blocked and technical, with the
+  reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
+  registered route, one engineering cycle, is not implemented for these runs yet; the full route
+  comes in a later change, before the search starts. The researcher decides; beside that, only
+  the recovery round where the launcher opens one is offered (after `check`). No closure is
+  written for such a mark, and one written anyway is a problem that decides nothing.
+- **Holds and closures.** Two kinds of run are closed by a closure record: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
-  and a technical run outside the qualification that no recovery round reruns, a run under
-  another commit included (above, "A run's own commit"). The step names each: for a held run,
-  the closure record to write; for a technical run, its ways out (a recovery round, where the
-  launcher would open one, and its closure record). The researcher decides which
+  and a run under another commit (above, "A run's own commit"). The step names each: for a held
+  run, the closure record to write; for a run under another commit, its ways out (a recovery
+  round, where the launcher would open one, and its closure record). The researcher decides which
   way out is taken. A closure record states the terminal technical outcome. A closure of A or F
   ends the study with the technical feasibility report, and candidate 2 is not taken; a closure of
   P closes P–F, and A–F goes on. It is written from the step, with exactly the fields the step

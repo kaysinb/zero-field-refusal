@@ -88,10 +88,12 @@ file through ``study3_decisions.write_decision``, which validates it against the
 names and the records it answers: written once, never over another; a refusal prints its reasons.
 
 **closure** writes the closure record closure-c<N>-<ARM> with exactly the fields the state's step
-gives: a held run's decision step, or a technical run's way out (its last end line, or its start
-line; for a run under another commit, its uncounted reason). It refuses when the step names no
-closure of that candidate and arm, and, when the step names several (two technical runs of the
-arm), unless --run-id chooses the run. The record's state is ``failed`` (a terminal technical
+gives: a held run's decision step, or the way out of a run under another commit (its last end
+line, or its start line, with its uncounted reason). Any other technical mark outside the
+qualification stops the route for the researcher's decision (``engineering_route_pending``): the
+step names no closure for it, and none is written. It refuses when the step names no closure of
+that candidate and arm, and, when the step names several (two runs of the arm), unless --run-id
+chooses the run. The record's state is ``failed`` (a terminal technical
 outcome) and its code HEAD's commit and that commit's GPU code.
 
 Every record is JSON, written whole and only where none is (``study3_decisions._publish``).

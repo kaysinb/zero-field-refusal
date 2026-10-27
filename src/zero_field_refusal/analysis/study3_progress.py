@@ -29,16 +29,17 @@ outcome (``TERMINAL``, below). ``candidate``.
 - ``pending``: what the step waits for (runs that have not ended, rates whose qualification has
   no record yet; at the confirmation, the blocks of those runs and each run's way out);
 - ``blocked``: the reasons; ``technical`` when it waits for a diagnosis, with ``ways_out`` for a
-  technical run outside the qualification (below);
+  technical run outside the qualification (below: for such a mark the step also carries the
+  ``reason`` id ``engineering_route_pending`` and its ``why``);
 - ``report`` or ``done``: the outcome and its reason.
 ``outcome`` (a terminal stage), each with its ``reason`` id and the ``reasons`` that name why:
 - ``scientific_feasibility_report``: A or F failed scientifically at candidate 2
   (``scientific_failure``);
 - ``technical_feasibility_report``: a dead end in the code: a failed engineering record
   (``engineering_failed``), an unresolved technical mark in A or F: a held run closed
-  (``held_run``), a technical run outside the qualification closed (``technical_end``), a run
-  under another commit closed (its uncounted reason id, ``study3_versions.UNCOUNTED_REASONS``), a
-  qualification technical after the candidate's engineering cycle (``unresolved_after_cycle``);
+  (``held_run``), a run under another commit closed (its uncounted reason id,
+  ``study3_versions.UNCOUNTED_REASONS``), a qualification technical after the candidate's
+  engineering cycle (``unresolved_after_cycle``);
 - ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
   level passed, or its verification failed: ``simulation_failed``), or the n record failed, its
   cap beyond the reserved confirmation seeds (``cap_beyond_reserved_seeds``);
@@ -67,15 +68,15 @@ that needs it (a ``decision`` step, not a problem).
 **A stage's decision**, the same at the search, the qualification, the repair, the validation
 and (for its technical marks) the confirmation (the arms are the active ones; a terminal or route
 decision is taken only on settled evidence, so that no later record of the stage can reverse it):
-1. A or F with an unresolved technical mark ("After a technical mark"): a held run or a technical
-   run outside the qualification with its closure record, or a qualification technical after the
-   candidate's engineering cycle: the technical feasibility report, and candidate 2 is not taken
-   ("the failure lies in the code"). A held run without its closure: the step names it.
+1. A or F with an unresolved technical mark ("After a technical mark"): a held run or a run under
+   another commit with its closure record, or a qualification technical after the candidate's
+   engineering cycle: the technical feasibility report, and candidate 2 is not taken ("the
+   failure lies in the code"). A held run without its closure: the step names it.
 2. P with such a mark: P–F closes (P with it, for the rest of the study), and A–F goes on.
 3. A run technical, awaiting its diagnosis, in any active arm: the stage stays at its step,
    ``technical``, with the case named (in the qualification, the registered engineering cycle;
-   outside it, its two ways out, below). A failed arm is failed whatever else, but the route
-   waits: the diagnosis may end in the technical report.
+   outside it, the stop for the researcher's decision, below). A failed arm is failed whatever
+   else, but the route waits: the diagnosis may end in the technical report.
 4. A run that has not ended (``pending``, or ``recovered`` with no later attempt), or a rate whose
    qualification has no record yet: the step waits.
 5. A or F failed scientifically: candidate 1 moves to candidate 2, candidate 2 ends the study
@@ -138,11 +139,12 @@ and the counters wait for that run, so the step waits (``pending``), naming the 
 and each run's way out once its launcher stopped without ending it (its recovery round, from its
 own block file), and ``confirmation_state`` lets no block start. A technical mark in a started
 block holds the confirmation (the step is blocked, and ``confirmation_state`` lets no block start)
-until its way out: a recovery round, or a closure record, whose route is any technical mark's (A
-or F: the technical feasibility report; P: P–F closes and the blocks go on with A and F). Once
-stopped, every comparison's reading needs its blocks resolved. The confirmation never moves the
-candidate: its failed endpoints (a scientific failure) remove support only, and P is closed in it
-only by a technical mark.
+until its way out: a recovery round where the launcher would open one, or the researcher's
+decision (below, "Technical marks outside the qualification"); a run under another commit's
+closure record routes as any technical mark's (A or F: the technical feasibility report; P: P–F
+closes and the blocks go on with A and F). Once stopped, every comparison's reading needs its
+blocks resolved. The confirmation never moves the candidate: its failed endpoints (a scientific
+failure) remove support only, and P is closed in it only by a technical mark.
 
 **A run under another commit** ("Voiding and supersession", Versions: a validation or confirmation
 run under a commit other than the pinned one does not count; it is kept and reported). The reader
@@ -151,7 +153,8 @@ record its header names pins (``study3_versions.uncounted_runs``: the pinned com
 record-only descendant of it, from a clean checkout). A run that does not count is kept, excluded
 from every count and listed in ``not_counted`` with its reason id and the commit it ran, wherever
 the walk stops. It is a technical mark outside the qualification of its arm, read before anything
-else of its stage (the candidate's validation or confirmation), with that route's ways out:
+else of its stage (the candidate's validation or confirmation), but no case for an engineering
+cycle: a run launched from the wrong checkout needs no code fix. Its ways out:
 - a recovery round of its label, only where the launcher would open one (no published outcome:
   the launcher skips a completed run), launched after ``study3_summary.py check`` passes, from a
   checkout of the pinned commit: its next attempt decides;
@@ -178,28 +181,42 @@ they are. A hold that no supersession record or no journal line names cannot be 
 blocks.
 
 **Technical marks outside the qualification** ("Failure routes", "Technical"): every run of the
-search, the validation or the confirmation that the readers count as unresolved and technical:
-an endpoint ``technical``; at the search, a K-only run that is not usable or has no positive K;
-in a block, a usable run that lacks its K or a utility loss, or a run the block cannot place;
-in the confirmation, every run its blocks list as unresolved; and a validation or confirmation
-run under another commit (above, with its own reason id). The engineering cycle of
-``qualify.py`` is the qualification's; a code fix for a run outside it has no tooling in this
-package (a limit of package 2). Such a run has two ways out, and the step stays ``blocked``,
-``technical``, naming the run and the ways that apply (``ways_out``) until one is taken: a
-recovery round of its label with its documented cause (an infrastructure interruption: the
+search, the validation or the confirmation that the readers count as unresolved and technical, in
+any arm: an endpoint ``technical``; at the search, a K-only run that is not usable or has no
+positive K; in a block, a usable run that lacks its K or a utility loss, or a run the block
+cannot place; in the confirmation, every run its blocks list as unresolved. Its registered route
+is one engineering cycle at once (diagnosis, fix, re-qualification of every affected case, one
+cycle per candidate); the engineering cycle of ``qualify.py`` is the qualification's, and the
+route for a run outside it is not implemented in this package. Until it is, nothing cancels it
+silently: such a mark stops the route for the researcher's decision. The step is ``blocked``,
+``technical``, with the reason id ``engineering_route_pending`` (``reason``) and its ``why`` ("the
+registered engineering cycle for a technical mark outside the qualification is not implemented
+yet: the researcher decides"), naming each run (its id, label, arm and step). Its ways out
+(``ways_out``): the researcher's decision (``{"decision": "engineering_route_pending"}``), beside a
+recovery round of its label with its documented cause (the registered infrastructure route: the
 attempt is ``recovered`` and its next attempt decides), only where the launcher would open one
 (``launch.run_campaign``: no published terminal record, a ``meta.json`` that records the run
-neither diverged nor completed, and its cell's round, or its own, not yet spent); and a closure
-record citing the run's last ``end`` line whatever its outcome, or its start line when the
-launcher never ended it (kind ``end`` or ``start``, no cycle; the step gives its fields exactly
-as the closure schema takes them, and the closure must carry the reason they give). Its
-route is "After a technical mark", wherever the run was. Two attempts that count for one cell, a
-refused run or a state no reader defines are no technical mark but a problem of the records'
-integrity: they block, with no way out. A closure record that names no mark the route met, and no
-held run of its route, is a problem, unless the walk stopped before the stage of the run it
-names (it is then judged once the walk reaches it). Run records the reader cannot read at all
-(a run id longer than a file name, a run directory it may not search) block the step: "the run
-records cannot be read".
+neither diverged nor completed, and its cell's round, or its own, not yet spent), for a validation
+or confirmation run launched after ``study3_summary.py check`` passes. No closure is offered for
+such a mark, nothing is voided, no outcome is reached and no cell is issued (the confirmation's
+guard and its writer refuse a new block). A closure record that names such a mark is not accepted:
+a problem that blocks ("a closure of a technical mark outside the qualification is not accepted
+until its engineering route exists"), and it decides nothing.
+
+A validation or confirmation run under another commit (above) is a technical mark of its arm too,
+read before the rest of its stage, but no cycle case: launched from the wrong checkout, it needs no
+code fix. Its ways out are a recovery round where the launcher would open one and its closure
+record, citing the run's last ``end`` line whatever its outcome, or its start line when the
+launcher never ended it (kind ``end`` or ``start``, no cycle; the step gives its fields exactly as
+the closure schema takes them, and the closure must carry the reason they give, the run's
+uncounted reason). Its route is "After a technical mark". The hold route is unchanged.
+
+Two attempts that count for one cell, a refused run or a state no reader defines are no technical
+mark but a problem of the records' integrity: they block, with no way out. A closure record that
+names no mark the route met, and no held run of its route, is a problem, unless the walk stopped
+before the stage of the run it names (it is then judged once the walk reaches it). Run records the
+reader cannot read at all (a run id longer than a file name, a run directory it may not search)
+block the step: "the run records cannot be read".
 
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
 problem, the step is ``blocked`` with them, and the stage is the last one the decision records
@@ -322,6 +339,15 @@ CAMPAIGNS = ("search-round0", "search-round1", "numerical", "repair", "validatio
 ROUTED = ("search", "numerical", "repair", "validation", "confirmation")  # a mark routes there
 OUTSIDE = ("search", "validation", "confirmation")  # the steps outside the qualification
 ENDED = ("usable", "unusable", "scientific")  # a run whose records are published and read
+# A technical mark outside the qualification: its registered engineering cycle is not implemented
+# here, so the route stops for the researcher's decision (module docstring)
+ENGINEERING_ROUTE_PENDING = "engineering_route_pending"
+ENGINEERING_ROUTE_WHY = (
+    "the registered engineering cycle for a technical mark outside the "
+    "qualification is not implemented yet: the researcher decides"
+)
+NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
+                "its engineering route exists")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -580,6 +606,7 @@ class _Walk:
         self.extra: dict[str, Any] = {}
         self.consumed: set[str] = set()
         self.marks: set[str] = set()  # the technical marks outside the qualification met
+        self.pending_route: set[str] = set()  # those of them whose route is pending (no closure)
         self.reached: set[tuple[int, str]] = set()  # (candidate, stage) whose marks were read
         self.blocks = 0
         self.codes: list[str] = []  # the chain of GPU codes, from the engineering record's
@@ -1106,10 +1133,12 @@ class _Walk:
     def _other_commits(self, stage: str, key: str) -> None:
         """The runs of the stage's cells (``key``) that do not count for the commit they ran
         (module docstring, "A run under another commit"), read before anything else of the
-        stage: technical marks outside the qualification of their active arms. A valid closure
-        decides as any technical mark's (A or F: the technical feasibility report, its reason the
-        run's; P: P–F closes and the stage goes on); otherwise the step is blocked, technical,
-        naming each run, its reason, its commit and its ways out (the lenient walk goes on)."""
+        stage: technical marks outside the qualification of their active arms, but no cycle
+        cases (a run launched from the wrong checkout needs no code fix), so their closure is
+        accepted. A valid closure decides as any technical mark's (A or F: the technical
+        feasibility report, its reason the run's; P: P–F closes and the stage goes on); otherwise
+        the step is blocked, technical, naming each run, its reason, its commit and its ways out
+        (the lenient walk goes on)."""
         found = sorted((e for e in self.by_key.get(key, ()) if e.run_id in self.records.uncounted
                         and e.arm in self.arms), key=lambda e: e.run_id)  # fmt: skip
         if not found:
@@ -1169,7 +1198,10 @@ class _Walk:
         if technical:
             step = {"kind": "blocked", "technical": True, "reasons": technical}
             ways = [self._way_out(run) for c in conditions.values() for run in c.closable]
-            raise _Stop(self._result(stage, {**step, "ways_out": ways} if ways else step))
+            if ways:  # a technical mark outside the qualification: the researcher decides
+                step = {**step, "reason": ENGINEERING_ROUTE_PENDING, "why": ENGINEERING_ROUTE_WHY,
+                        "ways_out": ways}  # fmt: skip
+            raise _Stop(self._result(stage, step))
         pending = [x for c in conditions.values() for x in c.pending]
         if pending:
             raise _Stop(self._result(stage, {"kind": "pending", "waiting": pending}))
@@ -1230,22 +1262,25 @@ class _Walk:
                 "recovery": recovery and (uncounted is None or e.state not in ENDED)}  # fmt: skip
         if uncounted is not None:
             mark |= {"uncounted": uncounted.get("reason"), "commit": uncounted.get("commit")}
-        mark["closure"] = self._closure_of(mark)
+        # a closure only for a run under another commit: any other mark's route is its cycle's
+        mark["closure"] = self._closure_of(mark) if uncounted is not None else None
         self.marks.add(e.run_id)
+        if uncounted is None:
+            self.pending_route.add(e.run_id)
         return mark
 
     def _technical_run(self, c: _Arm, e: Endpoint) -> None:
-        """A run outside the qualification that the readers count as a technical mark: no
-        engineering cycle applies, and it waits for one of its ways out (module docstring,
-        "Technical marks outside the qualification")."""
+        """A run outside the qualification that the readers count as a technical mark: its
+        registered route, one engineering cycle, is not implemented here, so the step stops for
+        the researcher's decision, beside the recovery round where the launcher would open one;
+        no closure is offered (module docstring, "Technical marks outside the qualification")."""
         mark = self._mark(e)
         c.closable.append(mark)
-        ways = ([f"a recovery round of {e.label} with its documented cause reruns it"]
-                if mark["recovery"] else [])  # fmt: skip
-        if mark["closure"] is not None:
-            ways.append(f"a closure record ({mark['closure']['record']}) closes it")
-        c.technical.append(f"{e.run_id}: {e.state}, outside the qualification: "
-                           + (" or ".join(ways) or "no way out the records give"))  # fmt: skip
+        way = (f"; a recovery round of {e.label} with its documented cause reruns it"
+               if mark["recovery"] else "")  # fmt: skip
+        c.technical.append(f"{e.run_id} ({e.label}, {e.arm}, {e.cell.step}): {e.state}, a "
+                           f"technical mark outside the qualification: {ENGINEERING_ROUTE_WHY}"
+                           f"{way}")  # fmt: skip
 
     def _closure_of(self, mark: Mapping[str, Any]) -> dict[str, Any] | None:
         """The closure record of a technical mark, with the fields the closure schema accepts:
@@ -1273,11 +1308,15 @@ class _Walk:
     def _way_out(self, mark: Mapping[str, Any]) -> dict[str, Any]:
         """A technical mark's ways out, only those that apply: a recovery round of its label
         when no terminal record was published (the launcher opens one only then), for a
-        validation or confirmation run after ``study3_summary.py check`` passes, and its closure
-        record."""
+        validation or confirmation run after ``study3_summary.py check`` passes; for a run under
+        another commit, its closure record; for any other mark, the researcher's decision
+        (``ENGINEERING_ROUTE_PENDING``), with its arm and step."""
         out: dict[str, Any] = {"run_id": mark["run_id"], "label": mark["label"]}
         if "uncounted" in mark:  # a run under another commit: its reason and commit
             out |= {"reason": mark["uncounted"], "commit": mark["commit"]}
+        else:
+            out |= {"arm": mark["arm"], "step": mark["step"],
+                    "decision": {"decision": ENGINEERING_ROUTE_PENDING}}  # fmt: skip
         if mark["recovery"]:
             checked = (", launched after study3_summary.py check passes on its campaign file"
                        if mark["step"] in ("validation", "confirmation") else "")  # fmt: skip
@@ -1331,6 +1370,8 @@ class _Walk:
         wanted = "held" if line.get("kind") == "held" else "mark"  # an end or a start line
         match = next((m for kind_, m in marks if kind_ == wanted
                       and m["run_id"] == record.get("run_id")), None)  # fmt: skip
+        if match is not None and wanted == "mark" and "uncounted" not in match:
+            raise _Stop(self._blocked(stage, [_not_accepted(entry["path"], match["run_id"])]))
         reason = None  # a mark's closure carries the reason its line gives, or the run's own
         if match is not None and wanted == "mark" and match["closure"] is not None:
             reason = match["closure"]["fields"]["reason"]
@@ -1358,8 +1399,7 @@ class _Walk:
         if arm == "P":
             self._close_p(stage, kind)
             return True
-        reason = (match.get("uncounted") or {"held": "held_run", "end": "technical_end"}.get(
-            line.get("kind"), "technical_no_end"))  # fmt: skip
+        reason = match.get("uncounted") or "held_run"
         what = "a run under another commit, " if match.get("uncounted") else ""
         self.route.append(self._event(stage, "report", [arm], kind))
         raise _Stop(self._report(TECHNICAL_REPORT, reason, [
@@ -1480,6 +1520,9 @@ class _Walk:
                 )
                 ended = (run is not None and run.run_id in self.marks and run.arm == arm
                          and run.candidate == candidate)  # fmt: skip
+                if line != "held" and ended and run.run_id in self.pending_route:
+                    found.append(_not_accepted(entry["path"], run.run_id))
+                    continue
                 unreached = (line != "held" and run is not None
                              and (run.candidate, run.cell.step) not in self.reached)  # fmt: skip
                 if not (held if line == "held" else ended) and not unreached:
@@ -1590,6 +1633,12 @@ def _hold(e: Endpoint, info: Mapping[str, Any] | None, run_id: str) -> dict[str,
                                                                           "line_sha256")},
             "cycle": None if cycle is None else {k: cycle[k] for k in ("path", "sha256")},
             "reasons": hold_reasons((info or {}).get("reason"))}  # fmt: skip
+
+
+def _not_accepted(path: Any, run_id: Any) -> str:
+    """The problem of a closure that names a technical mark outside the qualification other than
+    a run under another commit: it decides nothing."""
+    return f"{path}: it names {run_id}: {NOT_ACCEPTED}"
 
 
 def _path(kind: str) -> str:

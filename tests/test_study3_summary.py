@@ -429,13 +429,14 @@ def test_the_guard_refuses_a_block_whose_records_changed_since_it_was_written(wo
     files = block_files(world.write("confirmation"))
     summary.core(study)
     summary.versions()
-    # P closed after the block was written: the step's block has four cells
-    broken = study.technical(run_of(study, "confirmation", "P", "u", 10405),
-                             log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
-    study.closure(broken.run_id)
+    # P closed after the block was written (a P run under another commit, its closure): the
+    # step's block has four cells
+    broken = run_of(study, "confirmation", "P", "u", 10405)
+    study.other_commit(broken)
+    study.closure(broken)
     refused(summary.guard(10410, files[10410]), "does not match", "are not the step's cells")
     closed = study.entries.pop("closure-c1-P")
-    study.change(broken.run_id, state="usable", K=7.5, steps=25)
+    study.uncounted.clear()
     assert summary.guard(10410, files[10410])[0] == 0 and closed
     record = decision_path(world.root, "n-c1")
     kept = record.read_bytes()
@@ -1025,11 +1026,10 @@ def test_closure_refuses_when_the_step_names_no_closure_of_the_arm(world, summar
         assert not decision_path(world.root, kind).exists()
 
 
-def test_closure_writes_a_technical_runs_way_out_chosen_by_its_run(world, summary,
-                                                                  monkeypatch) -> None:  # fmt: skip
-    """A technical validation run outside the qualification: the step is blocked and names the
-    closure among its ways out (its last end line in the journal). With two such runs of the
-    arm, the run is chosen with --run-id."""
+def test_closure_writes_a_way_out_chosen_by_its_run(world, summary, monkeypatch) -> None:
+    """Two completed validation runs of F under another commit: the step is blocked and names
+    each one's closure among its ways out (its last end line in the journal, its reason); the
+    run is chosen with --run-id."""
     study = Study()
     study.through_validation()
     run_ids = [run_of(study, "validation", "F", "u", seed) for seed in (10304, 10306)]
@@ -1038,11 +1038,11 @@ def test_closure_writes_a_technical_runs_way_out_chosen_by_its_run(world, summar
         world.runs.log("study3-c1-validation", {"event": "start", "run": endpoint.label,
                                                 "attempt": 1, "run_id": run_id,
                                                 "experiment": "study3"})  # fmt: skip
-        world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "technical")
+        world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "done")
     ends = end_lines(world.root)
     for run_id in run_ids:
-        study.technical(run_id, log=ends[run_id]["path"], line=ends[run_id]["line"])
-        study.ends[run_id]["line_sha256"] = ends[run_id]["line_sha256"]
+        study.ends[run_id] = dict(ends[run_id])
+        study.other_commit(run_id)
     step = study.advance()["step"]
     assert (step["kind"], step["technical"], len(step["ways_out"])) == ("blocked", True, 2)
     summary.core(study)
@@ -1058,7 +1058,34 @@ def test_closure_writes_a_technical_runs_way_out_chosen_by_its_run(world, summar
     assert problems == [] and record["run_id"] == run_ids[1]
     assert (record["line"], record["reason"], record["cycle"]) == (
         {"kind": "end", **{k: ends[run_ids[1]][k] for k in ("path", "line", "line_sha256")}},
-        "launcher_technical", None)  # fmt: skip
+        "other_commit", None)  # fmt: skip
+
+
+def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualification(
+    world, summary, monkeypatch
+) -> None:
+    """A technical validation run stops the route for the researcher's decision: the step names
+    no closure, and ``closure`` writes none."""
+    study = Study()
+    study.through_validation()
+    run_id = run_of(study, "validation", "F", "u", 10304)
+    (endpoint,) = [e for e in study.endpoints if e.run_id == run_id]
+    world.runs.log("study3-c1-validation", {"event": "start", "run": endpoint.label,
+                                            "attempt": 1, "run_id": run_id,
+                                            "experiment": "study3"})  # fmt: skip
+    world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "technical")
+    end = end_lines(world.root)[run_id]
+    study.technical(run_id, log=end["path"], line=end["line"])
+    study.ends[run_id]["line_sha256"] = end["line_sha256"]
+    step = study.advance()["step"]
+    assert (step["kind"], step["reason"]) == ("blocked", "engineering_route_pending")
+    summary.core(study)
+    monkeypatch.setattr(
+        summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
+    )
+    refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"),
+            "names no closure record closure-c1-F", "engineering_route_pending")  # fmt: skip
+    assert not decision_path(world.root, "closure-c1-F").exists()
 
 
 def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary,

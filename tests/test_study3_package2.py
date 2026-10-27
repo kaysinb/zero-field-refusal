@@ -930,10 +930,11 @@ class Route(CampaignWorld):
 
     # -- the launcher and the tracker
 
-    def launch(self, path: Path, values=target, technical=()) -> list[str]:
+    def launch(self, path: Path, values=target, technical=(), dirty=()) -> list[str]:
         """The campaign's runs started, written and ended as the launcher and the tracker do it
         (``World.launched``), the guard off while they are written; a run of ``technical``'s
-        (arm, rate) ends technical, its meta.json failed, no terminal record."""
+        (arm, rate) ends technical, its meta.json failed, no terminal record; one of ``dirty``'s
+        ran on a checkout with uncommitted changes (its meta.json's ``git.dirty``)."""
         name, runs = load_campaign(path)
         header = campaign_header(path)
         ids = []
@@ -955,7 +956,8 @@ class Route(CampaignWorld):
                           OmegaConf.to_yaml(cfg, resolve=True), run.config_hash,
                           {"name": name, "label": run.label, "attempt": 1, "header": header},
                           k_only=OmegaConf.select(cfg, "eval.k_only", default=False) is True,
-                          git=git_state(self.repo), **outcome)  # fmt: skip
+                          git={**git_state(self.repo), "dirty": (arm, rate) in dirty},
+                          **outcome)  # fmt: skip
                 judged(self.root / run.experiment / run_id)
                 self.runs.end(name, run.label, 1, run_id, "technical" if failed else "done")
                 ids.append(run_id)
@@ -967,8 +969,8 @@ class Route(CampaignWorld):
     def build(self) -> None:
         """Candidate 1 from its engineering campaign to its confirmation's fourth block: every
         campaign kind, every summary command; the search's two rounds, a repair, the staged
-        fixation and two versions records, N = 99 with its budget record, a technical run that P's
-        closure record closes."""
+        fixation and two versions records, N = 99 with its budget record, a P run under another
+        commit (a dirty checkout) that P's closure record closes."""
         root, theta0 = self.root, self.runs.theta0
         assert self.step()["record"] == "engineering"
         self.launch(self.campaign("engineering"))
@@ -1026,10 +1028,10 @@ class Route(CampaignWorld):
         assert self.guarded(10401, self.blocks[10401]).code == 0
         self.launch(self.blocks[10401])
         assert self.guarded(10402, self.blocks[10402]).code == 0
-        self.launch(self.blocks[10402], technical={("P", START["P"]["u"])})
+        self.launch(self.blocks[10402], dirty={("P", START["P"]["u"])})
         step = self.state()["step"]
         assert (step["kind"], step.get("technical")) == ("blocked", True), step
-        assert self.guarded(10402, self.blocks[10402]).code != 0  # the technical mark holds it
+        assert self.guarded(10402, self.blocks[10402]).code != 0  # the mark holds it
         self.refused("campaigns", "confirmation", "--runs-root", root, "--candidate", 1, "--out",
                      self.out / "blocked")  # fmt: skip
         self.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "A")

@@ -35,7 +35,7 @@ from omegaconf import OmegaConf
 from test_study3_decisions import CODE as DECISION_CODE
 from test_study3_decisions import World as DecisionWorld
 from test_study3_decisions import held as decision_hold
-from test_study3_progress import Study
+from test_study3_progress import Study, run_of
 from test_study3_records import SEALED, SENTINEL, write_run
 from test_study3_records import World as RunWorld
 
@@ -734,6 +734,21 @@ def test_a_blocked_step_and_a_terminal_stage_are_refused(world) -> None:
     for kind in ("engineering", "search-round0"):
         error = world.refused(kind)
         assert "technical_feasibility_report" in error and "terminal" in error
+
+
+def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_stands(world):
+    """A technical confirmation run stops the route for the researcher's decision: the writer
+    refuses a new block, naming the stop."""
+    study = Study()
+    study.through_validation()
+    study.n(N=60)
+    study.confirmation(count=3)
+    broken = study.technical(run_of(study, "confirmation", "F", "l", 10402),
+                             log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
+    world.core(study)
+    error = world.refused("confirmation")
+    assert "the step is blocked" in error and "engineering_route_pending" in error
+    assert broken.run_id in error
 
 
 def test_a_step_with_no_cells_is_refused(world) -> None:

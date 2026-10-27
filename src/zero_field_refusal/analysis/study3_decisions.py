@@ -131,10 +131,12 @@ on is a response or an observation, and this module opens none.
   round of its label at or after the cited line, a ``superseded`` line or a ``held`` line
   followed: the readers would not count it as a technical mark. That the run lies outside the
   qualification and that the readers count it as a technical mark is the state machine's to
-  check. The record is checked against the files as they are now, through ``journal_lines`` (the
-  one reading of a cited journal line; a launch log that cannot be read fails the check closed):
-  the line's bytes, the supersession record's bytes, and the run id both name. The failure's
-  evidence stays as it is; a closure removes nothing.
+  check: it accepts an end or start closure only for a run under another commit, and one of any
+  other technical mark outside the qualification is a problem there until that mark's
+  engineering route exists (``study3_progress``). The record is checked against the files as
+  they are now, through ``journal_lines`` (the one reading of a cited journal line; a launch log
+  that cannot be read fails the check closed): the line's bytes, the supersession record's bytes,
+  and the run id both name. The failure's evidence stays as it is; a closure removes nothing.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
