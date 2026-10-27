@@ -104,8 +104,8 @@ on is a response or an observation, and this module opens none.
 - ``closure-c<N>-<arm>``: an unresolved technical failure of the arm closed as the terminal
   technical outcome it is ("Failure routes", "After a technical mark"): a launcher run that the
   candidate's engineering cycle held (an outcome nobody could resolve, never attempted again), or a
-  run outside the qualification (search, validation, confirmation) that the readers count as a
-  technical mark and that no recovery round reran. ``candidate`` and ``arm`` (the kind's), ``rate``,
+  validation or confirmation run under another commit that the readers count as a technical mark
+  and that no recovery round reran. ``candidate`` and ``arm`` (the kind's), ``rate``,
   ``seed`` (a registered seed of the candidate, the one the cited line's label names),
   ``run_id``, ``line`` (the launch-journal line that shows the failure: ``kind``, ``path``,
   ``launch/<log>.jsonl`` under the runs directory, ``line``, its number from 1, and
@@ -119,14 +119,16 @@ on is a response or an observation, and this module opens none.
     evidence of the candidate's supersession record (``qualification/c<N>/supersede-<n>.json``
     under the runs directory), whose ``held`` names the run.
   - ``kind: "end"``: the run's last ``end`` line in the journal (by its time stamp, in any log),
-    whatever its outcome, its ``reason`` the one that outcome gives (``end_reason``:
-    ``launcher_<outcome>``); ``cycle`` is null.
-  - ``kind: "start"``: the run's start line, when the journal holds no end line of the run; its
-    ``reason`` ``no_end_line`` (``START_REASON``); ``cycle`` is null.
-  - A validation or confirmation run under a commit other than the pinned one
-    (``study3_versions.uncounted_runs``) is closed by the same end or start line, its ``reason``
-    the run's uncounted reason id (``UNCOUNTED_REASONS``) whatever the end's outcome; that the
-    run is one, with that reason, is the state machine's to check.
+    whatever its outcome; ``cycle`` is null.
+  - ``kind: "start"``: the run's start line, when the journal holds no end line of the run;
+    ``cycle`` is null.
+  - An end or start line closes a validation or confirmation run under a commit other than the
+    pinned one (``study3_versions.uncounted_runs``) alone: its ``reason`` is the run's uncounted
+    reason id (``UNCOUNTED_REASONS``), whatever the end's outcome; that the run is one, with that
+    reason, is the state machine's to check. A closure with an end's or a start line's own reason
+    (``launcher_<outcome>``: ``end_reason``; ``no_end_line``: ``START_REASON``) would close a
+    technical mark outside the qualification, whose route is its engineering cycle: it is refused
+    (``NOT_ACCEPTED``).
   An end or start closure is refused for a run that a later attempt of its label, a recovery
   round of its label at or after the cited line, a ``superseded`` line or a ``held`` line
   followed: the readers would not count it as a technical mark. That the run lies outside the
@@ -245,6 +247,10 @@ HOLD_REASONS = {
 # launcher never ended it; an end line's reason is its outcome's (``end_reason``)
 LINE_KINDS = ("held", "end", "start")
 START_REASON = "no_end_line"  # a start line's reason: the launcher never ended the run
+# A closure of a technical mark outside the qualification (its reason an end's outcome or the
+# start line's): its registered route is its engineering cycle, not implemented yet
+NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
+                "its engineering route exists")  # fmt: skip
 # Why a validation or confirmation run does not count for the commit it ran
 # (``study3_versions.uncounted_runs``): the reason of its closure, an end or a start line
 UNCOUNTED_REASONS = ("no_commit", "dirty_checkout", "dirty_unrecorded", "unknown_commit",
@@ -1139,13 +1145,12 @@ class _Schema:
         if kind == "held" and not (isinstance(reason, str) and reason in HOLD_REASONS):
             self.add("reason", f"is {reason!r}, not the id of a reason a hold states "
                      f"({sorted(HOLD_REASONS)})")  # fmt: skip
-        elif kind == "end" and reason not in UNCOUNTED_REASONS and not _end_reason_id(reason):
-            self.add("reason", f"is {reason!r}, not the id of an end's outcome "
-                     f"(launcher_<outcome>) nor of a run under another commit "
-                     f"{UNCOUNTED_REASONS}")  # fmt: skip
-        elif kind == "start" and reason != START_REASON and reason not in UNCOUNTED_REASONS:
-            self.add("reason", f"is {reason!r}, not {START_REASON!r}, the reason of a start line, "
-                     f"nor the id of a run under another commit {UNCOUNTED_REASONS}")  # fmt: skip
+        elif kind in ("end", "start") and (_end_reason_id(reason) or reason == START_REASON):
+            self.add("reason", f"is {reason!r}: {NOT_ACCEPTED}")
+        elif kind in ("end", "start") and reason not in UNCOUNTED_REASONS:
+            self.add("reason", f"is {reason!r}, not the id of a run under another commit "
+                     f"{UNCOUNTED_REASONS}: an end or start line closes such a run "
+                     "alone")  # fmt: skip
         elif kind is None and not (isinstance(reason, str) and _REASON_ID.fullmatch(reason)):
             self.add("reason", f"is {reason!r}, not an id")
         if r["decision"] != CLOSURE_DECISIONS[arm]:

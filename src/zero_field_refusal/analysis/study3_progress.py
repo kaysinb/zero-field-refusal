@@ -159,7 +159,11 @@ cycle: a run launched from the wrong checkout needs no code fix. Its ways out:
   the launcher skips a completed run), launched after ``study3_summary.py check`` passes, from a
   checkout of the pinned commit: its next attempt decides;
 - its closure record (``closure-c<N>-<arm>``), citing the run's last ``end`` line, or its start
-  line when the launcher never ended it, with the run's uncounted reason id as its reason.
+  line when the launcher never ended it, with the run's uncounted reason id as its reason (and
+  no other). A pending run's start-line closure is offered beside its recovery round, but is
+  written only once the launcher has stopped for that run: a closure is written once, and one
+  whose run the launcher later ends cites a line that is no longer the run's last, and becomes
+  invalid.
 Until one is taken, the step is ``blocked``, ``technical``, naming each run, its reason id and its
 commit, with the closure record's fields exactly as the closure schema takes them. Once the
 closure is valid (it names the run, with its reason), the route is "After a technical mark": in
@@ -219,11 +223,14 @@ reader cannot read at all (a run id longer than a file name, a run directory it 
 block the step: "the run records cannot be read".
 
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
-problem, the step is ``blocked`` with them, and the stage is the last one the decision records
-establish (engineering, simulation, or the search, where the route starts to rest on the run
-records); the qualification's problems block from the numerical stage on; an invalid decision
-record blocks the stage that rests on it, and a record rests on the ones before it (an invalid
-simulation record invalidates the n records, an invalid n record its budget record). A search
+problem (every problem of the one check of a supersession record among them:
+``qualification_records.cycle_checks``, read once and given to both, so that a record it does not
+accept supersedes and holds nothing anywhere), the step is ``blocked`` with them, and the stage
+is the last one the decision records establish (engineering, simulation, or the search, where the
+route starts to rest on the run records); the qualification's problems block from the numerical
+stage on; an invalid decision record blocks the stage that rests on it, and a record rests on the
+ones before it (an invalid simulation record invalidates the n records, an invalid n record its
+budget record). A search
 start whose campaign header does not name the engineering record by its path and its sha256 now
 (``engineering_record`` and ``engineering_record_sha256``, the flat form ``immutable`` protects:
 that shows the record existed before the search started), an n or budget record the route has not
@@ -288,7 +295,7 @@ from .study3_blocks import (
 )
 from .study3_decisions import (
     DIRECTORY,
-    START_REASON,
+    NOT_ACCEPTED,
     SUPPORTED_AT,
     budget_reason,
     cap_of,
@@ -296,7 +303,6 @@ from .study3_decisions import (
     decision_path,
     decisions,
     end_lines,
-    end_reason,
     hold_reasons,
     invalidate,
     kind_of,
@@ -346,8 +352,6 @@ ENGINEERING_ROUTE_WHY = (
     "the registered engineering cycle for a technical mark outside the "
     "qualification is not implemented yet: the researcher decides"
 )
-NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
-                "its engineering route exists")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -402,7 +406,10 @@ def progress(
     root, repo = Path(runs_root), Path(repo)
     theta0 = root / THETA0_RUN if theta0 is None else Path(theta0)
     settings = load_config("experiments/qualification") if settings is None else settings
-    holds, hold_problems = read_holds(root)
+    # the one check of every supersession record: what an accepted record voids or holds, every
+    # problem of it one of the run records' (it blocks at every step)
+    checks = qualification_records.cycle_checks(root, settings=settings)
+    holds, hold_problems = read_holds(root, cycles=checks)
     entries = {c: decisions(root, c, repo=repo) for c in (1, 2)}
     found = {k: v for c in (1, 2) for k, v in closures(root, c, repo=repo).items()}
     valid = {k for found_ in (*entries.values(), found) for k, e in found_.items()
@@ -430,7 +437,7 @@ def progress(
                "read without it")  # fmt: skip
         return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
     try:  # one snapshot of the run records, read once whatever cells it is read under
-        reader = EndpointReader(root, theta0=theta0)
+        reader = EndpointReader(root, theta0=theta0, cycles=checks)
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
         return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
@@ -1283,18 +1290,18 @@ class _Walk:
                            f"{way}")  # fmt: skip
 
     def _closure_of(self, mark: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The closure record of a technical mark, with the fields the closure schema accepts:
-        its last end line, or its start line when the launcher never ended it, the reason the
-        line gives (a run under another commit: its uncounted reason); None when the run's cell
-        or line is unknown."""
-        if None in (mark["candidate"], mark["arm"], mark["rate"], mark["seed"]):
+        """The closure record of a run under another commit, with the fields the closure schema
+        accepts: its last end line, or its start line when the launcher never ended it, and the
+        run's uncounted reason; None when the run's cell or line is unknown (or the mark is no
+        such run: no other technical mark outside the qualification has a closure)."""
+        reason = mark.get("uncounted")
+        if reason is None or None in (mark["candidate"], mark["arm"], mark["rate"], mark["seed"]):
             return None
         end, start = self.records.ends.get(mark["run_id"]), self.records.starts.get(mark["run_id"])
-        uncounted = mark.get("uncounted")
-        if end is not None and (uncounted or end_reason(end.get("outcome"))) is not None:
-            line, reason = {"kind": "end", **end}, uncounted or end_reason(end["outcome"])
-        elif end is None and start is not None:
-            line, reason = {"kind": "start", **start}, uncounted or START_REASON
+        if end is not None:
+            line = {"kind": "end", **end}
+        elif start is not None:
+            line = {"kind": "start", **start}
         else:
             return None
         kind = f"closure-c{mark['candidate']}-{mark['arm']}"
@@ -1372,16 +1379,16 @@ class _Walk:
                       and m["run_id"] == record.get("run_id")), None)  # fmt: skip
         if match is not None and wanted == "mark" and "uncounted" not in match:
             raise _Stop(self._blocked(stage, [_not_accepted(entry["path"], match["run_id"])]))
-        reason = None  # a mark's closure carries the reason its line gives, or the run's own
-        if match is not None and wanted == "mark" and match["closure"] is not None:
-            reason = match["closure"]["fields"]["reason"]
+        reason = None  # the closure of a run under another commit carries the run's own reason
+        if match is not None and wanted == "mark":
+            reason = match.get("uncounted")
         if match is None or not (
             record.get("seed") == match["seed"]
             and record.get("arm") == match["arm"]
             and record.get("candidate") == match["candidate"]
             and isinstance(record.get("rate"), int | float)
             and math.isclose(record["rate"], match["rate"], rel_tol=RATE_TOLERANCE)
-            and record.get("reason") == (reason or record.get("reason"))
+            and (wanted != "mark" or record.get("reason") == reason)
         ):
             raise _Stop(
                 self._blocked(

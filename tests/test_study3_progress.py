@@ -902,16 +902,6 @@ def test_an_end_closure_of_a_run_that_is_not_technical_is_a_problem() -> None:
     assert any("closure-c1-F" in p for p in result["problems"])
 
 
-def test_a_technical_run_with_no_journal_line_known_has_no_closure_way_out() -> None:
-    study = Study()
-    study.through_validation()
-    broken = study.change(run_of(study, "validation", "F", "u", 10304), state="technical", K=None)
-    study.recoverable.add(broken.run_id)
-    (way,) = study.advance()["step"]["ways_out"]
-    assert (way["run_id"], "closure" in way, "recovery" in way) == (broken.run_id, False, True)
-    assert "study3_summary.py check" in way["recovery"]  # a validation run's recovery round
-
-
 def test_a_technical_run_the_launcher_never_ended_stops_and_its_start_closure_is_refused() -> None:
     study = Study()
     study.through_validation()
@@ -2099,6 +2089,69 @@ def test_a_confirmation_run_under_another_commit_does_not_count_and_blocks(reaso
     assert result["not_counted"] == [entry]
 
 
+@pytest.mark.parametrize("arm", ["A", "F", "P"])
+def test_a_run_under_another_commit_the_launcher_never_ended_is_closed_by_its_start_line(arm):
+    """A run under another commit whose launcher stopped without ending it: its closure cites its
+    start line, with its uncounted reason, and reaches the outcome of any technical mark: A or F,
+    the technical feasibility report; P alone, P–F closes and A–F goes on."""
+    study = Study()
+    study.through_validation()
+    run = study.change(run_of(study, "validation", arm, "u", 10301), state="technical", K=None,
+                       steps=None)  # fmt: skip
+    study.starts[run.run_id] = {"path": "launch/study3-c1-validation.jsonl", "line": 5,
+                                "line_sha256": "b" * 64, "attempt": 1,
+                                "run": run.label}  # fmt: skip
+    entry = study.other_commit(run.run_id, "unknown_commit", ended=False)
+    (way,) = study.advance()["step"]["ways_out"]
+    assert (way["closure"]["fields"]["line"]["kind"], way["closure"]["fields"]["reason"]) == (
+        "start", "unknown_commit")  # fmt: skip
+    study.closure(run.run_id)
+    result = study.advance()
+    assert result["not_counted"] == [entry] and result["problems"] == []
+    if arm == "P":
+        assert (result["stage"], result["active"]["comparisons"]) == ("choice", ["A-F"])
+    else:
+        assert (result["outcome"], result["reason"]) == (
+            "technical_feasibility_report", "unknown_commit")  # fmt: skip
+
+
+def test_a_run_under_another_commit_with_no_journal_line_known_has_no_way_out() -> None:
+    """With neither an end nor a start line known, the records give no way out: the step names
+    the run, with no closure and no recovery round."""
+    study = Study()
+    study.through_validation()
+    run = run_of(study, "validation", "F", "u", 10304)
+    study.other_commit(run, ended=False)
+    step = study.advance()["step"]
+    assert (step["kind"], step["technical"]) == ("blocked", True)
+    (way,) = step["ways_out"]
+    assert (way["run_id"], "closure" in way, "recovery" in way) == (run, False, False)
+    assert any(run in r and "no way out the records give" in r for r in step["reasons"])
+
+
+@pytest.mark.parametrize("reason, closed", [("launcher_done", False), ("dirty_checkout", False),
+                                            ("other_commit", True)])  # fmt: skip
+def test_the_closure_of_a_run_under_another_commit_carries_its_own_reason(reason, closed):
+    """Whatever the line the records know, the closure of a run under another commit carries
+    the run's own uncounted reason id: any other is a problem that decides nothing."""
+    study = Study()
+    study.through_validation()
+    run = run_of(study, "validation", "F", "u", 10304)
+    study.other_commit(run, "other_commit", ended=False)  # no journal line known
+    (found,) = [e for e in study.endpoints if e.run_id == run]
+    line = {"kind": "end", "path": "launch/x.jsonl", "line": 2, "line_sha256": "c" * 64}
+    study.record("closure-c1-F", "failed", candidate=1, arm="F", rate=found.lr, seed=found.seed,
+                 run_id=run, line=line, cycle=None, reason=reason,
+                 decision="technical_feasibility_report")  # fmt: skip
+    result = study.advance()
+    if closed:
+        assert (result["outcome"], result["reason"]) == ("technical_feasibility_report",
+                                                          "other_commit")  # fmt: skip
+    else:
+        assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+        assert any("closure-c1-F" in p and run in p for p in result["problems"])
+
+
 def test_a_pending_run_under_another_commit_names_its_recovery_round_too() -> None:
     """A run with no published outcome under another commit, which the launcher would recover:
     beside its closure (its start line), a recovery round of its label, launched after
@@ -2369,6 +2422,37 @@ def technical_search_run(records, runs, *, status="failed", end="technical", rec
     return run_id
 
 
+def test_a_rejected_supersession_record_blocks_the_route_at_the_search(worlds) -> None:
+    """A supersession record the one check rejects (here, of another candidate) holds no search
+    run, supersedes none and re-issues no cell: its problem blocks the route at the search."""
+    from zero_field_refusal.analysis.study3_records import voided_runs
+
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    ids = sorted(p.name for p in (runs.root / "study3").iterdir())
+    held_id, superseded_id = ids[0], ids[1]
+    cycle = runs.root / "qualification" / "c1" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True)
+    cycle.write_text(json.dumps({"candidate": 2, "supersession": 1,
+                                 "launchers": [{"run_id": superseded_id}],
+                                 "held": [{"run_id": held_id, "experiment": "study3",
+                                           "reason": "no recorded commit"}]}))  # fmt: skip
+    for event, run_id in (("held", held_id), ("superseded", superseded_id)):
+        runs.log("study3-cycle", {"event": event, "run_id": run_id, "experiment": "study3",
+                                  "reason": "the cycle", "record": str(cycle)})  # fmt: skip
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["outcome"]) == (
+        "search", "blocked", None)  # fmt: skip
+    assert any(p.startswith(f"{cycle}: ") and "candidate 2" in p for p in result["problems"])
+    assert result["closures"] == {}
+    assert voided_runs(runs.root)[0] == {}
+    cycle.unlink()  # without it, nothing else blocks: the route is at the search's next step
+    (runs.root / "launch" / "study3-cycle.jsonl").unlink()
+    assert read(records, runs)["problems"] == []
+
+
 @pytest.mark.parametrize("case, status, end, first, recovery", [
     ("failed, no round spent", "failed", "technical", None, True),
     ("its own round spent on an earlier attempt", "failed", "technical", "own", False),
@@ -2417,7 +2501,8 @@ def test_a_missing_theta0_is_a_problem_not_an_exception(worlds) -> None:
 
 def test_the_reader_reads_a_closure_record_from_its_files(worlds, monkeypatch) -> None:
     """A held F of the numerical qualification: the closure step names the record, the record
-    written from it (with its real hold line and cycle record) ends the route."""
+    written from it (with its real hold line and cycle record) ends the route. The one check of
+    the cycle record (tested on the qualification's own records) accepts it here."""
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
@@ -2443,6 +2528,9 @@ def test_the_reader_reads_a_closure_record_from_its_files(worlds, monkeypatch) -
         return out
 
     monkeypatch.setattr(qualification_records, "read_qualification", fake)
+    monkeypatch.setattr(qualification_records, "cycle_checks", lambda root, **k: {
+        "qualification/c1/supersede-1.json": {"candidate": 1, "accepted": True,
+                                              "problems": []}})  # fmt: skip
     result = read(records, runs, settings={})
     assert result["problems"] == []
     assert (result["stage"], result["step"]["record"]) == (
@@ -2512,6 +2600,10 @@ def test_each_candidates_qualification_is_read_under_its_own_code(worlds, monkey
         return out
 
     monkeypatch.setattr(qualification_records, "read_qualification", recording)
+    # the one check of the cycle record (tested on the qualification's own records) accepts it
+    monkeypatch.setattr(qualification_records, "cycle_checks", lambda root, **k: {
+        "qualification/c2/supersede-1.json": {"candidate": 2, "accepted": True,
+                                              "problems": []}})  # fmt: skip
     result = read(records, runs, expected_code=fix, settings={})
     assert read_under == {1: old, 2: fix}
     assert (result["stage"], result["candidate"], result["problems"]) == ("numerical", 2, [])

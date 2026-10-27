@@ -18,7 +18,6 @@ import pytest
 from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
-    START_REASON,
     UNCOUNTED_REASONS,
     DecisionRefused,
     budget_needed,
@@ -29,7 +28,6 @@ from zero_field_refusal.analysis.study3_decisions import (
     decision_path,
     decisions,
     end_lines,
-    end_reason,
     hold_reasons,
     immutable,
     kind_of,
@@ -2059,16 +2057,16 @@ def test_the_hold_reasons_are_the_unresolved_reasons_the_cycle_gives() -> None:
     assert all(key.replace("_", "").isalnum() and key == key.lower() for key in HOLD_REASONS)
 
 
-# ------------------------------------------------------------------ the closure of a technical run
+# ------------------------------------------------------------------ a run under another commit
 
 ENDED = "20261026T000003Z-F-1.83e-05-s10300-0123abcd-a1"
 
 
 def ended(world: World, *, arm="F", rate=1.83e-5, seed=10300, run_id=ENDED, outcome="technical",
           log="study3-c1-validation", attempt=1, step="validation") -> dict:  # fmt: skip
-    """A run outside the qualification whose launcher ended it (``outcome``): its start and its
-    ``end`` line in a launch log (with the launcher's free text). Returns the closure record that
-    cites that line: no cycle, the reason the outcome gives."""
+    """A validation run under another commit whose launcher ended it (``outcome``): its start
+    and its ``end`` line in a launch log (with the launcher's free text). Returns the closure
+    record that cites that line: no cycle, the run's uncounted reason."""
     label = f"{arm}-{rate:g}/s{seed}"
     path = world.runs / "launch" / f"{log}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2087,7 +2085,7 @@ def ended(world: World, *, arm="F", rate=1.83e-5, seed=10300, run_id=ENDED, outc
         "line": {"kind": "end", "path": f"launch/{log}.jsonl",
                  "line": len(path.read_text().splitlines()),
                  "line_sha256": hashlib.sha256(end.encode()).hexdigest()},
-        "cycle": None, "reason": end_reason(outcome),
+        "cycle": None, "reason": "other_commit",
         "decision": "close_pf" if arm == "P" else "technical_feasibility_report",
     }  # fmt: skip
 
@@ -2171,9 +2169,11 @@ def test_an_end_closure_cites_the_runs_last_end_line(world) -> None:
 
 
 @pytest.mark.parametrize("outcome", [None, "Not An Id", 3])
-def test_an_end_line_whose_outcome_names_no_reason_is_refused(world, outcome) -> None:
-    record = {**ended(world, outcome=outcome), "reason": "launcher_technical"}
-    refused(world, "closure-c1-F", record, "outcome")
+def test_a_closure_of_a_run_under_another_commit_takes_any_end_outcome(world, outcome) -> None:
+    """Its reason is the run's uncounted reason, not the end's outcome's."""
+    record = ended(world, outcome=outcome)
+    world.write("closure-c1-F", record)
+    assert world.read("closure-c1-F") == (record, [])
 
 
 def test_a_diverged_end_with_a_published_terminal_record_may_be_closed(world) -> None:
@@ -2187,10 +2187,23 @@ def test_a_diverged_end_with_a_published_terminal_record_may_be_closed(world) ->
     assert world.read("closure-c1-F") == (record, [])
 
 
-def test_an_end_closure_reason_is_the_one_its_outcome_gives(world) -> None:
-    record = ended(world, outcome="technical")
-    refused(world, "closure-c1-F", {**record, "reason": "launcher_exhausted"}, "reason")
-    refused(world, "closure-c1-F", {**record, "reason": "no_recorded_commit"}, "reason")
+@pytest.mark.parametrize("reason", ["launcher_technical", "launcher_exhausted", "no_end_line"])
+def test_a_closure_of_a_technical_mark_outside_the_qualification_is_refused(world, reason):
+    """A closure whose reason is an end's outcome (``launcher_<outcome>``) or the start line's
+    (``no_end_line``) closes a technical mark outside the qualification, whose route is its
+    engineering cycle: refused, with the stop's words. A hold's reason on an end line is no
+    reason of it either."""
+    record = ended(world, outcome="technical") if reason != "no_end_line" else started(world)
+    kind = record["kind"]
+    refused(
+        world,
+        kind,
+        {**record, "reason": reason},
+        "reason",
+        "a closure of a technical mark "
+        "outside the qualification is not accepted until its engineering route exists",
+    )
+    refused(world, "closure-c1-F", {**ended(world), "reason": "no_recorded_commit"}, "reason")
 
 
 def test_an_end_closure_line_must_be_an_end_line_of_the_run(world) -> None:
@@ -2243,7 +2256,7 @@ def started(world: World, *, arm="P", rate=1.85e-5, seed=10301, run_id=STARTED,
         "line": {"kind": "start", "path": f"launch/{log}.jsonl",
                  "line": len(path.read_text().splitlines()),
                  "line_sha256": hashlib.sha256(line.encode()).hexdigest()},
-        "cycle": None, "reason": START_REASON,
+        "cycle": None, "reason": "other_commit",
         "decision": "close_pf" if arm == "P" else "technical_feasibility_report",
     }  # fmt: skip
 
@@ -2295,7 +2308,7 @@ def test_a_start_closure_names_its_reason_and_no_cycle(world) -> None:
     refused(world, "closure-c1-P", {**record, "reason": "launcher_technical"}, "reason")
     cycle = {"path": "qualification/c1/supersede-1.json", "sha256": "0" * 64}
     refused(world, "closure-c1-P", {**record, "cycle": cycle}, "cycle")
-    as_end = {**record, "line": {**record["line"], "kind": "end"}, "reason": "launcher_technical"}
+    as_end = {**record, "line": {**record["line"], "kind": "end"}}
     refused(world, "closure-c1-P", as_end, "end line")
 
 

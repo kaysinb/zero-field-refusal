@@ -45,7 +45,7 @@ from zero_field_refusal import code_identity
 from zero_field_refusal import launch as launcher
 from zero_field_refusal import qualification as q
 from zero_field_refusal.analysis import qualification_records as qr
-from zero_field_refusal.analysis.study3_records import read_holds
+from zero_field_refusal.analysis.study3_records import read_holds, voided_runs
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import load_campaign
 from zero_field_refusal.paths import CONFIG_ROOT
@@ -73,13 +73,14 @@ class World:
     """Candidate 1's qualification campaign (with its header), its journal, launcher runs and
     part records under ``tmp_path/runs``."""
 
-    def __init__(self, tmp_path, cells=BOTH, *, name="study3-c1-numerical", header=HEADER):
+    def __init__(self, tmp_path, cells=BOTH, *, name="study3-c1-numerical", header=HEADER,
+                 role="numerical"):  # fmt: skip
         self.root = tmp_path / "runs"
         self.out = self.root / "qualification"
         self.endpoint = tmp_path / "ckpt"
         text = f"name: {name}\nheader: {json.dumps(header)}\ncells:\n"
         for (optimizer, lr), seeds in cells:
-            text += cell(f"{optimizer}-{lr:g}", optimizer, lr, seeds, self.endpoint)
+            text += cell(f"{optimizer}-{lr:g}", optimizer, lr, seeds, self.endpoint, role)
         self.path = tmp_path / f"{name}.yaml"
         self.path.write_text(text)
         self.name, self.runs = load_campaign(self.path)
@@ -524,6 +525,30 @@ def rewrite(path, record) -> None:
     path.write_text(json.dumps(record))
 
 
+HELD_RUN = "r10202-adamw-a1"  # a launcher run a rejected record's ``held`` names
+
+
+def assert_rejected(world, path) -> None:
+    """The supersession record at ``path`` is rejected everywhere it would void or hold: the one
+    check (``cycle_checks``) names its problem; with a ``held`` entry added, no reader of the run
+    records holds that run, and none supersedes a launcher run the record (or a journal line
+    written from it) names; the problem is one of the run records' problems too."""
+    record = json.loads(path.read_text())
+    entry = {"run_id": HELD_RUN, "campaign": world.name, "run": f"adamw-{ADAMW_LR:g}/s10202",
+             "experiment": "study3", "config_hash": "c" * 12,
+             "reason": "no recorded commit (git: {})"}  # fmt: skip
+    rewrite(path, {**record, "held": [entry]})
+    where = path.relative_to(world.root).as_posix()
+    check = qr.cycle_checks(world.root)[where]
+    assert check["accepted"] is False and check["problems"], check
+    voided, problems = voided_runs(world.root)
+    named = {e["run_id"] for e in record.get("launchers") or []} | {HELD_RUN}
+    assert not named & set(voided), voided
+    assert any(p.startswith(f"{path}: ") for p in problems), problems
+    holds, _ = read_holds(world.root)
+    assert HELD_RUN not in {h["run_id"] for h in holds}
+
+
 def test_the_candidates_one_cycle_from_its_technical_record_voids(
     qualify, monkeypatch, tmp_path
 ) -> None:
@@ -558,6 +583,7 @@ def test_probe_a_second_cycle_record_for_a_candidate_voids_nothing(
         assert any(p.startswith(f"{named}: ") and "one engineering cycle per candidate" in p
                    for p in reading["problems"]), reading["problems"]  # fmt: skip
     assert_nothing_voided(reading)
+    assert_rejected(world, path)
 
 
 @pytest.mark.parametrize("where", ["its candidate", "its old record"])
@@ -577,6 +603,7 @@ def test_probe_another_candidates_record_in_the_folder_voids_nothing(
     assert any(p.startswith(f"{path}: ") and "candidate 2" in p for p in reading["problems"]), (
         reading["problems"])  # fmt: skip
     assert_nothing_voided(reading)
+    assert_rejected(world, path)
 
 
 def test_a_cycle_whose_old_record_has_another_sha256_voids_nothing(
@@ -588,6 +615,7 @@ def test_a_cycle_whose_old_record_has_another_sha256_voids_nothing(
     assert any(p.startswith(f"{path}: ") and "sha256" in p for p in reading["problems"]), (
         reading["problems"])  # fmt: skip
     assert_nothing_voided(reading)
+    assert_rejected(world, path)
 
 
 @pytest.mark.parametrize("old", ["passed", "scientific", "not issued"])
@@ -618,6 +646,139 @@ def test_a_cycle_whose_old_record_is_no_technical_failure_of_an_issued_case_void
     assert any(p.startswith(f"{path}: ") and words in p for p in reading["problems"]), (
         reading["problems"])  # fmt: skip
     assert_nothing_voided(reading)
+    assert_rejected(world, path)
+
+
+def test_a_case_restart_after_the_cycle_leaves_it_valid(qualify, monkeypatch, tmp_path) -> None:
+    """A routine interruption of the old record's own case after the cycle: a new launcher
+    attempt, an interrupted baseline attempt and the script's ``restart-case``, which names every
+    attempt of the case, the old record the cycle voided included. The old record was not void at
+    the time of the cycle (the restart is not earlier than it): no problem, and the cycle still
+    voids what it voided. A restart earlier than the cycle that names the old record makes it void
+    already."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    before = world.read(expected_code=FIX["sha256"])
+    assert before["problems"] == []
+    world.launch(ADAMW)  # the re-qualification's launcher run
+    folder = world.folder(ADAMW)
+    q.publish(folder / "baseline-attempt-2.json.started", {"started_at": "t"})  # interrupted
+    world.command(qualify, "restart-case", "--case", ADAMW.name, "--infrastructure",
+                  "the Pod stopped")  # fmt: skip
+    restart = json.loads((folder / "restart-1.json").read_text())
+    assert ("baseline", 1) in {(a["part"], a["attempt"]) for a in restart["attempts"]}
+    after = world.read(expected_code=FIX["sha256"])
+    assert after["problems"] == []
+    assert set(before["voided"]) <= set(after["voided"])
+    where = path.relative_to(world.root).as_posix()
+    assert qr.cycle_checks(world.root)[where] == {"candidate": 1, "readable": True,
+                                                  "accepted": True, "problems": []}  # fmt: skip
+    for earlier in ("2000-01-01T00:00:00+00:00", None):  # earlier, or not readable: earlier
+        rewrite(folder / "restart-1.json", {**restart, "restarted_at": earlier})
+        reading = world.read(expected_code=FIX["sha256"])
+        assert any(p.startswith(f"{path}: ") and "void already, by a case restart" in p
+                   for p in reading["problems"]), reading["problems"]  # fmt: skip
+
+
+@pytest.mark.parametrize("code", ["fix equal to old", "no fix sha256", "old not the record's"])
+def test_a_cycle_whose_fix_is_its_old_code_voids_nothing(qualify, monkeypatch, tmp_path, code):
+    """The script refuses a cycle whose fix's GPU code is the superseded record's (the same path
+    is not simply rerun): the record's old code must be its old record's, and its fix's another."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    old, fix = record["old_gpu_code"], record["fix_gpu_code"]
+    assert (old["sha256"], fix["sha256"]) == (CODE["sha256"], FIX["sha256"])
+    changed = {
+        "fix equal to old": {"fix_gpu_code": dict(old)},
+        "no fix sha256": {"fix_gpu_code": {**fix, "sha256": None}},
+        "old not the record's": {"old_gpu_code": {**old, "sha256": "7" * 64}},
+    }[code]
+    rewrite(path, {**record, **changed})
+    reading = world.read(expected_code=FIX["sha256"])
+    assert any(p.startswith(f"{path}: ") and "the same path is not simply rerun" in p
+               for p in reading["problems"]), reading["problems"]  # fmt: skip
+    assert_nothing_voided(reading)
+    assert_rejected(world, path)
+
+
+def test_a_cycle_that_leaves_out_a_scientific_case_under_the_old_code_voids_nothing(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """The script keeps whole a case that holds a scientific failure under the old code, and
+    refuses a cycle that starts from one of its records: the reader re-reads the cited case's
+    old-code attempts, never trusting the record's own kept cases alone. A scientific failure of
+    a later attempt under the fix leaves the cycle valid."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    folder = world.folder(ADAMW)
+    identity = json.loads((folder / "baseline-attempt-1.json").read_text())["launcher"]["identity"]
+    baseline, rest = world.records(ADAMW, identity, code=FIX,
+                                   change=beyond("rest", "baseline~s3"))  # fmt: skip
+    world.publish(ADAMW, "baseline", baseline, 2)
+    world.publish(ADAMW, "rest", rest, 2)  # under the fix: the cycle stays valid
+    assert world.read(expected_code=FIX["sha256"])["problems"] == []
+    old_rest = json.loads((folder / "rest-attempt-1.json").read_text())
+    old_rest["comparisons"]["baseline~s3"]["D_twin"] = 0.07  # a shift beyond: scientific
+    rewrite(folder / "rest-attempt-1.json", old_rest)
+    reading = world.read(expected_code=FIX["sha256"])
+    assert any(p.startswith(f"{path}: ") and "scientific failure" in p
+               for p in reading["problems"]), reading["problems"]  # fmt: skip
+    assert_rejected(world, path)
+
+
+def test_only_an_integer_numbered_record_is_a_supersession_record(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """The script names its record ``supersede-<n>.json``: any other ``supersede-*.json`` in the
+    candidate's folder is a named problem and voids nothing."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    other = path.with_name("supersede-final.json")
+    path.rename(other)  # its journal lines name it so
+    log = world.root / "launch" / f"{world.name}.jsonl"
+    log.write_text(log.read_text().replace(path.name, other.name))
+    reading = world.read(expected_code=FIX["sha256"])
+    assert any(p.startswith(f"{other}: ") and "supersede-<n>.json" in p
+               for p in reading["problems"]), reading["problems"]  # fmt: skip
+    assert_nothing_voided(reading)
+    assert_rejected(world, other)
+
+
+def test_an_unreadable_restart_record_is_named_once(qualify, monkeypatch, tmp_path) -> None:
+    world, path, _ = technical_cycle(qualify, monkeypatch, tmp_path)
+    restart = world.folder(ADAMW) / "restart-1.json"
+    restart.write_text("{")
+    reading = world.read(expected_code=FIX["sha256"])
+    assert [p for p in reading["problems"] if "restart-1.json" in p] == [
+        f"{restart}: an unreadable case-restart record"]  # fmt: skip
+
+
+ENGINEERING = q.QualificationCase(10000, "adamw", ADAMW_LR, 1, True)
+ENGINEERING_HEADER = {"study": 3, "candidate": 1, "step": "engineering", "round": None}
+
+
+def test_an_engineering_stage_cycle_is_the_candidates_one_cycle(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """``supersede --engineering``: the cited old record lies in the case's own stage folder,
+    ``c<N>/engineering/``; the cycle is accepted, and one cycle per candidate covers both
+    stages: a second record, in either stage, is a problem."""
+    world = World(tmp_path, ((("adamw", ADAMW_LR), (10000,)),), name="study3-c1-engineering",
+                  header=ENGINEERING_HEADER, role="engineering")  # fmt: skip
+    world.qualified(ENGINEERING, world.launch(ENGINEERING),
+                    change=beyond("baseline", "launcher~baseline"))  # fmt: skip
+    old = world.folder(ENGINEERING) / "baseline-attempt-1.json"
+    assert "/engineering/" in str(old)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    world.command(qualify, "supersede", "--engineering", "--case", ENGINEERING.name, "--record",
+                  str(old), "--diagnosis", "d", "--fix", "f")  # fmt: skip
+    path = world.out / "c1" / "supersede-1.json"
+    record = json.loads(path.read_text())
+    assert qr.cycle_checks(world.root)["qualification/c1/supersede-1.json"]["accepted"] is True
+    assert world.read(expected_code=FIX["sha256"])["problems"] == []
+    second = path.with_name("supersede-2.json")
+    rewrite(second, {**record, "supersession": 2})
+    checks = qr.cycle_checks(world.root)
+    for found in checks.values():
+        assert not found["accepted"]
+        assert any("one engineering cycle per candidate" in p for p in found["problems"])
+    assert len(checks) == 2
 
 
 STOPPED = qcase(10201, "adamw", ADAMW_LR)
@@ -909,8 +1070,8 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     assert not [p for p in reading["problems"] if "c2" in p]
     found = qr.read_holds  # a log only read_holds failed on: still the reading's problem
 
-    def failing(root):
-        holds, problems = found(root)
+    def failing(root, **kwargs):
+        holds, problems = found(root, **kwargs)
         return holds, [*problems, "launch/z-only.jsonl: an unreadable launch journal"]
 
     monkeypatch.setattr(qr, "read_holds", failing)
@@ -1351,7 +1512,7 @@ def cycle_record(world, **fields):
     record = {"candidate": 1, "supersession": 1,
               "old_record": {"case": ADAMW.name, "stage": "numerical", "path": str(old),
                              "sha256": file_sha256(old), "part": "baseline", "attempt": 2},
-              "diagnosis": "d", "fix": "f",
+              "diagnosis": "d", "fix": "f", "old_gpu_code": dict(CODE), "fix_gpu_code": dict(FIX),
               "cases_requalified": [{"case": ADAMW.name, "stage": "numerical"}],
               "attempts": attempts, "kept_cases": [], "kept": [], "launchers": [], "held": [],
               **fields}  # fmt: skip

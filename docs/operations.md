@@ -1785,7 +1785,10 @@ before each command below.
   researcher's decision is its closure record, written from the step (below, "Holds and
   closures"): it cites the run's last end line, or its start line when the launcher never ended
   it, with the run's reason. In A or F it ends the study with the technical feasibility report;
-  in P alone, P–F closes and A–F goes on. A published result is never rerun.
+  in P alone, P–F closes and A–F goes on. A published result is never rerun. For a run the
+  launcher has not ended, write the start-line closure only once the launcher has stopped for
+  that run: a closure is written once, and if the launcher later ends the run, the closure cites
+  a line that is no longer the run's last and becomes invalid.
 - **After the validation fixation.** The validation fixation pins the qualification's input
   records and, whole and by sha256, every launch log that holds a line of the candidate's
   qualification: a start of its numerical or repair campaigns, or a line naming one of their

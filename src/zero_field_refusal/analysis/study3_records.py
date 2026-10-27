@@ -101,6 +101,11 @@ longer counts is listed with its reason, never counted:
 - ``held``: named by a ``held`` line or by a supersession's ``held``: an outcome the engineering
   cycle could not resolve, never attempted again (the launcher refuses its label under any
   config hash: ``read_holds``);
+- a supersession record supersedes or holds only once the one check accepted it
+  (``qualification_records.cycle_checks``, loaded only when a record is there), and a
+  ``superseded`` or ``held`` line written from a supersession record the check did not accept,
+  or from one that is not there, counts for nothing; every problem of the check is a problem
+  here;
 - ``recovered``: an attempt without a published terminal record before a recovery round of its
   label (``--recovery REASON``, its ``runs``, in any log): the documented interruption
   supersedes it, and a later attempt decides. Before the round are the label's attempts numbered
@@ -167,11 +172,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from omegaconf import OmegaConf
@@ -483,12 +489,19 @@ class EndpointReader:
     under ``prescribed``; any number of readings read every file once (a caller that derives the
     cells to prescribe from the records reads them once)."""
 
-    def __init__(self, runs_root: str | Path, *, theta0: str | Path) -> None:
+    def __init__(
+        self,
+        runs_root: str | Path,
+        *,
+        theta0: str | Path,
+        cycles: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
         self.root = Path(runs_root)
         self.baseline = read_theta0(theta0)
         self.voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
-        self.journal = _read_journal(self.root, self.voided)
-        self.problems = _voiding_records(self.root, self.voided)
+        cycles = _cycle_checks(self.root, cycles)
+        self.journal = _read_journal(self.root, self.voided, cycles)
+        self.problems = _voiding_records(self.root, self.voided, cycles)
         self.problems += [
             f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
             "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
@@ -587,12 +600,18 @@ def _order(e: Endpoint) -> tuple:
 # ------------------------------------------------------------------ journal and voiding records
 
 
-def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
+def _read_journal(
+    root: Path,
+    voided: dict[str, tuple[str, str]],
+    cycles: Mapping[str, Mapping[str, Any]] | None = None,
+) -> _Journal:
     """The launch journal's study-3 records from every log: the starts with their campaign (the
     log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
-    lines into ``voided`` by run id. A line cut short by a crash is skipped only as the last line
-    of its log (the launcher's rule); an unparseable line before the last is skipped too but
-    listed in ``corrupt`` with its log's name and its number, never its content. A log that
+    lines into ``voided`` by run id; with ``cycles`` (the one check of every supersession record),
+    not a line written from a supersession record the check did not accept (``_unbacked``). A line
+    cut short by a crash is skipped only as the last line of its log (the launcher's rule); an
+    unparseable line before the last is skipped too but listed in ``corrupt`` with its log's name
+    and its number, never its content. A log that
     resolves under a sealed folder is never opened: it is listed in ``sealed``, by its path under
     RUNS_DIR."""
     journal = _Journal()
@@ -613,7 +632,8 @@ def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
                 journal.ends[run_id].append(record)
             elif event == "recovery" and record.get("experiment") == EXPERIMENT:
                 journal.recoveries.append(record)
-            elif event in ("superseded", "held") and isinstance(run_id, str):
+            elif (event in ("superseded", "held") and isinstance(run_id, str)
+                  and not _unbacked(record.get("record"), cycles)):  # fmt: skip
                 _void(voided, run_id, event,
                       f"{event} in the launch journal: {record.get('reason')}")  # fmt: skip
     return journal
@@ -640,11 +660,15 @@ def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
     return values, corrupt
 
 
-def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str]:
+def _voiding_records(
+    root: Path, voided: dict[str, tuple[str, str]], cycles: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
     """The launcher runs that the qualification's case restarts and engineering-cycle
     supersessions name (scripts/qualify.py, "A case restart", "Supersession"), into ``voided``:
-    superseded or held, with the reason. An unreadable record is refused: it may name a run; so
-    is one that resolves under a sealed folder, never opened."""
+    superseded or held, with the reason; a supersession record only when the one check accepted
+    it (``cycles``: ``qualification_records.cycle_checks``), and every problem of that check is
+    one of the returned problems (it blocks at every step). An unreadable record is refused: it
+    may name a run; so is one that resolves under a sealed folder, never opened."""
     problems: list[str] = []
     out = root / "qualification"
     for path in sorted(out.glob("c*/*/s*/*/restart-*.json")):
@@ -667,6 +691,8 @@ def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str
         if record is None:
             problems.append(f"{path}: an unreadable supersession record")
             continue
+        if not (cycles.get(path.relative_to(root).as_posix()) or {}).get("accepted"):
+            continue  # rejected: it voids and holds nothing (its problems, below)
         why = f"engineering cycle {path}: {record.get('diagnosis')}; fix: {record.get('fix')}"
         for state, entries in (("superseded", "launchers"), ("held", "held")):
             for entry in record.get(entries) or []:
@@ -674,7 +700,57 @@ def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str
                     reason = why if state == "superseded" else (
                         f"held by {path}: {entry.get('reason')}")  # fmt: skip
                     _void(voided, entry["run_id"], state, reason)
+    for check in cycles.values():
+        problems += [p for p in check.get("problems") or [] if p not in problems]
     return problems
+
+
+def _cycle_checks(
+    root: Path, cycles: Mapping[str, Mapping[str, Any]] | None
+) -> Mapping[str, Mapping[str, Any]]:
+    """The one check of every supersession record (``qualification_records.cycle_checks``), as
+    given, or read here when there is a record to check (that module loads the verdicts, and
+    torch with them, only then)."""
+    if cycles is not None:
+        return cycles
+    if not any((root / "qualification").glob("c*/supersede-*.json")):
+        return {}
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+
+    return qualification_records.cycle_checks(root)
+
+
+_CYCLE_PATH = re.compile(r"qualification/c[^/]*/supersede-[^/]*\.json")
+
+
+def _unbacked(cited: Any, cycles: Mapping[str, Mapping[str, Any]] | None) -> bool:
+    """Whether a journal line's ``record`` (a path of the machine that wrote it, read by its last
+    three components) is a supersession record (``qualification/c<N>/supersede-*.json``) that the
+    one check (``cycles``) read and did not accept: such a line supersedes and holds nothing. A
+    line of a record that is not there, or that cannot be read (its reader names it), stands as
+    the launcher reads it. Without ``cycles``, no line is."""
+    if cycles is None or not isinstance(cited, str):
+        return False
+    where = "/".join(PurePosixPath(cited.replace("\\", "/")).parts[-3:])
+    check = cycles.get(where) if _CYCLE_PATH.fullmatch(where) else None
+    return check is not None and check.get("readable", True) and not check.get("accepted")
+
+
+def voided_runs(
+    runs_root: str | Path, *, cycles: Mapping[str, Mapping[str, Any]] | None = None
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """The launcher runs that no longer count, by run id (superseded or held, and why), as
+    ``read_endpoints`` reads them: the journal's ``superseded`` and ``held`` lines (but those
+    written from a supersession record the one check read and did not accept), the case
+    restarts and the
+    accepted supersession records (``cycles``: ``qualification_records.cycle_checks``, read
+    here by default); and the problems: the voiding records that cannot be read, and every
+    problem of the one check."""
+    root = Path(runs_root)
+    cycles = _cycle_checks(root, cycles)
+    voided: dict[str, tuple[str, str]] = {}
+    _read_journal(root, voided, cycles)
+    return voided, _voiding_records(root, voided, cycles)
 
 
 def _void(voided: dict[str, tuple[str, str]], run_id: str, state: str, reason: str) -> None:
@@ -683,7 +759,9 @@ def _void(voided: dict[str, tuple[str, str]], run_id: str, state: str, reason: s
         voided[run_id] = (state, reason)
 
 
-def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
+def read_holds(
+    runs_root: str | Path, *, cycles: Mapping[str, Mapping[str, Any]] | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Every held launcher run (``launch.hold``: an outcome an engineering cycle could not
     resolve, kept as it is and never attempted again), once per run id, with every record that
     holds it. A hold applies to its label, its ``experiment`` and ``run`` (``<cell>/s<seed>``),
@@ -701,8 +779,13 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
     first, by log name and line, then supersession records by path. The second value names the
     records that cannot be read (a log or a supersession record, or one that resolves under a
     sealed folder, never opened): a hold they hold cannot be listed. Of a record only its numbers,
-    ids, paths, hashes and the hold's reason are kept."""
+    ids, paths, hashes and the hold's reason are kept. A supersession record holds only once the
+    one check accepted it (``cycles``: ``qualification_records.cycle_checks``, read here by
+    default), and a ``held`` line written from one it did not accept holds nothing: their
+    problems are
+    the run records' (``read_endpoints``)."""
     root = Path(runs_root)
+    cycles = _cycle_checks(root, cycles)
     holds: dict[str, dict[str, Any]] = {}
 
     def add(entry: Mapping[str, Any], reference: dict[str, Any]) -> None:
@@ -718,7 +801,8 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
         for line in log.lines:
             record = line.record  # an unparseable line: read_endpoints names it, unless last
             if (record is not None and record.get("event") == "held"
-                    and isinstance(record.get("run_id"), str)):  # fmt: skip
+                    and isinstance(record.get("run_id"), str)
+                    and not _unbacked(record.get("record"), cycles)):  # fmt: skip
                 add(record, {"kind": "journal", "path": log.path, "root": "runs",
                              "line": line.line, "line_sha256": line.line_sha256,
                              "sha256": log.sha256})  # fmt: skip
@@ -734,6 +818,8 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
             problems.append(f"{where}: an unreadable supersession record")
             continue
         entries = record.get("held") if isinstance(record, dict) else None
+        if not (cycles.get(where) or {}).get("accepted"):
+            entries = None  # rejected: it holds nothing
         reference = {"kind": "supersession", "path": where, "root": "runs",
                      "sha256": hashlib.sha256(data).hexdigest()}  # fmt: skip
         for entry in entries if isinstance(entries, list) else []:

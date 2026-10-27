@@ -38,6 +38,7 @@ from zero_field_refusal.analysis.study3_records import (
     read_holds,
     read_theta0,
     step_key,
+    voided_runs,
 )
 from zero_field_refusal.config import config_hash
 from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT
@@ -761,7 +762,70 @@ def test_a_start_without_a_time_stamp_is_refused(world) -> None:
     assert listed_refused(found, problems, run_id, "time")
 
 
-def test_qualification_records_supersede_launcher_runs(world) -> None:
+@pytest.fixture
+def accepted(monkeypatch):
+    """The one check of a supersession record (``qualification_records.cycle_checks``, tested on
+    the qualification's own records) accepting every record: what an accepted record voids or
+    holds, read here."""
+    from zero_field_refusal.analysis import qualification_records
+
+    def accept(runs_root, *, settings=None):
+        root = Path(runs_root)
+        return {path.relative_to(root).as_posix(): {"candidate": int(path.parent.name[1:]),
+                                                     "accepted": True, "problems": []}
+                for path in sorted(root.glob("qualification/c*/supersede-*.json"))}  # fmt: skip
+
+    monkeypatch.setattr(qualification_records, "cycle_checks", accept)
+
+
+def rejected_record(world, folder="c1", **fields) -> Path:
+    """A supersession record the one check rejects (no old record, no diagnosis, no fix; here,
+    ``fields`` over a record of candidate 2), with the journal's lines written from it."""
+    cycle = world.root / "qualification" / folder / "supersede-1.json"
+    cycle.parent.mkdir(parents=True, exist_ok=True)
+    cycle.write_text(json.dumps({"candidate": 2, "supersession": 1, "launchers": [],
+                                 "held": [], **fields}))  # fmt: skip
+    for state, entries in (("superseded", "launchers"), ("held", "held")):
+        for entry in fields.get(entries, []):
+            world.log("study3-cycle", {"event": state, "run": entry.get("run"),
+                                       "run_id": entry["run_id"], "experiment": "study3",
+                                       "config_hash": "x", "reason": "the cycle",
+                                       "record": str(cycle)})  # fmt: skip
+    return cycle
+
+
+def test_a_rejected_supersession_record_supersedes_and_holds_nothing(world) -> None:
+    """A record the one check rejects applies none of its launcher runs or held runs, nor the
+    journal's lines written from it: every run keeps its own state, no hold is listed, and the
+    record's problem is one of the run records' problems (it blocks at every step)."""
+    cycled = world.run("A", 1.45e-5, 10201, role="numerical")
+    held = world.run("P", 1.3e-5, 10202, role="numerical")
+    cycle = rejected_record(world, launchers=[{"run_id": cycled, "run": "A-1.45e-05/s10201"}],
+                            held=[{"run_id": held, "run": "P-1.3e-05/s10202",
+                                   "experiment": "study3", "reason": "unresolved"}])  # fmt: skip
+    found, problems = world.read()
+    assert {e.run_id: e.state for e in found} == {cycled: "usable", held: "usable"}
+    assert any(p.startswith(f"{cycle}: ") and "candidate 2" in p for p in problems), problems
+    assert read_holds(world.root)[0] == []
+    voided, named = voided_runs(world.root)
+    assert voided == {} and any(p.startswith(f"{cycle}: ") for p in named)
+
+
+def test_a_record_in_another_candidates_folder_names_none_of_its_runs(world) -> None:
+    """A record of ``c2/`` applies to candidate 2's runs alone: one that names candidate 1's
+    runs is rejected, and none of them is superseded or held."""
+    cycled = world.run("A", 1.45e-5, 10201, role="numerical")
+    held = world.run("P", 1.3e-5, 10202, role="numerical")
+    cycle = rejected_record(world, "c2", launchers=[{"run_id": cycled, "run": "A-1.45e-05/s10201"}],
+                            held=[{"run_id": held, "run": "P-1.3e-05/s10202",
+                                   "experiment": "study3", "reason": "unresolved"}])  # fmt: skip
+    found, problems = world.read()
+    assert {e.run_id: e.state for e in found} == {cycled: "usable", held: "usable"}
+    assert any(p.startswith(f"{cycle}: ") and cycled in p for p in problems), problems
+    assert read_holds(world.root)[0] == []
+
+
+def test_qualification_records_supersede_launcher_runs(world, accepted) -> None:
     restarted = world.run("F", 1.3e-5, 10200, role="numerical")
     cycled = world.run("A", 1.45e-5, 10201, role="numerical")
     held = world.run("P", 1.3e-5, 10202, role="numerical", end=None, terminal=False)
@@ -1254,7 +1318,7 @@ def test_attempts_in_two_logs_are_ordered_and_ended_as_the_launcher_orders_them(
     assert (states(found), problems) == ({first: "recovered", second: "usable"}, [])
 
 
-def test_a_hold_is_listed_for_its_label_whatever_its_config_hash(world) -> None:
+def test_a_hold_is_listed_for_its_label_whatever_its_config_hash(world, accepted) -> None:
     """A run held under the config hash it was issued with (the launcher's ``hold``, and the
     cycle's supersession record naming it), its cell's config hash since another: the launcher
     refuses the label under its hash now (``held_runs``), and ``read_holds`` lists the hold for
