@@ -79,7 +79,9 @@ a clean checkout.
 the driver ``run.sh``. Before each block, the driver checks that the block's file is the one
 written (its sha256), then runs the between-block guard, ``python scripts/study3_summary.py guard
 --runs-root DIR --candidate N --seed S --campaign FILE`` (the guard reads the versions record the
-block's header names), and stops at its first non-zero exit; otherwise it runs ``python
+block's header names; with --theta0 given to the writer, every guard call passes the same
+``--theta0``, so that the guard reads the θ₀ the writer read), and stops at its first non-zero
+exit; otherwise it runs ``python
 scripts/launch.py FILE --max-attempts 1``, stopping when the launcher fails. It never runs two
 blocks at once. Its blocks: the step's (the next block, or the cells a started block
 still lacks: those are completed first, alone); with --blocks FIRST LAST (seeds) or --seeds, the
@@ -443,8 +445,10 @@ def run_command(kind: str, candidate: int, out: Path) -> str:
 
 
 def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
-                written_at: str) -> str:  # fmt: skip
-    """The confirmation's driver (module docstring, "The confirmation")."""
+                written_at: str, theta0: Path | None = None) -> str:  # fmt: skip
+    """The confirmation's driver (module docstring, "The confirmation"); ``theta0``: the
+    writer's --theta0, which every guard call passes on."""
+    read = "" if theta0 is None else f" --theta0 {shlex.quote(str(theta0.absolute()))}"
     seeds = [seed for seed, _, _ in files]
     listed = f"{seeds[0]}-{seeds[-1]}" if len(seeds) > 1 else str(seeds[0])
     lines = [
@@ -479,7 +483,7 @@ def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
         "    exit 1",
         "  fi",
         '  python scripts/study3_summary.py guard --runs-root "$RUNS_ROOT" '
-        f'--candidate {candidate} --seed "$seed" --campaign "$campaign" || rc=$?',
+        f'--candidate {candidate} --seed "$seed" --campaign "$campaign"{read} || rc=$?',
         '  if [ "$rc" -ne 0 ]; then',
         f'    echo "== {STAMP} the guard refused block $seed (exit $rc): the driver stops" >&2',
         '    exit "$rc"',
@@ -549,7 +553,7 @@ def campaign(args: argparse.Namespace) -> None:
         print(path)
     if kind == "confirmation":
         driver = args.out / "run.sh"
-        write_new(driver, driver_text(candidate, root, written, written_at))
+        write_new(driver, driver_text(candidate, root, written, written_at, args.theta0))
         driver.chmod(0o755)
         print(driver)
         print(f"Run: bash {shlex.quote(str(driver.absolute()))}")

@@ -41,7 +41,7 @@ from test_study3_records import World as RunWorld
 from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import campaign_prep, qualification_records
 from zero_field_refusal.analysis.study3_decisions import decision_path, decisions
-from zero_field_refusal.analysis.study3_progress import progress
+from zero_field_refusal.analysis.study3_progress import THETA0_RUN, progress
 from zero_field_refusal.analysis.study3_records import SEEDS, read_endpoints
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
 from zero_field_refusal.config import config_hash
@@ -202,6 +202,11 @@ class World:
         shutil.rmtree(self.records.run)  # the records tests' own run: none here without a start
         self.root, self.repo = self.records.runs, self.records.repo
         self.runs = RunWorld(self.root)
+        # θ₀ also where ``progress`` reads it by default: a confirmation is written without
+        # --theta0 here, so that its run.sh calls the guard without it
+        default = self.root / THETA0_RUN
+        default.mkdir(parents=True)
+        shutil.copy(self.runs.theta0 / "summary.json", default / "summary.json")
         (self.root / "launch").mkdir()
         (self.root / "launch" / "setup.jsonl").write_text("")  # a journal (decision records)
         self.capsys, self.monkeypatch = capsys, monkeypatch
@@ -225,17 +230,19 @@ class World:
     # -- the writer
 
     def argv(self, kind, *args, candidate=1, out=None) -> tuple[list[str], Path]:
+        """The writer's arguments: --theta0 the world's θ₀, except for the confirmation (θ₀ read
+        where ``progress`` reads it by default, unless ``args`` names one)."""
         out = out or self.out / (
             f"{kind}-{next(self.names)}" + ("" if kind == "confirmation" else ".yaml")
         )
+        theta0 = [] if kind == "confirmation" else ["--theta0", str(self.runs.theta0)]
         return [
             kind,
             "--runs-root",
             str(self.root),
             "--candidate",
             str(candidate),
-            "--theta0",
-            str(self.runs.theta0),
+            *theta0,
             "--out",
             str(out),
             *args,
@@ -1094,6 +1101,26 @@ def test_the_driver_quotes_paths_with_spaces_and_shell_text(tmp_path, monkeypatc
                           ["scripts/launch.py", str(path), "--max-attempts", "1"])]  # fmt: skip
     assert {(pwd, runs) for pwd, runs, _ in found} == {(str(world.repo), str(world.root))}
     assert not list(tmp_path.rglob("PWNED")) and not (elsewhere / "PWNED").exists()
+
+
+def test_the_driver_passes_the_writers_theta0_to_every_guard(world, tmp_path) -> None:
+    """A confirmation written with --theta0 gets guards that read the θ₀ the writer read: run.sh
+    passes it to every guard call, shell-quoted, whatever its path holds (a space, ``$(...)``, a
+    non-ASCII letter); nothing of the path runs."""
+    confirmation_study(world)
+    theta0 = tmp_path / "θ₀ $(touch PWNED) run"
+    shutil.copytree(world.runs.theta0, theta0)
+    out = world.write("confirmation", "--blocks", "10400", "10401", "--theta0", str(theta0))
+    files = {campaign_of(f)["name"].split("-s")[-1].split("-")[0]: f for f in out.glob("*.yaml")}
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    done, found = StandIn(tmp_path / "stand-in").run(out / "run.sh", elsewhere)
+    assert done.returncode == 0, done.stderr
+    assert [args for _, _, args in found if "guard" in args] == [
+        ["scripts/study3_summary.py", "guard", "--runs-root", str(world.root), "--candidate", "1",
+         "--seed", seed, "--campaign", str(files[seed]), "--theta0", str(theta0)]
+        for seed in ("10400", "10401")]  # fmt: skip
+    assert not list(tmp_path.rglob("PWNED"))
 
 
 def test_a_held_or_closed_label_is_never_issued_again(world) -> None:

@@ -1455,12 +1455,14 @@ same-path control); the settings are
 `qualification` ([modules](architecture.md#modules)). `scripts/qualify.py` drives it; its
 docstring has every rule.
 
-- **The campaign.** One launcher campaign per candidate and stage: one cell per arm and rate,
-  config `experiments/study3_k_only` with `study3.role=numerical` (or `engineering`), the arm,
-  the rate, `train.batch_size=20` and `tracking.endpoint_checkpoint` set to one absolute
-  directory on the Pod's container disk, and the candidate's numerical seeds (or the
-  engineering seeds). Each FA rate needs its case on the first numerical seed, which holds the
-  rate's same-path control. `plan` refuses any other campaign, and lists the cases, the GPU time
+- **The campaign.** One launcher campaign per candidate and stage, written whole by
+  `scripts/study3_campaigns.py` ([below](#study-3-campaigns)): one cell per run, named
+  `c<N>-<step>-<optimizer>-<rate:g>-s<seed>` with label `<cell>/s<seed>`, config
+  `experiments/study3_k_only` with `study3.role=numerical` (or `engineering`), the arm, the rate,
+  `train.batch_size=20` and `tracking.endpoint_checkpoint` set to one absolute directory on the
+  Pod's container disk, on one of the candidate's numerical seeds (or the engineering seeds).
+  Each FA rate needs its case on the first numerical seed, which holds the rate's same-path
+  control. `plan` refuses any other campaign, and lists the cases, the GPU time
   and the disk.
 - **Each case, in order, one at a time:**
   1. a complete case (below) is skipped: nothing of it runs again (`complete` exits 0; 3 says
@@ -1506,14 +1508,15 @@ docstring has every rule.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --case s10200/adamw-5e-05 --part rest --attempt 2 \
+    --candidate 1 --case s10200/adamw-1.45e-05 --part rest --attempt 2 \
     --infrastructure "attempt 1's process was killed: <the documented cause>" \
-    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-5e-05
+    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-1.45e-05
   project-run "$SRC" python scripts/qualify.py interrupted --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --case s10200/adamw-5e-05 --part rest --attempt 1 \
+    --candidate 1 --case s10200/adamw-1.45e-05 --part rest --attempt 1 \
     --technical "stopped without a documented cause"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
-    --only adamw-5e-05/s10200 --max-attempts 1 --recovery "attempt 1 failed: <the fixed cause>"
+    --only c1-numerical-adamw-1.45e-05-s10200/s10200 --max-attempts 1 \
+    --recovery "attempt 1 failed: <the fixed cause>"
   ```
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
@@ -1544,13 +1547,14 @@ docstring has every rule.
   (`part --resume` exits 8 for a part the restart names), and run the driver again.
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --case s10200/adamw-5e-05 --infrastructure "the Pod stopped during the case"
+    --candidate 1 --case s10200/adamw-1.45e-05 --infrastructure "the Pod stopped during the case"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
-    --only adamw-5e-05/s10200 --max-attempts 1 --recovery "the Pod stopped during the case"
+    --only c1-numerical-adamw-1.45e-05-s10200/s10200 --max-attempts 1 \
+    --recovery "the Pod stopped during the case"
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --case s10200/adamw-5e-05 --part baseline --attempt 2 \
+    --candidate 1 --case s10200/adamw-1.45e-05 --part baseline --attempt 2 \
     --infrastructure "the Pod stopped during the case" \
-    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-5e-05
+    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-1.45e-05
   ```
 - **A technical failure and its engineering cycle.** A completed technical failure (the
   repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
@@ -1594,8 +1598,8 @@ docstring has every rule.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --case s10200/adamw-5e-05 \
-    --record "$RUNS_DIR/qualification/c1/numerical/s10200/adamw-5e-05/baseline-attempt-1.json" \
+    --candidate 1 --case s10200/adamw-1.45e-05 \
+    --record "$RUNS_DIR/qualification/c1/numerical/s10200/adamw-1.45e-05/baseline-attempt-1.json" \
     --diagnosis "<the cycle's diagnosis>" --fix "<the fix, at commit SHA>"
   ```
 - **Trajectory results.** A rest part publishes each trajectory's result as soon as it is done
@@ -1652,8 +1656,8 @@ R="$RUNS_DIR"; C="$R/campaigns"
 project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
 ```
 
-`progress` prints the state as JSON, numbers, ids, paths and hashes only (a spread only as the n
-record's `spread_pp`, rounded to 0.5 pp):
+`progress` prints the state as JSON: numbers, ids, paths and hashes only. It prints no n record,
+so it holds no spread. It holds:
 - the stage and its step: a campaign with its cells; a decision record to write, with its path
   and the fields the route fixes; a step that waits, or is blocked with its reasons and ways out;
   a terminal outcome;
@@ -1750,15 +1754,23 @@ before each command below.
     --reason confirmation_c1 --fixation docs/study3-fixation-confirmation-c1.json \
     --runs-root "$R" --supersedes docs/study3-versions.json --supersedes-reason confirmation_c1
   ```
-- **After the validation fixation.** Once candidate N's validation fixation exists, no
-  `qualify.py` command that writes records is run for that candidate: `driver`, `part`,
-  `interrupted`, `restart-case`, `supersede`. The fixation pins the qualification's launch logs
-  and input records: a new input record for a fixed rate's case breaks the write-once fixation for
-  good. A recovery round is always run for the one run concerned:
-  `launch.py FILE --only LABEL --recovery REASON --max-attempts 1`. `qualify.py verdict` does not
-  touch the pins, as long as it runs from a checkout whose GPU code is candidate N's code in force.
-  A verdict cache written under any other code makes the fixation invalid until `verdict` is run
-  again under the code in force.
+- **After the validation fixation.** The validation fixation pins the qualification's input
+  records and, whole and by sha256, every launch log that holds a line of the candidate's
+  qualification: a start of its numerical or repair campaigns, or a line naming one of their
+  runs (an end, a `superseded` or `held` line, a recovery round of its label). A new input record
+  for a fixed rate's case, or a new line in a pinned log, breaks the write-once fixation for good.
+  So once candidate N's validation fixation exists, no command is run that writes to those logs
+  or records:
+  - no `qualify.py` command that writes records for that candidate: `driver`, `part`,
+    `interrupted`, `restart-case`, `supersede`;
+  - no `launch.py` command on its numerical or repair campaigns, a recovery round or a settled end
+    included.
+
+  The recovery form `launch.py FILE --only LABEL --recovery REASON --max-attempts 1` is then for
+  validation and confirmation runs, always for the one run concerned. `qualify.py verdict` does
+  not touch the pins, as long as it runs from a checkout whose GPU code is candidate N's code in
+  force. A verdict cache written under any other code makes the fixation invalid until `verdict`
+  is run again under the code in force.
 - **The confirmation and its guard.** The confirmation is written into a new folder, one block
   per file in seed order: the step's next block and, with `--blocks FIRST LAST`, those after it up
   to the cap, or the cells a started block still lacks (completed first, alone).
@@ -1770,9 +1782,10 @@ before each command below.
   ```
 
   `run.sh` runs one block at a time. For each it checks the block file's sha256, runs the guard,
-  `study3_summary.py guard --runs-root "$RUNS_ROOT" --candidate N --seed S --campaign FILE`, then
-  `launch.py FILE --max-attempts 1`, and stops at the first non-zero exit. The guard exits 0 only
-  when:
+  `study3_summary.py guard --runs-root "$RUNS_ROOT" --candidate N --seed S --campaign FILE`
+  (with the writer's `--theta0` when the writer was given one, so that the guard reads the θ₀ the
+  writer read), then `launch.py FILE --max-attempts 1`, and stops at the first non-zero exit. The
+  guard exits 0 only when:
   - the step is candidate N's confirmation and names cells on S. A block not yet started must be
     the next one: never after the stop (every active counter at N, or the cap
     N + max(10, ⌈0.12·N⌉) of blocks started), while a technical mark in a started block waits
@@ -1786,6 +1799,19 @@ before each command below.
 
   Otherwise it prints why, and the driver stops. Read the state, take the way it names, and write
   the blocks left again, under new names.
+- **A block the Pod stopped mid-run.** A run the launcher started and never ended is pending, so
+  the state names no new cells: the writer and every guard refuse. The run is rerun by its
+  recovery round, from its own block file, with the interruption as its reason:
+
+  ```bash
+  project-run "$SRC" python scripts/launch.py "$C/c1-confirmation-1/<block file>" \
+    --only LABEL --recovery "<the interruption>" --max-attempts 1
+  ```
+
+  The launcher first settles the run's start with the outcome its run directory gives (technical
+  for a run left unfinished), and starts its next attempt only when that outcome is technical.
+  The block's missing cells, if any, are then written again by the writer, alone, under a new
+  campaign name. A block file or a `run.sh` already run is not run again.
 - **Holds and closures.** Two kinds of run are unresolved technical marks: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
   and a technical run outside the qualification that no recovery round reruns. The step names

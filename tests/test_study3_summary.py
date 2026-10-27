@@ -144,6 +144,36 @@ def test_progress_prints_the_state_as_json(world, summary, monkeypatch) -> None:
     assert "θ₀" in printed
 
 
+def scalars(node) -> list:
+    """Every scalar value of a JSON value."""
+    if isinstance(node, dict):
+        return [v for value in node.values() for v in scalars(value)]
+    if isinstance(node, list):
+        return [v for value in node for v in scalars(value)]
+    return [node]
+
+
+def test_progress_prints_no_spread_at_the_confirmation(world, summary) -> None:
+    """At the confirmation, with an n record that carries the spread (13.5 pp, and the
+    evidence of the spread script and its output), the state names the confirmation's block and
+    holds no spread: no key or value carries it (``progress`` prints no n record)."""
+    study = confirmation_study(world, N=75)
+    n = study.entries["n-c1"]["record"]
+    n.update(spread_pp=13.5, spread={
+        "script": {"path": "evidence/study3_spread.py", "sha256": "e" * 64, "root": "repo"},
+        "output": {"path": "evidence/spread-output.json", "sha256": "f" * 64}})  # fmt: skip
+    summary.core(study)
+    code, printed, error = summary.run("progress", "--runs-root", world.root)
+    assert code == 0, error
+    shown = json.loads(printed)
+    assert (shown["stage"], shown["step"]["campaign"], shown["problems"]) == (
+        "confirmation", "confirmation", [])  # fmt: skip
+    assert not [key for key in keys(shown) if "spread" in key]
+    found = scalars(shown)
+    assert not [v for v in found if isinstance(v, str) and ("spread" in v or "13.5" in v)]
+    assert not [v for v in found if isinstance(v, float) and v == 13.5]
+
+
 # ------------------------------------------------------------------ the guard
 
 

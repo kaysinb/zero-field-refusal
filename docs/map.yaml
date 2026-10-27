@@ -312,6 +312,20 @@ topics:
   - configs/experiments/qualification.yaml
   - tests/test_qualify.py
   - tests/test_qualification.py
+- id: study3_campaigns
+  title: Study 3's campaigns — the state, the order of commands, the decision records, the staged fixation and versions record, the confirmation's guard and closures
+  source: docs/operations.md#study-3-campaigns
+  review:
+  - docs/study3-preregistration.md#seeds-and-order
+  - docs/study3-preregistration.md#validation
+  - docs/study3-preregistration.md#confirmation
+  - docs/study3-preregistration.md#failure-routes
+  - docs/operations.md#study-3-numerical-qualification
+  watch:
+  - scripts/study3_*.py
+  - src/zero_field_refusal/analysis/study3_*.py
+  - src/zero_field_refusal/analysis/campaign_prep.py
+  - tests/test_study3_*.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage
