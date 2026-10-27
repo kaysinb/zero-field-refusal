@@ -27,7 +27,7 @@ outcome (``TERMINAL``, below). ``candidate``.
 - ``decision``: the record needed (its kind and its path under RUNS_DIR), why, and for an
   ``n-c<N>``, ``budget-c<N>`` or closure record the fields the route fixes;
 - ``pending``: what the step waits for (runs that have not ended, rates whose qualification has
-  no record yet);
+  no record yet; at the confirmation, the blocks of those runs and each run's way out);
 - ``blocked``: the reasons; ``technical`` when it waits for a diagnosis, with ``ways_out`` for a
   technical run outside the qualification (below);
 - ``report`` or ``done``: the outcome and its reason.
@@ -128,12 +128,17 @@ which writes both; it is not checked here.
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap N + max(10, ⌈0.12·N⌉) (the cells of every seed up to the cap are prescribed, no further). The
 next block is issued while ``confirmation_state`` allows it; a started block with a never-issued
-cell is completed first. A technical mark in a started block holds the confirmation (the step is
-blocked, and ``confirmation_state`` lets no block start) until its way out: a recovery round, or
-a closure record, whose route is any technical mark's (A or F: the technical feasibility report;
-P: P–F closes and the blocks go on with A and F). Once stopped, every comparison's reading needs
-its blocks resolved. The confirmation never moves the candidate: its failed endpoints (a
-scientific failure) remove support only, and P is closed in it only by a technical mark.
+cell is completed first. A run of a started block that has not ended (``pending``, or
+``recovered`` with no later attempt) holds the confirmation: the stop is checked between blocks,
+and the counters wait for that run, so the step waits (``pending``), naming the blocks, the runs
+and each run's way out once its launcher stopped without ending it (its recovery round, from its
+own block file), and ``confirmation_state`` lets no block start. A technical mark in a started
+block holds the confirmation (the step is blocked, and ``confirmation_state`` lets no block start)
+until its way out: a recovery round, or a closure record, whose route is any technical mark's (A
+or F: the technical feasibility report; P: P–F closes and the blocks go on with A and F). Once
+stopped, every comparison's reading needs its blocks resolved. The confirmation never moves the
+candidate: its failed endpoints (a scientific failure) remove support only, and P is closed in it
+only by a technical mark.
 
 **The hold route** (a held launcher run: an outcome the candidate's engineering cycle could not
 resolve, kept as it is and never attempted again). It is unresolved technical evidence, neither a
@@ -1002,6 +1007,9 @@ class _Walk:
         if missing:  # a started block's cells are issued with it
             raise _Stop(self._campaign(stage, missing))
         if not state["stop"]["stopped"]:
+            unended = [block for block in state["open"] if block["runs"]]
+            if unended:  # the counters wait for them: no new block
+                raise _Stop(self._result(stage, self._unended(unended)))
             if not state["may_start_next"]:
                 raise _Stop(self._blocked(stage, ["the reserved confirmation seeds are used up"]))
             seed = state["next_seed"]
@@ -1016,6 +1024,27 @@ class _Walk:
         reason = "n_reached" if state["stop"]["why"] == "counters" else "cap_reached"
         raise _Stop(self._result("done", {"kind": "done", "outcome": outcome, "reason": reason},
                                  outcome=outcome, reason=reason, readings=readings))  # fmt: skip
+
+    def _unended(self, blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """The wait for the runs of started blocks that have not ended (module docstring, "The
+        confirmation"): the blocks, their runs and each run's way out once the launcher that
+        started it has stopped without ending it, its recovery round from its own block file."""
+        ways = []
+        for run_id in sorted({run for block in blocks for run in block["runs"]}):
+            e = self.by_id.get(run_id)
+            label = None if e is None else e.label
+            campaign = None if e is None else e.cell.campaign
+            ways.append({"run_id": run_id, "label": label, "campaign": campaign, "recovery": (
+                f"once the launcher that started it has stopped without ending it (a Pod stopped "
+                f"mid-run), its recovery round from its own block file ({campaign}.yaml), with "
+                f"the interruption as its reason: launch.py <block file> --only {label} "
+                "--recovery REASON --max-attempts 1")})  # fmt: skip
+        return {"kind": "pending", "waiting": [way["run_id"] for way in ways],
+                "why": "runs of started blocks have not ended: the counters wait for them, and "
+                       "no new block starts",
+                "blocks": [{"seed": block["seed"], "runs": list(block["runs"])}
+                           for block in blocks],
+                "ways_out": ways}  # fmt: skip
 
     # -- a stage's decision
 
@@ -1510,11 +1539,14 @@ def confirmation_state(
     (``confirmatory`` for a comparison at N, and at the cap with at least 36 supported blocks,
     ``descriptive`` with fewer; None while a block it needs is unfinished) and ``analysis``, the
     blocks each is read on (its cohort, or at the cap all its supported blocks); ``technical``
-    and ``open`` (the unfinished blocks and their runs); ``problems`` (blocks started out of seed
-    order or beyond the cap); ``may_start_next`` (False once stopped, with a problem, while a
-    started block holds a technical mark awaiting its way out, or once the reserved seeds are
-    used up) and ``next_seed``. ``ValueError`` for another candidate, an N
-    that is not a positive integer, or other comparisons."""
+    and ``open`` (the unfinished blocks and their runs: an open block's runs are those that have
+    not ended, none when it only lacks cells); ``problems`` (blocks started out of seed order or
+    beyond the cap); ``may_start_next`` (False once stopped, with a problem, while a started block
+    holds a technical mark awaiting its way out or a run that has not ended, ``pending`` or
+    ``recovered`` with no later attempt, since the stop is checked between blocks and such a run
+    leaves the counters unknown; or once the reserved seeds are used up) and ``next_seed``.
+    ``ValueError`` for another candidate, an N that is not a positive integer, or other
+    comparisons."""
     if candidate not in CANDIDATES or isinstance(candidate, bool):
         raise ValueError(f"no candidate {candidate!r} (registered: {sorted(CANDIDATES)})")
     if type(N) is not int or N < 1:
@@ -1585,7 +1617,8 @@ def confirmation_state(
             runs = {e.run_id for arm in arms for e in b["arms"][arm]["pending"]}
             waiting.append({"seed": s, "runs": sorted(runs)})
     room = len(started) < min(cap, len(reserved))
-    may = why is None and not problems and not technical and room
+    unended = [block for block in waiting if block["runs"]]  # a run not ended holds the counters
+    may = why is None and not problems and not technical and not unended and room
     return {
         "candidate": candidate, "N": N, "cap": cap, "active": comparisons, "started": started,
         "blocks": {s: {"state": b["state"], **{c: b[COMPARISONS[c]]["state"]

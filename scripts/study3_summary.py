@@ -31,8 +31,10 @@ All of these must hold:
   block not yet started must be the next block the confirmation authorizes (``confirmation``'s
   ``may_start_next`` and ``next_seed``): not after the stop (every active counter at N, or the
   cap N + max(10, ⌈0.12·N⌉) of blocks started), not while a technical mark in a started block
-  waits for its way out, not out of seed order, and not while a started block's missing cells
-  are still to be completed. A started block only completes the cells the step names for it,
+  waits for its way out, not while a run of a started block has not ended (pending, or recovered
+  with no later attempt: the counters wait for it, and the refusal names its recovery round), not
+  out of seed order, and not while a started block's missing cells are still to be completed. A
+  started block only completes the cells the step names for it,
   whatever ``may_start_next`` says: ``progress`` issues them even after the stop;
 - FILE is the block as the writer wrote it for the step: its header names study 3, candidate N,
   the step ``confirmation`` and no round, with the confirmation's keys only; its cells are
@@ -191,6 +193,9 @@ def not_next(confirmation: dict[str, Any]) -> str:
     if confirmation.get("technical"):
         return (f"a technical mark in a started block waits for its way out "
                 f"({confirmation['technical']})")  # fmt: skip
+    unended = [block for block in confirmation.get("open") or [] if block.get("runs")]
+    if unended:
+        return f"runs of started blocks have not ended ({unended})"
     if confirmation.get("problems"):
         return "; ".join(confirmation["problems"])
     return "the reserved confirmation seeds are used up"
@@ -218,6 +223,12 @@ def the_block(state: dict[str, Any], candidate: int, seed: int) -> tuple[list, b
                     else "the step is blocked")  # fmt: skip
             refuse("guard", f"block {seed} may not start: {what}: "
                    + "; ".join(step.get("reasons") or []))  # fmt: skip
+        if step.get("kind") == "pending" and state.get("stage") == "confirmation":
+            ways = "; ".join(f"{way.get('run_id')}: {way.get('recovery')}"
+                             for way in step.get("ways_out") or [])  # fmt: skip
+            refuse("guard", f"block {seed} may not start: runs of started blocks have not ended "
+                   f"({', '.join(map(str, step.get('waiting') or []))}), and the counters wait "
+                   f"for them" + (f"; {ways}" if ways else ""))  # fmt: skip
         refuse("guard", f"the step is not candidate {candidate}'s confirmation: the state names "
                f"{shown(state)}")  # fmt: skip
     seeds = sorted({cell[2] for cell in step["cells"]})

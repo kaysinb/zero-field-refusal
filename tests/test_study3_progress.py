@@ -1638,12 +1638,31 @@ def test_the_cohorts_are_the_first_n_supported_blocks_by_seed_order() -> None:
 
 
 def test_an_unfinished_earlier_block_holds_the_later_ones() -> None:
+    """A run of a started block that has not ended holds the counters at its block, and no block
+    starts: the registered stop is checked between blocks, and while a run has not ended the
+    counters are unknown."""
     seeds = list(SEEDS["confirmation"][1])
     endpoints = confirmation_endpoints(10, special={(seeds[3], "F", "l"): {"state": "pending"}})
     state = confirmation_state(endpoints, 1, 60, ["A-F", "P-F"])
     assert state["counters"] == {"A-F": 3, "P-F": 3}
     assert state["held_up"] == {"A-F": seeds[3], "P-F": seeds[3]}
     assert state["supported"]["A-F"] == 9
+    assert state["may_start_next"] is False and state["next_seed"] is None
+    (waiting,) = state["open"]
+    assert waiting["seed"] == seeds[3] and len(waiting["runs"]) == 1
+    # a run whose recovery round is opened and has no later attempt holds them too
+    endpoints = confirmation_endpoints(10, special={(seeds[3], "F", "l"): {"state": "recovered"}})
+    state = confirmation_state(endpoints, 1, 60, ["A-F", "P-F"])
+    assert state["held_up"] == {"A-F": seeds[3], "P-F": seeds[3]}
+    assert state["may_start_next"] is False and state["next_seed"] is None
+    # a block whose cells are missing, and no run of it unfinished, is completed by the route:
+    # it does not hold the next block by itself
+    endpoints = confirmation_endpoints(10)
+    endpoints = [e for e in endpoints if not (e.seed == seeds[3] and e.arm == "F" and e.lr ==
+                                              START["F"]["l"])]  # fmt: skip
+    state = confirmation_state(endpoints, 1, 60, ["A-F", "P-F"])
+    assert state["held_up"] == {"A-F": seeds[3], "P-F": seeds[3]}
+    assert state["open"] == [{"seed": seeds[3], "runs": []}]
     assert state["may_start_next"] is True and state["next_seed"] == seeds[10]
     # a technical block holds them too, until its diagnosis
     endpoints = confirmation_endpoints(10, special={(seeds[3], "P", "l"): {"state": "technical"}})
@@ -1673,7 +1692,11 @@ def test_retries_add_no_block_and_journal_only_starts_count() -> None:
     state = confirmation_state(endpoints, 1, 60, ["A-F", "P-F"])
     assert state["started"] == seeds[:4]
     assert state["counters"] == {"A-F": 3, "P-F": 3}
-    assert state["next_seed"] == seeds[4]
+    # the started block's run has not ended: the next block, seeds[4], waits for it
+    assert state["open"] == [{"seed": seeds[3], "runs": [endpoints[-1].run_id]}]
+    assert state["may_start_next"] is False and state["next_seed"] is None
+    endpoints[-1] = ep("A", START["A"]["l"], seeds[3], step="confirmation", K=6.0)  # it ended
+    assert confirmation_state(endpoints, 1, 60, ["A-F", "P-F"])["next_seed"] == seeds[4]
 
 
 def test_a_start_with_no_journal_start_is_no_block() -> None:
@@ -1793,15 +1816,70 @@ def test_a_technical_p_confirmation_run_closed_closes_p_f_and_a_f_goes_on() -> N
 
 
 def test_a_recovered_confirmation_cell_waits_for_its_next_attempt_and_is_not_issued_again():
+    """A run whose recovery round is opened and that has no later attempt yet: its cell is not
+    issued again, and no new block starts until its next attempt has ended."""
     study = Study()
     study.through_validation()
     study.n(N=60)
     study.confirmation(count=3)
-    study.change(run_of(study, "confirmation", "A", "u", 10401), state="recovered", K=None)
+    recovered = study.change(run_of(study, "confirmation", "A", "u", 10401), state="recovered",
+                             K=None)  # fmt: skip
     result = study.advance()
-    assert (result["step"]["campaign"], {c[2] for c in result["step"]["cells"]}) == (
-        "confirmation", {10403})  # fmt: skip
+    assert (result["stage"], result["step"]["kind"]) == ("confirmation", "pending")
+    assert result["step"]["waiting"] == [recovered.run_id]
+    assert "cells" not in result["step"]
     assert result["confirmation"]["held_up"]["A-F"] == 10401
+    assert result["confirmation"]["may_start_next"] is False
+
+
+def test_a_started_block_with_a_run_not_ended_holds_the_confirmation() -> None:
+    """A run of a started block that the launcher never ended (a Pod stopped mid-run): the step
+    waits, naming the block, the run and its way out (its recovery round, from its own block
+    file); it names no new block, and the next one is issued once the run has ended."""
+    study = Study()
+    study.through_validation()
+    study.n(N=60)
+    study.confirmation(count=5)
+    dead = study.change(run_of(study, "confirmation", "F", "l", 10402), state="pending", K=None,
+                        steps=None, mmlu_loss_pp=None, factual_loss_pp=None,
+                        K_harmful=None)  # fmt: skip
+    result = study.advance()
+    step = result["step"]
+    assert (result["stage"], step["kind"]) == ("confirmation", "pending")
+    assert step["waiting"] == [dead.run_id]
+    assert step["blocks"] == [{"seed": 10402, "runs": [dead.run_id]}]
+    (way,) = step["ways_out"]
+    assert (way["run_id"], way["label"], way["campaign"]) == (dead.run_id, dead.label,
+                                                              dead.cell.campaign)  # fmt: skip
+    assert (f"launch.py <block file> --only {dead.label} --recovery REASON --max-attempts 1"
+            in way["recovery"])  # fmt: skip
+    assert "cells" not in step and "campaign" not in step
+    assert result["confirmation"]["may_start_next"] is False
+    assert result["problems"] == []
+    study.change(dead.run_id, state="usable", K=dead.K, steps=25,
+                 mmlu_loss_pp=dead.mmlu_loss_pp, factual_loss_pp=dead.factual_loss_pp,
+                 K_harmful=dead.K_harmful)  # fmt: skip
+    result = study.advance()
+    assert {c[2] for c in result["step"]["cells"]} == {10405}
+
+
+def test_a_started_blocks_missing_cells_are_issued_before_the_wait_for_a_run() -> None:
+    """A started block holds a run that has not ended and another lacks a cell: the missing cell
+    is issued first, as a started block's cells always are; then the step waits."""
+    study = Study()
+    study.through_validation()
+    study.n(N=60)
+    study.confirmation(count=5)
+    dead = study.change(run_of(study, "confirmation", "F", "l", 10402), state="pending",
+                        K=None)  # fmt: skip
+    study.drop(run_of(study, "confirmation", "P", "u", 10403))
+    result = study.advance()
+    assert (result["step"]["kind"], result["step"]["campaign"]) == ("campaign", "confirmation")
+    assert cells(result["step"]) == {("P", START["P"]["u"], 10403)}
+    study.add(ep("P", START["P"]["u"], 10403, step="confirmation",
+                 K=CANDIDATES[1]["targets"]["u"]))  # the missing cell ran  # fmt: skip
+    result = study.advance()
+    assert (result["step"]["kind"], result["step"]["waiting"]) == ("pending", [dead.run_id])
 
 
 def test_a_partly_issued_confirmation_block_is_completed_before_the_next() -> None:

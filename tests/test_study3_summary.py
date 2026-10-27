@@ -262,6 +262,27 @@ def test_the_guard_refuses_while_a_technical_mark_holds_the_confirmation(world, 
     assert summary.checked == []
 
 
+def test_the_guard_refuses_while_a_started_block_holds_a_run_not_ended(world, summary) -> None:
+    """A run of a started block that the launcher never ended (the Pod stopped mid-run): no
+    later block starts, and the refusal names the run and its recovery round."""
+    study = confirmation_study(world, N=60)
+    study.confirmation(count=3)
+    files = block_files(world.write("confirmation", "--blocks", "10403", "10404"))
+    dead = study.change(run_of(study, "confirmation", "F", "l", 10402), state="pending",
+                        K=None)  # fmt: skip
+    summary.core(study)
+    summary.versions()
+    refused(summary.guard(10403, files[10403]), "block 10403 may not start",
+            "not ended", dead.run_id, f"--only {dead.label} --recovery")  # fmt: skip
+    # a run whose recovery round is opened and has no later attempt holds it too
+    study.change(dead.run_id, state="recovered")
+    refused(summary.guard(10403, files[10403]), "block 10403 may not start", dead.run_id)
+    assert summary.checked == []
+    # once its next attempt has ended, the next block starts
+    study.change(dead.run_id, state="usable", K=dead.K)
+    assert summary.guard(10403, files[10403])[0] == 0
+
+
 def test_the_guard_refuses_a_seed_that_is_not_the_steps(world, summary) -> None:
     study = confirmation_study(world)
     files = block_files(world.write("confirmation", "--blocks", "10400", "10401"))

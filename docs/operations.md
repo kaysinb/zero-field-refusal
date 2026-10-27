@@ -1789,8 +1789,9 @@ before each command below.
   - the step is candidate N's confirmation and names cells on S. A block not yet started must be
     the next one: never after the stop (every active counter at N, or the cap
     N + max(10, ⌈0.12·N⌉) of blocks started), while a technical mark in a started block waits
-    for its way out, out of seed order, or before a started block's missing cells. A started
-    block completes its missing cells even after the stop;
+    for its way out, while a run of a started block has not ended (below), out of seed order, or
+    before a started block's missing cells. A started block completes its missing cells even
+    after the stop;
   - the file is the block as written for that step: its header (study 3, candidate N, the
     confirmation, the n, budget and versions records it names, each still of the sha256 it
     names) and exactly the step's cells on S;
@@ -1800,8 +1801,11 @@ before each command below.
   Otherwise it prints why, and the driver stops. Read the state, take the way it names, and write
   the blocks left again, under new names.
 - **A block the Pod stopped mid-run.** A run the launcher started and never ended is pending, so
-  the state names no new cells: the writer and every guard refuse. The run is rerun by its
-  recovery round, from its own block file, with the interruption as its reason:
+  the state names no new block (a started block's missing cells are still completed first): the
+  writer and every guard refuse. The registered stop is checked between blocks, and the counters
+  wait for such a run, and for a run whose recovery round is opened and that has no later attempt
+  yet. The state names the block, the run and its way out. The run is rerun by its recovery
+  round, from its own block file, with the interruption as its reason:
 
   ```bash
   project-run "$SRC" python scripts/launch.py "$C/c1-confirmation-1/<block file>" \
