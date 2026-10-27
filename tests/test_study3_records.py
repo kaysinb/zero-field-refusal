@@ -31,6 +31,7 @@ from zero_field_refusal.analysis.study3_records import (
     ROLES,
     SEEDS,
     TORN_KIND,
+    TORN_WHY,
     EndpointReader,
     candidate_of,
     journal_lines,
@@ -1299,13 +1300,15 @@ def test_a_torn_line_without_its_resolution_still_blocks(world) -> None:
 
 
 @pytest.mark.parametrize("wrong", [None, "torn sha256", "torn length", "torn offset",
-                                   "no torn record", "resolution sha256", "resolution offset",
-                                   "resolution log", "no resolution"])  # fmt: skip
+                                   "no torn record", "torn record in another log",
+                                   "resolution sha256", "resolution offset", "resolution log",
+                                   "no resolution"])  # fmt: skip
 def test_a_torn_line_is_resolved_only_by_both_records_naming_its_bytes(world, wrong) -> None:
     """A torn line before the last of its log (a power loss inside the repair, say: its newline
     written, no ``torn`` record) is resolved only when a ``torn`` record of its log names its
     offset, length and sha256 and a ``torn_resolved`` record names its log, offset and sha256;
-    a record that names other bytes resolves nothing, and the line blocks."""
+    a record that names other bytes resolves nothing, and so does a ``torn`` record of another
+    log that names its offset, length and sha256: the line blocks."""
     run_id = world.run("A", 1.45e-5, 10300)
     log = world.root / "launch" / "study3-c1.jsonl"
     data = torn_start(10300)
@@ -1325,7 +1328,8 @@ def test_a_torn_line_is_resolved_only_by_both_records_naming_its_bytes(world, wr
         record[key] = value
     for record, missing in ((torn, "no torn record"), (resolution, "no resolution")):
         if wrong != missing:
-            world.log("study3-c1", record)
+            other = record is torn and wrong == "torn record in another log"
+            world.log("study3-c1-other" if other else "study3-c1", record)
     found, problems = world.read()
     assert states(found) == {run_id: "usable"}
     if wrong is None:
@@ -1341,13 +1345,14 @@ def test_a_line_that_holds_no_json_object_before_the_last_is_a_torn_line(world, 
     """As the launcher reads a log (``launch.torn_lines``): a blank line, a JSON value that is no
     object, a line with a byte-order mark, one cut short and followed by a newline, bytes that
     are not UTF-8: each, before the last line of its log, is a torn line, a problem by its log
-    and line until the launcher's resolution names it; then it is listed, no problem."""
+    and line, in the one term every reader uses (``TORN_WHY``), until the launcher's resolution
+    names it; then it is listed, no problem."""
     run_id = world.run("A", 1.45e-5, 10300)
     log = world.root / "launch" / "study3-c1.jsonl"
     with log.open("ab") as f:
         f.write(line + b"\n")
     found, problems = world.read()
-    assert len(problems) == 1 and torn_problems(problems, "launch/study3-c1.jsonl line 3")
+    assert problems == [f"launch/study3-c1.jsonl line 3: {TORN_WHY}"]
     [torn] = launch.torn_lines(world.root)
     launch.resolve_torn(world.root, log.name, offset=torn.offset, sha256=torn.sha256,
                         reason="nothing was lost")  # fmt: skip

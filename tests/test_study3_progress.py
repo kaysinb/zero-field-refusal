@@ -2565,7 +2565,8 @@ def test_a_torn_journal_line_blocks_the_state_until_it_is_resolved(worlds) -> No
     """A crash cut a line of the search campaign's log short (bytes that are not UTF-8 among
     them), and the launcher's next append repaired it (a newline, then its ``torn`` record): the
     state blocks on it, by its log and its line, never its bytes. Once the launcher's resolution
-    names it (``launch.resolve_torn``), the state is what it was before the crash."""
+    names it (``launch.resolve_torn``), the state is what it was before the crash, and it lists
+    the resolved line by its log, its line and its kind, nothing else of it."""
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
@@ -2585,7 +2586,11 @@ def test_a_torn_journal_line_blocks_the_state_until_it_is_resolved(worlds) -> No
     launch.resolve_torn(runs.root, log.name, offset=offset,
                         sha256=hashlib.sha256(data).hexdigest(),
                         reason="the end is settled from the run directory")  # fmt: skip
-    assert read(records, runs) == before
+    after = read(records, runs)
+    assert before["resolved_torn_lines"] == [] and after["resolved_torn_lines"] == [
+        {"log": "launch/study3-c1-search-r0.jsonl", "line": number, "kind": "end"}]  # fmt: skip
+    assert {**after, "resolved_torn_lines": []} == before
+    assert "TORN-SECRET" not in json.dumps(after, default=str)
 
 
 def test_a_missing_theta0_is_a_problem_not_an_exception(worlds) -> None:

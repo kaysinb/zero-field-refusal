@@ -998,9 +998,11 @@ def read_holds(
 # A torn line's standing (module docstring, "Attempts"): the last of its log, with no newline
 # after it (skipped, the launcher's rule); resolved (listed, no problem); unresolved (a problem)
 FINAL, RESOLVED, UNRESOLVED = "final", "resolved", "unresolved"
-TORN_WHY = ("a torn line (no JSON object) before the last line of its log that no torn and "
-            "torn_resolved records both name: what it held cannot be shown (resolve it: "
-            'docs/operations.md, "Launching runs")')  # fmt: skip
+# The one term every reader names an unresolved torn line before the last of its log with
+TORN_LINE = ("a torn line (no JSON object) before the last line of its log that no torn and "
+             "torn_resolved records both name")  # fmt: skip
+TORN_WHY = (f"{TORN_LINE}: what it held cannot be shown (resolve it: docs/operations.md, "
+            '"Launching runs")')  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -1035,6 +1037,12 @@ class JournalLog:
         """The numbers of its unresolved torn lines (each a problem: what it held cannot be
         shown)."""
         return tuple(line.line for line in self.lines if line.torn == UNRESOLVED)
+
+    @property
+    def refused(self) -> tuple[int, ...]:
+        """The numbers of the torn lines the launcher refuses (``launch.torn_lines``: every one
+        that is not resolved, the last of the log included)."""
+        return tuple(line.line for line in self.lines if line.torn in (UNRESOLVED, FINAL))
 
     @property
     def resolved(self) -> tuple[dict[str, Any], ...]:

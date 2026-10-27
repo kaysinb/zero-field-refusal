@@ -1209,7 +1209,7 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     assert len(found) == 1 and "torn line" in found[0], reading["problems"]
     assert f"{log}: an unreadable launch journal" not in reading["problems"]  # the log is read
     assert reading["held"] == []
-    assert not [p for p in reading["problems"] if "c2" in p]
+    assert not [p for p in reading["problems"] if str(other) in p or "qualification/c2/" in p]
     found = qr.read_holds  # a log only read_holds failed on: still the reading's problem
 
     def failing(root, **kwargs):

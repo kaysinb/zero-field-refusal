@@ -12,6 +12,7 @@ it names one."""
 
 import ast
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import cap_of
 from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint
+from zero_field_refusal.paths import REPO_ROOT
 
 REGISTRATION = "docs/study3-preregistration.md"
 AMENDMENTS = "".join(f"\n### Amendment {n}: change {n}\n\nText {n}.\n" for n in (1, 2, 3))
@@ -1130,9 +1132,9 @@ def test_a_missing_or_unreadable_journal_fails_closed(study) -> None:
     log = study.root / "launch" / "study3-c1-validation-10300.jsonl"
     lines = log.read_text().splitlines()
     log.write_text("\n".join([lines[0], "{not json", *lines[1:]]) + "\n")
-    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 2", "unparseable")
+    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 2", "torn line")
     log.write_bytes(b"\xff\xfe" + log.read_bytes())  # a line not UTF-8 is a torn line
-    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 1", "unparseable")
+    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 1", "torn line")
     log.unlink()
     log.mkdir()  # a log that cannot be read
     assert has(study.problems(), "launch journal", "cannot be read")
@@ -1338,10 +1340,50 @@ def test_the_logs_a_qualification_rests_on(study) -> None:
     launch.resolve_torn(study.root, path.name, offset=0,
                         sha256=hashlib.sha256(b"{cut \xff").hexdigest(),
                         reason="nothing was lost")  # fmt: skip
-    assert sv.qualification_logs(study.root, 1) == (sv.qualification_logs(study.root, 1)[0], [])
+    assert sv.qualification_logs(study.root, 1)[1] == []
     assert [entry["path"] for entry in sv.qualification_logs(study.root, 1)[0]] == [
         "launch/hold.jsonl", "launch/recover.jsonl", "launch/settle.jsonl",
         "launch/study3-c1-numerical.jsonl", "launch/study3-c1-repair.jsonl"]  # fmt: skip
+
+
+REFUSED_TORN = ("a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn) "
+                "before the fixation; its resolution changes the log")  # fmt: skip
+
+
+def launch_script():
+    """scripts/launch.py, the launcher's command."""
+    spec = importlib.util.spec_from_file_location("launch_script",
+                                                  REPO_ROOT / "scripts" / "launch.py")  # fmt: skip
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_fixation_pins_no_log_with_an_unresolved_torn_line(study, monkeypatch) -> None:
+    """A crash cut the last line of the qualification's log short. The analysis skips such a line,
+    but the launcher refuses it, and its one resolution appends to that log: so the fixation pins
+    no log that holds an unresolved torn line, the last included, and names it by its log and
+    line; the builder refuses. Once the launcher's resolution (``scripts/launch.py
+    --resolve-torn``) names the line, the log is pinned with no problem."""
+    study.ready()
+    log = study.root / "launch" / "study3-c1-numerical.jsonl"
+    data = b'{"time": "2026-10-27T00:00:00+00:00", "event": "stop", "run": "A-1'
+    offset, _ = tear(log, data)
+    number = log.read_bytes().count(b"\n") + 1
+    logs, problems = sv.qualification_logs(study.root, 1)
+    where = "launch/study3-c1-numerical.jsonl"
+    assert logs == [] and problems == [f"{where} line {number}: {REFUSED_TORN}"]
+    with pytest.raises(sv.RecordRefused) as refused:
+        study.fixation()
+    assert f"{where} line {number}: {REFUSED_TORN}" in str(refused.value)
+    monkeypatch.setenv("RUNS_DIR", str(study.root))
+    launch_script().main(["--resolve-torn", log.name, "--offset", str(offset), "--sha256",
+                          hashlib.sha256(data).hexdigest(), "--reason",
+                          "nothing was lost"])  # fmt: skip
+    logs, problems = sv.qualification_logs(study.root, 1)
+    assert problems == [] and logs == [{"path": where, "sha256": sha256(log)}]
+    record = study.fixation()
+    assert record["qualification"]["logs"] == logs
 
 
 # ------------------------------------------------------------------ a real qualification

@@ -21,7 +21,9 @@ routes", "Seeds and order", "Voiding and supersession" and amendments 1-3.
 **The state** is ``analysis.study3_progress.progress`` of --runs-root (θ₀'s evaluation from
 --theta0, study 2's under RUNS_DIR by default), its expected code this checkout's GPU code
 (``code_identity.gpu_code_identity``). ``progress`` prints it whole as JSON: numbers, ids, paths
-and hashes only (a spread appears only as an n record's ``spread_pp``, rounded to 0.5 pp).
+and hashes only (a spread appears only as an n record's ``spread_pp``, rounded to 0.5 pp), the
+launch journal's resolved torn lines included (``resolved_torn_lines``: each line's log, number
+and kind).
 
 **The guard** is the between-block guard of the confirmation's driver (``run.sh``, written by
 scripts/study3_campaigns.py confirmation, which runs it before each block and stops at its first

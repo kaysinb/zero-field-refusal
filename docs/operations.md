@@ -1867,10 +1867,14 @@ before each command below.
   names its bytes in a `torn` record. While any log holds a torn line that no `torn_resolved`
   record names, the launcher refuses with exit 12, and so does every `qualify.py` command that
   reads the runs but its two journal repairs. The procedure:
-  1. Restore what the line's kind lost, as [launching runs](#launching-runs) gives it per kind
-     (`end`, `start`, `held`, `superseded`, `recovery`, `stop`, `torn`, `torn_resolved`,
-     unknown). A lost `held` or `superseded` line is written again first, over the torn line, by
-     `qualify.py supersede` or `restart-case`.
+  1. Restore what the line's kind lost, in the order its kind takes (the per-kind list in
+     [launching runs](#launching-runs)):
+     - `held`, `superseded`: run the writer again first, then resolve. The two journal repairs,
+       `qualify.py supersede` with the same record and `restart-case` again for the case, run
+       while the torn line is still unresolved and write only the missing line.
+     - `end`, `start`, `recovery`, `stop` and an unknown kind (`null`): resolve first, since the
+       launcher refuses until then; then relaunch with the same command, or read on.
+     - `torn`, `torn_resolved`: resolve; nothing else is restored.
   2. Record the resolution:
      `python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT`. It
      writes the line's `torn` record if none names it yet, then its `torn_resolved` record.
@@ -1888,7 +1892,9 @@ before each command below.
   What the lost line held stays lost: a lost `start` leaves a run directory with no start, which
   the analysis names and blocks on. For a qualification log a validation fixation pins, any
   change of the log after the fixation, the repair and the resolution included, breaks the
-  fixation for good: the log is pinned whole, by its sha256.
+  fixation for good: the log is pinned whole, by its sha256. So resolve every torn line, the last
+  line of a log included, before the validation fixation: the fixation pins no log that holds
+  one, and names it by its log and line.
 - **A technical mark outside the qualification.** A technical mark of a search, validation or
   confirmation run, in any arm, stops the route: the step is blocked and technical, with the
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its

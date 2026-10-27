@@ -165,8 +165,8 @@ on is a response or an observation, and this module opens none.
   last three components (``study3/decisions/<kind>.json``), so a record named from another
   machine's root is found, and a path among the items of a list is named without a sha256. A
   record named with a sha256 other than its own now, or named without a readable one, or no
-  longer there, is a problem; a missing journal, or one with an unparseable line before the last
-  of its log that is not resolved (``study3_records``' rule for a torn line), fails closed. A
+  longer there, is a problem; a missing journal, or one with a torn line before the last line of
+  its log that is not resolved (``study3_records``' rule), fails closed. A
   record that resolves (a link, say) under a ``responses/`` or ``observations/`` folder is a
   problem and is never opened. The journal is read as ``study3_records`` reads it: through its
   private ``_read_journal``, which this module keeps importing (one journal reader, no copy).
@@ -199,6 +199,7 @@ from .study3_records import (
     EXPERIMENT,
     LOOP_WHY,
     SEEDS,
+    TORN_LINE,
     _read_journal,
     _time,
     journal_lines,
@@ -506,9 +507,8 @@ def immutable(
                  "has named this record cannot be shown"] if path.exists() else [])  # fmt: skip
     problems = set()
     if corrupt and path.exists():
-        problems.add(f"{path}: the launch journal has an unparseable line before the last of its "
-                     f"log that is not resolved ({', '.join(corrupt)}), so whether a campaign has "
-                     "named this record cannot be shown")  # fmt: skip
+        problems.add(f"{path}: the launch journal has {TORN_LINE} ({', '.join(corrupt)}), so "
+                     "whether a campaign has named this record cannot be shown")  # fmt: skip
     if sealed and path.exists():
         root = _runs_of(path)
         loops = [where for where in sealed if unresolvable(root / where)]
@@ -1270,8 +1270,7 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
     logs, unreadable = journal_lines(root)
     found = [f"line: {problem}: the journal cannot show what follows the run"
              for problem in unreadable]  # fmt: skip
-    found += [f"line: {log.path} line {number}: an unparseable line before the last of its log "
-              "that no torn and torn_resolved records both name: the journal cannot show what "
+    found += [f"line: {log.path} line {number}: {TORN_LINE}: the journal cannot show what "
               "follows the run" for log in logs for number in log.corrupt]  # fmt: skip
     log = next((log for log in logs if log.path == cited["path"]), None)
     where = f"line: line {cited['line']} of {path}"

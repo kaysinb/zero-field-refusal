@@ -132,12 +132,12 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
 - each such run's arm is active in its fixation and its rate one of the two the fixation fixes for
   that arm (a validation fixation's ``rates``; for a supplement, the rates of the n record it pins:
   the arms still open at confirmation), read from the run's cell as ``study3_records`` binds it;
-- a missing launch journal, a log that cannot be read, an unparseable line before the last of its
-  log that is not resolved (a torn line no ``torn`` and ``torn_resolved`` records both name:
-  ``study3_records``' rule; a resolved one is no problem), and a study-3 run directory without a
-  start in the journal that is a validation or confirmation run (its ``config.yaml``'s role, else
-  its ``meta.json``'s campaign header), or whose role cannot be read, are problems: what the
-  journal does not show cannot be shown.
+- a missing launch journal, a log that cannot be read, a torn line before the last line of its
+  log that no ``torn`` and ``torn_resolved`` records both name (``study3_records``' rule; a
+  resolved one is no problem), and a study-3 run directory without a start in the journal that
+  is a validation or confirmation run (its ``config.yaml``'s role, else its ``meta.json``'s
+  campaign header), or whose role cannot be read, are problems: what the journal does not show
+  cannot be shown.
 With ``step`` and ``candidate``, the record must also stand for a run of that step and candidate:
 the check before a campaign is written under it.
 
@@ -156,7 +156,10 @@ is read.
   recovery round naming a label). They are pinned whole, by sha256: no registered route writes to
   them after the fixation (the campaign writer refuses a reused campaign name). Any change to a
   pinned log breaks the fixation, the launcher's repair of a torn line and its resolution
-  written after the fixation included.
+  written after the fixation included. So no log that holds a torn line the launcher refuses
+  (every one not resolved, the last line of its log included, which the other readers skip) is
+  pinned: it is a problem by its log and line, in any log, until its resolution
+  (``scripts/launch.py --resolve-torn``) is written, before the fixation.
 - *The fixed rates* are the stage's: the validation step's cells when it carries them, each at one
   of the arm's two rates, and otherwise the rates of the reading the cells come from (``progress``'
   ``rates`` and ``active``); P is fixed exactly while P–F is open.
@@ -221,6 +224,7 @@ from .study3_records import (
     EXPERIMENT,
     RATE_TOLERANCE,
     STEP_ROLES,
+    TORN_LINE,
     VERSIONED_STEPS,
     Endpoint,
     _bind,
@@ -245,6 +249,9 @@ WHAT = ("The versions of study 3's validation and confirmation runs: the commit,
 QUALIFIED = "qualified"
 LABELS = ("lr_l", "lr_u")
 ARMS = ("A", "F", "P")
+# A launch log that holds a torn line the launcher refuses: the fixation pins none (``Rulings``)
+REFUSED_TORN = ("a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn) "
+                "before the fixation; its resolution changes the log")  # fmt: skip
 # The campaign steps whose runs are qualification cases (qualification_records.STEPS; that module
 # loads torch, and is imported only where it is read)
 QUALIFICATION_STEPS = ("numerical", "repair")
@@ -452,9 +459,11 @@ def qualification_logs(
 ) -> tuple[list[dict[str, str]], list[str]]:
     """The launch logs a candidate's numerical qualification rests on (module docstring,
     "Rulings"), in the order of their paths, each ``{"path", "sha256"}`` with its path under
-    RUNS_DIR and its sha256 now; and the problems: a log that cannot be read, or an unresolved
-    torn line before the last of its log (``study3_records.journal_lines``' ``corrupt``: it may
-    be a line of the qualification; a resolved one is no problem)."""
+    RUNS_DIR and its sha256 now; and the problems: a log that cannot be read, and each torn line
+    the launcher refuses (``study3_records.journal_lines``' ``refused``: every torn line that is
+    not resolved, the last of its log included), by its log and line, in any log: it may be a line
+    of the qualification, and its one resolution appends to its log. A log that holds one is not
+    pinned; a resolved one is no problem."""
     _candidate(candidate)
     logs, unreadable = journal_lines(runs_root)
     problems = [f"{problem}: it may hold a line of the qualification" for problem in unreadable]
@@ -470,11 +479,10 @@ def qualification_logs(
                     labels.add(key)
     pinned = []
     for log in logs:
-        problems += [f"{log.path} line {number}: an unparseable line before the last line of its "
-                     "log that no torn and torn_resolved records both name: it may be a line of "
-                     "the qualification" for number in log.corrupt]  # fmt: skip
-        if any(line.record is not None and _of_qualification(line.record, candidate, ids, labels)
-               for line in log.lines):  # fmt: skip
+        problems += [f"{log.path} line {number}: {REFUSED_TORN}" for number in log.refused]
+        if not log.refused and any(
+                line.record is not None and _of_qualification(line.record, candidate, ids, labels)
+                for line in log.lines):  # fmt: skip
             pinned.append({"path": log.path, "sha256": log.sha256})
     return pinned, problems
 
@@ -1743,10 +1751,8 @@ def _runs_problems(root: Path, chain: Sequence[_Link], fixations: _Fixations) ->
     pinned = {chain[0].name: []}  # the record's own fixation is read in full already
     if journal is not None:
         if journal.corrupt:
-            problems.append(f"the launch journal has an unparseable line before the last of its "
-                            "log that no torn and torn_resolved records both name "
-                            f"({', '.join(journal.corrupt)}): a start it held cannot be shown "
-                            "(fails closed)")  # fmt: skip
+            problems.append(f"the launch journal has {TORN_LINE} ({', '.join(journal.corrupt)}): "
+                            "a start it held cannot be shown (fails closed)")  # fmt: skip
         problems += [f"{where}: {sealed_record('a launch log', root / where, root)}: a start it "
                      "held cannot be shown (fails closed)" for where in journal.sealed]  # fmt: skip
         files = _Files(root / EXPERIMENT)

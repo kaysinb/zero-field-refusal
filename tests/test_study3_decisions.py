@@ -36,7 +36,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     start_lines,
     write_decision,
 )
-from zero_field_refusal.analysis.study3_records import SEEDS
+from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE
 from zero_field_refusal.paths import REPO_ROOT
 
 SENTINEL = "SEALED-RESPONSE-5d1e0b"
@@ -1505,6 +1505,7 @@ def test_a_line_cut_short_as_the_last_of_its_log_is_the_launchers_rule_and_no_pr
     journal_line(world, "blank", "")
     found = decisions(world.runs, 1, repo=world.repo)["engineering"]
     assert found["state"] == "invalid" and "launch/blank.jsonl line 1" in found["problems"][0]
+    assert TORN_LINE in found["problems"][0]  # the one term: a blank line is no "unparseable" one
     [torn] = [line for line in launch.torn_lines(world.runs) if line.log == "blank.jsonl"]
     launch.resolve_torn(world.runs, "blank.jsonl", offset=torn.offset, sha256=torn.sha256,
                         reason="nothing was lost")  # fmt: skip
@@ -2354,7 +2355,8 @@ def test_an_unreadable_launch_log_fails_a_closure_closed(world, bad) -> None:
         path.mkdir()
     else:
         path.write_bytes(b"\xff\xfe not text\n{}\n")
-    refused(world, "closure-c1-F", record, "zz-bad.jsonl")
+    refused(world, "closure-c1-F", record, "zz-bad.jsonl",
+            *([TORN_LINE] if bad == "torn line" else []))  # fmt: skip
 
 
 def test_a_closure_citing_a_line_after_a_resolved_torn_line_is_valid(world) -> None:
