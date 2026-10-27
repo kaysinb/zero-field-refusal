@@ -118,13 +118,15 @@ A–F gate is the candidate's failure; a failed P–F gate closes P–F, whether
 **The n record** ("Sample size from validation"). It is accepted only after the engineering
 record passed, for the chosen candidate, with its rates the validated ones, its comparisons the
 active ones, its cohort's seeds the validation blocks supported for A and F, and its cohort's run
-ids counting validation runs of its candidate at those seeds (the runs ``read_endpoints`` lists
-as counting). A failed n record (its cap beyond the 200 reserved confirmation seeds) means the
-confirmation cannot start: the design stop, with the reason; N is never cut. A power shortfall
-needs the budget record (``budget_reason``); a budget decision to stop ends the study before the
-confirmation (the budget stop). Whether the
-simulation's J is the one its fixation froze is checked by the simulation package (package 3),
-which writes both; it is not checked here.
+ids exactly the A and F endpoints of those blocks (A and F at ``lr_l`` and ``lr_u``: four per
+block), the counting runs the route itself read for their support: as a set, none missing, none
+extra (a P run, a run of another block or of another candidate), none twice; a problem names the
+counts, never every id. A failed n record (its cap beyond the 200 reserved confirmation seeds)
+means the confirmation cannot start: the design stop, with the reason; N is never cut. A power
+shortfall needs the budget record (``budget_reason``); a budget decision to stop ends the study
+before the confirmation (the budget stop). Whether the simulation's J is the one its fixation
+froze is checked by the simulation package (package 3), which writes both; it is not checked
+here.
 
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap N + max(10, ⌈0.12·N⌉) (the cells of every seed up to the cap are prescribed, no further). The
@@ -1004,12 +1006,19 @@ class _Walk:
             found.append(f"{kind}: its cohort's seeds are not the "
                          f"{len(fields['cohort']['seeds'])} validation blocks where A and F are "
                          "supported")  # fmt: skip
-        counting = {e.run_id for e in self.by_key[step_key(self.candidate, "validation")]
-                    if e.state in COUNTING and e.seed in set(seeds)}  # fmt: skip
-        stray = [r for r in cohort.get("run_ids") or [] if r not in counting]
-        if stray:
-            found.append(f"{kind}: cohort run ids that are no counting validation run of "
-                         f"candidate {self.candidate} at its seeds: {stray[:5]}")  # fmt: skip
+        given = cohort.get("run_ids")
+        given = list(given) if isinstance(given, list) else []
+        named = [r for r in given if isinstance(r, str)]
+        expected = set(fields["cohort"]["run_ids"])
+        missing, extra = expected - set(named), set(named) - expected
+        twice = len(named) - len(set(named))
+        if missing or extra or twice or len(named) != len(given):
+            blocks = len(fields["cohort"]["seeds"])
+            found.append(f"{kind}: its cohort's run ids are not exactly the A and F endpoints (A "
+                         f"and F at lr_l and lr_u) of its {blocks} supported validation blocks, "
+                         f"{len(expected)} runs: {len(missing)} missing, "
+                         f"{len(extra) + len(given) - len(named)} extra, {twice} "
+                         "duplicated")  # fmt: skip
         return found
 
     # -- the confirmation

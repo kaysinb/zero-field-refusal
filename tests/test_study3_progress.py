@@ -1512,6 +1512,12 @@ def test_an_expected_code_that_is_not_the_chains_end_is_a_problem() -> None:
     assert any(EXPECTED in p and "chain" in p for p in result["problems"])
 
 
+def cohort_problem(result) -> str:
+    """The n record's problem with its cohort's run ids."""
+    (found,) = [p for p in result["problems"] if "cohort's run ids" in p]
+    return found
+
+
 def test_the_n_records_cohort_run_ids_are_counting_validation_runs_of_its_candidate() -> None:
     study = Study()
     study.through_validation()
@@ -1519,7 +1525,61 @@ def test_the_n_records_cohort_run_ids_are_counting_validation_runs_of_its_candid
     record["cohort"]["run_ids"] = [*record["cohort"]["run_ids"][:-1], "not-a-validation-run"]
     result = study.advance()
     assert (result["stage"], result["step"]["kind"]) == ("n", "blocked")
-    assert any("not-a-validation-run" in p for p in result["problems"])
+    assert "1 missing, 1 extra, 0 duplicated" in cohort_problem(result)
+
+
+def test_probe_an_n_record_whose_cohort_holds_p_runs_for_f_runs_is_invalid() -> None:
+    """A probe: every F run id of the cohort replaced by the P run id of its block and label. Each
+    is a counting validation run at a listed seed, but the cohort is exactly the A and F
+    endpoints of the supported blocks: the n record is invalid, and the confirmation does not
+    start."""
+    study = Study()
+    study.through_validation()
+    record = study.n(N=60)
+    swap = {}
+    for e in study.endpoints:
+        if e.cell.step == "validation" and e.arm == "F":
+            label = "l" if math.isclose(e.lr, START["F"]["l"]) else "u"
+            swap[e.run_id] = run_of(study, "validation", "P", label, e.seed)
+    record["cohort"]["run_ids"] = [swap.get(r, r) for r in record["cohort"]["run_ids"]]
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"], result["outcome"]) == ("n", "blocked", None)
+    assert "confirmation" not in result
+    assert cohort_problem(result) == (
+        "n-c1: its cohort's run ids are not exactly the A and F endpoints (A and F at lr_l and "
+        "lr_u) of its 28 supported validation blocks, 112 runs: 56 missing, 56 extra, 0 "
+        "duplicated")  # fmt: skip
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "duplicate"])
+def test_the_n_records_cohort_is_exactly_the_supported_blocks_a_and_f_runs(change) -> None:
+    """One run id missing, one extra (an A run of a block A–F does not support), one twice: each
+    makes the n record invalid, its problem naming the counts; the exact set, in any order, is
+    accepted."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    seeds = SEEDS["validation"][1][:28]
+    low = CANDIDATES[1]["targets"]["star"] * 0.9  # A's upper run below K*: no bracket
+    study.validation(special={(seeds[-1], "A", "u"): {"K": low}})
+    record = study.n(N=60, seeds=seeds[:-1])
+    ids = record["cohort"]["run_ids"]
+    assert len(ids) == 4 * 27
+    record["cohort"]["run_ids"] = list(reversed(ids))
+    assert study.advance()["stage"] == "confirmation"  # the exact set, in another order
+    if change == "missing":
+        record["cohort"]["run_ids"] = ids[1:]
+        counts = "1 missing, 0 extra, 0 duplicated"
+    elif change == "extra":
+        record["cohort"]["run_ids"] = [*ids, run_of(study, "validation", "A", "l", seeds[-1])]
+        counts = "0 missing, 1 extra, 0 duplicated"
+    else:
+        record["cohort"]["run_ids"] = [*ids, ids[0]]
+        counts = "0 missing, 0 extra, 1 duplicated"
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("n", "blocked")
+    assert cohort_problem(result).endswith(f"27 supported validation blocks, 108 runs: {counts}")
 
 
 @pytest.mark.parametrize("change", ["rates", "active", "seeds"])
