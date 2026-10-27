@@ -432,6 +432,24 @@ def test_a_restart_voids_an_interrupted_attempt(qualify, monkeypatch, tmp_path) 
     assert run["superseded"] == {"r10200-adam_frozen-a1": RESTART}
 
 
+def test_the_real_restart_cases_line_counts_through_its_restart_record(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """``restart-case`` publishes its record, then the ``superseded`` line that cites it: the run
+    readers count the line, with no problem."""
+    world = World(tmp_path)
+    world.full(skip=(FA,))
+    identity = world.launch(FA)
+    baseline, _ = world.records(FA, identity)
+    world.publish(FA, "baseline", baseline)
+    q.publish(world.out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    world.command(qualify, "restart-case", "--case", FA.name, "--infrastructure", RESTART)
+    voided, problems = voided_runs(world.root)
+    assert voided[identity["run_id"]][0] == "superseded" and problems == []
+    (run,) = [r for r in world.read()["rates"][FA_KEY]["runs"] if r["seed"] == FA.seed]
+    assert run["superseded"] == {identity["run_id"]: RESTART}
+
+
 def test_an_engineering_cycle_voids_old_code_and_keeps_a_scientific_case(
     qualify, monkeypatch, tmp_path
 ) -> None:
@@ -1151,34 +1169,26 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
         reading["problems"])  # fmt: skip
 
 
-def test_a_hold_applies_to_its_label_whatever_run_id_it_names(qualify, tmp_path) -> None:
-    """A ``held`` line names FA's 10201 label with a run id that no start of it names and another
-    config hash: the hold applies to the label (``launch.held_runs``), so the reading lists it for
-    the rate and the label, the issued run's attempts unchanged, and ``complete`` exits HELD for
-    the case. The verdict reads no hold; the reading's states are its, both rates qualified."""
+def test_a_held_line_no_accepted_record_names_holds_nothing(qualify, tmp_path) -> None:
+    """A ``held`` line names FA's 10201 label with a run id that no start of it names, another
+    config hash, and no supersession record (``qualify.py`` writes one only from its cycle's
+    record, after the record): the launcher still refuses the label (``launch.held_runs``), but
+    a run stops counting only through a record that names it. The reading lists no hold, names
+    the line as a problem, and its states are the verdict's, both rates qualified."""
     world = World(tmp_path)
     world.full()
     case = qcase(10201, "adam_frozen", FA_LR)
     run = world.run(case)
     elsewhere = dataclasses.replace(run, config_hash="0" * 12)
     launcher.hold(world.root, "a-other", elsewhere, "r-unstarted", reason="unresolved elsewhere",
-                  record="a-hold-record.json")  # no supersession record's line  # fmt: skip
+                  record="a-hold-record.json")  # no record that names the run  # fmt: skip
     cached = world.verdict(qualify)
     reading = world.read()
-    assert_as_the_verdict(reading, cached)
-    assert reading["states"] == {FA_KEY: "qualified", ADAMW_KEY: "qualified"}
-    held_now = launcher.held_runs(run, launcher.launch_records(world.root))
-    assert held_now == {"r-unstarted": "unresolved elsewhere"}
-    (listed,) = [r for r in reading["rates"][FA_KEY]["runs"] if r["seed"] == case.seed]
-    assert listed["held"] == held_now and "r-unstarted" not in listed["run_ids"]
-    (held,) = reading["rates"][FA_KEY]["held"]
-    assert (held["run_id"], held["config_hash"], held["case"]) == (
-        "r-unstarted", "0" * 12,
-        {"arm": "F", "optimizer": "adam_frozen", "lr": FA_LR, "seed": 10201})  # fmt: skip
-    assert reading["rates"][ADAMW_KEY]["held"] == []
-    with pytest.raises(SystemExit) as stop:
-        world.command(qualify, "complete", "--case", case.name)
-    assert stop.value.code == qualify.HELD
+    assert reading["states"] == cached["states"] == {FA_KEY: "qualified", ADAMW_KEY: "qualified"}
+    assert launcher.held_runs(run, launcher.launch_records(world.root)) == {
+        "r-unstarted": "unresolved elsewhere"}  # fmt: skip
+    assert reading["held"] == [] and reading["rates"][FA_KEY]["held"] == []
+    assert any("r-unstarted" in p and "counts for nothing" in p for p in reading["problems"])
 
 
 # ------------------------------------------------------------------ the cache

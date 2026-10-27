@@ -1761,7 +1761,9 @@ before each command below.
     --runs-root "$R" --supersedes docs/study3-versions.json --supersedes-reason confirmation_c1
   ```
 - **A run's own commit.** A validation or confirmation run under a commit other than the pinned
-  one does not count ([the registration](study3-preregistration.md#voiding-and-supersession)).
+  one does not count ([the registration](study3-preregistration.md#voiding-and-supersession)). A
+  run stops counting only through a record that names it: a journal line alone never takes a run
+  out of the counts.
   The state compares each run's `meta.json` commit with the commit its header's versions record
   pins: that commit or a record-only descendant of it, from a clean checkout. Any other commit, a
   dirty checkout, a commit the checkout does not hold or no recorded commit, and the run is kept

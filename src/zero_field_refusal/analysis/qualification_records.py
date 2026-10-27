@@ -1365,7 +1365,7 @@ def read_qualification(
     # a superseded line counts only through an accepted record that names its run
     superseded_lines = []
     for line in _named_runs(journal, "superseded"):
-        why = _unbacked(line, cycles)
+        why = _unbacked(line, cycles, root)
         if why is None:
             superseded_lines.append(line)
         else:

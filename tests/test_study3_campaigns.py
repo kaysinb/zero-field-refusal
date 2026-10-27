@@ -1175,21 +1175,33 @@ def test_the_driver_passes_the_writers_theta0_to_every_guard(world, tmp_path) ->
     assert not list(tmp_path.rglob("PWNED"))
 
 
-def test_a_held_or_closed_label_is_never_issued_again(world) -> None:
-    """A step that names a cell whose label the launch journal holds, or whose run a closure
-    record closed, is refused (the readers never issue one; the writer checks again)."""
+def test_a_held_or_closed_label_is_never_issued_again(world, monkeypatch) -> None:
+    """A step that names a cell whose label the launch journal holds (through the accepted
+    supersession record that holds the run; its one check, tested on the qualification's own
+    records, accepts it here), or whose run a closure record closed, is refused (the readers
+    never issue one; the writer checks again)."""
+    from zero_field_refusal.analysis import qualification_records
+
     study = Study()
     study.ready()
     study.search()
     world.ready()
     world.core(study)
     label = "c1-numerical-adam_frozen-1.83e-05-s10200/s10200"
-    world.runs.log("held", {"event": "held", "run": label, "run_id": "20261026T000001Z-x-a1",
+    run_id = "20261026T000001Z-x-a1"
+    cycle = world.root / "qualification" / "c1" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True)
+    cycle.write_text(json.dumps({"candidate": 1, "held": []}))
+    monkeypatch.setattr(qualification_records, "cycle_checks", lambda root, **k: {
+        "qualification/c1/supersede-1.json": {"candidate": 1, "accepted": True, "problems": [],
+                                              "launchers": [], "held": [run_id]}})  # fmt: skip
+    world.runs.log("held", {"event": "held", "run": label, "run_id": run_id,
                             "experiment": "study3", "config_hash": "c" * 12,
-                            "reason": "no recorded commit"})  # fmt: skip
+                            "reason": "no recorded commit", "record": str(cycle)})  # fmt: skip
     error = world.refused("numerical")
     assert label in error and "held" in error
     (world.root / "launch" / "held.jsonl").unlink()
+    cycle.unlink()
     closure = decision_hold(world.records, arm="F", rate=1.83e-5, seed=10200)
     world.records.write("closure-c1-F", closure)
     error = world.refused("numerical")

@@ -635,24 +635,26 @@ def test_one_config_run_twice_is_refused_whatever_its_header(world) -> None:
     assert refused(problems, zero, one, "one launcher run")
 
 
-def test_a_journal_superseded_or_held_run_does_not_count(world) -> None:
+def test_a_journal_superseded_or_held_run_does_not_count(world, accepted) -> None:
+    """Each line through the record that names its run: a case restart record (its launcher
+    run), a supersession record (its ``held``)."""
     first = world.run("A", 1.45e-5, 10200, role="numerical")
     label = "A-1.45e-05/s10200"
     world.log("study3-c1", {"event": "superseded", "run": label, "run_id": first,
                             "experiment": "study3", "config_hash": "x", "reason": "lost disk",
-                            "record": "restart-1.json"})  # fmt: skip
+                            "record": str(restart_record(world, first))})  # fmt: skip
     world.recovery("study3-c1", label, "lost disk")
     second = world.run("A", 1.45e-5, 10200, role="numerical", attempt=2)
     held = world.run("F", 1.3e-5, 10200, role="numerical", stop="gradient_spike", steps=3)
     world.log("study3-c1", {"event": "held", "run": "F-1.3e-05/s10200", "run_id": held,
                             "experiment": "study3", "config_hash": "x",
                             "reason": "no commit recorded",
-                            "record": "supersede-1.json"})  # fmt: skip
+                            "record": str(holding_record(world, held))})  # fmt: skip
     found, problems = world.read()
     assert problems == []
     found = by_id(found)
     assert (found[first].state, found[first].counts) == ("superseded", False)
-    assert any("lost disk" in r for r in found[first].reasons)
+    assert any("Pod stopped" in r for r in found[first].reasons)  # its restart record's
     assert (found[second].state, found[second].counts) == ("usable", True)
     assert (found[held].state, found[held].counts) == ("held", False)
     assert any("no commit recorded" in r for r in found[held].reasons)
@@ -719,17 +721,18 @@ def test_a_round_never_recovers_a_later_attempt(world) -> None:
     assert (e.run_id, e.state, problems) == (first, "technical", [])
 
 
-def test_ends_holds_and_supersessions_in_another_log(world) -> None:
+def test_ends_holds_and_supersessions_in_another_log(world, accepted) -> None:
     ended = world.run(campaign="z-c", end=None)
     world.end("a-other", LABEL, 1, ended, "done")
     held = world.run("F", 1.3e-5, campaign="z-c", stop="gradient_spike", steps=3)
     world.log("a-other", {"event": "held", "run": "F-1.3e-05/s10300", "run_id": held,
                           "experiment": "study3", "config_hash": "x", "reason": "unresolved",
-                          "record": "supersede-1.json"})  # fmt: skip
+                          "record": str(holding_record(world, held))})  # fmt: skip
     superseded = world.run("P", 1.3e-5, campaign="a-c")
     world.log("z-other", {"event": "superseded", "run": "P-1.3e-05/s10300",
                           "run_id": superseded, "experiment": "study3", "config_hash": "x",
-                          "reason": "lost disk", "record": "restart-1.json"})  # fmt: skip
+                          "reason": "lost disk",
+                          "record": str(restart_record(world, superseded))})  # fmt: skip
     found, problems = world.read()
     assert problems == []
     assert states(found) == {ended: "usable", held: "held", superseded: "superseded"}
@@ -787,6 +790,16 @@ def accepted(monkeypatch):
     monkeypatch.setattr(qualification_records, "cycle_checks", accept)
 
 
+def holding_record(world, *held: str) -> Path:
+    """A supersession record of candidate 1 whose ``held`` names ``held`` (read with the
+    ``accepted`` fixture): the record a ``held`` line cites."""
+    cycle = world.root / "qualification" / "c1" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True, exist_ok=True)
+    cycle.write_text(json.dumps({"candidate": 1, "launchers": [],
+                                 "held": [{"run_id": run_id} for run_id in held]}))  # fmt: skip
+    return cycle
+
+
 def rejected_record(world, folder="c1", **fields) -> Path:
     """A supersession record the one check rejects (no old record, no diagnosis, no fix; here,
     ``fields`` over a record of candidate 2), with the journal's lines written from it."""
@@ -832,6 +845,83 @@ def test_a_record_in_another_candidates_folder_names_none_of_its_runs(world) -> 
     assert {e.run_id: e.state for e in found} == {cycled: "usable", held: "usable"}
     assert any(p.startswith(f"{cycle}: ") and cycled in p for p in problems), problems
     assert read_holds(world.root)[0] == []
+
+
+def journal_line_number(world, campaign: str) -> int:
+    """The number of the last line of a campaign's log."""
+    return len((world.root / "launch" / f"{campaign}.jsonl").read_text().splitlines())
+
+
+def restart_record(world, run_id: str, *, folder: str = "c1") -> Path:
+    """A case restart record naming ``run_id`` as its launcher run, where ``restart-case``
+    writes one."""
+    case = world.root / "qualification" / folder / "numerical" / "s10200" / "adamw-1.45e-05"
+    case.mkdir(parents=True, exist_ok=True)
+    path = case / "restart-1.json"
+    path.write_text(json.dumps({"case": {"name": "s10200/adamw-1.45e-05"}, "restart": 1,
+                                "reason": "Pod stopped", "attempts": [],
+                                "launcher": {"run_id": run_id}}))  # fmt: skip
+    return path
+
+
+@pytest.mark.parametrize("cited", [None, "restart-1.json", "notes/somewhere-else.json"])
+def test_a_study3_line_counts_only_through_a_record_that_names_its_run(world, cited) -> None:
+    """A run stops counting only through a record that names it: a study-3 ``superseded`` line
+    citing no record, a bare name or another file counts for nothing. It is a problem named by
+    its log and line, never by its content; the run still counts, and its cell is not issued
+    again."""
+    run_id = world.run("A", 1.45e-5, 10200, role="numerical")
+    line = {"event": "superseded", "run": "A-1.45e-05/s10200", "run_id": run_id,
+            "experiment": "study3", "config_hash": "x",
+            "reason": "LINE-FREE-TEXT-1d2c"}  # fmt: skip
+    world.log("study3-c1", {**line, **({} if cited is None else {"record": cited})})
+    number = journal_line_number(world, "study3-c1")
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable"
+    (problem,) = [p for p in problems if "counts for nothing" in p]
+    assert problem.startswith(f"launch/study3-c1.jsonl line {number}: ")
+    assert "LINE-FREE-TEXT" not in problem and "somewhere-else" not in problem
+    assert voided_runs(world.root)[0] == {}
+
+
+def test_a_superseded_line_counts_through_the_restart_record_that_names_its_run(world) -> None:
+    """A case restart record of a candidate's qualification folder that names the line's run as
+    its launcher run backs its ``superseded`` line, cited by a path of the machine that wrote it;
+    one that names another run backs nothing, and a ``held`` line counts through an accepted
+    cycle record alone, never a restart record."""
+    first = world.run("A", 1.45e-5, 10200, role="numerical")
+    restart = restart_record(world, first)
+    cited = "/workspace/runs/" + restart.relative_to(world.root).as_posix()  # a Pod's root
+    world.log("study3-c1", {"event": "superseded", "run": "A-1.45e-05/s10200", "run_id": first,
+                            "experiment": "study3", "config_hash": "x", "reason": "Pod stopped",
+                            "record": cited})  # fmt: skip
+    found, problems = world.read()
+    assert by_id(found)[first].state == "superseded" and problems == []
+    other = world.run("F", 1.3e-5, 10201, role="numerical")
+    held = world.run("P", 1.3e-5, 10202, role="numerical")
+    world.log("study3-c1", {"event": "superseded", "run": "F-1.3e-05/s10201", "run_id": other,
+                            "experiment": "study3", "config_hash": "x", "reason": "x",
+                            "record": cited})  # fmt: skip
+    world.log("study3-c1", {"event": "held", "run": "P-1.3e-05/s10202", "run_id": held,
+                            "experiment": "study3", "config_hash": "x", "reason": "x",
+                            "record": cited})  # fmt: skip
+    found, problems = world.read()
+    states = {e.run_id: e.state for e in found}
+    assert (states[first], states[other], states[held]) == ("superseded", "usable", "usable")
+    assert len([p for p in problems if "counts for nothing" in p]) == 2
+    assert read_holds(world.root)[0] == []
+
+
+def test_a_line_of_another_experiment_is_read_as_before(world) -> None:
+    """Study 2's lines in the same journal are read as the launcher reads them: no problem."""
+    run_id = world.run("A", 1.45e-5, 10200, role="numerical")
+    world.log("study2-x", {"event": "superseded", "run": "x/s1", "run_id": "study2-run-a1",
+                           "experiment": "study2_short", "config_hash": "x",
+                           "reason": "lost disk"})  # fmt: skip
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable" and problems == []
+    voided, named = voided_runs(world.root)
+    assert voided["study2-run-a1"][0] == "superseded" and named == []
 
 
 def test_a_line_counts_only_for_a_run_its_accepted_record_names(world, accepted) -> None:
@@ -1175,7 +1265,7 @@ def seal(monkeypatch) -> list[str]:
     return attempts
 
 
-def test_the_reader_never_opens_responses_or_observations(world, monkeypatch) -> None:
+def test_the_reader_never_opens_responses_or_observations(world, monkeypatch, accepted) -> None:
     world.run("A", 1.45e-5, 10300, mmlu=2.0)
     world.run("A", 2.11e-5, 10300, mmlu=16.0)
     world.run("F", 1.3e-5, 10300, stop="gradient_spike", steps=7)
@@ -1189,7 +1279,7 @@ def test_the_reader_never_opens_responses_or_observations(world, monkeypatch) ->
     (world.root / "study3" / broken / "terminal.json").write_text("{")
     world.log("study3-c1", {"event": "held", "run": "F-1.3e-05/s10300", "run_id": "h",
                             "experiment": "study3", "config_hash": "x", "reason": "unresolved",
-                            "record": "supersede-1.json"})  # fmt: skip
+                            "record": str(holding_record(world, "h"))})  # fmt: skip
     sealed = seal(monkeypatch)
     found, problems = world.read()
     holds, unreadable = read_holds(world.root)
