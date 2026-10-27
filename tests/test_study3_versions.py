@@ -1386,6 +1386,37 @@ def test_the_fixation_pins_no_log_with_an_unresolved_torn_line(study, monkeypatc
     assert record["qualification"]["logs"] == logs
 
 
+FIXED_TORN = "a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn)"
+PINNED_TORN = "its resolution changes a log the fixation pins, so the fixation breaks"
+
+
+def test_a_torn_line_once_the_fixation_exists_is_named_as_its_reader_finds_it(study) -> None:
+    """Once the validation fixation exists, its reader (and ``versions_problems`` through it:
+    ``check``, ``guard`` and the campaign writer) names a torn line the launcher refuses by its
+    log and line, with the command that resolves it and without the builder's "before the
+    fixation"; in a log the fixation pins, it adds that the resolution changes that log, so the
+    fixation breaks."""
+    study.validated()
+    assert study.problems() == []
+    other = study.root / "launch" / "unrelated.jsonl"
+    other.write_text('{"event": "end", "run_id": "a-run-of-no-qualification", "outcome": "done"}\n')
+    assert study.read_validation()[1] == []
+    tear(other, b'{"time": "2026-10-27T00:00:00+00:00", "event": "end", "run_id": "a-ru')
+    found, problems = study.read_validation()
+    assert found is None
+    shown = [p for p in problems if "launch/unrelated.jsonl line 2" in p]
+    assert len(shown) == 1 and shown[0].endswith(
+        f"qualification.logs: launch/unrelated.jsonl line 2: {FIXED_TORN}"), problems  # fmt: skip
+    log = study.root / "launch" / "study3-c1-numerical.jsonl"
+    number = log.read_bytes().count(b"\n") + 1
+    tear(log, b'{"time": "2026-10-27T00:00:00+00:00", "event": "stop", "run": "A-1')
+    where = f"qualification.logs: launch/study3-c1-numerical.jsonl line {number}: "
+    for found in (study.read_validation()[1], study.problems()):
+        shown = [p for p in found if where in p]
+        assert len(shown) == 1 and shown[0].endswith(f"{where}{FIXED_TORN}; {PINNED_TORN}"), found
+        assert not [p for p in found if "before the fixation" in p], found
+
+
 # ------------------------------------------------------------------ a real qualification
 
 

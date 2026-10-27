@@ -1669,7 +1669,9 @@ so it holds no spread. It holds:
   a terminal outcome;
 - the active arms and comparisons, the rates, the route, the closures and the problems;
 - the validation and confirmation runs that do not count for the commit they ran (`not_counted`,
-  below).
+  below);
+- the launch journal's resolved torn lines (`resolved_torn_lines`): each line's log, line number
+  and kind, nothing else of it (below, "A torn launch-log line").
 
 Nothing is decided on a problem: the step stays blocked while one is listed. Read the state
 before each command below.
@@ -1872,9 +1874,17 @@ before each command below.
      - `held`, `superseded`: run the writer again first, then resolve. The two journal repairs,
        `qualify.py supersede` with the same record and `restart-case` again for the case, run
        while the torn line is still unresolved and write only the missing line.
-     - `end`, `start`, `recovery`, `stop` and an unknown kind (`null`): resolve first, since the
-       launcher refuses until then; then relaunch with the same command, or read on.
-     - `torn`, `torn_resolved`: resolve; nothing else is restored.
+     - `end`, `start`, `recovery`, `stop`: resolve first, since the launcher refuses until then;
+       then relaunch with the same command, or read on.
+     - an unknown kind (`null`): read the run directories of the campaign's labels against the
+       readable records first, as the per-kind list says. Such a line may be a lost `held` or
+       `superseded` line cut before its `"event"` (each record's `"time"` comes first). If one
+       is lost, take that kind's order: run the writer again, then resolve. Otherwise resolve
+       first, then relaunch. Either way, the resolution's reason says what was found.
+     - `torn`: resolve; the resolution writes the missing `torn` record, and nothing else is
+       restored.
+     - a lost `torn_resolved`: the line it resolved is unresolved again. Resolve that line again;
+       nothing else is restored.
   2. Record the resolution:
      `python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT`. It
      writes the line's `torn` record if none names it yet, then its `torn_resolved` record.
@@ -1893,8 +1903,11 @@ before each command below.
   the analysis names and blocks on. For a qualification log a validation fixation pins, any
   change of the log after the fixation, the repair and the resolution included, breaks the
   fixation for good: the log is pinned whole, by its sha256. So resolve every torn line, the last
-  line of a log included, before the validation fixation: the fixation pins no log that holds
-  one, and names it by its log and line.
+  line of a log included, before the validation fixation: while any log holds one, the builder
+  (`study3_summary.py fixation validation`) refuses and writes nothing, naming each such line by
+  its log and line. Once the fixation exists, its reader (`check`, `guard`, the campaign writer)
+  names such a line the same way, with the command that resolves it; in a log the fixation pins,
+  the resolution changes that log, so the fixation breaks.
 - **A technical mark outside the qualification.** A technical mark of a search, validation or
   confirmation run, in any arm, stops the route: the step is blocked and technical, with the
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
@@ -2051,8 +2064,8 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
     and never reuses its run id.
   - `held`, `superseded`: run the writer that lost the line again, first, then resolve. Every
     `qualify.py` command that reads the runs refuses a torn line with exit 12, as the launcher
-    does, except these two journal repairs, which go on over it and then print the torn lines
-    left to resolve:
+    does, except these two journal repairs, which run despite the unresolved torn line and then
+    print the torn lines left to resolve:
     - `qualify.py supersede` with the same `--record`, `--diagnosis` and `--fix` as the
       published cycle: it writes only the missing `held` and `superseded` lines and prints
       `{"supersession": …, "journal_lines_written": [run ids]}` (exit 0);
@@ -2071,9 +2084,11 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
     recorded again.
   - `torn`: nothing to restore; the resolution writes the missing `torn` record.
   - `torn_resolved`: the line it resolved is unresolved again; run that resolution again.
-  - unknown (`null`; a blank line, say): read the run directories of the campaign's labels
-    against the readable records, restore what is missing as above, and say what was found in
-    the reason.
+  - unknown (`null`; a blank line, say): first read the run directories of the campaign's labels
+    against the readable records; a line cut before its `"event"` may be a lost `held` or
+    `superseded` line. Restore what is missing as above, in its kind's order (a lost `held` or
+    `superseded` line: its writer again, then the resolution; otherwise the resolution, then the
+    relaunch), and say what was found in the reason.
 
   ```bash
   python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT

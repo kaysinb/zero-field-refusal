@@ -159,7 +159,10 @@ is read.
   written after the fixation included. So no log that holds a torn line the launcher refuses
   (every one not resolved, the last line of its log included, which the other readers skip) is
   pinned: it is a problem by its log and line, in any log, until its resolution
-  (``scripts/launch.py --resolve-torn``) is written, before the fixation.
+  (``scripts/launch.py --resolve-torn``) is written, before the fixation; the builder refuses
+  meanwhile. Once the fixation exists, its reader names such a line by its log and line with the
+  command that resolves it, and, in a log the fixation pins, adds that the resolution changes
+  that log, so the fixation breaks.
 - *The fixed rates* are the stage's: the validation step's cells when it carries them, each at one
   of the arm's two rates, and otherwise the rates of the reading the cells come from (``progress``'
   ``rates`` and ``active``); P is fixed exactly while P–F is open.
@@ -249,9 +252,14 @@ WHAT = ("The versions of study 3's validation and confirmation runs: the commit,
 QUALIFIED = "qualified"
 LABELS = ("lr_l", "lr_u")
 ARMS = ("A", "F", "P")
-# A launch log that holds a torn line the launcher refuses: the fixation pins none (``Rulings``)
+# A launch log that holds a torn line the launcher refuses: the fixation pins none (``Rulings``).
+# While the fixation is built (``qualification_logs``), the line is named so:
 REFUSED_TORN = ("a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn) "
                 "before the fixation; its resolution changes the log")  # fmt: skip
+# Once the fixation exists, its reader names the line so, and in a log the fixation pins adds why
+# the fixation breaks
+FIXED_TORN = "a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn)"
+PINNED_TORN = "its resolution changes a log the fixation pins, so the fixation breaks"
 # The campaign steps whose runs are qualification cases (qualification_records.STEPS; that module
 # loads torch, and is imported only where it is read)
 QUALIFICATION_STEPS = ("numerical", "repair")
@@ -462,8 +470,20 @@ def qualification_logs(
     RUNS_DIR and its sha256 now; and the problems: a log that cannot be read, and each torn line
     the launcher refuses (``study3_records.journal_lines``' ``refused``: every torn line that is
     not resolved, the last of its log included), by its log and line, in any log: it may be a line
-    of the qualification, and its one resolution appends to its log. A log that holds one is not
-    pinned; a resolved one is no problem."""
+    of the qualification, and its one resolution appends to its log (``REFUSED_TORN``: resolve it
+    before the fixation). A log that holds one is not pinned; a resolved one is no problem."""
+    pinned, problems, refused = _qualification_logs(runs_root, candidate)
+    return pinned, problems + [f"{where} line {number}: {REFUSED_TORN}"
+                               for where, number in refused]  # fmt: skip
+
+
+def _qualification_logs(
+    runs_root: str | Path, candidate: int
+) -> tuple[list[dict[str, str]], list[str], list[tuple[str, int]]]:
+    """``qualification_logs``' logs, its logs that cannot be read (as problems), and each torn
+    line the launcher refuses, by its log's path under RUNS_DIR and its number: named by the
+    builder (``qualification_logs``) and by the reader of an existing fixation
+    (``_logs_problems``), each in its own words."""
     _candidate(candidate)
     logs, unreadable = journal_lines(runs_root)
     problems = [f"{problem}: it may hold a line of the qualification" for problem in unreadable]
@@ -477,14 +497,14 @@ def qualification_logs(
                 key = _label(record)
                 if key is not None:
                     labels.add(key)
-    pinned = []
+    pinned, refused = [], []
     for log in logs:
-        problems += [f"{log.path} line {number}: {REFUSED_TORN}" for number in log.refused]
+        refused += [(log.path, number) for number in log.refused]
         if not log.refused and any(
                 line.record is not None and _of_qualification(line.record, candidate, ids, labels)
                 for line in log.lines):  # fmt: skip
             pinned.append({"path": log.path, "sha256": log.sha256})
-    return pinned, problems
+    return pinned, problems, refused
 
 
 def _qualification_start(record: Mapping[str, Any], candidate: int) -> bool:
@@ -902,10 +922,17 @@ def _policy_problems(policy: Mapping[str, Any], repo: Path) -> list[str]:
 
 
 def _logs_problems(pinned: Sequence[Mapping[str, Any]], root: Path, candidate: int) -> list[str]:
-    """The logs the qualification rests on now against the ones pinned."""
-    logs, problems = qualification_logs(root, candidate)
+    """The logs the qualification rests on now against the ones pinned. A torn line the launcher
+    refuses is named by its log and line with the command that resolves it (``FIXED_TORN``),
+    and, in a log the fixation pins, with why the fixation breaks (``PINNED_TORN``): the builder's
+    "before the fixation" no longer applies once the fixation exists."""
+    logs, problems, refused = _qualification_logs(root, candidate)
+    named = {e["path"] for e in pinned}
     found = [f"qualification.logs: {p}" for p in problems]
-    now, named = {e["path"] for e in logs}, {e["path"] for e in pinned}
+    found += [f"qualification.logs: {where} line {number}: {FIXED_TORN}"
+              + (f"; {PINNED_TORN}" if where in named else "")
+              for where, number in refused]  # fmt: skip
+    now = {e["path"] for e in logs}
     if now - named:
         found.append(f"qualification.logs: the qualification rests now on {sorted(now - named)}, "
                      "which the record does not pin")  # fmt: skip
