@@ -416,14 +416,13 @@ def test_logs_and_qualification_records_linked_into_a_runs_responses_are_refused
     log = f"launch/linked.jsonl: a launch log that {SEALED_WHY}"
     guard = SealedGuard(monkeypatch)
     found, problems = runs.read()
-    assert {log, f"{restart}: a case-restart record that {SEALED_WHY}",
-            f"{cycle}: a supersession record that {SEALED_WHY}"} <= set(problems)  # fmt: skip
+    held = f"qualification/c1/supersede-1.json: a supersession record that {SEALED_WHY}"
+    assert {log, f"{restart}: a case-restart record that {SEALED_WHY}", held} <= set(problems)
     assert by_id(found)[other].state == "usable"
     logs, unreadable = journal_lines(runs.root)
     assert [entry.path for entry in logs] == ["launch/study3-c1.jsonl"] and unreadable == [log]
     _, unreadable = read_holds(runs.root)
-    assert unreadable == [log, f"qualification/c1/supersede-1.json: a supersession record that "
-                               f"{SEALED_WHY}"]  # fmt: skip
+    assert unreadable == [log, held]  # the same problem, in the same form
     pinned, found_logs = sv.qualification_logs(runs.root, 1)
     assert [p for p in found_logs if p.startswith(log)]
     reading = qualification_reading(runs.root)
@@ -1201,8 +1200,9 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         for run_id in (regular, k_only):
             assert f"{run_id}: {why}: never opened" in state["problems"]
         assert f"launch/linked.jsonl: a launch log that {SEALED_WHY}" in state["problems"]
-        for what in ("case-restart record", "supersession record"):
-            assert f"{added[what]}: a {what} that {SEALED_WHY}" in state["problems"], what
+        restart = f"{added['case-restart record']}: a case-restart record that {SEALED_WHY}"
+        cycle = f"qualification/c1/supersede-1.json: a supersession record that {SEALED_WHY}"
+        assert restart in state["problems"] and cycle in state["problems"]
         assert route.guarded(10403, route.blocks[10403]).code != 0
         check = route.refused("summary", "check", "--runs-root", root, "--campaign",
                               route.blocks[10403])  # fmt: skip

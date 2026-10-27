@@ -771,9 +771,18 @@ def accepted(monkeypatch):
 
     def accept(runs_root, *, settings=None):
         root = Path(runs_root)
-        return {path.relative_to(root).as_posix(): {"candidate": int(path.parent.name[1:]),
-                                                     "accepted": True, "problems": []}
-                for path in sorted(root.glob("qualification/c*/supersede-*.json"))}  # fmt: skip
+        out = {}
+        for path in sorted(root.glob("qualification/c*/supersede-*.json")):
+            try:
+                record = json.loads(path.read_text())
+            except ValueError:
+                record = None
+            out[path.relative_to(root).as_posix()] = {
+                "candidate": int(path.parent.name[1:]), "readable": record is not None,
+                "accepted": record is not None, "problems": [],
+                **{key: [e["run_id"] for e in (record or {}).get(key) or []]
+                   for key in ("launchers", "held")}}  # fmt: skip
+        return out
 
     monkeypatch.setattr(qualification_records, "cycle_checks", accept)
 
@@ -822,6 +831,29 @@ def test_a_record_in_another_candidates_folder_names_none_of_its_runs(world) -> 
     found, problems = world.read()
     assert {e.run_id: e.state for e in found} == {cycled: "usable", held: "usable"}
     assert any(p.startswith(f"{cycle}: ") and cycled in p for p in problems), problems
+    assert read_holds(world.root)[0] == []
+
+
+def test_a_line_counts_only_for_a_run_its_accepted_record_names(world, accepted) -> None:
+    """A ``superseded`` line counts only for a run among its record's ``launchers``, a ``held``
+    line only for one among its ``held``: an accepted record of ``c2/`` and lines that cite it
+    naming a candidate-1 run, or a run under the other key, are named problems and count for
+    nothing."""
+    other = world.run("A", 1.45e-5, 10201, role="numerical")  # candidate 1's
+    named = world.run("F", 1.3e-5, 10202, role="numerical")
+    cycle = world.root / "qualification" / "c2" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True)
+    cycle.write_text(json.dumps({"candidate": 2, "launchers": [{"run_id": named}],
+                                 "held": []}))  # fmt: skip
+    for event, run_id in (("superseded", other), ("held", named)):
+        world.log("study3-cycle", {"event": event, "run": "x/s1", "run_id": run_id,
+                                   "experiment": "study3", "config_hash": "x",
+                                   "reason": "the cycle", "record": str(cycle)})  # fmt: skip
+    found, problems = world.read()
+    states = {e.run_id: e.state for e in found}
+    assert states[other] == "usable" and states[named] == "superseded"
+    assert any(other in p and "counts for nothing" in p and "launchers" in p for p in problems)
+    assert any(named in p and "counts for nothing" in p and "held" in p for p in problems)
     assert read_holds(world.root)[0] == []
 
 
@@ -1358,12 +1390,14 @@ def test_a_hold_is_listed_for_its_label_whatever_its_config_hash(world, accepted
     assert (e.run_id, e.state, problems) == (held, "held", [])
     (world.root / "launch" / "c-bad.jsonl").write_bytes(b"\xff\xfe not text")
     cycle.write_text("{")
-    holds, problems = read_holds(world.root)
-    assert problems == [
+    holds, problems = read_holds(world.root)  # the record unreadable: no check accepts it
+    assert {
         "launch/c-bad.jsonl: an unreadable launch journal",
         "qualification/c1/supersede-1.json: an unreadable supersession record",
-    ]
-    assert [r["kind"] for r in holds[0]["records"]] == ["journal"]
+    } <= set(problems)
+    assert any(p.startswith("launch/a-cycle.jsonl line 1: ") and held in p
+               and "counts for nothing" in p for p in problems), problems  # fmt: skip
+    assert holds == []
 
 
 def test_the_reader_imports_no_gpu_path() -> None:

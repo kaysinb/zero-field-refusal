@@ -103,9 +103,11 @@ longer counts is listed with its reason, never counted:
   config hash: ``read_holds``);
 - a supersession record supersedes or holds only once the one check accepted it
   (``qualification_records.cycle_checks``, loaded only when a record is there), and a
-  ``superseded`` or ``held`` line written from a supersession record the check did not accept,
-  or from one that is not there, counts for nothing; every problem of the check is a problem
-  here;
+  ``superseded`` or ``held`` line that cites a supersession record counts only through a record
+  the check accepted, and only for a run that record names under ``launchers`` or ``held``
+  (``_unbacked``); any other such line counts for nothing and is a problem by its log and line
+  (``qualify.py`` publishes the record before its lines); every problem of the check is a
+  problem here;
 - ``recovered``: an attempt without a published terminal record before a recovery round of its
   label (``--recovery REASON``, its ``runs``, in any log): the documented interruption
   supersedes it, and a later attempt decides. Before the round are the label's attempts numbered
@@ -334,6 +336,7 @@ class _Journal:
     recoveries: list[dict[str, Any]] = field(default_factory=list)
     corrupt: list[str] = field(default_factory=list)  # "<log> line <n>": an unparseable line
     sealed: list[str] = field(default_factory=list)  # logs under a sealed folder, never opened
+    unbacked: list[str] = field(default_factory=list)  # lines that count for nothing: why
 
 
 def step_key(candidate: int, step: str, round_: int | None = None) -> str:
@@ -507,6 +510,7 @@ class EndpointReader:
             "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
         self.problems += [f"{where}: {sealed_record('a launch log', self.root / where)}"
                           for where in self.journal.sealed]  # fmt: skip
+        self.problems += self.journal.unbacked
         experiment = self.root / EXPERIMENT
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
                         if d.is_dir() and d.name != DECISIONS]  # fmt: skip
@@ -608,11 +612,12 @@ def _read_journal(
     """The launch journal's study-3 records from every log: the starts with their campaign (the
     log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
     lines into ``voided`` by run id; with ``cycles`` (the one check of every supersession record),
-    not a line written from a supersession record the check did not accept (``_unbacked``). A line
-    cut short by a crash is skipped only as the last line of its log (the launcher's rule); an
-    unparseable line before the last is skipped too but listed in ``corrupt`` with its log's name
-    and its number, never its content. A log that
-    resolves under a sealed folder is never opened: it is listed in ``sealed``, by its path under
+    a line that cites a supersession record counts only through a record the check accepted, and
+    only for a run that record names (``_unbacked``): any other is listed in ``unbacked``, with
+    why, and counts for nothing. A line cut short by a crash is skipped only as the last line of
+    its log (the launcher's rule); an unparseable line before the last is skipped too but listed
+    in ``corrupt`` with its log's name and its number, never its content. A log that resolves
+    under a sealed folder is never opened: it is listed in ``sealed``, by its path under
     RUNS_DIR."""
     journal = _Journal()
     for log in sorted((root / "launch").glob("*.jsonl")):
@@ -622,7 +627,7 @@ def _read_journal(
         campaign = log.stem
         values, corrupt = parse_journal_lines(log.read_text(encoding="utf-8").splitlines())
         journal.corrupt += [f"launch/{log.name} line {number}" for number in corrupt]
-        for record in values:
+        for number, record in enumerate(values, 1):
             if not isinstance(record, dict):
                 continue
             event, run_id = record.get("event"), record.get("run_id")
@@ -632,8 +637,12 @@ def _read_journal(
                 journal.ends[run_id].append(record)
             elif event == "recovery" and record.get("experiment") == EXPERIMENT:
                 journal.recoveries.append(record)
-            elif (event in ("superseded", "held") and isinstance(run_id, str)
-                  and not _unbacked(record.get("record"), cycles)):  # fmt: skip
+            elif event in ("superseded", "held") and isinstance(run_id, str):
+                why = _unbacked(record, cycles)
+                if why is not None:
+                    journal.unbacked.append(_unbacked_line(f"launch/{log.name}", number, record,
+                                                           why))  # fmt: skip
+                    continue
                 _void(voided, run_id, event,
                       f"{event} in the launch journal: {record.get('reason')}")  # fmt: skip
     return journal
@@ -684,14 +693,15 @@ def _voiding_records(
             _void(voided, launcher["run_id"], "superseded",
                   f"case restart {path}: {record.get('reason')}")  # fmt: skip
     for path in sorted(out.glob("c*/supersede-*.json")):
+        where = path.relative_to(root).as_posix()  # named as ``read_holds`` names it: once
         if under_sealed(path, root):
-            problems.append(f"{path}: {sealed_record('a supersession record', path, root)}")
+            problems.append(f"{where}: {sealed_record('a supersession record', path, root)}")
             continue
         record = _json(path)
         if record is None:
-            problems.append(f"{path}: an unreadable supersession record")
+            problems.append(f"{where}: an unreadable supersession record")
             continue
-        if not (cycles.get(path.relative_to(root).as_posix()) or {}).get("accepted"):
+        if not (cycles.get(where) or {}).get("accepted"):
             continue  # rejected: it voids and holds nothing (its problems, below)
         why = f"engineering cycle {path}: {record.get('diagnosis')}; fix: {record.get('fix')}"
         for state, entries in (("superseded", "launchers"), ("held", "held")):
@@ -720,37 +730,60 @@ def _cycle_checks(
     return qualification_records.cycle_checks(root)
 
 
-_CYCLE_PATH = re.compile(r"qualification/c[^/]*/supersede-[^/]*\.json")
+_CYCLE_PATH = re.compile(r"qualification/[^/]+/supersede-[^/]*\.json")
+_LINE_KEYS = {"superseded": "launchers", "held": "held"}  # what a line's record names it under
 
 
-def _unbacked(cited: Any, cycles: Mapping[str, Mapping[str, Any]] | None) -> bool:
-    """Whether a journal line's ``record`` (a path of the machine that wrote it, read by its last
-    three components) is a supersession record (``qualification/c<N>/supersede-*.json``) that the
-    one check (``cycles``) read and did not accept: such a line supersedes and holds nothing. A
-    line of a record that is not there, or that cannot be read (its reader names it), stands as
-    the launcher reads it. Without ``cycles``, no line is."""
+def _unbacked(
+    line: Mapping[str, Any], cycles: Mapping[str, Mapping[str, Any]] | None
+) -> str | None:
+    """Why a ``superseded`` or ``held`` line counts for nothing, or None when it counts. A line
+    that cites a supersession record (its ``record``, a path of the machine that wrote it, read
+    by its last three components: ``qualification/<folder>/supersede-*.json``) counts only
+    through a record the one check (``cycles``) has an entry for and accepted, and only for a run
+    that record names under ``launchers`` (a ``superseded`` line) or ``held`` (a ``held`` line).
+    A record that is not there, lies in no candidate's folder or has no entry, or that the check
+    did not accept, backs no line (``qualify.py`` publishes the record before it writes its
+    lines). Any other line counts as the launcher reads it. Without ``cycles``, every line
+    counts."""
+    cited = line.get("record")
     if cycles is None or not isinstance(cited, str):
-        return False
+        return None
     where = "/".join(PurePosixPath(cited.replace("\\", "/")).parts[-3:])
-    check = cycles.get(where) if _CYCLE_PATH.fullmatch(where) else None
-    return check is not None and check.get("readable", True) and not check.get("accepted")
+    if not _CYCLE_PATH.fullmatch(where):
+        return None
+    check = cycles.get(where)
+    if check is None:
+        return (f"it cites {where}, which no check of a supersession record covers (no record "
+                "there, or none in a candidate's folder)")  # fmt: skip
+    if not check.get("accepted"):
+        return f"it cites {where}, a supersession record the check did not accept"
+    key = _LINE_KEYS[line["event"]]
+    if line.get("run_id") not in (check.get(key) or ()):
+        return f"{line.get('run_id')} is not among the {key} of {where}, the record it cites"
+    return None
+
+
+def _unbacked_line(log: str, number: int, line: Mapping[str, Any], why: str) -> str:
+    """The problem of a line that counts for nothing (``_unbacked``)."""
+    return (f"{log} line {number}: a {line.get('event')} line of {line.get('run_id')} counts for "
+            f"nothing: {why}")  # fmt: skip
 
 
 def voided_runs(
     runs_root: str | Path, *, cycles: Mapping[str, Mapping[str, Any]] | None = None
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """The launcher runs that no longer count, by run id (superseded or held, and why), as
-    ``read_endpoints`` reads them: the journal's ``superseded`` and ``held`` lines (but those
-    written from a supersession record the one check read and did not accept), the case
-    restarts and the
-    accepted supersession records (``cycles``: ``qualification_records.cycle_checks``, read
-    here by default); and the problems: the voiding records that cannot be read, and every
-    problem of the one check."""
+    ``read_endpoints`` reads them: the journal's ``superseded`` and ``held`` lines that count
+    (``_unbacked``), the case restarts and the accepted supersession records (``cycles``:
+    ``qualification_records.cycle_checks``, read here by default); and the problems: the
+    voiding records that cannot be read, every problem of the one check, and every line that
+    counts for nothing."""
     root = Path(runs_root)
     cycles = _cycle_checks(root, cycles)
     voided: dict[str, tuple[str, str]] = {}
-    _read_journal(root, voided, cycles)
-    return voided, _voiding_records(root, voided, cycles)
+    journal = _read_journal(root, voided, cycles)
+    return voided, [*_voiding_records(root, voided, cycles), *journal.unbacked]
 
 
 def _void(voided: dict[str, tuple[str, str]], run_id: str, state: str, reason: str) -> None:
@@ -781,9 +814,9 @@ def read_holds(
     sealed folder, never opened): a hold they hold cannot be listed. Of a record only its numbers,
     ids, paths, hashes and the hold's reason are kept. A supersession record holds only once the
     one check accepted it (``cycles``: ``qualification_records.cycle_checks``, read here by
-    default), and a ``held`` line written from one it did not accept holds nothing: their
-    problems are
-    the run records' (``read_endpoints``)."""
+    default; its problems are the run records', ``read_endpoints``), and a ``held`` line that
+    cites a supersession record holds only through an accepted record whose ``held`` names its
+    run (``_unbacked``): any other is named among the problems and holds nothing."""
     root = Path(runs_root)
     cycles = _cycle_checks(root, cycles)
     holds: dict[str, dict[str, Any]] = {}
@@ -801,8 +834,11 @@ def read_holds(
         for line in log.lines:
             record = line.record  # an unparseable line: read_endpoints names it, unless last
             if (record is not None and record.get("event") == "held"
-                    and isinstance(record.get("run_id"), str)
-                    and not _unbacked(record.get("record"), cycles)):  # fmt: skip
+                    and isinstance(record.get("run_id"), str)):  # fmt: skip
+                why = _unbacked(record, cycles)
+                if why is not None:
+                    problems.append(_unbacked_line(log.path, line.line, record, why))
+                    continue
                 add(record, {"kind": "journal", "path": log.path, "root": "runs",
                              "line": line.line, "line_sha256": line.line_sha256,
                              "sha256": log.sha256})  # fmt: skip

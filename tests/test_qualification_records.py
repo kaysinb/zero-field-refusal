@@ -40,12 +40,13 @@ from test_qualify import (
     settled_launcher,
     trajectory_result,
 )
+from test_study3_records import THETA0
 
 from zero_field_refusal import code_identity
 from zero_field_refusal import launch as launcher
 from zero_field_refusal import qualification as q
 from zero_field_refusal.analysis import qualification_records as qr
-from zero_field_refusal.analysis.study3_records import read_holds, voided_runs
+from zero_field_refusal.analysis.study3_records import EndpointReader, read_holds, voided_runs
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import load_campaign
 from zero_field_refusal.paths import CONFIG_ROOT
@@ -670,8 +671,8 @@ def test_a_case_restart_after_the_cycle_leaves_it_valid(qualify, monkeypatch, tm
     assert after["problems"] == []
     assert set(before["voided"]) <= set(after["voided"])
     where = path.relative_to(world.root).as_posix()
-    assert qr.cycle_checks(world.root)[where] == {"candidate": 1, "readable": True,
-                                                  "accepted": True, "problems": []}  # fmt: skip
+    check = qr.cycle_checks(world.root)[where]
+    assert (check["accepted"], check["problems"]) == (True, [])
     for earlier in ("2000-01-01T00:00:00+00:00", None):  # earlier, or not readable: earlier
         rewrite(folder / "restart-1.json", {**restart, "restarted_at": earlier})
         reading = world.read(expected_code=FIX["sha256"])
@@ -1039,15 +1040,85 @@ def test_a_hold_under_an_earlier_config_hash_holds_its_label(qualify, monkeypatc
         assert record["sha256"] == file_sha256(world.root / record["path"])
 
 
+def held_cycle(qualify, monkeypatch, tmp_path):
+    """A cycle written by the script that supersedes launcher runs and holds one (10201's stopped
+    run, whose records record no commit), with the journal's lines it writes."""
+    no_commit = UNRESOLVABLE["no commit"][0]
+    world, identity, cycle = cycle_on_a_stop(qualify, monkeypatch, tmp_path, no_commit)
+    launchers = {r["run_id"] for r in cycle["launchers"]}
+    held = {r["run_id"] for r in cycle["held"]}
+    assert launchers and held == {identity["run_id"]}
+    return world, launchers, held
+
+
+def test_a_script_written_cycle_supersedes_and_holds_through_the_run_readers(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """With the one check itself (no stub): the run readers apply the accepted record's
+    ``launchers`` and ``held``, and the journal's lines written from it, with no problem."""
+    world, launchers, held = held_cycle(qualify, monkeypatch, tmp_path)
+    voided, problems = voided_runs(world.root)
+    assert problems == []
+    assert {r: voided[r][0] for r in launchers | held} == {
+        **dict.fromkeys(launchers, "superseded"), **dict.fromkeys(held, "held")}  # fmt: skip
+    theta0 = tmp_path / "theta0"
+    theta0.mkdir()
+    (theta0 / "summary.json").write_text(json.dumps({**THETA0, "K_benign": 0.0}))
+    reader = EndpointReader(world.root, theta0=theta0)
+    assert {r: reader.voided[r][0] for r in launchers | held} == {
+        r: voided[r][0] for r in launchers | held}  # fmt: skip
+    assert not [p for p in reader.problems if "supersede" in p or "counts for nothing" in p]
+    assert held <= {h["run_id"] for h in read_holds(world.root)[0]}
+
+
+def assert_lines_count_for_nothing(world, runs) -> None:
+    """None of ``runs`` is superseded or held by a journal line, each line a named problem."""
+    voided, problems = voided_runs(world.root)
+    assert not runs & set(voided), voided
+    for run_id in runs:
+        assert any(run_id in p and "counts for nothing" in p for p in problems), problems
+    holds, hold_problems = read_holds(world.root)
+    assert not runs & {h["run_id"] for h in holds}
+
+
+@pytest.mark.parametrize("where", ["deleted", "c01"])
+def test_a_line_whose_record_the_check_never_saw_counts_for_nothing(
+    qualify, monkeypatch, tmp_path, where
+) -> None:
+    """``qualify.py`` publishes the record before its journal lines: a ``superseded`` or
+    ``held`` line counts only through a record the one check accepted. The script's record then
+    deleted, or placed in ``c01/`` (no candidate's folder: a named problem) with its lines
+    pointing there: every line is a named problem, and none supersedes or holds."""
+    world, launchers, held = held_cycle(qualify, monkeypatch, tmp_path)
+    path = world.out / "c1" / "supersede-1.json"
+    if where == "deleted":
+        path.unlink()
+    else:
+        moved = world.out / "c01" / "supersede-1.json"
+        moved.parent.mkdir()
+        path.rename(moved)
+        for log in (world.root / "launch").glob("*.jsonl"):
+            log.write_text(
+                log.read_text().replace(
+                    "/qualification/c1/supersede-1.json", "/qualification/c01/supersede-1.json"
+                )
+            )
+        check = qr.cycle_checks(world.root)["qualification/c01/supersede-1.json"]
+        assert check["accepted"] is False
+        assert any("no candidate" in p for p in check["problems"]), check
+    assert_lines_count_for_nothing(world, launchers | held)
+
+
 def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     qualify, monkeypatch, tmp_path
 ) -> None:
     """A record that holds a run and cannot be read is a problem naming it, once, whichever
     reader finds it so (the reading's own, ``read_holds``): never a hold silently missing from
-    ``held``. The candidate's supersession record cut short: the hold is listed from its journal
-    line alone, beside the problem. Then the launch log that holds the line, its bytes not UTF-8:
-    no hold is listed, beside the problem. Another candidate's cycle record that cannot be read is
-    not this candidate's problem; a log that only ``read_holds`` reports is."""
+    ``held``. The candidate's supersession record cut short: no check accepts it, so its held line
+    counts for nothing, a named problem beside the record's own. Then the launch log that holds
+    the line, its bytes not UTF-8: no hold is listed, beside the problem. Another candidate's
+    cycle record that cannot be read is not this candidate's problem; a log that only
+    ``read_holds`` reports is."""
     no_commit = UNRESOLVABLE["no commit"][0]
     world, identity, _ = cycle_on_a_stop(qualify, monkeypatch, tmp_path, no_commit)
     cycle = world.out / "c1" / "supersede-1.json"
@@ -1056,11 +1127,11 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     corrupt(other)
     corrupt(cycle)
     reading = world.read(expected_code=FIX["sha256"])
-    assert [p for p in reading["problems"] if "supersede-1.json" in p] == [
+    assert [p for p in reading["problems"] if p.startswith(f"{cycle}: ")] == [
         f"{cycle}: an unreadable supersession record"]  # fmt: skip
-    (held,) = reading["held"]
-    assert held["run_id"] == identity["run_id"]
-    assert [r["kind"] for r in held["records"]] == ["journal"]
+    assert reading["held"] == []
+    assert any(identity["run_id"] in p and "counts for nothing" in p
+               for p in reading["problems"]), reading["problems"]  # fmt: skip
     log = world.root / "launch" / f"{world.name}.jsonl"
     log.write_bytes(log.read_bytes() + b"\xff\xfe\n")
     reading = world.read(expected_code=FIX["sha256"])
@@ -1091,7 +1162,7 @@ def test_a_hold_applies_to_its_label_whatever_run_id_it_names(qualify, tmp_path)
     run = world.run(case)
     elsewhere = dataclasses.replace(run, config_hash="0" * 12)
     launcher.hold(world.root, "a-other", elsewhere, "r-unstarted", reason="unresolved elsewhere",
-                  record="qualification/c1/supersede-1.json")  # fmt: skip
+                  record="a-hold-record.json")  # no supersession record's line  # fmt: skip
     cached = world.verdict(qualify)
     reading = world.read()
     assert_as_the_verdict(reading, cached)

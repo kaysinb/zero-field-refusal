@@ -2453,6 +2453,36 @@ def test_a_rejected_supersession_record_blocks_the_route_at_the_search(worlds) -
     assert read(records, runs)["problems"] == []
 
 
+@pytest.mark.parametrize("where", ["missing", "c01"])
+def test_a_line_of_a_record_the_check_never_saw_blocks_the_route_at_the_search(worlds, where):
+    """A ``held`` or ``superseded`` line citing a supersession record that is not there, or one in
+    ``c01/`` (no candidate's folder), counts for nothing: each is a named problem, and the route
+    blocks at the search."""
+    from zero_field_refusal.analysis.study3_records import voided_runs
+
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    ids = sorted(p.name for p in (runs.root / "study3").iterdir())
+    folder = "c1" if where == "missing" else "c01"
+    cycle = runs.root / "qualification" / folder / "supersede-1.json"
+    if where == "c01":
+        cycle.parent.mkdir(parents=True)
+        cycle.write_text(json.dumps({"candidate": 1, "supersession": 1,
+                                     "launchers": [{"run_id": ids[1]}],
+                                     "held": [{"run_id": ids[0]}]}))  # fmt: skip
+    for event, run_id in (("held", ids[0]), ("superseded", ids[1])):
+        runs.log("study3-cycle", {"event": event, "run_id": run_id, "experiment": "study3",
+                                  "reason": "the cycle", "record": str(cycle)})  # fmt: skip
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["outcome"]) == (
+        "search", "blocked", None)  # fmt: skip
+    for run_id in ids[:2]:
+        assert any(run_id in p and "counts for nothing" in p for p in result["problems"])
+    assert voided_runs(runs.root)[0] == {}
+
+
 @pytest.mark.parametrize("case, status, end, first, recovery", [
     ("failed, no round spent", "failed", "technical", None, True),
     ("its own round spent on an earlier attempt", "failed", "technical", "own", False),
@@ -2529,8 +2559,8 @@ def test_the_reader_reads_a_closure_record_from_its_files(worlds, monkeypatch) -
 
     monkeypatch.setattr(qualification_records, "read_qualification", fake)
     monkeypatch.setattr(qualification_records, "cycle_checks", lambda root, **k: {
-        "qualification/c1/supersede-1.json": {"candidate": 1, "accepted": True,
-                                              "problems": []}})  # fmt: skip
+        "qualification/c1/supersede-1.json": {"candidate": 1, "accepted": True, "problems": [],
+                                              "launchers": [], "held": [held_id]}})  # fmt: skip
     result = read(records, runs, settings={})
     assert result["problems"] == []
     assert (result["stage"], result["step"]["record"]) == (
@@ -2602,8 +2632,8 @@ def test_each_candidates_qualification_is_read_under_its_own_code(worlds, monkey
     monkeypatch.setattr(qualification_records, "read_qualification", recording)
     # the one check of the cycle record (tested on the qualification's own records) accepts it
     monkeypatch.setattr(qualification_records, "cycle_checks", lambda root, **k: {
-        "qualification/c2/supersede-1.json": {"candidate": 2, "accepted": True,
-                                              "problems": []}})  # fmt: skip
+        "qualification/c2/supersede-1.json": {"candidate": 2, "accepted": True, "problems": [],
+                                              "launchers": [], "held": []}})  # fmt: skip
     result = read(records, runs, expected_code=fix, settings={})
     assert read_under == {1: old, 2: fix}
     assert (result["stage"], result["candidate"], result["problems"]) == ("numerical", 2, [])

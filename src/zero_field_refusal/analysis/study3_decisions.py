@@ -22,8 +22,10 @@ records; the state machine consumes only what this module accepts.
 - ``closures``: the closure records of a candidate's arms, each with its state and problems, as
   ``decisions`` lists the others; ``hold_reasons``: the ids of the reasons a hold line states;
   ``end_lines`` and ``start_lines``: each run's last ``end`` line and its start line in the
-  launch journal, as a closure cites them; ``end_reason``: the reason id of an end's outcome;
-  ``invalidate``: an entry made invalid, with why.
+  launch journal, as a closure cites them; ``end_reason``: the id an end's outcome would give a
+  closure's reason (``launcher_<outcome>``), which a closure may not carry (it would close a
+  technical mark outside the qualification: ``NOT_ACCEPTED``); ``invalidate``: an entry made
+  invalid, with why.
 
 **Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate), ``budget-c<N>`` and
 ``closure-c<N>-<arm>`` (one per candidate and arm A, F or P).
@@ -244,9 +246,10 @@ HOLD_REASONS = {
     "no_terminal_record": "no whole terminal record",
 }
 # The line a closure cites: a held line, the run's last end line, or its start line when the
-# launcher never ended it; an end line's reason is its outcome's (``end_reason``)
+# launcher never ended it (an end or start line of a run under another commit alone)
 LINE_KINDS = ("held", "end", "start")
-START_REASON = "no_end_line"  # a start line's reason: the launcher never ended the run
+# A start line's own reason (the launcher never ended the run): a closure may not carry it
+START_REASON = "no_end_line"
 # A closure of a technical mark outside the qualification (its reason an end's outcome or the
 # start line's): its registered route is its engineering cycle, not implemented yet
 NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
@@ -310,8 +313,9 @@ def kind_of(kind: str) -> tuple[str, int | None]:
 
 
 def end_reason(outcome: Any) -> str | None:
-    """The reason id a closure names for an end line with the launcher's ``outcome``
-    (``launcher_<outcome>``), None for an outcome that names none."""
+    """The reason id an end line with the launcher's ``outcome`` would give a closure
+    (``launcher_<outcome>``), None for an outcome that names none: a closure may not carry it
+    (``NOT_ACCEPTED``)."""
     return (
         f"launcher_{outcome}" if isinstance(outcome, str) and _OUTCOME.fullmatch(outcome) else None
     )
@@ -1322,20 +1326,12 @@ def _held_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], 
 
 def _end_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], where: str,
               logs: Sequence[Any]) -> list[str]:  # fmt: skip
-    """A cited end line: the run's last ``end`` in the journal, whatever its outcome, giving
-    the record's reason (unless the record names a run under another commit,
-    ``UNCOUNTED_REASONS``), of a run nothing followed (``_followed``)."""
+    """A cited end line: the ``end`` of the record's run, its last in the journal, whatever its
+    outcome (the record's reason is the run's uncounted reason, not the outcome's: the schema
+    checks it), of a run nothing followed (``_followed``)."""
     if event.get("event") != "end":
         return [f"{where} is not an end line of the launch journal"]
     found = _of_run(event, record)
-    outcome = event.get("outcome")
-    if record["reason"] in UNCOUNTED_REASONS:  # a run under another commit: its own reason
-        pass
-    elif end_reason(outcome) is None:
-        found.append(f"line: its end's outcome {outcome!r} names no reason")
-    elif record["reason"] != end_reason(outcome):
-        found.append(f"reason: is {record['reason']!r}, not {end_reason(outcome)!r}, the one its "
-                     f"end's outcome {outcome!r} gives")  # fmt: skip
     last = end_lines(root, logs).get(record["run_id"])
     if last is None or (last["path"], last["line"]) != (
         record["line"]["path"],

@@ -83,12 +83,16 @@ record, and one it accepts, followed by the registered steps after it, stays val
   (``provenance.gpu_code.sha256``), and its fix's (``fix_gpu_code.sha256``) is named and another
   (the same path is not simply rerun).
 A record that fails any check voids and holds nothing: the failed attempts keep counting, its
-launcher runs stay located (a ``superseded`` line written from a record the check did not accept,
-or from one that is not there, does not count) and its kept cases add nothing. Every reader of
-what a record voids or holds applies the same check (``study3_records``: ``read_endpoints``,
-``read_holds``), and every problem of it is one of the run records' problems, so that it blocks
-at every step. The chain of GPU codes (``study3_progress.code_chain``) reads the records alone
-(``supersessions``) and counts a second record for a candidate as a break.
+launcher runs stay located and its kept cases add nothing. A ``superseded`` or ``held`` line that
+cites a supersession record counts only through a record the check accepted, and only for a run
+that record names under ``launchers`` or ``held``; any other (a record not there, in no
+candidate's folder, not accepted, or not naming the run) is a problem and counts for nothing.
+A record in a folder whose name is not exactly ``c<N>`` (``c01/``, say) belongs to no
+candidate. Every reader of what a record voids or holds applies the same check
+(``study3_records``: ``read_endpoints``, ``read_holds``), and every problem of it is one of the
+run records' problems, so that it blocks at every step. The chain of GPU codes
+(``study3_progress.code_chain``) reads the records alone (``supersessions``) and counts a second
+record for a candidate as a break.
 
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
@@ -662,6 +666,7 @@ class _Cycles:
             out[path] = {"candidate": self.candidate, "record": record,
                          "readable": path not in named or record is not None,
                          "accepted": record is not None and not found,
+                         **_named_entries(record),
                          "problems": [f"{path}: {why}" for why in found]}  # fmt: skip
         return out
 
@@ -879,6 +884,17 @@ class _Cycles:
         return None if verdict["state"] == ACCEPTED else verdict["kind"]
 
 
+def _named_entries(record: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    """The run ids a supersession record names under ``launchers`` and ``held``: the runs a
+    journal line written from it may supersede or hold (``study3_records._unbacked``)."""
+    out: dict[str, list[str]] = {}
+    for key in ("launchers", "held"):
+        entries = (record or {}).get(key)
+        out[key] = [e["run_id"] for e in (entries if isinstance(entries, list) else [])
+                    if isinstance(e, Mapping) and isinstance(e.get("run_id"), str)]  # fmt: skip
+    return out
+
+
 def _checks(
     root: Path, scope: Scope, journal: Sequence[tuple[str, Mapping[str, Any]]],
     issued: Mapping[int, Sequence[tuple[str, float, int]]] | None = None,
@@ -889,12 +905,12 @@ def _checks(
     out: dict[Path, dict[str, Any]] = {}
     folders = sorted({p.parent for p in (root / "qualification").glob("c*/supersede-*.json")})
     for folder in folders:
-        number = re.fullmatch(r"c(\d+)", folder.name)
+        number = re.fullmatch(r"c([1-9]\d*)", folder.name)  # exactly c<N>: c01 is no folder
         candidate = int(number[1]) if number else None
         if candidate is None or candidate not in dict(scope.numerical_seeds):
             for path in sorted(folder.glob("supersede-*.json")):
                 out[path] = {"candidate": candidate, "record": None, "readable": True,
-                             "accepted": False,
+                             "accepted": False, "launchers": [], "held": [],
                              "problems": [f"{path}: it lies in {folder.name}/, the folder of no "
                                           "candidate of the qualification: it voids "
                                           "nothing"]}  # fmt: skip
@@ -910,7 +926,10 @@ def cycle_checks(
     """The one check of every supersession record under RUNS_DIR (module docstring, "The
     engineering cycle"), by its path under RUNS_DIR (``qualification/c<N>/<name>``): its
     ``candidate``, whether it could be ``readable`` (its readers name one that cannot), whether
-    it is ``accepted`` and the ``problems`` that name why not. Every
+    it is ``accepted`` and the ``problems`` that name why not, and the run ids it names under
+    ``launchers`` and ``held`` (a journal line counts only for those, and only when the record
+    is accepted). A record in a folder whose name is not exactly ``c<N>`` belongs to no
+    candidate: a problem. Every
     reader of what a record voids or holds applies an accepted record alone
     (``study3_records``). ``settings``: configs/experiments/qualification.yaml as loaded (this
     checkout's, by default); when they are not the qualification's, no record is accepted."""
@@ -923,13 +942,14 @@ def cycle_checks(
                          else settings)  # fmt: skip
     except (QualificationError, OSError, ValueError) as exc:
         return {path.relative_to(root).as_posix(): {
-            "candidate": None, "readable": True, "accepted": False,
+            "candidate": None, "readable": True, "accepted": False, "launchers": [], "held": [],
             "problems": [f"{path}: the qualification's settings cannot be read ({exc}): no "
                          "supersession record is checked, and none voids anything"]}
             for path in files}  # fmt: skip
     return {path.relative_to(root).as_posix(): {
         "candidate": check["candidate"], "readable": check["readable"],
-        "accepted": check["accepted"], "problems": check["problems"]}
+        "accepted": check["accepted"], "problems": check["problems"],
+        "launchers": check["launchers"], "held": check["held"]}
         for path, check in _checks(root, scope, _journal(root, [])).items()}  # fmt: skip
 
 
@@ -1342,9 +1362,15 @@ def read_qualification(
     holds, unreadable = read_holds(root, cycles=cycles)
     problems += _hold_problems(root, candidate, unreadable)
     reading.read(cases, checks)
-    # a launcher run a cycle that voids nothing logged superseded is not superseded
-    superseded_lines = [line for line in _named_runs(journal, "superseded")
-                        if not _unbacked(line.get("record"), cycles)]  # fmt: skip
+    # a superseded line counts only through an accepted record that names its run
+    superseded_lines = []
+    for line in _named_runs(journal, "superseded"):
+        why = _unbacked(line, cycles)
+        if why is None:
+            superseded_lines.append(line)
+        else:
+            problems.append(f"{root / 'launch' / (line['campaign'] + '.jsonl')}: a superseded "
+                            f"line of {line['run_id']} counts for nothing: {why}")  # fmt: skip
     cache = _cache(reading.candidate_dir / VERDICT, problems, root)
     order: list[tuple[str, float]] = []
     for run in issued:
@@ -1374,7 +1400,8 @@ def read_qualification(
         "rates": rates, "states": {key: rate["state"] for key, rate in rates.items()},
         "cases": reading.cases, "superseded": reading.superseded,
         "voided": dict(reading.voided), "restarts": _restarts(reading),
-        "supersessions": [_supersession(p, r, root) for p, r in reading.supersessions],
+        "supersessions": [_supersession(p, r, root) for p, r in reading.supersessions
+                          if VOIDING_FILE.fullmatch(p.name)],
         "held": held, "issued": [r.record() for r in issued],
         "unassigned": [_case_name(v) for v in [*reading.cases, *reading.old_controls]
                        if id(v) not in assigned],
