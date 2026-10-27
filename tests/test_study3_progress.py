@@ -25,6 +25,7 @@ from test_study3_decisions import held as decision_hold
 from test_study3_records import SENTINEL, header, seal
 from test_study3_records import World as RunWorld
 
+from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis.study3_decisions import START_REASON, cap_of, end_reason
 from zero_field_refusal.analysis.study3_progress import (
@@ -2558,6 +2559,33 @@ def test_the_reader_blocks_on_a_refused_run(worlds) -> None:
     result = read(records, runs)
     assert result["step"]["kind"] == "blocked"
     assert any(refused in p for p in result["problems"])
+
+
+def test_a_torn_journal_line_blocks_the_state_until_it_is_resolved(worlds) -> None:
+    """A crash cut a line of the search campaign's log short (bytes that are not UTF-8 among
+    them), and the launcher's next append repaired it (a newline, then its ``torn`` record): the
+    state blocks on it, by its log and its line, never its bytes. Once the launcher's resolution
+    names it (``launch.resolve_torn``), the state is what it was before the crash."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    before = read(records, runs)
+    log = runs.root / "launch" / "study3-c1-search-r0.jsonl"
+    number, offset = log.read_bytes().count(b"\n") + 1, log.stat().st_size
+    data = b'{"time": "2026-10-26T01:00:00+00:00", "event": "end", "run": "TORN-SECRET-5c\xff'
+    with log.open("ab") as f:
+        f.write(data)  # no newline after it
+    launch._log(log, {"event": "stop", "run": "x/s1", "reason": "stop requested"})
+    blocked = read(records, runs)
+    assert blocked["step"]["kind"] == "blocked"
+    where = f"launch/study3-c1-search-r0.jsonl line {number}: "
+    assert [p for p in blocked["problems"] if p.startswith(where)], blocked["problems"]
+    assert "TORN-SECRET" not in json.dumps(blocked, default=str)
+    launch.resolve_torn(runs.root, log.name, offset=offset,
+                        sha256=hashlib.sha256(data).hexdigest(),
+                        reason="the end is settled from the run directory")  # fmt: skip
+    assert read(records, runs) == before
 
 
 def test_a_missing_theta0_is_a_problem_not_an_exception(worlds) -> None:

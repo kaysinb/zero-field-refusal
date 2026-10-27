@@ -138,9 +138,12 @@ on is a response or an observation, and this module opens none.
   check: it accepts an end or start closure only for a run under another commit, and one of any
   other technical mark outside the qualification is a problem there until that mark's
   engineering route exists (``study3_progress``). The record is checked against the files as
-  they are now, through ``journal_lines`` (the one reading of a cited journal line; a launch log
-  that cannot be read fails the check closed): the line's bytes, the supersession record's bytes,
-  and the run id both name. The failure's evidence stays as it is; a closure removes nothing.
+  they are now, through ``journal_lines`` (the one reading of a cited journal line, each log
+  split at ``\n`` alone as the launcher reads it, so a line's number counts every line before it,
+  a resolved torn line included; a launch log that cannot be read, or an unresolved torn line
+  before the last of a log, fails the check closed): the line's bytes, the supersession record's
+  bytes, and the run id both name. The failure's evidence stays as it is; a closure removes
+  nothing.
 
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
@@ -162,11 +165,11 @@ on is a response or an observation, and this module opens none.
   last three components (``study3/decisions/<kind>.json``), so a record named from another
   machine's root is found, and a path among the items of a list is named without a sha256. A
   record named with a sha256 other than its own now, or named without a readable one, or no
-  longer there, is a problem; a missing journal, or one with an unparseable line that is not the
-  last of its log, fails closed. A record that resolves (a link, say) under a ``responses/`` or
-  ``observations/`` folder is a problem and is never opened. The journal is read as
-  ``study3_records`` reads it: through its private ``_read_journal``, which this module keeps
-  importing (one journal reader, no copy).
+  longer there, is a problem; a missing journal, or one with an unparseable line before the last
+  of its log that is not resolved (``study3_records``' rule for a torn line), fails closed. A
+  record that resolves (a link, say) under a ``responses/`` or ``observations/`` folder is a
+  problem and is never opened. The journal is read as ``study3_records`` reads it: through its
+  private ``_read_journal``, which this module keeps importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the
   record to the file's bytes and does not read the evidence's meaning. The closure is the one
   exception: the launch journal and the supersession record are read for the run ids, labels,
@@ -492,8 +495,8 @@ def immutable(
     now, or with none that can be read, or the file is gone. A record no campaign named is free
     of problems. ``journal``: the launch journal's starts, ``(campaign, start record)``; None
     (a missing or unreadable journal) fails closed for a record that exists, and so do
-    ``corrupt`` lines (``"<log> line <n>"``, the journal's unparseable lines before the last of
-    their log) and ``sealed`` logs (their paths under RUNS_DIR: a log that resolves under a
+    ``corrupt`` lines (``"<log> line <n>"``, the journal's unresolved torn lines before the last
+    of their log) and ``sealed`` logs (their paths under RUNS_DIR: a log that resolves under a
     sealed folder, never opened): a campaign that named the record may be what they lost."""
     path = Path(record_path)
     if path.exists() and _under_sealed(path, _runs_of(path)):
@@ -503,9 +506,9 @@ def immutable(
                  "has named this record cannot be shown"] if path.exists() else [])  # fmt: skip
     problems = set()
     if corrupt and path.exists():
-        problems.add(f"{path}: the launch journal has an unparseable line that is not the last "
-                     f"of its log ({', '.join(corrupt)}), so whether a campaign has named this "
-                     "record cannot be shown")  # fmt: skip
+        problems.add(f"{path}: the launch journal has an unparseable line before the last of its "
+                     f"log that is not resolved ({', '.join(corrupt)}), so whether a campaign has "
+                     "named this record cannot be shown")  # fmt: skip
     if sealed and path.exists():
         root = _runs_of(path)
         loops = [where for where in sealed if unresolvable(root / where)]
@@ -1256,8 +1259,9 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
     run's last end, or its start when it has no end; of the record's run and seed, stating the
     record's reason), nothing in the journal after it that the readers would read as the run's
     next attempt, and, for a held line, the supersession record (its ``held`` naming the run).
-    A launch log that cannot be read fails closed: what it holds cannot be shown. The cycle's
-    sha256 is checked with the other evidence."""
+    A launch log that cannot be read, or an unresolved torn line before the last of a log, fails
+    closed: what it holds cannot be shown. The cycle's sha256 is checked with the other
+    evidence."""
     run_id, cited = record["run_id"], record["line"]
     path = root / cited["path"]
     if _under_sealed(path, root, Path(cited["path"])):
@@ -1266,6 +1270,9 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
     logs, unreadable = journal_lines(root)
     found = [f"line: {problem}: the journal cannot show what follows the run"
              for problem in unreadable]  # fmt: skip
+    found += [f"line: {log.path} line {number}: an unparseable line before the last of its log "
+              "that no torn and torn_resolved records both name: the journal cannot show what "
+              "follows the run" for log in logs for number in log.corrupt]  # fmt: skip
     log = next((log for log in logs if log.path == cited["path"]), None)
     where = f"line: line {cited['line']} of {path}"
     if log is None:

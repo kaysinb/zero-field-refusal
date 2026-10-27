@@ -133,9 +133,11 @@ study 2's records give them, equal to this checkout's configs (``experiments/stu
   that arm (a validation fixation's ``rates``; for a supplement, the rates of the n record it pins:
   the arms still open at confirmation), read from the run's cell as ``study3_records`` binds it;
 - a missing launch journal, a log that cannot be read, an unparseable line before the last of its
-  log, and a study-3 run directory without a start in the journal that is a validation or
-  confirmation run (its ``config.yaml``'s role, else its ``meta.json``'s campaign header), or whose
-  role cannot be read, are problems: what the journal does not show cannot be shown.
+  log that is not resolved (a torn line no ``torn`` and ``torn_resolved`` records both name:
+  ``study3_records``' rule; a resolved one is no problem), and a study-3 run directory without a
+  start in the journal that is a validation or confirmation run (its ``config.yaml``'s role, else
+  its ``meta.json``'s campaign header), or whose role cannot be read, are problems: what the
+  journal does not show cannot be shown.
 With ``step`` and ``candidate``, the record must also stand for a run of that step and candidate:
 the check before a campaign is written under it.
 
@@ -152,7 +154,9 @@ is read.
   of a ``numerical`` or ``repair`` campaign of the candidate, or a line naming one of those runs (an
   ``end``, ``superseded`` or ``held`` line by run id, a ``superseded`` or ``held`` line by label, a
   recovery round naming a label). They are pinned whole, by sha256: no registered route writes to
-  them after the fixation (the campaign writer refuses a reused campaign name).
+  them after the fixation (the campaign writer refuses a reused campaign name). Any change to a
+  pinned log breaks the fixation, the launcher's repair of a torn line and its resolution
+  written after the fixation included.
 - *The fixed rates* are the stage's: the validation step's cells when it carries them, each at one
   of the arm's two rates, and otherwise the rates of the reading the cells come from (``progress``'
   ``rates`` and ``active``); P is fixed exactly while P–F is open.
@@ -225,7 +229,6 @@ from .study3_records import (
     _sealed_file,
     _sealed_records,
     journal_lines,
-    parse_journal_lines,
     plain_name,
     sealed_record,
 )
@@ -449,9 +452,9 @@ def qualification_logs(
 ) -> tuple[list[dict[str, str]], list[str]]:
     """The launch logs a candidate's numerical qualification rests on (module docstring,
     "Rulings"), in the order of their paths, each ``{"path", "sha256"}`` with its path under
-    RUNS_DIR and its sha256 now; and the problems: a log that cannot be read, or an unparseable
-    line before the last of its log (``study3_records.parse_journal_lines``: it may be a line of
-    the qualification)."""
+    RUNS_DIR and its sha256 now; and the problems: a log that cannot be read, or an unresolved
+    torn line before the last of its log (``study3_records.journal_lines``' ``corrupt``: it may
+    be a line of the qualification; a resolved one is no problem)."""
     _candidate(candidate)
     logs, unreadable = journal_lines(runs_root)
     problems = [f"{problem}: it may hold a line of the qualification" for problem in unreadable]
@@ -467,10 +470,9 @@ def qualification_logs(
                     labels.add(key)
     pinned = []
     for log in logs:
-        corrupt = parse_journal_lines([line.text for line in log.lines])[1]
-        problems += [f"{log.path} line {number}: not valid JSON, and not the last line of its "
-                     "log: it may be a line of the qualification"
-                     for number in corrupt]  # fmt: skip
+        problems += [f"{log.path} line {number}: an unparseable line before the last line of its "
+                     "log that no torn and torn_resolved records both name: it may be a line of "
+                     "the qualification" for number in log.corrupt]  # fmt: skip
         if any(line.record is not None and _of_qualification(line.record, candidate, ids, labels)
                for line in log.lines):  # fmt: skip
             pinned.append({"path": log.path, "sha256": log.sha256})
@@ -1741,9 +1743,10 @@ def _runs_problems(root: Path, chain: Sequence[_Link], fixations: _Fixations) ->
     pinned = {chain[0].name: []}  # the record's own fixation is read in full already
     if journal is not None:
         if journal.corrupt:
-            problems.append(f"the launch journal has an unparseable line that is not the last of "
-                            f"its log ({', '.join(journal.corrupt)}): a start it held cannot be "
-                            "shown (fails closed)")  # fmt: skip
+            problems.append(f"the launch journal has an unparseable line before the last of its "
+                            "log that no torn and torn_resolved records both name "
+                            f"({', '.join(journal.corrupt)}): a start it held cannot be shown "
+                            "(fails closed)")  # fmt: skip
         problems += [f"{where}: {sealed_record('a launch log', root / where, root)}: a start it "
                      "held cannot be shown (fails closed)" for where in journal.sealed]  # fmt: skip
         files = _Files(root / EXPERIMENT)

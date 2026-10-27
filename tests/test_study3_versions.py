@@ -23,10 +23,10 @@ from test_qualification_records import qualify as qualify  # noqa: F401  (the fi
 from test_study3_decisions import World as DecisionWorld
 from test_study3_decisions import coverage_row, gates_with, pass_rate, seal, verified
 from test_study3_progress import numerical_runs, search_round0
-from test_study3_records import SENTINEL
+from test_study3_records import SENTINEL, tear
 from test_study3_records import World as RunWorld
 
-from zero_field_refusal import code_identity
+from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
@@ -441,8 +441,12 @@ def test_the_validation_size_and_level_are_the_simulation_records(study) -> None
 
 
 @pytest.mark.parametrize("evidence", ["ledger", "log", "simulation", "engineering", "new log",
-                                      "new input", "state"])  # fmt: skip
+                                      "new input", "state", "torn line", "repaired torn line",
+                                      "resolved torn line"])  # fmt: skip
 def test_an_evidence_file_changed_after_the_fixation_is_refused(study, evidence) -> None:
+    """Every pinned file stays as it was: a pinned launch log changed in any way breaks the
+    fixation, a torn line the launcher's repair or resolution then names included (the log is
+    pinned whole, by its sha256)."""
     study.ready()
     record = study.fixation()
     study.put(VALIDATION_C1, record, commit=False)
@@ -463,6 +467,18 @@ def test_an_evidence_file_changed_after_the_fixation_is_refused(study, evidence)
     elif evidence == "state":  # the qualification recomputed gives another state
         study.states[("A", 2.11e-5)] = "incomplete"
         words = ("qualification.states.A.lr_u", "incomplete")
+    elif evidence.endswith("torn line"):  # a crash in the middle of an append to a pinned log
+        log = study.root / "launch" / "study3-c1-numerical.jsonl"
+        data = b'{"time": "2026-10-26T01:00:00+00:00", "event": "recovery", "experiment": "st'
+        tear(log, data)
+        if evidence == "repaired torn line":  # the launcher's next append names it
+            launch._log(log, {"event": "stop", "run": "A-1.45e-05/s10200",
+                              "reason": "stop requested"})  # fmt: skip
+        elif evidence == "resolved torn line":
+            launch.resolve_torn(study.root, log.name, offset=log.stat().st_size - len(data),
+                                sha256=hashlib.sha256(data).hexdigest(),
+                                reason="nothing was lost")  # fmt: skip
+        words = ("qualification.logs", "launch/study3-c1-numerical.jsonl", "sha256")
     elif evidence == "log":  # the qualification's campaign run once more
         study.runs.log("study3-c1-numerical", {"event": "recovery", "experiment": "study3",
                                                "cell": "A-1.45e-05", "runs": ["A-1.45e-05/s10200"],
@@ -1115,7 +1131,10 @@ def test_a_missing_or_unreadable_journal_fails_closed(study) -> None:
     lines = log.read_text().splitlines()
     log.write_text("\n".join([lines[0], "{not json", *lines[1:]]) + "\n")
     assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 2", "unparseable")
-    log.write_bytes(b"\xff\xfe" + log.read_bytes())
+    log.write_bytes(b"\xff\xfe" + log.read_bytes())  # a line not UTF-8 is a torn line
+    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 1", "unparseable")
+    log.unlink()
+    log.mkdir()  # a log that cannot be read
     assert has(study.problems(), "launch journal", "cannot be read")
     shutil.rmtree(study.root / "launch")
     found = study.problems()
@@ -1313,8 +1332,16 @@ def test_the_logs_a_qualification_rests_on(study) -> None:
         "launch/hold.jsonl", "launch/recover.jsonl", "launch/settle.jsonl",
         "launch/study3-c1-numerical.jsonl", "launch/study3-c1-repair.jsonl"]  # fmt: skip
     path = study.root / "launch" / "unrelated.jsonl"
-    path.write_text("{cut\n" + path.read_text())
+    path.write_bytes(b"{cut \xff\n" + path.read_bytes())
     assert has(sv.qualification_logs(study.root, 1)[1], "launch/unrelated.jsonl line 1")
+    # resolved as the launcher resolves it: no problem, and the logs pinned are the same
+    launch.resolve_torn(study.root, path.name, offset=0,
+                        sha256=hashlib.sha256(b"{cut \xff").hexdigest(),
+                        reason="nothing was lost")  # fmt: skip
+    assert sv.qualification_logs(study.root, 1) == (sv.qualification_logs(study.root, 1)[0], [])
+    assert [entry["path"] for entry in sv.qualification_logs(study.root, 1)[0]] == [
+        "launch/hold.jsonl", "launch/recover.jsonl", "launch/settle.jsonl",
+        "launch/study3-c1-numerical.jsonl", "launch/study3-c1-repair.jsonl"]  # fmt: skip
 
 
 # ------------------------------------------------------------------ a real qualification

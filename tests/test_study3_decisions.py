@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from zero_field_refusal import launch
 from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
@@ -1489,15 +1490,24 @@ def test_an_unparseable_journal_line_that_is_not_the_last_fails_closed(world) ->
 def test_a_line_cut_short_as_the_last_of_its_log_is_the_launchers_rule_and_no_problem(
     world,
 ) -> None:
+    """The bytes after a log's last newline (a crash in the middle of an append) are skipped, as
+    the launcher skips them. A blank line before the last of its log is a torn line, as the
+    launcher reads it: it fails closed until the launcher's resolution names it."""
     world.write("engineering", world.engineering())
     world.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
-    journal_line(world, "study3-c1-validation", CUT)  # the last line of its log
-    journal_line(world, "study3-c1-validation", "")  # blank lines are no line
-    journal_line(world, "study3-c1-validation", "   ")
+    for log in ("study3-c1-validation", "other-log"):  # the last of its own log, no newline
+        with (world.runs / "launch" / f"{log}.jsonl").open("a") as f:
+            f.write(CUT)
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["engineering"]["state"] == "passed" and found["engineering"]["problems"] == []
-    journal_line(world, "other-log", CUT)  # the last of its own log, though another log follows
     world.start({"study": 3, "candidate": 1, "step": "search", "round": 0}, "zzz-last-log")
+    assert decisions(world.runs, 1, repo=world.repo)["engineering"]["state"] == "passed"
+    journal_line(world, "blank", "")
+    found = decisions(world.runs, 1, repo=world.repo)["engineering"]
+    assert found["state"] == "invalid" and "launch/blank.jsonl line 1" in found["problems"][0]
+    [torn] = [line for line in launch.torn_lines(world.runs) if line.log == "blank.jsonl"]
+    launch.resolve_torn(world.runs, "blank.jsonl", offset=torn.offset, sha256=torn.sha256,
+                        reason="nothing was lost")  # fmt: skip
     assert decisions(world.runs, 1, repo=world.repo)["engineering"]["state"] == "passed"
 
 
@@ -2083,7 +2093,7 @@ def ended(world: World, *, arm="F", rate=1.83e-5, seed=10300, run_id=ENDED, outc
         "kind": f"closure-c1-{arm}", "state": "failed", "written_at": WHEN, "code": CODE,
         "candidate": 1, "arm": arm, "rate": rate, "seed": seed, "run_id": run_id,
         "line": {"kind": "end", "path": f"launch/{log}.jsonl",
-                 "line": len(path.read_text().splitlines()),
+                 "line": path.read_bytes().count(b"\n"),  # the launcher's lines: \n alone
                  "line_sha256": hashlib.sha256(end.encode()).hexdigest()},
         "cycle": None, "reason": "other_commit",
         "decision": "close_pf" if arm == "P" else "technical_feasibility_report",
@@ -2333,11 +2343,44 @@ def test_a_closure_reason_that_is_no_uncounted_reason_is_refused(world) -> None:
     refused(world, "closure-c1-P", {**started(world), "reason": "launcher_done"}, "reason")
 
 
-def test_an_unreadable_launch_log_fails_a_closure_closed(world) -> None:
-    """The journal cannot show that nothing followed the run: the closure is refused."""
+@pytest.mark.parametrize("bad", ["unreadable", "torn line"])
+def test_an_unreadable_launch_log_fails_a_closure_closed(world, bad) -> None:
+    """The journal cannot show that nothing followed the run: a log that cannot be read (a
+    folder), or one with a torn line before its last (bytes that are not UTF-8) that no
+    resolution names. The closure is refused."""
     record = ended(world)
-    (world.runs / "launch" / "zz-bad.jsonl").write_bytes(b"\xff\xfe not text")
+    path = world.runs / "launch" / "zz-bad.jsonl"
+    if bad == "unreadable":
+        path.mkdir()
+    else:
+        path.write_bytes(b"\xff\xfe not text\n{}\n")
     refused(world, "closure-c1-F", record, "zz-bad.jsonl")
+
+
+def test_a_closure_citing_a_line_after_a_resolved_torn_line_is_valid(world) -> None:
+    """A crash cut a line of the run's log short (bytes that are not UTF-8 among them), and the
+    launcher's next append repaired it (a newline, then its ``torn`` record). Unresolved, it fails
+    the closure closed. Once the launcher's resolution names it (``launch.resolve_torn``), the
+    closure is valid: the closure command's line (``end_lines``) and its check count the torn line
+    among the log's lines, as the launcher reads them, so the cited line is the run's end."""
+    log = world.runs / "launch" / "study3-c1-validation.jsonl"
+    log.parent.mkdir(parents=True)
+    torn = b'{"time": "2026-10-26T09:00:00+00:00", "event": "stop", "run": "F-1.83e-05/s1\xff'
+    log.write_bytes(torn)  # no newline after it: a crash in the middle of the append
+    launch._log(log, {"event": "stop", "run": "F-1.83e-05/s1", "reason": "stop requested"})
+    record = ended(world)
+    assert record["line"]["line"] == 5  # the torn line, its torn record, the stop, the start
+    cited = {k: record["line"][k] for k in ("path", "line", "line_sha256")}
+    assert {k: end_lines(world.runs)[ENDED][k] for k in cited} == cited
+    refused(world, "closure-c1-F", record, "study3-c1-validation.jsonl line 1")
+    [line] = launch.torn_lines(world.runs)
+    assert (line.offset, line.kind, line.repaired) == (0, "stop", True)
+    launch.resolve_torn(world.runs, log.name, offset=0, sha256=line.sha256,
+                        reason="the stop was written again by the same command")  # fmt: skip
+    assert {k: end_lines(world.runs)[ENDED][k] for k in cited} == cited
+    world.write("closure-c1-F", record)
+    assert world.read("closure-c1-F") == (record, [])
+    assert closures(world.runs, 1, repo=world.repo)["closure-c1-F"]["state"] == "failed"
 
 
 def test_the_decisions_folder_is_reserved(world) -> None:

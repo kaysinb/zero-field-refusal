@@ -30,10 +30,11 @@ from zero_field_refusal.analysis.study3_records import (
     INSTABILITY,
     ROLES,
     SEEDS,
+    TORN_KIND,
     EndpointReader,
     candidate_of,
     journal_lines,
-    parse_journal_lines,
+    log_lines,
     read_endpoints,
     read_holds,
     read_theta0,
@@ -1131,18 +1132,28 @@ def test_one_reader_reads_each_run_file_once_across_its_readings(world, monkeypa
 
 
 def test_journal_lines_give_each_logs_lines_by_their_own_bytes(world) -> None:
+    """Each log line by line, as the launcher reads it: a line whose bytes are not UTF-8 is a
+    torn line of its log (here before its last: unresolved), not an unreadable log; a log that
+    cannot be read (a folder) is named."""
     world.run()
     (world.root / "launch" / "b-cut.jsonl").write_text('{"event": "start"}\n{"event": "st')
-    (world.root / "launch" / "c-bad.jsonl").write_bytes(b"\xff\xfe not text")
+    (world.root / "launch" / "c-bad.jsonl").write_bytes(b"\xff\xfe not text\n{}\n")
+    (world.root / "launch" / "d-folder.jsonl").mkdir()
     logs, problems = journal_lines(world.root)
-    assert problems == ["launch/c-bad.jsonl: an unreadable launch journal"]
+    assert problems == ["launch/d-folder.jsonl: an unreadable launch journal"]
     by_path = {log.path: log for log in logs}
     cut = by_path["launch/b-cut.jsonl"]
-    assert [(line.line, line.record) for line in cut.lines] == [
-        (1, {"event": "start"}), (2, None)]  # fmt: skip
+    assert [(line.line, line.record, line.torn) for line in cut.lines] == [
+        (1, {"event": "start"}, None), (2, None, "final")]  # fmt: skip
     data = (world.root / "launch" / "b-cut.jsonl").read_bytes()
     assert cut.sha256 == hashlib.sha256(data).hexdigest()
     assert cut.lines[1].line_sha256 == hashlib.sha256(data.split(b"\n")[1]).hexdigest()
+    bad = by_path["launch/c-bad.jsonl"]
+    assert [(line.line, line.offset, line.length, line.record, line.torn)
+            for line in bad.lines] == [
+        (1, 0, 11, None, "unresolved"), (2, 12, 2, {}, None)]  # fmt: skip
+    assert (bad.corrupt, bad.resolved) == ((1,), ())
+    assert bad.lines[0].line_sha256 == hashlib.sha256(b"\xff\xfe not text").hexdigest()
 
 
 def test_two_starts_of_one_run_id_are_both_refused(world) -> None:
@@ -1180,36 +1191,214 @@ def test_an_unparseable_journal_line_before_the_last_is_a_problem_by_log_and_lin
 
 
 def test_a_line_cut_short_as_the_last_of_its_log_is_skipped_silently(world) -> None:
+    """The bytes after a log's last newline (a crash in the middle of an append, the launcher's
+    rule), whatever they are: not UTF-8, blank, a JSON value that is no object."""
     world.run("A", 1.45e-5, 10300)
     other = world.run("F", 1.3e-5, 10300, campaign="study3-c1-other")
-    for name in ("study3-c1", "study3-c1-other"):  # the last line of each log is cut short
-        with (world.root / "launch" / f"{name}.jsonl").open("a") as f:
-            f.write(CUT_LINE + "\n\n   \n")  # and blank lines are no line
+    for name, cut in (("study3-c1", CUT_LINE.encode() + b"\xff"), ("study3-c1-other", b"   "),
+                      ("study3-c1-third", b"[1]")):  # fmt: skip
+        with (world.root / "launch" / f"{name}.jsonl").open("ab") as f:
+            f.write(cut)  # no newline after it
     found, problems = world.read()
     assert problems == [] and by_id(found)[other].state == "usable"
-
-
-def test_one_rule_names_a_logs_corrupt_lines() -> None:
-    """``parse_journal_lines``: each line's value (None for a blank or unparseable one), and the
-    unparseable lines before the last non-blank one, by number; a last line cut short is
-    skipped."""
-    texts = ['{"event": "start"}', "", "{cut", "[1]", '{"event": "end"}', "{cut again", "  "]
-    values, corrupt = parse_journal_lines(texts)
-    assert values == [{"event": "start"}, None, None, [1], {"event": "end"}, None, None]
-    assert corrupt == [3]
-    assert parse_journal_lines([]) == ([], [])
-    assert parse_journal_lines(["{cut"]) == ([None], [])
+    logs, unreadable = journal_lines(world.root)
+    assert unreadable == [] and [(log.path, log.lines[-1].torn) for log in logs] == [
+        ("launch/study3-c1-other.jsonl", "final"), ("launch/study3-c1-third.jsonl", "final"),
+        ("launch/study3-c1.jsonl", "final")]  # fmt: skip
 
 
 def test_every_log_is_checked_for_its_own_last_line(world) -> None:
     world.run("A", 1.45e-5, 10300)
     world.run("F", 1.3e-5, 10300, campaign="study3-c1-other")
     with (world.root / "launch" / "study3-c1.jsonl").open("a") as f:
-        f.write(CUT_LINE + "\n")  # the last of its own log, though another log follows it
+        f.write(CUT_LINE)  # the last of its own log, though another log follows it
     other = world.root / "launch" / "study3-c1-other.jsonl"
     other.write_text(CUT_LINE + "\n" + other.read_text())  # but not the last of this one
     found, problems = world.read()
     assert len(problems) == 1 and "launch/study3-c1-other.jsonl line 1" in problems[0]
+
+
+# ------------------------------------------------------------------ torn journal lines
+
+TORN_SECRET = "JOURNAL-SECRET-4b2e"
+
+
+def torn_start(seed: int) -> bytes:
+    """A start line a crash cut short: the launcher's encoding, its last bytes lost, with bytes
+    that are not UTF-8 in it."""
+    return (b'{"time": "2026-10-26T00:10:00+00:00", "event": "start", "run": "A-2.11e-05/s'
+            + str(seed).encode() + b'", "run_id": "' + TORN_SECRET.encode()
+            + b"\xff\xfe")  # fmt: skip
+
+
+def tear(log: Path, data: bytes) -> tuple[int, str]:
+    """``data`` appended after the log's last newline, with no newline after it (a crash in the
+    middle of an append); returns the torn bytes' offset and sha256."""
+    offset = log.stat().st_size
+    with log.open("ab") as f:
+        f.write(data)
+    return offset, hashlib.sha256(data).hexdigest()
+
+
+def torn_problems(problems, where: str) -> list[str]:
+    return [p for p in problems if p.startswith(f"{where}: ")]
+
+
+def test_a_resolved_torn_line_is_listed_with_its_kind_and_is_no_problem(world) -> None:
+    """A crash cut a start short (bytes that are not UTF-8 among them); the launcher's resolution
+    (``launch.resolve_torn``: its next append ends the line and writes the ``torn`` record naming
+    its bytes, then the ``torn_resolved`` record) resolves it, and the campaign goes on in the
+    same log. Every reader reads past it: the line is listed with its kind, by its log and its
+    line number, never its bytes, and is no problem; the ``torn`` and ``torn_resolved`` records
+    are no problem and void nothing; the lines after it keep the numbers the launcher's reading
+    gives them."""
+    first = world.run("A", 1.45e-5, 10300)
+    log = world.root / "launch" / "study3-c1.jsonl"
+    data = torn_start(10300)
+    offset, sha = tear(log, data)
+    launch.resolve_torn(world.root, log.name, offset=offset, sha256=sha,
+                        reason="the start's run never ran: no run directory")  # fmt: skip
+    second = world.run("F", 1.3e-5, 10300)
+    [torn] = launch.torn_lines(world.root)
+    assert (torn.offset, torn.sha256, torn.kind, torn.repaired, torn.resolved) == (
+        offset, sha, "start", True, True)  # fmt: skip
+    found, problems = world.read()
+    assert problems == [] and states(found) == {first: "usable", second: "usable"}
+    listed = {"path": "launch/study3-c1.jsonl", "line": 3, "offset": offset,
+              "length": len(data), "sha256": sha, "kind": "start"}  # fmt: skip
+    assert EndpointReader(world.root, theta0=world.theta0).resolved == [listed]
+    logs, unreadable = journal_lines(world.root)
+    assert unreadable == [] and [log.resolved for log in logs] == [(listed,)]
+    assert [(line.line, line.record and line.record["event"], line.torn, line.kind)
+            for line in logs[0].lines] == [
+        (1, "start", None, None), (2, "end", None, None), (3, None, "resolved", "start"),
+        (4, "torn", None, None), (5, "torn_resolved", None, None), (6, "start", None, None),
+        (7, "end", None, None)]  # fmt: skip
+    assert logs[0].lines[2].line_sha256 == sha and logs[0].corrupt == ()
+    assert read_holds(world.root) == ([], [])
+    assert voided_runs(world.root) == ({}, [])
+    shown = repr((found, problems, logs, EndpointReader(world.root, theta0=world.theta0).resolved))
+    assert TORN_SECRET not in shown
+
+
+def test_a_torn_line_without_its_resolution_still_blocks(world) -> None:
+    """The launcher's next append repairs a torn last line (a newline, then its ``torn``
+    record), but no ``torn_resolved`` record names it: it is a problem by its log and its line,
+    never its bytes, and the rest of the journal is read as before."""
+    first = world.run("A", 1.45e-5, 10300)
+    log = world.root / "launch" / "study3-c1.jsonl"
+    tear(log, torn_start(10300))
+    launch._log(log, {"event": "stop", "run": "A-1.45e-05/s10300", "reason": "stop requested"})
+    [torn] = launch.torn_lines(world.root)
+    assert (torn.repaired, torn.resolved) == (True, False)
+    found, problems = world.read()
+    assert len(problems) == 1 and torn_problems(problems, "launch/study3-c1.jsonl line 3")
+    assert states(found) == {first: "usable"} and TORN_SECRET not in repr(problems)
+    logs, _ = journal_lines(world.root)
+    assert logs[0].corrupt == (3,) and logs[0].resolved == ()
+
+
+@pytest.mark.parametrize("wrong", [None, "torn sha256", "torn length", "torn offset",
+                                   "no torn record", "resolution sha256", "resolution offset",
+                                   "resolution log", "no resolution"])  # fmt: skip
+def test_a_torn_line_is_resolved_only_by_both_records_naming_its_bytes(world, wrong) -> None:
+    """A torn line before the last of its log (a power loss inside the repair, say: its newline
+    written, no ``torn`` record) is resolved only when a ``torn`` record of its log names its
+    offset, length and sha256 and a ``torn_resolved`` record names its log, offset and sha256;
+    a record that names other bytes resolves nothing, and the line blocks."""
+    run_id = world.run("A", 1.45e-5, 10300)
+    log = world.root / "launch" / "study3-c1.jsonl"
+    data = torn_start(10300)
+    offset, _ = tear(log, data + b"\n")
+    sha = hashlib.sha256(data).hexdigest()
+    torn = {"event": "torn", "offset": offset, "length": len(data), "sha256": sha,
+            "kind": "start"}  # fmt: skip
+    resolution = {"event": "torn_resolved", "log": log.name, "offset": offset, "sha256": sha,
+                  "reason": "the start's run never ran"}  # fmt: skip
+    changed = {"torn sha256": (torn, "sha256", "0" * 64), "torn length": (torn, "length", 1),
+               "torn offset": (torn, "offset", offset + 1),
+               "resolution sha256": (resolution, "sha256", "0" * 64),
+               "resolution offset": (resolution, "offset", offset + 1),
+               "resolution log": (resolution, "log", "study3-c1-other.jsonl")}  # fmt: skip
+    if wrong in changed:
+        record, key, value = changed[wrong]
+        record[key] = value
+    for record, missing in ((torn, "no torn record"), (resolution, "no resolution")):
+        if wrong != missing:
+            world.log("study3-c1", record)
+    found, problems = world.read()
+    assert states(found) == {run_id: "usable"}
+    if wrong is None:
+        assert problems == []
+        return
+    assert len(problems) == 1 and torn_problems(problems, "launch/study3-c1.jsonl line 3")
+    assert TORN_SECRET not in repr(problems)
+
+
+@pytest.mark.parametrize("line", [b"", b"   ", b"[1]", b'"text"', b"\xef\xbb\xbf{}",
+                                  CUT_LINE.encode(), b"\xff\xfe{}"])  # fmt: skip
+def test_a_line_that_holds_no_json_object_before_the_last_is_a_torn_line(world, line) -> None:
+    """As the launcher reads a log (``launch.torn_lines``): a blank line, a JSON value that is no
+    object, a line with a byte-order mark, one cut short and followed by a newline, bytes that
+    are not UTF-8: each, before the last line of its log, is a torn line, a problem by its log
+    and line until the launcher's resolution names it; then it is listed, no problem."""
+    run_id = world.run("A", 1.45e-5, 10300)
+    log = world.root / "launch" / "study3-c1.jsonl"
+    with log.open("ab") as f:
+        f.write(line + b"\n")
+    found, problems = world.read()
+    assert len(problems) == 1 and torn_problems(problems, "launch/study3-c1.jsonl line 3")
+    [torn] = launch.torn_lines(world.root)
+    launch.resolve_torn(world.root, log.name, offset=torn.offset, sha256=torn.sha256,
+                        reason="nothing was lost")  # fmt: skip
+    found, problems = world.read()
+    assert problems == [] and states(found) == {run_id: "usable"}
+    resolved = EndpointReader(world.root, theta0=world.theta0).resolved
+    assert [(r["line"], r["length"], r["kind"]) for r in resolved] == [(3, len(line), torn.kind)]
+
+
+def test_the_journal_is_read_as_the_launcher_reads_it(tmp_path) -> None:
+    """``log_lines`` is the launcher's reading of a log's bytes (``launch._journal_lines``:
+    split at ``\\n`` alone, each line decoded strictly as UTF-8, a record only a JSON object),
+    and ``journal_lines`` lists the torn lines ``launch.torn_lines`` lists, by the same bytes
+    (offset, length, sha256) and kind: one resolved exactly when both a ``torn`` and a
+    ``torn_resolved`` record name it, the last with no newline after it ``final``."""
+    assert TORN_KIND.pattern == launch.TORN_KIND.pattern
+    path = tmp_path / "x.jsonl"
+    samples = [b"", b"\n", b"{}", b"{}\n", b'{"a": 1}\n\n', b"\n\n{}", b"\xff\xfe\n{}\n",
+               b"\xef\xbb\xbf{}\n", b'{"a": 1}\x1e{"b": 2}\n', b'{"a": 1}\r\n{"b": 2}\r',
+               b'{"a": "\xe2\x80\xa8"}\n[1]\n"s"\n3\n  \n', b'{"event": "end", "x": 1',
+               b"\xc3\x28\n\xed\xa0\x80\n"]  # fmt: skip
+    for data in samples:
+        path.write_bytes(data)
+        assert log_lines(data) == launch._journal_lines(path), data
+    root = tmp_path / "runs"
+    log = root / "launch" / "a.jsonl"
+    launch._log(log, {"event": "start", "run": "x/s1"})
+    with log.open("ab") as f:
+        f.write(b"\n[1]\n")  # a blank line and a value that is no object
+    other = root / "launch" / "b.jsonl"
+    launch._log(other, {"event": "start", "run": "y/s1"})
+    tear(other, b'{"event": "held", "run_id": "\xff')
+    launch._log(other, {"event": "stop", "run": "y/s1", "reason": "stop requested"})
+    tear(other, b'{"event": "end"')
+    lines = launch.torn_lines(root)
+    first = lines[0]
+    launch.resolve_torn(root, "a.jsonl", offset=first.offset, sha256=first.sha256,
+                        reason="nothing was lost")  # fmt: skip
+    lines = launch.torn_lines(root)
+    logs, unreadable = journal_lines(root)
+    assert unreadable == []
+    ours = [(Path(log.path).name, line.offset, line.length, line.line_sha256, line.kind,
+             line.torn) for log in logs for line in log.lines if line.record is None]  # fmt: skip
+    final = {(x.log, x.offset) for x in lines
+             if (root / "launch" / x.log).stat().st_size == x.offset + x.length}  # fmt: skip
+    theirs = [(x.log, x.offset, x.length, x.sha256, x.kind,
+               "final" if (x.log, x.offset) in final
+               else "resolved" if x.repaired and x.resolved else "unresolved")
+              for x in lines]  # fmt: skip
+    assert ours == theirs
+    assert [line[-1] for line in ours] == ["resolved", "unresolved", "unresolved", "final"]
 
 
 # ------------------------------------------------------------------ refusals: the issued cell
@@ -1599,7 +1788,7 @@ def test_a_hold_is_listed_for_its_label_whatever_its_config_hash(world, accepted
          "sha256": sha(cycle)}]  # fmt: skip
     [e], problems = world.read()
     assert (e.run_id, e.state, problems) == (held, "held", [])
-    (world.root / "launch" / "c-bad.jsonl").write_bytes(b"\xff\xfe not text")
+    (world.root / "launch" / "c-bad.jsonl").mkdir()  # a log that cannot be read
     cycle.write_text("{")
     holds, problems = read_holds(world.root)  # the record unreadable: no check accepts it
     assert {

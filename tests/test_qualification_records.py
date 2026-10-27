@@ -1184,10 +1184,10 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     """A record that holds a run and cannot be read is a problem naming it, once, whichever
     reader finds it so (the reading's own, ``read_holds``): never a hold silently missing from
     ``held``. The candidate's supersession record cut short: no check accepts it, so its held line
-    counts for nothing, a named problem beside the record's own. Then the launch log that holds
-    the line, its bytes not UTF-8: no hold is listed, beside the problem. Another candidate's
-    cycle record that cannot be read is not this candidate's problem; a log that only
-    ``read_holds`` reports is."""
+    counts for nothing, a named problem beside the record's own. Then a line of the launch log
+    that holds the line, its bytes not UTF-8 and before the log's last: a torn line, a problem by
+    its log and line, and no hold is listed. Another candidate's cycle record that cannot be read
+    is not this candidate's problem; a log that only ``read_holds`` reports is."""
     no_commit = UNRESOLVABLE["no commit"][0]
     world, identity, _ = cycle_on_a_stop(qualify, monkeypatch, tmp_path, no_commit)
     cycle = world.out / "c1" / "supersede-1.json"
@@ -1202,10 +1202,12 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     assert any(identity["run_id"] in p and "counts for nothing" in p
                for p in reading["problems"]), reading["problems"]  # fmt: skip
     log = world.root / "launch" / f"{world.name}.jsonl"
+    number = log.read_bytes().count(b"\n") + 1
     log.write_bytes(log.read_bytes() + b"\xff\xfe\n")
     reading = world.read(expected_code=FIX["sha256"])
-    assert [p for p in reading["problems"] if str(log) in p] == [
-        f"{log}: an unreadable launch journal"]  # fmt: skip
+    found = [p for p in reading["problems"] if p.startswith(f"{log} line {number}: ")]
+    assert len(found) == 1 and "torn line" in found[0], reading["problems"]
+    assert f"{log}: an unreadable launch journal" not in reading["problems"]  # the log is read
     assert reading["held"] == []
     assert not [p for p in reading["problems"] if "c2" in p]
     found = qr.read_holds  # a log only read_holds failed on: still the reading's problem
@@ -1218,6 +1220,31 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
     reading = world.read(expected_code=FIX["sha256"])
     assert f"{world.root / 'launch' / 'z-only.jsonl'}: an unreadable launch journal" in (
         reading["problems"])  # fmt: skip
+
+
+def test_a_torn_line_of_the_journal_is_a_problem_until_it_is_resolved(qualify, tmp_path) -> None:
+    """A crash cut a line of the qualification's log short (bytes that are not UTF-8 among them),
+    and the launcher's next append repaired it (a newline, then its ``torn`` record): unresolved,
+    it is a problem by its log and its line, never its bytes. Once the launcher's resolution
+    names it (``launch.resolve_torn``), the reading is the script's verdict again, without a
+    problem."""
+    world = World(tmp_path)
+    world.full()
+    cached = world.verdict(qualify)
+    log = world.root / "launch" / f"{world.name}.jsonl"
+    number, offset = log.read_bytes().count(b"\n") + 1, log.stat().st_size
+    data = b'{"time": "2026-10-26T00:00:00+00:00", "event": "stop", "run": "TORN-SECRET-77\xff'
+    with log.open("ab") as f:
+        f.write(data)  # no newline after it
+    launcher._log(log, {"event": "stop", "run": "x/s1", "reason": "stop requested"})
+    reading = world.read()
+    found = [p for p in reading["problems"] if str(log) in p]
+    assert len(found) == 1 and found[0].startswith(f"{log} line {number}: "), found
+    assert "TORN-SECRET" not in json.dumps(plain(reading))
+    launcher.resolve_torn(world.root, log.name, offset=offset,
+                          sha256=hashlib.sha256(data).hexdigest(),
+                          reason="the stop was written again by the same command")  # fmt: skip
+    assert_as_the_verdict(world.read(), cached)
 
 
 def test_a_held_line_of_no_study3_run_is_not_study3s(qualify, tmp_path) -> None:
@@ -1345,7 +1372,7 @@ def test_an_unreadable_record_is_a_problem(qualify, tmp_path, what) -> None:
     if what == "trajectory":
         q.publish(folder / "rest-attempt-2.json.started", {"started_at": "t"})
     if what == "journal":
-        path.write_bytes(b"\xff\xfe not text")
+        path.mkdir()  # a log that cannot be read (a line that is not UTF-8 is a torn line)
     else:
         corrupt(path)
     reading = world.read()

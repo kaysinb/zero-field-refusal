@@ -1862,14 +1862,33 @@ before each command below.
   for a run left unfinished), and starts its next attempt only when that outcome is technical.
   The block's missing cells, if any, are then written again by the writer, alone, under a new
   campaign name. A block file or a `run.sh` already run is not run again.
-- **A torn launch-log line** (a residual risk). The launcher appends each journal line with its
-  newline, and does not first end a line a crash cut short. A crash mid-append leaves the last
-  line cut short, which every reader skips, as the launcher does. If another append follows, the
-  cut line is no longer the last: it is corrupt, and the record appended after it is joined to it
-  and lost too. The analysis then blocks, naming the log and the line, since a start it held
-  cannot be shown. For a qualification log the validation fixation pins, any edit of the log
-  breaks the fixation for good. The repair belongs to a later change of the launcher: a fresh
-  line when the log does not end with a newline.
+- **A torn launch-log line.** A crash in the middle of an append leaves a torn line, the bytes
+  after a log's last newline; the launcher's next append to that log ends it with a newline and
+  names its bytes in a `torn` record. While any log holds a torn line that no `torn_resolved`
+  record names, the launcher refuses with exit 12, and so does every `qualify.py` command that
+  reads the runs but its two journal repairs. The procedure:
+  1. Restore what the line's kind lost, as [launching runs](#launching-runs) gives it per kind
+     (`end`, `start`, `held`, `superseded`, `recovery`, `stop`, `torn`, `torn_resolved`,
+     unknown). A lost `held` or `superseded` line is written again first, over the torn line, by
+     `qualify.py supersede` or `restart-case`.
+  2. Record the resolution:
+     `python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT`. It
+     writes the line's `torn` record if none names it yet, then its `torn_resolved` record.
+  3. Study 3's analysis then accepts the line. It reads each log as the launcher does (split at
+     `\n` alone, each line decoded strictly as UTF-8), so a line's number counts every line
+     before it, a torn one included, as a closure record cites it. A torn line before the last of
+     its log is accepted when a `torn` record names its offset, length and sha256 and a
+     `torn_resolved` record names its log, offset and sha256: the run records list it with its
+     kind and its line, and it is no problem. Any other torn line before the last (a blank line
+     or a JSON value that is no object included) is a problem named by its log and line, never
+     its bytes, and blocks: what it held cannot be shown. The last line of a log, with no newline
+     after it, is skipped, as the launcher's records skip it. The `torn` and `torn_resolved`
+     records are no problem and void nothing.
+
+  What the lost line held stays lost: a lost `start` leaves a run directory with no start, which
+  the analysis names and blocks on. For a qualification log a validation fixation pins, any
+  change of the log after the fixation, the repair and the resolution included, breaks the
+  fixation for good: the log is pinned whole, by its sha256.
 - **A technical mark outside the qualification.** A technical mark of a search, validation or
   confirmation run, in any arm, stops the route: the step is blocked and technical, with the
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
