@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import io
 import itertools
+import json
 import math
 import os
 import re
@@ -58,6 +59,13 @@ def script_module(path, name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def git(repo: Path, *args: str) -> str:
+    command = ["git", "-c", "user.name=test", "-c", "user.email=test@example.org",
+               "-c", "commit.gpgsign=false", *args]  # fmt: skip
+    return subprocess.run(command, cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
 
 
 def joined(text: str) -> list[str]:
@@ -266,10 +274,20 @@ class World:
         return error + (found.value.code if isinstance(found.value.code, str) else "")
 
     def versions(self, problems=()) -> None:
-        """A versions record in the checkout; its check replaced, giving ``problems``."""
+        """A versions record in the checkout (a Git checkout of its files), pinning the commit
+        before its own, which adds it alone; the runs written from now on ran that commit, clean
+        (their ``meta.json``'s ``git``). Its check replaced, giving ``problems``."""
+        if not (self.repo / ".git").exists():
+            git(self.repo, "init", "-q")
+            git(self.repo, "add", "-A")
+            git(self.repo, "commit", "-q", "--allow-empty", "-m", "the checkout")
         path = self.repo / VERSIONS
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"what": "versions"}\n')
+        pinned = git(self.repo, "rev-parse", "HEAD")
+        path.write_text(json.dumps({"what": "versions", "code": {"commit": pinned}}) + "\n")
+        git(self.repo, "add", VERSIONS)
+        git(self.repo, "commit", "-q", "-m", "the versions record", "--", VERSIONS)
+        self.runs.git = {"commit": git(self.repo, "rev-parse", "HEAD"), "dirty": False}
 
         def check(record, **kw):
             self.checked.append((Path(record), kw))
@@ -303,6 +321,7 @@ class World:
                       run.config_hash, {"name": name, "label": run.label, "attempt": 1,
                                         "header": header},
                       k_only=OmegaConf.select(cfg, "eval.k_only", default=False) is True,
+                      git=self.runs.git,
                       **values(arm, rate, run.seed, header["candidate"]))  # fmt: skip
             self.runs.end(name, run.label, 1, run_id, end)
             ids.append(run_id)
@@ -563,6 +582,24 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
     assert all(SENTINEL not in text for text in [*shown, *written])
     with pytest.raises(AssertionError):  # the guard is live
         next((world.root / "study3").glob("*/responses/*.jsonl")).read_text()
+
+
+def test_the_validation_prints_its_check_before_its_launch(world) -> None:
+    """The validation campaign's printed commands: ``study3_summary.py check`` on the file,
+    then its launch, from the same checkout."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    world.ready()
+    world.core(study)
+    world.versions()
+    out = world.write("validation", "--seeds", "10300")
+    lines = [line for line in printed(world).splitlines() if line.startswith(("Check: ", "Run: "))]
+    assert lines == [
+        f"Check: python scripts/study3_summary.py check --runs-root {world.root} --campaign {out}",
+        f"Run: python scripts/launch.py {out} --max-attempts 1"]  # fmt: skip
+    assert lines[0] in campaign_of(out)["comments"]
 
 
 def test_the_repair_campaign_qualifies_a_repaired_rate(world, monkeypatch) -> None:

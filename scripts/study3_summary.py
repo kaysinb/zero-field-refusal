@@ -4,6 +4,7 @@ researcher writes: the versions record, the staged fixation, the decision record
     python scripts/study3_summary.py progress --runs-root DIR [--theta0 RUN_DIR]
     python scripts/study3_summary.py guard --runs-root DIR --candidate N --seed S --campaign FILE
         [--theta0 RUN_DIR]
+    python scripts/study3_summary.py check --runs-root DIR --campaign FILE
     python scripts/study3_summary.py versions --out PATH --reason ID [--fixation PATH
         --runs-root DIR] [--supersedes PATH --supersedes-reason ID]
     python scripts/study3_summary.py fixation validation --runs-root DIR --candidate N
@@ -45,8 +46,21 @@ All of these must hold:
   the budget record (when named), each the candidate's under RUNS_DIR with the sha256 the header
   gives, and the versions record, in the checkout, of its named sha256;
 - ``study3_versions.versions_problems`` finds no problem in that versions record for the
-  confirmation of candidate N. With the check of the block's own records, this stands for
-  comparing each run's own commit with the pinned one.
+  confirmation of candidate N, the running checkout's HEAD included: it prevents a block from
+  running under a commit other than the pinned one. It does not stand for comparing each run's
+  own commit with the pinned one, which ``progress`` does (``study3_versions.uncounted_runs``):
+  a run under another commit does not count, and the state blocks on it.
+
+**check** is the same check of the versions record before any other launch of a validation or
+confirmation campaign FILE (--campaign): the validation's launch and every resumption of it, and
+every recovery round of a validation or confirmation run (a confirmation block's own launch is
+guarded by ``guard``). It exits 0 only when FILE's header is a validation or confirmation campaign
+of study 3 (study 3, the step, candidate 1 or 2), it names a versions record of the checkout with
+that record's sha256 now, and ``versions_problems`` finds no problem in that record for the
+step and the candidate, the running checkout's HEAD included; otherwise it exits non-zero with
+the reason. Run it from the checkout (``$SRC``) the launch runs from. The launcher never reruns a
+completed run, so a run launched under another commit stays, does not count, and blocks the
+state.
 
 **versions** writes a versions record (``study3_versions.versions_record``) at --out, a name the
 readers accept: docs/study3-versions.json, or docs/study3-versions-<k>.json (k = 2, 3, ...) for a
@@ -369,6 +383,43 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
     return problems
 
 
+def check(args: argparse.Namespace) -> None:
+    """Exit 0 only when the versions record a validation or confirmation campaign names holds
+    for its step and candidate, the running checkout's HEAD included (module docstring,
+    "check")."""
+    path, root = args.campaign, args.runs_root
+    if _under_sealed(path, root):
+        refuse("check", f"{path} resolves under a responses/ or observations/ folder: no "
+               "campaign is one, and it is not opened")  # fmt: skip
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        refuse("check", f"{path} cannot be read ({type(exc).__name__})")
+    header = data.get("header") if isinstance(data, dict) else None
+    header = header if isinstance(header, dict) else {}
+    step, candidate = header.get("step"), header.get("candidate")
+    if not (header.get("study") == 3 and type(header.get("study")) is int
+            and step in STEPS and type(candidate) is int and candidate in (1, 2)):  # fmt: skip
+        refuse("check", f"{path} is not a validation or confirmation campaign of study 3 (its "
+               f"header: study {header.get('study')!r}, step {step!r}, candidate "
+               f"{candidate!r}): no versions record stands for it")  # fmt: skip
+    named, sha = header.get("versions_record"), header.get("versions_record_sha256")
+    record = REPO / named if isinstance(named, str) and named else None
+    if record is None or _under_sealed(record, REPO):
+        refuse("check", f"{path}: its header names no versions record of the checkout "
+               f"({named!r})")  # fmt: skip
+    if not record.is_file() or sha256(record) != sha:
+        now = sha256(record) if record.is_file() else "missing"
+        refuse("check", f"{path}: its header names {named} with sha256 {sha}, and the checkout's "
+               f"is {now}: the campaign was not written under the record that stands")  # fmt: skip
+    problems = versions_problems(record, runs_root=root, repo=REPO, step=step,
+                                 candidate=candidate)  # fmt: skip
+    if problems:
+        refuse("check", "the versions record does not hold: " + "; ".join(problems))
+    print(f"{path}: the versions record {named} holds for candidate {candidate}'s {step}, the "
+          "running checkout included: its launch may run")  # fmt: skip
+
+
 def guard(args: argparse.Namespace) -> None:
     """Exit 0 only when the block may run now (module docstring, "The guard")."""
     candidate, seed, path, root = args.candidate, args.seed, args.campaign, args.runs_root
@@ -536,13 +587,15 @@ def main(argv: list[str] | None = None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     shown_ = commands.add_parser("progress", help="print the state as JSON")
     checked = commands.add_parser("guard", help="the confirmation's between-block guard")
+    held = commands.add_parser("check", help="the versions record a validation or confirmation "
+                               "campaign names, before its launch")  # fmt: skip
     versions = commands.add_parser("versions", help="write a versions record")
     fixed = commands.add_parser("fixation", help="write a validation fixation or a confirmation "
                                 "supplement")  # fmt: skip
     decided = commands.add_parser("record", help="write a decision record from a JSON file")
     closed = commands.add_parser("closure", help="write the closure record the step names")
     runs = "RUNS_DIR: the run records, the launch journal and the decision records"
-    for command in (shown_, checked, fixed, decided, closed):
+    for command in (shown_, checked, held, fixed, decided, closed):
         command.add_argument("--runs-root", type=Path, required=True, help=runs)
     for command in (shown_, checked, fixed, closed):
         command.add_argument("--theta0", type=Path,
@@ -552,6 +605,8 @@ def main(argv: list[str] | None = None) -> None:
         command.add_argument("--candidate", type=int, choices=(1, 2), required=True)
     checked.add_argument("--seed", type=int, required=True, help="the block's seed")
     checked.add_argument("--campaign", type=Path, required=True, help="the block's campaign file")
+    held.add_argument("--campaign", type=Path, required=True,
+                      help="the validation or confirmation campaign file")  # fmt: skip
     versions.add_argument("--out", type=Path, required=True,
                           help="docs/study3-versions.json, or docs/study3-versions-<k>.json for "
                           "a later record")  # fmt: skip
@@ -585,6 +640,7 @@ def main(argv: list[str] | None = None) -> None:
     commands_ = {
         "progress": print_progress,
         "guard": guard,
+        "check": check,
         "versions": write_versions,
         "fixation": write_fixation,
         "record": write_record,

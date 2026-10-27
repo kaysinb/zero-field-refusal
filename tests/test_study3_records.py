@@ -98,11 +98,13 @@ def write_run(
     factual: float = 3.0,
     status: str = "completed",
     terminal: bool = True,
+    git: dict | None = None,
 ) -> None:
     """One run directory as the tracker and the schedule write it: an evaluation at step 25
     with K_benign ``k`` (and ``k_harmful`` for a regular run), utility losses ``mmlu`` and
     ``factual`` in pp; for another stop, ``steps`` updates and no evaluation. Without
-    ``terminal`` the run is still running (or died) before its outcome."""
+    ``terminal`` the run is still running (or died) before its outcome. ``git``: the commit and
+    the dirty flag ``meta.json`` records (the tracker's ``git_state``), where a test gives one."""
     run_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text(yaml)
     inputs = {"streams": {"training": {"count": steps * 20}}}
@@ -111,7 +113,7 @@ def write_run(
     meta = {"run_id": run_dir.name, "experiment": "study3", "config_hash": chash,
             "status": status if terminal else "running", "campaign": campaign,
             "host": {"hostname": "pod"}, "launch": {"pod_id": "pod-1"},
-            "inputs": inputs}  # fmt: skip
+            "inputs": inputs, **({} if git is None else {"git": git})}  # fmt: skip
     (run_dir / "meta.json").write_text(json.dumps(meta))
     read_to = steps - 1 if stop == "nonfinite_weight" else steps
     readings = [{"step": s, "K_monitor": k * s / 25} for s in range(5, read_to + 1, 5)]
@@ -158,6 +160,7 @@ class World:
         self.prescribed: dict[str, set] = defaultdict(set)
         self.ids = itertools.count()
         self.clock = itertools.count()  # the journal's time stamps, one second apart
+        self.git: dict | None = None  # meta.json's git of the runs written from now on
         self.theta0 = root / "theta0"
         self.theta0.mkdir(parents=True)
         (self.theta0 / "summary.json").write_text(json.dumps({**THETA0, "K_benign": 0.0}))
@@ -203,7 +206,7 @@ class World:
         if directory:
             write_run(self.root / "study3" / run_id, yaml, chash,
                       {"name": campaign, "label": label, "attempt": attempt, "header": head},
-                      k_only=role in K_ONLY, **records)  # fmt: skip
+                      k_only=role in K_ONLY, **{"git": self.git, **records})  # fmt: skip
         if end is not None:
             self.end(campaign, label, attempt, run_id, end)
         if prescribe:

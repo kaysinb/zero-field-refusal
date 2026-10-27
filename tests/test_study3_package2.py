@@ -84,6 +84,7 @@ from zero_field_refusal.analysis.study3_search import adjusted_rate
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import campaign_header, load_campaign
 from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT
+from zero_field_refusal.tracking import git_state
 
 SENTINEL = "PKG2-SENTINEL-qX7v-Rk3W-9zJd"  # in every responses/ and observations/ file here
 SEALED = ("responses", "observations")
@@ -907,7 +908,7 @@ class Route(CampaignWorld):
                           OmegaConf.to_yaml(cfg, resolve=True), run.config_hash,
                           {"name": name, "label": run.label, "attempt": 1, "header": header},
                           k_only=OmegaConf.select(cfg, "eval.k_only", default=False) is True,
-                          **outcome)  # fmt: skip
+                          git=git_state(self.repo), **outcome)  # fmt: skip
                 judged(self.root / run.experiment / run_id)
                 self.runs.end(name, run.label, 1, run_id, "technical" if failed else "done")
                 ids.append(run_id)
@@ -947,7 +948,9 @@ class Route(CampaignWorld):
         self.ok("summary", "versions", "--out", FIRST, "--reason", "validation_c1", "--fixation",
                 VALIDATION_C1, "--runs-root", root)  # fmt: skip
         self.commit("the versions record", FIRST)
-        self.launch(self.campaign("validation"))
+        validation = self.campaign("validation")
+        self.ok("summary", "check", "--runs-root", root, "--campaign", validation)
+        self.launch(validation)
         state = self.state()
         assert (state["stage"], state["step"]["record"], state["problems"]) == (
             "choice", "n-c1", [])  # fmt: skip
@@ -969,6 +972,7 @@ class Route(CampaignWorld):
         self.blocks = {campaign_of(p)["cells"][0]["seeds"][0]: p for p in out.glob("*.yaml")}
         assert sorted(self.blocks) == [10400, 10401, 10402]
         self.prescribed = self.state()["prescribed"]
+        self.ok("summary", "check", "--runs-root", root, "--campaign", self.blocks[10400])
         assert self.guarded(10400, self.blocks[10400]).code == 0
         assert self.guarded(10401, self.blocks[10401]).code != 0  # out of seed order
         self.launch(self.blocks[10400])
@@ -1054,9 +1058,9 @@ def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) 
         "engineering", "search-round0", "search-round1", "numerical", "repair", "validation",
         "confirmation", "prep"}  # fmt: skip
     assert {kind for script, kind in done if script == "summary"} == {
-        "progress", "guard", "versions", "fixation validation", "fixation confirmation",
-        "record engineering", "record simulation", "record n-c1", "record budget-c1",
-        "closure"}  # fmt: skip
+        "progress", "guard", "check", "versions", "fixation validation",
+        "fixation confirmation", "record engineering", "record simulation", "record n-c1",
+        "record budget-c1", "closure"}  # fmt: skip
     assert route.guards == [(10400, 0), (10401, 1), (10401, 0), (10402, 0), (10402, 1),
                             (10403, 0)]  # fmt: skip
     # the guard's state and versions check were the real ones, on the checkout's GPU code
@@ -1151,6 +1155,9 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         for what in ("case-restart record", "supersession record"):
             assert f"{added[what]}: a {what} that {SEALED_WHY}" in state["problems"], what
         assert route.guarded(10403, route.blocks[10403]).code != 0
+        check = route.refused("summary", "check", "--runs-root", root, "--campaign",
+                              route.blocks[10403])  # fmt: skip
+        assert f"launch/linked.jsonl: a launch log that {SEALED_WHY}" in check.err
         for kind in KINDS:
             error = route.refused("campaigns", kind, "--runs-root", root, "--candidate", 1,
                                   "--theta0", route.runs.theta0, "--out",
@@ -1176,6 +1183,8 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
                                                       prescribed=route.prescribed)),
             ("versions_problems", lambda: sv.versions_problems(
                 repo / SECOND, runs_root=root, repo=repo, step="confirmation", candidate=1)),
+            ("uncounted_runs", lambda: sv.uncounted_runs(read_endpoints(
+                root, theta0=route.runs.theta0, prescribed=route.prescribed)[0], repo=repo)),
             ("read_validation_fixation", lambda: sv.read_validation_fixation(
                 1, runs_root=root, repo=repo)),
             ("read_confirmation_fixation", lambda: sv.read_confirmation_fixation(

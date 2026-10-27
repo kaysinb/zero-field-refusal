@@ -1646,10 +1646,11 @@ with its [validation, confirmation and stopping](study3-preregistration.md#valid
 and [failure routes](study3-preregistration.md#failure-routes). The state machine
 (`analysis.study3_progress`) reads every record under `RUNS_DIR` and names the next step.
 `scripts/study3_campaigns.py` writes the launcher campaign of that step and refuses any other.
-`scripts/study3_summary.py` prints the state, guards the confirmation between blocks and writes
-the versions record, the staged fixation and the decision records. Their docstrings hold every
-rule. Both run from the source checkout of the commit, clean (`$SRC`); campaign files and drivers
-go under `$RUNS_DIR/campaigns/`, never into the checkout.
+`scripts/study3_summary.py` prints the state, guards the confirmation between blocks, checks the
+versions record before a launch and writes the versions record, the staged fixation and the
+decision records. Their docstrings hold every rule. Both run from the source checkout of the
+commit, clean (`$SRC`); campaign files and drivers go under `$RUNS_DIR/campaigns/`, never into
+the checkout.
 
 ```bash
 R="$RUNS_DIR"; C="$R/campaigns"
@@ -1661,7 +1662,9 @@ so it holds no spread. It holds:
 - the stage and its step: a campaign with its cells; a decision record to write, with its path
   and the fields the route fixes; a step that waits, or is blocked with its reasons and ways out;
   a terminal outcome;
-- the active arms and comparisons, the rates, the route, the closures and the problems.
+- the active arms and comparisons, the rates, the route, the closures and the problems;
+- the validation and confirmation runs that do not count for the commit they ran (`not_counted`,
+  below).
 
 Nothing is decided on a problem: the step stays blocked while one is listed. Read the state
 before each command below.
@@ -1678,7 +1681,8 @@ before each command below.
      then `repair` (one round per arm, amendment 3) for an arm whose K misses by more than 0.05
      over its 4 + 3 seeds once its qualification passed, run the same way.
   5. **The validation.** The validation fixation and the first versions record, each committed
-     alone; then `validation`, 28 whole blocks (40 when the simulation record says so).
+     alone; then `validation`, 28 whole blocks (40 when the simulation record says so), run
+     after its printed `check` (below, "A run's own commit").
   6. **The choice and N.** The n record, and the budget record when N needs one.
   7. **The confirmation.** The confirmation supplement and a later versions record, each
      committed alone; then `confirmation`: one campaign file per block, and its driver `run.sh`.
@@ -1702,6 +1706,8 @@ before each command below.
   label `<cell>/s<seed>`), so no other run gets a second attempt from it:
 
   ```bash
+  project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
+    --campaign "$C/c1-validation.yaml"
   project-run "$SRC" python scripts/launch.py "$C/c1-validation.yaml" \
     --only c1-validation-adam_frozen-1.83e-05-s10304/s10304 --max-attempts 1 \
     --recovery "<the documented cause>"
@@ -1754,6 +1760,27 @@ before each command below.
     --reason confirmation_c1 --fixation docs/study3-fixation-confirmation-c1.json \
     --runs-root "$R" --supersedes docs/study3-versions.json --supersedes-reason confirmation_c1
   ```
+- **A run's own commit.** A validation or confirmation run under a commit other than the pinned
+  one does not count ([the registration](study3-preregistration.md#voiding-and-supersession)).
+  The state compares each run's `meta.json` commit with the commit its header's versions record
+  pins: that commit or a record-only descendant of it, from a clean checkout. Any other commit, a
+  dirty checkout, a commit the checkout does not hold or no recorded commit, and the run is kept
+  and listed (`not_counted`, with its reason and commit), and the step is blocked, naming it.
+  `check` prevents it. It exits 0 only when the campaign file is a validation or confirmation
+  campaign of study 3 and `versions_problems` finds no problem in the record its header names,
+  for its step and candidate, the running checkout's HEAD included:
+
+  ```bash
+  project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
+    --campaign "$C/c1-validation.yaml"
+  ```
+
+  It is run before every validation launch and every resumption of it, and before every recovery
+  round of a validation or confirmation run, with the same `$SRC` as the launch. Inside `run.sh`,
+  the guard already performs it for confirmation blocks. The limit: the launcher never reruns a
+  completed run, so a completed run under another commit cannot be rerun, and the state blocks on
+  it. Its way out is a decision the researcher records (`supersession_needed`); a run with no
+  published outcome is rerun by its recovery round, after `check` passes.
 - **After the validation fixation.** The validation fixation pins the qualification's input
   records and, whole and by sha256, every launch log that holds a line of the candidate's
   qualification: a start of its numerical or repair campaigns, or a line naming one of their

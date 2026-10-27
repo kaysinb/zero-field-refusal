@@ -27,6 +27,9 @@ its confirmation a supplement that names the first.
   them: an absent record is (None, []); with any problem the record is None.
 - ``versions_problems``: how the checkout and the launch journal depart from a versions record;
   none: it holds.
+- ``uncounted_runs``: the validation and confirmation runs that do not count for the commit they
+  ran, each with its reason; ``committed_changes``: the one reading of a record-only descendant,
+  for the running HEAD and for a run's own commit.
 - ``qualification_logs``: the launch logs a candidate's qualification rests on, each with its
   sha256 now; ``registered_policy``: the registration at a commit, as a fixation pins it;
   ``instruments``: the model and the judge as this checkout's configs give them.
@@ -155,8 +158,15 @@ is read.
   ``rates`` and ``active``); P is fixed exactly while P–F is open.
 - *The two reasons*: ``reason`` says why the record is written (the stage it serves, for example
   ``validation_c1``), ``supersedes.reason`` why the record before it no longer serves.
-- *A run's own commit* (``meta.json``'s ``git``) is not compared with the record's commit here: the
-  check of the record before each launch stands for it, as in study 2.
+- *A run's own commit* (``meta.json``'s ``git.commit`` and ``git.dirty``, kept by
+  ``study3_records``) is compared with the commit the versions record its header names pins, as
+  study 2 reads a run's commit (``uncounted_runs``): the pinned commit or a record-only
+  descendant of it, from a clean checkout. A run under any other commit, a dirty checkout, a
+  commit this checkout does not hold or no recorded commit does not count; it is kept and listed,
+  and ``study3_progress`` blocks on it. The check of the record before each launch
+  (``scripts/study3_summary.py check``, and the confirmation's guard) prevents such a run; it
+  does not stand for the comparison, which also covers a resumption or a recovery round launched
+  from another checkout.
 """
 
 from __future__ import annotations
@@ -168,7 +178,7 @@ import math
 import re
 import subprocess
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -180,7 +190,7 @@ from .. import code_identity
 from ..config import load_config
 from ..judge import IDENTITY_FIELDS, judge_identity
 from ..paths import REPO_ROOT
-from ..tracking import code_changes, git_state, tracked, worktree_changes
+from ..tracking import git_state, tracked, worktree_changes
 from .study3_decisions import (
     CAP_FLOOR,
     DIRECTORY,
@@ -199,11 +209,13 @@ from .study3_decisions import (
     read_decision,
 )
 from .study3_records import (
+    COUNTING,
     DECISIONS,
     EXPERIMENT,
     RATE_TOLERANCE,
     STEP_ROLES,
     VERSIONED_STEPS,
+    Endpoint,
     _bind,
     _Files,
     _read_journal,
@@ -254,6 +266,9 @@ _ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PART = r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}"
 _NAME = re.compile(rf"{_PART}(?:/{_PART}){{0,3}}")
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
+# Why a validation or confirmation run does not count for the commit it ran (``uncounted_runs``)
+UNCOUNTED_REASONS = ("no_commit", "dirty_checkout", "dirty_unrecorded", "unknown_commit",
+                     "no_versions_record", "other_commit")  # fmt: skip
 
 
 class RecordRefused(ValueError):
@@ -313,6 +328,31 @@ def _descends(repo: Path, commit: str) -> bool:
     """Whether HEAD is ``commit`` or descends from it."""
     try:
         _git(repo, "merge-base", "--is-ancestor", commit, "HEAD")
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+def committed_changes(base: str, target: str, repo: str | Path = REPO_ROOT) -> list[str] | None:
+    """The paths changed from the commit ``base`` to ``target`` (a commit, or ``HEAD``) when
+    ``target`` is ``base`` or descends from it; None otherwise, or when either is unknown to the
+    checkout ``repo``. A record-only descendant of ``base`` is one whose changes touch the record
+    alone: the one reading of it, for the running HEAD (``versions_problems``) and for a run's own
+    commit (``uncounted_runs``), as study 2 reads it."""
+    try:
+        _git(Path(repo), "merge-base", "--is-ancestor", base, target)
+        out = _git(Path(repo), "diff", "--name-only", "-z", "--no-renames", base, target)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return sorted(set(out.decode("utf-8", "replace").split("\0")) - {""})
+
+
+def _known(repo: Path, commit: str) -> bool:
+    """Whether ``commit`` (40 hexadecimal digits) is a commit of the checkout ``repo``."""
+    if not _COMMIT.fullmatch(commit):
+        return False
+    try:
+        _git(repo, "cat-file", "-e", f"{commit}^{{commit}}")
     except (OSError, subprocess.CalledProcessError):
         return False
     return True
@@ -1576,7 +1616,7 @@ def _checkout_problems(record: Mapping[str, Any], own: str, path: Path, repo: Pa
     checkout's changes, and the record unchanged since it was added."""
     commit, problems = record["code"]["commit"], []
     head = git_state(repo).get("commit")
-    changes = code_changes(commit, repo)
+    changes = _head_changes(commit, repo)
     if head is None:
         problems.append("the running code is not a Git checkout: its commit is unknown")
     elif changes is None:
@@ -1609,6 +1649,20 @@ def _checkout_problems(record: Mapping[str, Any], own: str, path: Path, repo: Pa
                             "never overwritten (a later one is a new file that supersedes "
                             "it)")  # fmt: skip
     return problems
+
+
+def _head_changes(commit: str, repo: Path) -> dict[str, list[str]] | None:
+    """How the checkout departs from ``commit``: ``committed``, the paths changed between it and
+    HEAD (``committed_changes``), and the uncommitted and untracked files
+    (``tracking.worktree_changes``); None when HEAD is neither ``commit`` nor a descendant of it
+    (or ``repo`` is no checkout)."""
+    committed = committed_changes(commit, "HEAD", repo)
+    if committed is None:
+        return None
+    try:
+        return {"committed": committed, **worktree_changes(repo)}
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def _chain(own: str, record: Mapping[str, Any], digest: str,
@@ -1839,4 +1893,107 @@ def _role(folder: Path, root: Path) -> str | None:
         step = header.get("step") if isinstance(header, Mapping) else None
         if isinstance(step, str) and step in STEP_ROLES:
             return STEP_ROLES[step]
+    return None
+
+
+# ------------------------------------------------------------------ each run's own commit
+
+
+def uncounted_runs(
+    endpoints: Iterable[Endpoint], *, repo: str | Path = REPO_ROOT
+) -> dict[str, dict[str, Any]]:
+    """The validation and confirmation runs that do not count for the commit they ran ("Voiding
+    and supersession", Versions: a run under a commit other than the pinned one does not count;
+    it is kept and reported), by run id. A run counts only under the commit the versions record
+    its campaign header names pins (``code.commit``), or a record-only descendant of it whose
+    changes touch that record alone (``committed_changes``, as the running HEAD is read), from a
+    clean checkout. Checked: every attempt of a validation or confirmation cell that counts
+    (``study3_records.COUNTING``) and whose ``meta.json`` was read (``Endpoint.git``); an attempt
+    without one has recorded no commit yet (it has not started), and one that no longer counts is
+    listed by the readers already. Each entry: ``run_id``, ``label``, ``candidate``, ``step``,
+    ``reason`` (``UNCOUNTED_REASONS``: ``no_commit``, its ``meta.json`` records no commit;
+    ``dirty_checkout``, its checkout was dirty; ``dirty_unrecorded``, its ``meta.json`` does not
+    record whether it was, which the tracker always records; ``unknown_commit``, a commit the
+    checkout ``repo`` does not hold; ``no_versions_record``, the record its header names is not in
+    the checkout with the named sha256, so the pinned commit cannot be shown; ``other_commit``,
+    neither the pinned commit nor a record-only descendant of it), ``commit`` as recorded (None
+    unless it is a commit id: no free text of a record is copied) and ``dirty``,
+    ``versions_record`` (the record's name in the checkout, or as the header names it) and
+    ``why``. Only the record's ``code.commit`` is read here; ``versions_problems`` checks the
+    record itself."""
+    repo = Path(repo)
+    pinned: dict[tuple[Any, Any], tuple[str | None, str | None]] = {}
+    known: dict[str, bool] = {}
+    changes: dict[tuple[str, str], list[str] | None] = {}
+    out: dict[str, dict[str, Any]] = {}
+    for e in endpoints:
+        if e.cell.step not in STAGES or e.state not in COUNTING or e.git is None:
+            continue
+        commit, dirty = e.git
+        named, sha = e.cell.versions_record, e.cell.versions_record_sha256
+        if (named, sha) not in pinned:
+            pinned[(named, sha)] = _pinned_commit(named, sha, repo)
+        name, base = pinned[(named, sha)]
+        if commit is not None and commit not in known:
+            known[commit] = _known(repo, commit)
+        if (commit is not None and base is not None and known[commit]
+                and (base, commit) not in changes):  # fmt: skip
+            changes[(base, commit)] = committed_changes(base, commit, repo)
+        found = _commit_problem(commit, dirty, name or named, sha, base,
+                                known.get(commit, False), changes.get((base, commit)))  # fmt: skip
+        if found is not None:
+            reason, why = found
+            shown = commit if commit is not None and _COMMIT.fullmatch(commit) else None
+            out[e.run_id] = {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
+                             "step": e.cell.step, "reason": reason, "commit": shown,
+                             "dirty": dirty, "versions_record": name or named,
+                             "why": why}  # fmt: skip
+    return out
+
+
+def _pinned_commit(named: Any, sha: Any, repo: Path) -> tuple[str | None, str | None]:
+    """The versions record a campaign header names (``versions_record``, a path in this checkout
+    or another, read by its last two components) as its name in the checkout, and the commit it
+    pins (``code.commit``), when the file is there with the named sha256; None for each that
+    cannot be shown. A file that resolves under a sealed folder is not opened."""
+    if not (isinstance(named, str) and isinstance(sha, str)):
+        return None, None
+    name = "/".join(PurePosixPath(named.replace("\\", "/")).parts[-2:])
+    if not _VERSIONS_NAME.fullmatch(name):
+        return None, None
+    data = _pinned_json(repo / name, repo, sha)
+    code = data.get("code") if isinstance(data, dict) else None
+    commit = code.get("commit") if isinstance(code, Mapping) else None
+    return name, commit if isinstance(commit, str) and _COMMIT.fullmatch(commit) else None
+
+
+def _commit_problem(commit: str | None, dirty: bool | None, record: Any, sha: Any,
+                    base: str | None, known: bool,
+                    changes: list[str] | None) -> tuple[str, str] | None:  # fmt: skip
+    """Why a run under ``commit`` (``dirty``) does not count against the commit ``base`` that the
+    versions record ``record`` pins (``changes``: the paths changed from ``base`` to ``commit``),
+    as (reason, why); None when it counts."""
+    if commit is None:
+        return "no_commit", "its meta.json records no commit (git.commit)"
+    if dirty is True:
+        return "dirty_checkout", f"it ran on a checkout of {commit} with uncommitted changes"
+    if dirty is None:
+        return ("dirty_unrecorded", f"its meta.json does not record whether its checkout of "
+                f"{commit} was clean (git.dirty)")  # fmt: skip
+    if not _COMMIT.fullmatch(commit):  # not copied: no free text of a record is shown
+        return "unknown_commit", "its meta.json records a commit that is no commit id"
+    if not known:
+        return "unknown_commit", f"its commit {commit} is not a commit of this checkout"
+    if base is None:
+        return ("no_versions_record", f"the versions record its header names ({record}, sha256 "
+                f"{sha}) is not in this checkout as named: the commit it pins cannot be "
+                "shown")  # fmt: skip
+    if changes is None:
+        return ("other_commit", f"its commit {commit} is neither the commit {base} that {record} "
+                "pins nor a descendant of it")  # fmt: skip
+    others = [path for path in changes if path != record]
+    if others:
+        return ("other_commit", f"its commit {commit} changes {len(others)} files from the commit "
+                f"{base} that {record} pins (first: {others[0]}): only the record itself may "
+                "follow it")  # fmt: skip
     return None

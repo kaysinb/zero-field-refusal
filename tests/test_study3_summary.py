@@ -721,6 +721,68 @@ def test_the_versions_command_refuses_what_the_readers_would_not_accept(checkout
     assert problems == [] and record["fixation"] is None
 
 
+def campaign_file(path: Path, header: dict) -> Path:
+    """A launcher campaign file with ``header`` (its cells do not matter to the check)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"name": path.stem, "header": header, "cells": []}))
+    return path
+
+
+def test_check_holds_before_a_validation_launch_and_refuses_otherwise(
+    checkout, tmp_path, monkeypatch
+) -> None:
+    """``check`` exits 0 only when the campaign file is a validation or confirmation campaign of
+    study 3 and the versions record its header names holds for its step and candidate, the
+    running checkout's HEAD included: before a launch, a resumption or a recovery round."""
+    study, summary = checkout
+    study.validated()  # the validation fixation and the first record, each committed alone
+    out = tmp_path / "campaigns"
+    good = campaign_file(out / "c1-validation.yaml", study.header("validation"))
+    attempts = sealed_reads(monkeypatch)
+    code, printed, error = summary.run("check", "--runs-root", study.root, "--campaign", good)
+    assert code == 0, error
+    assert str(good) in printed and "holds" in printed
+    # a file that is no validation or confirmation campaign of study 3
+    for name, header in (
+        ("study2", {**study.header("validation"), "study": 2}),
+        ("search", {"study": 3, "candidate": 1, "step": "search", "round": 0}),
+        ("numerical", {"study": 3, "candidate": 1, "step": "numerical", "round": None}),
+        ("no-candidate", {**study.header("validation"), "candidate": 3}),
+        ("no-header", None),
+    ):
+        refused(summary.run("check", "--runs-root", study.root, "--campaign",
+                            campaign_file(out / f"{name}.yaml", header)),
+                "not a validation or confirmation campaign of study 3")  # fmt: skip
+    refused(summary.run("check", "--runs-root", study.root, "--campaign", out / "absent.yaml"),
+            "cannot be read")  # fmt: skip
+    # the record the header names, by another sha256, or a record the checkout does not hold
+    refused(summary.run("check", "--runs-root", study.root, "--campaign", campaign_file(
+        out / "other-sha.yaml", study.header("validation", sha="0" * 64))),
+        "names docs/study3-versions.json with sha256 " + "0" * 64)  # fmt: skip
+    refused(summary.run("check", "--runs-root", study.root, "--campaign", campaign_file(
+        out / "other-record.yaml", {**study.header("validation"),
+                                    "versions_record": "docs/study3-versions-2.json"})),
+        "study3-versions-2.json")  # fmt: skip
+    # the record does not stand for the confirmation: its fixation is the validation's
+    refused(summary.run("check", "--runs-root", study.root, "--campaign", campaign_file(
+        out / "c1-confirmation.yaml", study.header("confirmation"))),
+        "the versions record does not hold", CONFIRMATION_C1)  # fmt: skip
+    # a checkout that is not the recorded commit or its record-only child
+    (study.repo / "notes.md").write_text("local notes\n")
+    refused(summary.run("check", "--runs-root", study.root, "--campaign", good),
+            "the versions record does not hold", "untracked")  # fmt: skip
+    study.commit("notes")
+    refused(summary.run("check", "--runs-root", study.root, "--campaign", good),
+            "the versions record does not hold", "notes.md")  # fmt: skip
+    # a campaign file under a run's sealed folder is not opened
+    sealed = study.root / "study3" / "run" / "responses" / "c1-validation.yaml"
+    sealed.parent.mkdir(parents=True)
+    sealed.write_text(SENTINEL + "\n")
+    error = refused(summary.run("check", "--runs-root", study.root, "--campaign", sealed),
+                    "responses/ or observations/")  # fmt: skip
+    assert SENTINEL not in error and attempts == []
+
+
 def test_a_record_is_published_once(world, summary) -> None:
     """Records are published whole and only where none is: a record found at the path when it is
     linked into place is kept, and the command refuses."""

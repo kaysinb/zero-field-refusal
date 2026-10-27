@@ -49,7 +49,8 @@ A chain of engineering cycles that is broken is a problem, never an outcome.
 ``active``: the arms and comparisons still open. ``rates``: the candidate's selected (or repaired)
 rates. ``route``: the decisions taken on the way (a candidate left, P–F closed, the candidate
 chosen). ``closures``: the closure records written. ``validation`` and ``confirmation``: the
-stage's summary once reached. ``problems``: every problem found.
+stage's summary once reached. ``problems``: every problem found. ``not_counted``: every validation
+or confirmation run that does not count for the commit it ran (below), wherever the walk stops.
 
 **Order** ("Seeds and order"). The engineering record passed (the cells of the engineering stage,
 every arm at candidate 1's starting rates on 10000–10003, are issued from the start), then the
@@ -139,6 +140,19 @@ or F: the technical feasibility report; P: P–F closes and the blocks go on wit
 stopped, every comparison's reading needs its blocks resolved. The confirmation never moves the
 candidate: its failed endpoints (a scientific failure) remove support only, and P is closed in it
 only by a technical mark.
+
+**A run under another commit** ("Voiding and supersession", Versions: a validation or confirmation
+run under a commit other than the pinned one does not count; it is kept and reported). The reader
+compares each such run's own commit (its ``meta.json``'s ``git``) with the commit the versions
+record its header names pins (``study3_versions.uncounted_runs``: the pinned commit or a
+record-only descendant of it, from a clean checkout). A run that does not count is listed in
+``not_counted`` with its reason id and the commit it ran, and its stage (the candidate's
+validation or confirmation) is blocked, naming it, before anything else of the stage is read. Its
+way out is a decision the researcher records (``supersession_needed``): the launcher skips a
+completed run, so no recovery round reruns it, and no tool here supersedes a run outside the
+qualification; for a run with no published outcome, where the launcher would open one, a
+recovery round launched from a checkout of the pinned commit reruns it. Its cell is never issued
+again while it stands.
 
 **The hold route** (a held launcher run: an outcome the candidate's engineering cycle could not
 resolve, kept as it is and never attempted again). It is unresolved technical evidence, neither a
@@ -295,6 +309,9 @@ CAMPAIGNS = ("search-round0", "search-round1", "numerical", "repair", "validatio
 ROUTED = ("search", "numerical", "repair", "validation", "confirmation")  # a mark routes there
 OUTSIDE = ("search", "validation", "confirmation")  # the steps outside the qualification
 ENDED = ("usable", "unusable", "scientific")  # a run whose records are published and read
+# The way out of a run under another commit: the researcher's recorded decision (the launcher
+# never reruns a completed run, and no tool here supersedes one outside the qualification)
+SUPERSESSION_NEEDED = "supersession_needed"
 
 
 @dataclass(frozen=True)
@@ -306,8 +323,9 @@ class Records:
     (``cycles``: ``qualification_records.supersessions``), each run's campaign header from its
     start in the launch journal (``headers``), the sha256 of each valid decision record's file
     now (``digests``), each run's last end line and its start line
-    (``study3_decisions.end_lines``, ``start_lines``) and the runs the launcher would open a
-    recovery round for (``recoverable``)."""
+    (``study3_decisions.end_lines``, ``start_lines``), the runs the launcher would open a
+    recovery round for (``recoverable``) and the validation and confirmation runs that do not
+    count for the commit they ran (``uncounted``: ``study3_versions.uncounted_runs``)."""
 
     endpoints: Sequence[Endpoint] = ()
     problems: Sequence[str] = ()
@@ -322,6 +340,7 @@ class Records:
     starts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     cycles: Mapping[int, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
     recoverable: Collection[str] = frozenset()
+    uncounted: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ the reader
@@ -389,8 +408,11 @@ def progress(
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
         return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
-    return advance(Records(tuple(endpoints), tuple(problems), recoverable=recoverable, **fixed),
-                   expected_code=expected_code)  # fmt: skip
+    from .study3_versions import uncounted_runs  # each run's own commit, against the checkout's
+
+    uncounted = uncounted_runs(endpoints, repo=repo)
+    return advance(Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
+                           uncounted=uncounted, **fixed), expected_code=expected_code)  # fmt: skip
 
 
 def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> frozenset[str]:
@@ -804,6 +826,7 @@ class _Walk:
         self._prescribe(candidate, "validation", None, [
             (arm, final[arm][label], seed) for arm in self.arms for label in LABELS
             for seed in seeds])  # fmt: skip
+        self._other_commits(stage, step_key(candidate, "validation"))
         # holds first: a closed P leaves the blocks
         self._decide(stage, {arm: _Arm(hold=self._holds_at(candidate, arm, ("validation",)))
                              for arm in self.arms})  # fmt: skip
@@ -982,6 +1005,7 @@ class _Walk:
         self._prescribe(candidate, "confirmation", None, [
             (arm, final[arm][label], seed) for arm in self.arms for label in LABELS
             for seed in seeds])  # fmt: skip
+        self._other_commits(stage, step_key(candidate, "confirmation"))
         while True:  # once more when a closure closed P: the blocks are A–F's alone
             arms = list(self.arms)
             state = confirmation_state(self.endpoints, candidate, n["N"], self._comparisons())
@@ -1045,6 +1069,33 @@ class _Walk:
                 "blocks": [{"seed": block["seed"], "runs": list(block["runs"])}
                            for block in blocks],
                 "ways_out": ways}  # fmt: skip
+
+    # -- a run under another commit
+
+    def _other_commits(self, stage: str, key: str) -> None:
+        """The runs of the stage's cells (``key``) that do not count for the commit they ran
+        (module docstring, "A run under another commit"): the step is blocked, naming each run,
+        its reason and its way out; nothing of the stage is read past them."""
+        found = sorted((e for e in self.by_key.get(key, ()) if e.run_id in self.records.uncounted),
+                       key=lambda e: e.run_id)  # fmt: skip
+        if not found or self.lenient:
+            return
+        reasons, ways = [], []
+        for e in found:
+            entry = self.records.uncounted[e.run_id]
+            reasons.append(f"{e.run_id}: a {e.cell.step} run under a commit other than the pinned "
+                           f"one does not count ({entry.get('reason')}: {entry.get('why')}); it "
+                           "is kept and reported, and the launcher never reruns a completed "
+                           "run")  # fmt: skip
+            way = {"run_id": e.run_id, "label": e.label, "reason": entry.get("reason"),
+                   "commit": entry.get("commit"), "decision": SUPERSESSION_NEEDED}  # fmt: skip
+            if e.run_id in self.records.recoverable and e.state not in ENDED:
+                way["recovery"] = (f"a recovery round of {e.label} with its documented cause, "
+                                   "launched after study3_summary.py check passes: its next "
+                                   "attempt decides")  # fmt: skip
+            ways.append(way)
+        raise _Stop(self._result(stage, {"kind": "blocked", "technical": False,
+                                         "reasons": reasons, "ways_out": ways}))  # fmt: skip
 
     # -- a stage's decision
 
@@ -1426,6 +1477,8 @@ class _Walk:
                          for k, e in sorted(self.entries.items())
                          if k.startswith("closure-") and e["state"] != "missing"},
             "problems": list(dict.fromkeys(self.problems)),
+            "not_counted": [dict(self.records.uncounted[k])
+                            for k in sorted(self.records.uncounted)],
             "prescribed": {k: sorted(v) for k, v in sorted(self.prescribed.items()) if v},
             **self.extra, **extra,
         }  # fmt: skip

@@ -66,6 +66,9 @@ step (``STEP_ROLES``) and its round (``round``, present, None only when written 
 validation and confirmation the versions record and its sha256. From the config: the arm
 (``ARMS``), the rate, the seed, the role (``study3.role``, the step's) and whether the run is
 K-only (the step's kind), at B = 20 and 25 updates under the fixed schedule evaluated at step 25.
+From the same ``meta.json`` the endpoint keeps the commit its run ran and whether its checkout
+was dirty (``git``, the tracker's ``git.commit`` and ``git.dirty``), which
+``study3_versions.uncounted_runs`` compares with the commit the header's versions record pins.
 Refused by name, before any outcome is read: a run directory with no start in the journal, a run
 id started twice, a start without a header that issues such a cell, a recorded campaign that is
 not the journal's, a config hash that is not the cell's, an unknown arm, a role or kind that is
@@ -285,6 +288,10 @@ class Endpoint:
     mmlu_loss_pp: float | None = None
     factual_loss_pp: float | None = None
     unusable_reason: str | None = None  # GROSS_COLLAPSE or NONPOSITIVE_K when unusable
+    # The commit its run ran and whether its checkout was dirty, as its meta.json's ``git``
+    # records them (``commit``, ``dirty``: None where not recorded as a string or a bool); None
+    # without a readable meta.json
+    git: tuple[str | None, bool | None] | None = None
 
     @property
     def counts(self) -> bool:
@@ -306,6 +313,7 @@ class _Attempt:
     unbound: str | None = None  # why its config can no longer be bound (technical)
     state: str | None = None
     reasons: list[str] = field(default_factory=list)
+    git: tuple[str | None, bool | None] | None = None  # meta.json's commit and dirty flag
 
 
 @dataclass
@@ -820,7 +828,18 @@ def _bind(
     return _Attempt(campaign=campaign, started=started, run_id=run_id, run_dir=run_dir,
                     cell=cell, number=number, role=facts.get("role"),
                     k_only=facts.get("k_only"), every=facts.get("every"), unbound=unbound,
-                    state="refused" if refusals else None, reasons=refusals)  # fmt: skip
+                    state="refused" if refusals else None, reasons=refusals,
+                    git=None if meta is None else _git_of(meta))  # fmt: skip
+
+
+def _git_of(meta: Mapping[str, Any]) -> tuple[str | None, bool | None]:
+    """The commit and the dirty flag a run's ``meta.json`` records (the tracker's ``git``:
+    ``commit`` and ``dirty``), each None where it is not recorded as a string or a bool."""
+    git = meta.get("git")
+    git = git if isinstance(git, Mapping) else {}
+    commit, dirty = git.get("commit"), git.get("dirty")
+    return (commit if isinstance(commit, str) else None,
+            dirty if isinstance(dirty, bool) else None)  # fmt: skip
 
 
 def _facts(
@@ -1067,7 +1086,7 @@ def _endpoint(attempt: _Attempt, ends: Sequence[Mapping[str, Any]],
     common = {"run_id": attempt.run_id, "run_dir": attempt.run_dir, "cell": cell,
               "arm": cell.arm, "lr": cell.rate, "seed": cell.seed, "role": attempt.role,
               "candidate": cell.candidate, "k_only": attempt.k_only,
-              "attempt": attempt.number, "label": cell.label}  # fmt: skip
+              "attempt": attempt.number, "label": cell.label, "git": attempt.git}  # fmt: skip
     if attempt.state is not None:
         return Endpoint(**common, state=attempt.state, reasons=tuple(attempt.reasons))
     return Endpoint(**common, **_outcome(attempt, ends, theta0, files or _Files()))

@@ -8,6 +8,7 @@ observations file with a sentinel text (never opened), and decision records with
 The registered K* of candidate 1 is 6.00; runs at K_l and K_u bracket it with the weight 1/2."""
 
 import builtins
+import hashlib
 import io
 import json
 import math
@@ -21,7 +22,7 @@ import pytest
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
 from test_study3_decisions import World as DecisionWorld
 from test_study3_decisions import held as decision_hold
-from test_study3_records import SENTINEL, seal
+from test_study3_records import SENTINEL, header, seal
 from test_study3_records import World as RunWorld
 
 from zero_field_refusal.analysis import study3_progress
@@ -108,6 +109,7 @@ class Study:
         self.recoverable: set[str] = set()  # runs the launcher would open a recovery round for
         self.cycles: dict[int, list[dict]] = {1: [], 2: []}  # each candidate's cycle records
         self.expected = EXPECTED  # the chain of engineering cycles' end
+        self.uncounted: dict[str, dict] = {}  # runs under another commit than the pinned one
 
     # -- decision records
 
@@ -372,10 +374,21 @@ class Study:
                        decisions=decisions, closures=closures, qualification=self.readings,
                        headers=self.headers, digests=self.digests, ends=self.ends,
                        starts=self.starts, cycles=self.cycles,
-                       recoverable=frozenset(self.recoverable))  # fmt: skip
+                       recoverable=frozenset(self.recoverable),
+                       uncounted=self.uncounted)  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
+
+    def other_commit(self, run_id, reason="other_commit", commit="e" * 40) -> dict:
+        """A run under a commit other than the pinned one, as ``uncounted_runs`` lists it."""
+        (found,) = [e for e in self.endpoints if e.run_id == run_id]
+        entry = {"run_id": run_id, "label": found.label, "candidate": found.candidate,
+                 "step": found.cell.step, "reason": reason, "commit": commit, "dirty": False,
+                 "versions_record": "docs/study3-versions.json",
+                 "why": f"its commit {commit} is not the pinned one"}  # fmt: skip
+        self.uncounted[run_id] = entry
+        return entry
 
 
 def cells(step) -> set:
@@ -1892,6 +1905,87 @@ def test_a_partly_issued_confirmation_block_is_completed_before_the_next() -> No
     assert cells(result["step"]) == {("P", START["P"]["u"], 10401)}
 
 
+# ------------------------------------------------------------------ a run under another commit
+
+
+@pytest.mark.parametrize("reason", ["other_commit", "dirty_checkout", "no_commit"])
+def test_a_validation_run_under_another_commit_does_not_count_and_blocks(reason) -> None:
+    """The registration's rule (Versions, in "Voiding and supersession"): the run does not count,
+    is kept and listed, and the step is blocked, naming it; its way out is the researcher's
+    recorded decision, and its cell is not issued again (the launcher skips a completed run)."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    study.validation(count=3)
+    run = run_of(study, "validation", "F", "u", 10301)
+    entry = study.other_commit(run, reason, None if reason == "no_commit" else "e" * 40)
+    result = study.advance()
+    step = result["step"]
+    assert (result["stage"], step["kind"], step["technical"]) == ("validation", "blocked", False)
+    assert any(run in r and reason in r for r in step["reasons"])
+    assert step["ways_out"] == [{"run_id": run, "label": entry["label"], "reason": reason,
+                                 "commit": entry["commit"],
+                                 "decision": "supersession_needed"}]  # fmt: skip
+    assert result["not_counted"] == [entry]
+    assert "cells" not in step
+    # the lenient derivation of the cells is not stopped by it
+    lenient = study.advance(lenient=True)
+    assert len(lenient["prescribed"]["c1/validation"]) == 6 * 28
+
+
+@pytest.mark.parametrize("reason", ["other_commit", "dirty_checkout", "no_commit"])
+def test_a_confirmation_run_under_another_commit_does_not_count_and_blocks(reason) -> None:
+    """The same in the confirmation: no block is issued, and the guard, which reads the step,
+    refuses every block."""
+    study = Study()
+    study.through_validation()
+    study.n(N=60)
+    study.confirmation(count=3)
+    run = run_of(study, "confirmation", "A", "l", 10401)
+    entry = study.other_commit(run, reason, None if reason == "no_commit" else "e" * 40)
+    result = study.advance()
+    step = result["step"]
+    assert (result["stage"], step["kind"], step["technical"]) == ("confirmation", "blocked", False)
+    assert [(w["run_id"], w["reason"], w["decision"]) for w in step["ways_out"]] == [
+        (run, reason, "supersession_needed")]  # fmt: skip
+    assert result["not_counted"] == [entry]
+    assert "cells" not in step
+
+
+def test_a_technical_run_under_another_commit_names_its_recovery_round_too() -> None:
+    """A run with no published outcome under another commit: beside the recorded decision, a
+    recovery round reruns it where the launcher would open one (its next attempt decides)."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    study.validation(count=3)
+    broken = study.technical(run_of(study, "validation", "A", "l", 10302))
+    study.other_commit(broken.run_id)
+    (way,) = study.advance()["step"]["ways_out"]
+    assert way["decision"] == "supersession_needed" and broken.label in way["recovery"]
+
+
+def test_a_run_under_another_commit_is_listed_wherever_the_walk_stops() -> None:
+    """The state lists every run that does not count for its commit, even where a problem stops
+    the walk before the run's stage; without one, the validation goes on."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    study.validation(count=3)
+    entry = study.other_commit(run_of(study, "validation", "F", "u", 10301))
+    study.problems.append("a problem of the records")
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("search", "blocked")
+    assert result["not_counted"] == [entry]
+    study.problems.clear()
+    study.uncounted.clear()
+    result = study.advance()
+    assert result["not_counted"] == [] and result["step"]["campaign"] == "validation"
+
+
 # ------------------------------------------------------------------ the reader
 
 
@@ -1909,6 +2003,31 @@ def worlds(tmp_path):
     (runs.root / "launch").mkdir()
     (runs.root / "launch" / "study3-c1-engineering.jsonl").write_text("")
     return records, runs
+
+
+def pinned(records, runs) -> dict:
+    """The checkout made a Git checkout with a versions record that pins the commit before its
+    own; the runs written from now on ran its own commit, clean. The header of a validation
+    campaign naming the record."""
+    repo = records.repo
+
+    def git(*args: str) -> str:
+        command = ["git", "-c", "user.name=test", "-c", "user.email=test@example.org",
+                   "-c", "commit.gpgsign=false", *args]  # fmt: skip
+        return subprocess.run(command, cwd=repo, check=True, capture_output=True,
+                              text=True).stdout.strip()  # fmt: skip
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "--allow-empty", "-m", "the checkout")
+    record = repo / "docs" / "study3-versions.json"
+    record.parent.mkdir(exist_ok=True)
+    record.write_text(json.dumps({"code": {"commit": git("rev-parse", "HEAD")}}) + "\n")
+    git("add", "docs/study3-versions.json")
+    git("commit", "-q", "-m", "the versions record")
+    runs.git = {"commit": git("rev-parse", "HEAD"), "dirty": False}
+    digest = hashlib.sha256(record.read_bytes()).hexdigest()
+    return header(1, "validation", None, versions_record_sha256=digest)
 
 
 def read(records, runs, expected_code=EXPECTED, **kw) -> dict:
@@ -2325,6 +2444,7 @@ def test_the_reader_never_opens_responses_or_observations(worlds, monkeypatch) -
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
     search_round0(records, runs)
+    head = pinned(records, runs)
     for arm in ARMS:
         for label in LABELS:
             for seed in SEEDS["numerical"][1]:
@@ -2334,10 +2454,10 @@ def test_the_reader_never_opens_responses_or_observations(worlds, monkeypatch) -
             for seed in SEEDS["validation"][1][:3]:
                 runs.run(arm, START[arm][label], seed, role="validation", prescribe=False,
                          campaign="study3-c1-validation", k=CANDIDATES[1]["targets"][label],
-                         mmlu=1.0, factual=2.0)  # fmt: skip
+                         mmlu=1.0, factual=2.0, head=head)  # fmt: skip
     # a conflict end whose free text is the sentinel
     conflict = runs.run("A", START["A"]["l"], 10303, role="validation", prescribe=False,
-                        campaign="study3-c1-validation", end=None)  # fmt: skip
+                        campaign="study3-c1-validation", end=None, head=head)  # fmt: skip
     runs.end("study3-c1-validation", f"A-{START['A']['l']:g}/s10303", 1, conflict, "conflict",
              problem=SENTINEL)  # fmt: skip
     from zero_field_refusal.analysis import qualification_records
@@ -2360,8 +2480,9 @@ def test_the_reader_never_opens_responses_or_observations(worlds, monkeypatch) -
     sealed = seal(monkeypatch)
     result = read(records, runs, settings={})
     assert sealed == []
-    assert (result["stage"], result["problems"]) == ("validation", [])
+    assert (result["stage"], result["problems"], result["not_counted"]) == ("validation", [], [])
     assert result["step"]["kind"] == "blocked"  # the conflict is technical: its diagnosis first
+    assert result["step"]["technical"] is True
     assert any(conflict in r for r in result["step"]["reasons"])
     assert SENTINEL not in tidy(result)
     with pytest.raises(AssertionError):  # the guard is live

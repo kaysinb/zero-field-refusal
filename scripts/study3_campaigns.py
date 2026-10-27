@@ -71,7 +71,12 @@ experiments/study3 with their role.
 ``--max-attempts 1`` (one technical attempt uses the launcher's allowance; a rerun is a recovery
 round with its reason): search and validation as ``python scripts/launch.py FILE --max-attempts
 1``; engineering, numerical and repair through ``python scripts/qualify.py driver --campaign FILE
---candidate N [--engineering] --commit SHA --out DRIVER``, which passes it itself. Campaign files
+--candidate N [--engineering] --commit SHA --out DRIVER``, which passes it itself. The validation's
+launch is preceded by its check, printed first: ``python scripts/study3_summary.py check
+--runs-root DIR --campaign FILE``, which exits 0 only while the versions record its header names
+holds for the running checkout (a run under another commit does not count, and the launcher never
+reruns it); it is run again, from the same checkout, before every resumption of the file and
+every recovery round of one of its runs. Campaign files
 belong outside the checkout (under $RUNS_DIR/campaigns/, say): the versions record holds only for
 a clean checkout.
 
@@ -444,6 +449,13 @@ def run_command(kind: str, candidate: int, out: Path) -> str:
             f"{shlex.quote(str(driver))}")  # fmt: skip
 
 
+def check_command(root: Path, out: Path) -> str:
+    """The check of the versions record a validation campaign names, run before its launch, every
+    resumption and every recovery round of one of its runs (``study3_summary.py check``)."""
+    return (f"python scripts/study3_summary.py check --runs-root {shlex.quote(str(root))} "
+            f"--campaign {shlex.quote(str(out))}")  # fmt: skip
+
+
 def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
                 written_at: str, theta0: Path | None = None) -> str:  # fmt: skip
     """The confirmation's driver (module docstring, "The confirmation"); ``theta0``: the
@@ -543,6 +555,8 @@ def campaign(args: argparse.Namespace) -> None:
                  f"{', '.join(str(s) for s, _ in chosen)}, from the state of the records under "
                  f"{root}."]  # fmt: skip
         if seed is None:
+            if kind == "validation":
+                notes.append(f"Check: {check_command(root.absolute(), path.absolute())}")
             notes.append(f"Run: {run_command(kind, candidate, path.absolute())}")
         else:
             notes.append(f"Run by {args.out.absolute() / 'run.sh'}, after the between-block "
@@ -558,6 +572,8 @@ def campaign(args: argparse.Namespace) -> None:
         print(driver)
         print(f"Run: bash {shlex.quote(str(driver.absolute()))}")
     else:
+        if kind == "validation":
+            print(f"Check: {check_command(root.absolute(), args.out.absolute())}")
         print(f"Run: {run_command(kind, candidate, args.out.absolute())}")
 
 

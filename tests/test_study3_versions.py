@@ -31,7 +31,7 @@ from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import cap_of
-from zero_field_refusal.analysis.study3_records import SEEDS
+from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint
 
 REGISTRATION = "docs/study3-preregistration.md"
 AMENDMENTS = "".join(f"\n### Amendment {n}: change {n}\n\nText {n}.\n" for n in (1, 2, 3))
@@ -1161,6 +1161,103 @@ def test_records_do_not_read_as_versions_records(study) -> None:
         found, problems = sv.read_versions(study.repo / FIRST, repo=study.repo)
         assert found is None and has(problems, *words), (change, problems)
         assert has(study.problems(), *words)
+
+
+# ------------------------------------------------------------------ each run's own commit
+
+
+def versioned(run_id: str, step: str, git, sha: str, *, state: str = "usable",
+              record: str = FIRST) -> Endpoint:  # fmt: skip
+    """A counting validation or confirmation attempt of A whose header names ``record`` with
+    ``sha``, its ``meta.json`` recording ``git`` (commit, dirty)."""
+    seed = SEEDS[step][1][0]
+    label = f"A-1.45e-05/s{seed}"
+    cell = Cell(campaign="c", label=label, candidate=1, step=step, round=None, arm="A",
+                rate=1.45e-5, seed=seed, config_hash="0" * 16, versions_record=record,
+                versions_record_sha256=sha, prescribed=("A", 1.45e-5, seed))  # fmt: skip
+    return Endpoint(run_id=run_id, run_dir=Path(run_id), cell=cell, arm="A", lr=1.45e-5,
+                    seed=seed, role=step, candidate=1, k_only=False, attempt=1, label=label,
+                    state=state, git=git)  # fmt: skip
+
+
+@pytest.mark.parametrize("step", ["validation", "confirmation"])
+def test_a_run_under_a_commit_other_than_the_pinned_one_does_not_count(study, step) -> None:
+    """The registration's rule (Versions, in "Voiding and supersession"): a run counts only under
+    the commit its header's versions record pins, or a record-only descendant of it, from a clean
+    checkout; every other is listed with its reason and the commit it ran."""
+    sha = study.validated()
+    base = json.loads((study.repo / FIRST).read_text())["code"]["commit"]
+    child = study.head()  # the record's own commit: a record-only descendant
+    assert base != child and git(study.repo, "rev-parse", f"{child}^") == base
+    (study.repo / "src" / "zero_field_refusal" / "train.py").write_text("x = 2\n")
+    study.commit("a change of code")
+    later = study.head()
+    gits = {"base": (base, False), "child": (child, False), "later": (later, False),
+            "earlier": (study.registered, False), "unknown": ("f" * 40, False),
+            "no-id": ("not a commit", False),
+            "missing": (None, False), "dirty": (child, True),
+            "unrecorded": (child, None)}  # fmt: skip
+    endpoints = [versioned(name, step, value, sha) for name, value in gits.items()]
+    endpoints.append(versioned("another-sha", step, (child, False), "0" * 64))
+    found = sv.uncounted_runs(endpoints, repo=study.repo)
+    assert {run_id: entry["reason"] for run_id, entry in found.items()} == {
+        "later": "other_commit", "earlier": "other_commit", "unknown": "unknown_commit",
+        "no-id": "unknown_commit",
+        "missing": "no_commit", "dirty": "dirty_checkout", "unrecorded": "dirty_unrecorded",
+        "another-sha": "no_versions_record"}  # fmt: skip
+    entry = found["later"]
+    assert {k: entry[k] for k in ("run_id", "label", "candidate", "step", "commit", "dirty",
+                                  "versions_record")} == {
+        "run_id": "later", "label": endpoints[2].label, "candidate": 1, "step": step,
+        "commit": later, "dirty": False, "versions_record": FIRST}  # fmt: skip
+    assert later in entry["why"] and base in entry["why"]
+    # a recorded commit that is no commit id is not copied
+    assert found["no-id"]["commit"] is None and "not a commit" not in repr(found["no-id"])
+    assert set(sv.UNCOUNTED_REASONS) >= {e["reason"] for e in found.values()}
+
+
+def test_only_counting_validation_and_confirmation_runs_with_their_meta_are_checked(study):
+    """A run that no longer counts (superseded, recovered, refused, held), a run of another step
+    and a run without a readable ``meta.json`` (no commit recorded: it has not started) are not
+    listed; a pending run under another commit is."""
+    sha = study.validated()
+    other = study.registered
+    endpoints = [versioned(state, "validation", (other, False), sha, state=state)
+                 for state in ("superseded", "recovered", "refused", "held",
+                               "pending")]  # fmt: skip
+    endpoints.append(versioned("unread", "validation", None, sha))
+    search = versioned("search", "validation", (other, False), sha)
+    endpoints.append(Endpoint(**{**search.__dict__, "cell": Cell(**{
+        **search.cell.__dict__, "step": "search", "round": 0})}))  # fmt: skip
+    assert set(sv.uncounted_runs(endpoints, repo=study.repo)) == {"pending"}
+
+
+def test_progress_lists_and_blocks_on_a_validation_run_under_another_commit(study) -> None:
+    """On files: the validation runs of a block, under the record-only child of the pinned
+    commit, count; one whose ``meta.json`` records another commit, a dirty checkout or no
+    commit does not, is listed, and blocks the validation."""
+    study.ready(real=True)
+    study.put(VALIDATION_C1, study.fixation())
+    study.versions()
+    study.runs.git = {"commit": study.head(), "dirty": False}
+    first = study.block(10300) + study.block(10300, arm="F") + study.block(10300, arm="P")
+    state = study.progress(study.root, repo=study.repo, expected_code=study.code["gpu_code_sha256"],
+                           theta0=study.runs.theta0)  # fmt: skip
+    assert (state["stage"], state["step"]["kind"], state["problems"]) == (
+        "validation", "campaign", [])  # fmt: skip
+    assert state["not_counted"] == [] and 10300 not in {c[2] for c in state["step"]["cells"]}
+    for git_, reason in (({"commit": study.registered, "dirty": False}, "other_commit"),
+                         ({"commit": study.head(), "dirty": True}, "dirty_checkout"),
+                         ({"dirty": False}, "no_commit")):  # fmt: skip
+        meta = study.root / "study3" / first[1] / "meta.json"
+        data = json.loads(meta.read_text())
+        meta.write_text(json.dumps({**data, "git": git_}))
+        state = study.progress(study.root, repo=study.repo,
+                               expected_code=study.code["gpu_code_sha256"],
+                               theta0=study.runs.theta0)  # fmt: skip
+        assert (state["stage"], state["step"]["kind"]) == ("validation", "blocked"), state["step"]
+        assert [(e["run_id"], e["reason"]) for e in state["not_counted"]] == [(first[1], reason)]
+        assert [w["run_id"] for w in state["step"]["ways_out"]] == [first[1]]
 
 
 # ------------------------------------------------------------------ the qualification's logs
