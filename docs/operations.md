@@ -1624,9 +1624,10 @@ docstring has every rule.
   cases. It writes the verdict on every exit. **Exits:** 0, every case complete; 1, a
   precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
   that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
-  9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; the
-  launcher's own exit when it stops (12: a torn line in a launch journal, resolved as
-  [launching runs](#launching-runs) says); any other, the exit of the command that failed.
+  9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; 12, a
+  torn line in a launch journal (`complete` refuses it, as every `qualify.py` command that reads
+  the runs does, and so does the launcher; resolved as [launching runs](#launching-runs) says);
+  the launcher's own exit when it stops; any other, the exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
@@ -1765,12 +1766,24 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   - `start`: nothing to restore. A run directory may stand with no start; study 3's analysis
     lists it and blocks. The launcher counts that directory as any directory of the run's config
     and never reuses its run id.
-  - `held`, `superseded`: run the writer that lost the line again, first: `qualify.py
-    supersede` with the same record (its `held` and `superseded` lines), or `qualify.py
-    restart-case` again for the case (its `superseded` line). Each writes only the missing lines:
-    `launch.hold` and `launch.supersede` write a line only when no identical one (the same event,
-    label, experiment, run id and reason) is in the journal. A held run is then never rerun, and
-    a superseded one never counts.
+  - `held`, `superseded`: run the writer that lost the line again, first, then resolve. Every
+    `qualify.py` command that reads the runs refuses a torn line with exit 12, as the launcher
+    does, except these two journal repairs, which go on over it and then print the torn lines
+    left to resolve:
+    - `qualify.py supersede` with the same `--record`, `--diagnosis` and `--fix` as the
+      published cycle: it writes only the missing `held` and `superseded` lines and prints
+      `{"supersession": …, "journal_lines_written": [run ids]}` (exit 0);
+    - `qualify.py restart-case --campaign … --candidate N --case CASE --infrastructure
+      "<the original cause>"` again, for a case whose published restart record's launcher run
+      has no `superseded` line: it writes only that line, with the restart record's own reason
+      (the new `--infrastructure` text is required but not written), and exits 1 with
+      `<case>: the restart is recorded (restart-<n>.json); the launch journal now names its
+      launcher run`.
+
+    Any other call of the two (a new cycle, a new restart) is refused like the rest. Each writes
+    only the missing lines: `launch.hold` and `launch.supersede` write a line only when no
+    identical one (the same event, label, experiment, run id and reason) is in the journal. A
+    held run is then never rerun, and a superseded one never counts.
   - `recovery`, `stop`: resolve, then relaunch with the same command; a recovery round's reason is
     recorded again.
   - `torn`: nothing to restore; the resolution writes the missing `torn` record.

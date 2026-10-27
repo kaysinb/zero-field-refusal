@@ -88,11 +88,12 @@ names its bytes and whether a ``torn_resolved`` record names it (by log, offset 
 While any log holds a torn line that no ``torn_resolved`` record names, ``run_campaign`` starts
 nothing, settles nothing and opens no recovery round, in a dry run too: it raises
 ``TornJournalError``, and scripts/launch.py prints each such line (log, offset, length, kind and
-the sha256 its resolution names) and exits ``TORN_JOURNAL`` (12). No caller uses that code: the
-launcher's other exits are 0, 1 and argparse's 2, and study 3's qualification driver, which
-passes the launcher's exit on, uses 1, 3 and 8 to 11. Every log is read, since a label's held and
-superseded lines can live in any of them. What a lost line costs, by its kind, and what restores
-it before the resolution:
+the sha256 its resolution names) and exits ``TORN_JOURNAL`` (12). The code means that alone: the
+launcher's other exits are 0, 1 and argparse's 2, and study 3's qualification commands use 1, 3
+and 8 to 11; they refuse a torn line with the same refusal and code, but for their two journal
+repairs (scripts/qualify.py), and their driver passes it on. Every log is read, since a label's
+held and superseded lines can live in any of them. What a lost line costs, by its kind, and
+what restores it before the resolution:
 
 - ``end``: the start stands without its end. Nothing is rerun; once the line is resolved, the
   launcher settles the start from its run directory, as any start found without its end.
@@ -100,11 +101,12 @@ it before the resolution:
   The launcher counts that directory as any directory of the run's config and never reuses its
   run id: a new attempt's id carries its own time and attempt number, and the tracker never
   writes into an existing run directory.
-- ``held``, ``superseded``: their writers run again first (``qualify.py supersede`` with the same
-  record, ``qualify.py restart-case`` again for the case), so that a held run is never rerun and
-  a superseded one never counts. Each writes only the missing lines: ``hold`` and ``supersede``
-  write a line only when no identical one (the same event, label, experiment, run id and reason)
-  is in the journal.
+- ``held``, ``superseded``: their writers run again first, over the unresolved torn line, so
+  that a held run is never rerun and a superseded one never counts: ``qualify.py supersede`` with
+  the same record, and ``qualify.py restart-case`` again for the case, the two calls qualify.py
+  lets through a torn line. Each writes only the missing lines: ``hold`` and ``supersede`` write
+  a line only when no identical one (the same event, label, experiment, run id and reason) is
+  in the journal.
 - ``recovery``, ``stop``: once the line is resolved, the operator relaunches with the same
   command; a recovery round's reason is recorded again.
 - ``torn``: a lost ``torn`` record costs nothing more; the resolution writes it (below).
@@ -316,7 +318,12 @@ def launch_records(runs_root: Path) -> list[dict[str, Any]]:
     order: each line (split at ``\n`` alone and decoded strictly as UTF-8, as ``torn_lines``
     reads it) that holds a JSON object. A torn line is skipped."""
     return [record for log in sorted((Path(runs_root) / "launch").glob("*.jsonl"))
-            for _, _, record in _journal_lines(log) if record is not None]  # fmt: skip
+            for record in journal_records(log)]  # fmt: skip
+
+
+def journal_records(log: Path) -> list[dict[str, Any]]:
+    """The records of one launch log, in line order, as ``launch_records`` reads them."""
+    return [record for _, _, record in _journal_lines(log) if record is not None]
 
 
 def torn_kind(data: bytes) -> str | None:
