@@ -1089,30 +1089,24 @@ def test_a_held_p_closes_p_f_once_its_closure_is_written_and_a_f_goes_on() -> No
     assert ("P", START["P"]["l"], 10201) in result["prescribed"]["c1/numerical"]
 
 
-def test_a_hold_of_a_label_alone_is_placed_on_its_cell() -> None:
-    """A hold line may name its label under a run id that no start names (the launcher holds the
-    label under any config hash): it holds that cell."""
+def test_a_hold_whose_run_id_no_study3_start_names_is_not_study3s() -> None:
+    """A hold is study 3's by the run it names: one whose run id no study-3 start names (here
+    under a study-3 label, with no experiment) holds no cell and is no problem."""
     study = Study()
     study.ready()
     study.search()
-    study.numerical(states={("P", "u"): "not_qualified"})
+    study.numerical()
     found = next(e for e in study.endpoints if e.cell.step == "numerical" and e.arm == "P"
                  and e.seed == 10202 and e.lr == START["P"]["u"])  # fmt: skip
+    before = study.advance()
     study.holds.append({"run_id": "20261026T999999Z-unknown-a9", "run": found.label,
-                        "experiment": "study3", "config_hash": "0" * 12,
+                        "experiment": None, "config_hash": "0" * 12,
                         "reason": "no hash of v₀", "records": [
                             {"kind": "journal", "path": "launch/x.jsonl", "line": 1,
-                             "line_sha256": "e" * 64, "sha256": "f" * 64},
-                            {"kind": "supersession", "path": "qualification/c1/supersede-1.json",
-                             "sha256": "9" * 64}]})  # fmt: skip
+                             "line_sha256": "e" * 64, "sha256": "f" * 64}]})  # fmt: skip
     result = study.advance()
-    assert (result["step"]["record"], result["step"]["fields"]["seed"]) == ("closure-c1-P", 10202)
-    assert result["step"]["hold_reasons"] == ["no_v0_hash"]
-    # a study-3 hold that no start places is a problem
-    study.holds[-1]["run"] = "Q-1e-05/s1"
-    result = study.advance()
-    assert result["step"]["kind"] == "blocked"
-    assert any("20261026T999999Z-unknown-a9" in p for p in result["problems"])
+    assert (result["stage"], result["step"], result["problems"]) == (
+        before["stage"], before["step"], [])  # fmt: skip
 
 
 def test_a_held_p_in_validation_closes_p_f_and_its_blocks_keep_four_runs() -> None:
@@ -2475,6 +2469,33 @@ def test_a_line_of_a_record_the_check_never_saw_blocks_the_route_at_the_search(w
     for event, run_id in (("held", ids[0]), ("superseded", ids[1])):
         runs.log("study3-cycle", {"event": event, "run_id": run_id, "experiment": "study3",
                                   "reason": "the cycle", "record": str(cycle)})  # fmt: skip
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["outcome"]) == (
+        "search", "blocked", None)  # fmt: skip
+    for run_id in ids[:2]:
+        assert any(run_id in p and "counts for nothing" in p for p in result["problems"])
+    assert voided_runs(runs.root)[0] == {}
+
+
+@pytest.mark.parametrize("experiment", [None, "study2_short"])
+def test_a_hand_written_line_of_another_experiment_does_not_bring_the_search_back(
+    worlds, experiment
+) -> None:
+    """After search round 0, a ``held`` and a ``superseded`` line naming search runs, with no
+    experiment or another one's and no record: neither takes its run out of the counts, so the
+    route neither issues the cell again nor reaches the technical feasibility report; each line
+    is a problem, and the route blocks at the search."""
+    from zero_field_refusal.analysis.study3_records import voided_runs
+
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    ids = sorted(p.name for p in (runs.root / "study3").iterdir())
+    for event, run_id in (("held", ids[0]), ("superseded", ids[1])):
+        line = {"event": event, "run_id": run_id, "reason": "hand-written"}
+        runs.log("study3-hand", {**line, **({} if experiment is None else
+                                            {"experiment": experiment})})  # fmt: skip
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["outcome"]) == (
         "search", "blocked", None)  # fmt: skip

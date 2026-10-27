@@ -1417,16 +1417,19 @@ class _Walk:
 
     def _place_holds(self) -> tuple[list[dict[str, Any]], list[str]]:
         """Every held run placed on its cell, by its run id (an attempt ``read_endpoints`` lists
-        as held) or, for a hold of a label alone, by its label; each with the hold line and the
-        candidate's supersession record that cite it (``read_holds``). A study-3 hold that no
-        start places is a problem."""
+        as held) or, for a study-3 run the walk leaves out (a refused attempt, in the lenient
+        walk), by its label; each with the hold line and the candidate's supersession record that
+        cite it (``read_holds``). A hold is study 3's by the run it names, a study-3 start,
+        whatever its ``experiment``: one that names none holds no cell and is no problem. A
+        study-3 hold that no start places is a problem."""
         infos = {h.get("run_id"): h for h in self.records.holds if isinstance(h, Mapping)}
         placed, problems, known = [], [], set(self.by_id)
+        study3 = {e.run_id for e in self.records.endpoints}  # every study-3 start
         for e in self.endpoints:
             if e.state == "held":
                 placed.append(_hold(e, infos.get(e.run_id), e.run_id))
         for run_id, info in infos.items():
-            if run_id in known or info.get("experiment") not in (None, EXPERIMENT):
+            if run_id in known or run_id not in study3:
                 continue
             owners = [
                 e for e in self.endpoints if e.label is not None and e.label == info.get("run")

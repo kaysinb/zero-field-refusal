@@ -204,6 +204,7 @@ from .study3_records import (
     plain_name,
     read_holds,
     sealed_record,
+    study3_labels,
     under_sealed,
 )
 from .study3_records import _config as _start_config
@@ -213,6 +214,7 @@ STEPS = ("numerical", "repair")  # the campaign steps whose runs are qualificati
 ENGINEERING = "engineering"  # the engineering stage's folder and its campaign step
 VERDICT = "verdict.json"
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
+RESTART_FILE = re.compile(r"restart-\d+\.json")  # a case restart record's name (qualify.py's)
 PART_FILE = re.compile(r"(baseline|rest|control)-attempt-(\d+)\.json")  # a part attempt record
 RELEASED = "checkpoints-removed"  # ``finish``'s record of the checkpoints it removed
 RELEASE_RECORD = "release record"  # what a release record is, among the records read
@@ -628,13 +630,13 @@ class _Cycles:
         )
         if issued is not None:
             self.cases[STAGE] = list(issued)
-        self.starts: dict[str, Any] = {}  # each start's run id -> the candidate its header names
+        # each start's run id -> whether its header issues a case of the candidate's
+        # qualification (``_issues_case``: numerical, repair or engineering)
+        self.starts: dict[str, bool] = {}
         for _, record in journal:
-            head = record.get("header")
             if record.get("event") == "start" and isinstance(record.get("run_id"), str):
-                self.starts.setdefault(record["run_id"], head.get("candidate")
-                                       if isinstance(head, Mapping) and head.get("study") == 3
-                                       else None)  # fmt: skip
+                mine = _issues_case(record, candidate, (*STEPS, ENGINEERING))
+                self.starts[record["run_id"]] = self.starts.get(record["run_id"], False) or mine
 
     def issued(self, stage: str) -> list[tuple[Any, float, int]]:
         """The (optimizer, rate, seed) the stage's issued starts name (``_issued``: the numerical
@@ -707,11 +709,13 @@ class _Cycles:
             entries = record.get(key)
             for entry in entries if isinstance(entries, list) else []:
                 run_id = entry.get("run_id") if isinstance(entry, Mapping) else None
-                if isinstance(run_id, str) and self.starts.get(run_id) != self.candidate:
-                    found.append(f"it names the launcher run {run_id} ({key}), which no start of "
-                                 f"candidate {self.candidate}'s study 3 issued: a record in "
-                                 f"c{self.candidate}/ applies to candidate {self.candidate}'s "
-                                 "runs alone")  # fmt: skip
+                if isinstance(run_id, str) and not self.starts.get(run_id):
+                    shown = run_id if plain_name(run_id) else "a run"
+                    found.append(f"it names the launcher run {shown} ({key}), which no start of "
+                                 f"candidate {self.candidate}'s qualification (numerical, repair "
+                                 f"or engineering) issued: a record in c{self.candidate}/ "
+                                 f"applies to candidate {self.candidate}'s qualification runs "
+                                 "alone")  # fmt: skip
         if given["old_record"]:
             found += self._old_record(old, record)
         return found
@@ -977,6 +981,11 @@ def _restart_check(
         where = path.relative_to(root).as_posix()
         folder, stage, seed, key = path.parts[-5:-1]
         number = re.fullmatch(r"c([1-9]\d*)", folder)
+        if not RESTART_FILE.fullmatch(path.name):
+            out[where] = {"readable": True, "accepted": False, "launchers": [], "problems": [
+                f"{where}: not a case restart record's name (restart-<n>.json, as qualify.py "
+                "names it): it voids nothing"]}  # fmt: skip
+            continue
         record = None if under_sealed(path, root) else _object(path, root)
         check: dict[str, Any] = {"readable": record is not None, "accepted": False,
                                  "launchers": [], "problems": []}  # fmt: skip
@@ -1001,7 +1010,8 @@ def _restart_check(
                    and f"s{r.seed}" == seed and f"{r.optimizer}-{r.lr:g}" == key]  # fmt: skip
             if not any(r.experiment == EXPERIMENT and run_id in r.run_ids for r in own):
                 labels = sorted({r.label for r in own}) or ["none issued"]
-                why = (f"its launcher run {run_id} is no start of its own case {seed}/{key} of "
+                shown = run_id if plain_name(run_id) else "(no plain run id)"
+                why = (f"its launcher run {shown} is no start of its own case {seed}/{key} of "
                        f"candidate {candidate}'s {stage} stage (its label: "
                        f"{', '.join(labels)}), in {EXPERIMENT}")  # fmt: skip
         if why is None:
@@ -1013,7 +1023,7 @@ def _restart_check(
 
 
 def restart_checks(runs_root: str | Path) -> dict[str, dict[str, Any]]:
-    """The check of every case restart record under RUNS_DIR (``_restarts``), by its path
+    """The check of every case restart record under RUNS_DIR (``_restart_check``), by its path
     under RUNS_DIR: what a restart record voids, and what backs a ``superseded`` line that
     cites it (``study3_records``)."""
     root = Path(runs_root)
@@ -1429,18 +1439,21 @@ def read_qualification(
     checks = _checks(root, scope, journal, {candidate: cases})  # the one check of every cycle
     cycles = {path.relative_to(root).as_posix(): check for path, check in checks.items()}
     restarts = _restart_check(root, journal)  # what each case restart record voids
+    labels = study3_labels([(c, r) for c, r in journal if r.get("event") == "start"
+                            and r.get("experiment") == EXPERIMENT])  # fmt: skip
     holds, unreadable = read_holds(root, cycles=cycles)
     problems += _hold_problems(root, candidate, unreadable)
     reading.read(cases, checks)
     # a superseded line counts only through an accepted record that names its run
     superseded_lines = []
     for line in _named_runs(journal, "superseded"):
-        why = _unbacked(line, cycles, restarts)
+        why = _unbacked(line, cycles, restarts, labels)
         if why is None:
             superseded_lines.append(line)
         else:
+            shown = f" of {line['run_id']}" if plain_name(line["run_id"]) else ""
             problems.append(f"{root / 'launch' / (line['campaign'] + '.jsonl')}: a superseded "
-                            f"line of {line['run_id']} counts for nothing: {why}")  # fmt: skip
+                            f"line{shown} counts for nothing: {why}")  # fmt: skip
     cache = _cache(reading.candidate_dir / VERDICT, problems, root)
     order: list[tuple[str, float]] = []
     for run in issued:

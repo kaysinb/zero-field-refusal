@@ -1089,6 +1089,29 @@ def test_a_script_written_cycle_supersedes_and_holds_through_the_run_readers(
     assert held <= {h["run_id"] for h in read_holds(world.root)[0]}
 
 
+@pytest.mark.parametrize("key", ["launchers", "held"])
+def test_a_cycle_record_naming_a_run_of_no_qualification_step_is_rejected(
+    qualify, monkeypatch, tmp_path, key
+) -> None:
+    """A cycle record names only its candidate's qualification runs (``supersede`` lists the
+    ``label_run_ids`` of its campaign's cases): one whose ``launchers`` or ``held`` adds a
+    validation run of candidate 1 is rejected whole, a named problem, and the run still counts."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    world.log({"event": "start", "run": "A-1.45e-05/s10300", "attempt": 1,
+               "run_id": "val-run-a1", "experiment": "study3", "config_hash": "v" * 12,
+               "header": {"study": 3, "candidate": 1, "step": "validation", "round": None}},
+              "study3-c1-validation")  # fmt: skip
+    entry = {"run_id": "val-run-a1", "campaign": "study3-c1-validation",
+             "run": "A-1.45e-05/s10300", "experiment": "study3", "config_hash": "v" * 12,
+             "reason": "no recorded commit (git: {})"}  # fmt: skip
+    rewrite(path, {**record, key: [*record[key], entry]})
+    check = qr.cycle_checks(world.root)["qualification/c1/supersede-1.json"]
+    assert check["accepted"] is False
+    assert any("val-run-a1" in p and "qualification" in p for p in check["problems"])
+    voided, problems = voided_runs(world.root)
+    assert "val-run-a1" not in voided and any(p.startswith(f"{path}: ") for p in problems)
+
+
 def assert_lines_count_for_nothing(world, runs) -> None:
     """None of ``runs`` is superseded or held by a journal line, each line a named problem."""
     voided, problems = voided_runs(world.root)
@@ -1169,26 +1192,28 @@ def test_a_record_that_may_hold_a_run_and_cannot_be_read_is_a_problem(
         reading["problems"])  # fmt: skip
 
 
-def test_a_held_line_no_accepted_record_names_holds_nothing(qualify, tmp_path) -> None:
-    """A ``held`` line names FA's 10201 label with a run id that no start of it names, another
-    config hash, and no supersession record (``qualify.py`` writes one only from its cycle's
-    record, after the record): the launcher still refuses the label (``launch.held_runs``), but
-    a run stops counting only through a record that names it. The reading lists no hold, names
-    the line as a problem, and its states are the verdict's, both rates qualified."""
+def test_a_held_line_of_no_study3_run_is_not_study3s(qualify, tmp_path) -> None:
+    """A ``held`` line names FA's 10201 label with a run id that no start names, another config
+    hash, and no supersession record: a line is study 3's by the run it names, and this one names
+    none, so it takes no study-3 run out of the counts and is no problem. The launcher refuses the
+    label (``launch.held_runs``), and the reading lists the hold for the rate and the label as
+    the launcher reads it; its states are the verdict's, both rates qualified."""
     world = World(tmp_path)
     world.full()
     case = qcase(10201, "adam_frozen", FA_LR)
     run = world.run(case)
     elsewhere = dataclasses.replace(run, config_hash="0" * 12)
     launcher.hold(world.root, "a-other", elsewhere, "r-unstarted", reason="unresolved elsewhere",
-                  record="a-hold-record.json")  # no record that names the run  # fmt: skip
+                  record="a-hold-record.json")  # fmt: skip
     cached = world.verdict(qualify)
     reading = world.read()
     assert reading["states"] == cached["states"] == {FA_KEY: "qualified", ADAMW_KEY: "qualified"}
-    assert launcher.held_runs(run, launcher.launch_records(world.root)) == {
-        "r-unstarted": "unresolved elsewhere"}  # fmt: skip
-    assert reading["held"] == [] and reading["rates"][FA_KEY]["held"] == []
-    assert any("r-unstarted" in p and "counts for nothing" in p for p in reading["problems"])
+    held_now = launcher.held_runs(run, launcher.launch_records(world.root))
+    assert held_now == {"r-unstarted": "unresolved elsewhere"}
+    (held,) = reading["rates"][FA_KEY]["held"]
+    assert held["run_id"] == "r-unstarted"
+    assert not [p for p in reading["problems"] if "r-unstarted" in p]
+    assert voided_runs(world.root)[1] == []
 
 
 # ------------------------------------------------------------------ the cache

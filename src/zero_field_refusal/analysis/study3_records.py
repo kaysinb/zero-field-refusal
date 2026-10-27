@@ -107,13 +107,15 @@ longer counts is listed with its reason, never counted:
 - a supersession record supersedes or holds only once the one check accepted it
   (``qualification_records.cycle_checks``, loaded only when a record is there); every problem
   of the check is a problem here;
-- a journal line alone never takes a run out of the counts: a study-3 ``superseded`` or
-  ``held`` line counts only through a record that names its run (``_unbacked``): an accepted
-  supersession record that names it under ``launchers`` or ``held``, or, for a ``superseded``
-  line, a readable case restart record of a candidate's qualification folder whose launcher run
-  it is, a start of its own case (``qualify.py`` publishes its records before their lines);
-  any other counts for nothing
-  and is a problem by its log and line, never by its free text;
+- a journal line alone never takes a run out of the counts. A ``superseded`` or ``held`` line
+  is study 3's by the run it names (a study-3 start), whatever its own ``experiment`` field, and
+  it counts only with study 3's experiment, its run's label and a record that names its run
+  (``_unbacked``): an accepted supersession record that names it under ``launchers`` or
+  ``held``, or, for a ``superseded`` line, a readable case restart record of a candidate's
+  qualification folder whose launcher run it is, a start of its own case (``qualify.py``
+  publishes its records before their lines). Any other study-3 line counts for nothing and is a
+  problem by its log and line, never by its free text; a line that names no study-3 start takes
+  no study-3 run out of the counts and is no problem;
 - ``recovered``: an attempt without a published terminal record before a recovery round of its
   label (``--recovery REASON``, its ``runs``, in any log): the documented interruption
   supersedes it, and a later attempt decides. Before the round are the label's attempts numbered
@@ -624,12 +626,14 @@ def _read_journal(
     a line counts only through a record that names its run (``_unbacked``: an accepted
     supersession record, or for a study-3 ``superseded`` line a case restart record whose
     launcher run it is): any other is listed in ``unbacked``, with why, and counts for nothing.
-    Another experiment's line counts as the launcher reads it. A line cut short by a crash is
+    A line is study 3's by the run it names (a study-3 start), whatever its own ``experiment``;
+    one that names no study-3 start takes no study-3 run out of the counts. A line cut short by a
     skipped only as the last line of its log (the launcher's rule); an unparseable line before
     the last is skipped too but listed in ``corrupt`` with its log's name and its number, never
     its content. A log that resolves under a sealed folder is never opened: it is listed in
     ``sealed``, by its path under RUNS_DIR."""
     journal = _Journal()
+    lines: list[tuple[str, int, dict[str, Any]]] = []  # the superseded and held lines
     for log in sorted((root / "launch").glob("*.jsonl")):
         if under_sealed(log, root):
             journal.sealed.append(f"launch/{log.name}")
@@ -648,14 +652,26 @@ def _read_journal(
             elif event == "recovery" and record.get("experiment") == EXPERIMENT:
                 journal.recoveries.append(record)
             elif event in ("superseded", "held") and isinstance(run_id, str):
-                why = _unbacked(record, cycles, restarts or {})
-                if why is not None:
-                    journal.unbacked.append(_unbacked_line(f"launch/{log.name}", number, record,
-                                                           why))  # fmt: skip
-                    continue
-                _void(voided, run_id, event,
-                      f"{event} in the launch journal: {record.get('reason')}")  # fmt: skip
+                lines.append((f"launch/{log.name}", number, record))
+    labels = study3_labels(journal.starts)  # every log read: a line's run may start in any
+    for where, number, record in lines:
+        why = _unbacked(record, cycles, restarts or {}, labels)
+        if why is not None:
+            journal.unbacked.append(_unbacked_line(where, number, record, why))
+            continue
+        _void(voided, record["run_id"], record["event"],
+              f"{record['event']} in the launch journal: {record.get('reason')}")  # fmt: skip
     return journal
+
+
+def study3_labels(starts: Sequence[tuple[str, Mapping[str, Any]]]) -> dict[str, set[Any]]:
+    """Each study-3 start's run id, with the labels its starts name: a ``superseded`` or
+    ``held`` line is study 3's when it names one of these runs."""
+    out: dict[str, set[Any]] = defaultdict(set)
+    for _, start in starts:
+        if isinstance(start.get("run_id"), str):
+            out[start["run_id"]].add(start.get("run"))
+    return dict(out)
 
 
 def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
@@ -696,6 +712,8 @@ def _voiding_records(
     problems: list[str] = []
     out = root / "qualification"
     for path in sorted(out.glob("c*/*/s*/*/restart-*.json")):
+        if not _RESTART_NAME.fullmatch(path.name):
+            continue  # no case restart record's name: its problem is the check's (``restarts``)
         if under_sealed(path, root):
             problems.append(f"{path}: {sealed_record('a case-restart record', path, root)}")
             continue
@@ -765,6 +783,7 @@ def _cycle_checks(
 _CYCLE_PATH = re.compile(r"qualification/[^/]+/supersede-[^/]*\.json")
 # A case restart record of a candidate's qualification folder (named exactly c<N>)
 _RESTART_PATH = re.compile(r"qualification/c[1-9]\d*/[^/]+/[^/]+/[^/]+/restart-\d+\.json")
+_RESTART_NAME = re.compile(r"restart-\d+\.json")  # a case restart record's name (qualify.py's)
 _LINE_KEYS = {"superseded": "launchers", "held": "held"}  # what a line's record names it under
 
 
@@ -772,26 +791,34 @@ def _unbacked(
     line: Mapping[str, Any],
     cycles: Mapping[str, Mapping[str, Any]] | None,
     restarts: Mapping[str, Mapping[str, Any]],
+    labels: Mapping[str, Collection[Any]],
 ) -> str | None:
     """Why a ``superseded`` or ``held`` line counts for nothing, or None when it counts: a run
     stops counting only through a record that names it ("Voiding and supersession"; every
-    attempt is kept). The line's ``record`` is a path of the machine that wrote it, read by its
-    trailing components, so that a Pod's root resolves.
-    - A line that cites a supersession record (``qualification/<folder>/supersede-*.json``)
-      counts only through a record the one check (``cycles``) has an entry for and accepted,
-      and only for a run that record names under ``launchers`` (a ``superseded`` line) or
-      ``held`` (a ``held`` line); ``qualify.py`` publishes the record before its lines.
-    - Any other line of study 3's experiment: a ``held`` line counts for nothing; a
-      ``superseded`` line counts only through a case restart record of a candidate's
-      qualification folder (``qualification/c<N>/<stage>/s<seed>/<case>/restart-<n>.json``,
-      the folder named exactly ``c<N>``) that is there, is readable, resolves under no sealed
-      folder and voids the line's run: its launcher run, a start of its own case
-      (``restarts``: ``qualification_records.restart_checks``).
-    - Another experiment's line counts as the launcher reads it.
-    Without ``cycles``, every line counts. The reason names paths and ids, never the line's free
-    text."""
-    if cycles is None:
+    attempt is kept). A line is study 3's by the run it names: one whose run id is a study-3
+    start (``labels``: ``study3_labels``), whatever its own ``experiment`` field says. A line
+    that names no study-3 start takes no study-3 run out of the counts, and is no problem (the
+    launcher, too, applies a line by its experiment and label). A study-3 line counts only when
+    its ``experiment`` is study 3's, its label (``run``) is its run's, and a record names its run;
+    its ``record`` is a path of the machine that wrote it, read by its trailing components, so
+    that a Pod's root resolves:
+    - a supersession record (``qualification/<folder>/supersede-*.json``) the one check
+      (``cycles``) has an entry for and accepted, that names the run under ``launchers`` (a
+      ``superseded`` line) or ``held`` (a ``held`` line); ``qualify.py`` publishes the record
+      before its lines;
+    - for a ``superseded`` line, a case restart record of a candidate's qualification folder
+      (``qualification/c<N>/<stage>/s<seed>/<case>/restart-<n>.json``, the folder named exactly
+      ``c<N>``) that is there, is readable, resolves under no sealed folder and voids the line's
+      run: its launcher run, a start of its own case (``restarts``:
+      ``qualification_records.restart_checks``).
+    Without ``cycles``, every line counts. The reason names ids and the paths of records that
+    are there, never the line's free text."""
+    if cycles is None or line.get("run_id") not in labels:
         return None
+    if line.get("experiment") != EXPERIMENT:
+        return f"it names a run of {EXPERIMENT}, and its experiment is not {EXPERIMENT}'s"
+    if line.get("run") not in labels[line["run_id"]]:
+        return "its label is not its run's label"
     cited = line.get("record")
     parts = PurePosixPath(cited.replace("\\", "/")).parts if isinstance(cited, str) else ()
     where = "/".join(parts[-3:])
@@ -806,21 +833,19 @@ def _unbacked(
         if line.get("run_id") not in (check.get(key) or ()):
             return f"its run is not among the {key} of {where}, the record it cites"
         return None
-    if line.get("experiment") != EXPERIMENT:
-        return None
     if line.get("event") == "held":
         return ("a held line counts only through an accepted supersession record whose held "
                 "names its run")  # fmt: skip
     if not isinstance(cited, str):
         return "it cites no record, and a run stops counting only through a record that names it"
     where = "/".join(parts[-6:])
-    if not _RESTART_PATH.fullmatch(where):
+    check = restarts.get(where) if _RESTART_PATH.fullmatch(where) else None
+    if check is None:
         return ("it cites no supersession record and no case restart record of a candidate's "
-                "qualification folder")  # fmt: skip
-    check = restarts.get(where)
-    if check is None or not check.get("readable"):
-        return (f"it cites {where}, a case restart record that is not there, cannot be read or "
-                "resolves under a sealed folder")  # fmt: skip
+                "qualification folder that is there")  # fmt: skip
+    if not check.get("readable"):
+        return (f"it cites {where}, a case restart record that cannot be read or resolves under "
+                "a sealed folder")  # fmt: skip
     if line.get("run_id") not in (check.get("launchers") if check.get("accepted") else ()):
         return (f"it cites {where}, a case restart record that does not void its run (its "
                 "launcher run is another, or no start of its own case)")  # fmt: skip
@@ -884,9 +909,11 @@ def read_holds(
     sealed folder, never opened): a hold they hold cannot be listed. Of a record only its numbers,
     ids, paths, hashes and the hold's reason are kept. A supersession record holds only once the
     one check accepted it (``cycles``: ``qualification_records.cycle_checks``, read here by
-    default; its problems are the run records', ``read_endpoints``), and a study-3 ``held`` line
-    holds only through an accepted supersession record whose ``held`` names its run
-    (``_unbacked``): any other is named among the problems and holds nothing."""
+    default; its problems are the run records', ``read_endpoints``), and a ``held`` line that
+    names a study-3 start holds only with study 3's experiment, its run's label and an accepted
+    supersession record whose ``held`` names its run (``_unbacked``): any other is named among
+    the problems and holds nothing. A held line that names no study-3 start is listed as the
+    launcher reads it (it holds no study-3 run: ``study3_progress`` places holds by run)."""
     root = Path(runs_root)
     cycles = _cycle_checks(root, cycles)
     holds: dict[str, dict[str, Any]] = {}
@@ -900,12 +927,16 @@ def read_holds(
         hold["records"].append(reference)
 
     logs, problems = journal_lines(root)
+    labels = study3_labels([
+        ("", line.record) for log in logs for line in log.lines
+        if line.record is not None and line.record.get("event") == "start"
+        and line.record.get("experiment") == EXPERIMENT])  # fmt: skip
     for log in logs:
         for line in log.lines:
             record = line.record  # an unparseable line: read_endpoints names it, unless last
             if (record is not None and record.get("event") == "held"
                     and isinstance(record.get("run_id"), str)):  # fmt: skip
-                why = _unbacked(record, cycles, {})  # a held line: never through a restart
+                why = _unbacked(record, cycles, {}, labels)  # never through a restart
                 if why is not None:
                     problems.append(_unbacked_line(log.path, line.line, record, why))
                     continue

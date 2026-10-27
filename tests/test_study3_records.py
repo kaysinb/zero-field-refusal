@@ -976,8 +976,9 @@ def test_a_line_counts_only_for_a_run_its_accepted_record_names(world, accepted)
     cycle.parent.mkdir(parents=True)
     cycle.write_text(json.dumps({"candidate": 2, "launchers": [{"run_id": named}],
                                  "held": []}))  # fmt: skip
-    for event, run_id in (("superseded", other), ("held", named)):
-        world.log("study3-cycle", {"event": event, "run": "x/s1", "run_id": run_id,
+    for event, run_id, label in (("superseded", other, "A-1.45e-05/s10201"),
+                                  ("held", named, "F-1.3e-05/s10202")):  # fmt: skip
+        world.log("study3-cycle", {"event": event, "run": label, "run_id": run_id,
                                    "experiment": "study3", "config_hash": "x",
                                    "reason": "the cycle", "record": str(cycle)})  # fmt: skip
     found, problems = world.read()
@@ -986,6 +987,65 @@ def test_a_line_counts_only_for_a_run_its_accepted_record_names(world, accepted)
     assert any(other in p and "counts for nothing" in p and "launchers" in p for p in problems)
     assert any(named in p and "counts for nothing" in p and "held" in p for p in problems)
     assert read_holds(world.root)[0] == []
+
+
+@pytest.mark.parametrize("event", ["superseded", "held"])
+@pytest.mark.parametrize("experiment", [None, "study2_short"])
+def test_a_line_is_study3s_by_the_run_it_names(world, experiment, event) -> None:
+    """A line naming a study-3 start is study 3's whatever its own ``experiment`` field says:
+    with none, or another experiment's, it counts for nothing (its experiment is not study 3's),
+    a problem by its log and line; the run still counts, and no hold is listed."""
+    run_id = world.run("A", 1.45e-5, 10300)
+    line = {"event": event, "run": "A-1.45e-05/s10300", "run_id": run_id, "config_hash": "x",
+            "reason": "r"}  # fmt: skip
+    world.log("study3-hand", {**line, **({} if experiment is None else {"experiment": experiment})})
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable"
+    assert any(p.startswith("launch/study3-hand.jsonl line 1: ") and "experiment" in p
+               for p in problems), problems  # fmt: skip
+    assert voided_runs(world.root)[0] == {} and read_holds(world.root)[0] == []
+
+
+def test_a_line_whose_label_is_not_its_runs_counts_for_nothing(world) -> None:
+    """The right experiment and the record that names its run, but another label: a problem."""
+    run_id = world.run("A", 1.45e-5, 10200, role="numerical")
+    restart = restart_record(world, run_id)
+    world.log("study3-c1", {"event": "superseded", "run": "A-1.45e-05/s10201", "run_id": run_id,
+                            "experiment": "study3", "config_hash": "x", "reason": "r",
+                            "record": str(restart)})  # fmt: skip
+    _, problems = voided_runs(world.root)
+    assert any("label" in p and "counts for nothing" in p for p in problems), problems
+
+
+def test_a_restart_record_with_another_name_voids_nothing(world) -> None:
+    """Only ``restart-<n>.json`` is a case restart record (``qualify.py``'s name): a
+    ``restart-x.json`` naming its own case's run is a named problem and voids nothing, nor backs a
+    line."""
+    run_id = world.run("A", 1.45e-5, 10200, role="numerical")
+    path = restart_record(world, run_id)
+    stray = path.rename(path.with_name("restart-x.json"))
+    world.log("study3-c1", {"event": "superseded", "run": "A-1.45e-05/s10200", "run_id": run_id,
+                            "experiment": "study3", "config_hash": "x", "reason": "r",
+                            "record": str(stray)})  # fmt: skip
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable"
+    where = stray.relative_to(world.root).as_posix()
+    assert any(p.startswith(f"{where}: ") and "restart-<n>.json" in p for p in problems), problems
+    assert voided_runs(world.root)[0] == {}
+
+
+def test_a_cited_restart_path_with_no_record_is_not_echoed(world) -> None:
+    """A cited path of a restart record's shape that is no record: the line is named by its log
+    and line, and no part of the path appears in a problem."""
+    run_id = world.run("A", 1.45e-5, 10200, role="numerical")
+    cited = "/x/qualification/c1/FREE TEXT HERE/b/c/restart-1.json"  # restart-shaped, no record
+    world.log("study3-c1", {"event": "superseded", "run": "A-1.45e-05/s10200", "run_id": run_id,
+                            "experiment": "study3", "config_hash": "x", "reason": "r",
+                            "record": cited})  # fmt: skip
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable"
+    assert any("counts for nothing" in p for p in problems)
+    assert not [p for p in problems if "FREE TEXT" in p]
 
 
 def test_qualification_records_supersede_launcher_runs(world, accepted) -> None:
