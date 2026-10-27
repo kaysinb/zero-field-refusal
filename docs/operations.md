@@ -1843,6 +1843,14 @@ before each command below.
   for a run left unfinished), and starts its next attempt only when that outcome is technical.
   The block's missing cells, if any, are then written again by the writer, alone, under a new
   campaign name. A block file or a `run.sh` already run is not run again.
+- **A torn launch-log line** (a residual risk). The launcher appends each journal line with its
+  newline, and does not first end a line a crash cut short. A crash mid-append leaves the last
+  line cut short, which every reader skips, as the launcher does. If another append follows, the
+  cut line is no longer the last: it is corrupt, and the record appended after it is joined to it
+  and lost too. The analysis then blocks, naming the log and the line, since a start it held
+  cannot be shown. For a qualification log the validation fixation pins, any edit of the log
+  breaks the fixation for good. The repair belongs to a later change of the launcher: a fresh
+  line when the log does not end with a newline.
 - **Holds and closures.** Two kinds of run are unresolved technical marks: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
   and a technical run outside the qualification that no recovery round reruns. The step names

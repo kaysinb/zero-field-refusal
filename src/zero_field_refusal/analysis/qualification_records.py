@@ -413,7 +413,7 @@ def _journal(root: Path, problems: list[str]) -> list[tuple[str, dict[str, Any]]
     records = []
     for log in sorted((root / "launch").glob("*.jsonl")):
         if under_sealed(log, root):
-            problems.append(f"{log}: {sealed_record('a launch log')}")
+            problems.append(f"{log}: {sealed_record('a launch log', log, root)}")
             continue
         try:
             lines = log.read_text(encoding="utf-8").splitlines()
@@ -567,7 +567,7 @@ class _Reading:
     def _flagged(self, path: Path, what: str) -> dict[str, Any] | None:
         self.inputs.setdefault(path, what)
         if under_sealed(path, self.root):
-            self.problems.append(f"{path}: {sealed_record(f'a {what}')}")
+            self.problems.append(f"{path}: {sealed_record(f'a {what}', path, self.root)}")
             return None
         record = _object(path, self.root)
         if record is None:
@@ -855,7 +855,7 @@ def _cache(path: Path, problems: list[str], root: Path) -> dict[str, Any] | None
     sealed = under_sealed(path, root)
     record = None if sealed else _object(path, root)
     if record is None:
-        problems.append(f"{path}: " + (sealed_record("a verdict cache") if sealed
+        problems.append(f"{path}: " + (sealed_record("a verdict cache", path, root) if sealed
                                        else "an unreadable verdict cache"))  # fmt: skip
         return {"path": str(path), "sha256": _file_sha256(path, root), "states": {}, "rates": {},
                 "readable": False, "valid": False}  # fmt: skip

@@ -38,7 +38,8 @@ file or a run folder that resolves, through a link, under a ``responses/`` or ``
 folder is never opened, and its attempt is refused by name before anything of the run is read.
 A run folder is a plain child of the experiment's folder: a start whose run id is not a plain
 name (``plain_name``: a separator, ``.``, ``..``, empty) binds no run, a refusal by name, and
-nothing under it is opened. A path the rule cannot resolve (a link loop) counts as sealed. θ₀'s
+nothing under it is opened. A path the rule cannot resolve (a link loop) counts as sealed, fail
+closed, and its refusal says so (``LOOP_WHY``: it cannot be resolved), not a sealed folder. θ₀'s
 folder must have no ``responses`` or ``observations`` component, and its ``summary.json`` is
 checked with that folder as the base (``read_theta0`` refuses it otherwise, unopened). Every
 other file read under RUNS_DIR, a launch log or a record of the qualification (a restart or
@@ -224,6 +225,7 @@ SEALED = ("responses", "observations")
 RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "evaluations.jsonl",
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
 SEALED_WHY = "under a responses or observations folder"
+LOOP_WHY = "cannot be resolved (a link loop)"  # a path the rule counts as sealed: why
 # The configs the launcher composes study 3's runs from (a start's command, composed again)
 STUDY3_CONFIGS = ("experiments/study3", "experiments/study3_k_only")
 
@@ -354,14 +356,36 @@ def under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
     return any(part in SEALED for part in (*(named.parts if named else ()), *below.parts))
 
 
+def unresolvable(path: Path, base: Path | None = None) -> bool:
+    """Whether ``path`` (or ``base``) cannot be resolved: a link loop, which the sealed-path rule
+    counts as sealed (``under_sealed``). Nothing is opened."""
+    try:
+        Path(path).resolve()
+        if base is not None:
+            Path(base).resolve()
+    except (OSError, RuntimeError):
+        return True
+    return False
+
+
+def sealed_why(path: Path, base: Path | None = None, folder: str = f"resolves {SEALED_WHY}") -> str:
+    """Why the sealed-path rule refuses ``path`` (with ``base``): it cannot be resolved (a link
+    loop, ``LOOP_WHY``), or it lies under a sealed folder (``folder``, the wording of that
+    case)."""
+    return LOOP_WHY if unresolvable(path, base) else folder
+
+
 class SealedRecord(PermissionError):
-    """A run's record file that resolves under a sealed folder: refused, never opened."""
+    """A run's record file that resolves under a sealed folder (or cannot be resolved): refused,
+    never opened."""
 
 
-def sealed_record(what: str) -> str:
+def sealed_record(what: str, path: Path | None = None, base: Path | None = None) -> str:
     """The problem that names a record under RUNS_DIR (``what``: "a launch log", say) refused by
-    the rule: it resolves under a sealed folder and is never opened."""
-    return f"{what} that resolves {SEALED_WHY}: never opened"
+    the rule: it resolves under a sealed folder, or ``path`` cannot be resolved (a link loop),
+    and it is never opened."""
+    why = f"resolves {SEALED_WHY}" if path is None else sealed_why(path, base)
+    return f"{what} that {why}: never opened"
 
 
 def plain_name(value: Any) -> bool:
@@ -391,12 +415,24 @@ def _sealed_records(run_dir: Path, base: Path | None = None) -> str | None:
     folder, as well as its parent), or record files of it, resolve under a sealed folder (named);
     None when none does."""
     if _sealed_folder(run_dir, base):
-        return f"its run folder resolves {SEALED_WHY}: nothing of it is opened"
+        return f"its run folder {sealed_why(run_dir, base)}: nothing of it is opened"
     found = [name for name in RECORD_FILES if under_sealed(run_dir / name, run_dir)]
     if not found:
         return None
-    names = found[0] if len(found) == 1 else f"{', '.join(found[:-1])} and {found[-1]}"
-    return f"its {names} {'resolves' if len(found) == 1 else 'resolve'} {SEALED_WHY}: never opened"
+    loops = [name for name in found if unresolvable(run_dir / name)]
+    sealed = [name for name in found if name not in loops]
+    out = []
+    if sealed:
+        verb = "resolves" if len(sealed) == 1 else "resolve"
+        out.append(f"its {_listed(sealed)} {verb} {SEALED_WHY}: never opened")
+    if loops:
+        out.append(f"its {_listed(loops)} {LOOP_WHY}: never opened")
+    return "; ".join(out)
+
+
+def _listed(names: Sequence[str]) -> str:
+    """``a``, or ``a, b and c``."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def read_theta0(path: str | Path) -> dict[str, float]:
@@ -412,7 +448,8 @@ def read_theta0(path: str | Path) -> dict[str, float]:
     except (OSError, RuntimeError):  # a link loop
         parts = SEALED
     if any(part in SEALED for part in parts) or under_sealed(file, folder):
-        raise ValueError(f"θ₀: {file} resolves {SEALED_WHY}: never opened")
+        why = LOOP_WHY if unresolvable(file, folder) else f"resolves {SEALED_WHY}"
+        raise ValueError(f"θ₀: {file} {why}: never opened")
     try:
         summary = json.loads(file.read_text())
     except (OSError, ValueError) as exc:
@@ -455,7 +492,7 @@ class EndpointReader:
         self.problems += [
             f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
             "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
-        self.problems += [f"{where}: {sealed_record('a launch log')}"
+        self.problems += [f"{where}: {sealed_record('a launch log', self.root / where)}"
                           for where in self.journal.sealed]  # fmt: skip
         experiment = self.root / EXPERIMENT
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
@@ -467,7 +504,8 @@ class EndpointReader:
     ) -> tuple[list[Endpoint], list[str]]:
         """``read_endpoints`` under ``prescribed``, from this snapshot."""
         problems = list(self.problems)
-        started = Counter(start.get("run_id") for _, start in self.journal.starts)
+        started = Counter(start["run_id"] for _, start in self.journal.starts
+                          if isinstance(start.get("run_id"), str))  # fmt: skip
         attempts: list[_Attempt] = []
         for campaign, start in self.journal.starts:
             if not isinstance(start.get("run_id"), str):
@@ -522,7 +560,7 @@ class _Files:
         if path not in self.texts:
             try:
                 if _sealed_file(path, self.base):
-                    raise SealedRecord(f"{path} resolves {SEALED_WHY}: never opened")
+                    raise SealedRecord(f"{path} {sealed_why(path)}: never opened")
                 self.texts[path] = path.read_text()
             except (OSError, ValueError) as exc:
                 self.texts[path] = exc
@@ -611,7 +649,7 @@ def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str
     out = root / "qualification"
     for path in sorted(out.glob("c*/*/s*/*/restart-*.json")):
         if under_sealed(path, root):
-            problems.append(f"{path}: {sealed_record('a case-restart record')}")
+            problems.append(f"{path}: {sealed_record('a case-restart record', path, root)}")
             continue
         record = _json(path)
         if record is None:
@@ -623,7 +661,7 @@ def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str
                   f"case restart {path}: {record.get('reason')}")  # fmt: skip
     for path in sorted(out.glob("c*/supersede-*.json")):
         if under_sealed(path, root):
-            problems.append(f"{path}: {sealed_record('a supersession record')}")
+            problems.append(f"{path}: {sealed_record('a supersession record', path, root)}")
             continue
         record = _json(path)
         if record is None:
@@ -687,7 +725,7 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
     for path in sorted((root / "qualification").glob("c*/supersede-*.json")):
         where = path.relative_to(root).as_posix()
         if under_sealed(path, root):
-            problems.append(f"{where}: {sealed_record('a supersession record')}")
+            problems.append(f"{where}: {sealed_record('a supersession record', path, root)}")
             continue
         try:
             data = path.read_bytes()
@@ -733,7 +771,7 @@ def journal_lines(runs_root: str | Path) -> tuple[list[JournalLog], list[str]]:
     for log in sorted((root / "launch").glob("*.jsonl")):
         where = log.relative_to(root).as_posix()
         if under_sealed(log, root):
-            problems.append(f"{where}: {sealed_record('a launch log')}")
+            problems.append(f"{where}: {sealed_record('a launch log', log, root)}")
             continue
         try:
             data = log.read_bytes()
@@ -818,7 +856,7 @@ def _bind(
     cell = Cell(
         campaign=campaign, label=label,
         candidate=candidate if candidate in (1, 2) and type(candidate) is int else None,
-        step=step if step in STEP_ROLES else None,
+        step=step if isinstance(step, str) and step in STEP_ROLES else None,
         round=issued.get("round") if type(issued.get("round")) is int else None,
         arm=facts.get("arm"), rate=facts.get("rate"), seed=facts.get("seed"), config_hash=chash,
         versions_record=_text(issued.get("versions_record")),
@@ -904,7 +942,7 @@ def _header_problem(head: Any) -> str | None:
         return f"its campaign header is not a study-3 header ({head!r})"
     if head.get("candidate") not in (1, 2) or type(head.get("candidate")) is not int:
         return f"its campaign header names no candidate 1 or 2 ({head.get('candidate')!r})"
-    if head.get("step") not in STEP_ROLES:
+    if not isinstance(head.get("step"), str) or head["step"] not in STEP_ROLES:
         return f"its campaign header names no study-3 step ({head.get('step')!r})"
     if "round" not in head:
         return "its campaign header carries no round (None only when written so)"
@@ -928,7 +966,7 @@ def _config(run_dir: Path, start: Mapping[str, Any], chash: str | None,
     folder, too) is refused, never opened."""
     path = run_dir / "config.yaml"
     if _sealed_file(path, base):
-        return None, None, f"its config.yaml resolves {SEALED_WHY}: never opened"
+        return None, None, f"its config.yaml {sealed_why(path)}: never opened"
     unreadable = None
     if path.is_file():
         try:

@@ -1742,8 +1742,8 @@ def _runs_problems(root: Path, chain: Sequence[_Link], fixations: _Fixations) ->
             problems.append(f"the launch journal has an unparseable line that is not the last of "
                             f"its log ({', '.join(journal.corrupt)}): a start it held cannot be "
                             "shown (fails closed)")  # fmt: skip
-        problems += [f"{where}: {sealed_record('a launch log')}: a start it held cannot be shown "
-                     "(fails closed)" for where in journal.sealed]  # fmt: skip
+        problems += [f"{where}: {sealed_record('a launch log', root / where, root)}: a start it "
+                     "held cannot be shown (fails closed)" for where in journal.sealed]  # fmt: skip
         files = _Files(root / EXPERIMENT)
         for campaign, start in journal.starts:
             run_id = start.get("run_id")
@@ -1768,7 +1768,7 @@ def _start_problem(root: Path, campaign: str, start: Mapping[str, Any], chain: S
     fixation of each earlier record a run is under is checked once, into ``pinned``."""
     header = start.get("header")
     if not (isinstance(header, Mapping) and header.get("study") == 3
-            and header.get("step") in STEP_ROLES):  # fmt: skip
+            and isinstance(header.get("step"), str) and header["step"] in STEP_ROLES):  # fmt: skip
         return ("its campaign header names no study-3 step: whether it is a validation or "
                 "confirmation run cannot be shown")  # fmt: skip
     step = header["step"]

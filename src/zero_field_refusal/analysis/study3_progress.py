@@ -283,6 +283,7 @@ from .study3_records import (
     EndpointReader,
     _read_journal,
     journal_lines,
+    plain_name,
     read_holds,
     read_theta0,
     step_key,
@@ -419,10 +420,14 @@ def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> froze
     """The runs the launcher would open a recovery round for (``launch.run_campaign``): a run
     with no published terminal record whose ``meta.json`` records it neither diverged nor
     completed (the launcher reads those as outcomes, never reruns), its cell's round not yet
-    spent (once per cell, ``launch.recovered_cells``) nor its own (``recovered_runs``)."""
+    spent (once per cell, ``launch.recovered_cells``) nor its own (``recovered_runs``). A refused
+    attempt, or one whose run id is no plain name, binds no run: it is skipped before anything of
+    it is read."""
     cells, runs = reader.recovery_rounds()
     found = set()
     for e in endpoints:
+        if e.state == "refused" or not plain_name(e.run_id):
+            continue
         if e.label is None or "/s" not in e.label:
             continue
         cell = e.label.rsplit("/s", 1)[0]

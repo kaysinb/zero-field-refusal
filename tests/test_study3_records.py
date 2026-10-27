@@ -263,6 +263,28 @@ def listed_refused(found, problems, run_id, *words) -> bool:
             and refused(problems, run_id, *words))  # fmt: skip
 
 
+# ------------------------------------------------------------------ unhashable fields
+
+
+def test_an_unhashable_run_id_or_header_step_is_a_named_problem(world) -> None:
+    """A journal start whose run id is a list, and one whose header's step is a list: each a
+    problem by name, never a crash; the ordinary run beside them reads as before."""
+    ordinary = world.run("A", 1.45e-5, 10300)
+    _, chash, command = config_of("A", 2.11e-5, 10300, "validation")
+    world.log("study3-c1", {"event": "start", "run": "A-2.11e-05/s10300", "attempt": 1,
+                            "run_id": ["a", "list"], "experiment": "study3",
+                            "config_hash": chash, "command": list(command),
+                            "header": header(1, "validation", None)})  # fmt: skip
+    stepped = world.run("F", 1.3e-5, 10300, prescribe=False,
+                        head={**header(1, "validation", None), "step": ["validation"]})  # fmt: skip
+    found, problems = world.read()
+    assert "study3-c1: a start in the launch journal without a run id" in problems
+    assert by_id(found)[stepped].state == "refused" and by_id(found)[stepped].cell.step is None
+    assert any(p.startswith(stepped) and "its campaign header names no study-3 step" in p
+               for p in problems)  # fmt: skip
+    assert by_id(found)[ordinary].state == "usable"
+
+
 # ------------------------------------------------------------------ registered values
 
 

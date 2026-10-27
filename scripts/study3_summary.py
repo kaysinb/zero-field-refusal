@@ -124,6 +124,7 @@ from zero_field_refusal.analysis.study3_records import (
     RATE_TOLERANCE,
     SEEDS,
     STEP_ROLES,
+    sealed_why,
 )
 from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import (
@@ -158,6 +159,12 @@ def refuse(command: str, why: str) -> NoReturn:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def unopened(path: Path, base: Path) -> str:
+    """Why the sealed-path rule refuses ``path`` (``study3_decisions._under_sealed``): it resolves
+    under a ``responses/`` or ``observations/`` folder, or it cannot be resolved (a link loop)."""
+    return sealed_why(path, base, "resolves under a responses/ or observations/ folder")
 
 
 def state_of(args: argparse.Namespace) -> dict[str, Any]:
@@ -359,8 +366,7 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
         if header[key] != named:
             problems.append(f"its header's {key} is {header[key]!r}, not {named}")
         elif _under_sealed(path, root):
-            problems.append(f"{path} resolves under a responses/ or observations/ folder: not "
-                            "opened")  # fmt: skip
+            problems.append(f"{path} {unopened(path, root)}: not opened")
         elif not path.is_file():
             problems.append(f"its header's {key} {named} is no longer there")
         elif sha256(path) != header.get(f"{key}_sha256"):
@@ -374,8 +380,7 @@ def block_problems(data: Any, candidate: int, seed: int, cells: list,
     else:
         path = REPO / named
         if _under_sealed(path, REPO):
-            problems.append(f"{path} resolves under a responses/ or observations/ folder: not "
-                            "opened")  # fmt: skip
+            problems.append(f"{path} {unopened(path, REPO)}: not opened")
         elif path.is_file() and sha256(path) != header.get("versions_record_sha256"):
             problems.append(f"its header names versions_record {named} with sha256 "
                             f"{header.get('versions_record_sha256')}, and it is now "
@@ -389,8 +394,8 @@ def check(args: argparse.Namespace) -> None:
     "check")."""
     path, root = args.campaign, args.runs_root
     if _under_sealed(path, root):
-        refuse("check", f"{path} resolves under a responses/ or observations/ folder: no "
-               "campaign is one, and it is not opened")  # fmt: skip
+        refuse("check", f"{path} {unopened(path, root)}: no campaign is one, and it is not "
+               "opened")  # fmt: skip
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -425,8 +430,8 @@ def guard(args: argparse.Namespace) -> None:
     candidate, seed, path, root = args.candidate, args.seed, args.campaign, args.runs_root
     cells, started = the_block(state_of(args), candidate, seed)
     if _under_sealed(path, root):
-        refuse("guard", f"{path} resolves under a responses/ or observations/ folder: no "
-               "campaign is one, and it is not opened")  # fmt: skip
+        refuse("guard", f"{path} {unopened(path, root)}: no campaign is one, and it is not "
+               "opened")  # fmt: skip
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -530,8 +535,8 @@ def write_record(args: argparse.Namespace) -> None:
     """A decision record from a JSON file, through ``study3_decisions.write_decision``."""
     source = args.source
     if _under_sealed(source, args.runs_root):
-        refuse("record", f"{source} resolves under a responses/ or observations/ folder: no "
-               "record is one, and it is not opened")  # fmt: skip
+        refuse("record", f"{source} {unopened(source, args.runs_root)}: no record is one, and it "
+               "is not opened")  # fmt: skip
     try:
         record = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

@@ -320,12 +320,16 @@ topics:
   - docs/study3-preregistration.md#validation
   - docs/study3-preregistration.md#confirmation
   - docs/study3-preregistration.md#failure-routes
+  - docs/study3-preregistration.md#voiding-and-supersession
   - docs/operations.md#study-3-numerical-qualification
+  - docs/architecture.md#modules
   watch:
   - scripts/study3_*.py
   - src/zero_field_refusal/analysis/study3_*.py
+  - src/zero_field_refusal/analysis/qualification_records.py
   - src/zero_field_refusal/analysis/campaign_prep.py
   - tests/test_study3_*.py
+  - tests/test_qualification_records.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage

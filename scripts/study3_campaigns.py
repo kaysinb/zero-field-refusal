@@ -144,6 +144,7 @@ from zero_field_refusal.analysis.study3_records import (
     STEP_ROLES,
     UPDATES,
     read_holds,
+    sealed_why,
     step_key,
 )
 from zero_field_refusal.analysis.study3_search import ARM_ORDER
@@ -369,8 +370,8 @@ def sha256(kind: str, path: Path, base: Path) -> str:
     ``study3_decisions._under_sealed`` decides: a folder of that name above ``base`` does not
     count."""
     if _under_sealed(path, base):
-        refuse(kind, f"{path} resolves under a responses/ or observations/ folder: no record a "
-               "campaign rests on is one, and it is not opened")  # fmt: skip
+        why = sealed_why(path, base, "resolves under a responses/ or observations/ folder")
+        refuse(kind, f"{path} {why}: no record a campaign rests on is one, and it is not opened")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 

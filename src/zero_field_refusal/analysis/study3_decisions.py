@@ -62,7 +62,11 @@ on is a response or an observation, and this module opens none.
   least 60, when the power is short; else null); ``coverage``: one entry per level tested, in
   ascending order, with ``level``, ``tests``, ``J``, ``M`` (exactly 10 000), ``counts`` and
   ``thresholds`` (each ``comparison`` and ``joint``, the non-coverage counts X and the thresholds
-  c) and ``passed``, all with the same J, the one frozen number of coverage tests across the
+  c; each X is the largest count over the level's ``tests``, the N grid and the scenarios, and,
+  for ``comparison``, over both comparisons A–F and P–F: the worst test decides, so the level
+  passes exactly when every X is at or under its c, which is how its ``passed`` is checked; the
+  record carries no count per test, so that aggregate itself cannot be checked here) and
+  ``passed``, all with the same J, the one frozen number of coverage tests across the
   grid, the levels and the calibration and verification streams: the ``tests`` of every level
   and of the verification add up to at most J; ``level`` (L, one of 0.975, 0.980, 0.985, 0.990,
   or null when no level passed) and ``validation_blocks`` (28 or 40); ``verification``
@@ -178,7 +182,16 @@ from typing import Any, NamedTuple
 
 from ..paths import REPO_ROOT
 from .study3_records import DECISIONS as DECISIONS_FOLDER
-from .study3_records import EXPERIMENT, SEEDS, _read_journal, _time, journal_lines
+from .study3_records import (
+    EXPERIMENT,
+    LOOP_WHY,
+    SEEDS,
+    _read_journal,
+    _time,
+    journal_lines,
+    sealed_why,
+    unresolvable,
+)
 from .study3_records import under_sealed as _under_sealed  # the one sealed-path rule
 
 DIRECTORY = (EXPERIMENT, DECISIONS_FOLDER)  # reserved in the experiment's folder
@@ -336,11 +349,12 @@ def budget_needed(n: int, simulation: Mapping[str, Any] | None = None) -> bool:
 def read_decision(
     runs_root: str | Path, kind: str, *, repo: str | Path = REPO_ROOT
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """The record ``kind`` if it is present and valid, and its problems. Absent: (None, []).
-    With any problem the record is None: nothing downstream may consume it. ``repo``: the
-    checkout that evidence with ``"root": "repo"`` is relative to."""
+    """The record ``kind`` if it is present and valid, and its problems. Absent (no file, and no
+    link in its place): (None, []); a link that cannot be resolved (a link loop) is refused
+    unopened, a problem. With any problem the record is None: nothing downstream may consume it.
+    ``repo``: the checkout that evidence with ``"root": "repo"`` is relative to."""
     path = decision_path(runs_root, kind)
-    if not path.exists():
+    if not (path.exists() or path.is_symlink()):  # a link that leads nowhere is no absence
         return None, []
     if _under_sealed(path, Path(runs_root)):
         return None, [_sealed_problem(path)]
@@ -464,8 +478,13 @@ def immutable(
                      f"of its log ({', '.join(corrupt)}), so whether a campaign has named this "
                      "record cannot be shown")  # fmt: skip
     if sealed and path.exists():
-        problems.add(f"{path}: a launch log resolves under a sealed folder ({', '.join(sealed)}), "
-                     "so whether a campaign has named this record cannot be shown")  # fmt: skip
+        root = _runs_of(path)
+        loops = [where for where in sealed if unresolvable(root / where)]
+        for logs, why in (([w for w in sealed if w not in loops], "resolves under a sealed folder"),
+                          (loops, LOOP_WHY)):  # fmt: skip
+            if logs:
+                problems.add(f"{path}: a launch log {why} ({', '.join(logs)}), so whether a "
+                             "campaign has named this record cannot be shown")  # fmt: skip
     now = _digest(path) if path.is_file() else None
     for campaign, start in journal:
         header = start.get("header") if isinstance(start, Mapping) else None
@@ -1036,10 +1055,14 @@ class _Schema:
                      "has at least four (A and F at both rates)")  # fmt: skip
 
     def _spread_pp(self, value: Any) -> None:
-        if self.real("spread_pp", value) and not (
-                0 <= value <= 100 and (value / SPREAD_STEP_PP).is_integer()):  # fmt: skip
-            self.add("spread_pp", f"is {value!r}: the spread is a multiple of {SPREAD_STEP_PP} pp "
-                     "between 0 and 100, and nothing finer")  # fmt: skip
+        """The spread rounded to 0.5 pp. A refusal names the field and the rule, never the value:
+        only the rounded spread is ever printed."""
+        number = (isinstance(value, int | float) and not isinstance(value, bool)
+                  and math.isfinite(value))  # fmt: skip
+        if not (number and 0 <= value <= 100 and (value / SPREAD_STEP_PP).is_integer()):
+            self.add("spread_pp", f"is not a finite multiple of {SPREAD_STEP_PP} pp between 0 and "
+                     "100: the spread is recorded rounded, and nothing finer (its value is not "
+                     "shown)")  # fmt: skip
 
     # -- budget
 
@@ -1153,8 +1176,8 @@ def _evidence(refs: Sequence[_Ref], root: Path, repo: Path) -> list[str]:
         base = repo if ref.root == "repo" else root
         path = named if named.is_absolute() else base / named
         if _under_sealed(path, base, named):
-            problems.append(f"{ref.where}: {path} is under a responses or observations folder: "
-                            "never evidence, never opened")  # fmt: skip
+            why = sealed_why(path, base, "is under a responses or observations folder")
+            problems.append(f"{ref.where}: {path} {why}: never evidence, never opened")
         elif not path.is_file():
             problems.append(f"{ref.where}: the evidence file {path} is missing")
         else:
@@ -1212,7 +1235,8 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
     run_id, cited = record["run_id"], record["line"]
     path = root / cited["path"]
     if _under_sealed(path, root, Path(cited["path"])):
-        return [f"line: {path} is under a responses or observations folder: never opened"]
+        why = sealed_why(path, root, "is under a responses or observations folder")
+        return [f"line: {path} {why}: never opened"]
     logs, unreadable = journal_lines(root)
     found = [f"line: {problem}: the journal cannot show what follows the run"
              for problem in unreadable]  # fmt: skip
@@ -1320,7 +1344,8 @@ def _followed(event: Mapping[str, Any], record: Mapping[str, Any],
     run_id, label, attempt = record["run_id"], event.get("run"), event.get("attempt")
     lines = [line.record for log in logs for line in log.lines if line.record is not None]
     found = []
-    later = sorted({r.get("run_id") for r in lines if r.get("event") == "start"
+    later = sorted({r["run_id"] if isinstance(r.get("run_id"), str) else "(no run id)"
+                    for r in lines if r.get("event") == "start"
                     and r.get("run") == label and type(r.get("attempt")) is int
                     and type(attempt) is int and r["attempt"] > attempt})  # fmt: skip
     if later:
@@ -1411,7 +1436,8 @@ def _runs_of(record_path: Path) -> Path:
 
 
 def _sealed_problem(path: Path) -> str:
-    return f"{path}: resolves under a responses or observations folder: never opened"
+    """A record path the sealed-path rule refuses: under a sealed folder, or a link loop."""
+    return f"{path}: {sealed_why(path)}: never opened"
 
 
 def _level(value: Any) -> float | None:

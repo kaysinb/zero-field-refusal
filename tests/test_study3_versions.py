@@ -841,6 +841,22 @@ def test_a_validation_run_without_its_start_fails_closed(study) -> None:
     assert study.problems() == []
 
 
+def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
+    """A study-3 start whose header's step, or whose run id, is a list: a named problem of the
+    journal check, never a crash."""
+    study.validated()
+    study.runs.log("study3-c1-validation-x", {
+        "event": "start", "run": "A-1.45e-05/s10300", "attempt": 1, "run_id": "r1",
+        "experiment": "study3", "config_hash": "0" * 16,
+        "header": {**study.header(), "step": ["validation"]}})  # fmt: skip
+    study.runs.log("study3-c1-validation-y", {
+        "event": "start", "run": "A-1.45e-05/s10301", "attempt": 1, "run_id": ["r", "2"],
+        "experiment": "study3", "config_hash": "0" * 16, "header": study.header()})  # fmt: skip
+    found = study.problems()
+    assert has(found, "study3-c1-validation-x", "names no study-3 step"), found
+    assert has(found, "study3-c1-validation-y", "names no run id"), found
+
+
 def test_a_header_naming_another_record_or_sha256_is_refused(study) -> None:
     digest = study.validated()
     study.block(10300)

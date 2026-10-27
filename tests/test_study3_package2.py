@@ -3,7 +3,8 @@
 ``scripts/study3_campaigns.py`` and ``scripts/study3_summary.py``): its boundaries.
 
 - No GPU path has changed since package 1's merge commit (``code_identity.reuse_check``).
-- No module of the package or script imports a GPU module or loads a script (read as code).
+- No module of the package or script imports a GPU module directly or loads a script (read as
+  code).
 - No label is read: the label readers' entry points raise wherever they are bound, before the
   package's modules and scripts are loaded, and none is called.
 - The sealing boundary: on the campaign writer's route world, run once for the module (every
@@ -68,7 +69,7 @@ from test_study3_versions import (
 from test_study3_versions import Study as VersionsStudy
 
 from zero_field_refusal import code_identity
-from zero_field_refusal.analysis import qualification_records, study3_records
+from zero_field_refusal.analysis import qualification_records, study3_progress, study3_records
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import decision_path, decisions
 from zero_field_refusal.analysis.study3_progress import THETA0_RUN, progress
@@ -581,25 +582,68 @@ def test_a_theta0_inside_a_sealed_folder_is_refused_unopened(runs, monkeypatch) 
 # ------------------------------------------------------------------ loops and sealed logs
 
 
-def test_a_link_loop_is_a_named_problem_not_a_crash(runs, monkeypatch) -> None:
-    """A record file that is a link to itself, and a launch log that is one, are refused unopened
-    and named; the readers go on."""
+LOOP_WHY = "cannot be resolved (a link loop): never opened"
+
+
+def test_a_link_loop_is_a_named_problem_not_a_crash(runs, monkeypatch, tmp_path) -> None:
+    """A record file that is a link to itself, a launch log, a decision record, θ₀'s summary and a
+    campaign file that are one: each refused unopened (fail-closed) and named as a link loop, not
+    as a sealed folder; the readers go on."""
     looped = runs.run("A", 1.45e-5, 10300)
     ordinary = runs.run("A", 2.11e-5, 10300)
     meta = runs.root / "study3" / looped / "meta.json"
     link(meta, meta)
     log = runs.root / "launch" / "loop.jsonl"
     log.symlink_to(log)
+    record = decision_path(runs.root, "engineering")
+    record.parent.mkdir(parents=True)
+    record.symlink_to(record)
     guard = SealedGuard(monkeypatch)
     found, problems = runs.read()
-    assert f"{looped}: its meta.json {SEALED_WHY}" in problems
-    assert f"launch/loop.jsonl: a launch log that {SEALED_WHY}" in problems
+    assert f"{looped}: its meta.json {LOOP_WHY}" in problems
+    assert f"launch/loop.jsonl: a launch log that {LOOP_WHY}" in problems
+    assert not [p for p in problems if "loop" in p and "responses or observations" in p]
     assert by_id(found)[ordinary].state == "usable"
     _, unreadable = journal_lines(runs.root)
-    assert unreadable == [f"launch/loop.jsonl: a launch log that {SEALED_WHY}"]
+    assert unreadable == [f"launch/loop.jsonl: a launch log that {LOOP_WHY}"]
     reading = qualification_reading(runs.root)
-    assert f"{log}: a launch log that {SEALED_WHY}" in reading["problems"]
+    assert f"{log}: a launch log that {LOOP_WHY}" in reading["problems"]
+    entry = decisions(runs.root, 1, repo=tmp_path)["engineering"]
+    assert entry["state"] == "invalid" and f"{record}: {LOOP_WHY}" in entry["problems"]
+    summary = runs.theta0 / "summary.json"
+    kept = summary.read_bytes()
+    link(summary, summary)
+    with pytest.raises(ValueError, match=r"cannot be resolved \(a link loop\): never opened"):
+        read_theta0(runs.theta0)
+    summary.unlink()
+    summary.write_bytes(kept)
+    campaign = tmp_path / "loop.yaml"
+    campaign.symlink_to(campaign)
+    script = script_module(SUMMARY, "study3_summary")
+    with pytest.raises(SystemExit) as refused:
+        script.main(["check", "--runs-root", str(runs.root), "--campaign", str(campaign)])
+    assert "cannot be resolved (a link loop)" in str(refused.value.code)
     assert guard.attempts == []
+
+
+def test_the_recovery_reading_opens_nothing_of_a_start_that_binds_no_run(runs, monkeypatch):
+    """A journal start whose run id is ``../elsewhere`` (files planted at ``RUNS_DIR/elsewhere``)
+    is refused; which runs the launcher would open a recovery round for
+    (``study3_progress._recoverable``) is read without opening anything of it, and it is none."""
+    real = runs.run("A", 1.45e-5, 10300, end=None, status="failed", terminal=False)
+    planted = plant(runs.root / "elsewhere")
+    _, chash, command = config_of("A", 2.11e-5, 10300, "validation")
+    runs.log("study3-c1", {"event": "start", "run": "A-2.11e-05/s10300", "attempt": 1,
+                           "run_id": "../elsewhere", "experiment": "study3",
+                           "config_hash": chash, "command": list(command),
+                           "header": header(1, "validation", None)})  # fmt: skip
+    guard = SealedGuard(monkeypatch, runs_root=runs.root)
+    reader = EndpointReader(runs.root, theta0=runs.theta0)
+    endpoints, _ = reader.read(runs.prescribed)
+    assert by_id(endpoints)["../elsewhere"].state == "refused"
+    found = study3_progress._recoverable(reader, endpoints)
+    assert "../elsewhere" not in found and real in found
+    assert guard.attempts == [] and not set(planted) & set(guard.opened)
 
 
 def test_a_sealed_launch_log_is_named_in_the_decision_records(tmp_path, monkeypatch) -> None:
@@ -643,12 +687,15 @@ def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
 
 def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     """Every module of the package and both scripts, read as code (``test_code_identity.gpu_uses``,
-    relative imports resolved, imports inside functions included): none imports
+    relative imports resolved, imports inside functions included): none imports directly
     ``zero_field_refusal.qualification``, ``schedule``, ``train`` or any other GPU module, nor
     torch; none uses CUDA; none imports ``scripts/qualify.py`` (``qualify``, ``scripts.qualify``),
     loads code at run time through the import machinery, or runs a subprocess whose arguments name
-    ``qualify.py``. The check is on what each file imports, not on what those modules can do, and
-    it is per file. Its allowed edges and what they load:
+    ``qualify.py``. The check is on what each file imports directly, not on what those modules
+    load in turn, and it is per file. Transitively, the analysis scripts do load torch,
+    ``zero_field_refusal.schedule``, ``train`` and ``runtime``, through
+    ``analysis.qualification_verdicts`` → ``fa_control_diagnostic``: they call none of their GPU
+    paths. Its allowed edges and what they load:
     - ``analysis.qualification_verdicts``, which ``qualification_records`` imports (the other
       modules import ``qualification_records`` only inside the functions that read the
       qualification), imports ``fa_control_diagnostic``, which loads torch and

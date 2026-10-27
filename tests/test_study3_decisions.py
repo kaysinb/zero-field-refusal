@@ -500,6 +500,21 @@ def test_an_unrounded_or_odd_spread_is_refused(world, spread) -> None:
     refused(world, "n-c1", world.n(spread_pp=spread), "spread_pp")
 
 
+@pytest.mark.parametrize("spread", [4.37, 4.25, 4.51, 0.1, 100.5, "4.37"])
+def test_an_invalid_spread_is_refused_without_its_value(world, spread) -> None:
+    """Only the spread rounded to 0.5 pp is ever printed: a refusal names the field and the rule,
+    never the value, on writing and as a file."""
+    world.chain(through="simulation")
+    with pytest.raises(DecisionRefused) as error:
+        world.write("n-c1", world.n(spread_pp=spread))
+    text = str(error.value)
+    assert "spread_pp" in text and "0.5 pp" in text and str(spread) not in text, text
+    world.raw("n-c1", world.n(spread_pp=spread))
+    found, problems = world.read("n-c1")
+    assert found is None and any("spread_pp" in p for p in problems)
+    assert not [p for p in problems if str(spread) in p]
+
+
 @pytest.mark.parametrize("spread", [0, 0.0, 0.5, 4.5, 5, 5.0, 12.5, 100])
 def test_a_spread_rounded_to_half_a_point_is_accepted(world, spread) -> None:
     world.chain(through="simulation")
