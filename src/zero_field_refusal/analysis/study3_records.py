@@ -36,10 +36,13 @@ rule (``under_sealed``, which ``study3_decisions`` and the scripts use too) befo
 with the run's folder as the base, and the run's folder itself with the experiment's: a record
 file or a run folder that resolves, through a link, under a ``responses/`` or ``observations/``
 folder is never opened, and its attempt is refused by name before anything of the run is read
-(θ₀'s ``summary.json`` likewise: ``read_theta0`` refuses it). The structural check of the
-responses that the launcher makes (``stage_a.load_trajectory``) is not repeated here; the
-launcher's verdict on it is its end record, whose outcome is read and whose free text is not
-copied.
+(θ₀'s ``summary.json`` likewise: ``read_theta0`` refuses it). Every other file read under
+RUNS_DIR, a launch log or a record of the qualification (a restart or supersession record), is
+checked by the same rule with RUNS_DIR as the base: one that resolves under a ``responses/`` or
+``observations/`` folder of any run is never opened, and is a problem named by its path (it
+blocks: what it holds cannot be shown). The structural check of the responses that the launcher
+makes (``stage_a.load_trajectory``) is not repeated here; the launcher's verdict on it is its end
+record, whose outcome is read and whose free text is not copied.
 
 **A start's command** is composed again (when the run has no readable ``config.yaml``) only from
 a config the launcher composes study 3's runs from, ``experiments/study3`` or
@@ -309,6 +312,7 @@ class _Journal:
     ends: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
     recoveries: list[dict[str, Any]] = field(default_factory=list)
     corrupt: list[str] = field(default_factory=list)  # "<log> line <n>": an unparseable line
+    sealed: list[str] = field(default_factory=list)  # a log under a sealed folder, never opened
 
 
 def step_key(candidate: int, step: str, round_: int | None = None) -> str:
@@ -335,6 +339,12 @@ def under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
 
 class SealedRecord(PermissionError):
     """A run's record file that resolves under a sealed folder: refused, never opened."""
+
+
+def sealed_record(what: str) -> str:
+    """The problem that names a record under RUNS_DIR (``what``: "a launch log", say) refused by
+    the rule: it resolves under a sealed folder and is never opened."""
+    return f"{what} that resolves {SEALED_WHY}: never opened"
 
 
 def _sealed_file(path: Path) -> bool:
@@ -407,6 +417,7 @@ class EndpointReader:
         self.problems += [
             f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
             "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
+        self.problems += self.journal.sealed
         experiment = self.root / EXPERIMENT
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
                         if d.is_dir() and d.name != DECISIONS]  # fmt: skip
@@ -503,9 +514,13 @@ def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
     log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
     lines into ``voided`` by run id. A line cut short by a crash is skipped only as the last line
     of its log (the launcher's rule); an unparseable line before the last is skipped too but
-    listed in ``corrupt`` with its log's name and its number, never its content."""
+    listed in ``corrupt`` with its log's name and its number, never its content. A log that
+    resolves under a sealed folder is never opened: it is listed in ``sealed``, named."""
     journal = _Journal()
     for log in sorted((root / "launch").glob("*.jsonl")):
+        if under_sealed(log, root):
+            journal.sealed.append(f"launch/{log.name}: {sealed_record('a launch log')}")
+            continue
         campaign = log.stem
         values, corrupt = parse_journal_lines(log.read_text(encoding="utf-8").splitlines())
         journal.corrupt += [f"launch/{log.name} line {number}" for number in corrupt]
@@ -549,10 +564,14 @@ def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
 def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str]:
     """The launcher runs that the qualification's case restarts and engineering-cycle
     supersessions name (scripts/qualify.py, "A case restart", "Supersession"), into ``voided``:
-    superseded or held, with the reason. An unreadable record is refused: it may name a run."""
+    superseded or held, with the reason. An unreadable record is refused: it may name a run; so
+    is one that resolves under a sealed folder, never opened."""
     problems: list[str] = []
     out = root / "qualification"
     for path in sorted(out.glob("c*/*/s*/*/restart-*.json")):
+        if under_sealed(path, root):
+            problems.append(f"{path}: {sealed_record('a case-restart record')}")
+            continue
         record = _json(path)
         if record is None:
             problems.append(f"{path}: an unreadable case-restart record")
@@ -562,6 +581,9 @@ def _voiding_records(root: Path, voided: dict[str, tuple[str, str]]) -> list[str
             _void(voided, launcher["run_id"], "superseded",
                   f"case restart {path}: {record.get('reason')}")  # fmt: skip
     for path in sorted(out.glob("c*/supersede-*.json")):
+        if under_sealed(path, root):
+            problems.append(f"{path}: {sealed_record('a supersession record')}")
+            continue
         record = _json(path)
         if record is None:
             problems.append(f"{path}: an unreadable supersession record")
@@ -598,8 +620,9 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
     grows, as a log's own sha256 does not), and ``supersession``, an engineering cycle's record
     (``qualification/c<N>/supersede-<n>.json``) whose ``held`` names the run. Journal lines come
     first, by log name and line, then supersession records by path. The second value names the
-    records that cannot be read (a log or a supersession record): a hold they hold cannot be
-    listed. Of a record only its numbers, ids, paths, hashes and the hold's reason are kept."""
+    records that cannot be read (a log or a supersession record, or one that resolves under a
+    sealed folder, never opened): a hold they hold cannot be listed. Of a record only its numbers,
+    ids, paths, hashes and the hold's reason are kept."""
     root = Path(runs_root)
     holds: dict[str, dict[str, Any]] = {}
 
@@ -622,6 +645,9 @@ def read_holds(runs_root: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
                              "sha256": log.sha256})  # fmt: skip
     for path in sorted((root / "qualification").glob("c*/supersede-*.json")):
         where = path.relative_to(root).as_posix()
+        if under_sealed(path, root):
+            problems.append(f"{where}: {sealed_record('a supersession record')}")
+            continue
         try:
             data = path.read_bytes()
             record = json.loads(data)
@@ -659,12 +685,15 @@ class JournalLog:
 
 def journal_lines(runs_root: str | Path) -> tuple[list[JournalLog], list[str]]:
     """Every launch log under ``runs_root/launch/``, by its name, line by line, each line with
-    its own sha256 and its record; and the logs that cannot be read (UTF-8 text), named. The
-    one reading of a cited journal line."""
+    its own sha256 and its record; and the logs that cannot be read (UTF-8 text) or resolve
+    under a sealed folder (never opened), named. The one reading of a cited journal line."""
     root = Path(runs_root)
     logs, problems = [], []
     for log in sorted((root / "launch").glob("*.jsonl")):
         where = log.relative_to(root).as_posix()
+        if under_sealed(log, root):
+            problems.append(f"{where}: {sealed_record('a launch log')}")
+            continue
         try:
             data = log.read_bytes()
             texts = data.decode("utf-8").splitlines()

@@ -207,6 +207,8 @@ from .study3_records import (
     _bind,
     _Files,
     _read_journal,
+    _sealed_file,
+    _sealed_records,
     journal_lines,
     parse_journal_lines,
 )
@@ -1524,6 +1526,8 @@ def versions_problems(
     if not path.is_file():
         return [f"{path} is missing: write the versions record (scripts/study3_summary.py "
                 "versions) and commit it first"]  # fmt: skip
+    if _under_sealed(path, repo):
+        return [_sealed_problem(path)]
     own = _in_checkout(path, repo)
     if own is None:
         return [f"{path} is not in the checkout {repo}: the record must be committed"]
@@ -1673,6 +1677,8 @@ def _runs_problems(root: Path, chain: Sequence[_Link], fixations: _Fixations) ->
             problems.append(f"the launch journal has an unparseable line that is not the last of "
                             f"its log ({', '.join(journal.corrupt)}): a start it held cannot be "
                             "shown (fails closed)")  # fmt: skip
+        problems += [f"{sealed}: a start it held cannot be shown (fails closed)"
+                     for sealed in journal.sealed]  # fmt: skip
         files = _Files()
         for campaign, start in journal.starts:
             run_id = start.get("run_id")
@@ -1776,6 +1782,10 @@ def _unstarted(root: Path, started: set[str]) -> list[str]:
     for folder in folders:
         if folder.name == DECISIONS or folder.name in started or not folder.is_dir():
             continue
+        if _sealed_records(folder) is not None:  # nothing of it is opened
+            found["a run whose record files resolve under a sealed folder (never opened)"].append(
+                folder.name)  # fmt: skip
+            continue
         role = _role(folder, root)
         if role is None:
             found["whose role cannot be read"].append(folder.name)
@@ -1795,16 +1805,17 @@ def _unstarted(root: Path, started: set[str]) -> list[str]:
 def _role(folder: Path, root: Path) -> str | None:
     """A run directory's role: its ``config.yaml``'s ``study3.role``, else the role of its
     ``meta.json``'s campaign step; None when neither can be read. A file that resolves under a
-    responses or observations folder is not opened."""
+    responses or observations folder is not opened (the rule, with the run's folder as the
+    base)."""
     config, meta = folder / "config.yaml", folder / "meta.json"
-    if config.is_file() and not _under_sealed(config, root):
+    if config.is_file() and not _sealed_file(config):
         try:
             role = OmegaConf.select(OmegaConf.load(config), "study3.role", default=None)
         except Exception:  # an unreadable config tells no role
             role = None
         if isinstance(role, str):
             return role
-    if meta.is_file() and not _under_sealed(meta, root):
+    if meta.is_file() and not _sealed_file(meta):
         try:
             data = json.loads(meta.read_text(encoding="utf-8"))
         except (OSError, ValueError):

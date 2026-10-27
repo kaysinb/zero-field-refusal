@@ -98,7 +98,14 @@ The states are always the recomputation's.
 
 **Pure reading.** No file is written. Of a launcher run, ``meta.json``, ``summary.json`` and the
 files of its identity (``config.yaml``, ``metrics.jsonl``, ``monitor.jsonl``, ``terminal.json``)
-are read; nothing under a run's ``responses/`` or ``observations/`` is opened. This checkout's
+are read; nothing under a run's ``responses/`` or ``observations/`` is opened. Every file is
+checked by ``study3_records``' one sealed-path rule (``under_sealed``) before it is opened, read
+or hashed: a run's files with the run's folder as the base (``_sealed_records``: a run whose
+folder or record files resolve under a sealed folder is read not at all, a problem, and no
+launcher run is located there); the launch logs and the qualification's records (part attempts,
+trajectory results, restart, supersession and release records, the verdict cache) with RUNS_DIR
+as the base. One that resolves under a sealed folder is never opened: it is a problem named by its
+path. This checkout's
 ``configs/`` are read to compose a cell's config. The decision records' folder in the
 experiment's folder (``study3_records.DECISIONS``) is no run and is never walked. The GPU code
 identity is not computed here: it is an argument. No GPU path is imported here;
@@ -135,7 +142,16 @@ from ..qualification_constants import (
     record_sha256,
 )
 from . import qualification_verdicts as verdicts
-from .study3_records import ARMS, DECISIONS, RATE_TOLERANCE, _command_config, read_holds
+from .study3_records import (
+    ARMS,
+    DECISIONS,
+    RATE_TOLERANCE,
+    _command_config,
+    _sealed_records,
+    read_holds,
+    sealed_record,
+    under_sealed,
+)
 from .study3_records import _config as _start_config
 
 STAGE = "numerical"  # the stage folder of the numerical qualification, c<N>/numerical/
@@ -254,8 +270,11 @@ def _container(value: Any) -> Any:
 # ------------------------------------------------------------------ records on disk
 
 
-def _object(path: Path) -> dict[str, Any] | None:
-    """A JSON object on disk, or None (missing, unreadable, not an object)."""
+def _object(path: Path, base: Path) -> dict[str, Any] | None:
+    """A JSON object on disk, or None (missing, unreadable, not an object, or resolving under a
+    sealed folder below ``base``: never opened)."""
+    if under_sealed(path, base):
+        return None
     try:
         record = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -263,8 +282,11 @@ def _object(path: Path) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def _file_sha256(path: Path) -> str | None:
-    """The sha256 of a record file's bytes (``record_sha256`` of a published record)."""
+def _file_sha256(path: Path, base: Path) -> str | None:
+    """The sha256 of a record file's bytes (``record_sha256`` of a published record); None when it
+    cannot be read or resolves under a sealed folder below ``base`` (never opened)."""
+    if under_sealed(path, base):
+        return None
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
@@ -302,9 +324,12 @@ def attempt_files(folder: Path, part: str) -> dict[int, str]:
 def launcher_identity(run_dir: Path) -> dict[str, Any] | None:
     """How a part record names its launcher run (``qualification.launcher_identity``): its place
     under the runs root, run id, config hash and the sha256 of its config, metrics, monitor and
-    terminal records, with its endpoint-checkpoint record; None when it cannot be read."""
+    terminal records, with its endpoint-checkpoint record; None when it cannot be read, and when
+    its folder or a record file of it resolves under a sealed folder (none is opened)."""
+    if _sealed_records(run_dir) is not None:
+        return None
     try:
-        summary = _object(run_dir / "summary.json") or {}
+        summary = _object(run_dir / "summary.json", run_dir) or {}
         digest = hashlib.sha256()
         for name in IDENTITY_FILES:
             path = run_dir / name
@@ -387,9 +412,13 @@ class _Issued:
 
 def _journal(root: Path, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
     """Every record of every launch log (UTF-8, as ``study3_records`` reads it), with its
-    campaign; a line cut short by a crash is skipped (the launcher's rule)."""
+    campaign; a line cut short by a crash is skipped (the launcher's rule). A log that resolves
+    under a sealed folder is a problem, never opened."""
     records = []
     for log in sorted((root / "launch").glob("*.jsonl")):
+        if under_sealed(log, root):
+            problems.append(f"{log}: {sealed_record('a launch log')}")
+            continue
         try:
             lines = log.read_text(encoding="utf-8").splitlines()
         except (OSError, ValueError):
@@ -489,8 +518,8 @@ def _issued(
             run.config_hash = config_hash(_command_config(run.starts[-1].get("command")))
         except Exception as exc:  # nothing to locate under: the verdict could not run either
             problems.append(f"{_named(run)}: its latest start's command does not compose under "
-                            f"this checkout's configs ({type(exc).__name__}): its launcher run "
-                            "cannot be located")  # fmt: skip
+                            f"this checkout's configs ({type(exc).__name__}: {exc}): its launcher "
+                            "run cannot be located")  # fmt: skip
     bound = [r for r in runs.values() if r.optimizer is not None]
     for run in bound:
         same = [o for o in bound if (o.optimizer, o.seed) == (run.optimizer, run.seed)
@@ -541,7 +570,10 @@ class _Reading:
 
     def _flagged(self, path: Path, what: str) -> dict[str, Any] | None:
         self.inputs.setdefault(path, what)
-        record = _object(path)
+        if under_sealed(path, self.root):
+            self.problems.append(f"{path}: {sealed_record(f'a {what}')}")
+            return None
+        record = _object(path, self.root)
         if record is None:
             self.problems.append(f"{path}: an unreadable {what}")
         return record
@@ -646,7 +678,7 @@ class _Reading:
                 path = folder / f"{part}-attempt-{n}.json"
                 recorded = state == "recorded"
                 record = self._flagged(path, f"{part} attempt record") if recorded else None
-                sha = _file_sha256(path) if recorded else None
+                sha = _file_sha256(path, self.root) if recorded else None
                 void = named.get(sha) if sha is not None else None
                 restart, supersession = (None, void) if sha in cycle_named else (void, None)
                 listing.setdefault(part, []).append(
@@ -764,11 +796,20 @@ class _Located:
     """``qualify.py``'s ``located`` for the issued runs: the one directory of the cell's config
     hash now, settled (completed or diverged, or with a terminal record), that no ``superseded``
     line of the journal names for its label and that hash; each experiment's ``meta.json`` files
-    read once."""
+    read once. A run directory whose folder or record files resolve under a sealed folder is read
+    not at all: a problem, into ``problems``, and no launcher run is located there."""
 
-    def __init__(self, root: Path, superseded: Sequence[Mapping[str, Any]]) -> None:
-        self.root, self.superseded = root, superseded
+    def __init__(self, root: Path, superseded: Sequence[Mapping[str, Any]],
+                 problems: list[str]) -> None:  # fmt: skip
+        self.root, self.superseded, self.problems = root, superseded, problems
         self.metas: dict[str, list[tuple[Path, dict[str, Any] | None]]] = {}
+
+    def _meta(self, folder: Path) -> dict[str, Any] | None:
+        why = _sealed_records(folder)
+        if why is not None:
+            self.problems.append(f"{folder}: {why}; no launcher run is located there")
+            return None
+        return _object(folder / "meta.json", folder)
 
     def __call__(self, run: _Issued) -> Path | None:
         if run.config_hash is None:  # its cell does not compose: nothing to locate under
@@ -776,8 +817,7 @@ class _Located:
         if run.experiment not in self.metas:
             directory = self.root / run.experiment
             # the decision records' folder is no run (study3_records.DECISIONS)
-            self.metas[run.experiment] = [(d, _object(d / "meta.json"))
-                                          for d in sorted(directory.glob("*"))
+            self.metas[run.experiment] = [(d, self._meta(d)) for d in sorted(directory.glob("*"))
                                           if d.name != DECISIONS]  # fmt: skip
         named = {r["run_id"] for r in self.superseded if r.get("run") == run.label
                  and r.get("experiment") == run.experiment
@@ -809,16 +849,19 @@ def _add_rate(rates: list[tuple[str, float]], optimizer: Any, lr: Any) -> None:
         rates.append((optimizer, float(lr)))
 
 
-def _cache(path: Path, problems: list[str]) -> dict[str, Any] | None:
+def _cache(path: Path, problems: list[str], root: Path) -> dict[str, Any] | None:
     """``verdict.json`` as a cache: its rates (optimizer and rate) and states, its identity;
-    ``valid`` unless it is unreadable or holds no rate as the verdict writes one."""
+    ``valid`` unless it is unreadable (or resolves under a sealed folder, never opened) or holds no
+    rate as the verdict writes one."""
     if not path.exists():
         return None
     before = len(problems)
-    record = _object(path)
+    sealed = under_sealed(path, root)
+    record = None if sealed else _object(path, root)
     if record is None:
-        problems.append(f"{path}: an unreadable verdict cache")
-        return {"path": str(path), "sha256": _file_sha256(path), "states": {}, "rates": {},
+        problems.append(f"{path}: " + (sealed_record("a verdict cache") if sealed
+                                       else "an unreadable verdict cache"))  # fmt: skip
+        return {"path": str(path), "sha256": _file_sha256(path, root), "states": {}, "rates": {},
                 "readable": False, "valid": False}  # fmt: skip
     states = record.get("states")
     rates = record.get("rates")
@@ -834,7 +877,7 @@ def _cache(path: Path, problems: list[str]) -> dict[str, Any] | None:
             problems.append(f"{path}: the cache names rate {key!r} without its arm and rate")
     provenance = record.get("provenance") if isinstance(record.get("provenance"), Mapping) else {}
     gpu_code = provenance.get("gpu_code")
-    return {"path": str(path), "sha256": _file_sha256(path), "readable": True,
+    return {"path": str(path), "sha256": _file_sha256(path, root), "readable": True,
             "valid": len(problems) == before,
             "candidate": record.get("candidate"), "stage": record.get("stage"),
             "campaign": record.get("campaign"), "states": dict(states), "rates": named,
@@ -909,7 +952,7 @@ def read_qualification(
     holds, unreadable = read_holds(root)
     problems += _hold_problems(root, candidate, unreadable)
     reading.read([(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None])
-    cache = _cache(reading.candidate_dir / VERDICT, problems)
+    cache = _cache(reading.candidate_dir / VERDICT, problems, root)
     order: list[tuple[str, float]] = []
     for run in issued:
         _add_rate(order, run.optimizer, run.lr)
@@ -918,7 +961,7 @@ def read_qualification(
         _add_rate(order, case.get("optimizer"), case.get("lr"))
     for optimizer, lr in (cache or {}).get("rates", {}).values():
         _add_rate(order, optimizer, lr)
-    located = _Located(root, superseded_lines)
+    located = _Located(root, superseded_lines, problems)
     held = _held(root, candidate, holds, issued)
     inputs = {"scope": scope, "candidate": candidate, "code": {"sha256": expected_code},
               "policy": policy}  # fmt: skip
@@ -938,7 +981,7 @@ def read_qualification(
         "rates": rates, "states": {key: rate["state"] for key, rate in rates.items()},
         "cases": reading.cases, "superseded": reading.superseded,
         "voided": dict(reading.voided), "restarts": _restarts(reading),
-        "supersessions": [_supersession(p, r) for p, r in reading.supersessions],
+        "supersessions": [_supersession(p, r, root) for p, r in reading.supersessions],
         "held": held, "issued": [r.record() for r in issued],
         "unassigned": [_case_name(v) for v in [*reading.cases, *reading.old_controls]
                        if id(v) not in assigned],
@@ -1059,7 +1102,7 @@ def _restarts(reading: _Reading) -> list[dict[str, Any]]:
         record = reading._flagged(path, "case-restart record") or {}
         launcher = record.get("launcher") if isinstance(record.get("launcher"), Mapping) else {}
         attempts = record.get("attempts") if isinstance(record.get("attempts"), list) else []
-        out.append({"path": str(path), "sha256": _file_sha256(path),
+        out.append({"path": str(path), "sha256": _file_sha256(path, reading.root),
                     "case": str(path.parent.relative_to(reading.base)),
                     "reason": record.get("reason"), "launcher_run_id": launcher.get("run_id"),
                     "attempts": [(a.get("part"), a.get("attempt"), a.get("state"))
@@ -1067,12 +1110,13 @@ def _restarts(reading: _Reading) -> list[dict[str, Any]]:
     return out
 
 
-def _supersession(path: Path, record: Mapping[str, Any] | None) -> dict[str, Any]:
-    """A supersession record as listed: what it names and keeps."""
+def _supersession(path: Path, record: Mapping[str, Any] | None, root: Path) -> dict[str, Any]:
+    """A supersession record as listed: what it names and keeps (``root``: RUNS_DIR, the base of
+    the sealed-path rule for its sha256)."""
     record = record or {}
     fix = record.get("fix_gpu_code") if isinstance(record.get("fix_gpu_code"), Mapping) else {}
     old = record.get("old_gpu_code") if isinstance(record.get("old_gpu_code"), Mapping) else {}
-    return {"path": str(path), "sha256": _file_sha256(path),
+    return {"path": str(path), "sha256": _file_sha256(path, root),
             "old_record": record.get("old_record"), "diagnosis": record.get("diagnosis"),
             "fix": record.get("fix"), "old_gpu_code": old.get("sha256"),
             "fix_gpu_code": fix.get("sha256"),
@@ -1084,10 +1128,15 @@ def _supersession(path: Path, record: Mapping[str, Any] | None) -> dict[str, Any
 
 def supersessions(runs_root: str | Path, candidate: int) -> list[dict[str, Any]]:
     """The candidate's supersession records (``c<N>/supersede-<n>.json``) as
-    ``read_qualification`` lists them, in their order; an unreadable one is listed with its
-    fields None (``read_qualification`` names it a problem)."""
-    folder = Path(runs_root) / "qualification" / f"c{candidate}"
-    return [_supersession(path, _object(path)) for path in sorted(folder.glob("supersede-*.json"))]
+    ``read_qualification`` lists them, in their order; an unreadable one, or one that resolves
+    under a sealed folder (never opened), is listed with its fields None (``read_qualification``
+    names it a problem)."""
+    root = Path(runs_root)
+    folder = root / "qualification" / f"c{candidate}"
+    return [
+        _supersession(path, _object(path, root), root)
+        for path in sorted(folder.glob("supersede-*.json"))
+    ]
 
 
 def rate_of(reading: Mapping[str, Any], arm: str, lr: float) -> dict[str, Any] | None:

@@ -1192,7 +1192,9 @@ def test_a_labels_starts_bind_one_case_and_its_cell_composes(tmp_path) -> None:
     reading = world.read()
     assert reading["problems"] == [
         f"{run.label} ({run.config_hash}): its latest start's command does not compose under "
-        "this checkout's configs (FileNotFoundError): its launcher run cannot be located"
+        "this checkout's configs (FileNotFoundError: names the config "
+        "'experiments/no_such_config', not a study-3 config (experiments/study3, "
+        "experiments/study3_k_only): not loaded): its launcher run cannot be located"
     ]
     assert reading["rates"][FA_KEY]["launchers"] == {10200: None}
 

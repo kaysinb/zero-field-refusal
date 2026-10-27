@@ -425,12 +425,15 @@ def _entry(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
 
 def _starts(root: Path) -> tuple[Starts | None, list[str]]:
     """The launch journal's study-3 starts and its corrupt lines (``study3_records``' reading of
-    it); (None, []) when there is no journal or it cannot be read."""
+    it); (None, []) when there is no journal or it cannot be read, a log that resolves under a
+    sealed folder included (never opened; ``read_endpoints`` and ``journal_lines`` name it)."""
     if not any((root / "launch").glob("*.jsonl")):
         return None, []
     try:
         journal = _read_journal(root, {})
     except (OSError, ValueError):
+        return None, []
+    if journal.sealed:
         return None, []
     return journal.starts, journal.corrupt
 

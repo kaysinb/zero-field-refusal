@@ -11,11 +11,13 @@
   ``progress`` and ``versions_problems``, the guard among them), every open of a path under a
   ``responses/`` or ``observations/`` folder fails, and none is made; the sentinel is in no output,
   refusal, problem or written file; and runs whose ``config.yaml`` and ``meta.json`` link into
-  their sealed folders are named problems. The qualification's reader, whose reading the route
-  gives, reads the same files too (with such links it opens them: an expected failure, named).
-- A run's record files are opened only outside its sealed folders (``study3_records``): a record
-  file, or a run's folder, that resolves through a link under a ``responses/`` or
-  ``observations/`` folder is refused unopened, a named problem; and a journal start's command
+  their sealed folders, and a launch log and qualification records that do, are named problems.
+  The qualification's reader, whose reading the route gives, reads the same files too, and opens
+  no such link.
+- A run's record files are opened only outside its sealed folders (``study3_records``, and the
+  qualification's reader): a record file, or a run's folder, that resolves through a link under a
+  ``responses/`` or ``observations/`` folder is refused unopened, a named problem; so is a launch
+  log or a record of the qualification (the base is the runs root); and a journal start's command
   composes only a study-3 config.
 
 Every sealed file of these worlds holds the sentinel ``SENTINEL``, and every read of a sealed path
@@ -367,6 +369,93 @@ def test_a_start_whose_command_names_another_config_gives_no_config(runs, monkey
         "experiments/study3_k_only): not loaded",
     )
     assert loaded == ["experiments/study3"]
+
+
+# ------------------------------------------------------------------ records under the runs root
+
+SEALED_WHY = "resolves under a responses or observations folder: never opened"
+
+
+def qualification_reading(root: Path) -> dict:
+    """Candidate 1's qualification as the real reader reads ``root``."""
+    return REAL_READING(root, 1, expected_code="e" * 64,
+                        settings=load_config("experiments/qualification"))  # fmt: skip
+
+
+def test_logs_and_qualification_records_linked_into_a_runs_responses_are_refused(runs, monkeypatch):
+    """A launch log, a case-restart record and a supersession record linked into a run's
+    ``responses/`` (the base is the runs root): each is a named problem of every reader of the
+    journal and of the qualification's records, and none is opened; the ordinary log beside them
+    is read as before."""
+    run_id = runs.run("A", 1.45e-5, 10300)
+    other = runs.run("A", 2.11e-5, 10300)
+    sealed = runs.root / "study3" / run_id / "responses" / "harmful_evaluation.jsonl"
+    (runs.root / "launch" / "linked.jsonl").symlink_to(sealed)
+    case = runs.root / "qualification" / "c1" / "numerical" / "s10200" / "adamw-1.45e-05"
+    case.mkdir(parents=True)
+    restart, cycle = (
+        case / "restart-1.json",
+        runs.root / "qualification" / "c1" / "supersede-1.json",
+    )
+    restart.symlink_to(sealed)
+    cycle.symlink_to(sealed)
+    log = f"launch/linked.jsonl: a launch log that {SEALED_WHY}"
+    guard = SealedGuard(monkeypatch)
+    found, problems = runs.read()
+    assert {log, f"{restart}: a case-restart record that {SEALED_WHY}",
+            f"{cycle}: a supersession record that {SEALED_WHY}"} <= set(problems)  # fmt: skip
+    assert by_id(found)[other].state == "usable"
+    logs, unreadable = journal_lines(runs.root)
+    assert [entry.path for entry in logs] == ["launch/study3-c1.jsonl"] and unreadable == [log]
+    _, unreadable = read_holds(runs.root)
+    assert unreadable == [log, f"qualification/c1/supersede-1.json: a supersession record that "
+                               f"{SEALED_WHY}"]  # fmt: skip
+    pinned, found_logs = sv.qualification_logs(runs.root, 1)
+    assert [p for p in found_logs if p.startswith(log)]
+    reading = qualification_reading(runs.root)
+    for where, what in (
+        (runs.root / "launch" / "linked.jsonl", "launch log"),
+        (restart, "case-restart record"),
+        (cycle, "supersession record"),
+    ):
+        assert f"{where}: a {what} that {SEALED_WHY}" in reading["problems"], where
+    (listed,) = qualification_records.supersessions(runs.root, 1)
+    assert listed["sha256"] is None and listed["diagnosis"] is None
+    assert guard.attempts == []
+    assert SENTINEL not in repr((found, problems, reading, listed, pinned, found_logs))
+
+
+def test_the_qualification_reader_reads_no_run_file_through_a_sealed_link(runs, monkeypatch):
+    """The qualification reader's run files go through the rule with the run's folder as base: a
+    numerical run whose ``config.yaml`` and ``meta.json`` link into its ``observations/`` is
+    refused unopened, named, and no launcher run is located there; the ordinary run beside it is
+    located and its identity files read. A start whose command names another config is a problem
+    that says why."""
+    linked = runs.run("A", 1.45e-5, 10200, role="numerical")
+    ordinary = runs.run("F", 1.3e-5, 10200, role="numerical")
+    crafted = runs.run("P", 1.3e-5, 10200, role="numerical")
+    folder = runs.root / "study3"
+    for name in ("config.yaml", "meta.json"):
+        link(folder / linked / name, Path("observations") / "measurements.jsonl")
+    journal = runs.root / "launch" / "study3-c1.jsonl"
+    test_study3_records.edit_jsonl(journal, lambda rows: [
+        {**r, "command": [r["command"][0], "experiments/smoke", *r["command"][2:]]}
+        if r.get("run_id") == crafted and r["event"] == "start" else r for r in rows])  # fmt: skip
+    guard = SealedGuard(monkeypatch)
+    reading = qualification_reading(runs.root)
+    why = "its config.yaml and meta.json resolve under a responses or observations folder"
+    assert (f"{folder / linked}: {why}: never opened; no launcher run is located there"
+            in reading["problems"])  # fmt: skip
+    assert any(p.startswith(f"{linked} (A-1.45e-05/s10200): a start of candidate 1's "
+                            "qualification refused: its config.yaml resolves under")
+               for p in reading["problems"])  # fmt: skip
+    assert any("P-1.3e-05/s10200" in p and "does not compose under this checkout's configs "
+               "(FileNotFoundError: names the config 'experiments/smoke', not a study-3 config"
+               in p for p in reading["problems"])  # fmt: skip
+    assert qualification_records.rate_of(reading, "F", 1.3e-5)["launchers"][10200] is not None
+    assert qualification_records.launcher_identity(folder / linked) is None
+    assert qualification_records.launcher_identity(folder / ordinary)["run_id"] == ordinary
+    assert guard.attempts == [] and SENTINEL not in repr(reading)
 
 
 # ------------------------------------------------------------------ no GPU path
@@ -818,7 +907,10 @@ def test_the_route_opens_nothing_sealed_and_shows_no_sentinel(route) -> None:
 @contextlib.contextmanager
 def linked(route):
     """A confirmation run's ``config.yaml`` and ``meta.json`` replaced by links into its
-    ``responses/``, and a numerical (K-only) run's into its ``observations/``; restored after."""
+    ``responses/``, and a numerical (K-only) run's into its ``observations/``; and a launch log, a
+    case-restart record (in a case folder of the qualification) and a supersession record added,
+    each a link into the confirmation run's ``responses/``. Yields the two runs and the added
+    records (what each is -> its path); everything is restored after."""
     regular = route.launched[str(route.blocks[10400])][0]
     k_only = route.numerical_runs[0]
     kept = {}
@@ -828,9 +920,19 @@ def linked(route):
             path = route.root / "study3" / run_id / name
             kept[path] = path.read_bytes()
             link(path, sealed)
+    sealed_file = route.root / "study3" / regular / "responses" / "harmful_evaluation.jsonl"
+    added = {
+        "launch log": route.root / "launch" / "linked.jsonl",
+        "case-restart record": route.case(1, f"adamw-{START['A']['u']:g}") / "restart-1.json",
+        "supersession record": route.root / "qualification" / "c1" / "supersede-1.json",
+    }
+    for path in added.values():
+        path.symlink_to(sealed_file)
     try:
-        yield regular, k_only
+        yield regular, k_only, added
     finally:
+        for path in added.values():
+            path.unlink()
         for path, data in kept.items():
             path.unlink()
             path.write_bytes(data)
@@ -844,14 +946,16 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
     route, monkeypatch
 ) -> None:
     """The commands again, with a confirmation run's ``config.yaml`` and ``meta.json`` linked into
-    its ``responses/`` and a numerical run's into its ``observations/``: each run is a problem
-    that names its files, and the step is blocked; every campaign kind and the guard refuse, the
-    other commands refuse or write what reads no run (the streams driver, a versions record); the
-    readers name the same problems. Nothing sealed is opened, no label reader is called, and the
-    sentinel is in no output, refusal, problem or written file."""
+    its ``responses/``, a numerical run's into its ``observations/``, and a launch log, a
+    case-restart record and a supersession record linked into a run's ``responses/``
+    (``linked``): each run and each record is a problem that names it, and the step is blocked;
+    every campaign kind, the guard and a new versions record refuse; the other commands refuse
+    or write what reads no run (the streams driver); the readers name the same problems. Nothing
+    sealed is opened, no label reader is called, and the sentinel is in no output, refusal,
+    problem or written file."""
     root, repo = route.root, route.repo
     third = "docs/study3-versions-3.json"
-    with linked(route) as (regular, k_only):
+    with linked(route) as (regular, k_only, added):
         guard = SealedGuard(monkeypatch)
         first = len(route.ran)
         why = "its config.yaml and meta.json resolve under a responses or observations folder"
@@ -859,6 +963,9 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         assert state["step"]["kind"] == "blocked"
         for run_id in (regular, k_only):
             assert f"{run_id}: {why}: never opened" in state["problems"]
+        assert f"launch/linked.jsonl: a launch log that {SEALED_WHY}" in state["problems"]
+        for what in ("case-restart record", "supersession record"):
+            assert f"{added[what]}: a {what} that {SEALED_WHY}" in state["problems"], what
         assert route.guarded(10403, route.blocks[10403]).code != 0
         for kind in KINDS:
             error = route.refused("campaigns", kind, "--runs-root", root, "--candidate", 1,
@@ -870,9 +977,11 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         for step in ("validation", "confirmation"):
             route.refused("summary", "fixation", step, "--runs-root", root, "--candidate", 1,
                           *(SUPPLEMENT_SEEDS if step == "confirmation" else ()))  # fmt: skip
-        versions = route.run("summary", "versions", "--out", third, "--reason", "linked_runs",
-                             "--fixation", CONFIRMATION_C1, "--runs-root", root, "--supersedes",
-                             SECOND, "--supersedes-reason", "linked_runs")  # fmt: skip
+        versions = route.refused("summary", "versions", "--out", third, "--reason",
+                                 "linked_runs", "--fixation", CONFIRMATION_C1, "--runs-root",
+                                 root, "--supersedes", SECOND, "--supersedes-reason",
+                                 "linked_runs")  # fmt: skip
+        assert f"launch/linked.jsonl: a launch log that {SEALED_WHY}" in versions.err
         route.refused("summary", "record", "engineering", "--runs-root", root, "--from",
                       route.inputs / "engineering.json")  # fmt: skip
         route.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "F")
@@ -902,15 +1011,13 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
         assert guard.attempts == []
         ran = route.ran[first:]
         files = written(route.base)
-    assert (repo / third) in files
-    (repo / third).unlink()
+    assert not (repo / third).exists()
     assert route.labels.calls == []
     for done in ran:
         assert SENTINEL not in done.out + done.err, done.argv
     for name, text in found.items():
         assert SENTINEL not in text and "AssertionError" not in text, name
     assert [path for path, data in files.items() if SENTINEL.encode() in data] == []
-    assert versions.code == 0, versions.err  # a versions record reads no run: it is written
 
 
 def real_reading(route) -> dict:
@@ -932,29 +1039,33 @@ def test_the_qualification_reader_opens_nothing_sealed_on_the_routes_files(route
     assert SENTINEL not in repr(reading)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="qualification_records reads every run's meta.json (_Located) and a located run's "
-    "identity files (launcher_identity) without the sealed-path rule: a record file linked into "
-    "a sealed folder is opened",
-)
 def test_the_qualification_reader_opens_no_record_linked_into_its_sealed_folders(
     route, monkeypatch
 ) -> None:
-    """With a numerical run's ``config.yaml`` and ``meta.json`` linked into its
-    ``observations/`` (and a confirmation run's into its ``responses/``), the real qualification
-    reader and ``launcher_identity`` open neither."""
-    with linked(route) as (_, k_only):
+    """With the links of ``linked``, the real qualification reader opens none of them: each run
+    and each record is a named problem; no launcher run is located through the numerical run
+    whose files are linked, and ``launcher_identity`` gives none for it, unopened; the other
+    rates' launcher runs are located as before."""
+    with linked(route) as (regular, k_only, added):
         guard = SealedGuard(monkeypatch)
-        for read in (lambda: real_reading(route),
-                     lambda: qualification_records.launcher_identity(
-                         route.root / "study3" / k_only)):  # fmt: skip
-            with contextlib.suppress(AssertionError):  # the guard's: the attempt is listed
-                read()
+        reading = real_reading(route)
+        identity = qualification_records.launcher_identity(route.root / "study3" / k_only)
         found = list(guard.attempts)
         guard.armed = False
-    assert found == []
+    assert found == [] and identity is None
+    why = "its config.yaml and meta.json resolve under a responses or observations folder"
+    for run_id in (regular, k_only):
+        assert (f"{route.root / 'study3' / run_id}: {why}: never opened; no launcher run is "
+                "located there") in reading["problems"]  # fmt: skip
+    for what, path in added.items():
+        assert f"{path}: a {what} that {SEALED_WHY}" in reading["problems"], what
+    assert any(p.startswith(f"{k_only} (") and "a start of candidate 1's qualification refused: "
+               f"its config.yaml {SEALED_WHY}" in p for p in reading["problems"])  # fmt: skip
+    seed = SEEDS["numerical"][1][0]
+    lower = qualification_records.rate_of(reading, "A", START["A"]["l"])
+    assert lower["launchers"].get(seed) is None  # its seed's run: refused, located nowhere
+    assert qualification_records.rate_of(reading, "A", START["A"]["u"])["launchers"][seed]
+    assert SENTINEL not in repr(reading)
 
 
 # ------------------------------------------------------------------ no label
