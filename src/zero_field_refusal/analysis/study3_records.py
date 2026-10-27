@@ -96,8 +96,11 @@ launcher writes after the fact for a start it found without one (``"settled": tr
 and an end ``done`` is the outcome whatever stop its terminal record holds. An attempt that no
 longer counts is listed with its reason, never counted:
 - ``superseded``: named by a ``superseded`` line, by a case restart
-  (``c<N>/<stage>/<case>/restart-<n>.json``, its ``launcher``) or by an engineering cycle's
-  supersession (``c<N>/supersede-<n>.json``, its ``launchers``);
+  (``c<N>/<stage>/<case>/restart-<n>.json``, its ``launcher``: its own case's launcher run
+  alone, a start of the label its case's issued run has, under candidate N, in the
+  qualification's experiment, ``qualification_records.restart_checks``; any other is a problem
+  and voids nothing) or by an engineering cycle's supersession (``c<N>/supersede-<n>.json``, its
+  ``launchers``);
 - ``held``: named by a ``held`` line or by a supersession's ``held``: an outcome the engineering
   cycle could not resolve, never attempted again (the launcher refuses its label under any
   config hash: ``read_holds``);
@@ -108,7 +111,8 @@ longer counts is listed with its reason, never counted:
   ``held`` line counts only through a record that names its run (``_unbacked``): an accepted
   supersession record that names it under ``launchers`` or ``held``, or, for a ``superseded``
   line, a readable case restart record of a candidate's qualification folder whose launcher run
-  it is (``qualify.py`` publishes its records before their lines); any other counts for nothing
+  it is, a start of its own case (``qualify.py`` publishes its records before their lines);
+  any other counts for nothing
   and is a problem by its log and line, never by its free text;
 - ``recovered``: an attempt without a published terminal record before a recovery round of its
   label (``--recovery REASON``, its ``runs``, in any log): the documented interruption
@@ -500,13 +504,15 @@ class EndpointReader:
         *,
         theta0: str | Path,
         cycles: Mapping[str, Mapping[str, Any]] | None = None,
+        restarts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self.root = Path(runs_root)
         self.baseline = read_theta0(theta0)
         self.voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
         cycles = _cycle_checks(self.root, cycles)
-        self.journal = _read_journal(self.root, self.voided, cycles)
-        self.problems = _voiding_records(self.root, self.voided, cycles)
+        restarts = _restart_checks(self.root, restarts)
+        self.journal = _read_journal(self.root, self.voided, cycles, restarts)
+        self.problems = _voiding_records(self.root, self.voided, cycles, restarts)
         self.problems += [
             f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
             "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
@@ -610,6 +616,7 @@ def _read_journal(
     root: Path,
     voided: dict[str, tuple[str, str]],
     cycles: Mapping[str, Mapping[str, Any]] | None = None,
+    restarts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> _Journal:
     """The launch journal's study-3 records from every log: the starts with their campaign (the
     log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
@@ -641,7 +648,7 @@ def _read_journal(
             elif event == "recovery" and record.get("experiment") == EXPERIMENT:
                 journal.recoveries.append(record)
             elif event in ("superseded", "held") and isinstance(run_id, str):
-                why = _unbacked(record, cycles, root)
+                why = _unbacked(record, cycles, restarts or {})
                 if why is not None:
                     journal.unbacked.append(_unbacked_line(f"launch/{log.name}", number, record,
                                                            why))  # fmt: skip
@@ -673,14 +680,19 @@ def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
 
 
 def _voiding_records(
-    root: Path, voided: dict[str, tuple[str, str]], cycles: Mapping[str, Mapping[str, Any]]
+    root: Path,
+    voided: dict[str, tuple[str, str]],
+    cycles: Mapping[str, Mapping[str, Any]],
+    restarts: Mapping[str, Mapping[str, Any]],
 ) -> list[str]:
     """The launcher runs that the qualification's case restarts and engineering-cycle
     supersessions name (scripts/qualify.py, "A case restart", "Supersession"), into ``voided``:
     superseded or held, with the reason; a supersession record only when the one check accepted
-    it (``cycles``: ``qualification_records.cycle_checks``), and every problem of that check is
-    one of the returned problems (it blocks at every step). An unreadable record is refused: it
-    may name a run; so is one that resolves under a sealed folder, never opened."""
+    it (``cycles``: ``qualification_records.cycle_checks``), and a case restart record only for
+    its own case's launcher run (``restarts``: ``qualification_records.restart_checks``); every
+    problem of either check is one of the returned problems (it blocks at every step). An
+    unreadable record is refused: it may name a run; so is one that resolves under a sealed
+    folder, never opened."""
     problems: list[str] = []
     out = root / "qualification"
     for path in sorted(out.glob("c*/*/s*/*/restart-*.json")):
@@ -692,7 +704,9 @@ def _voiding_records(
             problems.append(f"{path}: an unreadable case-restart record")
             continue
         launcher = record.get("launcher")
-        if isinstance(launcher, Mapping) and isinstance(launcher.get("run_id"), str):
+        check = restarts.get(path.relative_to(root).as_posix()) or {}
+        mine = check.get("launchers", ()) if check.get("accepted") else ()
+        if isinstance(launcher, Mapping) and launcher.get("run_id") in mine:
             _void(voided, launcher["run_id"], "superseded",
                   f"case restart {path}: {record.get('reason')}")  # fmt: skip
     for path in sorted(out.glob("c*/supersede-*.json")):
@@ -713,9 +727,24 @@ def _voiding_records(
                     reason = why if state == "superseded" else (
                         f"held by {path}: {entry.get('reason')}")  # fmt: skip
                     _void(voided, entry["run_id"], state, reason)
-    for check in cycles.values():
+    for check in (*cycles.values(), *restarts.values()):
         problems += [p for p in check.get("problems") or [] if p not in problems]
     return problems
+
+
+def _restart_checks(
+    root: Path, restarts: Mapping[str, Mapping[str, Any]] | None
+) -> Mapping[str, Mapping[str, Any]]:
+    """The check of every case restart record (``qualification_records.restart_checks``: what it
+    voids, its own case's launcher run alone), as given, or read here when there is a record to
+    check (that module loads the verdicts, and torch with them, only then)."""
+    if restarts is not None:
+        return restarts
+    if not any((root / "qualification").glob("c*/*/s*/*/restart-*.json")):
+        return {}
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+
+    return qualification_records.restart_checks(root)
 
 
 def _cycle_checks(
@@ -740,7 +769,9 @@ _LINE_KEYS = {"superseded": "launchers", "held": "held"}  # what a line's record
 
 
 def _unbacked(
-    line: Mapping[str, Any], cycles: Mapping[str, Mapping[str, Any]] | None, root: Path
+    line: Mapping[str, Any],
+    cycles: Mapping[str, Mapping[str, Any]] | None,
+    restarts: Mapping[str, Mapping[str, Any]],
 ) -> str | None:
     """Why a ``superseded`` or ``held`` line counts for nothing, or None when it counts: a run
     stops counting only through a record that names it ("Voiding and supersession"; every
@@ -754,7 +785,8 @@ def _unbacked(
       ``superseded`` line counts only through a case restart record of a candidate's
       qualification folder (``qualification/c<N>/<stage>/s<seed>/<case>/restart-<n>.json``,
       the folder named exactly ``c<N>``) that is there, is readable, resolves under no sealed
-      folder and names the line's run as its launcher run (``launcher.run_id``).
+      folder and voids the line's run: its launcher run, a start of its own case
+      (``restarts``: ``qualification_records.restart_checks``).
     - Another experiment's line counts as the launcher reads it.
     Without ``cycles``, every line counts. The reason names paths and ids, never the line's free
     text."""
@@ -785,15 +817,13 @@ def _unbacked(
     if not _RESTART_PATH.fullmatch(where):
         return ("it cites no supersession record and no case restart record of a candidate's "
                 "qualification folder")  # fmt: skip
-    path = root.joinpath(*parts[-6:])
-    if under_sealed(path, root):
-        return f"it cites {where}, which resolves under a sealed folder: never opened"
-    restart = _json(path)
-    if restart is None:
-        return f"it cites {where}, a case restart record that is not there or cannot be read"
-    launcher = restart.get("launcher")
-    if not (isinstance(launcher, Mapping) and launcher.get("run_id") == line.get("run_id")):
-        return f"it cites {where}, a case restart record whose launcher run is another"
+    check = restarts.get(where)
+    if check is None or not check.get("readable"):
+        return (f"it cites {where}, a case restart record that is not there, cannot be read or "
+                "resolves under a sealed folder")  # fmt: skip
+    if line.get("run_id") not in (check.get("launchers") if check.get("accepted") else ()):
+        return (f"it cites {where}, a case restart record that does not void its run (its "
+                "launcher run is another, or no start of its own case)")  # fmt: skip
     return None
 
 
@@ -806,7 +836,10 @@ def _unbacked_line(log: str, number: int, line: Mapping[str, Any], why: str) -> 
 
 
 def voided_runs(
-    runs_root: str | Path, *, cycles: Mapping[str, Mapping[str, Any]] | None = None
+    runs_root: str | Path,
+    *,
+    cycles: Mapping[str, Mapping[str, Any]] | None = None,
+    restarts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """The launcher runs that no longer count, by run id (superseded or held, and why), as
     ``read_endpoints`` reads them: the journal's ``superseded`` and ``held`` lines that count,
@@ -817,9 +850,10 @@ def voided_runs(
     counts for nothing."""
     root = Path(runs_root)
     cycles = _cycle_checks(root, cycles)
+    restarts = _restart_checks(root, restarts)
     voided: dict[str, tuple[str, str]] = {}
-    journal = _read_journal(root, voided, cycles)
-    return voided, [*_voiding_records(root, voided, cycles), *journal.unbacked]
+    journal = _read_journal(root, voided, cycles, restarts)
+    return voided, [*_voiding_records(root, voided, cycles, restarts), *journal.unbacked]
 
 
 def _void(voided: dict[str, tuple[str, str]], run_id: str, state: str, reason: str) -> None:
@@ -871,7 +905,7 @@ def read_holds(
             record = line.record  # an unparseable line: read_endpoints names it, unless last
             if (record is not None and record.get("event") == "held"
                     and isinstance(record.get("run_id"), str)):  # fmt: skip
-                why = _unbacked(record, cycles, root)
+                why = _unbacked(record, cycles, {})  # a held line: never through a restart
                 if why is not None:
                     problems.append(_unbacked_line(log.path, line.line, record, why))
                     continue

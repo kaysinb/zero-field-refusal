@@ -1531,8 +1531,9 @@ docstring has every rule.
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
   those attempts are void, kept and listed in the verdict, and neither count nor block. Once the
-  record is published, it logs the case's launcher run superseded in the launch journal: the run
-  stays on disk and in the journal, no longer counts for its label, and the launcher's recovery
+  record is published, it logs the case's launcher run superseded in the launch journal (the
+  analysis counts the record and the line for that run alone, a start of the case's own label
+  under its candidate): the run stays on disk and in the journal, no longer counts for its label, and the launcher's recovery
   round with the same reason starts a new one (if the command stopped between the two, running
   it again writes the journal's line). Only an interrupted case is restarted: a restart is
   refused without a reason, for a complete case, without evidence of an interruption (an

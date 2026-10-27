@@ -17,6 +17,9 @@ read here, and the verdict rules are called where they live, in ``qualification_
 - ``rate_of``: one rate of a reading, by arm (or optimizer) and rate.
 - ``supersessions``: the candidate's engineering-cycle records as ``read_qualification`` lists
   them (old and fix GPU codes included), read alone: they do not depend on the expected code.
+- ``cycle_checks`` and ``restart_checks``: the one check of every supersession record, and the
+  check of every case restart record (it voids its own case's launcher run alone), by path, for
+  every reader of what a record voids or holds (``study3_records``).
 - ``Scope``, ``settings_record``, ``launcher_identity`` and ``resolved_verdict``: what
   ``qualification.QualificationScope``, ``qualification.settings_record``,
   ``qualification.launcher_identity`` and ``qualify.py``'s ``resolved_verdict`` give, from the
@@ -41,13 +44,14 @@ read here, and the verdict rules are called where they live, in ``qualification_
   the candidate's first numerical seed, unless named;
 - *the launcher runs* located now, one per seed of the rate (``located``: the one settled
   directory of the cell's config hash now that no ``superseded`` line of the journal names for
-  that hash, a line written from a supersession record that voids nothing aside), as the records
-  name them (``launcher_identity``). The cell's config hash now is the
-  campaign's, which the verdict is given: its label's latest start's command (its config and
-  overrides) composed under this checkout's configs, as ``launch.load_campaign`` composes a
-  cell. It is that start's own hash unless a fix changed a hashed config key since; then it is
-  the fix's, and a run of the earlier hash (kept or held, never attempted again) is not
-  located, as the verdict has it;
+  that hash, a line that counts for nothing aside: one that no record naming its run backs, an
+  accepted supersession record or a case restart record whose own case's launcher run it is,
+  ``restart_checks``), as the records name them (``launcher_identity``). The cell's config hash
+  now is the campaign's, which the verdict is given: its label's latest start's command (its
+  config and overrides) composed under this checkout's configs, as ``launch.load_campaign``
+  composes a cell. It is that start's own hash unless a fix changed a hashed config key since;
+  then it is the fix's, and a run of the earlier hash (kept or held, never attempted again) is
+  not located, as the verdict has it;
 - the expected GPU code (``expected_code``, from the fixation record) and the settings as a record
   holds them (``settings_record``).
 
@@ -192,6 +196,7 @@ from . import qualification_verdicts as verdicts
 from .study3_records import (
     ARMS,
     DECISIONS,
+    EXPERIMENT,
     RATE_TOLERANCE,
     _command_config,
     _sealed_records,
@@ -953,6 +958,70 @@ def cycle_checks(
         for path, check in _checks(root, scope, _journal(root, [])).items()}  # fmt: skip
 
 
+def _restart_check(
+    root: Path, journal: Sequence[tuple[str, Mapping[str, Any]]]
+) -> dict[str, dict[str, Any]]:
+    """The check of every case restart record (``qualification/c<N>/<stage>/s<seed>/<case>/
+    restart-<n>.json``), by its path under RUNS_DIR: ``readable``, ``accepted`` and the run ids
+    it may void (``launchers``: its launcher run, or none), with the ``problems`` that name why
+    not. A restart record voids its launcher run only when that run is its own case's, as
+    ``qualify.py restart-case`` finds the case's launcher run: a start in the launch journal of
+    the label the case's issued run has (``_issued``: the candidate's starts of the record's
+    stage, numerical and repair or engineering, bound to their case; any config hash), under the
+    record's candidate (its folder named exactly ``c<N>``), in the qualification's experiment
+    (``EXPERIMENT``). A record that cannot be read, or resolves under a sealed folder, is named
+    by its reader and voids nothing."""
+    out: dict[str, dict[str, Any]] = {}
+    issued: dict[tuple[int, str], list[_Issued]] = {}
+    for path in sorted((root / "qualification").glob("c*/*/s*/*/restart-*.json")):
+        where = path.relative_to(root).as_posix()
+        folder, stage, seed, key = path.parts[-5:-1]
+        number = re.fullmatch(r"c([1-9]\d*)", folder)
+        record = None if under_sealed(path, root) else _object(path, root)
+        check: dict[str, Any] = {"readable": record is not None, "accepted": False,
+                                 "launchers": [], "problems": []}  # fmt: skip
+        out[where] = check
+        if record is None:
+            continue
+        launcher = record.get("launcher")
+        run_id = launcher.get("run_id") if isinstance(launcher, Mapping) else None
+        if not isinstance(run_id, str):  # no launcher run to void (one lost before it settled)
+            check["accepted"] = True
+            continue
+        why = None
+        if number is None or stage not in (STAGE, ENGINEERING):
+            why = (f"it lies in {folder}/{stage}/, no stage folder of a candidate's "
+                   "qualification")  # fmt: skip
+        else:
+            candidate = int(number[1])
+            if (candidate, stage) not in issued:
+                steps = STEPS if stage == STAGE else (ENGINEERING,)
+                issued[(candidate, stage)] = _issued(root, journal, candidate, [], steps)
+            own = [r for r in issued[(candidate, stage)] if r.optimizer is not None
+                   and f"s{r.seed}" == seed and f"{r.optimizer}-{r.lr:g}" == key]  # fmt: skip
+            if not any(r.experiment == EXPERIMENT and run_id in r.run_ids for r in own):
+                labels = sorted({r.label for r in own}) or ["none issued"]
+                why = (f"its launcher run {run_id} is no start of its own case {seed}/{key} of "
+                       f"candidate {candidate}'s {stage} stage (its label: "
+                       f"{', '.join(labels)}), in {EXPERIMENT}")  # fmt: skip
+        if why is None:
+            check.update(accepted=True, launchers=[run_id])
+        else:
+            check["problems"].append(f"{where}: {why}: a case restart voids its own case's "
+                                     "launcher run alone")  # fmt: skip
+    return out
+
+
+def restart_checks(runs_root: str | Path) -> dict[str, dict[str, Any]]:
+    """The check of every case restart record under RUNS_DIR (``_restarts``), by its path
+    under RUNS_DIR: what a restart record voids, and what backs a ``superseded`` line that
+    cites it (``study3_records``)."""
+    root = Path(runs_root)
+    if not any((root / "qualification").glob("c*/*/s*/*/restart-*.json")):
+        return {}
+    return _restart_check(root, _journal(root, []))
+
+
 # ------------------------------------------------------------------ the reading
 
 
@@ -1359,13 +1428,14 @@ def read_qualification(
     cases = [(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None]
     checks = _checks(root, scope, journal, {candidate: cases})  # the one check of every cycle
     cycles = {path.relative_to(root).as_posix(): check for path, check in checks.items()}
+    restarts = _restart_check(root, journal)  # what each case restart record voids
     holds, unreadable = read_holds(root, cycles=cycles)
     problems += _hold_problems(root, candidate, unreadable)
     reading.read(cases, checks)
     # a superseded line counts only through an accepted record that names its run
     superseded_lines = []
     for line in _named_runs(journal, "superseded"):
-        why = _unbacked(line, cycles, root)
+        why = _unbacked(line, cycles, restarts)
         if why is None:
             superseded_lines.append(line)
         else:

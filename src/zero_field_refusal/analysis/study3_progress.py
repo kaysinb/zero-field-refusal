@@ -437,7 +437,9 @@ def progress(
                "read without it")  # fmt: skip
         return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
     try:  # one snapshot of the run records, read once whatever cells it is read under
-        reader = EndpointReader(root, theta0=theta0, cycles=checks)
+        reader = EndpointReader(
+            root, theta0=theta0, cycles=checks, restarts=qualification_records.restart_checks(root)
+        )
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
         return advance(Records(problems=(why,), **fixed), expected_code=expected_code)

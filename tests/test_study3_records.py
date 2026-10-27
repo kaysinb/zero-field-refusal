@@ -728,11 +728,11 @@ def test_ends_holds_and_supersessions_in_another_log(world, accepted) -> None:
     world.log("a-other", {"event": "held", "run": "F-1.3e-05/s10300", "run_id": held,
                           "experiment": "study3", "config_hash": "x", "reason": "unresolved",
                           "record": str(holding_record(world, held))})  # fmt: skip
-    superseded = world.run("P", 1.3e-5, campaign="a-c")
-    world.log("z-other", {"event": "superseded", "run": "P-1.3e-05/s10300",
+    superseded = world.run("P", 1.3e-5, 10200, role="numerical", campaign="a-c")
+    restart = restart_record(world, superseded, arm="P", lr=1.3e-5)  # its own case's
+    world.log("z-other", {"event": "superseded", "run": "P-1.3e-05/s10200",
                           "run_id": superseded, "experiment": "study3", "config_hash": "x",
-                          "reason": "lost disk",
-                          "record": str(restart_record(world, superseded))})  # fmt: skip
+                          "reason": "lost disk", "record": str(restart)})  # fmt: skip
     found, problems = world.read()
     assert problems == []
     assert states(found) == {ended: "usable", held: "held", superseded: "superseded"}
@@ -852,16 +852,57 @@ def journal_line_number(world, campaign: str) -> int:
     return len((world.root / "launch" / f"{campaign}.jsonl").read_text().splitlines())
 
 
-def restart_record(world, run_id: str, *, folder: str = "c1") -> Path:
+def restart_record(world, run_id: str, *, folder: str = "c1", arm: str = "A", lr: float = 1.45e-5,
+                   seed: int = 10200) -> Path:  # fmt: skip
     """A case restart record naming ``run_id`` as its launcher run, where ``restart-case``
-    writes one."""
-    case = world.root / "qualification" / folder / "numerical" / "s10200" / "adamw-1.45e-05"
+    writes one: in the folder of the numerical case (``arm``, ``lr``, ``seed``) of ``folder``'s
+    candidate."""
+    name = f"s{seed}/{OPTIMIZER[arm]}-{lr:g}"
+    case = world.root / "qualification" / folder / "numerical" / name
     case.mkdir(parents=True, exist_ok=True)
     path = case / "restart-1.json"
-    path.write_text(json.dumps({"case": {"name": "s10200/adamw-1.45e-05"}, "restart": 1,
-                                "reason": "Pod stopped", "attempts": [],
-                                "launcher": {"run_id": run_id}}))  # fmt: skip
+    path.write_text(json.dumps({"case": {"name": name}, "restart": 1, "reason": "Pod stopped",
+                                "attempts": [], "launcher": {"run_id": run_id}}))  # fmt: skip
     return path
+
+
+@pytest.mark.parametrize("whose", ["candidate 2's run", "a validation run"])
+def test_a_case_restart_voids_only_its_own_cases_launcher_run(world, whose) -> None:
+    """A case restart record counts for its launcher run only when that run started with its
+    own case's label, under its candidate, in the qualification's experiment (as ``restart-case``
+    finds it). One in ``c1/`` naming candidate 2's run, or a validation run of candidate 1:
+    neither the record nor the ``superseded`` line that cites it takes the run out of the counts,
+    each a named problem; the run still counts, and its cell is not issued again."""
+    if whose == "candidate 2's run":
+        run_id = world.run("A", 1.45e-5, 10210, role="numerical", candidate=2,
+                           campaign="study3-c2")  # fmt: skip
+    else:
+        run_id = world.run("A", 1.45e-5, 10300)
+    restart = restart_record(world, run_id)  # candidate 1's case s10200/adamw-1.45e-05
+    world.log("study3-c1", {"event": "superseded", "run": "x/s1", "run_id": run_id,
+                            "experiment": "study3", "config_hash": "x", "reason": "Pod stopped",
+                            "record": str(restart)})  # fmt: skip
+    number = journal_line_number(world, "study3-c1")
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable"
+    where = restart.relative_to(world.root).as_posix()
+    assert any(p.startswith(f"{where}: ") and run_id in p for p in problems), problems
+    assert any(p.startswith(f"launch/study3-c1.jsonl line {number}: ") for p in problems)
+    assert voided_runs(world.root)[0] == {}
+
+
+def test_a_restart_record_of_its_own_case_voids_its_launcher_run(world) -> None:
+    """The restart record of a numerical case of candidate 1, naming that case's launcher run:
+    the run no longer counts, with no problem (the record's own voiding and its line's)."""
+    run_id = world.run("A", 1.45e-5, 10200, role="numerical")
+    restart = restart_record(world, run_id)
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "superseded" and problems == []
+    world.log("study3-c1", {"event": "superseded", "run": "A-1.45e-05/s10200", "run_id": run_id,
+                            "experiment": "study3", "config_hash": "x", "reason": "Pod stopped",
+                            "record": str(restart)})  # fmt: skip
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "superseded" and problems == []
 
 
 @pytest.mark.parametrize("cited", [None, "restart-1.json", "notes/somewhere-else.json"])
