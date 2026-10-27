@@ -25,13 +25,14 @@ read here, and the verdict rules are called where they live, in ``qualification_
 **The inputs of a rate**, as the verdict assembles them:
 - *the cases*: every case folder of ``c<N>/numerical/`` (``s<seed>/<optimizer>-<rate>/``), read
   with the case's restart records (``restart-<n>.json``, in the folder) and the candidate's
-  supersession records (``c<N>/supersede-<n>.json``), which void the attempts they name, by their
-  record file's sha256. One case verdict per folder, of the latest recorded baseline and rest
-  attempts that neither names; a rest whose latest attempt was interrupted is read from its
-  trajectory results (``rest_from_trajectories``), unless a restart or supersession names that
-  attempt. Every other recorded attempt is a superseded record: void when named, with the
-  restart's reason or the cycle's diagnosis and fix, and otherwise counted against its rate as a
-  case of its own (a control as a superseded control);
+  engineering cycle (its supersession record, ``c<N>/supersede-1.json``, once it passes the checks
+  below), which void the attempts they name, by their record file's sha256. One case verdict per
+  folder, of the latest recorded baseline and rest attempts that neither names; a rest whose
+  latest attempt was interrupted is read from its trajectory results (``rest_from_trajectories``),
+  unless a restart or supersession names that attempt. Every other recorded attempt is a
+  superseded record: void when named, with the restart's reason or the cycle's diagnosis and fix,
+  and otherwise counted against its rate as a case of its own (a control as a superseded
+  control);
 - *the cases the engineering cycle kept on their launcher run's resolved outcome* (``kept_cases``
   with a ``resolution``: no part record classified that run, ``launcher.classified``; none names
   it, or each that does raised before its launcher check): that outcome as a case verdict, beside
@@ -40,7 +41,8 @@ read here, and the verdict rules are called where they live, in ``qualification_
   the candidate's first numerical seed, unless named;
 - *the launcher runs* located now, one per seed of the rate (``located``: the one settled
   directory of the cell's config hash now that no ``superseded`` line of the journal names for
-  that hash), as the records name them (``launcher_identity``). The cell's config hash now is the
+  that hash, a line written from a supersession record that voids nothing aside), as the records
+  name them (``launcher_identity``). The cell's config hash now is the
   campaign's, which the verdict is given: its label's latest start's command (its config and
   overrides) composed under this checkout's configs, as ``launch.load_campaign`` composes a
   cell. It is that start's own hash unless a fix changed a hashed config key since; then it is
@@ -48,6 +50,26 @@ read here, and the verdict rules are called where they live, in ``qualification_
   located, as the verdict has it;
 - the expected GPU code (``expected_code``, from the fixation record) and the settings as a record
   holds them (``settings_record``).
+
+**The engineering cycle** ("Failure routes": one engineering cycle per candidate; "Voiding and
+supersession"). A supersession record voids something (attempts and their records, launcher runs,
+kept cases) only once the reader has checked it, each failure a problem naming the record:
+- *the candidate's*: it lies in ``c<N>/`` and every candidate it names is N: its ``candidate``,
+  its old record's (the folder it lies in and the case it holds) and its kept cases';
+- *its only cycle*: ``qualify.py supersede`` writes ``c<N>/supersede-1.json`` and refuses a
+  second; with a second record for the candidate, under any number, neither voids anything;
+- *from its technical record*: it names its diagnosis, fix and cases re-qualified, and its old
+  record (path and sha256) is found under RUNS_DIR by the path's last components
+  (``qualification/c<N>/numerical/s<seed>/<case>/<part>-attempt-<n>.json``, whatever root the
+  machine that wrote it had), resolves under no sealed folder, has the cited sha256, agrees with
+  the case, stage, part and attempt the record names, and is what ``supersede`` requires: a
+  recorded attempt no case restart names, a completed technical failure (``qualify.py``'s
+  ``failure_kind``, mirrored: ``_failure_kind``), of a case the cycle does not keep whole and an
+  issued start names.
+A record that fails any check voids nothing: the failed attempts keep counting, its launcher runs
+stay located (a ``superseded`` line written from it does not count) and its kept cases add
+nothing. The chain of GPU codes (``study3_progress.code_chain``) reads the records alone
+(``supersessions``) and counts a second record for a candidate as a break.
 
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
@@ -85,9 +107,8 @@ of the candidate (the repair's included) rewrites the file with its own rates.
 (a part attempt, a trajectory result, a restart, supersession or release record, the journal, the
 cache, or a cache without its rates); a malformed record, never an exception: one the verdicts
 cannot read (a case, an interrupted rest's trajectory results, a kept case, a rate; where the
-script would raise, the record is named and left out); a supersession record without its
-diagnosis, fix, old record (path and sha256) or cases re-qualified ("Voiding and supersession":
-it still voids what it names, as the script reads it); a start of the qualification refused or
+script would raise, the record is named and left out); a supersession record that fails a check
+of the engineering cycle (above: it voids nothing); a start of the qualification refused or
 that cannot be bound to its case, starts of one label bound to different cases, two issued runs
 (labels) of one case, a cell whose config this checkout's configs cannot compose, a case record
 no issued start names, and a record that may hold a run (a launch log, the candidate's
@@ -126,18 +147,20 @@ import math
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from ..config import config_hash
 from ..qualification_constants import (
+    ACCEPTED,
     FAILING,
     INCOMPLETE,
     PARTS,
     SCIENTIFIC,
     SHIFTS,
+    TECHNICAL,
     QualificationError,
     record_sha256,
 )
@@ -159,6 +182,7 @@ STAGE = "numerical"  # the stage folder of the numerical qualification, c<N>/num
 STEPS = ("numerical", "repair")  # the campaign steps whose runs are qualification cases
 VERDICT = "verdict.json"
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
+PART_FILE = re.compile(r"(baseline|rest|control)-attempt-(\d+)\.json")  # a part attempt record
 RELEASED = "checkpoints-removed"  # ``finish``'s record of the checkpoints it removed
 RELEASE_RECORD = "release record"  # what a release record is, among the records read
 IDENTITY_FILES = ("config.yaml", "metrics.jsonl", "monitor.jsonl", "terminal.json")
@@ -557,12 +581,10 @@ class _Reading:
         self.issued: list[tuple[str, float, int]] = []  # the issued cases (``read``)
         found = sorted(self.candidate_dir.glob("supersede-*.json"))
         self.supersessions = [(p, self._flagged(p, "supersession record")) for p in found]
-        for path, record in self.supersessions:
-            if record is not None:
-                self._cycle_record(path, record)
         self.cycles = sorted(((int(m[2]), p, r) for p, r in self.supersessions
                               if (m := VOIDING_FILE.fullmatch(p.name))),
                              key=lambda t: (t[0], t[1]))  # fmt: skip
+        self.voiding: list[tuple[Path, dict[str, Any]]] = []  # the valid cycle (``read``)
 
     def _flagged(self, path: Path, what: str) -> dict[str, Any] | None:
         self.inputs.setdefault(path, what)
@@ -574,10 +596,32 @@ class _Reading:
             self.problems.append(f"{path}: an unreadable {what}")
         return record
 
-    def _cycle_record(self, path: Path, record: Mapping[str, Any]) -> None:
-        """A supersession record names the old record (its path and sha256), the diagnosis, the
-        fix and the cases re-qualified ("Voiding and supersession"); one that lacks any is a
-        problem, and still voids what it names, as the script reads it."""
+    def _cycles(self) -> None:
+        """The candidate's engineering cycle (module docstring, "The engineering cycle"): the
+        supersession records that may void, each checked first, every failure a problem naming
+        the record. One that fails any check, or one of two or more, voids nothing."""
+        count = len(self.supersessions)
+        names = ", ".join(p.name for p, _ in self.supersessions)
+        for path, record in self.supersessions:
+            found = []
+            if count > 1:
+                found.append(f"one of {count} supersession records of candidate {self.candidate} "
+                             f"({names}): one engineering cycle per candidate, and no record of "
+                             "a second voids anything")  # fmt: skip
+            if record is not None:
+                found += self._cycle_record(record)
+            if record is None or found:
+                self.problems += [f"{path}: {why}" for why in found]
+                continue
+            self.voiding.append((path, record))
+
+    def _cycle_record(self, record: Mapping[str, Any]) -> list[str]:
+        """Why a supersession record of the candidate's folder voids nothing, or none: it names
+        the old record (its path and sha256), the diagnosis, the fix and the cases re-qualified
+        ("Voiding and supersession"); every candidate it names is this one, its old record's
+        included; and its old record is a completed technical failure of an issued case
+        (``_old_record``)."""
+        found = []
         old = record.get("old_record")
         requalified = record.get("cases_requalified")
         given = {"diagnosis": _given(record.get("diagnosis")), "fix": _given(record.get("fix")),
@@ -586,22 +630,143 @@ class _Reading:
                  "cases_requalified": isinstance(requalified, list)}  # fmt: skip
         missing = [key for key, ok in given.items() if not ok]
         if missing:
-            self.problems.append(f"{path}: a supersession record without its "
-                                 f"{', '.join(missing)}")  # fmt: skip
+            found.append(f"a supersession record without its {', '.join(missing)}")
+        named = record.get("candidate")
+        if type(named) is not int or named != self.candidate:
+            found.append(f"it names candidate {named!r}, not {self.candidate}: a "
+                         f"supersession record in c{self.candidate}/ is candidate "
+                         f"{self.candidate}'s")  # fmt: skip
+        kept_cases = record.get("kept_cases")
+        for kept in kept_cases if isinstance(kept_cases, list) else []:
+            resolution = kept.get("resolution") if isinstance(kept, Mapping) else None
+            case = resolution.get("case_record") if isinstance(resolution, Mapping) else None
+            if isinstance(case, Mapping) and case.get("candidate") != self.candidate:
+                found.append(f"a kept case of candidate {case.get('candidate')!r}, not "
+                             f"{self.candidate}")  # fmt: skip
+        if given["old_record"]:
+            found += self._old_record(old, record)
+        return found
+
+    def _old_record(self, old: Mapping[str, Any], record: Mapping[str, Any]) -> list[str]:
+        """Why the old record a supersession cites is not the technical failure that started the
+        candidate's cycle, or none, as ``qualify.py supersede`` requires it: a part attempt record
+        of a numerical case of the candidate (``qualification/c<N>/numerical/s<seed>/<case>/``,
+        found under RUNS_DIR whatever root the machine that wrote the cycle had), resolving under
+        no sealed folder, of the cited sha256, the case it names, named by no case restart, a
+        completed technical failure (``_failure_kind``), of a case the cycle does not keep whole
+        and an issued start names."""
+        cited = str(old["path"])
+        parts = PurePosixPath(cited.replace("\\", "/")).parts[-6:]
+        if (len(parts) < 6 or parts[0] != "qualification"
+                or not re.fullmatch(r"c\d+", parts[1])):  # fmt: skip
+            form = "qualification/c<N>/<stage>/s<seed>/<case>/<part>-attempt-<n>.json"
+            return [f"its old record {cited} is no record of the qualification ({form})"]
+        if parts[1] != f"c{self.candidate}":
+            return [f"its old record {cited} lies under qualification/{parts[1]}/, candidate "
+                    f"{parts[1][1:]}'s, not candidate {self.candidate}'s"]  # fmt: skip
+        match = PART_FILE.fullmatch(parts[5])
+        if parts[2] != STAGE or match is None:
+            return [f"its old record {cited} is no part attempt record of candidate "
+                    f"{self.candidate}'s {STAGE} qualification"]  # fmt: skip
+        name, (part, attempt) = f"{parts[3]}/{parts[4]}", (match[1], int(match[2]))
+        path = self.base / parts[3] / parts[4] / parts[5]
+        if under_sealed(path, self.root):
+            return [f"its old record {path}: {sealed_record('a record', path, self.root)}"]
+        found = [f"its old record names {key} {old.get(key)!r}, not its file's {value!r}"
+                 for key, value in (("case", name), ("stage", STAGE), ("part", part),
+                                    ("attempt", attempt))
+                 if old.get(key, value) != value]  # fmt: skip
+        sha = _file_sha256(path, self.root)
+        if sha is None:
+            return [*found, f"its old record {path} cannot be read"]
+        if sha != old["sha256"]:
+            return [*found, f"its old record {path} has sha256 {sha} now, not the cited "
+                    f"{old['sha256']}"]  # fmt: skip
+        data = _object(path, self.root)
+        case = data.get("case") if isinstance(data, Mapping) else None
+        if not isinstance(case, Mapping) or case.get("candidate") != self.candidate:
+            named = case.get("candidate") if isinstance(case, Mapping) else None
+            return [*found, f"its old record {path} is a record of candidate {named!r}, not "
+                    f"{self.candidate}"]  # fmt: skip
+        optimizer, lr, seed = case.get("optimizer"), case.get("lr"), case.get("seed")
+        if not any(o == optimizer and s == seed and _number(lr)
+                   and math.isclose(r, lr, rel_tol=RATE_TOLERANCE)
+                   for o, r, s in self.issued):  # fmt: skip
+            found.append(f"its old record {path} is of case s{seed}/{optimizer}-{lr!r}, which "
+                         f"no issued start of candidate {self.candidate}'s qualification "
+                         "names")  # fmt: skip
+        restarts = [self._flagged(p, "case-restart record") or {}
+                    for p in sorted(path.parent.glob("restart-*.json"))
+                    if VOIDING_FILE.fullmatch(p.name)]  # fmt: skip
+        named = [e for r in restarts if isinstance(r.get("attempts"), list)
+                 for e in r["attempts"] if isinstance(e, Mapping)]  # fmt: skip
+        if any(e.get("sha256") == sha for e in named):
+            found.append(f"its old record {path} is void already, by a case restart")
+        try:
+            kind = self._failure_kind(part, data, path.parent)
+        except Exception as exc:  # a record the verdicts cannot read is never superseded
+            kind = f"unreadable ({type(exc).__name__})"
+        if kind != TECHNICAL:
+            found.append(f"its old record {path} is not a completed technical failure "
+                         f"({kind or 'it passes so far'}): an engineering cycle supersedes only "
+                         "one")  # fmt: skip
+        kept_cases = record.get("kept_cases")
+        if any(isinstance(k, Mapping) and k.get("case") == name and k.get("stage") == STAGE
+               for k in (kept_cases if isinstance(kept_cases, list) else [])):  # fmt: skip
+            found.append(f"its old record's case {name} is one the cycle keeps whole")
+        return found
+
+    def _failure_kind(self, part: str, record: Mapping[str, Any], folder: Path) -> str | None:
+        """Whether a part's record is a completed failure, and of which kind, as
+        ``qualify.py``'s ``failure_kind`` reads it: a baseline its verdict alone fails
+        (scientific: a declared instability rule; technical: any reason but the rest still to
+        come); a rest failing with the baseline record it names (of the case's recorded
+        baselines, by sha256), or technical when it names none recorded; a control not accepted.
+        None for a record that passes so far."""
+        if part == "baseline":
+            verdict = verdicts.case_verdict(record, None, self.scope)
+            if verdict["kind"] == SCIENTIFIC:
+                return SCIENTIFIC
+            reasons = [r for r in verdict["reasons"] if r != verdicts.REST_MISSING]
+            return TECHNICAL if reasons else None
+        if part == "rest":
+            named = (record.get("baseline_record") or {}).get("sha256")
+            bound = None
+            for n, state in attempt_files(folder, "baseline").items():
+                file = folder / f"baseline-attempt-{n}.json"
+                if state == "recorded" and _file_sha256(file, self.root) == named:
+                    bound = _object(file, self.root)
+            if bound is None:
+                return SCIENTIFIC if record.get("kind") == SCIENTIFIC else TECHNICAL
+            return verdicts.case_verdict(bound, record, self.scope)["kind"]
+        verdict = verdicts.control_verdict(record, self.scope, self.candidate)
+        return None if verdict["state"] == ACCEPTED else verdict["kind"]
+
+    def cites_void_cycle(self, line: Mapping[str, Any]) -> bool:
+        """Whether a journal line was written from a supersession record of the candidate that
+        voids nothing (its ``record``, a path of the machine that wrote it, by its last three
+        components)."""
+        cited = line.get("record")
+        if not isinstance(cited, str):
+            return False
+        parts = PurePosixPath(cited.replace("\\", "/")).parts[-3:]
+        void = {p.name for p, _ in self.supersessions} - {p.name for p, _ in self.voiding}
+        return parts[:2] == ("qualification", f"c{self.candidate}") and parts[-1] in void
 
     def read(self, issued: Sequence[tuple[str, float, int]] = ()) -> None:
         """Every case folder, then the cases the engineering cycle kept on a resolved launcher
         run, beside their records' own verdicts (no record classified that run);
         ``issued``: the (optimizer, rate, seed) the issued starts name."""
         self.issued = list(issued)
+        self._cycles()
         for folder in sorted({f.parent for f in self.base.glob("s*/*/*-attempt-*")}):
             try:
                 self._folder(folder)
             except Exception as exc:  # a malformed record no rule below names
                 self.problems.append(f"{folder}: its records cannot be read: "
                                      f"{type(exc).__name__}: {exc}")  # fmt: skip
-        for path, record in self.supersessions:  # cases kept on a resolved launcher run
-            kept_cases = (record or {}).get("kept_cases") or []
+        for path, record in self.voiding:  # cases kept on a resolved launcher run
+            kept_cases = record.get("kept_cases") or []
             if not isinstance(kept_cases, list):
                 self.problems.append(f"{path}: its kept cases are not a list")
                 continue
@@ -641,7 +806,7 @@ class _Reading:
             if (m := VOIDING_FILE.fullmatch(p.name))
         )  # fmt: skip
         voiders = [(p, self._flagged(p, "case-restart record")) for _, p in restarts]
-        voiders += [(p, r) for _, p, r in self.cycles]
+        voiders += list(self.voiding)  # the valid cycle alone
         for path, record in voiders:
             entries = (record or {}).get("attempts") or []
             if not isinstance(entries, list):
@@ -944,10 +1109,12 @@ def read_qualification(
     problems = reading.problems
     journal = _journal(root, problems)
     issued = _issued(root, journal, candidate, problems)
-    superseded_lines = _named_runs(journal, "superseded")
     holds, unreadable = read_holds(root)
     problems += _hold_problems(root, candidate, unreadable)
     reading.read([(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None])
+    # a launcher run a cycle that voids nothing logged superseded is not superseded
+    superseded_lines = [line for line in _named_runs(journal, "superseded")
+                        if not reading.cites_void_cycle(line)]  # fmt: skip
     cache = _cache(reading.candidate_dir / VERDICT, problems, root)
     order: list[tuple[str, float]] = []
     for run in issued:

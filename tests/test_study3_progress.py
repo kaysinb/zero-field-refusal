@@ -1487,6 +1487,22 @@ def test_a_break_in_the_chain_of_cycles_is_a_problem() -> None:
     assert any("7" * 64 in p and "chain" in p for p in result["problems"])
 
 
+def test_a_second_cycle_record_for_a_candidate_is_a_break_in_the_chain() -> None:
+    """One engineering cycle per candidate: a second supersession record of candidate 1, even
+    one whose old code is the first one's fix, is a break, and blocks."""
+    study = Study()
+    study.through_validation()
+    study.cycle(1)
+    study.cycle(1, fix="8" * 64)
+    study.cycles[1][1]["path"] = "/runs/qualification/c1/supersede-2.json"
+    result = study.advance()
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+    assert any("candidate 1 has 2 supersession records" in p and "supersede-2.json" in p
+               and "chain" in p for p in result["problems"]), result["problems"]  # fmt: skip
+    _, _, breaks = study3_progress.code_chain(EXPECTED, study.cycles)
+    assert len(breaks) == 1
+
+
 def test_an_expected_code_that_is_not_the_chains_end_is_a_problem() -> None:
     study = Study()
     study.through_validation()

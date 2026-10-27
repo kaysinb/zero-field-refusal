@@ -488,6 +488,138 @@ def test_an_engineering_cycle_voids_old_code_and_keeps_a_scientific_case(
     assert run["located"] == "r10201-adam_frozen-a1" and run["superseded"] == {}
 
 
+SCIENTIFIC_CASE = qcase(10201, "adam_frozen", FA_LR)
+
+
+def technical_cycle(qualify, monkeypatch, tmp_path):
+    """AdamW's case on 10200 technical (its baseline's launcher~baseline beyond 0.06), FA's on
+    10201 failing scientifically, the others qualified; then the candidate's one engineering
+    cycle, written by the script from the technical baseline. Returns the world and the cycle's
+    path and record."""
+    world = World(tmp_path)
+    world.full(skip=(ADAMW,), changes={SCIENTIFIC_CASE: beyond("rest", "baseline~s3")})
+    world.qualified(ADAMW, world.launch(ADAMW), change=beyond("baseline", "launcher~baseline"))
+    record = world.folder(ADAMW) / "baseline-attempt-1.json"
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)  # this checkout: the fix
+    world.command(qualify, "supersede", "--case", ADAMW.name, "--record", str(record),
+                  "--diagnosis", "d", "--fix", "f")  # fmt: skip
+    path = world.out / "c1" / "supersede-1.json"
+    return world, path, json.loads(path.read_text())
+
+
+def assert_nothing_voided(reading) -> None:
+    """The cycle voided nothing: no attempt, no launcher run; AdamW's technical baseline still
+    counts for its case, and its launcher run is still located."""
+    assert reading["voided"] == {}
+    assert not [e for e in reading["superseded"] if e["supersession"]]
+    (case,) = [c for c in reading["rates"][ADAMW_KEY]["cases"] if c["seed"] == ADAMW.seed]
+    assert case["parts"]["baseline"]["counts"] == 1 and case["verdict"] is not None
+    assert [a["supersession"] for a in case["parts"]["baseline"]["attempts"]] == [None]
+    (run,) = [r for r in reading["rates"][ADAMW_KEY]["runs"] if r["seed"] == ADAMW.seed]
+    assert run["located"] == "r10200-adamw-a1" and run["superseded"] == {}
+    assert reading["rates"][ADAMW_KEY]["verdict"]["voided"] == []
+
+
+def rewrite(path, record) -> None:
+    path.write_text(json.dumps(record))
+
+
+def test_the_candidates_one_cycle_from_its_technical_record_voids(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """The ordinary cycle, as the script writes it: no problem, and it voids the old code's
+    attempts and launcher runs; its old record is found under this runs directory whatever root
+    the machine that wrote it had."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    for old_path in (record["old_record"]["path"], "/workspace/runs/qualification/c1/numerical/"
+                     f"{ADAMW.name}/baseline-attempt-1.json"):  # fmt: skip
+        rewrite(path, {**record, "old_record": {**record["old_record"], "path": old_path}})
+        reading = world.read(expected_code=FIX["sha256"])
+        assert reading["problems"] == []
+        (case,) = [c for c in reading["rates"][ADAMW_KEY]["cases"] if c["seed"] == ADAMW.seed]
+        assert case["parts"]["baseline"]["counts"] is None
+        voided = reading["voided"].values()
+        assert voided and all(v.startswith("superseded by an engineering cycle") for v in voided)
+        (run,) = [r for r in reading["rates"][ADAMW_KEY]["runs"] if r["seed"] == ADAMW.seed]
+        assert run["located"] is None and "r10200-adamw-a1" in run["superseded"]
+
+
+def test_probe_a_second_cycle_record_for_a_candidate_voids_nothing(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """A probe: a second supersession record for the candidate (the script writes
+    ``supersede-1.json`` and refuses a second). One cycle per candidate: each record is a named
+    problem, neither voids anything, and the failed attempts keep counting."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    second = path.with_name("supersede-7.json")
+    rewrite(second, {**record, "supersession": 7})
+    reading = world.read(expected_code=FIX["sha256"])
+    for named in (path, second):
+        assert any(p.startswith(f"{named}: ") and "one engineering cycle per candidate" in p
+                   for p in reading["problems"]), reading["problems"]  # fmt: skip
+    assert_nothing_voided(reading)
+
+
+@pytest.mark.parametrize("where", ["its candidate", "its old record"])
+def test_probe_another_candidates_record_in_the_folder_voids_nothing(
+    qualify, monkeypatch, tmp_path, where
+) -> None:
+    """A probe: a supersession record of candidate 2 placed in candidate 1's folder, by the
+    candidate it names or by the candidate of the old record it cites: a named problem, and it
+    voids nothing."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    if where == "its candidate":
+        rewrite(path, {**record, "candidate": 2})
+    else:
+        old = record["old_record"]["path"].replace("/qualification/c1/", "/qualification/c2/")
+        rewrite(path, {**record, "old_record": {**record["old_record"], "path": old}})
+    reading = world.read(expected_code=FIX["sha256"])
+    assert any(p.startswith(f"{path}: ") and "candidate 2" in p for p in reading["problems"]), (
+        reading["problems"])  # fmt: skip
+    assert_nothing_voided(reading)
+
+
+def test_a_cycle_whose_old_record_has_another_sha256_voids_nothing(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    rewrite(path, {**record, "old_record": {**record["old_record"], "sha256": "0" * 64}})
+    reading = world.read(expected_code=FIX["sha256"])
+    assert any(p.startswith(f"{path}: ") and "sha256" in p for p in reading["problems"]), (
+        reading["problems"])  # fmt: skip
+    assert_nothing_voided(reading)
+
+
+@pytest.mark.parametrize("old", ["passed", "scientific", "not issued"])
+def test_a_cycle_whose_old_record_is_no_technical_failure_of_an_issued_case_voids_nothing(
+    qualify, monkeypatch, tmp_path, old
+) -> None:
+    """The old record must be a completed technical failure of the case it names, as the
+    script's ``supersede`` requires, and of an issued case: a passed record, a scientific failure
+    and a technical record of a case no start issued are each a named problem, and the cycle
+    voids nothing."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    if old == "passed":
+        case, part = FA, "baseline"
+    elif old == "scientific":
+        case, part = SCIENTIFIC_CASE, "rest"
+    else:
+        case, part = qcase(10200, "adamw_prewarmed", 1.0e-05), "baseline"
+        world.qualified(case, dict(IDENTITY), change=beyond("baseline", "launcher~baseline"))
+    file = world.folder(case) / f"{part}-attempt-1.json"
+    old_record = {"case": case.name, "stage": "numerical", "path": str(file),
+                  "sha256": hashlib.sha256(file.read_bytes()).hexdigest(), "part": part,
+                  "attempt": 1}  # fmt: skip
+    rewrite(path, {**record, "old_record": old_record})
+    reading = world.read(expected_code=FIX["sha256"])
+    words = {"passed": "not a completed technical failure",
+             "scientific": "not a completed technical failure",
+             "not issued": "no issued start"}[old]  # fmt: skip
+    assert any(p.startswith(f"{path}: ") and words in p for p in reading["problems"]), (
+        reading["problems"])  # fmt: skip
+    assert_nothing_voided(reading)
+
+
 STOPPED = qcase(10201, "adamw", ADAMW_LR)
 ADAMW_ONLY = ((("adamw", ADAMW_LR), (10200, 10201)),)
 
@@ -1201,12 +1333,28 @@ def test_a_labels_starts_bind_one_case_and_its_cell_composes(tmp_path) -> None:
 
 def cycle_record(world, **fields):
     """A supersession record of candidate 1 with every field the registration asks for, as
-    ``qualify.py supersede`` writes one, and ``fields`` over it."""
+    ``qualify.py supersede`` writes one, and ``fields`` over it. Its old record is a completed
+    technical failure of an issued case: AdamW's second attempt on 10200 (its baseline's
+    launcher~baseline beyond 0.06), which it names and voids, re-qualified by a third attempt on
+    the same launcher run."""
+    run = world.run(ADAMW)
+    identity = q.launcher_identity(world.root / run.experiment / f"r{ADAMW.seed}-adamw-a1")
+    baseline, rest = world.records(ADAMW, identity, change=beyond("baseline", "launcher~baseline"))
+    world.publish(ADAMW, "baseline", baseline, 2)
+    world.publish(ADAMW, "rest", rest, 2)
+    world.qualified(ADAMW, identity, attempt=3)
+    folder = world.folder(ADAMW)
+    attempts = [{"case": ADAMW.name, "stage": "numerical", "part": part, "attempt": 2,
+                 "state": "recorded", "sha256": file_sha256(folder / f"{part}-attempt-2.json")}
+                for part in ("baseline", "rest")]  # fmt: skip
+    old = folder / "baseline-attempt-2.json"
     record = {"candidate": 1, "supersession": 1,
-              "old_record": {"case": ADAMW.name, "stage": "numerical", "path": "/x.json",
-                             "sha256": "0" * 64, "part": "baseline", "attempt": 1},
-              "diagnosis": "d", "fix": "f", "cases_requalified": [], "attempts": [],
-              "kept_cases": [], "kept": [], "launchers": [], "held": [], **fields}  # fmt: skip
+              "old_record": {"case": ADAMW.name, "stage": "numerical", "path": str(old),
+                             "sha256": file_sha256(old), "part": "baseline", "attempt": 2},
+              "diagnosis": "d", "fix": "f",
+              "cases_requalified": [{"case": ADAMW.name, "stage": "numerical"}],
+              "attempts": attempts, "kept_cases": [], "kept": [], "launchers": [], "held": [],
+              **fields}  # fmt: skip
     path = world.out / "c1" / "supersede-1.json"
     q.publish(path, record)
     return path
@@ -1261,10 +1409,13 @@ def test_a_kept_case_counts_by_its_resolution_whatever_its_name(qualify, tmp_pat
     assert reading["states"] == {FA_KEY: "qualified", ADAMW_KEY: "not_qualified"}
 
 
-def test_a_supersession_record_without_its_fields_is_a_problem_and_still_voids(qualify, tmp_path):
+def test_a_supersession_record_without_its_fields_is_a_problem_and_voids_nothing(
+    qualify, tmp_path
+) -> None:
     """A supersession record must name the old record (path and sha256), the diagnosis, the fix
-    and the cases re-qualified; one that lacks any is a problem, and still voids the attempts it
-    names, as the script's verdict reads it."""
+    and the cases re-qualified, and be the candidate's ("Voiding and supersession"); one that
+    lacks any is a problem and voids nothing. The script's verdict voids what it names: the
+    cache's disagreement is a problem too."""
     world = World(tmp_path)
     world.full()
     record = world.folder(ADAMW) / "baseline-attempt-1.json"
@@ -1275,15 +1426,19 @@ def test_a_supersession_record_without_its_fields_is_a_problem_and_still_voids(q
     q.publish(path, {"attempts": [entry]})
     cached = world.verdict(qualify)
     reading = world.read()
-    assert reading["problems"] == [f"{path}: a supersession record without its diagnosis, fix, "
-                                   "old_record, cases_requalified"]  # fmt: skip
-    got = plain(reading)
-    assert {key: got["rates"][key]["verdict"] for key in cached["rates"]} == cached["rates"]
-    assert got["superseded"] == cached["superseded"]
-    assert [(e["case"], e["part"], e["supersession"]) for e in reading["superseded"]] == [
-        (ADAMW.name, "baseline", "superseded by an engineering cycle (supersede-1.json): None; "
-         "fix: None")]  # fmt: skip
-    assert reading["states"][ADAMW_KEY] == "not_qualified"
+    assert [p for p in reading["problems"] if p.startswith(f"{path}: ")] == [
+        f"{path}: a supersession record without its diagnosis, fix, old_record, "
+        "cases_requalified",
+        f"{path}: it names candidate None, not 1: a supersession record in c1/ is candidate "
+        "1's"]  # fmt: skip
+    assert cached["states"][ADAMW_KEY] == "not_qualified"
+    assert reading["states"][ADAMW_KEY] == "qualified" and reading["voided"] == {}
+    assert not [e for e in reading["superseded"] if e["supersession"]]
+    assert any(p.startswith(f"{ADAMW_KEY}: the records give 'qualified', the cache")
+               for p in reading["problems"])  # fmt: skip
     old = {"case": ADAMW.name, "stage": "numerical", "path": str(record)}  # no sha256
     cycle_record(world, attempts=[entry], old_record=old)
-    assert world.read()["problems"] == [f"{path}: a supersession record without its old_record"]
+    reading = world.read()
+    assert [p for p in reading["problems"] if p.startswith(f"{path}: ")] == [
+        f"{path}: a supersession record without its old_record"]  # fmt: skip
+    assert reading["voided"] == {}
