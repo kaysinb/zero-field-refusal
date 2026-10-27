@@ -211,6 +211,8 @@ from .study3_records import (
     _sealed_records,
     journal_lines,
     parse_journal_lines,
+    plain_name,
+    sealed_record,
 )
 
 REGISTRATION = "docs/study3-preregistration.md"
@@ -1110,10 +1112,10 @@ def validation_fixation(
         "policy": policy, "rates": rates,
         "qualification": {"logs": logs, "ledger": ledger, "states": states},
         "simulation": {"path": SIMULATION_RECORD,
-                       "sha256": _digest(decision_path(root, "simulation"))},
+                       "sha256": _pin(decision_path(root, "simulation"), root)},
         "validation_blocks": simulation["validation_blocks"], "level": simulation["level"],
         "engineering": {"path": ENGINEERING_RECORD,
-                        "sha256": _digest(decision_path(root, "engineering"))},
+                        "sha256": _pin(decision_path(root, "engineering"), root)},
         "model": model, "judge": judge,
         "code": {"commit": code["commit"], "gpu_code_sha256": code["gpu_code_sha256"]},
     }  # fmt: skip
@@ -1233,7 +1235,7 @@ def confirmation_fixation(
                                 "confirmation does not start")  # fmt: skip
             else:
                 budget = {"path": "/".join((*DIRECTORY, f"{answer}.json")),
-                          "sha256": _digest(decision_path(root, answer))}  # fmt: skip
+                          "sha256": _pin(decision_path(root, answer), root)}  # fmt: skip
     if problems:
         raise RecordRefused(_refusal(KINDS["confirmation"], candidate, problems))
     name = fixation_name("validation", candidate)
@@ -1241,7 +1243,7 @@ def confirmation_fixation(
         "kind": KINDS["confirmation"], "candidate": candidate, "written_at": written_at or _now(),
         "validation_fixation": {"path": name, "sha256": _digest(repo / name), "root": "repo"},
         "n": {"path": "/".join((*DIRECTORY, f"{kind}.json")),
-              "sha256": _digest(decision_path(root, kind))},
+              "sha256": _pin(decision_path(root, kind), root)},
         "N": n["N"], "cap": n["cap"], "budget": budget,
         "bootstrap": {"seed": bootstrap_seed, "resamples": BOOTSTRAP_RESAMPLES},
         "audit": {"seed": audit_seed, "agreement_seed": agreement_seed,
@@ -1328,6 +1330,15 @@ def versions_record(
     if problems:
         raise RecordRefused(_refusal("versions", None, problems))
     return record
+
+
+def _pin(path: Path, base: Path) -> str:
+    """The sha256 of a record a fixation pins, the sealed-path rule applied again where it is read
+    (below ``base``): ``RecordRefused`` for one that resolves under a sealed folder now, never
+    opened."""
+    if _under_sealed(path, base):
+        raise RecordRefused(_sealed_problem(path))
+    return _digest(path)
 
 
 def _not_written(path: Path) -> None:
@@ -1677,9 +1688,9 @@ def _runs_problems(root: Path, chain: Sequence[_Link], fixations: _Fixations) ->
             problems.append(f"the launch journal has an unparseable line that is not the last of "
                             f"its log ({', '.join(journal.corrupt)}): a start it held cannot be "
                             "shown (fails closed)")  # fmt: skip
-        problems += [f"{sealed}: a start it held cannot be shown (fails closed)"
-                     for sealed in journal.sealed]  # fmt: skip
-        files = _Files()
+        problems += [f"{where}: {sealed_record('a launch log')}: a start it held cannot be shown "
+                     "(fails closed)" for where in journal.sealed]  # fmt: skip
+        files = _Files(root / EXPERIMENT)
         for campaign, start in journal.starts:
             run_id = start.get("run_id")
             if isinstance(run_id, str):
@@ -1734,6 +1745,9 @@ def _start_problem(root: Path, campaign: str, start: Mapping[str, Any], chain: S
         return None  # why its rates cannot be shown is named with its record
     if not isinstance(start.get("run_id"), str):
         return "its start names no run id: its arm and rate cannot be bound"
+    if not plain_name(start["run_id"]):
+        return (f"its run id {start['run_id']!r} is not a plain name: it names no run folder, "
+                "and nothing under it is opened")  # fmt: skip
     cell = _bind(root, campaign, start, {}, twice=False, files=files).cell
     if cell.arm is None or cell.rate is None:
         return ("its arm and rate cannot be bound from its records: whether its fixation fixes "
@@ -1782,7 +1796,7 @@ def _unstarted(root: Path, started: set[str]) -> list[str]:
     for folder in folders:
         if folder.name == DECISIONS or folder.name in started or not folder.is_dir():
             continue
-        if _sealed_records(folder) is not None:  # nothing of it is opened
+        if _sealed_records(folder, experiment) is not None:  # nothing of it is opened
             found["a run whose record files resolve under a sealed folder (never opened)"].append(
                 folder.name)  # fmt: skip
             continue

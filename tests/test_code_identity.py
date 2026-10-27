@@ -163,12 +163,17 @@ GPU_MODULES = ("qualification", "schedule", "train", "launch", "runtime", "fa_co
 # run so
 LOADERS = ("spec_from_file_location", "run_path", "run_module", "SourceFileLoader", "load_source",
            "import_module", "__import__", "exec")  # fmt: skip
+# What runs a program: a call of one whose arguments name scripts/qualify.py runs it
+RUNNERS = ("run", "Popen", "call", "check_call", "check_output", "system", "execv", "execvp",
+           "spawnv")  # fmt: skip
 
 
 def gpu_uses(path: Path, package: str | None = None) -> set[str]:
     """What a script, or a module of ``package`` (its relative imports resolved), imports that
-    runs on a GPU (the GPU modules, torch) or as a script (``qualify``: scripts/qualify.py), what
-    it calls to load code by its name or path at run time (``LOADERS``), and its uses of CUDA."""
+    runs on a GPU (the GPU modules, torch) or as a script (``qualify``, ``scripts.qualify``:
+    scripts/qualify.py), what it calls to load code by its name or path at run time (``LOADERS``)
+    or to run scripts/qualify.py (``RUNNERS``, an argument naming ``qualify.py``), and its uses of
+    CUDA."""
     import ast
 
     text = path.read_text()
@@ -189,6 +194,9 @@ def gpu_uses(path: Path, package: str | None = None) -> set[str]:
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
             if name in LOADERS:
                 loads.add(f"loads code at run time: {name}")
+            named = (n.value for n in ast.walk(node) if isinstance(n, ast.Constant))
+            if name in RUNNERS and any(isinstance(v, str) and "qualify.py" in v for v in named):
+                loads.add(f"runs scripts/qualify.py: {name}")
     found = {
         i
         for i in imported
@@ -196,16 +204,22 @@ def gpu_uses(path: Path, package: str | None = None) -> set[str]:
         if i == f"zero_field_refusal.{m}" or i.startswith(f"zero_field_refusal.{m}.")
     }
     found |= {i for i in imported if i == "torch" or i.startswith("torch.")}
-    found |= {i for i in imported if i == "qualify" or i.startswith("qualify.")}
+    found |= {
+        i
+        for i in imported
+        for m in ("qualify", "scripts.qualify")
+        if i == m or i.startswith(f"{m}.")
+    }
     return found | loads | {use for use in ("torch.cuda", ".cuda(") if use in text}  # fmt: skip
 
 
 def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work(tmp_path) -> None:
     """Study 3's analysis entry points are outside the identity from the start; each either does
     not exist yet or imports nothing that runs on a GPU (the GPU modules, torch) or as a script
-    (scripts/qualify.py), loads no code by its name or path at run time and uses no CUDA. The
-    check is shown to catch such a script, and such a module of the analysis package (its
-    relative imports resolved), which may import the package's own modules."""
+    (scripts/qualify.py), loads no code by its name or path at run time, runs no subprocess whose
+    arguments name scripts/qualify.py, and uses no CUDA. The check is shown to catch such a
+    script, and such a module of the analysis package (its relative imports resolved), which may
+    import the package's own modules."""
     from zero_field_refusal.code_identity import ANALYSIS_SCRIPTS
     from zero_field_refusal.paths import REPO_ROOT
 
@@ -228,6 +242,15 @@ def test_study3_analysis_scripts_are_listed_and_do_no_gpu_work(tmp_path) -> None
         sample.write_text(text)
         assert gpu_uses(sample) >= found, text
     for text, found in (("import qualify\n", {"qualify"}),
+                        ("import scripts.qualify\n", {"scripts.qualify"}),
+                        ("from scripts import qualify\n", {"scripts.qualify"}),
+                        ("import subprocess\n"
+                         "subprocess.run(['python', 'scripts/qualify.py', 'verdict'])\n",
+                         {"runs scripts/qualify.py: run"}),
+                        ("import os\nos.system('python scripts/qualify.py driver')\n",
+                         {"runs scripts/qualify.py: system"}),
+                        ("import subprocess\nsubprocess.run(['git', 'status'])\n", set()),
+                        ("print('python scripts/qualify.py driver --campaign x')\n", set()),
                         ("import importlib.util\n"
                          "importlib.util.spec_from_file_location('q', 'scripts/qualify.py')\n",
                          {"loads code at run time: spec_from_file_location"}),

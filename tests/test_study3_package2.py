@@ -53,8 +53,9 @@ from test_study3_campaigns import (
     target,
 )
 from test_study3_campaigns import World as CampaignWorld
+from test_study3_decisions import World as DecisionWorld
 from test_study3_records import World as RunWorld
-from test_study3_records import by_id, config_of, write_run
+from test_study3_records import by_id, config_of, header, write_run
 from test_study3_versions import (
     AMENDMENTS,
     CONFIRMATION_C1,
@@ -64,11 +65,12 @@ from test_study3_versions import (
     VALIDATION_C1,
     git,
 )
+from test_study3_versions import Study as VersionsStudy
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import qualification_records, study3_records
 from zero_field_refusal.analysis import study3_versions as sv
-from zero_field_refusal.analysis.study3_decisions import decisions
+from zero_field_refusal.analysis.study3_decisions import decision_path, decisions
 from zero_field_refusal.analysis.study3_progress import THETA0_RUN, progress
 from zero_field_refusal.analysis.study3_records import (
     SEEDS,
@@ -85,6 +87,7 @@ from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT
 
 SENTINEL = "PKG2-SENTINEL-qX7v-Rk3W-9zJd"  # in every responses/ and observations/ file here
 SEALED = ("responses", "observations")
+JUDGE = "judge"  # a run's judge outputs (<run>/judge/<judge>.jsonl): sealed for the checks
 RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "evaluations.jsonl",
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
 ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
@@ -112,12 +115,17 @@ class SealedGuard:
     """``builtins.open``, ``io.open``, ``os.open``, ``Path.open``, ``Path.read_text`` and
     ``Path.read_bytes`` wrapped: while armed, opening a path that resolves (links followed) under
     a ``responses/`` or ``observations/`` folder, in any mode, fails, and the path is kept in
-    ``attempts`` (a caller that swallows the failure is still caught). ``off()`` disarms it while a
-    test writes a run as the tracker does."""
+    ``attempts`` (a caller that swallows the failure is still caught); every path opened while
+    armed, resolved, is kept in ``opened``. With ``runs_root``, so does
+    a path under a run's ``judge/`` folder (a ``judge`` component below the runs root: the
+    checkout's ``configs/judge/`` stays readable). ``off()`` disarms it while a test writes a run
+    as the tracker does."""
 
-    def __init__(self, monkeypatch) -> None:
+    def __init__(self, monkeypatch, runs_root: Path | None = None) -> None:
         self.attempts: list[str] = []
+        self.opened: list[str] = []
         self.armed = True
+        self.runs_root = None if runs_root is None else Path(os.path.realpath(runs_root))
         real_open, real_os_open = builtins.open, os.open
 
         def open_(file, *args, **kwargs):
@@ -146,7 +154,11 @@ class SealedGuard:
         text = os.fsdecode(path)
         if dir_fd is not None and not os.path.isabs(text):
             text = os.path.join(f"/proc/self/fd/{dir_fd}", text)
-        if any(part in SEALED for part in Path(os.path.realpath(text)).parts):
+        resolved = Path(os.path.realpath(text))
+        self.opened.append(str(resolved))
+        judged = (self.runs_root is not None and resolved.is_relative_to(self.runs_root)
+                  and JUDGE in resolved.relative_to(self.runs_root).parts)  # fmt: skip
+        if judged or any(part in SEALED for part in resolved.parts):
             self.attempts.append(text)
             raise AssertionError(f"a sealed path was opened: {text}")
 
@@ -458,6 +470,154 @@ def test_the_qualification_reader_reads_no_run_file_through_a_sealed_link(runs, 
     assert guard.attempts == [] and SENTINEL not in repr(reading)
 
 
+# ------------------------------------------------------------------ a run folder is a plain child
+
+
+def plant(folder: Path) -> list[str]:
+    """Files a crafted journal could point a reader at: values that must never show in a reason.
+    Their resolved paths."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "meta.json").write_text(
+        json.dumps(
+            {"config_hash": "PLANTED-hash", "status": "completed", "campaign": {"name": SENTINEL}}
+        )
+    )
+    (folder / "config.yaml").write_text(f"seed: 777\nname: {SENTINEL}\n")
+    (folder / "summary.json").write_text(json.dumps({"benchmark_accuracy": 0.123,
+                                                     "factual_accuracy": 0.456,
+                                                     "text": SENTINEL}))  # fmt: skip
+    return [
+        os.path.realpath(folder / name) for name in ("meta.json", "config.yaml", "summary.json")
+    ]
+
+
+CRAFTED = ("a folder inside a run's responses", "..", "an absolute path")
+
+
+def crafted_start(runs: RunWorld, real: str, kind: str, header_: dict,
+                  campaign: str = "study3-c1") -> tuple[str, list[str]]:  # fmt: skip
+    """A crafted start whose run id is no plain name (``kind``: ``<run>/responses/sub``, ``..`` or
+    an absolute path), with files planted where it points; its run id and the planted files."""
+    if kind == CRAFTED[0]:
+        run_id = f"{real}/responses/sub"
+        folder = runs.root / "study3" / run_id
+    elif kind == "..":
+        run_id, folder = "..", runs.root  # the experiment's folder's parent: the runs root
+    else:
+        folder = runs.root.parent / "planted" / "run"
+        run_id = str(folder)
+    planted = plant(folder)
+    _, chash, command = config_of("A", 2.11e-5, 10300, "validation")
+    runs.log(campaign, {"event": "start", "run": "A-2.11e-05/s10300", "attempt": 1,
+                        "run_id": run_id, "experiment": "study3", "config_hash": chash,
+                        "command": list(command), "header": header_})  # fmt: skip
+    return run_id, planted
+
+
+PLANTED = ("PLANTED", "777", "0.123", "0.456", SENTINEL)
+
+
+@pytest.mark.parametrize("kind", CRAFTED)
+def test_a_start_whose_run_id_is_no_plain_name_binds_no_run(runs, monkeypatch, kind) -> None:
+    """A journal start whose run id is not a plain name (a folder inside a run's ``responses/``,
+    ``..`` or an absolute path; files planted where it points) binds no run: a named problem,
+    nothing under it opened, and no value of those files in any reason; the ordinary run beside
+    it binds as before."""
+    real = runs.run("A", 1.45e-5, 10300)
+    run_id, planted = crafted_start(runs, real, kind, header(1, "validation", None))
+    guard = SealedGuard(monkeypatch)
+    found, problems = runs.read()
+    assert guard.attempts == [] and not set(planted) & set(guard.opened)
+    why = (f"its run id {run_id!r} is not a plain name: it names no run folder, and nothing "
+           "under it is opened")  # fmt: skip
+    assert f"{run_id}: {why}" in problems
+    assert by_id(found)[run_id].state == "refused" and by_id(found)[real].state == "usable"
+    shown = repr((found, problems))
+    assert not [value for value in PLANTED if value in shown]
+    for bad in ("", ".", "..", "a/b", "/abs", "a\\b", None, 3):
+        assert study3_records.plain_name(bad) is False, bad
+    assert study3_records.plain_name(real) is True
+
+
+@pytest.mark.parametrize("kind", CRAFTED)
+def test_the_versions_check_binds_no_run_whose_id_is_no_plain_name(tmp_path, monkeypatch, kind):
+    """The same starts under a validation campaign whose header names the versions record:
+    ``versions_problems`` names each, opens nothing under it, and shows none of its values; the
+    ordinary runs beside it raise nothing."""
+    monkeypatch.setattr(test_study3_records, "SENTINEL", SENTINEL)
+    study = VersionsStudy(tmp_path, monkeypatch)
+    study.validated()
+    real, _ = study.block(10300)
+    assert study.problems(step="validation", candidate=1) == []
+    run_id, planted = crafted_start(study.runs, real, kind, study.header(),
+                                    campaign="study3-c1-validation-x")  # fmt: skip
+    guard = SealedGuard(monkeypatch)
+    problems = study.problems(step="validation", candidate=1)
+    assert guard.attempts == [] and not set(planted) & set(guard.opened)
+    assert problems == [f"study3-c1-validation-x: A-2.11e-05/s10300 ({run_id}): its run id "
+                        f"{run_id!r} is not a plain name: it names no run folder, and nothing "
+                        "under it is opened"]  # fmt: skip
+    assert not [value for value in PLANTED if value in repr(problems)]
+
+
+def test_a_theta0_inside_a_sealed_folder_is_refused_unopened(runs, monkeypatch) -> None:
+    """θ₀ named anywhere inside a run's ``responses/`` (two levels down, files planted there) is
+    refused unopened, whether its folder or its file is named; the ordinary θ₀ is read."""
+    real = runs.run("A", 1.45e-5, 10300)
+    inner = runs.root / "study3" / real / "responses" / "inner"
+    plant(inner)
+    guard = SealedGuard(monkeypatch)
+    for named in (inner, inner / "summary.json"):
+        with pytest.raises(
+            ValueError, match="responses or observations folder: never opened"
+        ) as found:
+            read_theta0(named)
+        assert not [value for value in PLANTED if value in str(found.value)]
+    assert read_theta0(runs.theta0)["benchmark_accuracy"] == 0.60
+    assert guard.attempts == []
+
+
+# ------------------------------------------------------------------ loops and sealed logs
+
+
+def test_a_link_loop_is_a_named_problem_not_a_crash(runs, monkeypatch) -> None:
+    """A record file that is a link to itself, and a launch log that is one, are refused unopened
+    and named; the readers go on."""
+    looped = runs.run("A", 1.45e-5, 10300)
+    ordinary = runs.run("A", 2.11e-5, 10300)
+    meta = runs.root / "study3" / looped / "meta.json"
+    link(meta, meta)
+    log = runs.root / "launch" / "loop.jsonl"
+    log.symlink_to(log)
+    guard = SealedGuard(monkeypatch)
+    found, problems = runs.read()
+    assert f"{looped}: its meta.json {SEALED_WHY}" in problems
+    assert f"launch/loop.jsonl: a launch log that {SEALED_WHY}" in problems
+    assert by_id(found)[ordinary].state == "usable"
+    _, unreadable = journal_lines(runs.root)
+    assert unreadable == [f"launch/loop.jsonl: a launch log that {SEALED_WHY}"]
+    reading = qualification_reading(runs.root)
+    assert f"{log}: a launch log that {SEALED_WHY}" in reading["problems"]
+    assert guard.attempts == []
+
+
+def test_a_sealed_launch_log_is_named_in_the_decision_records(tmp_path, monkeypatch) -> None:
+    """``decisions`` read on its own: a launch log that resolves under a sealed folder makes each
+    existing record fail closed, the log named by its path under the runs root."""
+    world = DecisionWorld(tmp_path)
+    world.write("engineering", world.engineering())
+    (world.runs / "launch").mkdir()
+    (world.runs / "launch" / "linked.jsonl").symlink_to(
+        world.run / "responses" / "harmful_evaluation.jsonl")  # fmt: skip
+    guard = SealedGuard(monkeypatch)
+    entry = decisions(world.runs, 1, repo=world.repo)["engineering"]
+    assert entry["state"] == "invalid"
+    assert (f"{decision_path(world.runs, 'engineering')}: a launch log resolves under a sealed "
+            "folder (launch/linked.jsonl), so whether a campaign has named this record cannot be "
+            "shown") in entry["problems"]  # fmt: skip
+    assert guard.attempts == []
+
+
 # ------------------------------------------------------------------ no GPU path
 
 
@@ -482,12 +642,19 @@ def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
 
 def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     """Every module of the package and both scripts, read as code (``test_code_identity.gpu_uses``,
-    relative imports resolved): none imports ``zero_field_refusal.qualification``, ``schedule``,
-    ``train`` or any other GPU module, nor torch; none uses CUDA; and none loads a script
-    (``scripts/qualify.py``) through the import machinery. ``analysis.qualification_verdicts``,
-    which loads torch through ``fa_control_diagnostic``, is allowed: ``qualification_records``
-    imports it, and the other modules import ``qualification_records`` only inside the functions
-    that read the qualification."""
+    relative imports resolved, imports inside functions included): none imports
+    ``zero_field_refusal.qualification``, ``schedule``, ``train`` or any other GPU module, nor
+    torch; none uses CUDA; none imports ``scripts/qualify.py`` (``qualify``, ``scripts.qualify``),
+    loads code at run time through the import machinery, or runs a subprocess whose arguments name
+    ``qualify.py``. The check is on what each file imports, not on what those modules can do, and
+    it is per file. Its allowed edges and what they load:
+    - ``analysis.qualification_verdicts``, which ``qualification_records`` imports (the other
+      modules import ``qualification_records`` only inside the functions that read the
+      qualification), imports ``fa_control_diagnostic``, which loads torch and
+      ``zero_field_refusal.schedule``, ``train`` and ``runtime``;
+    - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
+      torch and ``zero_field_refusal.runtime``.
+    The scripts run no training: none calls a GPU path."""
     assert len(PACKAGE) == 8 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
@@ -545,6 +712,13 @@ class LabelReaders:
         return raiser
 
 
+def judged(run_dir: Path) -> None:
+    """A judge's labels in the run's ``judge/`` folder, as the labeling writes them: the
+    sentinel."""
+    (run_dir / JUDGE).mkdir()
+    (run_dir / JUDGE / "wildguard.jsonl").write_text(json.dumps({"label": SENTINEL}) + "\n")
+
+
 def round0(arm, rate, seed, candidate) -> dict:
     """The search's round 0: A's lower rate kept (its median within 0.05 in ln K) though it
     misses on one seed; F's upper rate 0.2 off its target; every other run at its target."""
@@ -595,6 +769,7 @@ class Route(CampaignWorld):
                                  ("observations", "measurements.jsonl")):  # fmt: skip
                 (theta0 / folder).mkdir()
                 (theta0 / folder / name).write_text(json.dumps({"text": SENTINEL}) + "\n")
+            judged(theta0)
         self.ran: list[Ran] = []
         self.guards: list[tuple[int, int]] = []  # (seed, exit code) of each guard run
         self.launched: dict[str, list[str]] = {}  # campaign file -> its run ids
@@ -733,6 +908,7 @@ class Route(CampaignWorld):
                           {"name": name, "label": run.label, "attempt": 1, "header": header},
                           k_only=OmegaConf.select(cfg, "eval.k_only", default=False) is True,
                           **outcome)  # fmt: skip
+                judged(self.root / run.experiment / run_id)
                 self.runs.end(name, run.label, 1, run_id, "technical" if failed else "done")
                 ids.append(run_id)
         self.launched[str(path)] = ids
@@ -835,14 +1011,16 @@ def route(tmp_path_factory):
         patch.setattr(test_study3_records, "SENTINEL", SENTINEL)
         world = Route(tmp_path_factory.mktemp("route"), patch)
         world.labels = labels
-        world.guard = SealedGuard(sealed)
+        world.guard = SealedGuard(sealed, runs_root=world.root)
         world.build()
-        # the guard is live: a sealed file cannot be read under it
+        # the guard is live: a sealed file or a judge output cannot be read under it
         live = len(world.guard.attempts)
-        sealed_file = next(world.root.glob("study3/*/responses/harmful_evaluation.jsonl"))
-        with pytest.raises(AssertionError):
-            sealed_file.read_text()
-        assert len(world.guard.attempts) == live + 1
+        live_files = (next(world.root.glob("study3/*/responses/harmful_evaluation.jsonl")),
+                      next(world.root.glob(f"study3/*/{JUDGE}/wildguard.jsonl")))  # fmt: skip
+        for sealed_file in live_files:
+            with pytest.raises(AssertionError):
+                sealed_file.read_text()
+        assert len(world.guard.attempts) == live + 2
         del world.guard.attempts[live:]
         world.attempts = list(world.guard.attempts)
         sealed.undo()
@@ -852,13 +1030,19 @@ def route(tmp_path_factory):
         patch.undo()
 
 
-def written(base: Path) -> dict[Path, bytes]:
-    """Every file under ``base`` but the sealed folders' and Git's own, as bytes (read with no
-    guard)."""
-    kept = (*SEALED, ".git")
-    return {path: path.read_bytes() for path in sorted(base.rglob("*"))
-            if path.is_file() and not path.is_symlink()
-            and not any(part in kept for part in path.relative_to(base).parts)}  # fmt: skip
+def sealed_part(path: Path, route) -> bool:
+    """Whether a file of the route's world lies in a sealed folder or a run's judge folder."""
+    below = path.relative_to(route.base).parts
+    judge = path.is_relative_to(route.root) and JUDGE in path.relative_to(route.root).parts
+    return judge or any(part in SEALED for part in below)
+
+
+def written(route) -> dict[Path, bytes]:
+    """Every file of the route's world but the sealed folders', the judge outputs and Git's own,
+    as bytes (read with no guard)."""
+    return {path: path.read_bytes() for path in sorted(route.base.rglob("*"))
+            if path.is_file() and not path.is_symlink() and not sealed_part(path, route)
+            and ".git" not in path.relative_to(route.base).parts}  # fmt: skip
 
 
 def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) -> None:
@@ -877,10 +1061,10 @@ def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) 
                             (10403, 0)]  # fmt: skip
     # the guard's state and versions check were the real ones, on the checkout's GPU code
     assert {code for _, code in route.readings} == {route.code["gpu_code_sha256"]}
-    # the sentinel is in every sealed file of the world
-    sealed = [path for path in route.base.rglob("*") if path.is_file()
-              and any(part in SEALED for part in path.relative_to(route.base).parts)]  # fmt: skip
+    # the sentinel is in every sealed file and every judge output of the world
+    sealed = [path for path in route.base.rglob("*") if path.is_file() and sealed_part(path, route)]
     assert len(sealed) > 400
+    assert len([path for path in sealed if path.parent.name == JUDGE]) > 250
     assert all(SENTINEL.encode() in path.read_bytes() for path in sealed)
 
 
@@ -894,12 +1078,12 @@ def test_the_route_reads_no_label(route) -> None:
 
 
 def test_the_route_opens_nothing_sealed_and_shows_no_sentinel(route) -> None:
-    """No command opened a path under a ``responses/`` or ``observations/`` folder, and the
-    sentinel is in no output, error, refusal or written file."""
+    """No command opened a path under a ``responses/`` or ``observations/`` folder or a run's
+    judge outputs, and the sentinel is in no output, error, refusal or written file."""
     assert route.attempts == []
     for ran in route.ran:
         assert SENTINEL not in ran.out + ran.err, ran.argv
-    files = written(route.base)
+    files = written(route)
     assert len(files) > 1000
     assert [path for path, data in files.items() if SENTINEL.encode() in data] == []
 
@@ -956,7 +1140,7 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
     root, repo = route.root, route.repo
     third = "docs/study3-versions-3.json"
     with linked(route) as (regular, k_only, added):
-        guard = SealedGuard(monkeypatch)
+        guard = SealedGuard(monkeypatch, runs_root=route.root)
         first = len(route.ran)
         why = "its config.yaml and meta.json resolve under a responses or observations folder"
         state = json.loads(route.ok("summary", "progress", "--runs-root", root).out)
@@ -1010,7 +1194,7 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
             assert f"{run_id}: {why}: never opened" in problems
         assert guard.attempts == []
         ran = route.ran[first:]
-        files = written(route.base)
+        files = written(route)
     assert not (repo / third).exists()
     assert route.labels.calls == []
     for done in ran:
@@ -1030,13 +1214,15 @@ def real_reading(route) -> dict:
 
 def test_the_qualification_reader_opens_nothing_sealed_on_the_routes_files(route, monkeypatch):
     """The route replaces the qualification's reading; the real reader, on the same files, opens
-    nothing sealed while it locates the launcher runs and reads their identity files."""
-    guard = SealedGuard(monkeypatch)
+    nothing sealed while it locates the launcher runs and reads their identity files, and calls no
+    label reader."""
+    guard = SealedGuard(monkeypatch, runs_root=route.root)
     reading = real_reading(route)
     assert guard.attempts == []
     assert any(identity is not None for rate in reading["rates"].values()
                for identity in rate["launchers"].values())  # fmt: skip
     assert SENTINEL not in repr(reading)
+    assert route.labels.calls == []
 
 
 def test_the_qualification_reader_opens_no_record_linked_into_its_sealed_folders(
@@ -1045,9 +1231,9 @@ def test_the_qualification_reader_opens_no_record_linked_into_its_sealed_folders
     """With the links of ``linked``, the real qualification reader opens none of them: each run
     and each record is a named problem; no launcher run is located through the numerical run
     whose files are linked, and ``launcher_identity`` gives none for it, unopened; the other
-    rates' launcher runs are located as before."""
+    rates' launcher runs are located as before; no label reader is called."""
     with linked(route) as (regular, k_only, added):
-        guard = SealedGuard(monkeypatch)
+        guard = SealedGuard(monkeypatch, runs_root=route.root)
         reading = real_reading(route)
         identity = qualification_records.launcher_identity(route.root / "study3" / k_only)
         found = list(guard.attempts)
@@ -1066,6 +1252,7 @@ def test_the_qualification_reader_opens_no_record_linked_into_its_sealed_folders
     assert lower["launchers"].get(seed) is None  # its seed's run: refused, located nowhere
     assert qualification_records.rate_of(reading, "A", START["A"]["u"])["launchers"][seed]
     assert SENTINEL not in repr(reading)
+    assert route.labels.calls == []
 
 
 # ------------------------------------------------------------------ no label

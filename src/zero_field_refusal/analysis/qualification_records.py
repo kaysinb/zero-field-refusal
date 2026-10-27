@@ -148,6 +148,7 @@ from .study3_records import (
     RATE_TOLERANCE,
     _command_config,
     _sealed_records,
+    plain_name,
     read_holds,
     sealed_record,
     under_sealed,
@@ -301,11 +302,6 @@ def _number(value: Any) -> bool:
 def _given(value: Any) -> bool:
     """A non-empty string."""
     return isinstance(value, str) and bool(value)
-
-
-def _plain_name(value: Any) -> bool:
-    """A single path component (a run id, an experiment): nothing it names lies elsewhere."""
-    return isinstance(value, str) and value not in ("", ".", "..") and Path(value).name == value
 
 
 def attempt_files(folder: Path, part: str) -> dict[int, str]:
@@ -472,7 +468,7 @@ def _issued(
     for campaign, record in sorted(mine, key=lambda item: _attempt_key(item[1])):
         run_id, label = record.get("run_id"), record.get("run")
         experiment, chash = record.get("experiment"), record.get("config_hash")
-        if not (_plain_name(run_id) and _plain_name(experiment) and isinstance(label, str)
+        if not (plain_name(run_id) and plain_name(experiment) and isinstance(label, str)
                 and label and isinstance(chash, str) and chash):  # fmt: skip
             problems.append(f"{campaign}: a start of candidate {candidate}'s qualification "
                             f"without a run id, label, experiment or config hash: "
@@ -487,7 +483,7 @@ def _issued(
         why = []
         for start in run.starts:  # every start, by its own config hash
             found, unbound, refusal = _start_config(root / run.experiment / start["run_id"],
-                                                    start, start["config_hash"])  # fmt: skip
+                                                    start, start["config_hash"], root)  # fmt: skip
             if refusal is not None:
                 problems.append(f"{start['run_id']} ({run.label}): a start of candidate "
                                 f"{candidate}'s qualification refused: {refusal}")  # fmt: skip
@@ -805,7 +801,7 @@ class _Located:
         self.metas: dict[str, list[tuple[Path, dict[str, Any] | None]]] = {}
 
     def _meta(self, folder: Path) -> dict[str, Any] | None:
-        why = _sealed_records(folder)
+        why = _sealed_records(folder, self.root)
         if why is not None:
             self.problems.append(f"{folder}: {why}; no launcher run is located there")
             return None

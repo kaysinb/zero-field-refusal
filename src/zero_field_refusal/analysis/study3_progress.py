@@ -267,6 +267,7 @@ from .study3_records import (
     read_holds,
     read_theta0,
     step_key,
+    under_sealed,
 )
 from .study3_search import ARM_ORDER, CANDIDATES, LABELS, repair_state, search_state
 
@@ -359,8 +360,7 @@ def progress(
             root, c, expected_code=codes.get(c, expected_code), settings=settings)
             for c in (1, 2)},
         "headers": _headers(root),
-        "digests": {k: hashlib.sha256(decision_path(root, k).read_bytes()).hexdigest()
-                    for k in valid},
+        "digests": {k: _record_digest(root, k) for k in valid},
         "ends": end_lines(root, logs), "starts": start_lines(root, logs),
     }  # fmt: skip
     try:
@@ -446,6 +446,14 @@ def _bound(endpoints: Iterable[Endpoint]) -> dict[str, set[tuple[str, float, int
         if e.cell.key is not None and None not in (e.arm, e.lr, e.seed):
             out[e.cell.key].add((e.arm, e.lr, e.seed))
     return out
+
+
+def _record_digest(root: Path, kind: str) -> str | None:
+    """The sha256 of a valid decision record, the sealed-path rule applied again where it is read:
+    None for one that resolves under a sealed folder now (never opened; a header that names it then
+    matches nothing)."""
+    path = decision_path(root, kind)
+    return None if under_sealed(path, root) else hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _headers(root: Path) -> dict[str, Mapping[str, Any]]:

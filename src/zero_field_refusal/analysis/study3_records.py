@@ -35,14 +35,19 @@ order": harm labels never enter a selection). Each record file is checked by the
 rule (``under_sealed``, which ``study3_decisions`` and the scripts use too) before it is opened,
 with the run's folder as the base, and the run's folder itself with the experiment's: a record
 file or a run folder that resolves, through a link, under a ``responses/`` or ``observations/``
-folder is never opened, and its attempt is refused by name before anything of the run is read
-(θ₀'s ``summary.json`` likewise: ``read_theta0`` refuses it). Every other file read under
-RUNS_DIR, a launch log or a record of the qualification (a restart or supersession record), is
-checked by the same rule with RUNS_DIR as the base: one that resolves under a ``responses/`` or
-``observations/`` folder of any run is never opened, and is a problem named by its path (it
-blocks: what it holds cannot be shown). The structural check of the responses that the launcher
-makes (``stage_a.load_trajectory``) is not repeated here; the launcher's verdict on it is its end
-record, whose outcome is read and whose free text is not copied.
+folder is never opened, and its attempt is refused by name before anything of the run is read.
+A run folder is a plain child of the experiment's folder: a start whose run id is not a plain
+name (``plain_name``: a separator, ``.``, ``..``, empty) binds no run, a refusal by name, and
+nothing under it is opened. A path the rule cannot resolve (a link loop) counts as sealed. θ₀'s
+folder must have no ``responses`` or ``observations`` component, and its ``summary.json`` is
+checked with that folder as the base (``read_theta0`` refuses it otherwise, unopened). Every
+other file read under RUNS_DIR, a launch log or a record of the qualification (a restart or
+supersession record), is checked by the same rule with RUNS_DIR as the base: one that resolves
+under a ``responses/`` or ``observations/`` folder of any run is never opened, and is a problem
+named by its path (it blocks: what it holds cannot be shown). The structural check of the
+responses that the launcher makes (``stage_a.load_trajectory``) is not repeated here; the
+launcher's verdict on it is its end record, whose outcome is read and whose free text is not
+copied.
 
 **A start's command** is composed again (when the run has no readable ``config.yaml``) only from
 a config the launcher composes study 3's runs from, ``experiments/study3`` or
@@ -312,7 +317,7 @@ class _Journal:
     ends: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
     recoveries: list[dict[str, Any]] = field(default_factory=list)
     corrupt: list[str] = field(default_factory=list)  # "<log> line <n>": an unparseable line
-    sealed: list[str] = field(default_factory=list)  # a log under a sealed folder, never opened
+    sealed: list[str] = field(default_factory=list)  # logs under a sealed folder, never opened
 
 
 def step_key(candidate: int, step: str, round_: int | None = None) -> str:
@@ -330,9 +335,13 @@ def candidate_of(seed: int, role: str) -> int | None:
 def under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
     """Whether ``path`` (as written, ``named``, or where its links lead) is under a ``responses``
     or ``observations`` folder, below ``base`` (a folder of the base itself does not count).
-    Decided from the names alone: nothing is opened. The one sealed-path rule of study 3's
+    Decided from the names alone: nothing is opened. A path that cannot be resolved (a link
+    loop) counts as sealed: where it leads cannot be shown. The one sealed-path rule of study 3's
     analysis."""
-    resolved, root = Path(path).resolve(), Path(base).resolve()
+    try:
+        resolved, root = Path(path).resolve(), Path(base).resolve()
+    except (OSError, RuntimeError):  # a link loop
+        return True
     below = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
     return any(part in SEALED for part in (*(named.parts if named else ()), *below.parts))
 
@@ -347,18 +356,33 @@ def sealed_record(what: str) -> str:
     return f"{what} that resolves {SEALED_WHY}: never opened"
 
 
-def _sealed_file(path: Path) -> bool:
+def plain_name(value: Any) -> bool:
+    """A single path component: a string that names nothing in another folder (no separator, not
+    empty, ``.`` or ``..``). The one rule for a run id, an experiment's name and a config file
+    named by an override."""
+    return (isinstance(value, str) and value not in ("", ".", "..") and "\\" not in value
+            and Path(value).name == value)  # fmt: skip
+
+
+def _sealed_folder(folder: Path, base: Path | None) -> bool:
+    """Whether a run's folder resolves under a sealed folder: against its parent, and against
+    ``base`` (the experiment's folder, or the runs root) when given."""
+    return under_sealed(folder, folder.parent) or (base is not None and under_sealed(folder, base))
+
+
+def _sealed_file(path: Path, base: Path | None = None) -> bool:
     """Whether a run's record file (``<run folder>/<name>``) resolves under a sealed folder: the
     file with its run's folder as the base, or the run's folder itself (a link) with the
-    experiment's folder as the base."""
+    experiment's folder (``base``, or the folder's parent) as the base."""
     folder = path.parent
-    return under_sealed(path, folder) or under_sealed(folder, folder.parent)
+    return under_sealed(path, folder) or _sealed_folder(folder, base)
 
 
-def _sealed_records(run_dir: Path) -> str | None:
-    """Why nothing of a run is read: its folder, or record files of it, resolve under a sealed
-    folder (named); None when none does."""
-    if under_sealed(run_dir, run_dir.parent):
+def _sealed_records(run_dir: Path, base: Path | None = None) -> str | None:
+    """Why nothing of a run is read: its folder (checked against ``base``, the experiment's
+    folder, as well as its parent), or record files of it, resolve under a sealed folder (named);
+    None when none does."""
+    if _sealed_folder(run_dir, base):
         return f"its run folder resolves {SEALED_WHY}: nothing of it is opened"
     found = [name for name in RECORD_FILES if under_sealed(run_dir / name, run_dir)]
     if not found:
@@ -369,11 +393,17 @@ def _sealed_records(run_dir: Path) -> str | None:
 
 def read_theta0(path: str | Path) -> dict[str, float]:
     """θ₀'s accuracies from its evaluation's ``summary.json`` (the run directory or the file):
-    each a finite fraction in [0, 1]; ``ValueError`` otherwise, and for a file that resolves
-    under a sealed folder (never opened)."""
+    each a finite fraction in [0, 1]; ``ValueError`` otherwise, and, unopened, for a θ₀ folder
+    whose resolved path has a ``responses`` or ``observations`` component or a file that resolves
+    under a sealed folder below it."""
     path = Path(path)
-    file = path / "summary.json" if path.is_dir() else path
-    if _sealed_file(file):
+    folder = path if path.is_dir() else path.parent
+    file = folder / "summary.json" if path.is_dir() else path
+    try:
+        parts = folder.resolve().parts
+    except (OSError, RuntimeError):  # a link loop
+        parts = SEALED
+    if any(part in SEALED for part in parts) or under_sealed(file, folder):
         raise ValueError(f"θ₀: {file} resolves {SEALED_WHY}: never opened")
     try:
         summary = json.loads(file.read_text())
@@ -417,11 +447,12 @@ class EndpointReader:
         self.problems += [
             f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
             "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
-        self.problems += self.journal.sealed
+        self.problems += [f"{where}: {sealed_record('a launch log')}"
+                          for where in self.journal.sealed]  # fmt: skip
         experiment = self.root / EXPERIMENT
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
                         if d.is_dir() and d.name != DECISIONS]  # fmt: skip
-        self.files = _Files()
+        self.files = _Files(experiment)
 
     def read(
         self, prescribed: Mapping[str, Collection[tuple[str, float, int]]]
@@ -474,14 +505,15 @@ class _Files:
     """The run files a snapshot has read: each file's text (or the error reading it raised) and
     each run's bound config, read once."""
 
-    def __init__(self) -> None:
+    def __init__(self, base: Path | None = None) -> None:
+        self.base = base  # the experiment's folder: each run folder is checked against it too
         self.texts: dict[Path, str | Exception] = {}
         self.configs: dict[tuple, tuple[Any, Any, Any]] = {}
 
     def read_text(self, path: Path) -> str:
         if path not in self.texts:
             try:
-                if _sealed_file(path):
+                if _sealed_file(path, self.base):
                     raise SealedRecord(f"{path} resolves {SEALED_WHY}: never opened")
                 self.texts[path] = path.read_text()
             except (OSError, ValueError) as exc:
@@ -494,7 +526,7 @@ class _Files:
     def config(self, run_dir: Path, start: Mapping[str, Any], chash: str | None) -> tuple:
         key = (run_dir, chash, json.dumps(start.get("command"), sort_keys=True, default=str))
         if key not in self.configs:
-            self.configs[key] = _config(run_dir, start, chash)
+            self.configs[key] = _config(run_dir, start, chash, self.base)
         return self.configs[key]
 
 
@@ -515,11 +547,12 @@ def _read_journal(root: Path, voided: dict[str, tuple[str, str]]) -> _Journal:
     lines into ``voided`` by run id. A line cut short by a crash is skipped only as the last line
     of its log (the launcher's rule); an unparseable line before the last is skipped too but
     listed in ``corrupt`` with its log's name and its number, never its content. A log that
-    resolves under a sealed folder is never opened: it is listed in ``sealed``, named."""
+    resolves under a sealed folder is never opened: it is listed in ``sealed``, by its path under
+    RUNS_DIR."""
     journal = _Journal()
     for log in sorted((root / "launch").glob("*.jsonl")):
         if under_sealed(log, root):
-            journal.sealed.append(f"launch/{log.name}: {sealed_record('a launch log')}")
+            journal.sealed.append(f"launch/{log.name}")
             continue
         campaign = log.stem
         values, corrupt = parse_journal_lines(log.read_text(encoding="utf-8").splitlines())
@@ -748,8 +781,12 @@ def _bind(
     problem = _header_problem(head)
     if problem is not None:
         refusals.append(problem)
-    files = files or _Files()
-    sealed = _sealed_records(run_dir)
+    files = files or _Files(root / EXPERIMENT)
+    if plain_name(run_id):
+        sealed = _sealed_records(run_dir, root / EXPERIMENT)
+    else:  # a folder anywhere below the experiment's: never read
+        sealed = (f"its run id {run_id!r} is not a plain name: it names no run folder, and "
+                  "nothing under it is opened")  # fmt: skip
     if sealed is not None:
         refusals.append(sealed)
     meta = None if sealed else _json(run_dir / "meta.json", files)
@@ -863,13 +900,15 @@ def _header_problem(head: Any) -> str | None:
     return None
 
 
-def _config(run_dir: Path, start: Mapping[str, Any], chash: str | None) -> tuple[Any, Any, Any]:
+def _config(run_dir: Path, start: Mapping[str, Any], chash: str | None,
+            base: Path | None = None) -> tuple[Any, Any, Any]:  # fmt: skip
     """The run's config, whose hash is its cell's: its ``config.yaml``, or without a readable
     one its start's command loaded again (``_command_config``). Returns (config, why it can no
     longer be bound, why it is refused), the config None unless it binds; a ``config.yaml`` that
-    resolves under a sealed folder is refused, never opened."""
+    resolves under a sealed folder (its run folder checked against ``base``, the experiment's
+    folder, too) is refused, never opened."""
     path = run_dir / "config.yaml"
-    if _sealed_file(path):
+    if _sealed_file(path, base):
         return None, None, f"its config.yaml resolves {SEALED_WHY}: never opened"
     unreadable = None
     if path.is_file():
@@ -906,11 +945,6 @@ def _is_command(command: Any) -> bool:
             and all(isinstance(c, str) for c in command))  # fmt: skip
 
 
-def _plain(name: str) -> bool:
-    """A single path component: nothing it names lies in another folder."""
-    return name not in ("", ".", "..") and "\\" not in name and Path(name).name == name
-
-
 def _unissued(command: list[str]) -> Exception | None:
     """Why a start's command is composed by no study-3 cell of the launcher, as the error its
     composition is refused with (its message the reason, ``"<what>: not loaded"``): a config that
@@ -923,7 +957,7 @@ def _unissued(command: list[str]) -> Exception | None:
                                  f"({', '.join(STUDY3_CONFIGS)}): not loaded")  # fmt: skip
     for item in overrides:
         key, sep, value = item.partition("=")
-        if sep and "." not in key and not key.startswith("+") and not _plain(value):
+        if sep and "." not in key and not key.startswith("+") and not plain_name(value):
             return ValueError(f"has the override {item!r}, which names no config file by its "
                               "plain name: not loaded")  # fmt: skip
     return None

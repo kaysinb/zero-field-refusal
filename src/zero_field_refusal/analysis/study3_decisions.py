@@ -370,9 +370,9 @@ def decisions(
     if candidate not in (1, 2) or isinstance(candidate, bool):
         raise ValueError(f"candidate {candidate!r} is not 1 or 2")
     root, repo = Path(runs_root), Path(repo)
-    starts, corrupt = _starts(root)
+    starts, corrupt, sealed = _starts(root)
     kind_n, budget = f"n-c{candidate}", f"budget-c{candidate}"
-    out = {kind: _entry(root, kind, starts, corrupt, repo)
+    out = {kind: _entry(root, kind, starts, corrupt, sealed, repo)
            for kind in ("engineering", "simulation", kind_n)}  # fmt: skip
     simulation, n = out["simulation"], out[kind_n]
     if simulation["state"] == "invalid" and n["state"] in STATES:
@@ -381,7 +381,7 @@ def decisions(
     if n["record"] is not None and n["record"]["state"] == "passed":
         reason = budget_reason(n["record"]["N"], simulation["record"])
     if reason is not None or n["state"] == "invalid" or decision_path(root, budget).exists():
-        out[budget] = _entry(root, budget, starts, corrupt, repo)
+        out[budget] = _entry(root, budget, starts, corrupt, sealed, repo)
         if n["state"] == "invalid":
             invalidate(out[budget], f"the n-c{candidate} record it answers is invalid "
                                      f"({n['path']})")  # fmt: skip
@@ -402,8 +402,8 @@ def closures(
     if candidate not in (1, 2) or isinstance(candidate, bool):
         raise ValueError(f"candidate {candidate!r} is not 1 or 2")
     root, repo = Path(runs_root), Path(repo)
-    starts, corrupt = _starts(root)
-    return {kind: _entry(root, kind, starts, corrupt, repo)
+    starts, corrupt, sealed = _starts(root)
+    return {kind: _entry(root, kind, starts, corrupt, sealed, repo)
             for kind in (f"closure-c{candidate}-{arm}" for arm in CLOSURE_DECISIONS)}  # fmt: skip
 
 
@@ -414,32 +414,35 @@ def invalidate(entry: dict[str, Any], why: str) -> None:
 
 
 def _entry(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
-           repo: Path) -> dict[str, Any]:  # fmt: skip
+           sealed: Sequence[str], repo: Path) -> dict[str, Any]:  # fmt: skip
     path = decision_path(root, kind)
     record, problems = read_decision(root, kind, repo=repo)
-    problems = problems + [p for p in immutable(path, starts, corrupt=corrupt) if p not in problems]
+    problems = problems + [p for p in immutable(path, starts, corrupt=corrupt, sealed=sealed)
+                           if p not in problems]  # fmt: skip
     state = "invalid" if problems else "missing" if record is None else record["state"]
     return {"kind": kind, "path": str(path), "state": state,
             "record": None if problems else record, "problems": problems}  # fmt: skip
 
 
-def _starts(root: Path) -> tuple[Starts | None, list[str]]:
-    """The launch journal's study-3 starts and its corrupt lines (``study3_records``' reading of
-    it); (None, []) when there is no journal or it cannot be read, a log that resolves under a
-    sealed folder included (never opened; ``read_endpoints`` and ``journal_lines`` name it)."""
+def _starts(root: Path) -> tuple[Starts | None, list[str], list[str]]:
+    """The launch journal's study-3 starts, its corrupt lines and the logs that resolve under a
+    sealed folder, never opened (by their paths under RUNS_DIR: ``study3_records``' reading of
+    it); (None, [], []) when there is no journal or it cannot be read."""
     if not any((root / "launch").glob("*.jsonl")):
-        return None, []
+        return None, [], []
     try:
         journal = _read_journal(root, {})
     except (OSError, ValueError):
-        return None, []
-    if journal.sealed:
-        return None, []
-    return journal.starts, journal.corrupt
+        return None, [], []
+    return journal.starts, journal.corrupt, journal.sealed
 
 
 def immutable(
-    record_path: str | Path, journal: Starts | None, *, corrupt: Sequence[str] = ()
+    record_path: str | Path,
+    journal: Starts | None,
+    *,
+    corrupt: Sequence[str] = (),
+    sealed: Sequence[str] = (),
 ) -> list[str]:
     """Problems with a record that a started campaign named and that has since changed: the
     campaign's header named the record (module docstring) with a sha256 that is not the file's
@@ -447,7 +450,8 @@ def immutable(
     of problems. ``journal``: the launch journal's starts, ``(campaign, start record)``; None
     (a missing or unreadable journal) fails closed for a record that exists, and so do
     ``corrupt`` lines (``"<log> line <n>"``, the journal's unparseable lines before the last of
-    their log): a campaign that named the record may be what they lost."""
+    their log) and ``sealed`` logs (their paths under RUNS_DIR: a log that resolves under a
+    sealed folder, never opened): a campaign that named the record may be what they lost."""
     path = Path(record_path)
     if path.exists() and _under_sealed(path, _runs_of(path)):
         return [_sealed_problem(path)]
@@ -459,6 +463,9 @@ def immutable(
         problems.add(f"{path}: the launch journal has an unparseable line that is not the last "
                      f"of its log ({', '.join(corrupt)}), so whether a campaign has named this "
                      "record cannot be shown")  # fmt: skip
+    if sealed and path.exists():
+        problems.add(f"{path}: a launch log resolves under a sealed folder ({', '.join(sealed)}), "
+                     "so whether a campaign has named this record cannot be shown")  # fmt: skip
     now = _digest(path) if path.is_file() else None
     for campaign, start in journal:
         header = start.get("header") if isinstance(start, Mapping) else None
