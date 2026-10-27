@@ -182,13 +182,29 @@ import json
 import os
 import shutil
 import sys
-import textwrap
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
+# The prep driver, shared with study 3 (its names stay readable here, as before the move)
+from zero_field_refusal.analysis.campaign_prep import (  # noqa: F401
+    CLEAN,
+    CURVATURE_PANEL,
+    EXISTS,
+    INVENTORIES,
+    PASSED,
+    STAGE0_CONFIG,
+    STAGE0_OVERRIDES,
+    STAGE_A,
+    TEACHER,
+    V3_RECORD,
+    comment,
+    prep,
+    prep_driver,
+    revision,
+)
 from zero_field_refusal.analysis.stage_a import BATCHES, load_trajectories, rate, theta0_problems
 from zero_field_refusal.analysis.study2_short import (
     ARMS,
@@ -198,7 +214,6 @@ from zero_field_refusal.analysis.study2_short import (
     LOOK_SIZES,
     NUMERICAL_SEEDS,
     PREWARMED,
-    RAYLEIGH,
     STEPS,
     TIMECOURSE,
     VALIDATION_SEEDS,
@@ -222,61 +237,17 @@ from zero_field_refusal.analysis.study2_short import (
 )
 from zero_field_refusal.launch import launch_records
 from zero_field_refusal.paths import REPO_ROOT
-from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
+from zero_field_refusal.tracking import git_state
 
 KINDS = ("discovery", "repair", "prewarmed", "targeted", "numerical", "numerical-check",
          "validation", "confirmation", "timecourse")  # fmt: skip
 VERSIONED_KINDS = ("validation", "confirmation", "timecourse")  # they need the versions record
 STAGE_SEEDS = (*DISCOVERY_SEEDS, *NUMERICAL_SEEDS, *VALIDATION_SEEDS, *CONFIRMATION_SEEDS)
-STAGE_A = "experiments/study2_stage_a"  # the streams' config, as Stage A generated them
-TEACHER = 'project-run "$SRC" python scripts/generate_teacher.py'
-# generate_teacher.py's refusal of a stream that exists (runtime.generate_stream).
-EXISTS = "streams are the record and are never regenerated"
-# A stage-0 run counts only if it completed, ran under protocol version 3 and its path-field check
-# passed: a completed run can still have failed the check (review r34).
-PASSED = (
-    "import json, sys; from pathlib import Path; from omegaconf import OmegaConf; "
-    "d = Path(sys.argv[1]); m = json.loads((d / 'meta.json').read_text()); "
-    "s = json.loads((d / 'summary.json').read_text()); "
-    "c = OmegaConf.load(d / 'config.yaml'); "
-    "sys.exit(not (m.get('status') == 'completed' and c.get('protocol_version') == 3 "
-    "and s.get('path_field', {}).get('passed') is True))"
-)
-# The source checkout is clean as the runs read it (tracking.git_state: no uncommitted change, no
-# untracked file that its .gitignore does not ignore, whatever status.showUntrackedFiles,
-# .git/info/exclude and core.excludesFile say); the check is shared with the other Pod drivers.
-CLEAN = CLEAN_CHECKOUT
-# The stage-0 checks the driver runs, and where the restored soft-target copy waits meanwhile.
-STAGE0_CONFIG = "experiments/stage0_checks"
-STAGE0_OVERRIDES = ("model=qwen2.5-1.5b-instruct", "protocol_version=3")
 ASIDE_ROOT = Path("/workspace/tmp")  # on the Pod's volume, as DATA_DIR
 ASIDE_PREFIX = "soft-targets-aside-"  # + the UTC date
 SOFT_TARGET_KINDS = ("soft-targets-aside", "soft-targets-restore")
 REGENERATION_RECORD = "soft_targets_regeneration.json"  # in the stage-0 run's directory
 REGENERATED_MANIFEST = "soft_targets_manifest_regenerated.json"
-# The inventories under runs/archive/ from which pod_setup.sh restores DATA_DIR for this stage
-# (docs/operations.md, "Prerequisites on a Pod"). Every campaign kind reads the first group: K's
-# reference streams (kl_harmful, kl_benign), the prompt sets, the protocol-2 path-field record,
-# the monitor-v2 stream, v₀'s preconditioner streams and the latest training stream per seed.
-INVENTORIES = (
-    "inventory-2026-10-11.tsv",
-    "inventory-2026-10-14-study2-prompts.tsv",
-    "inventory-2026-10-14-study2-a-phase0.tsv",
-    "inventory-2026-10-15-study2-monitor-v2.tsv",
-    "inventory-2026-10-14-study2-a-preconditioner-s2000.tsv",
-    "inventory-2026-10-14-study2-a-preconditioner-s2001.tsv",
-    "inventory-2026-10-14-study2-a-preconditioner-s2002.tsv",
-    "inventory-2026-10-16-study2-a-stream-s2000-final.tsv",
-    "inventory-2026-10-15-study2-a-stream-s2001-search-s2001-2.tsv",
-    "inventory-2026-10-16-study2-a-stream-s2002-final.tsv",
-)
-# The prep of 2026-10-16 (prep --once on P0): the stage-0 record under protocol version 3 (made
-# for amendment 3's FA controls; amendment 4 launches none) and the curvature panel, which
-# confirmation blocks 1-10 need. Every later Pod restores both, whatever it runs: pod_setup.sh
-# checks every file in DATA_DIR against the inventories, so the v3 record is restored for that
-# check (review M9).
-V3_RECORD = "inventory-2026-10-16-study2-stage0-v3-record.tsv"
-CURVATURE_PANEL = "inventory-2026-10-16-study2-curvature-panel.tsv"
 
 
 def cell(name: str, config: str, overrides: list[str], seeds: list[int]) -> dict:
@@ -305,120 +276,6 @@ def regular_cells(runs: list[dict], suffix: str = "", *, timecourse: bool = Fals
         name = f"{arm}-b{batch}-{lr:g}{suffix}" + ("-rayleigh" if rayleigh else "")
         items.append(cell(name, config, overrides, sorted(seeds)))
     return items
-
-
-def revision() -> str:
-    """The code revision that writes a file: its commit, and whether the tree was clean."""
-    state = git_state()
-    commit = state.get("commit") or "an unknown commit"
-    return commit + (" with uncommitted changes" if state.get("dirty") else "")
-
-
-def comment(text: str) -> list[str]:
-    """``text`` as comment lines of at most 100 characters, broken at spaces only."""
-    return textwrap.wrap(text, 100, initial_indent="# ", subsequent_indent="# ",
-                         break_long_words=False, break_on_hyphens=False)  # fmt: skip
-
-
-def prep_driver(
-    seeds: list[int],
-    batch: int,
-    commit: str,
-    *,
-    once: bool,
-    stage0_run_id: str | None,
-    archived: bool,
-    written_at: str,
-) -> str:
-    """The bash driver of the runs' prerequisites (see the module docstring)."""
-    stamp = "$(date -u +%FT%TZ)"
-    listed = " ".join(map(str, seeds))
-    streams = (f"checks that the training and preconditioner streams of seeds {listed} at batch "
-               f"{batch} exist, generating nothing" if archived else
-               f"generates the training and preconditioner streams of seeds {listed} at batch "
-               f"{batch}")  # fmt: skip
-    steps = ("runs the stage-0 checks under protocol version 3 (with the restored soft-target "
-             "copy set aside, compared and put back) and generates the curvature panel, then "
-             f"{streams}") if once else streams  # fmt: skip
-    lines = [
-        "#!/usr/bin/env bash",
-        *comment(f"Written by scripts/study2_short_campaigns.py prep at {written_at}; do not "
-                 "edit."),
-        *comment(f"Study 2's short-regime stage, from commit {commit}: it {steps}."),
-        *comment("Before it runs, DATA_DIR is restored with scripts/pod_setup.sh from these "
-                 "inventories under runs/archive/, so that the runs read the streams that Stage "
-                 f"A's runs read: for every campaign kind {', '.join(INVENTORIES)} (the prompt "
-                 "sets, K's reference streams, the protocol-2 path-field record, the monitor-v2 "
-                 "stream, the preconditioner streams and the training streams); the stage-0 v3 "
-                 f"record {V3_RECORD} (no run of amendment 4 reads it: it is restored because "
-                 "pod_setup.sh checks the whole DATA_DIR against the inventories); for "
-                 f"confirmation blocks 1-10 also the curvature panel {CURVATURE_PANEL}. Every Pod "
-                 "after the prep of 2026-10-16 restores these two as well, and the inventories of "
-                 "the fresh seeds' streams once they are archived."),
-        *comment("It stops at the first failure and can be run again: a completed stage-0 run "
-                 "is kept, a soft-target copy set aside or put back stays so, a stream that "
-                 "exists is kept, and a training stream only grows to what the runs read."),
-        "set -euo pipefail",
-        ". /etc/rp_environment",
-        ". /root/zfr-env.sh",
-        f"SRC=/workspace/code/zero-field-refusal/{commit}/source",
-        'cd "$SRC"',
-        f'test "$(git rev-parse HEAD)" = {commit}',
-        f'project-run "$SRC" python -c "{CLEAN}"',
-        f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
-        "kept() {",
-        "  local log",
-        "  log=$(mktemp)",
-        f'  echo "== {stamp} start: $*"',
-        f'  if "$@" 2>&1 | tee "$log"; then echo "== {stamp} done: $*"',
-        f'  elif grep -q "{EXISTS}" "$log"; then',
-        f'    echo "== {stamp} kept, it exists: $*"',
-        '  else rm -f "$log"; return 1; fi',
-        '  rm -f "$log"',
-        "}",
-    ]  # fmt: skip
-    if once:
-        soft_targets = 'project-run "$SRC" python scripts/study2_short_campaigns.py soft-targets'
-        lines += [
-            f"STAGE0={stage0_run_id}",
-            f"PASSED=\"{PASSED}\"",
-            "stage0() {",
-            '  local dir="${RUNS_DIR:?}/stage0_checks/$STAGE0"',
-            '  if [ ! -e "$dir" ]; then',
-            "    # The restored soft-target copy lacks its distributions: stage 0 makes them anew.",
-            f'    step {soft_targets}-aside --stage0-run-id "$STAGE0"',
-            '    step env RUN_ID="$STAGE0" project-run "$SRC" python scripts/stage0_checks.py \\',
-            f"      {STAGE0_CONFIG} {' '.join(STAGE0_OVERRIDES)}",
-            "  fi",
-            '  if project-run "$SRC" python -c "$PASSED" "$dir"; then',
-            f'    echo "== {stamp} stage-0 run $STAGE0 passed under protocol version 3"',
-            "  else",
-            f'    echo "== {stamp} stage-0 run $STAGE0 did not complete, or did not pass under" \\',
-            '      "protocol version 3: read it, then run again with a new --stage0-run-id" >&2',
-            "    return 1",
-            "  fi",
-            f'  step {soft_targets}-restore --stage0-run-id "$STAGE0"',
-            "}",
-        ]  # fmt: skip
-    lines.append("# The steps")
-    if once:
-        lines += ["stage0", f"kept {TEACHER} {RAYLEIGH} \\", "  --stream curvature_panel"]
-    if archived:
-        lines += [
-            'step project-run "$SRC" python scripts/study2_short_campaigns.py check-streams \\',
-            f"  --seeds {listed} --batch {batch}",
-        ]
-    else:
-        for seed in seeds:
-            lines += [
-                f"step {TEACHER} {STAGE_A} --stream training \\",
-                f"  --seeds {seed} --responses {STEPS * batch}",
-                f"kept {TEACHER} {STAGE_A} \\",
-                f"  optimizer=adam_frozen train.batch_size={batch} --stream preconditioner \\",
-                f"  --seeds {seed}",
-            ]
-    lines.append(f'echo "== {stamp} the prerequisites are in place"')
-    return "\n".join(lines) + "\n"
 
 
 def check_streams(seeds: list[int], batch: int) -> tuple[list[str], list[str]]:
@@ -664,19 +521,6 @@ def restore(path: Path, data_root: Path, aside_root: Path, run_dir: Path) -> str
     if not equal:
         _differs(record, done)
     return "\n".join(done)
-
-
-def prep(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
-    if not args.seeds or args.batch is None or not args.commit:
-        parser.error("prep needs --seeds, --batch and --commit")
-    if len(args.commit) != 40 or set(args.commit) - set("0123456789abcdef"):
-        parser.error("--commit takes the full 40-character commit hash")
-    if args.once != bool(args.stage0_run_id):
-        parser.error("--once and --stage0-run-id go together: the stage-0 run's id names the GPU "
-                     "and the day, and has no default")  # fmt: skip
-    return prep_driver(args.seeds, args.batch, args.commit, once=args.once,
-                       stage0_run_id=args.stage0_run_id, archived=args.archived,
-                       written_at=revision())  # fmt: skip
 
 
 def w_max_of(parser: argparse.ArgumentParser, args: argparse.Namespace) -> tuple[float, str]:
