@@ -1745,14 +1745,17 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   it from starting, so expect up to one more run after the signal. A signal during the last
   attempt that then succeeds leaves no `stop` record and exit code 0: the campaign simply ended.
 - **The launcher's journal and a torn line.** Each record of `RUNS_DIR/launch/<campaign>.jsonl`
-  is appended as one line, in one write, and fsynced (the folder too when the log is created). A
-  crash in the middle of an append can still leave a torn line: the bytes after the log's last
-  newline. The next append to that log first ends it with a newline and writes a `torn` record
-  naming its exact bytes (`offset`, `length`, `sha256`) and its `kind`, the event its bytes show
-  through the strict pattern `"event": "<lower-case word>"` (`null` otherwise); nothing else of
-  the torn bytes is copied. While any log under `RUNS_DIR/launch/` holds a torn line (any
-  unparseable line, a valid JSON line that is not an object included) that no `torn_resolved`
-  record names, the launcher starts nothing, settles nothing and opens no recovery round, with
+  is appended as one line, in one write, under an exclusive lock on the log (writers take
+  turns), and fsynced (the folder too when the log is created). The logs are read line by line,
+  split at `\n` alone, each line decoded strictly as UTF-8. A **torn line** is any line that is
+  not a JSON object: one that does not decode or parse (a byte-order mark included), a valid
+  JSON value that is not an object, or a blank line (length 0). A crash in the middle of an
+  append leaves one at the end of the log, the bytes after its last newline; the next append to
+  that log first ends it with a newline and writes a `torn` record naming its exact bytes
+  (`offset`, `length`, `sha256`) and its `kind`, the event its bytes show through the strict
+  pattern `"event": "<lower-case word>"` (`null` otherwise); nothing else of the torn bytes is
+  copied. While any log under `RUNS_DIR/launch/` holds a torn line that no `torn_resolved` record
+  names, the launcher starts nothing, settles nothing and opens no recovery round, with
   `--dry-run` too: it prints each such line (log, offset, length, kind, sha256) and exits **12**.
   Every log counts, since a label's `held` and `superseded` lines can live in any of them. First
   restore what the line's kind lost, then record the resolution:
@@ -1770,18 +1773,23 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
     a superseded one never counts.
   - `recovery`, `stop`: resolve, then relaunch with the same command; a recovery round's reason is
     recorded again.
-  - unknown (`null`): read the run directories of the campaign's labels against the readable
-    records, restore what is missing as above, and say what was found in the reason.
+  - `torn`: nothing to restore; the resolution writes the missing `torn` record.
+  - `torn_resolved`: the line it resolved is unresolved again; run that resolution again.
+  - unknown (`null`; a blank line, say): read the run directories of the campaign's labels
+    against the readable records, restore what is missing as above, and say what was found in
+    the reason.
 
   ```bash
   python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT
   ```
 
   `LOG` is the log's file name as printed; no campaign file goes with it. The command appends
-  `{"event": "torn_resolved", "log", "offset", "sha256", "reason"}` to that log (repairing it
-  first if the torn line is still its last). It refuses an offset and sha256 that name no torn
-  line of that log, a line already resolved and an empty reason. The resolution does not recover
-  the lost record: it records that the operator restored what the journal needs.
+  `{"event": "torn_resolved", "log", "offset", "sha256", "reason"}` to that log. A line that no
+  `torn` record names yet (still the log's last, or left by a power loss inside the repair, a
+  blank line, a line an older writer merged) gets its `torn` record first, so that both records
+  name every resolved line. It refuses an offset and sha256 that name no torn line of that log,
+  a line already resolved and an empty reason. The resolution does not recover the lost record:
+  it records that the operator restored what the journal needs.
 - **Study-2 runs** (`scripts/train.py` with a config that has a `schedule`) stop by K, plateau,
   instability or T_max and may extend their seed's appendable stream with their frozen θ₀; all
   runs of a seed that may extend its stream run on one machine, where writers take turns under

@@ -556,3 +556,192 @@ def test_hold_and_supersede_write_a_line_only_when_no_identical_one_exists(tmp_p
         assert write(root, name, runs[2], "r1", reason="why", record="a.json") is True
         assert len(events(root, event)) == 4
     assert not (root / "launch" / "another.jsonl").exists()
+
+
+# ------------------------------------------------- a resolution names its line with both records
+
+AFTER = json.dumps({"event": "stop", "run": "a/s0"}).encode() + b"\n"
+
+
+@pytest.mark.parametrize(
+    ("line", "kind"),
+    [(PREFIX + b'"event": "end", "run": "' + MARKER.encode() + PREFIX + b'"event": "stop"}', "end"),
+     (b"", None),
+     (b"[1, 2, " + MARKER.encode().hex().encode() + b"]", None),
+     (PREFIX + b'"event": "held", "run": "\xff\xfe' + MARKER.encode(), "held")],
+    ids=["merged", "blank", "not-an-object", "invalid-utf8"],
+)  # fmt: skip
+def test_a_resolution_writes_the_missing_torn_record_first(
+    tmp_path, monkeypatch, capsys, line, kind
+) -> None:
+    """A non-final unparseable line that no ``torn`` record names (a merged line of an older
+    writer, a blank line, a power loss inside the repair): the resolution writes its ``torn``
+    record (offset, length, sha256, the kind through the strict pattern alone), then the
+    ``torn_resolved`` record, both through ``_log``; nothing else of its text is copied."""
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    log.parent.mkdir(parents=True)
+    before = json.dumps({"event": "start", "run": "a/s0"}).encode() + b"\n"
+    original = before + line + b"\n" + AFTER
+    log.write_bytes(original)
+    (found,) = torn_lines(root)
+    assert (found.offset, found.length, found.kind, found.repaired, found.resolved) == (
+        len(before), len(line), kind, False, False)  # fmt: skip
+    resolve(monkeypatch, root, found)
+    data = log.read_bytes()
+    assert data.startswith(original)
+    named, resolved = (json.loads(x) for x in data[len(original) :].splitlines())
+    assert named == {"time": named["time"], "event": "torn", "offset": len(before),
+                     "length": len(line), "sha256": hashlib.sha256(line).hexdigest(),
+                     "kind": kind}  # fmt: skip
+    assert (resolved["event"], resolved["offset"], resolved["sha256"]) == (
+        "torn_resolved", len(before), hashlib.sha256(line).hexdigest())  # fmt: skip
+    (after,) = torn_lines(root)
+    assert after.repaired and after.resolved
+    printed = capsys.readouterr()
+    for text in (data[len(original) :].decode(), printed.out, printed.err):
+        assert MARKER not in text and MARKER.encode().hex() not in text
+
+
+def test_a_log_of_one_newline_holds_a_blank_line_resolved_like_any_other(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"\n")
+    (line,) = torn_lines(root)
+    assert (line.offset, line.length, line.kind, line.repaired) == (0, 0, None, False)
+    name, runs = load_campaign(campaign(tmp_path))
+    refused(name, runs[1:2], root, Executor(root, {}))
+    resolve(monkeypatch, root, line, reason="a blank line: nothing was lost")
+    assert [(r["event"], r["offset"], r.get("length")) for r in launch_records(root)] == [
+        ("torn", 0, 0), ("torn_resolved", 0, None)]  # fmt: skip
+    assert run_campaign(name, runs[1:2], root, execute=Executor(root, {}))["done"]
+
+
+def test_a_torn_last_line_is_named_once_by_its_resolution(tmp_path, monkeypatch) -> None:
+    """The torn last line has no record yet: the resolution's append repairs it, and no second
+    ``torn`` record is written."""
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    torn = tear(log, {"event": "end", "run": "a/s0"})
+    (line,) = torn_lines(root)
+    resolve(monkeypatch, root, line)
+    assert [(r["event"], r["offset"]) for r in launch_records(root)] == [
+        ("torn", 0), ("torn_resolved", 0)]  # fmt: skip
+    assert events(root, "torn")[0]["length"] == len(torn)
+
+
+# ------------------------------------------------------------ the two readers agree on every byte
+
+
+def test_an_invalid_utf8_torn_line_is_listed_resolved_and_read_past(tmp_path, monkeypatch) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    log = root / "launch" / f"{name}.jsonl"
+    log.parent.mkdir(parents=True)
+    bad = PREFIX + b'"event": "end", "run": "\xc3\x28\xff'
+    log.write_bytes(bad + b"\n" + AFTER)
+    (line,) = torn_lines(root)
+    assert (line.offset, line.length, line.kind) == (0, len(bad), "end")
+    refused(name, runs[1:2], root, Executor(root, {}))
+    resolve(monkeypatch, root, line)
+    assert [r["event"] for r in launch_records(root)] == ["stop", "torn", "torn_resolved"]
+    assert run_campaign(name, runs[1:2], root, execute=Executor(root, {}))["done"]
+
+
+def test_a_bom_prefixed_line_is_unparseable_in_both_readers(tmp_path) -> None:
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    log.parent.mkdir(parents=True)
+    bom = b"\xef\xbb\xbf" + json.dumps({"event": "start", "run": "a/s0"}).encode()
+    log.write_bytes(bom + b"\n" + AFTER)
+    (line,) = torn_lines(root)
+    assert (line.offset, line.length, line.sha256, line.kind) == (
+        0, len(bom), hashlib.sha256(bom).hexdigest(), "start")  # fmt: skip
+    assert [r["event"] for r in launch_records(root)] == ["stop"]
+
+
+def test_a_record_separator_does_not_split_a_line(tmp_path) -> None:
+    """``\\x1e`` (or another Unicode line separator) before a valid record: one torn line, and no
+    record is read out of it."""
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    log.parent.mkdir(parents=True)
+    joined = b"\x1e" + json.dumps({"event": "held", "run": "a/s0", "run_id": "r1"}).encode()
+    log.write_bytes(joined + b"\n" + AFTER)
+    assert [(x.offset, x.length) for x in torn_lines(root)] == [(0, len(joined))]
+    assert [r["event"] for r in launch_records(root)] == ["stop"]
+
+
+def test_a_multibyte_torn_line_is_named_by_its_bytes(tmp_path) -> None:
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    log.parent.mkdir(parents=True)
+    first = json.dumps({"event": "start", "note": "θ₀ and v₀"}, ensure_ascii=False).encode()
+    torn = PREFIX + '"event": "end", "note": "θ₀ → '.encode()
+    log.write_bytes(first + b"\n" + torn)
+    (line,) = torn_lines(root)
+    assert (line.offset, line.length, line.sha256) == (
+        len(first) + 1, len(torn), hashlib.sha256(torn).hexdigest())  # fmt: skip
+    assert [r["note"] for r in launch_records(root)] == ["θ₀ and v₀"]
+    launch._log(log, {"event": "stop"})
+    (named,) = events(root, "torn")
+    assert (named["offset"], named["length"]) == (len(first) + 1, len(torn))
+
+
+# --------------------------------------------------------------------- one writer at a time
+
+WRITER = """
+import sys, time
+from pathlib import Path
+from zero_field_refusal import launch
+
+real = launch._torn_tail
+
+
+def slow(path):  # widens the window between reading the tail and repairing it
+    found = real(path)
+    if found is not None:
+        time.sleep(0.5)
+    return found
+
+
+launch._torn_tail = slow
+log, who, count, go = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), Path(sys.argv[4])
+(go.parent / f"ready-{who}").touch()
+while not go.exists():
+    time.sleep(0.005)
+for i in range(count):
+    launch._log(log, {"event": "stop", "run": f"{who}/{i}"})
+"""
+
+
+def test_two_writers_take_turns_on_one_log(tmp_path) -> None:
+    """Two processes append to one log that ends in a torn line: one ``torn`` record, no blank
+    line, every record."""
+    import subprocess
+    import sys
+    import time
+
+    log = tmp_path / "launch" / "c.jsonl"
+    torn = tear(log, {"event": "end", "run": "a/s0"})
+    go, count = tmp_path / "go", 200
+    writers = [subprocess.Popen([sys.executable, "-c", WRITER, str(log), who, str(count), str(go)],
+                                cwd=ROOT) for who in ("a", "b")]  # fmt: skip
+    deadline = time.monotonic() + 60
+    while not all((tmp_path / f"ready-{who}").exists() for who in ("a", "b")):
+        assert time.monotonic() < deadline and all(w.poll() is None for w in writers)
+        time.sleep(0.01)
+    go.touch()  # both are past their imports: they read the torn tail together
+    assert [w.wait(timeout=120) for w in writers] == [0, 0]
+    data = log.read_bytes()
+    assert data.startswith(torn + b"\n")
+    lines = data[len(torn) + 1 :].split(b"\n")
+    assert lines[-1] == b"" and b"" not in lines[:-1]
+    records = [json.loads(x) for x in lines[:-1]]
+    assert [r["event"] for r in records].count("torn") == 1
+    runs = sorted(r["run"] for r in records if r["event"] == "stop")
+    assert runs == sorted(f"{who}/{i}" for who in ("a", "b") for i in range(count))
+    assert [x.repaired for x in torn_lines(tmp_path)] == [True]

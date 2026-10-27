@@ -875,6 +875,28 @@ def test_the_cycle_covers_every_stage_and_old_code_launcher_run(qualify, tmp_pat
     assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-b1"]
 
 
+def test_the_cycles_repair_lists_only_the_lines_it_wrote(qualify, tmp_path) -> None:
+    """``repair_cycle_journal`` names a run id as written only when ``launch.supersede`` or
+    ``launch.hold`` wrote its line: an identical line (the same event, label, experiment, run id
+    and reason) under another config hash is not written again, and not listed."""
+    root = tmp_path / "runs"
+    record = {"diagnosis": "a stale kernel cache", "fix": "the cache is cleared",
+              "launchers": [{"run_id": "r-1", "run": "adamw-5e-05/s10200", "experiment": "x",
+                             "config_hash": "a" * 12, "campaign": "c1"}],
+              "held": [{"run_id": "r-2", "run": "adamw-5e-05/s10201", "experiment": "x",
+                        "config_hash": "a" * 12, "campaign": "c1",
+                        "reason": "unreadable"}]}  # fmt: skip
+    reason = "superseded by an engineering cycle: a stale kernel cache; fix: the cache is cleared"
+    log = root / "launch" / "c1.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps({"event": "superseded", "run": "adamw-5e-05/s10200", "run_id": "r-1",
+                               "experiment": "x", "config_hash": "b" * 12, "reason": reason,
+                               "record": "earlier"}) + "\n")  # fmt: skip
+    assert qualify.repair_cycle_journal(tmp_path / "supersede-1.json", record, root) == ["r-2"]
+    assert qualify.repair_cycle_journal(tmp_path / "supersede-1.json", record, root) == []
+    assert len(log.read_text().splitlines()) == 2
+
+
 def test_a_torn_superseded_line_is_written_again_by_the_same_cycle(
     qualify, tmp_path, monkeypatch
 ) -> None:

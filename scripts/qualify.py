@@ -1597,7 +1597,8 @@ def supersede_case(
 
 def repair_cycle_journal(path: Path, record: dict, root: Path) -> list[str]:
     """The journal's ``superseded`` line of every launcher run the supersession names, where it
-    is missing; returns the run ids written."""
+    is missing; returns the run ids whose line ``launch.hold`` or ``launch.supersede`` wrote
+    (neither writes a line identical to one in the journal)."""
     reason = (
         f"superseded by an engineering cycle: {record.get('diagnosis')}; fix: {record.get('fix')}"
     )
@@ -1605,16 +1606,16 @@ def repair_cycle_journal(path: Path, record: dict, root: Path) -> list[str]:
     for entry in record.get("held") or []:  # an unresolved outcome: the run is never rerun
         run = SimpleNamespace(label=entry.get("run"), experiment=entry.get("experiment"),
                               config_hash=entry.get("config_hash"))  # fmt: skip
-        if entry["run_id"] not in held_runs(run, launch_records(root)):
-            hold(root, entry["campaign"], run, entry["run_id"], reason=entry["reason"],
-                 record=str(path))  # fmt: skip
+        if entry["run_id"] not in held_runs(run, launch_records(root)) and hold(
+                root, entry["campaign"], run, entry["run_id"], reason=entry["reason"],
+                record=str(path)):  # fmt: skip
             written.append(entry["run_id"])
     for entry in record.get("launchers") or []:
         run = SimpleNamespace(label=entry.get("run"), experiment=entry.get("experiment"),
                               config_hash=entry.get("config_hash"))  # fmt: skip
-        if entry["run_id"] not in superseded_runs(run, launch_records(root)):
-            supersede(root, entry["campaign"], run, entry["run_id"], reason=reason,
-                      record=str(path))  # fmt: skip
+        if entry["run_id"] not in superseded_runs(run, launch_records(root)) and supersede(
+                root, entry["campaign"], run, entry["run_id"], reason=reason,
+                record=str(path)):  # fmt: skip
             written.append(entry["run_id"])
     return written
 
