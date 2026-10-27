@@ -875,6 +875,50 @@ def test_the_cycle_covers_every_stage_and_old_code_launcher_run(qualify, tmp_pat
     assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-b1"]
 
 
+def test_a_torn_superseded_line_is_written_again_by_the_same_cycle(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """The cycle stopped in the middle of its last journal line (``launch``, "The journal"):
+    the launcher refuses the campaign; run again with the same record, the cycle writes the
+    missing line once, after the ``torn`` record naming the torn bytes; once the torn line is
+    resolved, the launcher proceeds."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    for label, run_id in ((f"adamw-{ADAMW_LR:g}/s10200", "r-a1"),
+                          (f"adamw-{ADAMW_LR:g}/s10201", "r-b1")):  # fmt: skip
+        settled_launcher(root, journal(root, path, label, [run_id]), run_id)  # commit abc123
+    monkeypatch.setattr(code_identity, "gpu_code_identity",
+                        lambda commit="HEAD", *a, **k: dict(FIX) if commit == "HEAD"
+                        else dict(CODE))  # fmt: skip
+    qualify.main(supersede_args(path, ADAMW, record))
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    *kept, last = log.read_bytes().splitlines(keepends=True)
+    assert (json.loads(last)["event"], json.loads(last)["run_id"]) == ("superseded", "r-b1")
+    torn = last[:-13]
+    log.write_bytes(b"".join(kept) + torn)
+    name, runs = launch.load_campaign(path)
+    with pytest.raises(launch.TornJournalError):
+        launch.run_campaign(name, runs, root, dry_run=True)
+    qualify.main(supersede_args(path, ADAMW, record))  # the same record: the missing line
+    qualify.main(supersede_args(path, ADAMW, record))  # and nothing more
+    records = launch.launch_records(root)
+    assert [r["run_id"] for r in records if r["event"] == "superseded"] == ["r-a1", "r-b1"]
+    (named,) = [r for r in records if r["event"] == "torn"]
+    assert (named["length"], named["sha256"], named["kind"]) == (
+        len(torn), hashlib.sha256(torn).hexdigest(), "superseded")  # fmt: skip
+    (line,) = launch.torn_lines(root)
+    assert line.repaired and not line.resolved
+    with pytest.raises(launch.TornJournalError):
+        launch.run_campaign(name, runs, root, dry_run=True)
+    launch.resolve_torn(root, line.log, offset=line.offset, sha256=line.sha256,
+                        reason="the cycle wrote its missing line again")  # fmt: skip
+    result = launch.run_campaign(name, runs, root, dry_run=True)
+    assert not result["skipped"] and result["pending"] == [run.label for run in runs]
+
+
 THIRD = {**CODE, "commit": "0" * 40, "sha256": "3" * 64}  # a launcher run's earlier code
 
 

@@ -1625,7 +1625,8 @@ docstring has every rule.
   precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
   that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
   9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; the
-  launcher's own exit when it stops; any other, the exit of the command that failed.
+  launcher's own exit when it stops (12: a torn line in a launch journal, resolved as
+  [launching runs](#launching-runs) says); any other, the exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
@@ -1743,6 +1744,44 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   process starts: a signal that arrives while an admitted attempt is being logged does not keep
   it from starting, so expect up to one more run after the signal. A signal during the last
   attempt that then succeeds leaves no `stop` record and exit code 0: the campaign simply ended.
+- **The launcher's journal and a torn line.** Each record of `RUNS_DIR/launch/<campaign>.jsonl`
+  is appended as one line, in one write, and fsynced (the folder too when the log is created). A
+  crash in the middle of an append can still leave a torn line: the bytes after the log's last
+  newline. The next append to that log first ends it with a newline and writes a `torn` record
+  naming its exact bytes (`offset`, `length`, `sha256`) and its `kind`, the event its bytes show
+  through the strict pattern `"event": "<lower-case word>"` (`null` otherwise); nothing else of
+  the torn bytes is copied. While any log under `RUNS_DIR/launch/` holds a torn line (any
+  unparseable line, a valid JSON line that is not an object included) that no `torn_resolved`
+  record names, the launcher starts nothing, settles nothing and opens no recovery round, with
+  `--dry-run` too: it prints each such line (log, offset, length, kind, sha256) and exits **12**.
+  Every log counts, since a label's `held` and `superseded` lines can live in any of them. First
+  restore what the line's kind lost, then record the resolution:
+
+  - `end`: nothing to restore. The start stands without its end; once resolved, the launcher
+    settles it from its run directory, as any start found without its end.
+  - `start`: nothing to restore. A run directory may stand with no start; study 3's analysis
+    lists it and blocks. The launcher counts that directory as any directory of the run's config
+    and never reuses its run id.
+  - `held`, `superseded`: run the writer that lost the line again, first: `qualify.py
+    supersede` with the same record (its `held` and `superseded` lines), or `qualify.py
+    restart-case` again for the case (its `superseded` line). Each writes only the missing lines:
+    `launch.hold` and `launch.supersede` write a line only when no identical one (the same event,
+    label, experiment, run id and reason) is in the journal. A held run is then never rerun, and
+    a superseded one never counts.
+  - `recovery`, `stop`: resolve, then relaunch with the same command; a recovery round's reason is
+    recorded again.
+  - unknown (`null`): read the run directories of the campaign's labels against the readable
+    records, restore what is missing as above, and say what was found in the reason.
+
+  ```bash
+  python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT
+  ```
+
+  `LOG` is the log's file name as printed; no campaign file goes with it. The command appends
+  `{"event": "torn_resolved", "log", "offset", "sha256", "reason"}` to that log (repairing it
+  first if the torn line is still its last). It refuses an offset and sha256 that name no torn
+  line of that log, a line already resolved and an empty reason. The resolution does not recover
+  the lost record: it records that the operator restored what the journal needs.
 - **Study-2 runs** (`scripts/train.py` with a config that has a `schedule`) stop by K, plateau,
   instability or T_max and may extend their seed's appendable stream with their frozen θ₀; all
   runs of a seed that may extend its stream run on one machine, where writers take turns under

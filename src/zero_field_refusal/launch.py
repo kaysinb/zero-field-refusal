@@ -67,10 +67,54 @@ has another config hash is refused it as well; nothing here lifts a hold. A chec
 (``tracking.endpoint_checkpoint``) is done only if its recorded numerics setup is what the
 campaign's config asks for (``expected_numerics``: determinism, TF32 and the matmul precision,
 the memory limit; read without touching CUDA).
+
+**The journal** (``_log``). A record is appended as one line: the log is opened for appending
+(created with mode 0o644), the whole line goes out in one ``os.write`` (a short write raises) and
+is fsynced; creating a log fsyncs its folder too. A crash in the middle of an append can still
+leave a *torn line*: the bytes after the log's last newline. The next append to that log repairs
+it first: a newline, then a ``torn`` record naming the torn line's exact bytes (``offset`` of its
+first byte, ``length``, ``sha256``) and its ``kind``, then the record. The kind is the event the
+torn bytes show through the strict pattern ``"event": "<lower-case word>"`` (``torn_kind``), or
+null; nothing else of the torn bytes is copied anywhere. ``torn_lines`` lists every unparseable
+line of every log under ``RUNS_DIR/launch/`` (a valid JSON line that is not an object included,
+and a torn last line, which has no ``torn`` record yet), and whether a ``torn_resolved`` record
+names it (by log, offset and sha256); ``launch_records`` skips them, as before.
+
+While any log holds a torn line that no ``torn_resolved`` record names, ``run_campaign`` starts
+nothing, settles nothing and opens no recovery round, in a dry run too: it raises
+``TornJournalError``, and scripts/launch.py prints each such line (log, offset, length, kind and
+the sha256 its resolution names) and exits ``TORN_JOURNAL`` (12). No caller uses that code: the
+launcher's other exits are 0, 1 and argparse's 2, and study 3's qualification driver, which
+passes the launcher's exit on, uses 1, 3 and 8 to 11. Every log is read, since a label's held and
+superseded lines can live in any of them. What a lost line costs, by its kind, and what restores
+it before the resolution:
+
+- ``end``: the start stands without its end. Nothing is rerun; once the line is resolved, the
+  launcher settles the start from its run directory, as any start found without its end.
+- ``start``: a run directory may stand with no start (study 3's analysis lists it and blocks).
+  The launcher counts that directory as any directory of the run's config and never reuses its
+  run id: a new attempt's id carries its own time and attempt number, and the tracker never
+  writes into an existing run directory.
+- ``held``, ``superseded``: their writers run again first (``qualify.py supersede`` with the same
+  record, ``qualify.py restart-case`` again for the case), so that a held run is never rerun and
+  a superseded one never counts. Each writes only the missing lines: ``hold`` and ``supersede``
+  write a line only when no identical one (the same event, label, experiment, run id and reason)
+  is in the journal.
+- ``recovery``, ``stop``: once the line is resolved, the operator relaunches with the same
+  command; a recovery round's reason is recorded again.
+- unknown (null): the operator reads the run directories of the campaign's labels and records
+  the resolution.
+
+``resolve_torn`` (``scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT``)
+appends ``{"event": "torn_resolved", "log", "offset", "sha256", "reason"}`` to that log through
+``_log``. It refuses an offset and sha256 that name no torn line of that log, a line already
+resolved and an empty reason. It does not recover the lost record: it records that the operator
+restored what the journal needs.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -97,10 +141,46 @@ from .tensor_hash import file_sha256
 ENTRIES = {"train": "scripts/train.py", "theta0": "scripts/evaluate_theta0.py"}
 CELL_KEYS = {"name", "config", "entry", "overrides", "seeds"}
 MAX_ATTEMPTS = 3  # the first attempt and two reruns after technical failures
+TORN_JOURNAL = 12  # scripts/launch.py's exit while a torn journal line is unresolved
+# The one part of a torn line's bytes that a record copies: its kind (module docstring)
+TORN_KIND = re.compile(rb'"event": "([a-z][a-z_]{0,31})"')
 
 
 class CampaignError(ValueError):
     """The campaign cannot start, or go on, as it stands."""
+
+
+@dataclass(frozen=True)
+class TornLine:
+    """An unparseable line of a launch log (``torn_lines``): its log's file name, the offset of
+    its first byte, its length in bytes and their sha256, its kind (``torn_kind``), whether a
+    ``torn`` record of that log names exactly those bytes and whether a ``torn_resolved`` record
+    names it (by log, offset and sha256)."""
+
+    log: str
+    offset: int
+    length: int
+    sha256: str
+    kind: str | None
+    repaired: bool
+    resolved: bool
+
+
+class TornJournalError(CampaignError):
+    """A launch log holds a torn line that no ``torn_resolved`` record names (module docstring,
+    "The journal"): the launcher starts nothing, settles nothing and opens no recovery round."""
+
+    def __init__(self, lines: Sequence[TornLine]) -> None:
+        self.lines = list(lines)
+        listed = "\n".join(f"- {x.log}: offset {x.offset}, length {x.length}, kind "
+                           f"{x.kind or 'null'}, sha256 {x.sha256}"
+                           for x in self.lines)  # fmt: skip
+        super().__init__(
+            "The launch journal holds torn lines that no torn_resolved record names; nothing "
+            "starts, is settled or opens a recovery round until each is resolved: restore what "
+            'its kind lost (docs/operations.md, "Launching runs"), then run scripts/launch.py '
+            f"--resolve-torn LOG --offset N --sha256 HEX --reason TEXT.\n{listed}"
+        )
 
 
 class StopRequest:
@@ -234,6 +314,82 @@ def launch_records(runs_root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def torn_kind(data: bytes) -> str | None:
+    """The event a torn line's bytes show through the strict pattern ``TORN_KIND``
+    (``"event": "<lower-case word>"``), or None; nothing else of the bytes is read out."""
+    match = TORN_KIND.search(data)
+    return match[1].decode("ascii") if match else None
+
+
+def torn_lines(runs_root: Path) -> list[TornLine]:
+    """Every unparseable line of every launch log under ``runs_root/launch/``, a valid JSON line
+    that is not an object included, in file name and offset order (module docstring, "The
+    journal"). A torn last line, with no newline after it, is listed unrepaired: no record
+    follows it yet."""
+    logs = {log.name: _journal_lines(log)
+            for log in sorted((Path(runs_root) / "launch").glob("*.jsonl"))}  # fmt: skip
+    resolved = {(r.get("log"), r.get("offset"), r.get("sha256"))
+                for lines in logs.values() for _, _, r in lines
+                if r is not None and r.get("event") == "torn_resolved"
+                and _count(r.get("offset"))}  # fmt: skip
+    found = []
+    for name, lines in logs.items():
+        named = {(r.get("offset"), r.get("length"), r.get("sha256")) for _, _, r in lines
+                 if r is not None and r.get("event") == "torn"
+                 and _count(r.get("offset")) and _count(r.get("length"))}  # fmt: skip
+        for offset, data, record in lines:
+            if record is not None:
+                continue
+            sha = hashlib.sha256(data).hexdigest()
+            found.append(TornLine(name, offset, len(data), sha, torn_kind(data),
+                                  (offset, len(data), sha) in named,
+                                  (name, offset, sha) in resolved))  # fmt: skip
+    return found
+
+
+def resolve_torn(runs_root: Path, log: str, *, offset: int, sha256: str,
+                 reason: str) -> dict[str, Any]:  # fmt: skip
+    """Record that the operator restored what the journal needs after the torn line of ``log``
+    (a file name under ``runs_root/launch/``) at ``offset`` with ``sha256`` lost its record (module
+    docstring, "The journal"): a ``torn_resolved`` record appended to that log through ``_log``,
+    which is returned. Raises ``ValueError``, writing nothing, for an empty reason, an offset and
+    sha256 that name no torn line of that log, and a line already resolved."""
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("A resolution needs its reason: what was restored, and from what")
+    if Path(log).name != log or not log.endswith(".jsonl"):
+        raise ValueError(f"{log!r}: name the launch log by its file name under "
+                         "RUNS_DIR/launch/, as the launcher's refusal prints it")  # fmt: skip
+    named = [x for x in torn_lines(runs_root)
+             if (x.log, x.offset, x.sha256) == (log, offset, sha256)]  # fmt: skip
+    if not named:
+        raise ValueError(f"{log}: no torn line at offset {offset} with sha256 {sha256}")
+    if named[0].resolved:
+        raise ValueError(f"{log}: the torn line at offset {offset} is already resolved")
+    return _log(Path(runs_root) / "launch" / log,
+                {"event": "torn_resolved", "log": log, "offset": offset, "sha256": sha256,
+                 "reason": reason})  # fmt: skip
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _journal_lines(log: Path) -> list[tuple[int, bytes, dict[str, Any] | None]]:
+    """Each line of a launch log, split at its newlines: its offset, its bytes and the record it
+    holds (None when it is not a JSON object)."""
+    data, lines, offset = log.read_bytes(), [], 0
+    while offset < len(data):
+        end = data.find(b"\n", offset)
+        end = len(data) if end < 0 else end
+        try:
+            record = json.loads(data[offset:end])
+        except ValueError:
+            record = None
+        lines.append((offset, data[offset:end], record if isinstance(record, dict) else None))
+        offset = end + 1
+    return lines
+
+
 def superseded_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """The run ids of this run that the journal's ``superseded`` records name (``supersede``),
     with their reasons."""
@@ -287,25 +443,43 @@ def open_start(run: Run, records: Sequence[Mapping[str, Any]]) -> Mapping[str, A
 
 def hold(
     runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
-) -> None:
+) -> bool:
     """Log that an attempt of ``run`` has an outcome nobody could resolve (module docstring,
     "Superseded attempts"): it is kept as it is, and the run's label is never attempted again,
-    under any config hash, its recovery round included, while the record stands."""
+    under any config hash, its recovery round included, while the record stands. Written only
+    when no identical line is in the journal (``_journal_names``); returns whether it was."""
+    if _journal_names(runs_root, "held", run, run_id, reason):
+        return False
     _log(Path(runs_root) / "launch" / f"{campaign}.jsonl",
          {"event": "held", "run": run.label, "run_id": run_id, "experiment": run.experiment,
           "config_hash": run.config_hash, "reason": reason, "record": record})  # fmt: skip
+    return True
 
 
 def supersede(
     runs_root: Path, campaign: str, run: Run, run_id: str, *, reason: str, record: str
-) -> None:
+) -> bool:
     """Log that an attempt of ``run`` no longer counts for its label (module docstring,
     "Superseded attempts"): its directory and its records stay, and ``record`` (the path of the
-    record that decided it, a case restart or an engineering cycle's supersession) says why."""
+    record that decided it, a case restart or an engineering cycle's supersession) says why.
+    Written only when no identical line is in the journal (``_journal_names``); returns whether
+    it was."""
+    if _journal_names(runs_root, "superseded", run, run_id, reason):
+        return False
     _log(Path(runs_root) / "launch" / f"{campaign}.jsonl",
          {"event": "superseded", "run": run.label, "run_id": run_id,
           "experiment": run.experiment, "config_hash": run.config_hash, "reason": reason,
           "record": record})  # fmt: skip
+    return True
+
+
+def _journal_names(runs_root: Path, event: str, run: Run, run_id: str, reason: str) -> bool:
+    """Whether any launch log holds an identical ``held`` or ``superseded`` line: the same event,
+    label, experiment, run id and reason (module docstring, "The journal": a writer that lost its
+    line runs again and writes only what is missing)."""
+    return any(r.get("event") == event and r.get("run") == run.label
+               and r.get("experiment") == run.experiment and r.get("run_id") == run_id
+               and r.get("reason") == reason for r in launch_records(runs_root))  # fmt: skip
 
 
 def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ()) -> Assessment:
@@ -517,7 +691,15 @@ def run_campaign(
     rewritten. Nothing is written for a run that is not assessed (another label under ``only``,
     a run left out of ``runs``) and nothing in a dry run; the end goes to this campaign's log.
     Attempts are counted from the starts, as before, so the new end changes no count.
+
+    **A torn journal line** (module docstring, "The journal"). Before anything else, while any
+    log under ``runs_root/launch/`` holds a torn line that no ``torn_resolved`` record names
+    (``torn_lines``), it raises ``TornJournalError`` naming each such line: nothing starts,
+    nothing is settled or written, no recovery round opens, in a dry run too.
     """
+    unresolved = [line for line in torn_lines(runs_root) if not line.resolved]
+    if unresolved:
+        raise TornJournalError(unresolved)
     execute = execute or _subprocess
     if not (isinstance(max_attempts, int) and max_attempts >= 1):
         raise CampaignError(f"max_attempts must be a positive integer, not {max_attempts!r}")
@@ -724,8 +906,57 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _log(path: Path, record: Mapping[str, Any]) -> None:
+def _log(path: Path, record: Mapping[str, Any]) -> dict[str, Any]:
+    """Append ``record``, stamped with the time, to a launch log as one line (module docstring,
+    "The journal"): one ``os.write`` of the whole line (a short write raises ``OSError``), then
+    an fsync, and the folder's fsync when the log is created. A torn last line is named first: a
+    newline, then its ``torn`` record. Returns the stamped record."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    stamped = {"time": datetime.now(UTC).isoformat(timespec="seconds"), **record}
-    with path.open("a") as f:
-        f.write(json.dumps(stamped) + "\n")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    stamped = {"time": now, **record}
+    created = not path.exists()
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        torn = _torn_tail(path)
+        if torn is not None:  # the newline that ends the torn line, then the record naming it
+            _write(fd, path, b"\n" + _line({"time": now, "event": "torn", **torn}))
+        _write(fd, path, _line(stamped))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if created:
+        folder = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(folder)
+        finally:
+            os.close(folder)
+    return stamped
+
+
+def _line(record: Mapping[str, Any]) -> bytes:
+    return (json.dumps(record) + "\n").encode("utf-8")
+
+
+def _write(fd: int, path: Path, data: bytes) -> None:
+    written = os.write(fd, data)
+    if written != len(data):
+        raise OSError(f"{path}: a short write ({written} of {len(data)} bytes); the line is torn, "
+                      "and the log's next append names it")  # fmt: skip
+
+
+def _torn_tail(path: Path) -> dict[str, Any] | None:
+    """The log's torn last line as its ``torn`` record names it (``offset``, ``length``,
+    ``sha256``, ``kind``), or None when the log is empty or its last byte is a newline."""
+    with path.open("rb") as f:
+        if f.seek(0, os.SEEK_END) == 0:
+            return None
+        f.seek(-1, os.SEEK_END)
+        if f.read(1) == b"\n":
+            return None
+        f.seek(0)
+        data = f.read()
+    offset = data.rfind(b"\n") + 1
+    torn = data[offset:]
+    return {"offset": offset, "length": len(torn), "sha256": hashlib.sha256(torn).hexdigest(),
+            "kind": torn_kind(torn)}  # fmt: skip
