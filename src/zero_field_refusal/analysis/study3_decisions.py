@@ -179,10 +179,10 @@ from typing import Any, NamedTuple
 from ..paths import REPO_ROOT
 from .study3_records import DECISIONS as DECISIONS_FOLDER
 from .study3_records import EXPERIMENT, SEEDS, _read_journal, _time, journal_lines
+from .study3_records import under_sealed as _under_sealed  # the one sealed-path rule
 
 DIRECTORY = (EXPERIMENT, DECISIONS_FOLDER)  # reserved in the experiment's folder
 STATES = ("passed", "failed")
-SEALED = ("responses", "observations")  # a run's folders no decision rests on
 
 # "Simulation before validation": the candidate levels, the validation sizes and the gates
 LEVELS = (0.975, 0.980, 0.985, 0.990)
@@ -1392,15 +1392,6 @@ def _against_n(root: Path, kind: str, record: Mapping[str, Any], candidate: int,
 
 
 # ------------------------------------------------------------------ small helpers
-
-
-def _under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
-    """Whether ``path`` (as written, ``named``, or where its links lead) is under a ``responses``
-    or ``observations`` folder, below ``base`` (a folder of the base itself does not count).
-    Decided from the names alone: nothing is opened."""
-    resolved, root = path.resolve(), base.resolve()
-    below = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
-    return any(part in SEALED for part in (*(named.parts if named else ()), *below.parts))
 
 
 def _runs_of(record_path: Path) -> Path:
