@@ -1006,6 +1006,26 @@ def test_a_line_is_study3s_by_the_run_it_names(world, experiment, event) -> None
     assert voided_runs(world.root)[0] == {} and read_holds(world.root)[0] == []
 
 
+@pytest.mark.parametrize("value", [["x"], {"a": 1}])
+def test_a_malformed_label_on_a_line_or_a_start_is_a_named_problem(world, value) -> None:
+    """A ``superseded`` line, or a study-3 start, whose ``run`` is no string: a named problem,
+    never an exception, through ``read_endpoints`` and ``read_holds``. The line counts for nothing
+    and the run still counts; the start is refused by name."""
+    run_id = world.run("A", 1.45e-5, 10300)
+    world.log("study3-hand", {"event": "superseded", "run": value, "run_id": run_id,
+                              "experiment": "study3", "reason": "r"})  # fmt: skip
+    world.log("study3-hand", {"event": "start", "run": value, "run_id": "odd-run", "attempt": 1,
+                              "experiment": "study3", "config_hash": "x",
+                              "header": {"study": 3, "candidate": 1,
+                                         "step": "validation"}})  # fmt: skip
+    found, problems = world.read()
+    assert by_id(found)[run_id].state == "usable"
+    assert any(p.startswith("launch/study3-hand.jsonl line 1: ") and "counts for nothing" in p
+               for p in problems), problems  # fmt: skip
+    assert any(p.startswith("odd-run: ") for p in problems), problems
+    assert read_holds(world.root)[0] == []
+
+
 def test_a_line_whose_label_is_not_its_runs_counts_for_nothing(world) -> None:
     """The right experiment and the record that names its run, but another label: a problem."""
     run_id = world.run("A", 1.45e-5, 10200, role="numerical")

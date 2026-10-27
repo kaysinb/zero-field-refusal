@@ -628,9 +628,9 @@ def _read_journal(
     launcher run it is): any other is listed in ``unbacked``, with why, and counts for nothing.
     A line is study 3's by the run it names (a study-3 start), whatever its own ``experiment``;
     one that names no study-3 start takes no study-3 run out of the counts. A line cut short by a
-    skipped only as the last line of its log (the launcher's rule); an unparseable line before
-    the last is skipped too but listed in ``corrupt`` with its log's name and its number, never
-    its content. A log that resolves under a sealed folder is never opened: it is listed in
+    crash is skipped only as the last line of its log (the launcher's rule); an unparseable line
+    before the last is skipped too but listed in ``corrupt`` with its log's name and its number,
+    never its content. A log that resolves under a sealed folder is never opened: it is listed in
     ``sealed``, by its path under RUNS_DIR."""
     journal = _Journal()
     lines: list[tuple[str, int, dict[str, Any]]] = []  # the superseded and held lines
@@ -665,13 +665,16 @@ def _read_journal(
 
 
 def study3_labels(starts: Sequence[tuple[str, Mapping[str, Any]]]) -> dict[str, set[Any]]:
-    """Each study-3 start's run id, with the labels its starts name: a ``superseded`` or
-    ``held`` line is study 3's when it names one of these runs."""
-    out: dict[str, set[Any]] = defaultdict(set)
+    """Each study-3 start's run id, with the labels (strings) its starts name: a ``superseded``
+    or ``held`` line is study 3's when it names one of these runs. A start whose label is no
+    string names no label (its binding refuses it by name)."""
+    out: dict[str, set[Any]] = {}
     for _, start in starts:
         if isinstance(start.get("run_id"), str):
-            out[start["run_id"]].add(start.get("run"))
-    return dict(out)
+            labels = out.setdefault(start["run_id"], set())
+            if isinstance(start.get("run"), str):
+                labels.add(start["run"])
+    return out
 
 
 def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
@@ -817,7 +820,7 @@ def _unbacked(
         return None
     if line.get("experiment") != EXPERIMENT:
         return f"it names a run of {EXPERIMENT}, and its experiment is not {EXPERIMENT}'s"
-    if line.get("run") not in labels[line["run_id"]]:
+    if not isinstance(line.get("run"), str) or line["run"] not in labels[line["run_id"]]:
         return "its label is not its run's label"
     cited = line.get("record")
     parts = PurePosixPath(cited.replace("\\", "/")).parts if isinstance(cited, str) else ()

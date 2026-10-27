@@ -2504,6 +2504,24 @@ def test_a_hand_written_line_of_another_experiment_does_not_bring_the_search_bac
     assert voided_runs(runs.root)[0] == {}
 
 
+def test_a_line_with_a_malformed_label_blocks_the_route_by_name(worlds) -> None:
+    """A ``held`` and a ``superseded`` line whose ``run`` is no string, naming search runs: the
+    reader raises nothing; each is a named problem, and the route blocks at the search."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    ids = sorted(p.name for p in (runs.root / "study3").iterdir())
+    for event, run_id, value in (("held", ids[0], ["x"]), ("superseded", ids[1], {"a": 1})):
+        runs.log("study3-hand", {"event": event, "run": value, "run_id": run_id,
+                                 "experiment": "study3", "reason": "r"})  # fmt: skip
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["outcome"]) == (
+        "search", "blocked", None)  # fmt: skip
+    for run_id in ids[:2]:
+        assert any(run_id in p and "counts for nothing" in p for p in result["problems"])
+
+
 @pytest.mark.parametrize("case, status, end, first, recovery", [
     ("failed, no round spent", "failed", "technical", None, True),
     ("its own round spent on an earlier attempt", "failed", "technical", "own", False),

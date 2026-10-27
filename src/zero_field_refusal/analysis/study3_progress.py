@@ -1419,12 +1419,14 @@ class _Walk:
         """Every held run placed on its cell, by its run id (an attempt ``read_endpoints`` lists
         as held) or, for a study-3 run the walk leaves out (a refused attempt, in the lenient
         walk), by its label; each with the hold line and the candidate's supersession record that
-        cite it (``read_holds``). A hold is study 3's by the run it names, a study-3 start,
+        cite it (``read_holds``). A hold is study 3's by the run it names, one of the study-3
+        runs the endpoint reader lists (its starts, and the run folders with no start, refused),
         whatever its ``experiment``: one that names none holds no cell and is no problem. A
         study-3 hold that no start places is a problem."""
         infos = {h.get("run_id"): h for h in self.records.holds if isinstance(h, Mapping)}
         placed, problems, known = [], [], set(self.by_id)
-        study3 = {e.run_id for e in self.records.endpoints}  # every study-3 start
+        # the study-3 runs the endpoint reader lists: its starts, and run folders with no start
+        study3 = {e.run_id for e in self.records.endpoints}
         for e in self.endpoints:
             if e.state == "held":
                 placed.append(_hold(e, infos.get(e.run_id), e.run_id))

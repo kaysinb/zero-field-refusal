@@ -63,9 +63,10 @@ record, and one it accepts, followed by the registered steps after it, stays val
 - *its name*: only ``supersede-<n>.json`` (``VOIDING_FILE``) is a supersession record; any other
   ``supersede-*.json`` is a problem;
 - *the candidate's*: it lies in ``c<N>/``, and every candidate it names is N: its ``candidate``,
-  its old record's (the folder it lies in and the case it holds), its kept cases', and the starts
-  of the launcher runs it supersedes or holds (a record of ``c<N>/`` applies to candidate N's runs
-  alone);
+  its old record's (the folder it lies in and the case it holds) and its kept cases'; and every
+  run of its ``launchers`` and ``held`` is a start of candidate N's numerical, repair or
+  engineering step in study 3's experiment (a record of ``c<N>/`` applies to candidate N's
+  qualification runs alone);
 - *its only cycle*: ``qualify.py supersede`` writes ``c<N>/supersede-1.json`` and refuses a
   second, in either stage; with a second record for the candidate, under any number, neither
   voids anything;
@@ -630,12 +631,14 @@ class _Cycles:
         )
         if issued is not None:
             self.cases[STAGE] = list(issued)
-        # each start's run id -> whether its header issues a case of the candidate's
-        # qualification (``_issues_case``: numerical, repair or engineering)
+        # each start's run id -> whether a start of it issues a case of the candidate's
+        # qualification (``_issues_case``: numerical, repair or engineering) in study 3's
+        # experiment (``EXPERIMENT``)
         self.starts: dict[str, bool] = {}
         for _, record in journal:
             if record.get("event") == "start" and isinstance(record.get("run_id"), str):
-                mine = _issues_case(record, candidate, (*STEPS, ENGINEERING))
+                mine = (_issues_case(record, candidate, (*STEPS, ENGINEERING))
+                        and record.get("experiment") == EXPERIMENT)  # fmt: skip
                 self.starts[record["run_id"]] = self.starts.get(record["run_id"], False) or mine
 
     def issued(self, stage: str) -> list[tuple[Any, float, int]]:
@@ -680,8 +683,9 @@ class _Cycles:
     def _record(self, record: Mapping[str, Any]) -> list[str]:
         """Why a supersession record voids nothing, or none: it names the old record (its path
         and sha256), the diagnosis, the fix and the cases re-qualified ("Voiding and
-        supersession"); every candidate it names is this one (its ``candidate``, its kept cases',
-        and the starts of the launcher runs it supersedes or holds); and its old record is the
+        supersession"); every candidate it names is this one (its ``candidate`` and its kept
+        cases'); every run of its ``launchers`` and ``held`` is a start of this candidate's
+        numerical, repair or engineering step in study 3's experiment; and its old record is the
         technical failure ``qualify.py supersede`` starts a cycle from (``_old_record``)."""
         found = []
         old = record.get("old_record")

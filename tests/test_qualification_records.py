@@ -1112,6 +1112,34 @@ def test_a_cycle_record_naming_a_run_of_no_qualification_step_is_rejected(
     assert "val-run-a1" not in voided and any(p.startswith(f"{path}: ") for p in problems)
 
 
+@pytest.mark.parametrize("experiment", [None, "study2_short"])
+@pytest.mark.parametrize("key", ["launchers", "held"])
+def test_a_cycle_binds_only_study3_starts(qualify, monkeypatch, tmp_path, key, experiment):
+    """A start that shares a counting validation run's run id, with a numerical header of
+    candidate 1 but another experiment or none, binds nothing: the cycle record that names the
+    run is rejected, and the run still counts."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    world.log({"event": "start", "run": "A-1.45e-05/s10300", "attempt": 1,
+               "run_id": "val-run-a1", "experiment": "study3", "config_hash": "v" * 12,
+               "header": {"study": 3, "candidate": 1, "step": "validation", "round": None}},
+              "study3-c1-validation")  # fmt: skip
+    twin = {"event": "start", "run": "adamw-0.0001/s10200", "attempt": 9,
+            "run_id": "val-run-a1", "config_hash": "w" * 12,
+            "header": {"study": 3, "candidate": 1, "step": "numerical",
+                       "round": None}}  # fmt: skip
+    world.log({**twin, **({} if experiment is None else {"experiment": experiment})},
+              "study2-other")  # fmt: skip
+    entry = {"run_id": "val-run-a1", "campaign": "study3-c1-validation",
+             "run": "A-1.45e-05/s10300", "experiment": "study3", "config_hash": "v" * 12,
+             "reason": "no recorded commit (git: {})"}  # fmt: skip
+    rewrite(path, {**record, key: [*record[key], entry]})
+    check = qr.cycle_checks(world.root)["qualification/c1/supersede-1.json"]
+    assert check["accepted"] is False
+    assert any("val-run-a1" in p for p in check["problems"])
+    voided, _ = voided_runs(world.root)
+    assert "val-run-a1" not in voided
+
+
 def assert_lines_count_for_nothing(world, runs) -> None:
     """None of ``runs`` is superseded or held by a journal line, each line a named problem."""
     voided, problems = voided_runs(world.root)
