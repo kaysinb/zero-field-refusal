@@ -621,12 +621,33 @@ def test_qualify_reads_the_engineering_and_numerical_campaigns_and_their_checkpo
     _, runs = load_campaign(elsewhere)
     assert all("tracking.endpoint_checkpoint=/mnt/ckpt" in o for o in overrides_of(runs))
     assert qualify_cases(elsewhere, engineering=False) == []
-    first = world.write("numerical", "--seeds", "10200")
-    _, runs = load_campaign(first)
-    assert {run.seed for run in runs} == {10200} and len(runs) == 6
-    assert qualify_cases(first, engineering=False) == []
     assert "absolute" in world.refused("numerical", "--checkpoints", "ckpt")
     assert "--checkpoints" in world.refused("search-round0", "--checkpoints", "/mnt/ckpt")
+
+
+def test_the_qualification_campaigns_are_written_whole(world) -> None:
+    """Engineering, numerical and repair campaigns are one file per step: qualify.py refuses a
+    later part alone (its FA rates' same-path control lies on the first numerical seed), so
+    --seeds is refused for them, each at its own step; the whole campaign is written."""
+    engineering = Study()
+    numerical = Study()
+    numerical.ready()
+    numerical.search()
+    repair = Study()
+    repair.ready()
+    repair.search(offsets={("A", "l"): [0.0, 0.03, 0.06, 0.3]})
+    repair.numerical(special={("A", "l", seed): {"K": 4.8 * math.exp(0.3)}
+                              for seed in SEEDS["numerical"][1]})  # fmt: skip
+    world.ready()
+    for kind, study, runs in (("engineering", engineering, 24), ("numerical", numerical, 18),
+                              ("repair", repair, 3)):  # fmt: skip
+        world.core(study)
+        assert study.advance()["step"].get("campaign", "engineering") == kind
+        for seeds in (["10200"], ["10201"], ["10000"]):
+            error = world.refused(kind, "--seeds", *seeds)
+            assert "--seeds goes with search, validation and confirmation" in error
+            assert "written whole, one file per step" in error
+        assert len(load_campaign(world.write(kind))[1]) == runs
 
 
 # ------------------------------------------------------------------ what the step allows
@@ -912,6 +933,20 @@ def test_a_recovery_round_of_one_block_gives_a_later_block_no_second_attempt(wor
     shared = dataclasses.replace(later, cell=first.cell)
     found = launch.run_campaign(name2, [shared], world.root, dry_run=True, max_attempts=1)
     assert found["pending"] == [shared.label]  # what one name per cell would have allowed
+
+
+def test_a_folder_named_responses_above_the_runs_and_the_checkout_does_not_count(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The sealed folders are a run's: a ``responses`` folder above the runs directory and the
+    checkout (as ``study3_decisions._under_sealed`` reads it) refuses nothing."""
+    world = World(tmp_path / "responses" / "observations" / "base", monkeypatch, capsys)
+    confirmation_study(world, N=99, budget=True)
+    (only,) = world.write("confirmation").glob("*.yaml")
+    header = campaign_of(only)["header"]
+    assert header["versions_record_sha256"] == sha256(world.repo / VERSIONS)
+    assert header["n_record_sha256"] == world.records.digest("n-c1")
+    assert header["budget_record_sha256"] == world.records.digest("budget-c1")
 
 
 def test_a_record_linked_under_responses_is_refused_unopened(world, monkeypatch) -> None:

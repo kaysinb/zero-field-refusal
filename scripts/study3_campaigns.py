@@ -26,9 +26,14 @@ at candidate 1's two starting rates on 10000-10003), one launcher cell per run, 
 in seed order. --seeds takes the step's first blocks (a block is a seed), in order: it never adds
 a block, skips one or reorders them, so a block of the validation or the confirmation is issued
 whole (six cells, four once P is closed; for a block already started, the cells it still lacks,
-as the step names them). A label that a ``held`` line of the launch journal or a supersession
-record holds (``study3_records.read_holds``), or a cell whose run a closure record closed
-(``study3_decisions.closures``), is never issued again: a step naming one is refused.
+as the step names them). The qualification's campaigns (engineering, numerical, repair) are
+written whole, one file per step, and --seeds is refused for them: ``scripts/qualify.py`` reads a
+campaign as its whole step (each FA rate's same-path control lies on the first numerical seed, so
+a later part alone is no qualification campaign), and a stopped qualification goes on by running
+its driver again on the same file, which skips the complete cases. A label that a ``held`` line
+of the launch journal or a supersession record holds (``study3_records.read_holds``), or a cell
+whose run a closure record closed (``study3_decisions.closures``), is never issued again: a step
+naming one is refused.
 
 **Names.** The launcher keeps one log per campaign name (``RUNS_DIR/launch/<name>.jsonl``), and
 the validation fixation pins the numerical and repair logs by sha256, so that a later line breaks
@@ -113,7 +118,8 @@ import yaml
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis.campaign_prep import comment, revision, streams_driver
-from zero_field_refusal.analysis.study3_decisions import (
+from zero_field_refusal.analysis.study3_decisions import (  # its one sealed-path rule
+    _under_sealed,
     budget_reason,
     closures,
     decision_path,
@@ -155,7 +161,6 @@ RECORDS = {"search": {"engineering_record": "engineering"},
 REGULAR, K_ONLY = "experiments/study3", "experiments/study3_k_only"
 OPTIMIZERS = {arm: name for name, arm in ARMS.items()}
 STAMP = "$(date -u +%FT%TZ)"
-SEALED = {"responses", "observations"}  # a run's folders, where no record a campaign names lies
 WRITER = "scripts/study3_campaigns.py"
 
 Cell = tuple[str, float]  # an arm and its rate
@@ -350,10 +355,13 @@ def launcher_cells(candidate: int, step: str, round_: int | None, blocks: list[B
     return out
 
 
-def sha256(kind: str, path: Path) -> str:
-    """The sha256 of a record file the header names; refused, unopened, when it resolves under a
-    ``responses/`` or ``observations/`` folder."""
-    if SEALED & set(path.resolve().parts):
+def sha256(kind: str, path: Path, base: Path) -> str:
+    """The sha256 of a record file the header names, below ``base`` (the runs directory or the
+    checkout); refused, unopened, when it resolves under a ``responses/`` or ``observations/``
+    folder below ``base`` (or anywhere, when it leads outside it), as
+    ``study3_decisions._under_sealed`` decides: a folder of that name above ``base`` does not
+    count."""
+    if _under_sealed(path, base):
         refuse(kind, f"{path} resolves under a responses/ or observations/ folder: no record a "
                "campaign rests on is one, and it is not opened")  # fmt: skip
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -382,7 +390,10 @@ def decision(kind: str, root: Path, record_kind: str, key: str) -> tuple[dict, d
         refuse(kind, f"the {record_kind} record the campaign rests on is not valid and passed: "
                f"{why}")  # fmt: skip
     path = decision_path(root, record_kind)
-    named = {key: decision_path(".", record_kind).as_posix(), f"{key}_sha256": sha256(kind, path)}
+    named = {
+        key: decision_path(".", record_kind).as_posix(),
+        f"{key}_sha256": sha256(kind, path, root),
+    }
     return record, named
 
 
@@ -397,7 +408,7 @@ def header_of(kind: str, candidate: int, root: Path) -> dict[str, Any]:
         if problems:
             refuse(kind, "the versions record does not hold: " + "; ".join(problems))
         header.update(versions_record=path.relative_to(REPO).as_posix(),
-                      versions_record_sha256=sha256(kind, path))  # fmt: skip
+                      versions_record_sha256=sha256(kind, path, REPO))  # fmt: skip
     for key, record_kind in RECORDS.get(step, {}).items():
         header.update(decision(kind, root, record_kind, key)[1])
     if step == "confirmation":
@@ -617,6 +628,11 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--blocks goes with confirmation")
     if args.blocks is not None and args.seeds:
         parser.error("--seeds or --blocks, not both")
+    if args.seeds and args.kind in QUALIFICATION:
+        parser.error(f"--seeds goes with search, validation and confirmation: {args.kind} is a "
+                     "qualification campaign, written whole, one file per step, as "
+                     "scripts/qualify.py reads it (each FA rate's same-path control lies on the "
+                     "first numerical seed)")  # fmt: skip
     if args.checkpoints is not None and args.kind not in QUALIFICATION:
         parser.error("--checkpoints goes with engineering, numerical and repair")
     if args.checkpoints is not None and not args.checkpoints.is_absolute():
