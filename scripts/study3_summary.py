@@ -49,7 +49,9 @@ All of these must hold:
   confirmation of candidate N, the running checkout's HEAD included: it prevents a block from
   running under a commit other than the pinned one. It does not stand for comparing each run's
   own commit with the pinned one, which ``progress`` does (``study3_versions.uncounted_runs``):
-  a run under another commit does not count, and the state blocks on it.
+  a run under another commit does not count, and the state blocks on it, technical, until its
+  way out (a recovery round where the launcher would open one, or its closure record): no block
+  starts meanwhile.
 
 **check** is the same check of the versions record before any other launch of a validation or
 confirmation campaign FILE (--campaign): the validation's launch and every resumption of it, and
@@ -60,7 +62,7 @@ that record's sha256 now, and ``versions_problems`` finds no problem in that rec
 step and the candidate, the running checkout's HEAD included; otherwise it exits non-zero with
 the reason. Run it from the checkout (``$SRC``) the launch runs from. The launcher never reruns a
 completed run, so a run launched under another commit stays, does not count, and blocks the
-state.
+state until its closure record is written.
 
 **versions** writes a versions record (``study3_versions.versions_record``) at --out, a name the
 readers accept: docs/study3-versions.json, or docs/study3-versions-<k>.json (k = 2, 3, ...) for a
@@ -87,9 +89,10 @@ names and the records it answers: written once, never over another; a refusal pr
 
 **closure** writes the closure record closure-c<N>-<ARM> with exactly the fields the state's step
 gives: a held run's decision step, or a technical run's way out (its last end line, or its start
-line). It refuses when the step names no closure of that candidate and arm, and, when the step
-names several (two technical runs of the arm), unless --run-id chooses the run. The record's state
-is ``failed`` (a terminal technical outcome) and its code HEAD's commit and that commit's GPU code.
+line; for a run under another commit, its uncounted reason). It refuses when the step names no
+closure of that candidate and arm, and, when the step names several (two technical runs of the
+arm), unless --run-id chooses the run. The record's state is ``failed`` (a terminal technical
+outcome) and its code HEAD's commit and that commit's GPU code.
 
 Every record is JSON, written whole and only where none is (``study3_decisions._publish``).
 Nothing here opens a response, a harm label or a judge output: a campaign file, a record file or a

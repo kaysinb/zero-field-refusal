@@ -36,7 +36,8 @@ outcome (``TERMINAL``, below). ``candidate``.
   (``scientific_failure``);
 - ``technical_feasibility_report``: a dead end in the code: a failed engineering record
   (``engineering_failed``), an unresolved technical mark in A or F: a held run closed
-  (``held_run``), a technical run outside the qualification closed (``technical_end``), a
+  (``held_run``), a technical run outside the qualification closed (``technical_end``), a run
+  under another commit closed (its uncounted reason id, ``study3_versions.UNCOUNTED_REASONS``), a
   qualification technical after the candidate's engineering cycle (``unresolved_after_cycle``);
 - ``design_stop``: the confirmation cannot start as designed: the simulation record failed (no
   level passed, or its verification failed: ``simulation_failed``), or the n record failed, its
@@ -147,14 +148,20 @@ only by a technical mark.
 run under a commit other than the pinned one does not count; it is kept and reported). The reader
 compares each such run's own commit (its ``meta.json``'s ``git``) with the commit the versions
 record its header names pins (``study3_versions.uncounted_runs``: the pinned commit or a
-record-only descendant of it, from a clean checkout). A run that does not count is listed in
-``not_counted`` with its reason id and the commit it ran, and its stage (the candidate's
-validation or confirmation) is blocked, naming it, before anything else of the stage is read. Its
-way out is a decision the researcher records (``supersession_needed``): the launcher skips a
-completed run, so no recovery round reruns it, and no tool here supersedes a run outside the
-qualification; for a run with no published outcome, where the launcher would open one, a
-recovery round launched from a checkout of the pinned commit reruns it. Its cell is never issued
-again while it stands.
+record-only descendant of it, from a clean checkout). A run that does not count is kept, excluded
+from every count and listed in ``not_counted`` with its reason id and the commit it ran, wherever
+the walk stops. It is a technical mark outside the qualification of its arm, read before anything
+else of its stage (the candidate's validation or confirmation), with that route's ways out:
+- a recovery round of its label, only where the launcher would open one (no published outcome:
+  the launcher skips a completed run), launched after ``study3_summary.py check`` passes, from a
+  checkout of the pinned commit: its next attempt decides;
+- its closure record (``closure-c<N>-<arm>``), citing the run's last ``end`` line, or its start
+  line when the launcher never ended it, with the run's uncounted reason id as its reason.
+Until one is taken, the step is ``blocked``, ``technical``, naming each run, its reason id and its
+commit, with the closure record's fields exactly as the closure schema takes them. Once the
+closure is valid (it names the run, with its reason), the route is "After a technical mark": in
+A or F, the technical feasibility report, its reason the run's; in P alone, P–F closes and the
+stage goes on with A and F. A published result is never rerun: no cell is issued again for it.
 
 **The hold route** (a held launcher run: an outcome the candidate's engineering cycle could not
 resolve, kept as it is and never attempted again). It is unresolved technical evidence, neither a
@@ -174,7 +181,8 @@ blocks.
 search, the validation or the confirmation that the readers count as unresolved and technical:
 an endpoint ``technical``; at the search, a K-only run that is not usable or has no positive K;
 in a block, a usable run that lacks its K or a utility loss, or a run the block cannot place;
-in the confirmation, every run its blocks list as unresolved. The engineering cycle of
+in the confirmation, every run its blocks list as unresolved; and a validation or confirmation
+run under another commit (above, with its own reason id). The engineering cycle of
 ``qualify.py`` is the qualification's; a code fix for a run outside it has no tooling in this
 package (a limit of package 2). Such a run has two ways out, and the step stays ``blocked``,
 ``technical``, naming the run and the ways that apply (``ways_out``) until one is taken: a
@@ -182,9 +190,9 @@ recovery round of its label with its documented cause (an infrastructure interru
 attempt is ``recovered`` and its next attempt decides), only where the launcher would open one
 (``launch.run_campaign``: no published terminal record, a ``meta.json`` that records the run
 neither diverged nor completed, and its cell's round, or its own, not yet spent); and a closure
-record citing the run's last ``end``
-line whatever its outcome, or its start line when the launcher never ended it (kind ``end`` or
-``start``, no cycle; the step gives its fields exactly as the closure schema takes them). Its
+record citing the run's last ``end`` line whatever its outcome, or its start line when the
+launcher never ended it (kind ``end`` or ``start``, no cycle; the step gives its fields exactly
+as the closure schema takes them, and the closure must carry the reason they give). Its
 route is "After a technical mark", wherever the run was. Two attempts that count for one cell, a
 refused run or a state no reader defines are no technical mark but a problem of the records'
 integrity: they block, with no way out. A closure record that names no mark the route met, and no
@@ -314,9 +322,6 @@ CAMPAIGNS = ("search-round0", "search-round1", "numerical", "repair", "validatio
 ROUTED = ("search", "numerical", "repair", "validation", "confirmation")  # a mark routes there
 OUTSIDE = ("search", "validation", "confirmation")  # the steps outside the qualification
 ENDED = ("usable", "unusable", "scientific")  # a run whose records are published and read
-# The way out of a run under another commit: the researcher's recorded decision (the launcher
-# never reruns a completed run, and no tool here supersedes one outside the qualification)
-SUPERSESSION_NEEDED = "supersession_needed"
 
 
 @dataclass(frozen=True)
@@ -1100,27 +1105,42 @@ class _Walk:
 
     def _other_commits(self, stage: str, key: str) -> None:
         """The runs of the stage's cells (``key``) that do not count for the commit they ran
-        (module docstring, "A run under another commit"): the step is blocked, naming each run,
-        its reason and its way out; nothing of the stage is read past them."""
-        found = sorted((e for e in self.by_key.get(key, ()) if e.run_id in self.records.uncounted),
-                       key=lambda e: e.run_id)  # fmt: skip
-        if not found or self.lenient:
+        (module docstring, "A run under another commit"), read before anything else of the
+        stage: technical marks outside the qualification of their active arms. A valid closure
+        decides as any technical mark's (A or F: the technical feasibility report, its reason the
+        run's; P: P–F closes and the stage goes on); otherwise the step is blocked, technical,
+        naming each run, its reason, its commit and its ways out (the lenient walk goes on)."""
+        found = sorted((e for e in self.by_key.get(key, ()) if e.run_id in self.records.uncounted
+                        and e.arm in self.arms), key=lambda e: e.run_id)  # fmt: skip
+        if not found:
             return
-        reasons, ways = [], []
+        conditions: dict[str, _Arm] = {}
         for e in found:
             entry = self.records.uncounted[e.run_id]
-            reasons.append(f"{e.run_id}: a {e.cell.step} run under a commit other than the pinned "
-                           f"one does not count ({entry.get('reason')}: {entry.get('why')}); it "
-                           "is kept and reported, and the launcher never reruns a completed "
-                           "run")  # fmt: skip
-            way = {"run_id": e.run_id, "label": e.label, "reason": entry.get("reason"),
-                   "commit": entry.get("commit"), "decision": SUPERSESSION_NEEDED}  # fmt: skip
-            if e.run_id in self.records.recoverable and e.state not in ENDED:
-                way["recovery"] = (f"a recovery round of {e.label} with its documented cause, "
-                                   "launched after study3_summary.py check passes: its next "
-                                   "attempt decides")  # fmt: skip
-            ways.append(way)
-        raise _Stop(self._result(stage, {"kind": "blocked", "technical": False,
+            mark = self._mark(e, uncounted=entry)
+            c = conditions.setdefault(str(e.arm), _Arm())
+            c.closable.append(mark)
+            ways = ([f"a recovery round of {e.label} with its documented cause, launched after "
+                     "study3_summary.py check passes, reruns it"] if mark["recovery"]
+                    else [])  # fmt: skip
+            if mark["closure"] is not None:
+                ways.append(f"a closure record ({mark['closure']['record']}) closes it")
+            c.technical.append(
+                f"{e.run_id}: a {e.cell.step} run under a commit other than the pinned one does "
+                f"not count ({entry.get('reason')}, commit {entry.get('commit')}: "
+                f"{entry.get('why')}); it is kept, excluded from every count and listed, a "
+                "technical mark outside the qualification until its way out: "
+                + (" or ".join(ways) or "no way out the records give"))  # fmt: skip
+        for arm in ("A", "F"):
+            if arm in conditions:
+                self._close(stage, arm, conditions[arm])
+        if "P" in conditions and self._close(stage, "P", conditions["P"]):
+            del conditions["P"]
+        if not conditions or self.lenient:
+            return
+        reasons = [x for c in conditions.values() for x in c.technical]
+        ways = [self._way_out(m) for c in conditions.values() for m in c.closable]
+        raise _Stop(self._result(stage, {"kind": "blocked", "technical": True,
                                          "reasons": reasons, "ways_out": ways}))  # fmt: skip
 
     # -- a stage's decision
@@ -1199,15 +1219,26 @@ class _Walk:
                 self._technical_run(c, e)
         return problems
 
+    def _mark(self, e: Endpoint, uncounted: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """A technical mark outside the qualification: its run, cell and ways out (a recovery
+        round where the launcher would open one, its closure record). ``uncounted``: a run under
+        another commit (``uncounted_runs``' entry): its reason and commit, and no recovery round
+        for a run whose outcome is published."""
+        recovery = e.run_id in self.records.recoverable
+        mark = {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
+                "step": e.cell.step, "arm": e.arm, "rate": e.lr, "seed": e.seed,
+                "recovery": recovery and (uncounted is None or e.state not in ENDED)}  # fmt: skip
+        if uncounted is not None:
+            mark |= {"uncounted": uncounted.get("reason"), "commit": uncounted.get("commit")}
+        mark["closure"] = self._closure_of(mark)
+        self.marks.add(e.run_id)
+        return mark
+
     def _technical_run(self, c: _Arm, e: Endpoint) -> None:
         """A run outside the qualification that the readers count as a technical mark: no
         engineering cycle applies, and it waits for one of its ways out (module docstring,
         "Technical marks outside the qualification")."""
-        mark = {"run_id": e.run_id, "label": e.label, "candidate": e.candidate,
-                "step": e.cell.step, "arm": e.arm, "rate": e.lr, "seed": e.seed,
-                "recovery": e.run_id in self.records.recoverable}  # fmt: skip
-        mark["closure"] = self._closure_of(mark)
-        self.marks.add(e.run_id)
+        mark = self._mark(e)
         c.closable.append(mark)
         ways = ([f"a recovery round of {e.label} with its documented cause reruns it"]
                 if mark["recovery"] else [])  # fmt: skip
@@ -1218,15 +1249,17 @@ class _Walk:
 
     def _closure_of(self, mark: Mapping[str, Any]) -> dict[str, Any] | None:
         """The closure record of a technical mark, with the fields the closure schema accepts:
-        its last end line, or its start line when the launcher never ended it; None when the
-        run's cell or line is unknown."""
+        its last end line, or its start line when the launcher never ended it, the reason the
+        line gives (a run under another commit: its uncounted reason); None when the run's cell
+        or line is unknown."""
         if None in (mark["candidate"], mark["arm"], mark["rate"], mark["seed"]):
             return None
         end, start = self.records.ends.get(mark["run_id"]), self.records.starts.get(mark["run_id"])
-        if end is not None and end_reason(end.get("outcome")) is not None:
-            line, reason = {"kind": "end", **end}, end_reason(end["outcome"])
+        uncounted = mark.get("uncounted")
+        if end is not None and (uncounted or end_reason(end.get("outcome"))) is not None:
+            line, reason = {"kind": "end", **end}, uncounted or end_reason(end["outcome"])
         elif end is None and start is not None:
-            line, reason = {"kind": "start", **start}, START_REASON
+            line, reason = {"kind": "start", **start}, uncounted or START_REASON
         else:
             return None
         kind = f"closure-c{mark['candidate']}-{mark['arm']}"
@@ -1243,6 +1276,8 @@ class _Walk:
         validation or confirmation run after ``study3_summary.py check`` passes, and its closure
         record."""
         out: dict[str, Any] = {"run_id": mark["run_id"], "label": mark["label"]}
+        if "uncounted" in mark:  # a run under another commit: its reason and commit
+            out |= {"reason": mark["uncounted"], "commit": mark["commit"]}
         if mark["recovery"]:
             checked = (", launched after study3_summary.py check passes on its campaign file"
                        if mark["step"] in ("validation", "confirmation") else "")  # fmt: skip
@@ -1296,12 +1331,16 @@ class _Walk:
         wanted = "held" if line.get("kind") == "held" else "mark"  # an end or a start line
         match = next((m for kind_, m in marks if kind_ == wanted
                       and m["run_id"] == record.get("run_id")), None)  # fmt: skip
+        reason = None  # a mark's closure carries the reason its line gives, or the run's own
+        if match is not None and wanted == "mark" and match["closure"] is not None:
+            reason = match["closure"]["fields"]["reason"]
         if match is None or not (
             record.get("seed") == match["seed"]
             and record.get("arm") == match["arm"]
             and record.get("candidate") == match["candidate"]
             and isinstance(record.get("rate"), int | float)
             and math.isclose(record["rate"], match["rate"], rel_tol=RATE_TOLERANCE)
+            and record.get("reason") == (reason or record.get("reason"))
         ):
             raise _Stop(
                 self._blocked(
@@ -1309,7 +1348,8 @@ class _Walk:
                     [
                         f"{entry['path']}: it names {record.get('run_id')} ({record.get('arm')}, "
                         f"{record.get('rate')}, {record.get('seed')}, its {line.get('kind')} "
-                        f"line), not a mark of candidate {self.candidate}'s {arm} at its {stage}: "
+                        f"line, reason {record.get('reason')}), not a mark of candidate "
+                        f"{self.candidate}'s {arm} at its {stage}: "
                         f"{[(kind_, m['run_id'], m['rate'], m['seed']) for kind_, m in marks]}"
                     ],
                 )
@@ -1318,13 +1358,13 @@ class _Walk:
         if arm == "P":
             self._close_p(stage, kind)
             return True
-        reason = {"held": "held_run", "end": "technical_end"}.get(
-            line.get("kind"), "technical_no_end"
-        )
+        reason = (match.get("uncounted") or {"held": "held_run", "end": "technical_end"}.get(
+            line.get("kind"), "technical_no_end"))  # fmt: skip
+        what = "a run under another commit, " if match.get("uncounted") else ""
         self.route.append(self._event(stage, "report", [arm], kind))
         raise _Stop(self._report(TECHNICAL_REPORT, reason, [
-            f"{kind}: {record['run_id']} ({line.get('kind')} line): an unresolved technical mark "
-            f"of {arm} at candidate {self.candidate}'s {stage}"]))  # fmt: skip
+            f"{kind}: {record['run_id']} ({line.get('kind')} line): {what}an unresolved technical "
+            f"mark of {arm} at candidate {self.candidate}'s {stage}"]))  # fmt: skip
 
     def _place_holds(self) -> tuple[list[dict[str, Any]], list[str]]:
         """Every held run placed on its cell, by its run id (an attempt ``read_endpoints`` lists

@@ -354,6 +354,8 @@ class Study:
             start = self.starts[run_id]
             line = {"kind": "start", **{k: start[k] for k in ("path", "line", "line_sha256")}}
             cycle, reason = None, START_REASON
+        if run_id in self.uncounted:  # a run under another commit: its uncounted reason
+            reason = self.uncounted[run_id]["reason"]
         record = {
             "candidate": found.candidate, "arm": found.arm, "rate": found.lr, "seed": found.seed,
             "run_id": run_id, "line": line, "cycle": cycle, "reason": reason,
@@ -380,9 +382,15 @@ class Study:
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
 
-    def other_commit(self, run_id, reason="other_commit", commit="e" * 40) -> dict:
-        """A run under a commit other than the pinned one, as ``uncounted_runs`` lists it."""
+    def other_commit(self, run_id, reason="other_commit", commit="e" * 40, *,
+                     ended=True) -> dict:  # fmt: skip
+        """A run under a commit other than the pinned one, as ``uncounted_runs`` lists it; its
+        last end line (``done``) unless it has one, or unless ``ended`` is false."""
         (found,) = [e for e in self.endpoints if e.run_id == run_id]
+        if ended and run_id not in self.ends:
+            self.ends[run_id] = {"path": f"launch/study3-c1-{found.cell.step}.jsonl", "line": 9,
+                                 "line_sha256": "d" * 64, "outcome": "done", "attempt": 1,
+                                 "run": found.label}  # fmt: skip
         entry = {"run_id": run_id, "label": found.label, "candidate": found.candidate,
                  "step": found.cell.step, "reason": reason, "commit": commit, "dirty": False,
                  "versions_record": "docs/study3-versions.json",
@@ -1986,11 +1994,31 @@ def test_a_partly_issued_confirmation_block_is_completed_before_the_next() -> No
 # ------------------------------------------------------------------ a run under another commit
 
 
+def other_commit_closure(study, run, entry) -> dict:
+    """The closure record of a run under another commit, as the step names it: its last end
+    line (or its start line), its uncounted reason id, no cycle."""
+    (found,) = [e for e in study.endpoints if e.run_id == run]
+    if run in study.ends:
+        end = study.ends[run]
+        line = {"kind": "end", **{k: end[k] for k in ("path", "line", "line_sha256")}}
+    else:
+        start = study.starts[run]
+        line = {"kind": "start", **{k: start[k] for k in ("path", "line", "line_sha256")}}
+    return {"record": f"closure-c1-{found.arm}",
+            "path": f"study3/decisions/closure-c1-{found.arm}.json",
+            "fields": {"candidate": 1, "arm": found.arm, "rate": found.lr, "seed": found.seed,
+                       "run_id": run, "line": line, "cycle": None, "reason": entry["reason"],
+                       "decision": "close_pf" if found.arm == "P"
+                       else "technical_feasibility_report"}}  # fmt: skip
+
+
 @pytest.mark.parametrize("reason", ["other_commit", "dirty_checkout", "no_commit"])
 def test_a_validation_run_under_another_commit_does_not_count_and_blocks(reason) -> None:
     """The registration's rule (Versions, in "Voiding and supersession"): the run does not count,
-    is kept and listed, and the step is blocked, naming it; its way out is the researcher's
-    recorded decision, and its cell is not issued again (the launcher skips a completed run)."""
+    is kept and listed, and the step is blocked and technical, naming it, its reason id and its
+    commit: a technical mark outside the qualification of its arm, whose way out is its closure
+    record (a completed run is never rerun: the launcher skips it), with the fields the closure
+    schema takes. Its cell is not issued again."""
     study = Study()
     study.ready()
     study.search()
@@ -2000,11 +2028,14 @@ def test_a_validation_run_under_another_commit_does_not_count_and_blocks(reason)
     entry = study.other_commit(run, reason, None if reason == "no_commit" else "e" * 40)
     result = study.advance()
     step = result["step"]
-    assert (result["stage"], step["kind"], step["technical"]) == ("validation", "blocked", False)
-    assert any(run in r and reason in r for r in step["reasons"])
+    assert (result["stage"], step["kind"], step["technical"], result["outcome"]) == (
+        "validation", "blocked", True, None)  # fmt: skip
+    (why,) = step["reasons"]
+    assert run in why and reason in why and str(entry["commit"]) in why
     assert step["ways_out"] == [{"run_id": run, "label": entry["label"], "reason": reason,
                                  "commit": entry["commit"],
-                                 "decision": "supersession_needed"}]  # fmt: skip
+                                 "closure": other_commit_closure(study, run, entry)}]  # fmt: skip
+    assert "supersession_needed" not in tidy(result)
     assert result["not_counted"] == [entry]
     assert "cells" not in step
     # the lenient derivation of the cells is not stopped by it
@@ -2012,27 +2043,104 @@ def test_a_validation_run_under_another_commit_does_not_count_and_blocks(reason)
     assert len(lenient["prescribed"]["c1/validation"]) == 6 * 28
 
 
+@pytest.mark.parametrize("arm", ["A", "F", "P"])
+def test_probe_a_completed_run_under_another_commit_is_closed_by_its_closure(arm) -> None:
+    """A probe: a completed validation run under another commit, then its closure record. The
+    run stays kept, excluded and listed; the closure decides as any technical mark's ("After a
+    technical mark"): A or F, the technical feasibility report with the run's reason id; P alone,
+    P–F closes and A–F goes on, the run adding to no counter."""
+    study = Study()
+    study.through_validation()
+    run = run_of(study, "validation", arm, "u", 10301)
+    entry = study.other_commit(run, "other_commit")
+    assert study.advance()["step"]["kind"] == "blocked"
+    study.closure(run)
+    result = study.advance()
+    assert result["not_counted"] == [entry] and result["problems"] == []
+    if arm == "P":
+        assert (result["stage"], result["active"]["comparisons"]) == ("choice", ["A-F"])
+        (close,) = [e for e in result["route"] if e["event"] == "close_pf"]
+        assert (close["stage"], close["why"]) == ("validation", "closure-c1-P")
+        assert set(result["validation"]["gates"]) == {"AF"}
+        assert run not in result["step"]["fields"]["cohort"]["run_ids"]
+    else:
+        assert (result["stage"], result["outcome"], result["reason"]) == (
+            "technical_feasibility_report",
+            "technical_feasibility_report",
+            "other_commit",
+        )
+        assert any(run in r and "closure-c1-" + arm in r for r in result["reasons"])
+        assert not any(key.startswith("c2/") for key in result["prescribed"])
+
+
+def test_a_closure_of_a_run_under_another_commit_must_name_its_reason() -> None:
+    """The closure of a run under another commit carries the run's uncounted reason id: one
+    with the end line's reason, or another uncounted reason, closes nothing and blocks."""
+    study = Study()
+    study.through_validation()
+    run = run_of(study, "validation", "F", "u", 10301)
+    study.other_commit(run, "dirty_checkout")
+    for reason in ("launcher_done", "other_commit"):
+        study.closure(run, reason=reason)
+        result = study.advance()
+        assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+        assert any("closure-c1-F" in p and run in p for p in result["problems"])
+
+
 @pytest.mark.parametrize("reason", ["other_commit", "dirty_checkout", "no_commit"])
 def test_a_confirmation_run_under_another_commit_does_not_count_and_blocks(reason) -> None:
-    """The same in the confirmation: no block is issued, and the guard, which reads the step,
-    refuses every block."""
+    """The same in the confirmation: no block is issued, the step is blocked and technical, and
+    the guard, which reads the step, refuses every block; P's closure closes P–F and the blocks
+    go on with A and F."""
     study = Study()
     study.through_validation()
     study.n(N=60)
     study.confirmation(count=3)
-    run = run_of(study, "confirmation", "A", "l", 10401)
+    run = run_of(study, "confirmation", "P", "l", 10401)
     entry = study.other_commit(run, reason, None if reason == "no_commit" else "e" * 40)
     result = study.advance()
     step = result["step"]
-    assert (result["stage"], step["kind"], step["technical"]) == ("confirmation", "blocked", False)
-    assert [(w["run_id"], w["reason"], w["decision"]) for w in step["ways_out"]] == [
-        (run, reason, "supersession_needed")]  # fmt: skip
+    assert (result["stage"], step["kind"], step["technical"]) == ("confirmation", "blocked", True)
+    assert [(w["run_id"], w["reason"], w["closure"]["fields"]["reason"])
+            for w in step["ways_out"]] == [(run, reason, reason)]  # fmt: skip
     assert result["not_counted"] == [entry]
     assert "cells" not in step
+    study.closure(run)
+    result = study.advance()
+    assert (result["stage"], result["active"]["comparisons"]) == ("confirmation", ["A-F"])
+    assert result["step"]["campaign"] == "confirmation"
+    assert {(c[0], c[2]) for c in result["step"]["cells"]} == {
+        (arm, 10403) for arm in ("A", "F")}  # fmt: skip
+    assert result["not_counted"] == [entry]
+
+
+def test_a_pending_run_under_another_commit_names_its_recovery_round_too() -> None:
+    """A run with no published outcome under another commit, which the launcher would recover:
+    beside its closure (its start line), a recovery round of its label, launched after
+    ``study3_summary.py check`` passes, reruns it (its next attempt decides)."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    study.validation(count=3)
+    pending = study.change(run_of(study, "validation", "A", "l", 10302), state="pending", K=None,
+                           steps=None)  # fmt: skip
+    study.recoverable.add(pending.run_id)
+    study.starts[pending.run_id] = {"path": "launch/study3-c1-validation.jsonl", "line": 5,
+                                    "line_sha256": "b" * 64, "attempt": 1,
+                                    "run": pending.label}  # fmt: skip
+    entry = study.other_commit(pending.run_id, ended=False)
+    result = study.advance()
+    assert (result["step"]["kind"], result["step"]["technical"]) == ("blocked", True)
+    (way,) = result["step"]["ways_out"]
+    assert pending.label in way["recovery"] and "study3_summary.py check" in way["recovery"]
+    assert way["closure"] == other_commit_closure(study, pending.run_id, entry)
+    assert way["closure"]["fields"]["line"]["kind"] == "start"
+    assert result["not_counted"] == [entry]
 
 
 def test_a_technical_run_under_another_commit_names_its_recovery_round_too() -> None:
-    """A run with no published outcome under another commit: beside the recorded decision, a
+    """A technical run with no published outcome under another commit: beside its closure, a
     recovery round reruns it where the launcher would open one (its next attempt decides)."""
     study = Study()
     study.ready()
@@ -2042,7 +2150,7 @@ def test_a_technical_run_under_another_commit_names_its_recovery_round_too() -> 
     broken = study.technical(run_of(study, "validation", "A", "l", 10302))
     study.other_commit(broken.run_id)
     (way,) = study.advance()["step"]["ways_out"]
-    assert way["decision"] == "supersession_needed" and broken.label in way["recovery"]
+    assert broken.label in way["recovery"] and way["closure"]["fields"]["reason"] == "other_commit"
 
 
 def test_a_run_under_another_commit_is_listed_wherever_the_walk_stops() -> None:

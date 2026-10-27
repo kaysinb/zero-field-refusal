@@ -1778,9 +1778,14 @@ before each command below.
   It is run before every validation launch and every resumption of it, and before every recovery
   round of a validation or confirmation run, with the same `$SRC` as the launch. Inside `run.sh`,
   the guard already performs it for confirmation blocks. The limit: the launcher never reruns a
-  completed run, so a completed run under another commit cannot be rerun, and the state blocks on
-  it. Its way out is a decision the researcher records (`supersession_needed`); a run with no
-  published outcome is rerun by its recovery round, after `check` passes.
+  completed run, so a completed run under another commit cannot be rerun. Such a run is kept,
+  excluded from every count and listed; it is a technical mark outside the qualification of its
+  arm, and the step is blocked and technical, naming the run, its reason and its commit. A run
+  with no published outcome is rerun by its recovery round, after `check` passes. Otherwise the
+  researcher's decision is its closure record, written from the step (below, "Holds and
+  closures"): it cites the run's last end line, or its start line when the launcher never ended
+  it, with the run's reason. In A or F it ends the study with the technical feasibility report;
+  in P alone, P–F closes and A–F goes on. A published result is never rerun.
 - **After the validation fixation.** The validation fixation pins the qualification's input
   records and, whole and by sha256, every launch log that holds a line of the candidate's
   qualification: a start of its numerical or repair campaigns, or a line naming one of their
@@ -1856,9 +1861,10 @@ before each command below.
   line when the log does not end with a newline.
 - **Holds and closures.** Two kinds of run are unresolved technical marks: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
-  and a technical run outside the qualification that no recovery round reruns. The step names
-  each: for a held run, the closure record to write; for a technical run, its ways out (a recovery
-  round, where the launcher would open one, and its closure record). The researcher decides which
+  and a technical run outside the qualification that no recovery round reruns, a run under
+  another commit included (above, "A run's own commit"). The step names each: for a held run,
+  the closure record to write; for a technical run, its ways out (a recovery round, where the
+  launcher would open one, and its closure record). The researcher decides which
   way out is taken. A closure record states the terminal technical outcome. A closure of A or F
   ends the study with the technical feasibility report, and candidate 2 is not taken; a closure of
   P closes P–F, and A–F goes on. It is written from the step, with exactly the fields the step

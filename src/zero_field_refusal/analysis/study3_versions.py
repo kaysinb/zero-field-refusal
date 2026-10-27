@@ -163,7 +163,9 @@ is read.
   study 2 reads a run's commit (``uncounted_runs``): the pinned commit or a record-only
   descendant of it, from a clean checkout. A run under any other commit, a dirty checkout, a
   commit this checkout does not hold or no recorded commit does not count; it is kept and listed,
-  and ``study3_progress`` blocks on it. The check of the record before each launch
+  and ``study3_progress`` blocks on it as a technical mark outside the qualification of its arm,
+  until its way out: a recovery round where the launcher would open one, or its closure record
+  (its uncounted reason). The check of the record before each launch
   (``scripts/study3_summary.py check``, and the confirmation's guard) prevents such a run; it
   does not stand for the comparison, which also covers a resumption or a recovery round launched
   from another checkout.
@@ -208,6 +210,7 @@ from .study3_decisions import (
     decision_path,
     read_decision,
 )
+from .study3_decisions import UNCOUNTED_REASONS as UNCOUNTED_REASONS  # ``uncounted_runs``' reasons
 from .study3_records import (
     COUNTING,
     DECISIONS,
@@ -266,9 +269,8 @@ _ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PART = r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}"
 _NAME = re.compile(rf"{_PART}(?:/{_PART}){{0,3}}")
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
-# Why a validation or confirmation run does not count for the commit it ran (``uncounted_runs``)
-UNCOUNTED_REASONS = ("no_commit", "dirty_checkout", "dirty_unrecorded", "unknown_commit",
-                     "no_versions_record", "other_commit")  # fmt: skip
+# Why a validation or confirmation run does not count for the commit it ran (``uncounted_runs``):
+# ``UNCOUNTED_REASONS``, kept with the closure schema that names them (``study3_decisions``)
 
 
 class RecordRefused(ValueError):
@@ -1920,7 +1922,9 @@ def uncounted_runs(
     unless it is a commit id: no free text of a record is copied) and ``dirty``,
     ``versions_record`` (the record's name in the checkout, or as the header names it) and
     ``why``. Only the record's ``code.commit`` is read here; ``versions_problems`` checks the
-    record itself."""
+    record itself. Such a run is a technical mark outside the qualification of its arm
+    (``study3_progress``, "A run under another commit"): a recovery round where the launcher
+    would open one, or its closure record, its reason this one."""
     repo = Path(repo)
     pinned: dict[tuple[Any, Any], tuple[str | None, str | None]] = {}
     known: dict[str, bool] = {}

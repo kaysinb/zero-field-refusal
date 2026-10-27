@@ -123,6 +123,10 @@ on is a response or an observation, and this module opens none.
     ``launcher_<outcome>``); ``cycle`` is null.
   - ``kind: "start"``: the run's start line, when the journal holds no end line of the run; its
     ``reason`` ``no_end_line`` (``START_REASON``); ``cycle`` is null.
+  - A validation or confirmation run under a commit other than the pinned one
+    (``study3_versions.uncounted_runs``) is closed by the same end or start line, its ``reason``
+    the run's uncounted reason id (``UNCOUNTED_REASONS``) whatever the end's outcome; that the
+    run is one, with that reason, is the state machine's to check.
   An end or start closure is refused for a run that a later attempt of its label, a recovery
   round of its label at or after the cited line, a ``superseded`` line or a ``held`` line
   followed: the readers would not count it as a technical mark. That the run lies outside the
@@ -239,6 +243,10 @@ HOLD_REASONS = {
 # launcher never ended it; an end line's reason is its outcome's (``end_reason``)
 LINE_KINDS = ("held", "end", "start")
 START_REASON = "no_end_line"  # a start line's reason: the launcher never ended the run
+# Why a validation or confirmation run does not count for the commit it ran
+# (``study3_versions.uncounted_runs``): the reason of its closure, an end or a start line
+UNCOUNTED_REASONS = ("no_commit", "dirty_checkout", "dirty_unrecorded", "unknown_commit",
+                     "no_versions_record", "other_commit")  # fmt: skip
 _OUTCOME = re.compile(r"[a-z][a-z_]{0,40}")
 COMMON = ("kind", "state", "written_at", "code")
 FIELDS = {
@@ -298,6 +306,15 @@ def end_reason(outcome: Any) -> str | None:
     (``launcher_<outcome>``), None for an outcome that names none."""
     return (
         f"launcher_{outcome}" if isinstance(outcome, str) and _OUTCOME.fullmatch(outcome) else None
+    )
+
+
+def _end_reason_id(reason: Any) -> bool:
+    """Whether ``reason`` is the reason id of an end's outcome (``launcher_<outcome>``)."""
+    return (
+        isinstance(reason, str)
+        and reason.startswith("launcher_")
+        and end_reason(reason[len("launcher_") :]) == reason
     )
 
 
@@ -1120,15 +1137,13 @@ class _Schema:
         if kind == "held" and not (isinstance(reason, str) and reason in HOLD_REASONS):
             self.add("reason", f"is {reason!r}, not the id of a reason a hold states "
                      f"({sorted(HOLD_REASONS)})")  # fmt: skip
-        elif kind == "end" and not (
-            isinstance(reason, str)
-            and reason.startswith("launcher_")
-            and end_reason(reason[len("launcher_") :]) == reason
-        ):
+        elif kind == "end" and reason not in UNCOUNTED_REASONS and not _end_reason_id(reason):
             self.add("reason", f"is {reason!r}, not the id of an end's outcome "
-                     "(launcher_<outcome>)")  # fmt: skip
-        elif kind == "start" and reason != START_REASON:
-            self.add("reason", f"is {reason!r}, not {START_REASON!r}, the reason of a start line")
+                     f"(launcher_<outcome>) nor of a run under another commit "
+                     f"{UNCOUNTED_REASONS}")  # fmt: skip
+        elif kind == "start" and reason != START_REASON and reason not in UNCOUNTED_REASONS:
+            self.add("reason", f"is {reason!r}, not {START_REASON!r}, the reason of a start line, "
+                     f"nor the id of a run under another commit {UNCOUNTED_REASONS}")  # fmt: skip
         elif kind is None and not (isinstance(reason, str) and _REASON_ID.fullmatch(reason)):
             self.add("reason", f"is {reason!r}, not an id")
         if r["decision"] != CLOSURE_DECISIONS[arm]:
@@ -1301,12 +1316,15 @@ def _held_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], 
 def _end_line(root: Path, event: Mapping[str, Any], record: Mapping[str, Any], where: str,
               logs: Sequence[Any]) -> list[str]:  # fmt: skip
     """A cited end line: the run's last ``end`` in the journal, whatever its outcome, giving
-    the record's reason, of a run nothing followed (``_followed``)."""
+    the record's reason (unless the record names a run under another commit,
+    ``UNCOUNTED_REASONS``), of a run nothing followed (``_followed``)."""
     if event.get("event") != "end":
         return [f"{where} is not an end line of the launch journal"]
     found = _of_run(event, record)
     outcome = event.get("outcome")
-    if end_reason(outcome) is None:
+    if record["reason"] in UNCOUNTED_REASONS:  # a run under another commit: its own reason
+        pass
+    elif end_reason(outcome) is None:
         found.append(f"line: its end's outcome {outcome!r} names no reason")
     elif record["reason"] != end_reason(outcome):
         found.append(f"reason: is {record['reason']!r}, not {end_reason(outcome)!r}, the one its "

@@ -19,6 +19,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
     START_REASON,
+    UNCOUNTED_REASONS,
     DecisionRefused,
     budget_needed,
     budget_reason,
@@ -2296,6 +2297,27 @@ def test_a_start_closure_names_its_reason_and_no_cycle(world) -> None:
     refused(world, "closure-c1-P", {**record, "cycle": cycle}, "cycle")
     as_end = {**record, "line": {**record["line"], "kind": "end"}, "reason": "launcher_technical"}
     refused(world, "closure-c1-P", as_end, "end line")
+
+
+@pytest.mark.parametrize("reason", UNCOUNTED_REASONS)
+def test_a_closure_of_a_run_under_another_commit_names_its_uncounted_reason(world, reason):
+    """A validation or confirmation run under another commit (``study3_versions.uncounted_runs``)
+    is closed by its last end line, or its start line when the launcher never ended it, with its
+    uncounted reason id (``UNCOUNTED_REASONS``): the schema accepts it, whatever the end's
+    outcome; the state machine checks that the run is one, with that reason. Any other reason
+    is refused."""
+    record = {**ended(world, outcome="done"), "reason": reason}
+    world.write("closure-c1-F", record)
+    assert world.read("closure-c1-F") == (record, [])
+    record = {**started(world), "reason": reason}
+    world.write("closure-c1-P", record)
+    assert world.read("closure-c1-P") == (record, [])
+
+
+def test_a_closure_reason_that_is_no_uncounted_reason_is_refused(world) -> None:
+    refused(world, "closure-c1-F", {**ended(world, outcome="done"), "reason": "other_checkout"},
+            "reason")  # fmt: skip
+    refused(world, "closure-c1-P", {**started(world), "reason": "launcher_done"}, "reason")
 
 
 def test_an_unreadable_launch_log_fails_a_closure_closed(world) -> None:

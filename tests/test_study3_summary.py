@@ -262,6 +262,20 @@ def test_the_guard_refuses_while_a_technical_mark_holds_the_confirmation(world, 
     assert summary.checked == []
 
 
+def test_the_guard_refuses_while_a_run_under_another_commit_is_unresolved(world, summary):
+    """A confirmation run under another commit is a technical mark until its way out: the step
+    is blocked, and no block starts."""
+    study = confirmation_study(world, N=60)
+    study.confirmation(count=3)
+    files = block_files(world.write("confirmation"))
+    run_id = run_of(study, "confirmation", "F", "l", 10402)
+    study.other_commit(run_id)
+    summary.core(study)
+    summary.versions()
+    refused(summary.guard(10403, files[10403]), "a technical mark holds the confirmation", run_id)
+    assert summary.checked == []
+
+
 def test_the_guard_refuses_while_a_started_block_holds_a_run_not_ended(world, summary) -> None:
     """A run of a started block that the launcher never ended (the Pod stopped mid-run): no
     later block starts, and the refusal names the run and its recovery round."""
@@ -1045,6 +1059,39 @@ def test_closure_writes_a_technical_runs_way_out_chosen_by_its_run(world, summar
     assert (record["line"], record["reason"], record["cycle"]) == (
         {"kind": "end", **{k: ends[run_ids[1]][k] for k in ("path", "line", "line_sha256")}},
         "launcher_technical", None)  # fmt: skip
+
+
+def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary,
+                                                                 monkeypatch) -> None:  # fmt: skip
+    """A completed validation run under another commit: the step names its closure (its last
+    end line, its uncounted reason id), which ``closure`` writes and the schema accepts; once
+    written, the route ends with the technical feasibility report, the run's reason its own."""
+    study = Study()
+    study.through_validation()
+    run_id = run_of(study, "validation", "F", "u", 10304)
+    (endpoint,) = [e for e in study.endpoints if e.run_id == run_id]
+    world.runs.log("study3-c1-validation", {"event": "start", "run": endpoint.label,
+                                            "attempt": 1, "run_id": run_id,
+                                            "experiment": "study3"})  # fmt: skip
+    world.runs.end("study3-c1-validation", endpoint.label, 1, run_id, "done")
+    study.ends[run_id] = dict(end_lines(world.root)[run_id])
+    study.other_commit(run_id, "dirty_checkout")
+    summary.core(study)
+    monkeypatch.setattr(
+        summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
+    )
+    code, _, error = summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm",
+                                 "F")  # fmt: skip
+    assert code == 0, error
+    record, problems = read_decision(world.root, "closure-c1-F", repo=world.repo)
+    assert problems == [] and (record["run_id"], record["reason"], record["line"]["kind"]) == (
+        run_id, "dirty_checkout", "end")  # fmt: skip
+    study.entries["closure-c1-F"] = {"kind": "closure-c1-F", "state": "failed", "record": record,
+                                     "path": str(decision_path(world.root, "closure-c1-F")),
+                                     "problems": []}  # fmt: skip
+    result = study.advance()
+    assert (result["outcome"], result["reason"]) == (
+        "technical_feasibility_report", "dirty_checkout")  # fmt: skip
 
 
 def test_the_summary_imports_no_gpu_path() -> None:
