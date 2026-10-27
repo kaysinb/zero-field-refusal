@@ -1635,6 +1635,175 @@ docstring has every rule.
   engineering stage's (e_eng, the path maxima, the margins), and the driver's logs. Download and
   archive them with an inventory before the Pod stops.
 
+## Study 3: campaigns
+
+The order and the routes are [the registration's](study3-preregistration.md#seeds-and-order),
+with its [validation, confirmation and stopping](study3-preregistration.md#validation-confirmation-and-stopping)
+and [failure routes](study3-preregistration.md#failure-routes). The state machine
+(`analysis.study3_progress`) reads every record under `RUNS_DIR` and names the next step.
+`scripts/study3_campaigns.py` writes the launcher campaign of that step and refuses any other.
+`scripts/study3_summary.py` prints the state, guards the confirmation between blocks and writes
+the versions record, the staged fixation and the decision records. Their docstrings hold every
+rule. Both run from the source checkout of the commit, clean (`$SRC`); campaign files and drivers
+go under `$RUNS_DIR/campaigns/`, never into the checkout.
+
+```bash
+R="$RUNS_DIR"; C="$R/campaigns"
+project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
+```
+
+`progress` prints the state as JSON, numbers, ids, paths and hashes only (a spread only as the n
+record's `spread_pp`, rounded to 0.5 pp):
+- the stage and its step: a campaign with its cells; a decision record to write, with its path
+  and the fields the route fixes; a step that waits, or is blocked with its reasons and ways out;
+  a terminal outcome;
+- the active arms and comparisons, the rates, the route, the closures and the problems.
+
+Nothing is decided on a problem: the step stays blocked while one is listed. Read the state
+before each command below.
+
+- **The order of commands.** A campaign is written only when the step names its kind and
+  candidate (`--candidate N`); any other is refused, with the step the state names.
+  1. **Engineering.** `engineering` writes the starting rates on 10000-10003, run by the printed
+     `qualify.py driver ... --engineering` ([above](#study-3-numerical-qualification)). The
+     engineering record then names the records of its four checks: the dry run, the bridge,
+     θ₀'s utility (`scripts/check_theta0_utility.py`) and the stage-0 check.
+  2. **The simulation record**, before the search.
+  3. **The search.** `search-round0`, then `search-round1` where a median missed.
+  4. **The numerical qualification.** `numerical`, run through its printed `qualify.py driver`;
+     then `repair` (one round per arm, amendment 3) for an arm whose K misses by more than 0.05
+     over its 4 + 3 seeds once its qualification passed, run the same way.
+  5. **The validation.** The validation fixation and the first versions record, each committed
+     alone; then `validation`, 28 whole blocks (40 when the simulation record says so).
+  6. **The choice and N.** The n record, and the budget record when N needs one.
+  7. **The confirmation.** The confirmation supplement and a later versions record, each
+     committed alone; then `confirmation`: one campaign file per block, and its driver `run.sh`.
+
+  A stage's fresh seeds get their streams first, from the driver that `study3_campaigns.py prep
+  --seeds S [S ...] --commit SHA --out FILE` writes; archive them with an inventory.
+
+  ```bash
+  project-run "$SRC" python scripts/study3_campaigns.py search-round0 --runs-root "$R" \
+    --candidate 1 --out "$C/c1-search-r0.yaml"
+  project-run "$SRC" python scripts/launch.py "$C/c1-search-r0.yaml" --max-attempts 1
+  project-run "$SRC" python scripts/study3_campaigns.py numerical --runs-root "$R" \
+    --candidate 1 --out "$C/c1-numerical.yaml"   # prints its qualify.py driver command
+  ```
+- **`--max-attempts 1`.** Every campaign runs with one attempt per run: the search and the
+  validation as `launch.py FILE --max-attempts 1`, the qualification's campaigns through their
+  driver, which passes it, and each confirmation block through `run.sh`. A failed attempt is a
+  technical mark that the readers list, never retried by itself. Its rerun is a recovery round
+  with its documented cause, always for the one run concerned. The launcher grants a round once
+  per cell, and each cell holds one run (`c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>`, its
+  label `<cell>/s<seed>`), so no other run gets a second attempt from it:
+
+  ```bash
+  project-run "$SRC" python scripts/launch.py "$C/c1-validation.yaml" \
+    --only c1-validation-adam_frozen-1.83e-05-s10304/s10304 --max-attempts 1 \
+    --recovery "<the documented cause>"
+  ```
+
+  Every campaign file gets a new name: the writer refuses a name whose launch log exists, since
+  the validation fixation pins the qualification's logs whole.
+- **The decision records.** Each lies under `$RUNS_DIR/study3/decisions/`
+  (`analysis.study3_decisions` fixes the schemas) and is written once through `write_decision`,
+  which validates it against the evidence it names and the records it answers. A record a started
+  campaign's header named, by its sha256, is immutable from then on.
+  - `engineering`: the researcher's, once the four checks are recorded, each by its record's path
+    and sha256; it passes only when all four passed.
+  - `simulation`: the simulation's output (its fixation and inputs, the gates, the coverage
+    screen, L, the validation size and the independent verification).
+  - `n-c<N>`: the precommitted spread script's output, with the fields the `choice` step gives
+    (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap.
+  - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
+    `stop`, when N is above 90 or raised for power (the step names it then).
+  - `closure-c<N>-<arm>`: written from the step (below).
+
+  The others are written from a JSON file kept under `$RUNS_DIR` outside `study3/decisions/`; a
+  refusal prints its reasons, and a second record of a kind is refused:
+
+  ```bash
+  project-run "$SRC" python scripts/study3_summary.py record engineering --runs-root "$R" \
+    --from "$C/engineering.json"
+  ```
+- **The staged fixation and the versions record.** Each is written once at its fixed path in
+  `docs/` from a clean checkout of a known commit, and then committed alone. Their reasons are ids
+  (`validation_c1`, say), never free text.
+  - Before candidate N's validation: `fixation validation --candidate N`, then the first versions
+    record, `versions --out docs/study3-versions.json`, naming that fixation.
+  - Before its confirmation, once the n record (and the budget record) is written:
+    `fixation confirmation --candidate N` with the fixed seeds of the bootstrap, the audit draw
+    and the draw of agreements, then a later versions record naming the supplement and
+    superseding the one before it. The runs that started under the earlier record stay valid
+    under it.
+  - The validation and confirmation campaigns name the versions record that stands, by its
+    sha256, and are refused while `study3_versions.versions_problems` finds a problem in it.
+
+  ```bash
+  project-run "$SRC" python scripts/study3_summary.py fixation validation --runs-root "$R" \
+    --candidate 1
+  project-run "$SRC" python scripts/study3_summary.py versions --out docs/study3-versions.json \
+    --reason validation_c1 --fixation docs/study3-fixation-validation-c1.json --runs-root "$R"
+  project-run "$SRC" python scripts/study3_summary.py fixation confirmation --runs-root "$R" \
+    --candidate 1 --bootstrap-seed S1 --audit-seed S2 --agreement-seed S3
+  project-run "$SRC" python scripts/study3_summary.py versions --out docs/study3-versions-2.json \
+    --reason confirmation_c1 --fixation docs/study3-fixation-confirmation-c1.json \
+    --runs-root "$R" --supersedes docs/study3-versions.json --supersedes-reason confirmation_c1
+  ```
+- **After the validation fixation.** Once candidate N's validation fixation exists, no
+  `qualify.py` command that writes records is run for that candidate: `driver`, `part`,
+  `interrupted`, `restart-case`, `supersede`. The fixation pins the qualification's launch logs
+  and input records: a new input record for a fixed rate's case breaks the write-once fixation for
+  good. A recovery round is always run for the one run concerned:
+  `launch.py FILE --only LABEL --recovery REASON --max-attempts 1`. `qualify.py verdict` does not
+  touch the pins, as long as it runs from a checkout whose GPU code is candidate N's code in force.
+  A verdict cache written under any other code makes the fixation invalid until `verdict` is run
+  again under the code in force.
+- **The confirmation and its guard.** The confirmation is written into a new folder, one block
+  per file in seed order: the step's next block and, with `--blocks FIRST LAST`, those after it up
+  to the cap, or the cells a started block still lacks (completed first, alone).
+
+  ```bash
+  project-run "$SRC" python scripts/study3_campaigns.py confirmation --runs-root "$R" \
+    --candidate 1 --out "$C/c1-confirmation-1" --blocks 10400 10469
+  project-run "$SRC" bash "$C/c1-confirmation-1/run.sh"   # detached
+  ```
+
+  `run.sh` runs one block at a time. For each it checks the block file's sha256, runs the guard,
+  `study3_summary.py guard --runs-root "$RUNS_ROOT" --candidate N --seed S --campaign FILE`, then
+  `launch.py FILE --max-attempts 1`, and stops at the first non-zero exit. The guard exits 0 only
+  when:
+  - the step is candidate N's confirmation and names cells on S. A block not yet started must be
+    the next one: never after the stop (every active counter at N, or the cap
+    N + max(10, ⌈0.12·N⌉) of blocks started), while a technical mark in a started block waits
+    for its way out, out of seed order, or before a started block's missing cells. A started
+    block completes its missing cells even after the stop;
+  - the file is the block as written for that step: its header (study 3, candidate N, the
+    confirmation, the n, budget and versions records it names, each still of the sha256 it
+    names) and exactly the step's cells on S;
+  - `versions_problems` finds no problem in the versions record the header names, for candidate
+    N's confirmation.
+
+  Otherwise it prints why, and the driver stops. Read the state, take the way it names, and write
+  the blocks left again, under new names.
+- **Holds and closures.** Two kinds of run are unresolved technical marks: a run a candidate's
+  engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
+  and a technical run outside the qualification that no recovery round reruns. The step names
+  each: for a held run, the closure record to write; for a technical run, its ways out (a recovery
+  round, where the launcher would open one, and its closure record). The researcher decides which
+  way out is taken. A closure record states the terminal technical outcome. A closure of A or F
+  ends the study with the technical feasibility report, and candidate 2 is not taken; a closure of
+  P closes P–F, and A–F goes on. It is written from the step, with exactly the fields the step
+  names; `--run-id` chooses the run when the step names closures of two runs of the arm:
+
+  ```bash
+  project-run "$SRC" python scripts/study3_summary.py closure --runs-root "$R" --candidate 1 \
+    --arm F
+  ```
+
+  The hold and the failure's evidence stay as they are, and a closed or held label is never
+  issued again.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
