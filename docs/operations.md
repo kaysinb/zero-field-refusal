@@ -1832,9 +1832,12 @@ before each command below.
   writer and every guard refuse. The registered stop is checked between blocks, and the counters
   wait for such a run, and for a run whose recovery round is opened and that has no later attempt
   yet. The state names the block, the run and its way out. The run is rerun by its recovery
-  round, from its own block file, with the interruption as its reason:
+  round, from its own block file, with the interruption as its reason, once `check` passes on
+  that file:
 
   ```bash
+  project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
+    --campaign "$C/c1-confirmation-1/<block file>"
   project-run "$SRC" python scripts/launch.py "$C/c1-confirmation-1/<block file>" \
     --only LABEL --recovery "<the interruption>" --max-attempts 1
   ```

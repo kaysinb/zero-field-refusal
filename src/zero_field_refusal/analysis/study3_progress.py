@@ -1066,7 +1066,8 @@ class _Walk:
             ways.append({"run_id": run_id, "label": label, "campaign": campaign, "recovery": (
                 f"once the launcher that started it has stopped without ending it (a Pod stopped "
                 f"mid-run), its recovery round from its own block file ({campaign}.yaml), with "
-                f"the interruption as its reason: launch.py <block file> --only {label} "
+                f"the interruption as its reason, launched after study3_summary.py check passes "
+                f"on that file: launch.py <block file> --only {label} "
                 "--recovery REASON --max-attempts 1")})  # fmt: skip
         return {"kind": "pending", "waiting": [way["run_id"] for way in ways],
                 "why": "runs of started blocks have not ended: the counters wait for them, and "
@@ -1218,12 +1219,15 @@ class _Walk:
 
     def _way_out(self, mark: Mapping[str, Any]) -> dict[str, Any]:
         """A technical mark's ways out, only those that apply: a recovery round of its label
-        when no terminal record was published (the launcher opens one only then), and its
-        closure record."""
+        when no terminal record was published (the launcher opens one only then), for a
+        validation or confirmation run after ``study3_summary.py check`` passes, and its closure
+        record."""
         out: dict[str, Any] = {"run_id": mark["run_id"], "label": mark["label"]}
         if mark["recovery"]:
-            out["recovery"] = (f"a recovery round of {mark['label']} with its documented cause: "
-                               "its next attempt decides")  # fmt: skip
+            checked = (", launched after study3_summary.py check passes on its campaign file"
+                       if mark["step"] in ("validation", "confirmation") else "")  # fmt: skip
+            out["recovery"] = (f"a recovery round of {mark['label']} with its documented "
+                               f"cause{checked}: its next attempt decides")  # fmt: skip
         if mark["closure"] is not None:
             out["closure"] = mark["closure"]
         return out

@@ -1212,7 +1212,8 @@ def test_a_run_under_a_commit_other_than_the_pinned_one_does_not_count(study, st
             "earlier": (study.registered, False), "unknown": ("f" * 40, False),
             "no-id": ("not a commit", False),
             "missing": (None, False), "dirty": (child, True),
-            "unrecorded": (child, None)}  # fmt: skip
+            "unrecorded": (child, None), "dirty-no-id": ("free text, dirty", True),
+            "unrecorded-no-id": ("free text, unrecorded", None)}  # fmt: skip
     endpoints = [versioned(name, step, value, sha) for name, value in gits.items()]
     endpoints.append(versioned("another-sha", step, (child, False), "0" * 64))
     found = sv.uncounted_runs(endpoints, repo=study.repo)
@@ -1220,6 +1221,7 @@ def test_a_run_under_a_commit_other_than_the_pinned_one_does_not_count(study, st
         "later": "other_commit", "earlier": "other_commit", "unknown": "unknown_commit",
         "no-id": "unknown_commit",
         "missing": "no_commit", "dirty": "dirty_checkout", "unrecorded": "dirty_unrecorded",
+        "dirty-no-id": "unknown_commit", "unrecorded-no-id": "unknown_commit",
         "another-sha": "no_versions_record"}  # fmt: skip
     entry = found["later"]
     assert {k: entry[k] for k in ("run_id", "label", "candidate", "step", "commit", "dirty",
@@ -1229,6 +1231,8 @@ def test_a_run_under_a_commit_other_than_the_pinned_one_does_not_count(study, st
     assert later in entry["why"] and base in entry["why"]
     # a recorded commit that is no commit id is not copied
     assert found["no-id"]["commit"] is None and "not a commit" not in repr(found["no-id"])
+    for run_id in ("dirty-no-id", "unrecorded-no-id"):  # nor on a dirty or unrecorded checkout
+        assert found[run_id]["commit"] is None and "free text" not in repr(found[run_id])
     assert set(sv.UNCOUNTED_REASONS) >= {e["reason"] for e in found.values()}
 
 

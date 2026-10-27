@@ -889,6 +889,7 @@ def test_a_technical_run_with_no_journal_line_known_has_no_closure_way_out() -> 
     study.recoverable.add(broken.run_id)
     (way,) = study.advance()["step"]["ways_out"]
     assert (way["run_id"], "closure" in way, "recovery" in way) == (broken.run_id, False, True)
+    assert "study3_summary.py check" in way["recovery"]  # a validation run's recovery round
 
 
 def test_a_technical_run_the_launcher_never_ended_is_closed_by_its_start_line() -> None:
@@ -1866,6 +1867,7 @@ def test_a_started_block_with_a_run_not_ended_holds_the_confirmation() -> None:
                                                               dead.cell.campaign)  # fmt: skip
     assert (f"launch.py <block file> --only {dead.label} --recovery REASON --max-attempts 1"
             in way["recovery"])  # fmt: skip
+    assert "study3_summary.py check" in way["recovery"]  # before every recovery round
     assert "cells" not in step and "campaign" not in step
     assert result["confirmation"]["may_start_next"] is False
     assert result["problems"] == []
@@ -2220,6 +2222,7 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
     (way,) = result["step"]["ways_out"]
     assert way["run_id"] == run_id and way["closure"]["record"] == "closure-c1-F"
     assert ("recovery" in way) is recovery, case
+    assert "check" not in way.get("recovery", ""), case  # a search run's round needs none
 
 
 def test_the_reader_blocks_on_a_refused_run(worlds) -> None:

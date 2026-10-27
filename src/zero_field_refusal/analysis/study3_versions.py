@@ -1851,8 +1851,8 @@ def _unstarted(root: Path, started: set[str]) -> list[str]:
         if folder.name == DECISIONS or folder.name in started or not folder.is_dir():
             continue
         if _sealed_records(folder, experiment) is not None:  # nothing of it is opened
-            found["a run whose record files resolve under a sealed folder (never opened)"].append(
-                folder.name)  # fmt: skip
+            found["a run whose record files resolve under a sealed folder or cannot be resolved "
+                  "(never opened)"].append(folder.name)  # fmt: skip
             continue
         role = _role(folder, root)
         if role is None:
@@ -1975,13 +1975,13 @@ def _commit_problem(commit: str | None, dirty: bool | None, record: Any, sha: An
     as (reason, why); None when it counts."""
     if commit is None:
         return "no_commit", "its meta.json records no commit (git.commit)"
+    if not _COMMIT.fullmatch(commit):  # not copied: no free text of a record is shown
+        return "unknown_commit", "its meta.json records a commit that is no commit id"
     if dirty is True:
         return "dirty_checkout", f"it ran on a checkout of {commit} with uncommitted changes"
     if dirty is None:
         return ("dirty_unrecorded", f"its meta.json does not record whether its checkout of "
                 f"{commit} was clean (git.dirty)")  # fmt: skip
-    if not _COMMIT.fullmatch(commit):  # not copied: no free text of a record is shown
-        return "unknown_commit", "its meta.json records a commit that is no commit id"
     if not known:
         return "unknown_commit", f"its commit {commit} is not a commit of this checkout"
     if base is None:
