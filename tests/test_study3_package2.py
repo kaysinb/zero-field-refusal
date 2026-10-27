@@ -2,6 +2,17 @@
 ``analysis/qualification_records.py`` and ``analysis/campaign_prep.py``, and the scripts
 ``scripts/study3_campaigns.py`` and ``scripts/study3_summary.py``): its boundaries.
 
+- No GPU path has changed since package 1's merge commit (``code_identity.reuse_check``).
+- No module of the package or script imports a GPU module or loads a script (read as code).
+- No label is read: the label readers' entry points raise wherever they are bound, before the
+  package's modules and scripts are loaded, and none is called.
+- The sealing boundary: on the campaign writer's route world, run once for the module (every
+  campaign kind and every summary command, in process, on files, in a Git checkout: the real
+  ``progress`` and ``versions_problems``, the guard among them), every open of a path under a
+  ``responses/`` or ``observations/`` folder fails, and none is made; the sentinel is in no output,
+  refusal, problem or written file; and runs whose ``config.yaml`` and ``meta.json`` link into
+  their sealed folders are named problems. The qualification's reader, whose reading the route
+  gives, reads the same files too (with such links it opens them: an expected failure, named).
 - A run's record files are opened only outside its sealed folders (``study3_records``): a record
   file, or a run's folder, that resolves through a link under a ``responses/`` or
   ``observations/`` folder is refused unopened, a named problem; and a journal start's command
@@ -11,25 +22,88 @@ Every sealed file of these worlds holds the sentinel ``SENTINEL``, and every rea
 fails under ``SealedGuard``."""
 
 import builtins
+import contextlib
+import dataclasses
+import importlib
+import inspect
 import io
+import json
+import math
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import test_study3_records
+from omegaconf import OmegaConf
+from test_code_identity import gpu_uses
+from test_study3_campaigns import (
+    ARM_OF,
+    LABELS,
+    OPT,
+    START,
+    campaign_of,
+    run_config,
+    script_module,
+    target,
+)
+from test_study3_campaigns import World as CampaignWorld
 from test_study3_records import World as RunWorld
-from test_study3_records import by_id, config_of
+from test_study3_records import by_id, config_of, write_run
+from test_study3_versions import (
+    AMENDMENTS,
+    CONFIRMATION_C1,
+    FIRST,
+    REGISTRATION,
+    SECOND,
+    VALIDATION_C1,
+    git,
+)
 
-from zero_field_refusal.analysis import study3_records
-from zero_field_refusal.analysis.study3_records import EndpointReader, read_theta0
-from zero_field_refusal.config import config_hash
-from zero_field_refusal.paths import CONFIG_ROOT
+from zero_field_refusal import code_identity
+from zero_field_refusal.analysis import qualification_records, study3_records
+from zero_field_refusal.analysis import study3_versions as sv
+from zero_field_refusal.analysis.study3_decisions import decisions
+from zero_field_refusal.analysis.study3_progress import THETA0_RUN, progress
+from zero_field_refusal.analysis.study3_records import (
+    SEEDS,
+    EndpointReader,
+    journal_lines,
+    read_endpoints,
+    read_holds,
+    read_theta0,
+)
+from zero_field_refusal.analysis.study3_search import adjusted_rate
+from zero_field_refusal.config import config_hash, load_config
+from zero_field_refusal.launch import campaign_header, load_campaign
+from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT
 
 SENTINEL = "PKG2-SENTINEL-qX7v-Rk3W-9zJd"  # in every responses/ and observations/ file here
 SEALED = ("responses", "observations")
 RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "evaluations.jsonl",
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
+ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
+PACKAGE = (*sorted(ANALYSIS.glob("study3_*.py")), ANALYSIS / "qualification_records.py",
+           ANALYSIS / "campaign_prep.py")  # fmt: skip
+SCRIPTS = (
+    REPO_ROOT / "scripts" / "study3_campaigns.py",
+    REPO_ROOT / "scripts" / "study3_summary.py",
+)
+SUMMARY = SCRIPTS[1]
+LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
+                 "zero_field_refusal.run_judging")  # fmt: skip
+PACKAGE_1 = "00b98fe"  # package 1's merge commit: the GPU code study 3 qualifies
+REAL_IDENTITY = code_identity.gpu_code_identity
+REAL_READING = qualification_records.read_qualification  # the route replaces it
+# The route: A's lower rate kept by the search on these offsets in ln K, then repaired; N = 99
+# needs a budget record; the confirmation supplement's seeds
+OFFSETS = dict(zip(SEEDS["search"][1], (0.0, 0.03, 0.06, 0.3), strict=True))
+N = 99
+SUPPLEMENT_SEEDS = ("--bootstrap-seed", 20261101, "--audit-seed", 20261102, "--agreement-seed",
+                    20261103)  # fmt: skip
 
 
 class SealedGuard:
@@ -74,18 +148,13 @@ class SealedGuard:
             self.attempts.append(text)
             raise AssertionError(f"a sealed path was opened: {text}")
 
-    class _Off:
-        def __init__(self, guard) -> None:
-            self.guard = guard
-
-        def __enter__(self) -> None:
-            self.guard.armed = False
-
-        def __exit__(self, *exc) -> None:
-            self.guard.armed = True
-
-    def off(self) -> "SealedGuard._Off":
-        return self._Off(self)
+    @contextlib.contextmanager
+    def off(self):
+        self.armed = False
+        try:
+            yield
+        finally:
+            self.armed = True
 
 
 # ------------------------------------------------------------------ a run's sealed folders
@@ -298,3 +367,642 @@ def test_a_start_whose_command_names_another_config_gives_no_config(runs, monkey
         "experiments/study3_k_only): not loaded",
     )
     assert loaded == ["experiments/study3"]
+
+
+# ------------------------------------------------------------------ no GPU path
+
+
+def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
+    """No GPU path has changed since package 1's merge commit: the qualification made under its
+    GPU code holds at HEAD (``code_identity.reuse_check``)."""
+    try:
+        known = subprocess.run(["git", "merge-base", "--is-ancestor", PACKAGE_1, "HEAD"],
+                               cwd=REPO_ROOT, capture_output=True).returncode == 0  # fmt: skip
+    except OSError:
+        known = False
+    if not known:
+        pytest.skip(f"package 1's merge commit {PACKAGE_1} is not in this repository's history")
+    monkeypatch.setattr(code_identity, "gpu_code_identity", REAL_IDENTITY)
+    found = code_identity.reuse_check(PACKAGE_1, "HEAD")
+    assert found["changed"] == [], found["changed"]
+    assert found["reusable"] is True, found
+
+
+# ------------------------------------------------------------------ imports
+
+
+def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
+    """Every module of the package and both scripts, read as code (``test_code_identity.gpu_uses``,
+    relative imports resolved): none imports ``zero_field_refusal.qualification``, ``schedule``,
+    ``train`` or any other GPU module, nor torch; none uses CUDA; and none loads a script
+    (``scripts/qualify.py``) through the import machinery. ``analysis.qualification_verdicts``,
+    which loads torch through ``fa_control_diagnostic``, is allowed: ``qualification_records``
+    imports it, and the other modules import ``qualification_records`` only inside the functions
+    that read the qualification."""
+    assert len(PACKAGE) == 8 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    for path in PACKAGE:
+        assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
+    for path in SCRIPTS:
+        assert gpu_uses(path) == set(), path.name
+
+
+# ------------------------------------------------------------------ the route on files
+
+
+@dataclasses.dataclass
+class Ran:
+    """A command run in process: its script, its arguments, its exit code, its output, and its
+    error output with the message it exited with."""
+
+    script: str
+    argv: tuple[str, ...]
+    code: int
+    out: str
+    err: str
+
+
+class LabelReaders:
+    """The public entry points of the label readers (the functions ``analysis.study2_labels``,
+    ``labeling`` and ``run_judging`` define), replaced wherever a loaded module binds them by one
+    that records the call and raises."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.calls: list[str] = []
+        self.names: list[str] = []
+        found: dict[int, tuple[Any, Any]] = {}
+        for name in LABEL_MODULES:
+            module = importlib.import_module(name)
+            for attr, value in sorted(vars(module).items()):
+                if (attr.startswith("_") or not inspect.isfunction(value)
+                        or value.__module__ != name):  # fmt: skip
+                    continue
+                self.names.append(f"{name}.{attr}")
+                found[id(value)] = (value, self._raiser(f"{name}.{attr}"))
+        for module in list(sys.modules.values()):
+            try:
+                items = list(vars(module).items())
+            except TypeError:
+                continue
+            for attr, value in items:
+                entry = found.get(id(value))
+                if entry is not None and entry[0] is value:
+                    monkeypatch.setattr(module, attr, entry[1])
+
+    def _raiser(self, name: str):
+        def raiser(*args, **kwargs):
+            self.calls.append(name)
+            raise AssertionError(f"a label reader was called: {name}")
+
+        return raiser
+
+
+def round0(arm, rate, seed, candidate) -> dict:
+    """The search's round 0: A's lower rate kept (its median within 0.05 in ln K) though it
+    misses on one seed; F's upper rate 0.2 off its target; every other run at its target."""
+    if (arm, rate) == ("A", START["A"]["l"]):
+        return {"k": 4.8 * math.exp(OFFSETS[seed])}
+    found = target(arm, rate, seed, candidate)
+    return {"k": found["k"] * math.exp(0.2)} if (arm, rate) == ("F", START["F"]["u"]) else found
+
+
+def numerical(arm, rate, seed, candidate) -> dict:
+    """The numerical runs: A's lower rate 0.3 off its target, so that it misses over its 4 + 3
+    seeds and is repaired."""
+    if (arm, rate) == ("A", START["A"]["l"]):
+        return {"k": 4.8 * math.exp(0.3)}
+    return target(arm, rate, seed, candidate)
+
+
+class Route(CampaignWorld):
+    """The campaign writer's world (``test_study3_campaigns.World``) in a Git checkout, every
+    campaign kind and every summary command run in process on its files, from the engineering
+    campaign to the confirmation. The state is the real ``progress``, the versions checks are the
+    real ``versions_problems``, the GPU code is the checkout's (``gpu_code_identity``); only the
+    qualification's reading (``read_qualification``) is given: its rates qualified, its input
+    records on disk. Every sealed file holds ``SENTINEL``."""
+
+    def __init__(self, base: Path, monkeypatch) -> None:
+        super().__init__(base, monkeypatch, None)
+        self.base = base
+        git(self.repo, "init", "-q")
+        (self.repo / ".gitignore").write_text("/evidence/\n")  # the decision records' evidence
+        (self.repo / "docs").mkdir()
+        (self.repo / REGISTRATION).write_text("# Study 3 preregistration\n" + AMENDMENTS)
+        code = self.repo / "src" / "zero_field_refusal" / "train.py"
+        code.parent.mkdir(parents=True)
+        code.write_text("x = 1\n")
+        self.commit("the registration and the code")
+        monkeypatch.setattr(code_identity, "gpu_code_identity", self.identity)
+        head = git(self.repo, "rev-parse", "HEAD")
+        self.code = {"commit": head, "gpu_code_sha256": REAL_IDENTITY(head, self.repo)["sha256"]}
+        monkeypatch.setattr(qualification_records, "read_qualification", self.qualification)
+        monkeypatch.setattr("zero_field_refusal.launch.load_run_config", run_config)
+        self.summary = script_module(SUMMARY, "study3_summary")
+        monkeypatch.setattr(self.summary, "REPO", self.repo)
+        self.inputs = base / "inputs"
+        self.inputs.mkdir()
+        for theta0 in (self.runs.theta0, self.root / THETA0_RUN):  # θ₀'s run has them too
+            for folder, name in (("responses", "harmful_evaluation.jsonl"),
+                                 ("observations", "measurements.jsonl")):  # fmt: skip
+                (theta0 / folder).mkdir()
+                (theta0 / folder / name).write_text(json.dumps({"text": SENTINEL}) + "\n")
+        self.ran: list[Ran] = []
+        self.guards: list[tuple[int, int]] = []  # (seed, exit code) of each guard run
+        self.launched: dict[str, list[str]] = {}  # campaign file -> its run ids
+        self.readings: list[tuple[int, str]] = []
+        self.guard: SealedGuard | None = None
+        self.prescribed: dict = {}
+        self.blocks: dict[int, Path] = {}
+
+    # -- the checkout and the qualification
+
+    def identity(self, commit: str = "HEAD", repo: Path = REPO_ROOT) -> dict:
+        """``gpu_code_identity``, the world's checkout standing for this one (the writer reads
+        its expected code from the default checkout, the summary script from its ``REPO``)."""
+        if Path(repo).resolve() == REPO_ROOT.resolve():
+            repo = self.repo
+        return REAL_IDENTITY(commit, repo)
+
+    def commit(self, message: str, *paths: str) -> None:
+        git(self.repo, "add", *(paths or ("-A",)))
+        git(self.repo, "commit", "-qm", message)
+
+    def qualification(self, runs_root, candidate, *, expected_code, settings) -> dict:
+        """The qualification's reading: the rates in ``qualified``, each with its case's input
+        record (written by ``qualify``)."""
+        self.readings.append((candidate, expected_code))
+        out = {"rates": {}, "states": {}, "cases": [], "voided": {}, "supersessions": [],
+               "held": [], "problems": [], "inputs": []}  # fmt: skip
+        for arm, lr in sorted(self.qualified[candidate]):
+            key = f"{OPT[arm]}-{lr:g}"
+            case = self.case(candidate, key)
+            out["inputs"].append(str(case / "baseline-attempt-1.json"))
+            out["rates"][key] = {"key": key, "arm": arm, "optimizer": OPT[arm], "lr": lr,
+                                 "state": "qualified", "runs": [], "held": [],
+                                 "cases": [{"folder": str(case), "key": key}],
+                                 "verdict": {"state": "qualified", "control": None,
+                                             "not_counted": []}}  # fmt: skip
+            out["states"][key] = "qualified"
+        out["inputs"].sort()
+        return out
+
+    def case(self, candidate: int, key: str) -> Path:
+        seed = SEEDS["numerical"][candidate][0]
+        return self.root / "qualification" / f"c{candidate}" / "numerical" / f"s{seed}" / key
+
+    def qualify(self, rates) -> None:
+        """Candidate 1's rates qualified, each with its case's input record on disk."""
+        for arm, lr in rates:
+            self.qualified[1].add((arm, lr))
+            folder = self.case(1, f"{OPT[arm]}-{lr:g}")
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "baseline-attempt-1.json").write_text(json.dumps({"part": "baseline"}))
+
+    # -- the commands, in process
+
+    def run(self, script: str, *argv) -> Ran:
+        module = self.script if script == "campaigns" else self.summary
+        argv = tuple(str(a) for a in argv)
+        out, err = io.StringIO(), io.StringIO()
+        code, message = 0, ""
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                module.main(list(argv))
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 0 if exc.code is None else 1
+                message = exc.code if isinstance(exc.code, str) else ""
+        ran = Ran(script, argv, code, out.getvalue(), err.getvalue() + message)
+        self.ran.append(ran)
+        return ran
+
+    def ok(self, script: str, *argv) -> Ran:
+        ran = self.run(script, *argv)
+        assert ran.code == 0, (ran.argv, ran.err)
+        return ran
+
+    def refused(self, script: str, *argv) -> Ran:
+        ran = self.run(script, *argv)
+        assert ran.code not in (0, None), ran.argv
+        return ran
+
+    def campaign(self, kind: str, *args) -> Path:
+        """The writer's campaign of ``kind`` (θ₀ named, but for the confirmation, which reads it
+        where ``progress`` reads it by default): its path, a folder for the confirmation."""
+        out = self.out / (
+            f"{kind}-{next(self.names)}" + ("" if kind == "confirmation" else ".yaml")
+        )
+        theta0 = () if kind == "confirmation" else ("--theta0", self.runs.theta0)
+        self.ok("campaigns", kind, "--runs-root", self.root, "--candidate", 1, *theta0, "--out",
+                out, *args)  # fmt: skip
+        return out
+
+    def record(self, kind: str, record: dict) -> None:
+        source = self.inputs / f"{kind}.json"
+        source.write_text(json.dumps(record))
+        self.ok("summary", "record", kind, "--runs-root", self.root, "--from", source)
+
+    def guarded(self, seed: int, path: Path) -> Ran:
+        ran = self.run("summary", "guard", "--runs-root", self.root, "--candidate", 1, "--seed",
+                       seed, "--campaign", path)  # fmt: skip
+        self.guards.append((seed, ran.code))
+        return ran
+
+    def state(self) -> dict:
+        return progress(self.root, repo=self.repo, expected_code=self.code["gpu_code_sha256"],
+                        theta0=self.runs.theta0)  # fmt: skip
+
+    def step(self) -> dict:
+        state = self.state()
+        assert state["problems"] == [], state["problems"]
+        return state["step"]
+
+    # -- the launcher and the tracker
+
+    def launch(self, path: Path, values=target, technical=()) -> list[str]:
+        """The campaign's runs started, written and ended as the launcher and the tracker do it
+        (``World.launched``), the guard off while they are written; a run of ``technical``'s
+        (arm, rate) ends technical, its meta.json failed, no terminal record."""
+        name, runs = load_campaign(path)
+        header = campaign_header(path)
+        ids = []
+        with self.guard.off():
+            for run in runs:
+                cfg = run_config(run.config, run.overrides)
+                arm, rate = ARM_OF[str(cfg.optimizer.name)], float(cfg.optimizer.lr)
+                run_id = (f"20261027T{next(self.run_ids):06d}Z-{run.cell[:28]}-s{run.seed}-"
+                          f"{run.config_hash[:8]}-a1")  # fmt: skip
+                self.runs.log(name, {"event": "start", "run": run.label, "attempt": 1,
+                                     "run_id": run_id, "experiment": run.experiment,
+                                     "config_hash": run.config_hash,
+                                     "command": run.command()[1:], "header": header,
+                                     "max_attempts": 1})  # fmt: skip
+                failed = (arm, rate) in technical
+                outcome = {"terminal": False, "status": "failed"} if failed else {}
+                outcome |= values(arm, rate, run.seed, header["candidate"])
+                write_run(self.root / run.experiment / run_id,
+                          OmegaConf.to_yaml(cfg, resolve=True), run.config_hash,
+                          {"name": name, "label": run.label, "attempt": 1, "header": header},
+                          k_only=OmegaConf.select(cfg, "eval.k_only", default=False) is True,
+                          **outcome)  # fmt: skip
+                self.runs.end(name, run.label, 1, run_id, "technical" if failed else "done")
+                ids.append(run_id)
+        self.launched[str(path)] = ids
+        return ids
+
+    # -- the route
+
+    def build(self) -> None:
+        """Candidate 1 from its engineering campaign to its confirmation's fourth block: every
+        campaign kind, every summary command; the search's two rounds, a repair, the staged
+        fixation and two versions records, N = 99 with its budget record, a technical run that P's
+        closure record closes."""
+        root, theta0 = self.root, self.runs.theta0
+        assert self.step()["record"] == "engineering"
+        self.launch(self.campaign("engineering"))
+        self.record("engineering", self.records.engineering(code=self.code))
+        self.record("simulation", self.records.simulation(code=self.code))
+        assert self.step()["campaign"] == "search-round0"
+        self.launch(self.campaign("search-round0"), round0)
+        assert self.step()["campaign"] == "search-round1"
+        self.launch(self.campaign("search-round1"))
+        assert self.step()["campaign"] == "numerical"
+        self.numerical_runs = self.launch(self.campaign("numerical"), numerical)
+        adjusted = adjusted_rate(START["F"]["u"], math.log(7.5) + 0.2, 7.5, 1.30)
+        self.qualify({(arm, START[arm][label]) for arm in OPT for label in LABELS
+                      if (arm, label) != ("F", "u")} | {("F", adjusted)})  # fmt: skip
+        assert self.step()["campaign"] == "repair"
+        self.launch(self.campaign("repair"))
+        self.qualify({("A", adjusted_rate(START["A"]["l"], math.log(4.8) + 0.3, 4.8, 1.25))})
+        assert self.step()["campaign"] == "validation"
+        # the validation fixation and the first versions record, each committed alone
+        self.ok("summary", "progress", "--runs-root", root, "--theta0", theta0)
+        self.ok("summary", "fixation", "validation", "--runs-root", root, "--candidate", 1,
+                "--theta0", theta0)  # fmt: skip
+        self.commit("the validation fixation", VALIDATION_C1)
+        self.ok("summary", "versions", "--out", FIRST, "--reason", "validation_c1", "--fixation",
+                VALIDATION_C1, "--runs-root", root)  # fmt: skip
+        self.commit("the versions record", FIRST)
+        self.launch(self.campaign("validation"))
+        state = self.state()
+        assert (state["stage"], state["step"]["record"], state["problems"]) == (
+            "choice", "n-c1", [])  # fmt: skip
+        fields = state["step"]["fields"]
+        self.record("n-c1", self.records.n(1, N, rates=fields["rates"], active=fields["active"],
+                                          cohort=fields["cohort"], code=self.code))  # fmt: skip
+        self.record("budget-c1", self.records.budget(1, N, code=self.code))
+        assert self.step()["campaign"] == "confirmation"
+        # the confirmation supplement and the versions record that supersedes the first
+        self.ok("summary", "fixation", "confirmation", "--runs-root", root, "--candidate", 1,
+                *SUPPLEMENT_SEEDS)  # fmt: skip
+        self.commit("the confirmation supplement", CONFIRMATION_C1)
+        self.ok("summary", "versions", "--out", SECOND, "--reason", "confirmation_c1",
+                "--fixation", CONFIRMATION_C1, "--runs-root", root, "--supersedes", FIRST,
+                "--supersedes-reason", "confirmation_c1")  # fmt: skip
+        self.commit("the second versions record", SECOND)
+        # three blocks, each started only when the real guard lets it
+        out = self.campaign("confirmation", "--blocks", 10400, 10402)
+        self.blocks = {campaign_of(p)["cells"][0]["seeds"][0]: p for p in out.glob("*.yaml")}
+        assert sorted(self.blocks) == [10400, 10401, 10402]
+        self.prescribed = self.state()["prescribed"]
+        assert self.guarded(10400, self.blocks[10400]).code == 0
+        assert self.guarded(10401, self.blocks[10401]).code != 0  # out of seed order
+        self.launch(self.blocks[10400])
+        assert self.guarded(10401, self.blocks[10401]).code == 0
+        self.launch(self.blocks[10401])
+        assert self.guarded(10402, self.blocks[10402]).code == 0
+        self.launch(self.blocks[10402], technical={("P", START["P"]["u"])})
+        step = self.state()["step"]
+        assert (step["kind"], step.get("technical")) == ("blocked", True), step
+        assert self.guarded(10402, self.blocks[10402]).code != 0  # the technical mark holds it
+        self.refused("campaigns", "confirmation", "--runs-root", root, "--candidate", 1, "--out",
+                     self.out / "blocked")  # fmt: skip
+        self.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "A")
+        self.ok("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "P")
+        # P closed: the next block holds A and F
+        out = self.campaign("confirmation")
+        (block,) = out.glob("*.yaml")
+        assert campaign_of(block)["cells"][0]["seeds"] == [10403]
+        assert len(campaign_of(block)["cells"]) == 4
+        self.blocks[10403] = block
+        assert self.guarded(10403, block).code == 0
+        self.launch(block)
+        assert self.ok("summary", "progress", "--runs-root", root).out
+        state = self.state()
+        assert state["problems"] == [] and state["confirmation"]["started"] == [10400, 10401, 10402,
+                                                                              10403]  # fmt: skip
+        self.ok("campaigns", "prep", "--seeds", 10100, 10300, "--commit", self.code["commit"],
+                "--out", self.out / "prep.sh")  # fmt: skip
+
+
+@pytest.fixture(scope="module")
+def route(tmp_path_factory):
+    """The route built once, with the label readers replaced from the start and every sealed read
+    failing while the commands run (``SealedGuard``, kept as ``route.attempts``); the guard is
+    lifted once the route is built."""
+    patch = pytest.MonkeyPatch()
+    sealed = pytest.MonkeyPatch()
+    try:
+        labels = LabelReaders(patch)
+        patch.setattr(test_study3_records, "SENTINEL", SENTINEL)
+        world = Route(tmp_path_factory.mktemp("route"), patch)
+        world.labels = labels
+        world.guard = SealedGuard(sealed)
+        world.build()
+        # the guard is live: a sealed file cannot be read under it
+        live = len(world.guard.attempts)
+        sealed_file = next(world.root.glob("study3/*/responses/harmful_evaluation.jsonl"))
+        with pytest.raises(AssertionError):
+            sealed_file.read_text()
+        assert len(world.guard.attempts) == live + 1
+        del world.guard.attempts[live:]
+        world.attempts = list(world.guard.attempts)
+        sealed.undo()
+        yield world
+    finally:
+        sealed.undo()
+        patch.undo()
+
+
+def written(base: Path) -> dict[Path, bytes]:
+    """Every file under ``base`` but the sealed folders' and Git's own, as bytes (read with no
+    guard)."""
+    kept = (*SEALED, ".git")
+    return {path: path.read_bytes() for path in sorted(base.rglob("*"))
+            if path.is_file() and not path.is_symlink()
+            and not any(part in kept for part in path.relative_to(base).parts)}  # fmt: skip
+
+
+def test_the_route_runs_every_campaign_kind_and_summary_command_on_files(route) -> None:
+    """Every campaign kind of the writer and every command of the summary script ran on the
+    route's files, and the real guard let each confirmation block start only in its turn."""
+    done = {(r.script, r.argv[0] if r.argv[0] != "record" and r.argv[0] != "fixation"
+             else f"{r.argv[0]} {r.argv[1]}") for r in route.ran if r.code == 0}  # fmt: skip
+    assert {kind for script, kind in done if script == "campaigns"} == {
+        "engineering", "search-round0", "search-round1", "numerical", "repair", "validation",
+        "confirmation", "prep"}  # fmt: skip
+    assert {kind for script, kind in done if script == "summary"} == {
+        "progress", "guard", "versions", "fixation validation", "fixation confirmation",
+        "record engineering", "record simulation", "record n-c1", "record budget-c1",
+        "closure"}  # fmt: skip
+    assert route.guards == [(10400, 0), (10401, 1), (10401, 0), (10402, 0), (10402, 1),
+                            (10403, 0)]  # fmt: skip
+    # the guard's state and versions check were the real ones, on the checkout's GPU code
+    assert {code for _, code in route.readings} == {route.code["gpu_code_sha256"]}
+    # the sentinel is in every sealed file of the world
+    sealed = [path for path in route.base.rglob("*") if path.is_file()
+              and any(part in SEALED for part in path.relative_to(route.base).parts)]  # fmt: skip
+    assert len(sealed) > 400
+    assert all(SENTINEL.encode() in path.read_bytes() for path in sealed)
+
+
+def test_the_route_reads_no_label(route) -> None:
+    """Nothing on the route touched a label reader, every entry point of which raised (they were
+    replaced before the scripts were loaded)."""
+    assert route.labels.calls == []
+    assert {"zero_field_refusal.analysis.study2_labels.read_endpoint_labels",
+            "zero_field_refusal.labeling.load_labels",
+            "zero_field_refusal.run_judging.label_runs"} <= set(route.labels.names)  # fmt: skip
+
+
+def test_the_route_opens_nothing_sealed_and_shows_no_sentinel(route) -> None:
+    """No command opened a path under a ``responses/`` or ``observations/`` folder, and the
+    sentinel is in no output, error, refusal or written file."""
+    assert route.attempts == []
+    for ran in route.ran:
+        assert SENTINEL not in ran.out + ran.err, ran.argv
+    files = written(route.base)
+    assert len(files) > 1000
+    assert [path for path, data in files.items() if SENTINEL.encode() in data] == []
+
+
+@contextlib.contextmanager
+def linked(route):
+    """A confirmation run's ``config.yaml`` and ``meta.json`` replaced by links into its
+    ``responses/``, and a numerical (K-only) run's into its ``observations/``; restored after."""
+    regular = route.launched[str(route.blocks[10400])][0]
+    k_only = route.numerical_runs[0]
+    kept = {}
+    for run_id, sealed in ((regular, Path("responses") / "harmful_evaluation.jsonl"),
+                           (k_only, Path("observations") / "measurements.jsonl")):  # fmt: skip
+        for name in ("config.yaml", "meta.json"):
+            path = route.root / "study3" / run_id / name
+            kept[path] = path.read_bytes()
+            link(path, sealed)
+    try:
+        yield regular, k_only
+    finally:
+        for path, data in kept.items():
+            path.unlink()
+            path.write_bytes(data)
+
+
+KINDS = ("engineering", "search-round0", "search-round1", "numerical", "repair", "validation",
+         "confirmation")  # fmt: skip
+
+
+def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_problems(
+    route, monkeypatch
+) -> None:
+    """The commands again, with a confirmation run's ``config.yaml`` and ``meta.json`` linked into
+    its ``responses/`` and a numerical run's into its ``observations/``: each run is a problem
+    that names its files, and the step is blocked; every campaign kind and the guard refuse, the
+    other commands refuse or write what reads no run (the streams driver, a versions record); the
+    readers name the same problems. Nothing sealed is opened, no label reader is called, and the
+    sentinel is in no output, refusal, problem or written file."""
+    root, repo = route.root, route.repo
+    third = "docs/study3-versions-3.json"
+    with linked(route) as (regular, k_only):
+        guard = SealedGuard(monkeypatch)
+        first = len(route.ran)
+        why = "its config.yaml and meta.json resolve under a responses or observations folder"
+        state = json.loads(route.ok("summary", "progress", "--runs-root", root).out)
+        assert state["step"]["kind"] == "blocked"
+        for run_id in (regular, k_only):
+            assert f"{run_id}: {why}: never opened" in state["problems"]
+        assert route.guarded(10403, route.blocks[10403]).code != 0
+        for kind in KINDS:
+            error = route.refused("campaigns", kind, "--runs-root", root, "--candidate", 1,
+                                  "--theta0", route.runs.theta0, "--out",
+                                  route.out / f"linked-{kind}").err  # fmt: skip
+            assert "the step is blocked" in error and regular in error, (kind, error)
+        route.ok("campaigns", "prep", "--seeds", 10101, "--commit", route.code["commit"], "--out",
+                 route.out / "linked-prep.sh")  # fmt: skip
+        for step in ("validation", "confirmation"):
+            route.refused("summary", "fixation", step, "--runs-root", root, "--candidate", 1,
+                          *(SUPPLEMENT_SEEDS if step == "confirmation" else ()))  # fmt: skip
+        versions = route.run("summary", "versions", "--out", third, "--reason", "linked_runs",
+                             "--fixation", CONFIRMATION_C1, "--runs-root", root, "--supersedes",
+                             SECOND, "--supersedes-reason", "linked_runs")  # fmt: skip
+        route.refused("summary", "record", "engineering", "--runs-root", root, "--from",
+                      route.inputs / "engineering.json")  # fmt: skip
+        route.refused("summary", "closure", "--runs-root", root, "--candidate", 1, "--arm", "F")
+        # the readers, called directly
+        found = {}
+        for name, read in (
+            ("read_endpoints", lambda: read_endpoints(root, theta0=route.runs.theta0,
+                                                      prescribed=route.prescribed)),
+            ("versions_problems", lambda: sv.versions_problems(
+                repo / SECOND, runs_root=root, repo=repo, step="confirmation", candidate=1)),
+            ("read_validation_fixation", lambda: sv.read_validation_fixation(
+                1, runs_root=root, repo=repo)),
+            ("read_confirmation_fixation", lambda: sv.read_confirmation_fixation(
+                1, runs_root=root, repo=repo)),
+            ("decisions", lambda: decisions(root, 1, repo=repo)),
+            ("read_holds", lambda: read_holds(root)),
+            ("journal_lines", lambda: journal_lines(root)),
+            ("qualification_logs", lambda: sv.qualification_logs(root, 1)),
+        ):  # fmt: skip
+            try:
+                found[name] = repr(read())
+            except Exception as exc:  # noqa: BLE001  (its message is checked too)
+                found[name] = f"raised {type(exc).__name__}: {exc}"
+        _, problems = read_endpoints(root, theta0=route.runs.theta0, prescribed=route.prescribed)
+        for run_id in (regular, k_only):
+            assert f"{run_id}: {why}: never opened" in problems
+        assert guard.attempts == []
+        ran = route.ran[first:]
+        files = written(route.base)
+    assert (repo / third) in files
+    (repo / third).unlink()
+    assert route.labels.calls == []
+    for done in ran:
+        assert SENTINEL not in done.out + done.err, done.argv
+    for name, text in found.items():
+        assert SENTINEL not in text and "AssertionError" not in text, name
+    assert [path for path, data in files.items() if SENTINEL.encode() in data] == []
+    assert versions.code == 0, versions.err  # a versions record reads no run: it is written
+
+
+def real_reading(route) -> dict:
+    """Candidate 1's qualification as the real ``read_qualification`` reads the route's files
+    (they hold no qualification of package 1's: its rates are not qualified, and its problems say
+    so); its launcher runs located and their identity files read."""
+    return REAL_READING(route.root, 1, expected_code=route.code["gpu_code_sha256"],
+                        settings=load_config("experiments/qualification"))  # fmt: skip
+
+
+def test_the_qualification_reader_opens_nothing_sealed_on_the_routes_files(route, monkeypatch):
+    """The route replaces the qualification's reading; the real reader, on the same files, opens
+    nothing sealed while it locates the launcher runs and reads their identity files."""
+    guard = SealedGuard(monkeypatch)
+    reading = real_reading(route)
+    assert guard.attempts == []
+    assert any(identity is not None for rate in reading["rates"].values()
+               for identity in rate["launchers"].values())  # fmt: skip
+    assert SENTINEL not in repr(reading)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="qualification_records reads every run's meta.json (_Located) and a located run's "
+    "identity files (launcher_identity) without the sealed-path rule: a record file linked into "
+    "a sealed folder is opened",
+)
+def test_the_qualification_reader_opens_no_record_linked_into_its_sealed_folders(
+    route, monkeypatch
+) -> None:
+    """With a numerical run's ``config.yaml`` and ``meta.json`` linked into its
+    ``observations/`` (and a confirmation run's into its ``responses/``), the real qualification
+    reader and ``launcher_identity`` open neither."""
+    with linked(route) as (_, k_only):
+        guard = SealedGuard(monkeypatch)
+        for read in (lambda: real_reading(route),
+                     lambda: qualification_records.launcher_identity(
+                         route.root / "study3" / k_only)):  # fmt: skip
+            with contextlib.suppress(AssertionError):  # the guard's: the attempt is listed
+                read()
+        found = list(guard.attempts)
+        guard.armed = False
+    assert found == []
+
+
+# ------------------------------------------------------------------ no label
+
+LOADED = """\
+import importlib, importlib.util, inspect, json, sys
+from pathlib import Path
+
+labels, modules, scripts = sys.argv[1:4]
+labels, modules, scripts = json.loads(labels), json.loads(modules), json.loads(scripts)
+calls, readers = [], {}
+if "--patched" in sys.argv:  # the label readers' entry points raise from the start
+    for name in labels:
+        module = importlib.import_module(name)
+        for attr, value in list(vars(module).items()):
+            if attr.startswith("_") or not inspect.isfunction(value) or value.__module__ != name:
+                continue
+
+            def raiser(*args, _name=f"{name}.{attr}", **kwargs):
+                calls.append(_name)
+                raise AssertionError(_name)
+
+            readers[id(value)], readers[id(raiser)] = (value, attr), (raiser, attr)
+            setattr(module, attr, raiser)
+loaded = {name: importlib.import_module(name) for name in modules}
+for path in scripts:
+    spec = importlib.util.spec_from_file_location(Path(path).stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    loaded[path] = module
+bound = sorted(f"{where}.{attr}" for where, module in loaded.items()
+               for attr, value in vars(module).items()
+               if id(value) in readers and readers[id(value)][0] is value)
+print(json.dumps({"calls": calls, "bound": bound, "readers": len(readers) // 2,
+                  "loaded": [name for name in labels if name in sys.modules]}))
+"""
+
+
+def test_the_package_loads_and_binds_no_label_reader() -> None:
+    """Each module of the package and both scripts, imported in a fresh process: with the label
+    readers' entry points raising from the start, the imports call none and bind none; without
+    them, the imports load no label reader at all."""
+    modules = [f"zero_field_refusal.analysis.{path.stem}" for path in PACKAGE]
+    argv = [sys.executable, "-c", LOADED, json.dumps(LABEL_MODULES), json.dumps(modules),
+            json.dumps([str(path) for path in SCRIPTS])]  # fmt: skip
+    patched = json.loads(subprocess.run([*argv, "--patched"], capture_output=True, text=True,
+                                        check=True, cwd=REPO_ROOT).stdout)  # fmt: skip
+    assert patched["readers"] > 10 and patched["calls"] == [] and patched["bound"] == []
+    plain = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True,
+                                      cwd=REPO_ROOT).stdout)  # fmt: skip
+    assert plain == {"calls": [], "bound": [], "readers": 0, "loaded": []}
