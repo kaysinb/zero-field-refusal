@@ -1471,7 +1471,10 @@ docstring has every rule.
      and the driver stops there, neither rerunning nor skipping it. A case whose label
      (`<cell>/s<seed>` in its experiment) has a launcher run held in any launch journal, whatever
      its config hash, stops the driver with exit 11 naming the hold, before the launcher is
-     called; nothing lifts a hold;
+     called; nothing lifts a hold. For the case that holds the FA rate's same-path control,
+     `control-only` comes next (a decided case whose control is due, below): its exit 0, for a
+     case its baseline decided whose control alone is due, runs that control alone, then step
+     6; its exit 3 goes on with step 2; any other exit stops the driver;
   2. the `<dir>/<run_id>.pt` of the case's launcher run attempts that the launch journal shows
      superseded (ended technical, or never ended) are removed (`clear-stale`); a settled run's
      checkpoint (done, diverged, or completed but in conflict) stays. Then the free disk is
@@ -1502,7 +1505,9 @@ docstring has every rule.
   record (the Pod, the network or the deadline stopped it) stops the driver with exit 8. Its
   rerun is the next attempt, by hand, with its documented reason, which the record carries, while
   the Pod and its container disk are the ones it started on (otherwise the case restarts,
-  below); an interruption without a documented cause is recorded technical instead
+  below). The same-path control is the exception: it reads no checkpoint, so its interrupted
+  attempt is rerun this way after a lost container disk too (a decided case whose control is
+  due, below). An interruption without a documented cause is recorded technical instead
   (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its
   rerun is a recovery round of its own with the reason and its incident, one attempt per round
   (["Launching runs"](#launching-runs)): a second loss, or a first loss after the round was used
@@ -1561,7 +1566,8 @@ docstring has every rule.
   (round 2, one attempt at `--max-attempts 1`) runs its next attempt, and each part runs as its
   next attempt with the new reason. A launcher run in flight at the loss (a start without an
   end, no settled directory) is no attempt to restart (`restart-case` refuses): the launcher
-  settles it technical, and a round with the documented reason is the whole route.
+  settles it technical, and a round with the documented reason is the whole route. A decided
+  case is never restarted: its control runs alone (below).
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --infrastructure "the Pod stopped during the case"
@@ -1573,6 +1579,42 @@ docstring has every rule.
     --candidate 1 --case s10200/adamw-1.45e-05 --part baseline --attempt 2 \
     --infrastructure "the Pod stopped during the case" \
     --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-1.45e-05
+  ```
+- **A decided case whose control is due.** A case its baseline decided (a scientific failure)
+  still owes its same-path control. After a lost container disk the launcher refuses its run
+  (the checkpoint is missing) and
+  `restart-case` refuses the case (the failure keeps counting), but the control reads no
+  checkpoint. So, for the case that holds the control, the driver asks `control-only` first. It
+  exits 0, printing the launcher run's directory, when:
+  - the case holds the control, the engineering cycle has not resolved it, and its baseline
+    record (the latest, not void) is a scientific failure while the case is not complete;
+  - the control's latest attempt is due or interrupted, the only part outstanding;
+  - the baseline record classified its launcher run as conforming (`launcher.classified` true,
+    `launcher.kind` null): the decision is the baseline's own;
+  - the run that record names is the case's located run (its one settled directory, superseded
+    nowhere), with the identity the record gives (its recorded checkpoint record; the file is
+    never read), done in the launch journal, its label held nowhere.
+
+  The driver then runs `part --part control --resume` on that run, with all the control's own
+  checks (the launcher run's numerics, the streams, v₀), and then `finish`: never
+  `clear-stale`, the launcher, `locate`, the baseline, `decided` or the rest. Exit 3 is the
+  usual path (any other case, a case decided by its launcher run's own declared instability
+  stop included: the launcher accepts that run without its checkpoint). Exit 1 names the
+  condition that fails for a decided case it cannot bind: the driver stops, nothing is rerun,
+  and the case waits for a diagnosis. As any part, a recorded control, technical or
+  scientific, is never rerun (a technical one keeps the checkpoints left: `finish` exits 9). To
+  resume such a case after a lost container disk, run the driver again; when the control was
+  interrupted it stops with exit 8, and the control's next attempt runs by hand with the
+  documented reason on the directory `control-only` prints (no restart, no recovery round), and
+  then the driver again:
+
+  ```bash
+  RUN_DIR=$(project-run "$SRC" python scripts/qualify.py control-only \
+    --campaign "$C/qualification-c1.yaml" --candidate 1 --case s10200/adam_frozen-1.83e-05)
+  project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
+    --candidate 1 --case s10200/adam_frozen-1.83e-05 --part control --attempt 2 \
+    --infrastructure "the Pod stopped during the control: <the documented cause>" \
+    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adam_frozen-1.83e-05
   ```
 - **A technical failure and its engineering cycle.** A completed technical failure (the
   repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
@@ -1648,8 +1690,9 @@ docstring has every rule.
   unresolved torn line, or a line a published record requires missing) `verdict` refuses too
   (exit 12), so no `verdict.json` is written then and an older one stays on disk. **Exits:** 0,
   every case complete; 1, a
-  precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
-  that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
+  precondition (the host memory included), the disk (or `df` giving no number), a `finish`
+  that refuses a case not complete, or a decided case whose control is due that `control-only`
+  cannot bind to its launcher run; 8, an interrupted attempt (or a part a case restart names);
   9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; 12, a
   launch journal that is not whole, a torn line unresolved or a line a published record requires
   missing (`complete` refuses it, as every `qualify.py` command that reads the runs does, and so

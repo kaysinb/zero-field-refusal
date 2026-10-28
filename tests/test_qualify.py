@@ -187,6 +187,8 @@ def test_the_driver_runs_each_case_in_order(qualify, tmp_path) -> None:
     order = []
     for label, name, control in ((fa, FA.name, True), (adamw, ADAMW.name, False)):
         order += [rf"qualify\.py complete .*--case '?{re.escape(name)}'?",
+                  *([rf"qualify\.py control-only .*--case '?{re.escape(name)}'?"] if control
+                    else []),
                   r"qualify\.py clear-stale", r"df -Pk", r"-lt \d+ \]",
                   rf"scripts/launch\.py \"\$CAMPAIGN\" --only '?{re.escape(label)}'? "
                   r"--max-attempts 1", r"qualify\.py locate",
@@ -195,7 +197,10 @@ def test_the_driver_runs_each_case_in_order(qualify, tmp_path) -> None:
                   *([r"qualify\.py part .*--part control --resume"] if control else []),
                   r"qualify\.py finish"]  # fmt: skip
     positions(text, order)
-    assert text.count("--part control") == 1  # FA on the first numerical seed alone
+    fa_case, adamw_case = text.split("# ---- case ")[1:]
+    assert "control-only" not in adamw_case and "--part control" not in adamw_case
+    # FA on the first numerical seed alone: the control alone (control-only), or after the rest
+    assert fa_case.count("--part control") == 2 and fa_case.count("control-only") == 2
     subprocess.run(["bash", "-n"], input=text, text=True, check=True)
 
 
@@ -219,7 +224,7 @@ n=$(grep -c "^$cmd " "$STUB_LOG")
 var="STUB_${cmd//-/_}"
 read -r -a codes <<< "${!var:-0}"
 i=$(( n - 1 < ${#codes[@]} ? n - 1 : ${#codes[@]} - 1 ))
-if [ "$cmd" = locate ]; then echo /runs/study3/r1; fi
+if [ "$cmd" = locate ] || [ "$cmd" = control-only ]; then echo /runs/study3/r1; fi
 exit "${codes[$i]}"
 """
 
@@ -246,6 +251,7 @@ def run_driver(qualify, tmp_path, monkeypatch, **exits):
     log.touch()
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "RUNS_DIR": str(tmp_path / "runs"),
            "STUB_LOG": str(log), "STUB_complete": "3", "STUB_decided": "3",
+           "STUB_control_only": "3",
            **{f"STUB_{key}": str(value) for key, value in exits.items()}}  # fmt: skip
     done = subprocess.run(["bash", str(out)], env=env, capture_output=True, text=True)
     calls = [line.split(" ", 1)[0] + " " + " ".join(re.findall(r"--(?:part|case) (\S+)", line))
@@ -267,7 +273,8 @@ FULL = ["complete", "clear-stale", "launch", "locate", "part baseline", "decided
 def test_the_driver_runs_every_part_of_each_case(qualify, tmp_path, monkeypatch) -> None:
     code, calls = run_driver(qualify, tmp_path, monkeypatch)
     assert code == 0
-    assert calls == [*_with_case([*FULL, "part control", "finish"], FA),
+    assert calls == [*_with_case([FULL[0], "control-only", *FULL[1:], "part control", "finish"],
+                                 FA),
                      *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
 
 
@@ -283,18 +290,36 @@ def test_the_driver_resumes_past_a_complete_case(qualify, tmp_path, monkeypatch)
 def test_a_decided_case_skips_the_rest_but_not_its_control(qualify, tmp_path, monkeypatch):
     code, calls = run_driver(qualify, tmp_path, monkeypatch, decided="0 3")
     assert code == 0
-    assert calls[: len(FULL) + 1] == _with_case([*FULL[:-1], "part control", "finish"], FA)
+    assert calls[: len(FULL) + 2] == _with_case([FULL[0], "control-only", *FULL[1:-1],
+                                                 "part control", "finish"], FA)  # fmt: skip
     assert f"part {FA.name} rest" not in calls
 
 
-@pytest.mark.parametrize("command", ["complete", "decided"])
+def test_a_decided_case_with_its_control_due_runs_the_control_alone(qualify, tmp_path, monkeypatch):
+    """``control-only`` exits 0 for FA, decided by its baseline with its same-path control alone
+    outstanding: the driver runs that control with the launcher run's directory it printed, and
+    then ``finish``; neither ``clear-stale``, the launcher, ``locate``, the baseline,
+    ``decided`` nor the rest is called. AdamW's case, without the control, runs in full."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, control_only=0)
+    assert code == 0
+    assert calls == [*_with_case(["complete", "control-only", "part control", "finish"], FA),
+                     *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
+    (control,) = [line for line in (tmp_path / "stub.log").read_text().splitlines()
+                  if line.startswith("part ") and "--part control" in line]  # fmt: skip
+    assert "--run-dir /runs/study3/r1 " in control and control.endswith("--part control --resume")
+    text = (tmp_path / "driver.sh").read_text()
+    assert f"{FA.name}: decided by its baseline; only its same-path control is due" in text
+
+
+@pytest.mark.parametrize("command", ["complete", "control-only", "decided"])
 def test_a_crashing_check_stops_the_driver(qualify, tmp_path, monkeypatch, command) -> None:
-    """``complete`` and ``decided`` say no with exit 3; any other non-zero exit is a failure
-    that stops the driver (its verdict still written)."""
-    code, calls = run_driver(qualify, tmp_path, monkeypatch, **{command: 2})
+    """``complete``, ``control-only`` and ``decided`` say no with exit 3; any other non-zero exit
+    is a failure that stops the driver (its verdict still written)."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, **{command.replace("-", "_"): 2})
     assert code == 2
     assert calls[-2:] == [f"{command} {FA.name}", "verdict"]
     assert f"part {FA.name} rest" not in calls and f"finish {FA.name}" not in calls
+    assert f"part {FA.name} control" not in calls
 
 
 def test_the_driver_stops_after_a_technical_case(qualify, tmp_path, monkeypatch) -> None:
@@ -1985,7 +2010,8 @@ TORN_BYTES = b'{"time": "2026-10-27T10:00:00+00:00", "event": "held", "run": "\x
 @pytest.mark.parametrize(
     ("command", "extra"),
     [("part", ["--part", "baseline", "--resume", "--run-dir", "r", "--checkpoints", "c"]),
-     ("complete", []), ("decided", []), ("clear-stale", []), ("locate", []), ("finish", []),
+     ("complete", []), ("decided", []), ("control-only", []), ("clear-stale", []),
+     ("locate", []), ("finish", []),
      ("interrupted", ["--part", "rest", "--attempt", "1", "--technical", "a crash"]),
      ("restart-case", ["--infrastructure", RESTART]),
      ("supersede", ["--record", "CAMPAIGN", "--diagnosis", "d", "--fix", "f"]),
@@ -2304,6 +2330,245 @@ def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_p
     checkpoint.unlink()  # gone: a possible loss, which the documented restart names
     qualify.main(restart(path, ADAMW, RESTART))
     assert (case_folder(out, ADAMW) / "restart-1.json").is_file()
+
+
+# ------------------------------------------------- a decided case with its control due
+
+FA_LABEL = f"adam_frozen-{FA_LR:g}/s10200"
+LOST = "the Pod stopped during the control; its container disk is gone"
+UNSTABLE = {"reason": "gradient_spike", "step": 3, "detail": {"grad_norm": 50.0}}
+
+
+def decided_world(tmp_path):
+    """FA's case decided by its baseline (a declared instability rule fired on the unshifted
+    baseline trajectory), its baseline record bound to its conforming launcher run r-f1
+    (classified, ``launcher.kind`` null), done in the launch journal; r-f1's endpoint checkpoint
+    was written and recorded, then lost with the container disk. Its same-path control is due.
+    Returns the campaign, the runs root, the records' folder and r-f1's directory."""
+    path = campaign(tmp_path)
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, FA_LABEL, ["r-f1"])
+    with (root / "launch" / "study3-qualification-c1.jsonl").open("a") as f:
+        end = {"event": "end", "run": FA_LABEL, "attempt": 1, "run_id": "r-f1",
+               "returncode": 0, "outcome": "done", "problem": None}  # fmt: skip
+        f.write(json.dumps(end) + "\n")
+    checkpoint = tmp_path / "ckpt" / "r-f1.pt"
+    run_dir = with_checkpoint(settled_launcher(root, run, "r-f1"), checkpoint)
+    baseline, _ = synthetic(FA, identity=q.launcher_identity(run_dir))
+    baseline["trajectories"]["baseline"]["instability"] = dict(UNSTABLE)
+    baseline["launcher_run"] = str(run_dir)
+    baseline["launcher"]["classified"] = True
+    publish(out, FA, "baseline", baseline)
+    assert q.case_verdict(baseline, None, SCOPE)["kind"] == "scientific"
+    checkpoint.unlink()  # the container disk lost
+    return path, root, out, run_dir
+
+
+def control_only(path, case=FA):
+    return ["control-only", *common(path), "--case", case.name]
+
+
+def edit_baseline(out, change):
+    """FA's baseline record, changed by ``change`` and published again as attempt 1."""
+    record = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    change(record)
+    publish(out, FA, "baseline", record)
+
+
+def control_args(path, run_dir, tmp_path, *mode):
+    return ["part", *common(path), "--case", FA.name, "--part", "control", *mode,
+            "--run-dir", str(run_dir), "--checkpoints", str(tmp_path / "h"),
+            "--device", "cpu"]  # fmt: skip
+
+
+def test_control_only_binds_the_decided_baseline_to_its_launcher_run_without_the_checkpoint(
+    qualify, stubbed, tmp_path, monkeypatch, capsys
+) -> None:
+    """A decided case whose same-path control is due, its launcher run's checkpoint gone with the
+    container disk: ``control-only`` binds the baseline record to the located run by its
+    recorded identity (the checkpoint record, never the file), prints that run's directory and
+    exits 0; ``part --part control --resume`` then runs attempt 1 on it. Neither the launcher
+    nor the checkpoint is touched."""
+    from zero_field_refusal import launch
+
+    path, root, out, run_dir = decided_world(tmp_path)
+
+    def untouched(*args, **kwargs):
+        raise AssertionError(f"called with {args}")
+
+    monkeypatch.setattr(launch, "run_campaign", untouched)
+    monkeypatch.setattr(qualify, "checkpoint_sha256", untouched)  # the checkpoint never read
+    monkeypatch.setattr(q, "file_sha256", untouched)
+    capsys.readouterr()
+    qualify.main(control_only(path))
+    printed = capsys.readouterr().out.strip()
+    assert printed == str(run_dir)
+    qualify.main(control_args(path, printed, tmp_path, "--resume"))
+    assert stubbed == [(FA.name, "control", 1)]
+    started = json.loads((out / (FA.attempt_path("control", 1) + ".started")).read_text())
+    assert started["run_dir"] == str(run_dir) and started["infrastructure"] is None
+    assert not (tmp_path / "ckpt" / "r-f1.pt").exists()
+
+
+def test_control_only_says_no_outside_its_state(qualify, tmp_path, capsys) -> None:
+    """``control-only`` exits 3, and the driver takes its usual path, for a case that is not
+    decided, one that holds no same-path control, one the engineering cycle resolved, one whose
+    control is recorded (the case complete) or whose latest control attempt is neither due nor
+    interrupted (an unreadable record), and one decided by its launcher run's own declared
+    instability stop (the launcher needs no checkpoint for it, and goes on as before)."""
+    path, root, out, run_dir = decided_world(tmp_path)
+
+    def no(case, why):
+        capsys.readouterr()
+        assert exit_code(qualify, control_only(path, case)) == qualify.NO
+        assert why in capsys.readouterr().err
+
+    assert exit_code(qualify, control_only(path)) == 0
+    edit_baseline(out, lambda b: b["trajectories"]["baseline"].pop("instability"))
+    no(FA, "not decided")
+    edit_baseline(out, lambda b: b["trajectories"]["baseline"].update(instability=UNSTABLE))
+    write_case(out, ADAMW, decided=True)
+    no(ADAMW, "holds no same-path control")
+    cycle = out / "c1" / "supersede-1.json"  # the cycle kept FA on its launcher run, unresolved
+    resolution = {"run_id": "r-f1", "outcome": "unresolved", "reasons": ["no recorded commit"]}
+    q.publish(cycle, {"kept_cases": [{"case": FA.name, "stage": "numerical",
+                                      "resolution": resolution}]})  # fmt: skip
+    no(FA, "the engineering cycle kept the case on its launcher run r-f1 (unresolved)")
+    cycle.unlink()
+    assert exit_code(qualify, control_only(path)) == 0
+    publish(out, FA, "control", {"part": "rest", "case": FA.record()})  # not a control's record
+    no(FA, "attempt 1 is invalid, neither due nor interrupted")
+    publish(out, FA, "control", control_record(case=FA, identity=q.launcher_identity(run_dir)))
+    no(FA, "decided by the baseline")  # complete: nothing is outstanding
+    (out / FA.attempt_path("control", 1)).unlink()
+    assert exit_code(qualify, control_only(path)) == 0
+
+    def launcher_stop(record):
+        """The launcher run stopped by its declared rule: the baseline ran nothing."""
+        record.update(status="not_run", kind="scientific", reasons=["instability: r-f1"])
+        record["launcher"].update(kind="scientific", reasons=["instability: r-f1"])
+        record["trajectories"] = {}
+
+    edit_baseline(out, launcher_stop)
+    no(FA, "its launcher run's own declared instability stop")
+
+
+def fa_run(path):
+    from zero_field_refusal.launch import load_campaign
+
+    return next(r for r in load_campaign(path)[1] if r.label == FA_LABEL)
+
+
+def superseded(path, root, out, run_dir):
+    from zero_field_refusal.launch import supersede
+
+    supersede(root, "study3-qualification-c1", fa_run(path), run_dir.name, reason="a test",
+              record=str(out / "restart-1.json"))  # fmt: skip
+
+
+def ended(outcome):
+    def change(path, root, out, run_dir):
+        log = root / "launch" / "study3-qualification-c1.jsonl"
+        log.write_text(log.read_text().replace('"outcome": "done"', f'"outcome": "{outcome}"'))
+
+    return change
+
+
+def baseline_change(change):
+    return lambda path, root, out, run_dir: edit_baseline(out, lambda b: change(b, run_dir))
+
+
+UNBOUND = {  # what the decided case's binding lacks → how control-only names it
+    "unclassified": (baseline_change(lambda b, d: b["launcher"].update(classified=False)),
+                     "did not classify its launcher run"),
+    "kind": (baseline_change(lambda b, d: b["launcher"].update(kind="technical")),
+             "launcher.kind is 'technical'"),
+    "other run": (baseline_change(lambda b, d: b.update(launcher_run=str(d.parent / "r-f0"))),
+                  "not the located run"),
+    "identity": (baseline_change(lambda b, d: b["launcher"]["identity"].update(sha256="0" * 64)),
+                 "identity is not the one the baseline record names"),
+    "superseded": (superseded, "superseded in the launch journal"),
+    "end": (ended("conflict"), "not done"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("missing", list(UNBOUND))
+def test_control_only_refuses_a_decided_case_it_cannot_bind(qualify, tmp_path, missing) -> None:
+    """A decided case whose control is due, but whose baseline record cannot be bound to its
+    launcher run without the launcher (not classified, not conforming, another run, another
+    identity, the run superseded, its journal end not done): ``control-only`` exits 1 naming
+    the condition, and nothing runs."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    assert exit_code(qualify, control_only(path)) == 0
+    change, why = UNBOUND[missing]
+    change(path, root, out, run_dir)
+    code = exit_code(qualify, control_only(path))
+    assert isinstance(code, str) and why in code, code  # exit 1, with its message
+    assert "nothing is rerun" in code
+    assert not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+
+
+def test_control_only_answers_as_complete_first(qualify, tmp_path, monkeypatch) -> None:
+    """Before its own checks, ``control-only`` answers as ``complete`` and ``decided`` do: a
+    stale case exits 10 and a held label 11 (a journal that is not whole, 12:
+    ``test_every_subcommand_that_reads_the_runs_refuses_over_a_torn_line``)."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(FIX))
+    assert exit_code(qualify, control_only(path)) == qualify.STALE
+    monkeypatch.setattr(code_identity, "gpu_code_identity", lambda *a, **k: dict(CODE))
+    assert exit_code(qualify, control_only(path)) == 0
+    run = fa_run(path)
+    with (root / "launch" / "study3-qualification-c1.jsonl").open("a") as f:
+        f.write(json.dumps({"event": "held", "run": FA_LABEL, "experiment": run.experiment,
+                            "config_hash": run.config_hash, "run_id": "r-f0",
+                            "reason": "unresolved"}) + "\n")  # fmt: skip
+    assert exit_code(qualify, control_only(path)) == qualify.HELD
+
+
+def test_an_interrupted_control_of_a_decided_case_is_rerun_by_hand_after_a_lost_disk(
+    qualify, stubbed, tmp_path
+) -> None:
+    """The control of a decided case was interrupted, and the container disk is gone: ``part
+    --resume`` exits 8 (``control-only`` still binds the case, so the driver stops there); a
+    restart is refused (the scientific baseline keeps counting); the control's next attempt runs
+    by hand with ``--infrastructure``, without any checkpoint on disk, and its record carries
+    the reason."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    q.publish(out / (FA.attempt_path("control", 1) + ".started"),
+              {"started_at": "t", "run_dir": str(run_dir)})  # fmt: skip
+    assert exit_code(qualify, control_args(path, run_dir, tmp_path, "--resume")) == (
+        qualify.INTERRUPTED)  # fmt: skip
+    assert exit_code(qualify, control_only(path)) == 0
+    with pytest.raises(SystemExit, match=r"completed failure.*baseline attempt 1.*scientific"):
+        qualify.main(restart(path, FA, LOST))
+    assert not list(case_folder(out, FA).glob("restart-*"))
+    assert stubbed == []
+    qualify.main(control_args(path, run_dir, tmp_path, "--attempt", "2", "--infrastructure", LOST))
+    assert stubbed == [(FA.name, "control", 2)]
+    record = json.loads((out / FA.attempt_path("control", 2)).read_text())
+    assert record["infrastructure"]["reason"] == LOST
+    assert record["infrastructure"]["previous"] == [{"attempt": 1, "state": "interrupted"}]
+    assert not any((tmp_path / "ckpt").glob("*.pt"))
+
+
+def test_a_failed_control_of_a_decided_case_is_kept(qualify, stubbed, tmp_path) -> None:
+    """A decided case's control recorded technical (K beyond 0.01·K*): it is never rerun, by
+    hand or by ``control-only``; the case is complete, so no restart; ``finish`` keeps its
+    checkpoints for the diagnosis (exit 9)."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    failed = control_record(0.1, case=FA, identity=q.launcher_identity(run_dir))
+    assert q.control_verdict(failed, SCOPE, 1)["kind"] == "technical"
+    publish(out, FA, "control", failed)
+    with pytest.raises(SystemExit, match="is never rerun"):
+        qualify.main(control_args(path, run_dir, tmp_path, "--attempt", "2",
+                                  "--infrastructure", LOST))  # fmt: skip
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    with pytest.raises(SystemExit, match="the case is complete"):
+        qualify.main(restart(path, FA, LOST))
+    assert not list(case_folder(out, FA).glob("restart-*"))
+    assert exit_code(qualify, ["finish", *common(path), "--case", FA.name]) == (
+        qualify.TECHNICAL_CASE)  # fmt: skip
+    assert stubbed == []
 
 
 def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:

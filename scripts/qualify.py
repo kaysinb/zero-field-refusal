@@ -8,7 +8,7 @@
         --part baseline|rest|control
         (--resume | --attempt N [--infrastructure REASON | --engineering-cycle])
         --run-dir DIR --checkpoints DIR [--diagnostic-steps T1,T2,...] [--device D]
-    python scripts/qualify.py complete|decided|clear-stale|locate|finish [--release]
+    python scripts/qualify.py complete|decided|control-only|clear-stale|locate|finish [--release]
         --campaign FILE --candidate N [--engineering] --case NAME
     python scripts/qualify.py interrupted --campaign FILE --candidate N [--engineering]
         --case NAME --part baseline|rest|control --attempt N --technical REASON
@@ -48,7 +48,11 @@ outside this.
    launcher can be reached: a launcher run of the case's label (its experiment and
    ``<cell>/s<seed>``) held in any launch journal, whatever its config hash (``launch.hold``: an
    outcome the engineering cycle could not resolve), exits 11 (``HELD``) naming the run and the
-   hold's reason, and the driver stops there; nothing here lifts a hold.
+   hold's reason, and the driver stops there; nothing here lifts a hold. For the case that
+   holds its rate's same-path control, ``control-only`` follows ``complete``'s no (below, "A
+   decided case whose control is due"): its exit 0 prints the launcher run's directory, and the
+   driver runs ``part --part control --resume`` on it alone, then step 7; its exit 3 is the usual
+   path, steps 2 to 7; any other exit stops the driver.
 2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every attempt of the
    case's launcher run that the launch journal shows superseded (``superseded_run_ids``: ended
    technical, or not ended, without a settled directory); the checkpoint of a settled run (done,
@@ -83,6 +87,34 @@ for its control): the baseline, the due control and, unless decided, the rest, w
 when it names the latest baseline record's sha256 (``baseline_record``; a rest that read no
 baseline, having run nothing or failed before, excepted). Records are published atomically and
 durably (``qualification.publish``).
+
+**A decided case whose control is due** (``control-only``; "Failure routes", amendment 2). A Pod
+stop after the baseline decided a case loses the container disk, the launcher run's checkpoint
+with it: the launcher refuses that run then (its checkpoint is missing), and ``restart-case``
+refuses the case (its scientific failure keeps counting), although the control reads no
+checkpoint. ``control-only`` first answers as ``complete`` and ``decided`` (a journal that is not
+whole, exit 12; stale, 10; held, 11), then exits 0, printing the launcher run's directory and
+nothing else, when the case holds its rate's same-path control, the engineering cycle has not
+resolved it (``resolution_of``), it is not complete and decided (``case_state``: its latest
+baseline record, recorded and not void, a scientific failure by ``case_verdict`` of the baseline
+alone), the control's latest attempt is due or interrupted (the only part outstanding), and the
+baseline record binds the case to its launcher run without the launcher (``control_binding``):
+it classified the run as conforming (``launcher.classified`` true and ``launcher.kind`` null, so
+the decision is the baseline's own), and the run it names (``launcher_run``) is the case's
+located run (``located``), with the record's identity (``q.launcher_identity``: the recorded
+checkpoint record; the checkpoint file is never read), done in the launch journal (its end,
+settled or not), no ``held`` line naming its label. The driver then runs ``part --part control
+--resume`` on that run, with every check of the control (``run_part``: the launcher run against
+the case and this process's numerics, its streams and v₀), and neither ``clear-stale``, the disk
+check, the launcher, ``locate``, the baseline, ``decided`` nor the rest; ``finish`` follows. It
+exits 3 (``NO``) for a case outside that state, which takes the usual path: a case decided by its
+launcher run's own declared instability stop among them, a run the launcher accepts without its
+checkpoint. It exits 1, naming the condition, for a decided case it cannot bind: the driver
+stops there, and nothing is rerun. The control's attempts are a part's (below): ``--resume`` runs
+attempt 1, or exits 8 for an interrupted one, whose rerun is by hand (``--attempt N
+--infrastructure REASON``) whatever happened to the container disk, as the control reads no
+checkpoint; a recorded control, of any kind, is never rerun. A decided case is never restarted:
+its control runs alone.
 
 **Attempts of a part** (``part``; "Failure routes": an infrastructure interruption is rerun under a
 new attempt id, a technical or scientific record never). Before ``run_part`` the part publishes
@@ -228,8 +260,9 @@ writes the verdict on every exit, but one: over a launch journal that is not who
 unresolved torn line, or a line a published record requires missing) ``verdict`` refuses too
 (exit 12), so no verdict.json is written then and an older one stays on disk.
 Exits: 0 when every case is complete; 1 a precondition (the host
-memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
-not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
+memory included), the disk (``df``'s answer must be a number), a ``finish`` that refuses a case
+not complete, or a decided case whose control is due that ``control-only`` cannot bind to its
+launcher run; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
 technical case; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn line in
 a launch journal, or a line a published record requires missing from it (``complete``'s refusal,
 or the launcher's); the launcher's own when it stops; any other, the failed command's.
@@ -259,7 +292,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -297,11 +330,11 @@ RUN = 'project-run "$SRC" python scripts/qualify.py'
 # A case restart or an engineering cycle's supersession record, in the case's folder
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
 LAUNCH = 'project-run "$SRC" python scripts/launch.py'
-NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure)
+NO = 3  # ``complete``, ``decided``, ``control-only``: no (any other non-zero exit fails)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
-STALE = 10  # ``complete`` and ``decided``: records of other GPU code or settings
-HELD = 11  # ``complete`` and ``decided``: the case's label has a held launcher run
+STALE = 10  # ``complete``, ``decided``, ``control-only``: records of other code or settings
+HELD = 11  # ``complete``, ``decided``, ``control-only``: the label has a held launcher run
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
@@ -728,6 +761,86 @@ def located(run: Run, root: Path) -> Path | None:
         if meta.get("status") in ("completed", "diverged") or (run_dir / "terminal.json").is_file():
             found.append(run_dir)
     return found[0] if len(found) == 1 else None
+
+
+def control_binding(p: Planned, baseline: dict, root: Path) -> tuple[Path | None, list[str]]:
+    """Whether a decided case's baseline record binds it to its launcher run without the
+    launcher (module docstring, "A decided case whose control is due"): the record classified
+    the run as conforming (``launcher.classified`` true, ``launcher.kind`` null), and the run it
+    names (``launcher_run``) is the case's located run (``located``), with the record's identity
+    (``q.launcher_identity``: the recorded checkpoint record, never the file), done in the launch
+    journal (its end, settled or not), its label held nowhere. The located run, and what fails."""
+    problems = []
+    launcher = baseline.get("launcher") or {}
+    if launcher.get("classified") is not True:
+        problems.append("the baseline record did not classify its launcher run "
+                        "(launcher.classified is not true)")  # fmt: skip
+    elif launcher.get("kind") is not None:
+        problems.append(f"the baseline record's launcher check did not pass (launcher.kind is "
+                        f"{launcher.get('kind')!r}, not null)")  # fmt: skip
+    records = launch_records(root)
+    named = baseline.get("launcher_run")
+    if isinstance(named, str) and Path(named).name in label_superseded(p.run, root):
+        problems.append(f"the launcher run the baseline record names, {Path(named).name}, is "
+                        "superseded in the launch journal")  # fmt: skip
+    run_dir = located(p.run, root)
+    if run_dir is None:
+        problems.append("no located launcher run (one settled directory of its config hash "
+                        "that no superseded line names)")  # fmt: skip
+    else:
+        if not isinstance(named, str) or Path(named) != run_dir:
+            problems.append(f"the baseline record names the launcher run {named!r}, not the "
+                            f"located run {run_dir}")  # fmt: skip
+        if q.launcher_identity(run_dir) != launcher.get("identity"):
+            problems.append(f"the located run {run_dir.name}'s identity is not the one the "
+                            "baseline record names")  # fmt: skip
+        ends = [r.get("outcome") for r in records
+                if r.get("event") == "end" and r.get("run_id") == run_dir.name]  # fmt: skip
+        if not ends or any(outcome != "done" for outcome in ends):
+            problems.append(f"the launch journal's end of {run_dir.name} is not done: {ends}")
+    held = held_runs(p.run, records)
+    if held:
+        problems.append(f"its label {p.run.label} has a held launcher run: {held}")
+    return run_dir, problems
+
+
+def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope) -> Path:
+    """The launcher run of a case decided by its baseline whose same-path control alone is
+    outstanding (module docstring, "A decided case whose control is due"): the driver then runs
+    that control on it, and neither the launcher nor any other part. Exits 3 (``NO``) for a case
+    not in that state, which takes the driver's usual path, the case its launcher run's own
+    declared instability stop decided included; exits 1, naming why, for a decided case its
+    baseline record cannot bind to the launcher run (``control_binding``)."""
+    name = p.case.name
+
+    def no(why: str) -> NoReturn:
+        print(f"{name}: {why}: the usual path", file=sys.stderr)
+        sys.exit(NO)
+
+    if not p.control:
+        no("it holds no same-path control")
+    resolution = resolution_of(out, p.case)
+    if resolution is not None:
+        no(f"the engineering cycle kept the case on its launcher run {resolution['run_id']} "
+           f"({resolution['outcome']})")  # fmt: skip
+    complete, decided, why = case_state(out, p, scope)
+    if complete or not decided:
+        no(f"{why}: not decided with its control outstanding")
+    control = part_state(out, p.case, "control")
+    if control.state not in ("due", "interrupted"):
+        no(f"its control's attempt {control.attempt} is {control.state}, neither due nor "
+           "interrupted")  # fmt: skip
+    baseline = part_state(out, p.case, "baseline").record or {}
+    launcher = baseline.get("launcher") or {}
+    if launcher.get("classified") is True and launcher.get("kind") == q.SCIENTIFIC:
+        no("decided by its launcher run's own declared instability stop, a run the launcher "
+           "accepts without its checkpoint")  # fmt: skip
+    run_dir, problems = control_binding(p, baseline, root)
+    if problems or run_dir is None:
+        sys.exit(f"{name}: decided by its baseline, its same-path control outstanding, but the "
+                 f"baseline record cannot be bound to its launcher run without the launcher: "
+                 f"{'; '.join(problems)}. The driver stops; nothing is rerun")  # fmt: skip
+    return run_dir
 
 
 # ------------------------------------------------------------------------------- commands
@@ -1969,7 +2082,9 @@ def driver_script(
                  f"from commit {commit}: {len(planned)} cases of the campaign {campaign}, one at "
                  "a time: the launcher run alone (one attempt), the baseline part, then, unless "
                  "the baseline is already a scientific failure, the rest, and the FA rate's "
-                 "same-path control, each in a fresh process; then the case's checkpoints are "
+                 "same-path control, each in a fresh process (a case its baseline decided, its "
+                 "control alone due, runs that control alone, control-only: not the launcher, "
+                 "whose checkpoint the control does not read); then the case's checkpoints are "
                  "deleted, unless its verdict is technical: then the driver stops (exit "
                  f"{TECHNICAL_CASE}) with them kept for the diagnosis. K-only and blind to "
                  "outcomes."),
@@ -1977,8 +2092,10 @@ def driver_script(
                  "complete case is skipped, so the driver can be run again after a stop. It "
                  "never reruns a part or a launcher run: an interrupted part (exit "
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
-                 "REASON, a failed launcher run with scripts/launch.py --only LABEL "
-                 "--max-attempts 1 --recovery REASON --incident-time UTC --cause TEXT "
+                 "REASON, a same-path control's after a lost container disk too (it reads no "
+                 "checkpoint; a decided case is never restarted), a failed launcher run with "
+                 "scripts/launch.py --only LABEL --max-attempts 1 --recovery REASON "
+                 "--incident-time UTC --cause TEXT "
                  "--evidence REF, one attempt per documented incident, each round's reason one "
                  "no earlier round of the label gave. The verdict is written on every exit, "
                  "but over a launch journal that is not whole (an unresolved torn line, or a "
@@ -1986,8 +2103,10 @@ def driver_script(
                  f"{TORN_JOURNAL}): no verdict.json is written then, and an older one stays on "
                  "disk."),
         *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory "
-                 f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
-                 f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
+                 "included), the disk, a case finish refuses (not complete) or a decided case "
+                 "control-only cannot bind to its launcher run without the launcher; "
+                 f"{INTERRUPTED} an interrupted attempt (or a part a case restart names); "
+                 f"{TECHNICAL_CASE} a "
                  f"technical case; {STALE} a stale case (records of other GPU code or settings); "
                  f"{HELD} a case whose label has a held launcher run; {TORN_JOURNAL} a torn line "
                  "in a launch journal, or a line a published record requires missing from it "
@@ -2030,6 +2149,44 @@ def driver_script(
     for index, p in enumerate(planned, 1):
         case = f"--case {shlex.quote(p.case.name)}"
         parts = f'{common} {case} --run-dir "$RUN_DIR" --checkpoints {shlex.quote(str(p.harness))}'
+        control = f"step {RUN} part {parts} --part control --resume"
+        usual = [  # complete's no: the launcher run, then the parts
+            f"{RUN} clear-stale {common} {case}",
+            "free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
+            "case \"$free_kb\" in",
+            "  ''|*[!0-9]*) stop \"df gave no free space for $CKPT: '$free_kb'\" 1 ;;",
+            "esac",
+            f'if [ "$free_kb" -lt {need_kb(need)} ]; then',
+            f'  stop "{need:g} GB free are needed under $CKPT, $free_kb KB are" 1',
+            "fi",
+            f'step {LAUNCH} "$CAMPAIGN" --only {shlex.quote(p.run.label)} --max-attempts 1',
+            f"RUN_DIR=$({RUN} locate {common} {case})",
+            f"step {RUN} part {parts} --part baseline --resume{diagnostic}",
+            "rc=0",
+            f"{RUN} decided {common} {case} || rc=$?",
+            'case "$rc" in',
+            f'  0) echo "== {stamp} {p.case.name}: the baseline is a scientific failure; '
+            'no rest" ;;',
+            f"  {NO}) step {RUN} part {parts} --part rest --resume{diagnostic} ;;",
+            '  *) stop "decided failed (exit $rc)" "$rc" ;;',
+            "esac",
+            *([control] if p.control else []),
+        ]  # fmt: skip
+        if p.control:  # decided by its baseline, its control alone due: that control alone
+            usual = [
+                "rc=0",
+                f"RUN_DIR=$({RUN} control-only {common} {case}) || rc=$?",
+                'case "$rc" in',
+                f'  0) echo "== {stamp} {p.case.name}: decided by its baseline; only its '
+                "same-path control is due: the launcher, the baseline and the rest are not "
+                'called"',
+                f"     {control} ;;",
+                f"  {NO})",
+                *[f"    {line}" for line in usual],
+                "    ;;",
+                f'  *) stop "{p.case.name}: control-only failed (exit $rc)" "$rc" ;;',
+                "esac",
+            ]  # fmt: skip
         lines += [
             f"# ---- case {index}/{len(planned)}: {p.case.name}, launcher run {p.run.label}",
             "rc=0",
@@ -2045,26 +2202,7 @@ def driver_script(
             "record's repair, or scripts/launch.py --resolve-torn (docs/operations.md)"
             f'" {TORN_JOURNAL} ;;',
             f"  {NO})",
-            f"    {RUN} clear-stale {common} {case}",
-            "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
-            "    case \"$free_kb\" in",
-            "      ''|*[!0-9]*) stop \"df gave no free space for $CKPT: '$free_kb'\" 1 ;;",
-            "    esac",
-            f'    if [ "$free_kb" -lt {need_kb(need)} ]; then',
-            f'      stop "{need:g} GB free are needed under $CKPT, $free_kb KB are" 1',
-            "    fi",
-            f'    step {LAUNCH} "$CAMPAIGN" --only {shlex.quote(p.run.label)} --max-attempts 1',
-            f"    RUN_DIR=$({RUN} locate {common} {case})",
-            f"    step {RUN} part {parts} --part baseline --resume{diagnostic}",
-            "    rc=0",
-            f"    {RUN} decided {common} {case} || rc=$?",
-            '    case "$rc" in',
-            f'      0) echo "== {stamp} {p.case.name}: the baseline is a scientific failure; '
-            'no rest" ;;',
-            f"      {NO}) step {RUN} part {parts} --part rest --resume{diagnostic} ;;",
-            '      *) stop "decided failed (exit $rc)" "$rc" ;;',
-            "    esac",
-            *([f"    step {RUN} part {parts} --part control --resume"] if p.control else []),
+            *[f"    {line}" for line in usual],
             "    ;;",
             '  *) stop "complete failed (exit $rc)" "$rc" ;;',
             "esac",
@@ -2086,6 +2224,7 @@ def main(argv: list[str] | None = None) -> None:
             "part",
             "complete",
             "decided",
+            "control-only",
             "clear-stale",
             "locate",
             "finish",
@@ -2202,7 +2341,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.part == "control" and not chosen.control:
             sys.exit(f"{chosen.case.name} holds no same-path control")
         part(args, chosen, out)
-    elif args.command in ("complete", "decided"):
+    elif args.command in ("complete", "decided", "control-only"):
         stale = stale_records(out, chosen, code_identity.gpu_code_identity(),
                               q.settings_record(settings))  # fmt: skip
         if stale:
@@ -2215,6 +2354,9 @@ def main(argv: list[str] | None = None) -> None:
                   f"outcome nobody could resolve, and nothing of it runs: {held}",
                   file=sys.stderr)  # fmt: skip
             sys.exit(HELD)
+        if args.command == "control-only":  # the launcher run's directory, alone on stdout
+            print(control_only(chosen, out, root, scope))
+            return
         complete, decided, why = case_state(out, chosen, scope)
         print(f"{chosen.case.name}: {why}")
         if not (complete if args.command == "complete" else decided):
