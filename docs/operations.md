@@ -1593,9 +1593,10 @@ docstring has every rule.
   - the control's latest attempt is due or interrupted, the only part outstanding;
   - the baseline record classified its launcher run as conforming (`launcher.classified` true,
     `launcher.kind` null): the decision is the baseline's own;
-  - the run that record names is the case's located run (its one settled directory, superseded
-    nowhere), with the identity the record gives (its recorded checkpoint record; the file is
-    never read), done in the launch journal, its label held nowhere.
+  - the run that record names (its experiment and run id, wherever RUNS_DIR lay) is the
+    case's located run (its one settled directory, superseded nowhere), with the identity the
+    record gives (its recorded checkpoint record; the file is read only when present, never
+    required), done in the launch journal, its label held nowhere.
 
   The driver then runs `part --part control --resume` on that run, with all the control's own
   checks (the launcher run's numerics, the streams, v₀), and then `finish`: never
@@ -1603,7 +1604,9 @@ docstring has every rule.
   usual path (any other case, a case decided by its launcher run's own declared instability
   stop included: the launcher accepts that run without its checkpoint). Exit 1 names the
   condition that fails for a decided case it cannot bind: the driver stops, nothing is rerun,
-  and the case waits for a diagnosis. As any part, a recorded control, technical or
+  and the case waits for a diagnosis. A present endpoint checkpoint of another sha256 than its
+  recorded one stops the step too (exit 1, a provenance conflict), and the file is kept for the
+  diagnosis. As any part, a recorded control, technical or
   scientific, is never rerun (a technical one keeps the checkpoints left: `finish` exits 9). To
   resume such a case after a lost container disk, run the driver again; when the control was
   interrupted it stops with exit 8, and the control's next attempt runs by hand with the

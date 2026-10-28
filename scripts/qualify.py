@@ -101,12 +101,16 @@ alone), the control's latest attempt is due or interrupted (the only part outsta
 baseline record binds the case to its launcher run without the launcher (``control_binding``):
 it classified the run as conforming (``launcher.classified`` true and ``launcher.kind`` null, so
 the decision is the baseline's own), and the run it names (``launcher_run``) is the case's
-located run (``located``), with the record's identity (``q.launcher_identity``: the recorded
-checkpoint record; the checkpoint file is never read), done in the launch journal (its end,
-settled or not), no ``held`` line naming its label. The driver then runs ``part --part control
---resume`` on that run, with every check of the control (``run_part``: the launcher run against
-the case and this process's numerics, its streams and v₀), and neither ``clear-stale``, the disk
-check, the launcher, ``locate``, the baseline, ``decided`` nor the rest; ``finish`` follows. It
+located run (``located``; by its experiment and run id, wherever RUNS_DIR lay), with the
+record's identity, which it must name (``q.launcher_identity``: the recorded checkpoint record),
+done in the launch journal (its end, settled or not), no ``held`` line naming its label, and the
+run's endpoint checkpoint, read only when present and never required, not on disk with another
+sha256 than its recorded one (``checkpoint_conflict``, as ``restart-case`` reads it: a provenance
+conflict, which stops the step and is kept for the diagnosis). The driver then runs ``part
+--part control --resume`` on that run, with every check of the control (``run_part``: the
+launcher run against the case and this process's numerics, its streams and v₀), and neither
+``clear-stale``, the disk check, the launcher, ``locate``, the baseline, ``decided`` nor the
+rest; ``finish`` follows. It
 exits 3 (``NO``) for a case outside that state, which takes the usual path: a case decided by its
 launcher run's own declared instability stop among them, a run the launcher accepts without its
 checkpoint. It exits 1, naming the condition, for a decided case it cannot bind: the driver
@@ -767,9 +771,12 @@ def control_binding(p: Planned, baseline: dict, root: Path) -> tuple[Path | None
     """Whether a decided case's baseline record binds it to its launcher run without the
     launcher (module docstring, "A decided case whose control is due"): the record classified
     the run as conforming (``launcher.classified`` true, ``launcher.kind`` null), and the run it
-    names (``launcher_run``) is the case's located run (``located``), with the record's identity
-    (``q.launcher_identity``: the recorded checkpoint record, never the file), done in the launch
-    journal (its end, settled or not), its label held nowhere. The located run, and what fails."""
+    names (``launcher_run``, by its experiment and run id, wherever RUNS_DIR lay) is the case's
+    located run (``located``), with the record's identity, which it must name
+    (``q.launcher_identity``: the recorded checkpoint record), done in the launch journal (its
+    end, settled or not), its label held nowhere, and its endpoint checkpoint, when on disk,
+    with its recorded sha256 (``checkpoint_conflict``: read only when present, never required).
+    The located run, and what fails."""
     problems = []
     launcher = baseline.get("launcher") or {}
     if launcher.get("classified") is not True:
@@ -788,12 +795,25 @@ def control_binding(p: Planned, baseline: dict, root: Path) -> tuple[Path | None
         problems.append("no located launcher run (one settled directory of its config hash "
                         "that no superseded line names)")  # fmt: skip
     else:
-        if not isinstance(named, str) or Path(named) != run_dir:
+        # <experiment>/<run id>, as ``fa_control_diagnostic.run_identity`` names a run
+        if not isinstance(named, str) or Path(named).parts[-2:] != run_dir.parts[-2:]:
             problems.append(f"the baseline record names the launcher run {named!r}, not the "
                             f"located run {run_dir}")  # fmt: skip
-        if q.launcher_identity(run_dir) != launcher.get("identity"):
+        identity = launcher.get("identity")
+        if not isinstance(identity, dict):
+            problems.append(f"the baseline record names no launcher identity "
+                            f"(launcher.identity is {identity!r})")  # fmt: skip
+        elif q.launcher_identity(run_dir) != identity:
             problems.append(f"the located run {run_dir.name}'s identity is not the one the "
                             "baseline record names")  # fmt: skip
+        conflict = checkpoint_conflict(run_dir)  # as ``restart-case`` reads it
+        if conflict is not None:
+            summary = _read(run_dir / "summary.json") or {}
+            recorded = (summary.get("endpoint_checkpoint") or {}).get("sha256")
+            problems.append(f"the launcher run {run_dir.name}'s endpoint checkpoint {conflict} is "
+                            f"on disk with sha256 {checkpoint_sha256(conflict)}, not its recorded "
+                            f"{recorded}: a provenance conflict; the file is kept, and the case "
+                            "goes to diagnosis")  # fmt: skip
         ends = [r.get("outcome") for r in records
                 if r.get("event") == "end" and r.get("run_id") == run_dir.name]  # fmt: skip
         if not ends or any(outcome != "done" for outcome in ends):

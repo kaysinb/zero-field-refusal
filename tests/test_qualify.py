@@ -198,9 +198,9 @@ def test_the_driver_runs_each_case_in_order(qualify, tmp_path) -> None:
                   r"qualify\.py finish"]  # fmt: skip
     positions(text, order)
     fa_case, adamw_case = text.split("# ---- case ")[1:]
-    assert "control-only" not in adamw_case and "--part control" not in adamw_case
+    assert "qualify.py control-only" not in adamw_case and "--part control" not in adamw_case
     # FA on the first numerical seed alone: the control alone (control-only), or after the rest
-    assert fa_case.count("--part control") == 2 and fa_case.count("control-only") == 2
+    assert fa_case.count("--part control") == 2 and fa_case.count("qualify.py control-only") == 1
     subprocess.run(["bash", "-n"], input=text, text=True, check=True)
 
 
@@ -2384,18 +2384,14 @@ def test_control_only_binds_the_decided_baseline_to_its_launcher_run_without_the
 ) -> None:
     """A decided case whose same-path control is due, its launcher run's checkpoint gone with the
     container disk: ``control-only`` binds the baseline record to the located run by its
-    recorded identity (the checkpoint record, never the file), prints that run's directory and
-    exits 0; ``part --part control --resume`` then runs attempt 1 on it. Neither the launcher
-    nor the checkpoint is touched."""
-    from zero_field_refusal import launch
-
+    recorded identity (the checkpoint record), reads no checkpoint file, prints that run's
+    directory and exits 0; ``part --part control --resume`` then runs attempt 1 on it."""
     path, root, out, run_dir = decided_world(tmp_path)
 
     def untouched(*args, **kwargs):
         raise AssertionError(f"called with {args}")
 
-    monkeypatch.setattr(launch, "run_campaign", untouched)
-    monkeypatch.setattr(qualify, "checkpoint_sha256", untouched)  # the checkpoint never read
+    monkeypatch.setattr(qualify, "checkpoint_sha256", untouched)  # an absent file: none is read
     monkeypatch.setattr(q, "file_sha256", untouched)
     capsys.readouterr()
     qualify.main(control_only(path))
@@ -2472,6 +2468,14 @@ def ended(outcome):
     return change
 
 
+def no_identity_either_side(path, root, out, run_dir):
+    """The record names no identity, and the run's records cannot be read (its metrics a
+    folder): ``q.launcher_identity`` is None on both sides."""
+    edit_baseline(out, lambda record: record["launcher"].update(identity=None))
+    (run_dir / "metrics.jsonl").mkdir()
+    assert q.launcher_identity(run_dir) is None
+
+
 def baseline_change(change):
     return lambda path, root, out, run_dir: edit_baseline(out, lambda b: change(b, run_dir))
 
@@ -2485,6 +2489,9 @@ UNBOUND = {  # what the decided case's binding lacks → how control-only names 
                   "not the located run"),
     "identity": (baseline_change(lambda b, d: b["launcher"]["identity"].update(sha256="0" * 64)),
                  "identity is not the one the baseline record names"),
+    "no identity": (baseline_change(lambda b, d: b["launcher"].update(identity=None)),
+                    "names no launcher identity"),
+    "no identity on either side": (no_identity_either_side, "names no launcher identity"),
     "superseded": (superseded, "superseded in the launch journal"),
     "end": (ended("conflict"), "not done"),
 }  # fmt: skip
@@ -2504,6 +2511,41 @@ def test_control_only_refuses_a_decided_case_it_cannot_bind(qualify, tmp_path, m
     assert isinstance(code, str) and why in code, code  # exit 1, with its message
     assert "nothing is rerun" in code
     assert not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+
+
+def test_control_only_stops_on_a_present_checkpoint_of_another_hash(qualify, tmp_path) -> None:
+    """The launcher run's endpoint checkpoint on disk with another sha256 than its recorded one: a
+    provenance conflict (``checkpoint_conflict``, as ``restart-case`` reads it). ``control-only``
+    exits 1 naming the file and both hashes, and the file stays as it is, for the diagnosis; with
+    the recorded bytes, the file present, it exits 0."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    checkpoint = tmp_path / "ckpt" / "r-f1.pt"
+    recorded = q.launcher_identity(run_dir)["checkpoint"]["sha256"]
+    checkpoint.write_bytes(b"other weights")
+    present = hashlib.sha256(b"other weights").hexdigest()
+    code = exit_code(qualify, control_only(path))
+    assert isinstance(code, str), code  # exit 1, with its message
+    assert str(checkpoint) in code and recorded in code and present in code
+    assert "kept" in code and "diagnosis" in code and "nothing is rerun" in code
+    assert checkpoint.read_bytes() == b"other weights"
+    assert not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+    checkpoint.write_bytes(b"w")  # the recorded bytes (``with_checkpoint``)
+    assert hashlib.sha256(b"w").hexdigest() == recorded
+    assert exit_code(qualify, control_only(path)) == 0
+
+
+def test_control_only_matches_its_run_wherever_runs_dir_lies(qualify, tmp_path) -> None:
+    """The baseline record names its launcher run as ``<RUNS_DIR>/<experiment>/<run id>`` of the
+    root it ran under: the same experiment and run id under another root is the located run (its
+    identity still binds the content); another run id, or another experiment, is not."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    elsewhere = Path("/restored/elsewhere/runs") / run_dir.parent.name / run_dir.name
+    edit_baseline(out, lambda record: record.update(launcher_run=str(elsewhere)))
+    assert exit_code(qualify, control_only(path)) == 0
+    for named in (elsewhere.parent / "r-f0", elsewhere.parent.parent / "other" / run_dir.name):
+        edit_baseline(out, lambda record, named=named: record.update(launcher_run=str(named)))
+        code = exit_code(qualify, control_only(path))
+        assert isinstance(code, str) and "not the located run" in code, code
 
 
 def test_control_only_answers_as_complete_first(qualify, tmp_path, monkeypatch) -> None:
