@@ -103,8 +103,9 @@ SCRIPTS = (
 SUMMARY = SCRIPTS[1]
 LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
                  "zero_field_refusal.run_judging")  # fmt: skip
-# The GPU code study 3 qualifies, as of package 1b: its last commit that changed a GPU path
-QUALIFIED_GPU_CODE = "d7bc5f0"
+# The GPU code study 3 qualifies, as of package 1b: its last commit that changed a GPU path, the
+# launch writer that reconciles published records with the journal and fsyncs its entries
+QUALIFIED_GPU_CODE = "dbe9cc8"
 REAL_IDENTITY = code_identity.gpu_code_identity
 REAL_READING = qualification_records.read_qualification  # the route replaces it
 # The route: A's lower rate kept by the search on these offsets in ln K, then repaired; N = 99
