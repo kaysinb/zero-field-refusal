@@ -1060,9 +1060,15 @@ def explicit_python(stand_in: Path) -> dict[str, str]:
 
 class StandIn:
     """A stand-in ``python`` for running run.sh, selected by ``explicit_python`` and first on
-    PATH: it records each call (its own path, its working directory, ``RUNS_DIR`` and its
-    arguments, one per line) and exits 3 for the guard of the seed ``REFUSE`` names, 1 for the
-    launch of a file whose name ``FAIL`` holds, 0 otherwise. Nothing real runs."""
+    PATH: it records each call (its own path, ``SELF``, its working directory, ``RUNS_DIR`` and
+    its arguments, one per line) and exits 3 for the guard of the seed ``REFUSE`` names, 1 for
+    the launch of a file whose name ``FAIL`` holds, 0 otherwise. Nothing real runs.
+
+    ``SELF`` shows that a call reached the stand-in, not the route bash took to it: ``$0`` is the
+    same absolute ``<bin>/python`` whether bash ran it through the exported function or found it
+    on PATH. The route is shown by the exact call sequences the tests assert, and by
+    ``test_a_stand_in_python_survives_a_pod_environment_that_resets_path``, which runs both
+    branches (on PATH alone the decoy takes the calls; with the function, the stand-in)."""
 
     def __init__(self, folder: Path) -> None:
         self.bin, self.log = folder / "bin", folder / "calls.txt"
@@ -1190,11 +1196,12 @@ def test_the_driver_runs_the_guard_before_each_block_and_stops_at_its_refusal(wo
 
 
 def test_the_driver_quotes_paths_with_spaces_and_shell_text(tmp_path, monkeypatch, capsys):
-    """A runs directory, a checkout and an output folder whose paths hold a space, ``$(...)``
-    and a non-ASCII letter: run.sh, run by bash in another folder with the stand-in
-    (``StandIn``), passes each path whole and runs no text of them; the printed command is
-    quoted."""
-    base = tmp_path / "a b $(touch PWNED) θ"
+    """A runs directory, a checkout, an output folder and the stand-in itself (``StandIn``,
+    selected by ``explicit_python``) whose paths hold a space, ``$(...)``, a ``'`` and a
+    non-ASCII letter: run.sh, run by bash in another folder, passes each path whole and runs no
+    text of them, and the exported function's quoting holds (every call reaches the stand-in, in
+    the order asserted); the printed command is quoted."""
+    base = tmp_path / "a b $(touch PWNED) 'q' θ"
     world = World(base, monkeypatch, capsys)
     confirmation_study(world)
     out = world.write("confirmation", "--blocks", "10400", "10401",
@@ -1205,7 +1212,8 @@ def test_the_driver_quotes_paths_with_spaces_and_shell_text(tmp_path, monkeypatc
     assert shlex.split(run_line[len("Run: ") :]) == ["bash", str(driver.absolute())]
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    stand_in = StandIn(tmp_path / "stand-in")
+    stand_in = StandIn(base / "stand-in $(touch PWNED) 'q'")  # the function body carries it
+    assert "'\\''" in explicit_python(stand_in.python)["BASH_FUNC_python%%"]
     done, found = stand_in.run(driver, elsewhere)
     assert done.returncode == 0, done.stderr
     files = sorted(out.glob("*.yaml"))
