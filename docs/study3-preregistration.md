@@ -798,3 +798,62 @@ states the rule; no threshold, tolerance or route changes.
 - **Unchanged.** A repair follows only a K miss; a rate whose change would be under 2 % is not
   repaired; a second miss after the repair is reported, not repaired again.
 - **What was known.** The registration and the study-2 records; no study-3 outcome.
+
+### Amendment 4: the dry run in two parts
+
+Decided on 2026-10-28 by the researcher, before any study-3 run, campaign or stream existed, while
+the simulation and final analysis/report drivers were not yet implemented. The [engineering
+stage](#engineering-stage) puts the whole dry run before the engineering seeds. That dry run covers
+every driver, the simulation and the analysis, end to end. This amendment splits the dry run into
+two parts and states what each part gates. Only the dry-run scope, seed substitution and execution
+order change. Scientific selection and failure rules, thresholds, and registered study-seed ranges
+remain unchanged. Engineering seeds may run after Part I passes and before Part II.
+
+- **Part I, before the engineering seeds.**
+  - **Scope.** Part I runs in the Pod image, from an uninstalled checkout, through `project-run`. It
+    covers every GPU-side driver end to end: the launcher, the campaign writer, the qualification
+    driver with the same-path FA control, the guards and the launch journal's repair and refusal. It
+    includes the failure and restart paths: an interruption and its resumption, a crash near
+    publication and near the journal's end, a torn and a missing journal line, a held run, a run
+    under another commit, a recovery round, and one engineering cycle on real records. A short CUDA
+    check follows.
+  - **The real model.** Part I uses the real model at the registered batch and step count, not a
+    tiny model or 2 steps, because the qualification code accepts only the registered settings.
+  - **Seeds.** Part I uses no registered study-stage seed. A clean, never-merged or pushed commit,
+    DRY_SHA, derived from 07b7568, remaps every source that assigns or validates stage seeds to
+    disjoint dry-run ranges. Preparation, campaign generation, generated drivers, launcher and
+    harness use DRY_SHA consistently. Commit 07b7568 remains the baseline for environment checks.
+    Archive DRY_SHA, its exact patch and evidence that only stage-seed selection changed; identify
+    the actual commit of every check.
+  - **What counts.** Only the dry-run reports support the dry-run check; experimental runs, streams,
+    measurements and qualification verdicts from Part I never enter study evidence or selection.
+    Part I is archived apart from the study's records.
+- **Part II, before the search.**
+  - **Scope.** Part II covers the simulation and the analysis drivers, end to end, on synthetic
+    records, in the Pod image, from an uninstalled checkout, through `project-run`. It runs an
+    unmocked successful route through the fixation, the guard, the analysis and the final report, as
+    well as the failure and restart paths these drivers have.
+  - **Before the scientific simulation.** Part II is a dry run of the code. The full
+    [simulation](#simulation-before-validation) stays where the [order](#seeds-and-order) puts it:
+    after the engineering stage, before the search.
+- **The record of the dry run.**
+  - The engineering decision record's dry-run check is not marked passed before both parts have
+    passed.
+  - One aggregate report references each part's report and archive inventory by path and sha256,
+    identifies the tools by sha256 and all actual execution commits, including DRY_SHA, and records
+    coverage and results. `checks.dry_run` references this aggregate report and is passed only when
+    both parts pass.
+- **Re-runs this order can cause.**
+  - **GPU code.** If code written after Part I changes the GPU-code identity before the engineering
+    decision, every affected engineering case is re-run, by the [engineering stage's
+    rules](#engineering-stage). This covers the simulation, analysis and report code, and any fix
+    found by Part II. Part I's GPU steps are repeated for that code.
+  - **Analysis code.** A change to analysis code alone does not re-run GPU work. It does require the
+    affected part of the dry run to be replayed on CPU, and Part II replayed in full if the change
+    falls after it.
+- **Disclosure.** The final report states:
+  - that the dry run was done in two parts;
+  - that the engineering seeds ran after Part I and before Part II;
+  - every re-run that this caused.
+- **What was known.** The registration, the code up to commit 07b7568 and the dry-run plan. No
+  study-3 outcome.
