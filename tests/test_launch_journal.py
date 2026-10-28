@@ -76,7 +76,7 @@ def events(root: Path, event: str) -> list[dict]:
 
 def test_the_append_is_one_write_of_the_whole_line_then_an_fsync(tmp_path, monkeypatch) -> None:
     """The log is opened write-only for appending (created 0o644), the encoded line goes out in
-    one ``os.write`` and is fsynced; creating the log also fsyncs its folder."""
+    one ``os.write`` and is fsynced, and so are its folder and the runs root, on every append."""
     log = tmp_path / "launch" / "c.jsonl"
     seen, fds = [], {}
     real_open, real_write, real_fsync = os.open, os.write, os.fsync
@@ -111,7 +111,7 @@ def test_the_append_is_one_write_of_the_whole_line_then_an_fsync(tmp_path, monke
     launch._log(log, {"event": "end", "run": "a/s0"})
     second = log.read_bytes()[len(first) :]
     assert [s for s in seen if s[0] == "write"] == [("write", log, second)]
-    assert ("fsync", log) in seen and ("fsync", log.parent) not in seen  # it existed
+    assert ("fsync", log) in seen and ("fsync", log.parent) in seen  # every append
 
 
 def _umask() -> int:
@@ -745,3 +745,196 @@ def test_two_writers_take_turns_on_one_log(tmp_path) -> None:
     runs = sorted(r["run"] for r in records if r["event"] == "stop")
     assert runs == sorted(f"{who}/{i}" for who in ("a", "b") for i in range(count))
     assert [x.repaired for x in torn_lines(tmp_path)] == [True]
+
+
+# ------------------------------------------- a line a published record requires, and missing
+
+LABELLED = {"experiment": "smoke"}
+
+
+def cycle_record(root: Path, launchers, held, name: str = "supersede-1.json") -> Path:
+    """A published supersession record, as ``qualify.py supersede`` writes its entries."""
+    path = root / "qualification" / "c1" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"candidate": 1, "diagnosis": MARKER, "fix": MARKER,
+                                "launchers": launchers, "held": held}))  # fmt: skip
+    return path
+
+
+def restart_record(root: Path, run_id: str | None, number: int = 1) -> Path:
+    """A published case restart record, as ``qualify.py restart-case`` writes it."""
+    path = root / "qualification" / "c1" / "numerical" / "s0" / "adamw-5e-05"
+    path = path / f"restart-{number}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    launcher = None if run_id is None else {"run_id": run_id, "identity": {"note": MARKER}}
+    path.write_text(json.dumps({"restart": number, "reason": MARKER, "launcher": launcher}))
+    return path
+
+
+def entry(run, run_id: str, config_hash: str | None = None, **extra) -> dict:
+    return {"run_id": run_id, "campaign": "test-campaign", "run": run.label,
+            "experiment": run.experiment, "config_hash": config_hash or run.config_hash,
+            **extra}  # fmt: skip
+
+
+def named(error) -> set[tuple]:
+    return {(m.record, m.event, m.run_id) for m in error.missing}
+
+
+def test_a_published_records_missing_lines_refuse_the_launcher(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A cycle record and a case restart record published, none of their lines appended (a
+    crash between the record and its lines, or an append that wrote no byte): no torn bytes,
+    and still the launcher starts nothing, settles nothing and opens no recovery round, in a dry
+    run too, and exits 12 naming each missing line by its record's path, its event and its run
+    id. The held label's old run is under another config hash: without the refusal its label
+    would get a new attempt. Restored by the repair's writers, the launcher goes on, and the
+    held label is refused as held."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    old = "0" * 12  # the held run's config hash, before a fix changed a hashed key
+    cycle_record(root, [entry(runs[1], "r-l1")],
+                 [entry(runs[2], "r-h1", old, reason="no recorded commit")])  # fmt: skip
+    log_start(root, name, runs[3], "r-s1")  # the restart's launcher run, by its start
+    restart_record(root, "r-s1")
+    executor = Executor(root, {})
+    cycle = "qualification/c1/supersede-1.json"
+    restart = "qualification/c1/numerical/s0/adamw-5e-05/restart-1.json"
+    for kwargs in ({}, {"dry_run": True}, {"recovery": "fixed"},
+                   {"only": runs[2].label, "max_attempts": 1}):  # fmt: skip
+        before = files(root)
+        with pytest.raises(TornJournalError) as refusal:
+            run_campaign(name, runs, root, execute=executor, **kwargs)
+        assert executor.calls == [] and files(root) == before
+        assert refusal.value.lines == []
+        assert named(refusal.value) == {(cycle, "superseded", "r-l1"), (cycle, "held", "r-h1"),
+                                        (restart, "superseded", "r-s1")}  # fmt: skip
+    module = script()
+    real = module.run_campaign
+    monkeypatch.setattr(module, "run_campaign",
+                        lambda *a, **k: real(*a, execute=executor, **k))  # fmt: skip
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as stop:
+        module.main([str(campaign(tmp_path))])
+    assert stop.value.code == TORN_JOURNAL and executor.calls == []
+    err = capsys.readouterr().err
+    for line in (f"{cycle}: no superseded line of r-l1", f"{cycle}: no held line of r-h1",
+                 f"{restart}: no superseded line of r-s1"):  # fmt: skip
+        assert line in err
+    assert MARKER not in err
+    supersede(root, name, runs[1], "r-l1", reason="a cycle", record=cycle)
+    held = type(runs[2])(**{**runs[2].__dict__, "config_hash": old})
+    hold(root, name, held, "r-h1", reason="no recorded commit", record=cycle)
+    supersede(root, name, runs[3], "r-s1", reason="a restart", record=restart)
+    assert launch.missing_lines(root) == []
+    with pytest.raises(CampaignError, match="r-h1: held, its outcome unresolved"):
+        run_campaign(name, [runs[2]], root, execute=executor, only=runs[2].label, max_attempts=1)
+    assert executor.calls == []
+    assert run_campaign(name, [runs[0]], root, execute=executor)["done"] == [runs[0].label]
+
+
+def test_only_the_missing_lines_of_a_record_are_named(tmp_path) -> None:
+    """A record with some of its lines: only the others are named. A line is matched by its
+    event, label, experiment and run id, whatever its config hash: one under another hash
+    counts, one of another label does not."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    cycle_record(root, [entry(runs[1], "r-1"), entry(runs[2], "r-2"), entry(runs[3], "r-3")], [])
+    other = type(runs[1])(**{**runs[1].__dict__, "config_hash": "0" * 12})
+    supersede(root, name, other, "r-1", reason="r", record="c")  # another config hash: counts
+    supersede(root, name, runs[1], "r-2", reason="r", record="c")  # another label: does not
+    assert [(m.event, m.run_id) for m in launch.missing_lines(root)] == [
+        ("superseded", "r-2"), ("superseded", "r-3")]  # fmt: skip
+
+
+@pytest.mark.parametrize("which", ["cycle", "restart"])
+def test_an_unreadable_published_record_refuses_by_its_path(tmp_path, which) -> None:
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    path = cycle_record(root, [], []) if which == "cycle" else restart_record(root, "r-1")
+    path.write_bytes(b"{" + MARKER.encode())
+    executor = Executor(root, {})
+    with pytest.raises(TornJournalError) as refusal:
+        run_campaign(name, runs[1:2], root, execute=executor)
+    ((record, event, run_id),) = named(refusal.value)
+    assert (record, event, run_id) == (path.relative_to(root).as_posix(), None, None)
+    assert "cannot be read" in str(refusal.value) and MARKER not in str(refusal.value)
+    assert executor.calls == []
+
+
+def test_a_restarts_line_is_matched_by_its_runs_own_label(tmp_path) -> None:
+    """A case restart record names its launcher run by run id alone: its label and experiment
+    are its start's, or, with no start in the journal, its run directory's (its campaign label
+    in meta.json, its experiment folder). A restart without a launcher run requires no line."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    restart_record(root, None, 1)
+    restart_record(root, "r-dir", 2)
+    run_dir = make_run_dir(root, runs[1], "r-dir")
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta["campaign"] = {"name": name, "label": runs[1].label, "attempt": 1}
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    assert [(m.event, m.run_id) for m in launch.missing_lines(root)] == [("superseded", "r-dir")]
+    supersede(root, name, runs[2], "r-dir", reason="r", record="c")  # another label
+    assert len(launch.missing_lines(root)) == 1
+    supersede(root, name, runs[1], "r-dir", reason="r", record="c")
+    assert launch.missing_lines(root) == []
+
+
+# ------------------------------------------------------- every append makes its entries durable
+
+
+def _fsyncs(monkeypatch, log: Path) -> list[tuple[str, bool]]:
+    """Every ``os.fsync`` as (the path its descriptor names, whether the log's lock was held)."""
+    import fcntl
+
+    seen = []
+    real = os.fsync
+
+    def spy(fd):
+        path = os.readlink(f"/proc/self/fd/{fd}")
+        probe = os.open(log, os.O_RDONLY)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = False
+            fcntl.flock(probe, fcntl.LOCK_UN)
+        except BlockingIOError:
+            locked = True
+        finally:
+            os.close(probe)
+        seen.append((path, locked))
+        return real(fd)
+
+    monkeypatch.setattr(launch.os, "fsync", spy)
+    return seen
+
+
+@pytest.mark.parametrize("before", ["none", "created", "appended"])
+def test_every_append_fsyncs_the_log_its_folder_and_the_runs_root(
+    tmp_path, monkeypatch, before
+) -> None:
+    """The log, ``launch/`` and the runs root are fsynced on every append, under the lock: the
+    first, a later one, and one after an interrupted creation (the log there, its folder never
+    fsynced)."""
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    if before != "none":
+        log.parent.mkdir(parents=True)
+        log.write_bytes(b"" if before == "created" else json.dumps({"event": "x"}).encode() + b"\n")
+    seen = _fsyncs(monkeypatch, log)
+    launch._log(log, {"event": "stop"})
+    assert {path for path, _ in seen} >= {str(log), str(log.parent), str(root)}
+    assert all(locked for path, locked in seen if path in (str(log), str(log.parent), str(root)))
+
+
+def test_the_resolution_goes_through_the_same_writer(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    tear(log, {"event": "end", "run": "a/s0"})
+    (line,) = torn_lines(root)
+    seen = _fsyncs(monkeypatch, log)
+    launch.resolve_torn(root, line.log, offset=line.offset, sha256=line.sha256, reason="r")
+    assert {path for path, _ in seen} >= {str(log), str(log.parent), str(root)}
+    assert all(locked for _, locked in seen)

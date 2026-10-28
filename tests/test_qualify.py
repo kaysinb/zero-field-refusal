@@ -11,6 +11,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -875,6 +876,43 @@ def test_the_cycle_covers_every_stage_and_old_code_launcher_run(qualify, tmp_pat
     assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-b1"]
 
 
+def test_a_cycle_missing_some_lines_names_and_restores_those_alone(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """Written by the real command, the cycle and its lines raise no refusal. With one of its
+    two ``superseded`` lines gone (no torn bytes), that one alone is named, the launcher refuses
+    with 12, and the cycle run again writes that one alone."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=(), adamw=(10200, 10201))
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    _, record = technical_adamw(out, tmp_path)
+    for label, run_id in ((f"adamw-{ADAMW_LR:g}/s10200", "r-a1"),
+                          (f"adamw-{ADAMW_LR:g}/s10201", "r-b1")):  # fmt: skip
+        settled_launcher(root, journal(root, path, label, [run_id]), run_id)  # commit abc123
+    monkeypatch.setattr(code_identity, "gpu_code_identity",
+                        lambda commit="HEAD", *a, **k: dict(FIX) if commit == "HEAD"
+                        else dict(CODE))  # fmt: skip
+    qualify.main(supersede_args(path, ADAMW, record))
+    assert launch.missing_lines(root) == []
+    name, runs = launch.load_campaign(path)
+    assert launch.run_campaign(name, runs, root, dry_run=True)["pending"]
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    lost = ("superseded", "r-b1")
+    kept = [x for x in log.read_text().splitlines()
+            if (json.loads(x)["event"], json.loads(x)["run_id"]) != lost]  # fmt: skip
+    log.write_text("".join(x + "\n" for x in kept))
+    cycle = "qualification/c1/supersede-1.json"
+    assert [(m.record, m.event, m.run_id) for m in launch.missing_lines(root)] == [
+        (cycle, "superseded", "r-b1")]  # fmt: skip
+    with pytest.raises(launch.TornJournalError):
+        launch.run_campaign(name, runs, root, dry_run=True)
+    capsys.readouterr()
+    qualify.main(supersede_args(path, ADAMW, record))
+    assert json.loads(capsys.readouterr().out)["journal_lines_written"] == ["r-b1"]
+    assert launch.missing_lines(root) == []
+
+
 def test_the_cycles_repair_lists_only_the_lines_it_wrote(qualify, tmp_path) -> None:
     """``repair_cycle_journal`` names a run id as written only when ``launch.supersede`` or
     ``launch.hold`` wrote its line: an identical line (the same event, label, experiment, run id
@@ -1399,6 +1437,74 @@ def test_a_hold_under_an_earlier_config_hash_stops_its_label(
     assert "r-old" in capsys.readouterr().err
 
 
+def zero_byte_journal(monkeypatch) -> None:
+    """Every append to a launch log writes no byte (``os.write`` returns 0 for a log's
+    descriptor, and writes any other file): the window between a published record and its
+    journal lines."""
+    real = os.write
+
+    def write(fd, data):
+        target = os.readlink(f"/proc/self/fd/{fd}")
+        if f"{os.sep}launch{os.sep}" in target and target.endswith(".jsonl"):
+            return 0
+        return real(fd, data)
+
+    monkeypatch.setattr(os, "write", write)
+
+
+def test_a_cycle_whose_lines_wrote_no_byte_blocks_until_it_is_run_again(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """The cycle holds r-old, issued under the label's earlier config hash; its record is
+    published and its ``held`` line wrote no byte: no torn bytes, and still the launcher starts
+    nothing (without the line, the label would get a new attempt under its hash now), every
+    command but the repair refuses with 12 naming the missing line, and nothing changes. The
+    cycle run again with its record writes the line; the launcher then refuses the label as
+    held, and ``complete`` exits ``HELD``."""
+    from zero_field_refusal import launch
+
+    no_commit = edited_meta(lambda meta: meta.pop("git"))
+    path, root, out, run, name, record, log = issued_earlier(qualify, tmp_path, monkeypatch,
+                                                             no_commit)  # fmt: skip
+    with monkeypatch.context() as patched:
+        zero_byte_journal(patched)
+        with pytest.raises(OSError, match="short write"):
+            qualify.main(supersede_args(path, ADAMW, record))
+    assert (out / "c1" / "supersede-1.json").is_file()
+    assert [json.loads(x)["event"] for x in log.read_text().splitlines()] == ["start"]
+    assert launch.torn_lines(root) == []
+    _, runs = launch.load_campaign(path)
+    children = []
+
+    def execute(*args):
+        children.append(args)
+        return 0
+
+    missing = [("qualification/c1/supersede-1.json", "held", "r-old")]
+    for kwargs in ({"recovery": "a reason", "only": run.label, "max_attempts": 1},
+                   {"only": run.label, "max_attempts": 1}, {}, {"dry_run": True}):  # fmt: skip
+        with pytest.raises(launch.TornJournalError) as refusal:
+            launch.run_campaign(name, runs, root, execute=execute, **kwargs)
+        assert [(m.record, m.event, m.run_id) for m in refusal.value.missing] == missing
+    assert children == []
+    before = tree(root)
+    for argv in (["complete", *common(path), "--case", STOPPED.name],
+                 ["locate", *common(path), "--case", STOPPED.name], ["verdict", *common(path)],
+                 restart(path, STOPPED, RESTART), supersede_args(path, ADAMW, path)):  # fmt: skip
+        capsys.readouterr()
+        assert exit_code(qualify, argv) == qualify.TORN_JOURNAL, argv[0]
+        assert "qualification/c1/supersede-1.json: no held line of r-old" in capsys.readouterr().err
+    assert tree(root) == before
+    qualify.main(supersede_args(path, ADAMW, record))  # the repair: its missing line
+    assert [json.loads(x)["event"] for x in log.read_text().splitlines()] == ["start", "held"]
+    assert launch.missing_lines(root) == []
+    for kwargs in ({"recovery": "a reason", "only": run.label, "max_attempts": 1}, {}):
+        with pytest.raises(launch.CampaignError, match="r-old: held, its outcome unresolved"):
+            launch.run_campaign(name, runs, root, execute=execute, **kwargs)
+    assert children == []
+    assert exit_code(qualify, ["complete", *common(path), "--case", STOPPED.name]) == qualify.HELD
+
+
 def test_the_driver_stops_at_a_held_label_before_the_launcher(qualify, tmp_path, monkeypatch):
     """``complete`` exits ``HELD`` for the first case: the driver stops there, its verdict
     written, and neither the launcher nor a part is called."""
@@ -1718,6 +1824,57 @@ def test_a_restart_after_a_config_hash_change_is_recorded(qualify, tmp_path, cap
     lines = [json.loads(x) for x in log.read_text().splitlines()]
     assert [r["run_id"] for r in lines if r["event"] == "superseded"] == ["r-a1", "r-a2"]
     assert not (case_folder(out, ADAMW) / "restart-3.json").exists()
+
+
+def test_a_restart_whose_line_wrote_no_byte_blocks_until_restart_case_restores_it(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """A case restart record published, its ``superseded`` line written by no byte: the
+    launcher and every command but the repair refuse with 12 naming the record and the run;
+    ``restart-case`` restores the line (exit 1, its message), and the launcher goes on. Written
+    by the real command, a restart and its line raise no refusal."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    launcher = settled_launcher(root, run, "r-a1")
+    publish(out, ADAMW, "baseline", synthetic(ADAMW, identity=q.launcher_identity(launcher))[0])
+    with monkeypatch.context() as patched:
+        zero_byte_journal(patched)
+        with pytest.raises(OSError, match="short write"):
+            qualify.main(restart(path, ADAMW, RESTART))
+    record = case_folder(out, ADAMW) / "restart-1.json"
+    assert record.is_file() and launch.torn_lines(root) == []
+    where = record.relative_to(root).as_posix()
+    name, runs = launch.load_campaign(path)
+    with pytest.raises(launch.TornJournalError) as refusal:
+        launch.run_campaign(name, runs, root, dry_run=True)
+    assert [(m.record, m.event, m.run_id) for m in refusal.value.missing] == [
+        (where, "superseded", "r-a1")]  # fmt: skip
+    before = tree(root)
+    capsys.readouterr()
+    assert exit_code(qualify, ["complete", *common(path), "--case", ADAMW.name]) == 12
+    assert f"{where}: no superseded line of r-a1" in capsys.readouterr().err
+    assert tree(root) == before
+    with pytest.raises(SystemExit, match="the launch journal now names its launcher run"):
+        qualify.main(restart(path, ADAMW, RESTART))
+    assert launch.missing_lines(root) == []
+    assert launch.run_campaign(name, runs, root, dry_run=True)["pending"] == [runs[0].label]
+
+
+def test_an_unreadable_restart_record_blocks_by_its_path(qualify, tmp_path, capsys) -> None:
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    record = case_folder(out, ADAMW) / "restart-1.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("{")
+    for argv in (["complete", *common(path), "--case", ADAMW.name],
+                 restart(path, ADAMW, RESTART)):  # fmt: skip
+        capsys.readouterr()
+        assert exit_code(qualify, argv) == 12
+        err = capsys.readouterr().err
+        assert f"{record.relative_to(root).as_posix()}: a published record that cannot be" in err
 
 
 TORN_BYTES = b'{"time": "2026-10-27T10:00:00+00:00", "event": "held", "run": "\xff'
