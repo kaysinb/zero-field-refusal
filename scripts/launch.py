@@ -22,16 +22,23 @@ launcher exits non-zero without starting another. Started again, the campaign ca
 
     python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT
 
-A torn line is any line of a launch log that is not a JSON object, a blank line included; the
-tail a crash leaves in the middle of an append is one case of it. While any log under
-RUNS_DIR/launch/ holds a torn line that no torn_resolved record names, the launcher starts
-nothing, settles nothing and opens no recovery round: it prints each such line (log, offset,
-length, kind, sha256) and exits 12 (TORN_JOURNAL). Once what the line's kind lost is restored
-(docs/operations.md, "Launching runs"), --resolve-torn, with no campaign file, records the
-resolution in that log (LOG: its file name, as printed): it first writes the line's torn record
-if none names it, then the torn_resolved record. It refuses an offset and sha256 that name no
-torn line of the log, a line already resolved and an empty reason (zero_field_refusal.launch,
-"The journal").
+While the launch journal is not whole, the launcher starts nothing, settles nothing and opens
+no recovery round: it prints what is wrong and exits 12 (TORN_JOURNAL). The journal is not whole
+while a log under RUNS_DIR/launch/ holds a torn line that no torn_resolved record names, or a
+published qualification record under RUNS_DIR/qualification/ (a cycle's supersede-<n>.json, a
+case's restart-<n>.json) requires a held or superseded line that no log holds
+(zero_field_refusal.launch, "The journal"):
+- a torn line is any line of a log that is not a JSON object, a blank line included; the tail a
+  crash leaves in the middle of an append is one case of it. Each is printed with its log,
+  offset, length, kind and sha256. Once what the line's kind lost is restored (docs/operations.md,
+  "Launching runs"), --resolve-torn, with no campaign file, records the resolution in that log
+  (LOG: its file name, as printed): it first writes the line's torn record if none names it, then
+  the torn_resolved record. It refuses an offset and sha256 that name no torn line of the log, a
+  line already resolved and an empty reason;
+- a missing line is printed with its record's path, its event and its run id. It is lifted by
+  the record's own repair alone: scripts/qualify.py supersede run again with the cycle's record,
+  or scripts/qualify.py restart-case for the restart's case. An unreadable record, or an entry
+  that names no run, blocks too and is restored by hand.
 """
 
 import argparse

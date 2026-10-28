@@ -938,3 +938,76 @@ def test_the_resolution_goes_through_the_same_writer(tmp_path, monkeypatch) -> N
     launch.resolve_torn(root, line.log, offset=line.offset, sha256=line.sha256, reason="r")
     assert {path for path, _ in seen} >= {str(log), str(log.parent), str(root)}
     assert all(locked for _, locked in seen)
+
+
+# ------------------------------------------------------------ a malformed journal value
+
+
+MALFORMED = [
+    {"event": "stop", "run": ["x"]},
+    {"event": ["superseded"], "run": "adamw-5e-5/s0", "experiment": "smoke", "run_id": "r-1"},
+    {"event": "superseded", "run": "adamw-5e-5/s0", "experiment": {"x": 1}, "run_id": "r-1"},
+    {"event": "superseded", "run": "adamw-5e-5/s0", "experiment": "smoke", "run_id": ["r-1"]},
+    {"event": "start", "run": ["adamw-5e-5/s1"], "experiment": "smoke", "run_id": "r-s1"},
+    {"event": "torn_resolved", "log": ["c.jsonl"], "offset": 0, "sha256": "0" * 64},
+    {"event": "torn", "offset": 0, "length": 1, "sha256": ["0" * 64]},
+    {"event": "end", "run": "adamw-5e-5/s1", "run_id": {"r": 1}, "outcome": "done"},
+    {"event": "recovery", "experiment": "smoke", "cell": ["adamw-5e-5"], "reason": "r"},
+    {"event": "recovery", "experiment": "smoke", "cell": "adamw-5e-5", "only": ["x"]},
+]
+
+
+@pytest.mark.parametrize("line", MALFORMED, ids=range(len(MALFORMED)))
+def test_a_journal_value_that_is_not_a_string_is_no_crash(tmp_path, monkeypatch, line) -> None:
+    """A valid JSON line whose identity fields are lists or objects matches nothing: with no
+    published record the launcher goes on; with a record whose line is otherwise missing, it
+    refuses with 12 naming that line. Never a traceback."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    log = root / "launch" / "c.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps(line) + "\n")
+    assert launch.missing_lines(root) == [] and torn_lines(root) == []
+    assert run_campaign(name, runs[2:3], root, execute=Executor(root, {}))["done"]
+    cycle_record(root, [entry(runs[1], "r-1")], [])
+    log_start(root, name, runs[2], "r-s1")
+    restart_record(root, "r-s1")
+    assert [(m.event, m.run_id) for m in launch.missing_lines(root)] == [
+        ("superseded", "r-1"), ("superseded", "r-s1")]  # fmt: skip
+    module = script()
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    real = module.run_campaign
+    monkeypatch.setattr(module, "run_campaign",
+                        lambda *a, **k: real(*a, execute=Executor(root, {}), **k))  # fmt: skip
+    with pytest.raises(SystemExit) as stop:
+        module.main([str(campaign(tmp_path))])
+    assert stop.value.code == TORN_JOURNAL
+
+
+def test_a_restarts_run_with_no_start_and_no_label_is_matched_by_its_run_id(tmp_path) -> None:
+    """The last fallback: a restart record's run with no start in the journal and no campaign
+    label in a run directory is matched by a ``superseded`` line of its run id, whatever its
+    label."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    restart_record(root, "r-alone")
+    assert [(m.event, m.run_id) for m in launch.missing_lines(root)] == [("superseded", "r-alone")]
+    supersede(root, name, runs[1], "r-other", reason="r", record="c")  # another run
+    assert len(launch.missing_lines(root)) == 1
+    supersede(root, name, runs[3], "r-alone", reason="r", record="c")  # any label
+    assert launch.missing_lines(root) == []
+
+
+def test_a_start_whose_run_id_is_not_a_string_is_no_crash(tmp_path) -> None:
+    """A start of the run's experiment and config hash whose run id is a list matches nothing:
+    the run is assessed and attempted as without it."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    log = root / "launch" / f"{name}.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps({"event": "start", "run": runs[1].label, "attempt": 1,
+                               "run_id": ["r"], "experiment": runs[1].experiment,
+                               "config_hash": runs[1].config_hash}) + "\n")  # fmt: skip
+    executor = Executor(root, {})
+    assert run_campaign(name, runs[1:2], root, execute=executor)["done"] == [runs[1].label]
+    assert len(executor.calls) == 1

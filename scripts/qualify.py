@@ -1730,8 +1730,9 @@ def superseded_run_ids(run: Run, root: Path) -> list[str]:
     restart or supersession (``launch.supersede``), or started, and ended technical or not ended
     at all, with no settled directory (completed, whether it stands or is in conflict, or
     diverged). A completed run that cannot stand keeps its checkpoint for the diagnosis."""
-    settled_outcomes = {r.get("run_id") for r in launch_records(root)
+    settled_outcomes = {r["run_id"] for r in launch_records(root)
                         if r.get("event") == "end" and r.get("run") == run.label
+                        and isinstance(r.get("run_id"), str)
                         and r.get("outcome") in ("done", "diverged", "conflict")}  # fmt: skip
     superseded = []
     named = superseded_runs(run, launch_records(root))  # a restart or supersession names them

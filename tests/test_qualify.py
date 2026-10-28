@@ -1863,6 +1863,60 @@ def test_a_restart_whose_line_wrote_no_byte_blocks_until_restart_case_restores_i
     assert launch.run_campaign(name, runs, root, dry_run=True)["pending"] == [runs[0].label]
 
 
+@pytest.mark.parametrize(
+    "line",
+    [{"event": "stop", "run": ["x"]},
+     {"event": "end", "run": f"adamw-{ADAMW_LR:g}/s10200", "run_id": ["r"], "outcome": "done"},
+     {"event": "superseded", "run": f"adamw-{ADAMW_LR:g}/s10200", "experiment": "study3",
+      "run_id": {"r": 1}}],
+)  # fmt: skip
+def test_a_journal_value_that_is_not_a_string_stops_no_command(qualify, tmp_path, line) -> None:
+    """A valid JSON line whose identity fields are lists or objects matches nothing: the
+    commands answer as without it, and a published record whose line is otherwise missing
+    still blocks with 12."""
+    path = campaign(tmp_path, fa=())
+    root = tmp_path / "runs"
+    log = root / "launch" / "elsewhere.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps(line) + "\n")
+    case = ["--case", ADAMW.name]
+    assert exit_code(qualify, ["complete", *common(path), *case]) == qualify.NO
+    assert exit_code(qualify, ["clear-stale", *common(path), *case]) == 0
+    cycle = root / "qualification" / "c1" / "supersede-1.json"
+    cycle.parent.mkdir(parents=True)
+    cycle.write_text(json.dumps({"launchers": [{"run_id": "r-1", "run": "a/s0",
+                                                "experiment": "study3"}], "held": []}))  # fmt: skip
+    assert exit_code(qualify, ["complete", *common(path), *case]) == qualify.TORN_JOURNAL
+
+
+def test_a_real_restart_leaves_no_missing_line(qualify, tmp_path) -> None:
+    """``restart-case`` publishes its record and appends its ``superseded`` line: the journal
+    holds every line the record requires."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    launcher = settled_launcher(root, run, "r-a1")
+    publish(out, ADAMW, "baseline", synthetic(ADAMW, identity=q.launcher_identity(launcher))[0])
+    qualify.main(restart(path, ADAMW, RESTART))
+    assert (case_folder(out, ADAMW) / "restart-1.json").is_file()
+    assert launch.missing_lines(root) == []
+
+
+def test_a_real_cycle_leaves_no_missing_line(qualify, tmp_path, monkeypatch) -> None:
+    """``supersede`` publishes its record and appends its lines (here a ``held`` line, of a run
+    under the label's earlier config hash): the journal holds every line the record requires."""
+    from zero_field_refusal import launch
+
+    no_commit = edited_meta(lambda meta: meta.pop("git"))
+    path, root, out, run, name, record, log = issued_earlier(qualify, tmp_path, monkeypatch,
+                                                             no_commit)  # fmt: skip
+    qualify.main(supersede_args(path, ADAMW, record))
+    assert json.loads((out / "c1" / "supersede-1.json").read_text())["held"]
+    assert launch.missing_lines(root) == []
+
+
 def test_an_unreadable_restart_record_blocks_by_its_path(qualify, tmp_path, capsys) -> None:
     path = campaign(tmp_path, fa=())
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"

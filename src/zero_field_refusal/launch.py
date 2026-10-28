@@ -405,11 +405,11 @@ def torn_lines(runs_root: Path) -> list[TornLine]:
     resolved = {(r.get("log"), r.get("offset"), r.get("sha256"))
                 for lines in logs.values() for _, _, r in lines
                 if r is not None and r.get("event") == "torn_resolved"
-                and _count(r.get("offset"))}  # fmt: skip
+                and _count(r.get("offset")) and _identity(r, "log", "sha256")}  # fmt: skip
     found = []
     for name, lines in logs.items():
         named = {(r.get("offset"), r.get("length"), r.get("sha256")) for _, _, r in lines
-                 if r is not None and r.get("event") == "torn"
+                 if r is not None and r.get("event") == "torn" and _identity(r, "sha256")
                  and _count(r.get("offset")) and _count(r.get("length"))}  # fmt: skip
         for offset, data, record in lines:
             if record is not None:
@@ -471,8 +471,7 @@ def missing_lines(runs_root: Path) -> list[MissingLine]:
     line, so either blocks."""
     root = Path(runs_root)
     out, records = root / "qualification", launch_records(root)
-    lines = {(r.get("event"), r.get("run"), r.get("experiment"), r.get("run_id"))
-             for r in records}  # fmt: skip
+    lines = {_identity(r, "event", "run", "experiment", "run_id") for r in records} - {None}
     missing: list[MissingLine] = []
     for path in _records_of(out, CYCLE_RECORDS):
         where, record = path.relative_to(root).as_posix(), _read_json(path)
@@ -515,8 +514,8 @@ def _records_of(out: Path, kind: tuple[str, re.Pattern[str]]) -> list[Path]:
 def _run_labels(root: Path, records: Sequence[Mapping[str, Any]],
                 run_id: str) -> set[tuple[Any, Any]]:  # fmt: skip
     """A launcher run's label and experiment: its starts', else its run directory's."""
-    labels = {(r.get("run"), r.get("experiment")) for r in records
-              if r.get("event") == "start" and r.get("run_id") == run_id}  # fmt: skip
+    labels = {_identity(r, "run", "experiment") for r in records
+              if r.get("event") == "start" and r.get("run_id") == run_id} - {None}  # fmt: skip
     if labels or not PLAIN_RUN_ID.fullmatch(run_id):
         return labels
     for meta_path in sorted(root.glob(f"*/{run_id}/meta.json")):
@@ -526,6 +525,14 @@ def _run_labels(root: Path, records: Sequence[Mapping[str, Any]],
         if isinstance(label, str):
             labels.add((label, meta_path.parent.parent.name))
     return labels
+
+
+def _identity(record: Mapping[str, Any], *keys: str) -> tuple[str, ...] | None:
+    """The record's values of ``keys`` when every one is a string, else None: a journal record
+    whose identity field is a list, an object or anything but a string matches nothing, and
+    never stops a reading with a ``TypeError``."""
+    values = tuple(record.get(key) for key in keys)
+    return values if all(isinstance(value, str) for value in values) else None
 
 
 def _count(value: Any) -> bool:
@@ -596,7 +603,8 @@ def open_start(run: Run, records: Sequence[Mapping[str, Any]]) -> Mapping[str, A
     names by its run id (``run_campaign``, "A start found without its end"), or None. Attempts
     are ordered by their number, then the start's time (``label_starts``), whatever journal file
     holds each record; a record closes the start whose run id it names, wherever it is."""
-    closed = {r.get("run_id") for r in records if r.get("event") in ("end", "superseded", "held")}
+    closed = {r["run_id"] for r in records if r.get("event") in ("end", "superseded", "held")
+              and isinstance(r.get("run_id"), str)}  # fmt: skip
     pending = [r for r in label_starts(run, records) if r["run_id"] not in closed]
     return pending[-1] if pending else None
 
@@ -690,6 +698,7 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
     for record in records:  # starts that left no directory, e.g. a crash before the tracker ran
         if (record.get("event") == "start" and record.get("experiment") == run.experiment
                 and record.get("config_hash") == run.config_hash
+                and isinstance(record.get("run_id"), str)
                 and record.get("run_id") not in settled):  # fmt: skip
             result.technical.add(record["run_id"])
     return result
@@ -698,14 +707,14 @@ def assess(run: Run, runs_root: Path, records: Sequence[Mapping[str, Any]] = ())
 def recovered_cells(records: Sequence[Mapping[str, Any]]) -> set[tuple[str, str]]:
     """(experiment, cell) pairs that have had their recovery round (a run's own round, opened
     under ``only``, is not its cell's)."""
-    return {(r.get("experiment"), r.get("cell")) for r in records
-            if r.get("event") == "recovery" and r.get("only") is None}  # fmt: skip
+    return {key for r in records if r.get("event") == "recovery" and r.get("only") is None
+            and (key := _identity(r, "experiment", "cell")) is not None}  # fmt: skip
 
 
 def recovered_runs(records: Sequence[Mapping[str, Any]]) -> set[tuple[str, str]]:
     """(experiment, label) pairs that have had a recovery round of their own (under ``only``)."""
-    return {(r.get("experiment"), r.get("only")) for r in records
-            if r.get("event") == "recovery" and r.get("only") is not None}  # fmt: skip
+    return {key for r in records if r.get("event") == "recovery" and r.get("only") is not None
+            and (key := _identity(r, "experiment", "only")) is not None}  # fmt: skip
 
 
 def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str | None:
@@ -852,10 +861,16 @@ def run_campaign(
     a run left out of ``runs``) and nothing in a dry run; the end goes to this campaign's log.
     Attempts are counted from the starts, as before, so the new end changes no count.
 
-    **A torn journal line** (module docstring, "The journal"). Before anything else, while any
-    log under ``runs_root/launch/`` holds a torn line that no ``torn_resolved`` record names
-    (``torn_lines``), it raises ``TornJournalError`` naming each such line: nothing starts,
-    nothing is settled or written, no recovery round opens, in a dry run too.
+    **A journal that is not whole** (module docstring, "The journal"). Before anything else,
+    while any log under ``runs_root/launch/`` holds a torn line that no ``torn_resolved`` record
+    names (``torn_lines``), or a published qualification record under
+    ``runs_root/qualification/`` requires a ``held`` or ``superseded`` line that no log holds
+    (``missing_lines``; an unreadable record, or an entry that names no run, too), it raises
+    ``TornJournalError`` naming each: nothing starts, nothing is settled or written, no recovery
+    round opens, in a dry run too. A torn line is lifted by restoring what its kind lost and then
+    its resolution (``resolve_torn``); a missing line by its record's own repair alone
+    (scripts/qualify.py ``supersede`` run again with the cycle's record, or ``restart-case`` for
+    the restart's case); an unreadable record or an entry without a run, by hand.
     """
     unresolved = [line for line in torn_lines(runs_root) if not line.resolved]
     missing = missing_lines(runs_root)

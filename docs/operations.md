@@ -1920,7 +1920,14 @@ before each command below.
   `launchers`' `superseded` lines and its `held` lines), or `qualify.py restart-case` for the
   restart's case (its launcher run's `superseded` line). Nothing needs resolving afterwards:
   there is no torn line. A published record that cannot be read blocks the same way, named by its
-  path; it is restored by hand.
+  path, and so does a record entry that names no run (its label, experiment or run id is not
+  there, or not a string), named by its record's path and event; both are fixed by hand, since
+  no command can tell what they should hold. The reconciliation reads `$RUNS_DIR/qualification/`
+  alone: a record published under a custom `--out` is outside it, and the driver never passes
+  `--out`. A `supersede` or `restart-case` run by hand while a launcher is running can stop that
+  launcher with exit 12: if the launcher reads the journal after the record is published and
+  before its lines are appended, it finds them missing. Run the launcher again once the command
+  has ended.
 - **A technical mark outside the qualification.** A technical mark of a search, validation or
   confirmation run, in any arm, stops the route: the step is blocked and technical, with the
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
