@@ -28,9 +28,11 @@ while a log under RUNS_DIR/launch/ holds a torn line that no torn_resolved recor
 published qualification record under RUNS_DIR/qualification/ (a cycle's supersede-<n>.json, a
 case's restart-<n>.json) requires a held or superseded line that no log holds
 (zero_field_refusal.launch, "The journal"):
-- a torn line is any line of a log that is not a JSON object, a blank line included; the tail a
-  crash leaves in the middle of an append is one case of it. Each is printed with its log,
-  offset, length, kind and sha256. Once what the line's kind lost is restored (docs/operations.md,
+- a torn line is any line of a log that holds no record: one that is not a JSON object, a blank
+  line included, or a JSON object whose identity (event, run, experiment, run_id, config_hash,
+  campaign, log, sha256, cell, only) is not all strings; the tail a crash leaves in the middle
+  of an append is one case of it. Each is printed with its log and line, its offset, length,
+  kind and sha256. Once what the line's kind lost is restored (docs/operations.md,
   "Launching runs"), --resolve-torn, with no campaign file, records the resolution in that log
   (LOG: its file name, as printed): it first writes the line's torn record if none names it, then
   the torn_resolved record. It refuses an offset and sha256 that name no torn line of the log, a

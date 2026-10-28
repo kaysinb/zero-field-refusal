@@ -193,9 +193,11 @@ and ``driver``, which read no runs root, first reads ``launch.torn_lines`` and
 names, or a published cycle or restart record under RUNS_DIR/qualification/ requires a
 ``held`` or ``superseded`` line that no log holds (a crash between the record and its lines,
 or an append that wrote no byte; an unreadable record blocks too), it prints the launcher's
-refusal (each torn line's log, offset, length, kind and sha256; each missing line's record path,
-event and run id), acts on nothing and exits 12 (``launch.TORN_JOURNAL``). Two calls, decided
-before anything acts, are journal repairs and go on: ``supersede`` run again with its published
+refusal (each torn line's log and line, offset, length, kind and sha256; each missing line's
+record path, event and run id), acts on nothing and exits 12 (``launch.TORN_JOURNAL``). A torn
+line is any line of a launch log that holds no record, a JSON object whose identity is not all
+strings included (``launch.well_formed``). Two calls, decided before anything acts, are journal
+repairs and go on: ``supersede`` run again with its published
 record (``cycle_to_repair``: it writes only the journal's missing ``held`` and ``superseded``
 lines) and ``restart-case`` for a case whose published restart records lack their
 ``superseded`` lines (``restart_lines_to_repair``: it writes only those lines, each with its

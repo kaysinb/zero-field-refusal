@@ -27,6 +27,7 @@ from omegaconf import OmegaConf
 from zero_field_refusal import launch
 from zero_field_refusal.analysis.stage_a import TrajectoryError
 from zero_field_refusal.analysis.study3_records import (
+    IDENTITY_KEYS,
     INSTABILITY,
     ROLES,
     SEEDS,
@@ -270,8 +271,9 @@ def listed_refused(found, problems, run_id, *words) -> bool:
 
 
 def test_an_unhashable_run_id_or_header_step_is_a_named_problem(world) -> None:
-    """A journal start whose run id is a list, and one whose header's step is a list: each a
-    problem by name, never a crash; the ordinary run beside them reads as before."""
+    """A journal start whose run id is a list (a torn line, as the launcher reads it:
+    ``launch.well_formed``), and one whose header's step is a list: each a problem by name,
+    never a crash; the ordinary run beside them reads as before."""
     ordinary = world.run("A", 1.45e-5, 10300)
     _, chash, command = config_of("A", 2.11e-5, 10300, "validation")
     world.log("study3-c1", {"event": "start", "run": "A-2.11e-05/s10300", "attempt": 1,
@@ -281,7 +283,8 @@ def test_an_unhashable_run_id_or_header_step_is_a_named_problem(world) -> None:
     stepped = world.run("F", 1.3e-5, 10300, prescribe=False,
                         head={**header(1, "validation", None), "step": ["validation"]})  # fmt: skip
     found, problems = world.read()
-    assert "study3-c1: a start in the launch journal without a run id" in problems
+    assert any(p.startswith("launch/study3-c1.jsonl line ") and TORN_WHY in p
+               for p in problems), problems  # fmt: skip
     assert by_id(found)[stepped].state == "refused" and by_id(found)[stepped].cell.step is None
     assert any(p.startswith(stepped) and "its campaign header names no study-3 step" in p
                for p in problems)  # fmt: skip
@@ -1010,9 +1013,10 @@ def test_a_line_is_study3s_by_the_run_it_names(world, experiment, event) -> None
 
 @pytest.mark.parametrize("value", [["x"], {"a": 1}])
 def test_a_malformed_label_on_a_line_or_a_start_is_a_named_problem(world, value) -> None:
-    """A ``superseded`` line, or a study-3 start, whose ``run`` is no string: a named problem,
-    never an exception, through ``read_endpoints`` and ``read_holds``. The line counts for nothing
-    and the run still counts; the start is refused by name."""
+    """A ``superseded`` line, or a study-3 start, whose ``run`` is no string holds no record, as
+    the launcher reads it (``launch.well_formed``): each is a torn line, a named problem by its
+    log and line, never an exception, through ``read_endpoints`` and ``read_holds``. The line
+    counts for nothing and the run still counts."""
     run_id = world.run("A", 1.45e-5, 10300)
     world.log("study3-hand", {"event": "superseded", "run": value, "run_id": run_id,
                               "experiment": "study3", "reason": "r"})  # fmt: skip
@@ -1022,9 +1026,9 @@ def test_a_malformed_label_on_a_line_or_a_start_is_a_named_problem(world, value)
                                          "step": "validation"}})  # fmt: skip
     found, problems = world.read()
     assert by_id(found)[run_id].state == "usable"
-    assert any(p.startswith("launch/study3-hand.jsonl line 1: ") and "counts for nothing" in p
-               for p in problems), problems  # fmt: skip
-    assert any(p.startswith("odd-run: ") for p in problems), problems
+    for number in (1, 2):
+        assert any(p.startswith(f"launch/study3-hand.jsonl line {number}: ") and TORN_WHY in p
+                   for p in problems), problems  # fmt: skip
     assert read_holds(world.root)[0] == []
 
 
@@ -1367,13 +1371,20 @@ def test_the_journal_is_read_as_the_launcher_reads_it(tmp_path) -> None:
     split at ``\\n`` alone, each line decoded strictly as UTF-8, a record only a JSON object),
     and ``journal_lines`` lists the torn lines ``launch.torn_lines`` lists, by the same bytes
     (offset, length, sha256) and kind: one resolved exactly when both a ``torn`` and a
-    ``torn_resolved`` record name it, the last with no newline after it ``final``."""
+    ``torn_resolved`` record name it, the last with no newline after it ``final``. A JSON
+    object whose identity field (``IDENTITY_KEYS``) is not a string is a torn line in both."""
     assert TORN_KIND.pattern == launch.TORN_KIND.pattern
+    assert IDENTITY_KEYS == launch.IDENTITY_KEYS
     path = tmp_path / "x.jsonl"
     samples = [b"", b"\n", b"{}", b"{}\n", b'{"a": 1}\n\n', b"\n\n{}", b"\xff\xfe\n{}\n",
                b"\xef\xbb\xbf{}\n", b'{"a": 1}\x1e{"b": 2}\n', b'{"a": 1}\r\n{"b": 2}\r',
                b'{"a": "\xe2\x80\xa8"}\n[1]\n"s"\n3\n  \n', b'{"event": "end", "x": 1',
-               b"\xc3\x28\n\xed\xa0\x80\n"]  # fmt: skip
+               b"\xc3\x28\n\xed\xa0\x80\n",
+               b'{"event": "start", "run": "a/s0", "run_id": ["x"]}\n',
+               b'{"event": "held", "run": {"x": 1}, "run_id": "r"}\n{"event": "stop"}\n',
+               b'{"event": 3, "run_id": "r"}\n',
+               b'{"event": "torn", "offset": 0, "length": 1, "sha256": "a", "kind": null}\n',
+               b'{"event": "recovery", "cell": "c", "only": null}\n']  # fmt: skip
     for data in samples:
         path.write_bytes(data)
         assert log_lines(data) == launch._journal_lines(path), data
@@ -1381,7 +1392,7 @@ def test_the_journal_is_read_as_the_launcher_reads_it(tmp_path) -> None:
     log = root / "launch" / "a.jsonl"
     launch._log(log, {"event": "start", "run": "x/s1"})
     with log.open("ab") as f:
-        f.write(b"\n[1]\n")  # a blank line and a value that is no object
+        f.write(b'\n[1]\n{"event": "held", "run": {"x": 1}}\n')  # blank, no object, malformed
     other = root / "launch" / "b.jsonl"
     launch._log(other, {"event": "start", "run": "y/s1"})
     tear(other, b'{"event": "held", "run_id": "\xff')
@@ -1403,7 +1414,8 @@ def test_the_journal_is_read_as_the_launcher_reads_it(tmp_path) -> None:
                else "resolved" if x.repaired and x.resolved else "unresolved")
               for x in lines]  # fmt: skip
     assert ours == theirs
-    assert [line[-1] for line in ours] == ["resolved", "unresolved", "unresolved", "final"]
+    assert [line[-1] for line in ours] == ["resolved", "unresolved", "unresolved", "unresolved",
+                                           "final"]  # fmt: skip
 
 
 # ------------------------------------------------------------------ refusals: the issued cell

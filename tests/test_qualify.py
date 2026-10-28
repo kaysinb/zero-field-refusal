@@ -984,7 +984,7 @@ def test_a_torn_superseded_line_is_written_again_by_the_same_cycle(
     capsys.readouterr()
     qualify.main(supersede_args(path, ADAMW, record))  # the same record: the missing line
     err = capsys.readouterr().err
-    assert "study3-qualification-c1.jsonl: offset" in err and "--resolve-torn" in err
+    assert "study3-qualification-c1.jsonl line " in err and "--resolve-torn" in err
     qualify.main(supersede_args(path, ADAMW, record))  # and nothing more
     records = launch.launch_records(root)
     assert [r["run_id"] for r in records if r["event"] == "superseded"] == ["r-a1", "r-b1"]
@@ -1778,7 +1778,7 @@ def test_a_restart_rewrites_its_lost_journal_line_over_a_torn_line(
         qualify.main(restart(path, ADAMW, "any text: the record's reason is written"))
     assert stop.value.code != qualify.TORN_JOURNAL
     err = capsys.readouterr().err
-    assert "study3-qualification-c1.jsonl: offset" in err and "--resolve-torn" in err
+    assert "study3-qualification-c1.jsonl line " in err and "--resolve-torn" in err
     (line,) = [r for r in launch.launch_records(root) if r["event"] == "superseded"]
     assert (line["run_id"], line["reason"]) == ("r-a1", RESTART)
     (named,) = [r for r in launch.launch_records(root) if r["event"] == "torn"]
@@ -1870,16 +1870,25 @@ def test_a_restart_whose_line_wrote_no_byte_blocks_until_restart_case_restores_i
      {"event": "superseded", "run": f"adamw-{ADAMW_LR:g}/s10200", "experiment": "study3",
       "run_id": {"r": 1}}],
 )  # fmt: skip
-def test_a_journal_value_that_is_not_a_string_stops_no_command(qualify, tmp_path, line) -> None:
-    """A valid JSON line whose identity fields are lists or objects matches nothing: the
-    commands answer as without it, and a published record whose line is otherwise missing
-    still blocks with 12."""
+def test_a_journal_object_with_a_non_string_identity_blocks_until_resolved(
+    qualify, tmp_path, line
+) -> None:
+    """A valid JSON object whose identity fields are lists or objects is a torn line: every
+    command that reads the runs refuses with 12 (never a traceback) until it is resolved; then
+    they answer as without it, and a published record whose line is otherwise missing still
+    blocks with 12."""
+    from zero_field_refusal import launch
+
     path = campaign(tmp_path, fa=())
     root = tmp_path / "runs"
     log = root / "launch" / "elsewhere.jsonl"
     log.parent.mkdir(parents=True)
     log.write_text(json.dumps(line) + "\n")
     case = ["--case", ADAMW.name]
+    for command in ("complete", "clear-stale"):
+        assert exit_code(qualify, [command, *common(path), *case]) == qualify.TORN_JOURNAL
+    (torn,) = launch.torn_lines(root)
+    launch.resolve_torn(root, torn.log, offset=torn.offset, sha256=torn.sha256, reason="r")
     assert exit_code(qualify, ["complete", *common(path), *case]) == qualify.NO
     assert exit_code(qualify, ["clear-stale", *common(path), *case]) == 0
     cycle = root / "qualification" / "c1" / "supersede-1.json"
@@ -1887,6 +1896,45 @@ def test_a_journal_value_that_is_not_a_string_stops_no_command(qualify, tmp_path
     cycle.write_text(json.dumps({"launchers": [{"run_id": "r-1", "run": "a/s0",
                                                 "experiment": "study3"}], "held": []}))  # fmt: skip
     assert exit_code(qualify, ["complete", *common(path), *case]) == qualify.TORN_JOURNAL
+
+
+def test_a_malformed_held_line_is_torn_and_its_record_line_missing(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """The cycle's ``held`` line of r-old, hand-edited so that its label is an object: it is a
+    torn line, and the cycle record's line is missing as well, since the torn line matches
+    nothing. Every command refuses with 12 naming both; resolved, the line is still missing;
+    the cycle run again writes it, and the label is held again: the launcher refuses it as
+    held, and ``complete`` exits ``HELD``."""
+    from zero_field_refusal import launch
+
+    no_commit = edited_meta(lambda meta: meta.pop("git"))
+    path, root, out, run, name, record, log = issued_earlier(qualify, tmp_path, monkeypatch,
+                                                             no_commit)  # fmt: skip
+    qualify.main(supersede_args(path, ADAMW, record))
+    start, held = log.read_text().splitlines()
+    log.write_text("\n".join([start, json.dumps({**json.loads(held), "run": {"x": 1}})]) + "\n")
+    (torn,) = launch.torn_lines(root)
+    assert (torn.line, torn.kind, torn.resolved) == (2, "held", False)
+    missing = [("qualification/c1/supersede-1.json", "held", "r-old")]
+    assert [(m.record, m.event, m.run_id) for m in launch.missing_lines(root)] == missing
+    _, runs = launch.load_campaign(path)
+    with pytest.raises(launch.TornJournalError) as refusal:
+        launch.run_campaign(name, runs, root, dry_run=True)
+    assert len(refusal.value.lines) == 1 and len(refusal.value.missing) == 1
+    complete = ["complete", *common(path), "--case", STOPPED.name]
+    capsys.readouterr()
+    assert exit_code(qualify, complete) == qualify.TORN_JOURNAL
+    err = capsys.readouterr().err
+    assert f"{log.name} line 2: offset" in err and "no held line of r-old" in err
+    launch.resolve_torn(root, torn.log, offset=torn.offset, sha256=torn.sha256,
+                        reason="a hand edit; the cycle writes the line again")  # fmt: skip
+    assert exit_code(qualify, complete) == qualify.TORN_JOURNAL  # the line is still missing
+    qualify.main(supersede_args(path, ADAMW, record))  # the repair
+    assert launch.missing_lines(root) == []
+    with pytest.raises(launch.CampaignError, match="r-old: held, its outcome unresolved"):
+        launch.run_campaign(name, runs, root, only=run.label, max_attempts=1, recovery="r")
+    assert exit_code(qualify, complete) == qualify.HELD
 
 
 def test_a_real_restart_leaves_no_missing_line(qualify, tmp_path) -> None:
@@ -1964,7 +2012,7 @@ def test_every_subcommand_that_reads_the_runs_refuses_over_a_torn_line(
     assert exit_code(qualify, [*argv, *extra]) == qualify.TORN_JOURNAL
     assert tree(root) == before
     err = capsys.readouterr().err
-    assert f"elsewhere.jsonl: offset 0, length {len(TORN_BYTES)}, kind held" in err
+    assert f"elsewhere.jsonl line 1: offset 0, length {len(TORN_BYTES)}, kind held" in err
     (line,) = launch.torn_lines(root)
     launch.resolve_torn(root, line.log, offset=line.offset, sha256=line.sha256,
                         reason="nothing was lost: a test line")  # fmt: skip

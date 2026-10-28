@@ -2506,8 +2506,10 @@ def test_a_hand_written_line_of_another_experiment_does_not_bring_the_search_bac
 
 
 def test_a_line_with_a_malformed_label_blocks_the_route_by_name(worlds) -> None:
-    """A ``held`` and a ``superseded`` line whose ``run`` is no string, naming search runs: the
-    reader raises nothing; each is a named problem, and the route blocks at the search."""
+    """A ``held`` and a ``superseded`` line whose ``run`` is no string, naming search runs: as
+    the launcher reads them (``launch.well_formed``), each is a torn line; the reader raises
+    nothing, names each by its log and line, and the route blocks (a torn line blocks every
+    step until it is resolved)."""
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
@@ -2517,10 +2519,10 @@ def test_a_line_with_a_malformed_label_blocks_the_route_by_name(worlds) -> None:
         runs.log("study3-hand", {"event": event, "run": value, "run_id": run_id,
                                  "experiment": "study3", "reason": "r"})  # fmt: skip
     result = read(records, runs)
-    assert (result["stage"], result["step"]["kind"], result["outcome"]) == (
-        "search", "blocked", None)  # fmt: skip
-    for run_id in ids[:2]:
-        assert any(run_id in p and "counts for nothing" in p for p in result["problems"])
+    assert (result["step"]["kind"], result["outcome"]) == ("blocked", None)
+    for number in (1, 2):
+        where = f"launch/study3-hand.jsonl line {number}: "
+        assert any(p.startswith(where) for p in result["problems"]), result["problems"]
 
 
 @pytest.mark.parametrize("case, status, end, first, recovery", [
@@ -2591,6 +2593,35 @@ def test_a_torn_journal_line_blocks_the_state_until_it_is_resolved(worlds) -> No
         {"log": "launch/study3-c1-search-r0.jsonl", "line": number, "kind": "end"}]  # fmt: skip
     assert {**after, "resolved_torn_lines": []} == before
     assert "TORN-SECRET" not in json.dumps(after, default=str)
+
+
+def test_a_malformed_start_is_a_torn_line_that_blocks_until_resolved(worlds) -> None:
+    """A start of the search campaign's log, hand-edited so that its run id is a list: as the
+    launcher reads it, it is a torn line, so the state blocks on it by its log and its line;
+    once ``launch.resolve_torn`` names it, the state lists it as resolved, with its kind."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    log = runs.root / "launch" / "study3-c1-search-r0.jsonl"
+    lines = log.read_text().splitlines()
+    number = next(i for i, x in enumerate(lines, 1) if json.loads(x)["event"] == "start")
+    edited = json.loads(lines[number - 1])
+    edited["run_id"] = [edited["run_id"]]
+    lines[number - 1] = json.dumps(edited)
+    log.write_text("\n".join(lines) + "\n")
+    blocked = read(records, runs)
+    assert blocked["step"]["kind"] == "blocked"
+    where = f"launch/study3-c1-search-r0.jsonl line {number}: "
+    assert [p for p in blocked["problems"] if p.startswith(where)], blocked["problems"]
+    (line,) = launch.torn_lines(runs.root)
+    assert (line.line, line.kind) == (number, "start")
+    launch.resolve_torn(runs.root, line.log, offset=line.offset, sha256=line.sha256,
+                        reason="a hand edit of a start")  # fmt: skip
+    after = read(records, runs)
+    assert after["resolved_torn_lines"] == [
+        {"log": "launch/study3-c1-search-r0.jsonl", "line": number, "kind": "start"}]  # fmt: skip
+    assert not [p for p in after["problems"] if p.startswith(where)]
 
 
 def test_a_missing_theta0_is_a_problem_not_an_exception(worlds) -> None:

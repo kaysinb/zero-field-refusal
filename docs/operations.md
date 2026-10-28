@@ -1866,9 +1866,12 @@ before each command below.
   for a run left unfinished), and starts its next attempt only when that outcome is technical.
   The block's missing cells, if any, are then written again by the writer, alone, under a new
   campaign name. A block file or a `run.sh` already run is not run again.
-- **A torn launch-log line.** A crash in the middle of an append leaves a torn line, the bytes
-  after a log's last newline; the launcher's next append to that log ends it with a newline and
-  names its bytes in a `torn` record. While any log holds a torn line that no `torn_resolved`
+- **A torn launch-log line.** A torn line is any line of a launch log that holds no record (its
+  definition: [launching runs](#launching-runs)), a JSON object whose identity is not all
+  strings included, such as a hand-edited start whose run id is a list. A crash in the middle of
+  an append leaves one, the bytes after a log's last newline; the launcher's next append to that
+  log ends it with a newline and names its bytes in a `torn` record. While any log holds a torn
+  line that no `torn_resolved`
   record names, the launcher refuses with exit 12, and so does every `qualify.py` command that
   reads the runs but its two journal repairs. The procedure:
   1. Restore what the line's kind lost, in the order its kind takes (the per-kind list in
@@ -2066,9 +2069,13 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   turns); then, still under the lock, the log, its folder `launch/` and the runs root that holds
   it are fsynced, on every append, so that the log's and the folder's entries are durable before
   the append returns, whoever created them. The logs are read line by line,
-  split at `\n` alone, each line decoded strictly as UTF-8. A **torn line** is any line that is
-  not a JSON object: one that does not decode or parse (a byte-order mark included), a valid
-  JSON value that is not an object, or a blank line (length 0). A crash in the middle of an
+  split at `\n` alone, each line decoded strictly as UTF-8. A **torn line** is any line that
+  holds no record: one that does not decode or parse (a byte-order mark included), a valid JSON
+  value that is not an object, a blank line (length 0), or a JSON object whose identity is not
+  all strings (any of `event`, `run`, `experiment`, `run_id`, `config_hash`, `campaign`, `log`,
+  `sha256`, `cell`, `only` present with another value: a hand-edited record never matches
+  nothing silently, it blocks until resolved). The launcher writes only records whose identity
+  is all strings. A crash in the middle of an
   append leaves one at the end of the log, the bytes after its last newline; the next append to
   that log repairs it first, in two writes under its one lock: the newline that ends it together
   with a `torn` record naming its exact bytes (`offset`, `length`, `sha256`) and its `kind`, the
@@ -2080,8 +2087,9 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   names the same label, experiment and run id, whatever its config hash. While any log under
   `RUNS_DIR/launch/` holds a torn line that no `torn_resolved` record names, or such a line is
   missing (or such a record cannot be read), the launcher starts nothing, settles nothing and
-  opens no recovery round, with `--dry-run` too: it prints each torn line (log, offset, length,
-  kind, sha256) and each missing line (its record's path, event and run id) and exits **12**.
+  opens no recovery round, with `--dry-run` too: it prints each torn line (log and line, offset,
+  length, kind, sha256) and each missing line (its record's path, event and run id) and exits
+  **12**.
   Every log counts, since a label's `held` and `superseded` lines can live in any of them. A
   missing line is restored by its record's repair alone (below); for a torn line, first restore
   what its kind lost, then record the resolution:

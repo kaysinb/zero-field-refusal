@@ -92,8 +92,11 @@ gate is the caller's choice (``Cell.key``).
 "Voiding and supersession"). The journal is every log under ``launch/`` read as one, each log
 as the launcher reads it (``log_lines``: its bytes split at ``\n`` alone, each line decoded
 strictly as UTF-8): no rule depends on a log's name or a line's place in it, but for a *torn
-line*, one that holds no JSON object (it does not decode or parse, a byte-order mark included; a
-JSON value that is no object; a blank line), as ``launch.torn_lines`` lists them. The log's last
+line*, one that holds no record: it does not decode or parse (a byte-order mark included), it is
+a JSON value that is no object or a blank line, or it is a JSON object whose identity
+(``IDENTITY_KEYS``: ``event``, ``run``, ``experiment``, ``run_id``, ``config_hash``,
+``campaign``, ``log``, ``sha256``, ``cell``, ``only``) is not all strings, as
+``launch.torn_lines`` lists them. The log's last
 line, with no newline after it (cut short by a crash), is skipped silently: the launcher's rule.
 One before it is *resolved* when a ``torn`` record of its log names its offset, length and sha256
 and a ``torn_resolved`` record names its log, offset and sha256 (``launch.resolve_torn``,
@@ -259,6 +262,10 @@ STUDY3_CONFIGS = ("experiments/study3", "experiments/study3_k_only")
 # launch.TORN_KIND: the one part of a torn line's bytes a record copies, its kind (the launcher
 # itself is a GPU path, never imported here)
 TORN_KIND = re.compile(rb'"event": "([a-z][a-z_]{0,31})"')
+# launch.IDENTITY_KEYS: a journal record's identity, each key absent or a string; a JSON object
+# with any of them present and not a string is a torn line, as the launcher reads it
+IDENTITY_KEYS = ("event", "run", "experiment", "run_id", "config_hash", "campaign", "log",
+                 "sha256", "cell", "only")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -703,8 +710,9 @@ def study3_labels(starts: Sequence[tuple[str, Mapping[str, Any]]]) -> dict[str, 
 def log_lines(data: bytes) -> list[tuple[int, bytes, dict[str, Any] | None]]:
     """A launch log's bytes line by line, as the launcher reads them (``launch._journal_lines``,
     mirrored: the launcher is a GPU path, never imported here): split at ``\n`` alone, each line's
-    offset, its bytes and its record, None when its bytes do not decode strictly as UTF-8 (a
-    byte-order mark stays in the text) or do not parse as a JSON object (a torn line)."""
+    offset, its bytes and its record, None (a torn line) when its bytes do not decode strictly as
+    UTF-8 (a byte-order mark stays in the text), do not parse as a JSON object, or parse as one
+    whose identity (``IDENTITY_KEYS``) is not all strings (``launch.well_formed``)."""
     lines, offset = [], 0
     while offset < len(data):
         end = data.find(b"\n", offset)
@@ -713,7 +721,9 @@ def log_lines(data: bytes) -> list[tuple[int, bytes, dict[str, Any] | None]]:
             record = json.loads(data[offset:end].decode("utf-8"))
         except ValueError:  # a UnicodeDecodeError included
             record = None
-        lines.append((offset, data[offset:end], record if isinstance(record, dict) else None))
+        whole = isinstance(record, dict) and all(
+            isinstance(record[key], str) for key in IDENTITY_KEYS if key in record)  # fmt: skip
+        lines.append((offset, data[offset:end], record if whole else None))
         offset = end + 1
     return lines
 
@@ -999,8 +1009,8 @@ def read_holds(
 # after it (skipped, the launcher's rule); resolved (listed, no problem); unresolved (a problem)
 FINAL, RESOLVED, UNRESOLVED = "final", "resolved", "unresolved"
 # The one term every reader names an unresolved torn line before the last of its log with
-TORN_LINE = ("a torn line (no JSON object) before the last line of its log that no torn and "
-             "torn_resolved records both name")  # fmt: skip
+TORN_LINE = ("a torn line (no JSON object, or one whose identity is not all strings) before the "
+             "last line of its log that no torn and torn_resolved records both name")  # fmt: skip
 TORN_WHY = (f"{TORN_LINE}: what it held cannot be shown (resolve it: docs/operations.md, "
             '"Launching runs")')  # fmt: skip
 

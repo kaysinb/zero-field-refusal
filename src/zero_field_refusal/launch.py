@@ -74,18 +74,25 @@ fsync, so writers take turns), the whole line goes out in one ``os.write`` (a sh
 and then, still under the lock, the log, its folder ``launch/`` and the runs root that holds it
 are fsynced, on every append: whoever created the folder or the log, and whether a creator died
 before its own fsync, their entries are durable before an append returns. The logs are read line
-by line, split at
-``\n`` alone, each line decoded strictly as UTF-8 (``_journal_lines``, for ``launch_records`` and
-``torn_lines`` alike). A *torn line* is any line that is not a JSON object: one that does not
-decode or parse (a byte-order mark included), a valid JSON value that is not an object, and a
-blank line (length 0). A crash in the middle of an append leaves one at the end of the log, the
-bytes after its last newline; the next append to that log repairs it first, in two ``_write``
-calls under its one lock: the newline that ends the torn line together with a ``torn`` record
-naming its exact bytes (``offset`` of its first byte, ``length``, ``sha256``) and its ``kind``,
-then the record. The kind is the event the torn bytes show through
-the strict pattern ``"event": "<lower-case word>"`` (``torn_kind``), or null; nothing else of
-the torn bytes is copied anywhere. ``torn_lines`` lists every torn line of every log under
-``RUNS_DIR/launch/`` (a torn last line has no ``torn`` record yet), whether a ``torn`` record
+by line, split at ``\n`` alone, each line decoded strictly as UTF-8 (``_journal_lines``, for
+``launch_records`` and ``torn_lines`` alike).
+
+A *torn line* is any line that holds no record: one that does not decode or parse (a byte-order
+mark included), a valid JSON value that is not an object, a blank line (length 0), and a JSON
+object whose identity is not all strings (``well_formed``: each key of ``IDENTITY_KEYS``,
+``event``, ``run``, ``experiment``, ``run_id``, ``config_hash``, ``campaign``, ``log``,
+``sha256``, ``cell`` and ``only``, absent or a string). A hand-edited record is then never read
+as matching nothing: it blocks until resolved, like any other torn line. ``launch_records``
+returns the record of every other line, the exact complement of ``torn_lines``; ``_log`` refuses
+to write a record whose identity is not all strings, so the launcher's own records are never
+torn. A crash in the middle of an append leaves a torn line at the end of the log, the bytes
+after its last newline; the next append to that log repairs it first, in two ``_write`` calls
+under its one lock: the newline that ends the torn line together with a ``torn`` record naming
+its exact bytes (``offset`` of its first byte, ``length``, ``sha256``) and its ``kind``, then
+the record. The kind is the event the torn bytes show through the strict pattern
+``"event": "<lower-case word>"`` (``torn_kind``), or null; nothing else of the torn bytes is
+copied anywhere. ``torn_lines`` lists every torn line of every log under ``RUNS_DIR/launch/``
+with its log and line (a torn last line has no ``torn`` record yet), whether a ``torn`` record
 names its bytes and whether a ``torn_resolved`` record names it (by log, offset and sha256);
 ``launch_records`` skips them.
 
@@ -106,8 +113,8 @@ an entry that names no run, are named by the record's path and block too.
 **The journal is not whole** while any log holds a torn line that no ``torn_resolved`` record
 names, or a published record requires a line no log holds. Then ``run_campaign`` starts nothing,
 settles nothing and opens no recovery round, in a dry run too: it raises ``TornJournalError``,
-and scripts/launch.py prints each torn line (log, offset, length, kind and the sha256 its
-resolution names) and each missing line, and exits ``TORN_JOURNAL`` (12). The code means that
+and scripts/launch.py prints each torn line (log and line, offset, length, kind and the sha256
+its resolution names) and each missing line, and exits ``TORN_JOURNAL`` (12). The code means that
 alone: the launcher's other exits are 0, 1 and argparse's 2, and study 3's qualification
 commands use 1, 3 and 8 to 11; they refuse with the same refusal and code, but for their two
 journal repairs (scripts/qualify.py: ``supersede`` run again with its published record, which
@@ -180,6 +187,11 @@ MAX_ATTEMPTS = 3  # the first attempt and two reruns after technical failures
 TORN_JOURNAL = 12
 # The one part of a torn line's bytes that a record copies: its kind (module docstring)
 TORN_KIND = re.compile(rb'"event": "([a-z][a-z_]{0,31})"')
+# A journal record's identity: each of these keys, when present, holds a string. A JSON object
+# with any of them present and not a string is a torn line (module docstring, "The journal");
+# every record the launcher writes holds strings there (``_log`` refuses one that does not).
+IDENTITY_KEYS = ("event", "run", "experiment", "run_id", "config_hash", "campaign", "log",
+                 "sha256", "cell", "only")  # fmt: skip
 
 
 class CampaignError(ValueError):
@@ -188,10 +200,10 @@ class CampaignError(ValueError):
 
 @dataclass(frozen=True)
 class TornLine:
-    """An unparseable line of a launch log (``torn_lines``): its log's file name, the offset of
-    its first byte, its length in bytes and their sha256, its kind (``torn_kind``), whether a
-    ``torn`` record of that log names exactly those bytes and whether a ``torn_resolved`` record
-    names it (by log, offset and sha256)."""
+    """A torn line of a launch log (``torn_lines``): its log's file name, the offset of its first
+    byte, its length in bytes and their sha256, its kind (``torn_kind``), whether a ``torn``
+    record of that log names exactly those bytes, whether a ``torn_resolved`` record names it
+    (by log, offset and sha256), and its line number in the log, from 1."""
 
     log: str
     offset: int
@@ -200,6 +212,7 @@ class TornLine:
     kind: str | None
     repaired: bool
     resolved: bool
+    line: int
 
 
 # A run id shown in a message: a plain name, as the tracker accepts one (anything else is not shown)
@@ -237,8 +250,8 @@ class TornJournalError(CampaignError):
         parts = ["The launch journal is not whole; nothing starts, is settled or opens a "
                  "recovery round until it is."]  # fmt: skip
         if self.lines:
-            listed = "\n".join(f"- {x.log}: offset {x.offset}, length {x.length}, kind "
-                               f"{x.kind or 'null'}, sha256 {x.sha256}"
+            listed = "\n".join(f"- {x.log} line {x.line}: offset {x.offset}, length "
+                               f"{x.length}, kind {x.kind or 'null'}, sha256 {x.sha256}"
                                for x in self.lines)  # fmt: skip
             parts.append(
                 "Torn lines that no torn_resolved record names: restore what each kind lost "
@@ -396,10 +409,12 @@ def torn_kind(data: bytes) -> str | None:
 
 def torn_lines(runs_root: Path) -> list[TornLine]:
     """Every torn line of every launch log under ``runs_root/launch/``, in file name and offset
-    order (module docstring, "The journal"): every line, split at ``\n`` alone, that does not
-    decode strictly as UTF-8 or parse as a JSON object, a blank line (length 0) and a valid JSON
-    value that is not an object included. A torn last line, with no newline after it, is
-    listed unrepaired: no record follows it yet."""
+    order (module docstring, "The journal"): every line, split at ``\n`` alone, that is no
+    record (``_journal_lines``): one that does not decode strictly as UTF-8 or parse as a JSON
+    object, a blank line (length 0), a valid JSON value that is not an object, and a JSON object
+    whose identity (``IDENTITY_KEYS``) is not all strings. A torn last line, with no newline
+    after it, is listed unrepaired: no record follows it yet. ``launch_records`` returns every
+    other line's record: the two are each other's complement."""
     logs = {log.name: _journal_lines(log)
             for log in sorted((Path(runs_root) / "launch").glob("*.jsonl"))}  # fmt: skip
     resolved = {(r.get("log"), r.get("offset"), r.get("sha256"))
@@ -411,13 +426,13 @@ def torn_lines(runs_root: Path) -> list[TornLine]:
         named = {(r.get("offset"), r.get("length"), r.get("sha256")) for _, _, r in lines
                  if r is not None and r.get("event") == "torn" and _identity(r, "sha256")
                  and _count(r.get("offset")) and _count(r.get("length"))}  # fmt: skip
-        for offset, data, record in lines:
+        for number, (offset, data, record) in enumerate(lines, start=1):
             if record is not None:
                 continue
             sha = hashlib.sha256(data).hexdigest()
             found.append(TornLine(name, offset, len(data), sha, torn_kind(data),
                                   (offset, len(data), sha) in named,
-                                  (name, offset, sha) in resolved))  # fmt: skip
+                                  (name, offset, sha) in resolved, number))  # fmt: skip
     return found
 
 
@@ -541,9 +556,10 @@ def _count(value: Any) -> bool:
 
 def _journal_lines(log: Path) -> list[tuple[int, bytes, dict[str, Any] | None]]:
     """Each line of a launch log, split at ``\n`` alone: its offset, its bytes and the record it
-    holds, None when its bytes do not decode strictly as UTF-8 (a byte-order mark stays in the
-    text) or do not parse as a JSON object. The one reader of the logs' bytes, for
-    ``launch_records`` and ``torn_lines`` alike."""
+    holds, None (a torn line) when its bytes do not decode strictly as UTF-8 (a byte-order mark
+    stays in the text), do not parse as a JSON object, or parse as one whose identity is not all
+    strings (``well_formed``). The one reader of the logs' bytes, for ``launch_records`` and
+    ``torn_lines`` alike."""
     data, lines, offset = log.read_bytes(), [], 0
     while offset < len(data):
         end = data.find(b"\n", offset)
@@ -552,9 +568,18 @@ def _journal_lines(log: Path) -> list[tuple[int, bytes, dict[str, Any] | None]]:
             record = json.loads(data[offset:end].decode("utf-8"))
         except ValueError:  # a UnicodeDecodeError included
             record = None
-        lines.append((offset, data[offset:end], record if isinstance(record, dict) else None))
+        whole = isinstance(record, dict) and well_formed(record)
+        lines.append((offset, data[offset:end], record if whole else None))
         offset = end + 1
     return lines
+
+
+def well_formed(record: Mapping[str, Any]) -> bool:
+    """Whether a journal object's identity is all strings: each key of ``IDENTITY_KEYS`` absent
+    or a string. ``offset`` and ``length`` are no identity: a ``torn`` or ``torn_resolved``
+    record carries them as integers, and a record whose offset or length is not one names
+    nothing."""
+    return all(isinstance(record[key], str) for key in IDENTITY_KEYS if key in record)
 
 
 def superseded_runs(run: Run, records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -1090,6 +1115,9 @@ def _log(path: Path, record: Mapping[str, Any]) -> dict[str, Any]:
     last line is named first, by its own ``_write`` under the same lock: the newline that ends
     it and its ``torn`` record, then the record. Returns the stamped record."""
     path = Path(path)
+    for key in IDENTITY_KEYS:  # never a record its own reader would take for a torn line
+        if key in record and not isinstance(record[key], str):
+            raise ValueError(f"{path}: a journal record's {key} must be a string")
     path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC).isoformat(timespec="seconds")
     stamped = {"time": now, **record}

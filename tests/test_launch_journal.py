@@ -298,7 +298,7 @@ def test_an_unresolved_torn_line_in_any_log_refuses_every_campaign(
         module.main([str(campaign(tmp_path)), "--recovery", "the disk is replaced"])
     assert stop.value.code == TORN_JOURNAL and files(root) == before and executor.calls == []
     err = capsys.readouterr().err
-    assert f"elsewhere.jsonl: offset 0, length {len(torn)}, kind held" in err
+    assert f"elsewhere.jsonl line 1: offset 0, length {len(torn)}, kind held" in err
     assert line.sha256 in err and "--resolve-torn" in err
     resolve(monkeypatch, root, line)
     result = run_campaign(name, runs, root, execute=executor, recovery="the disk is replaced")
@@ -958,17 +958,26 @@ MALFORMED = [
 
 
 @pytest.mark.parametrize("line", MALFORMED, ids=range(len(MALFORMED)))
-def test_a_journal_value_that_is_not_a_string_is_no_crash(tmp_path, monkeypatch, line) -> None:
-    """A valid JSON line whose identity fields are lists or objects matches nothing: with no
-    published record the launcher goes on; with a record whose line is otherwise missing, it
-    refuses with 12 naming that line. Never a traceback."""
+def test_a_journal_object_with_a_non_string_identity_is_a_torn_line(
+    tmp_path, monkeypatch, line
+) -> None:
+    """A valid JSON object whose identity field is a list, an object or a number is a torn line:
+    listed (its kind through the strict pattern), never a record, and the launcher refuses with
+    12, never a traceback. Resolved, the launcher goes on; a published record whose line is
+    otherwise missing still blocks with 12, naming that line."""
     name, runs = load_campaign(campaign(tmp_path))
     root = tmp_path / "runs"
     log = root / "launch" / "c.jsonl"
     log.parent.mkdir(parents=True)
-    log.write_text(json.dumps(line) + "\n")
-    assert launch.missing_lines(root) == [] and torn_lines(root) == []
-    assert run_campaign(name, runs[2:3], root, execute=Executor(root, {}))["done"]
+    data = json.dumps(line).encode()
+    log.write_bytes(data + b"\n")
+    (torn,) = torn_lines(root)
+    assert (torn.log, torn.line, torn.offset, torn.length) == ("c.jsonl", 1, 0, len(data))
+    assert torn.kind == launch.torn_kind(data) and launch_records(root) == []
+    executor = Executor(root, {})
+    refused("test-campaign", runs[2:3], root, executor)
+    resolve(monkeypatch, root, torn)
+    assert run_campaign(name, runs[2:3], root, execute=executor)["done"]
     cycle_record(root, [entry(runs[1], "r-1")], [])
     log_start(root, name, runs[2], "r-s1")
     restart_record(root, "r-s1")
@@ -998,16 +1007,73 @@ def test_a_restarts_run_with_no_start_and_no_label_is_matched_by_its_run_id(tmp_
     assert launch.missing_lines(root) == []
 
 
-def test_a_start_whose_run_id_is_not_a_string_is_no_crash(tmp_path) -> None:
-    """A start of the run's experiment and config hash whose run id is a list matches nothing:
-    the run is assessed and attempted as without it."""
+def test_a_malformed_start_is_a_torn_line_and_its_attempt_still_counts(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A hand-edited start (its run id a list) of an attempt that left its run directory: the
+    launcher refuses with 12, naming the line by its log and line; resolved, the line is no
+    record, and the launcher counts the attempt from its directory as it did before the edit:
+    with one attempt allowed, it starts none."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_id = f"x-{run.config_hash[:8]}-a1"
+    make_run_dir(root, run, run_id, "failed")
+    log_start(root, name, run, run_id, only=run.label, max_attempts=1)
+    log = root / "launch" / f"{name}.jsonl"
+    with log.open("a") as f:
+        f.write(json.dumps({"event": "end", "run": run.label, "attempt": 1, "run_id": run_id,
+                            "returncode": 1, "outcome": "technical", "problem": "status 'failed'",
+                            "only": run.label}) + "\n")  # fmt: skip
+    executor, only = Executor(root, {}), {"only": run.label, "max_attempts": 1}
+    assert run_campaign(name, runs, root, execute=executor, **only)["exhausted"] == [run.label]
+    start, *rest = log.read_text().splitlines()
+    edited = json.dumps({**json.loads(start), "run_id": [run_id]})
+    log.write_text("\n".join([edited, *rest]) + "\n")
+    (line,) = torn_lines(root)
+    assert (line.line, line.kind, line.repaired) == (1, "start", False)
+    assert [r["event"] for r in launch_records(root)] == ["end"]
+    refused(name, runs, root, executor, **only)
+    module = script()
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as stop:
+        module.main([str(campaign(tmp_path)), "--only", run.label, "--max-attempts", "1"])
+    assert stop.value.code == TORN_JOURNAL
+    err = capsys.readouterr().err
+    assert f"{name}.jsonl line 1: offset 0, length {line.length}, kind start" in err
+    resolve(monkeypatch, root, line, reason="the attempt's run directory stands for its start")
+    assert run_campaign(name, runs, root, execute=executor, **only)["exhausted"] == [run.label]
+    assert executor.calls == []
+
+
+def test_the_launchers_own_records_are_never_torn(tmp_path, monkeypatch) -> None:
+    """Every record the launcher writes (start, end, stop, recovery, held, superseded, torn and
+    torn_resolved) is a record, never a torn line; the writer refuses a record whose identity
+    is not a string, and writes nothing."""
     name, runs = load_campaign(campaign(tmp_path))
     root = tmp_path / "runs"
+    cell = [r for r in runs if r.cell == "adamw-5e-5"]
+    broken = Executor(root, {r.label: ["failed"] * 3 for r in cell})
+    run_campaign(name, cell, root, execute=broken)
+    run_campaign(name, cell, root, execute=Executor(root, {}), recovery="fixed")
+    execute = Executor(root, {"theta0/s0": ["failed"]})
+    run_campaign(name, runs[:1], root, execute=execute, stop=lambda: len(execute.calls) >= 1)
+    run_campaign(name, runs[3:], root, execute=Executor(root, {}), only=runs[3].label,
+                 max_attempts=1)  # fmt: skip
+    hold(root, name, runs[1], "r-h", reason="r", record="c")
+    supersede(root, name, runs[2], "r-s", reason="r", record="c")
     log = root / "launch" / f"{name}.jsonl"
-    log.parent.mkdir(parents=True)
-    log.write_text(json.dumps({"event": "start", "run": runs[1].label, "attempt": 1,
-                               "run_id": ["r"], "experiment": runs[1].experiment,
-                               "config_hash": runs[1].config_hash}) + "\n")  # fmt: skip
-    executor = Executor(root, {})
-    assert run_campaign(name, runs[1:2], root, execute=executor)["done"] == [runs[1].label]
-    assert len(executor.calls) == 1
+    tear(log, {"event": "stop", "run": "x/s0"})
+    launch._log(log, {"event": "stop", "run": "x/s0", "reason": "stop requested"})
+    (torn,) = torn_lines(root)
+    resolve(monkeypatch, root, torn)
+    events_written = {r["event"] for r in launch_records(root)}
+    assert events_written == {"start", "end", "stop", "recovery", "held", "superseded", "torn",
+                              "torn_resolved"}  # fmt: skip
+    assert [(x.offset, x.resolved) for x in torn_lines(root)] == [(torn.offset, True)]
+    before = log.read_bytes()
+    for record in ({"event": "held", "run": ["x"]}, {"event": "stop", "run_id": None},
+                   {"event": 3}):  # fmt: skip
+        with pytest.raises(ValueError, match="must be a string"):
+            launch._log(log, record)
+    assert log.read_bytes() == before

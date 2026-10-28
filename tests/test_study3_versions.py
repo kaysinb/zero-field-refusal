@@ -32,7 +32,7 @@ from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import cap_of
-from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint
+from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE, Cell, Endpoint
 from zero_field_refusal.paths import REPO_ROOT
 
 REGISTRATION = "docs/study3-preregistration.md"
@@ -861,7 +861,8 @@ def test_a_validation_run_without_its_start_fails_closed(study) -> None:
 
 def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
     """A study-3 start whose header's step, or whose run id, is a list: a named problem of the
-    journal check, never a crash."""
+    journal check, never a crash. One whose run id is a list is a torn line, as the launcher
+    reads it (``launch.well_formed``), named by its log and line."""
     study.validated()
     study.runs.log("study3-c1-validation-x", {
         "event": "start", "run": "A-1.45e-05/s10300", "attempt": 1, "run_id": "r1",
@@ -872,7 +873,7 @@ def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
         "experiment": "study3", "config_hash": "0" * 16, "header": study.header()})  # fmt: skip
     found = study.problems()
     assert has(found, "study3-c1-validation-x", "names no study-3 step"), found
-    assert has(found, "study3-c1-validation-y", "names no run id"), found
+    assert has(found, TORN_LINE, "launch/study3-c1-validation-y.jsonl line 1"), found
 
 
 def test_a_header_naming_another_record_or_sha256_is_refused(study) -> None:
