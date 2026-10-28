@@ -2309,7 +2309,8 @@ def test_a_launcher_run_lost_in_flight_needs_no_restart_only_a_round(
 def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_path) -> None:
     """The launcher run's endpoint checkpoint is on disk with another sha256 than its recorded
     one, and the rest was interrupted: a provenance conflict, not a loss. ``restart-case``
-    refuses, naming it, and writes nothing; without the file, the restart goes on."""
+    refuses, naming it, and writes nothing (removing or replacing the file is no route to a
+    restart: the conflict goes to diagnosis and the technical route)."""
     path = campaign(tmp_path, fa=())
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
@@ -2327,9 +2328,6 @@ def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_p
     assert "another sha256" in str(stop.value.code) and str(checkpoint) in str(stop.value.code)
     assert "provenance conflict" in str(stop.value.code)
     assert not list(case_folder(out, ADAMW).glob("restart-*")) and log.read_bytes() == before
-    checkpoint.unlink()  # gone: a possible loss, which the documented restart names
-    qualify.main(restart(path, ADAMW, RESTART))
-    assert (case_folder(out, ADAMW) / "restart-1.json").is_file()
 
 
 # ------------------------------------------------- a decided case with its control due

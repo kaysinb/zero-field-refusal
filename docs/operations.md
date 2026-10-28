@@ -1547,17 +1547,19 @@ docstring has every rule.
   analysis counts the record and the line for that run alone, a start of the case's own label
   under its candidate): the run stays on disk and in the journal, no longer counts for its label,
   and a recovery round of the run's own with the same reason and its incident starts a new one
-  (if the command stopped between the two, running it again writes the journal's line). Only an interrupted case is restarted: a restart is
-  refused without a reason, for a complete case, without evidence of an interruption (an
-  interrupted attempt, or the launcher run's checkpoint gone from disk, which is enough even
-  before the baseline started; one `finish` removed, recorded in its `checkpoints-removed-<n>.json`,
-  is not), when the launcher run
+  (if the command stopped between the two, running it again writes the journal's line). Only an
+  interrupted case is restarted: a restart is refused without a reason, for a complete case, without
+  evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone from
+  disk, which is enough even before the baseline started; one `finish` removed, recorded in its
+  `checkpoints-removed-<n>.json`, is not), when the launcher run
   itself is a completed failure (its declared instability stop, scientific; another stop,
   technical), for a case with a completed failure, scientific (it keeps counting: no reruns
   to pass) or technical (the engineering cycle lifts it, below), an interrupted rest's
   trajectory results included, and when the launcher run's endpoint checkpoint is on disk with
   another sha256 than its recorded one: a provenance conflict, not a loss, which goes to the
-  technical route even when an interrupted part would otherwise allow the restart. Then rerun
+  technical route even when an interrupted part would otherwise allow the restart. Removing or
+  replacing a mismatching checkpoint is no route to a restart: the conflict goes to diagnosis and
+  the technical route. Then rerun
   the launcher run through its recovery round, run each part the case needs as its next attempt
   with the same reason, the baseline first (`part --resume` exits 8 for a part the restart
   names), and run the driver again. A second loss of the same unfinished case is restarted the
@@ -1653,9 +1655,10 @@ docstring has every rule.
   the cycle of a technical failure of A or F. Every case
   the cycle names re-qualifies under the new code: a recovery round of the launcher run's own
   (its first, or a further one at `--max-attempts 1`; its incident the cycle, its evidence the
-  supersession record), then each part as its next attempt with `--engineering-cycle` (its record names the supersession's path and
-  sha256), not `--infrastructure`; a later interruption of a new-code attempt is rerun with
-  `--infrastructure REASON`. The verdict lists the voided records under `supersession`.
+  supersession record), then each part as its next attempt with `--engineering-cycle` (its record
+  names the supersession's path and sha256), not `--infrastructure`; a later interruption of a
+  new-code attempt is rerun with `--infrastructure REASON`. The verdict lists the voided records
+  under `supersession`.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
@@ -2004,8 +2007,8 @@ before each command below.
   registered route, one engineering cycle, is not implemented for these runs yet; the full route
   comes in a later change, before the search starts. The researcher decides; beside that, only
   the recovery round where the launcher opens one is offered (after `check`): the run's own at
-  `--max-attempts 1`, with a reason no earlier round of its label gave and its incident. No closure is
-  written for such a mark, and one written anyway is a problem that decides nothing.
+  `--max-attempts 1`, with a reason no earlier round of its label gave and its incident. No closure
+  is written for such a mark, and one written anyway is a problem that decides nothing.
 - **Holds and closures.** Two kinds of run are closed by a closure record: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
   and a run under another commit (above, "A run's own commit"). The step names each: for a held
@@ -2119,12 +2122,19 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   unread, and its start and end records carry the label; a recovery round under it is that run's
   own. `--max-attempts N` replaces the three attempts (and the first round's three more) with N;
   study 3's qualification driver passes `--only` and 1
-  ([below](#study-3-numerical-qualification)), and never `--recovery`.
+  ([below](#study-3-numerical-qualification)), and never `--recovery`. No call runs more
+  attempts than its own `--max-attempts`; the attempts it leaves stay for later calls.
+  A later call's `--max-attempts` above the first start's value adds nothing (the base is the
+  smaller).
   **A run's own rounds** (study 3's infrastructure route) are one per documented incident:
   `--recovery REASON --incident-time UTC --cause TEXT --evidence REF` (the interruption's time in
   UTC, ISO 8601; its external cause, one line; a path or reference to its evidence; none blank).
-  The label's first round allows N more attempts; each further one (the label had a round, its
-  cell's or its own, under any config hash) needs `--max-attempts 1` and allows exactly one. A
+  The label's first round allows the smaller of N and the label's base (its first start's
+  `--max-attempts`); each further one (the label had a round, its cell's or its own, under any
+  config hash) needs `--max-attempts 1` and allows exactly one. Grants follow this rule, never
+  the journal: a round's recorded `granted` is for the record. A study-3 campaign (its header
+  carries `study: 3`) takes no cell round: `--recovery` without `--only` exits 1 with the form of
+  a run's own round. A
   round opens only for a run that used its attempts up and holds no outcome: a done or diverged
   run is skipped, a conflict (a provenance conflict included: a checkpoint present with another
   sha256, a departing numerics setup, an unclean checkout, another gate; a missing endpoint
@@ -2137,20 +2147,20 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   run with attempts left takes them first: rounds never stack. The round records its number
   (`round`), the run's `config_hash`, `after` (every start of the label, under any config hash,
   in attempt order), `max_attempts`, `granted` and its incident. The latest such round of the
-  run allows `granted` attempts beyond the ones it names, so a later `--max-attempts`
+  run allows what the rule grants it beyond the attempts it names, so a later `--max-attempts`
   recalculates no earlier grant, and a round under another config hash gives the run nothing. A
   new start is numbered after every attempt of its label, whatever its log or config hash; the
   run id keeps its form and the label never changes; nothing is deleted or rewritten.
   A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
   no longer count for its label: kept, a used attempt, neither done nor a conflict, so a round of
-  its own (its first, or a further one) starts a new one. A `held` record (an outcome a study-3 engineering cycle could
-  not resolve) makes the run a conflict: nothing starts, its recovery round included, and a
-  `--dry-run` reports the same conflict. The hold applies to the run's label (`<cell>/s<seed>` in
-  its experiment) in every journal, whatever the config hash it was written with, with or
-  without `--only`; the launcher never lifts it. A checkpoint run (`tracking.endpoint_checkpoint`) is done
-  only if its recorded numerics setup is what the campaign's config asks for (determinism, TF32
-  and the matmul precision, the memory limit), read without CUDA.
-  Send it to the
+  its own (its first, or a further one) starts a new one. A `held` record (an outcome a study-3
+  engineering cycle could not resolve) makes the run a conflict: nothing starts, its recovery round
+  included, and a `--dry-run` reports the same conflict. The hold applies to the run's label
+  (`<cell>/s<seed>` in its experiment) in every journal, whatever the config hash it was written
+  with, with or without `--only`; the launcher never lifts it. A checkpoint run
+  (`tracking.endpoint_checkpoint`) is done only if its recorded numerics setup is what the
+  campaign's config asks for (determinism, TF32 and the matmul precision, the memory limit), read
+  without CUDA. Send it to the
   launcher's PID only: Ctrl-C or a signal to the process group (`kill -TERM -PGID`) also reaches
   the running attempt and ends it. The boundary is where an attempt is admitted, not where its
   process starts: a signal that arrives while an admitted attempt is being logged does not keep

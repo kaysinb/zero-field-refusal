@@ -34,15 +34,20 @@ and attempts recorded in the launch logs ``RUNS_DIR/launch/*.jsonl`` — decides
 that used its attempts up, and never reruns an outcome:
 - *A cell's round* (without ``only``): once per cell, ``max_attempts`` more to each of its runs
   that used theirs up. It grants nothing to a run whose label had a round of its own: a call that
-  would open one over such a run is refused, naming it, and writes nothing.
+  would open one over such a run is refused, naming it, and writes nothing. A study-3 campaign
+  (its header carries ``study: 3``) takes none: ``recovery`` without ``only`` is refused with the
+  command form of a run's own round, so that every study-3 round is documented and numbered.
 - *A run's own rounds* (under ``only``; study 3's infrastructure route): one per documented
   incident. Each is logged with its reason; its incident, ``incident_time`` (ISO 8601, in UTC, not
   later than now), ``cause`` (one line) and ``evidence`` (a path or a reference), none blank;
   ``round``, its number among the label's rounds (its cell's and its own, under any config hash);
   the run's ``config_hash``; ``after``, the run ids of every start of the label under any config
   hash, in attempt order (the attempts it follows); ``max_attempts``; and ``granted``, the
-  attempts it allows: ``max_attempts`` for the label's first round, exactly 1 for a further one,
-  which needs ``max_attempts`` 1. A round opens only for a run that used its attempts up and
+  attempts it allows (``round_grant``): for the label's first round the smaller of
+  ``max_attempts`` and the label's base (``base_attempts``: the ``max_attempts`` its first start
+  recorded), exactly 1 for a further one, which needs ``max_attempts`` 1. Grants come from this
+  rule, never from the journal: ``granted`` is written for the record, and a value that differs
+  is the readers' problem, never a grant. A round opens only for a run that used its attempts up and
   holds no outcome: a done or diverged run is skipped, a conflict (a provenance conflict: another
   gate, an unclean checkout, a departing numerics setup, a checkpoint missing or of another
   sha256; a missing endpoint checkpoint is a possible loss requiring diagnosis, never by itself a
@@ -55,9 +60,11 @@ that used its attempts up, and never reruns an outcome:
   command form (``round_command``); nothing is written and nothing runs. A run with attempts left
   takes them first, whatever reason is given: rounds never stack.
 - *The attempts left* (``attempts_left``). The latest anchored round of the run's own (one that
-  names ``after`` and ``granted``) whose config hash is the run's allows ``granted`` attempts
-  beyond the attempts it names, so that no later ``max_attempts`` recalculates an earlier grant
-  and a round of another config hash gives the run nothing. Without one, the run has its base,
+  names ``after``) whose config hash is the run's allows what the rule grants it beyond the
+  attempts it names, so that no later ``max_attempts`` recalculates an earlier grant and a round
+  of another config hash gives the run nothing. No call runs more attempts than its own
+  ``max_attempts``: it runs at most the smaller of that and the attempts left, and those it
+  leaves stay for later calls. Without one, the run has its base,
   ``max_attempts`` or the one its first start recorded (``MAX_ATTEMPTS`` when it records none),
   whichever is less, doubled by one round in all: its own rounds written before rounds were
   numbered (none of ``NUMBERED_KEYS``) and its cell's round, as before; a numbered round that is
@@ -675,14 +682,17 @@ def attempt_key(record: Mapping[str, Any]) -> tuple[int, str]:
     return number, str(record.get("time") or "")
 
 
-def label_starts(run: Run, records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+def label_starts(
+    run: Run, records: Sequence[Mapping[str, Any]], *, every_config_hash: bool = False
+) -> list[Mapping[str, Any]]:
     """The start records of the run's attempts (its label, experiment and config hash, with a
-    run id), in attempt order (``attempt_key``). ``launch_records`` reads the journals in file
-    name order, so a later attempt logged under another campaign's name may come first there."""
+    run id), in attempt order (``attempt_key``); with ``every_config_hash``, those of its label
+    under any config hash. ``launch_records`` reads the journals in file name order, so a later
+    attempt logged under another campaign's name may come first there."""
     starts = [r for r in records
               if r.get("event") == "start" and r.get("run") == run.label
               and r.get("experiment") == run.experiment
-              and r.get("config_hash") == run.config_hash
+              and (every_config_hash or r.get("config_hash") == run.config_hash)
               and isinstance(r.get("run_id"), str)]  # fmt: skip
     return sorted(starts, key=attempt_key)
 
@@ -827,14 +837,10 @@ class Round:
         return None
 
     @property
-    def granted(self) -> int | None:
-        value = self.record.get("granted")
-        return value if _count(value) and value >= 1 else None
-
-    @property
     def anchored(self) -> bool:
-        """A run's own round that names the attempts it follows and the attempts it allows."""
-        return self.own and self.after is not None and self.granted is not None
+        """A run's own round that names the attempts it follows (``after``); what it allows is
+        the rule's (``round_grant``), never its recorded ``granted``."""
+        return self.own and self.after is not None
 
     @property
     def numbered(self) -> bool:
@@ -870,46 +876,57 @@ def recovery_rounds(entries: Entries, run: Run) -> list[Round]:
             if not x.own or x.record.get("config_hash") in (None, run.config_hash)]  # fmt: skip
 
 
+def base_attempts(run: Run, records: Sequence[Mapping[str, Any]], max_attempts: int) -> int:
+    """The label's base: the ``max_attempts`` its first start (under the run's config hash)
+    recorded, ``MAX_ATTEMPTS`` when it records none; ``max_attempts`` before any start."""
+    starts = label_starts(run, records)
+    first = starts[0].get("max_attempts", MAX_ATTEMPTS) if starts else max_attempts
+    return first if _count(first) and first >= 1 else MAX_ATTEMPTS
+
+
+def round_grant(item: Round, rounds: Sequence[Round], base: int) -> int:
+    """What a round of the run's own allows, by rule, never read from the journal (module
+    docstring, "Recovery rounds"): the label's first round (no round of the label, its cell's or
+    its own, before it in ``rounds``) the smaller of the ``max_attempts`` it was opened with (1
+    when it records none) and the label's base; every further round exactly 1."""
+    earlier = next((n for n, x in enumerate(rounds) if (x.log, x.line) == (item.log, item.line)),
+                   len(rounds))  # fmt: skip
+    if earlier:
+        return 1
+    asked = item.record.get("max_attempts")
+    return min(asked if _count(asked) and asked >= 1 else 1, base)
+
+
 def attempts_left(run: Run, state: Assessment, entries: Entries, max_attempts: int) -> int:
-    """How many attempts the run may still make (module docstring, "Recovery rounds"). The
-    latest anchored round of its own that applies (``recovery_rounds``) allows its ``granted``
-    attempts beyond the ones it names (``after``): the run's starts it does not name are spent
-    from them. Without one, the run has its base, ``max_attempts`` and the ``max_attempts`` its
-    first start recorded (``MAX_ATTEMPTS`` when it records none), whichever is less, doubled by
-    one round in all: its own rounds written before rounds were numbered and its cell's round,
-    which grants nothing to a label that had a round of its own; a numbered round that is not
-    anchored grants nothing. The attempts used are ``Assessment.technical``, superseded ones
-    included."""
+    """How many attempts the run may still make, over every call (module docstring, "Recovery
+    rounds"); a call runs at most ``max_attempts`` of them. The latest anchored round of its own
+    that applies (``recovery_rounds``) allows what the rule grants it (``round_grant``) beyond
+    the attempts it names (``after``): the run's starts it does not name are spent from it.
+    Without one, the run has its base, ``max_attempts`` and the label's base
+    (``base_attempts``), whichever is less, doubled by one round in all: its own rounds written
+    before rounds were numbered and its cell's round, which grants nothing to a label that had a
+    round of its own; a numbered round that is not anchored grants nothing. The attempts used
+    are ``Assessment.technical``, superseded ones included."""
     records = [record for _, _, record in entries]
     rounds = label_rounds(entries, run)
     applying = recovery_rounds(entries, run)
     anchored = [x for x in applying if x.anchored]
+    first = base_attempts(run, records, max_attempts)
     if anchored:
         latest = anchored[-1]
         spent = {s["run_id"] for s in label_starts(run, records)} - set(latest.after or ())
-        return max(0, (latest.granted or 0) - len(spent))
-    starts = label_starts(run, records)
-    first = starts[0].get("max_attempts", MAX_ATTEMPTS) if starts else max_attempts
-    base = min(max_attempts, first if _count(first) and first >= 1 else MAX_ATTEMPTS)
+        return max(0, round_grant(latest, rounds, first) - len(spent))
+    base = min(max_attempts, first)
     owned = any(x.own for x in rounds)
     doubled = any((x.own and not x.numbered) or (not x.own and not owned) for x in applying)
     return max(0, base * (2 if doubled else 1) - len(state.technical))
 
 
-def _label_attempts(run: Run, records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """The starts of the run's label (its experiment and ``<cell>/s<seed>``), whatever their
-    config hash, in attempt order (``attempt_key``)."""
-    starts = [r for r in records
-              if r.get("event") == "start" and r.get("run") == run.label
-              and r.get("experiment") == run.experiment
-              and isinstance(r.get("run_id"), str)]  # fmt: skip
-    return sorted(starts, key=attempt_key)
-
-
 def _highest_attempt(run: Run, records: Sequence[Mapping[str, Any]]) -> int:
     """The highest attempt number of any start of the run's label, whatever its log and config
     hash (0 without one)."""
-    return max((attempt_key(r)[0] for r in _label_attempts(run, records)), default=0)
+    starts = label_starts(run, records, every_config_hash=True)
+    return max((attempt_key(r)[0] for r in starts), default=0)
 
 
 def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str | None:
@@ -1081,6 +1098,13 @@ def run_campaign(
     if incident is not None and only is None:
         raise CampaignError("An incident documents a run's own recovery round: it goes with "
                             "only (--only LABEL) and its reason (--recovery)")  # fmt: skip
+    if recovery is not None and only is None and (header or {}).get("study") == 3:
+        raise CampaignError(
+            "A study-3 campaign takes no cell recovery round: each round is a run's own, "
+            "documented and numbered: scripts/launch.py CAMPAIGN --only LABEL --max-attempts 1 "
+            '--recovery "<reason>" --incident-time UTC --cause TEXT --evidence REF, its reason '
+            "one that no earlier round of the label gave"
+        )
     if only is not None:
         runs = [run for run in runs if run.label == only]
         if not runs:
@@ -1139,7 +1163,7 @@ def run_campaign(
         if state.diverged is not None:
             result["diverged"].append(run.label)
             continue
-        left = attempts_left(run, state, entries, max_attempts)
+        left = min(attempts_left(run, state, entries, max_attempts), max_attempts)  # this call's
         if dry_run:
             result["pending" if left > 0 else "exhausted"].append(run.label)
             continue
@@ -1209,11 +1233,13 @@ def _own_round(
         raise CampaignError(f"{label}: a further recovery round (round {number}; the label had "
                             f"{len(rounds)}) allows one attempt: run it with --max-attempts 1, "
                             f"not {max_attempts}: {form}")  # fmt: skip
-    after = list(dict.fromkeys(r["run_id"] for r in _label_attempts(run, records)))
+    starts = label_starts(run, records, every_config_hash=True)
+    after = list(dict.fromkeys(r["run_id"] for r in starts))
     return {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
             "reason": reason, "runs": [label], "only": label, "round": number,
             "config_hash": run.config_hash, "after": after, "max_attempts": max_attempts,
-            "granted": 1 if number > 1 else max_attempts,
+            "granted": 1 if number > 1 else min(max_attempts, base_attempts(run, records,
+                                                                            max_attempts)),
             **{key: incident[key] for key in INCIDENT_KEYS}}  # type: ignore[index]  # fmt: skip
 
 

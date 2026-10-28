@@ -852,19 +852,20 @@ def test_rounds_out_of_order_or_with_a_repeated_reason_are_problems(world, wrong
     assert not any(FIRST in p or SECOND in p for p in problems)
 
 
-@pytest.mark.parametrize("wrong", ["without only", "at three attempts"])
+@pytest.mark.parametrize("wrong", ["without only", "at three attempts", "granting five"])
 def test_a_further_round_without_only_or_at_three_attempts_is_a_problem(world, wrong) -> None:
     """A round numbered 2 or more is a run's own (``only``) and allows one attempt: one written
-    without ``only``, or followed by a start of its label that does not carry ``max_attempts``
-    1, is a problem by its log and line."""
+    without ``only``, opened at ``max_attempts`` 3, or recording ``granted`` 5 (the launcher
+    grants it 1 whatever it records), is a problem by its log and line."""
     first = lost(world, 1)  # lines 1 and 2
     world.round("study3-c1", LABEL, 1, [first], FIRST, chash=chash_of())  # line 3
     second = lost(world, 2)  # lines 4 and 5
-    change = {"only": None} if wrong == "without only" else {}
+    change = {"without only": {"only": None}, "at three attempts": {"max_attempts": 3},
+              "granting five": {"granted": 5}}[wrong]  # fmt: skip
     world.round("study3-c1", LABEL, 2, [first, second], SECOND, chash=chash_of(), **change)
-    world.run(attempt=3, start=ONE if wrong == "without only" else {})  # line 6 is round 2
+    world.run(attempt=3, start=ONE)  # line 6 is round 2
     _, problems = world.read()
-    words = ["without only"] if wrong == "without only" else ["max_attempts 1"]
+    words = ["without only"] if wrong == "without only" else ["exactly one attempt"]
     assert round_problems(problems, 6, "recovery round", *words), problems
 
 
@@ -880,6 +881,98 @@ def test_a_round_without_its_incident_is_a_problem(world, change) -> None:
     _, problems = world.read()
     (field,) = change
     assert round_problems(problems, 3, "recovery round", field), problems
+
+
+@pytest.mark.parametrize("wrong", [
+    "round 1 without granted", "round 1 granting more than its base", "round 1 without config_hash",
+    "round 1 without max_attempts", "an incident after the round", "a cause on two lines",
+    "evidence on two lines", "a blank reason",
+])  # fmt: skip
+def test_a_round_the_launcher_would_not_write_is_a_problem(world, wrong) -> None:
+    """A numbered round as the launcher never writes one: round 1 without ``granted``, or with a
+    ``granted`` that is not the smaller of its ``max_attempts`` and the label's base (its first
+    start's ``max_attempts``, here 1), or without ``config_hash`` or ``max_attempts``; an
+    incident later than the round's own time stamp; a cause or evidence on more than one line; a
+    blank reason. Each is a problem by the round's log and line."""
+    first = lost(world, 1)  # lines 1 and 2, at max_attempts 1: the label's base is 1
+    change, reason, chash = {}, FIRST, chash_of()
+    if wrong == "round 1 without granted":
+        change = {"granted": None}
+    elif wrong == "round 1 granting more than its base":
+        change = {"max_attempts": 3, "granted": 3}
+    elif wrong == "round 1 without config_hash":
+        chash = None
+    elif wrong == "round 1 without max_attempts":
+        change = {"max_attempts": None}
+    elif wrong == "an incident after the round":
+        change = {"incident_time": "2026-10-27T00:00:00+00:00"}
+    elif wrong == "a cause on two lines":
+        change = {"cause": "the Pod stopped\nand did not restart"}
+    elif wrong == "evidence on two lines":
+        change = {"evidence": "the event log\nthe console"}
+    else:
+        reason = "  "
+    world.round("study3-c1", LABEL, 1, [first], reason, chash=chash, **change)  # line 3
+    world.run(attempt=2, start=ONE)
+    _, problems = world.read()
+    word = {"round 1 without granted": "granted", "round 1 granting more than its base": "granted",
+            "round 1 without config_hash": "config_hash",
+            "round 1 without max_attempts": "max_attempts",
+            "an incident after the round": "later than", "a cause on two lines": "cause",
+            "evidence on two lines": "evidence", "a blank reason": "reason"}[wrong]  # fmt: skip
+    assert round_problems(problems, 3, "recovery round", word), problems
+
+
+@pytest.mark.parametrize("outcome", ["done", "diverged", "conflict"])
+def test_a_round_over_an_attempt_with_an_outcome_is_a_problem(world, outcome) -> None:
+    """A numbered round whose ``after`` names an attempt that is not superseded and whose end
+    records done, diverged or conflict: the launcher opens no round over an outcome."""
+    first = world.run(end=outcome, terminal=False, status="failed", start=ONE)  # lines 1 and 2
+    world.round("study3-c1", LABEL, 1, [first], FIRST, chash=chash_of())  # line 3
+    world.run(attempt=2, start=ONE)
+    _, problems = world.read()
+    assert round_problems(problems, 3, "recovery round", "outcome", outcome), problems
+
+
+def test_a_later_start_of_another_config_hash_at_its_default_attempts_is_no_problem(world):
+    """After round 2, the label's next start under another config hash (a fix changed a hashed
+    key), launched at its default attempts: a sequence the launcher writes, no problem."""
+    first = lost(world, 1)
+    world.round("study3-c1", LABEL, 1, [first], FIRST, chash=chash_of())
+    second = lost(world, 2)
+    world.round("study3-c1", LABEL, 2, [first, second], SECOND, chash=chash_of())
+    third = world.run("A", 1.5e-5, 10300, attempt=3, cell="A-1.45e-05")  # its default attempts
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {first: "recovered", second: "recovered", third: "usable"}
+
+
+def test_rounds_written_before_numbering_read_as_before(world) -> None:
+    """A round of the label's own written before rounds were numbered, then its cell's round
+    with the same reason (as an older launcher could write them): no problem, and the attempt
+    is placed as before, named by the first round in file order."""
+    first = world.run(end="technical", terminal=False, status="failed")
+    world.recovery("study3-c1", LABEL)
+    world.log("study3-c1", {"event": "recovery", "experiment": "study3", "cell": "A-1.45e-05",
+                            "reason": "the Pod stopped", "runs": [LABEL]})  # fmt: skip
+    second = world.run(attempt=2)
+    found, problems = world.read()
+    assert problems == []
+    assert states(found) == {first: "recovered", second: "usable"}
+    assert by_id(found)[first].reasons == ("a recovery round followed it: the Pod stopped",)
+
+
+def test_unnumbered_rounds_name_an_attempt_in_file_order(world) -> None:
+    """Two rounds written before rounds were numbered, in two logs whose name order is not their
+    time order: the attempt they both follow is named by the first in file order, as before."""
+    first = world.run(campaign="m-original", end="technical", terminal=False, status="failed")
+    world.recovery("z-later-log", LABEL, "the Pod stopped at 03:00Z")  # earlier time stamp
+    world.recovery("a-earlier-log", LABEL, "the disk filled at 04:00Z")  # later, first by name
+    second = world.run(campaign="m-original", attempt=2)
+    found, problems = world.read()
+    assert problems == [] and states(found) == {first: "recovered", second: "usable"}
+    assert by_id(found)[first].reasons == ("a recovery round followed it: the disk filled at "
+                                           "04:00Z",)  # fmt: skip
 
 
 def test_ends_holds_and_supersessions_in_another_log(world, accepted) -> None:

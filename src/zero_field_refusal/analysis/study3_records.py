@@ -142,15 +142,21 @@ longer counts is listed with its reason, never counted:
   its time stamp (the launcher numbers a run's attempts in order, and logs a round before the
   attempt it allows). The rounds of a label are its own (``only``) and its cell's, under any
   config hash (``label_rounds``); those that apply to a run, its cell's and its own under its
-  config hash or none (``RecoveryRound.applies``). A round that does not read as the launcher
-  writes it is a problem, named by its log and line, never by its reason: a numbered round
-  (one with any of ``NUMBERED_KEYS``) without its number, its ``after`` list or its incident
-  (``incident_time`` in UTC, ``cause``, ``evidence``, none blank); an ``after`` that names a run
-  id that is no start of its label, or leaves out a start of the label stamped before the round;
-  a label's rounds not numbered 1, 2, … in time order (ties by number); a round numbered 2 or
-  more without ``only``, not granting exactly one attempt, or followed by a start of its label
-  that does not carry ``max_attempts`` 1; two rounds of a label that give one reason (spaces
-  stripped).
+  config hash or none (``RecoveryRound.applies``); what the launcher would still allow a run,
+  ``attempts_left`` (the launcher's rule, mirrored: grants by ``round_grant``, never read from
+  ``granted``), the one helper ``study3_progress`` reads too. A numbered round (one with any of
+  ``NUMBERED_KEYS``) that does not read as the launcher writes it is a problem, named by its log
+  and line, never by its reason: one without its number, its ``after`` list, ``config_hash``,
+  ``max_attempts`` or a reason that is not blank; without its incident (``incident_time`` in
+  UTC and not later than the round's own stamp, ``cause`` and ``evidence``, none blank, each on
+  one line); round 1 whose ``granted`` is not the smaller of its ``max_attempts`` and the
+  label's base; a round numbered 2 or more without ``only``, or not at ``granted`` and
+  ``max_attempts`` 1; an ``after`` that names a run id that is no start of its label, leaves out
+  a start of the label stamped before the round, or names an attempt, not superseded, whose end
+  records done, diverged or conflict; a label's rounds not numbered 1, 2, … in time order (ties
+  by number); a numbered round that gives the reason of an earlier round of its label (spaces
+  stripped). Rounds written before rounds were numbered read as before: they raise no problem
+  of their own, and among them the first in file order names an attempt they follow.
 Every other attempt that is not refused counts. Two counting attempts of one scientific cell (the
 step key and the prescribed (arm, rate, seed) both matched), or of one launcher run (one config
 hash, whatever its campaign or label), are refused by name: a retry replaces an attempt only
@@ -290,6 +296,10 @@ INCIDENT_KEYS = ("incident_time", "cause", "evidence")
 # The fields of a recovery round written since rounds are numbered (``launch``, "Recovery
 # rounds"): a round with any of them is read as one, and needs them all
 NUMBERED_KEYS = ("round", "after", "granted", "max_attempts", "config_hash", *INCIDENT_KEYS)
+# launch.MAX_ATTEMPTS: a start's attempts when it records no max_attempts
+MAX_ATTEMPTS = 3
+# The ends after which the launcher opens no round over an attempt (``launch``, "Recovery rounds")
+HELD_ENDS = ("done", "diverged", "conflict")
 
 
 @dataclass(frozen=True)
@@ -488,6 +498,66 @@ def round_follows(
         return None
     before = [n for n, at in starts if type(n) is int and at is not None and at < when]
     return bool(before) and number <= max(before)
+
+
+def _starts_of(starts: Sequence[Mapping[str, Any]], label: Any, chash: Any) -> list[Mapping]:
+    """The starts of ``label`` under config hash ``chash`` (with a run id), in attempt order."""
+    found = [s for s in starts if s.get("run") == label and s.get("config_hash") == chash
+             and isinstance(s.get("run_id"), str)]  # fmt: skip
+    return sorted(found, key=_attempt_key)
+
+
+def base_attempts(starts: Sequence[Mapping[str, Any]], label: Any, chash: Any,
+                  max_attempts: Any) -> int:  # fmt: skip
+    """The label's base (``launch.base_attempts``, mirrored): the ``max_attempts`` its first
+    start under ``chash`` recorded, ``MAX_ATTEMPTS`` when it records none; ``max_attempts``
+    before any start."""
+    mine = _starts_of(starts, label, chash)
+    first = mine[0].get("max_attempts", MAX_ATTEMPTS) if mine else max_attempts
+    return first if type(first) is int and first >= 1 else MAX_ATTEMPTS
+
+
+def round_grant(item: RecoveryRound, rounds: Sequence[RecoveryRound], base: int) -> int:
+    """What a round of a run's own allows, by the launcher's rule (``launch.round_grant``,
+    mirrored), never read from its ``granted``: the label's first round (no round of the label
+    before it in ``rounds``) the smaller of the ``max_attempts`` it was opened with (1 when it
+    records none) and the label's base; every further round exactly 1."""
+    earlier = next((n for n, x in enumerate(rounds) if (x.path, x.line) == (item.path, item.line)),
+                   len(rounds))  # fmt: skip
+    if earlier:
+        return 1
+    asked = item.record.get("max_attempts")
+    return min(asked if type(asked) is int and asked >= 1 else 1, base)
+
+
+def attempts_left(
+    rounds: Sequence[RecoveryRound],
+    starts: Sequence[Mapping[str, Any]],
+    label: str,
+    chash: Any,
+    max_attempts: int = 1,
+) -> int:
+    """How many attempts the launcher would still make for the run of ``label`` under config
+    hash ``chash`` (``launch.attempts_left``, mirrored: the one helper of every reader here),
+    at ``max_attempts`` (1, the command a way out gives): the latest round of its own that
+    applies and names the attempts it follows grants by rule (``round_grant``) beyond them;
+    without one, the base (``max_attempts`` and the label's, whichever is less) doubled by one
+    round in all, a round of its own written before rounds were numbered or its cell's round (none
+    for a label that had a round of its own). The attempts used are its starts under ``chash``."""
+    mine = _starts_of(starts, label, chash)
+    of_label = label_rounds(rounds, label)
+    applying = [x for x in of_label if x.applies(label, chash)]
+    anchored = [x for x in applying if x.only is not None and x.after is not None]
+    first = base_attempts(starts, label, chash, max_attempts)
+    if anchored:
+        latest = anchored[-1]
+        spent = {s["run_id"] for s in mine} - set(latest.after or ())
+        return max(0, round_grant(latest, of_label, first) - len(spent))
+    owned = any(x.only is not None for x in of_label)
+    doubled = any((x.only is not None and not x.numbered) or (x.only is None and not owned)
+                  for x in applying)  # fmt: skip
+    used = len({s["run_id"] for s in mine})
+    return max(0, min(max_attempts, first) * (2 if doubled else 1) - used)
 
 
 @dataclass
@@ -709,7 +779,8 @@ class EndpointReader:
                     reasons=["a study-3 run directory with no start in the launch journal: no "
                              "issued cell"]))  # fmt: skip
         problems += _select(attempts, self.journal.recoveries, self.voided)
-        problems += _round_problems(self.journal.recoveries, self.journal.starts)
+        problems += _round_problems(self.journal.recoveries, self.journal.starts,
+                                    self.journal.ends, self.voided)  # fmt: skip
         _refuse_duplicates(attempts)
         problems += [f"{a.run_id}: {'; '.join(a.reasons)}" for a in attempts
                      if a.state == "refused"]  # fmt: skip
@@ -728,6 +799,20 @@ class EndpointReader:
         number, config hash, ``after``, reason and ``only`` (its record), and its log and line;
         a label's are ``label_rounds``, those that apply to a run ``RecoveryRound.applies``."""
         return sorted(self.journal.recoveries, key=round_order)
+
+    def attempts_left(self, label: str, chash: Any, max_attempts: int = 1) -> int:
+        """``attempts_left`` of the run of ``label`` under ``chash``, from this snapshot."""
+        starts = [start for _, start in self.journal.starts]
+        return attempts_left(self.journal.recoveries, starts, label, chash, max_attempts)
+
+    def outcome_held(self, label: str, chash: Any) -> bool:
+        """Whether an attempt of the run of ``label`` under ``chash``, not superseded, has an end
+        that records done, diverged or conflict: the launcher opens no round over it."""
+        starts = [start for _, start in self.journal.starts]
+        return any(self.voided.get(s["run_id"], ("",))[0] != "superseded"
+                   and any(end.get("outcome") in HELD_ENDS
+                           for end in self.journal.ends.get(s["run_id"], []))
+                   for s in _starts_of(starts, label, chash))  # fmt: skip
 
     def latest_start(self, label: str) -> Mapping[str, Any] | None:
         """The start of the label's latest attempt in any log (by its attempt number, then its
@@ -1530,8 +1615,9 @@ def _select(
     """Mark the attempts that no longer count (module docstring, "Attempts"); a refused one
     stays refused. A round recovers the attempts of the labels its ``runs`` names that it
     follows (``round_follows``) and that have no published terminal record; the first round to
-    follow an attempt names it. Returns the recovery rounds that cannot be placed (no time
-    stamp)."""
+    follow an attempt names it: the rounds written before rounds were numbered in file order,
+    as always, then the numbered ones in time order (``round_order``). Returns the recovery
+    rounds that cannot be placed (no time stamp)."""
     by_label: dict[str, list[_Attempt]] = defaultdict(list)  # across every log
     for attempt in attempts:
         if attempt.cell.label is not None and attempt.number is not None:
@@ -1540,7 +1626,9 @@ def _select(
             attempt.state, reason = voided[attempt.run_id]
             attempt.reasons.append(reason)
     problems = []
-    for item in sorted(recoveries, key=round_order):
+    ordered = [x for x in recoveries if not x.numbered]
+    ordered += sorted((x for x in recoveries if x.numbered), key=round_order)
+    for item in ordered:
         record = item.record
         if item.time is None:
             problems.append(f"a recovery round of {record.get('runs')!r} without a time stamp "
@@ -1561,15 +1649,22 @@ def _select(
 
 
 def _round_problems(
-    recoveries: Sequence[RecoveryRound], starts: Sequence[tuple[str, Mapping[str, Any]]]
+    recoveries: Sequence[RecoveryRound],
+    starts: Sequence[tuple[str, Mapping[str, Any]]],
+    ends: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    voided: Mapping[str, tuple[str, str]] | None = None,
 ) -> list[str]:
-    """The recovery rounds that do not read as the launcher writes them (module docstring,
-    "Attempts"), each named by its log and line, never by its reason: a numbered round without
-    its incident, number or ``after`` list; an ``after`` that names a run id that is no start
-    of its label, or leaves out a start of the label stamped before the round; a label's rounds
-    not numbered 1, 2, … in time order (ties by number); a round numbered 2 or more without
-    ``only``, or followed by a start of its label without ``max_attempts`` 1; two rounds of a
-    label that give one reason."""
+    """The numbered recovery rounds that do not read as the launcher writes them (module
+    docstring, "Attempts"), each named by its log and line, never by its reason: what
+    ``_round_fields`` finds in its record; round 1 whose ``granted`` is not the rule's
+    (``round_grant``: the smaller of its ``max_attempts`` and the label's base); an ``after``
+    that names a run id that is no start of its label, leaves out a start of the label stamped
+    before the round, or names an attempt, not superseded, whose end records done, diverged or
+    conflict; a label's rounds not numbered 1, 2, … in time order (ties by number); a numbered
+    round that gives the reason of an earlier round of its label. Rounds written before rounds
+    were numbered read as before: no problem of their own."""
+    ends, voided = ends or {}, voided or {}
+    every = [start for _, start in starts]
     problems: list[str] = []
     for item in recoveries:
         if item.numbered:
@@ -1582,7 +1677,7 @@ def _round_problems(
         rounds = label_rounds(recoveries, label)
         reasons: dict[str, RecoveryRound] = {}
         for position, item in enumerate(rounds, start=1):
-            if item.reason is not None and item.reason in reasons:
+            if item.numbered and item.reason is not None and item.reason in reasons:
                 problems.append(f"{item.where}: a recovery round that gives the reason of the "
                                 f"label's round at {reasons[item.reason].where}: each round "
                                 "documents an interruption of its own")  # fmt: skip
@@ -1594,28 +1689,58 @@ def _round_problems(
                 problems.append(f"{item.where}: a recovery round numbered {item.number}, the "
                                 f"label's round {position} in time order: a label's rounds are "
                                 "numbered 1, 2, … in time order")  # fmt: skip
-            if item.only == label:
-                problems += [f"{item.where}: a recovery round {why}"
-                             for why in _round_attempts(item, mine)]  # fmt: skip
+            if item.only != label:
+                continue
+            chash = item.record.get("config_hash")
+            granted = item.record.get("granted")
+            if item.number == 1:
+                rule = round_grant(
+                    item,
+                    rounds,
+                    base_attempts(every, label, chash, item.record.get("max_attempts")),
+                )
+                if type(granted) is not int or granted != rule:
+                    problems.append(f"{item.where}: a recovery round 1 whose granted is not the "
+                                    f"rule's ({rule}: the smaller of its max_attempts and the "
+                                    "label's base)")  # fmt: skip
+            problems += [f"{item.where}: a recovery round {why}"
+                         for why in _round_attempts(item, mine, ends, voided)]  # fmt: skip
     return problems
 
 
 def _round_fields(item: RecoveryRound) -> list[str]:
-    """What a numbered round lacks of what the launcher writes: its number, its ``after`` list,
-    its incident (a UTC time, a cause, the evidence), ``only`` from round 2 on, one attempt from
-    round 2 on."""
+    """What a numbered round lacks of what the launcher writes, from its record alone: its
+    number, its ``after`` list, ``config_hash`` and ``max_attempts``, a reason that is not
+    blank, its incident (a UTC time not later than the round's own stamp, a cause and the
+    evidence, each on one line), ``only`` and one attempt (``granted`` and ``max_attempts`` 1)
+    from round 2 on."""
     record, found = item.record, []
     if item.number is None:
         found.append("without its number (round)")
     if item.after is None:
         found.append("whose after list is no list of run ids")
+    if not isinstance(record.get("config_hash"), str):
+        found.append("without its config_hash")
+    if type(record.get("max_attempts")) is not int or record["max_attempts"] < 1:
+        found.append("without its max_attempts")
+    if not item.reason:
+        found.append("without its reason: a blank one documents nothing")
     for key in INCIDENT_KEYS:
         value = record.get(key)
         if not isinstance(value, str) or not value.strip():
             found.append(f"without its incident: {key} is missing or blank")
+        elif key != "incident_time" and len(value.splitlines()) > 1:
+            found.append(f"whose {key} is more than one line")
     when = record.get("incident_time")
     if isinstance(when, str) and when.strip() and not _utc(when):
         found.append("whose incident_time is no ISO 8601 time in UTC")
+    elif (
+        isinstance(when, str)
+        and when.strip()
+        and item.time is not None
+        and (datetime.fromisoformat(when.strip()) > item.time)
+    ):
+        found.append("whose incident_time is later than the round's own time stamp")
     if item.number is not None and item.number >= 2:
         if item.only is None:
             found.append(f"numbered {item.number} without only: a further round is a run's own")
@@ -1625,11 +1750,17 @@ def _round_fields(item: RecoveryRound) -> list[str]:
     return found
 
 
-def _round_attempts(item: RecoveryRound, starts: Sequence[Mapping[str, Any]]) -> list[str]:
+def _round_attempts(
+    item: RecoveryRound,
+    starts: Sequence[Mapping[str, Any]],
+    ends: Mapping[str, Sequence[Mapping[str, Any]]],
+    voided: Mapping[str, tuple[str, str]],
+) -> list[str]:
     """How a round of a label's own disagrees with the label's starts (``starts``, any config
-    hash): ``after`` names a run id that is no start of the label, or leaves out one stamped
-    before the round; a round numbered 2 or more is followed by a start (one it does not name,
-    stamped at or after it) that does not carry ``max_attempts`` 1."""
+    hash): ``after`` names a run id that is no start of the label, leaves out one stamped before
+    the round, or names an attempt, not superseded, whose end records done, diverged or
+    conflict (``ends``, ``voided``). A later start under another config hash, at any attempts,
+    is the launcher's own sequence."""
     after, when, found = item.after, item.time, []
     if after is None:
         return found
@@ -1643,13 +1774,12 @@ def _round_attempts(item: RecoveryRound, starts: Sequence[Mapping[str, Any]]) ->
     if earlier:
         found.append(f"whose after list leaves out {len(earlier)} start(s) of its label stamped "
                      "before it")  # fmt: skip
-    if item.number is not None and item.number >= 2:
-        following = [s for s in starts if s["run_id"] not in after and (
-            when is None or (at := _time(s.get("time"))) is None or at >= when)]  # fmt: skip
-        if any(s.get("max_attempts") != 1 for s in following):
-            found.append(f"numbered {item.number}, followed by a start of its label that does "
-                         "not carry max_attempts 1: a further round allows one "
-                         "attempt")  # fmt: skip
+    held = sorted({str(end.get("outcome")) for run_id in after
+                   if voided.get(run_id, ("",))[0] != "superseded"
+                   for end in ends.get(run_id, []) if end.get("outcome") in HELD_ENDS})  # fmt: skip
+    if held:
+        found.append(f"over an attempt whose end records the outcome {', '.join(held)}, not "
+                     "superseded: the launcher opens no round over an outcome")  # fmt: skip
     return found
 
 

@@ -9,7 +9,8 @@ already have a qualifying completed run, never reruns a diverged one, retries te
 up to three attempts in all, and runs the rest in order, each in its own process with its own
 RUN_ID. --dry-run lists what would run. --recovery REASON, once the technical cause of exhausted
 runs is fixed, opens the one recovery round of their cells (logged with the reason), never over a
-run that had a round of its own (the call is refused). Exits non-zero if any run used up its
+run that had a round of its own, and never for a study-3 campaign (its header carries study: 3),
+whose rounds are each run's own: the call is refused. Exits non-zero if any run used up its
 attempts.
 
 --only LABEL (a run's label, ``<cell>/s<seed>``) assesses and runs that run alone: every other
@@ -18,10 +19,12 @@ round under it is the run's own, one per documented incident (zero_field_refusal
 "Recovery rounds"): --recovery REASON (a reason no earlier round of the label gave) with its
 incident, --incident-time (UTC, ISO 8601), --cause (one line) and --evidence (a path or a
 reference), and only for a run that used its attempts up and holds no outcome (a published
-terminal record, a provenance conflict, a hold). Its first round allows N more attempts, each
-further one exactly one, at --max-attempts 1; the round names the attempts it follows. A round
-that is refused writes nothing and runs nothing (exit 1, naming the label and the earlier round
-or the bound). --max-attempts N bounds the attempts of a run (default 3); study 3's
+terminal record, a provenance conflict, a hold). Its first round allows the smaller of N and the
+label's base (the --max-attempts of its first start), each further one exactly one, at
+--max-attempts 1; the round names the attempts it follows. A round that is refused writes
+nothing and runs nothing (exit 1, naming the label and the earlier round or the bound).
+--max-attempts N bounds the attempts of a run (default 3) and of this call: no call runs more
+than N attempts, and a later call's N above the first start's adds nothing. Study 3's
 qualification driver passes 1, and never --recovery.
 
 SIGTERM to this process (not to its process group) stops the campaign at a run boundary: the

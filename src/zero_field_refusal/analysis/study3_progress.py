@@ -205,16 +205,16 @@ researcher's decision (``{"decision": "engineering_route_pending"}``), beside a 
 its label with its documented cause (the registered infrastructure route: the attempt is
 ``recovered`` and its next attempt decides), only where the launcher would open one
 (``launch.run_campaign``, "Recovery rounds"; ``_recoverable``: no published terminal record, a
-``meta.json`` that records the run neither diverged nor completed, the label's latest start, and
-either no round that applies to it yet or its start at ``max_attempts`` 1, so that a further round
-allows one attempt), for a validation or confirmation run launched after ``study3_summary.py check``
-passes. Each way out gives the command (``recovery_command``): ``launch.py <campaign file> --only
-<label> --max-attempts 1 --recovery "<a reason no earlier round of the label gave>"`` with the
-incident (``--incident-time``, ``--cause``, ``--evidence``). No closure is offered for such a mark,
-nothing is voided, no outcome is reached and no cell is issued (the confirmation's guard and its
-writer refuse a new block). A closure record that names such a mark is not accepted: a problem that
-blocks ("a closure of a technical mark outside the qualification is not accepted until its
-engineering route exists"), and it decides nothing.
+``meta.json`` that records the run neither diverged nor completed, the label's latest start, no
+outcome an earlier attempt holds, and its attempts used up at ``--max-attempts 1`` as the launcher
+counts them, ``study3_records.attempts_left``), for a validation or confirmation run launched after
+``study3_summary.py check`` passes. Each way out gives the command (``recovery_command``):
+``launch.py <campaign file> --only <label> --max-attempts 1 --recovery "<a reason no earlier round
+of the label gave>"`` with the incident (``--incident-time``, ``--cause``, ``--evidence``). No
+closure is offered for such a mark, nothing is voided, no outcome is reached and no cell is issued
+(the confirmation's guard and its writer refuse a new block). A closure record that names such a
+mark is not accepted: a problem that blocks ("a closure of a technical mark outside the
+qualification is not accepted until its engineering route exists"), and it decides nothing.
 
 A validation or confirmation run under another commit (above) is a technical mark of its arm too,
 read before the rest of its stage, but no cycle case: launched from the wrong checkout, it needs no
@@ -478,11 +478,12 @@ def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> froze
     """The runs the launcher would open a recovery round of their own for (``launch``,
     "Recovery rounds", mirrored): a run with no published terminal record whose ``meta.json``
     records it neither diverged nor completed (the launcher reads those as outcomes, never
-    reruns), its label's latest start, and either no round that applies to it yet (its cell's,
-    or its own under its config hash or none: ``RecoveryRound.applies``) or its start at
-    ``max_attempts`` 1 (a further round, one attempt). A refused attempt, or one whose run id is
-    no plain name, binds no run: it is skipped before anything of it is read."""
-    rounds = reader.recovery_rounds()
+    reruns), its label's latest start, no other attempt of it, not superseded, ended done,
+    diverged or conflict (``EndpointReader.outcome_held``), and its attempts used up at
+    ``--max-attempts 1``, the command its way out gives (``EndpointReader.attempts_left``,
+    ``study3_records.attempts_left``: the launcher's allowance, mirrored). A refused attempt,
+    or one whose run id is no plain name, binds no run: it is skipped before anything of it is
+    read."""
     found = set()
     for e in endpoints:
         if e.state == "refused" or not plain_name(e.run_id):
@@ -495,8 +496,8 @@ def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> froze
         latest = reader.latest_start(e.label)
         if latest is None or latest.get("run_id") != e.run_id:
             continue
-        spent = any(x.applies(e.label, e.cell.config_hash) for x in rounds)
-        if spent and latest.get("max_attempts") != 1:
+        chash = e.cell.config_hash
+        if reader.attempts_left(e.label, chash) > 0 or reader.outcome_held(e.label, chash):
             continue
         found.add(e.run_id)
     return frozenset(found)
