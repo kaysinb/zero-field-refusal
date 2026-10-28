@@ -96,7 +96,10 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--offset, --sha256 and --reason go with --resolve-torn")
     max_attempts = MAX_ATTEMPTS if args.max_attempts is None else args.max_attempts
     load_env()
-    name, runs = load_campaign(args.campaign)
+    try:
+        name, runs = load_campaign(args.campaign)
+    except CampaignError as exc:  # refused before anything is launched or written
+        raise SystemExit(str(exc)) from exc
     header = campaign_header(args.campaign)  # logged with every start (study 2's w_max)
     stop = StopRequest.on_sigterm()
     try:

@@ -81,20 +81,23 @@ A *torn line* is any line that holds no record: one that does not decode or pars
 mark included), a valid JSON value that is not an object, a blank line (length 0), and a JSON
 object whose identity is not all strings (``well_formed``: each key of ``IDENTITY_KEYS``,
 ``event``, ``run``, ``experiment``, ``run_id``, ``config_hash``, ``campaign``, ``log``,
-``sha256``, ``cell`` and ``only``, absent or a string). A hand-edited record is then never read
-as matching nothing: it blocks until resolved, like any other torn line. ``launch_records``
-returns the record of every other line, the exact complement of ``torn_lines``; ``_log`` refuses
-to write a record whose identity is not all strings, so the launcher's own records are never
-torn. A crash in the middle of an append leaves a torn line at the end of the log, the bytes
-after its last newline; the next append to that log repairs it first, in two ``_write`` calls
-under its one lock: the newline that ends the torn line together with a ``torn`` record naming
-its exact bytes (``offset`` of its first byte, ``length``, ``sha256``) and its ``kind``, then
-the record. The kind is the event the torn bytes show through the strict pattern
-``"event": "<lower-case word>"`` (``torn_kind``), or null; nothing else of the torn bytes is
-copied anywhere. ``torn_lines`` lists every torn line of every log under ``RUNS_DIR/launch/``
-with its log and line (a torn last line has no ``torn`` record yet), whether a ``torn`` record
-names its bytes and whether a ``torn_resolved`` record names it (by log, offset and sha256);
-``launch_records`` skips them.
+``sha256``, ``cell`` and ``only``, absent or a string). A record whose identity key is present
+with a value that is not a string therefore blocks until resolved, like any other torn line,
+and is never read as matching nothing. The rule covers a malformed value alone: a record with
+an identity key absent, or with an event no reader knows, is still a record, and matches
+nothing; the journal is written only by the launcher and qualify.py, never by hand.
+``launch_records`` returns the record of every other line, the exact complement of
+``torn_lines``; ``_log`` refuses to write a record whose identity is not all strings, so the
+launcher's own records are never torn. A crash in the middle of an append leaves a torn line at
+the end of the log, the bytes after its last newline; the next append to that log repairs it
+first, in two ``_write`` calls under its one lock: the newline that ends the torn line together
+with a ``torn`` record naming its exact bytes (``offset`` of its first byte, ``length``,
+``sha256``) and its ``kind``, then the record. The kind is the event the torn bytes show through
+the strict pattern ``"event": "<lower-case word>"`` (``torn_kind``), or null; nothing else of
+the torn bytes is copied anywhere. ``torn_lines`` lists every torn line of every log under
+``RUNS_DIR/launch/`` with its log and line (a torn last line has no ``torn`` record yet),
+whether a ``torn`` record names its bytes and whether a ``torn_resolved`` record names it (by
+log, offset and sha256); ``launch_records`` skips them.
 
 **A line a published record requires** (``missing_lines``). scripts/qualify.py publishes a
 record first and appends its journal lines after it: an engineering cycle's supersession
@@ -327,7 +330,9 @@ class Assessment:
 
 
 def load_campaign(path: str | Path) -> tuple[str, list[Run]]:
-    """The campaign's name and its runs in order, every config loaded and checked."""
+    """The campaign's name and its runs in order, every config loaded and checked. A cell whose
+    name is not a string (a YAML number, list, mapping or null) is a ``CampaignError`` naming
+    the cell by its position: its runs' labels and its journal records carry the name."""
     data = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
     if not isinstance(data, dict) or not isinstance(data.get("name"), str):
         raise ValueError(f"{path}: a campaign needs a name and a list of cells")
@@ -335,7 +340,10 @@ def load_campaign(path: str | Path) -> tuple[str, list[Run]]:
     if not isinstance(cells, list) or not cells:
         raise ValueError(f"{path}: a campaign needs a non-empty list of cells")
     runs, names = [], set()
-    for cell in cells:
+    for position, cell in enumerate(cells, start=1):
+        if isinstance(cell, dict) and "name" in cell and not isinstance(cell["name"], str):
+            raise CampaignError(f"{path}: cell {position} of the campaign: its name must be a "
+                                f"string, not {type(cell['name']).__name__}")  # fmt: skip
         runs += _cell_runs(cell, names)
     hashes = [(run.experiment, run.config_hash) for run in runs]
     if len(set(hashes)) != len(hashes):

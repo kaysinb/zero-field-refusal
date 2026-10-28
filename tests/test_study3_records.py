@@ -272,7 +272,8 @@ def listed_refused(found, problems, run_id, *words) -> bool:
 
 def test_an_unhashable_run_id_or_header_step_is_a_named_problem(world) -> None:
     """A journal start whose run id is a list (a torn line, as the launcher reads it:
-    ``launch.well_formed``), and one whose header's step is a list: each a problem by name,
+    ``launch.well_formed``), one with no run id at all (a record: the rule catches a malformed
+    value, not a removed key), and one whose header's step is a list: each a problem by name,
     never a crash; the ordinary run beside them reads as before."""
     ordinary = world.run("A", 1.45e-5, 10300)
     _, chash, command = config_of("A", 2.11e-5, 10300, "validation")
@@ -280,11 +281,15 @@ def test_an_unhashable_run_id_or_header_step_is_a_named_problem(world) -> None:
                             "run_id": ["a", "list"], "experiment": "study3",
                             "config_hash": chash, "command": list(command),
                             "header": header(1, "validation", None)})  # fmt: skip
+    world.log("study3-c1", {"event": "start", "run": "A-2.11e-05/s10301", "attempt": 1,
+                            "experiment": "study3", "config_hash": chash,
+                            "header": header(1, "validation", None)})  # fmt: skip
     stepped = world.run("F", 1.3e-5, 10300, prescribe=False,
                         head={**header(1, "validation", None), "step": ["validation"]})  # fmt: skip
     found, problems = world.read()
     assert any(p.startswith("launch/study3-c1.jsonl line ") and TORN_WHY in p
                for p in problems), problems  # fmt: skip
+    assert "study3-c1: a start in the launch journal without a run id" in problems
     assert by_id(found)[stepped].state == "refused" and by_id(found)[stepped].cell.step is None
     assert any(p.startswith(stepped) and "its campaign header names no study-3 step" in p
                for p in problems)  # fmt: skip
@@ -1016,11 +1021,17 @@ def test_a_malformed_label_on_a_line_or_a_start_is_a_named_problem(world, value)
     """A ``superseded`` line, or a study-3 start, whose ``run`` is no string holds no record, as
     the launcher reads it (``launch.well_formed``): each is a torn line, a named problem by its
     log and line, never an exception, through ``read_endpoints`` and ``read_holds``. The line
-    counts for nothing and the run still counts."""
+    counts for nothing and the run still counts. A start with no ``run`` at all is a record (the
+    rule catches a malformed value, not a removed key): it is refused by name, as it lacks its
+    label."""
     run_id = world.run("A", 1.45e-5, 10300)
     world.log("study3-hand", {"event": "superseded", "run": value, "run_id": run_id,
                               "experiment": "study3", "reason": "r"})  # fmt: skip
     world.log("study3-hand", {"event": "start", "run": value, "run_id": "odd-run", "attempt": 1,
+                              "experiment": "study3", "config_hash": "x",
+                              "header": {"study": 3, "candidate": 1,
+                                         "step": "validation"}})  # fmt: skip
+    world.log("study3-hand", {"event": "start", "run_id": "odd-run", "attempt": 1,
                               "experiment": "study3", "config_hash": "x",
                               "header": {"study": 3, "candidate": 1,
                                          "step": "validation"}})  # fmt: skip
@@ -1029,6 +1040,8 @@ def test_a_malformed_label_on_a_line_or_a_start_is_a_named_problem(world, value)
     for number in (1, 2):
         assert any(p.startswith(f"launch/study3-hand.jsonl line {number}: ") and TORN_WHY in p
                    for p in problems), problems  # fmt: skip
+    assert any(p.startswith("odd-run: ") and "lacks its label, attempt or config hash" in p
+               for p in problems), problems  # fmt: skip
     assert read_holds(world.root)[0] == []
 
 

@@ -1868,12 +1868,13 @@ before each command below.
   campaign name. A block file or a `run.sh` already run is not run again.
 - **A torn launch-log line.** A torn line is any line of a launch log that holds no record (its
   definition: [launching runs](#launching-runs)), a JSON object whose identity is not all
-  strings included, such as a hand-edited start whose run id is a list. A crash in the middle of
-  an append leaves one, the bytes after a log's last newline; the launcher's next append to that
-  log ends it with a newline and names its bytes in a `torn` record. While any log holds a torn
-  line that no `torn_resolved`
-  record names, the launcher refuses with exit 12, and so does every `qualify.py` command that
-  reads the runs but its two journal repairs. The procedure:
+  strings included, such as a start whose run id is a list (a malformed value; a removed key or
+  an invented event is no torn line, and the journal is never edited by hand). A crash in the
+  middle of an append leaves one, the bytes after a log's last newline; the launcher's next
+  append to that log ends it with a newline and names its bytes in a `torn` record. While any
+  log holds a torn line that no `torn_resolved` record names, the launcher refuses with exit
+  12, and so does every `qualify.py` command that reads the runs but its two journal repairs.
+  The procedure:
   1. Restore what the line's kind lost, in the order its kind takes (the per-kind list in
      [launching runs](#launching-runs)):
      - `held`, `superseded`: run the writer again first, then resolve. The two journal repairs,
@@ -2073,9 +2074,12 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   holds no record: one that does not decode or parse (a byte-order mark included), a valid JSON
   value that is not an object, a blank line (length 0), or a JSON object whose identity is not
   all strings (any of `event`, `run`, `experiment`, `run_id`, `config_hash`, `campaign`, `log`,
-  `sha256`, `cell`, `only` present with another value: a hand-edited record never matches
-  nothing silently, it blocks until resolved). The launcher writes only records whose identity
-  is all strings. A crash in the middle of an
+  `sha256`, `cell`, `only` present with a value that is not a string): such a record blocks
+  until resolved instead of matching nothing. A record with one of these keys absent, or with an
+  event no reader knows, is still a record, and matches nothing. The journal is written only by
+  the launcher and qualify.py; it is never edited by hand. The torn-line rule catches a
+  malformed value, not a removed key or an invented event. The launcher writes only records
+  whose identity is all strings. A crash in the middle of an
   append leaves one at the end of the log, the bytes after its last newline; the next append to
   that log repairs it first, in two writes under its one lock: the newline that ends it together
   with a `torn` record naming its exact bytes (`offset`, `length`, `sha256`) and its `kind`, the

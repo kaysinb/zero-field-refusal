@@ -862,7 +862,8 @@ def test_a_validation_run_without_its_start_fails_closed(study) -> None:
 def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
     """A study-3 start whose header's step, or whose run id, is a list: a named problem of the
     journal check, never a crash. One whose run id is a list is a torn line, as the launcher
-    reads it (``launch.well_formed``), named by its log and line."""
+    reads it (``launch.well_formed``), named by its log and line; one with no run id at all is a
+    record (the rule catches a malformed value, not a removed key), named as having none."""
     study.validated()
     study.runs.log("study3-c1-validation-x", {
         "event": "start", "run": "A-1.45e-05/s10300", "attempt": 1, "run_id": "r1",
@@ -871,9 +872,13 @@ def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
     study.runs.log("study3-c1-validation-y", {
         "event": "start", "run": "A-1.45e-05/s10301", "attempt": 1, "run_id": ["r", "2"],
         "experiment": "study3", "config_hash": "0" * 16, "header": study.header()})  # fmt: skip
+    study.runs.log("study3-c1-validation-z", {
+        "event": "start", "run": "A-1.45e-05/s10302", "attempt": 1,
+        "experiment": "study3", "config_hash": "0" * 16, "header": study.header()})  # fmt: skip
     found = study.problems()
     assert has(found, "study3-c1-validation-x", "names no study-3 step"), found
     assert has(found, TORN_LINE, "launch/study3-c1-validation-y.jsonl line 1"), found
+    assert has(found, "study3-c1-validation-z", "names no run id"), found
 
 
 def test_a_header_naming_another_record_or_sha256_is_refused(study) -> None:
