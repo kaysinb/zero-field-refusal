@@ -12,13 +12,17 @@ qualification's restart and supersession records (``qualification/c<N>/``).
   bound to its issued cell, with its state and step-25 endpoint, and the refusals by name
   (``problems``). Nothing may be computed from records with a refusal: they are ambiguous.
 - ``EndpointReader``: one snapshot of the same records, read under any number of prescriptions
-  (``read_endpoints`` is one reading of a fresh snapshot): every file is read once.
+  (``read_endpoints`` is one reading of a fresh snapshot): every file is read once; its
+  ``resolved`` lists the journal's resolved torn lines, each with its kind.
 - ``read_holds``: every held launcher run, by its label under any config hash, with the records
   that hold it and their sha256 (what a closure record cites).
-- ``journal_lines``: every launch log, line by line, each line with its own sha256: the one
-  reading of a cited journal line (``read_holds``, the closure records of ``study3_decisions``).
-- ``parse_journal_lines``: a log's lines parsed, and its corrupt ones (an unparseable line before
-  the last): the one rule for what is corrupt.
+- ``journal_lines``: every launch log, line by line, each line with its own sha256 and, for a
+  torn line, its kind and its standing (the last of its log, resolved or unresolved): the one
+  reading of a cited journal line (``read_holds``, the closure records of ``study3_decisions``)
+  and the one rule for what is corrupt (an unresolved torn line before the last of its log), for
+  every reader of the journal here, ``study3_versions``' and the qualification's.
+- ``log_lines``: a log's bytes line by line, as the launcher reads them (``launch``'s
+  ``_journal_lines``, mirrored: this module loads no GPU path).
 - ``SEEDS`` and ``candidate_of``: the registered seeds per role and candidate.
 - ``step_key``: the key of a step's prescribed cells, ``c<candidate>/<step>[/r<round>]``.
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
@@ -85,10 +89,21 @@ a recovery round or a supersession clears it. Authorized historical rounds stay 
 gate is the caller's choice (``Cell.key``).
 
 **Attempts** ("Failure routes": an infrastructure interruption is rerun under a new attempt id;
-"Voiding and supersession"). The journal is every log under ``launch/`` read as one: no rule
-depends on a log's name or a line's place in it, but for a line that cannot be parsed: it is
-skipped silently only as the last line of its log (cut short by a crash, the launcher's rule),
-and before the last it is a problem, named by its log and line number. An attempt is a start;
+"Voiding and supersession"). The journal is every log under ``launch/`` read as one, each log
+as the launcher reads it (``log_lines``: its bytes split at ``\n`` alone, each line decoded
+strictly as UTF-8): no rule depends on a log's name or a line's place in it, but for a *torn
+line*, one that holds no record: it does not decode or parse (a byte-order mark included), it is
+a JSON value that is no object or a blank line, or it is a JSON object whose identity
+(``IDENTITY_KEYS``: ``event``, ``run``, ``experiment``, ``run_id``, ``config_hash``,
+``campaign``, ``log``, ``sha256``, ``cell``, ``only``) is not all strings, as
+``launch.torn_lines`` lists them. The log's last
+line, with no newline after it (cut short by a crash), is skipped silently: the launcher's rule.
+One before it is *resolved* when a ``torn`` record of its log names its offset, length and sha256
+and a ``torn_resolved`` record names its log, offset and sha256 (``launch.resolve_torn``,
+``scripts/launch.py --resolve-torn``: the operator restored what its kind lost, docs/operations.md,
+"Launching runs"): it is then listed with its kind (``EndpointReader.resolved``) and is no
+problem. Any other is a problem, named by its log and line number, never by its bytes. The
+``torn`` and ``torn_resolved`` records are no problem and void nothing. An attempt is a start;
 its campaign is the log that holds its start, and the attempts of a label are its starts in any
 log, in the order of their attempt numbers (then of their starts' time stamps). Ends,
 ``superseded`` and ``held`` lines name their attempt by run id, in any log: the end the
@@ -244,6 +259,13 @@ SEALED_WHY = "under a responses or observations folder"
 LOOP_WHY = "cannot be resolved (a link loop)"  # a path the rule counts as sealed: why
 # The configs the launcher composes study 3's runs from (a start's command, composed again)
 STUDY3_CONFIGS = ("experiments/study3", "experiments/study3_k_only")
+# launch.TORN_KIND: the one part of a torn line's bytes a record copies, its kind (the launcher
+# itself is a GPU path, never imported here)
+TORN_KIND = re.compile(rb'"event": "([a-z][a-z_]{0,31})"')
+# launch.IDENTITY_KEYS: a journal record's identity, each key absent or a string; a JSON object
+# with any of them present and not a string is a torn line, as the launcher reads it
+IDENTITY_KEYS = ("event", "run", "experiment", "run_id", "config_hash", "campaign", "log",
+                 "sha256", "cell", "only")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -342,7 +364,8 @@ class _Journal:
     starts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # campaign, start
     ends: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
     recoveries: list[dict[str, Any]] = field(default_factory=list)
-    corrupt: list[str] = field(default_factory=list)  # "<log> line <n>": an unparseable line
+    corrupt: list[str] = field(default_factory=list)  # "<log> line <n>": an unresolved torn line
+    resolved: list[dict[str, Any]] = field(default_factory=list)  # the resolved torn lines
     sealed: list[str] = field(default_factory=list)  # logs under a sealed folder, never opened
     unbacked: list[str] = field(default_factory=list)  # lines that count for nothing: why
 
@@ -498,7 +521,10 @@ class EndpointReader:
     the qualification's restart and supersession records, the experiment's folders and, as they
     are first needed, each run's files. ``read(prescribed)`` gives what ``read_endpoints`` gives
     under ``prescribed``; any number of readings read every file once (a caller that derives the
-    cells to prescribe from the records reads them once)."""
+    cells to prescribe from the records reads them once). ``resolved``: the journal's resolved
+    torn lines (module docstring, "Attempts"), each its log's ``path`` under RUNS_DIR, its
+    ``line`` number, its ``offset``, ``length`` and ``sha256`` and its ``kind``; listed, no
+    problem."""
 
     def __init__(
         self,
@@ -515,9 +541,9 @@ class EndpointReader:
         restarts = _restart_checks(self.root, restarts)
         self.journal = _read_journal(self.root, self.voided, cycles, restarts)
         self.problems = _voiding_records(self.root, self.voided, cycles, restarts)
-        self.problems += [
-            f"{where}: not valid JSON, and not the last line of its log (only a line cut short "
-            "by a crash is skipped)" for where in self.journal.corrupt]  # fmt: skip
+        self.problems += [f"{where}: {TORN_WHY}" for where in self.journal.corrupt]
+        # the resolved torn lines, each with its kind: listed, no problem
+        self.resolved = list(self.journal.resolved)
         self.problems += [f"{where}: {sealed_record('a launch log', self.root / where)}"
                           for where in self.journal.sealed]  # fmt: skip
         self.problems += self.journal.unbacked
@@ -620,29 +646,33 @@ def _read_journal(
     cycles: Mapping[str, Mapping[str, Any]] | None = None,
     restarts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> _Journal:
-    """The launch journal's study-3 records from every log: the starts with their campaign (the
-    log's name), every end by run id, the recovery rounds, and the ``superseded`` and ``held``
-    lines into ``voided`` by run id; with ``cycles`` (the one check of every supersession record),
-    a line counts only through a record that names its run (``_unbacked``: an accepted
-    supersession record, or for a study-3 ``superseded`` line a case restart record whose
-    launcher run it is): any other is listed in ``unbacked``, with why, and counts for nothing.
-    A line is study 3's by the run it names (a study-3 start), whatever its own ``experiment``;
-    one that names no study-3 start takes no study-3 run out of the counts. A line cut short by a
-    crash is skipped only as the last line of its log (the launcher's rule); an unparseable line
-    before the last is skipped too but listed in ``corrupt`` with its log's name and its number,
-    never its content. A log that resolves under a sealed folder is never opened: it is listed in
-    ``sealed``, by its path under RUNS_DIR."""
+    """The launch journal's study-3 records from every log (``journal_lines``' reading): the
+    starts with their campaign (the log's name), every end by run id, the recovery rounds, and the
+    ``superseded`` and ``held`` lines into ``voided`` by run id; with ``cycles`` (the one check of
+    every supersession record), a line counts only through a record that names its run
+    (``_unbacked``: an accepted supersession record, or for a study-3 ``superseded`` line a case
+    restart record whose launcher run it is): any other is listed in ``unbacked``, with why, and
+    counts for nothing. A line is study 3's by the run it names (a study-3 start), whatever its
+    own ``experiment``; one that names no study-3 start takes no study-3 run out of the counts. A
+    torn line (module docstring, "Attempts") holds no record: the last of its log is skipped
+    silently (the launcher's rule), a resolved one is listed in ``resolved`` with its kind, and
+    any other is listed in ``corrupt`` with its log's name and its number, never its bytes. A
+    log that resolves under a sealed folder is never opened: it is listed in ``sealed``, by its
+    path under RUNS_DIR. A log that cannot be read raises its ``OSError``."""
     journal = _Journal()
     lines: list[tuple[str, int, dict[str, Any]]] = []  # the superseded and held lines
-    for log in sorted((root / "launch").glob("*.jsonl")):
-        if under_sealed(log, root):
-            journal.sealed.append(f"launch/{log.name}")
-            continue
-        campaign = log.stem
-        values, corrupt = parse_journal_lines(log.read_text(encoding="utf-8").splitlines())
-        journal.corrupt += [f"launch/{log.name} line {number}" for number in corrupt]
-        for number, record in enumerate(values, 1):
-            if not isinstance(record, dict):
+    logs, unread = _journal_logs(root)
+    for log, error in unread:
+        if error is not None:
+            raise error
+        journal.sealed.append(f"launch/{log.name}")
+    for log in logs:
+        campaign = PurePosixPath(log.path).stem
+        journal.corrupt += [f"{log.path} line {number}" for number in log.corrupt]
+        journal.resolved += log.resolved
+        for line in log.lines:
+            record, number = line.record, line.line
+            if record is None:
                 continue
             event, run_id = record.get("event"), record.get("run_id")
             if event == "start" and record.get("experiment") == EXPERIMENT:
@@ -652,7 +682,7 @@ def _read_journal(
             elif event == "recovery" and record.get("experiment") == EXPERIMENT:
                 journal.recoveries.append(record)
             elif event in ("superseded", "held") and isinstance(run_id, str):
-                lines.append((f"launch/{log.name}", number, record))
+                lines.append((log.path, number, record))
     labels = study3_labels(journal.starts)  # every log read: a line's run may start in any
     for where, number, record in lines:
         why = _unbacked(record, cycles, restarts or {}, labels)
@@ -677,25 +707,32 @@ def study3_labels(starts: Sequence[tuple[str, Mapping[str, Any]]]) -> dict[str, 
     return out
 
 
-def parse_journal_lines(texts: Sequence[str]) -> tuple[list[Any], list[int]]:
-    """A launch log's lines (``texts``, in order) as the readers of the journal read them: each
-    line's JSON value (None for a blank line or one that cannot be parsed), and the numbers (from
-    1) of the unparseable lines before the last non-blank one. A last line cut short by a crash is
-    skipped silently (the launcher's rule); an unparseable line before it is corrupt. The one rule
-    for every reader of the journal."""
-    last = max((i for i, text in enumerate(texts) if text.strip()), default=-1)
-    values: list[Any] = []
-    corrupt: list[int] = []
-    for i, text in enumerate(texts):
-        value = None
-        if text.strip():
-            try:
-                value = json.loads(text)
-            except ValueError:
-                if i != last:
-                    corrupt.append(i + 1)
-        values.append(value)
-    return values, corrupt
+def log_lines(data: bytes) -> list[tuple[int, bytes, dict[str, Any] | None]]:
+    """A launch log's bytes line by line, as the launcher reads them (``launch._journal_lines``,
+    mirrored: the launcher is a GPU path, never imported here): split at ``\n`` alone, each line's
+    offset, its bytes and its record, None (a torn line) when its bytes do not decode strictly as
+    UTF-8 (a byte-order mark stays in the text), do not parse as a JSON object, or parse as one
+    whose identity (``IDENTITY_KEYS``) is not all strings (``launch.well_formed``)."""
+    lines, offset = [], 0
+    while offset < len(data):
+        end = data.find(b"\n", offset)
+        end = len(data) if end < 0 else end
+        try:
+            record = json.loads(data[offset:end].decode("utf-8"))
+        except ValueError:  # a UnicodeDecodeError included
+            record = None
+        whole = isinstance(record, dict) and all(
+            isinstance(record[key], str) for key in IDENTITY_KEYS if key in record)  # fmt: skip
+        lines.append((offset, data[offset:end], record if whole else None))
+        offset = end + 1
+    return lines
+
+
+def torn_kind(data: bytes) -> str | None:
+    """The event a torn line's bytes show through the strict pattern ``TORN_KIND``
+    (``launch.torn_kind``), or None; nothing else of the bytes is read out."""
+    match = TORN_KIND.search(data)
+    return match[1].decode("ascii") if match else None
 
 
 def _voiding_records(
@@ -936,7 +973,7 @@ def read_holds(
         and line.record.get("experiment") == EXPERIMENT])  # fmt: skip
     for log in logs:
         for line in log.lines:
-            record = line.record  # an unparseable line: read_endpoints names it, unless last
+            record = line.record  # a torn line: read_endpoints names it, unless resolved
             if (record is not None and record.get("event") == "held"
                     and isinstance(record.get("run_id"), str)):  # fmt: skip
                 why = _unbacked(record, cycles, {}, labels)  # never through a restart
@@ -968,15 +1005,33 @@ def read_holds(
     return list(holds.values()), problems
 
 
+# A torn line's standing (module docstring, "Attempts"): the last of its log, with no newline
+# after it (skipped, the launcher's rule); resolved (listed, no problem); unresolved (a problem)
+FINAL, RESOLVED, UNRESOLVED = "final", "resolved", "unresolved"
+# The one term every reader names an unresolved torn line before the last of its log with
+TORN_LINE = ("a torn line (no JSON object, or one whose identity is not all strings) before the "
+             "last line of its log that no torn and torn_resolved records both name")  # fmt: skip
+TORN_WHY = (f"{TORN_LINE}: what it held cannot be shown (resolve it: docs/operations.md, "
+            '"Launching runs")')  # fmt: skip
+
+
 @dataclass(frozen=True)
 class JournalLine:
-    """One line of a launch log: its number from 1, its text, the sha256 of its UTF-8 text (its
-    own bytes, which stay when the log grows) and its record (None unless a JSON object)."""
+    """One line of a launch log, as the launcher reads it (``log_lines``): its number from 1, the
+    offset of its first byte and its length, the sha256 of its bytes (for a line that decodes,
+    the sha256 of its UTF-8 text: its own bytes, which stay when the log grows, and the bytes a
+    ``torn`` record names) and its record (None unless a JSON object). A torn line (no record)
+    has its ``kind`` (``torn_kind``) and its standing ``torn``: ``final``, ``resolved`` or
+    ``unresolved`` (module docstring, "Attempts"); a record has neither. Nothing else of a
+    line's bytes is kept."""
 
     line: int
-    text: str
+    offset: int
+    length: int
     line_sha256: str
     record: dict[str, Any] | None
+    kind: str | None = None
+    torn: str | None = None
 
 
 @dataclass(frozen=True)
@@ -987,34 +1042,89 @@ class JournalLog:
     sha256: str
     lines: tuple[JournalLine, ...]
 
+    @property
+    def corrupt(self) -> tuple[int, ...]:
+        """The numbers of its unresolved torn lines (each a problem: what it held cannot be
+        shown)."""
+        return tuple(line.line for line in self.lines if line.torn == UNRESOLVED)
+
+    @property
+    def refused(self) -> tuple[int, ...]:
+        """The numbers of the torn lines the launcher refuses (``launch.torn_lines``: every one
+        that is not resolved, the last of the log included)."""
+        return tuple(line.line for line in self.lines if line.torn in (UNRESOLVED, FINAL))
+
+    @property
+    def resolved(self) -> tuple[dict[str, Any], ...]:
+        """Its resolved torn lines, each with its kind: listed, no problem."""
+        return tuple({"path": self.path, "line": line.line, "offset": line.offset,
+                      "length": line.length, "sha256": line.line_sha256, "kind": line.kind}
+                     for line in self.lines if line.torn == RESOLVED)  # fmt: skip
+
 
 def journal_lines(runs_root: str | Path) -> tuple[list[JournalLog], list[str]]:
-    """Every launch log under ``runs_root/launch/``, by its name, line by line, each line with
-    its own sha256 and its record; and the logs that cannot be read (UTF-8 text) or resolve
-    under a sealed folder (never opened), named. The one reading of a cited journal line."""
+    """Every launch log under ``runs_root/launch/``, by its name, line by line as the launcher
+    reads it, each line with its own sha256 and its record, and each torn line with its kind and
+    its standing (``JournalLine``); and the logs that cannot be read or resolve under a sealed
+    folder (never opened), named. The one reading of a cited journal line, and of what is
+    corrupt: a log's ``corrupt`` lines."""
     root = Path(runs_root)
-    logs, problems = [], []
+    logs, unread = _journal_logs(root)
+    problems = [f"{log.relative_to(root).as_posix()}: "
+                + (sealed_record("a launch log", log, root) if error is None
+                   else "an unreadable launch journal") for log, error in unread]  # fmt: skip
+    return logs, problems
+
+
+def _journal_logs(root: Path) -> tuple[list[JournalLog], list[tuple[Path, OSError | None]]]:
+    """Every launch log under ``root/launch/`` that can be read, each line as the launcher reads
+    it (``log_lines``) with its standing as ``launch.torn_lines`` gives it: a ``torn_resolved``
+    record of any log read names a line by its log's name, offset and sha256, and a ``torn``
+    record names a line of its own log by offset, length and sha256; a torn line is resolved
+    only when both name it, and is ``final`` when no newline follows it. And the logs not read,
+    in the order of their paths: one that resolves under a sealed folder (None: never opened) or
+    that cannot be read (its error)."""
+    read, unread = [], []
     for log in sorted((root / "launch").glob("*.jsonl")):
-        where = log.relative_to(root).as_posix()
         if under_sealed(log, root):
-            problems.append(f"{where}: {sealed_record('a launch log', log, root)}")
+            unread.append((log, None))
             continue
         try:
             data = log.read_bytes()
-            texts = data.decode("utf-8").splitlines()
-        except (OSError, ValueError):
-            problems.append(f"{where}: an unreadable launch journal")
+        except OSError as exc:
+            unread.append((log, exc))
             continue
-        lines = []
-        for number, text in enumerate(texts, start=1):
-            try:
-                record = json.loads(text)
-            except ValueError:
-                record = None
-            lines.append(JournalLine(number, text, hashlib.sha256(text.encode()).hexdigest(),
-                                     record if isinstance(record, dict) else None))  # fmt: skip
-        logs.append(JournalLog(where, hashlib.sha256(data).hexdigest(), tuple(lines)))
-    return logs, problems
+        read.append((log, data, log_lines(data)))
+    resolutions = {(r["log"], r["offset"], r["sha256"]) for _, _, lines in read
+                   for _, _, r in lines if r is not None and r.get("event") == "torn_resolved"
+                   and isinstance(r.get("log"), str) and _count(r.get("offset"))
+                   and isinstance(r.get("sha256"), str)}  # fmt: skip
+    logs = []
+    for log, data, lines in read:
+        named = {(r["offset"], r["length"], r["sha256"]) for _, _, r in lines
+                 if r is not None and r.get("event") == "torn" and _count(r.get("offset"))
+                 and _count(r.get("length")) and isinstance(r.get("sha256"), str)}  # fmt: skip
+        found = []
+        for number, (offset, line, record) in enumerate(lines, start=1):
+            sha, kind, torn = hashlib.sha256(line).hexdigest(), None, None
+            if record is None:
+                kind = torn_kind(line)
+                if offset + len(line) == len(data):  # no newline after it
+                    torn = FINAL
+                elif ((offset, len(line), sha) in named
+                      and (log.name, offset, sha) in resolutions):  # fmt: skip
+                    torn = RESOLVED
+                else:
+                    torn = UNRESOLVED
+            found.append(JournalLine(number, offset, len(line), sha, record, kind, torn))
+        logs.append(JournalLog(log.relative_to(root).as_posix(), hashlib.sha256(data).hexdigest(),
+                               tuple(found)))  # fmt: skip
+    return logs, unread
+
+
+def _count(value: Any) -> bool:
+    """An offset or a length as ``launch`` counts one: an integer, not a bool."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 # ------------------------------------------------------------------ the issued cell

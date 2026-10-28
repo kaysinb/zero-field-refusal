@@ -187,15 +187,37 @@ counted against its rate as a case of its own (a control's as a superseded contr
 launcher runs located now (one settled directory per run) are the expected ones; a rate one of whose
 launcher runs is not located is at most ``incomplete``, with the reason and a warning.
 
+**A launch journal that is not whole** (``launch``, "The journal"). Every command but ``plan``
+and ``driver``, which read no runs root, first reads ``launch.torn_lines`` and
+``launch.missing_lines``: while a launch log holds a torn line that no ``torn_resolved`` record
+names, or a published cycle or restart record under RUNS_DIR/qualification/ requires a
+``held`` or ``superseded`` line that no log holds (a crash between the record and its lines,
+or an append that wrote no byte; an unreadable record blocks too), it prints the launcher's
+refusal (each torn line's log and line, offset, length, kind and sha256; each missing line's
+record path, event and run id), acts on nothing and exits 12 (``launch.TORN_JOURNAL``). A torn
+line is any line of a launch log that holds no record, a JSON object whose identity is not all
+strings included (``launch.well_formed``). Two calls, decided before anything acts, are journal
+repairs and go on: ``supersede`` run again with its published
+record (``cycle_to_repair``: it writes only the journal's missing ``held`` and ``superseded``
+lines) and ``restart-case`` for a case whose published restart records lack their
+``superseded`` lines (``restart_lines_to_repair``: it writes only those lines, each with its
+record's reason, and exits 1 naming the restart records). Each then prints what it leaves: a
+torn line's resolution (``scripts/launch.py --resolve-torn``), or another record's repair, is
+next. Any other call of the two, a new cycle or a new restart, is refused as the rest.
+
 ``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the checkout
 and the campaign file's sha256, that nothing else uses the GPU, and the free host memory
 (``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and the p1
 direction on the host and a checkpoint save's transient), then runs each case in order as above, and
-writes the verdict on every exit. Exits: 0 when every case is complete; 1 a precondition (the host
+writes the verdict on every exit, but one: over a launch journal that is not whole (an
+unresolved torn line, or a line a published record requires missing) ``verdict`` refuses too
+(exit 12), so no verdict.json is written then and an older one stays on disk.
+Exits: 0 when every case is complete; 1 a precondition (the host
 memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
 not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
-technical case; 10 a stale case; 11 a case whose label has a held launcher run; the launcher's own
-when it stops; any other, the failed command's.
+technical case; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn line in
+a launch journal, or a line a published record requires missing from it (``complete``'s refusal,
+or the launcher's); the launcher's own when it stops; any other, the failed command's.
 The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
 reason."""
 
@@ -232,17 +254,22 @@ from zero_field_refusal import qualification as q
 from zero_field_refusal.analysis.qualification_verdicts import REST_MISSING
 from zero_field_refusal.config import config_hash, load_config
 from zero_field_refusal.launch import (
+    TORN_JOURNAL,
     Run,
+    TornJournalError,
     assess,
     attempt_key,
     expected_numerics,
     held_runs,
     hold,
+    journal_records,
     label_starts,
     launch_records,
     load_campaign,
+    missing_lines,
     supersede,
     superseded_runs,
+    torn_lines,
 )
 from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT, load_env, runs_root
 from zero_field_refusal.protocol import load_run_config
@@ -641,6 +668,19 @@ def label_run_ids(run: Run, root: Path) -> list[str]:
     return list(dict.fromkeys(r["run_id"] for r in sorted(starts, key=attempt_key)))
 
 
+def label_superseded(run: Run, root: Path) -> set[str]:
+    """The run ids of the run's label (its experiment and ``<cell>/s<seed>``) that the launch
+    journal names superseded, whatever their config hash, as ``launch.supersede`` judges a line
+    it would write: the one check of the commands that decide whether a ``superseded`` line is
+    missing before writing it (``restart_lines_to_repair``, ``log_superseded``,
+    ``repair_cycle_journal``). What a campaign under the current config hash counts stays
+    ``launch.superseded_runs``."""
+    return {r["run_id"] for r in launch_records(root)
+            if r.get("event") == "superseded" and r.get("run") == run.label
+            and r.get("experiment") == run.experiment
+            and isinstance(r.get("run_id"), str)}  # fmt: skip
+
+
 def settled(run: Run, root: Path) -> Path | None:
     """The run's settled launcher directory (``launch.assess``: done, or diverged), or None."""
     state = assess(run, root, launch_records(root))
@@ -984,7 +1024,7 @@ def log_superseded(
     launcher's recovery round starts a new attempt. Done once."""
     if run_dir is None:
         return
-    if run_dir.name not in superseded_runs(planned.run, launch_records(root)):
+    if run_dir.name not in label_superseded(planned.run, root):
         supersede(root, campaign, planned.run, run_dir.name, reason=reason, record=str(record))
 
 
@@ -1042,15 +1082,9 @@ def restart_case(
     folder = case_folder(out, case)
     attempts, listed = case_attempts(folder, planned), named_attempts(folder)
     fresh = [a for a in attempts if (a["part"], a["attempt"]) not in listed]
-    earlier = restart_records(folder)
-    superseded = superseded_runs(planned.run, launch_records(root))
-    named_run = ((earlier[-1][1] or {}).get("launcher") or {}).get("run_id") if earlier else None
-    if named_run and named_run not in superseded:  # stopped before the journal's line
-        path, record = earlier[-1]
-        log_superseded(planned, root, campaign, root / planned.run.experiment / named_run,
-                       reason=str((record or {}).get("reason")), record=path)  # fmt: skip
-        sys.exit(f"{case.name}: the restart is recorded ({path.name}); the launch journal now "
-                 "names its launcher run")  # fmt: skip
+    pending = restart_lines_to_repair(planned, out, root)
+    if pending:  # stopped before the journal's line
+        repair_restart_lines(planned, root, campaign, pending)
     run_dir, launcher = launcher_to_supersede(planned, root)
     missing = checkpoint_missing(run_dir, folder)  # a checkpoint finish removed is no evidence
     if not fresh and not missing:  # a lost checkpoint alone is evidence, before any attempt
@@ -1085,6 +1119,86 @@ def restart_case(
     print(json.dumps({"case": case.name, "restart": str(path), "reason": reason,
                       "attempts": [(a["part"], a["attempt"]) for a in attempts],
                       "launcher": launcher}))  # fmt: skip
+
+
+def restart_lines_to_repair(
+    planned: Planned, out: Path, root: Path
+) -> list[tuple[Path, dict | None, str]]:
+    """The case's published restart records, each with the launcher run it names, whose
+    ``superseded`` line the launch journal lacks (a stop between a record and its line, or an
+    append that wrote no byte): ``restart-case`` run again then only writes those lines
+    (``repair_restart_lines``), one of the two journal repairs allowed over a journal that is
+    not whole (module docstring)."""
+    have = label_superseded(planned.run, root)
+    pending = []
+    for path, record in restart_records(case_folder(out, planned.case)):
+        launcher = (record or {}).get("launcher")
+        named_run = launcher.get("run_id") if isinstance(launcher, dict) else None
+        if isinstance(named_run, str) and named_run not in have:
+            pending.append((path, record, named_run))
+    return pending
+
+
+def repair_restart_lines(
+    planned: Planned, root: Path, campaign: str, pending: list[tuple[Path, dict | None, str]]
+) -> None:
+    """The ``superseded`` line of each published restart record ``restart_lines_to_repair``
+    found, with the record's own reason; exits 1 with what it wrote."""
+    for path, record, named_run in pending:
+        log_superseded(planned, root, campaign, root / planned.run.experiment / named_run,
+                       reason=str((record or {}).get("reason")), record=path)  # fmt: skip
+    names = ", ".join(path.name for path, _, _ in pending)
+    if len(pending) == 1:
+        sys.exit(f"{planned.case.name}: the restart is recorded ({names}); the launch journal "
+                 "now names its launcher run")  # fmt: skip
+    sys.exit(f"{planned.case.name}: the restarts are recorded ({names}); the launch journal now "
+             "names their launcher runs")  # fmt: skip
+
+
+def cycle_to_repair(args, chosen: Planned, out: Path) -> tuple[Path, dict] | None:
+    """The candidate's published supersession record when this ``supersede`` call names that
+    cycle's own record again (its path and sha256): the call then only writes the journal's
+    missing lines (``repair_cycle_journal``), one of the two journal repairs allowed over an
+    unresolved torn line (module docstring)."""
+    if args.record is None or not args.diagnosis or not args.fix:
+        return None
+    cycles = sorted(candidate_folder(case_folder(out, chosen.case)).glob("supersede-*.json"))
+    path = args.record.resolve()
+    if not cycles or not path.is_file():
+        return None
+    published = _read(cycles[0]) or {}
+    old_record = published.get("old_record") or {}
+    if old_record.get("path") == str(path) and old_record.get("sha256") == file_sha256(path):
+        return cycles[0], published
+    return None
+
+
+def repair_cycle(root: Path, cycle: tuple[Path, dict]) -> None:
+    """The journal's missing lines of a published supersession (``cycle_to_repair``)."""
+    repaired = repair_cycle_journal(cycle[0], cycle[1], root)
+    print(json.dumps({"supersession": str(cycle[0]), "journal_lines_written": repaired}))
+
+
+def journal_repair(args, planned: list[Planned], out: Path, root: Path, campaign: str):
+    """The journal repair this call is, decided before anything acts, or None: ``supersede``
+    run again with its published record (``cycle_to_repair``), or ``restart-case`` with a
+    published restart record whose ``superseded`` line is missing (``restart_lines_to_repair``,
+    with the reason and outside a case the engineering cycle kept, as ``restart_case`` asks).
+    Returns the action, which writes only the missing lines."""
+    found = [p for p in planned if p.case.name == args.case]
+    if len(found) != 1:
+        return None
+    chosen = found[0]
+    if args.command == "supersede":
+        cycle = cycle_to_repair(args, chosen, out)
+        return None if cycle is None else lambda: repair_cycle(root, cycle)
+    if args.command == "restart-case" and args.infrastructure:
+        if resolution_of(out, chosen.case) is not None:
+            return None
+        pending = restart_lines_to_repair(chosen, out, root)
+        if pending:
+            return lambda: repair_restart_lines(chosen, root, campaign, pending)
+    return None
 
 
 def scientific_attempts(
@@ -1338,13 +1452,8 @@ def journal_starts(root: Path) -> dict[str, tuple[str, dict]]:
     """Every launcher attempt in the launch journals, by run id: (campaign, its start record)."""
     starts: dict[str, tuple[str, dict]] = {}
     for log in sorted((root / "launch").glob("*.jsonl")):
-        for line in log.read_text().splitlines():
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(record, dict) and record.get("event") == "start" and isinstance(
-                    record.get("run_id"), str):  # fmt: skip
+        for record in journal_records(log):  # the launcher's reading: a torn line is skipped
+            if record.get("event") == "start" and isinstance(record.get("run_id"), str):
                 starts.setdefault(record["run_id"], (log.stem, record))
     return starts
 
@@ -1404,13 +1513,11 @@ def supersede_case(
     path = args.record.resolve()
     sha = file_sha256(path)
     cycles = sorted(candidate_dir.glob("supersede-*.json"))
+    again = cycle_to_repair(args, chosen, out)
+    if again is not None:
+        repair_cycle(root, again)
+        return
     if cycles:
-        published = _read(cycles[0]) or {}
-        old_record = published.get("old_record") or {}
-        if old_record.get("path") == str(path) and old_record.get("sha256") == sha:
-            repaired = repair_cycle_journal(cycles[0], published, root)
-            print(json.dumps({"supersession": str(cycles[0]), "journal_lines_written": repaired}))
-            return
         sys.exit(f"candidate {case.candidate}: its engineering cycle is recorded already "
                  f"({cycles[0]}): one cycle per candidate, and a technical failure left "
                  "unresolved after it routes to the technical feasibility report")  # fmt: skip
@@ -1597,7 +1704,8 @@ def supersede_case(
 
 def repair_cycle_journal(path: Path, record: dict, root: Path) -> list[str]:
     """The journal's ``superseded`` line of every launcher run the supersession names, where it
-    is missing; returns the run ids written."""
+    is missing; returns the run ids whose line ``launch.hold`` or ``launch.supersede`` wrote
+    (neither writes a line identical to one in the journal)."""
     reason = (
         f"superseded by an engineering cycle: {record.get('diagnosis')}; fix: {record.get('fix')}"
     )
@@ -1605,16 +1713,16 @@ def repair_cycle_journal(path: Path, record: dict, root: Path) -> list[str]:
     for entry in record.get("held") or []:  # an unresolved outcome: the run is never rerun
         run = SimpleNamespace(label=entry.get("run"), experiment=entry.get("experiment"),
                               config_hash=entry.get("config_hash"))  # fmt: skip
-        if entry["run_id"] not in held_runs(run, launch_records(root)):
-            hold(root, entry["campaign"], run, entry["run_id"], reason=entry["reason"],
-                 record=str(path))  # fmt: skip
+        if entry["run_id"] not in held_runs(run, launch_records(root)) and hold(
+                root, entry["campaign"], run, entry["run_id"], reason=entry["reason"],
+                record=str(path)):  # fmt: skip
             written.append(entry["run_id"])
     for entry in record.get("launchers") or []:
         run = SimpleNamespace(label=entry.get("run"), experiment=entry.get("experiment"),
                               config_hash=entry.get("config_hash"))  # fmt: skip
-        if entry["run_id"] not in superseded_runs(run, launch_records(root)):
-            supersede(root, entry["campaign"], run, entry["run_id"], reason=reason,
-                      record=str(path))  # fmt: skip
+        if entry["run_id"] not in label_superseded(run, root) and supersede(
+                root, entry["campaign"], run, entry["run_id"], reason=reason,
+                record=str(path)):  # fmt: skip
             written.append(entry["run_id"])
     return written
 
@@ -1624,8 +1732,9 @@ def superseded_run_ids(run: Run, root: Path) -> list[str]:
     restart or supersession (``launch.supersede``), or started, and ended technical or not ended
     at all, with no settled directory (completed, whether it stands or is in conflict, or
     diverged). A completed run that cannot stand keeps its checkpoint for the diagnosis."""
-    settled_outcomes = {r.get("run_id") for r in launch_records(root)
+    settled_outcomes = {r["run_id"] for r in launch_records(root)
                         if r.get("event") == "end" and r.get("run") == run.label
+                        and isinstance(r.get("run_id"), str)
                         and r.get("outcome") in ("done", "diverged", "conflict")}  # fmt: skip
     superseded = []
     named = superseded_runs(run, launch_records(root))  # a restart or supersession names them
@@ -1830,13 +1939,19 @@ def driver_script(
                  "never reruns a part or a launcher run: an interrupted part (exit "
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
                  "REASON, a failed launcher run with scripts/launch.py --only LABEL "
-                 "--max-attempts 1 --recovery REASON. The verdict is written on every exit."),
+                 "--max-attempts 1 --recovery REASON. The verdict is written on every exit, "
+                 "but over a launch journal that is not whole (an unresolved torn line, or a "
+                 "line a published record requires missing), which verdict refuses too (exit "
+                 f"{TORN_JOURNAL}): no verdict.json is written then, and an older one stays on "
+                 "disk."),
         *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory "
                  f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
                  f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
                  f"technical case; {STALE} a stale case (records of other GPU code or settings); "
-                 f"{HELD} a case whose label has a held launcher run; the launcher's own when it "
-                 "stops; another a failed command."),
+                 f"{HELD} a case whose label has a held launcher run; {TORN_JOURNAL} a torn line "
+                 "in a launch journal, or a line a published record requires missing from it "
+                 "(complete's refusal, or the launcher's); the launcher's own when it stops; "
+                 "another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -1852,7 +1967,7 @@ def driver_script(
         " 2>&1",
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
         f'stop() {{ echo "== {stamp} $1" >&2; exit "$2"; }}',
-        "# The verdict on every exit, whatever stopped the driver",
+        "# The verdict on every exit, whatever stopped the driver (it refuses a journal not whole)",
         f"trap 'rc=$?; {RUN} verdict {common} || true; exit $rc' EXIT",
         "# No GPU job beside the qualification: no compute process, and (as a container may not",
         "# see other processes) no GPU memory in use",
@@ -1884,6 +1999,10 @@ def driver_script(
             f'nothing is rerun or skipped" {STALE} ;;',
             f'  {HELD}) stop "{p.case.name}: its label has a held launcher run (an outcome '
             f'nobody could resolve); the launcher is not called" {HELD} ;;',
+            f'  {TORN_JOURNAL}) stop "{p.case.name}: the launch journal is not whole (an '
+            "unresolved torn line, or a line a published record requires); restore it by its "
+            "record's repair, or scripts/launch.py --resolve-torn (docs/operations.md)"
+            f'" {TORN_JOURNAL} ;;',
             f"  {NO})",
             f"    {RUN} clear-stale {common} {case}",
             "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
@@ -2013,6 +2132,21 @@ def main(argv: list[str] | None = None) -> None:
     out = args.out or root / "qualification"
     if args.command in ("part", "verdict", "interrupted", "restart-case", "supersede") and problems:
         sys.exit("\n".join(["The campaign is not a qualification campaign:", *problems]))
+    unresolved = [line for line in torn_lines(root) if not line.resolved]
+    missing = missing_lines(root)
+    if unresolved or missing:  # the launcher's refusal; only a repair of lost lines goes on
+        repair = journal_repair(args, planned, out, root, name)
+        if repair is None:
+            print(TornJournalError(unresolved, missing), file=sys.stderr)
+            sys.exit(TORN_JOURNAL)
+        try:
+            repair()
+        finally:  # what it leaves: the resolution, or another record's repair, is next
+            left = [line for line in torn_lines(root) if not line.resolved]
+            gone = missing_lines(root)
+            if left or gone:
+                print(TornJournalError(left, gone), file=sys.stderr)
+        return
     if args.command == "verdict":
         require_clean()
         print(verdict(args, settings, scope, planned, out, root))

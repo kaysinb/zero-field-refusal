@@ -12,6 +12,7 @@ it names one."""
 
 import ast
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -23,15 +24,16 @@ from test_qualification_records import qualify as qualify  # noqa: F401  (the fi
 from test_study3_decisions import World as DecisionWorld
 from test_study3_decisions import coverage_row, gates_with, pass_rate, seal, verified
 from test_study3_progress import numerical_runs, search_round0
-from test_study3_records import SENTINEL
+from test_study3_records import SENTINEL, tear
 from test_study3_records import World as RunWorld
 
-from zero_field_refusal import code_identity
+from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import cap_of
-from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint
+from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE, Cell, Endpoint
+from zero_field_refusal.paths import REPO_ROOT
 
 REGISTRATION = "docs/study3-preregistration.md"
 AMENDMENTS = "".join(f"\n### Amendment {n}: change {n}\n\nText {n}.\n" for n in (1, 2, 3))
@@ -441,8 +443,12 @@ def test_the_validation_size_and_level_are_the_simulation_records(study) -> None
 
 
 @pytest.mark.parametrize("evidence", ["ledger", "log", "simulation", "engineering", "new log",
-                                      "new input", "state"])  # fmt: skip
+                                      "new input", "state", "torn line", "repaired torn line",
+                                      "resolved torn line"])  # fmt: skip
 def test_an_evidence_file_changed_after_the_fixation_is_refused(study, evidence) -> None:
+    """Every pinned file stays as it was: a pinned launch log changed in any way breaks the
+    fixation, a torn line the launcher's repair or resolution then names included (the log is
+    pinned whole, by its sha256)."""
     study.ready()
     record = study.fixation()
     study.put(VALIDATION_C1, record, commit=False)
@@ -463,6 +469,18 @@ def test_an_evidence_file_changed_after_the_fixation_is_refused(study, evidence)
     elif evidence == "state":  # the qualification recomputed gives another state
         study.states[("A", 2.11e-5)] = "incomplete"
         words = ("qualification.states.A.lr_u", "incomplete")
+    elif evidence.endswith("torn line"):  # a crash in the middle of an append to a pinned log
+        log = study.root / "launch" / "study3-c1-numerical.jsonl"
+        data = b'{"time": "2026-10-26T01:00:00+00:00", "event": "recovery", "experiment": "st'
+        tear(log, data)
+        if evidence == "repaired torn line":  # the launcher's next append names it
+            launch._log(log, {"event": "stop", "run": "A-1.45e-05/s10200",
+                              "reason": "stop requested"})  # fmt: skip
+        elif evidence == "resolved torn line":
+            launch.resolve_torn(study.root, log.name, offset=log.stat().st_size - len(data),
+                                sha256=hashlib.sha256(data).hexdigest(),
+                                reason="nothing was lost")  # fmt: skip
+        words = ("qualification.logs", "launch/study3-c1-numerical.jsonl", "sha256")
     elif evidence == "log":  # the qualification's campaign run once more
         study.runs.log("study3-c1-numerical", {"event": "recovery", "experiment": "study3",
                                                "cell": "A-1.45e-05", "runs": ["A-1.45e-05/s10200"],
@@ -843,7 +861,9 @@ def test_a_validation_run_without_its_start_fails_closed(study) -> None:
 
 def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
     """A study-3 start whose header's step, or whose run id, is a list: a named problem of the
-    journal check, never a crash."""
+    journal check, never a crash. One whose run id is a list is a torn line, as the launcher
+    reads it (``launch.well_formed``), named by its log and line; one with no run id at all is a
+    record (the rule catches a malformed value, not a removed key), named as having none."""
     study.validated()
     study.runs.log("study3-c1-validation-x", {
         "event": "start", "run": "A-1.45e-05/s10300", "attempt": 1, "run_id": "r1",
@@ -852,9 +872,13 @@ def test_an_unhashable_header_step_or_run_id_is_named(study) -> None:
     study.runs.log("study3-c1-validation-y", {
         "event": "start", "run": "A-1.45e-05/s10301", "attempt": 1, "run_id": ["r", "2"],
         "experiment": "study3", "config_hash": "0" * 16, "header": study.header()})  # fmt: skip
+    study.runs.log("study3-c1-validation-z", {
+        "event": "start", "run": "A-1.45e-05/s10302", "attempt": 1,
+        "experiment": "study3", "config_hash": "0" * 16, "header": study.header()})  # fmt: skip
     found = study.problems()
     assert has(found, "study3-c1-validation-x", "names no study-3 step"), found
-    assert has(found, "study3-c1-validation-y", "names no run id"), found
+    assert has(found, TORN_LINE, "launch/study3-c1-validation-y.jsonl line 1"), found
+    assert has(found, "study3-c1-validation-z", "names no run id"), found
 
 
 def test_a_header_naming_another_record_or_sha256_is_refused(study) -> None:
@@ -1114,8 +1138,11 @@ def test_a_missing_or_unreadable_journal_fails_closed(study) -> None:
     log = study.root / "launch" / "study3-c1-validation-10300.jsonl"
     lines = log.read_text().splitlines()
     log.write_text("\n".join([lines[0], "{not json", *lines[1:]]) + "\n")
-    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 2", "unparseable")
-    log.write_bytes(b"\xff\xfe" + log.read_bytes())
+    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 2", "torn line")
+    log.write_bytes(b"\xff\xfe" + log.read_bytes())  # a line not UTF-8 is a torn line
+    assert has(study.problems(), "launch/study3-c1-validation-10300.jsonl line 1", "torn line")
+    log.unlink()
+    log.mkdir()  # a log that cannot be read
     assert has(study.problems(), "launch journal", "cannot be read")
     shutil.rmtree(study.root / "launch")
     found = study.problems()
@@ -1313,8 +1340,87 @@ def test_the_logs_a_qualification_rests_on(study) -> None:
         "launch/hold.jsonl", "launch/recover.jsonl", "launch/settle.jsonl",
         "launch/study3-c1-numerical.jsonl", "launch/study3-c1-repair.jsonl"]  # fmt: skip
     path = study.root / "launch" / "unrelated.jsonl"
-    path.write_text("{cut\n" + path.read_text())
+    path.write_bytes(b"{cut \xff\n" + path.read_bytes())
     assert has(sv.qualification_logs(study.root, 1)[1], "launch/unrelated.jsonl line 1")
+    # resolved as the launcher resolves it: no problem, and the logs pinned are the same
+    launch.resolve_torn(study.root, path.name, offset=0,
+                        sha256=hashlib.sha256(b"{cut \xff").hexdigest(),
+                        reason="nothing was lost")  # fmt: skip
+    assert sv.qualification_logs(study.root, 1)[1] == []
+    assert [entry["path"] for entry in sv.qualification_logs(study.root, 1)[0]] == [
+        "launch/hold.jsonl", "launch/recover.jsonl", "launch/settle.jsonl",
+        "launch/study3-c1-numerical.jsonl", "launch/study3-c1-repair.jsonl"]  # fmt: skip
+
+
+REFUSED_TORN = ("a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn) "
+                "before the fixation; its resolution changes the log")  # fmt: skip
+
+
+def launch_script():
+    """scripts/launch.py, the launcher's command."""
+    spec = importlib.util.spec_from_file_location("launch_script",
+                                                  REPO_ROOT / "scripts" / "launch.py")  # fmt: skip
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_fixation_pins_no_log_with_an_unresolved_torn_line(study, monkeypatch) -> None:
+    """A crash cut the last line of the qualification's log short. The analysis skips such a line,
+    but the launcher refuses it, and its one resolution appends to that log: so the fixation pins
+    no log that holds an unresolved torn line, the last included, and names it by its log and
+    line; the builder refuses. Once the launcher's resolution (``scripts/launch.py
+    --resolve-torn``) names the line, the log is pinned with no problem."""
+    study.ready()
+    log = study.root / "launch" / "study3-c1-numerical.jsonl"
+    data = b'{"time": "2026-10-27T00:00:00+00:00", "event": "stop", "run": "A-1'
+    offset, _ = tear(log, data)
+    number = log.read_bytes().count(b"\n") + 1
+    logs, problems = sv.qualification_logs(study.root, 1)
+    where = "launch/study3-c1-numerical.jsonl"
+    assert logs == [] and problems == [f"{where} line {number}: {REFUSED_TORN}"]
+    with pytest.raises(sv.RecordRefused) as refused:
+        study.fixation()
+    assert f"{where} line {number}: {REFUSED_TORN}" in str(refused.value)
+    monkeypatch.setenv("RUNS_DIR", str(study.root))
+    launch_script().main(["--resolve-torn", log.name, "--offset", str(offset), "--sha256",
+                          hashlib.sha256(data).hexdigest(), "--reason",
+                          "nothing was lost"])  # fmt: skip
+    logs, problems = sv.qualification_logs(study.root, 1)
+    assert problems == [] and logs == [{"path": where, "sha256": sha256(log)}]
+    record = study.fixation()
+    assert record["qualification"]["logs"] == logs
+
+
+FIXED_TORN = "a torn line the launcher refuses: resolve it (scripts/launch.py --resolve-torn)"
+PINNED_TORN = "its resolution changes a log the fixation pins, so the fixation breaks"
+
+
+def test_a_torn_line_once_the_fixation_exists_is_named_as_its_reader_finds_it(study) -> None:
+    """Once the validation fixation exists, its reader (and ``versions_problems`` through it:
+    ``check``, ``guard`` and the campaign writer) names a torn line the launcher refuses by its
+    log and line, with the command that resolves it and without the builder's "before the
+    fixation"; in a log the fixation pins, it adds that the resolution changes that log, so the
+    fixation breaks."""
+    study.validated()
+    assert study.problems() == []
+    other = study.root / "launch" / "unrelated.jsonl"
+    other.write_text('{"event": "end", "run_id": "a-run-of-no-qualification", "outcome": "done"}\n')
+    assert study.read_validation()[1] == []
+    tear(other, b'{"time": "2026-10-27T00:00:00+00:00", "event": "end", "run_id": "a-ru')
+    found, problems = study.read_validation()
+    assert found is None
+    shown = [p for p in problems if "launch/unrelated.jsonl line 2" in p]
+    assert len(shown) == 1 and shown[0].endswith(
+        f"qualification.logs: launch/unrelated.jsonl line 2: {FIXED_TORN}"), problems  # fmt: skip
+    log = study.root / "launch" / "study3-c1-numerical.jsonl"
+    number = log.read_bytes().count(b"\n") + 1
+    tear(log, b'{"time": "2026-10-27T00:00:00+00:00", "event": "stop", "run": "A-1')
+    where = f"qualification.logs: launch/study3-c1-numerical.jsonl line {number}: "
+    for found in (study.read_validation()[1], study.problems()):
+        shown = [p for p in found if where in p]
+        assert len(shown) == 1 and shown[0].endswith(f"{where}{FIXED_TORN}; {PINNED_TORN}"), found
+        assert not [p for p in found if "before the fixation" in p], found
 
 
 # ------------------------------------------------------------------ a real qualification

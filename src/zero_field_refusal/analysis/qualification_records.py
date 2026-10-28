@@ -133,9 +133,11 @@ of the candidate (the repair's included) rewrites the file with its own rates.
 
 **Problems** (each blocks every decision that rests on the qualification): an unreadable record
 (a part attempt, a trajectory result, a restart, supersession or release record, the journal, the
-cache, or a cache without its rates); a malformed record, never an exception: one the verdicts
-cannot read (a case, an interrupted rest's trajectory results, a kept case, a rate; where the
-script would raise, the record is named and left out); a supersession record that fails a check
+cache, or a cache without its rates); a torn line of the journal before the last of its log that
+is not resolved (``study3_records``' rule, by its log and line; a resolved one is no problem); a
+malformed record, never an exception: one the verdicts cannot read (a case, an interrupted rest's
+trajectory results, a kept case, a rate; where the script would raise, the record is named and
+left out); a supersession record that fails a check
 of the engineering cycle (above: it voids nothing); a start of the qualification refused or
 that cannot be bound to its case, starts of one label bound to different cases, two issued runs
 (labels) of one case, a cell whose config this checkout's configs cannot compose, a case record
@@ -199,7 +201,9 @@ from .study3_records import (
     DECISIONS,
     EXPERIMENT,
     RATE_TOLERANCE,
+    TORN_WHY,
     _command_config,
+    _journal_logs,
     _sealed_records,
     _unbacked,
     plain_name,
@@ -465,26 +469,22 @@ class _Issued:
 
 
 def _journal(root: Path, problems: list[str]) -> list[tuple[str, dict[str, Any]]]:
-    """Every record of every launch log (UTF-8, as ``study3_records`` reads it), with its
-    campaign; a line cut short by a crash is skipped (the launcher's rule). A log that resolves
-    under a sealed folder is a problem, never opened."""
+    """Every record of every launch log, with its campaign, each log read as the launcher and
+    ``study3_records`` read it (``journal_lines``: split at ``\n`` alone, each line decoded
+    strictly as UTF-8). A torn line holds no record: the last of its log is skipped (the
+    launcher's rule), a resolved one is no problem, and any other is a problem by its log and
+    line, never its bytes. A log that resolves under a sealed folder, or cannot be read, is a
+    problem, never opened."""
+    logs, unread = _journal_logs(root)
+    for log, error in unread:
+        why = (sealed_record("a launch log", log, root) if error is None
+               else "an unreadable launch journal")  # fmt: skip
+        problems.append(f"{log}: {why}")
     records = []
-    for log in sorted((root / "launch").glob("*.jsonl")):
-        if under_sealed(log, root):
-            problems.append(f"{log}: {sealed_record('a launch log', log, root)}")
-            continue
-        try:
-            lines = log.read_text(encoding="utf-8").splitlines()
-        except (OSError, ValueError):
-            problems.append(f"{log}: an unreadable launch journal")
-            continue
-        for line in lines:
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(record, dict):
-                records.append((log.stem, record))
+    for log in logs:
+        problems += [f"{root / log.path} line {number}: {TORN_WHY}" for number in log.corrupt]
+        records += [(PurePosixPath(log.path).stem, line.record) for line in log.lines
+                    if line.record is not None]  # fmt: skip
     return records
 
 

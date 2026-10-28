@@ -11,6 +11,7 @@ take long to build in files, ``advance``'s over the progress tests' records; the
 the real one on a Git checkout, and is replaced where the state is ``advance``'s."""
 
 import copy
+import hashlib
 import json
 import os
 import pickle
@@ -40,9 +41,11 @@ from test_study3_versions import CONFIRMATION_C1, FIRST, SECOND, VALIDATION_C1
 from test_study3_versions import Study as VersionsStudy
 from test_study3_versions import sha256 as vsha256
 
+from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import decision_path, end_lines, read_decision
 from zero_field_refusal.analysis.study3_records import SEEDS, Endpoint
+from zero_field_refusal.launch import load_campaign
 from zero_field_refusal.paths import REPO_ROOT
 
 SUMMARY = REPO_ROOT / "scripts" / "study3_summary.py"
@@ -142,6 +145,31 @@ def test_progress_prints_the_state_as_json(world, summary, monkeypatch) -> None:
                                    world.root / "no-theta0")  # fmt: skip
     assert code == 0 and json.loads(printed)["step"]["kind"] == "blocked"
     assert "θ₀" in printed
+
+
+def test_progress_prints_the_resolved_torn_lines(world, summary) -> None:
+    """A crash cut a line of a campaign's log short, and the launcher's resolution named it
+    (``launch.resolve_torn``): the printed state lists the line by its log, its line and its
+    kind; nothing else of its bytes is printed."""
+    world.ready()
+    path = world.write("search-round0")
+    world.launched(path)
+    name = load_campaign(path)[0]
+    log = world.root / "launch" / f"{name}.jsonl"
+    number, offset = log.read_bytes().count(b"\n") + 1, log.stat().st_size
+    data = b'{"time": "2026-10-27T01:00:00+00:00", "event": "end", "run": "TORN-SECRET-9a\xff'
+    with log.open("ab") as f:
+        f.write(data)  # no newline after it: a crash in the middle of the append
+    launch.resolve_torn(world.root, log.name, offset=offset,
+                        sha256=hashlib.sha256(data).hexdigest(),
+                        reason="the end is settled from the run directory")  # fmt: skip
+    code, printed, error = summary.run("progress", "--runs-root", world.root, "--theta0",
+                                       world.runs.theta0)  # fmt: skip
+    assert code == 0, error
+    shown = json.loads(printed)
+    assert shown["resolved_torn_lines"] == [
+        {"log": f"launch/{name}.jsonl", "line": number, "kind": "end"}]  # fmt: skip
+    assert shown["problems"] == [] and "TORN-SECRET" not in printed + error
 
 
 def scalars(node) -> list:

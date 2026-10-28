@@ -128,6 +128,29 @@ def test_a_wrong_cell_stops_the_campaign_before_anything_runs(tmp_path, cells, e
         load_campaign(campaign(tmp_path, f"name: c\ncells: {cells}\n"))
 
 
+@pytest.mark.parametrize("name", ["7", "[a, b]", "{a: 1}", "null"])
+def test_a_cell_name_that_is_not_a_string_is_a_campaign_error(tmp_path, monkeypatch,
+                                                                name) -> None:  # fmt: skip
+    """A cell whose name parses to a number, a list, a mapping or null: the campaign is refused
+    as a campaign error naming the cell by its position, before anything is launched or
+    written; the script exits with that message, no traceback."""
+    import importlib.util
+
+    path = campaign(tmp_path, "name: c\ncells:\n  - {name: ok, config: experiments/smoke, "
+                              f"seeds: [0]}}\n  - {{name: {name}, config: experiments/smoke, "
+                              "seeds: [1]}\n")  # fmt: skip
+    with pytest.raises(CampaignError, match="cell 2 of the campaign: its name must be a string"):
+        load_campaign(path)
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
+    with pytest.raises(SystemExit, match="cell 2 of the campaign: its name must be a string"):
+        script.main([str(path)])
+    assert not (tmp_path / "runs").exists()
+
+
 def test_the_campaigns_header_goes_into_every_start(tmp_path) -> None:
     """The final review of gate B, I4: a campaign's optional ``header`` (study 2's records the
     w_max it was written under) is logged with every start; without one, nothing is added; a

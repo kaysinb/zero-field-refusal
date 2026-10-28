@@ -53,6 +53,9 @@ rates. ``route``: the decisions taken on the way (a candidate left, P–F closed
 chosen). ``closures``: the closure records written. ``validation`` and ``confirmation``: the
 stage's summary once reached. ``problems``: every problem found. ``not_counted``: every validation
 or confirmation run that does not count for the commit it ran (below), wherever the walk stops.
+``resolved_torn_lines``: every torn line of the launch journal that the launcher's resolution
+names (``study3_records``, "Attempts": listed, no problem), each by its ``log`` (its path under
+RUNS_DIR), its ``line`` number and its ``kind``; nothing else of the line.
 
 **Order** ("Seeds and order"). The engineering record passed (the cells of the engineering stage,
 every arm at candidate 1's starting rates on 10000–10003, are issued from the start), then the
@@ -364,8 +367,10 @@ class Records:
     start in the launch journal (``headers``), the sha256 of each valid decision record's file
     now (``digests``), each run's last end line and its start line
     (``study3_decisions.end_lines``, ``start_lines``), the runs the launcher would open a
-    recovery round for (``recoverable``) and the validation and confirmation runs that do not
-    count for the commit they ran (``uncounted``: ``study3_versions.uncounted_runs``)."""
+    recovery round for (``recoverable``), the validation and confirmation runs that do not
+    count for the commit they ran (``uncounted``: ``study3_versions.uncounted_runs``) and the
+    journal's resolved torn lines, each by its log, line and kind (``resolved``:
+    ``study3_records.journal_lines``)."""
 
     endpoints: Sequence[Endpoint] = ()
     problems: Sequence[str] = ()
@@ -381,6 +386,7 @@ class Records:
     cycles: Mapping[int, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
     recoverable: Collection[str] = frozenset()
     uncounted: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    resolved: Sequence[Mapping[str, Any]] = ()
 
 
 # ------------------------------------------------------------------ the reader
@@ -429,6 +435,9 @@ def progress(
         "headers": _headers(root),
         "digests": {k: _record_digest(root, k) for k in valid},
         "ends": end_lines(root, logs), "starts": start_lines(root, logs),
+        # the resolved torn lines: their log, line and kind, nothing else of them
+        "resolved": tuple({"log": r["path"], "line": r["line"], "kind": r["kind"]}
+                          for log in logs for r in log.resolved),
     }  # fmt: skip
     try:
         read_theta0(theta0)
@@ -1605,6 +1614,7 @@ class _Walk:
             "problems": list(dict.fromkeys(self.problems)),
             "not_counted": [dict(self.records.uncounted[k])
                             for k in sorted(self.records.uncounted)],
+            "resolved_torn_lines": [dict(r) for r in self.records.resolved],
             "prescribed": {k: sorted(v) for k, v in sorted(self.prescribed.items()) if v},
             **self.extra, **extra,
         }  # fmt: skip

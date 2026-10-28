@@ -1626,11 +1626,17 @@ docstring has every rule.
   that no process holds the GPU and under 1 000 MiB of it is in use, and that the free host
   memory reaches `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the
   host, ≈ 25-30 GB at 1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), then runs the
-  cases. It writes the verdict on every exit. **Exits:** 0, every case complete; 1, a
+  cases. It writes the verdict on every exit but one: over a launch journal that is not whole (an
+  unresolved torn line, or a line a published record requires missing) `verdict` refuses too
+  (exit 12), so no `verdict.json` is written then and an older one stays on disk. **Exits:** 0,
+  every case complete; 1, a
   precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
   that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
-  9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; the
-  launcher's own exit when it stops; any other, the exit of the command that failed.
+  9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; 12, a
+  launch journal that is not whole, a torn line unresolved or a line a published record requires
+  missing (`complete` refuses it, as every `qualify.py` command that reads the runs does, and so
+  does the launcher; restored as [launching runs](#launching-runs) says); the launcher's own exit
+  when it stops; any other, the exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
@@ -1665,7 +1671,9 @@ so it holds no spread. It holds:
   a terminal outcome;
 - the active arms and comparisons, the rates, the route, the closures and the problems;
 - the validation and confirmation runs that do not count for the commit they ran (`not_counted`,
-  below).
+  below);
+- the launch journal's resolved torn lines (`resolved_torn_lines`): each line's log, line number
+  and kind, nothing else of it (below, "A torn launch-log line").
 
 Nothing is decided on a problem: the step stays blocked while one is listed. Read the state
 before each command below.
@@ -1858,14 +1866,72 @@ before each command below.
   for a run left unfinished), and starts its next attempt only when that outcome is technical.
   The block's missing cells, if any, are then written again by the writer, alone, under a new
   campaign name. A block file or a `run.sh` already run is not run again.
-- **A torn launch-log line** (a residual risk). The launcher appends each journal line with its
-  newline, and does not first end a line a crash cut short. A crash mid-append leaves the last
-  line cut short, which every reader skips, as the launcher does. If another append follows, the
-  cut line is no longer the last: it is corrupt, and the record appended after it is joined to it
-  and lost too. The analysis then blocks, naming the log and the line, since a start it held
-  cannot be shown. For a qualification log the validation fixation pins, any edit of the log
-  breaks the fixation for good. The repair belongs to a later change of the launcher: a fresh
-  line when the log does not end with a newline.
+- **A torn launch-log line.** A torn line is any line of a launch log that holds no record (its
+  definition: [launching runs](#launching-runs)), a JSON object whose identity is not all
+  strings included, such as a start whose run id is a list (a malformed value; a removed key or
+  an invented event is no torn line, and the journal is never edited by hand). A crash in the
+  middle of an append leaves one, the bytes after a log's last newline; the launcher's next
+  append to that log ends it with a newline and names its bytes in a `torn` record. While any
+  log holds a torn line that no `torn_resolved` record names, the launcher refuses with exit
+  12, and so does every `qualify.py` command that reads the runs but its two journal repairs.
+  The procedure:
+  1. Restore what the line's kind lost, in the order its kind takes (the per-kind list in
+     [launching runs](#launching-runs)):
+     - `held`, `superseded`: run the writer again first, then resolve. The two journal repairs,
+       `qualify.py supersede` with the same record and `restart-case` again for the case, run
+       while the torn line is still unresolved and write only the missing line.
+     - `end`, `start`, `recovery`, `stop`: resolve first, since the launcher refuses until then;
+       then relaunch with the same command, or read on.
+     - an unknown kind (`null`): read the run directories of the campaign's labels against the
+       readable records first, as the per-kind list says. Such a line may be a lost `held` or
+       `superseded` line cut before its `"event"` (each record's `"time"` comes first). If one
+       is lost, take that kind's order: run the writer again, then resolve. Otherwise resolve
+       first, then relaunch. Either way, the resolution's reason says what was found.
+     - `torn`: resolve; the resolution writes the missing `torn` record, and nothing else is
+       restored.
+     - a lost `torn_resolved`: the line it resolved is unresolved again. Resolve that line again;
+       nothing else is restored.
+  2. Record the resolution:
+     `python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT`. It
+     writes the line's `torn` record if none names it yet, then its `torn_resolved` record.
+  3. Study 3's analysis then accepts the line. It reads each log as the launcher does (split at
+     `\n` alone, each line decoded strictly as UTF-8), so a line's number counts every line
+     before it, a torn one included, as a closure record cites it. A torn line before the last of
+     its log is accepted when a `torn` record names its offset, length and sha256 and a
+     `torn_resolved` record names its log, offset and sha256: the run records list it with its
+     kind and its line, and it is no problem. Any other torn line before the last (a blank line
+     or a JSON value that is no object included) is a problem named by its log and line, never
+     its bytes, and blocks: what it held cannot be shown. The last line of a log, with no newline
+     after it, is skipped, as the launcher's records skip it. The `torn` and `torn_resolved`
+     records are no problem and void nothing.
+
+  What the lost line held stays lost: a lost `start` leaves a run directory with no start, which
+  the analysis names and blocks on. For a qualification log a validation fixation pins, any
+  change of the log after the fixation, the repair and the resolution included, breaks the
+  fixation for good: the log is pinned whole, by its sha256. So resolve every torn line, the last
+  line of a log included, before the validation fixation: while any log holds one, the builder
+  (`study3_summary.py fixation validation`) refuses and writes nothing, naming each such line by
+  its log and line. Once the fixation exists, its reader (`check`, `guard`, the campaign writer)
+  names such a line the same way, with the command that resolves it; in a log the fixation pins,
+  the resolution changes that log, so the fixation breaks.
+- **A missing journal line of a published record.** `qualify.py` publishes a cycle's or a case
+  restart's record first and appends its journal lines after it. A crash between the two, or an
+  append that wrote no byte, leaves the record without its lines and no torn byte. The launcher
+  and every `qualify.py` command that reads the runs reconcile the published records under
+  `$RUNS_DIR/qualification/` with the journal (`launch.missing_lines`) and refuse with exit 12,
+  naming each missing line by its record's path, its event and its run id, until the record's
+  own repair restores it: `qualify.py supersede` run again with the cycle's record (its
+  `launchers`' `superseded` lines and its `held` lines), or `qualify.py restart-case` for the
+  restart's case (its launcher run's `superseded` line). Nothing needs resolving afterwards:
+  there is no torn line. A published record that cannot be read blocks the same way, named by its
+  path, and so does a record entry that names no run (its label, experiment or run id is not
+  there, or not a string), named by its record's path and event; both are fixed by hand, since
+  no command can tell what they should hold. The reconciliation reads `$RUNS_DIR/qualification/`
+  alone: a record published under a custom `--out` is outside it, and the driver never passes
+  `--out`. A `supersede` or `restart-case` run by hand while a launcher is running can stop that
+  launcher with exit 12: if the launcher reads the journal after the record is published and
+  before its lines are appended, it finds them missing. Run the launcher again once the command
+  has ended.
 - **A technical mark outside the qualification.** A technical mark of a search, validation or
   confirmation run, in any arm, stops the route: the step is blocked and technical, with the
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
@@ -1999,6 +2065,84 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   process starts: a signal that arrives while an admitted attempt is being logged does not keep
   it from starting, so expect up to one more run after the signal. A signal during the last
   attempt that then succeeds leaves no `stop` record and exit code 0: the campaign simply ended.
+- **The launcher's journal and a torn line.** Each record of `RUNS_DIR/launch/<campaign>.jsonl`
+  is appended as one line, in one write, under an exclusive lock on the log (writers take
+  turns); then, still under the lock, the log, its folder `launch/` and the runs root that holds
+  it are fsynced, on every append, so that the log's and the folder's entries are durable before
+  the append returns, whoever created them. The logs are read line by line,
+  split at `\n` alone, each line decoded strictly as UTF-8. A **torn line** is any line that
+  holds no record: one that does not decode or parse (a byte-order mark included), a valid JSON
+  value that is not an object, a blank line (length 0), or a JSON object whose identity is not
+  all strings (any of `event`, `run`, `experiment`, `run_id`, `config_hash`, `campaign`, `log`,
+  `sha256`, `cell`, `only` present with a value that is not a string): such a record blocks
+  until resolved instead of matching nothing. A record with one of these keys absent, or with an
+  event no reader knows, is still a record, and matches nothing. The journal is written only by
+  the launcher and qualify.py; it is never edited by hand. The torn-line rule catches a
+  malformed value, not a removed key or an invented event. The launcher writes only records
+  whose identity is all strings. A crash in the middle of an
+  append leaves one at the end of the log, the bytes after its last newline; the next append to
+  that log repairs it first, in two writes under its one lock: the newline that ends it together
+  with a `torn` record naming its exact bytes (`offset`, `length`, `sha256`) and its `kind`, the
+  event its bytes show through the strict pattern `"event": "<lower-case word>"` (`null`
+  otherwise), then the new record; nothing else of the torn bytes is copied. The journal must
+  also hold every line a published qualification record requires (a cycle's `held` and
+  `superseded` lines, a case restart's `superseded` line; [study 3](#study-3-campaigns),
+  "A missing journal line of a published record"): a line is there when a line of its event
+  names the same label, experiment and run id, whatever its config hash. While any log under
+  `RUNS_DIR/launch/` holds a torn line that no `torn_resolved` record names, or such a line is
+  missing (or such a record cannot be read), the launcher starts nothing, settles nothing and
+  opens no recovery round, with `--dry-run` too: it prints each torn line (log and line, offset,
+  length, kind, sha256) and each missing line (its record's path, event and run id) and exits
+  **12**.
+  Every log counts, since a label's `held` and `superseded` lines can live in any of them. A
+  missing line is restored by its record's repair alone (below); for a torn line, first restore
+  what its kind lost, then record the resolution:
+
+  - `end`: nothing to restore. The start stands without its end; once resolved, the launcher
+    settles it from its run directory, as any start found without its end.
+  - `start`: nothing to restore. A run directory may stand with no start; study 3's analysis
+    lists it and blocks. The launcher counts that directory as any directory of the run's config
+    and never reuses its run id.
+  - `held`, `superseded`: run the writer that lost the line again, first, then resolve. Every
+    `qualify.py` command that reads the runs refuses a journal that is not whole with exit 12, as
+    the launcher does, except these two journal repairs, which run despite an unresolved torn
+    line or a missing line, and then print what is left (a torn line to resolve, or another
+    record's missing line):
+    - `qualify.py supersede` with the same `--record`, `--diagnosis` and `--fix` as the
+      published cycle: it writes only the missing `held` and `superseded` lines and prints
+      `{"supersession": …, "journal_lines_written": [run ids]}` (exit 0);
+    - `qualify.py restart-case --campaign … --candidate N --case CASE --infrastructure
+      "<the original cause>"` again, for a case whose published restart records' launcher runs
+      lack their `superseded` lines: it writes only those lines, each with its restart record's
+      own reason (the new `--infrastructure` text is required but not written), and exits 1 with
+      `<case>: the restart is recorded (restart-<n>.json); the launch journal now names its
+      launcher run`.
+
+    Any other call of the two (a new cycle, a new restart) is refused like the rest. Each writes
+    only the missing lines: `launch.hold` and `launch.supersede` write a line only when no
+    identical one (the same event, label, experiment, run id and reason) is in the journal. A
+    held run is then never rerun, and a superseded one never counts.
+  - `recovery`, `stop`: resolve, then relaunch with the same command; a recovery round's reason is
+    recorded again.
+  - `torn`: nothing to restore; the resolution writes the missing `torn` record.
+  - `torn_resolved`: the line it resolved is unresolved again; run that resolution again.
+  - unknown (`null`; a blank line, say): first read the run directories of the campaign's labels
+    against the readable records; a line cut before its `"event"` may be a lost `held` or
+    `superseded` line. Restore what is missing as above, in its kind's order (a lost `held` or
+    `superseded` line: its writer again, then the resolution; otherwise the resolution, then the
+    relaunch), and say what was found in the reason.
+
+  ```bash
+  python scripts/launch.py --resolve-torn LOG --offset N --sha256 HEX --reason TEXT
+  ```
+
+  `LOG` is the log's file name as printed; no campaign file goes with it. The command appends
+  `{"event": "torn_resolved", "log", "offset", "sha256", "reason"}` to that log. A line that no
+  `torn` record names yet (still the log's last, or left by a power loss inside the repair, a
+  blank line, a line an older writer merged) gets its `torn` record first, so that both records
+  name every resolved line. It refuses an offset and sha256 that name no torn line of that log,
+  a line already resolved and an empty reason. The resolution does not recover the lost record:
+  it records that the operator restored what the journal needs.
 - **Study-2 runs** (`scripts/train.py` with a config that has a `schedule`) stop by K, plateau,
   instability or T_max and may extend their seed's appendable stream with their frozen θ₀; all
   runs of a seed that may extend its stream run on one machine, where writers take turns under
