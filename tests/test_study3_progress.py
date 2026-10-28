@@ -1919,8 +1919,9 @@ def test_a_started_block_with_a_run_not_ended_holds_the_confirmation() -> None:
     (way,) = step["ways_out"]
     assert (way["run_id"], way["label"], way["campaign"]) == (dead.run_id, dead.label,
                                                               dead.cell.campaign)  # fmt: skip
-    assert (f"launch.py <block file> --only {dead.label} --recovery REASON --max-attempts 1"
+    assert (f"launch.py <block file> --only {dead.label} --max-attempts 1 --recovery"
             in way["recovery"])  # fmt: skip
+    assert "no earlier round of the label gave" in way["recovery"]
     assert "study3_summary.py check" in way["recovery"]  # before every recovery round
     assert "cells" not in step and "campaign" not in step
     assert result["confirmation"]["may_start_next"] is False
@@ -2377,11 +2378,13 @@ def test_a_run_directory_the_reader_may_not_search_blocks(worlds) -> None:
                for r in result["step"]["reasons"])  # fmt: skip
 
 
-def technical_search_run(records, runs, *, status="failed", end="technical", recover_first=None):
+def technical_search_run(records, runs, *, status="failed", end="technical", recover_first=None,
+                         start=None):  # fmt: skip
     """Candidate 1's search with F's lower rate on 10101 a technical mark: an attempt the launcher
     ended ``end``, its meta.json recording ``status``, no terminal record; with
     ``recover_first``, a recovery round already spent on an earlier attempt: the run's own
-    (``"own"``, under ``only``) or its cell's (``"cell"``)."""
+    (``"own"``, under ``only``) or its cell's (``"cell"``); ``start``: more fields of the mark's
+    start record (``max_attempts``)."""
     spec = CANDIDATES[1]
     for arm in ARMS:
         for label in LABELS:
@@ -2411,7 +2414,8 @@ def technical_search_run(records, runs, *, status="failed", end="technical", rec
                 },
             )
         attempt = 2
-    run_id = runs.run("F", rate, 10101, end=end, terminal=False, attempt=attempt, **common)
+    run_id = runs.run("F", rate, 10101, end=end, terminal=False, attempt=attempt, start=start,
+                      **common)  # fmt: skip
     meta = runs.root / "study3" / run_id / "meta.json"  # its status as the tracker left it
     meta.write_text(json.dumps({**json.loads(meta.read_text()), "status": status}))
     return run_id
@@ -2550,6 +2554,38 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
     assert "closure" not in way
     assert ("recovery" in way) is recovery, case
     assert "check" not in way.get("recovery", ""), case  # a search run's round needs none
+
+
+@pytest.mark.parametrize("first", ["own", "cell"])
+@pytest.mark.parametrize("attempts", [1, None])
+def test_a_technical_run_whose_round_is_spent_is_recoverable_at_one_attempt(
+    worlds, first, attempts
+) -> None:
+    """A round already spent on an earlier attempt (the run's own, or its cell's): a technical
+    mark whose start carries ``max_attempts`` 1 takes a further round, and its way out names it,
+    ``--only`` its label at ``--max-attempts 1`` with a reason no earlier round gave and its
+    incident; with the default attempts at its start, it lists no recovery round."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    start = None if attempts is None else {"only": "x", "max_attempts": attempts}
+    label = f"F-{CANDIDATES[1]['start']['F']['l']:g}/s10101"
+    if start is not None:
+        start["only"] = label
+    run_id = technical_search_run(records, runs, recover_first=first, start=start)
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["problems"]) == (
+        "search", "blocked", [])  # fmt: skip
+    (way,) = result["step"]["ways_out"]
+    assert way["run_id"] == run_id
+    if attempts is None:
+        assert "recovery" not in way
+        return
+    assert f"--only {label} --max-attempts 1 --recovery" in way["recovery"]
+    assert "no earlier round of the label gave" in way["recovery"]
+    assert all(option in way["recovery"] for option in ("--incident-time", "--cause",
+                                                        "--evidence"))  # fmt: skip
+    assert "check" not in way["recovery"]  # a search run's round needs none
 
 
 def test_the_reader_blocks_on_a_refused_run(worlds) -> None:

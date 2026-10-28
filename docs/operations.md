@@ -1504,7 +1504,10 @@ docstring has every rule.
   the Pod and its container disk are the ones it started on (otherwise the case restarts,
   below); an interruption without a documented cause is recorded technical instead
   (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its
-  rerun is the launcher's recovery round with the reason.
+  rerun is a recovery round of its own with the reason and its incident, one attempt per round
+  (["Launching runs"](#launching-runs)): a second loss, or a first loss after the round was used
+  (by an engineering cycle's new launcher run, say), takes a further round with a reason no
+  earlier round of the label gave.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
@@ -1516,7 +1519,9 @@ docstring has every rule.
     --technical "stopped without a documented cause"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
     --only c1-numerical-adamw-1.45e-05-s10200/s10200 --max-attempts 1 \
-    --recovery "attempt 1 failed: <the fixed cause>"
+    --recovery "attempt 1 failed: <the fixed cause>" \
+    --incident-time 2026-10-29T03:12:00Z --cause "<the external cause, one line>" \
+    --evidence "<a path or reference to the evidence>"
   ```
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
@@ -1527,31 +1532,43 @@ docstring has every rule.
   interrupted attempt (above) and its checkpoints on the container disk, which a stopped Pod
   loses: the case starts again as a whole (below).
 - **A case restart.** When the Pod stopped during a case, its recorded parts cannot go on (the
-  launcher's and the harness's checkpoints are gone). `restart-case` records it: a
+  launcher's and the harness's checkpoints are gone). A missing endpoint checkpoint alone is a
+  possible loss requiring diagnosis, never by itself a lost container disk: diagnose it first,
+  and give the restart the interruption the diagnosis found. `restart-case` records it: a
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
   those attempts are void, kept and listed in the verdict, and neither count nor block. Once the
   record is published, it logs the case's launcher run superseded in the launch journal (the
   analysis counts the record and the line for that run alone, a start of the case's own label
-  under its candidate): the run stays on disk and in the journal, no longer counts for its label, and the launcher's recovery
-  round with the same reason starts a new one (if the command stopped between the two, running
-  it again writes the journal's line). Only an interrupted case is restarted: a restart is
+  under its candidate): the run stays on disk and in the journal, no longer counts for its label,
+  and a recovery round of the run's own with the same reason and its incident starts a new one
+  (if the command stopped between the two, running it again writes the journal's line). Only an interrupted case is restarted: a restart is
   refused without a reason, for a complete case, without evidence of an interruption (an
   interrupted attempt, or the launcher run's checkpoint gone from disk, which is enough even
   before the baseline started; one `finish` removed, recorded in its `checkpoints-removed-<n>.json`,
   is not), when the launcher run
   itself is a completed failure (its declared instability stop, scientific; another stop,
-  technical), and for a case with a completed failure, scientific (it keeps counting: no reruns
+  technical), for a case with a completed failure, scientific (it keeps counting: no reruns
   to pass) or technical (the engineering cycle lifts it, below), an interrupted rest's
-  trajectory results included. Then rerun the launcher run through its recovery round, run each
-  part the case needs as its next attempt with the same reason, the baseline first
-  (`part --resume` exits 8 for a part the restart names), and run the driver again.
+  trajectory results included, and when the launcher run's endpoint checkpoint is on disk with
+  another sha256 than its recorded one: a provenance conflict, not a loss, which goes to the
+  technical route even when an interrupted part would otherwise allow the restart. Then rerun
+  the launcher run through its recovery round, run each part the case needs as its next attempt
+  with the same reason, the baseline first (`part --resume` exits 8 for a part the restart
+  names), and run the driver again. A second loss of the same unfinished case is restarted the
+  same way with its own reason: `restart-2.json` names every attempt (the first restart's
+  included), the case's current launcher run is logged superseded, the launcher's further round
+  (round 2, one attempt at `--max-attempts 1`) runs its next attempt, and each part runs as its
+  next attempt with the new reason. A launcher run in flight at the loss (a start without an
+  end, no settled directory) is no attempt to restart (`restart-case` refuses): the launcher
+  settles it technical, and a round with the documented reason is the whole route.
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --infrastructure "the Pod stopped during the case"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
     --only c1-numerical-adamw-1.45e-05-s10200/s10200 --max-attempts 1 \
-    --recovery "the Pod stopped during the case"
+    --recovery "the Pod stopped during the case" --incident-time 2026-10-29T03:12:00Z \
+    --cause "the Pod stopped: <the external cause>" --evidence "<the Pod's event log>"
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --part baseline --attempt 2 \
     --infrastructure "the Pod stopped during the case" \
@@ -1592,8 +1609,9 @@ docstring has every rule.
   a cycle cannot start from one of its records:
   the failure keeps counting, so a scientific failure of P, which closes P–F alone, never blocks
   the cycle of a technical failure of A or F. Every case
-  the cycle names re-qualifies under the new code: the launcher's recovery round, then each part
-  as its next attempt with `--engineering-cycle` (its record names the supersession's path and
+  the cycle names re-qualifies under the new code: a recovery round of the launcher run's own
+  (its first, or a further one at `--max-attempts 1`; its incident the cycle, its evidence the
+  supersession record), then each part as its next attempt with `--engineering-cycle` (its record names the supersession's path and
   sha256), not `--infrastructure`; a later interruption of a new-code attempt is rerun with
   `--infrastructure REASON`. The verdict lists the voided records under `supersession`.
 
@@ -1710,16 +1728,19 @@ before each command below.
   validation as `launch.py FILE --max-attempts 1`, the qualification's campaigns through their
   driver, which passes it, and each confirmation block through `run.sh`. A failed attempt is a
   technical mark that the readers list, never retried by itself. Its rerun is a recovery round
-  with its documented cause, always for the one run concerned. The launcher grants a round once
-  per cell, and each cell holds one run (`c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>`, its
-  label `<cell>/s<seed>`), so no other run gets a second attempt from it:
+  of its own with its documented cause and incident, always for the one run concerned, one
+  attempt per round, each round's reason one no earlier round of the label gave
+  (["Launching runs"](#launching-runs)). Each cell holds one run
+  (`c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>`, its label `<cell>/s<seed>`), so no other
+  run gets a second attempt from a round:
 
   ```bash
   project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
     --campaign "$C/c1-validation.yaml"
   project-run "$SRC" python scripts/launch.py "$C/c1-validation.yaml" \
     --only c1-validation-adam_frozen-1.83e-05-s10304/s10304 --max-attempts 1 \
-    --recovery "<the documented cause>"
+    --recovery "<the documented cause>" --incident-time <UTC, ISO 8601> \
+    --cause "<the external cause, one line>" --evidence "<a path or reference>"
   ```
 
   Every campaign file gets a new name: the writer refuses a name whose launch log exists, since
@@ -1793,7 +1814,8 @@ before each command below.
   completed run, so a completed run under another commit cannot be rerun. Such a run is kept,
   excluded from every count and listed; it is a technical mark outside the qualification of its
   arm, and the step is blocked and technical, naming the run, its reason and its commit. A run
-  with no published outcome is rerun by its recovery round, after `check` passes. Otherwise the
+  with no published outcome is rerun by a recovery round of its own (at `--max-attempts 1`, with
+  its incident), after `check` passes. Otherwise the
   researcher's decision is its closure record, written from the step (below, "Holds and
   closures"): it cites the run's last end line, or its start line when the launcher never ended
   it, with the run's reason. In A or F it ends the study with the technical feasibility report;
@@ -1859,7 +1881,8 @@ before each command below.
   project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
     --campaign "$C/c1-confirmation-1/<block file>"
   project-run "$SRC" python scripts/launch.py "$C/c1-confirmation-1/<block file>" \
-    --only LABEL --recovery "<the interruption>" --max-attempts 1
+    --only LABEL --max-attempts 1 --recovery "<the interruption>" \
+    --incident-time <UTC, ISO 8601> --cause "<the external cause>" --evidence "<a reference>"
   ```
 
   The launcher first settles the run's start with the outcome its run directory gives (technical
@@ -1937,7 +1960,8 @@ before each command below.
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
   registered route, one engineering cycle, is not implemented for these runs yet; the full route
   comes in a later change, before the search starts. The researcher decides; beside that, only
-  the recovery round where the launcher opens one is offered (after `check`). No closure is
+  the recovery round where the launcher opens one is offered (after `check`): the run's own at
+  `--max-attempts 1`, with a reason no earlier round of its label gave and its incident. No closure is
   written for such a mark, and one written anyway is a problem that decides nothing.
 - **Holds and closures.** Two kinds of run are closed by a closure record: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
@@ -2028,7 +2052,9 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   (a non-finite training loss or K) is an outcome and is never rerun. Any other failure is
   technical and is retried, up to three attempts in all, counting earlier attempts from the run
   directories and the logged starts. Once the cause of exhausted runs is fixed, `--recovery
-  REASON` opens one recovery round per cell (three more attempts), logged with its reason.
+  REASON` opens one recovery round per cell (three more attempts), logged with its reason; never
+  over a run whose label had a round of its own (below): the call is refused, naming the label
+  and its round, and writes nothing.
   Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
   A start the launcher finds without an end (it died while the attempt ran, or after the child
@@ -2048,11 +2074,33 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   non-zero without starting another; the same command carries on later. `--only LABEL` (a run's
   `<cell>/s<seed>`) assesses and runs that run alone, leaving every other run of the campaign
   unread, and its start and end records carry the label; a recovery round under it is that run's
-  own. `--max-attempts N` replaces the three attempts (and the round's three more) with N; study
-  3's qualification driver passes `--only` and 1 ([below](#study-3-numerical-qualification)).
+  own. `--max-attempts N` replaces the three attempts (and the first round's three more) with N;
+  study 3's qualification driver passes `--only` and 1
+  ([below](#study-3-numerical-qualification)), and never `--recovery`.
+  **A run's own rounds** (study 3's infrastructure route) are one per documented incident:
+  `--recovery REASON --incident-time UTC --cause TEXT --evidence REF` (the interruption's time in
+  UTC, ISO 8601; its external cause, one line; a path or reference to its evidence; none blank).
+  The label's first round allows N more attempts; each further one (the label had a round, its
+  cell's or its own, under any config hash) needs `--max-attempts 1` and allows exactly one. A
+  round opens only for a run that used its attempts up and holds no outcome: a done or diverged
+  run is skipped, a conflict (a provenance conflict included: a checkpoint present with another
+  sha256, a departing numerics setup, an unclean checkout, another gate; a missing endpoint
+  checkpoint is a possible loss requiring diagnosis, never by itself a lost container disk) or a
+  hold stops the campaign before, and an attempt, not superseded, with a published terminal
+  record or an end `done`, `diverged` or `conflict` refuses it. Its reason must be one no earlier
+  round of the label gave (spaces stripped): a new reason is necessary, not sufficient. A refused
+  round exits 1, naming the label and the earlier round (its number, log and line), the outcome,
+  the incident's gap or the bound, and the command form; nothing is written and nothing runs. A
+  run with attempts left takes them first: rounds never stack. The round records its number
+  (`round`), the run's `config_hash`, `after` (every start of the label, under any config hash,
+  in attempt order), `max_attempts`, `granted` and its incident. The latest such round of the
+  run allows `granted` attempts beyond the ones it names, so a later `--max-attempts`
+  recalculates no earlier grant, and a round under another config hash gives the run nothing. A
+  new start is numbered after every attempt of its label, whatever its log or config hash; the
+  run id keeps its form and the label never changes; nothing is deleted or rewritten.
   A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
-  no longer count for its label: kept, a used attempt, neither done nor a conflict, so its
-  recovery round starts a new one. A `held` record (an outcome a study-3 engineering cycle could
+  no longer count for its label: kept, a used attempt, neither done nor a conflict, so a round of
+  its own (its first, or a further one) starts a new one. A `held` record (an outcome a study-3 engineering cycle could
   not resolve) makes the run a conflict: nothing starts, its recovery round included, and a
   `--dry-run` reports the same conflict. The hold applies to the run's label (`<cell>/s<seed>` in
   its experiment) in every journal, whatever the config hash it was written with, with or
@@ -2123,7 +2171,8 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
     identical one (the same event, label, experiment, run id and reason) is in the journal. A
     held run is then never rerun, and a superseded one never counts.
   - `recovery`, `stop`: resolve, then relaunch with the same command; a recovery round's reason is
-    recorded again.
+    recorded again (a run's own round with its incident and the same number: a torn line is no
+    record, so no earlier round gave its reason).
   - `torn`: nothing to restore; the resolution writes the missing `torn` record.
   - `torn_resolved`: the line it resolved is unresolved again; run that resolution again.
   - unknown (`null`; a blank line, say): first read the run directories of the campaign's labels

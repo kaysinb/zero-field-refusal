@@ -2078,7 +2078,7 @@ def test_a_lost_checkpoint_restarts_the_launcher_run(
     launcher refuses the run whose checkpoint is gone. ``restart-case`` voids the parts and logs
     the launcher run superseded (kept): the launcher's recovery round starts a new run,
     ``locate`` finds it, the parts run as attempt 2, and the verdict voids the old ones."""
-    from test_launch import make_run_dir
+    from test_launch import INCIDENT, make_run_dir
 
     from zero_field_refusal import launch
 
@@ -2104,7 +2104,8 @@ def test_a_lost_checkpoint_restarts_the_launcher_run(
     restart_record = json.loads((case_folder(out, ADAMW) / "restart-1.json").read_text())
     assert restart_record["launcher"] == {"run_id": "r-a1", "identity": identity}
     monkeypatch.setattr(launch, "_disqualification", lambda run, run_dir, meta: None)
-    result = launch.run_campaign(name, runs, root, execute=execute, recovery=RESTART, **only)
+    result = launch.run_campaign(name, runs, root, execute=execute, recovery=RESTART,
+                                 incident=INCIDENT, **only)  # fmt: skip
     (new,) = [d for d in (root / run.experiment).iterdir() if d.name != "r-a1"]
     assert result["done"] == [label] and old.is_dir()
     assert qualify.located(run, root) == new  # the old run no longer counts
@@ -2123,6 +2124,186 @@ def test_a_lost_checkpoint_restarts_the_launcher_run(
 
 def case_folder(out, case):
     return out / case.attempt_path("baseline", 1).rsplit("/", 1)[0]
+
+
+SECOND = "the Pod stopped again during the case; its container disk is gone again"
+
+
+def with_checkpoint(run_dir: Path, checkpoint: Path, data: bytes = b"w") -> Path:
+    """The launcher run's checkpoint written at ``checkpoint`` and recorded with its sha256 in
+    its summary and meta.json (``settled_launcher`` records a lost /x.pt)."""
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(data)
+    for name in ("meta.json", "summary.json"):
+        text = (run_dir / name).read_text().replace('"/x.pt"', json.dumps(str(checkpoint)))
+        text = text.replace('"' + "c" * 64 + '"', json.dumps(hashlib.sha256(data).hexdigest()))
+        (run_dir / name).write_text(text)
+    return run_dir
+
+
+def checkpoint_lost(run, run_dir, meta):
+    """The launcher's verdict on a settled launcher run, as ``_checkpoint_problem`` gives it for
+    its checkpoint: done while the file is there, a conflict once it is gone."""
+    record = json.loads((run_dir / "summary.json").read_text())["endpoint_checkpoint"]
+    return (
+        None
+        if Path(record["path"]).is_file()
+        else f"the endpoint checkpoint {record['path']} is missing"
+    )
+
+
+def launch_script():
+    spec = importlib.util.spec_from_file_location("launch_script", ROOT / "scripts" / "launch.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_second_loss_restarts_the_case_again_through_a_further_round(
+    qualify, stubbed, tmp_path, monkeypatch
+) -> None:
+    """The container disk lost twice in one case. After restart 1 and round 1, the new launcher
+    run a2 is done, baseline attempt 2 recorded and rest attempt 2 interrupted, and a2's
+    checkpoint is gone: the launcher refuses (exit 1, "is missing"); ``restart-case`` with the
+    second interruption names every attempt in ``restart-2.json`` and logs a2 superseded; a
+    round with round 1's reason is refused, one with the new reason is round 2 and runs a3,
+    which ``locate`` finds; the parts run as their attempt 3, and the verdict voids baseline 1
+    and 2, each with its own restart's reason."""
+    from test_launch import INCIDENT
+
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    label = f"adamw-{ADAMW_LR:g}/s10200"
+    run = journal(root, path, label, ["r-a1"])
+    old = settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
+    baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(old))
+    publish(out, ADAMW, "baseline", baseline)
+    q.publish(out / (ADAMW.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    name, runs = launch.load_campaign(path)
+    only = {"only": label, "max_attempts": 1}
+    monkeypatch.setattr(launch, "_disqualification", checkpoint_lost)
+
+    def execute(run, run_id, output, campaign=None):
+        with_checkpoint(settled_launcher(root, run, run_id), tmp_path / "ckpt" / f"{run_id}.pt")
+        return 0
+
+    qualify.main(restart(path, ADAMW, RESTART))
+    result = launch.run_campaign(name, runs, root, execute=execute, recovery=RESTART,
+                                 incident=INCIDENT, **only)  # fmt: skip
+    (a2,) = [d for d in (root / run.experiment).iterdir() if d.name != "r-a1"]
+    assert result["done"] == [label] and qualify.located(run, root) == a2
+    second, _ = synthetic(ADAMW, identity=q.launcher_identity(a2))
+    publish(out, ADAMW, "baseline", second, attempt=2)
+    q.publish(out / (ADAMW.attempt_path("rest", 2) + ".started"), {"started_at": "t"})
+    (tmp_path / "ckpt" / f"{a2.name}.pt").unlink()  # the container disk lost again
+    with pytest.raises(SystemExit) as stop:  # the driver's launcher call
+        launch_script().main([str(path), "--only", label, "--max-attempts", "1"])
+    assert "cannot stand" in str(stop.value.code) and "is missing" in str(stop.value.code)
+    qualify.main(restart(path, ADAMW, SECOND))
+    folder = case_folder(out, ADAMW)
+    record = json.loads((folder / "restart-2.json").read_text())
+    assert [(a["part"], a["attempt"], a["state"]) for a in record["attempts"]] == [
+        ("baseline", 1, "recorded"), ("baseline", 2, "recorded"), ("rest", 1, "interrupted"),
+        ("rest", 2, "interrupted")]  # fmt: skip
+    assert record["launcher"]["run_id"] == a2.name and record["checkpoint_missing"] is True
+    assert a2.name in qualify.label_superseded(run, root)
+    with pytest.raises(launch.CampaignError, match=r"round 1 \("):
+        launch.run_campaign(name, runs, root, execute=execute, recovery=RESTART,
+                            incident=INCIDENT, **only)  # fmt: skip
+    result = launch.run_campaign(name, runs, root, execute=execute, recovery=SECOND,
+                                 incident=INCIDENT, **only)  # fmt: skip
+    (a3,) = [d for d in (root / run.experiment).iterdir() if d.name not in ("r-a1", a2.name)]
+    assert result["done"] == [label] and a3.name.endswith("-a3")
+    assert qualify.located(run, root) == a3 and old.is_dir() and a2.is_dir()
+    rounds = [r for r in launch.launch_records(root) if r.get("event") == "recovery"]
+    assert [(r["round"], r["reason"], r["after"]) for r in rounds] == [
+        (1, RESTART, ["r-a1"]), (2, SECOND, ["r-a1", a2.name])]  # fmt: skip
+    for part_name in ("baseline", "rest"):
+        qualify.main(["part", *common(path), "--case", ADAMW.name, "--part", part_name,
+                      "--attempt", "3", "--infrastructure", SECOND, "--run-dir", str(a3),
+                      "--checkpoints", str(tmp_path / "h"), "--device", "cpu"])  # fmt: skip
+    assert stubbed == [(ADAMW.name, "baseline", 3), (ADAMW.name, "rest", 3)]
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert [(e["part"], e["attempt"], e["restart"]) for e in verdict["superseded"]] == [
+        ("baseline", 1, RESTART), ("baseline", 2, SECOND)]  # fmt: skip
+    rate = verdict["rates"][f"adamw-{ADAMW_LR:g}"]
+    assert sorted(v["reason"] for v in rate["voided"]) == sorted([RESTART, SECOND])
+
+
+def test_a_launcher_run_lost_in_flight_needs_no_restart_only_a_round(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """After restart 1 and round 1, the new launcher run a2 was in flight when the container
+    disk was lost: a start, no end, no directory. ``restart-case`` has nothing to restart; the
+    launcher settles a2 technical and, with the documented reason, opens round 2 and runs a3."""
+    from test_launch import INCIDENT, log_start
+
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    label = f"adamw-{ADAMW_LR:g}/s10200"
+    run = journal(root, path, label, ["r-a1"])
+    old = settled_launcher(root, run, "r-a1")
+    baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(old))
+    publish(out, ADAMW, "baseline", baseline)
+    q.publish(out / (ADAMW.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    name, runs = launch.load_campaign(path)
+    only = {"only": label, "max_attempts": 1}
+    monkeypatch.setattr(launch, "_disqualification", checkpoint_lost)
+    qualify.main(restart(path, ADAMW, RESTART))
+    result = launch.run_campaign(name, runs, root, stop=lambda: True, recovery=RESTART,
+                                 incident=INCIDENT, **only)  # fmt: skip
+    assert result["stopped"] == [label]  # round 1 logged; its attempt a2 starts next
+    in_flight = f"20261027T051200Z-{run.cell}-s10200-{run.config_hash[:8]}-a2"
+    log_start(root, name, run, in_flight, attempt=2, only=label, max_attempts=1)
+    with pytest.raises(SystemExit, match="no attempt to restart"):
+        qualify.main(restart(path, ADAMW, SECOND))
+    assert not (case_folder(out, ADAMW) / "restart-2.json").exists()
+
+    def execute(run, run_id, output, campaign=None):
+        with_checkpoint(settled_launcher(root, run, run_id), tmp_path / "ckpt" / f"{run_id}.pt")
+        return 0
+
+    result = launch.run_campaign(name, runs, root, execute=execute, recovery=SECOND,
+                                 incident=INCIDENT, **only)  # fmt: skip
+    assert result["done"] == [label]
+    records = launch.launch_records(root)
+    (settled,) = [r for r in records if r.get("event") == "end" and r["run_id"] == in_flight]
+    assert (settled["outcome"], settled["settled"]) == ("technical", True)
+    rounds = [r for r in records if r.get("event") == "recovery"]
+    assert [(r["round"], r["after"]) for r in rounds] == [(1, ["r-a1"]),
+                                                          (2, ["r-a1", in_flight])]  # fmt: skip
+    assert qualify.located(run, root).name.endswith("-a3")
+
+
+def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_path) -> None:
+    """The launcher run's endpoint checkpoint is on disk with another sha256 than its recorded
+    one, and the rest was interrupted: a provenance conflict, not a loss. ``restart-case``
+    refuses, naming it, and writes nothing; without the file, the restart goes on."""
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    launcher = with_checkpoint(settled_launcher(root, run, "r-a1"), tmp_path / "ckpt" / "r-a1.pt")
+    checkpoint = tmp_path / "ckpt" / "r-a1.pt"
+    checkpoint.write_bytes(b"other weights")  # present, not the recorded bytes
+    baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(launcher))
+    publish(out, ADAMW, "baseline", baseline)
+    q.publish(out / (ADAMW.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    before = log.read_bytes()
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(restart(path, ADAMW, RESTART))
+    assert stop.value.code not in (0, None)
+    assert "another sha256" in str(stop.value.code) and str(checkpoint) in str(stop.value.code)
+    assert "provenance conflict" in str(stop.value.code)
+    assert not list(case_folder(out, ADAMW).glob("restart-*")) and log.read_bytes() == before
+    checkpoint.unlink()  # gone: a possible loss, which the documented restart names
+    qualify.main(restart(path, ADAMW, RESTART))
+    assert (case_folder(out, ADAMW) / "restart-1.json").is_file()
 
 
 def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:

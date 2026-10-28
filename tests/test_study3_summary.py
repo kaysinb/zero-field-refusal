@@ -315,8 +315,8 @@ def test_the_guard_refuses_while_a_started_block_holds_a_run_not_ended(world, su
                         K=None)  # fmt: skip
     summary.core(study)
     summary.versions()
-    refused(summary.guard(10403, files[10403]), "block 10403 may not start",
-            "not ended", dead.run_id, f"--only {dead.label} --recovery")  # fmt: skip
+    refused(summary.guard(10403, files[10403]), "block 10403 may not start", "not ended",
+            dead.run_id, f"--only {dead.label} --max-attempts 1 --recovery")  # fmt: skip
     # a run whose recovery round is opened and has no later attempt holds it too
     study.change(dead.run_id, state="recovered")
     refused(summary.guard(10403, files[10403]), "block 10403 may not start", dead.run_id)

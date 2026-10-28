@@ -58,8 +58,11 @@ outside this.
    step, one checkpoint of headroom for an atomic save, and ``disk_margin_gb``); below it the
    driver exits 1.
 4. ``python scripts/launch.py CAMPAIGN --only LABEL --max-attempts 1``: the launcher run alone,
-   one attempt; a failed one stops the driver, and is attempted again only with
-   ``--recovery REASON`` on that command (a recorded reason).
+   one attempt; a failed one stops the driver, and is attempted again only through a recovery
+   round of its own, by hand: ``--recovery REASON`` on that command with its documented incident
+   (``--incident-time``, ``--cause``, ``--evidence``), one attempt per round, each round with a
+   reason no earlier round of the label gave (``launch``, "Recovery rounds"). The driver never
+   passes ``--recovery``.
 5. ``locate`` prints the launcher run's directory (its settled run: done, or diverged).
 6. ``part --part baseline --resume``; then, unless ``decided`` (exit 0: the baseline record is
    already a scientific failure, a declared instability rule fired on the unshifted baseline or
@@ -103,28 +106,39 @@ campaign config; the survival retry and the float64 fallback stay inside the par
 **A case restart** (``restart-case --infrastructure REASON``; "Voiding and supersession": an
 infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop during
 a case loses the container disk, with the launcher run's checkpoint and the harness's: the case
-cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a clean checkout)
+cannot go on from its recorded parts. A missing endpoint checkpoint alone is a possible loss
+requiring diagnosis, never by itself a lost container disk: the restart's reason documents the
+interruption the diagnosis found. ``restart-case`` publishes (atomically, from a clean checkout)
 ``restart-<n>.json`` in the case's folder, naming every attempt of the case's parts (the baseline,
 the rest and, for the case that holds it, the same-path control): each recorded one with its
 record's sha256, status and kind, each interrupted one by its number; the reason; and the case's
 launcher run. Then, the record published, it logs that run superseded in the launch journal
 (``launch.supersede``): the run is kept, no longer counts for its label (``assess``, ``located``),
-and the launcher's recovery round with the same reason starts a new run; run again once every
-attempt is named, the command only completes that journal line. Only an interrupted case is
-restarted: it is refused without a reason, when every attempt is named already, for a complete case,
-without evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
-from disk, unless ``finish`` removed it on purpose: its ``checkpoints-removed-<n>.json`` records),
-when the launcher run itself is a completed failure (its declared instability stop, scientific, or
-another stop or a departing run, technical: ``launcher_problems`` without the comparison with this
-process's environment), and when any attempt is a completed failure (``attempt_failures``): a
-scientific one, which keeps counting ("no reruns to pass"), a technical one (the engineering cycle
-lifts it: below), or an unreadable record; an interrupted rest attempt counts by its trajectory
-results. A recorded attempt that passes so far (the baseline, a control) depends on the lost run or
-checkpoint and is named with the others. The attempts it names are void: a part whose recorded
-attempts are all named is ``voided``, so the case is not complete; ``part --resume`` exits 8 for it,
-and ``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names
-the restart records); a rest waits for the baseline's new attempt. The named records are kept,
-listed, and voided in the verdict (with the reason, under ``restart``).
+and a recovery round of the run's own with the same reason (its first, or a further one at
+``--max-attempts 1``, one attempt per documented incident: ``launch``, "Recovery rounds") starts a
+new run; run again once every attempt is named, the command only completes that journal line. A
+second loss in the same case is restarted the same way: ``restart-<n+1>.json`` names every attempt,
+the earlier restarts' included, and the case's current launcher run is logged superseded; then the
+launcher's further round with the new reason, and each part as its next attempt. A launcher run in
+flight at the loss (a start without an end, no settled directory) is no attempt to restart: the
+launcher settles it technical, and a round of its own with the documented reason is the whole route.
+Only an interrupted case is restarted: it is refused without a reason, when every attempt is named
+already, for a complete case, without evidence of an interruption (an interrupted attempt, or the
+launcher run's checkpoint gone from disk, unless ``finish`` removed it on purpose: its
+``checkpoints-removed-<n>.json`` records), when the launcher run itself is a completed failure (its
+declared instability stop, scientific, or another stop or a departing run, technical:
+``launcher_problems`` without the comparison with this process's environment), when any attempt is a
+completed failure (``attempt_failures``): a scientific one, which keeps counting ("no reruns to
+pass"), a technical one (the engineering cycle lifts it: below), or an unreadable record; an
+interrupted rest attempt counts by its trajectory results; and when the launcher run's endpoint
+checkpoint is on disk with another sha256 than its recorded one (``checkpoint_conflict``): a
+provenance conflict, not a loss, which goes to the technical route even when an interrupted attempt
+would otherwise allow the restart. A recorded attempt that passes so far (the baseline, a control)
+depends on the lost run or checkpoint and is named with the others. The attempts it names are void:
+a part whose recorded attempts are all named is ``voided``, so the case is not complete; ``part
+--resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt with ``--infrastructure
+REASON`` (its record names the restart records); a rest waits for the baseline's new attempt. The
+named records are kept, listed, and voided in the verdict (with the reason, under ``restart``).
 
 **Supersession** (``supersede --record PATH --diagnosis TEXT --fix TEXT``; "Failure routes": one
 engineering cycle per candidate; "Voiding and supersession"). A completed technical failure stops
@@ -136,40 +150,41 @@ every launcher run of the candidate in the launch journal not of the fix's GPU c
 records name and those of the campaign's cases, a case with no part attempt yet included, found by
 the case's label, its experiment and ``<cell>/s<seed>``, in every journal whatever their config
 hash, so that a fix that changes a hashed config key hides none; another or an unknown code
-included, since a re-qualification under the fix could not use it), which it then logs superseded;
-a case whose run is superseded is re-qualified, whether or not it had a part record. A case that
-holds a scientific failure, as its bound, valid part records read with the verdicts show it
-(another stage's included; a launcher run's declared stop counts only when such a record
-classified it scientific), is kept whole: none of its records (its parts, its control, its
-trajectory results) nor its launcher run is voided, it is listed as kept with why, and the driver's
-stale check passes it; the failure keeps counting (no reruns to pass). A record classified its
-launcher run only when it says so (``launcher.classified``, true once ``launcher_problems``
-returned): naming the run is not enough. A launcher run no part record classified (none names it:
-the Pod stopped before its baseline, say; or each that does raised before its check returned, in
-the numerics setup or the check itself; a campaign case's or another stage's, as its records
-name the case) is first resolved against what it was issued and its own provenance, never this
-checkout's configs, code or environment (``resolve_launcher_run``): its journal start (label,
-config hash, header, command), its saved config and meta.json (config hash, the campaign's header,
-commit, numerics setup) and the configs of its own commit, read from git (``configs_at``), from
-which its command and the case's confirmation config are composed; its identity, config agreement
-and numerics are checked against those. Conforming and stopped by its declared instability rule,
-a scientific failure (the case is kept whole and decided, and no part runs for it); departing from
-what it was issued on readable records, or completed, superseded as any run; unresolvable (records
-unreadable, a needed field missing, no commit or one not in this clone, configs that do not
-compose or do not give the start's config hash), the case is kept as it is, listed unresolved,
-and the run held in the journal (``launch.hold``), so that neither a part nor the launcher's
-recovery round reruns it. The verdict counts a resolved outcome as the case's
-(``resolved_verdict``), beside the verdicts of any records that did not classify the run. The
-cycle is refused a second time for the candidate (a technical failure left unresolved after it
-routes to the technical feasibility report), for a record that is not a completed technical
-failure of the case or that belongs to a case the cycle keeps whole (by its records or its
-launcher run), and when the fix's GPU code is the old one (the same path is not simply rerun); run
-again with the same record, it only writes the journal's lines that are missing. Each case it
-names re-qualifies under the new code from a new launcher run (the recovery round) and new
-attempts of its parts: the attempt after one the cycle named carries ``--engineering-cycle`` (its
-record: ``engineering_cycle``, the supersession's path and sha256) instead of
-``--infrastructure``; a later interruption of a new-code attempt is rerun with ``--infrastructure
-REASON``, as any other. The verdict lists the records it voids under ``supersession``.
+included, since a re-qualification under the fix could not use it), which it then logs superseded; a
+case whose run is superseded is re-qualified, whether or not it had a part record. A case that holds
+a scientific failure, as its bound, valid part records read with the verdicts show it (another
+stage's included; a launcher run's declared stop counts only when such a record classified it
+scientific), is kept whole: none of its records (its parts, its control, its trajectory results) nor
+its launcher run is voided, it is listed as kept with why, and the driver's stale check passes it;
+the failure keeps counting (no reruns to pass). A record classified its launcher run only when it
+says so (``launcher.classified``, true once ``launcher_problems`` returned): naming the run is not
+enough. A launcher run no part record classified (none names it: the Pod stopped before its
+baseline, say; or each that does raised before its check returned, in the numerics setup or the
+check itself; a campaign case's or another stage's, as its records name the case) is first resolved
+against what it was issued and its own provenance, never this checkout's configs, code or
+environment (``resolve_launcher_run``): its journal start (label, config hash, header, command), its
+saved config and meta.json (config hash, the campaign's header, commit, numerics setup) and the
+configs of its own commit, read from git (``configs_at``), from which its command and the case's
+confirmation config are composed; its identity, config agreement and numerics are checked against
+those. Conforming and stopped by its declared instability rule, a scientific failure (the case is
+kept whole and decided, and no part runs for it); departing from what it was issued on readable
+records, or completed, superseded as any run; unresolvable (records unreadable, a needed field
+missing, no commit or one not in this clone, configs that do not compose or do not give the start's
+config hash), the case is kept as it is, listed unresolved, and the run held in the journal
+(``launch.hold``), so that neither a part nor the launcher's recovery round reruns it. The verdict
+counts a resolved outcome as the case's (``resolved_verdict``), beside the verdicts of any records
+that did not classify the run. The cycle is refused a second time for the candidate (a technical
+failure left unresolved after it routes to the technical feasibility report), for a record that is
+not a completed technical failure of the case or that belongs to a case the cycle keeps whole (by
+its records or its launcher run), and when the fix's GPU code is the old one (the same path is not
+simply rerun); run again with the same record, it only writes the journal's lines that are missing.
+Each case it names re-qualifies under the new code from a new launcher run (a recovery round of the
+run's own: its first, or a further one at ``--max-attempts 1``, its incident the cycle, its evidence
+the supersession record) and new attempts of its parts: the attempt after one the cycle named
+carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path and
+sha256) instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun with
+``--infrastructure REASON``, as any other. The verdict lists the records it voids under
+``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -274,6 +289,7 @@ from zero_field_refusal.launch import (
 from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT, load_env, runs_root
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.schedule import INSTABILITY
+from zero_field_refusal.tensor_hash import file_sha256 as checkpoint_sha256
 from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 SETTINGS = CONFIG_ROOT / "experiments" / "qualification.yaml"  # the tracked settings, by path
@@ -1050,6 +1066,21 @@ def checkpoint_missing(run_dir: Path | None, folder: Path | None = None) -> bool
     return folder is None or str(record.get("path")) not in released(folder)
 
 
+def checkpoint_conflict(run_dir: Path | None) -> Path | None:
+    """The launcher run's recorded endpoint checkpoint when it is on disk with another sha256
+    than its recorded one, or None: a provenance conflict, never a loss (module docstring, "A
+    case restart")."""
+    if run_dir is None:
+        return None
+    record = (_read(run_dir / "summary.json") or {}).get("endpoint_checkpoint")
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+        return None
+    path = Path(record["path"])
+    if not path.is_file():
+        return None
+    return path if checkpoint_sha256(path) != record.get("sha256") else None
+
+
 def next_number(folder: Path, kind: str) -> int:
     return max((int(VOIDING_FILE.fullmatch(f.name)[2]) for f, _ in voiding_records(folder, kind)),
                default=0) + 1  # fmt: skip
@@ -1065,9 +1096,11 @@ def restart_case(
     without a reason, for a complete case, with no attempt it does not name already, without
     evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
-    its declared instability stop, scientific; another stop or a departing run, technical), and
+    its declared instability stop, scientific; another stop or a departing run, technical),
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``): only an interrupted case is restarted. A launcher run whose
+    (``attempt_failures``), and when the launcher run's checkpoint is on disk with another sha256
+    than its recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever
+    an interrupted attempt would allow): only an interrupted case is restarted. A launcher run whose
     checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
     Pod stopped between the launch and the baseline). Run again after a stop between the record
     and the journal's line, it only writes that line."""
@@ -1106,6 +1139,12 @@ def restart_case(
     if not any(a["state"] == "interrupted" for a in fresh) and not missing:
         sys.exit(f"{case.name}: no restart: no evidence of an interruption (no interrupted "
                  "attempt, and the launcher run's checkpoint is on disk)")  # fmt: skip
+    conflict = checkpoint_conflict(run_dir)
+    if conflict is not None:  # whatever an interrupted attempt would allow
+        sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name}'s endpoint checkpoint "
+                 f"{conflict} is on disk with another sha256 than its recorded one: a "
+                 "provenance conflict, not a loss; it goes to the technical route (diagnosis, "
+                 "the engineering cycle)")  # fmt: skip
     require_clean()
     number = next_number(folder, "restart")
     path = folder / f"restart-{number}.json"
@@ -1939,7 +1978,9 @@ def driver_script(
                  "never reruns a part or a launcher run: an interrupted part (exit "
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
                  "REASON, a failed launcher run with scripts/launch.py --only LABEL "
-                 "--max-attempts 1 --recovery REASON. The verdict is written on every exit, "
+                 "--max-attempts 1 --recovery REASON --incident-time UTC --cause TEXT "
+                 "--evidence REF, one attempt per documented incident, each round's reason one "
+                 "no earlier round of the label gave. The verdict is written on every exit, "
                  "but over a launch journal that is not whole (an unresolved torn line, or a "
                  "line a published record requires missing), which verdict refuses too (exit "
                  f"{TORN_JOURNAL}): no verdict.json is written then, and an older one stays on "

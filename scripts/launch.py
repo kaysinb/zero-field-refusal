@@ -1,20 +1,28 @@
 """Run the missing runs of a campaign one after another (zero_field_refusal.launch).
 
     python scripts/launch.py CAMPAIGN.yaml [--dry-run] [--recovery REASON] [--only LABEL]
-        [--max-attempts N]
+        [--max-attempts N] [--incident-time UTC --cause TEXT --evidence REF]
 
 Checks every run's config first, and refuses to start if a completed run with a campaign run's
 config cannot stand for it (wrong gate, unclean checkout, missing artifacts). Skips runs that
 already have a qualifying completed run, never reruns a diverged one, retries technical failures
 up to three attempts in all, and runs the rest in order, each in its own process with its own
 RUN_ID. --dry-run lists what would run. --recovery REASON, once the technical cause of exhausted
-runs is fixed, opens the one recovery round of their cells (logged with the reason). Exits non-zero
-if any run used up its attempts.
+runs is fixed, opens the one recovery round of their cells (logged with the reason), never over a
+run that had a round of its own (the call is refused). Exits non-zero if any run used up its
+attempts.
 
 --only LABEL (a run's label, ``<cell>/s<seed>``) assesses and runs that run alone: every other
 run of the campaign is neither read nor started, and the journal records the label; a recovery
-round under it is the run's own. --max-attempts N bounds the attempts of a run (default 3, and N
-more in a recovery round); study 3's qualification driver passes 1 (zero_field_refusal.launch).
+round under it is the run's own, one per documented incident (zero_field_refusal.launch,
+"Recovery rounds"): --recovery REASON (a reason no earlier round of the label gave) with its
+incident, --incident-time (UTC, ISO 8601), --cause (one line) and --evidence (a path or a
+reference), and only for a run that used its attempts up and holds no outcome (a published
+terminal record, a provenance conflict, a hold). Its first round allows N more attempts, each
+further one exactly one, at --max-attempts 1; the round names the attempts it follows. A round
+that is refused writes nothing and runs nothing (exit 1, naming the label and the earlier round
+or the bound). --max-attempts N bounds the attempts of a run (default 3); study 3's
+qualification driver passes 1, and never --recovery.
 
 SIGTERM to this process (not to its process group) stops the campaign at a run boundary: the
 running attempt, a child process the signal does not reach, finishes and is recorded; then the
@@ -70,6 +78,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--only", metavar="LABEL", help="assess and run this run alone")
     parser.add_argument("--max-attempts", type=int, metavar="N",
                         help=f"attempts per run (default {MAX_ATTEMPTS})")  # fmt: skip
+    parser.add_argument("--incident-time", metavar="UTC",
+                        help="a run's own round: its interruption's time, in UTC")  # fmt: skip
+    parser.add_argument("--cause", metavar="TEXT", help="a run's own round: its external cause")
+    parser.add_argument("--evidence", metavar="REF", help="a run's own round: its evidence")
     parser.add_argument("--resolve-torn", metavar="LOG", help="resolve a torn line of this log")
     parser.add_argument("--offset", type=int, metavar="N", help="the torn line's offset")
     parser.add_argument("--sha256", metavar="HEX", help="the torn line's sha256")
@@ -78,7 +90,8 @@ def main(argv: list[str] | None = None) -> None:
     resolution = (args.offset, args.sha256, args.reason)
     if args.resolve_torn is not None:
         if (args.campaign is not None or args.dry_run or args.recovery is not None
-                or args.only is not None or args.max_attempts is not None):  # fmt: skip
+                or args.only is not None or args.max_attempts is not None
+                or (args.incident_time, args.cause, args.evidence) != (None,) * 3):  # fmt: skip
             parser.error("--resolve-torn takes no campaign file and no campaign option")
         if None in resolution:
             parser.error("--resolve-torn needs --offset N, --sha256 HEX and --reason TEXT")
@@ -92,6 +105,11 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.campaign is None:
         parser.error("a campaign file is needed (or --resolve-torn LOG)")
+    given = {"incident_time": args.incident_time, "cause": args.cause, "evidence": args.evidence}
+    incident = {key: value for key, value in given.items() if value is not None} or None
+    if incident is not None and (args.recovery is None or args.only is None):
+        parser.error("--incident-time, --cause and --evidence document a run's own recovery "
+                     "round: they go with --only LABEL and --recovery REASON")  # fmt: skip
     if any(value is not None for value in resolution):
         parser.error("--offset, --sha256 and --reason go with --resolve-torn")
     max_attempts = MAX_ATTEMPTS if args.max_attempts is None else args.max_attempts
@@ -105,7 +123,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         result = run_campaign(name, runs, runs_root(), dry_run=args.dry_run,
                               recovery=args.recovery, stop=stop, header=header,
-                              only=args.only, max_attempts=max_attempts)  # fmt: skip
+                              only=args.only, max_attempts=max_attempts,
+                              incident=incident)  # fmt: skip
     except TornJournalError as exc:
         print(exc, file=sys.stderr)
         sys.exit(TORN_JOURNAL)

@@ -2171,6 +2171,21 @@ def test_an_end_closure_for_a_run_a_recovery_round_or_a_supersession_followed_is
     refused(other, "closure-c1-F", record, "superseded")
 
 
+def test_an_end_closure_for_a_run_a_further_round_followed_is_refused(world) -> None:
+    """A numbered round that names the run in ``after`` follows it, whatever its time stamp:
+    here in the run's own second, where the time-stamp rule of a round without ``after`` would
+    take the start to follow the round (the records reader's rule, ``round_follows``)."""
+    record = ended(world)
+    label = "F-1.83e-05/s10300"
+    journal(world, {"time": "2026-10-26T10:00:00+00:00", "event": "recovery",
+                    "experiment": "study3", "cell": "F-1.83e-05", "reason": "the Pod stopped",
+                    "runs": [label], "only": label, "round": 2, "config_hash": "c" * 12,
+                    "after": [ENDED], "max_attempts": 1, "granted": 1,
+                    "incident_time": "2026-10-26T09:59:00+00:00", "cause": "the Pod stopped",
+                    "evidence": "the Pod's event log"})  # fmt: skip
+    refused(world, "closure-c1-F", record, "recovery")
+
+
 def test_an_end_closure_cites_the_runs_last_end_line(world) -> None:
     record = ended(world)
     journal(world, {"time": "2026-10-26T10:09:00+00:00", "event": "end",
