@@ -105,8 +105,9 @@ LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusa
                  "zero_field_refusal.run_judging")  # fmt: skip
 # The GPU code study 3 qualifies, as of package 1c: its last commit that changed a GPU path, the
 # launcher's further recovery rounds, the driver's control-only path, the export of a technical
-# case's checkpoints and the restart refusals of the final fix
-QUALIFIED_GPU_CODE = "102508e"
+# case's checkpoints, the restart refusals of the final fix and an established technical case's
+# early export
+QUALIFIED_GPU_CODE = "8510d50"
 REAL_IDENTITY = code_identity.gpu_code_identity
 REAL_READING = qualification_records.read_qualification  # the route replaces it
 # The route: A's lower rate kept by the search on these offsets in ln K, then repaired; N = 99
