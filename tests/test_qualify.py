@@ -3175,6 +3175,46 @@ TECHNICAL_WORLDS = {  # a case its own verdict marks technical → what control-
 }  # fmt: skip
 
 
+def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_alone(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """The lost-checkpoint table's scientific branch: the rest was interrupted after a valid
+    scientific failure in its trajectory results and the container disk was lost. ``control-only``
+    says no (the rest is outstanding) and ``restart-case`` refuses (the failure keeps counting).
+    ``interrupted --part rest --attempt 1 --technical`` records the attempt with its results,
+    the verdict is scientific, and then ``control-only`` exits 0, the control runs alone and
+    ``finish`` exits 0."""
+    path = campaign(tmp_path)
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, FA_LABEL, ["r-f1"])
+    log_end(root, path, run, "r-f1")  # the launcher run is done
+    checkpoint = tmp_path / "ckpt" / "r-f1.pt"
+    run_dir = with_checkpoint(settled_launcher(root, run, "r-f1"), checkpoint)
+    baseline, rest = synthetic(FA, identity=q.launcher_identity(run_dir))
+    baseline["launcher_run"] = rest["launcher_run"] = str(run_dir)
+    baseline["launcher"]["classified"] = rest["launcher"]["classified"] = True
+    publish(out, FA, "baseline", baseline)
+    scientific_rest(rest)
+    rest["baseline_record"] = {"path": str(out / FA.attempt_path("baseline", 1)),
+                               "sha256": q.record_sha256(baseline)}  # fmt: skip
+    q.publish(out / (FA.attempt_path("rest", 1) + ".started"),
+              {"part": "rest", "attempt": 1, "case": FA.record(), "run_dir": str(run_dir),
+               "pod_id": "pod-1", "started_at": "t"})  # fmt: skip
+    for name in ("repeat", "reference"):
+        q.publish(out / FA.trajectory_path(1, name), trajectory_result(FA, rest, name))
+    checkpoint.unlink()  # the container disk lost
+    assert exit_code(qualify, control_only(path)) == 3  # the rest is outstanding
+    with pytest.raises(SystemExit, match="completed failure keeps counting|keeps counting"):
+        qualify.main(restart(path, FA, RESTART))
+    assert not list(case_folder(out, FA).glob("restart-*"))
+    qualify.main(["interrupted", *common(path), "--case", FA.name, "--part", "rest",
+                  "--attempt", "1", "--technical", "the Pod stopped during the rest"])  # fmt: skip
+    record = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    scope = q.QualificationScope.of(REGISTERED)
+    assert q.case_verdict(baseline, record, scope)["kind"] == q.SCIENTIFIC
+    assert run_the_control_alone(qualify, monkeypatch, capsys, path, run_dir, tmp_path)
+
+
 @pytest.mark.parametrize("world", list(TECHNICAL_WORLDS))
 def test_control_only_sends_every_technical_case_to_the_usual_path(
     qualify, tmp_path, monkeypatch, capsys, world

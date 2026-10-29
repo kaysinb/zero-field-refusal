@@ -572,6 +572,27 @@ def test_the_expected_numerics_are_what_the_setup_records(overrides) -> None:
     assert {key: setup[key] for key in wanted} == wanted
 
 
+def test_a_settled_run_that_lost_only_its_checkpoint_records_exactly_the_missing_checkpoint(
+    tmp_path,
+) -> None:
+    """The settle of a start without an end, over whole scheduled records of which only the
+    checkpoint file is gone, judges the run with the missing-checkpoint problem alone (no check
+    before it reads the container disk): the end it writes is a settled ``conflict`` whose problem
+    satisfies ``is_missing_checkpoint``, which is what lets ``restart-case`` tell it from any other
+    conflict."""
+    from zero_field_refusal.launch import is_missing_checkpoint
+
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = checkpointed_run_dir(root, runs[1], tmp_path, record="missing_file")
+    log_start(root, name, runs[1], run_dir.name)  # the launcher died with the container
+    with pytest.raises(CampaignError, match="is missing"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    (end,) = [r for r in launch_records(root) if r.get("event") == "end"]
+    assert end["settled"] is True and end["returncode"] is None and end["outcome"] == "conflict"
+    assert is_missing_checkpoint(end["problem"])
+
+
 def test_a_superseded_run_no_longer_counts_and_its_recovery_starts_anew(tmp_path) -> None:
     """A completed run named superseded in the journal (a case restart after its checkpoint was
     lost) stays on disk and in the journal, is a used attempt, and is neither done nor a
