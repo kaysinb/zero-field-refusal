@@ -1555,7 +1555,7 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   | The message for a label whose case `complete` exits 0, and a `checkpoints-removed-<n>.json` names the path | `finish` removed it on purpose | Nothing. The driver never calls the launcher on a complete case, and nobody calls it on a finished case's label. `restart-case` refuses a complete case. |
   | A launcher start without an end at the loss; the next launcher call settles it technical and exits 1 with "used up their attempts" | The launcher run was in flight | No restart (`restart-case` refuses). A recovery round with the documented reason: `--only LABEL --max-attempts 1 --recovery` and the incident fields. |
   | The driver's own launcher attempt failed technically: a journal end of the launcher run with a return code and outcome `technical`, and no loss. `complete` exits 3 (the baseline is due), and the driver's launcher call exits 1 with "N runs used up their attempts; see RUNS_DIR/launch/<name>.jsonl" | A technical failure of the launcher run, not a loss | A recovery round (`--only LABEL --max-attempts 1 --recovery` with the incident fields) needs a documented external cause: the interruption's time, the cause and its evidence, none blank. Without one there is no automatic route. `supersede --record` must name a recorded part attempt of the case, and a launcher run that failed before any part has none: `supersede` refuses it with "is not a recorded attempt of this case". Such a run is swept up only when an engineering cycle opens from another case's technical record (a launcher run no part record classified). Otherwise the researcher decides. |
-  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint, and a run whose numerics setup or Rayleigh record departs behind a settled missing-checkpoint end). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. Stop the driver, not the Pod: for a technical case whose control is still outstanding, the checkpoints are still only on the container disk, and `finish --kept` refuses a case that is not complete, so the export is not reached. What keeps them is the Pod, which stays up while the diagnosis runs (no planned stop, and the hard deadline stays). |
+  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint, a run whose numerics setup or Rayleigh record departs behind a settled missing-checkpoint end, and a case whose recorded parts `control-only` cannot bind to its launcher run, its exit 1). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. Stop the driver, not the Pod: for a technical case whose control is still outstanding, the checkpoints are still only on the container disk, and `finish --kept` refuses a case that is not complete, so the export is not reached. What keeps them is the Pod, which stays up while the diagnosis runs (no planned stop, and the hard deadline stays). |
   | A technical case (exit 9 or 13) whose kept checkpoints were lost | The technical mark stands | See "A technical case's checkpoints", "Lost before the export". |
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
@@ -1597,11 +1597,12 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   when the launcher run's numerics setup, or its Rayleigh record when enabled, departs from the
   campaign's config behind a settled missing-checkpoint end (a provenance conflict, for
   diagnosis and the technical route), when `control-only` would run the case's control alone,
-  and when the launcher run's endpoint checkpoint is on disk with
-  another sha256 than its recorded one: a provenance conflict, not a loss, which goes to the
-  technical route even when an interrupted part would otherwise allow the restart. Removing or
-  replacing a mismatching checkpoint is no route to a restart: the conflict goes to diagnosis and
-  the technical route. Then rerun
+  when `control-only` refuses the case (its recorded parts cannot be bound to its launcher run:
+  exit 1, a provenance problem for diagnosis), and when the launcher run's endpoint checkpoint is
+  on disk with another sha256 than its recorded one: a provenance conflict, not a loss, which goes
+  to the technical route even when an interrupted part would otherwise allow the restart.
+  Removing or replacing a mismatching checkpoint is no route to a restart: the conflict goes to
+  diagnosis and the technical route. Then rerun
   the launcher run through its recovery round, run each part the case needs as its next attempt
   with the same reason, the baseline first (`part --resume` exits 8 for a part the restart
   names), and run the driver again. A second loss of the same unfinished case is restarted the
@@ -1616,8 +1617,9 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   failure. A case `control-only` would run alone (not technical, every recorded part bound to the
   located launcher run, the control due or interrupted) is never restarted, and `restart-case`
   refuses it: its control runs alone, with no restart (below). A non-technical case whose binding
-  fails, a rest that names another run id, say, is not refused for that: `control-only` exits 1
-  for it.
+  fails, a rest that names another run id, say, is refused too: `control-only` exits 1 for it, and
+  `restart-case` carries that refusal with its reason (exit 1), writing nothing. The restart goes
+  on only where `control-only` takes the usual path (exit 3).
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --infrastructure "the Pod stopped during the case"

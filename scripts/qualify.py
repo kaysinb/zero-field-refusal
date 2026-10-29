@@ -219,7 +219,10 @@ a case loses the container disk, with the launcher run's checkpoint and the harn
 cannot go on from its recorded parts. A missing endpoint checkpoint alone is a possible loss
 requiring diagnosis, never by itself a lost container disk: the restart's reason documents the
 interruption the diagnosis found. A case whose only outstanding part is its same-path control is
-not restarted: ``control-only`` runs that control alone. Exit 1 is shared (the
+not restarted: ``control-only`` runs that control alone. The restart goes on only where
+``control-only`` takes the usual path (exit 3): a case whose recorded parts cannot be bound to its
+launcher run (``control-only``'s exit 1), or any other answer of it, is refused too, with its
+reason, as a provenance problem for diagnosis. Exit 1 is shared (the
 launcher's conflicts, this command's refusals, ``control-only``, ``finish``, the driver's
 preconditions), so it never triggers a restart by itself: docs/operations.md, "A lost checkpoint",
 tells the launcher's messages apart. ``restart-case`` publishes (atomically, from a clean checkout)
@@ -247,7 +250,9 @@ pass"), a technical one (the engineering cycle lifts it: below), or an unreadabl
 interrupted rest attempt counts by its trajectory results; when the launcher run's journal holds
 an end ``conflict`` that no lost container disk explains (``own_conflict_end``: an unsettled one,
 the launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint);
-and when the launcher run's endpoint checkpoint is on disk with another sha256 than its recorded one
+when ``control-only`` answers anything but its usual path (exit 0: it runs the control alone;
+exit 1: the recorded parts cannot be bound to the launcher run, a provenance problem); and when
+the launcher run's endpoint checkpoint is on disk with another sha256 than its recorded one
 (``checkpoint_conflict``): a provenance conflict, not a loss, which goes to the technical route even
 when an interrupted attempt would otherwise allow the restart. A recorded attempt that passes so far
 (the baseline, a control) depends on the lost run or checkpoint and is named with the others. The
@@ -1929,7 +1934,9 @@ def restart_case(
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
     its declared instability stop, scientific; another stop or a departing run, technical),
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``), when ``control-only`` would run the control alone (nothing to void),
+    (``attempt_failures``), when ``control-only`` answers anything but its usual path, 3 (0: it
+    would run the control alone, nothing to void; 1: the recorded parts cannot be bound to the
+    launcher run, a provenance problem; any other exit: carried, never swallowed),
     when the launcher run's numerics or Rayleigh record depart (``after_checkpoint_problem``, which
     a settled missing-checkpoint end hides), when the launcher run has an end ``conflict`` in the
     launch journal that a lost container disk does not explain (``own_conflict_end``: an unsettled
@@ -1970,8 +1977,12 @@ def restart_case(
                  "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
     try:
         control_only(planned, out, root, scope)
-    except SystemExit:
-        pass  # the case is not in control-only's state (3), or cannot be bound (1)
+    except SystemExit as stop:  # its usual path (3) alone lets the restart go on
+        if stop.code != NO:  # a binding refusal (1), or any other answer: never swallowed
+            said = stop.code if isinstance(stop.code, str) else f"exit {stop.code}"
+            sys.exit(f"{case.name}: no restart: control-only refuses the case ({said}). A part "
+                     "that cannot be bound to the case's launcher run is a provenance problem, "
+                     "for diagnosis, never a restart")  # fmt: skip
     else:
         sys.exit(f"{case.name}: no restart: only its same-path control is outstanding, and "
                  "control-only runs it alone through the driver; a restart would void the "

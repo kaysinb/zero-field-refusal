@@ -3191,6 +3191,58 @@ def test_restart_case_refuses_the_state_control_only_runs_alone(qualify, tmp_pat
     assert not launch.superseded_runs(run, launch.launch_records(root))
 
 
+def conforming_launcher(run_dir) -> None:
+    """The FA launcher run's meta.json with the hash of v₀ the launcher check asks of an arm that
+    reads it, so that ``launcher_problems`` passes it (its identity reads no meta.json field but
+    the config hash: unchanged)."""
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta["inputs"]["v0_sha256"] = "v" * 64
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+
+
+@pytest.mark.parametrize("elsewhere", list(BOUND_ELSEWHERE))
+def test_restart_case_never_restarts_over_a_binding_refusal(qualify, tmp_path, elsewhere) -> None:
+    """A case whose baseline and rest are recorded, its control due, one of those records bound
+    to another launcher run (its run id or its identity) than the located one, and the
+    checkpoint lost with the container disk: ``restart-case`` refuses it (exit 1, with the
+    reason), whether ``control-only`` refuses its binding or the case is technical, and writes
+    nothing: no restart record, no ``superseded`` line."""
+    from zero_field_refusal import launch
+
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    conforming_launcher(run_dir)  # nothing else refuses: only the binding is left to judge
+    change, expected, why = BOUND_ELSEWHERE[elsewhere]
+    change(path, root, out, run_dir)
+    assert not (tmp_path / "ckpt" / "r-f1.pt").exists()  # the container disk lost
+    log = root / "launch" / "study3-qualification-c1.jsonl"
+    before = log.read_bytes()
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(restart(path, FA, RESTART))
+    assert isinstance(stop.value.code, str), stop.value.code  # exit 1, its reason named
+    assert "no restart" in stop.value.code
+    if expected == 1:  # control-only's binding refusal, carried as restart-case's
+        assert "control-only" in stop.value.code and why in stop.value.code
+    assert not list(case_folder(out, FA).glob("restart-*")) and log.read_bytes() == before
+    assert not launch.superseded_runs(fa_run(path), launch.launch_records(root))
+
+
+def test_restart_case_restarts_a_case_whose_rest_is_due_after_a_loss(qualify, tmp_path) -> None:
+    """A passing baseline, the rest due (no record), the control due and the checkpoint lost:
+    ``control-only`` takes the usual path (exit 3), and ``restart-case`` restarts the case as
+    before: its restart record, and the launcher run logged superseded."""
+    from zero_field_refusal import launch
+
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    conforming_launcher(run_dir)
+    (out / FA.attempt_path("rest", 1)).unlink()  # the rest due
+    assert exit_code(qualify, control_only(path)) == NO
+    qualify.main(restart(path, FA, RESTART))
+    record = json.loads((case_folder(out, FA) / "restart-1.json").read_text())
+    assert [(a["part"], a["attempt"]) for a in record["attempts"]] == [("baseline", 1)]
+    assert record["checkpoint_missing"] is True
+    assert set(launch.superseded_runs(fa_run(path), launch.launch_records(root))) == {run_dir.name}
+
+
 def test_restart_case_keeps_its_refusal_of_a_decided_case(qualify, tmp_path) -> None:
     """A case its baseline decided keeps the refusal it had: the failure keeps counting."""
     path, root, out, run_dir = decided_world(tmp_path)
