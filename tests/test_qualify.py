@@ -193,8 +193,7 @@ def test_the_driver_runs_each_case_in_order(qualify, tmp_path) -> None:
     order = []
     for label, name, control in ((fa, FA.name, True), (adamw, ADAMW.name, False)):
         order += [rf"qualify\.py complete .*--case '?{re.escape(name)}'?",
-                  *([rf"qualify\.py control-only .*--case '?{re.escape(name)}'?"] if control
-                    else []),
+                  rf"qualify\.py control-only .*--case '?{re.escape(name)}'?",
                   r"qualify\.py clear-stale", r"df -Pk", r"-lt \d+ \]",
                   rf"scripts/launch\.py \"\$CAMPAIGN\" --only '?{re.escape(label)}'? "
                   r"--max-attempts 1", r"qualify\.py locate",
@@ -204,9 +203,12 @@ def test_the_driver_runs_each_case_in_order(qualify, tmp_path) -> None:
                   r"qualify\.py finish"]  # fmt: skip
     positions(text, order)
     fa_case, adamw_case = text.split("# ---- case ")[1:]
-    assert "qualify.py control-only" not in adamw_case and "--part control" not in adamw_case
+    assert adamw_case.count("qualify.py control-only") == 1 and "--part control" not in adamw_case
     # FA on the first numerical seed alone: the control alone (control-only), or after the rest
     assert fa_case.count("--part control") == 2 and fa_case.count("qualify.py control-only") == 1
+    for block in (fa_case, adamw_case):  # an established technical case: exported first
+        assert block.count("qualify.py finish ") == 2
+        assert block.index("qualify.py finish ") < block.index('scripts/launch.py "$CAMPAIGN"')
     subprocess.run(["bash", "-n"], input=text, text=True, check=True)
 
 
@@ -314,7 +316,8 @@ def test_the_driver_runs_every_part_of_each_case(qualify, tmp_path, monkeypatch)
     assert code == 0
     assert calls == [*_with_case([FULL[0], "control-only", *FULL[1:], "part control", "finish"],
                                  FA),
-                     *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
+                     *_with_case([FULL[0], "control-only", *FULL[1:], "finish"], ADAMW),
+                     "verdict"]  # fmt: skip
 
 
 def test_the_driver_resumes_past_a_complete_case(qualify, tmp_path, monkeypatch) -> None:
@@ -323,7 +326,8 @@ def test_the_driver_resumes_past_a_complete_case(qualify, tmp_path, monkeypatch)
     code, calls = run_driver(qualify, tmp_path, monkeypatch, complete="0 3")
     assert code == 0
     assert calls == [f"complete {FA.name}", f"finish {FA.name}",
-                     *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
+                     *_with_case([FULL[0], "control-only", *FULL[1:], "finish"], ADAMW),
+                     "verdict"]  # fmt: skip
 
 
 def test_a_decided_case_skips_the_rest_but_not_its_control(qualify, tmp_path, monkeypatch):
@@ -338,16 +342,45 @@ def test_a_decided_case_with_its_control_due_runs_the_control_alone(qualify, tmp
     """``control-only`` exits 0 for FA, decided by its baseline with its same-path control alone
     outstanding: the driver runs that control with the launcher run's directory it printed, and
     then ``finish``; neither ``clear-stale``, the launcher, ``locate``, the baseline,
-    ``decided`` nor the rest is called. AdamW's case, without the control, runs in full."""
-    code, calls = run_driver(qualify, tmp_path, monkeypatch, control_only=0)
+    ``decided`` nor the rest is called. AdamW's case, without the control (its ``control-only``
+    says 3), runs in full."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, control_only="0 3")
     assert code == 0
     assert calls == [*_with_case(["complete", "control-only", "part control", "finish"], FA),
-                     *_with_case([*FULL, "finish"], ADAMW), "verdict"]  # fmt: skip
+                     *_with_case([FULL[0], "control-only", *FULL[1:], "finish"], ADAMW),
+                     "verdict"]  # fmt: skip
     (control,) = [line for line in (tmp_path / "stub.log").read_text().splitlines()
                   if line.startswith("part ") and "--part control" in line]  # fmt: skip
     assert "--run-dir /runs/study3/r1 " in control and control.endswith("--part control --resume")
     text = (tmp_path / "driver.sh").read_text()
     assert f"{FA.name}: only its same-path control is due (its baseline decided it, or" in text
+
+
+def test_the_driver_exports_an_established_technical_case_before_any_launcher_call(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """``control-only`` exits 9 for a case its recorded parts already mark technical: the driver
+    runs the export at once (the routed ``finish --kept``, archive.py, ``kept-check --remote``,
+    the sequence a complete technical case's ``finish`` takes) and stops with 9, or with 13 when
+    the upload fails; neither ``clear-stale``, the launcher, ``locate`` nor a part is called. In
+    AdamW's block too: every case block asks ``control-only`` first."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, control_only=9, finish=9)
+    assert code == qualify.TECHNICAL_CASE
+    assert calls == [f"complete {FA.name}", f"control-only {FA.name}", f"finish {FA.name}",
+                     "archive", f"kept-check {FA.name}", "verdict"]  # fmt: skip
+    for folder, exits, last in (
+        ("adamw", {"control_only": "3 9", "finish": "0 9"}, ADAMW),
+        ("pending", {"control_only": 9, "finish": 9, "archive": 1}, FA),
+    ):  # fmt: skip
+        (tmp_path / folder).mkdir()
+        code, calls = run_driver(qualify, tmp_path / folder, monkeypatch, **exits)
+        asked = calls.index(f"control-only {last.name}")
+        assert "launch" not in calls[asked:]
+        assert calls[-5:] == [f"control-only {last.name}", f"finish {last.name}", "archive",
+                              f"kept-check {last.name}", "verdict"]  # fmt: skip
+        assert code == (qualify.NOT_EXPORTED if folder == "pending" else qualify.TECHNICAL_CASE)
+    output = (tmp_path / "adamw" / "driver.out").read_text()
+    assert f"{ADAMW.name}: a technical case by its recorded parts" in output
 
 
 @pytest.mark.parametrize("command", ["complete", "control-only", "decided"])
@@ -399,10 +432,11 @@ def test_the_driver_exports_and_verifies_a_technical_case_before_it_stops(
     assert re.search(r"--remote (\S+)", check)[1] == destination
     text = (tmp_path / "driver.sh").read_text()
     commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-    assert commands.count(" finish --campaign ") == 2
-    assert commands.count('--kept "$KEPT" || rc=$?') == 2
-    assert commands.count("scripts/archive.py ") == 2
-    assert commands.count("qualify.py kept-check ") == 2
+    # Per case, one export sequence after control-only's 9 and one after the case: one generator
+    assert commands.count(" finish --campaign ") == 4
+    assert commands.count('--kept "$KEPT" || rc=$?') == 4
+    assert commands.count("scripts/archive.py ") == 4
+    assert commands.count("qualify.py kept-check ") == 4
     output = (tmp_path / "driver.out").read_text()  # each routed step's start and done markers
     for command, code in (("scripts/qualify.py finish", 9), ("scripts/archive.py", 0),
                           ("scripts/qualify.py kept-check", 0)):  # fmt: skip
@@ -415,9 +449,9 @@ def test_the_driver_exports_and_verifies_a_technical_case_before_it_stops(
                   "dryrun/dry-1/kept-checkpoints", "--commit", "a" * 40,
                   "--out", str(out)])  # fmt: skip
     text = out.read_text()  # one destination, the upload's and the check's
-    assert text.count('DEST="$ARTIFACT_REMOTE"/dryrun/dry-1/kept-checkpoints\n') == 2
-    assert text.count('scripts/archive.py "$INV" "$DEST" "$KEPT" ') == 2
-    assert text.count('--inventory "$INV" --remote "$DEST" ') == 2
+    assert text.count('DEST="$ARTIFACT_REMOTE"/dryrun/dry-1/kept-checkpoints\n') == 4
+    assert text.count('scripts/archive.py "$INV" "$DEST" "$KEPT" ') == 4
+    assert text.count('--inventory "$INV" --remote "$DEST" ') == 4
 
 
 @pytest.mark.parametrize("exits", [{"archive": 1}, {"kept_check": 13},
@@ -2954,7 +2988,7 @@ def test_a_failed_control_of_a_decided_case_is_kept(
     with pytest.raises(SystemExit, match="is never rerun"):
         qualify.main(control_args(path, run_dir, tmp_path, "--attempt", "2",
                                   "--infrastructure", LOST))  # fmt: skip
-    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert exit_code(qualify, control_only(path)) == qualify.TECHNICAL_CASE  # its export first
     with pytest.raises(SystemExit, match="the case is complete"):
         qualify.main(restart(path, FA, LOST))
     assert not list(case_folder(out, FA).glob("restart-*"))
@@ -3088,6 +3122,7 @@ def baseline_identity_elsewhere(path, root, out, run_dir):
 
 
 NO = 3  # ``control-only``'s no: the driver's usual path (scripts/qualify.py's ``NO``)
+EXPORT = 9  # ``control-only``'s answer for a technical case: export its evidence (TECHNICAL_CASE)
 BOUND_ELSEWHERE = {  # a part bound to another launcher run → the exit, and what it names
     # Not technical by the case's verdict (it compares no run directory): refused, exit 1
     "rest run id, not technical: 1": (
@@ -3095,12 +3130,12 @@ BOUND_ELSEWHERE = {  # a part bound to another launcher run → the exit, and wh
         "the rest record names the launcher run"),
     "baseline run id, not technical: 1": (
         baseline_elsewhere, 1, "the baseline record names the launcher run"),
-    # Technical by the verdict (the rest ran against another launcher run): the usual path, 3
-    "rest identity, technical: 3": (
-        rest_change(lambda r, d: r["launcher"]["identity"].update(sha256="0" * 64)), NO,
+    # Technical by the verdict (the rest ran against another launcher run): its export, 9
+    "rest identity, technical: 9": (
+        rest_change(lambda r, d: r["launcher"]["identity"].update(sha256="0" * 64)), EXPORT,
         "the rest part ran against another launcher run"),
-    "baseline identity, technical: 3": (
-        baseline_identity_elsewhere, NO, "the rest part ran against another launcher run"),
+    "baseline identity, technical: 9": (
+        baseline_identity_elsewhere, EXPORT, "the rest part ran against another launcher run"),
 }  # fmt: skip
 
 
@@ -3112,7 +3147,8 @@ def test_control_only_refuses_a_part_bound_to_another_launcher_run(
     bound to another launcher run than the located one: ``control-only`` never runs the control
     alone. Where the case's verdict does not mark it technical (a run id differs), it exits 1
     naming the record; where it does (an identity differs: the rest ran against another launcher
-    run), it exits 3, the usual path, whose ``finish`` exports the case's checkpoints."""
+    run), it exits 9 first, so that the driver exports the case's checkpoints before any launcher
+    call (it exited 3, the usual path, before)."""
     path, root, out, run_dir = decided_world(tmp_path, rest=True)
     assert exit_code(qualify, control_only(path)) == 0
     change, expected, why = BOUND_ELSEWHERE[elsewhere]
@@ -3120,11 +3156,11 @@ def test_control_only_refuses_a_part_bound_to_another_launcher_run(
     baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
     rest = json.loads((out / FA.attempt_path("rest", 1)).read_text())
     technical = q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
-    assert technical is (expected == NO)
+    assert technical is (expected == EXPORT)
     capsys.readouterr()
     code = exit_code(qualify, control_only(path))
-    if expected == NO:
-        assert code == NO and why in capsys.readouterr().err
+    if expected == EXPORT:
+        assert code == EXPORT and why in capsys.readouterr().err
     else:
         assert isinstance(code, str) and why in code and "nothing is rerun" in code, code
     assert stubbed == [] and not (out / (FA.attempt_path("control", 1) + ".started")).exists()
@@ -3322,16 +3358,16 @@ def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_al
 
 
 @pytest.mark.parametrize("world", list(TECHNICAL_WORLDS))
-def test_control_only_sends_every_technical_case_to_the_usual_path(
+def test_control_only_sends_every_technical_case_to_its_export(
     qualify, tmp_path, monkeypatch, capsys, world
 ) -> None:
     """A case its own verdict marks technical, its control due: the baseline's launcher check
     failed (the run not conforming, or the check never returned), or its rest is bound to
-    another launcher run. ``control-only`` exits 3 naming the technical mark, before any binding
-    check, and runs nothing alone. On the driver's usual path (its launcher call and ``locate``
-    are the driver's) ``decided`` says no, the control runs on the case's run, and ``finish
-    --kept`` exports the checkpoints and exits 9."""
-    assert NO == qualify.NO
+    another launcher run. ``control-only`` exits 9 naming the technical mark, first, and runs
+    nothing alone (it exited 3, the usual path, before). ``finish --kept`` then exports its
+    checkpoints and exits 9, the case not complete: its control never runs, and the case stays
+    incomplete and technical."""
+    assert NO == qualify.NO and EXPORT == qualify.TECHNICAL_CASE
     make, why = TECHNICAL_WORLDS[world]
     path, root, out, run_dir = make(tmp_path)
     (tmp_path / "ckpt" / "r-f1.pt").write_bytes(b"w")  # the disk intact
@@ -3343,37 +3379,295 @@ def test_control_only_sends_every_technical_case_to_the_usual_path(
     monkeypatch.setattr(qualify.runtime, "environment", lambda cfg, device: object())
     monkeypatch.setattr(qualify.q, "run_part", accepted_control(calls, run_dir))
     capsys.readouterr()
-    assert exit_code(qualify, control_only(path)) == NO
+    assert exit_code(qualify, control_only(path)) == EXPORT
     err = capsys.readouterr().err
     assert "technical case" in err and why in err, err
-    assert calls == [] and not (out / (FA.attempt_path("control", 1) + ".started")).exists()
-    # The usual path, the disk intact
-    assert exit_code(qualify, ["decided", *common(path), "--case", FA.name]) == NO
-    qualify.main(control_args(path, run_dir, tmp_path, "--resume"))
-    assert calls == [(FA.name, "control", 1, str(run_dir))]
     kept = kept_folder(qualify, monkeypatch, tmp_path)
     assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
     manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
-    assert manifest["lost"] == []
+    assert manifest["lost"] == [] and manifest["binding"]["parts"]["control"] is None
+    assert calls == [] and not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    assert qualify.case_state(out, planned, SCOPE)[0] is False
+    assert qualify.established_technical(out, planned, SCOPE)
 
 
-def test_control_only_leaves_a_technical_or_unfinished_case_to_the_usual_path(
+def test_control_only_exports_a_technical_case_and_leaves_an_unfinished_one_to_the_usual_path(
     qualify, tmp_path, capsys
 ) -> None:
-    """A case whose rest holds a technical mark is not run by ``control-only`` (exit 3: the usual
-    path, whose ``finish`` exports a technical case's checkpoints); a case whose rest is due or
-    interrupted is not either, as before."""
+    """A case whose rest holds a technical mark is not run by ``control-only``: exit 9, its
+    export (it exited 3, the usual path, before); a case whose rest is due or interrupted, its
+    baseline passing, is no technical case (an outstanding part is no mark) and takes the usual
+    path (exit 3), as before."""
     path, root, out, run_dir = decided_world(tmp_path, rest=technical_rest)
     baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
     rest = json.loads((out / FA.attempt_path("rest", 1)).read_text())
     assert q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
     capsys.readouterr()
-    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert exit_code(qualify, control_only(path)) == qualify.TECHNICAL_CASE
     assert "technical" in capsys.readouterr().err
     (out / FA.attempt_path("rest", 1)).unlink()  # the rest due
     assert exit_code(qualify, control_only(path)) == qualify.NO
     q.publish(out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
     assert exit_code(qualify, control_only(path)) == qualify.NO  # the rest interrupted
+
+
+def test_control_only_asks_every_case_first_whether_it_is_technical(qualify, tmp_path) -> None:
+    """``control-only`` asks first whether the case's recorded parts already mark it technical
+    (its baseline's verdict alone, the rest bound to it, its control), complete or not: AdamW's
+    case, which holds no control, exits 9 then (its baseline's launcher check failed, its rest
+    due), and 3, the usual path, when its baseline passes and its rest is due."""
+    path = campaign(tmp_path)
+    out = tmp_path / "runs" / "qualification"
+    baseline, _ = synthetic(ADAMW)
+    publish(out, ADAMW, "baseline", baseline)
+    assert exit_code(qualify, control_only(path, ADAMW)) == qualify.NO
+    launcher_not_conforming(baseline)
+    publish(out, ADAMW, "baseline", baseline)
+    assert exit_code(qualify, control_only(path, ADAMW)) == qualify.TECHNICAL_CASE
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][1]
+    assert planned.case == ADAMW and qualify.case_state(out, planned, SCOPE)[0] is False
+
+
+def test_finish_exports_an_established_technical_case_that_is_not_complete(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """A case its recorded parts mark technical, not complete (its control due): ``finish --kept``
+    exports it as a complete technical case's (exit 9; the manifest, the copies), never marks it
+    complete, and ``finish --release`` follows the same receipt binding (13 before ``kept-check``,
+    then the deletion, its record naming the manifest). A case neither complete nor technical is
+    still refused (exit 1), its checkpoints kept."""
+    path, root, out, run_dir = launcher_check_world(tmp_path, launcher_not_conforming)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    assert qualify.case_state(out, planned, SCOPE)[0] is False
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    capsys.readouterr()
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert "not complete" in capsys.readouterr().err
+    folder = case_folder(out, FA)
+    manifest = json.loads((folder / "kept-checkpoints-1.json").read_text())
+    (entry,) = manifest["files"]
+    assert entry["source"] == str(tmp_path / "ckpt" / "r-f1.pt") and entry["verified"] is True
+    assert qualify.case_state(out, planned, SCOPE)[0] is False
+    assert qualify.established_technical(out, planned, SCOPE)
+    release = finish_args(path, FA, None, "--release")
+    assert exit_code(qualify, release) == qualify.NOT_EXPORTED  # no kept-check yet
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    qualify.main(release)
+    assert not (tmp_path / "ckpt" / "r-f1.pt").exists()
+    (record,) = [json.loads(f.read_text()) for f in folder.glob("checkpoints-removed-*")]
+    assert record["manifests"][0]["path"] == str(folder / "kept-checkpoints-1.json")
+    assert qualify.case_state(out, planned, SCOPE)[0] is False
+    (tmp_path / "plain").mkdir()  # neither complete nor technical: refused, as before
+    path, root, out, run_dir = decided_world(tmp_path / "plain", rest=True)
+    (tmp_path / "plain" / "ckpt" / "r-f1.pt").write_bytes(b"w")
+    with pytest.raises(SystemExit, match="control: due .*; its checkpoints are kept"):
+        qualify.main([*finish_args(path, FA, kept), "--runs-root", str(root)])
+    assert (tmp_path / "plain" / "ckpt" / "r-f1.pt").exists()
+
+
+# ------------------------------------- an established technical case, exported before the launcher
+
+# project-run SRC python <script> ...: the real qualify.py (through QUALIFY_RUN, which patches
+# only ``same_filesystem``: the tmp paths share one device), and stand-ins for the launcher (its
+# conflict, exit 1) and scripts/archive.py (the real archive over a stand-in bucket; STUB_archive
+# a failure)
+REAL_PROJECT_RUN = r"""#!/usr/bin/env bash
+src="$1"
+shift 2
+case "$1" in
+  -c) exit 0 ;;
+  scripts/launch.py)
+    echo "launch ${*:2}" >> "$STUB_LOG"
+    echo "1 run completed but cannot stand: the endpoint checkpoint does not match its" \
+      "recorded sha256; the campaign stops" >&2
+    exit 1 ;;
+  scripts/archive.py)
+    echo "archive ${*:2}" >> "$STUB_LOG"
+    if [ "${STUB_archive:-0}" != 0 ]; then exit "$STUB_archive"; fi
+    exec "$PYTHON" "$ARCHIVE_STAND_IN" "$src/scripts/archive.py" "${@:2}" ;;
+  scripts/qualify.py)
+    echo "${*:2}" >> "$STUB_LOG"
+    cd "$src" && exec "$PYTHON" "$QUALIFY_RUN" "$src/scripts/qualify.py" "${@:2}" ;;
+esac
+echo "project-run: unexpected $*" >&2
+exit 99
+"""
+QUALIFY_RUN = """import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("qualify_script", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.same_filesystem = lambda a, b: False  # the tmp paths share one device
+module.main(sys.argv[2:])
+"""
+ARCHIVE_STAND_IN = """import importlib.util
+import json
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("archive_script", sys.argv[1])
+archive = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(archive)
+inventory, prefix, root, *paths = sys.argv[2:]
+bucket, _, base = prefix.removeprefix("gs://").partition("/")
+
+
+def gcloud(args):  # the bucket: cp copies nothing; a listing gives each local file's size and MD5
+    if args[0] == "cp":
+        return ""
+    rel = args[2].removesuffix("/**").removeprefix(prefix + "/")
+    found = []
+    for file in sorted(f for f in (Path(root) / rel).rglob("*") if f.is_file()):
+        size, _, md5 = archive.digests(file)
+        name = f"{base}/{file.relative_to(root).as_posix()}"
+        found.append({"bucket": bucket, "name": name, "size": str(size), "md5_hash": md5})
+    return json.dumps(found)
+
+
+archive.gcloud = gcloud
+print(json.dumps(archive.archive(Path(inventory), prefix, Path(root), paths)))
+"""
+
+
+def real_gpu_code() -> dict:
+    """This checkout's GPU code identity as a separate process computes it (the fixture replaces
+    it in this one): what a real ``qualify.py`` holds a record's provenance to."""
+    done = subprocess.run([sys.executable, "-c", "import json; from zero_field_refusal import "
+                           "code_identity; print(json.dumps(code_identity.gpu_code_identity()))"],
+                          capture_output=True, text=True, check=True, cwd=ROOT)  # fmt: skip
+    return json.loads(done.stdout)
+
+
+def established_technical_world(tmp_path, case, code):
+    """A case its recorded parts mark technical, not complete: its baseline's launcher check found
+    the run not conforming (nothing ran); for FA its rest ran nothing and its control is due, for
+    AdamW its rest is due. Its launcher run r-1 is done, and r-1's endpoint checkpoint is on disk
+    with corrupted bytes, which the launcher would refuse. The records carry ``code``, the GPU
+    code a real ``qualify.py`` reads. Returns the campaign, the records' folder and the
+    checkpoint."""
+    fa = case == FA
+    path = campaign(tmp_path, fa=(10200,) if fa else ())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, FA_LABEL if fa else f"adamw-{ADAMW_LR:g}/s10200", ["r-1"])
+    log_end(root, path, run, "r-1")
+    checkpoint = tmp_path / "ckpt" / "r-1.pt"
+    run_dir = with_checkpoint(settled_launcher(root, run, "r-1"), checkpoint)
+    baseline, rest = synthetic(case, identity=q.launcher_identity(run_dir))
+    for record in (baseline, rest):
+        record.update(launcher_run=str(run_dir))
+        record["launcher"]["classified"] = True
+        record["provenance"]["gpu_code"] = code
+    launcher_not_conforming(baseline)
+    publish(out, case, "baseline", baseline)
+    if fa:
+        reasons = ["the baseline part did not end with its checkpoint (not_run)"]
+        rest.update(status="not_run", kind="technical", reasons=reasons)
+        rest["baseline_record"] = {"path": str(out / case.attempt_path("baseline", 1)),
+                                   "sha256": q.record_sha256(baseline)}  # fmt: skip
+        publish(out, case, "rest", rest)
+    checkpoint.write_bytes(b"corrupted bytes")
+    return path, out, checkpoint
+
+
+def real_driver(qualify, tmp_path, monkeypatch, path):
+    """The generated driver over the real ``qualify.py`` subcommands (``REAL_PROJECT_RUN``): the
+    launcher a stand-in that refuses with the launcher's conflict (exit 1), scripts/archive.py a
+    stand-in over the real archive (``ARCHIVE_STAND_IN``), ``git rev-parse HEAD`` the driver's
+    commit (any other git call the real one), ``stat`` the devices (``STAT``), ``nvidia-smi``
+    idle and ``gcloud`` present. Returns what runs it: the exits ``STUB_<name>`` give it, then
+    its exit and the calls it logged."""
+    commit = "a" * 40
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git = shutil.which("git")
+    for name, text in (
+        ("project-run", REAL_PROJECT_RUN),
+        ("git", f'#!/bin/sh\nif [ "$*" = "rev-parse HEAD" ]; then echo {commit}; exit 0; fi\n'
+                f'exec {git} "$@"\n'),
+        ("stat", STAT),
+        ("nvidia-smi", '#!/bin/sh\ncase "$*" in *compute-apps*) ;; *) echo 0 ;; esac\n'),
+        ("gcloud", "#!/bin/sh\nexit 1\n"),
+    ):  # fmt: skip
+        (bin_dir / name).write_text(text)
+        (bin_dir / name).chmod(0o755)
+    (tmp_path / "qualify_run.py").write_text(QUALIFY_RUN)
+    (tmp_path / "archive_stand_in.py").write_text(ARCHIVE_STAND_IN)
+    (tmp_path / "code" / commit).mkdir(parents=True)
+    (tmp_path / "code" / commit / "source").symlink_to(ROOT)  # the source checkout
+    key = tmp_path / "artifact-gcs-key.json"
+    key.write_text("{}")
+    monkeypatch.setattr(qualify, "POD_ENVIRONMENT", ())
+    monkeypatch.setattr(qualify, "SOURCES", str(tmp_path / "code"))
+    monkeypatch.setattr(qualify, "need_kb", lambda gb: 1)
+    driver = tmp_path / "driver.sh"
+    qualify.main([*driver_args(tmp_path, path), "--commit", commit, "--out", str(driver)])
+    log = tmp_path / "stub.log"
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "RUNS_DIR": str(tmp_path / "runs"),
+           "DATA_DIR": str(tmp_path / "data"), "HOME": os.environ.get("HOME", str(tmp_path)),
+           "TMPDIR": os.environ.get("TMPDIR", str(tmp_path)), "PYTHON": sys.executable,
+           "QUALIFY_RUN": str(tmp_path / "qualify_run.py"),
+           "ARCHIVE_STAND_IN": str(tmp_path / "archive_stand_in.py"), "STUB_LOG": str(log),
+           "ARTIFACT_REMOTE": "gs://bucket/zfr", "ARTIFACT_GCS_KEY": str(key)}  # fmt: skip
+
+    def run(**exits):
+        log.write_text("")
+        stubs = {f"STUB_{key}": str(value) for key, value in exits.items()}
+        done = subprocess.run(["bash", str(driver)], capture_output=True, text=True,
+                              env={**env, **stubs})  # fmt: skip
+        (tmp_path / "driver.out").write_text(done.stdout + done.stderr)
+        return done.returncode, [line.split(" ", 1)[0] for line in log.read_text().splitlines()]
+
+    return run
+
+
+@pytest.mark.parametrize("case", [FA, ADAMW], ids=["FA, its control due", "AdamW, its rest due"])
+def test_the_driver_exports_a_technical_case_before_a_launcher_that_would_refuse(
+    qualify, tmp_path, monkeypatch, case
+) -> None:
+    """The generated driver over the real ``qualify.py`` subcommands, a case its recorded parts
+    mark technical and not complete, its launcher run's checkpoint corrupted (the launcher's
+    stand-in refuses it, exit 1): ``complete`` says 3, ``control-only`` 9, and the export runs
+    before any launcher call. The launcher is never called; the export holds the corrupt bytes,
+    ``matches_record`` false; ``kept-check`` passes; the driver stops with 9; the case stays
+    incomplete and technical. Run again, the driver reuses the verified export (9 again)."""
+    path, out, checkpoint = established_technical_world(tmp_path, case, real_gpu_code())
+    run = real_driver(qualify, tmp_path, monkeypatch, path)
+    code, calls = run()
+    assert code == qualify.TECHNICAL_CASE, (tmp_path / "driver.out").read_text()
+    assert calls == ["complete", "control-only", "finish", "archive", "kept-check", "verdict"]
+    folder = case_folder(out, case)
+    manifest = json.loads((folder / "kept-checkpoints-1.json").read_text())
+    (entry,) = [e for e in manifest["files"] if e["source"] == str(checkpoint)]
+    assert (entry["verified"], entry["matches_record"]) == (True, False)
+    assert (tmp_path / "volume" / "kept" / entry["copy"]).read_bytes() == b"corrupted bytes"
+    assert json.loads((folder / "kept-check-1.json").read_text())["exit"] == 0
+    planned = next(p for p in qualify.campaign_cases(path, SCOPE, 1, False)[1] if p.case == case)
+    assert qualify.case_state(out, planned, SCOPE)[0] is False
+    assert qualify.established_technical(out, planned, SCOPE)
+    assert checkpoint.read_bytes() == b"corrupted bytes"  # kept where it is
+    code, calls = run()  # a second pass
+    assert code == qualify.TECHNICAL_CASE and "launch" not in calls
+    assert [f.name for f in folder.glob("kept-checkpoints-*")] == ["kept-checkpoints-1.json"]
+    assert json.loads((folder / "kept-check-2.json").read_text())["exit"] == 0
+
+
+def test_the_driver_leaves_a_pending_upload_receipt_for_an_early_export(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """The same world for FA, the upload failing (scripts/archive.py exits 1): ``kept-check``
+    still runs and publishes its receipt, ``pending-upload`` true (the volume copy verified), and
+    the driver stops with 13; the launcher is never called."""
+    path, out, checkpoint = established_technical_world(tmp_path, FA, real_gpu_code())
+    run = real_driver(qualify, tmp_path, monkeypatch, path)
+    code, calls = run(archive=1)
+    assert code == qualify.NOT_EXPORTED, (tmp_path / "driver.out").read_text()
+    assert calls == ["complete", "control-only", "finish", "archive", "kept-check", "verdict"]
+    receipt = json.loads((case_folder(out, FA) / "kept-check-1.json").read_text())
+    assert (receipt["exit"], receipt["pending-upload"]) == (qualify.NOT_EXPORTED, True)
 
 
 def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path, monkeypatch) -> None:
