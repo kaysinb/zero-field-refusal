@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -317,3 +318,16 @@ def test_required_values_in_runnable_example_fail(repo):
     check = docs.Check(root)
     check.validate(data)
     assert any("Set these config values" in e for e in check.errors)
+
+
+def test_the_launchers_conflict_note_names_an_operations_section_that_exists():
+    """The title the launcher's note quotes leads a bullet (or is a heading) of
+    docs/operations.md, and the note says where it is."""
+    from zero_field_refusal.launch import LOST_CHECKPOINT_NOTE
+
+    (title,) = re.findall(r'\(docs/operations\.md, "([^"]+)"\)', LOST_CHECKPOINT_NOTE)
+    lines = (ROOT / "docs/operations.md").read_text().splitlines()
+    assert any(
+        line.startswith(f"- **{title}.**") or re.fullmatch(rf"#+ {re.escape(title)}", line)
+        for line in lines
+    )

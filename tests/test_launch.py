@@ -492,6 +492,34 @@ def test_a_run_without_a_sound_checkpoint_is_a_conflict(tmp_path, record, proble
         run_campaign(name, runs, root, execute=Executor(root, {}))
 
 
+def test_a_missing_checkpoint_conflict_points_to_the_lost_checkpoint_procedure(tmp_path) -> None:
+    """A missing endpoint checkpoint is a possible loss, not a run to move or rerun: the message
+    holds the conflict line and a note naming the procedure. Another conflict has no note."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    checkpointed_run_dir(root, runs[1], tmp_path, record="missing_file")
+    with pytest.raises(CampaignError, match="cannot stand") as lost:
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    text = str(lost.value)
+    assert re.search(r"^- \S+/\S+: the endpoint checkpoint \S+ is missing$", text, re.M)
+    assert text.count("a possible loss requiring diagnosis") == 1
+    assert '(docs/operations.md, "A lost checkpoint")' in text
+    assert "unless finish removed it" in text and "lost container disk" not in text
+    note = " ".join(text.splitlines()[2:])
+    assert note.endswith(".") and ". " not in note  # one sentence
+    assert all(len(line) <= 100 for line in text.splitlines()[2:])
+
+    other = tmp_path / "other"
+    (other / "runs").mkdir(parents=True)
+    name, runs = load_campaign(campaign(other))
+    checkpointed_run_dir(other / "runs", runs[1], other, record="other_bytes")
+    with pytest.raises(CampaignError, match="does not match its recorded sha256") as mismatch:
+        run_campaign(name, runs, other / "runs", execute=Executor(other / "runs", {}))
+    assert "possible loss" not in str(mismatch.value) and "A lost checkpoint" not in str(
+        mismatch.value
+    )
+
+
 @pytest.mark.parametrize(
     "departure",
     [{"deterministic": True}, {"tf32_matmul": True}, {"matmul_precision": "high"},
@@ -1701,3 +1729,4 @@ def test_a_study3_dry_run_reports_the_recovery_refusal_of_the_real_call(tmp_path
         assert messages[0] == messages[1] and execute.calls == []
         assert [r for r in launch_records(root) if r.get("event") == "recovery"] == []
     assert "done" in messages[0] and "diverged" not in messages[0]  # the state the run has
+    assert "no recovery round is written" in messages[0] and "nothing is written" not in messages[0]

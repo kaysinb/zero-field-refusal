@@ -208,7 +208,10 @@ infrastructure-interrupted attempt is void and kept, its rerun a new attempt id)
 a case loses the container disk, with the launcher run's checkpoint and the harness's: the case
 cannot go on from its recorded parts. A missing endpoint checkpoint alone is a possible loss
 requiring diagnosis, never by itself a lost container disk: the restart's reason documents the
-interruption the diagnosis found. ``restart-case`` publishes (atomically, from a clean checkout)
+interruption the diagnosis found. Exit 1 is shared (the
+launcher's conflicts, this command's refusals, ``control-only``, ``finish``, the driver's
+preconditions), so it never triggers a restart by itself: docs/operations.md, "A lost checkpoint",
+tells the launcher's messages apart. ``restart-case`` publishes (atomically, from a clean checkout)
 ``restart-<n>.json`` in the case's folder, naming every attempt of the case's parts (the baseline,
 the rest and, for the case that holds it, the same-path control): each recorded one with its
 record's sha256, status and kind, each interrupted one by its number; the reason; and the case's

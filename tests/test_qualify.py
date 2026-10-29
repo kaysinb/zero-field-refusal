@@ -216,7 +216,7 @@ def test_the_driver_has_no_rerun_line(qualify, tmp_path) -> None:
     text = driver_text(qualify, tmp_path)
     commands = "\n".join(line for line in text.splitlines() if not line.startswith("#"))
     assert "--attempt" not in commands and "--infrastructure" not in commands
-    assert "--recovery" not in commands
+    assert "--recovery" not in commands and "restart-case" not in commands
     assert commands.count("--max-attempts 1") == 2
 
 
@@ -2414,6 +2414,58 @@ def test_a_second_loss_restarts_the_case_again_through_a_further_round(
         ("baseline", 1, RESTART), ("baseline", 2, SECOND)]  # fmt: skip
     rate = verdict["rates"][f"adamw-{ADAMW_LR:g}"]
     assert sorted(v["reason"] for v in rate["voided"]) == sorted([RESTART, SECOND])
+
+
+def test_a_study3_round_is_not_refused_as_unused_after_a_restart(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """The documented sequence under a study-3 campaign header (the real campaign file's): the
+    launcher's conflict over the lost checkpoint, ``restart-case``, then the run's recovery
+    round, ``--only LABEL --max-attempts 1 --recovery`` with the incident fields, which the
+    refusal of a round over a run that is not used up does not stop (the restart left the run
+    used up); a second loss takes a further round the same way."""
+    from test_launch import INCIDENT
+
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    path.write_text("header:\n  study: 3\n" + path.read_text())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    label = f"adamw-{ADAMW_LR:g}/s10200"
+    run = journal(root, path, label, ["r-a1"])
+    old = settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
+    baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(old))
+    publish(out, ADAMW, "baseline", baseline)
+    q.publish(out / (ADAMW.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    name, runs = launch.load_campaign(path)
+    header = launch.campaign_header(path)
+    assert header == {"study": 3}
+    monkeypatch.setattr(launch, "_disqualification", checkpoint_lost)
+    form = [str(path), "--only", label, "--max-attempts", "1"]
+
+    def execute(run, run_id, output, campaign=None):
+        with_checkpoint(settled_launcher(root, run, run_id), tmp_path / "ckpt" / f"{run_id}.pt")
+        return 0
+
+    with pytest.raises(SystemExit, match="is missing"):  # the loss, before the restart
+        launch_script().main([*form, "--recovery", RESTART])
+    qualify.main(restart(path, ADAMW, RESTART))
+    result = launch.run_campaign(name, runs, root, execute=execute, recovery=RESTART,
+                                 header=header, only=label, max_attempts=1,
+                                 incident=INCIDENT)  # fmt: skip
+    (a2,) = [d for d in (root / run.experiment).iterdir() if d.name != "r-a1"]
+    assert result["done"] == [label]
+    second, _ = synthetic(ADAMW, identity=q.launcher_identity(a2))
+    publish(out, ADAMW, "baseline", second, attempt=2)
+    q.publish(out / (ADAMW.attempt_path("rest", 2) + ".started"), {"started_at": "t"})
+    (tmp_path / "ckpt" / f"{a2.name}.pt").unlink()  # the container disk lost again
+    with pytest.raises(SystemExit, match="is missing"):
+        launch_script().main(form)
+    qualify.main(restart(path, ADAMW, SECOND))
+    result = launch.run_campaign(name, runs, root, execute=execute, recovery=SECOND,
+                                 header=header, only=label, max_attempts=1,
+                                 incident=INCIDENT)  # fmt: skip
+    assert result["done"] == [label]
 
 
 def test_a_launcher_run_lost_in_flight_needs_no_restart_only_a_round(

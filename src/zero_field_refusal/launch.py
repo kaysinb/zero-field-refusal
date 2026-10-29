@@ -971,6 +971,17 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
     return None
 
 
+LOST_CHECKPOINT_NOTE = (
+    "\nA missing endpoint checkpoint is a possible loss requiring diagnosis under study 3's\n"
+    'qualification (docs/operations.md, "A lost checkpoint"), unless finish removed it.'
+)
+
+
+def _is_missing_checkpoint(problem: str) -> bool:
+    """The conflict ``_checkpoint_problem`` gives a run whose endpoint checkpoint file is gone."""
+    return problem.startswith("the endpoint checkpoint ") and problem.endswith(" is missing")
+
+
 def _checkpoint_problem(cfg: Any, run_dir: Path) -> str | None:
     """A run whose config sets ``tracking.endpoint_checkpoint`` is done only if its summary holds
     the checkpoint record and the file at the recorded path exists with the recorded sha256
@@ -1131,8 +1142,9 @@ def run_campaign(
                  for run_dir, problem in assessments[run.label].conflicts.items()}  # fmt: skip
     if conflicts:
         lines = "\n".join(f"- {where}: {problem}" for where, problem in sorted(conflicts.items()))
+        note = LOST_CHECKPOINT_NOTE if any(map(_is_missing_checkpoint, conflicts.values())) else ""
         raise CampaignError(f"Completed runs that cannot stand for this campaign; move them out "
-                            f"of the experiment or fix them first:\n{lines}")  # fmt: skip
+                            f"of the experiment or fix them first:\n{lines}{note}")  # fmt: skip
 
     def used_up(run: Run) -> bool:
         state = assessments[run.label]
@@ -1303,8 +1315,8 @@ def _not_used_up(run: Run, state: Assessment, entries: Entries, max_attempts: in
             if where is not None]  # fmt: skip
     if held:
         raise CampaignError(f"{run.label}: no recovery round: the run is {' and '.join(held)} "
-                            "under its config hash, an outcome that is never rerun; nothing is "
-                            "written")  # fmt: skip
+                            "under its config hash, an outcome that is never rerun; no recovery "
+                            "round is written")  # fmt: skip
     left = attempts_left(run, state, entries, max_attempts)
     raise CampaignError(
         f"{run.label}: no recovery round: the run is not used up under its config hash ({left} "

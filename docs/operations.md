@@ -1517,7 +1517,8 @@ docstring has every rule.
   rerun is a recovery round of its own with the reason and its incident, one attempt per round
   (["Launching runs"](#launching-runs)): a second loss, or a first loss after the round was used
   (by an engineering cycle's new launcher run, say), takes a further round with a reason no
-  earlier round of the label gave.
+  earlier round of the label gave. A launcher exit 1 over a missing checkpoint is a lost
+  checkpoint to diagnose first ("A lost checkpoint", below), no round by itself.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
@@ -1534,17 +1535,38 @@ docstring has every rule.
     --evidence "<a path or reference to the evidence>"
   ```
 
+- **A lost checkpoint.** The launcher's exit 1 is shared: the driver's preconditions and disk
+  check, `finish`'s and `control-only`'s refusals, a refused `restart-case` or recovery round,
+  and the launcher's conflicts all exit 1. Exit 1 alone never triggers a restart, a recovery
+  round or a rerun: the message identifies the procedure; bound records and incident evidence
+  determine the route. `restart-case` and every recovery round are commands a person runs,
+  never the driver's. A launcher run whose endpoint checkpoint file is gone is refused with
+  "the endpoint checkpoint … is missing" and a note that points here; the table tells that
+  message apart from the others.
+
+  | What the driver's log and the records show | What it is | What to do |
+  |---|---|---|
+  | `complete` exits 3 for the case. The launcher, called by the driver, exits 1 with "the endpoint checkpoint … is missing" for the case's own launcher run. No `checkpoints-removed-<n>.json` of the case names that path. The checkpoint folder is empty, or the Pod restarted. | An unfinished case's lost checkpoint (infrastructure) | Diagnose it, then `restart-case --infrastructure "<UTC time; what was lost; the evidence>"`. Then the launcher run's recovery round, `launch.py CAMPAIGN --only LABEL --max-attempts 1 --recovery "<the same reason>"` with `--incident-time`, `--cause` and `--evidence` (its first round, or a further one with a reason no earlier round gave). Then each part as its next attempt with that reason, the baseline first. Then the driver. The commands are in "A case restart". |
+  | The same, for a case decided by its baseline (a scientific failure) with its control due | Not a restart | The driver runs the control alone: `control-only` exits 0 and the control resumes on the run it prints, or exits 1 naming the condition that fails. `restart-case` refuses: the scientific failure keeps counting. See "A decided case whose control is due". |
+  | The same, for a case with a completed failure (`restart-case` refuses) | Not a restart | A scientific failure stands. A technical one goes to the engineering cycle (`supersede`, below). |
+  | The message for a label whose case `complete` exits 0, and a `checkpoints-removed-<n>.json` names the path | `finish` removed it on purpose | Nothing. The driver never calls the launcher on a complete case, and nobody calls it on a finished case's label. `restart-case` refuses a complete case. |
+  | A launcher start without an end at the loss; the next launcher call settles it technical and exits 1 with "used up their attempts" | The launcher run was in flight | No restart (`restart-case` refuses). A recovery round with the documented reason: `--only LABEL --max-attempts 1 --recovery` and the incident fields. |
+  | Any other conflict: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved" | A provenance conflict, not a loss | No restart and no round. Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. |
+  | A technical case (exit 9 or 13) whose kept checkpoints were lost | The technical mark stands | See "A technical case's checkpoints", "Lost before the export". |
+
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
   campaigns" [above](#study-2-stage-a)), its cap in `ZFR_DEADLINE_EPOCH`. Before the driver,
   set the deadline in `/workspace/zfr-deadline` to cover the cases left, ≈ 39 min each and
   ≈ 11 min more per same-path control, with an hour to spare
   (`python3 scripts/pod_deadline_watch.py --set EPOCH`). A case the deadline stops leaves an
   interrupted attempt (above) and its checkpoints on the container disk, which a stopped Pod
-  loses: the case starts again as a whole (below).
+  loses: the case starts again as a whole (below), once the loss is diagnosed ("A lost
+  checkpoint", above).
 - **A case restart.** When the Pod stopped during a case, its recorded parts cannot go on (the
   launcher's and the harness's checkpoints are gone). A missing endpoint checkpoint alone is a
   possible loss requiring diagnosis, never by itself a lost container disk: diagnose it first,
-  and give the restart the interruption the diagnosis found. `restart-case` records it: a
+  and give the restart the interruption the diagnosis found ("A lost checkpoint", above, tells
+  it from the launcher's other conflicts). `restart-case` records it: a
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
   those attempts are void, kept and listed in the verdict, and neither count nor block. Once the
@@ -2196,6 +2218,10 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   and its round, and writes nothing.
   Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
   attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
+  A conflict over a missing endpoint checkpoint ends with a note that points to "A lost
+  checkpoint" in ["Study 3: numerical qualification"](#study-3-numerical-qualification): the
+  file may be lost with a Pod's container disk, which needs a diagnosis before anything is
+  moved, deleted or rerun.
   A start the launcher finds without an end (it died while the attempt ran, or after the child
   published its outcome) is ended when its run is assessed, before the run is skipped, a conflict
   raised or a new attempt started: an `end` record with the attempt's run id and number, no
