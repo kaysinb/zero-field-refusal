@@ -31,6 +31,7 @@ from test_study3_campaigns import (
     World,
     campaign_of,
     confirmation_study,
+    explicit_python,
     script_module,
     sealed_reads,
 )
@@ -314,8 +315,8 @@ def test_the_guard_refuses_while_a_started_block_holds_a_run_not_ended(world, su
                         K=None)  # fmt: skip
     summary.core(study)
     summary.versions()
-    refused(summary.guard(10403, files[10403]), "block 10403 may not start",
-            "not ended", dead.run_id, f"--only {dead.label} --recovery")  # fmt: skip
+    refused(summary.guard(10403, files[10403]), "block 10403 may not start", "not ended",
+            dead.run_id, f"--only {dead.label} --max-attempts 1 --recovery")  # fmt: skip
     # a run whose recovery round is opened and has no later attempt holds it too
     study.change(dead.run_id, state="recovered")
     refused(summary.guard(10403, files[10403]), "block 10403 may not start", dead.run_id)
@@ -576,8 +577,10 @@ from pathlib import Path
 
 script = sys.argv[1]
 sys.argv = sys.argv[1:]
+world = pickle.loads(Path(os.environ["GUARD_WORLD"]).read_bytes())
+with Path(world["ran"]).open("a") as ran:
+    ran.write(f"{sys.executable}\\t{Path(script).name}\\n")
 if Path(script).name == "study3_summary.py":
-    world = pickle.loads(Path(os.environ["GUARD_WORLD"]).read_bytes())
     from zero_field_refusal import code_identity, paths
     from zero_field_refusal.analysis import study3_progress, study3_versions
 
@@ -607,7 +610,9 @@ with (Path(os.environ["RUNS_DIR"]) / "launched.txt").open("a") as f:
 def test_the_writers_driver_runs_the_real_guard_before_each_block(world, tmp_path) -> None:
     """run.sh as the writer wrote it, run by bash, calls this script's guard (the real one, in its
     own process) before each block and the launcher after it; only the launcher is a stand-in,
-    which records each block it is given in RUNS_DIR. The guard's state is ``advance``'s over the
+    which records each block it is given in RUNS_DIR. Its ``python`` is this test's interpreter,
+    selected by ``explicit_python`` whatever PATH a sourced file sets, and each call records the
+    interpreter it ran under and its script. The guard's state is ``advance``'s over the
     progress tests' records after the blocks launched so far, and its versions check is replaced
     (neither has a record on these files); it reads the real block files and the decision
     records they name. A refusal stops the driver before the block's launch."""
@@ -625,13 +630,18 @@ def test_the_writers_driver_runs_the_real_guard_before_each_block(world, tmp_pat
                                  f'{shlex.quote(str(boot))} "$@"\n')  # fmt: skip
     (bin_ / "python").chmod(0o755)
     launched = world.root / "launched.txt"
+    ran = tmp_path / "ran.txt"
+    guarded, started = f"{sys.executable}\tstudy3_summary.py", f"{sys.executable}\tlaunch.py"
 
     def run(states) -> subprocess.CompletedProcess:
         launched.unlink(missing_ok=True)
+        ran.unlink(missing_ok=True)
         config = tmp_path / "world.pickle"
         config.write_bytes(pickle.dumps({"repo": str(world.repo), "launched": str(launched),
-                                         "states": states, "code": "b" * 64}))  # fmt: skip
-        env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "GUARD_WORLD": str(config)}
+                                         "ran": str(ran), "states": states,
+                                         "code": "b" * 64}))  # fmt: skip
+        env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "GUARD_WORLD": str(config),
+               **explicit_python(bin_ / "python")}  # fmt: skip
         return subprocess.run(["bash", str(out / "run.sh")], env=env, cwd=tmp_path,
                               capture_output=True, text=True)  # fmt: skip
 
@@ -641,6 +651,7 @@ def test_the_writers_driver_runs_the_real_guard_before_each_block(world, tmp_pat
         study.confirmation(count=1, first=first)
     done = run(states)
     assert done.returncode == 0, done.stderr
+    assert ran.read_text().splitlines() == [guarded, started] * 3
     assert launched.read_text().splitlines() == [
         f"{files[seed]} --max-attempts 1" for seed in (10400, 10401, 10402)]  # fmt: skip
     assert [int(s) for s in re.findall(r"block (\d+) of candidate 1's", done.stdout)] == [
@@ -656,11 +667,13 @@ def test_the_writers_driver_runs_the_real_guard_before_each_block(world, tmp_pat
     assert done.returncode == 1
     assert "the guard refused block 10401 (exit 1)" in done.stderr
     assert "a technical mark holds the confirmation" in done.stderr and broken.run_id in done.stderr
+    assert ran.read_text().splitlines() == [guarded, started, guarded]
     assert launched.read_text().splitlines() == [f"{files[10400]} --max-attempts 1"]
     # the n record changed after the blocks were written: the first guard refuses
     world.records.change("n-c1", written_at="2026-10-26T13:00:00Z")
     done = run(states)
     assert done.returncode == 1 and "n_record" in done.stderr and not launched.exists()
+    assert ran.read_text().splitlines() == [guarded]
 
 
 # ------------------------------------------------------------------ the versions record

@@ -432,6 +432,65 @@ def test_a_restart_voids_an_interrupted_attempt(qualify, monkeypatch, tmp_path) 
     assert run["superseded"] == {"r10200-adam_frozen-a1": RESTART}
 
 
+SECOND = "the Pod stopped again during the case; its container disk is gone again"
+
+
+def own_round(world, case, number, after, reason):
+    """The launcher's round of the case's run, as ``launch.py --only LABEL --max-attempts 1
+    --recovery REASON`` with its incident writes it (``launch``, "Recovery rounds")."""
+    run = world.run(case)
+    world.log({"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+               "reason": reason, "runs": [run.label], "only": run.label, "round": number,
+               "config_hash": run.config_hash, "after": after, "max_attempts": 1, "granted": 1,
+               "incident_time": "2026-10-26T00:00:00+00:00", "cause": "the Pod stopped",
+               "evidence": "the Pod's event log"})  # fmt: skip
+
+
+def test_a_case_restarted_twice_locates_its_third_launcher_run(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """The container disk lost twice in one case: restart 1, the run's round 1 and new attempts;
+    then restart 2, which names every attempt and supersedes the second launcher run, and round
+    2. The third launcher run is located, both restarts' voids are listed with their reasons,
+    the attempts re-qualify the rate, and nothing is a problem."""
+    world = World(tmp_path)
+    world.full(skip=(FA,))
+    first = world.launch(FA)
+    baseline, _ = world.records(FA, first)
+    world.publish(FA, "baseline", baseline)
+    world.publish(FA, "control", control_record(case=FA, identity=first))
+    q.publish(world.out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    world.command(qualify, "restart-case", "--case", FA.name, "--infrastructure", RESTART)
+    own_round(world, FA, 1, [first["run_id"]], RESTART)
+    second = world.launch(FA)  # its checkpoint is lost in turn
+    baseline, _ = world.records(FA, second)
+    world.publish(FA, "baseline", baseline, 2)
+    world.publish(FA, "control", control_record(case=FA, identity=second), 2)
+    q.publish(world.out / (FA.attempt_path("rest", 2) + ".started"), {"started_at": "t"})
+    world.command(qualify, "restart-case", "--case", FA.name, "--infrastructure", SECOND)
+    own_round(world, FA, 2, [first["run_id"], second["run_id"]], SECOND)
+    world.qualified(FA, world.launch(FA), attempt=3)
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"] == {FA_KEY: "qualified", ADAMW_KEY: "qualified"}
+    fa = reading["rates"][FA_KEY]
+    assert {v["reason"] for v in fa["verdict"]["voided"]} == {RESTART, SECOND}
+    (case,) = [c for c in fa["cases"] if c["seed"] == FA.seed]
+    assert [(e["part"], e["attempt"], e["restart"]) for e in case["superseded"]] == [
+        ("baseline", 1, RESTART), ("baseline", 2, SECOND), ("control", 1, RESTART),
+        ("control", 2, SECOND)]  # fmt: skip
+    assert [(r["reason"], r["launcher_run_id"]) for r in reading["restarts"]] == [
+        (RESTART, first["run_id"]), (SECOND, second["run_id"])]  # fmt: skip
+    (run,) = [r for r in fa["runs"] if r["seed"] == FA.seed]
+    assert run["run_ids"] == [first["run_id"], second["run_id"], "r10200-adam_frozen-a3"]
+    assert run["located"] == "r10200-adam_frozen-a3"
+    assert run["superseded"] == {first["run_id"]: RESTART, second["run_id"]: SECOND}
+    voided, problems = voided_runs(world.root)
+    assert problems == [] and {run_id: why[0] for run_id, why in voided.items()} == {
+        first["run_id"]: "superseded", second["run_id"]: "superseded"}  # fmt: skip
+
+
 def test_the_real_restart_cases_line_counts_through_its_restart_record(
     qualify, monkeypatch, tmp_path
 ) -> None:

@@ -3,13 +3,18 @@
     python scripts/qualify.py plan --campaign FILE --candidate N [--engineering]
         [--diagnostic-steps T1,T2,...]
     python scripts/qualify.py driver --campaign FILE --candidate N [--engineering]
-        [--diagnostic-steps T1,T2,...] --commit SHA --out FILE [--dry-run]
+        [--diagnostic-steps T1,T2,...] --kept DIR [--kept-remote PREFIX] --commit SHA
+        --out FILE [--dry-run]
     python scripts/qualify.py part --campaign FILE --candidate N [--engineering] --case NAME
         --part baseline|rest|control
         (--resume | --attempt N [--infrastructure REASON | --engineering-cycle])
         --run-dir DIR --checkpoints DIR [--diagnostic-steps T1,T2,...] [--device D]
-    python scripts/qualify.py complete|decided|clear-stale|locate|finish [--release]
+    python scripts/qualify.py complete|decided|control-only|clear-stale|locate
         --campaign FILE --candidate N [--engineering] --case NAME
+    python scripts/qualify.py finish [--kept DIR | --release] --campaign FILE --candidate N
+        [--engineering] --case NAME
+    python scripts/qualify.py kept-check --campaign FILE --candidate N [--engineering]
+        --case NAME --inventory FILE --remote PREFIX
     python scripts/qualify.py interrupted --campaign FILE --candidate N [--engineering]
         --case NAME --part baseline|rest|control --attempt N --technical REASON
     python scripts/qualify.py restart-case --campaign FILE --candidate N [--engineering]
@@ -48,7 +53,14 @@ outside this.
    launcher can be reached: a launcher run of the case's label (its experiment and
    ``<cell>/s<seed>``) held in any launch journal, whatever its config hash (``launch.hold``: an
    outcome the engineering cycle could not resolve), exits 11 (``HELD``) naming the run and the
-   hold's reason, and the driver stops there; nothing here lifts a hold.
+   hold's reason, and the driver stops there; nothing here lifts a hold. For every case,
+   ``control-only`` follows ``complete``'s no (below, "A case whose control alone is
+   outstanding"): its exit 9, for a case its recorded parts already mark technical, complete or
+   not (``established_technical``), runs step 7's export at once (``finish --kept``, the upload,
+   ``kept-check``), before any launcher call, and neither step 2 to 6 nor the control; its exit 0,
+   for the case that holds its rate's same-path control, prints the launcher run's directory, and
+   the driver runs ``part --part control --resume`` on it alone, then step 7; its exit 3 is the
+   usual path, steps 2 to 7; any other exit stops the driver.
 2. ``clear-stale`` removes ``<dir>/<run_id>.pt`` (and its partial file) of every attempt of the
    case's launcher run that the launch journal shows superseded (``superseded_run_ids``: ended
    technical, or not ended, without a settled directory); the checkpoint of a settled run (done,
@@ -58,8 +70,11 @@ outside this.
    step, one checkpoint of headroom for an atomic save, and ``disk_margin_gb``); below it the
    driver exits 1.
 4. ``python scripts/launch.py CAMPAIGN --only LABEL --max-attempts 1``: the launcher run alone,
-   one attempt; a failed one stops the driver, and is attempted again only with
-   ``--recovery REASON`` on that command (a recorded reason).
+   one attempt; a failed one stops the driver, and is attempted again only through a recovery
+   round of its own, by hand: ``--recovery REASON`` on that command with its documented incident
+   (``--incident-time``, ``--cause``, ``--evidence``), one attempt per round, each round with a
+   reason no earlier round of the label gave (``launch``, "Recovery rounds"). The driver never
+   passes ``--recovery``.
 5. ``locate`` prints the launcher run's directory (its settled run: done, or diverged).
 6. ``part --part baseline --resume``; then, unless ``decided`` (exit 0: the baseline record is
    already a scientific failure, a declared instability rule fired on the unshifted baseline or
@@ -69,10 +84,21 @@ outside this.
    either way (the control reads no checkpoint).
 7. ``finish`` deletes the case's checkpoints (every ``<dir>/<run_id>.pt`` of its launcher run's
    attempts and the harness's directory ``<dir>/harness/<case>/``), only once its records are
-   published and valid; it exits 1 and keeps them for a case that is not complete. A case whose
-   verdict is technical (its own, or its same-path control's: ``technical_reasons``) keeps them
-   for the diagnosis, "Failure routes": ``finish`` exits 9, and the driver stops there, before
-   the next case. ``finish --release`` deletes them once the diagnosis is done.
+   published and valid; it exits 1 and keeps them for a case that is neither complete nor
+   technical. A case whose verdict is technical (its own, or its same-path control's:
+   ``technical_reasons``), or that is not complete but whose recorded parts already mark it
+   technical (an established technical case, ``established_technical``), keeps them for the
+   diagnosis, "Failure routes", and ``finish --kept DIR`` exports them to the Pod's volume
+   (below, "A technical case's kept checkpoints"); it never marks a case complete, so an
+   established technical case stays incomplete and technical. It exits 9 (``TECHNICAL_CASE``) once
+   every file still present has a verified copy there, 13 (``NOT_EXPORTED``) when the export was
+   refused or failed (no verified volume copy: the checkpoints are still only on the container
+   disk, which a stop loses). On 9 the driver uploads the export to the bucket
+   (``scripts/archive.py``) and, whatever the upload's exit, checks both copies (``kept-check``),
+   and stops there, before the next case: with 9 when both exit 0, with 13 otherwise (the
+   receipt's ``pending-upload`` true: the volume copy verified, the upload pending; false: the
+   volume copy not verified either, the worse state). ``finish --release`` deletes them once the
+   diagnosis is done, only through that verified export.
 
 A case is **complete** when the latest attempt of each of its parts is recorded, is that part's
 of that case, and the verdicts read it without error (``case_verdict``, and ``control_verdict``
@@ -80,6 +106,111 @@ for its control): the baseline, the due control and, unless decided, the rest, w
 when it names the latest baseline record's sha256 (``baseline_record``; a rest that read no
 baseline, having run nothing or failed before, excepted). Records are published atomically and
 durably (``qualification.publish``).
+
+**A technical case's kept checkpoints** ("Failure routes": a technical case keeps its checkpoints
+for the diagnosis). The Pod's container disk goes with a Pod stop, so ``finish --kept DIR`` (the
+driver's ``--kept``: on a Pod ``/workspace/kept-checkpoints``, the volume) exports a technical
+case's evidence: a complete case whose verdict is technical, and an established technical case,
+complete or not: one whose recorded parts mark it technical in a way no part the verdict would still
+read can change (``established_technical``), when one of these holds: (1) its baseline's gate fails,
+or its baseline did not complete (failed, or ran nothing), so the verdict reads no rest for it; (2)
+a rest recorded and bound to that baseline makes the whole verdict technical, not scientific; (3)
+its recorded same-path control is technical. A complete baseline with only a technical comparison of
+its own, its rest due or interrupted, is none: the rest may turn the verdict scientific. Such a case
+is exported with the same files, copies, manifest (``lost`` included), receipts and exits; the case
+stays as it is, never marked complete. The driver exports an established technical case before any
+launcher call (``control-only``'s exit 9), so files the launcher would refuse (a corrupt checkpoint)
+are kept as they are. ``finish --kept`` copies the case's files, exactly those ``finish --release``
+would delete (``case_files``), to ``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout
+they have under the checkpoint directory: each written under a partial name, fsynced, renamed and
+its folder fsynced, the source hashed while read and the copy read back, verified when the two
+sha256 agree. A present checkpoint whose sha256 is not its recorded one is exported as it is
+(``matches_record`` false): the export changes neither the technical mark nor any verdict. Refused
+before any copy, exit 13 and nothing called verified: no ``--kept``, a relative DIR, DIR under the
+runs root or the records' folder (its copies would join the small results archived from there) or
+under the checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
+``st_dev``, the container disk), or less free space under DIR than the files take with a margin of 1
+GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export, these checks included (a folder, a
+``stat``, the free space, a copy, a manifest, ``SHA256SUMS``), exits 13 too, naming the error, a
+partial ``kept-<n>`` left without a case manifest and never called verified. The manifest,
+``kept-checkpoints-<n>.json`` in the case's folder and the same JSON in the export as
+``MANIFEST.json`` with a ``SHA256SUMS``, holds the case, its stage, candidate and
+``technical_reasons``; the binding records (``binding_records``: the located launcher run's
+``summary.json`` and ``meta.json`` by path and sha256 with its ``endpoint_checkpoint`` record, and
+the case's latest baseline, rest and control records by path, file sha256 and ``record_sha256``;
+nothing else of the run's directory is opened or listed); each file (its source path, its copy's
+path relative to DIR, size, sha256, the sha256 the binding records give that path or null, whether
+it matches, whether it is a partial file); ``lost``, every checkpoint those records name that is not
+on disk and that ``finish`` did not remove on purpose (``released``), with its recorded sha256 and
+the records naming it; ``verified``, the host, the Pod, the time and the provenance. Run again over
+an export whose copies re-hash to its manifest under DIR, the case's files listed in it as they are
+now, nothing is copied (exit 9); otherwise ``kept-<n+1>`` is written, and nothing is ever
+overwritten. Checkpoints lost before the export leave the technical mark as it stands: ``finish``
+exits 9 when every file still present is verified, ``lost`` names what was lost, and it says "lost
+before the export: the technical mark stands; the diagnosis goes on from the records; nothing
+reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE --remote PREFIX``
+(the driver's: the REMOTE_PREFIX it gives ``archive.py``) reads the case's latest manifest,
+re-hashes every copy under its DIR (with ``MANIFEST.json`` and ``SHA256SUMS``), and reads
+``scripts/archive.py``'s inventory: every line's URL lies under ``PREFIX/``, and every exported file
+needs its line (path relative to DIR, size, sha256, md5, URL, status) with the exported size and
+sha256, the status ``ok`` (the object's size and MD5 are the file's) and the URL ``PREFIX/<path>``.
+It exits 0 when all hold, 13 naming what fails (each line under another prefix included), and
+publishes its receipt ``kept-check-<n>.json`` in the case's folder: the manifest's and the
+inventory's path and sha256, the prefix, the exit, what fails, and ``pending-upload`` true for a
+volume copy verified whose bucket copy is not (no inventory, or one without the export's verified
+lines). ``finish --release`` of a technical case deletes only through the manifest of a receipt of
+exit 0 that names its sha256 (``bound_export``), the inventory that receipt names still of the
+receipt's sha256, when every current file is listed in the manifest with its size and sha256, each
+file checked again right before its deletion; otherwise it exits 13 naming the files or the
+inventory (a file new or changed since the export needs another export and its ``kept-check``; an
+inventory gone or changed, the upload checked again). Its ``checkpoints-removed-<n>.json`` names
+that manifest and that receipt by path and sha256. A kept checkpoint is not one ``finish`` removed
+(``released``): its absence is never evidence of an interruption. The planned teardown of the Pod
+waits for ``kept-check`` exit 0; an upload that cannot be verified leaves the volume copy kept and
+the receipt ``pending-upload``, and never lifts the hard deadline.
+
+**A case whose control alone is outstanding** (``control-only``; "Failure routes", amendment 2):
+a case whose only outstanding part is its same-path control, decided by its baseline or with its
+baseline and rest recorded. A Pod stop then loses the container disk, the launcher run's
+checkpoint with it: the launcher refuses that run (its checkpoint is missing), and
+``restart-case`` refuses a case with a scientific failure (it keeps counting) or voids passing
+parts, although the control reads no checkpoint. ``control-only`` first answers as
+``complete`` and ``decided`` (a journal that is not whole, exit 12; stale, 10; held, 11), then
+exits 0, printing the launcher run's directory and nothing else, when the case holds its rate's
+same-path control, the engineering cycle has not resolved it (``resolution_of``), it is not
+complete (``case_state``), the control's latest attempt is due or interrupted, every other part
+the case needs is recorded as ``complete`` reads it (``case_state`` of the case without its
+control: the latest baseline record, recorded and not void, and, unless the baseline decided
+the case, a rest bound to it; the verdicts read them), the case is not technical
+(``technical_reasons`` of those parts: a scientific failure, the baseline's or the rest's, keeps
+counting, and its control runs alone), and its recorded parts bind it to its launcher run
+without the launcher (``control_binding``): the baseline record classified the run as
+conforming (``launcher.classified`` true and ``launcher.kind`` null), and each record, the
+baseline's and the rest's, names (``launcher_run``) the case's located run (``located``; by its
+experiment and run id, wherever RUNS_DIR lay), superseded nowhere, with its identity, which it
+must name (``q.launcher_identity``: the recorded checkpoint record); the run is done in the
+launch journal (its end, settled or not), no ``held`` line names its label, and the run's
+endpoint checkpoint, read only when present and never required, is not on disk with another
+sha256 than its recorded one (``checkpoint_conflict``, as ``restart-case`` reads it: a
+provenance conflict, which stops the step and is kept for the diagnosis). The driver then runs
+``part --part control --resume`` on that run, with every check of the control (``run_part``: the
+launcher run against the case and this process's numerics, its streams and v₀), and neither
+``clear-stale``, the disk check, the launcher, ``locate``, the baseline, ``decided`` nor the
+rest; ``finish`` follows. The checks go in this order. First, for every case (the driver asks
+``control-only`` in each case block, AdamW's included), exit 9 (``TECHNICAL_CASE``): a case its
+recorded parts already mark technical, complete or not (``established_technical``), whatever its
+bindings: "a technical case: export its evidence"; the driver runs ``finish --kept``, the upload
+and ``kept-check`` at once, before any launcher call, and neither the launcher, a part nor the
+control runs for it. Exit 3 (``NO``), the usual path: a case that holds no same-path control, a
+case whose control is not outstanding or with another part outstanding; then a case decided by
+its launcher run's own declared instability stop (a run the launcher accepts without its
+checkpoint). Exit 1, naming the condition: a
+baseline record not classified or of another non-null kind, then any binding that fails; the
+driver stops there, and nothing is rerun. Otherwise exit 0. The control's attempts are a part's
+(below): ``--resume`` runs attempt 1, or exits 8 for an interrupted one, whose rerun is by hand
+(``--attempt N --infrastructure REASON``) whatever happened to the container disk, as the
+control reads no checkpoint; a recorded control, of any kind, is never rerun. A decided case is
+never restarted: its control runs alone.
 
 **Attempts of a part** (``part``; "Failure routes": an infrastructure interruption is rerun under a
 new attempt id, a technical or scientific record never). Before ``run_part`` the part publishes
@@ -103,28 +234,51 @@ campaign config; the survival retry and the float64 fallback stay inside the par
 **A case restart** (``restart-case --infrastructure REASON``; "Voiding and supersession": an
 infrastructure-interrupted attempt is void and kept, its rerun a new attempt id). A Pod stop during
 a case loses the container disk, with the launcher run's checkpoint and the harness's: the case
-cannot go on from its recorded parts. ``restart-case`` publishes (atomically, from a clean checkout)
+cannot go on from its recorded parts. A missing endpoint checkpoint alone is a possible loss
+requiring diagnosis, never by itself a lost container disk: the restart's reason documents the
+interruption the diagnosis found. A case whose only outstanding part is its same-path control is
+not restarted: ``control-only`` runs that control alone. The restart goes on only where
+``control-only`` takes the usual path (exit 3): a case whose recorded parts cannot be bound to its
+launcher run (``control-only``'s exit 1), or any other answer of it, is refused too, with its
+reason, as a provenance problem for diagnosis. Exit 1 is shared (the
+launcher's conflicts, this command's refusals, ``control-only``, ``finish``, the driver's
+preconditions), so it never triggers a restart by itself: docs/operations.md, "A lost checkpoint",
+tells the launcher's messages apart. ``restart-case`` publishes (atomically, from a clean checkout)
 ``restart-<n>.json`` in the case's folder, naming every attempt of the case's parts (the baseline,
 the rest and, for the case that holds it, the same-path control): each recorded one with its
 record's sha256, status and kind, each interrupted one by its number; the reason; and the case's
 launcher run. Then, the record published, it logs that run superseded in the launch journal
 (``launch.supersede``): the run is kept, no longer counts for its label (``assess``, ``located``),
-and the launcher's recovery round with the same reason starts a new run; run again once every
-attempt is named, the command only completes that journal line. Only an interrupted case is
-restarted: it is refused without a reason, when every attempt is named already, for a complete case,
-without evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
-from disk, unless ``finish`` removed it on purpose: its ``checkpoints-removed-<n>.json`` records),
-when the launcher run itself is a completed failure (its declared instability stop, scientific, or
-another stop or a departing run, technical: ``launcher_problems`` without the comparison with this
-process's environment), and when any attempt is a completed failure (``attempt_failures``): a
-scientific one, which keeps counting ("no reruns to pass"), a technical one (the engineering cycle
-lifts it: below), or an unreadable record; an interrupted rest attempt counts by its trajectory
-results. A recorded attempt that passes so far (the baseline, a control) depends on the lost run or
-checkpoint and is named with the others. The attempts it names are void: a part whose recorded
-attempts are all named is ``voided``, so the case is not complete; ``part --resume`` exits 8 for it,
-and ``part --attempt N`` takes its next attempt with ``--infrastructure REASON`` (its record names
-the restart records); a rest waits for the baseline's new attempt. The named records are kept,
-listed, and voided in the verdict (with the reason, under ``restart``).
+and a recovery round of the run's own with the same reason (its first, or a further one at
+``--max-attempts 1``, one attempt per documented incident: ``launch``, "Recovery rounds") starts a
+new run; run again once every attempt is named, the command only completes that journal line. A
+second loss in the same case is restarted the same way: ``restart-<n+1>.json`` names every attempt,
+the earlier restarts' included, and the case's current launcher run is logged superseded; then the
+launcher's further round with the new reason, and each part as its next attempt. A launcher run in
+flight at the loss (a start without an end, no settled directory) is no attempt to restart: the
+launcher settles it technical, and a round of its own with the documented reason is the whole route.
+Only an interrupted case is restarted: it is refused without a reason, when every attempt is named
+already, for a complete case, without evidence of an interruption (an interrupted attempt, or the
+launcher run's checkpoint gone from disk, unless ``finish`` removed it on purpose: its
+``checkpoints-removed-<n>.json`` records), when the launcher run itself is a completed failure (its
+declared instability stop, scientific, or another stop or a departing run, technical:
+``launcher_problems`` without the comparison with this process's environment), when any attempt is a
+completed failure (``attempt_failures``): a scientific one, which keeps counting ("no reruns to
+pass"), a technical one (the engineering cycle lifts it: below), or an unreadable record; an
+interrupted rest attempt counts by its trajectory results; when the launcher run's journal holds
+an end ``conflict`` that no lost container disk explains (``own_conflict_end``: an unsettled one,
+the launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint);
+when ``control-only`` answers anything but its usual path (exit 0: it runs the control alone;
+exit 1: the recorded parts cannot be bound to the launcher run, a provenance problem); and when
+the launcher run's endpoint checkpoint is on disk with another sha256 than its recorded one
+(``checkpoint_conflict``): a provenance conflict, not a loss, which goes to the technical route even
+when an interrupted attempt would otherwise allow the restart. A recorded attempt that passes so far
+(the baseline, a control) depends on the lost run or checkpoint and is named with the others. The
+attempts it names are void: a part whose recorded attempts are all named is ``voided``, so the case
+is not complete; ``part --resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt
+with ``--infrastructure REASON`` (its record names the restart records); a rest waits for the
+baseline's new attempt. The named records are kept, listed, and voided in the verdict (with the
+reason, under ``restart``).
 
 **Supersession** (``supersede --record PATH --diagnosis TEXT --fix TEXT``; "Failure routes": one
 engineering cycle per candidate; "Voiding and supersession"). A completed technical failure stops
@@ -136,40 +290,44 @@ every launcher run of the candidate in the launch journal not of the fix's GPU c
 records name and those of the campaign's cases, a case with no part attempt yet included, found by
 the case's label, its experiment and ``<cell>/s<seed>``, in every journal whatever their config
 hash, so that a fix that changes a hashed config key hides none; another or an unknown code
-included, since a re-qualification under the fix could not use it), which it then logs superseded;
-a case whose run is superseded is re-qualified, whether or not it had a part record. A case that
-holds a scientific failure, as its bound, valid part records read with the verdicts show it
-(another stage's included; a launcher run's declared stop counts only when such a record
-classified it scientific), is kept whole: none of its records (its parts, its control, its
-trajectory results) nor its launcher run is voided, it is listed as kept with why, and the driver's
-stale check passes it; the failure keeps counting (no reruns to pass). A record classified its
-launcher run only when it says so (``launcher.classified``, true once ``launcher_problems``
-returned): naming the run is not enough. A launcher run no part record classified (none names it:
-the Pod stopped before its baseline, say; or each that does raised before its check returned, in
-the numerics setup or the check itself; a campaign case's or another stage's, as its records
-name the case) is first resolved against what it was issued and its own provenance, never this
-checkout's configs, code or environment (``resolve_launcher_run``): its journal start (label,
-config hash, header, command), its saved config and meta.json (config hash, the campaign's header,
-commit, numerics setup) and the configs of its own commit, read from git (``configs_at``), from
-which its command and the case's confirmation config are composed; its identity, config agreement
-and numerics are checked against those. Conforming and stopped by its declared instability rule,
-a scientific failure (the case is kept whole and decided, and no part runs for it); departing from
-what it was issued on readable records, or completed, superseded as any run; unresolvable (records
-unreadable, a needed field missing, no commit or one not in this clone, configs that do not
-compose or do not give the start's config hash), the case is kept as it is, listed unresolved,
-and the run held in the journal (``launch.hold``), so that neither a part nor the launcher's
-recovery round reruns it. The verdict counts a resolved outcome as the case's
-(``resolved_verdict``), beside the verdicts of any records that did not classify the run. The
-cycle is refused a second time for the candidate (a technical failure left unresolved after it
-routes to the technical feasibility report), for a record that is not a completed technical
-failure of the case or that belongs to a case the cycle keeps whole (by its records or its
-launcher run), and when the fix's GPU code is the old one (the same path is not simply rerun); run
-again with the same record, it only writes the journal's lines that are missing. Each case it
-names re-qualifies under the new code from a new launcher run (the recovery round) and new
-attempts of its parts: the attempt after one the cycle named carries ``--engineering-cycle`` (its
-record: ``engineering_cycle``, the supersession's path and sha256) instead of
-``--infrastructure``; a later interruption of a new-code attempt is rerun with ``--infrastructure
-REASON``, as any other. The verdict lists the records it voids under ``supersession``.
+included, since a re-qualification under the fix could not use it), which it then logs superseded; a
+case whose run is superseded is re-qualified, whether or not it had a part record. A case that holds
+a scientific failure, as its bound, valid part records read with the verdicts show it (another
+stage's included; a launcher run's declared stop counts only when such a record classified it
+scientific), is kept whole: none of its records (its parts, its control, its trajectory results) nor
+its launcher run is voided, it is listed as kept with why, and the driver's stale check passes it;
+the failure keeps counting (no reruns to pass). A record classified its launcher run only when it
+says so (``launcher.classified``, true once ``launcher_problems`` returned): naming the run is not
+enough. A launcher run no part record classified (none names it: the Pod stopped before its
+baseline, say; or each that does raised before its check returned, in the numerics setup or the
+check itself; a campaign case's or another stage's, as its records name the case) is first resolved
+against what it was issued and its own provenance, never this checkout's configs, code or
+environment (``resolve_launcher_run``): its journal start (label, config hash, header, command), its
+saved config and meta.json (config hash, the campaign's header, commit, numerics setup) and the
+configs of its own commit, read from git (``configs_at``), from which its command and the case's
+confirmation config are composed; its identity, config agreement and numerics are checked against
+those. Conforming and stopped by its declared instability rule, a scientific failure (the case is
+kept whole and decided, and no part runs for it); departing from what it was issued on readable
+records, or completed, superseded as any run; unresolvable (records unreadable, a needed field
+missing, no commit or one not in this clone, configs that do not compose or do not give the start's
+config hash), the case is kept as it is, listed unresolved, and the run held in the journal
+(``launch.hold``), so that neither a part nor the launcher's recovery round reruns it. The verdict
+counts a resolved outcome as the case's (``resolved_verdict``), beside the verdicts of any records
+that did not classify the run. The cycle is refused a second time for the candidate (a technical
+failure left unresolved after it routes to the technical feasibility report), for a record that is
+not a completed technical failure of the case or that belongs to a case the cycle keeps whole (by
+its records or its launcher run), and when the fix's GPU code is the old one (the same path is not
+simply rerun); run again with the same record, it only writes the journal's lines that are missing.
+Each case it names re-qualifies under the new code from a new launcher run and new attempts of its
+parts. Under the old config hash the new run comes from a recovery round of the run's own (its
+first, or a further one at ``--max-attempts 1``, its incident the cycle, its evidence the
+supersession record); under a new config hash (the fix changed a hashed key) it is the new run's
+base attempt, without ``--recovery``, which a study-3 campaign refuses over a run that is not used
+up, and the supersession record carries the cycle. Of the parts, the attempt after one the cycle
+named carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path
+and sha256) instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun
+with ``--infrastructure REASON``, as any other. The verdict lists the records it voids under
+``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,
 ``c{N}/engineering/verdict.json`` with ``engineering_summary``): per rate of the campaign its
@@ -205,19 +363,33 @@ record's reason, and exits 1 naming the restart records). Each then prints what 
 torn line's resolution (``scripts/launch.py --resolve-torn``), or another record's repair, is
 next. Any other call of the two, a new cycle or a new restart, is refused as the rest.
 
-``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the checkout
-and the campaign file's sha256, that nothing else uses the GPU, and the free host memory
+``driver`` writes the bash driver for a Pod from the source checkout of SHA (``--kept DIR``, an
+absolute folder outside the checkpoint directory, is each case's ``finish --kept``; the export goes
+to ``$ARTIFACT_REMOTE/<--kept-remote>``, by default ``kept-checkpoints``): it checks the checkout
+and the campaign file's sha256, that nothing else uses the GPU, the free host memory
 (``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and the p1
-direction on the host and a checkpoint save's transient), then runs each case in order as above, and
+direction on the host and a checkpoint save's transient), and that a technical case's kept
+checkpoints can reach the bucket (``ARTIFACT_REMOTE`` a gs:// path, ``ARTIFACT_GCS_KEY`` a readable
+file, ``gcloud`` on PATH), then runs each case in order as above, and
 writes the verdict on every exit, but one: over a launch journal that is not whole (an
 unresolved torn line, or a line a published record requires missing) ``verdict`` refuses too
 (exit 12), so no verdict.json is written then and an older one stays on disk.
-Exits: 0 when every case is complete; 1 a precondition (the host
-memory included), the disk (``df``'s answer must be a number) or a ``finish`` that refuses a case
-not complete; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
-technical case; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn line in
-a launch journal, or a line a published record requires missing from it (``complete``'s refusal,
-or the launcher's); the launcher's own when it stops; any other, the failed command's.
+Exits: 0 when every case is complete; 1 a precondition (the host memory and the bucket's settings
+included), the disk (``df``'s answer must be a number), a ``finish`` that refuses a case neither
+complete nor technical, or a case whose control alone is outstanding that ``control-only`` cannot
+bind to its launcher run; 8 an interrupted attempt (or a part a case restart or supersession names);
+9 a technical case, its checkpoints kept on the volume and in the bucket, verified (a complete one
+after its ``finish``, an established one after ``control-only``'s 9, before any launcher call); 10 a
+stale case; 11 a case whose label has a held launcher run; 12 a torn line in a launch journal, or a
+line a published record requires missing from it (``complete``'s refusal, or the launcher's); 13 a
+technical case whose kept checkpoints are not verified: from ``finish``, its export refused or
+failed (no verified volume copy, the checkpoints still only on the container disk, which a stop
+loses), or after ``kept-check`` (run whatever ``archive.py``'s exit), its receipt's
+``pending-upload`` true (the volume copy verified, the upload pending) or false (the volume copy not
+verified either, the worse state); either way the planned teardown waits for ``kept-check`` exit 0,
+and the hard deadline stays; the launcher's own when it stops; any other, the failed command's.
+Before the first case the driver also exits 1 when ``$KEPT`` is on the checkpoint directory's device
+(``stat -L -c %d``) or lies, resolved, under ``$RUNS_DIR`` or the checkpoint directory.
 The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
 reason."""
 
@@ -229,6 +401,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import shlex
 import shutil
@@ -239,12 +412,12 @@ import tarfile
 import tempfile
 import textwrap
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -257,11 +430,13 @@ from zero_field_refusal.launch import (
     TORN_JOURNAL,
     Run,
     TornJournalError,
+    after_checkpoint_problem,
     assess,
     attempt_key,
     expected_numerics,
     held_runs,
     hold,
+    is_missing_checkpoint,
     journal_records,
     label_starts,
     launch_records,
@@ -274,6 +449,7 @@ from zero_field_refusal.launch import (
 from zero_field_refusal.paths import CONFIG_ROOT, REPO_ROOT, load_env, runs_root
 from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.schedule import INSTABILITY
+from zero_field_refusal.tensor_hash import file_sha256 as checkpoint_sha256
 from zero_field_refusal.tracking import CLEAN_CHECKOUT, git_state
 
 SETTINGS = CONFIG_ROOT / "experiments" / "qualification.yaml"  # the tracked settings, by path
@@ -281,11 +457,16 @@ RUN = 'project-run "$SRC" python scripts/qualify.py'
 # A case restart or an engineering cycle's supersession record, in the case's folder
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
 LAUNCH = 'project-run "$SRC" python scripts/launch.py'
-NO = 3  # ``complete`` and ``decided``: no (any other non-zero exit is a failure)
+NO = 3  # ``complete``, ``decided``, ``control-only``: no (any other non-zero exit fails)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
-STALE = 10  # ``complete`` and ``decided``: records of other GPU code or settings
-HELD = 11  # ``complete`` and ``decided``: the case's label has a held launcher run
+STALE = 10  # ``complete``, ``decided``, ``control-only``: records of other code or settings
+HELD = 11  # ``complete``, ``decided``, ``control-only``: the label has a held launcher run
+# A technical case's checkpoints lack a verified export (the launcher's exits are 0, 1, 2 and 12):
+# ``finish``'s, its export refused or failed (no verified volume copy); ``kept-check``'s and the
+# driver's after it, the upload pending (``pending-upload`` true) or the volume copy not verified
+# either (false)
+NOT_EXPORTED = 13
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
@@ -588,13 +769,7 @@ def case_state(out: Path, p: Planned, scope: q.QualificationScope) -> tuple[bool
         if state.state != "recorded":
             return False, decided, f"{part}: {state.state} (attempt {state.attempt})"
     rest = states["rest"].record if "rest" in states else None
-    # A rest that read no baseline (it ran nothing, or failed before reading one) binds none:
-    # the verdict holds it technical
-    read_none = rest is not None and (rest.get("status") == "not_run" or (
-        rest.get("status") == "failed" and rest.get("baseline_record") is None))  # fmt: skip
-    if (rest is not None and not read_none
-            and (rest.get("baseline_record") or {}).get("sha256")
-            != q.record_sha256(baseline.record)):  # fmt: skip
+    if rest is not None and not rest_bound(rest, baseline.record):
         return False, decided, ("the rest record is not bound to the latest baseline record: "
                                 "the case is not complete")  # fmt: skip
     try:
@@ -604,6 +779,16 @@ def case_state(out: Path, p: Planned, scope: q.QualificationScope) -> tuple[bool
     except Exception as exc:
         return False, decided, f"the records cannot be read: {type(exc).__name__}: {exc}"
     return True, decided, "decided by the baseline: a scientific failure" if decided else "complete"
+
+
+def rest_bound(rest: Mapping[str, Any], baseline: Mapping[str, Any]) -> bool:
+    """Whether a rest record counts with this baseline record, as ``complete`` reads it: it names
+    that record's sha256 (``baseline_record``), or it read no baseline (it ran nothing, or failed
+    before reading one: it binds none, and the verdict holds it technical)."""
+    read_none = rest.get("status") == "not_run" or (
+        rest.get("status") == "failed" and rest.get("baseline_record") is None)  # fmt: skip
+    return read_none or (rest.get("baseline_record") or {}).get("sha256") == q.record_sha256(
+        baseline)  # fmt: skip
 
 
 def stale_records(
@@ -646,6 +831,43 @@ def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> lis
     return reasons
 
 
+def established_technical(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
+    """The technical marks of an established technical case (module docstring, "A technical
+    case's kept checkpoints"): a case whose recorded parts mark it technical in a way no part the
+    verdict would still read can change, complete or not. One of: (1) the latest baseline's
+    verdict alone is technical and reads no rest (``case_verdict`` gives no ``REST_MISSING``: its
+    gate failed, or the baseline did not complete); (2) a rest recorded and bound to that baseline
+    (``rest_bound``) makes the whole verdict technical, not scientific; (3) the recorded same-path
+    control's verdict is technical. Anything else marks nothing: a complete baseline with only a
+    technical comparison of its own, its rest due or interrupted, still has its rest read, which
+    may turn the verdict scientific. Nothing for a case the engineering cycle resolved, one without
+    a recorded baseline, or one whose records the verdicts cannot read. For a complete case, the
+    marks ``technical_reasons`` gives."""
+    if resolution_of(out, p.case) is not None:
+        return []
+    baseline = part_state(out, p.case, "baseline")
+    if baseline.state != "recorded":
+        return []
+    reasons: list[str] = []
+    try:
+        alone = q.case_verdict(baseline.record, None, scope)
+        if alone["kind"] == q.TECHNICAL and REST_MISSING not in alone["reasons"]:
+            reasons += alone["reasons"]  # (1): the verdict reads no rest for this baseline
+        rest = part_state(out, p.case, "rest")
+        if rest.state == "recorded" and rest_bound(rest.record, baseline.record):
+            whole = q.case_verdict(baseline.record, rest.record, scope)
+            if whole["kind"] == q.TECHNICAL:  # (2): technical, not scientific, with its rest
+                reasons += [r for r in whole["reasons"] if r not in reasons]
+        control = part_state(out, p.case, "control") if p.control else None
+        if control is not None and control.state == "recorded":
+            checked = q.control_verdict(control.record, scope, p.case.candidate)
+            if checked["kind"] == q.TECHNICAL:  # (3)
+                reasons += [f"control: {r}" for r in checked["reasons"]]
+    except Exception:  # a record the verdicts cannot read marks nothing here
+        return []
+    return reasons
+
+
 # --------------------------------------------------------------- the launcher run's files
 
 
@@ -661,11 +883,8 @@ def label_run_ids(run: Run, root: Path) -> list[str]:
     ``<cell>/s<seed>``), whatever their config hash, in attempt order (``launch.attempt_key``),
     across all journals: how an engineering cycle finds a case's launcher runs, so that a fix
     that changes a hashed config key does not hide an attempt issued before it."""
-    starts = [r for r in launch_records(root)
-              if r.get("event") == "start" and r.get("run") == run.label
-              and r.get("experiment") == run.experiment
-              and isinstance(r.get("run_id"), str)]  # fmt: skip
-    return list(dict.fromkeys(r["run_id"] for r in sorted(starts, key=attempt_key)))
+    starts = label_starts(run, launch_records(root), every_config_hash=True)
+    return list(dict.fromkeys(r["run_id"] for r in starts))
 
 
 def label_superseded(run: Run, root: Path) -> set[str]:
@@ -712,6 +931,668 @@ def located(run: Run, root: Path) -> Path | None:
         if meta.get("status") in ("completed", "diverged") or (run_dir / "terminal.json").is_file():
             found.append(run_dir)
     return found[0] if len(found) == 1 else None
+
+
+def control_binding(
+    p: Planned, records: Mapping[str, dict], root: Path
+) -> tuple[Path | None, list[str]]:
+    """Whether the recorded parts of a case whose control alone is outstanding bind it to its
+    launcher run without the launcher (module docstring, "A case whose control alone is
+    outstanding"); ``records``: the baseline record, and the rest record when there is one. The
+    baseline record classified the run as conforming (``launcher.classified`` true,
+    ``launcher.kind`` null); each record names (``launcher_run``, by its experiment and run id,
+    wherever RUNS_DIR lay) the case's located run (``located``), superseded nowhere, with the
+    record's identity, which it must name (``q.launcher_identity``: the recorded checkpoint
+    record); the run is done in the launch journal (its end, settled or not), its label held
+    nowhere, and its endpoint checkpoint, when on disk, has its recorded sha256
+    (``checkpoint_conflict``: read only when present, never required). The located run, and what
+    fails."""
+    problems = []
+    launcher = records["baseline"].get("launcher") or {}
+    if launcher.get("classified") is not True:
+        problems.append("the baseline record did not classify its launcher run "
+                        "(launcher.classified is not true)")  # fmt: skip
+    elif launcher.get("kind") is not None:
+        problems.append(f"the baseline record's launcher check did not pass (launcher.kind is "
+                        f"{launcher.get('kind')!r}, not null)")  # fmt: skip
+    journal = launch_records(root)
+    superseded = label_superseded(p.run, root)
+    run_dir = located(p.run, root)
+    if run_dir is None:
+        problems.append("no located launcher run (one settled directory of its config hash "
+                        "that no superseded line names)")  # fmt: skip
+    for part_name, record in records.items():
+        named = record.get("launcher_run")
+        if isinstance(named, str) and Path(named).name in superseded:
+            problems.append(f"the launcher run the {part_name} record names, {Path(named).name}, "
+                            "is superseded in the launch journal")  # fmt: skip
+        if run_dir is None:
+            continue
+        # <experiment>/<run id>, as ``fa_control_diagnostic.run_identity`` names a run
+        if not isinstance(named, str) or Path(named).parts[-2:] != run_dir.parts[-2:]:
+            problems.append(f"the {part_name} record names the launcher run {named!r}, not the "
+                            f"located run {run_dir}")  # fmt: skip
+        identity = (record.get("launcher") or {}).get("identity")
+        if not isinstance(identity, dict):
+            problems.append(f"the {part_name} record names no launcher identity "
+                            f"(launcher.identity is {identity!r})")  # fmt: skip
+        elif q.launcher_identity(run_dir) != identity:
+            problems.append(f"the located run {run_dir.name}'s identity is not the one the "
+                            f"{part_name} record names")  # fmt: skip
+    if run_dir is not None:
+        conflict = checkpoint_conflict(run_dir)  # as ``restart-case`` reads it
+        if conflict is not None:
+            summary = _read(run_dir / "summary.json") or {}
+            recorded = (summary.get("endpoint_checkpoint") or {}).get("sha256")
+            problems.append(f"the launcher run {run_dir.name}'s endpoint checkpoint {conflict} is "
+                            f"on disk with sha256 {checkpoint_sha256(conflict)}, not its recorded "
+                            f"{recorded}: a provenance conflict; the file is kept, and the case "
+                            "goes to diagnosis")  # fmt: skip
+        ends = [r.get("outcome") for r in journal
+                if r.get("event") == "end" and r.get("run_id") == run_dir.name]  # fmt: skip
+        if not ends or any(outcome != "done" for outcome in ends):
+            problems.append(f"the launch journal's end of {run_dir.name} is not done: {ends}")
+    held = held_runs(p.run, journal)
+    if held:
+        problems.append(f"its label {p.run.label} has a held launcher run: {held}")
+    return run_dir, problems
+
+
+def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope) -> Path:
+    """The launcher run of a case whose only outstanding part is its same-path control (module
+    docstring, "A case whose control alone is outstanding": decided by its baseline, or with its
+    baseline and rest recorded), not technical: the driver then runs that control on it, and
+    neither the launcher nor any other part. In this order: first, for every case, exits 9
+    (``TECHNICAL_CASE``) for one its recorded parts already mark technical, complete or not
+    (``established_technical``, whatever its bindings): the driver exports its evidence (``finish
+    --kept``) before any launcher call, and nothing of it runs; then exits 3 (``NO``), the
+    driver's usual path, for a case not in that state, then for a case decided by its launcher
+    run's own declared instability stop; exits 1, naming why, for a case whose recorded parts
+    cannot be bound to the launcher run (``control_binding``: a baseline not classified or of
+    another kind included)."""
+    name = p.case.name
+
+    def no(why: str) -> NoReturn:
+        print(f"{name}: {why}: the usual path", file=sys.stderr)
+        sys.exit(NO)
+
+    # First: a case its recorded parts already mark technical, complete or not, every case (AdamW's
+    # too): its evidence is exported before any launcher call, and nothing of it runs
+    technical = established_technical(out, p, scope)
+    if technical:
+        print(f"{name}: a technical case ({'; '.join(technical)}): export its evidence (finish "
+              "--kept) before any launcher call; nothing of it runs", file=sys.stderr)  # fmt: skip
+        sys.exit(TECHNICAL_CASE)
+    if not p.control:
+        no("it holds no same-path control")
+    resolution = resolution_of(out, p.case)
+    if resolution is not None:
+        no(f"the engineering cycle kept the case on its launcher run {resolution['run_id']} "
+           f"({resolution['outcome']})")  # fmt: skip
+    complete, _, why = case_state(out, p, scope)
+    if complete:
+        no(f"{why}: complete, nothing is outstanding")
+    control = part_state(out, p.case, "control")
+    if control.state not in ("due", "interrupted"):
+        no(f"its control's attempt {control.attempt} is {control.state}, neither due nor "
+           "interrupted")  # fmt: skip
+    # The other parts, as ``complete`` reads them: the baseline and, unless it decided, the rest
+    others = dataclasses.replace(p, control=False)
+    recorded, decided, why = case_state(out, others, scope)
+    if not recorded:
+        no(f"{why}: {'' if decided else 'not decided, and '}a part besides its control is "
+           "outstanding")  # fmt: skip
+    baseline = part_state(out, p.case, "baseline").record or {}
+    launcher = baseline.get("launcher") or {}
+    if launcher.get("classified") is True and launcher.get("kind") == q.SCIENTIFIC:
+        no("decided by its launcher run's own declared instability stop, a run the launcher "
+           "accepts without its checkpoint")  # fmt: skip
+    records = {"baseline": baseline}
+    if not decided:
+        records["rest"] = part_state(out, p.case, "rest").record or {}
+    run_dir, problems = control_binding(p, records, root)
+    if problems or run_dir is None:
+        sys.exit(f"{name}: its same-path control alone is outstanding, but its recorded parts "
+                 f"cannot be bound to its launcher run without the launcher: "
+                 f"{'; '.join(problems)}. The driver stops; nothing is rerun")  # fmt: skip
+    return run_dir
+
+
+# ---------------------------------------------------- a technical case's kept checkpoints
+
+KEPT_MANIFEST = re.compile(r"kept-checkpoints-(\d+)\.json")  # an export's manifest (case folder)
+KEPT_RECEIPT = re.compile(r"kept-check-(\d+)\.json")  # ``kept-check``'s receipt (case folder)
+KEPT_FOLDER = re.compile(r"kept-(\d+)")  # an export's folder on the volume
+KEPT_REMOTE = "kept-checkpoints"  # the driver's --kept-remote by default, under ARTIFACT_REMOTE
+UPLOADED = "ok"  # scripts/archive.py's status of an object whose size and MD5 match its file
+KEPT_MARGIN = 1 << 30  # the free space an export needs beyond its files (1 GiB)
+LOST_BEFORE_EXPORT = ("lost before the export: the technical mark stands; the diagnosis goes on "
+                      "from the records; nothing reruns")  # fmt: skip
+
+
+def case_files(p: Planned, root: Path) -> list[Path]:
+    """The case's checkpoint files on disk, exactly those ``finish --release`` deletes: the
+    ``<dir>/<run_id>.pt`` and ``.<run_id>.pt.partial`` of every attempt of its launcher run
+    (``journal_run_ids``) and every file under its harness's folder ``<dir>/harness/<case>/``."""
+    found = [path for run_id in journal_run_ids(p.run, root)
+             for path in (p.endpoint / f"{run_id}.pt", p.endpoint / f".{run_id}.pt.partial")
+             if path.is_file()]  # fmt: skip
+    if p.harness.is_dir():
+        found += sorted(path for path in p.harness.rglob("*") if path.is_file())
+    return found
+
+
+def numbered(folder: Path, pattern: re.Pattern[str]) -> list[tuple[int, Path]]:
+    """The entries of ``folder`` whose name ``pattern`` gives a number, in its order."""
+    if not folder.is_dir():
+        return []
+    return sorted((int(m[1]), f) for f in folder.iterdir() if (m := pattern.fullmatch(f.name)))
+
+
+def same_filesystem(a: Path, b: Path) -> bool:
+    """Whether two paths lie on one filesystem: ``os.stat(...).st_dev`` of each, or of the nearest
+    folder above it that exists (a checkpoint directory gone with the container disk)."""
+
+    def device(path: Path) -> int:
+        path = Path(path).absolute()
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        return os.stat(path).st_dev
+
+    return device(a) == device(b)
+
+
+def free_bytes(folder: Path) -> int:
+    return shutil.disk_usage(folder).free
+
+
+def fsync_folder(folder: Path) -> None:
+    """A folder's entries made durable: a rename or a new entry in it survives a crash."""
+    descriptor = os.open(folder, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def make_folders(folder: Path) -> None:
+    """``folder`` and each missing folder above it, every new entry made durable."""
+    missing = []
+    while not folder.exists():
+        missing.append(folder)
+        folder = folder.parent
+    for new in reversed(missing):
+        new.mkdir()
+        fsync_folder(new.parent)
+
+
+def copy_durably(source: Path, target: Path) -> tuple[int, str]:
+    """``source`` copied to ``target``, never over a file: written under a partial name, fsynced,
+    renamed, its folder fsynced. The source's size and sha256, hashed while it is read."""
+    if target.exists():
+        raise FileExistsError(f"{target} exists: an export overwrites nothing")
+    make_folders(target.parent)
+    partial = target.with_name(f".{target.name}.copying")
+    digest, size = hashlib.sha256(), 0
+    with source.open("rb") as read, partial.open("xb") as write:
+        while chunk := read.read(1 << 24):
+            digest.update(chunk)
+            size += len(chunk)
+            write.write(chunk)
+        write.flush()
+        os.fsync(write.fileno())
+    os.replace(partial, target)
+    fsync_folder(target.parent)
+    return size, digest.hexdigest()
+
+
+def write_durably(path: Path, data: bytes) -> None:
+    """A new file written whole and durably (a partial name, fsync, rename, its folder fsynced)."""
+    partial = path.with_name(f".{path.name}.partial")
+    with partial.open("xb") as write:
+        write.write(data)
+        write.flush()
+        os.fsync(write.fileno())
+    os.replace(partial, path)
+    fsync_folder(path.parent)
+
+
+def matches_export(path: Path, entry: Mapping[str, Any]) -> bool:
+    """Whether a file holds the bytes an export's manifest lists for ``entry``: its size, then its
+    sha256."""
+    try:
+        return path.stat().st_size == entry["size"] and checkpoint_sha256(path) == entry["sha256"]
+    except OSError:
+        return False
+
+
+def sums_bytes(manifest: Mapping[str, Any], manifest_sha256: str | None) -> bytes:
+    """An export's ``SHA256SUMS`` (``sha256sum -c`` in its folder): each copy's sha256 and path
+    relative to the export's folder, then ``MANIFEST.json``'s."""
+    export = PurePosixPath(manifest["export"])
+    lines = [f"{entry['sha256']}  {PurePosixPath(entry['copy']).relative_to(export)}"
+             for entry in manifest["files"]]  # fmt: skip
+    return "".join(f"{line}\n" for line in [*lines, f"{manifest_sha256}  MANIFEST.json"]).encode()
+
+
+def binding_records(
+    p: Planned, out: Path, root: Path
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """What an export's manifest binds, its binding records, read by path and sha256 alone: the
+    case's located launcher run's ``summary.json`` and ``meta.json`` (path, sha256) with the
+    summary's ``endpoint_checkpoint`` record, and the case's latest baseline, rest and control
+    records (path, file sha256, ``record_sha256``). Nothing else of the run's directory is opened
+    or listed: its responses/, observations/ and judge/ least of all. With them, every checkpoint
+    those records name, by path: each record that names it, with the sha256 it gives."""
+    named: dict[str, list[dict[str, Any]]] = {}
+
+    def name(record: Path, checkpoint: Any) -> None:
+        if isinstance(checkpoint, dict) and isinstance(checkpoint.get("path"), str):
+            named.setdefault(checkpoint["path"], []).append(
+                {"record": str(record), "sha256": checkpoint.get("sha256")})  # fmt: skip
+
+    def bound(path: Path) -> tuple[dict[str, Any], dict | None]:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return {"path": str(path), "sha256": None}, None
+        try:
+            record = json.loads(data)
+        except ValueError:
+            record = None
+        found = {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
+        return found, record if isinstance(record, dict) else None
+
+    launcher = None
+    run_dir = located(p.run, root)
+    if run_dir is not None:
+        summary, record = bound(run_dir / "summary.json")
+        checkpoint = (record or {}).get("endpoint_checkpoint")
+        launcher = {"run_dir": str(run_dir), "summary": summary,
+                    "meta": bound(run_dir / "meta.json")[0],
+                    "endpoint_checkpoint": checkpoint}  # fmt: skip
+        name(run_dir / "summary.json", checkpoint)
+    parts: dict[str, Any] = {}
+    for part in ["baseline", "rest", *(["control"] if p.control else [])]:
+        state = part_state(out, p.case, part)
+        if state.state != "recorded":
+            parts[part] = None
+            continue
+        path = out / p.case.attempt_path(part, state.attempt)
+        parts[part] = {"attempt": state.attempt, "path": str(path), "sha256": file_sha256(path),
+                       "record_sha256": q.record_sha256(state.record)}  # fmt: skip
+        if part == "baseline":
+            name(path, state.record.get("checkpoint"))
+        launcher_check = state.record.get("launcher")
+        identity = launcher_check.get("identity") if isinstance(launcher_check, dict) else None
+        name(path, identity.get("checkpoint") if isinstance(identity, dict) else None)
+    return {"launcher": launcher, "parts": parts}, named
+
+
+def kept_refusal(p: Planned, out: Path, root: Path, kept: Path | None) -> str | None:
+    """Why an export to ``kept`` could not keep the case's checkpoints (module docstring, "A
+    technical case's kept checkpoints"), or None."""
+    if kept is None:
+        return "no --kept DIR (the folder on the Pod's volume: /workspace/kept-checkpoints)"
+    if not kept.is_absolute():
+        return f"--kept {kept} is not an absolute path"
+    if not kept.is_dir():
+        return f"--kept {kept} is not an existing folder"
+    where = kept.resolve()
+    for label, other, why in (
+        ("the runs root", root, "its copies would join the small results downloaded and "
+         "archived from there"),
+        ("the records' folder", out, "its copies would join the records"),
+        ("the checkpoint directory", p.endpoint, "it goes with the container disk"),
+    ):  # fmt: skip
+        if where.is_relative_to(other.resolve()):
+            return f"--kept {kept} lies under {label} {other}: {why}"
+    if same_filesystem(kept, p.endpoint):
+        return (f"--kept {kept} is on the filesystem of the checkpoint directory {p.endpoint} (the "
+                "container disk, lost with it)")  # fmt: skip
+    return None
+
+
+def export_problems(manifest: Mapping[str, Any], manifest_sha256: str | None) -> list[str]:
+    """What of an export on the volume does not re-hash to its manifest: a manifest not verified,
+    a copy missing or other than its exported bytes (size, sha256), a ``MANIFEST.json`` other than
+    the case folder's manifest, a ``SHA256SUMS`` other than the manifest gives."""
+    problems = []
+    if manifest.get("verified") is not True:
+        problems.append("the manifest is not verified (a copy did not read back as its source)")
+    try:
+        kept, export = Path(manifest["kept"]), Path(manifest["export"])
+        for entry in manifest["files"]:
+            copy = kept / entry["copy"]
+            if not copy.is_file():
+                problems.append(f"{copy}: missing on the volume")
+            elif not matches_export(copy, entry):
+                problems.append(f"{copy}: not its exported bytes (size or sha256)")
+        if file_sha256(kept / export / "MANIFEST.json") != manifest_sha256:
+            problems.append(f"{kept / export / 'MANIFEST.json'}: not the case's manifest")
+        sums = hashlib.sha256(sums_bytes(manifest, manifest_sha256)).hexdigest()
+        if file_sha256(kept / export / "SHA256SUMS") != sums:
+            problems.append(f"{kept / export / 'SHA256SUMS'}: not the manifest's sums")
+    except (KeyError, TypeError, ValueError) as exc:
+        problems.append(f"the manifest cannot be read: {type(exc).__name__}: {exc}")
+    return problems
+
+
+def source_problems(manifest: Mapping[str, Any], files: list[Path]) -> list[str]:
+    """The case's files an export does not hold as they are now: one it does not list (new since
+    the export), or one whose size or sha256 is not the exported one (changed since)."""
+    entries = {entry.get("source"): entry for entry in manifest.get("files") or []
+               if isinstance(entry, dict)}  # fmt: skip
+    problems = []
+    for path in files:
+        entry = entries.get(str(path))
+        if entry is None:
+            problems.append(f"{path}: not in the export (new since)")
+        elif not matches_export(path, entry):
+            problems.append(f"{path}: not its exported bytes (changed since)")
+    return problems
+
+
+def reusable(path: Path, kept: Path, files: list[Path]) -> dict | None:
+    """The manifest at ``path`` when its export can stand for a new one: made under ``kept``,
+    listing exactly the case's files, its copies re-hashing to it (``export_problems``) and the
+    files still its exported bytes (``source_problems``); otherwise None."""
+    manifest = _read(path)
+    if manifest is None or manifest.get("kept") != str(kept):
+        return None
+    listed = {entry.get("source") for entry in manifest.get("files") or []
+              if isinstance(entry, dict)}  # fmt: skip
+    if listed != {str(file) for file in files} or export_problems(manifest, file_sha256(path)):
+        return None
+    return None if source_problems(manifest, files) else manifest
+
+
+def write_export(
+    p: Planned, out: Path, root: Path, technical: list[str], kept: Path, files: list[Path],
+    export: Path, number: int,
+) -> dict[str, Any]:  # fmt: skip
+    """The export itself (``export_kept``): the new folder ``export``, each file copied and read
+    back, ``MANIFEST.json`` and ``SHA256SUMS`` in it, and last the case's manifest
+    ``kept-checkpoints-<number>.json``. Its manifest; an ``OSError`` anywhere is the caller's."""
+    folder = case_folder(out, p.case)
+    binding, named = binding_records(p, out, root)
+    make_folders(export.parent)
+    export.mkdir()  # a new folder: an export overwrites nothing
+    fsync_folder(export.parent)
+    entries = []
+    for source in files:
+        target = export / source.relative_to(p.endpoint)
+        size, sha = copy_durably(source, target)
+        copy_sha = checkpoint_sha256(target)  # the copy read back
+        records = named.get(str(source), [])
+        entries.append({
+            "source": str(source), "copy": target.relative_to(kept).as_posix(), "size": size,
+            "sha256": sha, "copy_sha256": copy_sha, "verified": copy_sha == sha,
+            "recorded_sha256": records[0]["sha256"] if records else None,
+            "matches_record": all(r["sha256"] == sha for r in records) if records else None,
+            "named_by": records, "partial": source.name.endswith(".pt.partial")})  # fmt: skip
+    gone = released(folder)  # removed on purpose by finish: never lost
+    lost = [{"path": path, "recorded_sha256": records[0]["sha256"], "named_by": records}
+            for path, records in sorted(named.items())
+            if path not in gone and not Path(path).is_file()]  # fmt: skip
+    manifest = {
+        "case": p.case.record(), "stage": ROLES[p.case.engineering],
+        "candidate": p.case.candidate, "technical_reasons": technical, "kept": str(kept),
+        "export": export.relative_to(kept).as_posix(), "number": number, "binding": binding,
+        "files": entries, "lost": lost, "verified": all(e["verified"] for e in entries),
+        "host": socket.gethostname(), "pod_id": q.pod_id(),
+        "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "provenance": q.qualification_provenance(load_settings()),
+    }  # fmt: skip
+    q.publish(export / "MANIFEST.json", manifest)
+    write_durably(export / "SHA256SUMS", sums_bytes(manifest, q.record_sha256(manifest)))
+    q.publish(folder / f"kept-checkpoints-{number}.json", manifest)  # last: the case's record
+    return manifest
+
+
+def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+    """``_export_kept``, its every ``OSError`` exit 13 with the error named (the refusal and space
+    checks' included: an unreadable folder, a failing ``stat``): no verified volume copy, the
+    checkpoints still only on the container disk."""
+    try:
+        return _export_kept(p, out, root, technical, kept)
+    except OSError as exc:
+        print(f"{p.case.name}: the export could not be checked or made: {exc}. Nothing is called "
+              "verified; the checkpoints stay where they are, still only on the container disk; "
+              "fix the cause, then finish --kept again", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+
+
+def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+    """A technical case's checkpoints (``case_files``) exported to the Pod's volume (module
+    docstring, "A technical case's kept checkpoints"): each copied durably to
+    ``<kept>/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout it has under the
+    checkpoint directory, read back and verified by its sha256, then the manifest, in the export
+    (``MANIFEST.json``, with ``SHA256SUMS``) and last in the case's folder
+    (``kept-checkpoints-<n>.json``). Refused before any copy (``kept_refusal``, or less free space
+    than the files take with ``KEPT_MARGIN``); an earlier manifest whose copies re-hash to it under
+    ``kept``, the case's files as it lists them, is reused: nothing is copied. An ``OSError``
+    anywhere in the export (``write_export``) leaves the partial ``kept-<n>`` without a case
+    manifest, never called verified. The exit: 9 (``TECHNICAL_CASE``) when every file still
+    present has a verified copy, 13 (``NOT_EXPORTED``) otherwise: refused, failed or not verified,
+    the checkpoints still only on the container disk."""
+    name, folder = p.case.name, case_folder(out, p.case)
+
+    def refused(why: str) -> int:
+        print(f"{name}: the export is refused and nothing is copied: {why}. The checkpoints stay "
+              "where they are, still only on the container disk, and nothing is called verified",
+              file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+
+    def lost_note(lost: list[dict[str, Any]]) -> None:
+        if lost:
+            print(f"{name}: {LOST_BEFORE_EXPORT}: {[entry['path'] for entry in lost]}",
+                  file=sys.stderr)  # fmt: skip
+
+    refusal = kept_refusal(p, out, root, kept)
+    if refusal is not None:
+        return refused(refusal)
+    files, manifests = case_files(p, root), numbered(folder, KEPT_MANIFEST)
+    reused = reusable(manifests[-1][1], kept, files) if manifests else None
+    if reused is not None:  # nothing is copied
+        lost_note(reused.get("lost") or [])
+        print(json.dumps({"case": name, "manifest": str(manifests[-1][1]), "reused": True,
+                          "files": len(files)}))  # fmt: skip
+        return TECHNICAL_CASE
+    need, free = sum(path.stat().st_size for path in files) + KEPT_MARGIN, free_bytes(kept)
+    if free < need:
+        return refused(f"{free} bytes are free under {kept}, below the {need} its files take "
+                       f"with a margin of {KEPT_MARGIN} bytes")  # fmt: skip
+    parent = kept / "qualification" / folder.relative_to(out)
+    number = 1 + max([n for n, _ in manifests] + [n for n, _ in numbered(parent, KEPT_FOLDER)],
+                     default=0)  # fmt: skip
+    export = parent / f"kept-{number}"
+    try:
+        manifest = write_export(p, out, root, technical, kept, files, export, number)
+    except OSError as exc:  # no case manifest: nothing of this export is called verified
+        print(f"{name}: the export to {export} failed: {exc}. No manifest is published in the "
+              "case's folder and nothing is called verified; the checkpoints stay where they "
+              "are, still only on the container disk, and finish --kept again exports to a new "
+              "folder", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+    path = folder / f"kept-checkpoints-{number}.json"
+    entries, lost = manifest["files"], manifest["lost"]
+    if not manifest["verified"]:
+        bad = [entry["source"] for entry in entries if not entry["verified"]]
+        print(f"{name}: a copy did not read back as its source's bytes, so nothing of {export} is "
+              f"called verified: {bad}. The checkpoints stay where they are, still only on the "
+              f"container disk; finish --kept again writes kept-{number + 1}",
+              file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+    lost_note(lost)
+    print(json.dumps({"case": name, "manifest": str(path), "export": str(export),
+                      "files": len(entries),
+                      "lost": [entry["path"] for entry in lost]}))  # fmt: skip
+    return TECHNICAL_CASE
+
+
+def inventory_problems(
+    manifest: Mapping[str, Any], manifest_size: int, manifest_sha256: str, inventory: Path,
+    remote: str,
+) -> list[str]:  # fmt: skip
+    """What scripts/archive.py's inventory does not show verified in the bucket under ``remote``
+    (its REMOTE_PREFIX): every line's URL lies under ``remote/``, and each exported file (the
+    copies, ``MANIFEST.json``, ``SHA256SUMS``) needs its line (the latest of its path, relative to
+    the volume folder) with the exported size and sha256, the status ``ok`` (the object's size
+    and MD5 are the file's) and the URL ``remote/<its path>``."""
+    try:
+        export = manifest["export"]
+        expected = {entry["copy"]: (entry["size"], entry["sha256"]) for entry in manifest["files"]}
+        sums = sums_bytes(manifest, manifest_sha256)
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"the manifest cannot be read: {type(exc).__name__}: {exc}"]
+    expected[f"{export}/MANIFEST.json"] = (manifest_size, manifest_sha256)
+    expected[f"{export}/SHA256SUMS"] = (len(sums), hashlib.sha256(sums).hexdigest())
+    try:
+        rows = inventory.read_text().splitlines()
+    except OSError as exc:
+        return [f"the inventory {inventory} cannot be read: {exc}"]
+    rows = [cells for cells in (row.split("\t") for row in rows)
+            if len(cells) == 6 and cells[0] != "path"]  # fmt: skip
+    lines = {cells[0]: cells for cells in rows}
+    problems = [f"{cells[0]}: archived at {cells[4]}, not under {remote}/" for cells in rows
+                if not cells[4].startswith(f"{remote}/")]  # fmt: skip
+    for rel, (size, sha) in expected.items():
+        cells = lines.get(rel)
+        if cells is None:
+            problems.append(f"{rel}: no line in the inventory {inventory}")
+        elif (cells[1], cells[2]) != (str(size), sha):
+            problems.append(f"{rel}: the inventory's size and sha256 ({cells[1]}, {cells[2]}) "
+                            f"are not the exported {size}, {sha}")  # fmt: skip
+        elif cells[5] != UPLOADED:
+            problems.append(f"{rel}: not verified in the bucket ({cells[5]})")
+        elif cells[4].startswith(f"{remote}/") and cells[4] != f"{remote}/{rel}":
+            problems.append(f"{rel}: archived at {cells[4]}, not at {remote}/{rel}")
+    return problems
+
+
+def kept_check(p: Planned, out: Path, inventory: Path, remote: str) -> int:
+    """Whether the case's latest export is kept, verified, on the Pod's volume and in the bucket
+    (module docstring, "A technical case's kept checkpoints"): its copies re-hash to its manifest
+    (``export_problems``) and archive.py's ``inventory`` shows every exported file verified
+    (``inventory_problems``). Reads only; then publishes its receipt, ``kept-check-<n>.json`` in
+    the case's folder: the manifest's and the inventory's path and sha256, the exit, what fails,
+    and ``pending-upload`` for a volume copy verified whose bucket copy is not. 0, or 13
+    (``NOT_EXPORTED``)."""
+    name, folder = p.case.name, case_folder(out, p.case)
+    manifests = numbered(folder, KEPT_MANIFEST)
+    if not manifests:
+        print(f"{name}: no export of its checkpoints (no kept-checkpoints-<n>.json in {folder}): "
+              "finish --kept DIR exports them", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+    path = manifests[-1][1]
+    data = path.read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    manifest = _read(path)
+    if manifest is None:
+        volume, bucket = [f"{path}: unreadable"], []
+    else:
+        volume = export_problems(manifest, sha)
+        bucket = inventory_problems(manifest, len(data), sha, inventory, remote)
+    code = NOT_EXPORTED if volume or bucket else 0
+    pending = not volume and bool(bucket)
+    number = 1 + max((n for n, _ in numbered(folder, KEPT_RECEIPT)), default=0)
+    receipt = folder / f"kept-check-{number}.json"
+    teardown = None
+    if code:
+        teardown = "planned teardown waits for kept-check; the hard deadline stands"
+        if pending:
+            teardown = f"the volume copy is verified and kept, the upload pending: {teardown}"
+    q.publish(receipt, {
+        "case": p.case.record(), "manifest": {"path": str(path), "sha256": sha},
+        "inventory": {"path": str(inventory.absolute()), "sha256": file_sha256(inventory)},
+        "remote": remote, "exit": code,
+        "problems": volume + bucket, "pending-upload": pending, "teardown": teardown,
+        "host": socket.gethostname(), "pod_id": q.pod_id(),
+        "checked_at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
+    if volume:
+        print(f"{name}: its export on the volume is not verified: {volume}"
+              + (f"; in the bucket: {bucket}" if bucket else "") + f". {teardown}",
+              file=sys.stderr)  # fmt: skip
+    elif bucket:
+        print(f"{name}: its bucket copy is not verified (pending-upload, {receipt.name}): "
+              f"{bucket}. {teardown}", file=sys.stderr)  # fmt: skip
+    else:
+        print(json.dumps({"case": name, "manifest": str(path), "receipt": str(receipt),
+                          "exit": 0}))  # fmt: skip
+    return code
+
+
+def bound_export(folder: Path) -> tuple[Path, dict, Path] | None:
+    """The export a release relies on: the manifest of the case's latest ``kept-check`` receipt
+    of exit 0 that names it with the sha256 it still has, verified; with that receipt. None
+    without one."""
+    manifests = {path.name: path for _, path in numbered(folder, KEPT_MANIFEST)}
+    for _, receipt in reversed(numbered(folder, KEPT_RECEIPT)):
+        record = _read(receipt) or {}
+        named = record.get("manifest") if isinstance(record.get("manifest"), dict) else {}
+        path = manifests.get(Path(str(named.get("path"))).name)
+        if record.get("exit") != 0 or path is None or file_sha256(path) != named.get("sha256"):
+            continue
+        manifest = _read(path)
+        if manifest is not None and manifest.get("verified") is True:
+            return path, manifest, receipt
+    return None
+
+
+def release_kept(p: Planned, root: Path, folder: Path) -> tuple[list[str], dict, list[str]]:
+    """``finish --release`` of a technical case (module docstring, "A technical case's kept
+    checkpoints"): the files ``case_files`` gives go only through the export a ``kept-check`` of
+    exit 0 bound (``bound_export``), the inventory that receipt names still of its sha256, every
+    file listed in the manifest with its size and sha256 (``source_problems``), and each checked
+    again right before its deletion; then the harness's folders left empty. What it removed, the
+    export it relied on (the manifest and the receipt, by path and sha256), and why it stopped
+    (nothing when it did not)."""
+    files = case_files(p, root)
+    bound = bound_export(folder)
+    relied: dict[str, Any] = {"manifests": [], "kept_check": None}
+    if bound is None:
+        if files:
+            why = ("no export of them is bound by a kept-check of exit 0 (finish --kept DIR, then "
+                   f"kept-check): {list(map(str, files))}")  # fmt: skip
+            return [], relied, [why]
+        entries: dict[str, Any] = {}
+    else:
+        path, manifest, receipt = bound
+        relied = {"manifests": [{"path": str(path), "sha256": file_sha256(path)}],
+                  "kept_check": {"path": str(receipt), "sha256": file_sha256(receipt)}}  # fmt: skip
+        inventory = (_read(receipt) or {}).get("inventory")
+        inventory = inventory if isinstance(inventory, dict) else {}
+        if files and (not isinstance(inventory.get("path"), str) or inventory.get("sha256") is None
+                      or file_sha256(Path(inventory["path"])) != inventory["sha256"]):  # fmt: skip
+            why = (f"the inventory {inventory.get('path')} that {receipt.name} verified is gone or "
+                   "changed (its sha256 is not the receipt's): the upload is checked again "
+                   "(archive.py, then kept-check)")  # fmt: skip
+            return [], relied, [why]
+        problems = source_problems(manifest, files)
+        if problems:
+            return [], relied, [*problems, "another export is needed (finish --kept DIR, then "
+                                           "kept-check)"]  # fmt: skip
+        entries = {entry["source"]: entry for entry in manifest["files"]}
+    removed: list[str] = []
+    for source in files:
+        if not matches_export(source, entries[str(source)]):  # right before its deletion
+            return removed, relied, [f"{source}: not its exported bytes right before its "
+                                     "deletion (changed since the check)"]  # fmt: skip
+        source.unlink()
+        removed.append(str(source))
+    if p.harness.is_dir():  # the folders left empty
+        for sub in sorted((d for d in p.harness.rglob("*") if d.is_dir()),
+                          key=lambda d: len(d.parts), reverse=True):  # fmt: skip
+            with suppress(OSError):
+                sub.rmdir()
+        try:
+            p.harness.rmdir()
+            removed.append(str(p.harness))
+        except OSError:
+            pass
+    left = [f"{path}: not in the export (new since the check)" for path in case_files(p, root)]
+    return removed, relied, left
 
 
 # ------------------------------------------------------------------------------- commands
@@ -841,26 +1722,47 @@ def part(args, planned: Planned, out: Path) -> None:
 
 
 def finish(
-    planned: Planned, out: Path, root: Path, scope: q.QualificationScope, *, release: bool
-) -> None:
+    planned: Planned, out: Path, root: Path, scope: q.QualificationScope, *, release: bool,
+    kept: Path | None = None,
+) -> None:  # fmt: skip
+    """A complete case's checkpoints deleted (module docstring, step 7); a technical case's
+    exported to ``kept`` instead (``export_kept``: exit 9, or 13), and deleted with ``release``
+    only through that export, verified (``release_kept``). A technical case is a complete one
+    whose verdict is technical (``technical_reasons``), or one not complete whose recorded parts
+    already mark it technical (``established_technical``): it is exported, or released, all the
+    same, and never marked complete. A case neither complete nor technical is refused (exit 1),
+    its checkpoints kept."""
     complete, _, why = case_state(out, planned, scope)
-    if not complete:
-        sys.exit(f"{planned.case.name}: {why}; its checkpoints are kept")
-    technical = technical_reasons(out, planned, scope)
+    if complete:
+        technical = technical_reasons(out, planned, scope)
+    else:  # an established technical case is exported (or released) all the same
+        technical = established_technical(out, planned, scope)
+        if not technical:
+            sys.exit(f"{planned.case.name}: {why}; its checkpoints are kept")
+        why = f"not complete ({why}), and technical: it stays so"
     if technical and not release:
-        print(f"{planned.case.name}: a technical verdict; its checkpoints are kept for the "
-              f"diagnosis: {technical}", file=sys.stderr)  # fmt: skip
-        sys.exit(TECHNICAL_CASE)
-    removed = remove_checkpoints(planned, journal_run_ids(planned.run, root))
-    if planned.harness.exists():
-        shutil.rmtree(planned.harness)
-        removed.append(str(planned.harness))
+        print(f"{planned.case.name}: a technical verdict ({why}); its checkpoints are kept for "
+              f"the diagnosis, and exported: {technical}", file=sys.stderr)  # fmt: skip
+        sys.exit(export_kept(planned, out, root, technical, kept))
+    folder = case_folder(out, planned.case)
+    relied: dict[str, Any] = {}
+    stopped: list[str] = []
+    if technical:  # released only through its verified export
+        removed, relied, stopped = release_kept(planned, root, folder)
+    else:
+        removed = remove_checkpoints(planned, journal_run_ids(planned.run, root))
+        if planned.harness.exists():
+            shutil.rmtree(planned.harness)
+            removed.append(str(planned.harness))
     if removed:  # removed on purpose: never evidence of an interruption (``restart-case``)
-        folder = case_folder(out, planned.case)
         q.publish(folder / f"{RELEASED}-{len(list(folder.glob(f'{RELEASED}-*.json'))) + 1}.json",
                   {"case": planned.case.record(), "removed": removed, "release": release,
-                   "technical": technical,
+                   "technical": technical, **relied,
                    "at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
+    if stopped:
+        print(f"{planned.case.name}: the release stops, and what is left is kept: "
+              f"{'; '.join(stopped)}", file=sys.stderr)  # fmt: skip
+        sys.exit(NOT_EXPORTED)
     print(json.dumps({"case": planned.case.name, "state": why, "removed": removed}))
 
 
@@ -1050,6 +1952,42 @@ def checkpoint_missing(run_dir: Path | None, folder: Path | None = None) -> bool
     return folder is None or str(record.get("path")) not in released(folder)
 
 
+def checkpoint_conflict(run_dir: Path | None) -> Path | None:
+    """The launcher run's recorded endpoint checkpoint when it is on disk with another sha256
+    than its recorded one, or None: a provenance conflict, never a loss (module docstring, "A
+    case restart")."""
+    if run_dir is None:
+        return None
+    record = (_read(run_dir / "summary.json") or {}).get("endpoint_checkpoint")
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+        return None
+    path = Path(record["path"])
+    if not path.is_file():
+        return None
+    return path if checkpoint_sha256(path) != record.get("sha256") else None
+
+
+def own_conflict_end(run: Run, root: Path, run_dir: Path | None) -> dict | None:
+    """The launcher run's end in the launch journal that no lost container disk explains, or None:
+    an end ``outcome: conflict`` that is not settled (it carries a return code: the launcher saw
+    the attempt's process end, and a lost disk takes that process with it), or one, settled or
+    not, whose problem is not the missing endpoint checkpoint (``launch.is_missing_checkpoint``).
+    A settled end (``settled: true``, no return code) with that problem alone is what a lost
+    container disk leaves, as is an end ``done``: a clean run that lost only its checkpoint
+    settles with it (the launcher checks the config, gate, clean checkout and records first, and
+    the checkpoint before the numerics and the Rayleigh record, so ``restart-case`` reads those
+    two itself, ``after_checkpoint_problem``)."""
+    if run_dir is None:
+        return None
+    for record in launch_records(root):
+        if (record.get("event") == "end" and record.get("run_id") == run_dir.name
+                and record.get("run") == run.label and record.get("outcome") == "conflict"
+                and (not record.get("settled")
+                     or not is_missing_checkpoint(str(record.get("problem"))))):  # fmt: skip
+            return record
+    return None
+
+
 def next_number(folder: Path, kind: str) -> int:
     return max((int(VOIDING_FILE.fullmatch(f.name)[2]) for f, _ in voiding_records(folder, kind)),
                default=0) + 1  # fmt: skip
@@ -1065,9 +2003,19 @@ def restart_case(
     without a reason, for a complete case, with no attempt it does not name already, without
     evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
-    its declared instability stop, scientific; another stop or a departing run, technical), and
+    its declared instability stop, scientific; another stop or a departing run, technical),
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``): only an interrupted case is restarted. A launcher run whose
+    (``attempt_failures``), when ``control-only`` answers anything but its usual path, 3 (0: it
+    would run the control alone, nothing to void; 1: the recorded parts cannot be bound to the
+    launcher run, a provenance problem; any other exit: carried, never swallowed),
+    when the launcher run's numerics or Rayleigh record depart (``after_checkpoint_problem``, which
+    a settled missing-checkpoint end hides), when the launcher run has an end ``conflict`` in the
+    launch journal that a lost container disk does not explain (``own_conflict_end``: an unsettled
+    one, the launcher's own judgement of its attempt, or one whose problem is not the missing
+    checkpoint), and when the launcher run's checkpoint is on disk with another sha256 than its
+    recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever an
+    interrupted attempt would allow):
+    only an interrupted case is restarted. A launcher run whose
     checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
     Pod stopped between the launch and the baseline). Run again after a stop between the record
     and the journal's line, it only writes that line."""
@@ -1098,14 +2046,57 @@ def restart_case(
         sys.exit(f"{case.name}: no restart: a completed failure keeps counting: {failures}. A "
                  "scientific one is never rerun (no reruns to pass); a technical one is lifted "
                  "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
+    try:
+        control_only(planned, out, root, scope)
+    except SystemExit as stop:  # its usual path (3) alone lets the restart go on
+        if stop.code == TECHNICAL_CASE:  # its recorded parts mark it technical
+            sys.exit(f"{case.name}: no restart: control-only answers {TECHNICAL_CASE}, a "
+                     "technical case by its recorded parts: its evidence is exported by the "
+                     "driver, or by finish --kept, and a technical failure goes to the "
+                     "engineering cycle, never a restart")  # fmt: skip
+        if stop.code != NO:  # a binding refusal (1), or any other answer: never swallowed
+            said = stop.code if isinstance(stop.code, str) else f"exit {stop.code}"
+            sys.exit(f"{case.name}: no restart: control-only refuses the case ({said}). A part "
+                     "that cannot be bound to the case's launcher run is a provenance problem, "
+                     "for diagnosis, never a restart")  # fmt: skip
+    else:
+        sys.exit(f"{case.name}: no restart: only its same-path control is outstanding, and "
+                 "control-only runs it alone through the driver; a restart would void the "
+                 "passing parts and rerun them. Do not restart")  # fmt: skip
     if run_dir is not None:
         kind, why = q.launcher_problems(run_dir, case, checkpoint=False, environment=False)
         if kind is not None:
             sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} is itself a "
                      f"completed {kind} failure, which keeps counting: {why}")  # fmt: skip
+        departs = after_checkpoint_problem(
+            planned.run, run_dir, OmegaConf.load(run_dir / "config.yaml"),
+            _read(run_dir / "meta.json") or {})  # fmt: skip
+        if departs is not None:
+            sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} is not sound "
+                     f"beyond its checkpoint: {departs}. A settled end that records the missing "
+                     "checkpoint alone hides it: a provenance conflict, which goes to diagnosis "
+                     "and the technical route, never a restart")  # fmt: skip
+    own = own_conflict_end(planned.run, root, run_dir)
+    if own is not None:
+        by = (
+            "the launcher's own judgement of its attempt, which cannot come from a lost "
+            "container disk (its process ends with the disk and writes no end)"
+            if not own.get("settled")
+            else "a conflict other than a missing checkpoint"
+        )
+        sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} has an end with "
+                 f"return code {own.get('returncode')} and outcome conflict "
+                 f"({own.get('problem')}): {by}. A provenance conflict goes to diagnosis and "
+                 "the technical route, never a restart")  # fmt: skip
     if not any(a["state"] == "interrupted" for a in fresh) and not missing:
         sys.exit(f"{case.name}: no restart: no evidence of an interruption (no interrupted "
                  "attempt, and the launcher run's checkpoint is on disk)")  # fmt: skip
+    conflict = checkpoint_conflict(run_dir)
+    if conflict is not None:  # whatever an interrupted attempt would allow
+        sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name}'s endpoint checkpoint "
+                 f"{conflict} is on disk with another sha256 than its recorded one: a "
+                 "provenance conflict, not a loss; it goes to the technical route (diagnosis, "
+                 "the engineering cycle)")  # fmt: skip
     require_clean()
     number = next_number(folder, "restart")
     path = folder / f"restart-{number}.json"
@@ -1909,6 +2900,50 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
     return target
 
 
+def export_sequence(p: Planned, common: str, remote: str) -> list[str]:
+    """The driver's routed export of a technical case's checkpoints (module docstring, "A
+    technical case's kept checkpoints"): ``finish --kept "$KEPT"``, then on its 9 the upload
+    (scripts/archive.py to ``$ARTIFACT_REMOTE/<--kept-remote>``) and, whatever the upload's exit,
+    ``kept-check --remote`` on its inventory; the driver stops with 9 when both exit 0, with 13
+    otherwise, and with ``finish``'s 13 or other failure as it gives them. One sequence, after a
+    case (``finish``'s 9) and after ``control-only``'s 9 (an established technical case)."""
+    case = f"--case {shlex.quote(p.case.name)}"
+    # The case's folder of its exports under $KEPT (each export kept-<n>/ in it)
+    kept_path = shlex.quote(f"qualification/{case_folder(Path(), p.case).as_posix()}")
+    return [
+        "rc=0",
+        f'routed {RUN} finish {common} {case} --kept "$KEPT" || rc=$?',
+        'case "$rc" in',
+        "  0) ;;",
+        f'  {TECHNICAL_CASE}) INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ)'
+        '.tsv"',
+        f'     DEST="$ARTIFACT_REMOTE"/{remote}',
+        "     arc=0",
+        '     routed project-run "$SRC" python scripts/archive.py "$INV" "$DEST" "$KEPT" '
+        f"{kept_path} || arc=$?",
+        "     kc=0",
+        f'     routed {RUN} kept-check {common} {case} --inventory "$INV" --remote "$DEST" '
+        "|| kc=$?",
+        '     if [ "$arc" -ne 0 ] || [ "$kc" -ne 0 ]; then',
+        f'       stop "{p.case.name}: its kept checkpoints are not verified in the bucket '
+        "(archive.py exit $arc); if kept-check published a receipt for this export, it says "
+        "whether the volume copy is verified and the upload pending (pending-upload true) or "
+        "the volume copy is not verified either (pending-upload false, the worse state); "
+        "kept-check exit $kc; do not stop the Pod by plan; the hard deadline stays"
+        f'" {NOT_EXPORTED}',
+        "     fi",
+        f'     stop "{p.case.name}: a technical case: its checkpoints are kept, on the volume '
+        f'and in the bucket, verified" {TECHNICAL_CASE} ;;',
+        f'  {NOT_EXPORTED}) stop "{p.case.name}: finish refused or failed its export (exit '
+        f"{NOT_EXPORTED}): no verified volume copy; its checkpoints are still only on the "
+        "container disk, which a stop loses; fix the cause finish names, then run the driver "
+        "again; do not stop the Pod by plan; the hard deadline stays"
+        f'" {NOT_EXPORTED} ;;',
+        f'  *) stop "{p.case.name}: finish failed (exit $rc)" "$rc" ;;',
+        "esac",
+    ]  # fmt: skip
+
+
 def driver_script(
     commit: str, written_at: str, campaign: Path, args, planned: list[Planned], settings,
     steps: list[int],
@@ -1923,6 +2958,7 @@ def driver_script(
         " --engineering" if args.engineering else "")  # fmt: skip
     diagnostic = f" --diagnostic-steps {','.join(map(str, steps))}" if steps else ""
     endpoint = planned[0].endpoint
+    remote = shlex.quote(args.kept_remote.strip().rstrip("/"))
     lines = [
         "#!/usr/bin/env bash",
         *comment(f"Written by scripts/qualify.py driver at {written_at}; do not edit."),
@@ -1930,28 +2966,53 @@ def driver_script(
                  f"from commit {commit}: {len(planned)} cases of the campaign {campaign}, one at "
                  "a time: the launcher run alone (one attempt), the baseline part, then, unless "
                  "the baseline is already a scientific failure, the rest, and the FA rate's "
-                 "same-path control, each in a fresh process; then the case's checkpoints are "
-                 "deleted, unless its verdict is technical: then the driver stops (exit "
-                 f"{TECHNICAL_CASE}) with them kept for the diagnosis. K-only and blind to "
-                 "outcomes."),
+                 "same-path control, each in a fresh process (every case asks control-only "
+                 "first: a case its recorded parts already mark technical, complete or not, is "
+                 "exported at once, before any launcher call, and nothing of it runs; a case "
+                 "whose control alone is due, not technical, runs that control alone, not the "
+                 "launcher, whose checkpoint the control does not read); then the case's "
+                 "checkpoints are "
+                 "deleted, unless its verdict is technical: then they are kept for the "
+                 "diagnosis, exported to $KEPT on the Pod's volume and verified there (finish), "
+                 "uploaded to $ARTIFACT_REMOTE (scripts/archive.py) and verified there "
+                 f"(kept-check), and the driver stops (exit {TECHNICAL_CASE}; {NOT_EXPORTED} "
+                 "while the export is not verified: the planned teardown waits for kept-check, "
+                 "and the hard deadline stays). K-only and blind to outcomes."),
         *comment(f"A case needs {need:g} GB free under {endpoint} (the container disk). A "
                  "complete case is skipped, so the driver can be run again after a stop. It "
                  "never reruns a part or a launcher run: an interrupted part (exit "
                  f"{INTERRUPTED}) is rerun by hand as its next attempt with --infrastructure "
-                 "REASON, a failed launcher run with scripts/launch.py --only LABEL "
-                 "--max-attempts 1 --recovery REASON. The verdict is written on every exit, "
+                 "REASON, a same-path control's after a lost container disk too (it reads no "
+                 "checkpoint; a decided case is never restarted), a failed launcher run with "
+                 "scripts/launch.py --only LABEL --max-attempts 1 --recovery REASON "
+                 "--incident-time UTC --cause TEXT "
+                 "--evidence REF, one attempt per documented incident, each round's reason one "
+                 "no earlier round of the label gave. The verdict is written on every exit, "
                  "but over a launch journal that is not whole (an unresolved torn line, or a "
                  "line a published record requires missing), which verdict refuses too (exit "
                  f"{TORN_JOURNAL}): no verdict.json is written then, and an older one stays on "
                  "disk."),
-        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory "
-                 f"included), the disk or a case finish refuses (not complete); {INTERRUPTED} an "
-                 f"interrupted attempt (or a part a case restart names); {TECHNICAL_CASE} a "
-                 f"technical case; {STALE} a stale case (records of other GPU code or settings); "
-                 f"{HELD} a case whose label has a held launcher run; {TORN_JOURNAL} a torn line "
-                 "in a launch journal, or a line a published record requires missing from it "
-                 "(complete's refusal, or the launcher's); the launcher's own when it stops; "
-                 "another a failed command."),
+        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory, the "
+                 "bucket's settings and the place of $KEPT included), the disk, a case finish "
+                 "refuses (neither complete nor technical) "
+                 "or a case control-only cannot bind to its launcher run without the "
+                 f"launcher; {INTERRUPTED} an interrupted attempt (or a part a case restart "
+                 f"names); {TECHNICAL_CASE} a technical case, its checkpoints kept, on the volume "
+                 "and in the bucket, verified (a complete one after its finish; one its recorded "
+                 "parts already mark technical, complete or not, after control-only's "
+                 f"{TECHNICAL_CASE}, before any launcher call); {STALE} a stale case (records "
+                 f"of other GPU code or settings); {HELD} a case whose label has a held "
+                 f"launcher run; {TORN_JOURNAL} a torn line in a launch journal, or a line a "
+                 "published record requires missing from it (complete's refusal, or the "
+                 "launcher's); "
+                 f"{NOT_EXPORTED} a technical case whose kept checkpoints are not verified: from "
+                 "finish, its export refused or failed (no verified volume copy: the checkpoints "
+                 "still only on the container disk, which a stop loses), or after kept-check "
+                 "(run whatever archive.py's exit), the volume copy verified and the upload "
+                 "pending (its receipt's pending-upload true) or the volume copy not verified "
+                 "either (false, the worse state); either way the planned teardown waits for "
+                 "kept-check exit 0, and the hard deadline stays; the launcher's own when it "
+                 "stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -1961,12 +3022,17 @@ def driver_script(
         f"CAMPAIGN={shlex.quote(str(campaign))}",
         f'test "$(sha256sum "$CAMPAIGN" | cut -d " " -f 1)" = {sha}',
         f"CKPT={shlex.quote(str(endpoint))}",
+        f"KEPT={shlex.quote(os.path.normpath(args.kept))}",
         'OUT="${RUNS_DIR:?}/qualification"',
         f'mkdir -p "$OUT/c{args.candidate}" "$CKPT"',
+        'mkdir -p "$KEPT"',
         f'exec > >(tee -a "$OUT/c{args.candidate}/driver-{stage}-$(date -u +%Y%m%dT%H%M%SZ).log")'
         " 2>&1",
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
         f'stop() {{ echo "== {stamp} $1" >&2; exit "$2"; }}',
+        "# A step whose exit the driver routes: its start and done markers, and its exit",
+        f'routed() {{ echo "== {stamp} start: $*"; local rc=0; "$@" || rc=$?; '
+        f'echo "== {stamp} done (exit $rc): $*"; return "$rc"; }}',
         "# The verdict on every exit, whatever stopped the driver (it refuses a journal not whole)",
         f"trap 'rc=$?; {RUN} verdict {common} || true; exit $rc' EXIT",
         "# No GPU job beside the qualification: no compute process, and (as a container may not",
@@ -1985,10 +3051,85 @@ def driver_script(
         f'  stop "{host:g} GB of free host memory are needed; the qualification does not '
         'start" 1',
         "fi",
+        *comment("A technical case's checkpoints go to the bucket before the driver stops "
+                 "(scripts/archive.py under the key ARTIFACT_GCS_KEY): without ARTIFACT_REMOTE, "
+                 "a gs:// path, a readable key file or gcloud, no case starts"),
+        'case "${ARTIFACT_REMOTE:-}" in',
+        "  gs://?*) ;;",
+        "  *) stop \"a technical case's kept checkpoints could not reach the bucket: "
+        'ARTIFACT_REMOTE is not a gs:// path; the qualification does not start" 1 ;;',
+        "esac",
+        'if [ ! -f "${ARTIFACT_GCS_KEY:-}" ] || [ ! -r "${ARTIFACT_GCS_KEY:-}" ] '
+        "|| ! command -v gcloud > /dev/null; then",
+        "  stop \"a technical case's kept checkpoints could not reach the bucket: "
+        "ARTIFACT_GCS_KEY is not a readable file, or gcloud is not on PATH; the qualification "
+        'does not start" 1',
+        "fi",
+        *comment("The kept checkpoints' folder is on the Pod's volume: never on the checkpoint "
+                 "directory's device (the container disk), never under $RUNS_DIR or the "
+                 "checkpoint directory"),
+        'if [ "$(stat -L -c %d "$KEPT")" = "$(stat -L -c %d "$CKPT")" ]; then',
+        '  stop "KEPT $KEPT is on the device of the checkpoint directory $CKPT (the container '
+        'disk); the qualification does not start" 1',
+        "fi",
+        'case "$(realpath "$KEPT")/" in',
+        '  "$(realpath "$RUNS_DIR")"/*|"$(realpath "$CKPT")"/*)',
+        '    stop "KEPT $KEPT lies under RUNS_DIR or under the checkpoint directory $CKPT; the '
+        'qualification does not start" 1 ;;',
+        "esac",
     ]  # fmt: skip
     for index, p in enumerate(planned, 1):
         case = f"--case {shlex.quote(p.case.name)}"
         parts = f'{common} {case} --run-dir "$RUN_DIR" --checkpoints {shlex.quote(str(p.harness))}'
+        export = export_sequence(p, common, remote)
+        control = f"step {RUN} part {parts} --part control --resume"
+        usual = [  # complete's no: the launcher run, then the parts
+            f"{RUN} clear-stale {common} {case}",
+            "free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
+            "case \"$free_kb\" in",
+            "  ''|*[!0-9]*) stop \"df gave no free space for $CKPT: '$free_kb'\" 1 ;;",
+            "esac",
+            f'if [ "$free_kb" -lt {need_kb(need)} ]; then',
+            f'  stop "{need:g} GB free are needed under $CKPT, $free_kb KB are" 1',
+            "fi",
+            f'step {LAUNCH} "$CAMPAIGN" --only {shlex.quote(p.run.label)} --max-attempts 1',
+            f"RUN_DIR=$({RUN} locate {common} {case})",
+            f"step {RUN} part {parts} --part baseline --resume{diagnostic}",
+            "rc=0",
+            f"{RUN} decided {common} {case} || rc=$?",
+            'case "$rc" in',
+            f'  0) echo "== {stamp} {p.case.name}: the baseline is a scientific failure; '
+            'no rest" ;;',
+            f"  {NO}) step {RUN} part {parts} --part rest --resume{diagnostic} ;;",
+            '  *) stop "decided failed (exit $rc)" "$rc" ;;',
+            "esac",
+            *([control] if p.control else []),
+        ]  # fmt: skip
+        # Every case asks control-only first: an established technical case (9) is exported before
+        # any launcher call; a case whose control alone is outstanding, not technical (0), runs
+        # that control alone; any other case (3) takes the usual path
+        alone = [  # its control alone outstanding, the case not technical: that alone
+            f'  0) echo "== {stamp} {p.case.name}: only its same-path control is due (its '
+            "baseline decided it, or its rest is recorded): the launcher, the baseline and "
+            'the rest are not called"',
+            f"     {control} ;;",
+        ]  # fmt: skip
+        usual = [
+            "rc=0",
+            f"RUN_DIR=$({RUN} control-only {common} {case}) || rc=$?",
+            'case "$rc" in',
+            f'  {TECHNICAL_CASE}) echo "== {stamp} {p.case.name}: a technical case by its recorded '
+            "parts: its evidence is exported before any launcher call; neither the launcher nor "
+            'a part is called"',
+            *[f"     {line}" for line in export],
+            "     ;;",
+            *(alone if p.control else []),
+            f"  {NO})",
+            *[f"    {line}" for line in usual],
+            "    ;;",
+            f'  *) stop "{p.case.name}: control-only failed (exit $rc)" "$rc" ;;',
+            "esac",
+        ]  # fmt: skip
         lines += [
             f"# ---- case {index}/{len(planned)}: {p.case.name}, launcher run {p.run.label}",
             "rc=0",
@@ -2004,32 +3145,16 @@ def driver_script(
             "record's repair, or scripts/launch.py --resolve-torn (docs/operations.md)"
             f'" {TORN_JOURNAL} ;;',
             f"  {NO})",
-            f"    {RUN} clear-stale {common} {case}",
-            "    free_kb=$(df -Pk \"$CKPT\" | awk 'NR == 2 {print $4}')",
-            "    case \"$free_kb\" in",
-            "      ''|*[!0-9]*) stop \"df gave no free space for $CKPT: '$free_kb'\" 1 ;;",
-            "    esac",
-            f'    if [ "$free_kb" -lt {need_kb(need)} ]; then',
-            f'      stop "{need:g} GB free are needed under $CKPT, $free_kb KB are" 1',
-            "    fi",
-            f'    step {LAUNCH} "$CAMPAIGN" --only {shlex.quote(p.run.label)} --max-attempts 1',
-            f"    RUN_DIR=$({RUN} locate {common} {case})",
-            f"    step {RUN} part {parts} --part baseline --resume{diagnostic}",
-            "    rc=0",
-            f"    {RUN} decided {common} {case} || rc=$?",
-            '    case "$rc" in',
-            f'      0) echo "== {stamp} {p.case.name}: the baseline is a scientific failure; '
-            'no rest" ;;',
-            f"      {NO}) step {RUN} part {parts} --part rest --resume{diagnostic} ;;",
-            '      *) stop "decided failed (exit $rc)" "$rc" ;;',
-            "    esac",
-            *([f"    step {RUN} part {parts} --part control --resume"] if p.control else []),
+            *[f"    {line}" for line in usual],
             "    ;;",
             '  *) stop "complete failed (exit $rc)" "$rc" ;;',
             "esac",
-            f"# A technical case stops the driver here (exit {TECHNICAL_CASE}), its checkpoints "
-            "kept",
-            f"step {RUN} finish {common} {case}",
+            *comment("A technical case stops the driver here, its checkpoints kept: finish exports "
+                     f"them to $KEPT, verified (exit {TECHNICAL_CASE}; {NOT_EXPORTED} when "
+                     "refused or failed), then the bucket copy is uploaded and, whatever the "
+                     "upload's exit, checked (kept-check: its receipt records a pending upload); "
+                     f"{TECHNICAL_CASE} only when both exit 0"),
+            *export,
         ]  # fmt: skip
     lines.append(f'echo "== {stamp} every case is complete"')
     return "\n".join(lines) + "\n"
@@ -2045,9 +3170,11 @@ def main(argv: list[str] | None = None) -> None:
             "part",
             "complete",
             "decided",
+            "control-only",
             "clear-stale",
             "locate",
             "finish",
+            "kept-check",
             "verdict",
             "interrupted",
             "restart-case",
@@ -2090,6 +3217,19 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="finish: delete a technical case's checkpoints once diagnosed",
     )
+    parser.add_argument(
+        "--kept",
+        type=Path,
+        metavar="DIR",
+        help="finish: the folder on the Pod's volume a technical case's checkpoints are exported "
+        "to (absolute); driver: the same, for each case's finish",
+    )
+    parser.add_argument("--kept-remote", default=KEPT_REMOTE, metavar="PREFIX",
+                        help="driver: the export's place under ARTIFACT_REMOTE")  # fmt: skip
+    parser.add_argument("--inventory", type=Path, metavar="FILE",
+                        help="kept-check: archive.py's inventory of the upload")  # fmt: skip
+    parser.add_argument("--remote", metavar="PREFIX",
+                        help="kept-check: the bucket prefix the upload went to")  # fmt: skip
     parser.add_argument("--run-dir", type=Path, help="part: the launcher run")
     parser.add_argument("--checkpoints", type=Path, help="part: the harness's checkpoints")
     parser.add_argument("--device", default="cuda")
@@ -2116,6 +3256,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "driver":
         if problems or not planned:
             sys.exit("\n".join(["The campaign is not a qualification campaign:", *problems]))
+        kept = None if args.kept is None else Path(os.path.normpath(args.kept))
+        if kept is None or not kept.is_absolute():
+            sys.exit("driver needs --kept DIR, an absolute folder on the Pod's volume "
+                     "(/workspace/kept-checkpoints): a technical case's checkpoints are exported "
+                     "there")  # fmt: skip
+        if kept.is_relative_to(os.path.normpath(planned[0].endpoint)):
+            sys.exit(f"--kept {kept} lies under the checkpoint directory {planned[0].endpoint}, "
+                     "which goes with the container disk")  # fmt: skip
+        remote = PurePosixPath(args.kept_remote.strip().rstrip("/"))
+        if remote.is_absolute() or ".." in remote.parts or str(remote) == ".":
+            sys.exit(f"--kept-remote {args.kept_remote!r} is not a relative path under "
+                     "ARTIFACT_REMOTE")  # fmt: skip
         script = driver_script(args.commit or "<SHA>",
                                datetime.now(UTC).isoformat(timespec="seconds"),
                                args.campaign.resolve(), args, planned, settings,
@@ -2161,7 +3313,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.part == "control" and not chosen.control:
             sys.exit(f"{chosen.case.name} holds no same-path control")
         part(args, chosen, out)
-    elif args.command in ("complete", "decided"):
+    elif args.command in ("complete", "decided", "control-only"):
         stale = stale_records(out, chosen, code_identity.gpu_code_identity(),
                               q.settings_record(settings))  # fmt: skip
         if stale:
@@ -2174,12 +3326,22 @@ def main(argv: list[str] | None = None) -> None:
                   f"outcome nobody could resolve, and nothing of it runs: {held}",
                   file=sys.stderr)  # fmt: skip
             sys.exit(HELD)
+        if args.command == "control-only":  # the launcher run's directory, alone on stdout
+            print(control_only(chosen, out, root, scope))
+            return
         complete, decided, why = case_state(out, chosen, scope)
         print(f"{chosen.case.name}: {why}")
         if not (complete if args.command == "complete" else decided):
             sys.exit(NO)
     elif args.command == "finish":
-        finish(chosen, out, root, scope, release=args.release)
+        finish(chosen, out, root, scope, release=args.release, kept=args.kept)
+    elif args.command == "kept-check":
+        if args.inventory is None or not args.remote:
+            sys.exit("kept-check needs --inventory FILE (scripts/archive.py's) and --remote PREFIX "
+                     "(archive.py's REMOTE_PREFIX: $ARTIFACT_REMOTE/<--kept-remote>)")  # fmt: skip
+        code = kept_check(chosen, out, args.inventory, args.remote.rstrip("/"))
+        if code:
+            sys.exit(code)
     elif args.command == "interrupted":
         if args.part is None or args.attempt is None or not args.technical:
             sys.exit("interrupted needs --part, --attempt N and --technical REASON")

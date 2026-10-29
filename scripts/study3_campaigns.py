@@ -42,10 +42,10 @@ it for good. Each file therefore gets a name no campaign used, ``study3-c<N>-<ki
 exists is refused. A launcher cell holds one run, and its name is fixed by that run,
 ``c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>``: no two runs of the study share a cell name,
 and a run gets the same name, and the same label (``<cell>/s<seed>``), whatever file issues it.
-The launcher grants a recovery round once per cell name, read from every log, so a round opened
-for one run never gives another run, in a later file of the step, a second attempt at
---max-attempts 1 (which the readers would refuse as two attempts of one cell); and a hold by
-label keeps its meaning across files.
+The launcher reads a cell's recovery round by its cell name, and a run's own rounds by its label,
+from every log, so a round opened for one run never gives another run, in a later file of the
+step, a second attempt at --max-attempts 1 (which the readers would refuse as two attempts of one
+cell); and a hold by label keeps its meaning across files.
 
 **The header** (flat and plain, as the launcher logs it with every start, and as
 ``study3_records`` binds a run by it): ``study`` 3, ``candidate``, ``step`` and ``round`` (0 or 1
@@ -67,18 +67,21 @@ Engineering, numerical and repair: experiments/study3_k_only, ``study3.role=engi
 container disk (--checkpoints, ``CHECKPOINTS`` by default). Validation and confirmation:
 experiments/study3 with their role.
 
-**Running.** Nothing is run here; the command is printed. Every campaign runs with
-``--max-attempts 1`` (one technical attempt uses the launcher's allowance; a rerun is a recovery
-round with its reason): search and validation as ``python scripts/launch.py FILE --max-attempts
-1``; engineering, numerical and repair through ``python scripts/qualify.py driver --campaign FILE
---candidate N [--engineering] --commit SHA --out DRIVER``, which passes it itself. The validation's
-launch is preceded by its check, printed first: ``python scripts/study3_summary.py check
---runs-root DIR --campaign FILE``, which exits 0 only while the versions record its header names
-holds for the running checkout (a run under another commit does not count, and the launcher never
-reruns it); it is run again, from the same checkout, before every resumption of the file and
-every recovery round of one of its runs. Campaign files
-belong outside the checkout (under $RUNS_DIR/campaigns/, say): the versions record holds only for
-a clean checkout.
+**Running.** Nothing is run here; the command is printed. Every campaign runs with ``--max-attempts
+1`` (one technical attempt uses the launcher's allowance; a rerun is a recovery round of the run's
+own, one attempt per documented incident: ``python scripts/launch.py FILE --only LABEL
+--max-attempts 1 --recovery REASON --incident-time UTC --cause TEXT --evidence REF``, its reason one
+that no earlier round of the label gave, zero_field_refusal.launch, "Recovery rounds"): search and
+validation as ``python scripts/launch.py FILE --max-attempts 1``; engineering, numerical and repair
+through ``python scripts/qualify.py driver --campaign FILE --candidate N [--engineering] --commit
+SHA --out DRIVER --kept /workspace/kept-checkpoints`` (``--kept``: the folder on the Pod's volume
+a technical case's checkpoints are exported to), which passes it itself. The validation's launch
+is preceded by its check, printed first: ``python scripts/study3_summary.py check --runs-root DIR
+--campaign FILE``, which exits 0 only while the versions record its header names holds for the
+running checkout (a run under another commit does not count, and the launcher never reruns it);
+it is run again, from the same checkout, before every resumption of the file and every recovery
+round of one of its runs. Campaign files belong outside the checkout (under $RUNS_DIR/campaigns/,
+say): the versions record holds only for a clean checkout.
 
 **The confirmation** is written into --out DIR: one campaign file per block, in seed order, and
 the driver ``run.sh``. Before each block, the driver checks that the block's file is the one
@@ -162,6 +165,7 @@ KINDS = {"engineering": ("engineering", None), "search-round0": ("search", 0),
          "repair": ("repair", None), "validation": ("validation", None),
          "confirmation": ("confirmation", None)}  # fmt: skip
 QUALIFICATION = ("engineering", "numerical", "repair")  # run through scripts/qualify.py driver
+KEPT = "/workspace/kept-checkpoints"  # the driver's --kept: the Pod's volume
 VERSIONED = ("validation", "confirmation")
 # The decision records a step's campaign rests on, by header key
 RECORDS = {"search": {"engineering_record": "engineering"},
@@ -447,7 +451,7 @@ def run_command(kind: str, candidate: int, out: Path) -> str:
     driver = out.with_name(f"{out.stem}-driver.sh")
     return (f"python scripts/qualify.py driver --campaign {shlex.quote(str(out))} --candidate "
             f"{candidate}{engineering} --commit {commit or 'SHA'} --out "
-            f"{shlex.quote(str(driver))}")  # fmt: skip
+            f"{shlex.quote(str(driver))} --kept {KEPT}")  # fmt: skip
 
 
 def check_command(root: Path, out: Path) -> str:

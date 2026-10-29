@@ -1453,7 +1453,8 @@ The registered rules are [the registration's](study3-preregistration.md#numerica
 same-path control); the settings are
 `configs/experiments/qualification.yaml`, and the harness and verdicts
 `qualification` ([modules](architecture.md#modules)). `scripts/qualify.py` drives it; its
-docstring has every rule.
+docstring holds the rules, and "A case restart" below has the complete list of the refusals of
+`restart-case`.
 
 - **The campaign.** One launcher campaign per candidate and stage, written whole by
   `scripts/study3_campaigns.py` ([below](#study-3-campaigns)): one cell per run, named
@@ -1471,7 +1472,13 @@ docstring has every rule.
      and the driver stops there, neither rerunning nor skipping it. A case whose label
      (`<cell>/s<seed>` in its experiment) has a launcher run held in any launch journal, whatever
      its config hash, stops the driver with exit 11 naming the hold, before the launcher is
-     called; nothing lifts a hold;
+     called; nothing lifts a hold. For every case, `control-only` comes next (a case whose control
+     alone is due, below): its exit 9, for an established technical case, complete or not ("A
+     technical case's checkpoints", below), runs step 6's export at once, before any launcher call
+     (`finish --kept`, the upload, `kept-check`), and nothing of the case runs; its exit 0, for a
+     case whose only outstanding part is its same-path control (decided by its baseline, or with its
+     baseline and rest recorded), runs that control alone, then step 6; its exit 3 goes on with step
+     2; any other exit stops the driver;
   2. the `<dir>/<run_id>.pt` of the case's launcher run attempts that the launch journal shows
      superseded (ended technical, or never ended) are removed (`clear-stale`); a settled run's
      checkpoint (done, diverged, or completed but in conflict) stays. Then the free disk is
@@ -1484,9 +1491,14 @@ docstring has every rule.
      a fresh process;
   6. the case's checkpoints are deleted (`finish`): every `<dir>/<run_id>.pt` of its launcher
      run and `<dir>/harness/<case>/`, only once its records are published and read back by the
-     verdicts without error. A case whose verdict is technical (its own or its control's) keeps
-     them for the diagnosis that starts its engineering cycle: `finish` exits 9 and the driver
-     stops before the next case; `finish --release` deletes them once diagnosed.
+     verdicts without error. A case whose verdict is technical (its own or its control's), or an
+     established technical case that is not complete (exported before any launcher call, step 1),
+     keeps them for the diagnosis that starts its engineering cycle, exported and verified on the
+     Pod's volume and in the bucket (below): `finish --kept "$KEPT"` exits 9 once each file still
+     present has a verified copy on the volume (13 when the export is refused or fails), then the
+     driver uploads that export (`scripts/archive.py`), checks both copies (`kept-check`, whatever
+     the upload's exit) and stops before the next case, with 9 when both exit 0 and 13 otherwise;
+     `finish --release` deletes them once diagnosed, only through that verified export.
 
   A case is complete when the latest attempt of each part it needs is recorded and readable:
   the baseline, the due control and, unless decided, the rest, which must name the latest
@@ -1502,9 +1514,15 @@ docstring has every rule.
   record (the Pod, the network or the deadline stopped it) stops the driver with exit 8. Its
   rerun is the next attempt, by hand, with its documented reason, which the record carries, while
   the Pod and its container disk are the ones it started on (otherwise the case restarts,
-  below); an interruption without a documented cause is recorded technical instead
+  below). The same-path control is the exception: it reads no checkpoint, so its interrupted
+  attempt is rerun this way after a lost container disk too (a case whose control alone is due,
+  below). An interruption without a documented cause is recorded technical instead
   (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its
-  rerun is the launcher's recovery round with the reason.
+  rerun is a recovery round of its own with the reason and its incident, one attempt per round
+  (["Launching runs"](#launching-runs)): a second loss, or a first loss after the round was used
+  (by an engineering cycle's new launcher run, say), takes a further round with a reason no
+  earlier round of the label gave. A launcher exit 1 over a missing checkpoint is a lost
+  checkpoint to diagnose first ("A lost checkpoint", below), no round by itself.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
@@ -1516,8 +1534,31 @@ docstring has every rule.
     --technical "stopped without a documented cause"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
     --only c1-numerical-adamw-1.45e-05-s10200/s10200 --max-attempts 1 \
-    --recovery "attempt 1 failed: <the fixed cause>"
+    --recovery "attempt 1 failed: <the fixed cause>" \
+    --incident-time 2026-10-29T03:12:00Z --cause "<the external cause, one line>" \
+    --evidence "<a path or reference to the evidence>"
   ```
+
+- **A lost checkpoint.** Exit 1 is shared. The driver's preconditions and disk check, `finish`'s
+  and `control-only`'s refusals, a refused `restart-case` or recovery round, the launcher's
+  conflicts, its "used up their attempts" (row 5) and its stop on request all exit 1. Exit 1 alone
+  never triggers a restart, a recovery round or a rerun: the message identifies the procedure;
+  bound records and incident evidence determine the route. `restart-case` and every recovery
+  round are commands a person runs, never the driver's. A launcher run whose endpoint checkpoint
+  file is gone is refused with "the endpoint checkpoint … is missing" and a note that points
+  here; the table tells that message apart from the others. A message with any conflict line the
+  note does not cover (row 6) belongs to row 6, even when it carries the note.
+
+  | What the driver's log and the records show | What it is | What to do |
+  |---|---|---|
+  | `complete` exits 3 for the case. The launcher, called by the driver, exits 1 and its only conflict line is "the endpoint checkpoint … is missing" for the case's own launcher run. No `checkpoints-removed-<n>.json` of the case names that path. Evidence of a lost container disk: the Pod stopped or restarted (its event log), or an empty checkpoint folder after a container restart. The launch journal's end of that launcher run records `done`, or is settled (`"settled": true`, no return code) and was written after that stop. | An unfinished case's lost checkpoint (infrastructure) | Diagnose it, then `restart-case --infrastructure "<UTC time; what was lost; the evidence>"`. Then the launcher run's recovery round, `launch.py CAMPAIGN --only LABEL --max-attempts 1 --recovery "<the same reason>"` with `--incident-time`, `--cause` and `--evidence` (its first round, or a further one with a reason no earlier round gave). Then each part the restart names that the case needs, the baseline first, as its next attempt with that reason; a part the restart does not name takes attempt 1, without `--infrastructure`. Then the driver. The commands are in "A case restart". |
+  | A case whose only outstanding part is its same-path control (decided by its baseline, or with its baseline and rest recorded), not technical (a technical one gets `control-only`'s exit 9 and its export before any launcher call; after a lost container disk, row 3). The driver's log shows `control-only` exit 0, then the control, then `finish`; or `part --part control --resume` exits 8 (the control was interrupted); or `control-only` exits 1 with the reason it names. The launcher is never called there, so no "is missing" message appears (the exception: a case decided by its launcher run's own declared instability stop gets exit 3 and the launcher is called, and the launcher accepts that run without its checkpoint, so no "is missing" appears either). | Not a restart | Nothing beyond the driver. For an interrupted control, run its next attempt with `--infrastructure "<reason>"`, then the driver. For `control-only`'s exit 1, follow the reason it names. `restart-case` refuses a case with a scientific failure: it keeps counting. See "A case whose control alone is due". |
+  | The same sign as row 1, for a case with a completed failure (`restart-case` refuses), or a technical case whose only outstanding part is its control (row 2's technical branch) | Not a restart | A scientific failure stands. With a control due, the only scientific failure that shows row 1's sign is an interrupted rest whose trajectory results hold the failure: record that attempt first, `qualify.py interrupted --campaign … --candidate N --case CASE --part rest --attempt N --technical "<the interruption>"` (the results count), and the driver then runs the control alone. A technical case gets `control-only`'s exit 9 and its export before any launcher call: its checkpoints went with the disk, so the export holds the manifest alone, its `lost` naming them with their recorded sha256, and `kept-check` verifies that ("Lost before the export"); the incident's cause and evidence name what was lost, and the `supersede` that opens the engineering cycle names in its `--diagnosis` the lost paths with their recorded sha256 (from the binding records) and the evidence of the loss. Then the engineering cycle (`supersede`, below). |
+  | The message for a label whose case `complete` exits 0, and a `checkpoints-removed-<n>.json` names the path | `finish` removed it on purpose | Nothing. The driver never calls the launcher on a complete case, and nobody calls it on a finished case's label. `restart-case` refuses a complete case. |
+  | A launcher start without an end at the loss; the next launcher call settles it technical and exits 1 with "used up their attempts" | The launcher run was in flight | No restart (`restart-case` refuses). A recovery round with the documented reason: `--only LABEL --max-attempts 1 --recovery` and the incident fields. |
+  | The driver's own launcher attempt failed technically: a journal end of the launcher run with a return code and outcome `technical`, and no loss. `complete` exits 3 (the baseline is due), and the driver's launcher call exits 1 with "N runs used up their attempts; see RUNS_DIR/launch/<name>.jsonl" | A technical failure of the launcher run, not a loss | A recovery round (`--only LABEL --max-attempts 1 --recovery` with the incident fields) needs a documented external cause: the interruption's time, the cause and its evidence, none blank. Without one there is no automatic route. `supersede --record` must name a recorded part attempt of the case, and a launcher run that failed before any part has none: `supersede` refuses it with "is not a recorded attempt of this case". Such a run is swept up only when an engineering cycle opens from another case's technical record (a launcher run no part record classified). Otherwise the researcher decides. |
+  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint, a run whose numerics setup or Rayleigh record departs behind a settled missing-checkpoint end, and a case whose recorded parts `control-only` cannot bind to its launcher run, its exit 1). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. Stop the driver, not the Pod. An established technical case, complete or not ("A technical case's checkpoints"), is exported before any launcher call (`control-only` exits 9, then `finish --kept`), as long as its files are on disk, a corrupt checkpoint included (`matches_record: false`), so the launcher never refuses it. A case not yet technical keeps its checkpoints only on the container disk: what keeps them is the Pod, which stays up while the diagnosis runs (no planned stop, and the hard deadline stays). |
+  | A technical case (exit 9 or 13) whose kept checkpoints were lost | The technical mark stands | See "A technical case's checkpoints", "Lost before the export". |
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
   campaigns" [above](#study-2-stage-a)), its cap in `ZFR_DEADLINE_EPOCH`. Before the driver,
@@ -1525,37 +1566,213 @@ docstring has every rule.
   ≈ 11 min more per same-path control, with an hour to spare
   (`python3 scripts/pod_deadline_watch.py --set EPOCH`). A case the deadline stops leaves an
   interrupted attempt (above) and its checkpoints on the container disk, which a stopped Pod
-  loses: the case starts again as a whole (below).
+  loses: the case starts again as a whole (below), once the loss is diagnosed ("A lost
+  checkpoint", above); a case `control-only` would run alone (not technical, bound to its
+  launcher run, only its same-path control outstanding) is the exception: it runs the control
+  alone, with no restart (below).
 - **A case restart.** When the Pod stopped during a case, its recorded parts cannot go on (the
-  launcher's and the harness's checkpoints are gone). `restart-case` records it: a
+  launcher's and the harness's checkpoints are gone). A missing endpoint checkpoint alone is a
+  possible loss requiring diagnosis, never by itself a lost container disk: diagnose it first,
+  and give the restart the interruption the diagnosis found ("A lost checkpoint", above, tells
+  it from the launcher's other conflicts). A case `control-only` would run alone (not technical,
+  bound to its launcher run, only its same-path control outstanding) is no case to restart:
+  `control-only` runs the control alone and `restart-case` refuses it (below). `restart-case`
+  records it: a
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
   those attempts are void, kept and listed in the verdict, and neither count nor block. Once the
   record is published, it logs the case's launcher run superseded in the launch journal (the
   analysis counts the record and the line for that run alone, a start of the case's own label
-  under its candidate): the run stays on disk and in the journal, no longer counts for its label, and the launcher's recovery
-  round with the same reason starts a new one (if the command stopped between the two, running
-  it again writes the journal's line). Only an interrupted case is restarted: a restart is
-  refused without a reason, for a complete case, without evidence of an interruption (an
-  interrupted attempt, or the launcher run's checkpoint gone from disk, which is enough even
-  before the baseline started; one `finish` removed, recorded in its `checkpoints-removed-<n>.json`,
-  is not), when the launcher run
+  under its candidate): the run stays on disk and in the journal, no longer counts for its label,
+  and a recovery round of the run's own with the same reason and its incident starts a new one
+  (if the command stopped between the two, running it again writes the journal's line). Only an
+  interrupted case is restarted: a restart is refused without a reason, for a complete case, without
+  evidence of an interruption (an interrupted attempt, or the launcher run's checkpoint gone from
+  disk, which is enough even before the baseline started; one `finish` removed, recorded in its
+  `checkpoints-removed-<n>.json`, is not), when the launcher run
   itself is a completed failure (its declared instability stop, scientific; another stop,
-  technical), and for a case with a completed failure, scientific (it keeps counting: no reruns
+  technical), for a case with a completed failure, scientific (it keeps counting: no reruns
   to pass) or technical (the engineering cycle lifts it, below), an interrupted rest's
-  trajectory results included. Then rerun the launcher run through its recovery round, run each
-  part the case needs as its next attempt with the same reason, the baseline first
-  (`part --resume` exits 8 for a part the restart names), and run the driver again.
+  trajectory results included, when the launcher run's journal holds an end `conflict` that no
+  lost container disk explains (an unsettled one, with a return code: the launcher's own
+  judgement of its attempt; or one, settled or not, whose problem is not the missing checkpoint),
+  when the launcher run's numerics setup, or its Rayleigh record when enabled, departs from the
+  campaign's config behind a settled missing-checkpoint end (a provenance conflict, for
+  diagnosis and the technical route), when `control-only` would run the case's control alone,
+  when `control-only` refuses the case (its recorded parts cannot be bound to its launcher run:
+  exit 1, a provenance problem for diagnosis), and when the launcher run's endpoint checkpoint is
+  on disk with another sha256 than its recorded one: a provenance conflict, not a loss, which goes
+  to the technical route even when an interrupted part would otherwise allow the restart.
+  Removing or replacing a mismatching checkpoint is no route to a restart: the conflict goes to
+  diagnosis and the technical route. Then rerun
+  the launcher run through its recovery round, run each part the case needs as its next attempt
+  with the same reason, the baseline first (`part --resume` exits 8 for a part the restart
+  names), and run the driver again. A second loss of the same unfinished case is restarted the
+  same way with its own reason: `restart-2.json` names every attempt (the first restart's
+  included), the case's current launcher run is logged superseded, the launcher's further round
+  (round 2, one attempt at `--max-attempts 1`) runs its next attempt, and each part runs as its
+  next attempt with the new reason. A launcher run in flight at the loss (a start without an
+  end, no settled directory) is no attempt to restart (`restart-case` refuses): the launcher
+  settles it technical, and a round with the documented reason is the whole route. A known
+  narrow window: a child that stopped between publishing `terminal.json` and summarizing its
+  terminal record cannot be restarted, because `restart-case` reports a completed technical
+  failure. A case `control-only` would run alone (not technical, every recorded part bound to the
+  located launcher run, the control due or interrupted) is never restarted, and `restart-case`
+  refuses it: its control runs alone, with no restart (below). A non-technical case whose binding
+  fails, a rest that names another run id, say, is refused too: `control-only` exits 1 for it, and
+  `restart-case` carries that refusal with its reason (exit 1), writing nothing. The restart goes
+  on only where `control-only` takes the usual path (exit 3).
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --infrastructure "the Pod stopped during the case"
   project-run "$SRC" python scripts/launch.py "$C/qualification-c1.yaml" \
     --only c1-numerical-adamw-1.45e-05-s10200/s10200 --max-attempts 1 \
-    --recovery "the Pod stopped during the case"
+    --recovery "the Pod stopped during the case" --incident-time 2026-10-29T03:12:00Z \
+    --cause "the Pod stopped: <the external cause>" --evidence "<the Pod's event log>"
   project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --part baseline --attempt 2 \
     --infrastructure "the Pod stopped during the case" \
     --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-1.45e-05
+  ```
+- **A case whose control alone is due** (a decided case whose control is due included). This is
+  a case whose only outstanding part is its same-path control (decided by its baseline, or with
+  its baseline and rest recorded). After a lost container disk the launcher refuses its run (the
+  checkpoint is missing). `restart-case` refuses a case with a scientific failure (the failure
+  keeps counting), and for a passing one it would void the passing parts and rerun them, but the
+  control reads no checkpoint. So, for the case that holds the control, the driver asks
+  `control-only` first. It exits 0, printing the launcher run's directory, when:
+  - the case holds the control, the engineering cycle has not resolved it, and the case is not
+    complete;
+  - the control's latest attempt is due or interrupted, and every other part the case needs is
+    recorded as `complete` reads it: the baseline (the latest, not void) and, unless it decided
+    the case, the rest bound to it;
+  - the case is no established technical case ("A technical case's checkpoints", below): a
+    scientific failure, the baseline's or the rest's, keeps counting, and its control runs alone;
+  - the baseline record classified its launcher run as conforming (`launcher.classified` true,
+    `launcher.kind` null);
+  - the run each recorded part names (its experiment and run id, wherever RUNS_DIR lay) is the
+    case's located run (its one settled directory, superseded nowhere), with the identity the
+    record gives (its recorded checkpoint record; the file is read only when present, never
+    required), done in the launch journal, its label held nowhere.
+
+  The driver then runs `part --part control --resume` on that run, with all the control's own
+  checks (the launcher run's numerics, the streams, v₀), and then `finish`: never
+  `clear-stale`, the launcher, `locate`, the baseline, `decided` or the rest. The checks go in
+  this order, and the driver asks every case (AdamW's too). Exit 9 first: a case its recorded parts
+  already mark technical, complete or not, whatever its bindings ("a technical case: export its
+  evidence"); the driver exports it before any launcher call ("A technical case's checkpoints",
+  below). Exit 3, the usual path: a case outside this state (one that holds no control among them);
+  then a case decided by its launcher run's own declared instability stop (the launcher accepts that
+  run without its checkpoint). Exit 1: a baseline not classified or of another kind, then a binding
+  that fails. Otherwise exit 0. Exit 1 names the condition: the driver stops, nothing is rerun,
+  and the case waits for a diagnosis. A present endpoint checkpoint of another sha256 than its
+  recorded one stops the step too (exit 1, a provenance conflict), and the file is kept for the
+  diagnosis. As any part, a recorded control, technical or
+  scientific, is never rerun (a technical one keeps the checkpoints left: `finish` exits 9). To
+  resume such a case after a lost container disk, run the driver again; when the control was
+  interrupted it stops with exit 8, and the control's next attempt runs by hand with the
+  documented reason on the directory `control-only` prints (no restart, no recovery round), and
+  then the driver again:
+
+  ```bash
+  RUN_DIR=$(project-run "$SRC" python scripts/qualify.py control-only \
+    --campaign "$C/qualification-c1.yaml" --candidate 1 --case s10200/adam_frozen-1.83e-05)
+  project-run "$SRC" python scripts/qualify.py part --campaign "$C/qualification-c1.yaml" \
+    --candidate 1 --case s10200/adam_frozen-1.83e-05 --part control --attempt 2 \
+    --infrastructure "the Pod stopped during the control: <the documented cause>" \
+    --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adam_frozen-1.83e-05
+  ```
+- **A technical case's checkpoints.** A Pod stop takes the container disk, and the checkpoints
+  with it, so a technical case's are exported before the driver stops: a complete case whose
+  verdict is technical after its `finish`, and an established technical case, complete or not,
+  before any launcher call. A case is an established technical case when no part the verdict
+  would still read can change its technical status, that is, when one of these holds: (1) its
+  baseline's gate fails, or its baseline did not complete (failed, or ran nothing), so the
+  verdict reads no rest for it; (2) a rest recorded and bound to that baseline makes the whole
+  verdict technical, not scientific; (3) its recorded control is technical. A complete baseline
+  with only a technical comparison of its own, its rest due or interrupted, is none: the rest may
+  turn the verdict scientific, and the case takes the usual path (or its control alone).
+  `control-only` exits 9 for an established technical case, and the driver runs `finish --kept`,
+  the upload and `kept-check` at once, so files the launcher would refuse (a corrupt checkpoint)
+  are kept as they are, `matches_record: false`. The export never marks a case complete: one
+  that is not stays incomplete and technical, and its control or rest never runs.
+  - **Where.** On the Pod's volume, `finish --kept /workspace/kept-checkpoints` writes them to
+    `qualification/c<N>/<stage>/<case>/kept-<n>/` there, in their layout under the checkpoint
+    directory, each copy read back and verified by its sha256 (a file of another sha256 than its
+    recorded one is kept as it is, `matches_record: false`; nothing of the case's verdict changes).
+    The driver then uploads the case's folder there with `scripts/archive.py` to
+    `$ARTIFACT_REMOTE/kept-checkpoints/` (`--kept-remote` sets the prefix; the dry run passes
+    `dryrun/<id>/kept-checkpoints`), with an inventory
+    `$RUNS_DIR/archive/inventory-kept-<time>.tsv`, and `kept-check` verifies both, whatever the
+    upload's exit: every copy re-hashes to the manifest, and every exported file has its inventory
+    line with the same size and sha256, the status `ok` (its object's size and MD5) and its URL
+    under the prefix `kept-check --remote` is given (the driver gives it the destination it gives
+    `archive.py`; a line under any other prefix fails the check). Earlier `kept-<n>` folders of the
+    case, verified or not, go to the bucket as well and are kept there until the study's report.
+    `finish` refuses before any copy (exit 13) without `--kept`, for a relative folder, one under
+    `$RUNS_DIR` or under the checkpoint directory, one on the checkpoint directory's filesystem, and
+    one with less free space than the files take plus 1 GiB; an error in the export or its checks (a
+    full volume, an I/O error, say) exits 13 too, a partial folder never called verified. Before the
+    first case the driver itself exits 1 when `$KEPT` is on the checkpoint directory's device or
+    lies under `$RUNS_DIR` or the checkpoint directory.
+  - **The manifest.** `kept-checkpoints-<n>.json` in the case's folder, and the same JSON as
+    `MANIFEST.json` in the export with a `SHA256SUMS`: the case, its technical reasons, the
+    binding records by path and sha256 (the launcher run's `summary.json` and `meta.json` with its
+    checkpoint record, and the case's latest baseline, rest and control records; nothing under a
+    run's `responses/`, `observations/` or `judge/` is read), each file (source, copy, size,
+    sha256, the recorded sha256 and whether it matches), `lost` (each checkpoint a record names
+    that is gone and that `finish` did not remove), `verified`, the host, the Pod and the
+    provenance. Run again, `finish` reuses an export that still re-hashes and still holds the
+    case's files as they are; otherwise it writes `kept-<n+1>`, and nothing is overwritten.
+    Each `kept-check` publishes its receipt, `kept-check-<n>.json`: the manifest's and the
+    inventory's path and sha256, its exit, and `pending-upload` when the volume copy is verified
+    and the bucket copy is not (no inventory, or one without the export's verified lines).
+  - **The two exits 13.** `finish`'s 13: the export was refused or failed, there is no verified
+    volume copy, and the checkpoints are still only on the container disk, which a stop loses.
+    The driver's 13 after `kept-check`: either the volume copy is verified and the upload is
+    pending (the receipt's `pending-upload: true`), or the volume copy is not verified either
+    (`pending-upload: false`), the worse state. After `finish`'s 13, fix the cause it names (room
+    on the volume, the filesystem of `--kept`, an I/O error), then run the driver again or
+    `finish --kept /workspace/kept-checkpoints` by hand; meanwhile the Pod is not stopped by plan,
+    and the hard deadline stays. Checkpoints lost meanwhile take the technical case's row of "A
+    lost checkpoint" (above).
+  - **The Pod.** A planned stop, restart or deletion of the Pod waits for `kept-check` exit 0
+    while a technical case lacks it, unless its checkpoints went with the container disk before
+    any export: it has nothing left to protect (see "Lost before the export"). An upload that
+    cannot be verified never lifts the hard deadline: the verified volume copy stays and the
+    pending upload is recorded in the receipt.
+    To recover, repeat the upload before `kept-check`: run the driver again (`finish` reuses the
+    verified export, then uploads and checks it), or run `archive.py` and then `kept-check` by
+    hand with a new inventory:
+
+    ```bash
+    INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ).tsv"
+    project-run "$SRC" python scripts/archive.py "$INV" "$ARTIFACT_REMOTE/kept-checkpoints" \
+      /workspace/kept-checkpoints qualification/c1/numerical/s10200/adamw-1.45e-05
+    project-run "$SRC" python scripts/qualify.py kept-check --campaign "$C/qualification-c1.yaml" \
+      --candidate 1 --case s10200/adamw-1.45e-05 --inventory "$INV" \
+      --remote "$ARTIFACT_REMOTE/kept-checkpoints"
+    ```
+
+    Both commands take the prefix the driver's `--kept-remote` gave; a dry run uses its own,
+    `"$ARTIFACT_REMOTE/dryrun/<id>/kept-checkpoints"`, in both.
+  - **Lost before the export.** Checkpoints a Pod stop took before `finish` leave the technical
+    mark as it stands: `finish` exits 9 with `lost` naming them ("lost before the export: the
+    technical mark stands; the diagnosis goes on from the records; nothing reruns"), the export
+    holds the manifest alone, there is no restart (`restart-case` refuses a complete case), and
+    nothing reruns.
+  - **After the diagnosis.** `finish --release` deletes them, only through the manifest that a
+    `kept-check` of exit 0 binds by its sha256, with that receipt's inventory unchanged (its
+    sha256 re-hashed), every current file listed in the manifest with its size and sha256 and
+    checked again right before its deletion (a new or changed file needs another export and its
+    `kept-check`; an inventory gone or changed, the upload checked again); otherwise it exits 13
+    naming the files or the inventory. Its `checkpoints-removed-<n>.json` names the manifest and
+    the receipt. The volume copy may go once `kept-check` has passed and the diagnosis is done;
+    the bucket copy is kept until the study's report.
+
+  ```bash
+  project-run "$SRC" python scripts/qualify.py finish --release \
+    --campaign "$C/qualification-c1.yaml" --candidate 1 --case s10200/adamw-1.45e-05
   ```
 - **A technical failure and its engineering cycle.** A completed technical failure (the
   repeat beyond 0.01·K\*, a failed bridge, a launcher comparison alone, an exception) is never
@@ -1592,10 +1809,15 @@ docstring has every rule.
   a cycle cannot start from one of its records:
   the failure keeps counting, so a scientific failure of P, which closes P–F alone, never blocks
   the cycle of a technical failure of A or F. Every case
-  the cycle names re-qualifies under the new code: the launcher's recovery round, then each part
-  as its next attempt with `--engineering-cycle` (its record names the supersession's path and
-  sha256), not `--infrastructure`; a later interruption of a new-code attempt is rerun with
-  `--infrastructure REASON`. The verdict lists the voided records under `supersession`.
+  the cycle names re-qualifies under the new code from a new launcher run: under the old config
+  hash, a recovery round of the launcher run's own (its first, or a further one at
+  `--max-attempts 1`; its incident the cycle, its evidence the supersession record); under a new
+  config hash (the fix changed a hashed key), the new run's base attempt, without `--recovery`
+  (a study-3 campaign refuses `--recovery` over a run that is not used up), and the supersession
+  record carries the cycle. Then each part runs as its next attempt with `--engineering-cycle` (its
+  record names the supersession's path and sha256), not `--infrastructure`; a later interruption
+  of a new-code attempt is rerun with `--infrastructure REASON`. The verdict lists the voided
+  records under `supersession`.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
@@ -1608,7 +1830,10 @@ docstring has every rule.
   the baseline record and both checkpoints, the code and the settings), and stops at once,
   decided, on a valid scientific failure. When a rest attempt is interrupted, its results count:
   the verdict reads them, a rerun or a restart is refused when they hold a failure, and
-  `interrupted --technical REASON` records the attempt with them.
+  `interrupted --technical REASON` records the attempt with them. An interrupted part is no
+  technical mark until `interrupted --technical` records it; once recorded, a case it makes an
+  established technical case ("A technical case's checkpoints", above) is exported by the driver
+  before any launcher call (`control-only` exits 9).
 - **The commands.** The campaign file and the driver are written on the Pod, from the source
   checkout of the commit; the driver embeds the campaign's absolute path and sha256.
 
@@ -1617,34 +1842,48 @@ docstring has every rule.
   project-run "$SRC" python scripts/qualify.py plan --campaign "$C/qualification-c1.yaml" \
     --candidate 1
   project-run "$SRC" python scripts/qualify.py driver --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --commit SHA --out "$C/qualification-c1-driver.sh"
+    --candidate 1 --kept /workspace/kept-checkpoints --commit SHA \
+    --out "$C/qualification-c1-driver.sh"
   bash "$C/qualification-c1-driver.sh"   # detached
   ```
 
   The engineering stage adds `--engineering` and, for its path diagnostics,
-  `--diagnostic-steps 1,5,10,15,20`. The driver checks the checkout and the campaign's sha256,
-  that no process holds the GPU and under 1 000 MiB of it is in use, and that the free host
-  memory reaches `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the
-  host, ≈ 25-30 GB at 1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), then runs the
+  `--diagnostic-steps 1,5,10,15,20`. The driver checks the checkout and the campaign's sha256, that
+  no process holds the GPU and under 1 000 MiB of it is in use, that the free host memory reaches
+  `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the host, ≈ 25-30 GB at
+  1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), and that a technical case's checkpoints
+  can reach the bucket (`ARTIFACT_REMOTE` a gs:// path, `ARTIFACT_GCS_KEY` a readable file, `gcloud`
+  on PATH) and that `$KEPT` is on the volume (not on the checkpoint directory's device, not under
+  `$RUNS_DIR` or the checkpoint directory; otherwise exit 1 before the first case), then runs the
   cases. It writes the verdict on every exit but one: over a launch journal that is not whole (an
-  unresolved torn line, or a line a published record requires missing) `verdict` refuses too
-  (exit 12), so no `verdict.json` is written then and an older one stays on disk. **Exits:** 0,
-  every case complete; 1, a
-  precondition (the host memory included), the disk (or `df` giving no number) or a `finish`
-  that refuses a case not complete; 8, an interrupted attempt (or a part a case restart names);
-  9, a technical case; 10, a stale case; 11, a case whose label has a held launcher run; 12, a
-  launch journal that is not whole, a torn line unresolved or a line a published record requires
-  missing (`complete` refuses it, as every `qualify.py` command that reads the runs does, and so
-  does the launcher; restored as [launching runs](#launching-runs) says); the launcher's own exit
-  when it stops; any other, the exit of the command that failed.
+  unresolved torn line, or a line a published record requires missing) `verdict` refuses too (exit
+  12), so no `verdict.json` is written then and an older one stays on disk.
+  **Exits:** 0, every case complete; 1, a precondition (the host memory, the bucket's settings and
+  the place of `$KEPT` included), the disk (or `df` giving no number), a `finish` that refuses a
+  case not complete, or a case whose control alone is due that `control-only` cannot bind to its
+  launcher run; 8, an interrupted attempt (or a part a case restart names); 9, a technical case, its
+  checkpoints kept on the volume and in the bucket, verified; 10, a stale case; 11, a case whose
+  label has a held launcher run; 12, a launch journal that is not whole, a torn line unresolved or a
+  line a published record requires missing (`complete` refuses it, as every `qualify.py` command
+  that reads the runs does, and so does the launcher; restored as [launching runs](#launching-runs)
+  says); 13, a technical case whose kept checkpoints are not verified, in one of two meanings ("The
+  two exits 13", above): from `finish`, its export refused or failed (no verified volume copy, the
+  checkpoints still only on the container disk, which a stop loses), or after `kept-check`, the
+  volume copy verified and the upload pending (`pending-upload: true`) or the volume copy not
+  verified either (`pending-upload: false`, the worse state); either way the planned teardown waits
+  for `kept-check` exit 0, and the hard deadline stays; the launcher's own exit when it stops; any
+  other, the exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
   same-path control, every attempt of every part, the superseded records with the restart that
   voids them, the warnings; `--e-eng X` sets τ; a rate whose launcher runs are not all located
   is at most incomplete), `c<N>/engineering/verdict.json` the
-  engineering stage's (e_eng, the path maxima, the margins), and the driver's logs. Download and
-  archive them with an inventory before the Pod stops.
+  engineering stage's (e_eng, the path maxima, the margins), a technical case's
+  `kept-checkpoints-<n>.json` and `kept-check-<n>.json` in its folder, and the driver's logs.
+  Download and archive them with an inventory before the Pod stops. The kept checkpoints
+  themselves stay on the volume under `/workspace/kept-checkpoints/qualification/` and go to the
+  bucket from the Pod (above), never through this machine.
 
 ## Study 3: campaigns
 
@@ -1710,16 +1949,19 @@ before each command below.
   validation as `launch.py FILE --max-attempts 1`, the qualification's campaigns through their
   driver, which passes it, and each confirmation block through `run.sh`. A failed attempt is a
   technical mark that the readers list, never retried by itself. Its rerun is a recovery round
-  with its documented cause, always for the one run concerned. The launcher grants a round once
-  per cell, and each cell holds one run (`c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>`, its
-  label `<cell>/s<seed>`), so no other run gets a second attempt from it:
+  of its own with its documented cause and incident, always for the one run concerned, one
+  attempt per round, each round's reason one no earlier round of the label gave
+  (["Launching runs"](#launching-runs)). Each cell holds one run
+  (`c<N>-<step>[-r<round>]-<optimizer>-<rate>-s<seed>`, its label `<cell>/s<seed>`), so no other
+  run gets a second attempt from a round:
 
   ```bash
   project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
     --campaign "$C/c1-validation.yaml"
   project-run "$SRC" python scripts/launch.py "$C/c1-validation.yaml" \
     --only c1-validation-adam_frozen-1.83e-05-s10304/s10304 --max-attempts 1 \
-    --recovery "<the documented cause>"
+    --recovery "<the documented cause>" --incident-time <UTC, ISO 8601> \
+    --cause "<the external cause, one line>" --evidence "<a path or reference>"
   ```
 
   Every campaign file gets a new name: the writer refuses a name whose launch log exists, since
@@ -1793,7 +2035,8 @@ before each command below.
   completed run, so a completed run under another commit cannot be rerun. Such a run is kept,
   excluded from every count and listed; it is a technical mark outside the qualification of its
   arm, and the step is blocked and technical, naming the run, its reason and its commit. A run
-  with no published outcome is rerun by its recovery round, after `check` passes. Otherwise the
+  with no published outcome is rerun by a recovery round of its own (at `--max-attempts 1`, with
+  its incident), after `check` passes. Otherwise the
   researcher's decision is its closure record, written from the step (below, "Holds and
   closures"): it cites the run's last end line, or its start line when the launcher never ended
   it, with the run's reason. In A or F it ends the study with the technical feasibility report;
@@ -1813,7 +2056,8 @@ before each command below.
   - no `launch.py` command on its numerical or repair campaigns, a recovery round or a settled end
     included.
 
-  The recovery form `launch.py FILE --only LABEL --recovery REASON --max-attempts 1` is then for
+  The recovery form `launch.py FILE --only LABEL --max-attempts 1 --recovery REASON` (with its
+  incident) is then for
   validation and confirmation runs, always for the one run concerned. `qualify.py verdict` does
   not touch the pins, as long as it runs from a checkout whose GPU code is candidate N's code in
   force. A verdict cache written under any other code makes the fixation invalid until `verdict`
@@ -1859,7 +2103,8 @@ before each command below.
   project-run "$SRC" python scripts/study3_summary.py check --runs-root "$R" \
     --campaign "$C/c1-confirmation-1/<block file>"
   project-run "$SRC" python scripts/launch.py "$C/c1-confirmation-1/<block file>" \
-    --only LABEL --recovery "<the interruption>" --max-attempts 1
+    --only LABEL --max-attempts 1 --recovery "<the interruption>" \
+    --incident-time <UTC, ISO 8601> --cause "<the external cause>" --evidence "<a reference>"
   ```
 
   The launcher first settles the run's start with the outcome its run directory gives (technical
@@ -1937,8 +2182,9 @@ before each command below.
   reason `engineering_route_pending`, naming each run (its id, label, arm and step). Its
   registered route, one engineering cycle, is not implemented for these runs yet; the full route
   comes in a later change, before the search starts. The researcher decides; beside that, only
-  the recovery round where the launcher opens one is offered (after `check`). No closure is
-  written for such a mark, and one written anyway is a problem that decides nothing.
+  the recovery round where the launcher opens one is offered (after `check`): the run's own at
+  `--max-attempts 1`, with a reason no earlier round of its label gave and its incident. No closure
+  is written for such a mark, and one written anyway is a problem that decides nothing.
 - **Holds and closures.** Two kinds of run are closed by a closure record: a run a candidate's
   engineering cycle held (an outcome nobody could resolve, [above](#study-3-numerical-qualification)),
   and a run under another commit (above, "A run's own commit"). The step names each: for a held
@@ -2028,9 +2274,20 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   (a non-finite training loss or K) is an outcome and is never rerun. Any other failure is
   technical and is retried, up to three attempts in all, counting earlier attempts from the run
   directories and the logged starts. Once the cause of exhausted runs is fixed, `--recovery
-  REASON` opens one recovery round per cell (three more attempts), logged with its reason.
+  REASON` opens one recovery round per cell (three more attempts), logged with its reason; never
+  over a run whose label had a round of its own (below): the call is refused, naming the label
+  and its round; no recovery round is written (a settled end of an open start may be written
+  first).
   Starts, ends, outcomes and recovery rounds go to `RUNS_DIR/launch/<campaign>.jsonl`, each
-  attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run.
+  attempt's output to `RUNS_DIR/launch/<campaign>/`. `--dry-run` lists what would run. A `--dry-run`
+  of a round lists the label as used up and exits 1:
+  it opens no round and checks none of the round's refusals (a repeated reason, a missing incident
+  field, a further round above 1), only the not-used-up one, so it does not tell an accepted round
+  from a refused one.
+  A conflict over a missing endpoint checkpoint ends with a note that points to "A lost
+  checkpoint" in ["Study 3: numerical qualification"](#study-3-numerical-qualification): the
+  file may be lost with a Pod's container disk, which needs a diagnosis before anything is
+  moved, deleted or rerun.
   A start the launcher finds without an end (it died while the attempt ran, or after the child
   published its outcome) is ended when its run is assessed, before the run is skipped, a conflict
   raised or a new attempt started: an `end` record with the attempt's run id and number, no
@@ -2048,18 +2305,53 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   non-zero without starting another; the same command carries on later. `--only LABEL` (a run's
   `<cell>/s<seed>`) assesses and runs that run alone, leaving every other run of the campaign
   unread, and its start and end records carry the label; a recovery round under it is that run's
-  own. `--max-attempts N` replaces the three attempts (and the round's three more) with N; study
-  3's qualification driver passes `--only` and 1 ([below](#study-3-numerical-qualification)).
-  A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
-  no longer count for its label: kept, a used attempt, neither done nor a conflict, so its
-  recovery round starts a new one. A `held` record (an outcome a study-3 engineering cycle could
-  not resolve) makes the run a conflict: nothing starts, its recovery round included, and a
-  `--dry-run` reports the same conflict. The hold applies to the run's label (`<cell>/s<seed>` in
-  its experiment) in every journal, whatever the config hash it was written with, with or
-  without `--only`; the launcher never lifts it. A checkpoint run (`tracking.endpoint_checkpoint`) is done
-  only if its recorded numerics setup is what the campaign's config asks for (determinism, TF32
-  and the matmul precision, the memory limit), read without CUDA.
-  Send it to the
+  own. `--max-attempts N` replaces the three attempts (and the first round's three more, at most
+  the label's base) with N;
+  study 3's qualification driver passes `--only` and 1
+  ([below](#study-3-numerical-qualification)), and never `--recovery`. No call runs more
+  attempts than its own `--max-attempts`; the attempts it leaves stay for later calls.
+  A later call's `--max-attempts` above the value of the first start under the run's config hash
+  adds nothing (the base is the smaller); this holds per config hash: a new config hash is a new
+  run, with its own first start.
+  **A run's own rounds** (study 3's infrastructure route) are one per documented incident:
+  `--recovery REASON --incident-time UTC --cause TEXT --evidence REF` (the interruption's time in
+  UTC, ISO 8601; its external cause, one line; a path or reference to its evidence; none blank).
+  The label's first round allows the smaller of N and the label's base (the first start's
+  `--max-attempts` under its config hash); each further one (the label had a round, its cell's or
+  its own, under any config hash) needs `--max-attempts 1` and allows exactly one. Grants follow
+  this rule, never the journal: a round's recorded `granted` is for the record. A study-3 campaign
+  (its header carries `study: 3`) takes no cell round: `--recovery` without `--only` exits 1 with
+  the form of a run's own round; and `--recovery` over a run that is not used up under its config
+  hash exits 1 too, with the command without `--recovery`: its attempts run without a round (a new
+  config hash is a new run), and a documented incident is never dropped unrecorded. A round opens
+  only for a run that used its attempts up and holds no outcome: a done or diverged run is skipped
+  in a study-2 campaign and refused, exit 1, in a study-3 one (as the call over a run with
+  attempts left is, a `--dry-run` included, with the same message),
+  a conflict (a provenance conflict included: a checkpoint present with another sha256, a departing
+  numerics setup, an unclean checkout, another gate; a missing endpoint checkpoint is a possible
+  loss requiring diagnosis, never by itself a lost container disk) or a hold stops the campaign
+  before, and an attempt, not superseded, with a published terminal record or an end `done`,
+  `diverged` or `conflict` refuses it. Its reason must be one no earlier round of the label gave
+  (spaces stripped): a new reason is necessary, not sufficient. A refused round exits 1, naming the
+  label and the earlier round (its number, log and line), the outcome, the incident's gap or the
+  bound, and the command form; no recovery round is written and nothing runs (a settled end of an
+  open start may be written first). A run with attempts left takes
+  them first: rounds never stack. The round records its number (`round`), the run's `config_hash`,
+  `after` (every start of the label, under any config hash, in attempt order), `max_attempts`,
+  `granted` and its incident. The latest such round of the run allows what the rule grants it beyond
+  the attempts it names, so a later `--max-attempts` recalculates no earlier grant, and a round
+  under another config hash gives the run nothing. A new start is numbered after every attempt of
+  its label, whatever its log or config hash; the run id keeps its form and the label never changes;
+  nothing is deleted or rewritten. A `superseded` record in the journal (a study-3 case restart or
+  supersession) makes an attempt no longer count for its label: kept, a used attempt, neither done
+  nor a conflict, so a round of its own (its first, or a further one) starts a new one. A `held`
+  record (an outcome a study-3 engineering cycle could not resolve) makes the run a conflict:
+  nothing starts, its recovery round included, and a `--dry-run` reports the same conflict. The hold
+  applies to the run's label (`<cell>/s<seed>` in its experiment) in every journal, whatever the
+  config hash it was written with, with or without `--only`; the launcher never lifts it. A
+  checkpoint run (`tracking.endpoint_checkpoint`) is done only if its recorded numerics setup is
+  what the campaign's config asks for (determinism, TF32 and the matmul precision, the memory
+  limit), read without CUDA. Send it to the
   launcher's PID only: Ctrl-C or a signal to the process group (`kill -TERM -PGID`) also reaches
   the running attempt and ends it. The boundary is where an attempt is admitted, not where its
   process starts: a signal that arrives while an admitted attempt is being logged does not keep
@@ -2123,7 +2415,8 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
     identical one (the same event, label, experiment, run id and reason) is in the journal. A
     held run is then never rerun, and a superseded one never counts.
   - `recovery`, `stop`: resolve, then relaunch with the same command; a recovery round's reason is
-    recorded again.
+    recorded again (a run's own round with its incident and the same number: a torn line is no
+    record, so no earlier round gave its reason).
   - `torn`: nothing to restore; the resolution writes the missing `torn` record.
   - `torn_resolved`: the line it resolved is unresolved again; run that resolution again.
   - unknown (`null`; a blank line, say): first read the run directories of the campaign's labels
@@ -2183,6 +2476,10 @@ stream and log was archived and verified, and deleted with its volume the same d
   machine never loses a stream that results depend on.
 - **Every run record.** Run directories go to the bucket as their batch finishes, failed runs
   included, together with the launch log.
+- **Kept checkpoints.** A study-3 technical case's checkpoints are exported to the Pod's volume
+  (`/workspace/kept-checkpoints`) and to `$ARTIFACT_REMOTE/kept-checkpoints/`, both verified,
+  before its driver stops ([numerical qualification](#study-3-numerical-qualification)); the
+  bucket copy is kept until the study's report.
 
 - **Small results** (run directories, labels, reports) come back to this machine, are checked
   against their sha256, and are archived from here.

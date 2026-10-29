@@ -1919,8 +1919,9 @@ def test_a_started_block_with_a_run_not_ended_holds_the_confirmation() -> None:
     (way,) = step["ways_out"]
     assert (way["run_id"], way["label"], way["campaign"]) == (dead.run_id, dead.label,
                                                               dead.cell.campaign)  # fmt: skip
-    assert (f"launch.py <block file> --only {dead.label} --recovery REASON --max-attempts 1"
+    assert (f"launch.py <block file> --only {dead.label} --max-attempts 1 --recovery"
             in way["recovery"])  # fmt: skip
+    assert "no earlier round of the label gave" in way["recovery"]
     assert "study3_summary.py check" in way["recovery"]  # before every recovery round
     assert "cells" not in step and "campaign" not in step
     assert result["confirmation"]["may_start_next"] is False
@@ -2377,11 +2378,13 @@ def test_a_run_directory_the_reader_may_not_search_blocks(worlds) -> None:
                for r in result["step"]["reasons"])  # fmt: skip
 
 
-def technical_search_run(records, runs, *, status="failed", end="technical", recover_first=None):
+def technical_search_run(records, runs, *, status="failed", end="technical", recover_first=None,
+                         start=None):  # fmt: skip
     """Candidate 1's search with F's lower rate on 10101 a technical mark: an attempt the launcher
     ended ``end``, its meta.json recording ``status``, no terminal record; with
     ``recover_first``, a recovery round already spent on an earlier attempt: the run's own
-    (``"own"``, under ``only``) or its cell's (``"cell"``)."""
+    (``"own"``, under ``only``) or its cell's (``"cell"``); ``start``: more fields of the mark's
+    start record (``max_attempts``)."""
     spec = CANDIDATES[1]
     for arm in ARMS:
         for label in LABELS:
@@ -2411,7 +2414,8 @@ def technical_search_run(records, runs, *, status="failed", end="technical", rec
                 },
             )
         attempt = 2
-    run_id = runs.run("F", rate, 10101, end=end, terminal=False, attempt=attempt, **common)
+    run_id = runs.run("F", rate, 10101, end=end, terminal=False, attempt=attempt, start=start,
+                      **common)  # fmt: skip
     meta = runs.root / "study3" / run_id / "meta.json"  # its status as the tracker left it
     meta.write_text(json.dumps({**json.loads(meta.read_text()), "status": status}))
     return run_id
@@ -2527,16 +2531,17 @@ def test_a_line_with_a_malformed_label_blocks_the_route_by_name(worlds) -> None:
 
 @pytest.mark.parametrize("case, status, end, first, recovery", [
     ("failed, no round spent", "failed", "technical", None, True),
-    ("its own round spent on an earlier attempt", "failed", "technical", "own", False),
-    ("its cell's round spent on an earlier attempt", "failed", "technical", "cell", False),
+    ("its own round spent on an earlier attempt", "failed", "technical", "own", True),
+    ("its cell's round spent on an earlier attempt", "failed", "technical", "cell", True),
     ("diverged", "diverged", "diverged", None, False),
     ("completed with no terminal record", "completed", "done", None, False),
 ])  # fmt: skip
 def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
     worlds, case, status, end, first, recovery
 ) -> None:
-    """The launcher opens a cell's recovery round once, and never for a diverged run or a
-    completed one: otherwise only the researcher's decision is listed (no closure)."""
+    """The launcher opens a round of the run's own where its attempts are used up (a round spent
+    on an earlier attempt included: a further round, one attempt), and never for a diverged run
+    or a completed one: there only the researcher's decision is listed (no closure)."""
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
@@ -2550,6 +2555,65 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
     assert "closure" not in way
     assert ("recovery" in way) is recovery, case
     assert "check" not in way.get("recovery", ""), case  # a search run's round needs none
+
+
+@pytest.mark.parametrize("first", ["own", "cell"])
+@pytest.mark.parametrize("attempts", [1, None])
+def test_a_technical_run_whose_round_is_spent_is_recoverable_at_one_attempt(
+    worlds, first, attempts
+) -> None:
+    """A round already spent on an earlier attempt (the run's own, or its cell's): a technical
+    mark takes a further round, whatever ``max_attempts`` its start carries (at
+    ``--max-attempts 1`` the run has used its attempts up, as the launcher counts them), and its
+    way out names it, ``--only`` its label at ``--max-attempts 1`` with a reason no earlier
+    round gave and its incident."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    start = None if attempts is None else {"only": "x", "max_attempts": attempts}
+    label = f"F-{CANDIDATES[1]['start']['F']['l']:g}/s10101"
+    if start is not None:
+        start["only"] = label
+    run_id = technical_search_run(records, runs, recover_first=first, start=start)
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["problems"]) == (
+        "search", "blocked", [])  # fmt: skip
+    (way,) = result["step"]["ways_out"]
+    assert way["run_id"] == run_id
+    assert f"--only {label} --max-attempts 1 --recovery" in way["recovery"]
+    assert "no earlier round of the label gave" in way["recovery"]
+    assert all(option in way["recovery"] for option in ("--incident-time", "--cause",
+                                                        "--evidence"))  # fmt: skip
+    assert "check" not in way["recovery"]  # a search run's round needs none
+
+
+def test_a_run_with_attempts_left_under_its_round_is_offered_no_round(worlds) -> None:
+    """The label's first round, opened at three attempts over a start at the default (its base
+    3), grants 3; one attempt after it failed: the launcher runs the next attempt within that
+    round, and opens no other, so no recovery round is offered, whatever the failed start
+    carries."""
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    rate = CANDIDATES[1]["start"]["F"]["l"]
+    label = f"F-{rate:g}/s10101"
+    run_id = technical_search_run(records, runs, recover_first="own",
+                                  start={"only": label, "max_attempts": 1})  # fmt: skip
+    journal = runs.root / "launch" / "study3-c1-search-r0.jsonl"
+    rows = [json.loads(line) for line in journal.read_text().splitlines()]
+    first = next(r["run_id"] for r in rows if r.get("event") == "start" and r["run"] == label)
+    chash = next(r["config_hash"] for r in rows if r.get("run_id") == run_id)
+    for row in rows:  # the round as the launcher writes it now: round 1 at three attempts
+        if row.get("event") == "recovery":
+            row.update(round=1, config_hash=chash, after=[first], max_attempts=3, granted=3,
+                       incident_time="2026-10-26T00:00:00+00:00", cause="the Pod stopped",
+                       evidence="the Pod's event log")  # fmt: skip
+    journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    result = read(records, runs)
+    assert (result["stage"], result["step"]["kind"], result["problems"]) == (
+        "search", "blocked", [])  # fmt: skip
+    (way,) = result["step"]["ways_out"]
+    assert way["run_id"] == run_id and "recovery" not in way
 
 
 def test_the_reader_blocks_on_a_refused_run(worlds) -> None:

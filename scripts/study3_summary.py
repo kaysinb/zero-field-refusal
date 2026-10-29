@@ -35,7 +35,8 @@ All of these must hold:
   ``may_start_next`` and ``next_seed``): not after the stop (every active counter at N, or the
   cap N + max(10, ⌈0.12·N⌉) of blocks started), not while a technical mark in a started block
   waits for its way out, not while a run of a started block has not ended (pending, or recovered
-  with no later attempt: the counters wait for it, and the refusal names its recovery round), not
+  with no later attempt: the counters wait for it, and the refusal names its recovery round, the
+  run's own at --max-attempts 1 with its incident), not
   out of seed order, and not while a started block's missing cells are still to be completed. A
   started block only completes the cells the step names for it,
   whatever ``may_start_next`` says: ``progress`` issues them even after the stop;
@@ -52,19 +53,20 @@ All of these must hold:
   running under a commit other than the pinned one. It does not stand for comparing each run's
   own commit with the pinned one, which ``progress`` does (``study3_versions.uncounted_runs``):
   a run under another commit does not count, and the state blocks on it, technical, until its
-  way out (a recovery round where the launcher would open one, or its closure record): no block
-  starts meanwhile.
+  way out (a recovery round where the launcher would open one, the run's own at --max-attempts 1
+  with a reason no earlier round of its label gave and its incident, or its closure record): no
+  block starts meanwhile.
 
 **check** is the same check of the versions record before any other launch of a validation or
 confirmation campaign FILE (--campaign): the validation's launch and every resumption of it, and
-every recovery round of a validation or confirmation run (a confirmation block's own launch is
-guarded by ``guard``). It exits 0 only when FILE's header is a validation or confirmation campaign
-of study 3 (study 3, the step, candidate 1 or 2), it names a versions record of the checkout with
-that record's sha256 now, and ``versions_problems`` finds no problem in that record for the
-step and the candidate, the running checkout's HEAD included; otherwise it exits non-zero with
-the reason. Run it from the checkout (``$SRC``) the launch runs from. The launcher never reruns a
-completed run, so a run launched under another commit stays, does not count, and blocks the
-state until its closure record is written.
+every recovery round of a validation or confirmation run, the first or a further one (a confirmation
+block's own launch is guarded by ``guard``). It exits 0 only when FILE's header is a validation or
+confirmation campaign of study 3 (study 3, the step, candidate 1 or 2), it names a versions record
+of the checkout with that record's sha256 now, and ``versions_problems`` finds no problem in that
+record for the step and the candidate, the running checkout's HEAD included; otherwise it exits
+non-zero with the reason. Run it from the checkout (``$SRC``) the launch runs from. The launcher
+never reruns a completed run, so a run launched under another commit stays, does not count, and
+blocks the state until its closure record is written.
 
 **versions** writes a versions record (``study3_versions.versions_record``) at --out, a name the
 readers accept: docs/study3-versions.json, or docs/study3-versions-<k>.json (k = 2, 3, ...) for a

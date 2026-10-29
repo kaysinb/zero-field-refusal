@@ -10,7 +10,7 @@ import stat
 from pathlib import Path
 
 import pytest
-from test_launch import Executor, campaign, log_start, make_run_dir
+from test_launch import INCIDENT, R1, Executor, campaign, log_start, make_run_dir
 
 from zero_field_refusal import launch
 from zero_field_refusal.launch import (
@@ -417,7 +417,8 @@ def test_a_lost_supersession_is_written_again_and_its_run_never_counts(tmp_path,
     resolve(monkeypatch, root, line)
     result = run_campaign(name, runs, root, execute=executor, **only)
     assert result["exhausted"] == [run.label] and executor.calls == []
-    result = run_campaign(name, runs, root, execute=executor, recovery=reason, **only)
+    result = run_campaign(name, runs, root, execute=executor, recovery=reason, incident=INCIDENT,
+                          **only)  # fmt: skip
     assert result["done"] == [run.label] and len(executor.calls) == 1
     assert len(events(root, "superseded")) == 1
 
@@ -441,6 +442,36 @@ def test_a_lost_recovery_is_recorded_again_by_the_same_command(tmp_path, monkeyp
     result = run_campaign(name, cell, root, execute=executor, recovery=reason)
     assert result["done"] == [r.label for r in cell] and len(executor.calls) == 2
     assert [(r["cell"], r["reason"]) for r in events(root, "recovery")] == [("adamw-5e-5", reason)]
+
+
+def test_a_lost_further_round_is_recorded_again_with_the_same_reason(tmp_path, monkeypatch):
+    """A run's round 2 torn in its append (a crash before its attempt started): the launcher
+    refuses until it is resolved; then the same command and reason write round 2 again, numbered
+    2, after the same attempts: a torn line is no record, so its reason was given by no earlier
+    round. Its attempt runs, and the label's attempts stay numbered 1, 2, 3."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed", "failed", "completed"]})
+    run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    first = {"only": run.label, "max_attempts": 1, "incident": INCIDENT}
+    run_campaign(name, runs, root, execute=execute, recovery=R1, **first)
+    ids = [run_id for _, run_id in execute.calls]
+    reason = "attempt 2: the Pod stopped again; its container disk was lost"
+    round_two = {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+                 "reason": reason, "runs": [run.label], "only": run.label, "round": 2,
+                 "config_hash": run.config_hash, "after": ids, "max_attempts": 1,
+                 "granted": 1, **INCIDENT}  # fmt: skip
+    tear(root / "launch" / f"{name}.jsonl", round_two)
+    executor = Executor(root, {run.label: ["completed"]})
+    (line,) = refused(name, runs, root, executor, recovery=reason, **first)
+    assert line.kind == "recovery"
+    resolve(monkeypatch, root, line)
+    result = run_campaign(name, runs, root, execute=executor, recovery=reason, **first)
+    assert result["done"] == [run.label] and len(executor.calls) == 1
+    rounds = events(root, "recovery")
+    assert [(r["round"], r["reason"], r["after"]) for r in rounds] == [(1, R1, ids[:1]),
+                                                                      (2, reason, ids)]  # fmt: skip
+    assert [r["attempt"] for r in events(root, "start")] == [1, 2, 3]
 
 
 def test_a_lost_stop_is_carried_on_by_the_same_command(tmp_path, monkeypatch) -> None:

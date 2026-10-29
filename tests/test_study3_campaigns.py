@@ -501,6 +501,7 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
             overrides
         )
     assert f"python scripts/qualify.py driver --campaign {out} --candidate 1 --commit" in shown[-1]
+    assert "-driver.sh --kept /workspace/kept-checkpoints\n" in shown[-1]
     world.launched(out)
     world.qualified[1] = {(arm, rate) for (arm, _), rate in selected.items()}
 
@@ -1048,48 +1049,112 @@ def test_a_started_blocks_missing_cells_are_issued_alone(world) -> None:
     assert "completed first" in error
 
 
+def explicit_python(stand_in: Path) -> dict[str, str]:
+    """The environment entry that makes ``python`` in a bash script the stand-in at
+    ``stand_in``: an exported function, which bash takes before any PATH lookup, so a sourced
+    file that resets PATH (a Pod's ``/etc/rp_environment``) cannot bypass it. The function runs
+    the stand-in as a child and returns its exit status (``exec`` there would replace run.sh's
+    own shell at its first call)."""
+    quoted = "'" + str(stand_in.absolute()).replace("'", "'\\''") + "'"
+    return {"BASH_FUNC_python%%": f'() {{ {quoted} "$@"; }}'}
+
+
 class StandIn:
-    """A stand-in ``python`` on PATH for running run.sh: it records each call (its working
-    directory, ``RUNS_DIR`` and its arguments, one per line) and exits 3 for the guard of the
-    seed ``REFUSE`` names, 1 for the launch of a file whose name ``FAIL`` holds, 0 otherwise.
-    Nothing real runs."""
+    """A stand-in ``python`` for running run.sh, selected by ``explicit_python`` and first on
+    PATH: it records each call (its own path, ``SELF``, its working directory, ``RUNS_DIR`` and
+    its arguments, one per line) and exits 3 for the guard of the seed ``REFUSE`` names, 1 for
+    the launch of a file whose name ``FAIL`` holds, 0 otherwise. Nothing real runs.
+
+    ``SELF`` shows that a call reached the stand-in, not the route bash took to it: ``$0`` is the
+    same absolute ``<bin>/python`` whether bash ran it through the exported function or found it
+    on PATH. The route is shown by the exact call sequences the tests assert, and by
+    ``test_a_stand_in_python_survives_a_pod_environment_that_resets_path``, which runs both
+    branches (on PATH alone the decoy takes the calls; with the function, the stand-in)."""
 
     def __init__(self, folder: Path) -> None:
         self.bin, self.log = folder / "bin", folder / "calls.txt"
+        self.python = self.bin / "python"
         self.bin.mkdir(parents=True)
-        (self.bin / "python").write_text(
+        self.python.write_text(
             "#!/usr/bin/env bash\n"
-            'printf \'%s\\n\' "PWD=$PWD" "RUNS_DIR=${RUNS_DIR:-}" "$@" "--end--" '
+            'printf \'%s\\n\' "SELF=$0" "PWD=$PWD" "RUNS_DIR=${RUNS_DIR:-}" "$@" "--end--" '
             f">> {shlex.quote(str(self.log))}\n"
             'case "$*" in\n'
             '  *"guard"*"--seed $REFUSE "*) exit 3 ;;\n'
             '  *"launch.py"*"$FAIL"*) exit 1 ;;\n'
             "esac\n")  # fmt: skip
-        (self.bin / "python").chmod(0o755)
+        self.python.chmod(0o755)
 
-    def run(self, driver: Path, cwd: Path, refuse="none", fail="none"):
-        """run.sh run by bash in ``cwd``: the completed process and the calls, each (working
-        directory, RUNS_DIR, arguments)."""
+    def run(self, driver: Path, cwd: Path, refuse="none", fail="none", explicit=True):
+        """run.sh run by bash in ``cwd``: the completed process and the calls, each (the
+        stand-in's path, working directory, RUNS_DIR, arguments). ``explicit=False``: the stand-in
+        on PATH alone, which a sourced file that resets PATH bypasses."""
         self.log.write_text("")
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "REFUSE": refuse,
-               "FAIL": fail}  # fmt: skip
+               "FAIL": fail, **(explicit_python(self.python) if explicit else {})}  # fmt: skip
         done = subprocess.run(["bash", str(driver)], env=env, cwd=cwd, capture_output=True,
                               text=True)  # fmt: skip
         calls, current = [], []
         for line in self.log.read_text().splitlines():
             if line == "--end--":
-                calls.append((current[0][4:], current[1][9:], current[2:]))
+                calls.append((current[0][5:], current[1][4:], current[2][9:], current[3:]))
                 current = []
             else:
                 current.append(line)
         return done, calls
 
 
+POD_ENVIRONMENT = ("/etc/rp_environment", "/root/zfr-env.sh")
+
+
+def test_a_stand_in_python_survives_a_pod_environment_that_resets_path(world, tmp_path) -> None:
+    """run.sh as the writer wrote it, its two environment lines alone pointed at files that act
+    as a Pod's: the first resets PATH to a folder whose decoy ``python`` records ``DECOY`` and
+    exits 97, the second prepends another folder. On PATH alone the decoy runs and the driver
+    stops at its exit; the stand-in selected by ``explicit_python`` takes every call."""
+    confirmation_study(world)
+    out = world.write("confirmation", "--blocks", "10400", "10401")
+    lines = (out / "run.sh").read_text().splitlines(keepends=True)
+    pod = tmp_path / "pod"
+    decoy, other = pod / "decoy", pod / "other"
+    decoy.mkdir(parents=True)
+    other.mkdir()
+    marks = pod / "decoy.txt"
+    (decoy / "python").write_text(f"#!/bin/sh\necho DECOY >> {shlex.quote(str(marks))}\nexit 97\n")
+    (decoy / "python").chmod(0o755)
+    (pod / "rp_environment").write_text(f"export PATH={shlex.quote(str(decoy))}:/usr/bin:/bin\n")
+    (pod / "zfr-env.sh").write_text(f'export PATH={shlex.quote(str(other))}:"$PATH"\n')
+
+    def sourcing(name: str) -> str:
+        return f"if [ -f {name} ]; then . {name}; fi\n"
+
+    sourced = {sourcing(name): sourcing(shlex.quote(str(pod / Path(name).name)))
+               for name in POD_ENVIRONMENT}  # fmt: skip
+    assert [line for line in lines if line in sourced] == list(sourced)  # each once, in order
+    driver = tmp_path / "pod-run.sh"
+    driver.write_text("".join(sourced.get(line, line) for line in lines))
+    stand_in = StandIn(tmp_path / "stand-in")
+    done, found = stand_in.run(driver, tmp_path, explicit=False)  # PATH alone
+    assert done.returncode == 97 and found == [] and marks.read_text() == "DECOY\n"
+    marks.unlink()
+    done, found = stand_in.run(driver, tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert not marks.exists()
+    files = sorted(out.glob("*.yaml"))
+    assert found == [
+        (str(stand_in.python), str(world.repo), str(world.root), arguments)
+        for path, seed in zip(files, ("10400", "10401"), strict=True)
+        for arguments in (["scripts/study3_summary.py", "guard", "--runs-root", str(world.root),
+                           "--candidate", "1", "--seed", seed, "--campaign", str(path)],
+                          ["scripts/launch.py", str(path), "--max-attempts", "1"])]  # fmt: skip
+
+
 def test_the_driver_runs_the_guard_before_each_block_and_stops_at_its_refusal(world, tmp_path):
-    """run.sh with stand-ins for the guard and the launcher on PATH: each block's file checked
-    against its sha256, then its guard (which reads the block's file), then its launch with
-    --max-attempts 1, one block at a time in seed order; the first guard that refuses, a launch
-    that fails or an edited block file stops it. The launcher writes where the guard reads."""
+    """run.sh with the stand-in for the guard and the launcher (``StandIn``, which takes every
+    call, whatever PATH a sourced file sets): each block's file checked against its sha256, then
+    its guard (which reads the block's file), then its launch with --max-attempts 1, one block at
+    a time in seed order; the first guard that refuses, a launch that fails or an edited block
+    file stops it. The launcher writes where the guard reads."""
     confirmation_study(world)
     out = world.write("confirmation", "--blocks", "10400", "10402")
     driver = out / "run.sh"
@@ -1102,8 +1167,11 @@ def test_the_driver_runs_the_guard_before_each_block_and_stops_at_its_refusal(wo
     stand_in = StandIn(tmp_path / "stand-in")
 
     def calls(done_calls):
-        assert {(pwd, runs) for pwd, runs, _ in done_calls} <= {(str(world.repo), str(world.root))}
-        return [" ".join(args) for _, _, args in done_calls]
+        """The calls' arguments; each call reached the stand-in, so the list is every call."""
+        assert {self_ for self_, _, _, _ in done_calls} == {str(stand_in.python)}
+        assert {(pwd, runs) for _, pwd, runs, _ in done_calls} <= {
+            (str(world.repo), str(world.root))}  # fmt: skip
+        return [" ".join(args) for _, _, _, args in done_calls]
 
     def guard(seed):
         return (f"scripts/study3_summary.py guard --runs-root {world.root} --candidate 1 --seed "
@@ -1129,10 +1197,12 @@ def test_the_driver_runs_the_guard_before_each_block_and_stops_at_its_refusal(wo
 
 
 def test_the_driver_quotes_paths_with_spaces_and_shell_text(tmp_path, monkeypatch, capsys):
-    """A runs directory, a checkout and an output folder whose paths hold a space, ``$(...)``
-    and a non-ASCII letter: run.sh, run by bash in another folder with stand-ins on PATH, passes
-    each path whole and runs no text of them; the printed command is quoted."""
-    base = tmp_path / "a b $(touch PWNED) θ"
+    """A runs directory, a checkout, an output folder and the stand-in itself (``StandIn``,
+    selected by ``explicit_python``) whose paths hold a space, ``$(...)``, a ``'`` and a
+    non-ASCII letter: run.sh, run by bash in another folder, passes each path whole and runs no
+    text of them, and the exported function's quoting holds (every call reaches the stand-in, in
+    the order asserted); the printed command is quoted."""
+    base = tmp_path / "a b $(touch PWNED) 'q' θ"
     world = World(base, monkeypatch, capsys)
     confirmation_study(world)
     out = world.write("confirmation", "--blocks", "10400", "10401",
@@ -1143,22 +1213,25 @@ def test_the_driver_quotes_paths_with_spaces_and_shell_text(tmp_path, monkeypatc
     assert shlex.split(run_line[len("Run: ") :]) == ["bash", str(driver.absolute())]
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    done, found = StandIn(tmp_path / "stand-in").run(driver, elsewhere)
+    stand_in = StandIn(base / "stand-in $(touch PWNED) 'q'")  # the function body carries it
+    assert "'\\''" in explicit_python(stand_in.python)["BASH_FUNC_python%%"]
+    done, found = stand_in.run(driver, elsewhere)
     assert done.returncode == 0, done.stderr
     files = sorted(out.glob("*.yaml"))
-    assert [args for _, _, args in found] == [
+    assert {self_ for self_, _, _, _ in found} == {str(stand_in.python)}
+    assert [args for _, _, _, args in found] == [
         arguments for path, seed in zip(files, ("10400", "10401"), strict=True)
         for arguments in (["scripts/study3_summary.py", "guard", "--runs-root", str(world.root),
                            "--candidate", "1", "--seed", seed, "--campaign", str(path)],
                           ["scripts/launch.py", str(path), "--max-attempts", "1"])]  # fmt: skip
-    assert {(pwd, runs) for pwd, runs, _ in found} == {(str(world.repo), str(world.root))}
+    assert {(pwd, runs) for _, pwd, runs, _ in found} == {(str(world.repo), str(world.root))}
     assert not list(tmp_path.rglob("PWNED")) and not (elsewhere / "PWNED").exists()
 
 
 def test_the_driver_passes_the_writers_theta0_to_every_guard(world, tmp_path) -> None:
     """A confirmation written with --theta0 gets guards that read the θ₀ the writer read: run.sh
     passes it to every guard call, shell-quoted, whatever its path holds (a space, ``$(...)``, a
-    non-ASCII letter); nothing of the path runs."""
+    non-ASCII letter); nothing of the path runs. Every call reaches the stand-in (``StandIn``)."""
     confirmation_study(world)
     theta0 = tmp_path / "θ₀ $(touch PWNED) run"
     shutil.copytree(world.runs.theta0, theta0)
@@ -1166,9 +1239,13 @@ def test_the_driver_passes_the_writers_theta0_to_every_guard(world, tmp_path) ->
     files = {campaign_of(f)["name"].split("-s")[-1].split("-")[0]: f for f in out.glob("*.yaml")}
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    done, found = StandIn(tmp_path / "stand-in").run(out / "run.sh", elsewhere)
+    stand_in = StandIn(tmp_path / "stand-in")
+    done, found = stand_in.run(out / "run.sh", elsewhere)
     assert done.returncode == 0, done.stderr
-    assert [args for _, _, args in found if "guard" in args] == [
+    assert [(self_, args[0]) for self_, _, _, args in found] == [
+        (str(stand_in.python), script) for _ in ("10400", "10401")
+        for script in ("scripts/study3_summary.py", "scripts/launch.py")]  # fmt: skip
+    assert [args for _, _, _, args in found if "guard" in args] == [
         ["scripts/study3_summary.py", "guard", "--runs-root", str(world.root), "--candidate", "1",
          "--seed", seed, "--campaign", str(files[seed]), "--theta0", str(theta0)]
         for seed in ("10400", "10401")]  # fmt: skip

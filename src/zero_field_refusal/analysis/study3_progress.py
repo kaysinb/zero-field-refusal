@@ -160,7 +160,9 @@ else of its stage (the candidate's validation or confirmation), but no case for 
 cycle: a run launched from the wrong checkout needs no code fix. Its ways out:
 - a recovery round of its label, only where the launcher would open one (no published outcome:
   the launcher skips a completed run), launched after ``study3_summary.py check`` passes, from a
-  checkout of the pinned commit: its next attempt decides;
+  checkout of the pinned commit, as ``recovery_command`` gives it (``--only`` its label at
+  ``--max-attempts 1``, a reason no earlier round of the label gave, its incident): its next
+  attempt decides;
 - its closure record (``closure-c<N>-<arm>``), citing the run's last ``end`` line, or its start
   line when the launcher never ended it, with the run's uncounted reason id as its reason (and
   no other). A pending run's start-line closure is offered beside its recovery round, but is
@@ -190,25 +192,29 @@ blocks.
 **Technical marks outside the qualification** ("Failure routes", "Technical"): every run of the
 search, the validation or the confirmation that the readers count as unresolved and technical, in
 any arm: an endpoint ``technical``; at the search, a K-only run that is not usable or has no
-positive K; in a block, a usable run that lacks its K or a utility loss, or a run the block
-cannot place; in the confirmation, every run its blocks list as unresolved. Its registered route
-is one engineering cycle at once (diagnosis, fix, re-qualification of every affected case, one
-cycle per candidate); the engineering cycle of ``qualify.py`` is the qualification's, and the
-route for a run outside it is not implemented in this package. Until it is, nothing cancels it
-silently: such a mark stops the route for the researcher's decision. The step is ``blocked``,
-``technical``, with the reason id ``engineering_route_pending`` (``reason``) and its ``why`` ("the
-registered engineering cycle for a technical mark outside the qualification is not implemented
-yet: the researcher decides"), naming each run (its id, label, arm and step). Its ways out
-(``ways_out``): the researcher's decision (``{"decision": "engineering_route_pending"}``), beside a
-recovery round of its label with its documented cause (the registered infrastructure route: the
-attempt is ``recovered`` and its next attempt decides), only where the launcher would open one
-(``launch.run_campaign``: no published terminal record, a ``meta.json`` that records the run
-neither diverged nor completed, and its cell's round, or its own, not yet spent), for a validation
-or confirmation run launched after ``study3_summary.py check`` passes. No closure is offered for
-such a mark, nothing is voided, no outcome is reached and no cell is issued (the confirmation's
-guard and its writer refuse a new block). A closure record that names such a mark is not accepted:
-a problem that blocks ("a closure of a technical mark outside the qualification is not accepted
-until its engineering route exists"), and it decides nothing.
+positive K; in a block, a usable run that lacks its K or a utility loss, or a run the block cannot
+place; in the confirmation, every run its blocks list as unresolved. Its registered route is one
+engineering cycle at once (diagnosis, fix, re-qualification of every affected case, one cycle per
+candidate); the engineering cycle of ``qualify.py`` is the qualification's, and the route for a run
+outside it is not implemented in this package. Until it is, nothing cancels it silently: such a mark
+stops the route for the researcher's decision. The step is ``blocked``, ``technical``, with the
+reason id ``engineering_route_pending`` (``reason``) and its ``why`` ("the registered engineering
+cycle for a technical mark outside the qualification is not implemented yet: the researcher
+decides"), naming each run (its id, label, arm and step). Its ways out (``ways_out``): the
+researcher's decision (``{"decision": "engineering_route_pending"}``), beside a recovery round of
+its label with its documented cause (the registered infrastructure route: the attempt is
+``recovered`` and its next attempt decides), only where the launcher would open one
+(``launch.run_campaign``, "Recovery rounds"; ``_recoverable``: no published terminal record, a
+``meta.json`` that records the run neither diverged nor completed, the label's latest start, no
+outcome an earlier attempt holds, and its attempts used up at ``--max-attempts 1`` as the launcher
+counts them, ``study3_records.attempts_left``), for a validation or confirmation run launched after
+``study3_summary.py check`` passes. Each way out gives the command (``recovery_command``):
+``launch.py <campaign file> --only <label> --max-attempts 1 --recovery "<a reason no earlier round
+of the label gave>"`` with the incident (``--incident-time``, ``--cause``, ``--evidence``). No
+closure is offered for such a mark, nothing is voided, no outcome is reached and no cell is issued
+(the confirmation's guard and its writer refuse a new block). A closure record that names such a
+mark is not accepted: a problem that blocks ("a closure of a technical mark outside the
+qualification is not accepted until its engineering route exists"), and it decides nothing.
 
 A validation or confirmation run under another commit (above) is a technical mark of its arm too,
 read before the rest of its stage, but no cycle case: launched from the wrong checkout, it needs no
@@ -313,7 +319,6 @@ from .study3_decisions import (
 )
 from .study3_records import (
     COUNTING,
-    EXPERIMENT,
     RATE_TOLERANCE,
     SEEDS,
     STATES,
@@ -470,26 +475,41 @@ def progress(
 
 
 def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> frozenset[str]:
-    """The runs the launcher would open a recovery round for (``launch.run_campaign``): a run
-    with no published terminal record whose ``meta.json`` records it neither diverged nor
-    completed (the launcher reads those as outcomes, never reruns), its cell's round not yet
-    spent (once per cell, ``launch.recovered_cells``) nor its own (``recovered_runs``). A refused
-    attempt, or one whose run id is no plain name, binds no run: it is skipped before anything of
-    it is read."""
-    cells, runs = reader.recovery_rounds()
+    """The runs the launcher would open a recovery round of their own for (``launch``,
+    "Recovery rounds", mirrored): a run with no published terminal record whose ``meta.json``
+    records it neither diverged nor completed (the launcher reads those as outcomes, never
+    reruns), its label's latest start, no other attempt of it, not superseded, ended done,
+    diverged or conflict (``EndpointReader.outcome_held``), and its attempts used up at
+    ``--max-attempts 1``, the command its way out gives (``EndpointReader.attempts_left``,
+    ``study3_records.attempts_left``: the launcher's allowance, mirrored). A refused attempt,
+    or one whose run id is no plain name, binds no run: it is skipped before anything of it is
+    read."""
     found = set()
     for e in endpoints:
         if e.state == "refused" or not plain_name(e.run_id):
             continue
         if e.label is None or "/s" not in e.label:
             continue
-        cell = e.label.rsplit("/s", 1)[0]
-        if ((EXPERIMENT, cell) in cells or (EXPERIMENT, e.label) in runs
-                or (e.run_dir / "terminal.json").is_file()
+        if ((e.run_dir / "terminal.json").is_file()
                 or reader.meta_status(e.run_dir) in ("diverged", "completed")):  # fmt: skip
+            continue
+        latest = reader.latest_start(e.label)
+        if latest is None or latest.get("run_id") != e.run_id:
+            continue
+        chash = e.cell.config_hash
+        if reader.attempts_left(e.label, chash) > 0 or reader.outcome_held(e.label, chash):
             continue
         found.add(e.run_id)
     return frozenset(found)
+
+
+def recovery_command(label: Any, campaign: str = "<campaign file>") -> str:
+    """The command of a recovery round of the run's own (``launch``, "Recovery rounds"): its
+    label alone at one attempt, a reason no earlier round of the label gave, and the incident it
+    documents."""
+    return (f'launch.py {campaign} --only {label} --max-attempts 1 --recovery "<a reason no '
+            'earlier round of the label gave>" --incident-time <UTC, ISO 8601> --cause "<the '
+            'external cause, one line>" --evidence <a path or a reference>')  # fmt: skip
 
 
 def _engineering_code(entry: Mapping[str, Any]) -> str | None:
@@ -1133,12 +1153,12 @@ class _Walk:
             e = self.by_id.get(run_id)
             label = None if e is None else e.label
             campaign = None if e is None else e.cell.campaign
+            command = recovery_command(label, "<block file>")
             ways.append({"run_id": run_id, "label": label, "campaign": campaign, "recovery": (
                 f"once the launcher that started it has stopped without ending it (a Pod stopped "
                 f"mid-run), its recovery round from its own block file ({campaign}.yaml), with "
-                f"the interruption as its reason, launched after study3_summary.py check passes "
-                f"on that file: launch.py <block file> --only {label} "
-                "--recovery REASON --max-attempts 1")})  # fmt: skip
+                f"the interruption as its reason and incident, launched after study3_summary.py "
+                f"check passes on that file: {command}")})  # fmt: skip
         return {"kind": "pending", "waiting": [way["run_id"] for way in ways],
                 "why": "runs of started blocks have not ended: the counters wait for them, and "
                        "no new block starts",
@@ -1168,8 +1188,8 @@ class _Walk:
             c = conditions.setdefault(str(e.arm), _Arm())
             c.closable.append(mark)
             ways = ([f"a recovery round of {e.label} with its documented cause, launched after "
-                     "study3_summary.py check passes, reruns it"] if mark["recovery"]
-                    else [])  # fmt: skip
+                     f"study3_summary.py check passes, reruns it: {recovery_command(e.label)}"]
+                    if mark["recovery"] else [])  # fmt: skip
             if mark["closure"] is not None:
                 ways.append(f"a closure record ({mark['closure']['record']}) closes it")
             c.technical.append(
@@ -1294,8 +1314,8 @@ class _Walk:
         no closure is offered (module docstring, "Technical marks outside the qualification")."""
         mark = self._mark(e)
         c.closable.append(mark)
-        way = (f"; a recovery round of {e.label} with its documented cause reruns it"
-               if mark["recovery"] else "")  # fmt: skip
+        way = (f"; a recovery round of {e.label} with its documented cause reruns it: "
+               f"{recovery_command(e.label)}" if mark["recovery"] else "")  # fmt: skip
         c.technical.append(f"{e.run_id} ({e.label}, {e.arm}, {e.cell.step}): {e.state}, a "
                            f"technical mark outside the qualification: {ENGINEERING_ROUTE_WHY}"
                            f"{way}")  # fmt: skip
@@ -1339,7 +1359,8 @@ class _Walk:
             checked = (", launched after study3_summary.py check passes on its campaign file"
                        if mark["step"] in ("validation", "confirmation") else "")  # fmt: skip
             out["recovery"] = (f"a recovery round of {mark['label']} with its documented "
-                               f"cause{checked}: its next attempt decides")  # fmt: skip
+                               f"cause{checked}: its next attempt decides: "
+                               f"{recovery_command(mark['label'])}")  # fmt: skip
         if mark["closure"] is not None:
             out["closure"] = mark["closure"]
         return out

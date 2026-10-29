@@ -492,6 +492,34 @@ def test_a_run_without_a_sound_checkpoint_is_a_conflict(tmp_path, record, proble
         run_campaign(name, runs, root, execute=Executor(root, {}))
 
 
+def test_a_missing_checkpoint_conflict_points_to_the_lost_checkpoint_procedure(tmp_path) -> None:
+    """A missing endpoint checkpoint is a possible loss, not a run to move or rerun: the message
+    holds the conflict line and a note naming the procedure. Another conflict has no note."""
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    checkpointed_run_dir(root, runs[1], tmp_path, record="missing_file")
+    with pytest.raises(CampaignError, match="cannot stand") as lost:
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    text = str(lost.value)
+    assert re.search(r"^- \S+/\S+: the endpoint checkpoint \S+ is missing$", text, re.M)
+    assert text.count("a possible loss requiring diagnosis") == 1
+    assert '(docs/operations.md, "A lost checkpoint")' in " ".join(text.split("\n"))
+    assert "unless finish removed it" in text and "lost container disk" not in text
+    note = " ".join(text.splitlines()[2:])
+    assert note.endswith(".") and ". " not in note  # one sentence
+    assert all(len(line) <= 100 for line in text.splitlines()[2:])
+
+    other = tmp_path / "other"
+    (other / "runs").mkdir(parents=True)
+    name, runs = load_campaign(campaign(other))
+    checkpointed_run_dir(other / "runs", runs[1], other, record="other_bytes")
+    with pytest.raises(CampaignError, match="does not match its recorded sha256") as mismatch:
+        run_campaign(name, runs, other / "runs", execute=Executor(other / "runs", {}))
+    assert "possible loss" not in str(mismatch.value) and "A lost checkpoint" not in str(
+        mismatch.value
+    )
+
+
 @pytest.mark.parametrize(
     "departure",
     [{"deterministic": True}, {"tf32_matmul": True}, {"matmul_precision": "high"},
@@ -544,6 +572,27 @@ def test_the_expected_numerics_are_what_the_setup_records(overrides) -> None:
     assert {key: setup[key] for key in wanted} == wanted
 
 
+def test_a_settled_run_that_lost_only_its_checkpoint_records_exactly_the_missing_checkpoint(
+    tmp_path,
+) -> None:
+    """The settle of a start without an end, over whole scheduled records of which only the
+    checkpoint file is gone, judges the run with the missing-checkpoint problem alone (no check
+    before it reads the container disk): the end it writes is a settled ``conflict`` whose problem
+    satisfies ``is_missing_checkpoint``, which is what lets ``restart-case`` tell it from any other
+    conflict. It pins the problem text and the predicate together, not the order of the checks."""
+    from zero_field_refusal.launch import is_missing_checkpoint
+
+    name, runs = load_campaign(campaign(tmp_path))
+    root = tmp_path / "runs"
+    run_dir = checkpointed_run_dir(root, runs[1], tmp_path, record="missing_file")
+    log_start(root, name, runs[1], run_dir.name)  # the launcher died with the container
+    with pytest.raises(CampaignError, match="is missing"):
+        run_campaign(name, runs, root, execute=Executor(root, {}))
+    (end,) = [r for r in launch_records(root) if r.get("event") == "end"]
+    assert end["settled"] is True and end["returncode"] is None and end["outcome"] == "conflict"
+    assert is_missing_checkpoint(end["problem"])
+
+
 def test_a_superseded_run_no_longer_counts_and_its_recovery_starts_anew(tmp_path) -> None:
     """A completed run named superseded in the journal (a case restart after its checkpoint was
     lost) stays on disk and in the journal, is a used attempt, and is neither done nor a
@@ -563,7 +612,8 @@ def test_a_superseded_run_no_longer_counts_and_its_recovery_starts_anew(tmp_path
     executor = Executor(root, {})
     result = run_campaign(name, runs, root, execute=executor, **only)
     assert result["exhausted"] == [runs[1].label] and executor.calls == []  # one attempt used
-    result = run_campaign(name, runs, root, execute=executor, recovery="the Pod stopped", **only)
+    result = run_campaign(name, runs, root, execute=executor, recovery="the Pod stopped",
+                          incident=INCIDENT, **only)  # fmt: skip
     assert result["done"] == [runs[1].label] and len(executor.calls) == 1
     assert run_dir.is_dir()  # kept
     events = [json.loads(line)["event"] for line in log.read_text().splitlines()]
@@ -767,7 +817,7 @@ def test_max_attempts_one_stops_after_one_failed_attempt(tmp_path) -> None:
     again = run_campaign(name, runs, root, execute=broken, only=first.label, max_attempts=1)
     assert again["exhausted"] == [first.label] and len(broken.calls) == 1
     run_campaign(name, runs, root, execute=broken, only=first.label, max_attempts=1,
-                 recovery="the Pod's deadline stopped attempt 1")  # fmt: skip
+                 recovery="the Pod's deadline stopped attempt 1", incident=INCIDENT)  # fmt: skip
     assert [label for label, _ in broken.calls] == [first.label] * 2
     # The other seed of the cell has no round of its own: one attempt, no retry
     run_campaign(name, runs, root, execute=broken, only=second.label, max_attempts=1)
@@ -1079,3 +1129,625 @@ def test_under_only_the_open_starts_of_other_labels_are_untouched(tmp_path) -> N
     assert opened == {other.label} and len(launch_log(root, name)) == 3
     run_campaign(name, [mine], root, execute=Executor(root, {}))  # a run left out is not assessed
     assert len(launch_log(root, name)) == 3
+
+
+# ------------------------------------------- further recovery rounds: one per documented incident
+
+R1 = "attempt 1: the Pod stopped at 03:12Z and its container disk was lost"
+R2 = "attempt 2: the Pod stopped again at 05:40Z and its container disk was lost"
+INCIDENT = {"incident_time": "2026-10-27T03:12:00+00:00",
+            "cause": "the Pod stopped: a host maintenance event",
+            "evidence": "the Pod's event log, pod-1, 2026-10-27"}  # fmt: skip
+
+
+def own_round(run, reason: str, *, max_attempts: int = 1, **incident) -> dict:
+    """``run_campaign``'s keywords for a round of the run's own: ``only``, the attempts, the
+    reason and the incident it documents (``INCIDENT`` changed by ``incident``; None drops a
+    field)."""
+    documented = {key: value for key, value in {**INCIDENT, **incident}.items()
+                  if value is not None}  # fmt: skip
+    return {"only": run.label, "max_attempts": max_attempts, "recovery": reason,
+            "incident": documented}  # fmt: skip
+
+
+def rounds_of(root: Path, name: str) -> list[dict]:
+    return [r for r in launch_log(root, name) if r["event"] == "recovery"]
+
+
+def run_ids(execute: Executor) -> list[str]:
+    return [run_id for _, run_id in execute.calls]
+
+
+@pytest.mark.parametrize("second", ["failed", "superseded"])
+def test_a_second_loss_after_the_runs_round_opens_a_further_round(tmp_path, second) -> None:
+    """Under ``only`` at one attempt: attempt 1 fails; round 1 allows attempt 2, which fails, or
+    completes and is then superseded (a case restart after a second lost disk). A round with a
+    new reason is round 2: it names the attempts it follows and allows attempt 3 alone. The
+    label, the run ids' form and every earlier byte of the journal stay."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    then = "failed" if second == "failed" else "completed"
+    execute = Executor(root, {run.label: ["failed", then, "completed"]})
+    only = {"only": run.label, "max_attempts": 1}
+    assert run_campaign(name, runs, root, execute=execute, **only)["exhausted"] == [run.label]
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R1))
+    if second == "superseded":
+        assert result["done"] == [run.label]
+        supersede(root, name, run, run_ids(execute)[1], reason=R2, record="restart-2.json")
+    else:
+        assert result["exhausted"] == [run.label]
+    assert run_campaign(name, runs, root, execute=execute, **only)["exhausted"] == [run.label]
+    log = root / "launch" / f"{name}.jsonl"
+    before = log.read_bytes()
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert result["done"] == [run.label] and len(execute.calls) == 3
+    assert log.read_bytes().startswith(before)
+    ids = run_ids(execute)
+    assert [(r["round"], r["after"], r["reason"], r["granted"], r["max_attempts"])
+            for r in rounds_of(root, name)] == [(1, ids[:1], R1, 1, 1),
+                                                (2, ids[:2], R2, 1, 1)]  # fmt: skip
+    for r in rounds_of(root, name):
+        assert (r["only"], r["runs"], r["cell"], r["experiment"], r["config_hash"]) == (
+            run.label, [run.label], run.cell, run.experiment, run.config_hash)  # fmt: skip
+        assert {key: r[key] for key in INCIDENT} == INCIDENT
+    starts = [r for r in launch_log(root, name) if r["event"] == "start"]
+    assert [(r["run"], r["attempt"], r["run_id"]) for r in starts] == [
+        (run.label, n, ids[n - 1]) for n in (1, 2, 3)]  # fmt: skip
+    assert [run_id.rsplit("-", 1)[1] for run_id in ids] == ["a1", "a2", "a3"]
+    assert run_campaign(name, runs, root, execute=execute, **only)["skipped"] == [run.label]
+
+
+def test_a_further_round_needs_a_reason_no_earlier_round_gave(tmp_path) -> None:
+    """Round 1's reason again (spaced otherwise too), or a blank reason: refused, naming the
+    label and round 1 by its log and line; nothing is written and nothing runs."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed", "failed", "completed"]})
+    run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    run_campaign(name, runs, root, execute=execute, **own_round(run, R1))
+    log = root / "launch" / f"{name}.jsonl"
+    before = log.read_bytes()
+    for reason in (R1, f"  {R1}\t"):
+        with pytest.raises(CampaignError, match=rf"round 1 \({name}\.jsonl line 3\)") as refusal:
+            run_campaign(name, runs, root, execute=execute, **own_round(run, reason))
+        assert run.label in str(refusal.value) and "--recovery" in str(refusal.value)
+    for reason in ("", "  \n"):
+        with pytest.raises(CampaignError, match="needs its reason") as refusal:
+            run_campaign(name, runs, root, execute=execute, **own_round(run, reason))
+        assert run.label in str(refusal.value)
+    assert log.read_bytes() == before and len(execute.calls) == 2
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert result["done"] == [run.label] and len(execute.calls) == 3
+
+
+def test_a_further_round_waits_for_the_previous_rounds_attempt(tmp_path) -> None:
+    """Round 1 is logged and its attempt not yet started (a stop came first): a new reason
+    writes no round, and the attempt runs under round 1's allowance: rounds never stack."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed", "failed"]})
+    run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    result = run_campaign(name, runs, root, execute=execute, stop=lambda: True,
+                          **own_round(run, R1))  # fmt: skip
+    assert result["stopped"] == [run.label] and len(execute.calls) == 1
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert result["exhausted"] == [run.label] and len(execute.calls) == 2
+    assert [r["reason"] for r in rounds_of(root, name)] == [R1]
+    again = run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    assert again["exhausted"] == [run.label] and len(execute.calls) == 2
+
+
+@pytest.mark.parametrize("first", ["written", "before numbering"])
+def test_a_further_round_after_six_attempts_allows_exactly_one_more(tmp_path, first) -> None:
+    """Six attempts under the three-attempt policy (three, then round 1's three; round 1
+    written now, with ``granted: 3``, or before rounds were numbered): a further round at three
+    attempts is refused and writes nothing; round 2 at one attempt allows exactly one more, and
+    no later ``max_attempts`` recalculates what the rounds granted."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    log = root / "launch" / f"{name}.jsonl"
+    execute = Executor(root, {run.label: ["failed"] * 8})
+    run_campaign(name, runs, root, execute=execute, only=run.label)  # three attempts
+    if first == "written":
+        run_campaign(name, runs, root, execute=execute, **own_round(run, R1, max_attempts=3))
+        (written,) = rounds_of(root, name)
+        assert (written["round"], written["granted"], written["after"]) == (
+            1, 3, run_ids(execute)[:3])  # fmt: skip
+    else:
+        from zero_field_refusal import launch
+
+        launch._log(log, {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+                          "reason": R1, "runs": [run.label], "only": run.label})  # fmt: skip
+        run_campaign(name, runs, root, execute=execute, only=run.label)
+    assert len(execute.calls) == 6
+    before = log.read_bytes()
+    with pytest.raises(CampaignError, match="--max-attempts 1") as refusal:
+        run_campaign(name, runs, root, execute=execute, **own_round(run, R2, max_attempts=3))
+    assert run.label in str(refusal.value) and "round 2" in str(refusal.value)
+    assert log.read_bytes() == before and len(execute.calls) == 6
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert result["exhausted"] == [run.label] and len(execute.calls) == 7
+    last = rounds_of(root, name)[-1]
+    assert (last["round"], last["granted"], last["after"]) == (2, 1, run_ids(execute)[:6])
+    for attempts in (1, 3, 9):
+        result = run_campaign(name, runs, root, execute=execute, only=run.label,
+                              max_attempts=attempts)  # fmt: skip
+        assert result["exhausted"] == [run.label] and len(execute.calls) == 7
+    assert [r["attempt"] for r in launch_log(root, name) if r["event"] == "start"] == [
+        1, 2, 3, 4, 5, 6, 7]  # fmt: skip
+
+
+def lost_checkpoint(tmp_path: Path, record: str):
+    """An attempt whose checkpoint run (``checkpointed_run_dir``) is damaged as ``record``."""
+
+    def execute(run, run_id, output, campaign=None) -> int:
+        checkpointed_run_dir(tmp_path / "runs", run, tmp_path, record=record)
+        return 0
+
+    return execute
+
+
+def published_but_failed(tmp_path: Path):
+    """An attempt that published its terminal record, then failed with its records incomplete:
+    no outcome the launcher reads, and still a published record."""
+
+    def execute(run, run_id, output, campaign=None) -> int:
+        run_dir = scheduled_run_dir(tmp_path / "runs", run, run_id, status="failed")
+        (run_dir / "evaluations.jsonl").unlink()
+        return 1
+
+    return execute
+
+
+def moved_conflict(tmp_path: Path):
+    """An attempt that completed without qualifying (a conflict, ended so), whose directory was
+    then moved out of the experiment."""
+
+    def execute(run, run_id, output, campaign=None) -> int:
+        make_run_dir(tmp_path / "runs", run, run_id, "completed", responses=False)
+        return 0
+
+    return execute
+
+
+OUTCOMES = ["done", "diverged", "held", "missing checkpoint", "other sha256", "published record",
+            "moved conflict"]  # fmt: skip
+
+
+@pytest.mark.parametrize("case", OUTCOMES)
+def test_a_further_round_never_reruns_an_outcome(tmp_path, case) -> None:
+    """After round 1, its attempt done, diverged, held, a provenance conflict (a missing
+    checkpoint, one of another sha256), a published terminal record with incomplete records, or a
+    conflict moved out of the experiment: a round with a new reason is skipped, diverged or
+    refused as each already is, and no ``recovery`` record is written."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    run_campaign(name, runs, root, execute=Executor(root, {run.label: ["failed"]}),
+                 only=run.label, max_attempts=1)  # fmt: skip
+    then = {"done": Executor(root, {run.label: ["completed"]}),
+            "diverged": Executor(root, {run.label: ["diverged"]}),
+            "held": Executor(root, {run.label: ["failed"]}),
+            "missing checkpoint": lost_checkpoint(tmp_path, "missing_file"),
+            "other sha256": lost_checkpoint(tmp_path, "other_bytes"),
+            "published record": published_but_failed(tmp_path),
+            "moved conflict": moved_conflict(tmp_path)}[case]  # fmt: skip
+    try:
+        run_campaign(name, runs, root, execute=then, **own_round(run, R1))
+    except CampaignError:
+        assert case == "moved conflict"
+    if case == "held":
+        (second,) = run_ids(then)
+        hold(root, name, run, second, reason="no recorded commit", record="supersede-1.json")
+    if case == "moved conflict":
+        (moved,) = [d for d in (root / run.experiment).iterdir() if d.name.endswith("-a2")]
+        moved.rename(tmp_path / moved.name)
+    log = root / "launch" / f"{name}.jsonl"
+    before, execute = log.read_bytes(), Executor(root, {})
+    expected = {"done": "skipped", "diverged": "diverged"}
+    if case in expected:
+        result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+        assert result[expected[case]] == [run.label]
+    else:
+        match = {"held": "held, its outcome unresolved", "missing checkpoint": "is missing",
+                 "other sha256": "does not match its recorded sha256",
+                 "published record": "its terminal record is published",
+                 "moved conflict": "its end records the outcome conflict"}[case]  # fmt: skip
+        with pytest.raises(CampaignError, match=match):
+            run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert execute.calls == [] and [r["reason"] for r in rounds_of(root, name)] == [R1]
+    written = [json.loads(line)["event"] for line in log.read_bytes()[len(before) :].splitlines()]
+    assert written in ([], ["end"])  # nothing but the settled end of an attempt found without one
+
+
+def test_rounds_under_another_config_hash_give_this_run_nothing(tmp_path) -> None:
+    """A label's round under its config hash X; the campaign now has hash Y (a fix changed a
+    hashed key). Y's first attempt fails and a relaunch runs nothing, at any ``max_attempts``;
+    a round with a new reason is the label's round 2, after every start of the label, and Y's
+    attempts are numbered on from the label's highest."""
+    from zero_field_refusal import launch
+
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    log = root / "launch" / f"{name}.jsonl"
+    old = "0" * 12
+
+    def start(attempt: int, run_id: str) -> None:
+        launch._log(log, {"event": "start", "run": run.label, "attempt": attempt,
+                          "run_id": run_id, "experiment": run.experiment, "config_hash": old,
+                          "only": run.label, "max_attempts": 1})  # fmt: skip
+        launch._log(log, {"event": "end", "run": run.label, "attempt": attempt,
+                          "run_id": run_id, "returncode": 1, "outcome": "technical",
+                          "problem": "status 'failed'", "only": run.label})  # fmt: skip
+
+    start(1, "x-a1")
+    launch._log(log, {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+                      "reason": R1, "runs": [run.label], "only": run.label, "round": 1,
+                      "config_hash": old, "after": ["x-a1"], "max_attempts": 1, "granted": 1,
+                      **INCIDENT})  # fmt: skip
+    start(2, "x-a2")
+    execute = Executor(root, {run.label: ["failed", "completed"]})
+    only = {"only": run.label, "max_attempts": 1}
+    assert run_campaign(name, runs, root, execute=execute, **only)["exhausted"] == [run.label]
+    for attempts in ({}, {"max_attempts": 3}):
+        result = run_campaign(name, runs, root, execute=execute, only=run.label, **attempts)
+        assert result["exhausted"] == [run.label] and len(execute.calls) == 1
+    with pytest.raises(CampaignError, match=r"round 1 \("):  # its reason, under any hash
+        run_campaign(name, runs, root, execute=execute, **own_round(run, R1))
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert result["done"] == [run.label]
+    ids = run_ids(execute)
+    assert [i.rsplit("-", 1)[1] for i in ids] == ["a3", "a4"]
+    last = rounds_of(root, name)[-1]
+    assert (last["round"], last["after"], last["config_hash"], last["granted"]) == (
+        2, ["x-a1", "x-a2", ids[0]], run.config_hash, 1)  # fmt: skip
+
+
+def test_attempt_numbers_rise_per_label_across_config_hashes(tmp_path) -> None:
+    """A new start is numbered after every start of its label, whatever its config hash; under
+    one config hash the numbers are those of before (one more than the attempts used)."""
+    name, runs = load_campaign(campaign(tmp_path))
+    mine, other, root = runs[1], runs[2], tmp_path / "runs"
+    earlier = SimpleNamespace(label=mine.label, experiment=mine.experiment,
+                              config_hash="0" * 12, command=mine.command)  # fmt: skip
+    log_start(root, name, earlier, "x-a1", attempt=1)
+    log_start(root, name, earlier, "x-a2", attempt=2)
+    execute = Executor(root, {mine.label: ["failed"] * 3, other.label: ["failed"] * 3})
+    run_campaign(name, [mine, other], root, execute=execute)
+    starts = [(r["run"], r["attempt"]) for r in launch_log(root, name)
+              if r["event"] == "start" and r["run_id"] not in ("x-a1", "x-a2")]  # fmt: skip
+    assert starts == [(mine.label, 3), (mine.label, 4), (mine.label, 5),
+                      (other.label, 1), (other.label, 2), (other.label, 3)]  # fmt: skip
+    assert [i.rsplit("-", 1)[1] for i in run_ids(execute)] == ["a3", "a4", "a5", "a1", "a2", "a3"]
+
+
+def test_a_cell_round_after_a_labels_own_round_grants_it_nothing(tmp_path) -> None:
+    """A label that had a round of its own: a cell-wide recovery call whose round would cover it
+    is refused, naming the label, its round and the form of a further round, and writes
+    nothing; a cell round in the journal after the label's round (as an older launcher opened
+    it) gives that label no attempt, and the cell's other run its round's attempts."""
+    from zero_field_refusal import launch
+
+    name, runs = load_campaign(campaign(tmp_path))
+    mine, other, root = runs[1], runs[2], tmp_path / "runs"  # one cell, two seeds
+    log = root / "launch" / f"{name}.jsonl"
+    execute = Executor(root, {mine.label: ["failed"] * 4, other.label: ["failed"] * 6})
+    run_campaign(name, runs, root, execute=execute, only=mine.label, max_attempts=1)
+    run_campaign(name, runs, root, execute=execute, **own_round(mine, R1))
+    run_campaign(name, [other], root, execute=execute)  # its three attempts
+    assert len(execute.calls) == 5
+    before = log.read_bytes()
+    reason = "the disk quota is raised"
+    with pytest.raises(CampaignError, match=rf"round 1 \({name}\.jsonl line 3\)") as refusal:
+        run_campaign(name, [mine, other], root, execute=execute, recovery=reason)
+    assert mine.label in str(refusal.value) and f"--only {mine.label}" in str(refusal.value)
+    assert log.read_bytes() == before and len(execute.calls) == 5
+    launch._log(log, {"event": "recovery", "experiment": mine.experiment, "cell": mine.cell,
+                      "reason": reason, "runs": [mine.label, other.label]})  # fmt: skip
+    result = run_campaign(name, [mine, other], root, execute=execute)
+    assert result["exhausted"] == [mine.label, other.label]
+    assert [label for label, _ in execute.calls[5:]] == [other.label] * 3
+
+
+@pytest.mark.parametrize("change", [
+    {"incident_time": None}, {"cause": None}, {"evidence": None}, {"cause": "  "},
+    {"evidence": ""}, {"incident_time": "yesterday"}, {"incident_time": "2026-10-27T03:12:00"},
+    {"incident_time": "2026-10-27T05:12:00+02:00"}, {"incident_time": "2999-01-01T00:00:00Z"},
+    {"cause": "the Pod stopped\nand restarted"}, {"incident_time": 3},
+])  # fmt: skip
+def test_a_round_of_a_label_records_its_incident(tmp_path, change) -> None:
+    """A run's own round records its incident: the UTC time (ISO 8601, not later than the
+    round), the external cause on one line and the evidence. Any of them missing, blank or
+    malformed: refused, naming the field; nothing is written and nothing runs. A time with
+    ``Z`` is UTC."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed", "completed"]})
+    run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    log = root / "launch" / f"{name}.jsonl"
+    before = log.read_bytes()
+    (field,) = change
+    with pytest.raises(CampaignError, match=field) as refusal:
+        run_campaign(name, runs, root, execute=execute, **own_round(run, R1, **change))
+    assert run.label in str(refusal.value)
+    with pytest.raises(CampaignError, match="incident_time"):
+        run_campaign(name, runs, root, execute=execute,
+                     **{**own_round(run, R1), "incident": None})  # fmt: skip
+    assert log.read_bytes() == before and len(execute.calls) == 1
+    zulu = own_round(run, R1, incident_time="2026-10-27T03:12:00Z")
+    assert run_campaign(name, runs, root, execute=execute, **zulu)["done"] == [run.label]
+    assert rounds_of(root, name)[0]["incident_time"] == "2026-10-27T03:12:00Z"
+
+
+def test_an_incident_goes_with_a_runs_own_round(tmp_path) -> None:
+    """The incident documents a run's own round (``only``): given without it, refused."""
+    name, runs = load_campaign(campaign(tmp_path))
+    with pytest.raises(CampaignError, match="only"):
+        run_campaign(name, runs, tmp_path / "runs", execute=Executor(tmp_path, {}),
+                     recovery=R1, incident=INCIDENT)  # fmt: skip
+
+
+def test_the_launch_script_passes_the_incident(tmp_path, monkeypatch) -> None:
+    import importlib.util
+
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    seen = {}
+
+    def fake(name, runs, root, **kwargs):
+        seen.update(kwargs)
+        return {key: [] for key in ("skipped", "done", "diverged", "exhausted", "stopped",
+                                    "pending")}  # fmt: skip
+
+    monkeypatch.setattr(script, "run_campaign", fake)
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
+    path = campaign(tmp_path)
+    only = ["--only", "adamw-5e-5/s0", "--max-attempts", "1", "--recovery", R1]
+    incident = ["--incident-time", INCIDENT["incident_time"], "--cause", INCIDENT["cause"],
+                "--evidence", INCIDENT["evidence"]]  # fmt: skip
+    script.main([str(path), *only, *incident])
+    assert seen["recovery"] == R1 and seen["incident"] == INCIDENT
+    script.main([str(path), *only])
+    assert seen["incident"] is None
+    script.main([str(path), *only, "--cause", "x"])  # the launcher names what is missing
+    assert seen["incident"] == {"cause": "x"}
+    for argv in ([str(path), *incident], [str(path), "--recovery", R1, *incident]):
+        with pytest.raises(SystemExit) as error:  # without --recovery, or without --only
+            script.main(argv)
+        assert error.value.code == 2
+
+
+def test_a_numbered_round_that_names_no_attempts_grants_nothing(tmp_path) -> None:
+    """A round of the run's own written since rounds are numbered, but without a list of the
+    attempts it follows (not as the launcher writes it): it grants no attempt, and the run is
+    exhausted until a round of its own is opened as the launcher writes it."""
+    from zero_field_refusal import launch
+
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed", "completed"]})
+    only = {"only": run.label, "max_attempts": 1}
+    run_campaign(name, runs, root, execute=execute, **only)
+    launch._log(root / "launch" / f"{name}.jsonl",
+                {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+                 "reason": R1, "runs": [run.label], "only": run.label, "round": 1,
+                 "config_hash": run.config_hash, "after": "all of them", "max_attempts": 1,
+                 "granted": 1, **INCIDENT})  # fmt: skip
+    assert run_campaign(name, runs, root, execute=execute, **only)["exhausted"] == [run.label]
+    assert len(execute.calls) == 1
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R2))
+    assert result["done"] == [run.label] and rounds_of(root, name)[-1]["round"] == 2
+
+
+# ------------------------- grants by rule; no call runs more attempts than its own max_attempts
+
+
+def test_a_first_round_at_three_attempts_grants_at_most_the_labels_base(tmp_path) -> None:
+    """Attempt 1 at one attempt fails; the label's first round, asked at ``--max-attempts 3``,
+    grants the smaller of 3 and the label's base (its first start's 1): exactly one attempt runs
+    for the one documented incident, and the round records ``granted: 1``."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed"] * 4})
+    run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    result = run_campaign(name, runs, root, execute=execute, **own_round(run, R1, max_attempts=3))
+    assert result["exhausted"] == [run.label] and len(execute.calls) == 2
+    (written,) = rounds_of(root, name)
+    assert (written["round"], written["max_attempts"], written["granted"]) == (1, 3, 1)
+
+
+def test_a_stopped_round_then_the_drivers_call_runs_one_attempt(tmp_path) -> None:
+    """The same round, stopped before its attempt, then the driver's own call (``--only L
+    --max-attempts 1``, no ``--recovery``): one attempt runs, and no later call runs another."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed"] * 4})
+    only = {"only": run.label, "max_attempts": 1}
+    run_campaign(name, runs, root, execute=execute, **only)
+    result = run_campaign(name, runs, root, execute=execute, stop=lambda: True,
+                          **own_round(run, R1, max_attempts=3))  # fmt: skip
+    assert result["stopped"] == [run.label] and len(execute.calls) == 1
+    for _ in range(3):
+        assert run_campaign(name, runs, root, execute=execute, **only)["exhausted"] == [run.label]
+    assert len(execute.calls) == 2
+
+
+def test_a_hand_made_further_round_granting_five_allows_one_attempt(tmp_path) -> None:
+    """A round 2 written by hand with ``granted: 5``: grants come from the rule, never from the
+    journal, so it allows exactly one attempt, at any ``max_attempts``."""
+    from zero_field_refusal import launch
+
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed"] * 8})
+    run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=1)
+    run_campaign(name, runs, root, execute=execute, **own_round(run, R1))
+    launch._log(root / "launch" / f"{name}.jsonl",
+                {"event": "recovery", "experiment": run.experiment, "cell": run.cell,
+                 "reason": R2, "runs": [run.label], "only": run.label, "round": 2,
+                 "config_hash": run.config_hash, "after": run_ids(execute), "max_attempts": 1,
+                 "granted": 5, **INCIDENT})  # fmt: skip
+    for attempts in (3, 9, 1):
+        result = run_campaign(name, runs, root, execute=execute, only=run.label,
+                              max_attempts=attempts)  # fmt: skip
+        assert result["exhausted"] == [run.label]
+    assert len(execute.calls) == 3
+
+
+def test_no_call_runs_more_attempts_than_its_own_max_attempts(tmp_path) -> None:
+    """Three attempts at the default, then round 1 at three attempts (``granted: 3``), stopped
+    before its attempts: a call at one attempt runs one, one at two runs two, and the next runs
+    nothing. The attempts left stay for later calls; no grant is recalculated."""
+    name, runs = load_campaign(campaign(tmp_path))
+    run, root = runs[1], tmp_path / "runs"
+    execute = Executor(root, {run.label: ["failed"] * 7})
+    run_campaign(name, runs, root, execute=execute, only=run.label)
+    run_campaign(name, runs, root, execute=execute, stop=lambda: True,
+                 **own_round(run, R1, max_attempts=3))  # fmt: skip
+    assert rounds_of(root, name)[0]["granted"] == 3 and len(execute.calls) == 3
+    for attempts, total in ((1, 4), (2, 6), (3, 6)):
+        run_campaign(name, runs, root, execute=execute, only=run.label, max_attempts=attempts)
+        assert len(execute.calls) == total
+
+
+STUDY3_CELLS = CELLS.replace("name: test-campaign\n", "name: test-campaign\nheader: {study: 3, "
+                             "candidate: 1, step: search, round: 0}\n")  # fmt: skip
+
+
+def test_a_study3_campaign_takes_no_cell_round(tmp_path, monkeypatch) -> None:
+    """A campaign whose header names study 3: ``--recovery`` without ``--only`` is refused, exit
+    1, with the command form of a run's own round (``--only LABEL --max-attempts 1 --recovery``
+    and the incident), and writes nothing; study 2's cell round (a header without ``study``)
+    opens as before."""
+    import importlib.util
+
+    path = campaign(tmp_path, STUDY3_CELLS)
+    name, runs = load_campaign(path)
+    root = tmp_path / "runs"
+    cell = [r for r in runs if r.cell == "adamw-5e-5"]
+    header = campaign_header(path)
+    broken = Executor(root, {r.label: ["failed"] * 6 for r in cell})
+    run_campaign(name, cell, root, execute=broken, header=header)
+    log = root / "launch" / f"{name}.jsonl"
+    before = log.read_bytes()
+    with pytest.raises(CampaignError, match="--only LABEL --max-attempts 1 --recovery") as refusal:
+        run_campaign(name, cell, root, execute=broken, header=header, recovery="disk replaced")
+    assert "--incident-time" in str(refusal.value) and "--evidence" in str(refusal.value)
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    with pytest.raises(SystemExit) as stop:
+        script.main([str(path), "--recovery", "disk replaced"])
+    assert isinstance(stop.value.code, str) and "--only LABEL" in stop.value.code  # exit 1
+    assert log.read_bytes() == before and len(broken.calls) == 6
+    study2 = tmp_path / "study2"
+    study2.mkdir()
+    study2_cells = CELLS.replace("name: test-campaign\n",
+                                 "name: test-campaign\nheader: {w_max: 0.47}\n")  # fmt: skip
+    path = campaign(study2, study2_cells)
+    name, runs = load_campaign(path)
+    cell, root = [r for r in runs if r.cell == "adamw-5e-5"], study2 / "runs"
+    broken = Executor(root, {cell[0].label: ["failed"] * 6,
+                             cell[1].label: ["failed"] * 3 + ["completed"]})  # fmt: skip
+    run_campaign(name, cell, root, execute=broken, header=campaign_header(path))
+    result = run_campaign(name, cell, root, execute=broken, header=campaign_header(path),
+                          recovery="disk replaced")  # fmt: skip
+    assert result["exhausted"] == [cell[0].label] and result["done"] == [cell[1].label]
+    assert len(broken.calls) == 10
+    assert [r["cell"] for r in rounds_of(root, name)] == ["adamw-5e-5"]
+
+
+def test_a_study3_recovery_over_a_run_not_used_up_is_refused(tmp_path, monkeypatch) -> None:
+    """A study-3 campaign: the label's attempt under an earlier config hash (an engineering
+    cycle's fix changed a hashed key, and superseded it); under the new hash the run is new, not
+    used up. ``--recovery`` over it is refused, exit 1, naming the command without
+    ``--recovery``; nothing is written and nothing runs. The same call without ``--recovery``
+    runs its base attempt. A done run is refused a round too. Study 2's call over a run with
+    attempts left still runs them, writing no round."""
+    import importlib.util
+
+    path = campaign(tmp_path, STUDY3_CELLS)
+    name, runs = load_campaign(path)
+    run, root, header = runs[1], tmp_path / "runs", campaign_header(path)
+    earlier = SimpleNamespace(label=run.label, experiment=run.experiment, config_hash="0" * 12,
+                              command=run.command)  # fmt: skip
+    log_start(root, name, earlier, "x-a1", only=run.label, max_attempts=1)
+    supersede(root, name, earlier, "x-a1", reason="the cycle's fix", record="c1/supersede-1.json")
+    log = root / "launch" / f"{name}.jsonl"
+    before, execute = log.read_bytes(), Executor(root, {run.label: ["completed"]})
+    only = {"only": run.label, "max_attempts": 1}
+    with pytest.raises(CampaignError, match="not used up") as refusal:
+        run_campaign(name, runs, root, execute=execute, header=header, recovery=R1,
+                     incident=INCIDENT, **only)  # fmt: skip
+    form = f"scripts/launch.py CAMPAIGN --only {run.label} --max-attempts 1"
+    assert form in str(refusal.value) and log.read_bytes() == before and execute.calls == []
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    incident = ["--incident-time", INCIDENT["incident_time"], "--cause", INCIDENT["cause"],
+                "--evidence", INCIDENT["evidence"]]  # fmt: skip
+    with pytest.raises(SystemExit) as stop:
+        script.main([str(path), "--only", run.label, "--max-attempts", "1", "--recovery", R1,
+                     *incident])  # fmt: skip
+    assert isinstance(stop.value.code, str) and "not used up" in stop.value.code  # exit 1
+    assert log.read_bytes() == before and execute.calls == []
+    result = run_campaign(name, runs, root, execute=execute, header=header, **only)
+    assert result["done"] == [run.label] and run_ids(execute)[0].endswith("-a2")
+    with pytest.raises(CampaignError, match="done"):
+        run_campaign(name, runs, root, execute=execute, header=header, recovery=R1,
+                     incident=INCIDENT, **only)  # fmt: skip
+    assert rounds_of(root, name) == [] and len(execute.calls) == 1
+    study2 = tmp_path / "study2"
+    study2.mkdir()
+    study2_cells = CELLS.replace("name: test-campaign\n",
+                                 "name: test-campaign\nheader: {w_max: 0.47}\n")  # fmt: skip
+    path = campaign(study2, study2_cells)
+    name, runs = load_campaign(path)
+    run, root = runs[1], study2 / "runs"
+    execute = Executor(root, {run.label: ["completed"]})
+    result = run_campaign(name, runs, root, execute=execute, header=campaign_header(path),
+                          recovery=R1, incident=INCIDENT, **only)  # fmt: skip
+    assert result["done"] == [run.label] and rounds_of(root, name) == []
+
+
+def test_a_study3_dry_run_reports_the_recovery_refusal_of_the_real_call(tmp_path, monkeypatch):
+    """A study-3 ``--dry-run --recovery`` over a run that is not used up (a new run, and a done
+    one) fails exactly as the real call does: the same message, exit 1 through the script, and
+    nothing runs or is written."""
+    import importlib.util
+
+    path = campaign(tmp_path, STUDY3_CELLS)
+    name, runs = load_campaign(path)
+    run, root, header = runs[1], tmp_path / "runs", campaign_header(path)
+    only = {"only": run.label, "max_attempts": 1, "recovery": R1, "incident": INCIDENT}
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    argv = [str(path), "--only", run.label, "--max-attempts", "1", "--recovery", R1,
+            "--incident-time", INCIDENT["incident_time"], "--cause", INCIDENT["cause"],
+            "--evidence", INCIDENT["evidence"]]  # fmt: skip
+    for state in ("new", "done"):
+        if state == "done":
+            run_campaign(name, runs, root, execute=Executor(root, {}), header=header,
+                         only=run.label, max_attempts=1)  # fmt: skip
+        execute = Executor(root, {})
+        messages = []
+        for dry_run in (True, False):
+            with pytest.raises(CampaignError) as refusal:
+                run_campaign(name, runs, root, execute=execute, header=header, dry_run=dry_run,
+                             **only)  # fmt: skip
+            messages.append(str(refusal.value))
+            with pytest.raises(SystemExit) as stop:
+                script.main(argv + (["--dry-run"] if dry_run else []))
+            assert stop.value.code == str(refusal.value)  # exit 1, the same message
+        assert messages[0] == messages[1] and execute.calls == []
+        assert [r for r in launch_records(root) if r.get("event") == "recovery"] == []
+    assert "done" in messages[0] and "diverged" not in messages[0]  # the state the run has
+    assert "no recovery round is written" in messages[0] and "nothing is written" not in messages[0]
