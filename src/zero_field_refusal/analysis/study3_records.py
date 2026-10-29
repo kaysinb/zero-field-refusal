@@ -795,12 +795,6 @@ class EndpointReader:
         this snapshot."""
         return (_json(run_dir / "meta.json", self.files) or {}).get("status")
 
-    def recovery_rounds(self) -> list[RecoveryRound]:
-        """The journal's study-3 recovery rounds, in ``round_order``: each with its time, its
-        number, config hash, ``after``, reason and ``only`` (its record), and its log and line;
-        a label's are ``label_rounds``, those that apply to a run ``RecoveryRound.applies``."""
-        return sorted(self.journal.recoveries, key=round_order)
-
     def attempts_left(self, label: str, chash: Any, max_attempts: int = 1) -> int:
         """``attempts_left`` of the run of ``label`` under ``chash``, from this snapshot."""
         starts = [start for _, start in self.journal.starts]

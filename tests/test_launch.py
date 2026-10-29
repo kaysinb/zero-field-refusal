@@ -579,7 +579,7 @@ def test_a_settled_run_that_lost_only_its_checkpoint_records_exactly_the_missing
     checkpoint file is gone, judges the run with the missing-checkpoint problem alone (no check
     before it reads the container disk): the end it writes is a settled ``conflict`` whose problem
     satisfies ``is_missing_checkpoint``, which is what lets ``restart-case`` tell it from any other
-    conflict."""
+    conflict. It pins the problem text and the predicate together, not the order of the checks."""
     from zero_field_refusal.launch import is_missing_checkpoint
 
     name, runs = load_campaign(campaign(tmp_path))

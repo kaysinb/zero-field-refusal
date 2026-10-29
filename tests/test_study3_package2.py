@@ -2,7 +2,7 @@
 ``analysis/qualification_records.py`` and ``analysis/campaign_prep.py``, and the scripts
 ``scripts/study3_campaigns.py`` and ``scripts/study3_summary.py``): its boundaries.
 
-- No GPU path has changed since the GPU code study 3 qualifies, as of package 1b
+- No GPU path has changed since the GPU code study 3 qualifies, as of package 1c
   (``QUALIFIED_GPU_CODE``, ``code_identity.reuse_check``).
 - No module of the package or script imports a GPU module directly or loads a script (read as
   code).
@@ -670,7 +670,7 @@ def test_a_sealed_launch_log_is_named_in_the_decision_records(tmp_path, monkeypa
 
 
 def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
-    """No GPU path has changed since the GPU code study 3 qualifies, as of package 1b
+    """No GPU path has changed since the GPU code study 3 qualifies, as of package 1c
     (``QUALIFIED_GPU_CODE``): the qualification made under that GPU code holds at HEAD
     (``code_identity.reuse_check``)."""
     try:

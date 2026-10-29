@@ -1553,7 +1553,8 @@ docstring has every rule.
   | The same sign as row 1, for a case with a completed failure (`restart-case` refuses), or a technical case whose only outstanding part is its control (row 2's technical branch) | Not a restart | A scientific failure stands. With a control due, the only scientific failure that shows row 1's sign is an interrupted rest whose trajectory results hold the failure: record that attempt first, `qualify.py interrupted --campaign … --candidate N --case CASE --part rest --attempt N --technical "<the interruption>"` (the results count), and the driver then runs the control alone. A technical case takes the usual path (`control-only` exits 3): its checkpoints went with the disk, so nothing is left to export and `kept-check` does not apply to it; the incident's cause and evidence name what was lost, and the `supersede` that opens the engineering cycle names in its `--diagnosis` the lost paths with their recorded sha256 (from the binding records) and the evidence of the loss. Then the engineering cycle (`supersede`, below). |
   | The message for a label whose case `complete` exits 0, and a `checkpoints-removed-<n>.json` names the path | `finish` removed it on purpose | Nothing. The driver never calls the launcher on a complete case, and nobody calls it on a finished case's label. `restart-case` refuses a complete case. |
   | A launcher start without an end at the loss; the next launcher call settles it technical and exits 1 with "used up their attempts" | The launcher run was in flight | No restart (`restart-case` refuses). A recovery round with the documented reason: `--only LABEL --max-attempts 1 --recovery` and the incident fields. |
-  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, and any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. |
+  | The driver's own launcher attempt failed technically: a journal end of the launcher run with a return code and outcome `technical` (no loss; no run is settled, so `complete` exits 3), and the next call exits 1 with "used up their attempts" | A technical failure of the launcher run, not a loss | A recovery round (`--only LABEL --max-attempts 1 --recovery` with the incident fields) needs a documented external cause: the interruption's time, the cause and its evidence, none blank. Without one, the launcher run's technical failure takes the technical route (the engineering cycle, below), as the launcher says: "the technical route decides". |
+  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, and any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. Stop the driver, not the Pod: for a technical case whose control is still outstanding, the checkpoints are still only on the container disk, and `finish --kept` refuses a case that is not complete, so the export is not reached. What keeps them is the Pod, which stays up while the diagnosis runs (no planned stop, and the hard deadline stays). |
   | A technical case (exit 9 or 13) whose kept checkpoints were lost | The technical mark stands | See "A technical case's checkpoints", "Lost before the export". |
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
@@ -1563,12 +1564,15 @@ docstring has every rule.
   (`python3 scripts/pod_deadline_watch.py --set EPOCH`). A case the deadline stops leaves an
   interrupted attempt (above) and its checkpoints on the container disk, which a stopped Pod
   loses: the case starts again as a whole (below), once the loss is diagnosed ("A lost
-  checkpoint", above).
+  checkpoint", above); a case whose only outstanding part is its same-path control is the
+  exception: `control-only` runs it alone, with no restart (below).
 - **A case restart.** When the Pod stopped during a case, its recorded parts cannot go on (the
   launcher's and the harness's checkpoints are gone). A missing endpoint checkpoint alone is a
   possible loss requiring diagnosis, never by itself a lost container disk: diagnose it first,
   and give the restart the interruption the diagnosis found ("A lost checkpoint", above, tells
-  it from the launcher's other conflicts). `restart-case` records it: a
+  it from the launcher's other conflicts). A case whose only outstanding part is its same-path
+  control is no case to restart: `control-only` runs the control alone and `restart-case`
+  refuses it (below). `restart-case` records it: a
   `restart-<n>.json` in the case's folder names every attempt of the case's parts (baseline,
   rest and the case's control), each recorded one with its record's sha256, and the reason;
   those attempts are void, kept and listed in the verdict, and neither count nor block. Once the
@@ -1603,7 +1607,9 @@ docstring has every rule.
   settles it technical, and a round with the documented reason is the whole route. A known
   narrow window: a child that stopped between publishing `terminal.json` and summarizing its
   terminal record cannot be restarted, because `restart-case` reports a completed technical
-  failure. A decided case is never restarted: its control runs alone (below).
+  failure. A case whose only outstanding part is its same-path control (decided by its baseline,
+  or with its baseline and rest recorded) is never restarted, and `restart-case` refuses it: its
+  control runs alone, with no restart (below).
   ```bash
   project-run "$SRC" python scripts/qualify.py restart-case --campaign "$C/qualification-c1.yaml" \
     --candidate 1 --case s10200/adamw-1.45e-05 --infrastructure "the Pod stopped during the case"
@@ -1706,8 +1712,9 @@ docstring has every rule.
     lost checkpoint" (above).
   - **The Pod.** A planned stop, restart or deletion of the Pod waits for `kept-check` exit 0
     while a technical case lacks it, unless its checkpoints went with the container disk before
-    any export: it has nothing left to protect (see "Lost before the export"). An upload that cannot be verified never lifts the hard
-    deadline: the verified volume copy stays and the pending upload is recorded in the receipt.
+    any export: it has nothing left to protect (see "Lost before the export"). An upload that
+    cannot be verified never lifts the hard deadline: the verified volume copy stays and the
+    pending upload is recorded in the receipt.
     To recover, repeat the upload before `kept-check`: run the driver again (`finish` reuses the
     verified export, then uploads and checks it), or run `archive.py` and then `kept-check` by
     hand with a new inventory:
