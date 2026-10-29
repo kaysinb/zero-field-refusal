@@ -3,13 +3,18 @@
     python scripts/qualify.py plan --campaign FILE --candidate N [--engineering]
         [--diagnostic-steps T1,T2,...]
     python scripts/qualify.py driver --campaign FILE --candidate N [--engineering]
-        [--diagnostic-steps T1,T2,...] --commit SHA --out FILE [--dry-run]
+        [--diagnostic-steps T1,T2,...] --kept DIR [--kept-remote PREFIX] --commit SHA
+        --out FILE [--dry-run]
     python scripts/qualify.py part --campaign FILE --candidate N [--engineering] --case NAME
         --part baseline|rest|control
         (--resume | --attempt N [--infrastructure REASON | --engineering-cycle])
         --run-dir DIR --checkpoints DIR [--diagnostic-steps T1,T2,...] [--device D]
-    python scripts/qualify.py complete|decided|control-only|clear-stale|locate|finish [--release]
+    python scripts/qualify.py complete|decided|control-only|clear-stale|locate
         --campaign FILE --candidate N [--engineering] --case NAME
+    python scripts/qualify.py finish [--kept DIR | --release] --campaign FILE --candidate N
+        [--engineering] --case NAME
+    python scripts/qualify.py kept-check --campaign FILE --candidate N [--engineering]
+        --case NAME --inventory FILE
     python scripts/qualify.py interrupted --campaign FILE --candidate N [--engineering]
         --case NAME --part baseline|rest|control --attempt N --technical REASON
     python scripts/qualify.py restart-case --campaign FILE --candidate N [--engineering]
@@ -78,8 +83,13 @@ outside this.
    attempts and the harness's directory ``<dir>/harness/<case>/``), only once its records are
    published and valid; it exits 1 and keeps them for a case that is not complete. A case whose
    verdict is technical (its own, or its same-path control's: ``technical_reasons``) keeps them
-   for the diagnosis, "Failure routes": ``finish`` exits 9, and the driver stops there, before
-   the next case. ``finish --release`` deletes them once the diagnosis is done.
+   for the diagnosis, "Failure routes", and ``finish --kept DIR`` exports them to the Pod's
+   volume (below, "A technical case's kept checkpoints"): it exits 9 (``TECHNICAL_CASE``) once
+   every file still present has a verified copy there, 13 (``NOT_EXPORTED``) otherwise. On 9 the
+   driver uploads the export to the bucket (``scripts/archive.py``) and checks both copies
+   (``kept-check``), and stops there, before the next case: with 9 when both are verified, with
+   13 when either is not. ``finish --release`` deletes them once the diagnosis is done, only
+   through that verified export.
 
 A case is **complete** when the latest attempt of each of its parts is recorded, is that part's
 of that case, and the verdicts read it without error (``case_verdict``, and ``control_verdict``
@@ -87,6 +97,52 @@ for its control): the baseline, the due control and, unless decided, the rest, w
 when it names the latest baseline record's sha256 (``baseline_record``; a rest that read no
 baseline, having run nothing or failed before, excepted). Records are published atomically and
 durably (``qualification.publish``).
+
+**A technical case's kept checkpoints** ("Failure routes": a technical case keeps its
+checkpoints for the diagnosis). The Pod's container disk goes with a Pod stop, so ``finish
+--kept DIR`` (the driver's ``--kept``: on a Pod ``/workspace/kept-checkpoints``, the volume)
+copies the case's files, exactly those ``finish --release`` would delete (``case_files``), to
+``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout they have under the checkpoint
+directory: each written under a partial name, fsynced, renamed and its folder fsynced, the source
+hashed while read and the copy read back, verified when the two sha256 agree. A present
+checkpoint whose sha256 is not its recorded one is exported as it is (``matches_record`` false):
+the export changes neither the technical mark nor any verdict. Refused before any copy, exit 13
+and nothing called verified: no ``--kept``, a relative DIR, DIR under the runs root or the
+records' folder (its copies would join the small results archived from there) or under the
+checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
+``st_dev``, the container disk), or less free space under DIR than the files take. The manifest,
+``kept-checkpoints-<n>.json`` in the case's folder and the same JSON in the export as
+``MANIFEST.json`` with a ``SHA256SUMS``, holds the case, its stage, candidate and
+``technical_reasons``; the binding records (``binding_records``: the located launcher run's
+``summary.json`` and ``meta.json`` by path and sha256 with its ``endpoint_checkpoint`` record, and
+the case's latest baseline, rest and control records by path, file sha256 and ``record_sha256``;
+nothing else of the run's directory is opened or listed); each file (its source path, its copy's
+path relative to DIR, size, sha256, the sha256 the binding records give that path or null, whether
+it matches, whether it is a partial file); ``lost``, every checkpoint those records name that is not
+on disk and that ``finish`` did not remove on purpose (``released``), with its recorded sha256 and
+the records naming it; ``verified``, the host, the Pod, the time and the provenance. Run again
+over an export whose copies re-hash to its manifest under DIR, the case's files listed in it as
+they are now, nothing is copied (exit 9); otherwise ``kept-<n+1>`` is written, and nothing is ever
+overwritten. Checkpoints lost before the export leave the technical mark as it stands: ``finish``
+exits 9 when every file still present is verified, ``lost`` names what was lost, and it says
+"lost before the export: the technical mark stands; the diagnosis goes on from the records;
+nothing reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE`` reads
+the case's latest manifest, re-hashes every copy under its DIR (with ``MANIFEST.json`` and
+``SHA256SUMS``), and reads ``scripts/archive.py``'s inventory: every exported file needs its line
+(path relative to DIR, size, sha256, md5, URL, status) with the exported size and sha256 and the
+status ``ok`` (the object's size and MD5 are the file's). It exits 0 when all hold, 13 naming
+what fails, and publishes its receipt ``kept-check-<n>.json`` in the case's folder: the
+manifest's and the inventory's path and sha256, the exit, what fails, and ``pending-upload``
+true for a volume copy verified whose bucket copy is not. ``finish --release`` of a technical
+case deletes only through the manifest of a receipt of exit 0 that names its sha256
+(``bound_export``), when every current file is listed in it with its size and sha256, each file
+checked again right before its deletion; otherwise it exits 13 naming the files (a file new or
+changed since the export needs another export and its ``kept-check``). Its
+``checkpoints-removed-<n>.json`` names that manifest and that receipt by path and sha256. A kept
+checkpoint is not one ``finish`` removed (``released``): its absence is never evidence of an
+interruption. The planned teardown of the Pod waits for ``kept-check`` exit 0; an upload that
+cannot be verified leaves the volume copy kept and the receipt ``pending-upload``, and never
+lifts the hard deadline.
 
 **A decided case whose control is due** (``control-only``; "Failure routes", amendment 2). A Pod
 stop after the baseline decided a case loses the container disk, the launcher run's checkpoint
@@ -259,20 +315,28 @@ record's reason, and exits 1 naming the restart records). Each then prints what 
 torn line's resolution (``scripts/launch.py --resolve-torn``), or another record's repair, is
 next. Any other call of the two, a new cycle or a new restart, is refused as the rest.
 
-``driver`` writes the bash driver for a Pod from the source checkout of SHA: it checks the checkout
-and the campaign file's sha256, that nothing else uses the GPU, and the free host memory
+``driver`` writes the bash driver for a Pod from the source checkout of SHA (``--kept DIR``, an
+absolute folder outside the checkpoint directory, is each case's ``finish --kept``; the export goes
+to ``$ARTIFACT_REMOTE/<--kept-remote>``, by default ``kept-checkpoints``): it checks the checkout
+and the campaign file's sha256, that nothing else uses the GPU, the free host memory
 (``host_memory_gb`` of the settings, ``drift.host_memory``: θ₀, v₀, the second model and the p1
-direction on the host and a checkpoint save's transient), then runs each case in order as above, and
+direction on the host and a checkpoint save's transient), and that a technical case's kept
+checkpoints can reach the bucket (``ARTIFACT_REMOTE`` a gs:// path, ``ARTIFACT_GCS_KEY`` a readable
+file, ``gcloud`` on PATH), then runs each case in order as above, and
 writes the verdict on every exit, but one: over a launch journal that is not whole (an
 unresolved torn line, or a line a published record requires missing) ``verdict`` refuses too
 (exit 12), so no verdict.json is written then and an older one stays on disk.
 Exits: 0 when every case is complete; 1 a precondition (the host
-memory included), the disk (``df``'s answer must be a number), a ``finish`` that refuses a case
-not complete, or a decided case whose control is due that ``control-only`` cannot bind to its
-launcher run; 8 an interrupted attempt (or a part a case restart or supersession names); 9 a
-technical case; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn line in
-a launch journal, or a line a published record requires missing from it (``complete``'s refusal,
-or the launcher's); the launcher's own when it stops; any other, the failed command's.
+memory and the bucket's settings included), the disk (``df``'s answer must be a number), a
+``finish`` that refuses a case not complete, or a decided case whose control is due that
+``control-only`` cannot bind to its launcher run; 8 an interrupted attempt (or a part a case
+restart or supersession names); 9 a technical case, its checkpoints kept on the volume and in
+the bucket, verified; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn
+line in a launch journal, or a line a published record requires missing from it (``complete``'s
+refusal, or the launcher's); 13 a technical case whose kept checkpoints are not verified on the
+volume (``finish``) or in the bucket (``archive.py``, ``kept-check``): the volume copy is kept,
+the upload pending, and the planned teardown waits for ``kept-check``; the launcher's own when it
+stops; any other, the failed command's.
 The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
 reason."""
 
@@ -284,6 +348,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import shlex
 import shutil
@@ -294,10 +359,10 @@ import tarfile
 import tempfile
 import textwrap
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, NoReturn
 
@@ -342,6 +407,9 @@ INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
 STALE = 10  # ``complete``, ``decided``, ``control-only``: records of other code or settings
 HELD = 11  # ``complete``, ``decided``, ``control-only``: the label has a held launcher run
+# ``finish``, ``kept-check``, the driver: a technical case's checkpoints lack a verified export (on
+# the Pod's volume, or in the bucket); the launcher's exits are 0, 1, 2 and 12
+NOT_EXPORTED = 13
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
@@ -866,6 +934,494 @@ def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope)
     return run_dir
 
 
+# ---------------------------------------------------- a technical case's kept checkpoints
+
+KEPT_MANIFEST = re.compile(r"kept-checkpoints-(\d+)\.json")  # an export's manifest (case folder)
+KEPT_RECEIPT = re.compile(r"kept-check-(\d+)\.json")  # ``kept-check``'s receipt (case folder)
+KEPT_FOLDER = re.compile(r"kept-(\d+)")  # an export's folder on the volume
+KEPT_REMOTE = "kept-checkpoints"  # the driver's --kept-remote by default, under ARTIFACT_REMOTE
+UPLOADED = "ok"  # scripts/archive.py's status of an object whose size and MD5 match its file
+LOST_BEFORE_EXPORT = ("lost before the export: the technical mark stands; the diagnosis goes on "
+                      "from the records; nothing reruns")  # fmt: skip
+
+
+def case_files(p: Planned, root: Path) -> list[Path]:
+    """The case's checkpoint files on disk, exactly those ``finish --release`` deletes: the
+    ``<dir>/<run_id>.pt`` and ``.<run_id>.pt.partial`` of every attempt of its launcher run
+    (``journal_run_ids``) and every file under its harness's folder ``<dir>/harness/<case>/``."""
+    found = [path for run_id in journal_run_ids(p.run, root)
+             for path in (p.endpoint / f"{run_id}.pt", p.endpoint / f".{run_id}.pt.partial")
+             if path.is_file()]  # fmt: skip
+    if p.harness.is_dir():
+        found += sorted(path for path in p.harness.rglob("*") if path.is_file())
+    return found
+
+
+def numbered(folder: Path, pattern: re.Pattern[str]) -> list[tuple[int, Path]]:
+    """The entries of ``folder`` whose name ``pattern`` gives a number, in its order."""
+    if not folder.is_dir():
+        return []
+    return sorted((int(m[1]), f) for f in folder.iterdir() if (m := pattern.fullmatch(f.name)))
+
+
+def same_filesystem(a: Path, b: Path) -> bool:
+    """Whether two paths lie on one filesystem: ``os.stat(...).st_dev`` of each, or of the nearest
+    folder above it that exists (a checkpoint directory gone with the container disk)."""
+
+    def device(path: Path) -> int:
+        path = Path(path).absolute()
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        return os.stat(path).st_dev
+
+    return device(a) == device(b)
+
+
+def free_bytes(folder: Path) -> int:
+    return shutil.disk_usage(folder).free
+
+
+def fsync_folder(folder: Path) -> None:
+    """A folder's entries made durable: a rename or a new entry in it survives a crash."""
+    descriptor = os.open(folder, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def make_folders(folder: Path) -> None:
+    """``folder`` and each missing folder above it, every new entry made durable."""
+    missing = []
+    while not folder.exists():
+        missing.append(folder)
+        folder = folder.parent
+    for new in reversed(missing):
+        new.mkdir()
+        fsync_folder(new.parent)
+
+
+def copy_durably(source: Path, target: Path) -> tuple[int, str]:
+    """``source`` copied to ``target``, never over a file: written under a partial name, fsynced,
+    renamed, its folder fsynced. The source's size and sha256, hashed while it is read."""
+    if target.exists():
+        raise FileExistsError(f"{target} exists: an export overwrites nothing")
+    make_folders(target.parent)
+    partial = target.with_name(f".{target.name}.copying")
+    digest, size = hashlib.sha256(), 0
+    with source.open("rb") as read, partial.open("xb") as write:
+        while chunk := read.read(1 << 24):
+            digest.update(chunk)
+            size += len(chunk)
+            write.write(chunk)
+        write.flush()
+        os.fsync(write.fileno())
+    os.replace(partial, target)
+    fsync_folder(target.parent)
+    return size, digest.hexdigest()
+
+
+def write_durably(path: Path, data: bytes) -> None:
+    """A new file written whole and durably (a partial name, fsync, rename, its folder fsynced)."""
+    partial = path.with_name(f".{path.name}.partial")
+    with partial.open("xb") as write:
+        write.write(data)
+        write.flush()
+        os.fsync(write.fileno())
+    os.replace(partial, path)
+    fsync_folder(path.parent)
+
+
+def matches_export(path: Path, entry: Mapping[str, Any]) -> bool:
+    """Whether a file holds the bytes an export's manifest lists for ``entry``: its size, then its
+    sha256."""
+    try:
+        return path.stat().st_size == entry["size"] and checkpoint_sha256(path) == entry["sha256"]
+    except OSError:
+        return False
+
+
+def sums_bytes(manifest: Mapping[str, Any], manifest_sha256: str | None) -> bytes:
+    """An export's ``SHA256SUMS`` (``sha256sum -c`` in its folder): each copy's sha256 and path
+    relative to the export's folder, then ``MANIFEST.json``'s."""
+    export = PurePosixPath(manifest["export"])
+    lines = [f"{entry['sha256']}  {PurePosixPath(entry['copy']).relative_to(export)}"
+             for entry in manifest["files"]]  # fmt: skip
+    return "".join(f"{line}\n" for line in [*lines, f"{manifest_sha256}  MANIFEST.json"]).encode()
+
+
+def binding_records(
+    p: Planned, out: Path, root: Path
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """What an export's manifest binds, its binding records, read by path and sha256 alone: the
+    case's located launcher run's ``summary.json`` and ``meta.json`` (path, sha256) with the
+    summary's ``endpoint_checkpoint`` record, and the case's latest baseline, rest and control
+    records (path, file sha256, ``record_sha256``). Nothing else of the run's directory is opened
+    or listed: its responses/, observations/ and judge/ least of all. With them, every checkpoint
+    those records name, by path: each record that names it, with the sha256 it gives."""
+    named: dict[str, list[dict[str, Any]]] = {}
+
+    def name(record: Path, checkpoint: Any) -> None:
+        if isinstance(checkpoint, dict) and isinstance(checkpoint.get("path"), str):
+            named.setdefault(checkpoint["path"], []).append(
+                {"record": str(record), "sha256": checkpoint.get("sha256")})  # fmt: skip
+
+    def bound(path: Path) -> tuple[dict[str, Any], dict | None]:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return {"path": str(path), "sha256": None}, None
+        try:
+            record = json.loads(data)
+        except ValueError:
+            record = None
+        found = {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
+        return found, record if isinstance(record, dict) else None
+
+    launcher = None
+    run_dir = located(p.run, root)
+    if run_dir is not None:
+        summary, record = bound(run_dir / "summary.json")
+        checkpoint = (record or {}).get("endpoint_checkpoint")
+        launcher = {"run_dir": str(run_dir), "summary": summary,
+                    "meta": bound(run_dir / "meta.json")[0],
+                    "endpoint_checkpoint": checkpoint}  # fmt: skip
+        name(run_dir / "summary.json", checkpoint)
+    parts: dict[str, Any] = {}
+    for part in ["baseline", "rest", *(["control"] if p.control else [])]:
+        state = part_state(out, p.case, part)
+        if state.state != "recorded":
+            parts[part] = None
+            continue
+        path = out / p.case.attempt_path(part, state.attempt)
+        parts[part] = {"attempt": state.attempt, "path": str(path), "sha256": file_sha256(path),
+                       "record_sha256": q.record_sha256(state.record)}  # fmt: skip
+        if part == "baseline":
+            name(path, state.record.get("checkpoint"))
+        launcher_check = state.record.get("launcher")
+        identity = launcher_check.get("identity") if isinstance(launcher_check, dict) else None
+        name(path, identity.get("checkpoint") if isinstance(identity, dict) else None)
+    return {"launcher": launcher, "parts": parts}, named
+
+
+def kept_refusal(p: Planned, out: Path, root: Path, kept: Path | None) -> str | None:
+    """Why an export to ``kept`` could not keep the case's checkpoints (module docstring, "A
+    technical case's kept checkpoints"), or None."""
+    if kept is None:
+        return "no --kept DIR (the folder on the Pod's volume: /workspace/kept-checkpoints)"
+    if not kept.is_absolute():
+        return f"--kept {kept} is not an absolute path"
+    if not kept.is_dir():
+        return f"--kept {kept} is not an existing folder"
+    where = kept.resolve()
+    for label, other, why in (
+        ("the runs root", root, "its copies would join the small results downloaded and "
+         "archived from there"),
+        ("the records' folder", out, "its copies would join the records"),
+        ("the checkpoint directory", p.endpoint, "it goes with the container disk"),
+    ):  # fmt: skip
+        if where.is_relative_to(other.resolve()):
+            return f"--kept {kept} lies under {label} {other}: {why}"
+    if same_filesystem(kept, p.endpoint):
+        return (f"--kept {kept} is on the filesystem of the checkpoint directory {p.endpoint} (the "
+                "container disk, lost with it)")  # fmt: skip
+    return None
+
+
+def export_problems(manifest: Mapping[str, Any], manifest_sha256: str | None) -> list[str]:
+    """What of an export on the volume does not re-hash to its manifest: a manifest not verified,
+    a copy missing or other than its exported bytes (size, sha256), a ``MANIFEST.json`` other than
+    the case folder's manifest, a ``SHA256SUMS`` other than the manifest gives."""
+    problems = []
+    if manifest.get("verified") is not True:
+        problems.append("the manifest is not verified (a copy did not read back as its source)")
+    try:
+        kept, export = Path(manifest["kept"]), Path(manifest["export"])
+        for entry in manifest["files"]:
+            copy = kept / entry["copy"]
+            if not copy.is_file():
+                problems.append(f"{copy}: missing on the volume")
+            elif not matches_export(copy, entry):
+                problems.append(f"{copy}: not its exported bytes (size or sha256)")
+        if file_sha256(kept / export / "MANIFEST.json") != manifest_sha256:
+            problems.append(f"{kept / export / 'MANIFEST.json'}: not the case's manifest")
+        sums = hashlib.sha256(sums_bytes(manifest, manifest_sha256)).hexdigest()
+        if file_sha256(kept / export / "SHA256SUMS") != sums:
+            problems.append(f"{kept / export / 'SHA256SUMS'}: not the manifest's sums")
+    except (KeyError, TypeError, ValueError) as exc:
+        problems.append(f"the manifest cannot be read: {type(exc).__name__}: {exc}")
+    return problems
+
+
+def source_problems(manifest: Mapping[str, Any], files: list[Path]) -> list[str]:
+    """The case's files an export does not hold as they are now: one it does not list (new since
+    the export), or one whose size or sha256 is not the exported one (changed since)."""
+    entries = {entry.get("source"): entry for entry in manifest.get("files") or []
+               if isinstance(entry, dict)}  # fmt: skip
+    problems = []
+    for path in files:
+        entry = entries.get(str(path))
+        if entry is None:
+            problems.append(f"{path}: not in the export (new since)")
+        elif not matches_export(path, entry):
+            problems.append(f"{path}: not its exported bytes (changed since)")
+    return problems
+
+
+def reusable(path: Path, kept: Path, files: list[Path]) -> dict | None:
+    """The manifest at ``path`` when its export can stand for a new one: made under ``kept``,
+    listing exactly the case's files, its copies re-hashing to it (``export_problems``) and the
+    files still its exported bytes (``source_problems``); otherwise None."""
+    manifest = _read(path)
+    if manifest is None or manifest.get("kept") != str(kept):
+        return None
+    listed = {entry.get("source") for entry in manifest.get("files") or []
+              if isinstance(entry, dict)}  # fmt: skip
+    if listed != {str(file) for file in files} or export_problems(manifest, file_sha256(path)):
+        return None
+    return None if source_problems(manifest, files) else manifest
+
+
+def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+    """A technical case's checkpoints (``case_files``) exported to the Pod's volume (module
+    docstring, "A technical case's kept checkpoints"): each copied durably to
+    ``<kept>/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout it has under the
+    checkpoint directory, read back and verified by its sha256, then the manifest, in the export
+    (``MANIFEST.json``, with ``SHA256SUMS``) and last in the case's folder
+    (``kept-checkpoints-<n>.json``). Refused before any copy (``kept_refusal``, or too little free
+    space); an earlier manifest whose copies re-hash to it under ``kept``, the case's files as it
+    lists them, is reused: nothing is copied. The exit: 9 (``TECHNICAL_CASE``) when every file
+    still present has a verified copy, 13 (``NOT_EXPORTED``) otherwise."""
+    name, folder = p.case.name, case_folder(out, p.case)
+
+    def refused(why: str) -> int:
+        print(f"{name}: the export is refused and nothing is copied: {why}. The checkpoints stay "
+              "where they are, and nothing is called verified", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+
+    def lost_note(lost: list[dict[str, Any]]) -> None:
+        if lost:
+            print(f"{name}: {LOST_BEFORE_EXPORT}: {[entry['path'] for entry in lost]}",
+                  file=sys.stderr)  # fmt: skip
+
+    refusal = kept_refusal(p, out, root, kept)
+    if refusal is not None:
+        return refused(refusal)
+    files, manifests = case_files(p, root), numbered(folder, KEPT_MANIFEST)
+    reused = reusable(manifests[-1][1], kept, files) if manifests else None
+    if reused is not None:  # nothing is copied
+        lost_note(reused.get("lost") or [])
+        print(json.dumps({"case": name, "manifest": str(manifests[-1][1]), "reused": True,
+                          "files": len(files)}))  # fmt: skip
+        return TECHNICAL_CASE
+    need, free = sum(path.stat().st_size for path in files), free_bytes(kept)
+    if free < need:
+        return refused(f"{free} bytes are free under {kept}, below the {need} its files take")
+    binding, named = binding_records(p, out, root)
+    parent = kept / "qualification" / folder.relative_to(out)
+    number = 1 + max([n for n, _ in manifests] + [n for n, _ in numbered(parent, KEPT_FOLDER)],
+                     default=0)  # fmt: skip
+    export = parent / f"kept-{number}"
+    make_folders(parent)
+    export.mkdir()  # a new folder: an export overwrites nothing
+    fsync_folder(parent)
+    entries = []
+    for source in files:
+        target = export / source.relative_to(p.endpoint)
+        try:
+            size, sha = copy_durably(source, target)
+            copy_sha = checkpoint_sha256(target)  # the copy read back
+        except OSError as exc:  # no manifest: nothing of this export is called verified
+            print(f"{name}: the export to {export} failed at {source}: {exc}. No manifest is "
+                  "written and nothing is called verified; the checkpoints stay where they are, "
+                  "and finish --kept again exports to a new folder", file=sys.stderr)  # fmt: skip
+            return NOT_EXPORTED
+        records = named.get(str(source), [])
+        entries.append({
+            "source": str(source), "copy": target.relative_to(kept).as_posix(), "size": size,
+            "sha256": sha, "copy_sha256": copy_sha, "verified": copy_sha == sha,
+            "recorded_sha256": records[0]["sha256"] if records else None,
+            "matches_record": all(r["sha256"] == sha for r in records) if records else None,
+            "named_by": records, "partial": source.name.endswith(".pt.partial")})  # fmt: skip
+    gone = released(folder)  # removed on purpose by finish: never lost
+    lost = [{"path": path, "recorded_sha256": records[0]["sha256"], "named_by": records}
+            for path, records in sorted(named.items())
+            if path not in gone and not Path(path).is_file()]  # fmt: skip
+    manifest = {
+        "case": p.case.record(), "stage": ROLES[p.case.engineering],
+        "candidate": p.case.candidate, "technical_reasons": technical, "kept": str(kept),
+        "export": export.relative_to(kept).as_posix(), "number": number, "binding": binding,
+        "files": entries, "lost": lost, "verified": all(e["verified"] for e in entries),
+        "host": socket.gethostname(), "pod_id": q.pod_id(),
+        "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "provenance": q.qualification_provenance(load_settings()),
+    }  # fmt: skip
+    q.publish(export / "MANIFEST.json", manifest)
+    write_durably(export / "SHA256SUMS", sums_bytes(manifest, q.record_sha256(manifest)))
+    path = folder / f"kept-checkpoints-{number}.json"
+    q.publish(path, manifest)  # last: the case's record of the export
+    if not manifest["verified"]:
+        bad = [entry["source"] for entry in entries if not entry["verified"]]
+        print(f"{name}: a copy did not read back as its source's bytes, so nothing of {export} is "
+              f"called verified: {bad}. The checkpoints stay where they are; finish --kept again "
+              f"writes kept-{number + 1}", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+    lost_note(lost)
+    print(json.dumps({"case": name, "manifest": str(path), "export": str(export),
+                      "files": len(entries),
+                      "lost": [entry["path"] for entry in lost]}))  # fmt: skip
+    return TECHNICAL_CASE
+
+
+def inventory_problems(
+    manifest: Mapping[str, Any], manifest_size: int, manifest_sha256: str, inventory: Path
+) -> list[str]:
+    """What scripts/archive.py's inventory does not show verified in the bucket: each exported
+    file (the copies, ``MANIFEST.json``, ``SHA256SUMS``) needs its line (the latest of its path,
+    relative to the volume folder) with the exported size and sha256, the status ``ok`` (the
+    object's size and MD5 are the file's) and a gs:// URL ending in its path."""
+    try:
+        export = manifest["export"]
+        expected = {entry["copy"]: (entry["size"], entry["sha256"]) for entry in manifest["files"]}
+        sums = sums_bytes(manifest, manifest_sha256)
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"the manifest cannot be read: {type(exc).__name__}: {exc}"]
+    expected[f"{export}/MANIFEST.json"] = (manifest_size, manifest_sha256)
+    expected[f"{export}/SHA256SUMS"] = (len(sums), hashlib.sha256(sums).hexdigest())
+    try:
+        rows = inventory.read_text().splitlines()
+    except OSError as exc:
+        return [f"the inventory {inventory} cannot be read: {exc}"]
+    lines = {cells[0]: cells for cells in (row.split("\t") for row in rows) if len(cells) == 6}
+    problems = []
+    for rel, (size, sha) in expected.items():
+        cells = lines.get(rel)
+        if cells is None:
+            problems.append(f"{rel}: no line in the inventory {inventory}")
+        elif (cells[1], cells[2]) != (str(size), sha):
+            problems.append(f"{rel}: the inventory's size and sha256 ({cells[1]}, {cells[2]}) "
+                            f"are not the exported {size}, {sha}")  # fmt: skip
+        elif cells[5] != UPLOADED:
+            problems.append(f"{rel}: not verified in the bucket ({cells[5]})")
+        elif not (cells[4].startswith("gs://") and cells[4].endswith(f"/{rel}")):
+            problems.append(f"{rel}: archived at {cells[4]}, not under its own path")
+    return problems
+
+
+def kept_check(p: Planned, out: Path, inventory: Path) -> int:
+    """Whether the case's latest export is kept, verified, on the Pod's volume and in the bucket
+    (module docstring, "A technical case's kept checkpoints"): its copies re-hash to its manifest
+    (``export_problems``) and archive.py's ``inventory`` shows every exported file verified
+    (``inventory_problems``). Reads only; then publishes its receipt, ``kept-check-<n>.json`` in
+    the case's folder: the manifest's and the inventory's path and sha256, the exit, what fails,
+    and ``pending-upload`` for a volume copy verified whose bucket copy is not. 0, or 13
+    (``NOT_EXPORTED``)."""
+    name, folder = p.case.name, case_folder(out, p.case)
+    manifests = numbered(folder, KEPT_MANIFEST)
+    if not manifests:
+        print(f"{name}: no export of its checkpoints (no kept-checkpoints-<n>.json in {folder}): "
+              "finish --kept DIR exports them", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+    path = manifests[-1][1]
+    data = path.read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    manifest = _read(path)
+    if manifest is None:
+        volume, bucket = [f"{path}: unreadable"], []
+    else:
+        volume = export_problems(manifest, sha)
+        bucket = inventory_problems(manifest, len(data), sha, inventory)
+    code = NOT_EXPORTED if volume or bucket else 0
+    pending = not volume and bool(bucket)
+    number = 1 + max((n for n, _ in numbered(folder, KEPT_RECEIPT)), default=0)
+    receipt = folder / f"kept-check-{number}.json"
+    teardown = None
+    if code:
+        teardown = "planned teardown waits for kept-check; the hard deadline stands"
+        if pending:
+            teardown = f"the volume copy is verified and kept, the upload pending: {teardown}"
+    q.publish(receipt, {
+        "case": p.case.record(), "manifest": {"path": str(path), "sha256": sha},
+        "inventory": {"path": str(inventory), "sha256": file_sha256(inventory)}, "exit": code,
+        "problems": volume + bucket, "pending-upload": pending, "teardown": teardown,
+        "host": socket.gethostname(), "pod_id": q.pod_id(),
+        "checked_at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
+    if volume:
+        print(f"{name}: its export on the volume is not verified: {volume}"
+              + (f"; in the bucket: {bucket}" if bucket else "") + f". {teardown}",
+              file=sys.stderr)  # fmt: skip
+    elif bucket:
+        print(f"{name}: its bucket copy is not verified (pending-upload, {receipt.name}): "
+              f"{bucket}. {teardown}", file=sys.stderr)  # fmt: skip
+    else:
+        print(json.dumps({"case": name, "manifest": str(path), "receipt": str(receipt),
+                          "exit": 0}))  # fmt: skip
+    return code
+
+
+def bound_export(folder: Path) -> tuple[Path, dict, Path] | None:
+    """The export a release relies on: the manifest of the case's latest ``kept-check`` receipt
+    of exit 0 that names it with the sha256 it still has, verified; with that receipt. None
+    without one."""
+    manifests = {path.name: path for _, path in numbered(folder, KEPT_MANIFEST)}
+    for _, receipt in reversed(numbered(folder, KEPT_RECEIPT)):
+        record = _read(receipt) or {}
+        named = record.get("manifest") if isinstance(record.get("manifest"), dict) else {}
+        path = manifests.get(Path(str(named.get("path"))).name)
+        if record.get("exit") != 0 or path is None or file_sha256(path) != named.get("sha256"):
+            continue
+        manifest = _read(path)
+        if manifest is not None and manifest.get("verified") is True:
+            return path, manifest, receipt
+    return None
+
+
+def release_kept(p: Planned, root: Path, folder: Path) -> tuple[list[str], dict, list[str]]:
+    """``finish --release`` of a technical case (module docstring, "A technical case's kept
+    checkpoints"): the files ``case_files`` gives go only through the export a ``kept-check`` of
+    exit 0 bound (``bound_export``), every one of them listed in it with its size and sha256
+    (``source_problems``), and each checked again right before its deletion; then the harness's
+    folders left empty. What it removed, the export it relied on (the manifest and the receipt,
+    by path and sha256), and why it stopped (nothing when it did not)."""
+    files = case_files(p, root)
+    bound = bound_export(folder)
+    relied: dict[str, Any] = {"manifests": [], "kept_check": None}
+    if bound is None:
+        if files:
+            why = ("no export of them is bound by a kept-check of exit 0 (finish --kept DIR, then "
+                   f"kept-check): {list(map(str, files))}")  # fmt: skip
+            return [], relied, [why]
+        entries: dict[str, Any] = {}
+    else:
+        path, manifest, receipt = bound
+        relied = {"manifests": [{"path": str(path), "sha256": file_sha256(path)}],
+                  "kept_check": {"path": str(receipt), "sha256": file_sha256(receipt)}}  # fmt: skip
+        problems = source_problems(manifest, files)
+        if problems:
+            return [], relied, [*problems, "another export is needed (finish --kept DIR, then "
+                                           "kept-check)"]  # fmt: skip
+        entries = {entry["source"]: entry for entry in manifest["files"]}
+    removed: list[str] = []
+    for source in files:
+        if not matches_export(source, entries[str(source)]):  # right before its deletion
+            return removed, relied, [f"{source}: not its exported bytes right before its "
+                                     "deletion (changed since the check)"]  # fmt: skip
+        source.unlink()
+        removed.append(str(source))
+    if p.harness.is_dir():  # the folders left empty
+        for sub in sorted((d for d in p.harness.rglob("*") if d.is_dir()),
+                          key=lambda d: len(d.parts), reverse=True):  # fmt: skip
+            with suppress(OSError):
+                sub.rmdir()
+        try:
+            p.harness.rmdir()
+            removed.append(str(p.harness))
+        except OSError:
+            pass
+    left = [f"{path}: not in the export (new since the check)" for path in case_files(p, root)]
+    return removed, relied, left
+
+
 # ------------------------------------------------------------------------------- commands
 
 
@@ -993,26 +1549,39 @@ def part(args, planned: Planned, out: Path) -> None:
 
 
 def finish(
-    planned: Planned, out: Path, root: Path, scope: q.QualificationScope, *, release: bool
-) -> None:
+    planned: Planned, out: Path, root: Path, scope: q.QualificationScope, *, release: bool,
+    kept: Path | None = None,
+) -> None:  # fmt: skip
+    """A complete case's checkpoints deleted (module docstring, step 7); a technical case's
+    exported to ``kept`` instead (``export_kept``: exit 9, or 13), and deleted with ``release``
+    only through that export, verified (``release_kept``)."""
     complete, _, why = case_state(out, planned, scope)
     if not complete:
         sys.exit(f"{planned.case.name}: {why}; its checkpoints are kept")
     technical = technical_reasons(out, planned, scope)
     if technical and not release:
         print(f"{planned.case.name}: a technical verdict; its checkpoints are kept for the "
-              f"diagnosis: {technical}", file=sys.stderr)  # fmt: skip
-        sys.exit(TECHNICAL_CASE)
-    removed = remove_checkpoints(planned, journal_run_ids(planned.run, root))
-    if planned.harness.exists():
-        shutil.rmtree(planned.harness)
-        removed.append(str(planned.harness))
+              f"diagnosis, and exported: {technical}", file=sys.stderr)  # fmt: skip
+        sys.exit(export_kept(planned, out, root, technical, kept))
+    folder = case_folder(out, planned.case)
+    relied: dict[str, Any] = {}
+    stopped: list[str] = []
+    if technical:  # released only through its verified export
+        removed, relied, stopped = release_kept(planned, root, folder)
+    else:
+        removed = remove_checkpoints(planned, journal_run_ids(planned.run, root))
+        if planned.harness.exists():
+            shutil.rmtree(planned.harness)
+            removed.append(str(planned.harness))
     if removed:  # removed on purpose: never evidence of an interruption (``restart-case``)
-        folder = case_folder(out, planned.case)
         q.publish(folder / f"{RELEASED}-{len(list(folder.glob(f'{RELEASED}-*.json'))) + 1}.json",
                   {"case": planned.case.record(), "removed": removed, "release": release,
-                   "technical": technical,
+                   "technical": technical, **relied,
                    "at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
+    if stopped:
+        print(f"{planned.case.name}: the release stops, and what is left is kept: "
+              f"{'; '.join(stopped)}", file=sys.stderr)  # fmt: skip
+        sys.exit(NOT_EXPORTED)
     print(json.dumps({"case": planned.case.name, "state": why, "removed": removed}))
 
 
@@ -2098,6 +2667,7 @@ def driver_script(
         " --engineering" if args.engineering else "")  # fmt: skip
     diagnostic = f" --diagnostic-steps {','.join(map(str, steps))}" if steps else ""
     endpoint = planned[0].endpoint
+    remote = shlex.quote(args.kept_remote.strip().rstrip("/"))
     lines = [
         "#!/usr/bin/env bash",
         *comment(f"Written by scripts/qualify.py driver at {written_at}; do not edit."),
@@ -2108,9 +2678,12 @@ def driver_script(
                  "same-path control, each in a fresh process (a case its baseline decided, its "
                  "control alone due, runs that control alone, control-only: not the launcher, "
                  "whose checkpoint the control does not read); then the case's checkpoints are "
-                 "deleted, unless its verdict is technical: then the driver stops (exit "
-                 f"{TECHNICAL_CASE}) with them kept for the diagnosis. K-only and blind to "
-                 "outcomes."),
+                 "deleted, unless its verdict is technical: then they are kept for the "
+                 "diagnosis, exported to $KEPT on the Pod's volume and verified there (finish), "
+                 "uploaded to $ARTIFACT_REMOTE (scripts/archive.py) and verified there "
+                 f"(kept-check), and the driver stops (exit {TECHNICAL_CASE}; "
+                 f"{NOT_EXPORTED} while the export is not verified: the planned teardown waits "
+                 "for kept-check). K-only and blind to outcomes."),
         *comment(f"A case needs {need:g} GB free under {endpoint} (the container disk). A "
                  "complete case is skipped, so the driver can be run again after a stop. It "
                  "never reruns a part or a launcher run: an interrupted part (exit "
@@ -2125,16 +2698,19 @@ def driver_script(
                  "line a published record requires missing), which verdict refuses too (exit "
                  f"{TORN_JOURNAL}): no verdict.json is written then, and an older one stays on "
                  "disk."),
-        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory "
-                 "included), the disk, a case finish refuses (not complete) or a decided case "
-                 "control-only cannot bind to its launcher run without the launcher; "
-                 f"{INTERRUPTED} an interrupted attempt (or a part a case restart names); "
-                 f"{TECHNICAL_CASE} a "
-                 f"technical case; {STALE} a stale case (records of other GPU code or settings); "
-                 f"{HELD} a case whose label has a held launcher run; {TORN_JOURNAL} a torn line "
-                 "in a launch journal, or a line a published record requires missing from it "
-                 "(complete's refusal, or the launcher's); the launcher's own when it stops; "
-                 "another a failed command."),
+        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory and the "
+                 "bucket's settings included), the disk, a case finish refuses (not complete) "
+                 "or a decided case control-only cannot bind to its launcher run without the "
+                 f"launcher; {INTERRUPTED} an interrupted attempt (or a part a case restart "
+                 f"names); {TECHNICAL_CASE} a technical case, its checkpoints kept, on the volume "
+                 f"and in the bucket, verified; {STALE} a stale case (records of other GPU code "
+                 f"or settings); {HELD} a case whose label has a held launcher run; "
+                 f"{TORN_JOURNAL} a torn line in a launch journal, or a line a published record "
+                 "requires missing from it (complete's refusal, or the launcher's); "
+                 f"{NOT_EXPORTED} a technical case whose kept checkpoints are not verified on "
+                 "the volume or in the bucket (the volume copy kept, the upload pending: the "
+                 "planned teardown waits for kept-check, and the hard deadline stands); the "
+                 "launcher's own when it stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -2144,8 +2720,10 @@ def driver_script(
         f"CAMPAIGN={shlex.quote(str(campaign))}",
         f'test "$(sha256sum "$CAMPAIGN" | cut -d " " -f 1)" = {sha}',
         f"CKPT={shlex.quote(str(endpoint))}",
+        f"KEPT={shlex.quote(os.path.normpath(args.kept))}",
         'OUT="${RUNS_DIR:?}/qualification"',
         f'mkdir -p "$OUT/c{args.candidate}" "$CKPT"',
+        'mkdir -p "$KEPT"',
         f'exec > >(tee -a "$OUT/c{args.candidate}/driver-{stage}-$(date -u +%Y%m%dT%H%M%SZ).log")'
         " 2>&1",
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
@@ -2168,10 +2746,26 @@ def driver_script(
         f'  stop "{host:g} GB of free host memory are needed; the qualification does not '
         'start" 1',
         "fi",
+        *comment("A technical case's checkpoints go to the bucket before the driver stops "
+                 "(scripts/archive.py under the key ARTIFACT_GCS_KEY): without ARTIFACT_REMOTE, "
+                 "a gs:// path, a readable key file or gcloud, no case starts"),
+        'case "${ARTIFACT_REMOTE:-}" in',
+        "  gs://?*) ;;",
+        "  *) stop \"a technical case's kept checkpoints could not reach the bucket: "
+        'ARTIFACT_REMOTE is not a gs:// path; the qualification does not start" 1 ;;',
+        "esac",
+        'if [ ! -f "${ARTIFACT_GCS_KEY:-}" ] || [ ! -r "${ARTIFACT_GCS_KEY:-}" ] '
+        "|| ! command -v gcloud > /dev/null; then",
+        "  stop \"a technical case's kept checkpoints could not reach the bucket: "
+        "ARTIFACT_GCS_KEY is not a readable file, or gcloud is not on PATH; the qualification "
+        'does not start" 1',
+        "fi",
     ]  # fmt: skip
     for index, p in enumerate(planned, 1):
         case = f"--case {shlex.quote(p.case.name)}"
         parts = f'{common} {case} --run-dir "$RUN_DIR" --checkpoints {shlex.quote(str(p.harness))}'
+        # The case's folder of its exports under $KEPT (each export kept-<n>/ in it)
+        kept_path = shlex.quote(f"qualification/{case_folder(Path(), p.case).as_posix()}")
         control = f"step {RUN} part {parts} --part control --resume"
         usual = [  # complete's no: the launcher run, then the parts
             f"{RUN} clear-stale {common} {case}",
@@ -2229,9 +2823,30 @@ def driver_script(
             "    ;;",
             '  *) stop "complete failed (exit $rc)" "$rc" ;;',
             "esac",
-            f"# A technical case stops the driver here (exit {TECHNICAL_CASE}), its checkpoints "
-            "kept",
-            f"step {RUN} finish {common} {case}",
+            *comment(f"A technical case stops the driver here, its checkpoints kept: finish "
+                     f"exports them to $KEPT, verified (exit {TECHNICAL_CASE}; {NOT_EXPORTED} "
+                     "when not), then the bucket copy is uploaded and verified (kept-check)"),
+            "rc=0",
+            f'{RUN} finish {common} {case} --kept "$KEPT" || rc=$?',
+            'case "$rc" in',
+            "  0) ;;",
+            f'  {TECHNICAL_CASE}) INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ)'
+            '.tsv"',
+            '     project-run "$SRC" python scripts/archive.py "$INV" '
+            f'"$ARTIFACT_REMOTE"/{remote} "$KEPT" {kept_path} \\',
+            f'       || stop "{p.case.name}: its kept checkpoints are not verified in the bucket '
+            "(archive.py); the volume copy is kept; the planned teardown waits for kept-check"
+            f'" {NOT_EXPORTED}',
+            f'     {RUN} kept-check {common} {case} --inventory "$INV" \\',
+            f'       || stop "{p.case.name}: kept-check did not verify its kept checkpoints; the '
+            f'volume copy is kept; the planned teardown waits for kept-check" {NOT_EXPORTED}',
+            f'     stop "{p.case.name}: a technical case: its checkpoints are kept, on the volume '
+            f'and in the bucket, verified" {TECHNICAL_CASE} ;;',
+            f'  {NOT_EXPORTED}) stop "{p.case.name}: its checkpoints are not exported and verified '
+            "on the volume (finish); they stay where they are; the planned teardown waits for "
+            f'kept-check" {NOT_EXPORTED} ;;',
+            f'  *) stop "{p.case.name}: finish failed (exit $rc)" "$rc" ;;',
+            "esac",
         ]  # fmt: skip
     lines.append(f'echo "== {stamp} every case is complete"')
     return "\n".join(lines) + "\n"
@@ -2251,6 +2866,7 @@ def main(argv: list[str] | None = None) -> None:
             "clear-stale",
             "locate",
             "finish",
+            "kept-check",
             "verdict",
             "interrupted",
             "restart-case",
@@ -2293,6 +2909,17 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="finish: delete a technical case's checkpoints once diagnosed",
     )
+    parser.add_argument(
+        "--kept",
+        type=Path,
+        metavar="DIR",
+        help="finish: the folder on the Pod's volume a technical case's checkpoints are exported "
+        "to (absolute); driver: the same, for each case's finish",
+    )
+    parser.add_argument("--kept-remote", default=KEPT_REMOTE, metavar="PREFIX",
+                        help="driver: the export's place under ARTIFACT_REMOTE")  # fmt: skip
+    parser.add_argument("--inventory", type=Path, metavar="FILE",
+                        help="kept-check: archive.py's inventory of the upload")  # fmt: skip
     parser.add_argument("--run-dir", type=Path, help="part: the launcher run")
     parser.add_argument("--checkpoints", type=Path, help="part: the harness's checkpoints")
     parser.add_argument("--device", default="cuda")
@@ -2319,6 +2946,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "driver":
         if problems or not planned:
             sys.exit("\n".join(["The campaign is not a qualification campaign:", *problems]))
+        kept = None if args.kept is None else Path(os.path.normpath(args.kept))
+        if kept is None or not kept.is_absolute():
+            sys.exit("driver needs --kept DIR, an absolute folder on the Pod's volume "
+                     "(/workspace/kept-checkpoints): a technical case's checkpoints are exported "
+                     "there")  # fmt: skip
+        if kept.is_relative_to(os.path.normpath(planned[0].endpoint)):
+            sys.exit(f"--kept {kept} lies under the checkpoint directory {planned[0].endpoint}, "
+                     "which goes with the container disk")  # fmt: skip
+        remote = PurePosixPath(args.kept_remote.strip().rstrip("/"))
+        if remote.is_absolute() or ".." in remote.parts or str(remote) == ".":
+            sys.exit(f"--kept-remote {args.kept_remote!r} is not a relative path under "
+                     "ARTIFACT_REMOTE")  # fmt: skip
         script = driver_script(args.commit or "<SHA>",
                                datetime.now(UTC).isoformat(timespec="seconds"),
                                args.campaign.resolve(), args, planned, settings,
@@ -2385,7 +3024,13 @@ def main(argv: list[str] | None = None) -> None:
         if not (complete if args.command == "complete" else decided):
             sys.exit(NO)
     elif args.command == "finish":
-        finish(chosen, out, root, scope, release=args.release)
+        finish(chosen, out, root, scope, release=args.release, kept=args.kept)
+    elif args.command == "kept-check":
+        if args.inventory is None:
+            sys.exit("kept-check needs --inventory FILE (scripts/archive.py's)")
+        code = kept_check(chosen, out, args.inventory)
+        if code:
+            sys.exit(code)
     elif args.command == "interrupted":
         if args.part is None or args.attempt is None or not args.technical:
             sys.exit("interrupted needs --part, --attempt N and --technical REASON")

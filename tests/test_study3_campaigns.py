@@ -501,6 +501,7 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
             overrides
         )
     assert f"python scripts/qualify.py driver --campaign {out} --candidate 1 --commit" in shown[-1]
+    assert "-driver.sh --kept /workspace/kept-checkpoints\n" in shown[-1]
     world.launched(out)
     world.qualified[1] = {(arm, rate) for (arm, _), rate in selected.items()}
 

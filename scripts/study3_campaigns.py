@@ -74,13 +74,14 @@ own, one attempt per documented incident: ``python scripts/launch.py FILE --only
 that no earlier round of the label gave, zero_field_refusal.launch, "Recovery rounds"): search and
 validation as ``python scripts/launch.py FILE --max-attempts 1``; engineering, numerical and repair
 through ``python scripts/qualify.py driver --campaign FILE --candidate N [--engineering] --commit
-SHA --out DRIVER``, which passes it itself. The validation's launch is preceded by its check,
-printed first: ``python scripts/study3_summary.py check --runs-root DIR --campaign FILE``, which
-exits 0 only while the versions record its header names holds for the running checkout (a run under
-another commit does not count, and the launcher never reruns it); it is run again, from the same
-checkout, before every resumption of the file and every recovery round of one of its runs. Campaign
-files belong outside the checkout (under $RUNS_DIR/campaigns/, say): the versions record holds only
-for a clean checkout.
+SHA --out DRIVER --kept /workspace/kept-checkpoints`` (``--kept``: the folder on the Pod's volume
+a technical case's checkpoints are exported to), which passes it itself. The validation's launch
+is preceded by its check, printed first: ``python scripts/study3_summary.py check --runs-root DIR
+--campaign FILE``, which exits 0 only while the versions record its header names holds for the
+running checkout (a run under another commit does not count, and the launcher never reruns it);
+it is run again, from the same checkout, before every resumption of the file and every recovery
+round of one of its runs. Campaign files belong outside the checkout (under $RUNS_DIR/campaigns/,
+say): the versions record holds only for a clean checkout.
 
 **The confirmation** is written into --out DIR: one campaign file per block, in seed order, and
 the driver ``run.sh``. Before each block, the driver checks that the block's file is the one
@@ -164,6 +165,7 @@ KINDS = {"engineering": ("engineering", None), "search-round0": ("search", 0),
          "repair": ("repair", None), "validation": ("validation", None),
          "confirmation": ("confirmation", None)}  # fmt: skip
 QUALIFICATION = ("engineering", "numerical", "repair")  # run through scripts/qualify.py driver
+KEPT = "/workspace/kept-checkpoints"  # the driver's --kept: the Pod's volume
 VERSIONED = ("validation", "confirmation")
 # The decision records a step's campaign rests on, by header key
 RECORDS = {"search": {"engineering_record": "engineering"},
@@ -449,7 +451,7 @@ def run_command(kind: str, candidate: int, out: Path) -> str:
     driver = out.with_name(f"{out.stem}-driver.sh")
     return (f"python scripts/qualify.py driver --campaign {shlex.quote(str(out))} --candidate "
             f"{candidate}{engineering} --commit {commit or 'SHA'} --out "
-            f"{shlex.quote(str(driver))}")  # fmt: skip
+            f"{shlex.quote(str(driver))} --kept {KEPT}")  # fmt: skip
 
 
 def check_command(root: Path, out: Path) -> str:

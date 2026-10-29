@@ -154,7 +154,7 @@ def test_the_disk_need_counts_the_diagnostic_steps(qualify, tmp_path) -> None:
     assert qualify.disk_need_gb(REGISTERED, [5, 10, 15]) == pytest.approx(6 * 6.5 + 4)
     path = campaign(tmp_path, fa=(10000,), adamw=(10001,), name="e", role="engineering")
     out = tmp_path / "driver.sh"
-    qualify.main(["driver", *common(path, "--engineering", "--diagnostic-steps", "5,10,15"),
+    qualify.main([*driver_args(tmp_path, path, "--engineering", "--diagnostic-steps", "5,10,15"),
                   "--commit", "a" * 40, "--out", str(out)])  # fmt: skip
     text = out.read_text()
     assert f"-lt {qualify.need_kb(6 * 6.5 + 4)} ]" in text
@@ -164,9 +164,15 @@ def test_the_disk_need_counts_the_diagnostic_steps(qualify, tmp_path) -> None:
 # ------------------------------------------------------------------------------- the driver
 
 
+def driver_args(tmp_path, path, *extra):
+    """``driver``'s arguments: the campaign, the candidate and the Pod's volume folder of a
+    technical case's kept checkpoints (``--kept``, absolute)."""
+    return ["driver", *common(path, *extra), "--kept", str(tmp_path / "volume" / "kept")]
+
+
 def driver_text(qualify, tmp_path, path=None) -> str:
     out = tmp_path / "driver.sh"
-    qualify.main(["driver", *common(path or campaign(tmp_path)), "--commit", "a" * 40,
+    qualify.main([*driver_args(tmp_path, path or campaign(tmp_path)), "--commit", "a" * 40,
                   "--out", str(out)])  # fmt: skip
     return out.read_text()
 
@@ -219,6 +225,7 @@ STUB = r"""#!/usr/bin/env bash
 if [ "$3" = -c ]; then exit 0; fi
 cmd="$4"
 if [ "$3" = scripts/launch.py ]; then cmd=launch; fi
+if [ "$3" = scripts/archive.py ]; then cmd=archive; fi
 echo "$cmd ${*:5}" >> "$STUB_LOG"
 n=$(grep -c "^$cmd " "$STUB_LOG")
 var="STUB_${cmd//-/_}"
@@ -229,29 +236,42 @@ exit "${codes[$i]}"
 """
 
 
-def run_driver(qualify, tmp_path, monkeypatch, **exits):
-    """The generated driver run by bash against stubs: ``project-run`` (each qualify.py command
-    and the launcher logged, with the exit ``exits`` gives it: a code, or codes call by call),
-    ``git`` and ``nvidia-smi``; no Pod environment, and a disk need of 1 KB."""
+def run_driver(qualify, tmp_path, monkeypatch, *, bucket=None, **exits):
+    """The generated driver run by bash against stubs: ``project-run`` (each qualify.py command,
+    the launcher and scripts/archive.py logged, with the exit ``exits`` gives it: a code, or codes
+    call by call), ``git``, ``nvidia-smi`` and a stand-in ``gcloud``; no Pod environment, a disk
+    need of 1 KB, and the bucket's settings (``ARTIFACT_REMOTE``, ``ARTIFACT_GCS_KEY`` a readable
+    file; ``bucket`` changes them: a value, or None to leave one unset, ``gcloud`` None to have no
+    gcloud on PATH)."""
     commit = "a" * 40
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, text in (("project-run", STUB), ("git", f"#!/bin/sh\necho {commit}\n"),
-                       ("nvidia-smi", '#!/bin/sh\ncase "$*" in *compute-apps*) ;; '
-                                      "*) echo 0 ;; esac\n")):  # fmt: skip
+    bucket = dict(bucket or {})
+    stand_ins = [("project-run", STUB), ("git", f"#!/bin/sh\necho {commit}\n"),
+                 ("nvidia-smi", '#!/bin/sh\ncase "$*" in *compute-apps*) ;; '
+                                "*) echo 0 ;; esac\n")]  # fmt: skip
+    if "gcloud" not in bucket:  # never called: project-run stands in for scripts/archive.py
+        stand_ins.append(("gcloud", "#!/bin/sh\nexit 1\n"))
+    bucket.pop("gcloud", None)
+    for name, text in stand_ins:
         (bin_dir / name).write_text(text)
         (bin_dir / name).chmod(0o755)
     (tmp_path / "code" / commit / "source").mkdir(parents=True)
+    key = tmp_path / "artifact-gcs-key.json"
+    key.write_text("{}")
     monkeypatch.setattr(qualify, "POD_ENVIRONMENT", ())
     monkeypatch.setattr(qualify, "SOURCES", str(tmp_path / "code"))
     monkeypatch.setattr(qualify, "need_kb", lambda gb: 1)
     out = tmp_path / "driver.sh"
-    qualify.main(["driver", *common(campaign(tmp_path)), "--commit", commit, "--out", str(out)])
+    qualify.main([*driver_args(tmp_path, campaign(tmp_path)), "--commit", commit,
+                  "--out", str(out)])  # fmt: skip
     log = tmp_path / "stub.log"
     log.touch()
+    settings = {"ARTIFACT_REMOTE": "gs://bucket/zfr", "ARTIFACT_GCS_KEY": str(key), **bucket}
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "RUNS_DIR": str(tmp_path / "runs"),
            "STUB_LOG": str(log), "STUB_complete": "3", "STUB_decided": "3",
            "STUB_control_only": "3",
+           **{name: value for name, value in settings.items() if value is not None},
            **{f"STUB_{key}": str(value) for key, value in exits.items()}}  # fmt: skip
     done = subprocess.run(["bash", str(out)], env=env, capture_output=True, text=True)
     calls = [line.split(" ", 1)[0] + " " + " ".join(re.findall(r"--(?:part|case) (\S+)", line))
@@ -323,12 +343,96 @@ def test_a_crashing_check_stops_the_driver(qualify, tmp_path, monkeypatch, comma
 
 
 def test_the_driver_stops_after_a_technical_case(qualify, tmp_path, monkeypatch) -> None:
-    """``finish`` exits 9 for a technical case and keeps its checkpoints: the driver stops there,
-    before the next case."""
+    """``finish`` exits 9 for a technical case and keeps its checkpoints, exported to the Pod's
+    volume: the driver uploads that export (scripts/archive.py), verifies it (``kept-check``) and
+    stops there, before the next case."""
     code, calls = run_driver(qualify, tmp_path, monkeypatch, finish=qualify.TECHNICAL_CASE)
     assert code == qualify.TECHNICAL_CASE
-    assert calls[-2:] == [f"finish {FA.name}", "verdict"]
+    assert calls[-4:] == [f"finish {FA.name}", "archive", f"kept-check {FA.name}", "verdict"]
     assert not any(ADAMW.name in call for call in calls)
+
+
+def test_the_driver_exports_and_verifies_a_technical_case_before_it_stops(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """A technical case: ``finish --kept "$KEPT"`` exits 9 once its checkpoints are exported to the
+    Pod's volume and verified there; scripts/archive.py uploads the case's folder of that export
+    to ``$ARTIFACT_REMOTE/<--kept-remote>`` with a new inventory under ``$RUNS_DIR/archive/``, and
+    ``kept-check`` reads that inventory; the driver then stops with 9. Every case's ``finish``
+    line is written so, both of FA's branches (``control-only`` 0 and 3) and AdamW's."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, finish=qualify.TECHNICAL_CASE,
+                             control_only=0)  # fmt: skip
+    assert code == qualify.TECHNICAL_CASE
+    assert calls == [*_with_case(["complete", "control-only", "part control", "finish"], FA),
+                     "archive", f"kept-check {FA.name}", "verdict"]  # fmt: skip
+    lines = (tmp_path / "stub.log").read_text().splitlines()
+    (finish,) = [line for line in lines if line.startswith("finish ")]
+    kept = tmp_path / "volume" / "kept"
+    assert finish.endswith(f"--kept {kept}") and kept.is_dir()
+    (archive,) = [line for line in lines if line.startswith("archive ")]
+    folder = f"qualification/c1/numerical/{FA.name}"
+    assert archive == f"archive gs://bucket/zfr/kept-checkpoints {kept} {folder}"
+    (check,) = [line for line in lines if line.startswith("kept-check ")]
+    inventory = check.split("--inventory ", 1)[1]
+    assert re.fullmatch(rf"{re.escape(str(tmp_path / 'runs' / 'archive'))}/"
+                        r"inventory-kept-\d{8}T\d{6}Z\.tsv", inventory)  # fmt: skip
+    text = (tmp_path / "driver.sh").read_text()
+    commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert commands.count(" finish --campaign ") == 2
+    assert commands.count('--kept "$KEPT" || rc=$?') == 2
+    assert commands.count("scripts/archive.py ") == 2
+    assert commands.count("qualify.py kept-check ") == 2
+    (tmp_path / "remote").mkdir()
+    out = tmp_path / "remote" / "driver.sh"
+    qualify.main([*driver_args(tmp_path, campaign(tmp_path)), "--kept-remote",
+                  "dryrun/dry-1/kept-checkpoints", "--commit", "a" * 40,
+                  "--out", str(out)])  # fmt: skip
+    assert '"$ARTIFACT_REMOTE"/dryrun/dry-1/kept-checkpoints "$KEPT" ' in out.read_text()
+
+
+@pytest.mark.parametrize(("exits", "stopped_at"), [({"archive": 1}, "archive"),
+                                                  ({"kept_check": 13}, "kept-check")])  # fmt: skip
+def test_the_driver_stops_with_13_when_the_bucket_copy_is_not_verified(
+    qualify, tmp_path, monkeypatch, exits, stopped_at
+) -> None:
+    """The upload fails (scripts/archive.py exits 1) or ``kept-check`` does not verify it (13):
+    the driver stops with 13, the volume copy kept, and says the planned teardown waits for
+    ``kept-check``; it goes on to no other case. ``finish``'s own 13 (no verified export on the
+    volume) stops it the same way."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, finish=qualify.TECHNICAL_CASE,
+                             **exits)  # fmt: skip
+    assert code == qualify.NOT_EXPORTED == 13
+    named = {"archive": "archive", "kept-check": f"kept-check {FA.name}"}
+    assert calls[-2:] == [named[stopped_at], "verdict"]
+    assert not any(ADAMW.name in call for call in calls)
+    text = (tmp_path / "driver.sh").read_text()
+    assert "planned teardown waits for kept-check" in text
+    (tmp_path / "again").mkdir()
+    code, calls = run_driver(qualify, tmp_path / "again", monkeypatch,
+                             finish=qualify.NOT_EXPORTED)  # fmt: skip
+    assert code == qualify.NOT_EXPORTED and calls[-2:] == [f"finish {FA.name}", "verdict"]
+
+
+@pytest.mark.parametrize("bucket", [{"ARTIFACT_REMOTE": None}, {"ARTIFACT_REMOTE": "/workspace/x"},
+                                    {"ARTIFACT_GCS_KEY": None}, {"ARTIFACT_GCS_KEY": "/no/key"},
+                                    {"gcloud": None}])  # fmt: skip
+def test_the_driver_checks_the_bucket_settings_before_the_first_case(
+    qualify, tmp_path, monkeypatch, bucket
+) -> None:
+    """Without ``ARTIFACT_REMOTE`` (a gs:// path), a readable ``ARTIFACT_GCS_KEY`` file or
+    ``gcloud`` on PATH, a technical case's kept checkpoints could not reach the bucket: the
+    driver exits 1 beside its GPU and memory checks, before the first case (no ``complete``);
+    its verdict is still written. ``driver`` itself needs ``--kept`` as an absolute folder outside
+    the checkpoint directory."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, bucket=bucket)
+    assert code == 1 and calls == ["verdict"]
+    text = (tmp_path / "driver.sh").read_text()
+    positions(text, [r"nvidia-smi", r"60 GB of free host memory", r"ARTIFACT_REMOTE",
+                     r"could not reach the bucket", r"--case "])  # fmt: skip
+    path = campaign(tmp_path)
+    for kept in ([], ["--kept", "volume/kept"], ["--kept", str(tmp_path / "ckpt" / "kept")]):
+        with pytest.raises(SystemExit, match="--kept"):
+            qualify.main(["driver", *common(path), *kept, "--dry-run"])
 
 
 def test_the_driver_validates_the_free_space(qualify, tmp_path) -> None:
@@ -344,8 +448,8 @@ def test_the_driver_checks_its_campaign_and_the_gpu(qualify, tmp_path) -> None:
     positions(text, [r"git rev-parse HEAD", r"sha256sum", r"trap .*verdict", r"nvidia-smi",
                      r"drift import host_memory.*\" 60; then", r"60 GB of free host memory",
                      r"--case "])  # fmt: skip
-    with pytest.raises(SystemExit):  # an existing --out
-        qualify.main(["driver", *common(path), "--commit", "a" * 40,
+    with pytest.raises(SystemExit, match="does not exist"):  # an existing --out
+        qualify.main([*driver_args(tmp_path, path), "--commit", "a" * 40,
                       "--out", str(path)])  # fmt: skip
 
 
@@ -386,7 +490,9 @@ def test_a_decided_fa_case_needs_its_control(qualify, tmp_path) -> None:
     qualify.main(["complete", *common(path), "--case", FA.name])
 
 
-def test_a_rest_bound_to_another_baseline_keeps_the_case_open(qualify, tmp_path) -> None:
+def test_a_rest_bound_to_another_baseline_keeps_the_case_open(
+    qualify, tmp_path, monkeypatch
+) -> None:
     """A rest record counts only when it names the latest baseline record's sha256 (a rest that
     ran nothing excepted): otherwise the case is not complete and keeps its checkpoints."""
     path = campaign(tmp_path, fa=())
@@ -411,9 +517,11 @@ def test_a_rest_bound_to_another_baseline_keeps_the_case_open(qualify, tmp_path)
     publish(out, ADAMW, "rest", {**failed, "status": "failed", "kind": "technical",
                                  "reasons": ["RuntimeError: before the baseline"]})  # fmt: skip
     qualify.main(["complete", *common(path), "--case", ADAMW.name])
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
     with pytest.raises(SystemExit) as stop:  # complete, and technical: its checkpoints stay
-        qualify.main(["finish", *common(path), "--case", ADAMW.name])
+        qualify.main(finish_args(path, ADAMW, kept))
     assert stop.value.code == qualify.TECHNICAL_CASE
+    assert (tmp_path / "ckpt" / "r-a1.pt").exists()
 
 
 def fake_part(calls):
@@ -2011,7 +2119,7 @@ TORN_BYTES = b'{"time": "2026-10-27T10:00:00+00:00", "event": "held", "run": "\x
     ("command", "extra"),
     [("part", ["--part", "baseline", "--resume", "--run-dir", "r", "--checkpoints", "c"]),
      ("complete", []), ("decided", []), ("control-only", []), ("clear-stale", []),
-     ("locate", []), ("finish", []),
+     ("locate", []), ("finish", []), ("kept-check", ["--inventory", "inventory.tsv"]),
      ("interrupted", ["--part", "rest", "--attempt", "1", "--technical", "a crash"]),
      ("restart-case", ["--infrastructure", RESTART]),
      ("supersede", ["--record", "CAMPAIGN", "--diagnosis", "d", "--fix", "f"]),
@@ -2052,7 +2160,7 @@ def test_plan_and_driver_read_no_runs_and_are_not_refused(qualify, tmp_path, cap
     log.parent.mkdir(parents=True)
     log.write_bytes(TORN_BYTES)
     qualify.main(["plan", *common(path)])
-    qualify.main(["driver", *common(path), "--dry-run"])
+    qualify.main([*driver_args(tmp_path, path), "--dry-run"])
     assert "torn" not in capsys.readouterr().err
 
 
@@ -2591,10 +2699,13 @@ def test_an_interrupted_control_of_a_decided_case_is_rerun_by_hand_after_a_lost_
     assert not any((tmp_path / "ckpt").glob("*.pt"))
 
 
-def test_a_failed_control_of_a_decided_case_is_kept(qualify, stubbed, tmp_path) -> None:
+def test_a_failed_control_of_a_decided_case_is_kept(
+    qualify, stubbed, tmp_path, monkeypatch
+) -> None:
     """A decided case's control recorded technical (K beyond 0.01·K*): it is never rerun, by
     hand or by ``control-only``; the case is complete, so no restart; ``finish`` keeps its
-    checkpoints for the diagnosis (exit 9)."""
+    checkpoints for the diagnosis (exit 9), the launcher run's, lost with the container disk,
+    listed as lost in its export's manifest."""
     path, root, out, run_dir = decided_world(tmp_path)
     failed = control_record(0.1, case=FA, identity=q.launcher_identity(run_dir))
     assert q.control_verdict(failed, SCOPE, 1)["kind"] == "technical"
@@ -2606,14 +2717,17 @@ def test_a_failed_control_of_a_decided_case_is_kept(qualify, stubbed, tmp_path) 
     with pytest.raises(SystemExit, match="the case is complete"):
         qualify.main(restart(path, FA, LOST))
     assert not list(case_folder(out, FA).glob("restart-*"))
-    assert exit_code(qualify, ["finish", *common(path), "--case", FA.name]) == (
-        qualify.TECHNICAL_CASE)  # fmt: skip
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
+    assert [entry["path"] for entry in manifest["lost"]] == [str(tmp_path / "ckpt" / "r-f1.pt")]
     assert stubbed == []
 
 
-def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:
+def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path, monkeypatch) -> None:
     """A case whose verdict is technical (or whose same-path control is) keeps its checkpoints
-    for the diagnosis: ``finish`` exits 9; ``--release`` deletes them once diagnosed."""
+    for the diagnosis: ``finish --kept DIR`` exports them and exits 9; ``--release`` deletes them
+    once diagnosed, after ``kept-check`` has verified that export."""
     path = campaign(tmp_path)
     out = tmp_path / "runs" / "qualification"
     journal(tmp_path / "runs", path, f"adam_frozen-{FA_LR:g}/s10200", ["r-a1"])
@@ -2621,13 +2735,543 @@ def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path) -> None:
     (tmp_path / "ckpt" / "r-a1.pt").write_bytes(b"w")
     write_case(out, FA)
     publish(out, FA, "control", control_record(0.1, case=FA))  # beyond 0.01·K*: technical
-    finish = ["finish", *common(path), "--case", FA.name]
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
     with pytest.raises(SystemExit) as stop:
-        qualify.main(finish)
+        qualify.main(finish_args(path, FA, kept))
     assert stop.value.code == qualify.TECHNICAL_CASE
     assert (tmp_path / "ckpt" / "r-a1.pt").exists()
-    qualify.main([*finish, "--release"])
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    qualify.main(finish_args(path, FA, None, "--release"))
     assert not (tmp_path / "ckpt" / "r-a1.pt").exists()
+
+
+# ------------------------------------------------- a technical case's kept checkpoints
+
+WEIGHTS, BASE, STATE = b"launcher weights", b"harness baseline", b"state at step 5"
+REMOTE = "gs://bucket/zfr/kept-checkpoints"  # $ARTIFACT_REMOTE/<--kept-remote>
+LOST_MESSAGE = ("lost before the export: the technical mark stands; the diagnosis goes on from "
+                "the records; nothing reruns")  # fmt: skip
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def kept_folder(qualify, monkeypatch, tmp_path, *, apart=True) -> Path:
+    """The Pod's volume folder of the kept checkpoints; ``apart``: on another filesystem than the
+    checkpoint directory (``same_filesystem`` patched: the tmp paths share one device)."""
+    if apart:
+        monkeypatch.setattr(qualify, "same_filesystem", lambda a, b: False)
+    folder = tmp_path / "volume" / "kept-checkpoints"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def finish_args(path, case, kept=None, *extra):
+    return ["finish", *common(path), "--case", case.name,
+            *([] if kept is None else ["--kept", str(kept)]), *extra]  # fmt: skip
+
+
+def kept_check_args(path, case, inventory):
+    return ["kept-check", *common(path), "--case", case.name, "--inventory", str(inventory)]
+
+
+def technical_world(tmp_path):
+    """FA's case complete and technical by its same-path control (K beyond 0.01·K*), its records
+    bound to its launcher run r-f1 (done); on disk, r-f1's endpoint checkpoint and the harness's
+    baseline checkpoint with their recorded sha256, and a diagnostic state no record names.
+    Returns the campaign, the records' folder, r-f1's directory and the files by name."""
+    path = campaign(tmp_path)
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, FA_LABEL, ["r-f1"])
+    endpoint = tmp_path / "ckpt"
+    run_dir = with_checkpoint(settled_launcher(root, run, "r-f1"), endpoint / "r-f1.pt", WEIGHTS)
+    harness = endpoint / "harness" / "s10200-adam_frozen-1.83e-05"
+    files = {"launcher": endpoint / "r-f1.pt", "baseline": harness / "harness-baseline.pt",
+             "state": harness / "baseline-states" / "step-5.pt"}  # fmt: skip
+    files["state"].parent.mkdir(parents=True)
+    files["baseline"].write_bytes(BASE)
+    files["state"].write_bytes(STATE)
+    identity = q.launcher_identity(run_dir)
+    baseline, rest = synthetic(FA, identity=identity)
+    baseline["checkpoint"] = {"path": str(files["baseline"]), "sha256": sha(BASE), "step": 25,
+                              "names_sha256": "n"}  # fmt: skip
+    publish(out, FA, "baseline", baseline)
+    rest["baseline_record"]["sha256"] = q.record_sha256(baseline)
+    rest["baseline_checkpoint_sha256"] = sha(BASE)
+    publish(out, FA, "rest", rest)
+    publish(out, FA, "control", control_record(0.1, case=FA, identity=identity))  # technical
+    return path, out, run_dir, files
+
+
+def archive_script():
+    spec = importlib.util.spec_from_file_location("archive_script", ROOT / "scripts" / "archive.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def archived(kept, inventory, monkeypatch, case=FA, *, change=None) -> Path:
+    """scripts/archive.py run as the driver runs it, on the case's folder of the export under
+    ``kept``, against a stand-in bucket: ``gcloud storage cp`` copies nothing, and the listing
+    gives each local file's size and MD5 (``change(name, size, md5)`` alters an object's). Its
+    inventory."""
+    archive = archive_script()
+
+    def gcloud(args):
+        if args[0] == "cp":
+            return ""
+        rel = args[2].removesuffix("/**").removeprefix(REMOTE + "/")
+        found = []
+        for file in sorted(f for f in (kept / rel).rglob("*") if f.is_file()):
+            size, _, md5 = archive.digests(file)
+            name = f"zfr/kept-checkpoints/{file.relative_to(kept).as_posix()}"
+            if change is not None:
+                size, md5 = change(name, size, md5)
+            found.append({"bucket": "bucket", "name": name, "size": str(size), "md5_hash": md5})
+        return json.dumps(found)
+
+    monkeypatch.setattr(archive, "gcloud", gcloud)
+    archive.archive(inventory, REMOTE, kept, [f"qualification/{case_folder(Path(), case)}"])
+    return inventory
+
+
+@contextlib.contextmanager
+def watched():
+    """Every path this process opens or lists while inside (the audit events ``open``,
+    ``os.listdir`` and ``os.scandir``)."""
+    seen, active = [], [True]
+
+    def hook(event, args):
+        if (active[0] and event in ("open", "os.listdir", "os.scandir") and args
+                and isinstance(args[0], (str, bytes, os.PathLike))):  # fmt: skip
+            seen.append(os.fsdecode(args[0]))
+
+    sys.addaudithook(hook)
+    try:
+        yield seen
+    finally:
+        active[0] = False
+
+
+def test_finish_exports_a_technical_cases_checkpoints_and_exits_9(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """A technical case (its same-path control beyond 0.01·K*): ``finish --kept DIR`` copies its
+    launcher run's checkpoint and every file of the harness's folder to
+    ``DIR/qualification/c<N>/<stage>/<case>/kept-1/`` in the same layout, each copy read back and
+    verified by its sha256, and exits 9 with the originals kept. Its manifest, in the case's
+    folder and in the export (``MANIFEST.json``, with ``SHA256SUMS``), lists every file with its
+    sha256 and whether it matches the sha256 a binding record gives its path, and binds the
+    records by path and sha256; nothing under the launcher run's responses/ is opened or listed."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    with watched() as seen:
+        assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert not [p for p in seen if {"responses", "observations", "judge"} & set(Path(p).parts)]
+    assert str(run_dir / "summary.json") in seen and str(run_dir / "meta.json") in seen
+    folder = case_folder(out, FA)
+    (manifest_path,) = folder.glob("kept-checkpoints-*.json")
+    assert manifest_path.name == "kept-checkpoints-1.json"
+    manifest = json.loads(manifest_path.read_text())
+    export = kept / "qualification" / "c1" / "numerical" / FA.name / "kept-1"
+    assert (manifest["kept"], manifest["export"]) == (str(kept), str(export.relative_to(kept)))
+    assert (export / "MANIFEST.json").read_bytes() == manifest_path.read_bytes()
+    assert manifest["verified"] is True and manifest["case"] == FA.record()
+    assert (manifest["stage"], manifest["candidate"]) == ("numerical", 1)
+    assert manifest["technical_reasons"]
+    assert all(r.startswith("control: ") for r in manifest["technical_reasons"])
+    entries = {entry["source"]: entry for entry in manifest["files"]}
+    assert set(entries) == {str(file) for file in files.values()}
+    for file in files.values():
+        entry = entries[str(file)]
+        copy = export / file.relative_to(tmp_path / "ckpt")
+        assert entry["copy"] == str(copy.relative_to(kept))
+        assert (kept / entry["copy"]).read_bytes() == file.read_bytes()  # the original kept
+        assert (entry["size"], entry["partial"], entry["verified"]) == (len(file.read_bytes()),
+                                                                       False, True)  # fmt: skip
+        assert entry["sha256"] == entry["copy_sha256"] == sha(file.read_bytes())
+    launcher, harness, state = (entries[str(files[name])] for name in files)
+    assert (launcher["recorded_sha256"], launcher["matches_record"]) == (sha(WEIGHTS), True)
+    assert (harness["recorded_sha256"], harness["matches_record"]) == (sha(BASE), True)
+    assert (state["recorded_sha256"], state["matches_record"]) == (None, None)  # none names it
+    records = {part: out / FA.attempt_path(part, 1) for part in ("baseline", "rest", "control")}
+    assert {r["record"] for r in launcher["named_by"]} == {str(run_dir / "summary.json"),
+                                                          *map(str, records.values())}  # fmt: skip
+    assert [r["record"] for r in harness["named_by"]] == [str(records["baseline"])]
+    assert manifest["lost"] == []
+    sums = (export / "SHA256SUMS").read_text().splitlines()
+    assert sorted(sums) == sorted([
+        *(f"{sha(f.read_bytes())}  {f.relative_to(tmp_path / 'ckpt')}" for f in files.values()),
+        f"{sha(manifest_path.read_bytes())}  MANIFEST.json"])  # fmt: skip
+    binding = manifest["binding"]
+    for part, record in records.items():
+        assert binding["parts"][part] == {
+            "attempt": 1, "path": str(record), "sha256": sha(record.read_bytes()),
+            "record_sha256": q.record_sha256(json.loads(record.read_text()))}  # fmt: skip
+    for name in ("summary", "meta"):
+        file = run_dir / f"{name}.json"
+        assert binding["launcher"][name] == {"path": str(file), "sha256": sha(file.read_bytes())}
+    assert binding["launcher"]["endpoint_checkpoint"]["sha256"] == sha(WEIGHTS)
+    assert manifest["provenance"]["gpu_code"] == CODE
+    assert {"host", "pod_id", "written_at"} <= set(manifest)
+    assert all(file.exists() for file in files.values())
+
+
+def test_a_present_checkpoint_of_another_hash_is_exported_as_it_is(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """The launcher run's checkpoint on disk with another sha256 than its recorded one (a
+    provenance conflict, ``checkpoint_conflict``): its bytes are exported and verified as a copy
+    of the file on disk, with ``matches_record`` false; nothing of the case changes, its
+    technical mark included."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    files["launcher"].write_bytes(b"other weights")
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    reasons = qualify.technical_reasons(out, planned, SCOPE)
+    records = tree(case_folder(out, FA))
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
+    (entry,) = [e for e in manifest["files"] if e["source"] == str(files["launcher"])]
+    assert entry["verified"] is True and entry["matches_record"] is False
+    assert entry["sha256"] == sha(b"other weights") and entry["recorded_sha256"] == sha(WEIGHTS)
+    assert (kept / entry["copy"]).read_bytes() == b"other weights"
+    assert qualify.checkpoint_conflict(run_dir) == files["launcher"]
+    assert qualify.technical_reasons(out, planned, SCOPE) == reasons
+    after = tree(case_folder(out, FA))
+    assert set(after) - set(records) == {"kept-checkpoints-1.json"}
+    assert all(after[name] == data for name, data in records.items())
+
+
+REFUSALS = {  # where --kept points → how finish names the refusal
+    "no --kept": "no --kept",
+    "relative": "not an absolute path",
+    "same filesystem": "filesystem",
+    "under the runs root": "under the runs root",
+    "under the checkpoint directory": "under the checkpoint directory",
+    "no room": "free",
+}
+
+
+@pytest.mark.parametrize("refusal", list(REFUSALS))
+def test_finish_refuses_an_export_it_cannot_keep(
+    qualify, tmp_path, monkeypatch, capsys, refusal
+) -> None:
+    """Before any copy, ``finish`` refuses the export (exit 13; no manifest, nothing copied,
+    nothing called verified, the checkpoints kept) without ``--kept``, for a relative folder, one
+    on the checkpoint directory's filesystem (the container disk), one under the runs root (it
+    would join the small results archived from there) or under the checkpoint directory, and one
+    with less free space than the files take."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path, apart=refusal != "same filesystem")
+    given = {
+        "no --kept": None,
+        "relative": Path("volume/kept-checkpoints"),
+        "under the runs root": tmp_path / "runs" / "kept",
+        "under the checkpoint directory": tmp_path / "ckpt" / "kept",
+    }.get(refusal, kept)
+    if given is not None and given.is_absolute():
+        given.mkdir(parents=True, exist_ok=True)
+    if refusal == "no room":
+        need = sum(len(file.read_bytes()) for file in files.values())
+        monkeypatch.setattr(qualify, "free_bytes", lambda folder: need - 1)
+    before = tree(tmp_path / "ckpt")
+    capsys.readouterr()
+    assert exit_code(qualify, finish_args(path, FA, given)) == qualify.NOT_EXPORTED
+    err = capsys.readouterr().err
+    assert REFUSALS[refusal] in err and "nothing is copied" in err
+    assert not list(case_folder(out, FA).glob("kept-*"))
+    for folder in (kept, tmp_path / "runs" / "kept", tmp_path / "ckpt" / "kept"):
+        assert not folder.exists() or not any(folder.iterdir())
+    assert tree(tmp_path / "ckpt") == before
+
+
+def test_a_copy_that_differs_is_never_verified(qualify, tmp_path, monkeypatch) -> None:
+    """A copy that does not read back as its source's bytes (a byte flipped after the copy): the
+    export is not verified, ``finish`` exits 13, its manifest says so, and ``kept-check`` refuses
+    it. Run again, ``finish`` writes ``kept-2``, verified; ``kept-1`` stays as it was: nothing is
+    overwritten."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    copy = qualify.copy_durably
+
+    def corrupting(source, target):
+        result = copy(source, target)
+        data = bytearray(target.read_bytes())
+        data[0] ^= 0xFF
+        target.write_bytes(bytes(data))
+        return result
+
+    monkeypatch.setattr(qualify, "copy_durably", corrupting)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.NOT_EXPORTED
+    folder = case_folder(out, FA)
+    first = json.loads((folder / "kept-checkpoints-1.json").read_text())
+    assert first["verified"] is False and not any(e["verified"] for e in first["files"])
+    assert all(e["copy_sha256"] != e["sha256"] for e in first["files"])
+    exports = kept / "qualification" / "c1" / "numerical" / FA.name
+    before = tree(exports / "kept-1")
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == qualify.NOT_EXPORTED
+    monkeypatch.setattr(qualify, "copy_durably", copy)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    second = json.loads((folder / "kept-checkpoints-2.json").read_text())
+    assert second["verified"] is True and second["export"].endswith("/kept-2")
+    assert tree(exports / "kept-1") == before
+    assert json.loads((folder / "kept-checkpoints-1.json").read_text()) == first
+    assert all(file.exists() for file in files.values())
+
+
+def test_a_copy_that_fails_leaves_nothing_called_verified(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """A copy that raises partway (the volume full, say): ``finish`` exits 13 and publishes no
+    manifest, so nothing is called verified; the checkpoints stay, and the next run exports to a
+    new folder past the one left partial."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    copy = qualify.copy_durably
+
+    def failing(source, target):
+        if source == files["baseline"]:
+            raise OSError(28, "No space left on device")
+        return copy(source, target)
+
+    monkeypatch.setattr(qualify, "copy_durably", failing)
+    capsys.readouterr()
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.NOT_EXPORTED
+    assert "No space left on device" in capsys.readouterr().err
+    folder = case_folder(out, FA)
+    assert not list(folder.glob("kept-checkpoints-*"))
+    assert all(file.exists() for file in files.values())
+    monkeypatch.setattr(qualify, "copy_durably", copy)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    (manifest,) = [json.loads(f.read_text()) for f in folder.glob("kept-checkpoints-*")]
+    assert manifest["export"].endswith("/kept-2") and manifest["verified"] is True
+
+
+def test_finish_again_reuses_a_verified_export(qualify, tmp_path, monkeypatch) -> None:
+    """Run again over an export whose copies all re-hash to its manifest, the case's files
+    unchanged: nothing is copied, and ``finish`` exits 9. A file added since is exported anew,
+    the whole case as ``kept-2``; ``kept-1`` stays."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    before = tree(kept)
+    copies, copy = [], qualify.copy_durably
+    monkeypatch.setattr(
+        qualify,
+        "copy_durably",
+        lambda source, target: copies.append(source) or copy(source, target),
+    )
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert copies == [] and tree(kept) == before
+    folder = case_folder(out, FA)
+    assert [f.name for f in folder.glob("kept-checkpoints-*")] == ["kept-checkpoints-1.json"]
+    late = files["state"].with_name("step-10.pt")
+    late.write_bytes(b"state at step 10")
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert sorted(f.name for f in folder.glob("kept-checkpoints-*")) == [
+        "kept-checkpoints-1.json", "kept-checkpoints-2.json"]  # fmt: skip
+    assert sorted(copies) == sorted([*files.values(), late])
+    after = tree(kept)
+    assert all(after[name] == data for name, data in before.items())
+
+
+def test_checkpoints_lost_before_the_export_leave_the_technical_mark(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """The container disk lost after the case's records and before ``finish``: nothing is left
+    to copy. The technical mark stands: ``finish`` exits 9, saying so; its manifest's ``lost``
+    names each checkpoint a binding record names, with its recorded sha256 and the records
+    naming it, and the export holds the manifest alone, which ``kept-check`` verifies;
+    ``restart-case`` refuses the complete case, and the verdict stays technical."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    shutil.rmtree(tmp_path / "ckpt")
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    reasons = qualify.technical_reasons(out, planned, SCOPE)
+    assert reasons
+    capsys.readouterr()
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert LOST_MESSAGE in capsys.readouterr().err
+    folder = case_folder(out, FA)
+    manifest = json.loads((folder / "kept-checkpoints-1.json").read_text())
+    assert manifest["files"] == [] and manifest["verified"] is True
+    lost = {entry["path"]: entry for entry in manifest["lost"]}
+    assert set(lost) == {str(files["launcher"]), str(files["baseline"])}
+    assert lost[str(files["launcher"])]["recorded_sha256"] == sha(WEIGHTS)
+    assert lost[str(files["baseline"])]["recorded_sha256"] == sha(BASE)
+    assert str(run_dir / "summary.json") in {
+        r["record"] for r in lost[str(files["launcher"])]["named_by"]}  # fmt: skip
+    assert [r["record"] for r in lost[str(files["baseline"])]["named_by"]] == [
+        str(out / FA.attempt_path("baseline", 1))]  # fmt: skip
+    export = kept / manifest["export"]
+    assert sorted(p.name for p in export.iterdir()) == ["MANIFEST.json", "SHA256SUMS"]
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    with pytest.raises(SystemExit, match="the case is complete"):
+        qualify.main(restart(path, FA, RESTART))
+    assert not list(folder.glob("restart-*"))
+    assert qualify.technical_reasons(out, planned, SCOPE) == reasons
+    assert qualify.case_state(out, planned, SCOPE)[0] is True
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    assert verdict["rates"][f"adam_frozen-{FA_LR:g}"]["control"]["kind"] == "technical"
+
+
+def test_release_needs_a_verified_export(qualify, tmp_path, monkeypatch) -> None:
+    """``finish --release`` deletes a technical case's checkpoints only once a ``kept-check`` of
+    exit 0 binds the export it relies on (its receipt names that manifest's sha256), and every
+    file still matches its exported copy by size and sha256: without an export, before
+    ``kept-check`` has passed, after one that did not, or with a file added or changed since the
+    export, it exits 13 and deletes nothing. Its release record names the manifest and the
+    receipt; the volume copy stays."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    release = finish_args(path, FA, None, "--release")
+    folder = case_folder(out, FA)
+
+    def refused():
+        return (
+            exit_code(qualify, release) == qualify.NOT_EXPORTED
+            and all(file.exists() for file in files.values())
+            and not list(folder.glob("checkpoints-removed-*"))
+        )
+
+    assert refused()  # no export
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert refused()  # no kept-check yet
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    text = inventory.read_text()
+    inventory.write_text(text.replace("\tok\n", "\tMISMATCH remote=None,None\n", 1))
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == qualify.NOT_EXPORTED
+    assert refused()  # its kept-check exited 13
+    inventory.write_text(text)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    late = files["state"].with_name("step-10.pt")
+    late.write_bytes(b"state at step 10")
+    assert refused() and late.exists()  # a file the export does not hold
+    late.unlink()
+    files["state"].write_bytes(b"another state")
+    assert refused()  # a file changed since the export
+    files["state"].write_bytes(STATE)
+    qualify.main(release)
+    assert not any(file.exists() for file in files.values())
+    assert not (tmp_path / "ckpt" / "harness" / "s10200-adam_frozen-1.83e-05").exists()
+    (record,) = [json.loads(f.read_text()) for f in folder.glob("checkpoints-removed-*")]
+    manifest = folder / "kept-checkpoints-1.json"
+    receipt = folder / "kept-check-2.json"
+    assert record["manifests"] == [{"path": str(manifest), "sha256": sha(manifest.read_bytes())}]
+    assert record["kept_check"] == {"path": str(receipt), "sha256": sha(receipt.read_bytes())}
+    assert str(files["launcher"]) in record["removed"] and record["release"] is True
+    assert qualify.checkpoint_missing(run_dir, folder) is False  # removed on purpose
+    export = kept / json.loads(manifest.read_text())["export"]
+    assert all((export / f.relative_to(tmp_path / "ckpt")).is_file() for f in files.values())
+
+
+def test_release_checks_each_file_again_right_before_its_deletion(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """A file that changes after the release's check of every file and before its own deletion:
+    the release stops there (exit 13); the files deleted before it, each matching its copy, are
+    recorded, and it and the rest are kept."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    order = [files["launcher"], files["state"], files["baseline"]]  # case_files' order
+    checked, check = [], qualify.matches_export
+
+    def changing(source, entry):
+        checked.append(source)
+        if len(checked) == len(order) + 2:  # the deletion's check of the second file
+            source.write_bytes(b"changed in between")
+        return check(source, entry)
+
+    monkeypatch.setattr(qualify, "matches_export", changing)
+    assert exit_code(qualify, finish_args(path, FA, None, "--release")) == qualify.NOT_EXPORTED
+    assert checked == [*order, *order[:2]]
+    assert not order[0].exists() and order[1].exists() and order[2].exists()
+    (record,) = [json.loads(f.read_text())
+                 for f in case_folder(out, FA).glob("checkpoints-removed-*")]  # fmt: skip
+    assert record["removed"] == [str(order[0])]
+
+
+KEPT_CHECK_CHANGES = {  # how the inventory departs from the export → what kept-check names
+    "a missing line": (lambda rows, export: [r for r in rows if not r.startswith(
+        f"{export}/r-f1.pt\t")], "r-f1.pt"),
+    "another size": (lambda rows, export: [field(r, 1, "999", export) for r in rows],
+                     "r-f1.pt"),
+    "another sha256": (lambda rows, export: [field(r, 2, "0" * 64, export) for r in rows],
+                       "r-f1.pt"),
+    "not verified": (lambda rows, export: [field(r, 5, "MISMATCH remote=1,x", export)
+                                           for r in rows], "r-f1.pt"),
+    "no MANIFEST.json line": (lambda rows, export: [r for r in rows if not r.startswith(
+        f"{export}/MANIFEST.json\t")], "MANIFEST.json"),
+    "no SHA256SUMS line": (lambda rows, export: [r for r in rows if not r.startswith(
+        f"{export}/SHA256SUMS\t")], "SHA256SUMS"),
+}  # fmt: skip
+
+
+def field(row, index, value, export):
+    """``row`` of the inventory with field ``index`` set to ``value``, when it is r-f1.pt's."""
+    cells = row.split("\t")
+    if cells[0] == f"{export}/r-f1.pt":
+        cells[index] = value
+    return "\t".join(cells)
+
+
+def test_kept_check_verifies_the_volume_copy_and_the_inventory(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """``kept-check`` exits 0 only when the copies of the case's latest manifest re-hash to it on
+    the volume and archive.py's inventory has a line for each exported file (the copies,
+    ``MANIFEST.json``, ``SHA256SUMS``) with its size and sha256 and the verified status; 13
+    otherwise, naming what fails. Each check publishes its receipt (``kept-check-<n>.json``):
+    the manifest's and the inventory's path and sha256, the exit, and ``pending-upload`` when the
+    volume copy is verified and the bucket copy is not."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    folder = case_folder(out, FA)
+    none = tmp_path / "none.tsv"
+    assert exit_code(qualify, kept_check_args(path, FA, none)) == qualify.NOT_EXPORTED
+    assert not list(folder.glob("kept-check-*"))  # no export: no receipt
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    manifest = folder / "kept-checkpoints-1.json"
+    receipt = json.loads((folder / "kept-check-1.json").read_text())
+    assert receipt["manifest"] == {"path": str(manifest), "sha256": sha(manifest.read_bytes())}
+    assert receipt["inventory"] == {"path": str(inventory), "sha256": sha(inventory.read_bytes())}
+    assert (receipt["exit"], receipt["pending-upload"], receipt["problems"]) == (0, False, [])
+    export = json.loads(manifest.read_text())["export"]
+    text = inventory.read_text()
+    rows = text.splitlines()
+    number = 1
+    for what, (change, named) in KEPT_CHECK_CHANGES.items():
+        inventory.write_text("\n".join(change(rows, export)) + "\n")
+        capsys.readouterr()
+        assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 13, what
+        assert named in capsys.readouterr().err, what
+        number += 1
+        receipt = json.loads((folder / f"kept-check-{number}.json").read_text())
+        assert (receipt["exit"], receipt["pending-upload"]) == (13, True), what
+        assert "planned teardown waits for kept-check" in receipt["teardown"]
+    other = archived(kept, tmp_path / "other.tsv", monkeypatch, change=lambda name, size, md5: (
+        (size, "x") if name.endswith("/r-f1.pt") else (size, md5)))  # fmt: skip
+    assert exit_code(qualify, kept_check_args(path, FA, other)) == 13  # another object
+    inventory.write_text(text)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    (kept / export / "r-f1.pt").write_bytes(b"changed on the volume")
+    capsys.readouterr()
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 13
+    assert "r-f1.pt" in capsys.readouterr().err
+    receipts = sorted(folder.glob("kept-check-*"), key=lambda f: int(f.stem.rsplit("-", 1)[1]))
+    receipt = json.loads(receipts[-1].read_text())
+    assert (receipt["exit"], receipt["pending-upload"]) == (13, False)
 
 
 def test_a_part_sets_the_numerics_before_its_environment(qualify, tmp_path, monkeypatch) -> None:
