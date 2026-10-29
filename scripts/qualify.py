@@ -182,11 +182,13 @@ provenance conflict, which stops the step and is kept for the diagnosis). The dr
 ``part --part control --resume`` on that run, with every check of the control (``run_part``: the
 launcher run against the case and this process's numerics, its streams and v₀), and neither
 ``clear-stale``, the disk check, the launcher, ``locate``, the baseline, ``decided`` nor the
-rest; ``finish`` follows. It exits 3 (``NO``) for a case outside that state, which takes the
-usual path: a case decided by its launcher run's own declared instability stop among them (a
-run the launcher accepts without its checkpoint), and a technical case, whose ``finish``
-exports its checkpoints. It exits 1, naming the condition, for a case whose recorded parts it
-cannot bind: the driver stops there, and nothing is rerun. The control's attempts are a part's
+rest; ``finish`` follows. The checks go in this order. Exit 3 (``NO``), the usual path: a case
+whose control is not outstanding or with another part outstanding; then a case its own verdict
+marks technical, whatever its bindings, before any binding check, so that its ``finish``
+exports its checkpoints; then a case decided by its launcher run's own declared instability
+stop (a run the launcher accepts without its checkpoint). Exit 1, naming the condition: a
+baseline record not classified or of another non-null kind, then any binding that fails; the
+driver stops there, and nothing is rerun. Otherwise exit 0. The control's attempts are a part's
 (below): ``--resume`` runs attempt 1, or exits 8 for an interrupted one, whose rerun is by hand
 (``--attempt N --infrastructure REASON``) whatever happened to the container disk, as the
 control reads no checkpoint; a recorded control, of any kind, is never rerun. A decided case is
@@ -933,10 +935,12 @@ def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope)
     """The launcher run of a case whose only outstanding part is its same-path control (module
     docstring, "A case whose control alone is outstanding": decided by its baseline, or with its
     baseline and rest recorded), not technical: the driver then runs that control on it, and
-    neither the launcher nor any other part. Exits 3 (``NO``) for a case not in that state, which
-    takes the driver's usual path (a case decided by its launcher run's own declared instability
-    stop, and a technical case, included); exits 1, naming why, for a case whose recorded parts
-    cannot be bound to the launcher run (``control_binding``)."""
+    neither the launcher nor any other part. In this order: exits 3 (``NO``), the driver's usual
+    path, for a case not in that state, then for a case its own verdict marks technical
+    (``technical_reasons``, whatever its bindings: ``finish`` exports its checkpoints), then for
+    a case decided by its launcher run's own declared instability stop; exits 1, naming why, for
+    a case whose recorded parts cannot be bound to the launcher run (``control_binding``: a
+    baseline not classified or of another kind included)."""
     name = p.case.name
 
     def no(why: str) -> NoReturn:
@@ -962,6 +966,11 @@ def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope)
     if not recorded:
         no(f"{why}: {'' if decided else 'not decided, and '}a part besides its control is "
            "outstanding")  # fmt: skip
+    # Technical by its own verdict, whatever its bindings: its control, and the export of its
+    # checkpoints by ``finish``, on the usual path
+    technical = technical_reasons(out, others, scope)
+    if technical:
+        no(f"a technical case ({'; '.join(technical)}), whose finish exports its checkpoints")
     baseline = part_state(out, p.case, "baseline").record or {}
     launcher = baseline.get("launcher") or {}
     if launcher.get("classified") is True and launcher.get("kind") == q.SCIENTIFIC:
@@ -975,9 +984,6 @@ def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope)
         sys.exit(f"{name}: its same-path control alone is outstanding, but its recorded parts "
                  f"cannot be bound to its launcher run without the launcher: "
                  f"{'; '.join(problems)}. The driver stops; nothing is rerun")  # fmt: skip
-    technical = technical_reasons(out, others, scope)
-    if technical:  # its control and its export of the checkpoints: the usual path
-        no(f"a technical case ({'; '.join(technical)}), whose finish exports its checkpoints")
     return run_dir
 
 

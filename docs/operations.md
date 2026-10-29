@@ -1549,7 +1549,7 @@ docstring has every rule.
   | What the driver's log and the records show | What it is | What to do |
   |---|---|---|
   | `complete` exits 3 for the case. The launcher, called by the driver, exits 1 and its only conflict line is "the endpoint checkpoint … is missing" for the case's own launcher run. No `checkpoints-removed-<n>.json` of the case names that path. Evidence of a lost container disk: the Pod stopped or restarted (its event log), or an empty checkpoint folder after a container restart. The launch journal's end of that launcher run records `done`, or is settled (`"settled": true`, no return code) and was written after that stop. | An unfinished case's lost checkpoint (infrastructure) | Diagnose it, then `restart-case --infrastructure "<UTC time; what was lost; the evidence>"`. Then the launcher run's recovery round, `launch.py CAMPAIGN --only LABEL --max-attempts 1 --recovery "<the same reason>"` with `--incident-time`, `--cause` and `--evidence` (its first round, or a further one with a reason no earlier round gave). Then each part the restart names that the case needs, the baseline first, as its next attempt with that reason; a part the restart does not name takes attempt 1, without `--infrastructure`. Then the driver. The commands are in "A case restart". |
-  | A case whose only outstanding part is its same-path control (decided by its baseline, or with its baseline and rest recorded). The driver's log shows `control-only` exit 0, then the control, then `finish`; or `part --part control --resume` exits 8 (the control was interrupted); or `control-only` exits 1 with the reason it names. The launcher is never called there, so no "is missing" message appears. | Not a restart | Nothing beyond the driver. For an interrupted control, run its next attempt with `--infrastructure "<reason>"`, then the driver. For `control-only`'s exit 1, follow the reason it names. `restart-case` refuses a case with a scientific failure: it keeps counting. See "A case whose control alone is due". |
+  | A case whose only outstanding part is its same-path control (decided by its baseline, or with its baseline and rest recorded), not technical (a technical one gets `control-only`'s exit 3 and the usual path; after a lost container disk, row 3). The driver's log shows `control-only` exit 0, then the control, then `finish`; or `part --part control --resume` exits 8 (the control was interrupted); or `control-only` exits 1 with the reason it names. The launcher is never called there, so no "is missing" message appears. | Not a restart | Nothing beyond the driver. For an interrupted control, run its next attempt with `--infrastructure "<reason>"`, then the driver. For `control-only`'s exit 1, follow the reason it names. `restart-case` refuses a case with a scientific failure: it keeps counting. See "A case whose control alone is due". |
   | The same sign as row 1, for a case with a completed failure (`restart-case` refuses) | Not a restart | A scientific failure stands, and a due control still runs alone through the driver. A technical one goes to the engineering cycle (`supersede`, below). |
   | The message for a label whose case `complete` exits 0, and a `checkpoints-removed-<n>.json` names the path | `finish` removed it on purpose | Nothing. The driver never calls the launcher on a complete case, and nobody calls it on a finished case's label. `restart-case` refuses a complete case. |
   | A launcher start without an end at the loss; the next launcher call settles it technical and exits 1 with "used up their attempts" | The launcher run was in flight | No restart (`restart-case` refuses). A recovery round with the documented reason: `--only LABEL --max-attempts 1 --recovery` and the incident fields. |
@@ -1634,11 +1634,12 @@ docstring has every rule.
 
   The driver then runs `part --part control --resume` on that run, with all the control's own
   checks (the launcher run's numerics, the streams, v₀), and then `finish`: never
-  `clear-stale`, the launcher, `locate`, the baseline, `decided` or the rest. Exit 3 is the
-  usual path (any other case, a case decided by its launcher run's own declared instability
-  stop included: the launcher accepts that run without its checkpoint; and a technical case,
-  whose `finish` exports its checkpoints). Exit 1 names the condition that fails for a case whose
-  recorded parts it cannot bind: the driver stops, nothing is rerun,
+  `clear-stale`, the launcher, `locate`, the baseline, `decided` or the rest. The checks go in
+  this order. Exit 3, the usual path: a case outside this state; then a technical case (by its
+  own verdict, whatever its bindings, so that its `finish` exports its checkpoints); then a case
+  decided by its launcher run's own declared instability stop (the launcher accepts that run
+  without its checkpoint). Exit 1: a baseline not classified or of another kind, then a binding
+  that fails. Otherwise exit 0. Exit 1 names the condition: the driver stops, nothing is rerun,
   and the case waits for a diagnosis. A present endpoint checkpoint of another sha256 than its
   recorded one stops the step too (exit 1, a provenance conflict), and the file is kept for the
   diagnosis. As any part, a recorded control, technical or

@@ -3019,29 +3019,137 @@ def baseline_elsewhere(path, root, out, run_dir):
         sha256=q.record_sha256(baseline)))  # fmt: skip
 
 
-BOUND_ELSEWHERE = {  # a part of a case whose rest is recorded, bound to another launcher run
-    "rest run id": (rest_change(lambda r, d: r.update(launcher_run=str(d.parent / "r-f0"))),
-                    "the rest record names the launcher run"),
-    "rest identity": (rest_change(lambda r, d: r["launcher"]["identity"].update(sha256="0" * 64)),
-                      "identity is not the one the rest record names"),
-    "baseline run id": (baseline_elsewhere, "the baseline record names the launcher run"),
+def baseline_identity_elsewhere(path, root, out, run_dir):
+    """The baseline names another identity than the located run's (and the rest's); the rest is
+    bound to that baseline record again, so that only the identity differs."""
+    edit_part(out, "baseline", lambda b: b["launcher"]["identity"].update(sha256="0" * 64))
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    edit_part(out, "rest", lambda r: r["baseline_record"].update(
+        sha256=q.record_sha256(baseline)))  # fmt: skip
+
+
+NO = 3  # ``control-only``'s no: the driver's usual path (scripts/qualify.py's ``NO``)
+BOUND_ELSEWHERE = {  # a part bound to another launcher run → the exit, and what it names
+    # Not technical by the case's verdict (it compares no run directory): refused, exit 1
+    "rest run id, not technical: 1": (
+        rest_change(lambda r, d: r.update(launcher_run=str(d.parent / "r-f0"))), 1,
+        "the rest record names the launcher run"),
+    "baseline run id, not technical: 1": (
+        baseline_elsewhere, 1, "the baseline record names the launcher run"),
+    # Technical by the verdict (the rest ran against another launcher run): the usual path, 3
+    "rest identity, technical: 3": (
+        rest_change(lambda r, d: r["launcher"]["identity"].update(sha256="0" * 64)), NO,
+        "the rest part ran against another launcher run"),
+    "baseline identity, technical: 3": (
+        baseline_identity_elsewhere, NO, "the rest part ran against another launcher run"),
 }  # fmt: skip
 
 
 @pytest.mark.parametrize("elsewhere", list(BOUND_ELSEWHERE))
 def test_control_only_refuses_a_part_bound_to_another_launcher_run(
-    qualify, stubbed, tmp_path, elsewhere
+    qualify, stubbed, tmp_path, capsys, elsewhere
 ) -> None:
     """A case whose baseline and rest are recorded, its control due, but one of those records
-    bound to another launcher run than the located one (the rest by its run id or its identity,
-    or the baseline): ``control-only`` exits 1 naming it, and nothing runs."""
+    bound to another launcher run than the located one: ``control-only`` never runs the control
+    alone. Where the case's verdict does not mark it technical (a run id differs), it exits 1
+    naming the record; where it does (an identity differs: the rest ran against another launcher
+    run), it exits 3, the usual path, whose ``finish`` exports the case's checkpoints."""
     path, root, out, run_dir = decided_world(tmp_path, rest=True)
     assert exit_code(qualify, control_only(path)) == 0
-    change, why = BOUND_ELSEWHERE[elsewhere]
+    change, expected, why = BOUND_ELSEWHERE[elsewhere]
     change(path, root, out, run_dir)
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    rest = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    technical = q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
+    assert technical is (expected == NO)
+    capsys.readouterr()
     code = exit_code(qualify, control_only(path))
-    assert isinstance(code, str) and why in code and "nothing is rerun" in code, code
+    if expected == NO:
+        assert code == NO and why in capsys.readouterr().err
+    else:
+        assert isinstance(code, str) and why in code and "nothing is rerun" in code, code
     assert stubbed == [] and not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+
+
+def launcher_not_conforming(baseline):
+    """The baseline's launcher check found the run not conforming: nothing ran (technical)."""
+    reasons = ["the launcher run does not conform: its numerics setup departs"]
+    baseline["launcher"].update(kind="technical", reasons=reasons)
+    baseline.update(status="not_run", kind="technical", reasons=reasons)
+
+
+def launcher_not_classified(baseline):
+    """The baseline raised before its launcher check returned: failed, technical."""
+    baseline["launcher"]["classified"] = False
+    baseline.update(status="failed", kind="technical", reasons=["RuntimeError: the setup"])
+
+
+def launcher_check_world(tmp_path, change):
+    """FA's passing baseline changed by ``change`` (its launcher check failed or never
+    returned), its rest recorded and bound to it (ran nothing: technical), the control due; the
+    disk intact, r-f1's checkpoint on it with its recorded bytes."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    edit_part(out, "baseline", change)
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+
+    def ran_nothing(rest):
+        reasons = ["the baseline part did not end with its checkpoint (not_run)"]
+        rest.update(status="not_run", kind="technical", reasons=reasons)
+        rest["baseline_record"]["sha256"] = q.record_sha256(baseline)
+
+    edit_part(out, "rest", ran_nothing)
+    (tmp_path / "ckpt" / "r-f1.pt").write_bytes(b"w")  # ``with_checkpoint``'s recorded bytes
+    return path, root, out, run_dir
+
+
+TECHNICAL_WORLDS = {  # a case its own verdict marks technical → what control-only names
+    "baseline launcher kind technical": (
+        lambda tmp_path: launcher_check_world(tmp_path, launcher_not_conforming),
+        "the launcher run does not conform"),
+    "baseline not classified": (
+        lambda tmp_path: launcher_check_world(tmp_path, launcher_not_classified),
+        "RuntimeError: the setup"),
+    "rest bound to another identity": (
+        lambda tmp_path: decided_world(tmp_path, rest=lambda r: r["launcher"]["identity"].update(
+            sha256="0" * 64)),
+        "the rest part ran against another launcher run"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("world", list(TECHNICAL_WORLDS))
+def test_control_only_sends_every_technical_case_to_the_usual_path(
+    qualify, tmp_path, monkeypatch, capsys, world
+) -> None:
+    """A case its own verdict marks technical, its control due: the baseline's launcher check
+    failed (the run not conforming, or the check never returned), or its rest is bound to
+    another launcher run. ``control-only`` exits 3 naming the technical mark, before any binding
+    check, and runs nothing alone. On the driver's usual path (its launcher call and ``locate``
+    are the driver's) ``decided`` says no, the control runs on the case's run, and ``finish
+    --kept`` exports the checkpoints and exits 9."""
+    assert NO == qualify.NO
+    make, why = TECHNICAL_WORLDS[world]
+    path, root, out, run_dir = make(tmp_path)
+    (tmp_path / "ckpt" / "r-f1.pt").write_bytes(b"w")  # the disk intact
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    rest = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    assert q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
+    calls = []
+    monkeypatch.setattr(qualify.runtime, "configure_numerics", lambda cfg, device: {})
+    monkeypatch.setattr(qualify.runtime, "environment", lambda cfg, device: object())
+    monkeypatch.setattr(qualify.q, "run_part", accepted_control(calls, run_dir))
+    capsys.readouterr()
+    assert exit_code(qualify, control_only(path)) == NO
+    err = capsys.readouterr().err
+    assert "technical case" in err and why in err, err
+    assert calls == [] and not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+    # The usual path, the disk intact
+    assert exit_code(qualify, ["decided", *common(path), "--case", FA.name]) == NO
+    qualify.main(control_args(path, run_dir, tmp_path, "--resume"))
+    assert calls == [(FA.name, "control", 1, str(run_dir))]
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
+    assert manifest["lost"] == []
 
 
 def test_control_only_leaves_a_technical_or_unfinished_case_to_the_usual_path(
