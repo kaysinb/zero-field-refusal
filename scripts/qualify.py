@@ -1882,6 +1882,21 @@ def checkpoint_conflict(run_dir: Path | None) -> Path | None:
     return path if checkpoint_sha256(path) != record.get("sha256") else None
 
 
+def own_conflict_end(run: Run, root: Path, run_dir: Path | None) -> dict | None:
+    """The launcher run's end in the launch journal that records ``outcome: conflict`` and is not
+    settled (it carries a return code: the launcher saw the attempt's process end), or None. A
+    settled end (``settled: true``, no return code) is written after the fact and is what a lost
+    container disk leaves; an end ``done`` is none."""
+    if run_dir is None:
+        return None
+    for record in launch_records(root):
+        if (record.get("event") == "end" and record.get("run_id") == run_dir.name
+                and record.get("run") == run.label and record.get("outcome") == "conflict"
+                and not record.get("settled")):  # fmt: skip
+            return record
+    return None
+
+
 def next_number(folder: Path, kind: str) -> int:
     return max((int(VOIDING_FILE.fullmatch(f.name)[2]) for f, _ in voiding_records(folder, kind)),
                default=0) + 1  # fmt: skip
@@ -1899,7 +1914,9 @@ def restart_case(
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
     its declared instability stop, scientific; another stop or a departing run, technical),
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``), and when the launcher run's checkpoint is on disk with another sha256
+    (``attempt_failures``), when the launcher run has an unsettled end ``conflict`` in the launch
+    journal (``own_conflict_end``: its own judgement of its attempt, which a lost container disk
+    cannot write), and when the launcher run's checkpoint is on disk with another sha256
     than its recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever
     an interrupted attempt would allow): only an interrupted case is restarted. A launcher run whose
     checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
@@ -1937,6 +1954,14 @@ def restart_case(
         if kind is not None:
             sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} is itself a "
                      f"completed {kind} failure, which keeps counting: {why}")  # fmt: skip
+    own = own_conflict_end(planned.run, root, run_dir)
+    if own is not None:
+        sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} has an end with "
+                 f"return code {own.get('returncode')} and outcome conflict "
+                 f"({own.get('problem')}): the launcher's own judgement of its attempt, which "
+                 "cannot come from a lost container disk (its process ends with the disk and "
+                 "writes no end). A provenance conflict goes to diagnosis and the technical "
+                 "route, never a restart")  # fmt: skip
     if not any(a["state"] == "interrupted" for a in fresh) and not missing:
         sys.exit(f"{case.name}: no restart: no evidence of an interruption (no interrupted "
                  "attempt, and the launcher run's checkpoint is on disk)")  # fmt: skip

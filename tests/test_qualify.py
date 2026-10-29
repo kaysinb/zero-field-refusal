@@ -2439,7 +2439,7 @@ def test_a_study3_round_is_not_refused_as_unused_after_a_restart(
     path.write_text("header:\n  study: 3\n" + path.read_text())
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     label = f"adamw-{ADAMW_LR:g}/s10200"
-    run = journal(root, path, label, ["r-a1"])
+    run = journal(root, path, label, ["r-a1"], only=label, max_attempts=1)
     old = settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
     baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(old))
     publish(out, ADAMW, "baseline", baseline)
@@ -2520,6 +2520,68 @@ def test_a_launcher_run_lost_in_flight_needs_no_restart_only_a_round(
     assert [(r["round"], r["after"]) for r in rounds] == [(1, ["r-a1"]),
                                                           (2, ["r-a1", in_flight])]  # fmt: skip
     assert qualify.located(run, root).name.endswith("-a3")
+
+
+def log_end(root, path, run, run_id, **fields) -> None:
+    """An ``end`` line of the launcher run ``run_id`` in the campaign's launch journal."""
+    log = root / "launch" / f"{launch_name(path)}.jsonl"
+    record = {"event": "end", "run": run.label, "attempt": 1, "run_id": run_id,
+              "returncode": 0, "outcome": "done", "problem": None, **fields}  # fmt: skip
+    with log.open("a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def launch_name(path) -> str:
+    from zero_field_refusal.launch import load_campaign
+
+    return load_campaign(path)[0]
+
+
+def test_a_conflict_the_launcher_found_at_its_own_attempt_is_never_restarted(
+    qualify, tmp_path
+) -> None:
+    """The launcher's attempt completed and its checkpoint was missing at once: the end it wrote
+    (a return code, ``outcome: conflict``) is its own judgement, not a lost container disk (its
+    process lives on the disk and would have ended with it). The checkpoint is gone, so a
+    restart would otherwise be accepted: ``restart-case`` refuses, naming the run and the end,
+    and supersedes nothing."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
+    log_end(root, path, run, "r-a1", outcome="conflict",
+            problem="the endpoint checkpoint /x.pt is missing")  # fmt: skip
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(restart(path, ADAMW, RESTART))
+    message = str(stop.value.code)
+    assert "r-a1" in message and "outcome conflict" in message
+    assert "the launcher's own judgement of its attempt" in message and "never a restart" in message
+    assert not list(case_folder(out, ADAMW).glob("restart-*"))
+    assert not launch.superseded_runs(run, launch.launch_records(root))
+
+
+@pytest.mark.parametrize(
+    "end",
+    [{"outcome": "done"},  # the attempt ended done; the disk was lost afterwards
+     {"outcome": "conflict", "returncode": None, "settled": True},  # the next call settled it
+     {"outcome": "technical", "returncode": None, "settled": True}],
+)  # fmt: skip
+def test_a_real_disk_loss_is_not_caught_by_the_own_conflict_refusal(qualify, tmp_path, end) -> None:
+    """After a lost container disk the journal holds an end ``done`` (written before the loss)
+    or a settled end (no return code, written by a later call): ``restart-case`` is accepted as
+    it is without the refusal, and logs the run superseded."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
+    log_end(root, path, run, "r-a1", **end)
+    qualify.main(restart(path, ADAMW, RESTART))
+    assert list(case_folder(out, ADAMW).glob("restart-1.json"))
+    assert set(launch.superseded_runs(run, launch.launch_records(root))) == {"r-a1"}
 
 
 def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_path) -> None:
@@ -3740,7 +3802,7 @@ def test_a_part_needs_a_clean_checkout(qualify, stubbed, tmp_path, monkeypatch) 
 # ------------------------------------------------------------------ the checkpoints
 
 
-def journal(root, path, label, run_ids):
+def journal(root, path, label, run_ids, **extra):
     from zero_field_refusal.launch import load_campaign
 
     name, runs = load_campaign(path)
@@ -3755,7 +3817,7 @@ def journal(root, path, label, run_ids):
             f.write(json.dumps({"event": "start", "run": label, "attempt": attempt,
                                 "run_id": run_id, "experiment": run.experiment,
                                 "config_hash": run.config_hash,
-                                "command": run.command()[1:]}) + "\n")  # fmt: skip
+                                "command": run.command()[1:], **extra}) + "\n")  # fmt: skip
     return run
 
 

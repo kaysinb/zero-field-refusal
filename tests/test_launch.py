@@ -503,7 +503,7 @@ def test_a_missing_checkpoint_conflict_points_to_the_lost_checkpoint_procedure(t
     text = str(lost.value)
     assert re.search(r"^- \S+/\S+: the endpoint checkpoint \S+ is missing$", text, re.M)
     assert text.count("a possible loss requiring diagnosis") == 1
-    assert '(docs/operations.md, "A lost checkpoint")' in text
+    assert '(docs/operations.md, "A lost checkpoint")' in " ".join(text.split("\n"))
     assert "unless finish removed it" in text and "lost container disk" not in text
     note = " ".join(text.splitlines()[2:])
     assert note.endswith(".") and ". " not in note  # one sentence

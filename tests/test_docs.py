@@ -321,13 +321,16 @@ def test_required_values_in_runnable_example_fail(repo):
 
 
 def test_the_launchers_conflict_note_names_an_operations_section_that_exists():
-    """The title the launcher's note quotes leads a bullet (or is a heading) of
-    docs/operations.md, and the note says where it is."""
+    """The title the launcher's note quotes leads one bullet of docs/operations.md, in the
+    section on study 3's numerical qualification."""
     from zero_field_refusal.launch import LOST_CHECKPOINT_NOTE
 
-    (title,) = re.findall(r'\(docs/operations\.md, "([^"]+)"\)', LOST_CHECKPOINT_NOTE)
-    lines = (ROOT / "docs/operations.md").read_text().splitlines()
-    assert any(
-        line.startswith(f"- **{title}.**") or re.fullmatch(rf"#+ {re.escape(title)}", line)
-        for line in lines
+    (title,) = re.findall(
+        r'\(docs/operations\.md, "([^"]+)"\)', " ".join(LOST_CHECKPOINT_NOTE.split())
     )
+    lines = (ROOT / "docs/operations.md").read_text().splitlines()
+    leads = [n for n, line in enumerate(lines) if line.startswith(f"- **{title}.**")]
+    assert len(leads) == 1, "one bullet leads with the quoted title"
+    section = [n for n, line in enumerate(lines) if line == "## Study 3: numerical qualification"]
+    later = [n for n, line in enumerate(lines) if line.startswith("## ") and n > section[0]]
+    assert section[0] < leads[0] < later[0], "the bullet lies in the qualification's section"

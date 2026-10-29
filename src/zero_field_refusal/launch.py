@@ -34,7 +34,8 @@ and attempts recorded in the launch logs ``RUNS_DIR/launch/*.jsonl`` — decides
 that used its attempts up, and never reruns an outcome:
 - *A cell's round* (without ``only``): once per cell, ``max_attempts`` more to each of its runs
   that used theirs up. It grants nothing to a run whose label had a round of its own: a call that
-  would open one over such a run is refused, naming it, and writes nothing. A study-3 campaign
+  would open one over such a run is refused, naming it; no recovery round is written (a settled
+  end of an open start may be written first). A study-3 campaign
   (its header carries ``study: 3``) takes none: ``recovery`` without ``only`` is refused with the
   command form of a run's own round, so that every study-3 round is documented and numbered.
 - *A run's own rounds* (under ``only``; study 3's infrastructure route): one per documented
@@ -58,7 +59,8 @@ that used its attempts up, and never reruns an outcome:
   the label gave (its cell's or its own, under any config hash): a new reason is necessary, not
   sufficient. A refused round raises ``CampaignError`` naming the label and the earlier round
   (its number, log and line), the outcome, the incident's gap or the attempt bound, and the
-  command form (``round_command``); nothing is written and nothing runs. A run with attempts left
+  command form (``round_command``); no recovery round is written and nothing runs (a settled
+  end of an open start may be written first, a dry run writes nothing). A run with attempts left
   takes them first, whatever reason is given: rounds never stack. In a study-3 campaign (its
   header carries ``study: 3``) a documented incident is never dropped: ``recovery`` over a run
   that is not used up under its config hash is refused (``_not_used_up``), in a dry run too,
@@ -972,8 +974,9 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
 
 
 LOST_CHECKPOINT_NOTE = (
-    "\nA missing endpoint checkpoint is a possible loss requiring diagnosis under study 3's\n"
-    'qualification (docs/operations.md, "A lost checkpoint"), unless finish removed it.'
+    "\nA missing endpoint checkpoint is a possible loss requiring diagnosis before anything is\n"
+    "moved, deleted or rerun under study 3's qualification (docs/operations.md,\n"
+    '"A lost checkpoint"), unless finish removed it.'
 )
 
 
@@ -1075,8 +1078,9 @@ def run_campaign(
     attempts (module docstring). Raises ``CampaignError`` before starting anything, its recovery
     round included and in a dry run too, if a run's existing directories conflict or its label
     has a ``held`` run in any journal, whatever that run's config hash (the conflict names it and
-    the hold's reason), or if ``only`` names no run; before starting anything and writing nothing,
-    when a recovery round asked for is refused ("Recovery rounds"), or ``incident`` is given
+    the hold's reason), or if ``only`` names no run; before starting anything and writing no
+    recovery round (a settled end of an open start may be written first), when a recovery round
+    asked for is refused ("Recovery rounds"), or ``incident`` is given
     without ``only``; and stops at an attempt that completes without qualifying.
 
     **A start found without its end** (the launcher died while its child ran, or after the child

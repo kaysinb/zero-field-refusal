@@ -27,7 +27,11 @@ one, at --max-attempts 1; the round names the attempts it follows. In a study-3 
 --recovery over a run that is not used up under its config hash (a new config hash is a new run,
 whose attempts run without --recovery; a done or diverged run keeps its outcome) is refused, exit
 1, in a --dry-run too, with the same message. A round that is refused writes
-nothing and runs nothing (exit 1, naming the label and the earlier round or the bound).
+no recovery round and runs nothing (a settled end of an open start may be written first; exit 1,
+naming the label and the earlier round or the bound). A --dry-run of a round lists the label as
+used up and exits 1: it opens no round and checks none of the round's refusals (a repeated
+reason, a missing incident field, a further round above 1), only the not-used-up one, so it does
+not tell an accepted round from a refused one.
 --max-attempts N bounds the attempts of a run (default 3) and of this call: no call runs more
 than N attempts, and a later call's N above the first start's under its config hash adds
 nothing. Study 3's
