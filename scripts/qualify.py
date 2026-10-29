@@ -14,7 +14,7 @@
     python scripts/qualify.py finish [--kept DIR | --release] --campaign FILE --candidate N
         [--engineering] --case NAME
     python scripts/qualify.py kept-check --campaign FILE --candidate N [--engineering]
-        --case NAME --inventory FILE
+        --case NAME --inventory FILE --remote PREFIX
     python scripts/qualify.py interrupted --campaign FILE --candidate N [--engineering]
         --case NAME --part baseline|rest|control --attempt N --technical REASON
     python scripts/qualify.py restart-case --campaign FILE --candidate N [--engineering]
@@ -114,9 +114,9 @@ and nothing called verified: no ``--kept``, a relative DIR, DIR under the runs r
 records' folder (its copies would join the small results archived from there) or under the
 checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
 ``st_dev``, the container disk), or less free space under DIR than the files take with a margin
-of 1 GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export after these checks (a folder, a
-copy, a manifest, ``SHA256SUMS``) exits 13 too, naming the error, its partial ``kept-<n>`` left
-without a case manifest and never called verified. The manifest,
+of 1 GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export, these checks included (a
+folder, a ``stat``, the free space, a copy, a manifest, ``SHA256SUMS``), exits 13 too, naming the
+error, a partial ``kept-<n>`` left without a case manifest and never called verified. The manifest,
 ``kept-checkpoints-<n>.json`` in the case's folder and the same JSON in the export as
 ``MANIFEST.json`` with a ``SHA256SUMS``, holds the case, its stage, candidate and
 ``technical_reasons``; the binding records (``binding_records``: the located launcher run's
@@ -132,13 +132,16 @@ they are now, nothing is copied (exit 9); otherwise ``kept-<n+1>`` is written, a
 overwritten. Checkpoints lost before the export leave the technical mark as it stands: ``finish``
 exits 9 when every file still present is verified, ``lost`` names what was lost, and it says
 "lost before the export: the technical mark stands; the diagnosis goes on from the records;
-nothing reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE`` reads
-the case's latest manifest, re-hashes every copy under its DIR (with ``MANIFEST.json`` and
-``SHA256SUMS``), and reads ``scripts/archive.py``'s inventory: every exported file needs its line
-(path relative to DIR, size, sha256, md5, URL, status) with the exported size and sha256 and the
-status ``ok`` (the object's size and MD5 are the file's). It exits 0 when all hold, 13 naming
-what fails, and publishes its receipt ``kept-check-<n>.json`` in the case's folder: the
-manifest's and the inventory's path and sha256, the exit, what fails, and ``pending-upload``
+nothing reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE
+--remote PREFIX`` (the driver's: the REMOTE_PREFIX it gives ``archive.py``) reads the case's
+latest manifest, re-hashes every copy under its DIR (with ``MANIFEST.json`` and ``SHA256SUMS``),
+and reads ``scripts/archive.py``'s inventory: every line's URL lies under ``PREFIX/``, and every
+exported file needs its line (path relative to DIR, size, sha256, md5, URL, status) with the
+exported size and sha256, the status ``ok`` (the object's size and MD5 are the file's) and the URL
+``PREFIX/<path>``. It exits 0 when all hold, 13 naming what fails (each line under another
+prefix included), and publishes its receipt ``kept-check-<n>.json`` in the case's folder: the
+manifest's and the inventory's path and sha256, the prefix, the exit, what fails, and
+``pending-upload``
 true for a volume copy verified whose bucket copy is not (no inventory, or one without the
 export's verified lines). ``finish --release`` of a technical case deletes only through the
 manifest of a receipt of exit 0 that names its sha256 (``bound_export``), the inventory that
@@ -1245,6 +1248,19 @@ def write_export(
 
 
 def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+    """``_export_kept``, its every ``OSError`` exit 13 with the error named (the refusal and space
+    checks' included: an unreadable folder, a failing ``stat``): no verified volume copy, the
+    checkpoints still only on the container disk."""
+    try:
+        return _export_kept(p, out, root, technical, kept)
+    except OSError as exc:
+        print(f"{p.case.name}: the export could not be checked or made: {exc}. Nothing is called "
+              "verified; the checkpoints stay where they are, still only on the container disk; "
+              "fix the cause, then finish --kept again", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+
+
+def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
     """A technical case's checkpoints (``case_files``) exported to the Pod's volume (module
     docstring, "A technical case's kept checkpoints"): each copied durably to
     ``<kept>/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout it has under the
@@ -1313,12 +1329,14 @@ def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: P
 
 
 def inventory_problems(
-    manifest: Mapping[str, Any], manifest_size: int, manifest_sha256: str, inventory: Path
-) -> list[str]:
-    """What scripts/archive.py's inventory does not show verified in the bucket: each exported
-    file (the copies, ``MANIFEST.json``, ``SHA256SUMS``) needs its line (the latest of its path,
-    relative to the volume folder) with the exported size and sha256, the status ``ok`` (the
-    object's size and MD5 are the file's) and a gs:// URL ending in its path."""
+    manifest: Mapping[str, Any], manifest_size: int, manifest_sha256: str, inventory: Path,
+    remote: str,
+) -> list[str]:  # fmt: skip
+    """What scripts/archive.py's inventory does not show verified in the bucket under ``remote``
+    (its REMOTE_PREFIX): every line's URL lies under ``remote/``, and each exported file (the
+    copies, ``MANIFEST.json``, ``SHA256SUMS``) needs its line (the latest of its path, relative to
+    the volume folder) with the exported size and sha256, the status ``ok`` (the object's size
+    and MD5 are the file's) and the URL ``remote/<its path>``."""
     try:
         export = manifest["export"]
         expected = {entry["copy"]: (entry["size"], entry["sha256"]) for entry in manifest["files"]}
@@ -1331,8 +1349,11 @@ def inventory_problems(
         rows = inventory.read_text().splitlines()
     except OSError as exc:
         return [f"the inventory {inventory} cannot be read: {exc}"]
-    lines = {cells[0]: cells for cells in (row.split("\t") for row in rows) if len(cells) == 6}
-    problems = []
+    rows = [cells for cells in (row.split("\t") for row in rows)
+            if len(cells) == 6 and cells[0] != "path"]  # fmt: skip
+    lines = {cells[0]: cells for cells in rows}
+    problems = [f"{cells[0]}: archived at {cells[4]}, not under {remote}/" for cells in rows
+                if not cells[4].startswith(f"{remote}/")]  # fmt: skip
     for rel, (size, sha) in expected.items():
         cells = lines.get(rel)
         if cells is None:
@@ -1342,12 +1363,12 @@ def inventory_problems(
                             f"are not the exported {size}, {sha}")  # fmt: skip
         elif cells[5] != UPLOADED:
             problems.append(f"{rel}: not verified in the bucket ({cells[5]})")
-        elif not (cells[4].startswith("gs://") and cells[4].endswith(f"/{rel}")):
-            problems.append(f"{rel}: archived at {cells[4]}, not under its own path")
+        elif cells[4].startswith(f"{remote}/") and cells[4] != f"{remote}/{rel}":
+            problems.append(f"{rel}: archived at {cells[4]}, not at {remote}/{rel}")
     return problems
 
 
-def kept_check(p: Planned, out: Path, inventory: Path) -> int:
+def kept_check(p: Planned, out: Path, inventory: Path, remote: str) -> int:
     """Whether the case's latest export is kept, verified, on the Pod's volume and in the bucket
     (module docstring, "A technical case's kept checkpoints"): its copies re-hash to its manifest
     (``export_problems``) and archive.py's ``inventory`` shows every exported file verified
@@ -1369,7 +1390,7 @@ def kept_check(p: Planned, out: Path, inventory: Path) -> int:
         volume, bucket = [f"{path}: unreadable"], []
     else:
         volume = export_problems(manifest, sha)
-        bucket = inventory_problems(manifest, len(data), sha, inventory)
+        bucket = inventory_problems(manifest, len(data), sha, inventory, remote)
     code = NOT_EXPORTED if volume or bucket else 0
     pending = not volume and bool(bucket)
     number = 1 + max((n for n, _ in numbered(folder, KEPT_RECEIPT)), default=0)
@@ -1382,7 +1403,7 @@ def kept_check(p: Planned, out: Path, inventory: Path) -> int:
     q.publish(receipt, {
         "case": p.case.record(), "manifest": {"path": str(path), "sha256": sha},
         "inventory": {"path": str(inventory.absolute()), "sha256": file_sha256(inventory)},
-        "exit": code,
+        "remote": remote, "exit": code,
         "problems": volume + bucket, "pending-upload": pending, "teardown": teardown,
         "host": socket.gethostname(), "pod_id": q.pod_id(),
         "checked_at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
@@ -2903,24 +2924,28 @@ def driver_script(
             "  0) ;;",
             f'  {TECHNICAL_CASE}) INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ)'
             '.tsv"',
+            f'     DEST="$ARTIFACT_REMOTE"/{remote}',
             "     arc=0",
-            '     routed project-run "$SRC" python scripts/archive.py "$INV" '
-            f'"$ARTIFACT_REMOTE"/{remote} "$KEPT" {kept_path} || arc=$?',
+            '     routed project-run "$SRC" python scripts/archive.py "$INV" "$DEST" "$KEPT" '
+            f"{kept_path} || arc=$?",
             "     kc=0",
-            f'     routed {RUN} kept-check {common} {case} --inventory "$INV" || kc=$?',
+            f'     routed {RUN} kept-check {common} {case} --inventory "$INV" --remote "$DEST" '
+            "|| kc=$?",
             '     if [ "$arc" -ne 0 ] || [ "$kc" -ne 0 ]; then',
             f'       stop "{p.case.name}: its kept checkpoints are not verified in the bucket '
-            "(archive.py exit $arc, kept-check exit $kc); its kept-check receipt says whether the "
-            "volume copy is verified and the upload pending (pending-upload true) or the volume "
-            "copy is not verified either (pending-upload false, the worse state); do not stop "
-            f'the Pod by plan; the hard deadline stays" {NOT_EXPORTED}',
+            "(archive.py exit $arc); if kept-check published a receipt for this export, it says "
+            "whether the volume copy is verified and the upload pending (pending-upload true) or "
+            "the volume copy is not verified either (pending-upload false, the worse state); "
+            "kept-check exit $kc; do not stop the Pod by plan; the hard deadline stays"
+            f'" {NOT_EXPORTED}',
             "     fi",
             f'     stop "{p.case.name}: a technical case: its checkpoints are kept, on the volume '
             f'and in the bucket, verified" {TECHNICAL_CASE} ;;',
             f'  {NOT_EXPORTED}) stop "{p.case.name}: finish refused or failed its export (exit '
             f"{NOT_EXPORTED}): no verified volume copy; its checkpoints are still only on the "
-            "container disk, which a stop loses; do not stop the Pod by plan; the hard deadline "
-            f'stays" {NOT_EXPORTED} ;;',
+            "container disk, which a stop loses; fix the cause finish names, then run the driver "
+            "again; do not stop the Pod by plan; the hard deadline stays"
+            f'" {NOT_EXPORTED} ;;',
             f'  *) stop "{p.case.name}: finish failed (exit $rc)" "$rc" ;;',
             "esac",
         ]  # fmt: skip
@@ -2996,6 +3021,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="driver: the export's place under ARTIFACT_REMOTE")  # fmt: skip
     parser.add_argument("--inventory", type=Path, metavar="FILE",
                         help="kept-check: archive.py's inventory of the upload")  # fmt: skip
+    parser.add_argument("--remote", metavar="PREFIX",
+                        help="kept-check: the bucket prefix the upload went to")  # fmt: skip
     parser.add_argument("--run-dir", type=Path, help="part: the launcher run")
     parser.add_argument("--checkpoints", type=Path, help="part: the harness's checkpoints")
     parser.add_argument("--device", default="cuda")
@@ -3102,9 +3129,10 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "finish":
         finish(chosen, out, root, scope, release=args.release, kept=args.kept)
     elif args.command == "kept-check":
-        if args.inventory is None:
-            sys.exit("kept-check needs --inventory FILE (scripts/archive.py's)")
-        code = kept_check(chosen, out, args.inventory)
+        if args.inventory is None or not args.remote:
+            sys.exit("kept-check needs --inventory FILE (scripts/archive.py's) and --remote PREFIX "
+                     "(archive.py's REMOTE_PREFIX: $ARTIFACT_REMOTE/<--kept-remote>)")  # fmt: skip
+        code = kept_check(chosen, out, args.inventory, args.remote.rstrip("/"))
         if code:
             sys.exit(code)
     elif args.command == "interrupted":

@@ -1658,15 +1658,17 @@ docstring has every rule.
     `$ARTIFACT_REMOTE/kept-checkpoints/` (`--kept-remote` sets the prefix; the dry run passes
     `dryrun/<id>/kept-checkpoints`), with an inventory
     `$RUNS_DIR/archive/inventory-kept-<time>.tsv`, and `kept-check` verifies both, whatever the
-    upload's exit: every copy re-hashes to the manifest, and every exported file has its
-    inventory line with the same size and sha256 and the status `ok` (its object's size and MD5).
-    Earlier `kept-<n>` folders of the case, verified or not, go to the bucket as well and are kept
-    there until the study's report. `finish` refuses before any copy (exit 13) without `--kept`,
-    for a relative folder, one under `$RUNS_DIR` or under the checkpoint directory, one on the
-    checkpoint directory's filesystem, and one with less free space than the files take plus
-    1 GiB; an error during the export (a full volume, say) exits 13 too, its partial folder never
-    called verified. Before the first case the driver itself exits 1 when `$KEPT` is on the
-    checkpoint directory's device or lies under `$RUNS_DIR` or the checkpoint directory.
+    upload's exit: every copy re-hashes to the manifest, and every exported file has its inventory
+    line with the same size and sha256, the status `ok` (its object's size and MD5) and its URL
+    under the prefix `kept-check --remote` is given (the driver gives it the destination it gives
+    `archive.py`; a line under any other prefix fails the check). Earlier `kept-<n>` folders of the
+    case, verified or not, go to the bucket as well and are kept there until the study's report.
+    `finish` refuses before any copy (exit 13) without `--kept`, for a relative folder, one under
+    `$RUNS_DIR` or under the checkpoint directory, one on the checkpoint directory's filesystem, and
+    one with less free space than the files take plus 1 GiB; an error in the export or its checks (a
+    full volume, an I/O error, say) exits 13 too, a partial folder never called verified. Before the
+    first case the driver itself exits 1 when `$KEPT` is on the checkpoint directory's device or
+    lies under `$RUNS_DIR` or the checkpoint directory.
   - **The manifest.** `kept-checkpoints-<n>.json` in the case's folder, and the same JSON as
     `MANIFEST.json` in the export with a `SHA256SUMS`: the case, its technical reasons, the
     binding records by path and sha256 (the launcher run's `summary.json` and `meta.json` with its
@@ -1683,7 +1685,11 @@ docstring has every rule.
     volume copy, and the checkpoints are still only on the container disk, which a stop loses.
     The driver's 13 after `kept-check`: either the volume copy is verified and the upload is
     pending (the receipt's `pending-upload: true`), or the volume copy is not verified either
-    (`pending-upload: false`), the worse state.
+    (`pending-upload: false`), the worse state. After `finish`'s 13, fix the cause it names (room
+    on the volume, the filesystem of `--kept`, an I/O error), then run the driver again or
+    `finish --kept /workspace/kept-checkpoints` by hand; meanwhile the Pod is not stopped by plan,
+    and the hard deadline stays. Checkpoints lost meanwhile take the technical case's row of "A
+    lost checkpoint" (above).
   - **The Pod.** A planned stop, restart or deletion of the Pod waits for `kept-check` exit 0
     while a technical case lacks it. An upload that cannot be verified never lifts the hard
     deadline: the verified volume copy stays and the pending upload is recorded in the receipt.
@@ -1696,8 +1702,12 @@ docstring has every rule.
     project-run "$SRC" python scripts/archive.py "$INV" "$ARTIFACT_REMOTE/kept-checkpoints" \
       /workspace/kept-checkpoints qualification/c1/numerical/s10200/adamw-1.45e-05
     project-run "$SRC" python scripts/qualify.py kept-check --campaign "$C/qualification-c1.yaml" \
-      --candidate 1 --case s10200/adamw-1.45e-05 --inventory "$INV"
+      --candidate 1 --case s10200/adamw-1.45e-05 --inventory "$INV" \
+      --remote "$ARTIFACT_REMOTE/kept-checkpoints"
     ```
+
+    Both commands take the prefix the driver's `--kept-remote` gave; a dry run uses its own,
+    `"$ARTIFACT_REMOTE/dryrun/<id>/kept-checkpoints"`, in both.
   - **Lost before the export.** Checkpoints a Pod stop took before `finish` leave the technical
     mark as it stands: `finish` exits 9 with `lost` naming them ("lost before the export: the
     technical mark stands; the diagnosis goes on from the records; nothing reruns"), the export

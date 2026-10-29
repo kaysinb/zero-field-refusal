@@ -392,9 +392,11 @@ def test_the_driver_exports_and_verifies_a_technical_case_before_it_stops(
     folder = f"qualification/c1/numerical/{FA.name}"
     assert archive == f"archive gs://bucket/zfr/kept-checkpoints {kept} {folder}"
     (check,) = [line for line in lines if line.startswith("kept-check ")]
-    inventory = check.split("--inventory ", 1)[1]
+    inventory = re.search(r"--inventory (\S+)", check)[1]
     assert re.fullmatch(rf"{re.escape(str(tmp_path / 'runs' / 'archive'))}/"
                         r"inventory-kept-\d{8}T\d{6}Z\.tsv", inventory)  # fmt: skip
+    destination = archive.split()[1]  # archive.py's REMOTE_PREFIX
+    assert re.search(r"--remote (\S+)", check)[1] == destination
     text = (tmp_path / "driver.sh").read_text()
     commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     assert commands.count(" finish --campaign ") == 2
@@ -412,7 +414,10 @@ def test_the_driver_exports_and_verifies_a_technical_case_before_it_stops(
     qualify.main([*driver_args(tmp_path, campaign(tmp_path)), "--kept-remote",
                   "dryrun/dry-1/kept-checkpoints", "--commit", "a" * 40,
                   "--out", str(out)])  # fmt: skip
-    assert '"$ARTIFACT_REMOTE"/dryrun/dry-1/kept-checkpoints "$KEPT" ' in out.read_text()
+    text = out.read_text()  # one destination, the upload's and the check's
+    assert text.count('DEST="$ARTIFACT_REMOTE"/dryrun/dry-1/kept-checkpoints\n') == 2
+    assert text.count('scripts/archive.py "$INV" "$DEST" "$KEPT" ') == 2
+    assert text.count('--inventory "$INV" --remote "$DEST" ') == 2
 
 
 @pytest.mark.parametrize("exits", [{"archive": 1}, {"kept_check": 13},
@@ -432,6 +437,8 @@ def test_the_driver_stops_with_13_when_the_bucket_copy_is_not_verified(
     assert not any(ADAMW.name in call for call in calls)
     output = (tmp_path / "driver.out").read_text()
     assert "do not stop the Pod by plan; the hard deadline stays" in output
+    assert "if kept-check published a receipt for this export, it says whether" in output
+    assert "its kept-check receipt says" not in output
     (tmp_path / "again").mkdir()
     code, calls = run_driver(qualify, tmp_path / "again", monkeypatch,
                              finish=qualify.NOT_EXPORTED)  # fmt: skip
@@ -2168,7 +2175,7 @@ TORN_BYTES = b'{"time": "2026-10-27T10:00:00+00:00", "event": "held", "run": "\x
     ("command", "extra"),
     [("part", ["--part", "baseline", "--resume", "--run-dir", "r", "--checkpoints", "c"]),
      ("complete", []), ("decided", []), ("control-only", []), ("clear-stale", []),
-     ("locate", []), ("finish", []), ("kept-check", ["--inventory", "inventory.tsv"]),
+     ("locate", []), ("finish", []), ("kept-check", ["--inventory", "inventory.tsv", "--remote", "gs://b/k"]),
      ("interrupted", ["--part", "rest", "--attempt", "1", "--technical", "a crash"]),
      ("restart-case", ["--infrastructure", RESTART]),
      ("supersede", ["--record", "CAMPAIGN", "--diagnosis", "d", "--fix", "f"]),
@@ -2874,8 +2881,11 @@ def finish_args(path, case, kept=None, *extra):
             *([] if kept is None else ["--kept", str(kept)]), *extra]  # fmt: skip
 
 
-def kept_check_args(path, case, inventory):
-    return ["kept-check", *common(path), "--case", case.name, "--inventory", str(inventory)]
+def kept_check_args(path, case, inventory, remote=None):
+    """``kept-check``'s arguments: the inventory, and the bucket prefix it is bound to (by default
+    the stand-in bucket's, ``REMOTE``)."""
+    return ["kept-check", *common(path), "--case", case.name, "--inventory", str(inventory),
+            "--remote", remote or REMOTE]  # fmt: skip
 
 
 def technical_world(tmp_path):
@@ -3161,6 +3171,25 @@ def no_space(*args, **kwargs):
     raise OSError(28, "No space left on device")
 
 
+def test_an_error_before_the_export_is_13(qualify, tmp_path, monkeypatch, capsys) -> None:
+    """An ``OSError`` in the checks before any copy (the free space read, here an I/O error):
+    ``finish`` exits 13 naming it, never 1 with a traceback; nothing is written, and the
+    checkpoints stay where they are, only on the container disk."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+
+    def unreadable(folder):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(qualify, "free_bytes", unreadable)
+    capsys.readouterr()
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.NOT_EXPORTED
+    err = capsys.readouterr().err
+    assert "Input/output error" in err and "only on the container disk" in err
+    assert not list(case_folder(out, FA).glob("kept-*")) and not any(kept.iterdir())
+    assert all(file.exists() for file in files.values())
+
+
 def failing_at(qualify, monkeypatch, where):
     """The export failing at ``where``: a folder made, ``MANIFEST.json`` or the case's manifest
     published, or ``SHA256SUMS`` written."""
@@ -3403,6 +3432,9 @@ KEPT_CHECK_CHANGES = {  # how the inventory departs from the export → what kep
                                           for r in rows], "archived at gs://bucket/elsewhere"),
     "not a gs:// URL": (lambda rows, export: [field(r, 4, f"/local/{export}/r-f1.pt", export)
                                               for r in rows], "archived at /local/"),
+    "another prefix": (lambda rows, export: [field(
+        r, 4, f"gs://other-bucket/kept-checkpoints/{export}/r-f1.pt", export) for r in rows],
+        "gs://other-bucket/kept-checkpoints/"),
 }  # fmt: skip
 
 
@@ -3444,10 +3476,19 @@ def test_kept_check_verifies_the_volume_copy_and_the_inventory(
     assert receipt["manifest"] == {"path": str(manifest), "sha256": sha(manifest.read_bytes())}
     assert receipt["inventory"] == {"path": str(inventory), "sha256": sha(inventory.read_bytes())}
     assert (receipt["exit"], receipt["pending-upload"], receipt["problems"]) == (0, False, [])
+    assert receipt["remote"] == REMOTE
+    with pytest.raises(SystemExit, match="--remote"):  # bound to a prefix, always
+        qualify.main(kept_check_args(path, FA, inventory)[:-2])
+    capsys.readouterr()  # the same inventory checked against another prefix: every line named
+    other_prefix = "gs://bucket/dryrun/dry-1/kept-checkpoints"
+    assert exit_code(qualify, kept_check_args(path, FA, inventory, other_prefix)) == 13
+    err = capsys.readouterr().err
+    assert all(f"{row.split(chr(9))[0]}: archived at" in err for row in
+               inventory.read_text().splitlines()[1:])  # fmt: skip
+    number = 3
     export = json.loads(manifest.read_text())["export"]
     text = inventory.read_text()
     rows = text.splitlines()
-    number = 2
     for what, (change, named) in KEPT_CHECK_CHANGES.items():
         inventory.write_text("\n".join(change(rows, export)) + "\n")
         capsys.readouterr()
