@@ -3523,10 +3523,12 @@ def test_finish_exports_an_established_technical_case_that_is_not_complete(
 # project-run SRC python <script> ...: the real qualify.py (through QUALIFY_RUN, which patches
 # only ``same_filesystem``: the tmp paths share one device), and stand-ins for the launcher (its
 # conflict, exit 1) and scripts/archive.py (the real archive over a stand-in bucket; STUB_archive
-# a failure)
+# a failure). As project-run does, the source's own src is the only PYTHONPATH, so the scripts
+# import that checkout's package whatever the interpreter has installed.
 REAL_PROJECT_RUN = r"""#!/usr/bin/env bash
 src="$1"
 shift 2
+export PYTHONPATH="$src/src"
 case "$1" in
   -c) exit 0 ;;
   scripts/launch.py)
