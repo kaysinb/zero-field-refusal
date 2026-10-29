@@ -85,11 +85,14 @@ outside this.
    verdict is technical (its own, or its same-path control's: ``technical_reasons``) keeps them
    for the diagnosis, "Failure routes", and ``finish --kept DIR`` exports them to the Pod's
    volume (below, "A technical case's kept checkpoints"): it exits 9 (``TECHNICAL_CASE``) once
-   every file still present has a verified copy there, 13 (``NOT_EXPORTED``) otherwise. On 9 the
-   driver uploads the export to the bucket (``scripts/archive.py``) and checks both copies
-   (``kept-check``), and stops there, before the next case: with 9 when both are verified, with
-   13 when either is not. ``finish --release`` deletes them once the diagnosis is done, only
-   through that verified export.
+   every file still present has a verified copy there, 13 (``NOT_EXPORTED``) when the export was
+   refused or failed (no verified volume copy: the checkpoints are still only on the container
+   disk, which a stop loses). On 9 the driver uploads the export to the bucket
+   (``scripts/archive.py``) and, whatever the upload's exit, checks both copies (``kept-check``),
+   and stops there, before the next case: with 9 when both exit 0, with 13 otherwise (the
+   receipt's ``pending-upload`` true: the volume copy verified, the upload pending; false: the
+   volume copy not verified either, the worse state). ``finish --release`` deletes them once the
+   diagnosis is done, only through that verified export.
 
 A case is **complete** when the latest attempt of each of its parts is recorded, is that part's
 of that case, and the verdicts read it without error (``case_verdict``, and ``control_verdict``
@@ -110,7 +113,10 @@ the export changes neither the technical mark nor any verdict. Refused before an
 and nothing called verified: no ``--kept``, a relative DIR, DIR under the runs root or the
 records' folder (its copies would join the small results archived from there) or under the
 checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
-``st_dev``, the container disk), or less free space under DIR than the files take. The manifest,
+``st_dev``, the container disk), or less free space under DIR than the files take with a margin
+of 1 GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export after these checks (a folder, a
+copy, a manifest, ``SHA256SUMS``) exits 13 too, naming the error, its partial ``kept-<n>`` left
+without a case manifest and never called verified. The manifest,
 ``kept-checkpoints-<n>.json`` in the case's folder and the same JSON in the export as
 ``MANIFEST.json`` with a ``SHA256SUMS``, holds the case, its stage, candidate and
 ``technical_reasons``; the binding records (``binding_records``: the located launcher run's
@@ -133,11 +139,13 @@ the case's latest manifest, re-hashes every copy under its DIR (with ``MANIFEST.
 status ``ok`` (the object's size and MD5 are the file's). It exits 0 when all hold, 13 naming
 what fails, and publishes its receipt ``kept-check-<n>.json`` in the case's folder: the
 manifest's and the inventory's path and sha256, the exit, what fails, and ``pending-upload``
-true for a volume copy verified whose bucket copy is not. ``finish --release`` of a technical
-case deletes only through the manifest of a receipt of exit 0 that names its sha256
-(``bound_export``), when every current file is listed in it with its size and sha256, each file
-checked again right before its deletion; otherwise it exits 13 naming the files (a file new or
-changed since the export needs another export and its ``kept-check``). Its
+true for a volume copy verified whose bucket copy is not (no inventory, or one without the
+export's verified lines). ``finish --release`` of a technical case deletes only through the
+manifest of a receipt of exit 0 that names its sha256 (``bound_export``), the inventory that
+receipt names still of the receipt's sha256, when every current file is listed in the manifest
+with its size and sha256, each file checked again right before its deletion; otherwise it exits
+13 naming the files or the inventory (a file new or changed since the export needs another
+export and its ``kept-check``; an inventory gone or changed, the upload checked again). Its
 ``checkpoints-removed-<n>.json`` names that manifest and that receipt by path and sha256. A kept
 checkpoint is not one ``finish`` removed (``released``): its absence is never evidence of an
 interruption. The planned teardown of the Pod waits for ``kept-check`` exit 0; an upload that
@@ -333,10 +341,15 @@ memory and the bucket's settings included), the disk (``df``'s answer must be a 
 restart or supersession names); 9 a technical case, its checkpoints kept on the volume and in
 the bucket, verified; 10 a stale case; 11 a case whose label has a held launcher run; 12 a torn
 line in a launch journal, or a line a published record requires missing from it (``complete``'s
-refusal, or the launcher's); 13 a technical case whose kept checkpoints are not verified on the
-volume (``finish``) or in the bucket (``archive.py``, ``kept-check``): the volume copy is kept,
-the upload pending, and the planned teardown waits for ``kept-check``; the launcher's own when it
-stops; any other, the failed command's.
+refusal, or the launcher's); 13 a technical case whose kept checkpoints are not verified: from
+``finish``, its export refused or failed (no verified volume copy, the checkpoints still only on
+the container disk, which a stop loses), or after ``kept-check`` (run whatever ``archive.py``'s
+exit), its receipt's ``pending-upload`` true (the volume copy verified, the upload pending) or
+false (the volume copy not verified either, the worse state); either way the planned teardown
+waits for ``kept-check`` exit 0, and the hard deadline stays; the launcher's own when it stops;
+any other, the failed command's. Before the first case the driver also exits 1 when ``$KEPT`` is
+on the checkpoint directory's device (``stat -L -c %d``) or lies, resolved, under ``$RUNS_DIR``
+or the checkpoint directory.
 The driver never reruns a part or the launcher run: a rerun is a command of its own, with its
 reason."""
 
@@ -407,8 +420,10 @@ INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
 STALE = 10  # ``complete``, ``decided``, ``control-only``: records of other code or settings
 HELD = 11  # ``complete``, ``decided``, ``control-only``: the label has a held launcher run
-# ``finish``, ``kept-check``, the driver: a technical case's checkpoints lack a verified export (on
-# the Pod's volume, or in the bucket); the launcher's exits are 0, 1, 2 and 12
+# A technical case's checkpoints lack a verified export (the launcher's exits are 0, 1, 2 and 12):
+# ``finish``'s, its export refused or failed (no verified volume copy); ``kept-check``'s and the
+# driver's after it, the upload pending (``pending-upload`` true) or the volume copy not verified
+# either (false)
 NOT_EXPORTED = 13
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
@@ -941,6 +956,7 @@ KEPT_RECEIPT = re.compile(r"kept-check-(\d+)\.json")  # ``kept-check``'s receipt
 KEPT_FOLDER = re.compile(r"kept-(\d+)")  # an export's folder on the volume
 KEPT_REMOTE = "kept-checkpoints"  # the driver's --kept-remote by default, under ARTIFACT_REMOTE
 UPLOADED = "ok"  # scripts/archive.py's status of an object whose size and MD5 match its file
+KEPT_MARGIN = 1 << 30  # the free space an export needs beyond its files (1 GiB)
 LOST_BEFORE_EXPORT = ("lost before the export: the technical mark stands; the diagnosis goes on "
                       "from the records; nothing reruns")  # fmt: skip
 
@@ -1182,60 +1198,23 @@ def reusable(path: Path, kept: Path, files: list[Path]) -> dict | None:
     return None if source_problems(manifest, files) else manifest
 
 
-def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
-    """A technical case's checkpoints (``case_files``) exported to the Pod's volume (module
-    docstring, "A technical case's kept checkpoints"): each copied durably to
-    ``<kept>/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout it has under the
-    checkpoint directory, read back and verified by its sha256, then the manifest, in the export
-    (``MANIFEST.json``, with ``SHA256SUMS``) and last in the case's folder
-    (``kept-checkpoints-<n>.json``). Refused before any copy (``kept_refusal``, or too little free
-    space); an earlier manifest whose copies re-hash to it under ``kept``, the case's files as it
-    lists them, is reused: nothing is copied. The exit: 9 (``TECHNICAL_CASE``) when every file
-    still present has a verified copy, 13 (``NOT_EXPORTED``) otherwise."""
-    name, folder = p.case.name, case_folder(out, p.case)
-
-    def refused(why: str) -> int:
-        print(f"{name}: the export is refused and nothing is copied: {why}. The checkpoints stay "
-              "where they are, and nothing is called verified", file=sys.stderr)  # fmt: skip
-        return NOT_EXPORTED
-
-    def lost_note(lost: list[dict[str, Any]]) -> None:
-        if lost:
-            print(f"{name}: {LOST_BEFORE_EXPORT}: {[entry['path'] for entry in lost]}",
-                  file=sys.stderr)  # fmt: skip
-
-    refusal = kept_refusal(p, out, root, kept)
-    if refusal is not None:
-        return refused(refusal)
-    files, manifests = case_files(p, root), numbered(folder, KEPT_MANIFEST)
-    reused = reusable(manifests[-1][1], kept, files) if manifests else None
-    if reused is not None:  # nothing is copied
-        lost_note(reused.get("lost") or [])
-        print(json.dumps({"case": name, "manifest": str(manifests[-1][1]), "reused": True,
-                          "files": len(files)}))  # fmt: skip
-        return TECHNICAL_CASE
-    need, free = sum(path.stat().st_size for path in files), free_bytes(kept)
-    if free < need:
-        return refused(f"{free} bytes are free under {kept}, below the {need} its files take")
+def write_export(
+    p: Planned, out: Path, root: Path, technical: list[str], kept: Path, files: list[Path],
+    export: Path, number: int,
+) -> dict[str, Any]:  # fmt: skip
+    """The export itself (``export_kept``): the new folder ``export``, each file copied and read
+    back, ``MANIFEST.json`` and ``SHA256SUMS`` in it, and last the case's manifest
+    ``kept-checkpoints-<number>.json``. Its manifest; an ``OSError`` anywhere is the caller's."""
+    folder = case_folder(out, p.case)
     binding, named = binding_records(p, out, root)
-    parent = kept / "qualification" / folder.relative_to(out)
-    number = 1 + max([n for n, _ in manifests] + [n for n, _ in numbered(parent, KEPT_FOLDER)],
-                     default=0)  # fmt: skip
-    export = parent / f"kept-{number}"
-    make_folders(parent)
+    make_folders(export.parent)
     export.mkdir()  # a new folder: an export overwrites nothing
-    fsync_folder(parent)
+    fsync_folder(export.parent)
     entries = []
     for source in files:
         target = export / source.relative_to(p.endpoint)
-        try:
-            size, sha = copy_durably(source, target)
-            copy_sha = checkpoint_sha256(target)  # the copy read back
-        except OSError as exc:  # no manifest: nothing of this export is called verified
-            print(f"{name}: the export to {export} failed at {source}: {exc}. No manifest is "
-                  "written and nothing is called verified; the checkpoints stay where they are, "
-                  "and finish --kept again exports to a new folder", file=sys.stderr)  # fmt: skip
-            return NOT_EXPORTED
+        size, sha = copy_durably(source, target)
+        copy_sha = checkpoint_sha256(target)  # the copy read back
         records = named.get(str(source), [])
         entries.append({
             "source": str(source), "copy": target.relative_to(kept).as_posix(), "size": size,
@@ -1258,13 +1237,70 @@ def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: P
     }  # fmt: skip
     q.publish(export / "MANIFEST.json", manifest)
     write_durably(export / "SHA256SUMS", sums_bytes(manifest, q.record_sha256(manifest)))
+    q.publish(folder / f"kept-checkpoints-{number}.json", manifest)  # last: the case's record
+    return manifest
+
+
+def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+    """A technical case's checkpoints (``case_files``) exported to the Pod's volume (module
+    docstring, "A technical case's kept checkpoints"): each copied durably to
+    ``<kept>/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout it has under the
+    checkpoint directory, read back and verified by its sha256, then the manifest, in the export
+    (``MANIFEST.json``, with ``SHA256SUMS``) and last in the case's folder
+    (``kept-checkpoints-<n>.json``). Refused before any copy (``kept_refusal``, or less free space
+    than the files take with ``KEPT_MARGIN``); an earlier manifest whose copies re-hash to it under
+    ``kept``, the case's files as it lists them, is reused: nothing is copied. An ``OSError``
+    anywhere in the export (``write_export``) leaves the partial ``kept-<n>`` without a case
+    manifest, never called verified. The exit: 9 (``TECHNICAL_CASE``) when every file still
+    present has a verified copy, 13 (``NOT_EXPORTED``) otherwise: refused, failed or not verified,
+    the checkpoints still only on the container disk."""
+    name, folder = p.case.name, case_folder(out, p.case)
+
+    def refused(why: str) -> int:
+        print(f"{name}: the export is refused and nothing is copied: {why}. The checkpoints stay "
+              "where they are, still only on the container disk, and nothing is called verified",
+              file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
+
+    def lost_note(lost: list[dict[str, Any]]) -> None:
+        if lost:
+            print(f"{name}: {LOST_BEFORE_EXPORT}: {[entry['path'] for entry in lost]}",
+                  file=sys.stderr)  # fmt: skip
+
+    refusal = kept_refusal(p, out, root, kept)
+    if refusal is not None:
+        return refused(refusal)
+    files, manifests = case_files(p, root), numbered(folder, KEPT_MANIFEST)
+    reused = reusable(manifests[-1][1], kept, files) if manifests else None
+    if reused is not None:  # nothing is copied
+        lost_note(reused.get("lost") or [])
+        print(json.dumps({"case": name, "manifest": str(manifests[-1][1]), "reused": True,
+                          "files": len(files)}))  # fmt: skip
+        return TECHNICAL_CASE
+    need, free = sum(path.stat().st_size for path in files) + KEPT_MARGIN, free_bytes(kept)
+    if free < need:
+        return refused(f"{free} bytes are free under {kept}, below the {need} its files take "
+                       f"with a margin of {KEPT_MARGIN} bytes")  # fmt: skip
+    parent = kept / "qualification" / folder.relative_to(out)
+    number = 1 + max([n for n, _ in manifests] + [n for n, _ in numbered(parent, KEPT_FOLDER)],
+                     default=0)  # fmt: skip
+    export = parent / f"kept-{number}"
+    try:
+        manifest = write_export(p, out, root, technical, kept, files, export, number)
+    except OSError as exc:  # no case manifest: nothing of this export is called verified
+        print(f"{name}: the export to {export} failed: {exc}. No manifest is published in the "
+              "case's folder and nothing is called verified; the checkpoints stay where they "
+              "are, still only on the container disk, and finish --kept again exports to a new "
+              "folder", file=sys.stderr)  # fmt: skip
+        return NOT_EXPORTED
     path = folder / f"kept-checkpoints-{number}.json"
-    q.publish(path, manifest)  # last: the case's record of the export
+    entries, lost = manifest["files"], manifest["lost"]
     if not manifest["verified"]:
         bad = [entry["source"] for entry in entries if not entry["verified"]]
         print(f"{name}: a copy did not read back as its source's bytes, so nothing of {export} is "
-              f"called verified: {bad}. The checkpoints stay where they are; finish --kept again "
-              f"writes kept-{number + 1}", file=sys.stderr)  # fmt: skip
+              f"called verified: {bad}. The checkpoints stay where they are, still only on the "
+              f"container disk; finish --kept again writes kept-{number + 1}",
+              file=sys.stderr)  # fmt: skip
         return NOT_EXPORTED
     lost_note(lost)
     print(json.dumps({"case": name, "manifest": str(path), "export": str(export),
@@ -1342,7 +1378,8 @@ def kept_check(p: Planned, out: Path, inventory: Path) -> int:
             teardown = f"the volume copy is verified and kept, the upload pending: {teardown}"
     q.publish(receipt, {
         "case": p.case.record(), "manifest": {"path": str(path), "sha256": sha},
-        "inventory": {"path": str(inventory), "sha256": file_sha256(inventory)}, "exit": code,
+        "inventory": {"path": str(inventory.absolute()), "sha256": file_sha256(inventory)},
+        "exit": code,
         "problems": volume + bucket, "pending-upload": pending, "teardown": teardown,
         "host": socket.gethostname(), "pod_id": q.pod_id(),
         "checked_at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
@@ -1379,10 +1416,11 @@ def bound_export(folder: Path) -> tuple[Path, dict, Path] | None:
 def release_kept(p: Planned, root: Path, folder: Path) -> tuple[list[str], dict, list[str]]:
     """``finish --release`` of a technical case (module docstring, "A technical case's kept
     checkpoints"): the files ``case_files`` gives go only through the export a ``kept-check`` of
-    exit 0 bound (``bound_export``), every one of them listed in it with its size and sha256
-    (``source_problems``), and each checked again right before its deletion; then the harness's
-    folders left empty. What it removed, the export it relied on (the manifest and the receipt,
-    by path and sha256), and why it stopped (nothing when it did not)."""
+    exit 0 bound (``bound_export``), the inventory that receipt names still of its sha256, every
+    file listed in the manifest with its size and sha256 (``source_problems``), and each checked
+    again right before its deletion; then the harness's folders left empty. What it removed, the
+    export it relied on (the manifest and the receipt, by path and sha256), and why it stopped
+    (nothing when it did not)."""
     files = case_files(p, root)
     bound = bound_export(folder)
     relied: dict[str, Any] = {"manifests": [], "kept_check": None}
@@ -1396,6 +1434,14 @@ def release_kept(p: Planned, root: Path, folder: Path) -> tuple[list[str], dict,
         path, manifest, receipt = bound
         relied = {"manifests": [{"path": str(path), "sha256": file_sha256(path)}],
                   "kept_check": {"path": str(receipt), "sha256": file_sha256(receipt)}}  # fmt: skip
+        inventory = (_read(receipt) or {}).get("inventory")
+        inventory = inventory if isinstance(inventory, dict) else {}
+        if files and (not isinstance(inventory.get("path"), str) or inventory.get("sha256") is None
+                      or file_sha256(Path(inventory["path"])) != inventory["sha256"]):  # fmt: skip
+            why = (f"the inventory {inventory.get('path')} that {receipt.name} verified is gone or "
+                   "changed (its sha256 is not the receipt's): the upload is checked again "
+                   "(archive.py, then kept-check)")  # fmt: skip
+            return [], relied, [why]
         problems = source_problems(manifest, files)
         if problems:
             return [], relied, [*problems, "another export is needed (finish --kept DIR, then "
@@ -2681,9 +2727,9 @@ def driver_script(
                  "deleted, unless its verdict is technical: then they are kept for the "
                  "diagnosis, exported to $KEPT on the Pod's volume and verified there (finish), "
                  "uploaded to $ARTIFACT_REMOTE (scripts/archive.py) and verified there "
-                 f"(kept-check), and the driver stops (exit {TECHNICAL_CASE}; "
-                 f"{NOT_EXPORTED} while the export is not verified: the planned teardown waits "
-                 "for kept-check). K-only and blind to outcomes."),
+                 f"(kept-check), and the driver stops (exit {TECHNICAL_CASE}; {NOT_EXPORTED} "
+                 "while the export is not verified: the planned teardown waits for kept-check, "
+                 "and the hard deadline stays). K-only and blind to outcomes."),
         *comment(f"A case needs {need:g} GB free under {endpoint} (the container disk). A "
                  "complete case is skipped, so the driver can be run again after a stop. It "
                  "never reruns a part or a launcher run: an interrupted part (exit "
@@ -2698,8 +2744,9 @@ def driver_script(
                  "line a published record requires missing), which verdict refuses too (exit "
                  f"{TORN_JOURNAL}): no verdict.json is written then, and an older one stays on "
                  "disk."),
-        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory and the "
-                 "bucket's settings included), the disk, a case finish refuses (not complete) "
+        *comment(f"Exits: 0 every case complete; 1 a precondition (the host memory, the "
+                 "bucket's settings and the place of $KEPT included), the disk, a case finish "
+                 "refuses (not complete) "
                  "or a decided case control-only cannot bind to its launcher run without the "
                  f"launcher; {INTERRUPTED} an interrupted attempt (or a part a case restart "
                  f"names); {TECHNICAL_CASE} a technical case, its checkpoints kept, on the volume "
@@ -2707,10 +2754,14 @@ def driver_script(
                  f"or settings); {HELD} a case whose label has a held launcher run; "
                  f"{TORN_JOURNAL} a torn line in a launch journal, or a line a published record "
                  "requires missing from it (complete's refusal, or the launcher's); "
-                 f"{NOT_EXPORTED} a technical case whose kept checkpoints are not verified on "
-                 "the volume or in the bucket (the volume copy kept, the upload pending: the "
-                 "planned teardown waits for kept-check, and the hard deadline stands); the "
-                 "launcher's own when it stops; another a failed command."),
+                 f"{NOT_EXPORTED} a technical case whose kept checkpoints are not verified: from "
+                 "finish, its export refused or failed (no verified volume copy: the checkpoints "
+                 "still only on the container disk, which a stop loses), or after kept-check "
+                 "(run whatever archive.py's exit), the volume copy verified and the upload "
+                 "pending (its receipt's pending-upload true) or the volume copy not verified "
+                 "either (false, the worse state); either way the planned teardown waits for "
+                 "kept-check exit 0, and the hard deadline stays; the launcher's own when it "
+                 "stops; another a failed command."),
         "set -euo pipefail",
         *POD_ENVIRONMENT,
         f"SRC={SOURCES}/{commit}/source",
@@ -2728,6 +2779,9 @@ def driver_script(
         " 2>&1",
         f'step() {{ echo "== {stamp} start: $*"; "$@"; echo "== {stamp} done: $*"; }}',
         f'stop() {{ echo "== {stamp} $1" >&2; exit "$2"; }}',
+        "# A step whose exit the driver routes: its start and done markers, and its exit",
+        f'routed() {{ echo "== {stamp} start: $*"; local rc=0; "$@" || rc=$?; '
+        f'echo "== {stamp} done (exit $rc): $*"; return "$rc"; }}',
         "# The verdict on every exit, whatever stopped the driver (it refuses a journal not whole)",
         f"trap 'rc=$?; {RUN} verdict {common} || true; exit $rc' EXIT",
         "# No GPU job beside the qualification: no compute process, and (as a container may not",
@@ -2760,6 +2814,18 @@ def driver_script(
         "ARTIFACT_GCS_KEY is not a readable file, or gcloud is not on PATH; the qualification "
         'does not start" 1',
         "fi",
+        *comment("The kept checkpoints' folder is on the Pod's volume: never on the checkpoint "
+                 "directory's device (the container disk), never under $RUNS_DIR or the "
+                 "checkpoint directory"),
+        'if [ "$(stat -L -c %d "$KEPT")" = "$(stat -L -c %d "$CKPT")" ]; then',
+        '  stop "KEPT $KEPT is on the device of the checkpoint directory $CKPT (the container '
+        'disk); the qualification does not start" 1',
+        "fi",
+        'case "$(realpath "$KEPT")/" in',
+        '  "$(realpath "$RUNS_DIR")"/*|"$(realpath "$CKPT")"/*)',
+        '    stop "KEPT $KEPT lies under RUNS_DIR or under the checkpoint directory $CKPT; the '
+        'qualification does not start" 1 ;;',
+        "esac",
     ]  # fmt: skip
     for index, p in enumerate(planned, 1):
         case = f"--case {shlex.quote(p.case.name)}"
@@ -2823,28 +2889,35 @@ def driver_script(
             "    ;;",
             '  *) stop "complete failed (exit $rc)" "$rc" ;;',
             "esac",
-            *comment(f"A technical case stops the driver here, its checkpoints kept: finish "
-                     f"exports them to $KEPT, verified (exit {TECHNICAL_CASE}; {NOT_EXPORTED} "
-                     "when not), then the bucket copy is uploaded and verified (kept-check)"),
+            *comment("A technical case stops the driver here, its checkpoints kept: finish exports "
+                     f"them to $KEPT, verified (exit {TECHNICAL_CASE}; {NOT_EXPORTED} when "
+                     "refused or failed), then the bucket copy is uploaded and, whatever the "
+                     "upload's exit, checked (kept-check: its receipt records a pending upload); "
+                     f"{TECHNICAL_CASE} only when both exit 0"),
             "rc=0",
-            f'{RUN} finish {common} {case} --kept "$KEPT" || rc=$?',
+            f'routed {RUN} finish {common} {case} --kept "$KEPT" || rc=$?',
             'case "$rc" in',
             "  0) ;;",
             f'  {TECHNICAL_CASE}) INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ)'
             '.tsv"',
-            '     project-run "$SRC" python scripts/archive.py "$INV" '
-            f'"$ARTIFACT_REMOTE"/{remote} "$KEPT" {kept_path} \\',
-            f'       || stop "{p.case.name}: its kept checkpoints are not verified in the bucket '
-            "(archive.py); the volume copy is kept; the planned teardown waits for kept-check"
-            f'" {NOT_EXPORTED}',
-            f'     {RUN} kept-check {common} {case} --inventory "$INV" \\',
-            f'       || stop "{p.case.name}: kept-check did not verify its kept checkpoints; the '
-            f'volume copy is kept; the planned teardown waits for kept-check" {NOT_EXPORTED}',
+            "     arc=0",
+            '     routed project-run "$SRC" python scripts/archive.py "$INV" '
+            f'"$ARTIFACT_REMOTE"/{remote} "$KEPT" {kept_path} || arc=$?',
+            "     kc=0",
+            f'     routed {RUN} kept-check {common} {case} --inventory "$INV" || kc=$?',
+            '     if [ "$arc" -ne 0 ] || [ "$kc" -ne 0 ]; then',
+            f'       stop "{p.case.name}: its kept checkpoints are not verified in the bucket '
+            "(archive.py exit $arc, kept-check exit $kc); its kept-check receipt says whether the "
+            "volume copy is verified and the upload pending (pending-upload true) or the volume "
+            "copy is not verified either (pending-upload false, the worse state); do not stop "
+            f'the Pod by plan; the hard deadline stays" {NOT_EXPORTED}',
+            "     fi",
             f'     stop "{p.case.name}: a technical case: its checkpoints are kept, on the volume '
             f'and in the bucket, verified" {TECHNICAL_CASE} ;;',
-            f'  {NOT_EXPORTED}) stop "{p.case.name}: its checkpoints are not exported and verified '
-            "on the volume (finish); they stay where they are; the planned teardown waits for "
-            f'kept-check" {NOT_EXPORTED} ;;',
+            f'  {NOT_EXPORTED}) stop "{p.case.name}: finish refused or failed its export (exit '
+            f"{NOT_EXPORTED}): no verified volume copy; its checkpoints are still only on the "
+            "container disk, which a stop loses; do not stop the Pod by plan; the hard deadline "
+            f'stays" {NOT_EXPORTED} ;;',
             f'  *) stop "{p.case.name}: finish failed (exit $rc)" "$rc" ;;',
             "esac",
         ]  # fmt: skip

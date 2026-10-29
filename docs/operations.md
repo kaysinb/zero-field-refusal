@@ -1490,10 +1490,11 @@ docstring has every rule.
      verdicts without error. A case whose verdict is technical (its own or its control's) keeps
      them for the diagnosis that starts its engineering cycle, exported and verified on the
      Pod's volume and in the bucket (below): `finish --kept "$KEPT"` exits 9 once each file
-     still present has a verified copy on the volume, then the driver uploads that export
-     (`scripts/archive.py`), checks both copies (`kept-check`) and stops before the next case,
-     with 9 when both are verified and 13 when either is not; `finish --release` deletes them
-     once diagnosed, only through that verified export.
+     still present has a verified copy on the volume (13 when the export is refused or fails),
+     then the driver uploads that export (`scripts/archive.py`), checks both copies
+     (`kept-check`, whatever the upload's exit) and stops before the next case, with 9 when both
+     exit 0 and 13 otherwise; `finish --release` deletes them once diagnosed, only through that
+     verified export.
 
   A case is complete when the latest attempt of each part it needs is recorded and readable:
   the baseline, the due control and, unless decided, the rest, which must name the latest
@@ -1631,15 +1632,19 @@ docstring has every rule.
     `qualification/c<N>/<stage>/<case>/kept-<n>/` there, in their layout under the checkpoint
     directory, each copy read back and verified by its sha256 (a file of another sha256 than its
     recorded one is kept as it is, `matches_record: false`; nothing of the case's verdict changes).
-    The driver then uploads that folder with `scripts/archive.py` to
+    The driver then uploads the case's folder there with `scripts/archive.py` to
     `$ARTIFACT_REMOTE/kept-checkpoints/` (`--kept-remote` sets the prefix; the dry run passes
     `dryrun/<id>/kept-checkpoints`), with an inventory
-    `$RUNS_DIR/archive/inventory-kept-<time>.tsv`, and `kept-check` verifies both: every copy
-    re-hashes to the manifest, and every exported file has its inventory line with the same size and
-    sha256 and the status `ok` (its object's size and MD5). `finish` refuses before any copy (exit
-    13) without `--kept`, for a relative folder, one under `$RUNS_DIR` or under the checkpoint
-    directory, one on the checkpoint directory's filesystem, and one with less free space than the
-    files take.
+    `$RUNS_DIR/archive/inventory-kept-<time>.tsv`, and `kept-check` verifies both, whatever the
+    upload's exit: every copy re-hashes to the manifest, and every exported file has its
+    inventory line with the same size and sha256 and the status `ok` (its object's size and MD5).
+    Earlier `kept-<n>` folders of the case, verified or not, go to the bucket as well and are kept
+    there until the study's report. `finish` refuses before any copy (exit 13) without `--kept`,
+    for a relative folder, one under `$RUNS_DIR` or under the checkpoint directory, one on the
+    checkpoint directory's filesystem, and one with less free space than the files take plus
+    1 GiB; an error during the export (a full volume, say) exits 13 too, its partial folder never
+    called verified. Before the first case the driver itself exits 1 when `$KEPT` is on the
+    checkpoint directory's device or lies under `$RUNS_DIR` or the checkpoint directory.
   - **The manifest.** `kept-checkpoints-<n>.json` in the case's folder, and the same JSON as
     `MANIFEST.json` in the export with a `SHA256SUMS`: the case, its technical reasons, the
     binding records by path and sha256 (the launcher run's `summary.json` and `meta.json` with its
@@ -1651,29 +1656,41 @@ docstring has every rule.
     case's files as they are; otherwise it writes `kept-<n+1>`, and nothing is overwritten.
     Each `kept-check` publishes its receipt, `kept-check-<n>.json`: the manifest's and the
     inventory's path and sha256, its exit, and `pending-upload` when the volume copy is verified
-    and the bucket copy is not.
+    and the bucket copy is not (no inventory, or one without the export's verified lines).
+  - **The two exits 13.** `finish`'s 13: the export was refused or failed, there is no verified
+    volume copy, and the checkpoints are still only on the container disk, which a stop loses.
+    The driver's 13 after `kept-check`: either the volume copy is verified and the upload is
+    pending (the receipt's `pending-upload: true`), or the volume copy is not verified either
+    (`pending-upload: false`), the worse state.
   - **The Pod.** A planned stop, restart or deletion of the Pod waits for `kept-check` exit 0
-    while a technical case lacks it (driver exit 13: the volume copy is kept, the upload
-    pending). An upload that cannot be verified never lifts the hard deadline: the verified
-    volume copy stays, the pending upload is recorded in the receipt, and `kept-check` is run
-    again once the bucket is reachable.
+    while a technical case lacks it. An upload that cannot be verified never lifts the hard
+    deadline: the verified volume copy stays and the pending upload is recorded in the receipt.
+    To recover, repeat the upload before `kept-check`: run the driver again (`finish` reuses the
+    verified export, then uploads and checks it), or run `archive.py` and then `kept-check` by
+    hand with a new inventory:
+
+    ```bash
+    INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ).tsv"
+    project-run "$SRC" python scripts/archive.py "$INV" "$ARTIFACT_REMOTE/kept-checkpoints" \
+      /workspace/kept-checkpoints qualification/c1/numerical/s10200/adamw-1.45e-05
+    project-run "$SRC" python scripts/qualify.py kept-check --campaign "$C/qualification-c1.yaml" \
+      --candidate 1 --case s10200/adamw-1.45e-05 --inventory "$INV"
+    ```
   - **Lost before the export.** Checkpoints a Pod stop took before `finish` leave the technical
     mark as it stands: `finish` exits 9 with `lost` naming them ("lost before the export: the
     technical mark stands; the diagnosis goes on from the records; nothing reruns"), the export
     holds the manifest alone, there is no restart (`restart-case` refuses a complete case), and
     nothing reruns.
   - **After the diagnosis.** `finish --release` deletes them, only through the manifest that a
-    `kept-check` of exit 0 binds by its sha256, every current file listed in it with its size and
-    sha256 and checked again right before its deletion (a new or changed file needs another
-    export and its `kept-check`); otherwise it exits 13 naming the files. Its
-    `checkpoints-removed-<n>.json` names the manifest and the receipt. The volume copy may go
-    once `kept-check` has passed and the diagnosis is done; the bucket copy is kept until the
-    study's report.
+    `kept-check` of exit 0 binds by its sha256, with that receipt's inventory unchanged (its
+    sha256 re-hashed), every current file listed in the manifest with its size and sha256 and
+    checked again right before its deletion (a new or changed file needs another export and its
+    `kept-check`; an inventory gone or changed, the upload checked again); otherwise it exits 13
+    naming the files or the inventory. Its `checkpoints-removed-<n>.json` names the manifest and
+    the receipt. The volume copy may go once `kept-check` has passed and the diagnosis is done;
+    the bucket copy is kept until the study's report.
 
   ```bash
-  project-run "$SRC" python scripts/qualify.py kept-check --campaign "$C/qualification-c1.yaml" \
-    --candidate 1 --case s10200/adamw-1.45e-05 \
-    --inventory "$RUNS_DIR/archive/inventory-kept-<time>.tsv"
   project-run "$SRC" python scripts/qualify.py finish --release \
     --campaign "$C/qualification-c1.yaml" --candidate 1 --case s10200/adamw-1.45e-05
   ```
@@ -1748,26 +1765,31 @@ docstring has every rule.
   ```
 
   The engineering stage adds `--engineering` and, for its path diagnostics,
-  `--diagnostic-steps 1,5,10,15,20`. The driver checks the checkout and the campaign's sha256,
-  that no process holds the GPU and under 1 000 MiB of it is in use, that the free host
-  memory reaches `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the
-  host, ≈ 25-30 GB at 1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), and that a
-  technical case's checkpoints can reach the bucket (`ARTIFACT_REMOTE` a gs:// path,
-  `ARTIFACT_GCS_KEY` a readable file, `gcloud` on PATH; otherwise exit 1 before the first case),
-  then runs the cases. It writes the verdict on every exit but one: over a launch journal that is
-  not whole (an unresolved torn line, or a line a published record requires missing) `verdict`
-  refuses too (exit 12), so no `verdict.json` is written then and an older one stays on disk.
-  **Exits:** 0, every case complete; 1, a precondition (the host memory and the bucket's settings
-  included), the disk (or `df` giving no number), a `finish` that refuses a case not complete, or a
-  decided case whose control is due that `control-only` cannot bind to its launcher run; 8, an
-  interrupted attempt (or a part a case restart names); 9, a technical case, its checkpoints kept on
-  the volume and in the bucket, verified; 10, a stale case; 11, a case whose label has a held
-  launcher run; 12, a launch journal that is not whole, a torn line unresolved or a line a published
-  record requires missing (`complete` refuses it, as every `qualify.py` command that reads the runs
-  does, and so does the launcher; restored as [launching runs](#launching-runs) says); 13, a
-  technical case whose kept checkpoints are not verified on the volume or in the bucket (the volume
-  copy kept, the upload pending: the planned teardown waits for `kept-check`); the launcher's own
-  exit when it stops; any other, the exit of the command that failed.
+  `--diagnostic-steps 1,5,10,15,20`. The driver checks the checkout and the campaign's sha256, that
+  no process holds the GPU and under 1 000 MiB of it is in use, that the free host memory reaches
+  `host_memory_gb` (60 GB: θ₀, v₀, the second model and the p1 direction on the host, ≈ 25-30 GB at
+  1.5B, and a checkpoint save's ≈ 5 GB, × 1.5, rounded up), and that a technical case's checkpoints
+  can reach the bucket (`ARTIFACT_REMOTE` a gs:// path, `ARTIFACT_GCS_KEY` a readable file, `gcloud`
+  on PATH) and that `$KEPT` is on the volume (not on the checkpoint directory's device, not under
+  `$RUNS_DIR` or the checkpoint directory; otherwise exit 1 before the first case), then runs the
+  cases. It writes the verdict on every exit but one: over a launch journal that is not whole (an
+  unresolved torn line, or a line a published record requires missing) `verdict` refuses too (exit
+  12), so no `verdict.json` is written then and an older one stays on disk.
+  **Exits:** 0, every case complete; 1, a precondition (the host memory, the bucket's settings and
+  the place of `$KEPT` included), the disk (or `df` giving no number), a `finish` that refuses a
+  case not complete, or a decided case whose control is due that `control-only` cannot bind to its
+  launcher run; 8, an interrupted attempt (or a part a case restart names); 9, a technical case, its
+  checkpoints kept on the volume and in the bucket, verified; 10, a stale case; 11, a case whose
+  label has a held launcher run; 12, a launch journal that is not whole, a torn line unresolved or a
+  line a published record requires missing (`complete` refuses it, as every `qualify.py` command
+  that reads the runs does, and so does the launcher; restored as [launching runs](#launching-runs)
+  says); 13, a technical case whose kept checkpoints are not verified, in one of two meanings ("The
+  two exits 13", above): from `finish`, its export refused or failed (no verified volume copy, the
+  checkpoints still only on the container disk, which a stop loses), or after `kept-check`, the
+  volume copy verified and the upload pending (`pending-upload: true`) or the volume copy not
+  verified either (`pending-upload: false`, the worse state); either way the planned teardown waits
+  for `kept-check` exit 0, and the hard deadline stays; the launcher's own exit when it stops; any
+  other, the exit of the command that failed.
 - **Outputs** under `$RUNS_DIR/qualification/`: `c<N>/<numerical|engineering>/s<seed>/<arm>-<rate>/`
   holds each part's `<part>-attempt-<n>.json` and its `.started` file, `c<N>/verdict.json` the
   verdict (each rate's state, its cases with their 13 comparisons, kinds and reasons, its
