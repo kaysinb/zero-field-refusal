@@ -1472,9 +1472,10 @@ docstring has every rule.
      (`<cell>/s<seed>` in its experiment) has a launcher run held in any launch journal, whatever
      its config hash, stops the driver with exit 11 naming the hold, before the launcher is
      called; nothing lifts a hold. For the case that holds the FA rate's same-path control,
-     `control-only` comes next (a decided case whose control is due, below): its exit 0, for a
-     case its baseline decided whose control alone is due, runs that control alone, then step
-     6; its exit 3 goes on with step 2; any other exit stops the driver;
+     `control-only` comes next (a case whose control alone is due, below): its exit 0, for a
+     case whose only outstanding part is its same-path control (decided by its baseline, or with
+     its baseline and rest recorded), runs that control alone, then step 6; its exit 3 goes on
+     with step 2; any other exit stops the driver;
   2. the `<dir>/<run_id>.pt` of the case's launcher run attempts that the launch journal shows
      superseded (ended technical, or never ended) are removed (`clear-stale`); a settled run's
      checkpoint (done, diverged, or completed but in conflict) stays. Then the free disk is
@@ -1511,8 +1512,8 @@ docstring has every rule.
   rerun is the next attempt, by hand, with its documented reason, which the record carries, while
   the Pod and its container disk are the ones it started on (otherwise the case restarts,
   below). The same-path control is the exception: it reads no checkpoint, so its interrupted
-  attempt is rerun this way after a lost container disk too (a decided case whose control is
-  due, below). An interruption without a documented cause is recorded technical instead
+  attempt is rerun this way after a lost container disk too (a case whose control alone is due,
+  below). An interruption without a documented cause is recorded technical instead
   (`interrupted`). Then run the driver again. A failed launcher run stops the driver too; its
   rerun is a recovery round of its own with the reason and its incident, one attempt per round
   (["Launching runs"](#launching-runs)): a second loss, or a first loss after the round was used
@@ -1609,18 +1610,23 @@ docstring has every rule.
     --infrastructure "the Pod stopped during the case" \
     --run-dir "$RUN_DIR" --checkpoints /root/ckpt/harness/s10200-adamw-1.45e-05
   ```
-- **A decided case whose control is due.** A case its baseline decided (a scientific failure)
-  still owes its same-path control. After a lost container disk the launcher refuses its run
-  (the checkpoint is missing) and
-  `restart-case` refuses the case (the failure keeps counting), but the control reads no
-  checkpoint. So, for the case that holds the control, the driver asks `control-only` first. It
-  exits 0, printing the launcher run's directory, when:
-  - the case holds the control, the engineering cycle has not resolved it, and its baseline
-    record (the latest, not void) is a scientific failure while the case is not complete;
-  - the control's latest attempt is due or interrupted, the only part outstanding;
+- **A case whose control alone is due** (a decided case whose control is due included). This is
+  a case whose only outstanding part is its same-path control (decided by its baseline, or with
+  its baseline and rest recorded). After a lost container disk the launcher refuses its run (the
+  checkpoint is missing). `restart-case` refuses a case with a scientific failure (the failure
+  keeps counting), and for a passing one it would void the passing parts and rerun them, but the
+  control reads no checkpoint. So, for the case that holds the control, the driver asks
+  `control-only` first. It exits 0, printing the launcher run's directory, when:
+  - the case holds the control, the engineering cycle has not resolved it, and the case is not
+    complete;
+  - the control's latest attempt is due or interrupted, and every other part the case needs is
+    recorded as `complete` reads it: the baseline (the latest, not void) and, unless it decided
+    the case, the rest bound to it;
+  - the case is not technical: a scientific failure, the baseline's or the rest's, keeps
+    counting, and its control runs alone;
   - the baseline record classified its launcher run as conforming (`launcher.classified` true,
-    `launcher.kind` null): the decision is the baseline's own;
-  - the run that record names (its experiment and run id, wherever RUNS_DIR lay) is the
+    `launcher.kind` null);
+  - the run each recorded part names (its experiment and run id, wherever RUNS_DIR lay) is the
     case's located run (its one settled directory, superseded nowhere), with the identity the
     record gives (its recorded checkpoint record; the file is read only when present, never
     required), done in the launch journal, its label held nowhere.
@@ -1629,8 +1635,9 @@ docstring has every rule.
   checks (the launcher run's numerics, the streams, v₀), and then `finish`: never
   `clear-stale`, the launcher, `locate`, the baseline, `decided` or the rest. Exit 3 is the
   usual path (any other case, a case decided by its launcher run's own declared instability
-  stop included: the launcher accepts that run without its checkpoint). Exit 1 names the
-  condition that fails for a decided case it cannot bind: the driver stops, nothing is rerun,
+  stop included: the launcher accepts that run without its checkpoint; and a technical case,
+  whose `finish` exports its checkpoints). Exit 1 names the condition that fails for a case whose
+  recorded parts it cannot bind: the driver stops, nothing is rerun,
   and the case waits for a diagnosis. A present endpoint checkpoint of another sha256 than its
   recorded one stops the step too (exit 1, a provenance conflict), and the file is kept for the
   diagnosis. As any part, a recorded control, technical or
@@ -1809,7 +1816,7 @@ docstring has every rule.
   12), so no `verdict.json` is written then and an older one stays on disk.
   **Exits:** 0, every case complete; 1, a precondition (the host memory, the bucket's settings and
   the place of `$KEPT` included), the disk (or `df` giving no number), a `finish` that refuses a
-  case not complete, or a decided case whose control is due that `control-only` cannot bind to its
+  case not complete, or a case whose control alone is due that `control-only` cannot bind to its
   launcher run; 8, an interrupted attempt (or a part a case restart names); 9, a technical case, its
   checkpoints kept on the volume and in the bucket, verified; 10, a stale case; 11, a case whose
   label has a held launcher run; 12, a launch journal that is not whole, a torn line unresolved or a

@@ -347,7 +347,7 @@ def test_a_decided_case_with_its_control_due_runs_the_control_alone(qualify, tmp
                   if line.startswith("part ") and "--part control" in line]  # fmt: skip
     assert "--run-dir /runs/study3/r1 " in control and control.endswith("--part control --resume")
     text = (tmp_path / "driver.sh").read_text()
-    assert f"{FA.name}: decided by its baseline; only its same-path control is due" in text
+    assert f"{FA.name}: only its same-path control is due (its baseline decided it, or" in text
 
 
 @pytest.mark.parametrize("command", ["complete", "control-only", "decided"])
@@ -2553,12 +2553,14 @@ LOST = "the Pod stopped during the control; its container disk is gone"
 UNSTABLE = {"reason": "gradient_spike", "step": 3, "detail": {"grad_norm": 50.0}}
 
 
-def decided_world(tmp_path):
+def decided_world(tmp_path, *, rest=None):
     """FA's case decided by its baseline (a declared instability rule fired on the unshifted
     baseline trajectory), its baseline record bound to its conforming launcher run r-f1
     (classified, ``launcher.kind`` null), done in the launch journal; r-f1's endpoint checkpoint
     was written and recorded, then lost with the container disk. Its same-path control is due.
-    Returns the campaign, the runs root, the records' folder and r-f1's directory."""
+    With ``rest`` (a change of the rest record, or ``True``), the baseline passes instead and its
+    rest is recorded, bound to it and to r-f1. Returns the campaign, the runs root, the records'
+    folder and r-f1's directory."""
     path = campaign(tmp_path)
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     run = journal(root, path, FA_LABEL, ["r-f1"])
@@ -2568,12 +2570,22 @@ def decided_world(tmp_path):
         f.write(json.dumps(end) + "\n")
     checkpoint = tmp_path / "ckpt" / "r-f1.pt"
     run_dir = with_checkpoint(settled_launcher(root, run, "r-f1"), checkpoint)
-    baseline, _ = synthetic(FA, identity=q.launcher_identity(run_dir))
-    baseline["trajectories"]["baseline"]["instability"] = dict(UNSTABLE)
+    baseline, rest_record = synthetic(FA, identity=q.launcher_identity(run_dir))
+    if rest is None:
+        baseline["trajectories"]["baseline"]["instability"] = dict(UNSTABLE)
     baseline["launcher_run"] = str(run_dir)
     baseline["launcher"]["classified"] = True
     publish(out, FA, "baseline", baseline)
-    assert q.case_verdict(baseline, None, SCOPE)["kind"] == "scientific"
+    decided = q.case_verdict(baseline, None, SCOPE)["kind"] == "scientific"
+    assert decided is (rest is None)
+    if rest is not None:
+        rest_record["launcher_run"] = str(run_dir)
+        rest_record["launcher"]["classified"] = True
+        if callable(rest):
+            rest(rest_record)
+        rest_record["baseline_record"] = {"path": str(out / FA.attempt_path("baseline", 1)),
+                                          "sha256": q.record_sha256(baseline)}  # fmt: skip
+        publish(out, FA, "rest", rest_record)
     checkpoint.unlink()  # the container disk lost
     return path, root, out, run_dir
 
@@ -2830,6 +2842,163 @@ def test_a_failed_control_of_a_decided_case_is_kept(
     manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
     assert [entry["path"] for entry in manifest["lost"]] == [str(tmp_path / "ckpt" / "r-f1.pt")]
     assert stubbed == []
+
+
+# --------------------------------- a case whose baseline and rest are recorded, its control due
+
+
+def accepted_control(calls, run_dir):
+    """``run_part`` stubbed: the control's record as an accepted control on ``run_dir`` (its
+    identity, K far below 0.01·K*); nothing loads a model."""
+
+    def run_part(settings, env, case, run_dir_, out, *, part, attempt, checkpoints,
+                 diagnostic_steps=(), infrastructure=None, engineering_cycle=None):  # fmt: skip
+        calls.append((case.name, part, attempt, str(run_dir_)))
+        record = {**control_record(case=case, identity=q.launcher_identity(run_dir)),
+                  "attempt": attempt, "launcher_run": str(run_dir_)}  # fmt: skip
+        q.publish(out / case.attempt_path(part, attempt), record)
+        return record
+
+    return run_part
+
+
+def scientific_rest(rest):
+    """A rest whose baseline~reference D₂₅ is beyond 0.01·K*: a scientific failure."""
+    rest["comparisons"]["baseline~reference"]["D_twin"] = 0.5
+
+
+def technical_rest(rest):
+    """A rest whose unshifted repeat is beyond 0.01·K*: a technical mark."""
+    rest["comparisons"]["baseline~repeat"]["D_twin"] = 0.07
+
+
+def run_the_control_alone(qualify, monkeypatch, capsys, path, run_dir, tmp_path):
+    """The driver's calls for a case ``control-only`` takes, by hand: ``control-only`` (no
+    checkpoint file read), ``part --part control --resume`` on the run it printed (an accepted
+    control) and ``finish``. Returns the calls ``run_part`` saw."""
+    calls = []
+
+    def untouched(*args, **kwargs):
+        raise AssertionError(f"called with {args}")
+
+    monkeypatch.setattr(qualify.runtime, "configure_numerics", lambda cfg, device: {})
+    monkeypatch.setattr(qualify.runtime, "environment", lambda cfg, device: object())
+    monkeypatch.setattr(qualify.q, "run_part", accepted_control(calls, run_dir))
+    with monkeypatch.context() as guard:  # an absent file: none is read
+        guard.setattr(qualify, "checkpoint_sha256", untouched)
+        guard.setattr(q, "file_sha256", untouched)
+        capsys.readouterr()
+        qualify.main(control_only(path))
+        printed = capsys.readouterr().out.strip()
+    assert printed == str(run_dir)
+    qualify.main(control_args(path, printed, tmp_path, "--resume"))
+    assert calls == [(FA.name, "control", 1, str(run_dir))]
+    qualify.main(["complete", *common(path), "--case", FA.name])  # exit 0: complete now
+    assert exit_code(qualify, finish_args(path, FA)) == 0
+    return calls
+
+
+def test_control_only_runs_the_control_alone_after_a_recorded_rest(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """A passing baseline and a passing rest, bound to r-f1, its checkpoint lost with the container
+    disk, the same-path control due: ``control-only`` exits 0 without reading a checkpoint file,
+    the control runs on the run it printed, and ``finish`` follows (the driver's 0 branch:
+    ``test_a_decided_case_with_its_control_due_runs_the_control_alone``)."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    run_the_control_alone(qualify, monkeypatch, capsys, path, run_dir, tmp_path)
+    assert not (tmp_path / "ckpt" / "r-f1.pt").exists()
+
+
+def test_a_scientific_rest_failure_keeps_counting_when_the_control_runs_alone(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """A passing baseline, then a rest that records a scientific failure, the control due and the
+    checkpoint lost: ``control-only`` exits 0, the control runs on that run and ``finish``
+    follows. The verdict afterwards shows the rest's scientific failure as it was: the control's
+    record neither voids, replaces nor softens it, and the rest record is unchanged."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=scientific_rest)
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    rest_path = out / FA.attempt_path("rest", 1)
+    rest, rest_bytes = json.loads(rest_path.read_text()), rest_path.read_bytes()
+    before = q.case_verdict(baseline, rest, SCOPE)
+    assert (before["state"], before["kind"]) == ("failing", "scientific")
+    run_the_control_alone(qualify, monkeypatch, capsys, path, run_dir, tmp_path)
+    assert rest_path.read_bytes() == rest_bytes
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    key = f"adam_frozen-{FA_LR:g}"
+    (case,) = [c for c in verdict["cases"] if c["case"]["name"] == FA.name]
+    assert (case["state"], case["kind"], case["reasons"]) == (
+        "failing", "scientific", before["reasons"])  # fmt: skip
+    assert case["comparisons"] == before["comparisons"]
+    assert verdict["rates"][key]["control"]["state"] == "accepted"
+    assert verdict["states"][key] == "failing"
+    assert verdict["superseded"] == [] and verdict["rates"][key]["voided"] == []
+
+
+def rest_change(change):
+    return lambda path, root, out, run_dir: edit_part(out, "rest", lambda r: change(r, run_dir))
+
+
+def edit_part(out, part, change):
+    """FA's latest record of ``part`` changed by ``change`` and published again as attempt 1."""
+    record = json.loads((out / FA.attempt_path(part, 1)).read_text())
+    change(record)
+    publish(out, FA, part, record)
+
+
+def baseline_elsewhere(path, root, out, run_dir):
+    """The baseline names another launcher run (r-f0); the rest is bound to that baseline record
+    again, so that only the launcher run differs."""
+    edit_part(out, "baseline", lambda b: b.update(launcher_run=str(run_dir.parent / "r-f0")))
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    edit_part(out, "rest", lambda r: r["baseline_record"].update(
+        sha256=q.record_sha256(baseline)))  # fmt: skip
+
+
+BOUND_ELSEWHERE = {  # a part of a case whose rest is recorded, bound to another launcher run
+    "rest run id": (rest_change(lambda r, d: r.update(launcher_run=str(d.parent / "r-f0"))),
+                    "the rest record names the launcher run"),
+    "rest identity": (rest_change(lambda r, d: r["launcher"]["identity"].update(sha256="0" * 64)),
+                      "identity is not the one the rest record names"),
+    "baseline run id": (baseline_elsewhere, "the baseline record names the launcher run"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("elsewhere", list(BOUND_ELSEWHERE))
+def test_control_only_refuses_a_part_bound_to_another_launcher_run(
+    qualify, stubbed, tmp_path, elsewhere
+) -> None:
+    """A case whose baseline and rest are recorded, its control due, but one of those records
+    bound to another launcher run than the located one (the rest by its run id or its identity,
+    or the baseline): ``control-only`` exits 1 naming it, and nothing runs."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    assert exit_code(qualify, control_only(path)) == 0
+    change, why = BOUND_ELSEWHERE[elsewhere]
+    change(path, root, out, run_dir)
+    code = exit_code(qualify, control_only(path))
+    assert isinstance(code, str) and why in code and "nothing is rerun" in code, code
+    assert stubbed == [] and not (out / (FA.attempt_path("control", 1) + ".started")).exists()
+
+
+def test_control_only_leaves_a_technical_or_unfinished_case_to_the_usual_path(
+    qualify, tmp_path, capsys
+) -> None:
+    """A case whose rest holds a technical mark is not run by ``control-only`` (exit 3: the usual
+    path, whose ``finish`` exports a technical case's checkpoints); a case whose rest is due or
+    interrupted is not either, as before."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=technical_rest)
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    rest = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    assert q.case_verdict(baseline, rest, SCOPE)["kind"] == "technical"
+    capsys.readouterr()
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert "technical" in capsys.readouterr().err
+    (out / FA.attempt_path("rest", 1)).unlink()  # the rest due
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    q.publish(out / (FA.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    assert exit_code(qualify, control_only(path)) == qualify.NO  # the rest interrupted
 
 
 def test_finish_keeps_a_technical_cases_checkpoints(qualify, tmp_path, monkeypatch) -> None:
