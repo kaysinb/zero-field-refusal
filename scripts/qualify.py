@@ -218,7 +218,8 @@ infrastructure-interrupted attempt is void and kept, its rerun a new attempt id)
 a case loses the container disk, with the launcher run's checkpoint and the harness's: the case
 cannot go on from its recorded parts. A missing endpoint checkpoint alone is a possible loss
 requiring diagnosis, never by itself a lost container disk: the restart's reason documents the
-interruption the diagnosis found. Exit 1 is shared (the
+interruption the diagnosis found. A case whose only outstanding part is its same-path control is
+not restarted: ``control-only`` runs that control alone. Exit 1 is shared (the
 launcher's conflicts, this command's refusals, ``control-only``, ``finish``, the driver's
 preconditions), so it never triggers a restart by itself: docs/operations.md, "A lost checkpoint",
 tells the launcher's messages apart. ``restart-case`` publishes (atomically, from a clean checkout)
@@ -406,6 +407,7 @@ from zero_field_refusal.launch import (
     TORN_JOURNAL,
     Run,
     TornJournalError,
+    after_checkpoint_problem,
     assess,
     attempt_key,
     expected_numerics,
@@ -817,11 +819,8 @@ def label_run_ids(run: Run, root: Path) -> list[str]:
     ``<cell>/s<seed>``), whatever their config hash, in attempt order (``launch.attempt_key``),
     across all journals: how an engineering cycle finds a case's launcher runs, so that a fix
     that changes a hashed config key does not hide an attempt issued before it."""
-    starts = [r for r in launch_records(root)
-              if r.get("event") == "start" and r.get("run") == run.label
-              and r.get("experiment") == run.experiment
-              and isinstance(r.get("run_id"), str)]  # fmt: skip
-    return list(dict.fromkeys(r["run_id"] for r in sorted(starts, key=attempt_key)))
+    starts = label_starts(run, launch_records(root), every_config_hash=True)
+    return list(dict.fromkeys(r["run_id"] for r in starts))
 
 
 def label_superseded(run: Run, root: Path) -> set[str]:
@@ -1899,7 +1898,9 @@ def own_conflict_end(run: Run, root: Path, run_dir: Path | None) -> dict | None:
     not, whose problem is not the missing endpoint checkpoint (``launch.is_missing_checkpoint``).
     A settled end (``settled: true``, no return code) with that problem alone is what a lost
     container disk leaves, as is an end ``done``: a clean run that lost only its checkpoint
-    settles with it, the launcher having checked the rest first."""
+    settles with it (the launcher checks the config, gate, clean checkout and records first, and
+    the checkpoint before the numerics and the Rayleigh record, so ``restart-case`` reads those
+    two itself, ``after_checkpoint_problem``)."""
     if run_dir is None:
         return None
     for record in launch_records(root):
@@ -1928,12 +1929,15 @@ def restart_case(
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
     its declared instability stop, scientific; another stop or a departing run, technical),
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``), when the launcher run has an end ``conflict`` in the launch journal
-    that a lost container disk does not explain (``own_conflict_end``: an unsettled one, the
-    launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint),
-    and when the launcher run's checkpoint is on disk with another sha256
-    than its recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever
-    an interrupted attempt would allow): only an interrupted case is restarted. A launcher run whose
+    (``attempt_failures``), when ``control-only`` would run the control alone (nothing to void),
+    when the launcher run's numerics or Rayleigh record depart (``after_checkpoint_problem``, which
+    a settled missing-checkpoint end hides), when the launcher run has an end ``conflict`` in the
+    launch journal that a lost container disk does not explain (``own_conflict_end``: an unsettled
+    one, the launcher's own judgement of its attempt, or one whose problem is not the missing
+    checkpoint), and when the launcher run's checkpoint is on disk with another sha256 than its
+    recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever an
+    interrupted attempt would allow):
+    only an interrupted case is restarted. A launcher run whose
     checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
     Pod stopped between the launch and the baseline). Run again after a stop between the record
     and the journal's line, it only writes that line."""
@@ -1964,11 +1968,27 @@ def restart_case(
         sys.exit(f"{case.name}: no restart: a completed failure keeps counting: {failures}. A "
                  "scientific one is never rerun (no reruns to pass); a technical one is lifted "
                  "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
+    try:
+        control_only(planned, out, root, scope)
+    except SystemExit:
+        pass  # the case is not in control-only's state (3), or cannot be bound (1)
+    else:
+        sys.exit(f"{case.name}: no restart: only its same-path control is outstanding, and "
+                 "control-only runs it alone through the driver; a restart would void the "
+                 "passing parts and rerun them. Do not restart")  # fmt: skip
     if run_dir is not None:
         kind, why = q.launcher_problems(run_dir, case, checkpoint=False, environment=False)
         if kind is not None:
             sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} is itself a "
                      f"completed {kind} failure, which keeps counting: {why}")  # fmt: skip
+        departs = after_checkpoint_problem(
+            planned.run, run_dir, OmegaConf.load(run_dir / "config.yaml"),
+            _read(run_dir / "meta.json") or {})  # fmt: skip
+        if departs is not None:
+            sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} is not sound "
+                     f"beyond its checkpoint: {departs}. A settled end that records the missing "
+                     "checkpoint alone hides it: a provenance conflict, which goes to diagnosis "
+                     "and the technical route, never a restart")  # fmt: skip
     own = own_conflict_end(planned.run, root, run_dir)
     if own is not None:
         by = (

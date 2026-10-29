@@ -957,12 +957,9 @@ def _disqualification(run: Run, run_dir: Path, meta: Mapping[str, Any]) -> str |
             load_trajectory(run_dir)
         except TrajectoryError as exc:
             return f"a scheduled run's records are incomplete: {exc}"
-        problem = _checkpoint_problem(cfg, run_dir) or _numerics_problem(run, cfg, meta)
-        if problem is not None:
-            return problem
-        if OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False):
-            return _rayleigh_problem(_read_json(run_dir / "rayleigh.json"))
-        return None
+        return _checkpoint_problem(cfg, run_dir) or after_checkpoint_problem(
+            run, run_dir, cfg, meta
+        )
     summary = _read_json(run_dir / "summary.json")
     k = None if summary is None else summary.get("K_harmful")
     finite = isinstance(k, int | float) and not isinstance(k, bool) and math.isfinite(k)
@@ -1026,6 +1023,21 @@ def expected_numerics(cfg: Any) -> dict[str, Any]:
             "tf32_matmul": tf32, "tf32_cudnn": tf32,
             "matmul_precision": "high" if tf32 else "highest",
             "memory_limit_gb": None if limit is None else float(limit)}  # fmt: skip
+
+
+def after_checkpoint_problem(
+    run: Run, run_dir: Path, cfg: Any, meta: Mapping[str, Any]
+) -> str | None:
+    """What ``_disqualification`` checks of a scheduled run after its checkpoint, which reads the
+    container disk: the recorded numerics setup (``_numerics_problem``) and, when enabled, the
+    Rayleigh record. Neither reads a checkpoint file, so ``restart-case`` runs them on a run
+    whose checkpoint is gone (a settled end records the missing checkpoint alone)."""
+    problem = _numerics_problem(run, cfg, meta)
+    if problem is not None:
+        return problem
+    if OmegaConf.select(cfg, "eval.rayleigh.enabled", default=False):
+        return _rayleigh_problem(_read_json(run_dir / "rayleigh.json"))
+    return None
 
 
 def _numerics_problem(run: Run, cfg: Any, meta: Mapping[str, Any]) -> str | None:

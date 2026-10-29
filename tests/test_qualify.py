@@ -3175,6 +3175,60 @@ TECHNICAL_WORLDS = {  # a case its own verdict marks technical → what control-
 }  # fmt: skip
 
 
+def test_restart_case_refuses_the_state_control_only_runs_alone(qualify, tmp_path) -> None:
+    """A passing baseline and rest, the control due, the container disk lost: ``control-only``
+    would run the control alone, so ``restart-case`` refuses (it would void both passing parts
+    and rerun them), naming that route, and voids and supersedes nothing."""
+    from zero_field_refusal import launch
+
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    assert exit_code(qualify, control_only(path)) == 0
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(restart(path, FA, RESTART))
+    assert "control-only" in stop.value.code and "Do not restart" in stop.value.code
+    assert not list(case_folder(out, FA).glob("restart-*"))
+    run = next(r for r in launch.load_campaign(path)[1] if r.label == FA_LABEL)
+    assert not launch.superseded_runs(run, launch.launch_records(root))
+
+
+def test_restart_case_keeps_its_refusal_of_a_decided_case(qualify, tmp_path) -> None:
+    """A case its baseline decided keeps the refusal it had: the failure keeps counting."""
+    path, root, out, run_dir = decided_world(tmp_path)
+    with pytest.raises(SystemExit, match="a completed failure keeps counting") as stop:
+        qualify.main(restart(path, FA, RESTART))
+    assert "control-only" not in stop.value.code
+    assert not list(case_folder(out, FA).glob("restart-*"))
+
+
+@pytest.mark.parametrize("departs", [True, False])
+def test_restart_case_reads_the_launcher_runs_numerics(qualify, tmp_path, departs) -> None:
+    """A start without an end, settled ``conflict`` with the missing-checkpoint problem alone (the
+    launcher checks the checkpoint before the numerics, so it hides them): ``restart-case`` reads
+    the run's recorded numerics against its campaign's config and refuses a departing setup as a
+    provenance conflict, superseding nothing; matching numerics are accepted as before."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    run_dir = settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
+    if departs:
+        meta = json.loads((run_dir / "meta.json").read_text())
+        meta["inputs"]["numerics_setup"]["tf32_matmul"] = True
+        (run_dir / "meta.json").write_text(json.dumps(meta))
+    log_end(root, path, run, "r-a1", outcome="conflict", returncode=None, settled=True,
+            problem=f"the endpoint checkpoint {run_dir}/x.pt is missing")  # fmt: skip
+    if departs:
+        with pytest.raises(SystemExit, match="numerics setup departs") as stop:
+            qualify.main(restart(path, ADAMW, RESTART))
+        assert "provenance conflict" in stop.value.code
+        assert not list(case_folder(out, ADAMW).glob("restart-*"))
+        assert not launch.superseded_runs(run, launch.launch_records(root))
+    else:
+        qualify.main(restart(path, ADAMW, RESTART))
+        assert list(case_folder(out, ADAMW).glob("restart-1.json"))
+
+
 def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_alone(
     qualify, tmp_path, monkeypatch, capsys
 ) -> None:
@@ -3204,7 +3258,7 @@ def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_al
         q.publish(out / FA.trajectory_path(1, name), trajectory_result(FA, rest, name))
     checkpoint.unlink()  # the container disk lost
     assert exit_code(qualify, control_only(path)) == 3  # the rest is outstanding
-    with pytest.raises(SystemExit, match="completed failure keeps counting|keeps counting"):
+    with pytest.raises(SystemExit, match="keeps counting"):
         qualify.main(restart(path, FA, RESTART))
     assert not list(case_folder(out, FA).glob("restart-*"))
     qualify.main(["interrupted", *common(path), "--case", FA.name, "--part", "rest",
