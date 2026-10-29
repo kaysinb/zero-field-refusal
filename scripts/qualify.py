@@ -110,26 +110,29 @@ durably (``qualification.publish``).
 **A technical case's kept checkpoints** ("Failure routes": a technical case keeps its checkpoints
 for the diagnosis). The Pod's container disk goes with a Pod stop, so ``finish --kept DIR`` (the
 driver's ``--kept``: on a Pod ``/workspace/kept-checkpoints``, the volume) exports a technical
-case's evidence: a complete case whose verdict is technical, and an established technical case, one
-whose recorded parts already mark it technical whether or not it is complete
-(``established_technical``: the latest baseline's verdict alone, a rest still to come being no mark;
-the rest bound to that baseline with it; the recorded control), with the same files, copies,
-manifest (``lost`` included), receipts and exits; the case stays as it is, never marked complete.
-The driver exports an established technical case before any launcher call (``control-only``'s exit
-9), so files the launcher would refuse (a corrupt checkpoint) are kept as they are. ``finish
---kept`` copies the case's files, exactly those ``finish --release`` would delete (``case_files``),
-to ``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout they have under the checkpoint
-directory: each written under a partial name, fsynced, renamed and its folder fsynced, the source
-hashed while read and the copy read back, verified when the two sha256 agree. A present checkpoint
-whose sha256 is not its recorded one is exported as it is (``matches_record`` false): the export
-changes neither the technical mark nor any verdict. Refused before any copy, exit 13
-and nothing called verified: no ``--kept``, a relative DIR, DIR under the runs root or the
-records' folder (its copies would join the small results archived from there) or under the
-checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
-``st_dev``, the container disk), or less free space under DIR than the files take with a margin
-of 1 GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export, these checks included (a
-folder, a ``stat``, the free space, a copy, a manifest, ``SHA256SUMS``), exits 13 too, naming the
-error, a partial ``kept-<n>`` left without a case manifest and never called verified. The manifest,
+case's evidence: a complete case whose verdict is technical, and an established technical case,
+complete or not: one whose recorded parts mark it technical in a way no part the verdict would still
+read can change (``established_technical``), when one of these holds: (1) its baseline's gate fails,
+or its baseline did not complete (failed, or ran nothing), so the verdict reads no rest for it; (2)
+a rest recorded and bound to that baseline makes the whole verdict technical, not scientific; (3)
+its recorded same-path control is technical. A complete baseline with only a technical comparison of
+its own, its rest due or interrupted, is none: the rest may turn the verdict scientific. Such a case
+is exported with the same files, copies, manifest (``lost`` included), receipts and exits; the case
+stays as it is, never marked complete. The driver exports an established technical case before any
+launcher call (``control-only``'s exit 9), so files the launcher would refuse (a corrupt checkpoint)
+are kept as they are. ``finish --kept`` copies the case's files, exactly those ``finish --release``
+would delete (``case_files``), to ``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout
+they have under the checkpoint directory: each written under a partial name, fsynced, renamed and
+its folder fsynced, the source hashed while read and the copy read back, verified when the two
+sha256 agree. A present checkpoint whose sha256 is not its recorded one is exported as it is
+(``matches_record`` false): the export changes neither the technical mark nor any verdict. Refused
+before any copy, exit 13 and nothing called verified: no ``--kept``, a relative DIR, DIR under the
+runs root or the records' folder (its copies would join the small results archived from there) or
+under the checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
+``st_dev``, the container disk), or less free space under DIR than the files take with a margin of 1
+GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export, these checks included (a folder, a
+``stat``, the free space, a copy, a manifest, ``SHA256SUMS``), exits 13 too, naming the error, a
+partial ``kept-<n>`` left without a case manifest and never called verified. The manifest,
 ``kept-checkpoints-<n>.json`` in the case's folder and the same JSON in the export as
 ``MANIFEST.json`` with a ``SHA256SUMS``, holds the case, its stage, candidate and
 ``technical_reasons``; the binding records (``binding_records``: the located launcher run's
@@ -139,34 +142,32 @@ nothing else of the run's directory is opened or listed); each file (its source 
 path relative to DIR, size, sha256, the sha256 the binding records give that path or null, whether
 it matches, whether it is a partial file); ``lost``, every checkpoint those records name that is not
 on disk and that ``finish`` did not remove on purpose (``released``), with its recorded sha256 and
-the records naming it; ``verified``, the host, the Pod, the time and the provenance. Run again
-over an export whose copies re-hash to its manifest under DIR, the case's files listed in it as
-they are now, nothing is copied (exit 9); otherwise ``kept-<n+1>`` is written, and nothing is ever
+the records naming it; ``verified``, the host, the Pod, the time and the provenance. Run again over
+an export whose copies re-hash to its manifest under DIR, the case's files listed in it as they are
+now, nothing is copied (exit 9); otherwise ``kept-<n+1>`` is written, and nothing is ever
 overwritten. Checkpoints lost before the export leave the technical mark as it stands: ``finish``
-exits 9 when every file still present is verified, ``lost`` names what was lost, and it says
-"lost before the export: the technical mark stands; the diagnosis goes on from the records;
-nothing reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE
---remote PREFIX`` (the driver's: the REMOTE_PREFIX it gives ``archive.py``) reads the case's
-latest manifest, re-hashes every copy under its DIR (with ``MANIFEST.json`` and ``SHA256SUMS``),
-and reads ``scripts/archive.py``'s inventory: every line's URL lies under ``PREFIX/``, and every
-exported file needs its line (path relative to DIR, size, sha256, md5, URL, status) with the
-exported size and sha256, the status ``ok`` (the object's size and MD5 are the file's) and the URL
-``PREFIX/<path>``. It exits 0 when all hold, 13 naming what fails (each line under another
-prefix included), and publishes its receipt ``kept-check-<n>.json`` in the case's folder: the
-manifest's and the inventory's path and sha256, the prefix, the exit, what fails, and
-``pending-upload``
-true for a volume copy verified whose bucket copy is not (no inventory, or one without the
-export's verified lines). ``finish --release`` of a technical case deletes only through the
-manifest of a receipt of exit 0 that names its sha256 (``bound_export``), the inventory that
-receipt names still of the receipt's sha256, when every current file is listed in the manifest
-with its size and sha256, each file checked again right before its deletion; otherwise it exits
-13 naming the files or the inventory (a file new or changed since the export needs another
-export and its ``kept-check``; an inventory gone or changed, the upload checked again). Its
-``checkpoints-removed-<n>.json`` names that manifest and that receipt by path and sha256. A kept
-checkpoint is not one ``finish`` removed (``released``): its absence is never evidence of an
-interruption. The planned teardown of the Pod waits for ``kept-check`` exit 0; an upload that
-cannot be verified leaves the volume copy kept and the receipt ``pending-upload``, and never
-lifts the hard deadline.
+exits 9 when every file still present is verified, ``lost`` names what was lost, and it says "lost
+before the export: the technical mark stands; the diagnosis goes on from the records; nothing
+reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE --remote PREFIX``
+(the driver's: the REMOTE_PREFIX it gives ``archive.py``) reads the case's latest manifest,
+re-hashes every copy under its DIR (with ``MANIFEST.json`` and ``SHA256SUMS``), and reads
+``scripts/archive.py``'s inventory: every line's URL lies under ``PREFIX/``, and every exported file
+needs its line (path relative to DIR, size, sha256, md5, URL, status) with the exported size and
+sha256, the status ``ok`` (the object's size and MD5 are the file's) and the URL ``PREFIX/<path>``.
+It exits 0 when all hold, 13 naming what fails (each line under another prefix included), and
+publishes its receipt ``kept-check-<n>.json`` in the case's folder: the manifest's and the
+inventory's path and sha256, the prefix, the exit, what fails, and ``pending-upload`` true for a
+volume copy verified whose bucket copy is not (no inventory, or one without the export's verified
+lines). ``finish --release`` of a technical case deletes only through the manifest of a receipt of
+exit 0 that names its sha256 (``bound_export``), the inventory that receipt names still of the
+receipt's sha256, when every current file is listed in the manifest with its size and sha256, each
+file checked again right before its deletion; otherwise it exits 13 naming the files or the
+inventory (a file new or changed since the export needs another export and its ``kept-check``; an
+inventory gone or changed, the upload checked again). Its ``checkpoints-removed-<n>.json`` names
+that manifest and that receipt by path and sha256. A kept checkpoint is not one ``finish`` removed
+(``released``): its absence is never evidence of an interruption. The planned teardown of the Pod
+waits for ``kept-check`` exit 0; an upload that cannot be verified leaves the volume copy kept and
+the receipt ``pending-upload``, and never lifts the hard deadline.
 
 **A case whose control alone is outstanding** (``control-only``; "Failure routes", amendment 2):
 a case whose only outstanding part is its same-path control, decided by its baseline or with its
@@ -831,13 +832,17 @@ def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> lis
 
 
 def established_technical(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
-    """The technical marks a case's recorded parts already carry, complete or not (an established
-    technical case: module docstring, "A technical case's kept checkpoints"): the latest
-    baseline's verdict alone (a rest still to come is no mark), the rest's with it when the rest
-    is recorded and counts with that baseline (``rest_bound``), and the same-path control's when
-    recorded. Nothing for a case the engineering cycle resolved, one without a recorded baseline,
-    or one whose records the verdicts cannot read. For a complete case, the marks
-    ``technical_reasons`` gives."""
+    """The technical marks of an established technical case (module docstring, "A technical
+    case's kept checkpoints"): a case whose recorded parts mark it technical in a way no part the
+    verdict would still read can change, complete or not. One of: (1) the latest baseline's
+    verdict alone is technical and reads no rest (``case_verdict`` gives no ``REST_MISSING``: its
+    gate failed, or the baseline did not complete); (2) a rest recorded and bound to that baseline
+    (``rest_bound``) makes the whole verdict technical, not scientific; (3) the recorded same-path
+    control's verdict is technical. Anything else marks nothing: a complete baseline with only a
+    technical comparison of its own, its rest due or interrupted, still has its rest read, which
+    may turn the verdict scientific. Nothing for a case the engineering cycle resolved, one without
+    a recorded baseline, or one whose records the verdicts cannot read. For a complete case, the
+    marks ``technical_reasons`` gives."""
     if resolution_of(out, p.case) is not None:
         return []
     baseline = part_state(out, p.case, "baseline")
@@ -846,17 +851,17 @@ def established_technical(out: Path, p: Planned, scope: q.QualificationScope) ->
     reasons: list[str] = []
     try:
         alone = q.case_verdict(baseline.record, None, scope)
-        if alone["kind"] == q.TECHNICAL:
-            reasons += [r for r in alone["reasons"] if r != REST_MISSING]
+        if alone["kind"] == q.TECHNICAL and REST_MISSING not in alone["reasons"]:
+            reasons += alone["reasons"]  # (1): the verdict reads no rest for this baseline
         rest = part_state(out, p.case, "rest")
         if rest.state == "recorded" and rest_bound(rest.record, baseline.record):
             whole = q.case_verdict(baseline.record, rest.record, scope)
-            if whole["kind"] == q.TECHNICAL:
+            if whole["kind"] == q.TECHNICAL:  # (2): technical, not scientific, with its rest
                 reasons += [r for r in whole["reasons"] if r not in reasons]
         control = part_state(out, p.case, "control") if p.control else None
         if control is not None and control.state == "recorded":
             checked = q.control_verdict(control.record, scope, p.case.candidate)
-            if checked["kind"] == q.TECHNICAL:
+            if checked["kind"] == q.TECHNICAL:  # (3)
                 reasons += [f"control: {r}" for r in checked["reasons"]]
     except Exception:  # a record the verdicts cannot read marks nothing here
         return []
@@ -2046,9 +2051,9 @@ def restart_case(
     except SystemExit as stop:  # its usual path (3) alone lets the restart go on
         if stop.code == TECHNICAL_CASE:  # its recorded parts mark it technical
             sys.exit(f"{case.name}: no restart: control-only answers {TECHNICAL_CASE}, a "
-                     "technical case by its recorded parts: its evidence is exported (finish "
-                     "--kept), and a technical failure goes to the engineering cycle, never a "
-                     "restart")  # fmt: skip
+                     "technical case by its recorded parts: its evidence is exported by the "
+                     "driver, or by finish --kept, and a technical failure goes to the "
+                     "engineering cycle, never a restart")  # fmt: skip
         if stop.code != NO:  # a binding refusal (1), or any other answer: never swallowed
             said = stop.code if isinstance(stop.code, str) else f"exit {stop.code}"
             sys.exit(f"{case.name}: no restart: control-only refuses the case ({said}). A part "

@@ -1472,13 +1472,13 @@ docstring holds the rules, and "A case restart" below has the complete list of t
      and the driver stops there, neither rerunning nor skipping it. A case whose label
      (`<cell>/s<seed>` in its experiment) has a launcher run held in any launch journal, whatever
      its config hash, stops the driver with exit 11 naming the hold, before the launcher is
-     called; nothing lifts a hold. For every case, `control-only` comes next (a case whose
-     control alone is due, below): its exit 9, for a case its recorded parts already mark
-     technical, complete or not, runs step 6's export at once, before any launcher call
+     called; nothing lifts a hold. For every case, `control-only` comes next (a case whose control
+     alone is due, below): its exit 9, for an established technical case, complete or not ("A
+     technical case's checkpoints", below), runs step 6's export at once, before any launcher call
      (`finish --kept`, the upload, `kept-check`), and nothing of the case runs; its exit 0, for a
-     case whose only outstanding part is its same-path control (decided by its baseline, or with
-     its baseline and rest recorded), runs that control alone, then step 6; its exit 3 goes on
-     with step 2; any other exit stops the driver;
+     case whose only outstanding part is its same-path control (decided by its baseline, or with its
+     baseline and rest recorded), runs that control alone, then step 6; its exit 3 goes on with step
+     2; any other exit stops the driver;
   2. the `<dir>/<run_id>.pt` of the case's launcher run attempts that the launch journal shows
      superseded (ended technical, or never ended) are removed (`clear-stale`); a settled run's
      checkpoint (done, diverged, or completed but in conflict) stays. Then the free disk is
@@ -1491,14 +1491,14 @@ docstring holds the rules, and "A case restart" below has the complete list of t
      a fresh process;
   6. the case's checkpoints are deleted (`finish`): every `<dir>/<run_id>.pt` of its launcher
      run and `<dir>/harness/<case>/`, only once its records are published and read back by the
-     verdicts without error. A case whose verdict is technical (its own or its control's), or a case
-     not complete whose recorded parts already mark it technical (exported before any launcher call,
-     step 1), keeps them for the diagnosis that starts its engineering cycle, exported and verified
-     on the Pod's volume and in the bucket (below): `finish --kept "$KEPT"` exits 9 once each file
-     still present has a verified copy on the volume (13 when the export is refused or fails), then
-     the driver uploads that export (`scripts/archive.py`), checks both copies (`kept-check`,
-     whatever the upload's exit) and stops before the next case, with 9 when both exit 0 and 13
-     otherwise; `finish --release` deletes them once diagnosed, only through that verified export.
+     verdicts without error. A case whose verdict is technical (its own or its control's), or an
+     established technical case that is not complete (exported before any launcher call, step 1),
+     keeps them for the diagnosis that starts its engineering cycle, exported and verified on the
+     Pod's volume and in the bucket (below): `finish --kept "$KEPT"` exits 9 once each file still
+     present has a verified copy on the volume (13 when the export is refused or fails), then the
+     driver uploads that export (`scripts/archive.py`), checks both copies (`kept-check`, whatever
+     the upload's exit) and stops before the next case, with 9 when both exit 0 and 13 otherwise;
+     `finish --release` deletes them once diagnosed, only through that verified export.
 
   A case is complete when the latest attempt of each part it needs is recorded and readable:
   the baseline, the due control and, unless decided, the rest, which must name the latest
@@ -1557,7 +1557,7 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   | The message for a label whose case `complete` exits 0, and a `checkpoints-removed-<n>.json` names the path | `finish` removed it on purpose | Nothing. The driver never calls the launcher on a complete case, and nobody calls it on a finished case's label. `restart-case` refuses a complete case. |
   | A launcher start without an end at the loss; the next launcher call settles it technical and exits 1 with "used up their attempts" | The launcher run was in flight | No restart (`restart-case` refuses). A recovery round with the documented reason: `--only LABEL --max-attempts 1 --recovery` and the incident fields. |
   | The driver's own launcher attempt failed technically: a journal end of the launcher run with a return code and outcome `technical`, and no loss. `complete` exits 3 (the baseline is due), and the driver's launcher call exits 1 with "N runs used up their attempts; see RUNS_DIR/launch/<name>.jsonl" | A technical failure of the launcher run, not a loss | A recovery round (`--only LABEL --max-attempts 1 --recovery` with the incident fields) needs a documented external cause: the interruption's time, the cause and its evidence, none blank. Without one there is no automatic route. `supersede --record` must name a recorded part attempt of the case, and a launcher run that failed before any part has none: `supersede` refuses it with "is not a recorded attempt of this case". Such a run is swept up only when an engineering cycle opens from another case's technical record (a launcher run no part record classified). Otherwise the researcher decides. |
-  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint, a run whose numerics setup or Rayleigh record departs behind a settled missing-checkpoint end, and a case whose recorded parts `control-only` cannot bind to its launcher run, its exit 1). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. Stop the driver, not the Pod. A case whose recorded parts already mark it technical, complete or not, is exported before any launcher call (`control-only` exits 9, then `finish --kept`), as long as its files are on disk, a corrupt checkpoint included (`matches_record: false`), so the launcher never refuses it. A case not yet technical keeps its checkpoints only on the container disk: what keeps them is the Pod, which stays up while the diagnosis runs (no planned stop, and the hard deadline stays). |
+  | Any conflict line the note does not cover: "does not match its recorded sha256", "holds no endpoint-checkpoint record", "its numerics setup departs", "tracking.gate", "not run from a clean checkout", "records are incomplete", "config.yaml is missing", "one of several completed runs", "held, its outcome unresolved", any other "… is missing" (responses, rayleigh). Also a journal end of the launcher run with a return code that records `conflict`, and the message "… completed but cannot stand … the campaign stops": the launcher's own judgement of its attempt, which no lost container disk can write. | A provenance conflict, not a loss | No restart and no round (`restart-case` refuses an unsettled end that records `conflict`, any end that records `conflict`, settled or not, whose problem is not the missing endpoint checkpoint, a run whose numerics setup or Rayleigh record departs behind a settled missing-checkpoint end, and a case whose recorded parts `control-only` cannot bind to its launcher run, its exit 1). Stop and diagnose. Then the technical route (the engineering cycle, below), or the hold route for a held label. Stop the driver, not the Pod. An established technical case, complete or not ("A technical case's checkpoints"), is exported before any launcher call (`control-only` exits 9, then `finish --kept`), as long as its files are on disk, a corrupt checkpoint included (`matches_record: false`), so the launcher never refuses it. A case not yet technical keeps its checkpoints only on the container disk: what keeps them is the Pod, which stays up while the diagnosis runs (no planned stop, and the hard deadline stays). |
   | A technical case (exit 9 or 13) whose kept checkpoints were lost | The technical mark stands | See "A technical case's checkpoints", "Lost before the export". |
 
 - **The deadline.** Start the Pod with the file-reading deadline watcher (see "Deadlines between
@@ -1646,8 +1646,8 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   - the control's latest attempt is due or interrupted, and every other part the case needs is
     recorded as `complete` reads it: the baseline (the latest, not void) and, unless it decided
     the case, the rest bound to it;
-  - the case is not technical: a scientific failure, the baseline's or the rest's, keeps
-    counting, and its control runs alone;
+  - the case is no established technical case ("A technical case's checkpoints", below): a
+    scientific failure, the baseline's or the rest's, keeps counting, and its control runs alone;
   - the baseline record classified its launcher run as conforming (`launcher.classified` true,
     `launcher.kind` null);
   - the run each recorded part names (its experiment and run id, wherever RUNS_DIR lay) is the
@@ -1684,9 +1684,15 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   ```
 - **A technical case's checkpoints.** A Pod stop takes the container disk, and the checkpoints
   with it, so a technical case's are exported before the driver stops: a complete case whose
-  verdict is technical after its `finish`, and a case whose recorded parts already mark it
-  technical, complete or not (its baseline's verdict alone, a rest bound to it, its control),
-  before any launcher call: `control-only` exits 9 for it, and the driver runs `finish --kept`,
+  verdict is technical after its `finish`, and an established technical case, complete or not,
+  before any launcher call. A case is an established technical case when no part the verdict
+  would still read can change its technical status, that is, when one of these holds: (1) its
+  baseline's gate fails, or its baseline did not complete (failed, or ran nothing), so the
+  verdict reads no rest for it; (2) a rest recorded and bound to that baseline makes the whole
+  verdict technical, not scientific; (3) its recorded control is technical. A complete baseline
+  with only a technical comparison of its own, its rest due or interrupted, is none: the rest may
+  turn the verdict scientific, and the case takes the usual path (or its control alone).
+  `control-only` exits 9 for an established technical case, and the driver runs `finish --kept`,
   the upload and `kept-check` at once, so files the launcher would refuse (a corrupt checkpoint)
   are kept as they are, `matches_record: false`. The export never marks a case complete: one
   that is not stays incomplete and technical, and its control or rest never runs.
@@ -1824,7 +1830,10 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   the baseline record and both checkpoints, the code and the settings), and stops at once,
   decided, on a valid scientific failure. When a rest attempt is interrupted, its results count:
   the verdict reads them, a rerun or a restart is refused when they hold a failure, and
-  `interrupted --technical REASON` records the attempt with them.
+  `interrupted --technical REASON` records the attempt with them. An interrupted part is no
+  technical mark until `interrupted --technical` records it; once recorded, a case it makes an
+  established technical case ("A technical case's checkpoints", above) is exported by the driver
+  before any launcher call (`control-only` exits 9).
 - **The commands.** The campaign file and the driver are written on the Pod, from the source
   checkout of the commit; the driver embeds the campaign's absolute path and sha256.
 

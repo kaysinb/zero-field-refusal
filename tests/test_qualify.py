@@ -3412,6 +3412,57 @@ def test_control_only_exports_a_technical_case_and_leaves_an_unfinished_one_to_t
     assert exit_code(qualify, control_only(path)) == qualify.NO  # the rest interrupted
 
 
+def technical_comparison(path, root, out, run_dir):
+    """The baseline, complete, with a technical comparison of its own (``launcher~baseline`` D 0.07
+    against the bound 0.06), the rest, when recorded, bound to it again."""
+    edit_part(out, "baseline", lambda b: b["comparisons"]["launcher~baseline"].update(D_twin=0.07))
+    if (out / FA.attempt_path("rest", 1)).exists():
+        baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+        edit_part(out, "rest", lambda r: r["baseline_record"].update(
+            sha256=q.record_sha256(baseline)))  # fmt: skip
+
+
+def test_a_technical_comparison_a_scientific_rest_overrides_runs_the_control_alone(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """A complete baseline with a technical comparison of its own (``launcher~baseline`` beyond
+    the bound) still has its rest read, and a bound rest holding a scientific failure turns the
+    case's verdict scientific: no established technical case. With the control due,
+    ``control-only`` exits 0 and the control runs alone, and the verdict stays scientific."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=scientific_rest)
+    technical_comparison(path, root, out, run_dir)
+    baseline = json.loads((out / FA.attempt_path("baseline", 1)).read_text())
+    rest = json.loads((out / FA.attempt_path("rest", 1)).read_text())
+    alone = q.case_verdict(baseline, None, SCOPE)
+    assert alone["kind"] == "technical" and any(r.startswith("launcher~baseline")
+                                                for r in alone["reasons"])  # fmt: skip
+    assert q.case_verdict(baseline, rest, SCOPE)["kind"] == "scientific"
+    assert exit_code(qualify, control_only(path)) == 0
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    assert qualify.established_technical(out, planned, SCOPE) == []
+    run_the_control_alone(qualify, monkeypatch, capsys, path, run_dir, tmp_path)  # 0, then finish
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    (case,) = [c for c in verdict["cases"] if c["case"]["name"] == FA.name]
+    assert (case["state"], case["kind"]) == ("failing", "scientific")
+
+
+def test_a_technical_comparison_with_its_rest_due_takes_the_usual_path(
+    qualify, tmp_path, capsys
+) -> None:
+    """The same baseline (a technical comparison of its own), its rest due: the rest may still
+    turn the verdict scientific, so no established technical case; ``control-only`` exits 3, the
+    usual path, which runs the rest."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    (out / FA.attempt_path("rest", 1)).unlink()
+    technical_comparison(path, root, out, run_dir)
+    capsys.readouterr()
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert "outstanding" in capsys.readouterr().err
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    assert qualify.established_technical(out, planned, SCOPE) == []
+
+
 def test_control_only_asks_every_case_first_whether_it_is_technical(qualify, tmp_path) -> None:
     """``control-only`` asks first whether the case's recorded parts already mark it technical
     (its baseline's verdict alone, the rest bound to it, its control), complete or not: AdamW's
@@ -3542,13 +3593,15 @@ def real_gpu_code() -> dict:
     return json.loads(done.stdout)
 
 
-def established_technical_world(tmp_path, case, code):
+def established_technical_world(tmp_path, case, code, *, comparison=False):
     """A case its recorded parts mark technical, not complete: its baseline's launcher check found
-    the run not conforming (nothing ran); for FA its rest ran nothing and its control is due, for
-    AdamW its rest is due. Its launcher run r-1 is done, and r-1's endpoint checkpoint is on disk
-    with corrupted bytes, which the launcher would refuse. The records carry ``code``, the GPU
-    code a real ``qualify.py`` reads. Returns the campaign, the records' folder and the
-    checkpoint."""
+    the run not conforming (nothing ran: the verdict reads no rest for it); for FA its rest ran
+    nothing and its control is due, for AdamW its rest is due. With ``comparison`` (FA), the
+    baseline passes instead and its rest, recorded and bound to it, holds a technical comparison
+    (``baseline~repeat`` beyond the bound): the whole verdict technical, its control due. Its
+    launcher run r-1 is done, and r-1's endpoint checkpoint is on disk with corrupted bytes,
+    which the launcher would refuse. The records carry ``code``, the GPU code a real
+    ``qualify.py`` reads. Returns the campaign, the records' folder and the checkpoint."""
     fa = case == FA
     path = campaign(tmp_path, fa=(10200,) if fa else ())
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
@@ -3561,14 +3614,19 @@ def established_technical_world(tmp_path, case, code):
         record.update(launcher_run=str(run_dir))
         record["launcher"]["classified"] = True
         record["provenance"]["gpu_code"] = code
-    launcher_not_conforming(baseline)
+    if comparison:
+        technical_rest(rest)
+    else:
+        launcher_not_conforming(baseline)
+        ran_nothing = ["the baseline part did not end with its checkpoint (not_run)"]
+        rest.update(status="not_run", kind="technical", reasons=ran_nothing)
     publish(out, case, "baseline", baseline)
     if fa:
-        reasons = ["the baseline part did not end with its checkpoint (not_run)"]
-        rest.update(status="not_run", kind="technical", reasons=reasons)
         rest["baseline_record"] = {"path": str(out / case.attempt_path("baseline", 1)),
                                    "sha256": q.record_sha256(baseline)}  # fmt: skip
         publish(out, case, "rest", rest)
+        whole = q.case_verdict(baseline, rest, SCOPE)
+        assert whole["kind"] == "technical" and (comparison or rest["status"] == "not_run")
     checkpoint.write_bytes(b"corrupted bytes")
     return path, out, checkpoint
 
@@ -3624,17 +3682,22 @@ def real_driver(qualify, tmp_path, monkeypatch, path):
     return run
 
 
-@pytest.mark.parametrize("case", [FA, ADAMW], ids=["FA, its control due", "AdamW, its rest due"])
+@pytest.mark.parametrize(("case", "comparison"), [(FA, False), (ADAMW, False), (FA, True)],
+                         ids=["FA, its control due", "AdamW, its rest due",
+                              "FA, a technical comparison of its rest"])  # fmt: skip
 def test_the_driver_exports_a_technical_case_before_a_launcher_that_would_refuse(
-    qualify, tmp_path, monkeypatch, case
+    qualify, tmp_path, monkeypatch, case, comparison
 ) -> None:
     """The generated driver over the real ``qualify.py`` subcommands, a case its recorded parts
     mark technical and not complete, its launcher run's checkpoint corrupted (the launcher's
     stand-in refuses it, exit 1): ``complete`` says 3, ``control-only`` 9, and the export runs
     before any launcher call. The launcher is never called; the export holds the corrupt bytes,
     ``matches_record`` false; ``kept-check`` passes; the driver stops with 9; the case stays
-    incomplete and technical. Run again, the driver reuses the verified export (9 again)."""
-    path, out, checkpoint = established_technical_world(tmp_path, case, real_gpu_code())
+    incomplete and technical. Run again, the driver reuses the verified export (9 again). The
+    mark is a baseline whose verdict reads no rest (its launcher check failed), or a technical
+    comparison of a recorded rest bound to the baseline (``comparison``)."""
+    path, out, checkpoint = established_technical_world(tmp_path, case, real_gpu_code(),
+                                                        comparison=comparison)  # fmt: skip
     run = real_driver(qualify, tmp_path, monkeypatch, path)
     code, calls = run()
     assert code == qualify.TECHNICAL_CASE, (tmp_path / "driver.out").read_text()
