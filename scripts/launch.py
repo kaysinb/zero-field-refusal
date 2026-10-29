@@ -5,7 +5,8 @@
 
 Checks every run's config first, and refuses to start if a completed run with a campaign run's
 config cannot stand for it (wrong gate, unclean checkout, missing artifacts). Skips runs that
-already have a qualifying completed run, never reruns a diverged one, retries technical failures
+already have a qualifying completed run, never reruns a diverged one (with --only and --recovery in
+a study-3 campaign, a done or diverged run is refused instead: exit 1), retries technical failures
 up to three attempts in all, and runs the rest in order, each in its own process with its own
 RUN_ID. --dry-run lists what would run. --recovery REASON, once the technical cause of exhausted
 runs is fixed, opens the one recovery round of their cells (logged with the reason), never over a
@@ -19,11 +20,13 @@ round under it is the run's own, one per documented incident (zero_field_refusal
 "Recovery rounds"): --recovery REASON (a reason no earlier round of the label gave) with its
 incident, --incident-time (UTC, ISO 8601), --cause (one line) and --evidence (a path or a
 reference), and only for a run that used its attempts up and holds no outcome (a published
-terminal record, a provenance conflict, a hold). Its first round allows the smaller of N and the
+terminal record, a provenance conflict, a hold; a study-2 call skips a done or diverged run, a
+study-3 call over one is refused, exit 1). Its first round allows the smaller of N and the
 label's base (the first start's --max-attempts under its config hash), each further one exactly
 one, at --max-attempts 1; the round names the attempts it follows. In a study-3 campaign,
---recovery over a run that is not used up under its config hash (a new config hash is a new run)
-is refused: its attempts run without --recovery. A round that is refused writes
+--recovery over a run that is not used up under its config hash (a new config hash is a new run,
+whose attempts run without --recovery; a done or diverged run keeps its outcome) is refused, exit
+1, in a --dry-run too, with the same message. A round that is refused writes
 nothing and runs nothing (exit 1, naming the label and the earlier round or the bound).
 --max-attempts N bounds the attempts of a run (default 3) and of this call: no call runs more
 than N attempts, and a later call's N above the first start's under its config hash adds

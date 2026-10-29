@@ -2210,7 +2210,9 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   the form of a run's own round; and `--recovery` over a run that is not used up under its config
   hash exits 1 too, with the command without `--recovery`: its attempts run without a round (a new
   config hash is a new run), and a documented incident is never dropped unrecorded. A round opens
-  only for a run that used its attempts up and holds no outcome: a done or diverged run is skipped,
+  only for a run that used its attempts up and holds no outcome: a done or diverged run is skipped
+  in a study-2 campaign and refused, exit 1, in a study-3 one (as the call over a run with
+  attempts left is, a `--dry-run` included, with the same message),
   a conflict (a provenance conflict included: a checkpoint present with another sha256, a departing
   numerics setup, an unclean checkout, another gate; a missing endpoint checkpoint is a possible
   loss requiring diagnosis, never by itself a lost container disk) or a hold stops the campaign

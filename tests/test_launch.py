@@ -1664,3 +1664,40 @@ def test_a_study3_recovery_over_a_run_not_used_up_is_refused(tmp_path, monkeypat
     result = run_campaign(name, runs, root, execute=execute, header=campaign_header(path),
                           recovery=R1, incident=INCIDENT, **only)  # fmt: skip
     assert result["done"] == [run.label] and rounds_of(root, name) == []
+
+
+def test_a_study3_dry_run_reports_the_recovery_refusal_of_the_real_call(tmp_path, monkeypatch):
+    """A study-3 ``--dry-run --recovery`` over a run that is not used up (a new run, and a done
+    one) fails exactly as the real call does: the same message, exit 1 through the script, and
+    nothing runs or is written."""
+    import importlib.util
+
+    path = campaign(tmp_path, STUDY3_CELLS)
+    name, runs = load_campaign(path)
+    run, root, header = runs[1], tmp_path / "runs", campaign_header(path)
+    only = {"only": run.label, "max_attempts": 1, "recovery": R1, "incident": INCIDENT}
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    argv = [str(path), "--only", run.label, "--max-attempts", "1", "--recovery", R1,
+            "--incident-time", INCIDENT["incident_time"], "--cause", INCIDENT["cause"],
+            "--evidence", INCIDENT["evidence"]]  # fmt: skip
+    for state in ("new", "done"):
+        if state == "done":
+            run_campaign(name, runs, root, execute=Executor(root, {}), header=header,
+                         only=run.label, max_attempts=1)  # fmt: skip
+        execute = Executor(root, {})
+        messages = []
+        for dry_run in (True, False):
+            with pytest.raises(CampaignError) as refusal:
+                run_campaign(name, runs, root, execute=execute, header=header, dry_run=dry_run,
+                             **only)  # fmt: skip
+            messages.append(str(refusal.value))
+            with pytest.raises(SystemExit) as stop:
+                script.main(argv + (["--dry-run"] if dry_run else []))
+            assert stop.value.code == str(refusal.value)  # exit 1, the same message
+        assert messages[0] == messages[1] and execute.calls == []
+        assert [r for r in launch_records(root) if r.get("event") == "recovery"] == []
+    assert "done" in messages[0] and "diverged" not in messages[0]  # the state the run has

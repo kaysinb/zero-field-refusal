@@ -48,7 +48,8 @@ that used its attempts up, and never reruns an outcome:
   recorded), exactly 1 for a further one, which needs ``max_attempts`` 1. Grants come from this
   rule, never from the journal: ``granted`` is written for the record, and a value that differs
   is the readers' problem, never a grant. A round opens only for a run that used its attempts up and
-  holds no outcome: a done or diverged run is skipped, a conflict (a provenance conflict: another
+  holds no outcome: a done or diverged run is skipped (in a study-3 campaign the call is refused
+  instead, below), a conflict (a provenance conflict: another
   gate, an unclean checkout, a departing numerics setup, a checkpoint missing or of another
   sha256; a missing endpoint checkpoint is a possible loss requiring diagnosis, never by itself a
   lost container disk) and a held label stop the campaign before, and an attempt, not
@@ -60,7 +61,8 @@ that used its attempts up, and never reruns an outcome:
   command form (``round_command``); nothing is written and nothing runs. A run with attempts left
   takes them first, whatever reason is given: rounds never stack. In a study-3 campaign (its
   header carries ``study: 3``) a documented incident is never dropped: ``recovery`` over a run
-  that is not used up under its config hash is refused (``_not_used_up``), so that a run with
+  that is not used up under its config hash is refused (``_not_used_up``), in a dry run too,
+  with the real call's message and exit, so that a run with
   attempts left, a new config hash's new run included, takes them without ``recovery``, and a
   done or diverged run keeps its outcome.
 - *The attempts left* (``attempts_left``), per config hash: a new config hash is a new run, with
@@ -1136,14 +1138,16 @@ def run_campaign(
         state = assessments[run.label]
         return _open(state) and attempts_left(run, state, entries, max_attempts) == 0
 
+    if (recovery is not None and only is not None and (header or {}).get("study") == 3
+            and not used_up(runs[0])):  # fmt: skip
+        # its documented incident is never dropped; a dry run reports the real call's refusal
+        _not_used_up(runs[0], assessments[runs[0].label], entries, max_attempts)
     if recovery is not None and not dry_run and only is not None:
         run = runs[0]
         if used_up(run):  # a run with attempts left takes them: rounds never stack
             _log(log, _own_round(run, assessments[run.label], entries, recovery, incident,
                                  max_attempts))  # fmt: skip
             entries = journal_entries(runs_root)
-        elif (header or {}).get("study") == 3:  # its documented incident is never dropped
-            _not_used_up(run, assessments[run.label], entries, max_attempts)
     elif recovery and not dry_run:
         opening = []
         for experiment, cell in sorted({(r.experiment, r.cell) for r in runs}):
@@ -1290,13 +1294,17 @@ def _incident_problems(incident: Mapping[str, Any] | None) -> list[str]:
 
 def _not_used_up(run: Run, state: Assessment, entries: Entries, max_attempts: int) -> None:
     """A study-3 call with ``recovery`` over a run that is not used up under its config hash
-    (module docstring, "Recovery rounds") raises ``CampaignError``: no round opens, and its
-    incident would be recorded nowhere. A run with attempts left (a new config hash is a new
-    run) takes them without ``recovery``; a done or diverged run holds its outcome."""
-    if not _open(state):
-        kept = "done" if state.done is not None else "diverged"
-        raise CampaignError(f"{run.label}: no recovery round: the run is {kept} under its config "
-                            "hash, an outcome that is never rerun; nothing is written")  # fmt: skip
+    (module docstring, "Recovery rounds") raises ``CampaignError``, in a dry run too, with the
+    same message: no round opens, and its incident would be recorded nowhere. A run with
+    attempts left (a new config hash is a new run) takes them without ``recovery``; a done or
+    diverged run holds its outcome, named as ``assess`` found it, with its directory."""
+    held = [f"{outcome} ({where.name})" for outcome, where in (("done", state.done),
+                                                               ("diverged", state.diverged))
+            if where is not None]  # fmt: skip
+    if held:
+        raise CampaignError(f"{run.label}: no recovery round: the run is {' and '.join(held)} "
+                            "under its config hash, an outcome that is never rerun; nothing is "
+                            "written")  # fmt: skip
     left = attempts_left(run, state, entries, max_attempts)
     raise CampaignError(
         f"{run.label}: no recovery round: the run is not used up under its config hash ({left} "
