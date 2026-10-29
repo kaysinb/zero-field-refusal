@@ -699,7 +699,8 @@ Seeds are disjoint between stages and candidates. Each seed has its own fresh st
   - the 40-block validation: 8.5 GPU-h, about $9.3, per candidate tested.
 - **High case:** about $260–270, since study 2 overran its forecasts by 1.5–1.7 times. This is not a
   bound under unlimited infrastructure retries.
-- **Available:** about $272 for study 3.
+- **Available:** about $272 for study 3. *Raised to about $294, with a rule for infrastructure
+  incidents, by [amendment 5](#amendment-5-the-budget-after-the-dry-runs-part-i).*
 - **Spending checkpoint:** before the confirmation.
 - **When a step does not fit:** the work stops and the step's price is brought for a decision.
   No step is cut to fit.
@@ -857,3 +858,38 @@ remain unchanged. Engineering seeds may run after Part I passes and before Part 
   - every re-run that this caused.
 - **What was known.** The registration, the code up to commit 07b7568 and the dry-run plan. No
   study-3 outcome.
+
+### Amendment 5: the budget after the dry run's Part I
+
+Decided on 2026-10-29 by the researcher, before any engineering seed, search or later study-3 stage
+ran. The only study-3 runs so far are the dry run's Part I, on dry seeds outside every registered
+range. This amendment changes only the money available and adds a stopping rule for infrastructure
+incidents. Scientific selection and failure rules, thresholds, seeds and the order of stages
+remain unchanged.
+
+- **Available: about $294 for study 3.** That is the earlier $272, plus:
+  - $16 for the engineering stage. The dry run's spending checkpoint D1 re-priced the stage from a
+    measured case (37.0 GPU-min), which put the study's high total at $279.02–287.16
+    ([Part I's report](reports/study3-dry-run-part-1.md#d1)). The $16 brings the high total's
+    upper end within what is available;
+  - up to $6.0 for repeating Part I's affected GPU paths on a Pod, after the code that changed
+    the GPU-code identity ([amendment 4](#amendment-4-the-dry-run-in-two-parts), "Re-runs this
+    order can cause"). Its price is $4.4–6.0.
+- **Infrastructure incidents.**
+  - **What counts.** An infrastructure incident is a loss the code records as infrastructure: a lost
+    container disk, a Pod or container that stopped or restarted, an image pull or a provider fault.
+  - **Its price.** Each incident is counted once. Its price is its GPU minutes plus the Pod time of
+    its recovery and setup, as billed.
+  - **Where it is listed.** Every incident is listed with its price at the stage's spending
+    checkpoints.
+  - **The stop.** A stage stops for a decision about the price at its third incident, or once its
+    incidents' cumulative price passes $5, whichever comes first. The rule of this section, "When a
+    step does not fit", applies to that decision: no step is cut to fit.
+- **Storage.** A technical case's checkpoints are kept on the volume and in the bucket until the
+  study's report: about 46 GB per technical engineering case and 13 GB per numerical one, about
+  $0.3–1.2 per case-month. This is a running cost within "storage and idle time" above. It applies
+  to technical cases only.
+- **Disclosure.** The final report states the money available, each stage's incidents with their
+  prices, and any stop this rule caused.
+- **What was known.** The registration, the code up to the dry run's Part I, and Part I's report
+  with its measured GPU minutes. Only GPU minutes were read; no study-3 outcome.
