@@ -58,9 +58,14 @@ that used its attempts up, and never reruns an outcome:
   sufficient. A refused round raises ``CampaignError`` naming the label and the earlier round
   (its number, log and line), the outcome, the incident's gap or the attempt bound, and the
   command form (``round_command``); nothing is written and nothing runs. A run with attempts left
-  takes them first, whatever reason is given: rounds never stack.
-- *The attempts left* (``attempts_left``). The latest anchored round of the run's own (one that
-  names ``after``) whose config hash is the run's allows what the rule grants it beyond the
+  takes them first, whatever reason is given: rounds never stack. In a study-3 campaign (its
+  header carries ``study: 3``) a documented incident is never dropped: ``recovery`` over a run
+  that is not used up under its config hash is refused (``_not_used_up``), so that a run with
+  attempts left, a new config hash's new run included, takes them without ``recovery``, and a
+  done or diverged run keeps its outcome.
+- *The attempts left* (``attempts_left``), per config hash: a new config hash is a new run, with
+  its own base. The latest anchored round of the run's own (one that names ``after``) whose
+  config hash is the run's allows what the rule grants it beyond the
   attempts it names, so that no later ``max_attempts`` recalculates an earlier grant and a round
   of another config hash gives the run nothing. No call runs more attempts than its own
   ``max_attempts``: it runs at most the smaller of that and the attempts left, and those it
@@ -1137,6 +1142,8 @@ def run_campaign(
             _log(log, _own_round(run, assessments[run.label], entries, recovery, incident,
                                  max_attempts))  # fmt: skip
             entries = journal_entries(runs_root)
+        elif (header or {}).get("study") == 3:  # its documented incident is never dropped
+            _not_used_up(run, assessments[run.label], entries, max_attempts)
     elif recovery and not dry_run:
         opening = []
         for experiment, cell in sorted({(r.experiment, r.cell) for r in runs}):
@@ -1279,6 +1286,24 @@ def _incident_problems(incident: Mapping[str, Any] | None) -> list[str]:
         if isinstance(incident.get(key), str) and len(incident[key].splitlines()) > 1:
             problems.append(f"{key} is more than one line")
     return problems
+
+
+def _not_used_up(run: Run, state: Assessment, entries: Entries, max_attempts: int) -> None:
+    """A study-3 call with ``recovery`` over a run that is not used up under its config hash
+    (module docstring, "Recovery rounds") raises ``CampaignError``: no round opens, and its
+    incident would be recorded nowhere. A run with attempts left (a new config hash is a new
+    run) takes them without ``recovery``; a done or diverged run holds its outcome."""
+    if not _open(state):
+        kept = "done" if state.done is not None else "diverged"
+        raise CampaignError(f"{run.label}: no recovery round: the run is {kept} under its config "
+                            "hash, an outcome that is never rerun; nothing is written")  # fmt: skip
+    left = attempts_left(run, state, entries, max_attempts)
+    raise CampaignError(
+        f"{run.label}: no recovery round: the run is not used up under its config hash ({left} "
+        "attempt(s) left; a new config hash is a new run), so a round would record its incident "
+        "nowhere. Run its attempts without --recovery: scripts/launch.py CAMPAIGN --only "
+        f"{run.label} --max-attempts 1"
+    )
 
 
 def _no_cell_round_over_own_rounds(exhausted: Sequence[Run], entries: Entries) -> None:

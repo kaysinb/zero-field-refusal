@@ -20,11 +20,14 @@ round under it is the run's own, one per documented incident (zero_field_refusal
 incident, --incident-time (UTC, ISO 8601), --cause (one line) and --evidence (a path or a
 reference), and only for a run that used its attempts up and holds no outcome (a published
 terminal record, a provenance conflict, a hold). Its first round allows the smaller of N and the
-label's base (the --max-attempts of its first start), each further one exactly one, at
---max-attempts 1; the round names the attempts it follows. A round that is refused writes
+label's base (the first start's --max-attempts under its config hash), each further one exactly
+one, at --max-attempts 1; the round names the attempts it follows. In a study-3 campaign,
+--recovery over a run that is not used up under its config hash (a new config hash is a new run)
+is refused: its attempts run without --recovery. A round that is refused writes
 nothing and runs nothing (exit 1, naming the label and the earlier round or the bound).
 --max-attempts N bounds the attempts of a run (default 3) and of this call: no call runs more
-than N attempts, and a later call's N above the first start's adds nothing. Study 3's
+than N attempts, and a later call's N above the first start's under its config hash adds
+nothing. Study 3's
 qualification driver passes 1, and never --recovery.
 
 SIGTERM to this process (not to its process group) stops the campaign at a run boundary: the

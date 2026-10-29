@@ -947,6 +947,31 @@ def test_a_later_start_of_another_config_hash_at_its_default_attempts_is_no_prob
     assert states(found) == {first: "recovered", second: "recovered", third: "usable"}
 
 
+def test_an_outcome_under_another_config_hash_is_no_problem_for_a_round(world) -> None:
+    """An attempt of the label under config hash X ends ``conflict``; an attempt under Y fails;
+    round 1 under Y names both (every start of the label): the launcher judges an outcome under
+    the run's own config hash alone, so no problem."""
+    other = world.run("A", 1.5e-5, 10300, end="conflict", terminal=False, status="failed",
+                      cell="A-1.45e-05", start=ONE)  # fmt: skip
+    first = lost(world, 2)
+    world.round("study3-c1", LABEL, 1, [other, first], FIRST, chash=chash_of())
+    found, problems = world.read()
+    assert problems == []
+    assert states(found)[first] == "recovered"
+
+
+@pytest.mark.parametrize("when, flagged", [("2026-10-26T00:00:02.750000+00:00", False),
+                                           ("2026-10-26T00:00:03+00:00", True)])  # fmt: skip
+def test_an_incident_time_is_compared_with_the_rounds_stamp_at_whole_seconds(world, when, flagged):
+    """The launcher stamps a round to the second (here 00:00:02): an incident time with a
+    fraction inside that second is no problem; one a second later is."""
+    first = lost(world, 1)  # lines 1 and 2, stamped 00:00:00 and 00:00:01
+    world.round("study3-c1", LABEL, 1, [first], FIRST, chash=chash_of(), incident_time=when)
+    world.run(attempt=2, start=ONE)
+    _, problems = world.read()
+    assert bool(round_problems(problems, 3, "recovery round", "later than")) is flagged, problems
+
+
 def test_rounds_written_before_numbering_read_as_before(world) -> None:
     """A round of the label's own written before rounds were numbered, then its cell's round
     with the same reason (as an older launcher could write them): no problem, and the attempt

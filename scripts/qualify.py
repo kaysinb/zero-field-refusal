@@ -214,12 +214,15 @@ failure left unresolved after it routes to the technical feasibility report), fo
 not a completed technical failure of the case or that belongs to a case the cycle keeps whole (by
 its records or its launcher run), and when the fix's GPU code is the old one (the same path is not
 simply rerun); run again with the same record, it only writes the journal's lines that are missing.
-Each case it names re-qualifies under the new code from a new launcher run (a recovery round of the
-run's own: its first, or a further one at ``--max-attempts 1``, its incident the cycle, its evidence
-the supersession record) and new attempts of its parts: the attempt after one the cycle named
-carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path and
-sha256) instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun with
-``--infrastructure REASON``, as any other. The verdict lists the records it voids under
+Each case it names re-qualifies under the new code from a new launcher run and new attempts of its
+parts. Under the old config hash the new run comes from a recovery round of the run's own (its
+first, or a further one at ``--max-attempts 1``, its incident the cycle, its evidence the
+supersession record); under a new config hash (the fix changed a hashed key) it is the new run's
+base attempt, without ``--recovery``, which a study-3 campaign refuses over a run that is not used
+up, and the supersession record carries the cycle. Of the parts, the attempt after one the cycle
+named carries ``--engineering-cycle`` (its record: ``engineering_cycle``, the supersession's path
+and sha256) instead of ``--infrastructure``; a later interruption of a new-code attempt is rerun
+with ``--infrastructure REASON``, as any other. The verdict lists the records it voids under
 ``supersession``.
 
 ``verdict`` writes RUNS_DIR/qualification/c{N}/verdict.json (with ``--engineering``,

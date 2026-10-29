@@ -1656,12 +1656,15 @@ docstring has every rule.
   a cycle cannot start from one of its records:
   the failure keeps counting, so a scientific failure of P, which closes P–F alone, never blocks
   the cycle of a technical failure of A or F. Every case
-  the cycle names re-qualifies under the new code: a recovery round of the launcher run's own
-  (its first, or a further one at `--max-attempts 1`; its incident the cycle, its evidence the
-  supersession record), then each part as its next attempt with `--engineering-cycle` (its record
-  names the supersession's path and sha256), not `--infrastructure`; a later interruption of a
-  new-code attempt is rerun with `--infrastructure REASON`. The verdict lists the voided records
-  under `supersession`.
+  the cycle names re-qualifies under the new code from a new launcher run: under the old config
+  hash, a recovery round of the launcher run's own (its first, or a further one at
+  `--max-attempts 1`; its incident the cycle, its evidence the supersession record); under a new
+  config hash (the fix changed a hashed key), the new run's base attempt, without `--recovery`
+  (a study-3 campaign refuses `--recovery` over a run that is not used up), and the supersession
+  record carries the cycle. Then each part runs as its next attempt with `--engineering-cycle` (its
+  record names the supersession's path and sha256), not `--infrastructure`; a later interruption
+  of a new-code attempt is rerun with `--infrastructure REASON`. The verdict lists the voided
+  records under `supersession`.
 
   ```bash
   project-run "$SRC" python scripts/qualify.py supersede --campaign "$C/qualification-c1.yaml" \
@@ -1884,7 +1887,8 @@ before each command below.
   - no `launch.py` command on its numerical or repair campaigns, a recovery round or a settled end
     included.
 
-  The recovery form `launch.py FILE --only LABEL --recovery REASON --max-attempts 1` is then for
+  The recovery form `launch.py FILE --only LABEL --max-attempts 1 --recovery REASON` (with its
+  incident) is then for
   validation and confirmation runs, always for the one run concerned. `qualify.py verdict` does
   not touch the pins, as long as it runs from a checkout whose GPU code is candidate N's code in
   force. A verdict cache written under any other code makes the fixation invalid until `verdict`
@@ -2123,47 +2127,50 @@ environment; `scripts/judge.py` runs locally and talks to it over HTTPS.
   non-zero without starting another; the same command carries on later. `--only LABEL` (a run's
   `<cell>/s<seed>`) assesses and runs that run alone, leaving every other run of the campaign
   unread, and its start and end records carry the label; a recovery round under it is that run's
-  own. `--max-attempts N` replaces the three attempts (and the first round's three more) with N;
+  own. `--max-attempts N` replaces the three attempts (and the first round's three more, at most
+  the label's base) with N;
   study 3's qualification driver passes `--only` and 1
   ([below](#study-3-numerical-qualification)), and never `--recovery`. No call runs more
   attempts than its own `--max-attempts`; the attempts it leaves stay for later calls.
-  A later call's `--max-attempts` above the first start's value adds nothing (the base is the
-  smaller).
+  A later call's `--max-attempts` above the value of the first start under the run's config hash
+  adds nothing (the base is the smaller); this holds per config hash: a new config hash is a new
+  run, with its own first start.
   **A run's own rounds** (study 3's infrastructure route) are one per documented incident:
   `--recovery REASON --incident-time UTC --cause TEXT --evidence REF` (the interruption's time in
   UTC, ISO 8601; its external cause, one line; a path or reference to its evidence; none blank).
-  The label's first round allows the smaller of N and the label's base (its first start's
-  `--max-attempts`); each further one (the label had a round, its cell's or its own, under any
-  config hash) needs `--max-attempts 1` and allows exactly one. Grants follow this rule, never
-  the journal: a round's recorded `granted` is for the record. A study-3 campaign (its header
-  carries `study: 3`) takes no cell round: `--recovery` without `--only` exits 1 with the form of
-  a run's own round. A
-  round opens only for a run that used its attempts up and holds no outcome: a done or diverged
-  run is skipped, a conflict (a provenance conflict included: a checkpoint present with another
-  sha256, a departing numerics setup, an unclean checkout, another gate; a missing endpoint
-  checkpoint is a possible loss requiring diagnosis, never by itself a lost container disk) or a
-  hold stops the campaign before, and an attempt, not superseded, with a published terminal
-  record or an end `done`, `diverged` or `conflict` refuses it. Its reason must be one no earlier
-  round of the label gave (spaces stripped): a new reason is necessary, not sufficient. A refused
-  round exits 1, naming the label and the earlier round (its number, log and line), the outcome,
-  the incident's gap or the bound, and the command form; nothing is written and nothing runs. A
-  run with attempts left takes them first: rounds never stack. The round records its number
-  (`round`), the run's `config_hash`, `after` (every start of the label, under any config hash,
-  in attempt order), `max_attempts`, `granted` and its incident. The latest such round of the
-  run allows what the rule grants it beyond the attempts it names, so a later `--max-attempts`
-  recalculates no earlier grant, and a round under another config hash gives the run nothing. A
-  new start is numbered after every attempt of its label, whatever its log or config hash; the
-  run id keeps its form and the label never changes; nothing is deleted or rewritten.
-  A `superseded` record in the journal (a study-3 case restart or supersession) makes an attempt
-  no longer count for its label: kept, a used attempt, neither done nor a conflict, so a round of
-  its own (its first, or a further one) starts a new one. A `held` record (an outcome a study-3
-  engineering cycle could not resolve) makes the run a conflict: nothing starts, its recovery round
-  included, and a `--dry-run` reports the same conflict. The hold applies to the run's label
-  (`<cell>/s<seed>` in its experiment) in every journal, whatever the config hash it was written
-  with, with or without `--only`; the launcher never lifts it. A checkpoint run
-  (`tracking.endpoint_checkpoint`) is done only if its recorded numerics setup is what the
-  campaign's config asks for (determinism, TF32 and the matmul precision, the memory limit), read
-  without CUDA. Send it to the
+  The label's first round allows the smaller of N and the label's base (the first start's
+  `--max-attempts` under its config hash); each further one (the label had a round, its cell's or
+  its own, under any config hash) needs `--max-attempts 1` and allows exactly one. Grants follow
+  this rule, never the journal: a round's recorded `granted` is for the record. A study-3 campaign
+  (its header carries `study: 3`) takes no cell round: `--recovery` without `--only` exits 1 with
+  the form of a run's own round; and `--recovery` over a run that is not used up under its config
+  hash exits 1 too, with the command without `--recovery`: its attempts run without a round (a new
+  config hash is a new run), and a documented incident is never dropped unrecorded. A round opens
+  only for a run that used its attempts up and holds no outcome: a done or diverged run is skipped,
+  a conflict (a provenance conflict included: a checkpoint present with another sha256, a departing
+  numerics setup, an unclean checkout, another gate; a missing endpoint checkpoint is a possible
+  loss requiring diagnosis, never by itself a lost container disk) or a hold stops the campaign
+  before, and an attempt, not superseded, with a published terminal record or an end `done`,
+  `diverged` or `conflict` refuses it. Its reason must be one no earlier round of the label gave
+  (spaces stripped): a new reason is necessary, not sufficient. A refused round exits 1, naming the
+  label and the earlier round (its number, log and line), the outcome, the incident's gap or the
+  bound, and the command form; nothing is written and nothing runs. A run with attempts left takes
+  them first: rounds never stack. The round records its number (`round`), the run's `config_hash`,
+  `after` (every start of the label, under any config hash, in attempt order), `max_attempts`,
+  `granted` and its incident. The latest such round of the run allows what the rule grants it beyond
+  the attempts it names, so a later `--max-attempts` recalculates no earlier grant, and a round
+  under another config hash gives the run nothing. A new start is numbered after every attempt of
+  its label, whatever its log or config hash; the run id keeps its form and the label never changes;
+  nothing is deleted or rewritten. A `superseded` record in the journal (a study-3 case restart or
+  supersession) makes an attempt no longer count for its label: kept, a used attempt, neither done
+  nor a conflict, so a round of its own (its first, or a further one) starts a new one. A `held`
+  record (an outcome a study-3 engineering cycle could not resolve) makes the run a conflict:
+  nothing starts, its recovery round included, and a `--dry-run` reports the same conflict. The hold
+  applies to the run's label (`<cell>/s<seed>` in its experiment) in every journal, whatever the
+  config hash it was written with, with or without `--only`; the launcher never lifts it. A
+  checkpoint run (`tracking.endpoint_checkpoint`) is done only if its recorded numerics setup is
+  what the campaign's config asks for (determinism, TF32 and the matmul precision, the memory
+  limit), read without CUDA. Send it to the
   launcher's PID only: Ctrl-C or a signal to the process group (`kill -TERM -PGID`) also reaches
   the running attempt and ends it. The boundary is where an attempt is admitted, not where its
   process starts: a signal that arrives while an admitted attempt is being logged does not keep

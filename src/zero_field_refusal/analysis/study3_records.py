@@ -136,7 +136,8 @@ longer counts is listed with its reason, never counted:
   ``study3_decisions`` reads too): the documented interruption supersedes it, and a later
   attempt decides; the first round that follows it names it, with its number and reason. A round
   written since rounds are numbered (``launch``, "Recovery rounds": a run's own round, one per
-  documented incident, the label's first allowing ``max_attempts`` attempts and each further one
+  documented incident, the label's first allowing the smaller of its ``max_attempts`` and the
+  label's base, the first start's ``max_attempts`` under its config hash, and each further one
   exactly one) follows exactly the attempts its ``after`` names. A round without ``after``
   (written before) follows the label's attempts numbered up to the highest number started before
   its time stamp (the launcher numbers a run's attempts in order, and logs a round before the
@@ -1738,7 +1739,8 @@ def _round_fields(item: RecoveryRound) -> list[str]:
         isinstance(when, str)
         and when.strip()
         and item.time is not None
-        and (datetime.fromisoformat(when.strip()) > item.time)
+        # the launcher stamps a round to the second: compared at whole seconds
+        and (datetime.fromisoformat(when.strip()).replace(microsecond=0) > item.time)
     ):
         found.append("whose incident_time is later than the round's own time stamp")
     if item.number is not None and item.number >= 2:
@@ -1758,9 +1760,9 @@ def _round_attempts(
 ) -> list[str]:
     """How a round of a label's own disagrees with the label's starts (``starts``, any config
     hash): ``after`` names a run id that is no start of the label, leaves out one stamped before
-    the round, or names an attempt, not superseded, whose end records done, diverged or
-    conflict (``ends``, ``voided``). A later start under another config hash, at any attempts,
-    is the launcher's own sequence."""
+    the round, or names an attempt under the round's config hash, not superseded, whose end
+    records done, diverged or conflict (``ends``, ``voided``; ``launch._outcome_held``). A
+    later start under another config hash, at any attempts, is the launcher's own sequence."""
     after, when, found = item.after, item.time, []
     if after is None:
         return found
@@ -1774,8 +1776,10 @@ def _round_attempts(
     if earlier:
         found.append(f"whose after list leaves out {len(earlier)} start(s) of its label stamped "
                      "before it")  # fmt: skip
+    chash = item.record.get("config_hash")  # the launcher judges outcomes under the run's hash
+    mine = {s["run_id"] for s in starts if s.get("config_hash") == chash}
     held = sorted({str(end.get("outcome")) for run_id in after
-                   if voided.get(run_id, ("",))[0] != "superseded"
+                   if run_id in mine and voided.get(run_id, ("",))[0] != "superseded"
                    for end in ends.get(run_id, []) if end.get("outcome") in HELD_ENDS})  # fmt: skip
     if held:
         found.append(f"over an attempt whose end records the outcome {', '.join(held)}, not "

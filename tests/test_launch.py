@@ -1609,3 +1609,58 @@ def test_a_study3_campaign_takes_no_cell_round(tmp_path, monkeypatch) -> None:
     assert result["exhausted"] == [cell[0].label] and result["done"] == [cell[1].label]
     assert len(broken.calls) == 10
     assert [r["cell"] for r in rounds_of(root, name)] == ["adamw-5e-5"]
+
+
+def test_a_study3_recovery_over_a_run_not_used_up_is_refused(tmp_path, monkeypatch) -> None:
+    """A study-3 campaign: the label's attempt under an earlier config hash (an engineering
+    cycle's fix changed a hashed key, and superseded it); under the new hash the run is new, not
+    used up. ``--recovery`` over it is refused, exit 1, naming the command without
+    ``--recovery``; nothing is written and nothing runs. The same call without ``--recovery``
+    runs its base attempt. A done run is refused a round too. Study 2's call over a run with
+    attempts left still runs them, writing no round."""
+    import importlib.util
+
+    path = campaign(tmp_path, STUDY3_CELLS)
+    name, runs = load_campaign(path)
+    run, root, header = runs[1], tmp_path / "runs", campaign_header(path)
+    earlier = SimpleNamespace(label=run.label, experiment=run.experiment, config_hash="0" * 12,
+                              command=run.command)  # fmt: skip
+    log_start(root, name, earlier, "x-a1", only=run.label, max_attempts=1)
+    supersede(root, name, earlier, "x-a1", reason="the cycle's fix", record="c1/supersede-1.json")
+    log = root / "launch" / f"{name}.jsonl"
+    before, execute = log.read_bytes(), Executor(root, {run.label: ["completed"]})
+    only = {"only": run.label, "max_attempts": 1}
+    with pytest.raises(CampaignError, match="not used up") as refusal:
+        run_campaign(name, runs, root, execute=execute, header=header, recovery=R1,
+                     incident=INCIDENT, **only)  # fmt: skip
+    form = f"scripts/launch.py CAMPAIGN --only {run.label} --max-attempts 1"
+    assert form in str(refusal.value) and log.read_bytes() == before and execute.calls == []
+    where = Path(__file__).resolve().parents[1] / "scripts" / "launch.py"
+    spec = importlib.util.spec_from_file_location("launch_script", where)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setenv("RUNS_DIR", str(root))
+    incident = ["--incident-time", INCIDENT["incident_time"], "--cause", INCIDENT["cause"],
+                "--evidence", INCIDENT["evidence"]]  # fmt: skip
+    with pytest.raises(SystemExit) as stop:
+        script.main([str(path), "--only", run.label, "--max-attempts", "1", "--recovery", R1,
+                     *incident])  # fmt: skip
+    assert isinstance(stop.value.code, str) and "not used up" in stop.value.code  # exit 1
+    assert log.read_bytes() == before and execute.calls == []
+    result = run_campaign(name, runs, root, execute=execute, header=header, **only)
+    assert result["done"] == [run.label] and run_ids(execute)[0].endswith("-a2")
+    with pytest.raises(CampaignError, match="done"):
+        run_campaign(name, runs, root, execute=execute, header=header, recovery=R1,
+                     incident=INCIDENT, **only)  # fmt: skip
+    assert rounds_of(root, name) == [] and len(execute.calls) == 1
+    study2 = tmp_path / "study2"
+    study2.mkdir()
+    study2_cells = CELLS.replace("name: test-campaign\n",
+                                 "name: test-campaign\nheader: {w_max: 0.47}\n")  # fmt: skip
+    path = campaign(study2, study2_cells)
+    name, runs = load_campaign(path)
+    run, root = runs[1], study2 / "runs"
+    execute = Executor(root, {run.label: ["completed"]})
+    result = run_campaign(name, runs, root, execute=execute, header=campaign_header(path),
+                          recovery=R1, incident=INCIDENT, **only)  # fmt: skip
+    assert result["done"] == [run.label] and rounds_of(root, name) == []
