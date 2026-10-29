@@ -2288,6 +2288,7 @@ def test_a_lost_checkpoint_restarts_the_launcher_run(
         make_run_dir(root, run, run_id, "completed")
         return 0
 
+    monkeypatch.setattr(launch, "_disqualification", checkpoint_lost)  # a clean run, file gone
     with pytest.raises(launch.CampaignError, match="cannot stand"):  # before any recovery
         launch.run_campaign(name, runs, root, execute=execute, recovery=RESTART, **only)
     qualify.main(restart(path, ADAMW, RESTART))
@@ -2562,10 +2563,68 @@ def test_a_conflict_the_launcher_found_at_its_own_attempt_is_never_restarted(
     assert not launch.superseded_runs(run, launch.launch_records(root))
 
 
+def test_a_settled_conflict_of_another_problem_is_never_restarted(qualify, tmp_path) -> None:
+    """A start found without its end and settled ``conflict`` for a problem other than the
+    missing checkpoint (here a dirty checkout), the checkpoint gone as well: a provenance
+    conflict, whatever the missing file allows. ``restart-case`` refuses and supersedes nothing."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    settled_launcher(root, run, "r-a1")  # its checkpoint, /x.pt, is gone
+    log_end(root, path, run, "r-a1", outcome="conflict", returncode=None, settled=True,
+            problem="not run from a clean checkout of a recorded commit")  # fmt: skip
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(restart(path, ADAMW, RESTART))
+    assert "r-a1" in str(stop.value.code) and "never a restart" in str(stop.value.code)
+    assert not list(case_folder(out, ADAMW).glob("restart-*"))
+    assert not launch.superseded_runs(run, launch.launch_records(root))
+
+
+def test_the_launchers_own_conflict_end_is_never_restarted(qualify, tmp_path, monkeypatch) -> None:
+    """The launcher itself, run through its entry under a study-3 header on a fresh attempt that
+    completes with its checkpoint missing, writes the end (return code 0, ``conflict``, not
+    settled) and stops; the next call shows the note. ``restart-case`` refuses on that end,
+    writes no record and supersedes nothing."""
+    from zero_field_refusal import launch
+
+    path = campaign(tmp_path, fa=())
+    path.write_text("header:\n  study: 3\n" + path.read_text())
+    root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
+    label = f"adamw-{ADAMW_LR:g}/s10200"
+    made = []
+
+    def execute(run, run_id, output, campaign=None):
+        settled_launcher(root, run, run_id)  # completed; its checkpoint, /x.pt, is absent
+        made.append(run_id)
+        return 0
+
+    monkeypatch.setattr(launch, "_subprocess", execute)
+    monkeypatch.setattr(launch, "_disqualification", checkpoint_lost)
+    form = [str(path), "--only", label, "--max-attempts", "1"]
+    with pytest.raises(SystemExit, match="completed but cannot stand"):
+        launch_script().main(form)
+    (run_id,) = made
+    (end,) = [r for r in launch.launch_records(root)
+              if r.get("event") == "end" and r["run_id"] == run_id]  # fmt: skip
+    assert end["returncode"] == 0 and end["outcome"] == "conflict" and "settled" not in end
+    with pytest.raises(SystemExit) as again:
+        launch_script().main(form)
+    assert "A lost checkpoint" in " ".join(str(again.value.code).split())
+    with pytest.raises(SystemExit) as stop:
+        qualify.main(restart(path, ADAMW, RESTART))
+    assert "own judgement" in stop.value.code and run_id in stop.value.code
+    assert not list(case_folder(out, ADAMW).glob("restart-*"))
+    run = next(r for r in launch.load_campaign(path)[1] if r.label == label)
+    assert not launch.superseded_runs(run, launch.launch_records(root))
+
+
 @pytest.mark.parametrize(
     "end",
     [{"outcome": "done"},  # the attempt ended done; the disk was lost afterwards
-     {"outcome": "conflict", "returncode": None, "settled": True},  # the next call settled it
+     {"outcome": "conflict", "returncode": None, "settled": True,  # the next call settled it
+      "problem": "the endpoint checkpoint /x.pt is missing"},
      {"outcome": "technical", "returncode": None, "settled": True}],
 )  # fmt: skip
 def test_a_real_disk_loss_is_not_caught_by_the_own_conflict_refusal(qualify, tmp_path, end) -> None:

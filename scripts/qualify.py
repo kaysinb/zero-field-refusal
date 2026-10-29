@@ -243,15 +243,18 @@ declared instability stop, scientific, or another stop or a departing run, techn
 ``launcher_problems`` without the comparison with this process's environment), when any attempt is a
 completed failure (``attempt_failures``): a scientific one, which keeps counting ("no reruns to
 pass"), a technical one (the engineering cycle lifts it: below), or an unreadable record; an
-interrupted rest attempt counts by its trajectory results; and when the launcher run's endpoint
-checkpoint is on disk with another sha256 than its recorded one (``checkpoint_conflict``): a
-provenance conflict, not a loss, which goes to the technical route even when an interrupted attempt
-would otherwise allow the restart. A recorded attempt that passes so far (the baseline, a control)
-depends on the lost run or checkpoint and is named with the others. The attempts it names are void:
-a part whose recorded attempts are all named is ``voided``, so the case is not complete; ``part
---resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt with ``--infrastructure
-REASON`` (its record names the restart records); a rest waits for the baseline's new attempt. The
-named records are kept, listed, and voided in the verdict (with the reason, under ``restart``).
+interrupted rest attempt counts by its trajectory results; when the launcher run's journal holds
+an end ``conflict`` that no lost container disk explains (``own_conflict_end``: an unsettled one,
+the launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint);
+and when the launcher run's endpoint checkpoint is on disk with another sha256 than its recorded one
+(``checkpoint_conflict``): a provenance conflict, not a loss, which goes to the technical route even
+when an interrupted attempt would otherwise allow the restart. A recorded attempt that passes so far
+(the baseline, a control) depends on the lost run or checkpoint and is named with the others. The
+attempts it names are void: a part whose recorded attempts are all named is ``voided``, so the case
+is not complete; ``part --resume`` exits 8 for it, and ``part --attempt N`` takes its next attempt
+with ``--infrastructure REASON`` (its record names the restart records); a rest waits for the
+baseline's new attempt. The named records are kept, listed, and voided in the verdict (with the
+reason, under ``restart``).
 
 **Supersession** (``supersede --record PATH --diagnosis TEXT --fix TEXT``; "Failure routes": one
 engineering cycle per candidate; "Voiding and supersession"). A completed technical failure stops
@@ -408,6 +411,7 @@ from zero_field_refusal.launch import (
     expected_numerics,
     held_runs,
     hold,
+    is_missing_checkpoint,
     journal_records,
     label_starts,
     launch_records,
@@ -1889,16 +1893,20 @@ def checkpoint_conflict(run_dir: Path | None) -> Path | None:
 
 
 def own_conflict_end(run: Run, root: Path, run_dir: Path | None) -> dict | None:
-    """The launcher run's end in the launch journal that records ``outcome: conflict`` and is not
-    settled (it carries a return code: the launcher saw the attempt's process end), or None. A
-    settled end (``settled: true``, no return code) is written after the fact and is what a lost
-    container disk leaves; an end ``done`` is none."""
+    """The launcher run's end in the launch journal that no lost container disk explains, or None:
+    an end ``outcome: conflict`` that is not settled (it carries a return code: the launcher saw
+    the attempt's process end, and a lost disk takes that process with it), or one, settled or
+    not, whose problem is not the missing endpoint checkpoint (``launch.is_missing_checkpoint``).
+    A settled end (``settled: true``, no return code) with that problem alone is what a lost
+    container disk leaves, as is an end ``done``: a clean run that lost only its checkpoint
+    settles with it, the launcher having checked the rest first."""
     if run_dir is None:
         return None
     for record in launch_records(root):
         if (record.get("event") == "end" and record.get("run_id") == run_dir.name
                 and record.get("run") == run.label and record.get("outcome") == "conflict"
-                and not record.get("settled")):  # fmt: skip
+                and (not record.get("settled")
+                     or not is_missing_checkpoint(str(record.get("problem"))))):  # fmt: skip
             return record
     return None
 
@@ -1920,9 +1928,10 @@ def restart_case(
     from disk), when the launcher run itself is a completed failure (``launcher_problems``:
     its declared instability stop, scientific; another stop or a departing run, technical),
     when any attempt is a completed failure, scientific or technical, or unreadable
-    (``attempt_failures``), when the launcher run has an unsettled end ``conflict`` in the launch
-    journal (``own_conflict_end``: its own judgement of its attempt, which a lost container disk
-    cannot write), and when the launcher run's checkpoint is on disk with another sha256
+    (``attempt_failures``), when the launcher run has an end ``conflict`` in the launch journal
+    that a lost container disk does not explain (``own_conflict_end``: an unsettled one, the
+    launcher's own judgement of its attempt, or one whose problem is not the missing checkpoint),
+    and when the launcher run's checkpoint is on disk with another sha256
     than its recorded one (``checkpoint_conflict``: a provenance conflict, not a loss, whatever
     an interrupted attempt would allow): only an interrupted case is restarted. A launcher run whose
     checkpoint is lost is evidence enough, and restarts the case even before any attempt (the
@@ -1962,12 +1971,16 @@ def restart_case(
                      f"completed {kind} failure, which keeps counting: {why}")  # fmt: skip
     own = own_conflict_end(planned.run, root, run_dir)
     if own is not None:
+        by = (
+            "the launcher's own judgement of its attempt, which cannot come from a lost "
+            "container disk (its process ends with the disk and writes no end)"
+            if not own.get("settled")
+            else "a conflict other than a missing checkpoint"
+        )
         sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name} has an end with "
                  f"return code {own.get('returncode')} and outcome conflict "
-                 f"({own.get('problem')}): the launcher's own judgement of its attempt, which "
-                 "cannot come from a lost container disk (its process ends with the disk and "
-                 "writes no end). A provenance conflict goes to diagnosis and the technical "
-                 "route, never a restart")  # fmt: skip
+                 f"({own.get('problem')}): {by}. A provenance conflict goes to diagnosis and "
+                 "the technical route, never a restart")  # fmt: skip
     if not any(a["state"] == "interrupted" for a in fresh) and not missing:
         sys.exit(f"{case.name}: no restart: no evidence of an interruption (no interrupted "
                  "attempt, and the launcher run's checkpoint is on disk)")  # fmt: skip

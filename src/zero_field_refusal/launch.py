@@ -980,7 +980,7 @@ LOST_CHECKPOINT_NOTE = (
 )
 
 
-def _is_missing_checkpoint(problem: str) -> bool:
+def is_missing_checkpoint(problem: str) -> bool:
     """The conflict ``_checkpoint_problem`` gives a run whose endpoint checkpoint file is gone."""
     return problem.startswith("the endpoint checkpoint ") and problem.endswith(" is missing")
 
@@ -1146,7 +1146,7 @@ def run_campaign(
                  for run_dir, problem in assessments[run.label].conflicts.items()}  # fmt: skip
     if conflicts:
         lines = "\n".join(f"- {where}: {problem}" for where, problem in sorted(conflicts.items()))
-        note = LOST_CHECKPOINT_NOTE if any(map(_is_missing_checkpoint, conflicts.values())) else ""
+        note = LOST_CHECKPOINT_NOTE if any(map(is_missing_checkpoint, conflicts.values())) else ""
         raise CampaignError(f"Completed runs that cannot stand for this campaign; move them out "
                             f"of the experiment or fix them first:\n{lines}{note}")  # fmt: skip
 
@@ -1339,8 +1339,9 @@ def _no_cell_round_over_own_rounds(exhausted: Sequence[Run], entries: Entries) -
     if named:
         lines = "\n".join(named)
         raise CampaignError("A cell's recovery round grants nothing to a run that had a round of "
-                            "its own; its further round is its own, at one attempt. Nothing is "
-                            f"written:\n{lines}")  # fmt: skip
+                            "its own; its further round is its own, at one attempt. No recovery "
+                            "round is written (a settled end of an open start may be "
+                            f"written first):\n{lines}")  # fmt: skip
 
 
 def _settle(run: Run, state: Assessment, records: Sequence[Mapping[str, Any]], log: Path,
