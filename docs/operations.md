@@ -2341,8 +2341,11 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
      (J = 1 785) and writes `docs/study3-simulation-fixation.json`, with the machine it ran on.
      Commit it alone, before the first draw.
   3. `run` checks, before any draw, that the fixation is tracked, committed once and alone in
-     HEAD or an ancestor and unchanged, that its inputs and tests are the pinned ones, that the
-     checkout is clean, and that no results, no screen and no part of another fixation or commit
+     HEAD or an ancestor and unchanged, that its inputs and tests are the pinned ones, that its
+     sizes are the registered ones (M, 2 000 and 100 000 resamples, the calibration's selections
+     and tolerances: `analysis.study3_decisions`' constants, which every reader of the simulation
+     record checks, `study3_summary.py record simulation` included), that the checkout is clean,
+     and that no results, no screen and no part of another fixation or commit
      exist; it recomputes the calibration (integers and identities exactly; floats within a
      relative 10⁻⁹ or within their solver's precision, 10⁻⁹ pp for a pp field and 10⁻¹¹ for a
      proportion, so that a value near 0 compares by its precision; a different machine is
@@ -2390,6 +2393,10 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
     studies: 5–6 h on an idle machine;
   - the n_min scan, only when the power is short: some 44 000 studies at one level per value of
     n, a few minutes each;
+  - a power scenario's study (C16, C17, P18, P19) draws, wherever the cap's primary interval
+    has a direction, three more intervals at the cap (the missing labels' two and all missing
+    harmful: the registered final direction), about a third more bootstrap work for that study:
+    a few per cent more for the screen and the verification, about a third more for the scan;
   - in all about 9 h on an idle machine. The parts take about 1.9 kB per study (about 0.8 GB).
   At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples, 1 000 calibration
   selections per scenario and candidate, `study3_simulation`'s M25) the screen takes about 1.5
