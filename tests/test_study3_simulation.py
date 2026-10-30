@@ -1220,7 +1220,7 @@ def test_sigma_is_brents_root_from_any_bracket(setup, monkeypatch) -> None:
 
     monkeypatch.setattr(sim, "_spread", counted)
     fresh = sim._solve_sigma(sc, draws, cal.failure, "A-F", 0.0)
-    assert 0 < fresh and calls[0] <= 15
+    assert fresh > 0 and calls[0] <= 15
     assert real(sc, draws, cal.failure, fresh, "A-F")[0] == pytest.approx(sc.spread_pp, abs=1e-9)
     for start in (fresh, fresh * 0.97, fresh * 1.03, fresh * 0.2, fresh * 5):
         calls[0] = 0
