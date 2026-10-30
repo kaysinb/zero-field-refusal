@@ -5,7 +5,8 @@ Write one report per evaluated gate (`gate-1.md`, `gate-2.md`, `gate-3.md`) and 
 [stage-0.md](stage-0.md). Stage 1 records its runs and mechanics, without outcomes, in
 [stage-1.md](stage-1.md), next to the Gate 1 report. Study 2, which stopped before its primary comparison, has its
 [feasibility report](study2-feasibility.md). Study 3's dry run records its Part I in
-[study3-dry-run-part-1.md](study3-dry-run-part-1.md). Reference the
+[study3-dry-run-part-1.md](study3-dry-run-part-1.md), and the repeat of Part I for package 1c in
+[study3-dry-run-part-1-repeat.md](study3-dry-run-part-1-repeat.md). Reference the
 [preregistered criteria](../preregistration.md#gate-thresholds) instead of copying them.
 
 Use aggregates only, never raw completions. Run IDs, analysis inputs and scripted figures follow
