@@ -1442,7 +1442,8 @@ class _Schema:
 
     def _affected(self, value: Any) -> None:
         """The affected runs (each with its records and its start and end lines), the
-        qualification's part records and launcher runs, and the stale write-once records."""
+        qualification's part records, launcher runs and the case restart records counted before
+        the cycle, and the stale write-once records."""
         entry = self.object("affected", value, ("runs", "qualification", "records"))
         if entry is None:
             return
@@ -1468,9 +1469,10 @@ class _Schema:
                 keys.append(str(run["run_id"]))
             self._canonical("affected.runs", keys)
         qualification = self.object("affected.qualification", entry["qualification"],
-                                    ("records", "launchers"))  # fmt: skip
+                                    ("records", "launchers", "restarts"))  # fmt: skip
         if qualification is not None:
             self._files("affected.qualification.records", qualification["records"])
+            self._files("affected.qualification.restarts", qualification["restarts"])
             launchers = qualification["launchers"]
             if not isinstance(launchers, list):
                 self.add("affected.qualification.launchers", "is not a list")

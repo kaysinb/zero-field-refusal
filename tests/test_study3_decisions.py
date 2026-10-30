@@ -2481,8 +2481,8 @@ def cycle_record(world: World, **over) -> dict:
         "fixation": None,
         "journal": [{"path": VALIDATION_LOG, "lines": 4,
                      "sha256": hashlib.sha256(data).hexdigest()}],
-        "affected": {"runs": runs, "qualification": {"records": [], "launchers": []},
-                     "records": []},
+        "affected": {"runs": runs, "records": [],
+                     "qualification": {"records": [], "launchers": [], "restarts": []}},
         "kept": [{"why": "reused_stage", "stage": "search", "runs": 24}],
         "bridge": "qualification/c1/supersede-1.json",
     }  # fmt: skip

@@ -72,9 +72,11 @@ its GPU code), and
   absence marker ``{path, absent: true}`` for a file that is not there) and its journal ``start``
   and ``end`` lines (``{path, line, line_sha256}``; ``end`` null without one), which bind the
   command and config hash it was issued; ``qualification``, the part records the bridge voids
-  (``records``, evidence) and the launcher runs it supersedes (``launchers``, each ``run_id`` and
-  ``meta``, its ``meta.json`` as evidence or an absence marker); ``records``, the write-once
-  records the cycle makes stale;
+  (``records``, evidence), the launcher runs it supersedes (``launchers``, each ``run_id`` and
+  ``meta``, its ``meta.json`` as evidence or an absence marker) and the case restart records
+  counted as written before the cycle (``restarts``, evidence: every one there when the cycle is
+  written; a restart is never dated by its clock); ``records``, the write-once records the cycle
+  makes stale;
 - ``kept``: what keeps counting, each with ``why``: a run that is a ``scientific_failure``,
   ``held``, of a ``closed_arm`` (or cited by a closure), each ``run_id`` with its ``evidence``
   (its ``terminal.json``, else its ``meta.json``, else an absence marker); and per stage whose
@@ -96,14 +98,18 @@ launcher runs it supersedes and every affected run, each ``run_id``, ``campaign`
 
 **Refusals** (``CycleRefused``, naming every reason) where a cycle is derived: a diagnosis or fix
 that is not one line; the fix's GPU code the old one; a claim missing for a stage started, or
-one for a stage not started; the marks' stage not a rerun of every marked arm; a mark under a
-known GPU code other than the old one (its code unknown, it is a mark of the code in force); a
-start in the pinned prefix that the records read do not hold; a record under a sealed folder or
-present and unreadable (a missing one is an absence marker, never a refusal); and a launcher run
-of the qualification that no part record classified and that the readers cannot settle
-(``qualification_records.cycle_entries``: ``qualify.py``'s own resolution of such a run needs
-GPU paths, so the cycle names it instead). ``qualification_records`` (and torch with it) is
-imported only where the qualification is rerun.
+one for a stage not started; no mark; the marks' stage not a rerun of every marked arm; a mark
+under a known GPU code other than the old one (its code unknown, it is a mark of the code in
+force); a mark that is not among the affected runs; a journal whose prefix moved since the
+records were read, or a start in the pinned prefix that the records read do not hold; a record
+under a sealed folder or present and unreadable (a missing one is an absence marker, never a
+refusal); a launcher run of the qualification that no part record classified and that the
+readers cannot settle (``qualification_records.cycle_entries``: ``qualify.py``'s own
+resolution of such a run needs GPU paths, so the cycle names it instead); and case restarts that
+disagree with the journal prefix (below). It is published (``publish_cycle``) only when no other
+supersession record of the candidate is there and no file of it is there with other content:
+every refusal comes before anything is written. ``qualification_records`` (and torch with it)
+is imported only where the qualification is rerun.
 
 **Reading a cycle back** ("Voiding and supersession": every superseded record stays, listed with
 its reason). ``read_cycle`` checks, in order: the record as a decision record (its form, every
@@ -116,7 +122,8 @@ the qualification, and no problem); and the bridge against the
 record (``bridge_problems``): its candidate and number, its ``old_record`` the record by its
 bytes' sha256, the record's diagnosis, fix and codes, its ``launchers`` exactly the affected runs
 and the qualification's affected launcher runs, its ``attempts`` exactly the qualification's
-affected records, nothing named twice, and ``held`` empty. It reads no run record. The bridge's
+affected records, nothing named twice, its launchers in canonical order (by run id), and
+``held`` empty. It reads no run record. The bridge's
 ``old_record.path`` is the exact record path the journal repair takes (``repair_record``), shown
 as it is: it names the machine the cycle was written on.
 
@@ -128,12 +135,20 @@ the view. Every bound cell is read (no cell the route would issue later decides 
 The qualification's reading is not part of the view: the cycle reads the qualification through
 ``qualification_records.cycle_entries``, with the same prefix and without the same bridge. The
 writer derives from this view with ``without=None``; the reader re-derives with ``without`` this
-cycle's bridge, before and after the repair alike. ``cycle_problems`` then requires a claim for
-every stage started and none for a stage not started, ``affected`` and ``kept`` equal to their
-derivation exactly (no omission, no extra, nothing twice, canonical order), the qualification's
-side equal to ``cycle_entries``' and no listed run a scientific failure. A run kept as of a
-closed arm is re-derived as cited by a closure, and needs a valid closure of the candidate of
-its arm or naming it.
+cycle's bridge, before and after the repair alike, and with the case restarts the record pins
+(only those count as written before the cycle; no time stamp is compared, the bridge's
+``superseded_at`` included). ``cycle_problems`` then requires a claim for every stage started
+and none for a stage not started, ``affected`` and ``kept`` equal to their derivation exactly
+(no omission, no extra, nothing twice, canonical order), every mark among the affected runs, the
+qualification's side equal to ``cycle_entries``', no listed run a scientific failure, and the
+bridge equal to its derivation (``_bridge_against``: its ``launchers`` the qualification's
+launcher runs and the affected runs, each field but the identity, in canonical order; under a
+rerun of the qualification its ``attempts``, interrupted ones included, ``cases_requalified``,
+``kept`` and ``kept_cases`` exactly ``cycle_entries``'). The pinned case restarts agree with the
+journal prefix (``_restart_problems``): every restart record of the candidate that a
+``superseded`` line inside the prefix cites is pinned, and none that only lines beyond it cite.
+A run kept as of a closed arm is re-derived as cited by a closure, and needs a valid closure of
+the candidate of its arm or naming it whose cited line lies in the pinned prefix.
 """
 
 from __future__ import annotations
@@ -602,10 +617,12 @@ def derive_cycle(
     repo: str | Path,
     written_at: str,
     host: str,
+    journal: Sequence[Mapping[str, Any]],
 ) -> tuple[dict, dict]:
     """The cycle record and its bridge (module docstring), derived from ``records`` (the view
-    before the cycle: ``pre_cycle_records``) and the journal prefix pinned now
-    (``journal_seen``). ``marks``: the run ids of the marks of ``stage``; ``closed_arms``: the
+    before the cycle: ``pre_cycle_records``) and ``journal``, the prefix those records were read
+    with (``journal_seen``, pinned before they were read). ``marks``: the run ids of the marks of
+    ``stage``; ``closed_arms``: the
     arms the route has closed; ``fixation``: the validation fixation in force, or None;
     ``code``: the fix (its commit and GPU code); ``fix_identity``: its ``gpu_code_identity``;
     ``settings``: the qualification's; ``repo``: the checkout the runs' commits are read in. The
@@ -613,12 +630,14 @@ def derive_cycle(
     ``CycleRefused``, naming every reason: a diagnosis or fix that is not one line; a stage that
     is not one of the marks'; the fix's GPU code the old one; a claim missing for a stage
     started, or one for a stage not started, the marks' stage not a rerun of every marked arm
-    (``parse_claims`` checked the claims' own form); a mark that is no run of the stage, or has no
-    line in the journal; a mark under a known GPU code other than ``old_code`` (an
-    ``other_gpu_code`` mark, no cycle case); a start in the prefix that ``records`` does not hold
-    (the records are not of this journal: read them again); a launcher run of the qualification
-    the readers cannot settle (``qualification_records.cycle_entries``' ``unsettled``); and what
-    ``affected_and_kept`` refuses."""
+    (``parse_claims`` checked the claims' own form); no mark at all; a mark that is no run of the
+    stage, or has no line in the journal; a mark under a known GPU code other than ``old_code``
+    (an ``other_gpu_code`` mark, no cycle case); a journal whose prefix is not ``journal`` now,
+    or a start in it that ``records`` does not hold (the records are not of this journal: read
+    them again); a mark that is not among the affected runs; a launcher run of the qualification
+    the readers cannot settle (``qualification_records.cycle_entries``' ``unsettled``); case
+    restarts the journal prefix cites and the cycle does not pin (``_restart_problems``); and
+    what ``affected_and_kept`` refuses."""
     root = Path(runs_root)
     reasons: list[str] = []
     for name, value in (("diagnosis", diagnosis), ("fix", fix)):
@@ -647,7 +666,10 @@ def derive_cycle(
     claim = claims.get(stage)
     left = sorted({e.arm for e in found} - set(claim.arms if claim and claim.action == "rerun"
                                                else ()), key=str)  # fmt: skip
-    if stage in MARKED_STAGES and (not found or left):
+    if stage in MARKED_STAGES and not marks:
+        reasons.append(f"no mark: a cycle is opened by the technical marks of its stage, and none "
+                       f"of the {stage} is given")  # fmt: skip
+    elif stage in MARKED_STAGES and left:
         reasons.append(f"the {stage}'s claim does not rerun every marked arm ({left} left): the "
                        "stage of the marks is a rerun of every marked arm")  # fmt: skip
     run_codes = run_gpu_codes(records.endpoints, repo=repo)
@@ -658,8 +680,11 @@ def derive_cycle(
                            f"{old_code}: an other_gpu_code mark, no cycle case")  # fmt: skip
     if reasons:
         raise CycleRefused(reasons)
-    journal = journal_seen(root)
-    starts = _seen_starts(root, journal)
+    now = journal_seen(root)
+    if now != [dict(entry) for entry in journal]:
+        raise CycleRefused("the launch journal is not the one the records were read with (its "
+                           "prefix has moved since): read the records again")  # fmt: skip
+    starts = _seen_starts(root, now)
     unread = sorted(run_id for run_id, (_, start) in starts.items()
                     if start.get("experiment") == EXPERIMENT and run_id not in by_id)  # fmt: skip
     if unread:
@@ -671,14 +696,20 @@ def derive_cycle(
     affected, kept = affected_and_kept(records, candidate, claims, run_codes=run_codes,
                                        fix_code=fix_code, seen=set(starts),
                                        closed_arms=closed_arms, cited=cited)  # fmt: skip
+    unmarked = sorted({e.run_id for e in found} - {run["run_id"] for run in affected})
+    if unmarked:
+        raise CycleRefused(f"the marks {unmarked} are not among the affected runs: a mark is a "
+                           "run the cycle reruns")  # fmt: skip
     entries = None
-    qualification: dict[str, list[dict[str, Any]]] = {"records": [], "launchers": []}
-    if "qualification" in claims and claims["qualification"].action == "rerun":
+    qualification: dict[str, list[dict[str, Any]]] = {"records": [], "launchers": [],
+                                                      "restarts": []}  # fmt: skip
+    rerun = "qualification" in claims and claims["qualification"].action == "rerun"
+    if rerun:
         from .qualification_records import cycle_entries  # it loads torch: here only
 
         entries = cycle_entries(root, candidate, old_code=old_code, fix_code=fix_code,
                                 settings=settings, run_codes=run_codes,
-                                prefix={j["path"]: j["lines"] for j in journal})  # fmt: skip
+                                prefix={j["path"]: j["lines"] for j in now})  # fmt: skip
         if entries.unsettled:
             raise CycleRefused(f"the qualification's launcher runs {entries.unsettled} were "
                                "classified by no part record, and the analysis readers cannot "
@@ -694,17 +725,15 @@ def derive_cycle(
         "stages": {name: {"action": c.action, "arms": list(c.arms),
                           "justification": c.justification} for name, c in claims.items()},
         "fixation": None if fixation is None else dict(fixation),
-        "journal": journal,
+        "journal": now,
         "affected": {"runs": affected, "qualification": qualification, "records": []},
         "kept": kept, "bridge": bridge_name(candidate),
     }  # fmt: skip
     record = json.loads(json.dumps(record, allow_nan=False))  # what a reader will see
-    stage_runs = []
-    for run in affected:
-        log, start = starts[run["run_id"]]
-        stage_runs.append({"run_id": run["run_id"], "campaign": PurePosixPath(log).stem,
-                           "run": start.get("run"), "experiment": start.get("experiment"),
-                           "config_hash": start.get("config_hash")})  # fmt: skip
+    anchored = _restart_problems(root, record) if rerun else []
+    if anchored:
+        raise CycleRefused(anchored)
+    stage_runs = _runs_of(affected, starts)
     bridge = build_bridge(root, candidate, cycle_file=cycle_path(root, candidate),
                           cycle_sha256=hashlib.sha256(serialized(record)).hexdigest(),
                           diagnosis=diagnosis, fix=fix, old_code=old_code,
@@ -727,26 +756,56 @@ def _mark(e: Endpoint, records: Records) -> dict[str, Any]:
 
 def _qualification(root: Path, entries: CycleEntries) -> dict[str, list[dict[str, Any]]]:
     """The qualification's side of the affected records: the part records the bridge voids (by
-    path under RUNS_DIR and sha256) and the launcher runs it supersedes (each its ``meta.json``
-    as evidence or an absence marker)."""
+    path under RUNS_DIR and sha256), the launcher runs it supersedes (each its ``meta.json`` as
+    evidence or an absence marker) and the case restart records counted before the cycle, each
+    pinned by its path and sha256 (``_evidence``)."""
     base = root.absolute()
     found = {}
     for entry in entries.attempts:
         if entry.get("state") == "recorded" and isinstance(entry.get("sha256"), str):
             where = Path(entry["path"]).relative_to(base).as_posix()
             found[where] = {"path": where, "sha256": entry["sha256"]}
-    launchers = []
-    for entry in entries.launchers:
-        where = f"{entry['experiment']}/{entry['run_id']}/meta.json"
-        path = root / where
-        if under_sealed(path, root):
-            raise CycleRefused(f"{where}: under a sealed folder: never evidence, never opened")
-        meta: dict[str, Any] = {"path": where, "absent": True}
-        if path.exists():
-            meta = {"path": where, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        launchers.append({"run_id": entry["run_id"], "meta": meta})
+    launchers = [{"run_id": entry["run_id"],
+                  "meta": _evidence(root, f"{entry['experiment']}/{entry['run_id']}/meta.json")}
+                 for entry in entries.launchers]  # fmt: skip
     return {"records": [found[k] for k in sorted(found)],
-            "launchers": sorted(launchers, key=lambda entry: entry["run_id"])}  # fmt: skip
+            "launchers": sorted(launchers, key=lambda entry: entry["run_id"]),
+            "restarts": [_evidence(root, where) for where in sorted(entries.restarts)]}  # fmt: skip
+
+
+def _evidence(root: Path, where: str) -> dict[str, Any]:
+    """A file under RUNS_DIR (``where``) as evidence ``{path, sha256}``, or an absence marker
+    ``{path, absent: true}`` when nothing is there (no file, no link). ``CycleRefused`` for one
+    that resolves under a sealed folder (never opened) and for one that is there and cannot be
+    read (a link to nothing, a folder)."""
+    path = root / where
+    if under_sealed(path, root):
+        raise CycleRefused(f"{where}: under a sealed folder: never evidence, never opened")
+    if not (path.exists() or path.is_symlink()):
+        return {"path": where, "absent": True}
+    try:
+        return {"path": where, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    except OSError as exc:
+        raise CycleRefused(f"{where}: there, and unreadable ({type(exc).__name__})") from exc
+
+
+def _runs_of(
+    runs: Sequence[Mapping[str, Any]], starts: Mapping[str, tuple[str, Mapping[str, Any]]]
+) -> list[dict[str, Any]]:
+    """The bridge's entries of the affected runs: each run's ``run_id`` and, from its start in
+    the pinned prefix (``starts``: ``_seen_starts``), its ``campaign`` (its log's name),
+    ``run``, ``experiment`` and ``config_hash``. ``CycleRefused`` for a run with no start
+    there."""
+    out = []
+    for run in runs:
+        found = starts.get(run["run_id"])
+        if found is None:
+            raise CycleRefused(f"{run['run_id']}: no start line in the pinned journal prefix")
+        log, start = found
+        out.append({"run_id": run["run_id"], "campaign": PurePosixPath(log).stem,
+                    "run": start.get("run"), "experiment": start.get("experiment"),
+                    "config_hash": start.get("config_hash")})  # fmt: skip
+    return out
 
 
 def publish_cycle(
@@ -754,32 +813,40 @@ def publish_cycle(
 ) -> tuple[Path, Path]:
     """The cycle record, then its bridge, each written once (``study3_decisions._publish``; the
     record validated by ``write_decision``, the bridge in ``qualify.py``'s format). Run again
-    with byte-identical content, it writes only a file that is missing. ``CycleRefused`` when a
-    file is published with other content (it is never rewritten), when the bridge does not name
-    the record by its bytes' sha256, and for a record ``write_decision`` refuses. Returns both
-    paths."""
+    with byte-identical content, it writes only a file that is missing. ``CycleRefused``, before
+    anything is written, when another supersession record of the candidate is there
+    (``c<N>/supersede-*.json``), when a file is published with other content (it is never
+    rewritten), when the bridge does not name the record by its bytes' sha256, and for a record
+    ``write_decision`` refuses. Returns both paths."""
     root = Path(runs_root)
     path, bridge_path = cycle_path(root, candidate), root / bridge_name(candidate)
     data = serialized(record)
     for where in (path, bridge_path):
         if under_sealed(where, root):
             raise CycleRefused(f"{where}: under a sealed folder: never written, never opened")
+    others = sorted(found for found in bridge_path.parent.glob("supersede-*.json")
+                    if found.name != bridge_path.name)  # fmt: skip
+    if others:
+        raise CycleRefused(f"{others[0]}: a supersession record of candidate {candidate} is "
+                           "there already: one engineering cycle per candidate, and nothing is "
+                           "written")  # fmt: skip
     published = path.exists() or path.is_symlink()
     if published and path.read_bytes() != data:
         raise CycleRefused(f"{path} is published with other content: a cycle record is never "
                            "rewritten")  # fmt: skip
     if hashlib.sha256(data).hexdigest() != (bridge.get("old_record") or {}).get("sha256"):
         raise CycleRefused("the bridge does not name the cycle record by its sha256")
+    content = (json.dumps(bridge, indent=1) + "\n").encode("utf-8")
+    bridged = bridge_path.exists() or bridge_path.is_symlink()
+    if bridged and bridge_path.read_bytes() != content:
+        raise CycleRefused(f"{bridge_path} is published with other content: a supersession "
+                           "record is never rewritten, and nothing is written")  # fmt: skip
     if not published:
         try:
             write_decision(root, f"cycle-c{candidate}", record)
         except DecisionRefused as exc:
             raise CycleRefused(str(exc)) from exc
-    content = (json.dumps(bridge, indent=1) + "\n").encode("utf-8")
-    if bridge_path.exists() or bridge_path.is_symlink():
-        if bridge_path.read_bytes() != content:
-            raise CycleRefused(f"{bridge_path} is published with other content: a supersession "
-                               "record is never rewritten")  # fmt: skip
+    if bridged:
         return path, bridge_path
     bridge_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -989,6 +1056,8 @@ def _bridge_problems(candidate: int, bridge: Any, record: Mapping[str, Any],
            for e in (launchers if isinstance(launchers, list) else [None])]  # fmt: skip
     found += [f"its launchers name {run_id!r} twice" for run_id in sorted(
         {str(r) for r in ids if ids.count(r) > 1})]  # fmt: skip
+    if len(set(ids)) == len(ids) and ids != sorted(ids, key=str):
+        found.append("its launchers are not in canonical order (by run id)")
     if set(ids) != wanted:
         found.append(f"its launchers are not the affected runs and the qualification's affected "
                      f"launcher runs (missing {sorted(wanted - set(ids), key=str)[:5]}, other "
@@ -1050,8 +1119,10 @@ def cycle_problems(
     run_codes = run_gpu_codes(records.endpoints, repo=repo)
     by_id = {e.run_id: e for e in records.endpoints}
     closed = [k["run_id"] for k in record["kept"] if k.get("why") == "closed_arm"]
+    # a closure the cycle may rest on cites a line of the pinned prefix: written before it
     valid = [e["record"] for e in records.closures.values() if e.get("record") is not None
-             and e["record"].get("candidate") == candidate]  # fmt: skip
+             and e["record"].get("candidate") == candidate
+             and _in_prefix(e["record"].get("line"), record["journal"])]  # fmt: skip
     for run_id in closed:
         arm = by_id[run_id].arm if run_id in by_id else None
         if not any(c.get("arm") == arm or c.get("run_id") == run_id for c in valid):
@@ -1066,23 +1137,29 @@ def cycle_problems(
     problems += _compare(where, "affected.runs", record["affected"]["runs"], affected,
                          lambda r: r["run_id"])  # fmt: skip
     problems += _compare(where, "kept", record["kept"], kept, kept_key)
-    wanted: dict[str, list[dict[str, Any]]] = {"records": [], "launchers": []}
-    if claims.get("qualification", Claim("reuse", (), "")).action == "rerun":
-        from .qualification_records import cycle_entries  # it loads torch: here only
-
-        entries = cycle_entries(root, candidate, old_code=record["old_code"],
-                                fix_code=record["code"]["gpu_code_sha256"], settings=settings,
-                                run_codes=run_codes, without=without,
-                                prefix={j["path"]: j["lines"]
-                                        for j in record["journal"]})  # fmt: skip
-        problems += [f"{where}: the qualification's launcher run {run_id} was classified by no "
-                     "part record, and the readers cannot settle it" for run_id in
-                     entries.unsettled]  # fmt: skip
-        wanted = _qualification(root, entries)
-    for key, by in (("records", lambda r: r["path"]), ("launchers", lambda r: r["run_id"])):
+    listed = {run["run_id"] for run in record["affected"]["runs"]}
+    problems += [f"{where}: the mark {mark['run_id']} is not among the affected runs: a mark is a "
+                 "run the cycle reruns" for mark in record["marks"]
+                 if mark["run_id"] not in listed]  # fmt: skip
+    entries = None
+    wanted: dict[str, list[dict[str, Any]]] = {"records": [], "launchers": [], "restarts": []}
+    try:
+        if claims.get("qualification", Claim("reuse", (), "")).action == "rerun":
+            entries = _requalified(root, record, run_codes=run_codes, settings=settings)
+            problems += [f"{where}: the qualification's launcher run {run_id} was classified by "
+                         "no part record, and the readers cannot settle it" for run_id in
+                         entries.unsettled]  # fmt: skip
+            wanted = _qualification(root, entries)
+            problems += [f"{where}: {p}" for p in _restart_problems(root, record)]
+        stage_runs = _stage_runs(root, record)
+    except CycleRefused as exc:
+        return problems + [f"{where}: {reason}" for reason in exc.reasons]
+    for key, by in (("records", lambda r: r["path"]), ("launchers", lambda r: r["run_id"]),
+                    ("restarts", lambda r: r["path"])):  # fmt: skip
         problems += _compare(where, f"affected.qualification.{key}",
                              record["affected"]["qualification"][key], wanted[key],
                              by)  # fmt: skip
+    problems += _bridge_against(where, found.get("bridge"), entries, stage_runs)
     mine = [e for e in records.endpoints if e.cell.candidate == candidate]
     for run in record["affected"]["runs"]:
         e = by_id.get(run["run_id"])
@@ -1090,6 +1167,111 @@ def cycle_problems(
             problems.append(f"{where}: {e.run_id} is a scientific failure, and it is listed as "
                             "affected: a scientific failure keeps counting")  # fmt: skip
     return problems
+
+
+def _requalified(root: Path, record: Mapping[str, Any], *, run_codes: Mapping[str, str | None],
+                 settings: Mapping[str, Any]) -> CycleEntries:  # fmt: skip
+    """The qualification's entries of a published cycle as the readers re-derive them
+    (``qualification_records.cycle_entries``): under the record's codes, its own bridge read as
+    absent, the journal up to its pinned prefix and the case restarts it pinned (never a time
+    stamp)."""
+    from .qualification_records import cycle_entries  # it loads torch: here only
+
+    candidate = record["candidate"]
+    return cycle_entries(root, candidate, old_code=record["old_code"],
+                         fix_code=record["code"]["gpu_code_sha256"], settings=settings,
+                         run_codes=run_codes, without=bridge_name(candidate),
+                         prefix={j["path"]: j["lines"] for j in record["journal"]},
+                         restarts=[r["path"] for r in
+                                   record["affected"]["qualification"]["restarts"]])  # fmt: skip
+
+
+def _stage_runs(root: Path, record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The bridge's entries of the record's affected runs, from their starts in its pinned
+    prefix (``_runs_of``)."""
+    return _runs_of(record["affected"]["runs"], _seen_starts(root, record["journal"]))
+
+
+ATTEMPT_KEYS = ("case", "stage", "part", "attempt", "state", "sha256")  # an attempt compared
+BRIDGE_LISTS = {"attempts": ATTEMPT_KEYS, "cases_requalified": ("case", "stage"),
+                "kept": ("case", "stage", "sha256"),
+                "kept_cases": ("case", "stage", "why")}  # fmt: skip
+
+
+def _bridge_against(where: str, bridge: Any, entries: CycleEntries | None,
+                    stage_runs: Sequence[Mapping[str, Any]]) -> list[str]:  # fmt: skip
+    """The bridge against its derivation (module docstring, "The pre-cycle view"): its
+    ``launchers`` exactly the qualification's launcher runs (``entries``, under a rerun of the
+    qualification) and the affected runs (``stage_runs``), every field but the identity, in
+    canonical order; its ``attempts`` (interrupted ones included), ``cases_requalified``,
+    ``kept`` and ``kept_cases`` exactly ``entries``' (empty without a rerun), in their order. A
+    bridge that cannot be read is ``read_cycle``'s problem."""
+    if not isinstance(bridge, Mapping):
+        return []
+
+    def bare(entry: Any) -> Any:
+        return ({k: v for k, v in entry.items() if k != "identity"}
+                if isinstance(entry, Mapping) else entry)  # fmt: skip
+
+    def rows(value: Any, keys: Sequence[str]) -> list[Any]:
+        items = value if isinstance(value, list) else [value]
+        return [tuple(e.get(k) for k in keys) if isinstance(e, Mapping) else e for e in items]
+
+    derived = [*(bare(e) for e in (entries.launchers if entries is not None else [])),
+               *(dict(run) for run in stage_runs)]  # fmt: skip
+    launchers = bridge.get("launchers")
+    found = []
+    if [bare(e) for e in (launchers if isinstance(launchers, list) else [launchers])] != sorted(
+            derived, key=lambda e: str(e["run_id"])):  # fmt: skip
+        found.append(f"{where}: the bridge's launchers are not their derivation (the "
+                     "qualification's launcher runs and the affected runs, each field but the "
+                     "identity, in canonical order)")  # fmt: skip
+    for key, keys in BRIDGE_LISTS.items():
+        wanted = list(getattr(entries, key)) if entries is not None else []
+        if rows(bridge.get(key), keys) != rows(wanted, keys):
+            found.append(f"{where}: the bridge's {key} are not their derivation "
+                         "(qualification_records.cycle_entries)")  # fmt: skip
+    return found
+
+
+_RESTART = re.compile(r"qualification/c\d+/[^/]+/s[^/]+/[^/]+/restart-\d+\.json")
+
+
+def _restart_problems(root: Path, record: Mapping[str, Any]) -> list[str]:
+    """The case restarts a cycle pins against the journal prefix it pins (module docstring, "The
+    pre-cycle view"): every case restart record of the candidate's qualification that a
+    ``superseded`` line inside the prefix cites (by its path's last components) is pinned, and
+    none that only lines beyond the prefix cite."""
+    candidate = record["candidate"]
+    pinned = {r["path"] for r in record["affected"]["qualification"]["restarts"]}
+    counts = {j["path"]: j["lines"] for j in record["journal"]}
+    inside: set[str] = set()
+    beyond: set[str] = set()
+    for log in journal_lines(root)[0]:
+        for line in log.lines:
+            found = line.record or {}
+            cited = found.get("record")
+            if found.get("event") != "superseded" or not isinstance(cited, str):
+                continue
+            parts = PurePosixPath(cited.replace("\\", "/")).parts[-6:]
+            where = "/".join(parts)
+            if _RESTART.fullmatch(where) and parts[1] == f"c{candidate}":
+                (inside if line.line <= counts.get(log.path, 0) else beyond).add(where)
+    problems = [f"the case restart {where} is cited by a superseded line inside the pinned "
+                "prefix and is not pinned" for where in sorted(inside - pinned)]  # fmt: skip
+    problems += [f"the case restart {where} is pinned and cited only by a superseded line "
+                 "beyond the pinned prefix"
+                 for where in sorted(pinned & beyond - inside)]  # fmt: skip
+    return problems
+
+
+def _in_prefix(line: Any, journal: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a cited line (``{path, line}``) lies within the pinned prefix of its log."""
+    if not isinstance(line, Mapping):
+        return False
+    count = {j.get("path"): j.get("lines") for j in journal}.get(line.get("path"))
+    number = line.get("line")
+    return type(number) is int and type(count) is int and 1 <= number <= count
 
 
 def _compare(where: str, name: str, recorded: Sequence[Mapping[str, Any]],

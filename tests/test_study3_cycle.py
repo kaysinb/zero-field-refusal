@@ -10,6 +10,7 @@ worlds, in the formats scripts/qualify.py writes; the published cycle read back 
 the campaign writer's route (``cycle_route``), with the real readers and qualify.py's own journal
 repair."""
 
+import copy
 import hashlib
 import json
 from dataclasses import replace
@@ -389,7 +390,7 @@ def derive(study, root, *, claims, stage="validation", marks=None, closed_arms=(
               "code": {"commit": "c" * 40, "gpu_code_sha256": FIXED},
               "fix_identity": {"commit": "c" * 40, "files": 1, "sha256": FIXED},
               "settings": REGISTERED, "repo": root.parent, "written_at": WRITTEN,
-              "host": "the researcher's machine"}  # fmt: skip
+              "host": "the researcher's machine", "journal": cycle.journal_seen(root)}  # fmt: skip
     return cycle.derive_cycle(root, 1, **{**fields, **kw})
 
 
@@ -424,7 +425,7 @@ def test_the_cycle_record_lists_every_affected_record_by_path_and_sha256(tmp_pat
     (run,) = [r for r in record["affected"]["runs"] if r["run_id"] == mark["run_id"]]
     assert {"path": f"study3/{mark['run_id']}/terminal.json", "absent": True} in run["records"]
     assert record["kept"] == [{"why": "reused_stage", "stage": "search", "runs": 24}]
-    assert record["affected"]["qualification"] == {"records": [], "launchers": []}
+    assert record["affected"]["qualification"] == {"records": [], "launchers": [], "restarts": []}
     assert record["journal"] == cycle.journal_seen(root)
     assert bridge["attempts"] == bridge["held"] == bridge["kept_cases"] == []
     assert (bridge["old_gpu_code"], bridge["fix_gpu_code"]["sha256"]) == ({"sha256": OLD}, FIXED)
@@ -774,7 +775,10 @@ class CycleRoute(Route):
         self.commit("the fix")
         head = git(self.repo, "rev-parse", "HEAD")
         identity = REAL_IDENTITY(head, self.repo)
-        records = self.pre_cycle()
+        journal = cycle.journal_seen(self.root)
+        records = cycle.pre_cycle_records(self.root, 1, journal=journal, without=None,
+                                          theta0=self.runs.theta0, repo=self.repo,
+                                          settings=REGISTERED)  # fmt: skip
         marks = [e.run_id for e in records.endpoints
                  if e.cell.step == "search" and e.state == "technical"]  # fmt: skip
         record, bridge = cycle.derive_cycle(
@@ -783,7 +787,7 @@ class CycleRoute(Route):
             diagnosis=DIAGNOSIS, fix=FIX_TEXT,
             code={"commit": head, "gpu_code_sha256": identity["sha256"]}, fix_identity=identity,
             settings=REGISTERED, repo=self.repo, written_at=self.written_at,
-            host="host")  # fmt: skip
+            host="host", journal=journal)  # fmt: skip
         cycle.publish_cycle(self.root, 1, record, bridge)
 
     def repair(self) -> None:
@@ -908,6 +912,7 @@ def test_a_bridge_set_must_equal_the_records_not_merely_lie_within_it(cycle_rout
     assert cycle.bridge_problems(cycle_route.root, 1, bridge, repo=cycle_route.repo) == []
     for change in ({"launchers": bridge["launchers"][1:]}, {"held": [{"run_id": "x"}]},
                    {"launchers": [*bridge["launchers"], bridge["launchers"][0]]},
+                   {"launchers": bridge["launchers"][::-1]},
                    {"attempts": [{"sha256": "0" * 64}]},
                    {"fix_gpu_code": {"sha256": "0" * 64}},
                    {"old_record": {**bridge["old_record"], "sha256": "0" * 64}}):  # fmt: skip
@@ -950,3 +955,170 @@ def test_a_record_or_a_bridge_alone_names_the_command_that_writes_the_other(cycl
                             chain_old=old)["state"] == "valid"  # fmt: skip
     found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo, chain_old="0" * 64)
     assert any("old" in p for p in found["problems"])
+
+
+def test_every_mark_is_one_of_the_affected_runs(cycle_route):
+    """A mark is a run the cycle reruns: a record whose affected runs leave a mark out is a
+    problem naming it."""
+    cycle_route.write_cycle()
+    mark = cycle_route.mark
+
+    def drop(record):
+        runs = record["affected"]["runs"]
+        runs[:] = [run for run in runs if run["run_id"] != mark]
+
+    cycle_route.edit(drop, rebridge=True)
+    assert any(f"the mark {mark}" in p and "affected" in p for p in cycle_route.cycle_problems())
+
+
+# ------------------------------------------------------------------ restarts, the bridge, refusals
+
+
+def case_restart(case_dir: Path, when: str, launcher: str | None = None) -> Path:
+    """A case restart record as qualify.py restart-case writes it, naming the case's baseline
+    attempt 1, written at ``when`` by its machine's clock; ``launcher``: the run it voids."""
+    path = case_dir / "restart-1.json"
+    path.write_text(json.dumps({
+        "restart": 1, "reason": "the Pod stopped", "restarted_at": when,
+        "attempts": [{"part": "baseline", "attempt": 1, "state": "recorded",
+                      "sha256": sha(case_dir / "baseline-attempt-1.json")}],
+        "launcher": None if launcher is None else {"run_id": launcher}}))  # fmt: skip
+    return path
+
+
+def rederived(root: Path, record: dict) -> set[str]:
+    """The qualification records a reader re-derives for a published cycle: its pinned prefix
+    and restarts, its own bridge read as absent."""
+    entries = cycle._requalified(root, record, run_codes={}, settings=REGISTERED)
+    return {r["sha256"] for r in cycle._qualification(root, entries)["records"]}
+
+
+@pytest.mark.parametrize("skew", ["behind", "ahead"])
+def test_a_cycle_pins_the_case_restarts_it_counted_and_reads_no_clock(tmp_path, skew):
+    """A case restart counts before the cycle exactly when the cycle record pins it (its path
+    and sha256): one written after the cycle, its clock behind the writer's, is not counted; one
+    written before, its clock ahead, is. The bridge's ``superseded_at`` changes nothing, and a
+    pinned restart record that changes is a problem of the record."""
+    study, root = materialized_validation_mark(tmp_path)
+    case = sorted((root / "qualification" / "c1" / "numerical").glob("s*/*"))[0]
+    if skew == "ahead":
+        case_restart(case, "2026-10-28T13:00:00+00:00")  # before the cycle, an hour ahead
+    record, bridge = derive(study, root, claims=ALL_RERUN)  # written at 12:00
+    cycle.publish_cycle(root, 1, record, bridge)
+    restart = case / "restart-1.json"
+    pinned = ([{"path": restart.relative_to(root).as_posix(), "sha256": sha(restart)}]
+              if skew == "ahead" else [])  # fmt: skip
+    assert record["affected"]["qualification"]["restarts"] == pinned
+    if skew == "behind":
+        case_restart(case, "2026-10-28T11:00:00+00:00")  # after the cycle, an hour behind
+    records = {r["sha256"] for r in record["affected"]["qualification"]["records"]}
+    assert rederived(root, record) == records
+    path = root / bridge_name(1)
+    path.write_text(json.dumps({**bridge, "superseded_at": "1999-01-01T00:00:00+00:00"},
+                               indent=1) + "\n")  # fmt: skip
+    assert rederived(root, record) == records
+    if skew == "ahead":
+        restart.write_text(restart.read_text() + " ")
+        assert any("restart-1.json" in p for p in cycle.read_cycle(root, 1)["problems"])
+
+
+def test_the_pinned_restarts_are_those_the_journal_prefix_cites(tmp_path):
+    """Every case restart that a ``superseded`` line inside the pinned prefix cites is pinned,
+    and none that only a line beyond the prefix cites."""
+    study, root = materialized_validation_mark(tmp_path)
+    case = sorted((root / "qualification" / "c1" / "numerical").glob("s*/*"))[0]
+    baseline = json.loads((case / "baseline-attempt-1.json").read_text())
+    run_id = baseline["launcher"]["identity"]["run_id"]
+    restart = case_restart(case, "2026-10-28T11:00:00+00:00", launcher=run_id)
+    log = root / "launch" / f"{LOGS['numerical']}.jsonl"
+    before = cycle.journal_seen(root)
+    (label,) = {json.loads(x)["run"] for x in log.read_text().splitlines()
+                if json.loads(x).get("run_id") == run_id}  # fmt: skip
+    append_line(log, {"time": WRITTEN, "event": "superseded", "run": label, "run_id": run_id,
+                      "experiment": "study3", "config_hash": "0" * 16,
+                      "reason": "the Pod stopped", "record": str(restart)})  # fmt: skip
+    record, _ = derive(study, root, claims=ALL_RERUN)
+    assert [r["path"] for r in record["affected"]["qualification"]["restarts"]] == [
+        restart.relative_to(root).as_posix()]  # fmt: skip
+    assert cycle._restart_problems(root, record) == []
+    unpinned = copy.deepcopy(record)
+    unpinned["affected"]["qualification"]["restarts"] = []
+    assert any("restart-1.json" in p and "not pinned" in p
+               for p in cycle._restart_problems(root, unpinned))  # fmt: skip
+    beyond = {**copy.deepcopy(record), "journal": before}  # its line beyond the prefix
+    assert any("restart-1.json" in p and "beyond" in p
+               for p in cycle._restart_problems(root, beyond))  # fmt: skip
+
+
+def test_the_bridge_equals_its_derivation_field_by_field(tmp_path):
+    """Under a rerun of the qualification the bridge's lists are exactly their derivation:
+    ``attempts`` (interrupted ones included), ``cases_requalified``, ``kept``, ``kept_cases`` and
+    ``launchers`` (every field but the identity, in canonical order)."""
+    study, root = materialized_validation_mark(tmp_path)
+    record, bridge = derive(study, root, claims=ALL_RERUN)
+    cycle.publish_cycle(root, 1, record, bridge)
+    entries = cycle._requalified(root, record, run_codes={}, settings=REGISTERED)
+    runs = cycle._stage_runs(root, record)
+    assert cycle._bridge_against("w", bridge, entries, runs) == []
+    first, *rest = bridge["attempts"]
+    forged = {"case": first["case"], "stage": "numerical", "sha256": "0" * 64}
+    for change in ({"launchers": bridge["launchers"][::-1]}, {"kept": [forged]},
+                   {"kept_cases": [{"case": first["case"], "stage": "numerical", "why": "x"}]},
+                   {"attempts": [{**first, "attempt": 9}, *rest]},
+                   {"cases_requalified": bridge["cases_requalified"][1:]},
+                   {"launchers": [{**bridge["launchers"][0], "config_hash": "x"},
+                                  *bridge["launchers"][1:]]}):  # fmt: skip
+        assert cycle._bridge_against("w", {**bridge, **change}, entries, runs), change
+    reordered = {**bridge, "launchers": bridge["launchers"][::-1]}
+    assert any("canonical order" in p for p in cycle.bridge_problems(root, 1, reordered))
+
+
+def test_a_foreign_supersession_record_refuses_the_cycle_before_anything_is_written(tmp_path):
+    """A supersession record of the candidate that is not this bridge (at the bridge's path with
+    other content, or under any other number): nothing is written, the cycle record included."""
+    study, root = materialized_validation_mark(tmp_path)
+    claims = {"search": reuse(), "qualification": reuse(), "validation": rerun()}
+    record, bridge = derive(study, root, claims=claims)
+    foreign = root / bridge_name(1)
+    foreign.write_text(json.dumps({"candidate": 1, "supersession": 1, "old_record": {"path": "x"}}))
+    with pytest.raises(cycle.CycleRefused, match="supersede-1.json"):
+        cycle.publish_cycle(root, 1, record, bridge)
+    assert not cycle_path(root, 1).exists()
+    foreign.rename(foreign.with_name("supersede-2.json"))
+    with pytest.raises(cycle.CycleRefused, match="supersede-2.json"):
+        cycle.publish_cycle(root, 1, record, bridge)
+    assert not cycle_path(root, 1).exists() and not foreign.exists()
+
+
+def test_the_derivation_takes_the_journal_its_records_were_read_with(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)
+    journal = cycle.journal_seen(root)  # pinned before the records are read
+    append_line(root / "launch" / f"{LOGS['validation']}.jsonl", {"time": WRITTEN, "event": "x"})
+    with pytest.raises(cycle.CycleRefused, match="read the records again"):
+        derive(study, root, claims=ALL_RERUN, journal=journal)
+
+
+def test_a_launcher_record_there_and_unreadable_is_refused_never_marked_absent(tmp_path):
+    """A qualification launcher run's meta.json that is there and cannot be read (a link to
+    nothing) is a refusal, as an affected run's is: never an absence marker."""
+    study, root = materialized_validation_mark(tmp_path)
+    run_id = sorted(e.run_id for e in study.endpoints if e.cell.step == "numerical")[0]
+    meta = root / "study3" / run_id / "meta.json"
+    meta.unlink()
+    meta.symlink_to(tmp_path / "nowhere.json")
+    with pytest.raises(cycle.CycleRefused, match=f"{run_id}/meta.json"):
+        derive(study, root, claims=ALL_RERUN)
+
+
+def test_a_cycle_without_a_mark_is_refused_as_such(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)
+    with pytest.raises(cycle.CycleRefused, match="no mark"):
+        derive(study, root, claims=ALL_RERUN, marks=[])
+
+
+def test_a_closed_arm_rests_only_on_a_closure_whose_line_lies_in_the_prefix():
+    journal = [{"path": "launch/a.jsonl", "lines": 2, "sha256": "0" * 64}]
+    assert cycle._in_prefix({"path": "launch/a.jsonl", "line": 2}, journal)
+    assert not cycle._in_prefix({"path": "launch/a.jsonl", "line": 3}, journal)
+    assert not cycle._in_prefix({"path": "launch/b.jsonl", "line": 1}, journal)
+    assert not cycle._in_prefix(None, journal)

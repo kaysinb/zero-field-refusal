@@ -154,9 +154,11 @@ engineering stage, and certify nothing the fix changed; the re-qualification cer
   read are named here instead, never superseded, and the cycle is refused for them. No run is
   held.
 The view before the cycle is read with ``without`` (the cycle's own bridge, read as absent: it
-voids nothing and names nothing void, and its ``superseded_at`` dates the cycle, so that a case
-restart after it changes nothing, as ``_restarted_before`` reads a restart's time) and
-``prefix`` (each launch log up to the line count the cycle pinned).
+voids nothing and names nothing void), ``prefix`` (each launch log up to the line count the cycle
+pinned) and ``restarts`` (the case restart records the cycle pinned, by path: only they count as
+written before it, so that a case restart after it changes nothing; no time stamp is compared,
+the clocks of the machines need not agree). The writer counts every case restart record there
+when it writes, and pins those (``restarts`` of the result).
 
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
@@ -1039,6 +1041,7 @@ class CycleEntries(NamedTuple):
     kept_cases: list[dict]
     launchers: list[dict]
     unsettled: list[str]
+    restarts: list[str] = []  # the case restart records counted as before the cycle
 
 
 def cycle_entries(
@@ -1051,6 +1054,7 @@ def cycle_entries(
     run_codes: Mapping[str, str | None],
     without: str | None = None,
     prefix: Mapping[str, int] | None = None,
+    restarts: Collection[str] | None = None,
 ) -> CycleEntries:
     """The entries an engineering cycle's bridge lists for the candidate's numerical
     qualification (module docstring, "The cycle's qualification entries"): ``qualify.py
@@ -1058,9 +1062,12 @@ def cycle_entries(
     there too). ``old_code``: the GPU code in force before the cycle; ``fix_code``: the fix's;
     ``settings``: configs/experiments/qualification.yaml as loaded; ``run_codes``: each run's GPU
     code by run id (``study3_cycle.run_gpu_codes``; a run it does not name has none). The view
-    before the cycle: ``without``, a supersession record (its path under RUNS_DIR) read as absent,
-    and ``prefix``, each launch log read up to its pinned number of lines
-    (``study3_records.prefixed``)."""
+    before the cycle: ``without``, a supersession record (its path under RUNS_DIR) read as absent;
+    ``prefix``, each launch log read up to its pinned number of lines
+    (``study3_records.prefixed``); and ``restarts``, the case restart records the cycle pinned
+    (their paths under RUNS_DIR): only those count, as written before it, whatever their time
+    stamps say. None (the writer's view): every case restart record there now counts; the ones
+    counted are ``restarts`` of the result, for the writer to pin."""
     root = Path(runs_root)
     scope = Scope.of(settings)
     journal = _journal(root, [], prefix)
@@ -1073,9 +1080,13 @@ def cycle_entries(
     supersessions = [_object(path, root) or {} for path in sorted(folder.glob("supersede-*.json"))
                      if VOIDING_FILE.fullmatch(path.name)
                      and path.relative_to(root).as_posix() != without]  # fmt: skip
-    # the time of the cycle, when its own bridge is read as absent: a case restart after it
-    # (which names every attempt of its case) changes nothing, as ``_restarted_before`` reads it
-    at = (_object(root / without, root) or {}) if without is not None else {}
+    # the case restarts before the cycle: those it pinned (never dated by a clock), or, for the
+    # writer, every one there now
+    there = sorted(path.relative_to(root).as_posix()
+                   for path in folder.glob("*/s*/*/restart-*.json")
+                   if RESTART_FILE.fullmatch(path.name))  # fmt: skip
+    pinned = None if restarts is None else set(restarts)
+    counted = [where for where in there if pinned is None or where in pinned]
     attempts, requalified, kept, kept_cases = [], [], [], []
     run_ids: set[str] = set()
     kept_runs: set[str] = set()
@@ -1083,7 +1094,7 @@ def cycle_entries(
     entries_of: dict[str, list[dict[str, Any]]] = {}
     for case_dir in sorted({f.parent for f in (folder / STAGE).glob("s*/*/*-attempt-*")}):
         name = f"{case_dir.parent.name}/{case_dir.name}"
-        before, listed = cycles._restarted_before(case_dir, at)  # the restarts before it
+        before, listed = _counted_restarts(case_dir, root, counted)  # the restarts before it
         named = before | {e["sha256"] for record in supersessions
                           for e in record.get("attempts") or []
                           if isinstance(e, Mapping) and isinstance(e.get("sha256"), str)
@@ -1136,7 +1147,7 @@ def cycle_entries(
             starts.setdefault(run_id, (campaign, record))
         elif record.get("event") == "end" and isinstance(run_id, str):
             ends.setdefault(run_id, []).append(record.get("outcome"))
-    voided = _voided(journal, supersessions, folder, without)
+    voided = _voided(journal, supersessions, folder, without, root, counted)
     unsettled: set[str] = set()
     labels: dict[str, set[str]] = {}
     for name in sorted(set(issued) | set(entries_of)):
@@ -1168,7 +1179,8 @@ def cycle_entries(
             entry = {"case": name, "stage": STAGE}
             if run_id in ids and entry not in requalified:
                 requalified.append(entry)
-    return CycleEntries(attempts, requalified, kept, kept_cases, launchers, sorted(unsettled))
+    unsettled_ = sorted(unsettled)
+    return CycleEntries(attempts, requalified, kept, kept_cases, launchers, unsettled_, counted)
 
 
 def _run_dir(root: Path, start: tuple[str, Mapping[str, Any]] | None) -> Path | None:
@@ -1180,12 +1192,33 @@ def _run_dir(root: Path, start: tuple[str, Mapping[str, Any]] | None) -> Path | 
     return root / experiment / run_id if plain_name(run_id) and plain_name(experiment) else None
 
 
+def _counted_restarts(
+    folder: Path, root: Path, counted: Collection[str]
+) -> tuple[set[str], set[tuple[Any, Any]]]:
+    """The attempts the case's restart records counted before the cycle name (``counted``:
+    their paths under RUNS_DIR): their records' sha256 and their (part, attempt). An unreadable
+    restart record names nothing (its reader names it)."""
+    named: set[str] = set()
+    listed: set[tuple[Any, Any]] = set()
+    for path in sorted(folder.glob("restart-*.json")):
+        if path.relative_to(root).as_posix() not in counted:
+            continue
+        entries = (_object(path, root) or {}).get("attempts")
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, Mapping):
+                listed.add((entry.get("part"), entry.get("attempt")))
+                if isinstance(entry.get("sha256"), str):
+                    named.add(entry["sha256"])
+    return named, listed
+
+
 def _voided(journal: Sequence[tuple[str, Mapping[str, Any]]],
-            supersessions: Sequence[Mapping[str, Any]], folder: Path,
-            without: str | None) -> dict[str, str]:  # fmt: skip
+            supersessions: Sequence[Mapping[str, Any]], folder: Path, without: str | None,
+            root: Path, counted: Collection[str]) -> dict[str, str]:  # fmt: skip
     """The launcher runs that no longer count before the cycle, ``superseded`` or ``held``: the
-    journal's lines that cite no record ``without`` names, the case restarts' launcher runs and
-    the other supersession records' ``launchers`` and ``held`` (a held run stays held)."""
+    journal's lines that cite no record ``without`` names, the launcher runs of the case restarts
+    counted before the cycle (``counted``: their paths under RUNS_DIR) and the other supersession
+    records' ``launchers`` and ``held`` (a held run stays held)."""
     out: dict[str, str] = {}
 
     def add(run_id: Any, state: str) -> None:
@@ -1199,7 +1232,9 @@ def _voided(journal: Sequence[tuple[str, Mapping[str, Any]]],
         if record.get("event") in ("superseded", "held") and (without is None or tail != without):
             add(record.get("run_id"), record["event"])
     for path in sorted(folder.glob("*/s*/*/restart-*.json")):
-        restart = _object(path, folder.parent.parent) if VOIDING_FILE.fullmatch(path.name) else None
+        if path.relative_to(root).as_posix() not in counted:
+            continue
+        restart = _object(path, root)
         launcher = (restart or {}).get("launcher")
         add(launcher.get("run_id") if isinstance(launcher, Mapping) else None, "superseded")
     for record in supersessions:
