@@ -105,8 +105,9 @@ stands for it. A start of a campaign whose header names study 3, the candidate a
 config (its run's ``config.yaml``, or its start's command loaded again, bound by the start's
 config hash as ``study3_records`` binds a start) gives the case's arm, rate and seed. The starts
 of one label and experiment are the attempts of one launcher run whatever their config hash (a
-fix may change a hashed config key: ``qualify.py``'s ``label_run_ids``), in attempt order: the
-attempt number, then the start's time stamp, never the journal file that holds it
+fix may change a hashed config key: ``launch.label_starts`` with ``every_config_hash``, as
+``qualify.py``'s ``supersede`` reads them), in attempt order: the attempt number, then the start's
+time stamp, never the journal file that holds it
 (``launch.attempt_key``). Every start is bound by its own config hash, one refused (its
 ``config.yaml`` of another config hash) is a problem whatever the others, and starts of one label
 that bind different cases are a problem. Every case record (a part record, an interrupted rest's
@@ -154,9 +155,9 @@ checked by ``study3_records``' one sealed-path rule (``under_sealed``) before it
 or hashed: a run's files with the run's folder as the base (``_sealed_records``: a run whose
 folder or record files resolve under a sealed folder is read not at all, a problem, and no
 launcher run is located there); the launch logs and the qualification's records (part attempts,
-trajectory results, restart, supersession and release records, the verdict cache) with RUNS_DIR
-as the base. One that resolves under a sealed folder is never opened: it is a problem named by its
-path. This checkout's
+trajectory results, restart, supersession and release records, the kept exports' manifests and
+their ``kept-check`` receipts, the verdict cache) with RUNS_DIR as the base. One that resolves under
+a sealed folder is never opened: it is a problem named by its path. This checkout's
 ``configs/`` are read to compose a cell's config. The decision records' folder in the
 experiment's folder (``study3_records.DECISIONS``) is no run and is never walked. The GPU code
 identity is not computed here: it is an argument. No GPU path is imported here;
@@ -223,6 +224,13 @@ RESTART_FILE = re.compile(r"restart-\d+\.json")  # a case restart record's name 
 PART_FILE = re.compile(r"(baseline|rest|control)-attempt-(\d+)\.json")  # a part attempt record
 RELEASED = "checkpoints-removed"  # ``finish``'s record of the checkpoints it removed
 RELEASE_RECORD = "release record"  # what a release record is, among the records read
+# A case's kept exports and their checks (qualify.py's ``finish --kept`` and ``kept-check``):
+# their file names, as the script writes them, and what each is among the records read
+KEPT_MANIFEST = re.compile(r"kept-checkpoints-(\d+)\.json")
+KEPT_RECEIPT = re.compile(r"kept-check-(\d+)\.json")
+KEPT_RECORD = "kept export"
+KEPT_CHECK_RECORD = "kept-check receipt"
+UNCOUNTED = (RELEASE_RECORD, KEPT_RECORD, KEPT_CHECK_RECORD)  # read, and no input: no state
 IDENTITY_FILES = ("config.yaml", "metrics.jsonl", "monitor.jsonl", "terminal.json")
 SETTLED = ("completed", "diverged")  # a launcher run's settled statuses (``located``)
 
@@ -523,7 +531,7 @@ def _issued(
     runs: dict[tuple[str, str], _Issued] = {}
     mine = [(campaign, record) for campaign, record in journal
             if _issues_case(record, candidate, steps)]  # fmt: skip
-    # attempt order; a stable sort, so equal keys keep the journal's order, as ``label_run_ids``
+    # attempt order; a stable sort, so equal keys keep the journal's order, as ``label_starts``
     for campaign, record in sorted(mine, key=lambda item: _attempt_key(item[1])):
         run_id, label = record.get("run_id"), record.get("run")
         experiment, chash = record.get("experiment"), record.get("config_hash")
@@ -1241,6 +1249,7 @@ class _Reading:
                       for part in PARTS},
             "verdict": verdict, "superseded": mine, "control": control,
             "control_attempt": counts["control"], "released": self._released(folder),
+            "kept": self._kept(folder), "kept_checks": self._kept_checks(folder),
         })  # fmt: skip
 
     def _case_verdict(self, name: str, baseline: Any, rest: Any, superseded: Any = None) -> Any:
@@ -1276,7 +1285,52 @@ class _Reading:
             record = self._flagged(path, RELEASE_RECORD) or {}
             out.append({"path": str(path), "removed": record.get("removed"),
                         "release": record.get("release"),
-                        "technical": record.get("technical")})  # fmt: skip
+                        "technical": record.get("technical"),
+                        "failed_control": record.get("failed_control")})  # fmt: skip
+        return out
+
+    def _numbered(self, folder: Path, pattern: re.Pattern[str]) -> list[tuple[int, Path]]:
+        """The case folder's files ``pattern`` names, in the order of their number."""
+        return sorted((int(m[1]), f) for f in folder.iterdir() if (m := pattern.fullmatch(f.name)))
+
+    def _kept(self, folder: Path) -> list[dict[str, Any]]:
+        """The case's kept exports, by their manifests (``kept-checkpoints-<n>.json``), in number
+        order: each with its sha256, whether it is verified, its technical reasons, the failed
+        control it keeps (a scientific case whose same-path control failed), the number of its
+        files and the checkpoints it names lost. None decides a state."""
+        out = []
+        for number, path in self._numbered(folder, KEPT_MANIFEST):
+            manifest = self._flagged(path, KEPT_RECORD) or {}
+            files = manifest.get("files")
+            lost = manifest.get("lost")
+            out.append({
+                "path": str(path),
+                "sha256": _file_sha256(path, self.root),  # the sealed-path rule's, too
+                "number": number, "verified": manifest.get("verified"),
+                "technical_reasons": manifest.get("technical_reasons"),
+                "failed_control": manifest.get("failed_control"),
+                "files": len(files) if isinstance(files, list) else None,
+                "lost": [e.get("path") for e in lost if isinstance(e, Mapping)]
+                if isinstance(lost, list) else None,
+            })  # fmt: skip
+        return out
+
+    def _kept_checks(self, folder: Path) -> list[dict[str, Any]]:
+        """The case's ``kept-check`` receipts (``kept-check-<n>.json``), in number order: each with
+        its sha256, its exit, whether the upload is pending, and the sha256 of the manifest it
+        checked. None decides a state."""
+        out = []
+        for number, path in self._numbered(folder, KEPT_RECEIPT):
+            receipt = self._flagged(path, KEPT_CHECK_RECORD) or {}
+            checked = receipt.get("manifest")
+            out.append({
+                "path": str(path),
+                "sha256": _file_sha256(path, self.root),  # the sealed-path rule's, too
+                "number": number, "exit": receipt.get("exit"),
+                "pending_upload": receipt.get("pending-upload"),
+                "manifest_sha256": checked.get("sha256") if isinstance(checked, Mapping)
+                else None,
+            })  # fmt: skip
         return out
 
 
@@ -1417,18 +1471,23 @@ def read_qualification(
     (``rates``, keyed ``<optimizer>-<rate:g>``) its ``arm``, optimizer, ``lr``, ``state`` and
     ``verdict`` (``rate_verdict``'s), its ``cases`` (each folder's ``parts`` with every attempt
     and the one that ``counts``, its case ``verdict`` and its ``superseded`` records), its
-    ``control`` (an FA rate's: the folder, the attempt and the verdict the rate read), its issued
+    ``control`` (an FA rate's: the folder, the attempt and the verdict the rate read), each case's
+    ``released`` records (``finish``'s, with the failed control they name), its ``kept`` exports
+    (each manifest's path, sha256, number, ``verified``, ``technical_reasons``,
+    ``failed_control``, its number of ``files`` and the checkpoints it names ``lost``) and their
+    ``kept_checks`` (each receipt's path, sha256, number, ``exit``, ``pending_upload`` and the
+    ``manifest_sha256`` it checked), its issued
     ``runs`` with the one ``located``, the ``superseded`` and the ``held`` ones, and its
     ``launchers``; the rates' ``states``; every case verdict (``cases``), the ``superseded``
     records, the ``restarts`` and ``supersessions``, the ``held`` runs, the cases of no rate
     (``unassigned``); the ``cache`` and the rates it does not name (``uncached``); the
     ``inputs``, the record files of the candidate's qualification the reading took as inputs,
     sorted (the part attempt records, the interrupted rests' trajectory results, the case
-    restart and supersession records; not the cache, nor ``finish``'s release records, which
-    decide no state); and the ``problems``, sorted. ``expected_code`` is the GPU code's sha256
-    the qualification must carry (the fixation record's); ``settings``
-    configs/experiments/qualification.yaml as loaded. ``QualificationError`` (a ``ValueError``)
-    for settings that are not the qualification's or a candidate outside them."""
+    restart and supersession records; not the cache, nor ``finish``'s release records, the kept
+    exports or their receipts, which decide no state); and the ``problems``, sorted.
+    ``expected_code`` is the GPU code's sha256 the qualification must carry (the fixation record's);
+    ``settings`` configs/experiments/qualification.yaml as loaded. ``QualificationError`` (a
+    ``ValueError``) for settings that are not the qualification's or a candidate outside them."""
     if not (isinstance(expected_code, str) and expected_code):
         raise ValueError(f"expected_code is the GPU code's sha256, not {expected_code!r}")
     scope = Scope.of(settings)
@@ -1493,7 +1552,7 @@ def read_qualification(
         "unassigned": [_case_name(v) for v in [*reading.cases, *reading.old_controls]
                        if id(v) not in assigned],
         "cache": cache, "uncached": uncached,
-        "inputs": sorted(str(p) for p, what in reading.inputs.items() if what != RELEASE_RECORD),
+        "inputs": sorted(str(p) for p, what in reading.inputs.items() if what not in UNCOUNTED),
         "problems": sorted(set(problems)),
     }  # fmt: skip
 

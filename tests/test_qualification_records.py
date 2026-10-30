@@ -988,8 +988,9 @@ def test_a_resolved_stop_counts_beside_a_record_that_did_not_classify_it(
 def test_a_runs_attempts_are_read_in_attempt_order_across_journals(qualify, tmp_path) -> None:
     """FA's 10200 restarted after the Pod stopped during its rest; the recovery round's attempt
     2 is logged under a campaign name that sorts before the first's. The issued run's attempts
-    are read by their number, as ``label_run_ids`` and ``journal_run_ids`` read them, whatever
-    journal file holds them, and the second is located."""
+    are read by their number, as ``launch.label_starts`` (with every config hash) and
+    ``journal_run_ids`` read them, whatever journal file holds them, and the second is
+    located."""
     world = World(tmp_path)
     world.full(skip=(FA,))
     identity = world.launch(FA)
@@ -1002,7 +1003,8 @@ def test_a_runs_attempts_are_read_in_attempt_order_across_journals(qualify, tmp_
     reading = world.read()
     assert_as_the_verdict(reading, cached)
     run = world.run(FA)
-    order = qualify.label_run_ids(run, world.root)
+    order = list(dict.fromkeys(r["run_id"] for r in launcher.label_starts(
+        run, launcher.launch_records(world.root), every_config_hash=True)))  # fmt: skip
     assert order == qualify.journal_run_ids(run, world.root) == [
         "r10200-adam_frozen-a1", "r10200-adam_frozen-a2"]  # fmt: skip
     (issued,) = [r for r in reading["rates"][FA_KEY]["runs"] if r["seed"] == FA.seed]
@@ -1076,7 +1078,9 @@ def test_a_label_is_one_launcher_run_whatever_its_config_hash(qualify, monkeypat
     runs = {r["seed"]: r for r in reading["rates"][ADAMW_KEY]["runs"]}
     now = {seed: world.run(qcase(seed, "adamw", ADAMW_LR)) for seed in (10200, 10201)}
     for seed, run in now.items():
-        assert runs[seed]["run_ids"] == qualify.label_run_ids(run, world.root)
+        assert runs[seed]["run_ids"] == list(dict.fromkeys(
+            r["run_id"] for r in launcher.label_starts(
+                run, launcher.launch_records(world.root), every_config_hash=True)))  # fmt: skip
         assert runs[seed]["config_hash"] == run.config_hash
         located = qualify.located(run, world.root)
         assert runs[seed]["located"] == (None if located is None else located.name)
@@ -1153,8 +1157,9 @@ def test_a_cycle_record_naming_a_run_of_no_qualification_step_is_rejected(
     qualify, monkeypatch, tmp_path, key
 ) -> None:
     """A cycle record names only its candidate's qualification runs (``supersede`` lists the
-    ``label_run_ids`` of its campaign's cases): one whose ``launchers`` or ``held`` adds a
-    validation run of candidate 1 is rejected whole, a named problem, and the run still counts."""
+    runs of its campaign's cases' labels, ``launch.label_starts`` with every config hash): one
+    whose ``launchers`` or ``held`` adds a validation run of candidate 1 is rejected whole, a
+    named problem, and the run still counts."""
     world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
     world.log({"event": "start", "run": "A-1.45e-05/s10300", "attempt": 1,
                "run_id": "val-run-a1", "experiment": "study3", "config_hash": "v" * 12,
@@ -1458,6 +1463,91 @@ def test_a_record_the_verdicts_cannot_read_is_a_problem(qualify, tmp_path) -> No
     reading = world.read()
     prefix = f"{world.folder(ADAMW)}: the verdicts cannot read its records"
     assert [p for p in reading["problems"] if p.startswith(prefix)]
+
+
+def test_the_reading_lists_a_failed_controls_export_and_its_check(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """FA's first seed holds a scientific failure in its rest and its same-path control is
+    recorded technical: the rate fails, and lists the failed control. ``finish --kept`` exports
+    the failed control's evidence (exit 14) and ``kept-check`` finds no inventory (13, the upload
+    pending). The reading lists the case's export (its manifest: number, verification, no
+    technical reasons, the failed control, its files and the checkpoints lost) and the check's
+    receipt (its exit, the pending upload, the manifest it checked); neither is an input."""
+    world = World(tmp_path)
+    world.full(changes={FA: beyond("rest", "baseline~reference", 0.5)})
+    identity = q.launcher_identity(world.root / "study3" / "r10200-adam_frozen-a1")
+    world.publish(FA, "control", control_record(0.1, case=FA, identity=identity))
+    monkeypatch.setattr(qualify, "same_filesystem", lambda a, b: False)
+    (tmp_path / "volume").mkdir()
+    with pytest.raises(SystemExit) as stop:
+        world.command(qualify, "finish", "--case", FA.name, "--kept", str(tmp_path / "volume"))
+    assert stop.value.code == 14
+    with pytest.raises(SystemExit) as stop:
+        world.command(qualify, "kept-check", "--case", FA.name, "--inventory",
+                      str(tmp_path / "no-inventory.tsv"),
+                      "--remote", "gs://bucket/zfr/kept-checkpoints")  # fmt: skip
+    assert stop.value.code == 13
+    cached = world.verdict(qualify)
+    reading = world.read()
+    assert_as_the_verdict(reading, cached)
+    assert reading["states"][FA_KEY] == "failing"
+    control = reading["rates"][FA_KEY]["control"]["verdict"]
+    assert (control["state"], control["kind"]) == ("not_qualified", "technical")
+    assert control["reasons"] == ["K_scoring 0.1 at step 25 beyond 0.06"]
+    (case,) = [c for c in reading["rates"][FA_KEY]["cases"] if c["seed"] == FA.seed]
+    manifest = world.folder(FA) / "kept-checkpoints-1.json"
+    receipt = world.folder(FA) / "kept-check-1.json"
+    lost = [e["path"] for e in json.loads(manifest.read_text())["lost"]]
+    assert case["kept"] == [{
+        "path": str(manifest), "sha256": file_sha256(manifest), "number": 1, "verified": True,
+        "technical_reasons": [],
+        "failed_control": {"reasons": ["control: K_scoring 0.1 at step 25 beyond 0.06"],
+                           "scientific": ["rest attempt 1"]},
+        "files": 0, "lost": lost}]  # fmt: skip
+    assert case["kept_checks"] == [{
+        "path": str(receipt), "sha256": file_sha256(receipt), "number": 1, "exit": 13,
+        "pending_upload": True, "manifest_sha256": file_sha256(manifest)}]  # fmt: skip
+    assert str(manifest) not in reading["inputs"] and str(receipt) not in reading["inputs"]
+
+
+def test_a_kept_export_or_receipt_linked_into_a_sealed_folder_is_never_opened(
+    qualify, monkeypatch, tmp_path
+) -> None:
+    """A case's kept-export manifest and ``kept-check`` receipt are read by the one sealed-path
+    rule: linked into a run's ``responses/`` folder, neither is opened or hashed, each is a named
+    problem, and the reading lists them without their contents."""
+    world = World(tmp_path)
+    world.full()
+    world.verdict(qualify)
+    responses = world.root / "study3" / "r10200-adam_frozen-a1" / "responses"
+    responses.mkdir(exist_ok=True)
+    names = {"kept-checkpoints-1.json": "kept export", "kept-check-1.json": "kept-check receipt"}
+    for name in names:
+        (responses / name).write_text(json.dumps({"text": SENTINEL}))
+        (world.folder(FA) / name).symlink_to(responses / name)
+
+    def guard(original):
+        def wrapped(path, *args, **kwargs):
+            if "responses" in Path(path).resolve().parts:
+                raise AssertionError(f"opened {path}")
+            return original(path, *args, **kwargs)
+
+        return wrapped
+
+    for owner, name in ((builtins, "open"), (io, "open"), (pathlib.Path, "open"),
+                        (pathlib.Path, "read_text"), (pathlib.Path, "read_bytes")):  # fmt: skip
+        monkeypatch.setattr(owner, name, guard(getattr(owner, name)))
+    reading = world.read()
+    monkeypatch.undo()
+    (case,) = [c for c in reading["rates"][FA_KEY]["cases"] if c["seed"] == FA.seed]
+    assert [(k["number"], k["sha256"], k["verified"]) for k in case["kept"]] == [(1, None, None)]
+    assert [(k["number"], k["sha256"], k["exit"]) for k in case["kept_checks"]] == [
+        (1, None, None)]  # fmt: skip
+    for name, what in names.items():
+        assert any(p.startswith(f"{world.folder(FA) / name}: a {what} that ")
+                   for p in reading["problems"]), (name, reading["problems"])  # fmt: skip
+    assert SENTINEL not in json.dumps(reading, default=str)
 
 
 def test_the_issued_runs_are_the_candidates_qualification_starts(tmp_path) -> None:

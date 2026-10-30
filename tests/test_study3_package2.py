@@ -2,7 +2,7 @@
 ``analysis/qualification_records.py`` and ``analysis/campaign_prep.py``, and the scripts
 ``scripts/study3_campaigns.py`` and ``scripts/study3_summary.py``): its boundaries.
 
-- No GPU path has changed since the GPU code study 3 qualifies, as of package 1c
+- No GPU path has changed since the GPU code study 3 qualifies, as of package 1d
   (``QUALIFIED_GPU_CODE``, ``code_identity.reuse_check``).
 - No module of the package or script imports a GPU module directly or loads a script (read as
   code).
@@ -103,11 +103,14 @@ SCRIPTS = (
 SUMMARY = SCRIPTS[1]
 LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
                  "zero_field_refusal.run_judging")  # fmt: skip
-# The GPU code study 3 qualifies, as of package 1c: its last commit that changed a GPU path, the
+# The GPU code study 3 qualifies, as of package 1d: its last commit that changed a GPU path, the
 # launcher's further recovery rounds, the driver's control-only path, the export of a technical
 # case's checkpoints, restart-case's refusals of a control-alone state, of departing numerics and
-# of a binding refusal, and an established technical case's early export
-QUALIFIED_GPU_CODE = "8418510"
+# of a binding refusal, an established technical case's early export, a scientific case whose
+# same-path control failed (it counts as scientific, its evidence kept while the driver goes on),
+# control-only's quiet answer, a present checkpoint hashed once, the launch journal read once per
+# engineering cycle and the record that names an interrupted attempt
+QUALIFIED_GPU_CODE = "14c131f"
 REAL_IDENTITY = code_identity.gpu_code_identity
 REAL_READING = qualification_records.read_qualification  # the route replaces it
 # The route: A's lower rate kept by the search on these offsets in ln K, then repaired; N = 99
@@ -671,7 +674,7 @@ def test_a_sealed_launch_log_is_named_in_the_decision_records(tmp_path, monkeypa
 
 
 def test_the_package_changes_no_gpu_path(monkeypatch) -> None:
-    """No GPU path has changed since the GPU code study 3 qualifies, as of package 1c
+    """No GPU path has changed since the GPU code study 3 qualifies, as of package 1d
     (``QUALIFIED_GPU_CODE``): the qualification made under that GPU code holds at HEAD
     (``code_identity.reuse_check``)."""
     try:
