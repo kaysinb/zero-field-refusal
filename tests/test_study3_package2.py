@@ -869,9 +869,6 @@ class Route(CampaignWorld):
         monkeypatch.setattr("zero_field_refusal.launch.load_run_config", run_config)
         self.summary = script_module(SUMMARY, "study3_summary")
         monkeypatch.setattr(self.summary, "REPO", self.repo)
-        # the validation fixation's gate open here; it goes once the route after the fixation
-        # and its replay are in place
-        monkeypatch.setattr(self.summary, "POST_FIXATION_ROUTE", True)
         self.inputs = base / "inputs"
         self.inputs.mkdir()
         for theta0 in (self.runs.theta0, self.root / THETA0_RUN):  # θ₀'s run has them too

@@ -699,9 +699,6 @@ def checkout(tmp_path, monkeypatch, capsys) -> tuple[VersionsStudy, Summary]:
     run from that checkout."""
     study = VersionsStudy(tmp_path, monkeypatch)
     summary = Summary(study, monkeypatch, capsys)
-    # the validation fixation's gate open here; it goes once the route after the fixation and its
-    # replay are in place
-    monkeypatch.setattr(summary.script, "POST_FIXATION_ROUTE", True)
     return study, summary
 
 
@@ -912,20 +909,17 @@ def test_the_fixation_records_are_written_at_their_paths_once(checkout, monkeypa
     assert attempts == []
 
 
-def test_the_validation_fixation_waits_for_the_post_fixation_route(checkout) -> None:
-    """Until the route after the validation fixation (its successor records and the
-    confirmation boundary) and its replay are in place, no validation fixation is written, and so
-    no confirmation supplement either."""
+def test_the_validation_fixation_is_written_with_the_route_after_it_in_place(checkout) -> None:
+    """The route after the validation fixation (its successor records and the confirmation
+    boundary) is in place: the validation fixation is written as its builder builds it, with no
+    gate before it."""
     study, summary = checkout
     study.ready(real=True)
-    summary.monkeypatch.setattr(summary.script, "POST_FIXATION_ROUTE", False)
+    assert not hasattr(summary.script, "POST_FIXATION_ROUTE")
     code, _, err = summary.run(*fixation_argv(study, "validation", "--theta0",
                                               study.runs.theta0))  # fmt: skip
-    assert code != 0 and "route after the validation fixation" in err
-    assert not (study.repo / sv.fixation_name("validation", 1)).exists()
-    study.n(75)
-    refused(summary.run(*fixation_argv(study, "confirmation", *SEED_ARGS)), "fixation-validation")
-    assert not (study.repo / sv.fixation_name("confirmation", 1)).exists()
+    assert code == 0, err
+    assert (study.repo / sv.fixation_name("validation", 1)).is_file()
 
 
 def test_the_fixation_command_refuses_what_its_builders_refuse(checkout) -> None:
