@@ -83,6 +83,19 @@ it is run again, from the same checkout, before every resumption of the file and
 round of one of its runs. Campaign files belong outside the checkout (under $RUNS_DIR/campaigns/,
 say): the versions record holds only for a clean checkout.
 
+*A label an engineering cycle reissues* ("Failure routes": reruns of the affected runs; the
+launcher's recovery rounds, as ``qualify.py``'s re-qualification takes them). When the state lists
+a valid cycle of the candidate outside the qualification (``progress``' ``cycle``), each launcher
+cell of a search or validation file whose label has attempts in the launch journal and none left
+under the cell's config hash as written (``cell_hash``, at ``--max-attempts 1``: a superseded
+attempt is a used one) gets its own recovery round (``reissue_commands``), printed after the check
+(the validation's) and before the file's launch, and in the file's comments: ``python
+scripts/launch.py FILE --only LABEL --max-attempts 1 --recovery "engineering cycle c<N>"
+--incident-time <the cycle record's written_at> --cause "engineering cycle c<N>, fix <its
+commit>" --evidence <the bridge>``. The file's launch then skips the labels those rounds ran. A
+label with attempts left, or none in the journal (a new config hash is a new run: its own
+attempts), takes the plain launch.
+
 **The confirmation** is written into --out DIR: one campaign file per block, in seed order, and
 the driver ``run.sh``. Before each block, the driver checks that the block's file is the one
 written (its sha256), then runs the between-block guard, ``python scripts/study3_summary.py guard
@@ -90,7 +103,9 @@ written (its sha256), then runs the between-block guard, ``python scripts/study3
 block's header names; with --theta0 given to the writer, every guard call passes the same
 ``--theta0``, so that the guard reads the θ₀ the writer read), and stops at its first non-zero
 exit; otherwise it runs ``python
-scripts/launch.py FILE --max-attempts 1``, stopping when the launcher fails. It never runs two
+scripts/launch.py FILE --max-attempts 1``, stopping when the launcher fails. A block with a label
+an engineering cycle reissues (above) runs that label's recovery round after its guard, in place
+of the label's plain launch, and then the block's launch. It never runs two
 blocks at once. Its blocks: the step's (the next block, or the cells a started block
 still lacks: those are completed first, alone); with --blocks FIRST LAST (seeds) or --seeds, the
 step's next block and those after it in seed order up to the cap N + max(10, ⌈0.12·N⌉), each
@@ -120,6 +135,7 @@ import re
 import shlex
 import sys
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -136,7 +152,7 @@ from zero_field_refusal.analysis.study3_decisions import (  # its one sealed-pat
     read_decision,
     start_lines,
 )
-from zero_field_refusal.analysis.study3_progress import TERMINAL, progress
+from zero_field_refusal.analysis.study3_progress import TERMINAL, THETA0_RUN, progress
 from zero_field_refusal.analysis.study3_records import (
     ARMS,
     BATCH,
@@ -146,13 +162,16 @@ from zero_field_refusal.analysis.study3_records import (
     SEEDS,
     STEP_ROLES,
     UPDATES,
+    EndpointReader,
     read_holds,
     sealed_why,
     step_key,
 )
 from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import versions_name, versions_problems
+from zero_field_refusal.config import config_hash
 from zero_field_refusal.paths import REPO_ROOT
+from zero_field_refusal.protocol import load_run_config
 from zero_field_refusal.tracking import git_state
 
 REPO = REPO_ROOT  # the checkout: its versions records, the decision records' repo evidence
@@ -454,6 +473,44 @@ def run_command(kind: str, candidate: int, out: Path) -> str:
             f"{shlex.quote(str(driver))} --kept {KEPT}")  # fmt: skip
 
 
+def cell_hash(config: str, overrides: Sequence[str], seed: int) -> str:
+    """A launcher cell's config hash at ``seed``, as the launcher computes it for the cell's run
+    (``launch.load_campaign``: the cell's config with its overrides, then ``seed=N``)."""
+    return config_hash(load_run_config(config, [*overrides, f"seed={seed}"]))
+
+
+def reissue_commands(reader: EndpointReader, cells: Sequence[Mapping[str, Any]], *,
+                     campaign: Path, cycle: Mapping[str, Any]) -> list[str]:  # fmt: skip
+    """The recovery rounds of the labels a candidate's engineering cycle reissues (module
+    docstring, "Running"): for each launcher cell of the file ``campaign`` whose label has
+    attempts in the launch journal and none left under the cell's config hash as written
+    (``cell_hash``; ``EndpointReader.attempts_left`` at ``--max-attempts 1``), the command of
+    its own recovery round, the cycle (``progress``' ``cycle`` entry of the candidate) as its
+    documented incident: ``--only`` the label at one attempt, the reason ``engineering cycle
+    c<N>``, the cycle record's ``written_at`` as the incident's time, the fix's commit in the
+    cause and the bridge as the evidence. A label with attempts left, or with none in the
+    journal (a new config hash is a new run), takes the plain launch."""
+    candidate = cycle.get("candidate")
+    commit = (cycle.get("code") or {}).get("commit")
+    out = []
+    for cell in cells:
+        for seed in cell["seeds"]:
+            label = f"{cell['name']}/s{seed}"
+            if reader.latest_start(label) is None:
+                continue
+            if reader.attempts_left(label, cell_hash(cell["config"], cell["overrides"],
+                                                     seed)) > 0:  # fmt: skip
+                continue
+            out.append(
+                f"python scripts/launch.py {shlex.quote(str(campaign))} --only "
+                f'{shlex.quote(label)} --max-attempts 1 --recovery "engineering cycle '
+                f'c{candidate}" --incident-time {shlex.quote(str(cycle.get("written_at")))} '
+                f'--cause "engineering cycle c{candidate}, fix {commit}" --evidence '
+                f"{shlex.quote(str(cycle.get('bridge')))}"
+            )
+    return out
+
+
 def check_command(root: Path, out: Path) -> str:
     """The check of the versions record a validation campaign names, run before its launch, every
     resumption and every recovery round of one of its runs (``study3_summary.py check``)."""
@@ -462,9 +519,13 @@ def check_command(root: Path, out: Path) -> str:
 
 
 def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
-                written_at: str, theta0: Path | None = None) -> str:  # fmt: skip
+                written_at: str, theta0: Path | None = None,
+                reissued: Mapping[int, Sequence[str]] | None = None) -> str:  # fmt: skip
     """The confirmation's driver (module docstring, "The confirmation"); ``theta0``: the
-    writer's --theta0, which every guard call passes on."""
+    writer's --theta0, which every guard call passes on; ``reissued``: per block (its seed), the
+    recovery rounds of its labels an engineering cycle reissues (``reissue_commands``), run after
+    its guard and before its launch."""
+    reissued = reissued or {}
     read = "" if theta0 is None else f" --theta0 {shlex.quote(str(theta0.absolute()))}"
     seeds = [seed for seed, _, _ in files]
     listed = f"{seeds[0]}-{seeds[-1]}" if len(seeds) > 1 else str(seeds[0])
@@ -492,7 +553,7 @@ def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
         f"RUNS_ROOT={shlex.quote(str(root.absolute()))}",
         "# The launcher writes where the guard reads",
         'export RUNS_DIR="$RUNS_ROOT"',
-        "block() {",
+        "guarded() {",
         '  local seed="$1" campaign="$2" sha="$3" rc=0',
         '  if [ "$(sha256sum "$campaign" | cut -d " " -f 1)" != "$sha" ]; then',
         f'    echo "== {STAMP} $campaign is not the file written for block $seed: the driver '
@@ -506,9 +567,16 @@ def driver_text(candidate: int, root: Path, files: list[tuple[int, Path, str]],
         '    exit "$rc"',
         "  fi",
         f'  echo "== {STAMP} block $seed: $campaign"',
-        '  python scripts/launch.py "$campaign" --max-attempts 1',
         "}",
-        *(f"block {seed} {shlex.quote(str(path))} {digest}" for seed, path, digest in files),
+        "block() {",
+        '  guarded "$@"',
+        '  python scripts/launch.py "$2" --max-attempts 1',
+        "}",
+        *(line for seed, path, digest in files for line in (
+            [f"block {seed} {shlex.quote(str(path))} {digest}"] if not reissued.get(seed) else [
+                "# a label an engineering cycle reissued: its own recovery round, then the block",
+                f"guarded {seed} {shlex.quote(str(path))} {digest}", *reissued[seed],
+                f"python scripts/launch.py {shlex.quote(str(path))} --max-attempts 1"])),
         f'echo "== {STAMP} blocks {listed} ran"',
     ]  # fmt: skip
     return "\n".join(lines) + "\n"
@@ -538,6 +606,10 @@ def campaign(args: argparse.Namespace) -> None:
         refuse(kind, "; ".join(found))
     header = header_of(kind, candidate, root)
     checkpoints = (args.checkpoints or CHECKPOINTS) if kind in QUALIFICATION else None
+    cycle = (state.get("cycle") or {}).get(candidate) or {}
+    reader = None  # the journal, read only to reissue the labels of a valid cycle
+    if cycle.get("state") == "valid" and kind not in QUALIFICATION:
+        reader = EndpointReader(root, theta0=args.theta0 or root / THETA0_RUN)
     when, written_at = stamp(), revision()
     if kind == "confirmation":
         files = [(seed, args.out / f"study3-c{candidate}-confirmation-s{seed}-{when}.yaml",
@@ -550,9 +622,12 @@ def campaign(args: argparse.Namespace) -> None:
         if (root / "launch" / f"{name}.jsonl").exists():
             refuse(kind, f"the campaign name {name} is already used (its launch log exists): a "
                    "campaign's name is new")  # fmt: skip
-    written = []
+    written, reissued = [], {}
     for name, (seed, path, chosen) in zip(names, files, strict=True):
         runs = sum(len(cells) for _, cells in chosen)
+        cells = launcher_cells(candidate, step, round_, chosen, checkpoints)
+        rounds = [] if reader is None else reissue_commands(
+            reader, cells, campaign=path.absolute(), cycle=cycle)  # fmt: skip
         what = (f"{kind} of candidate {candidate}" if seed is None else
                 f"block {seed} of the confirmation of candidate {candidate}")  # fmt: skip
         notes = [f"Written by {WRITER} {kind} at {written_at}; do not edit.",
@@ -562,23 +637,28 @@ def campaign(args: argparse.Namespace) -> None:
         if seed is None:
             if kind == "validation":
                 notes.append(f"Check: {check_command(root.absolute(), path.absolute())}")
+            notes += [f"Recovery: {command}" for command in rounds]
             notes.append(f"Run: {run_command(kind, candidate, path.absolute())}")
         else:
             notes.append(f"Run by {args.out.absolute() / 'run.sh'}, after the between-block "
                          "guard.")  # fmt: skip
-        text = campaign_text(name, header, launcher_cells(candidate, step, round_, chosen,
-                                                          checkpoints), notes)  # fmt: skip
+            notes += [f"Recovery, after the guard: {command}" for command in rounds]
+            reissued[seed] = rounds
+        text = campaign_text(name, header, cells, notes)
         written.append((seed, path.absolute(), write_new(path, text)))
         print(path)
     if kind == "confirmation":
         driver = args.out / "run.sh"
-        write_new(driver, driver_text(candidate, root, written, written_at, args.theta0))
+        write_new(driver, driver_text(candidate, root, written, written_at, args.theta0,
+                                      reissued))  # fmt: skip
         driver.chmod(0o755)
         print(driver)
         print(f"Run: bash {shlex.quote(str(driver.absolute()))}")
     else:
         if kind == "validation":
             print(f"Check: {check_command(root.absolute(), args.out.absolute())}")
+        for command in rounds:
+            print(f"Recovery: {command}")
         print(f"Run: {run_command(kind, candidate, args.out.absolute())}")
 
 
