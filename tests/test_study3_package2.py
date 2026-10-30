@@ -136,6 +136,7 @@ LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_label_cli.py", ANALYSIS / 
 # Every such open is inside one of them (``NamedOpens``)
 SEALED_OPENERS = frozenset({
     "study3_labels.read_ledger", "study3_labels.append_event", "study3_labels.ledger_lock",
+    # diagnoses opens the ledger through read_ledger: named for the reading it gives the report
     "study3_labels.diagnoses", "study3_labels.torn_tail", "study3_labels.resolve_torn",
     "study3_labels._read_run", "study3_labels._receipt_sha256",
     "study3_label_cli._label_pass", "study3_label_cli._rounds_used",
