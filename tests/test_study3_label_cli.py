@@ -770,7 +770,8 @@ def test_validation_runs_are_refused_outside_the_spread_window(world):
     assert not (world.ledger_dir / "journal.jsonl").exists() and world.judge.attempts == 0
 
 
-def test_confirmation_runs_are_refused_until_the_final_point_opens(world):  # Task 11 opens it
+def test_confirmation_runs_are_refused_until_the_final_point_opens(world):
+    # until the final point is wired to the freeze gate
     with pytest.raises(BatchRefused, match="freeze gate"):
         world.batch(["r1"], step="confirmation")
     assert world.judge.attempts == 0
@@ -795,6 +796,45 @@ def test_a_resume_needs_the_batchs_runs_step_and_candidate(world):
     with pytest.raises(BatchRefused, match="unfinished"):
         world.batch(["r1", "r2", "r3"])  # r3 is not the batch's
     assert world.batch(["r2", "r1"]).batch == first.batch  # the same command resumes it
+
+
+def test_a_resume_naming_left_out_runs_advances_only_the_batchs_runs(world):
+    """The same command again, naming a run accepted earlier beside the unfinished batch's runs:
+    only the batch's runs advance, and the named outside run is untouched."""
+    first = world.batch(["r3"])
+    assert first.outcome == "accepted"
+    kept = {sha256(p) for p in (world.run("r3") / "judge").rglob("*") if p.is_file()}
+    second = world.batch(["r1", "r2"], fail_after=3)
+    assert second.outcome == "unfinished"
+    third = world.batch(["r1", "r2", "r3"])
+    assert (third.batch, third.outcome) == (second.batch, "accepted")
+    assert third.statuses == {"r1": LABELED, "r2": LABELED, "r3": "accepted earlier"}
+    (opened,) = [e for e in world.events("opened") if e["batch"] == second.batch]
+    assert opened["runs"] == ["r1", "r2"]
+    lines = [e for e in map(json.loads, (world.ledger_dir / "journal.jsonl").read_text()
+                            .splitlines()) if e.get("batch") == second.batch]  # fmt: skip
+    named = {e.get("run") for e in lines} | {c["run"] for e in lines for c in e.get("covers", ())}
+    named |= {r["run"] for e in lines if e["event"] == "labeled" for r in e["runs"]}
+    assert "r3" not in named
+    assert {sha256(p) for p in (world.run("r3") / "judge").rglob("*") if p.is_file()} == kept
+    assert not (world.run("r3") / "judge-superseded").exists()
+    assert world.ledger().current("r3").number == 1 and (world.ledger().current("r3").batch
+                                                         == first.batch)  # fmt: skip
+
+
+def test_infrastructure_is_refused_after_a_parsed_change_then_an_unparsed_one(world):
+    """A parsed control change at k = 1 and an unparsed one at k = 2: the parsed one is a control
+    mismatch, so the mark is never infrastructure."""
+    out = world.batch(["r1"], flips={(1, "control-3")}, garble={(2, "control-5")})
+    assert out.outcome == "mark"
+    three, five = world.record["items"][3]["id"], world.record["items"][5]["id"]
+    assert [(e["k"], e["changed"], e["parsed_changed"]) for e in world.events("controls")] == [
+        (1, [three], [three]), (2, [five], [])]  # fmt: skip
+    with pytest.raises(ValueError, match="a control mismatch: never infrastructure"):
+        world.diagnose(out.batch, cause="infrastructure", diagnosis="x",
+                       evidence=[world.pod_log_ref()])  # fmt: skip
+    assert world.events("diagnosed") == []
+    assert not (world.ledger_dir / f"diagnosis-{out.batch}.json").exists()
 
 
 def test_the_diagnosis_is_written_once_and_only_for_a_mark(world):

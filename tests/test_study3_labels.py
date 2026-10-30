@@ -16,6 +16,12 @@ import pytest
 import test_study3_package2
 from test_study2_labels import IDENTITY, IDS, JUDGE, PROMPTS, factory, make_run
 from test_study3_package2 import SealedGuard
+from test_study3_progress import Study
+
+from zero_field_refusal import code_identity
+from zero_field_refusal.analysis import study3_labels, study3_progress, study3_versions
+from zero_field_refusal.analysis.evidence import label_path
+from zero_field_refusal.analysis.study2_label_cli import LABELED
 from zero_field_refusal.analysis.study3_labels import (
     DIAGNOSIS_KIND,
     ITEM_LABELS,
@@ -38,10 +44,6 @@ from zero_field_refusal.analysis.study3_labels import (
     run_items,
     torn_tail,
 )
-
-from zero_field_refusal.analysis import study3_labels
-from zero_field_refusal.analysis.evidence import label_path
-from zero_field_refusal.analysis.study2_label_cli import LABELED
 from zero_field_refusal.run_judging import label_runs, receipt_path
 
 HARMFUL_REPLY = "Harmful request: yes\nResponse refusal: no\nHarmful response: yes"
@@ -267,6 +269,49 @@ def test_the_spread_point_follows_the_choice_step(stage, step, problems, is_open
     else:
         with pytest.raises(SealedPoint, match="choice step"):
             open_point("spread", candidate=1, runs_root=root, repo_root=root)
+
+
+def test_the_spread_point_opens_on_the_cores_choice_step(root, monkeypatch):
+    """The spread window against the real core (``study3_progress.advance`` over a synthetic
+    study): open at candidate 1's ``n-c1`` step on exactly that step's cohort, closed once the n
+    record is written."""
+    study = Study()
+    study.through_validation()
+    state = study.advance()
+    assert (state["stage"], state["step"]["record"]) == ("choice", "n-c1")
+    cohort = frozenset(state["step"]["fields"]["cohort"]["run_ids"])
+    monkeypatch.setattr(study3_labels, "_state", lambda *a, **k: study.advance())
+    assert cohort and open_point("spread", candidate=1, runs_root=root, repo_root=root) == cohort
+    with pytest.raises(SealedPoint, match="choice step"):
+        open_point("spread", candidate=2, runs_root=root, repo_root=root)
+    study.n(1)
+    with pytest.raises(SealedPoint, match="choice step"):
+        open_point("spread", candidate=1, runs_root=root, repo_root=root)
+
+
+def test_the_state_is_progress_under_the_checkouts_gpu_code(tmp_path, monkeypatch):
+    """``_state`` is one ``progress`` call: the runs root, the checkout as ``repo`` and the GPU
+    code identity of that checkout as the expected code, θ₀ and the settings at their defaults."""
+    calls = []
+
+    def identity(**kw):
+        calls.append(("code", kw))
+        return {"sha256": "c" * 64}
+
+    def progress(*args, **kw):
+        calls.append(("progress", args, kw))
+        return {"stage": "x"}
+
+    monkeypatch.setattr(code_identity, "gpu_code_identity", identity)
+    monkeypatch.setattr(study3_progress, "progress", progress)
+    runs, repo = tmp_path / "runs", tmp_path / "repo"
+    assert study3_labels._state(runs, repo) == {"stage": "x"}
+    assert calls == [("code", {"repo": repo}),
+                     ("progress", (runs,), {"repo": repo, "expected_code": "c" * 64})]  # fmt: skip
+
+
+def test_the_judge_config_is_the_frozen_one():
+    assert study3_labels.JUDGE_CONFIG == study3_versions.JUDGE_CONFIG
 
 
 def test_a_cohort_is_gated_by_one_reading_of_the_state(root, monkeypatch):

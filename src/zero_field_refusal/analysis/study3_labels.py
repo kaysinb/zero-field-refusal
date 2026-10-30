@@ -21,6 +21,8 @@ and "Voiding and supersession" (an embargo breach).
 - ``ledger_runs``, ``labeling_problems`` and ``diagnoses``: label-free readings of the ledger
   (ids, states and the diagnosis records) for the report.
 
+Importing loads torch through study 2's judge helpers; nothing GPU-side runs.
+
 **The points** (nothing sealed is read to decide them).
 - ``spread`` opens when candidate N's validation decision is complete: the study's state
   (``study3_progress.progress`` under this checkout's GPU code, θ₀ at its default place) is at
