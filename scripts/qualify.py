@@ -85,10 +85,11 @@ outside this.
 7. ``finish`` deletes the case's checkpoints (every ``<dir>/<run_id>.pt`` of its launcher run's
    attempts and the harness's directory ``<dir>/harness/<case>/``), only once its records are
    published and valid; it exits 1 and keeps them for a case that is neither complete nor
-   technical. A case whose verdict is technical (its own, or its same-path control's:
-   ``technical_reasons``), or that is not complete but whose recorded parts already mark it
-   technical (an established technical case, ``established_technical``), keeps them for the
-   diagnosis, "Failure routes", and ``finish --kept DIR`` exports them to the Pod's volume
+   technical. A case whose verdict is technical (its own, or its same-path control's, the case
+   holding no scientific failure: ``technical_reasons``), or that is not complete but whose
+   recorded parts already mark it technical (an established technical case,
+   ``established_technical``), keeps them for the diagnosis, "Failure routes", and ``finish
+   --kept DIR`` exports them to the Pod's volume
    (below, "A technical case's kept checkpoints"); it never marks a case complete, so an
    established technical case stays incomplete and technical. It exits 9 (``TECHNICAL_CASE``) once
    every file still present has a verified copy there, 13 (``NOT_EXPORTED``) when the export was
@@ -98,7 +99,12 @@ outside this.
    and stops there, before the next case: with 9 when both exit 0, with 13 otherwise (the
    receipt's ``pending-upload`` true: the volume copy verified, the upload pending; false: the
    volume copy not verified either, the worse state). ``finish --release`` deletes them once the
-   diagnosis is done, only through that verified export.
+   diagnosis is done, only through that verified export. A complete case with a scientific
+   failure whose same-path control is recorded technical (below, "A scientific case whose
+   same-path control failed") keeps them as the failed control's evidence: ``finish --kept DIR``
+   exports them the same way and exits 14 (``CONTROL_KEPT``) once they are verified there (13 as
+   above); on 14 the driver uploads and checks them the same way and goes on to the next case
+   when both exit 0, otherwise it stops with 13.
 
 A case is **complete** when the latest attempt of each of its parts is recorded, is that part's
 of that case, and the verdicts read it without error (``case_verdict``, and ``control_verdict``
@@ -115,27 +121,32 @@ complete or not: one whose recorded parts mark it technical in a way no part the
 read can change (``established_technical``), when one of these holds: (1) its baseline's gate fails,
 or its baseline did not complete (failed, or ran nothing), so the verdict reads no rest for it; (2)
 a rest recorded and bound to that baseline makes the whole verdict technical, not scientific; (3)
-its recorded same-path control is technical. A complete baseline with only a technical comparison of
-its own, its rest due or interrupted, is none: the rest may turn the verdict scientific. Such a case
-is exported with the same files, copies, manifest (``lost`` included), receipts and exits; the case
-stays as it is, never marked complete. The driver exports an established technical case before any
-launcher call (``control-only``'s exit 9), so files the launcher would refuse (a corrupt checkpoint)
-are kept as they are. ``finish --kept`` copies the case's files, exactly those ``finish --release``
-would delete (``case_files``), to ``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout
-they have under the checkpoint directory: each written under a partial name, fsynced, renamed and
-its folder fsynced, the source hashed while read and the copy read back, verified when the two
-sha256 agree. A present checkpoint whose sha256 is not its recorded one is exported as it is
-(``matches_record`` false): the export changes neither the technical mark nor any verdict. Refused
-before any copy, exit 13 and nothing called verified: no ``--kept``, a relative DIR, DIR under the
-runs root or the records' folder (its copies would join the small results archived from there) or
-under the checkpoint directory, DIR on the checkpoint directory's filesystem (``same_filesystem``:
-``st_dev``, the container disk), or less free space under DIR than the files take with a margin of 1
-GiB (``KEPT_MARGIN``); an ``OSError`` anywhere in the export, these checks included (a folder, a
-``stat``, the free space, a copy, a manifest, ``SHA256SUMS``), exits 13 too, naming the error, a
-partial ``kept-<n>`` left without a case manifest and never called verified. The manifest,
-``kept-checkpoints-<n>.json`` in the case's folder and the same JSON in the export as
-``MANIFEST.json`` with a ``SHA256SUMS``, holds the case, its stage, candidate and
-``technical_reasons``; the binding records (``binding_records``: the located launcher run's
+its same-path control is recorded technical, with every part the verdict still reads recorded (or
+not read: a baseline decided by itself, as in (1)). In each, the case holds no scientific failure
+(``scientific_failures``): a scientific verdict takes precedence (below, "A scientific case whose
+same-path control failed"). A complete baseline with only a technical comparison of its own, or a
+technical control, its rest due or interrupted, is none: the rest may turn the verdict scientific.
+Such a case is exported with the same files, copies, manifest (``lost`` included), receipts and
+exits; the case stays as it is, never marked complete. The driver exports an established technical
+case before any launcher call (``control-only``'s exit 9), so files the launcher would refuse (a
+corrupt checkpoint) are kept as they are. ``finish --kept`` copies the case's files, exactly those
+``finish --release`` would delete (``case_files``), to
+``DIR/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout they have under the checkpoint
+directory: each written under a partial name, fsynced, renamed and its folder fsynced, the source
+hashed while read and the copy read back, verified when the two sha256 agree. A present checkpoint
+whose sha256 is not its recorded one is exported as it is (``matches_record`` false): the export
+changes neither the technical mark nor any verdict. Refused before any copy, exit 13 and nothing
+called verified: no ``--kept``, a relative DIR, DIR under the runs root or the records' folder (its
+copies would join the small results archived from there) or under the checkpoint directory, DIR on
+the checkpoint directory's filesystem (``same_filesystem``: ``st_dev``, the container disk), or less
+free space under DIR than the files take with a margin of 1 GiB (``KEPT_MARGIN``); an ``OSError``
+anywhere in the export, these checks included (a folder, a ``stat``, the free space, a copy, a
+manifest, ``SHA256SUMS``), exits 13 too, naming the error, a partial ``kept-<n>`` left without a
+case manifest and never called verified. The manifest, ``kept-checkpoints-<n>.json`` in the case's
+folder and the same JSON in the export as ``MANIFEST.json`` with a ``SHA256SUMS``, holds the case,
+its stage, candidate, ``technical_reasons`` and ``failed_control`` (null; for a scientific case
+whose same-path control failed, the control's reasons and the scientific failures, its
+``technical_reasons`` empty); the binding records (``binding_records``: the located launcher run's
 ``summary.json`` and ``meta.json`` by path and sha256 with its ``endpoint_checkpoint`` record, and
 the case's latest baseline, rest and control records by path, file sha256 and ``record_sha256``;
 nothing else of the run's directory is opened or listed); each file (its source path, its copy's
@@ -144,11 +155,13 @@ it matches, whether it is a partial file); ``lost``, every checkpoint those reco
 on disk and that ``finish`` did not remove on purpose (``released``), with its recorded sha256 and
 the records naming it; ``verified``, the host, the Pod, the time and the provenance. Run again over
 an export whose copies re-hash to its manifest under DIR, the case's files listed in it as they are
-now, nothing is copied (exit 9); otherwise ``kept-<n+1>`` is written, and nothing is ever
-overwritten. Checkpoints lost before the export leave the technical mark as it stands: ``finish``
-exits 9 when every file still present is verified, ``lost`` names what was lost, and it says "lost
-before the export: the technical mark stands; the diagnosis goes on from the records; nothing
-reruns" (``restart-case`` refuses a complete case). ``kept-check --inventory FILE --remote PREFIX``
+now, nothing is copied (exit 9, or 14); otherwise ``kept-<n+1>`` is written, and nothing is
+ever overwritten. Checkpoints lost before the export leave the technical mark as it stands:
+``finish`` exits 9 when every file still present is verified, ``lost`` names what was lost, and it
+says "lost before the export: the technical mark stands; the diagnosis goes on from the records;
+nothing reruns" (``restart-case`` refuses a complete case); for a scientific case whose same-path
+control failed, exit 14 and "lost before the export: the scientific failure stands and the failed
+control's records stay; nothing reruns". ``kept-check --inventory FILE --remote PREFIX``
 (the driver's: the REMOTE_PREFIX it gives ``archive.py``) reads the case's latest manifest,
 re-hashes every copy under its DIR (with ``MANIFEST.json`` and ``SHA256SUMS``), and reads
 ``scripts/archive.py``'s inventory: every line's URL lies under ``PREFIX/``, and every exported file
@@ -158,16 +171,43 @@ It exits 0 when all hold, 13 naming what fails (each line under another prefix i
 publishes its receipt ``kept-check-<n>.json`` in the case's folder: the manifest's and the
 inventory's path and sha256, the prefix, the exit, what fails, and ``pending-upload`` true for a
 volume copy verified whose bucket copy is not (no inventory, or one without the export's verified
-lines). ``finish --release`` of a technical case deletes only through the manifest of a receipt of
+lines). ``finish --release`` of a technical case (or of a scientific case whose same-path control
+failed) deletes only through the manifest of a receipt of
 exit 0 that names its sha256 (``bound_export``), the inventory that receipt names still of the
 receipt's sha256, when every current file is listed in the manifest with its size and sha256, each
 file checked again right before its deletion; otherwise it exits 13 naming the files or the
 inventory (a file new or changed since the export needs another export and its ``kept-check``; an
 inventory gone or changed, the upload checked again). Its ``checkpoints-removed-<n>.json`` names
-that manifest and that receipt by path and sha256. A kept checkpoint is not one ``finish`` removed
+that manifest and that receipt by path and sha256, and the failed control's reasons
+(``failed_control``, empty for a technical case). A kept checkpoint is not one ``finish`` removed
 (``released``): its absence is never evidence of an interruption. The planned teardown of the Pod
 waits for ``kept-check`` exit 0; an upload that cannot be verified leaves the volume copy kept and
 the receipt ``pending-upload``, and never lifts the hard deadline.
+
+**A scientific case whose same-path control failed** ("Failure routes": a scientific failure keeps
+counting; amendment 2: a failed control blocks its rate for technical diagnosis). A case that holds
+a scientific failure (``scientific_failures``: ``attempt_failures`` of kind scientific, the
+predicate by which ``supersede`` keeps a case whole: its baseline decided it, a bound rest holds
+one, or an interrupted rest's trajectory results do) is never a technical case:
+``established_technical`` and ``technical_reasons`` give nothing for it, whatever its control, as
+``case_verdict`` holds a case with both kinds scientific and ``rate_verdict`` a rate with a
+scientific case failing. Complete, its same-path control recorded technical
+(``failed_control_reasons``), it counts as scientific: its rate fails, and the verdict lists the
+failed control under the rate's ``control``, with its reasons. ``control-only`` says no (complete,
+nothing is outstanding), ``restart-case`` refuses it (complete), ``supersede`` keeps it whole, and
+its recorded control is never rerun. Its checkpoints are kept as the failed control's evidence, the
+full export of a technical case (``case_files``, the case's records bound in the manifest, the
+control's included): ``finish --kept DIR`` exports them with ``technical_reasons`` empty and
+``failed_control`` the control's reasons and the scientific failures, and exits 14
+(``CONTROL_KEPT``) once every file still present has a verified copy (13 as for a
+technical case); the driver then uploads the export and runs ``kept-check``, and goes on to the next
+case when both exit 0, otherwise it stops with 13. Once a ``kept-check`` of exit 0 binds an export
+that holds the case's files as they are (``kept_settled``), ``finish`` exits 0 for the case and
+copies, uploads and receipts nothing. ``finish --release`` deletes them after the control's
+diagnosis, only through that export (``release_kept``). Not yet complete, its rest interrupted with
+the scientific failure in its trajectory results, such a case takes the usual path (``control-only``
+exits 3, and ``part --resume`` exits 8 at the rest), and ``finish`` refuses it (exit 1), its
+checkpoints kept, until ``interrupted --technical`` records the rest.
 
 **A case whose control alone is outstanding** (``control-only``; "Failure routes", amendment 2):
 a case whose only outstanding part is its same-path control, decided by its baseline or with its
@@ -379,12 +419,15 @@ included), the disk (``df``'s answer must be a number), a ``finish`` that refuse
 complete nor technical, or a case whose control alone is outstanding that ``control-only`` cannot
 bind to its launcher run; 8 an interrupted attempt (or a part a case restart or supersession names);
 9 a technical case, its checkpoints kept on the volume and in the bucket, verified (a complete one
-after its ``finish``, an established one after ``control-only``'s 9, before any launcher call); 10 a
-stale case; 11 a case whose label has a held launcher run; 12 a torn line in a launch journal, or a
-line a published record requires missing from it (``complete``'s refusal, or the launcher's); 13 a
-technical case whose kept checkpoints are not verified: from ``finish``, its export refused or
-failed (no verified volume copy, the checkpoints still only on the container disk, which a stop
-loses), or after ``kept-check`` (run whatever ``archive.py``'s exit), its receipt's
+after its ``finish``, an established one after ``control-only``'s 9, before any launcher call);
+``finish``'s 14, a scientific case whose same-path control failed, its evidence verified on the
+volume, is none of the driver's: it uploads and checks that export and goes on to the next case when
+both exit 0 (the driver never exits 14); 10 a stale case; 11 a case whose label has a held launcher
+run; 12 a torn line in a launch journal, or a line a published record requires missing from it
+(``complete``'s refusal, or the launcher's); 13 a technical case, or a scientific case whose
+same-path control failed, whose kept checkpoints are not verified: from ``finish``, its export
+refused or failed (no verified volume copy, the checkpoints still only on the container disk, which
+a stop loses), or after ``kept-check`` (run whatever ``archive.py``'s exit), its receipt's
 ``pending-upload`` true (the volume copy verified, the upload pending) or false (the volume copy not
 verified either, the worse state); either way the planned teardown waits for ``kept-check`` exit 0,
 and the hard deadline stays; the launcher's own when it stops; any other, the failed command's.
@@ -457,6 +500,7 @@ RUN = 'project-run "$SRC" python scripts/qualify.py'
 # A case restart or an engineering cycle's supersession record, in the case's folder
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
 LAUNCH = 'project-run "$SRC" python scripts/launch.py'
+STAMP = "$(date -u +%FT%TZ)"  # the time of each line the driver logs
 NO = 3  # ``complete``, ``decided``, ``control-only``: no (any other non-zero exit fails)
 INTERRUPTED = 8  # ``part --resume``: the latest attempt was started and left no record
 TECHNICAL_CASE = 9  # ``finish``: the case's verdict is technical; its checkpoints are kept
@@ -467,6 +511,10 @@ HELD = 11  # ``complete``, ``decided``, ``control-only``: the label has a held l
 # driver's after it, the upload pending (``pending-upload`` true) or the volume copy not verified
 # either (false)
 NOT_EXPORTED = 13
+# ``finish``: a case with a scientific failure whose same-path control is recorded technical: its
+# checkpoints are kept as the failed control's evidence, exported to the volume and verified; the
+# driver uploads and checks them, then goes on
+CONTROL_KEPT = 14
 # The Pod's environment and the source checkouts (the driver's preamble)
 POD_ENVIRONMENT = (". /etc/rp_environment", ". /root/zfr-env.sh")
 SOURCES = "/workspace/code/zero-field-refusal"
@@ -813,11 +861,25 @@ def stale_records(
     return stale
 
 
+def scientific_failures(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
+    """The case's attempts that are a scientific failure (``attempt_failures`` of kind
+    scientific: a record, or an interrupted rest's trajectory results), by their labels, in its
+    order. A case that holds one is never a technical case: a scientific verdict takes precedence
+    (module docstring, "A scientific case whose same-path control failed"). Empty exactly when
+    ``scientific_attempts`` is, the predicate by which an engineering cycle keeps a case whole."""
+    folder = case_folder(out, p.case)
+    return [label for label, kind in attempt_failures(folder, p, scope) if kind == q.SCIENTIFIC]
+
+
 def technical_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
     """Why a complete case's verdict is technical (its own, or its same-path control's), or
     nothing: such a case keeps its checkpoints for the diagnosis ("Failure routes"). A case
-    decided by its launcher run's resolved stop has none."""
+    decided by its launcher run's resolved stop has none, and so has a case that holds a
+    scientific failure (``scientific_failures``): its failed control, if any, is
+    ``failed_control_reasons``'s."""
     if resolution_of(out, p.case) is not None:
+        return []
+    if scientific_failures(out, p, scope):  # a scientific verdict takes precedence
         return []
     baseline = part_state(out, p.case, "baseline").record
     rest = part_state(out, p.case, "rest").record
@@ -838,12 +900,17 @@ def established_technical(out: Path, p: Planned, scope: q.QualificationScope) ->
     verdict alone is technical and reads no rest (``case_verdict`` gives no ``REST_MISSING``: its
     gate failed, or the baseline did not complete); (2) a rest recorded and bound to that baseline
     (``rest_bound``) makes the whole verdict technical, not scientific; (3) the recorded same-path
-    control's verdict is technical. Anything else marks nothing: a complete baseline with only a
-    technical comparison of its own, its rest due or interrupted, still has its rest read, which
-    may turn the verdict scientific. Nothing for a case the engineering cycle resolved, one without
-    a recorded baseline, or one whose records the verdicts cannot read. For a complete case, the
-    marks ``technical_reasons`` gives."""
+    control's verdict is technical, with every part the verdict still reads recorded: its rest,
+    unless the baseline's verdict reads none. Anything else marks nothing: a complete baseline
+    with only a technical comparison of its own, or a technical control, its rest due,
+    interrupted or void, still has its rest read, which may turn the verdict scientific. Nothing
+    for a case that holds a scientific failure (``scientific_failures``: a scientific verdict
+    takes precedence), one the engineering cycle resolved, one without a recorded baseline, or one
+    whose records the verdicts cannot read. For a complete case, the marks ``technical_reasons``
+    gives."""
     if resolution_of(out, p.case) is not None:
+        return []
+    if scientific_failures(out, p, scope):  # a scientific verdict takes precedence
         return []
     baseline = part_state(out, p.case, "baseline")
     if baseline.state != "recorded":
@@ -851,7 +918,8 @@ def established_technical(out: Path, p: Planned, scope: q.QualificationScope) ->
     reasons: list[str] = []
     try:
         alone = q.case_verdict(baseline.record, None, scope)
-        if alone["kind"] == q.TECHNICAL and REST_MISSING not in alone["reasons"]:
+        reads_rest = REST_MISSING in alone["reasons"]
+        if alone["kind"] == q.TECHNICAL and not reads_rest:
             reasons += alone["reasons"]  # (1): the verdict reads no rest for this baseline
         rest = part_state(out, p.case, "rest")
         if rest.state == "recorded" and rest_bound(rest.record, baseline.record):
@@ -859,13 +927,34 @@ def established_technical(out: Path, p: Planned, scope: q.QualificationScope) ->
             if whole["kind"] == q.TECHNICAL:  # (2): technical, not scientific, with its rest
                 reasons += [r for r in whole["reasons"] if r not in reasons]
         control = part_state(out, p.case, "control") if p.control else None
-        if control is not None and control.state == "recorded":
+        # (3) needs the rest the verdict reads recorded (its record readable or not: never rerun)
+        to_come = reads_rest and rest.state in ("due", "interrupted", "voided")
+        if control is not None and control.state == "recorded" and not to_come:
             checked = q.control_verdict(control.record, scope, p.case.candidate)
             if checked["kind"] == q.TECHNICAL:  # (3)
                 reasons += [f"control: {r}" for r in checked["reasons"]]
     except Exception:  # a record the verdicts cannot read marks nothing here
         return []
     return reasons
+
+
+def failed_control_reasons(out: Path, p: Planned, scope: q.QualificationScope) -> list[str]:
+    """Why the same-path control of a case that holds a scientific failure failed, or nothing
+    (module docstring, "A scientific case whose same-path control failed"): the reasons of its
+    latest control attempt's verdict (``q.control_verdict``), prefixed ``control: ``, when that
+    attempt is recorded and its verdict technical, the case holds its rate's control, the
+    engineering cycle has not resolved it and it holds a scientific failure
+    (``scientific_failures``). Such a case counts as scientific; its checkpoints are kept as the
+    failed control's evidence (``finish``: exit 14)."""
+    if not p.control or resolution_of(out, p.case) is not None:
+        return []
+    control = part_state(out, p.case, "control")
+    if control.state != "recorded" or not scientific_failures(out, p, scope):
+        return []
+    verdict = q.control_verdict(control.record, scope, p.case.candidate)
+    if verdict["kind"] != q.TECHNICAL:
+        return []
+    return [f"control: {r}" for r in verdict["reasons"]]
 
 
 # --------------------------------------------------------------- the launcher run's files
@@ -1068,6 +1157,9 @@ UPLOADED = "ok"  # scripts/archive.py's status of an object whose size and MD5 m
 KEPT_MARGIN = 1 << 30  # the free space an export needs beyond its files (1 GiB)
 LOST_BEFORE_EXPORT = ("lost before the export: the technical mark stands; the diagnosis goes on "
                       "from the records; nothing reruns")  # fmt: skip
+# The same note for a scientific case whose same-path control failed (``finish``'s exit 14)
+LOST_BEFORE_CONTROL_EXPORT = ("lost before the export: the scientific failure stands and the "
+                              "failed control's records stay; nothing reruns")  # fmt: skip
 
 
 def case_files(p: Planned, root: Path) -> list[Path]:
@@ -1309,11 +1401,12 @@ def reusable(path: Path, kept: Path, files: list[Path]) -> dict | None:
 
 def write_export(
     p: Planned, out: Path, root: Path, technical: list[str], kept: Path, files: list[Path],
-    export: Path, number: int,
+    export: Path, number: int, *, failed_control: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:  # fmt: skip
     """The export itself (``export_kept``): the new folder ``export``, each file copied and read
     back, ``MANIFEST.json`` and ``SHA256SUMS`` in it, and last the case's manifest
-    ``kept-checkpoints-<number>.json``. Its manifest; an ``OSError`` anywhere is the caller's."""
+    ``kept-checkpoints-<number>.json``, which names ``failed_control`` (null for a technical
+    case). Its manifest; an ``OSError`` anywhere is the caller's."""
     folder = case_folder(out, p.case)
     binding, named = binding_records(p, out, root)
     make_folders(export.parent)
@@ -1337,7 +1430,9 @@ def write_export(
             if path not in gone and not Path(path).is_file()]  # fmt: skip
     manifest = {
         "case": p.case.record(), "stage": ROLES[p.case.engineering],
-        "candidate": p.case.candidate, "technical_reasons": technical, "kept": str(kept),
+        "candidate": p.case.candidate, "technical_reasons": technical,
+        "failed_control": None if failed_control is None else dict(failed_control),
+        "kept": str(kept),
         "export": export.relative_to(kept).as_posix(), "number": number, "binding": binding,
         "files": entries, "lost": lost, "verified": all(e["verified"] for e in entries),
         "host": socket.gethostname(), "pod_id": q.pod_id(),
@@ -1350,12 +1445,15 @@ def write_export(
     return manifest
 
 
-def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+def export_kept(
+    p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None, *,
+    failed_control: Mapping[str, Any] | None = None,
+) -> int:  # fmt: skip
     """``_export_kept``, its every ``OSError`` exit 13 with the error named (the refusal and space
     checks' included: an unreadable folder, a failing ``stat``): no verified volume copy, the
     checkpoints still only on the container disk."""
     try:
-        return _export_kept(p, out, root, technical, kept)
+        return _export_kept(p, out, root, technical, kept, failed_control=failed_control)
     except OSError as exc:
         print(f"{p.case.name}: the export could not be checked or made: {exc}. Nothing is called "
               "verified; the checkpoints stay where they are, still only on the container disk; "
@@ -1363,9 +1461,14 @@ def export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: P
         return NOT_EXPORTED
 
 
-def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None) -> int:
+def _export_kept(
+    p: Planned, out: Path, root: Path, technical: list[str], kept: Path | None, *,
+    failed_control: Mapping[str, Any] | None = None,
+) -> int:  # fmt: skip
     """A technical case's checkpoints (``case_files``) exported to the Pod's volume (module
-    docstring, "A technical case's kept checkpoints"): each copied durably to
+    docstring, "A technical case's kept checkpoints"), or with ``failed_control`` (its reasons and
+    the scientific failures, in the manifest) those of a scientific case whose same-path control
+    failed, kept as that control's evidence: each copied durably to
     ``<kept>/qualification/c<N>/<stage>/<case>/kept-<n>/`` in the layout it has under the
     checkpoint directory, read back and verified by its sha256, then the manifest, in the export
     (``MANIFEST.json``, with ``SHA256SUMS``) and last in the case's folder
@@ -1373,10 +1476,13 @@ def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: 
     than the files take with ``KEPT_MARGIN``); an earlier manifest whose copies re-hash to it under
     ``kept``, the case's files as it lists them, is reused: nothing is copied. An ``OSError``
     anywhere in the export (``write_export``) leaves the partial ``kept-<n>`` without a case
-    manifest, never called verified. The exit: 9 (``TECHNICAL_CASE``) when every file still
-    present has a verified copy, 13 (``NOT_EXPORTED``) otherwise: refused, failed or not verified,
-    the checkpoints still only on the container disk."""
+    manifest, never called verified. The exit: 9 (``TECHNICAL_CASE``; with ``failed_control``,
+    14, ``CONTROL_KEPT``) when every file still present has a verified copy, 13 (``NOT_EXPORTED``)
+    otherwise: refused, failed or not verified, the checkpoints still only on the container
+    disk."""
     name, folder = p.case.name, case_folder(out, p.case)
+    kept_code = TECHNICAL_CASE if failed_control is None else CONTROL_KEPT
+    note = LOST_BEFORE_EXPORT if failed_control is None else LOST_BEFORE_CONTROL_EXPORT
 
     def refused(why: str) -> int:
         print(f"{name}: the export is refused and nothing is copied: {why}. The checkpoints stay "
@@ -1386,7 +1492,7 @@ def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: 
 
     def lost_note(lost: list[dict[str, Any]]) -> None:
         if lost:
-            print(f"{name}: {LOST_BEFORE_EXPORT}: {[entry['path'] for entry in lost]}",
+            print(f"{name}: {note}: {[entry['path'] for entry in lost]}",
                   file=sys.stderr)  # fmt: skip
 
     refusal = kept_refusal(p, out, root, kept)
@@ -1398,7 +1504,7 @@ def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: 
         lost_note(reused.get("lost") or [])
         print(json.dumps({"case": name, "manifest": str(manifests[-1][1]), "reused": True,
                           "files": len(files)}))  # fmt: skip
-        return TECHNICAL_CASE
+        return kept_code
     need, free = sum(path.stat().st_size for path in files) + KEPT_MARGIN, free_bytes(kept)
     if free < need:
         return refused(f"{free} bytes are free under {kept}, below the {need} its files take "
@@ -1408,7 +1514,8 @@ def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: 
                      default=0)  # fmt: skip
     export = parent / f"kept-{number}"
     try:
-        manifest = write_export(p, out, root, technical, kept, files, export, number)
+        manifest = write_export(p, out, root, technical, kept, files, export, number,
+                                failed_control=failed_control)  # fmt: skip
     except OSError as exc:  # no case manifest: nothing of this export is called verified
         print(f"{name}: the export to {export} failed: {exc}. No manifest is published in the "
               "case's folder and nothing is called verified; the checkpoints stay where they "
@@ -1428,7 +1535,7 @@ def _export_kept(p: Planned, out: Path, root: Path, technical: list[str], kept: 
     print(json.dumps({"case": name, "manifest": str(path), "export": str(export),
                       "files": len(entries),
                       "lost": [entry["path"] for entry in lost]}))  # fmt: skip
-    return TECHNICAL_CASE
+    return kept_code
 
 
 def inventory_problems(
@@ -1538,6 +1645,18 @@ def bound_export(folder: Path) -> tuple[Path, dict, Path] | None:
         if manifest is not None and manifest.get("verified") is True:
             return path, manifest, receipt
     return None
+
+
+def kept_settled(p: Planned, root: Path, folder: Path) -> Path | None:
+    """The receipt of the export a ``kept-check`` of exit 0 binds (``bound_export``) when that
+    export holds the case's files as they are now (``source_problems`` of ``case_files``: none
+    new, none changed; none left once released), or None: a scientific case whose same-path
+    control failed is then settled, and ``finish`` copies, uploads and receipts nothing more."""
+    bound = bound_export(folder)
+    if bound is None:
+        return None
+    _, manifest, receipt = bound
+    return None if source_problems(manifest, case_files(p, root)) else receipt
 
 
 def release_kept(p: Planned, root: Path, folder: Path) -> tuple[list[str], dict, list[str]]:
@@ -1730,24 +1849,46 @@ def finish(
     only through that export, verified (``release_kept``). A technical case is a complete one
     whose verdict is technical (``technical_reasons``), or one not complete whose recorded parts
     already mark it technical (``established_technical``): it is exported, or released, all the
-    same, and never marked complete. A case neither complete nor technical is refused (exit 1),
-    its checkpoints kept."""
+    same, and never marked complete. A complete case with a scientific failure whose same-path
+    control is recorded technical (``failed_control_reasons``) counts as scientific, and its
+    checkpoints are kept as the failed control's evidence: exported the same way (exit 14, or 13)
+    until a ``kept-check`` of exit 0 binds an export that holds them as they are
+    (``kept_settled``: exit 0, nothing copied), and released only through that export. A case
+    neither complete nor technical is refused (exit 1), its checkpoints kept."""
+    name = planned.case.name
     complete, _, why = case_state(out, planned, scope)
+    control: list[str] = []
     if complete:
         technical = technical_reasons(out, planned, scope)
+        if not technical:  # a scientific case whose same-path control failed, or none
+            control = failed_control_reasons(out, planned, scope)
     else:  # an established technical case is exported (or released) all the same
         technical = established_technical(out, planned, scope)
         if not technical:
-            sys.exit(f"{planned.case.name}: {why}; its checkpoints are kept")
+            sys.exit(f"{name}: {why}; its checkpoints are kept")
         why = f"not complete ({why}), and technical: it stays so"
     if technical and not release:
-        print(f"{planned.case.name}: a technical verdict ({why}); its checkpoints are kept for "
-              f"the diagnosis, and exported: {technical}", file=sys.stderr)  # fmt: skip
+        print(f"{name}: a technical verdict ({why}); its checkpoints are kept for the diagnosis, "
+              f"and exported: {technical}", file=sys.stderr)  # fmt: skip
         sys.exit(export_kept(planned, out, root, technical, kept))
     folder = case_folder(out, planned.case)
+    if control and not release:  # the failed control's evidence: kept, exported, verified
+        receipt = kept_settled(planned, root, folder)
+        if receipt is not None:  # settled: nothing is copied
+            print(json.dumps({"case": name, "state": "a scientific failure; its failed same-path "
+                              "control's evidence is kept and verified",
+                              "receipt": str(receipt)}))  # fmt: skip
+            return
+        labels = scientific_failures(out, planned, scope)
+        print(f"{name}: a scientific failure ({'; '.join(labels)}); its same-path control "
+              f"failed ({'; '.join(control)}): the case counts as scientific, and the control's "
+              "evidence is kept and exported", file=sys.stderr)  # fmt: skip
+        sys.exit(export_kept(planned, out, root, [], kept,
+                             failed_control={"reasons": control,
+                                             "scientific": labels}))  # fmt: skip
     relied: dict[str, Any] = {}
     stopped: list[str] = []
-    if technical:  # released only through its verified export
+    if technical or control:  # released only through its verified export
         removed, relied, stopped = release_kept(planned, root, folder)
     else:
         removed = remove_checkpoints(planned, journal_run_ids(planned.run, root))
@@ -1757,13 +1898,13 @@ def finish(
     if removed:  # removed on purpose: never evidence of an interruption (``restart-case``)
         q.publish(folder / f"{RELEASED}-{len(list(folder.glob(f'{RELEASED}-*.json'))) + 1}.json",
                   {"case": planned.case.record(), "removed": removed, "release": release,
-                   "technical": technical, **relied,
+                   "technical": technical, "failed_control": control, **relied,
                    "at": datetime.now(UTC).isoformat(timespec="seconds")})  # fmt: skip
     if stopped:
-        print(f"{planned.case.name}: the release stops, and what is left is kept: "
-              f"{'; '.join(stopped)}", file=sys.stderr)  # fmt: skip
+        print(f"{name}: the release stops, and what is left is kept: {'; '.join(stopped)}",
+              file=sys.stderr)  # fmt: skip
         sys.exit(NOT_EXPORTED)
-    print(json.dumps({"case": planned.case.name, "state": why, "removed": removed}))
+    print(json.dumps({"case": name, "state": why, "removed": removed}))
 
 
 def interrupted(args, planned: Planned, out: Path, scope: q.QualificationScope) -> None:
@@ -2902,11 +3043,15 @@ def verdict(args, settings, scope, planned: list[Planned], out: Path, root: Path
 
 def export_sequence(p: Planned, common: str, remote: str) -> list[str]:
     """The driver's routed export of a technical case's checkpoints (module docstring, "A
-    technical case's kept checkpoints"): ``finish --kept "$KEPT"``, then on its 9 the upload
-    (scripts/archive.py to ``$ARTIFACT_REMOTE/<--kept-remote>``) and, whatever the upload's exit,
-    ``kept-check --remote`` on its inventory; the driver stops with 9 when both exit 0, with 13
-    otherwise, and with ``finish``'s 13 or other failure as it gives them. One sequence, after a
-    case (``finish``'s 9) and after ``control-only``'s 9 (an established technical case)."""
+    technical case's kept checkpoints"), or of a scientific case's whose same-path control failed:
+    ``finish --kept "$KEPT"``, then on its 9 or 14 the upload (scripts/archive.py to
+    ``$ARTIFACT_REMOTE/<--kept-remote>``) and, whatever the upload's exit, ``kept-check --remote``
+    on its inventory; when both exit 0, the driver stops with 9 after ``finish``'s 9 and goes on
+    to the next case after its 14; otherwise it stops with 13; and with ``finish``'s 13 or other
+    failure as it gives them. One sequence, after a case (``finish``'s 9 or 14) and after
+    ``control-only``'s 9 (an established technical case, which holds no scientific failure, so
+    ``finish`` gives no 14 there)."""
+    stamp = STAMP
     case = f"--case {shlex.quote(p.case.name)}"
     # The case's folder of its exports under $KEPT (each export kept-<n>/ in it)
     kept_path = shlex.quote(f"qualification/{case_folder(Path(), p.case).as_posix()}")
@@ -2915,8 +3060,8 @@ def export_sequence(p: Planned, common: str, remote: str) -> list[str]:
         f'routed {RUN} finish {common} {case} --kept "$KEPT" || rc=$?',
         'case "$rc" in',
         "  0) ;;",
-        f'  {TECHNICAL_CASE}) INV="$RUNS_DIR/archive/inventory-kept-$(date -u +%Y%m%dT%H%M%SZ)'
-        '.tsv"',
+        f'  {TECHNICAL_CASE}|{CONTROL_KEPT}) INV="$RUNS_DIR/archive/inventory-kept-'
+        '$(date -u +%Y%m%dT%H%M%SZ).tsv"',
         f'     DEST="$ARTIFACT_REMOTE"/{remote}',
         "     arc=0",
         '     routed project-run "$SRC" python scripts/archive.py "$INV" "$DEST" "$KEPT" '
@@ -2932,8 +3077,13 @@ def export_sequence(p: Planned, common: str, remote: str) -> list[str]:
         "kept-check exit $kc; do not stop the Pod by plan; the hard deadline stays"
         f'" {NOT_EXPORTED}',
         "     fi",
-        f'     stop "{p.case.name}: a technical case: its checkpoints are kept, on the volume '
-        f'and in the bucket, verified" {TECHNICAL_CASE} ;;',
+        f'     if [ "$rc" -eq {TECHNICAL_CASE} ]; then',
+        f'       stop "{p.case.name}: a technical case: its checkpoints are kept, on the volume '
+        f'and in the bucket, verified" {TECHNICAL_CASE}',
+        "     fi",
+        f'     echo "== {stamp} {p.case.name}: a scientific failure whose same-path control '
+        'failed: its evidence is kept, on the volume and in the bucket, verified; the next '
+        'case" ;;',
         f'  {NOT_EXPORTED}) stop "{p.case.name}: finish refused or failed its export (exit '
         f"{NOT_EXPORTED}): no verified volume copy; its checkpoints are still only on the "
         "container disk, which a stop loses; fix the cause finish names, then run the driver "
@@ -2949,7 +3099,7 @@ def driver_script(
     steps: list[int],
 ) -> str:  # fmt: skip
     """The bash driver of the qualification on a Pod (module docstring)."""
-    stamp = "$(date -u +%FT%TZ)"
+    stamp = STAMP
     sha = hashlib.sha256(campaign.read_bytes()).hexdigest()
     need = disk_need_gb(settings, steps)
     host = float(settings.host_memory_gb)
@@ -2977,7 +3127,10 @@ def driver_script(
                  "uploaded to $ARTIFACT_REMOTE (scripts/archive.py) and verified there "
                  f"(kept-check), and the driver stops (exit {TECHNICAL_CASE}; {NOT_EXPORTED} "
                  "while the export is not verified: the planned teardown waits for kept-check, "
-                 "and the hard deadline stays). K-only and blind to outcomes."),
+                 "and the hard deadline stays); a case with a scientific failure whose same-path "
+                 "control failed counts as scientific, its checkpoints kept as that control's "
+                 f"evidence, exported and verified the same way (finish's {CONTROL_KEPT}), and the "
+                 "driver goes on to the next case. K-only and blind to outcomes."),
         *comment(f"A case needs {need:g} GB free under {endpoint} (the container disk). A "
                  "complete case is skipped, so the driver can be run again after a stop. It "
                  "never reruns a part or a launcher run: an interrupted part (exit "
@@ -3000,12 +3153,16 @@ def driver_script(
                  f"names); {TECHNICAL_CASE} a technical case, its checkpoints kept, on the volume "
                  "and in the bucket, verified (a complete one after its finish; one its recorded "
                  "parts already mark technical, complete or not, after control-only's "
-                 f"{TECHNICAL_CASE}, before any launcher call); {STALE} a stale case (records "
+                 f"{TECHNICAL_CASE}, before any launcher call); finish's {CONTROL_KEPT}, a "
+                 "scientific case whose same-path control failed, its evidence kept, is no exit: "
+                 "the driver uploads and checks it, and goes on when both exit 0; "
+                 f"{STALE} a stale case (records "
                  f"of other GPU code or settings); {HELD} a case whose label has a held "
                  f"launcher run; {TORN_JOURNAL} a torn line in a launch journal, or a line a "
                  "published record requires missing from it (complete's refusal, or the "
                  "launcher's); "
-                 f"{NOT_EXPORTED} a technical case whose kept checkpoints are not verified: from "
+                 f"{NOT_EXPORTED} a technical case, or a scientific case whose same-path "
+                 "control failed, whose kept checkpoints are not verified: from "
                  "finish, its export refused or failed (no verified volume copy: the checkpoints "
                  "still only on the container disk, which a stop loses), or after kept-check "
                  "(run whatever archive.py's exit), the volume copy verified and the upload "
@@ -3153,7 +3310,10 @@ def driver_script(
                      f"them to $KEPT, verified (exit {TECHNICAL_CASE}; {NOT_EXPORTED} when "
                      "refused or failed), then the bucket copy is uploaded and, whatever the "
                      "upload's exit, checked (kept-check: its receipt records a pending upload); "
-                     f"{TECHNICAL_CASE} only when both exit 0"),
+                     f"{TECHNICAL_CASE} only when both exit 0. A scientific case whose same-path "
+                     "control failed (finish's "
+                     f"{CONTROL_KEPT}) is exported the same way and goes on to the next case "
+                     f"when both exit 0 ({NOT_EXPORTED} otherwise)"),
             *export,
         ]  # fmt: skip
     lines.append(f'echo "== {stamp} every case is complete"')

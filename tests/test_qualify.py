@@ -434,6 +434,7 @@ def test_the_driver_exports_and_verifies_a_technical_case_before_it_stops(
     commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     # Per case, one export sequence after control-only's 9 and one after the case: one generator
     assert commands.count(" finish --campaign ") == 4
+    assert commands.count(f"{qualify.TECHNICAL_CASE}|{qualify.CONTROL_KEPT}) INV=") == 4
     assert commands.count('--kept "$KEPT" || rc=$?') == 4
     assert commands.count("scripts/archive.py ") == 4
     assert commands.count("qualify.py kept-check ") == 4
@@ -478,6 +479,38 @@ def test_the_driver_stops_with_13_when_the_bucket_copy_is_not_verified(
                              finish=qualify.NOT_EXPORTED)  # fmt: skip
     assert code == qualify.NOT_EXPORTED and calls[-2:] == [f"finish {FA.name}", "verdict"]
     assert "still only on the container disk" in (tmp_path / "again" / "driver.out").read_text()
+
+
+def test_the_driver_goes_on_after_a_scientific_case_whose_control_failed(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """``finish`` exits 14 for a complete case with a scientific failure whose same-path control
+    is recorded technical: the driver uploads the export (scripts/archive.py), verifies both
+    copies (``kept-check``) and, both exiting 0, goes on to the next case, which runs in full;
+    the driver itself never exits 14."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, complete="0 3", finish="14 0")
+    assert code == 0
+    assert calls == [f"complete {FA.name}", f"finish {FA.name}", "archive",
+                     f"kept-check {FA.name}",
+                     *_with_case([FULL[0], "control-only", *FULL[1:], "finish"], ADAMW),
+                     "verdict"]  # fmt: skip
+    assert (f"{FA.name}: a scientific failure whose same-path control failed: its evidence is "
+            "kept, on the volume and in the bucket, verified; the next case") in (
+        tmp_path / "driver.out").read_text()  # fmt: skip
+
+
+@pytest.mark.parametrize("exits", [{"archive": 1}, {"kept_check": 13},
+                                   {"archive": 1, "kept_check": 13}])  # fmt: skip
+def test_the_driver_stops_with_13_when_a_failed_controls_evidence_is_not_verified(
+    qualify, tmp_path, monkeypatch, exits
+) -> None:
+    """``finish``'s 14 with the upload failing or ``kept-check`` not verifying it: the driver
+    stops with 13, as for a technical case, and goes on to no other case."""
+    code, calls = run_driver(qualify, tmp_path, monkeypatch, complete=0,
+                             finish=qualify.CONTROL_KEPT, **exits)  # fmt: skip
+    assert code == qualify.NOT_EXPORTED
+    assert calls[-4:] == [f"finish {FA.name}", "archive", f"kept-check {FA.name}", "verdict"]
+    assert not any(ADAMW.name in call for call in calls)
 
 
 @pytest.mark.parametrize("bucket", [{"ARTIFACT_REMOTE": None}, {"ARTIFACT_REMOTE": "/workspace/x"},
@@ -2978,9 +3011,10 @@ def test_a_failed_control_of_a_decided_case_is_kept(
     qualify, stubbed, tmp_path, monkeypatch
 ) -> None:
     """A decided case's control recorded technical (K beyond 0.01·K*): it is never rerun, by
-    hand or by ``control-only``; the case is complete, so no restart; ``finish`` keeps its
-    checkpoints for the diagnosis (exit 9), the launcher run's, lost with the container disk,
-    listed as lost in its export's manifest."""
+    hand or by ``control-only``; the case is complete and counts as scientific, so it is no
+    technical case (``control-only`` says no, nothing is outstanding) and no restart; ``finish``
+    keeps its checkpoints as the failed control's evidence (exit 14), the launcher run's, lost
+    with the container disk, listed as lost in its export's manifest."""
     path, root, out, run_dir = decided_world(tmp_path)
     failed = control_record(0.1, case=FA, identity=q.launcher_identity(run_dir))
     assert q.control_verdict(failed, SCOPE, 1)["kind"] == "technical"
@@ -2988,12 +3022,12 @@ def test_a_failed_control_of_a_decided_case_is_kept(
     with pytest.raises(SystemExit, match="is never rerun"):
         qualify.main(control_args(path, run_dir, tmp_path, "--attempt", "2",
                                   "--infrastructure", LOST))  # fmt: skip
-    assert exit_code(qualify, control_only(path)) == qualify.TECHNICAL_CASE  # its export first
+    assert exit_code(qualify, control_only(path)) == qualify.NO  # complete: nothing outstanding
     with pytest.raises(SystemExit, match="the case is complete"):
         qualify.main(restart(path, FA, LOST))
     assert not list(case_folder(out, FA).glob("restart-*"))
     kept = kept_folder(qualify, monkeypatch, tmp_path)
-    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT
     manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
     assert [entry["path"] for entry in manifest["lost"]] == [str(tmp_path / "ckpt" / "r-f1.pt")]
     assert stubbed == []
@@ -3317,15 +3351,12 @@ def test_restart_case_reads_the_launcher_runs_numerics(qualify, tmp_path, depart
         assert list(case_folder(out, ADAMW).glob("restart-1.json"))
 
 
-def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_alone(
-    qualify, tmp_path, monkeypatch, capsys
-) -> None:
-    """The lost-checkpoint table's scientific branch: the rest was interrupted after a valid
-    scientific failure in its trajectory results and the container disk was lost. ``control-only``
-    says no (the rest is outstanding) and ``restart-case`` refuses (the failure keeps counting).
-    ``interrupted --part rest --attempt 1 --technical`` records the attempt with its results,
-    the verdict is scientific, and then ``control-only`` exits 0, the control runs alone and
-    ``finish`` exits 0."""
+def interrupted_scientific_rest_world(tmp_path):
+    """FA's passing baseline bound to its done launcher run r-f1; its rest interrupted after a
+    valid scientific failure in its trajectory results (``repeat`` and ``reference`` published,
+    the part's record not), and the container disk lost (r-f1's checkpoint gone); its control
+    due. Returns the campaign, the runs root, the records' folder, r-f1's directory and the
+    baseline record."""
     path = campaign(tmp_path)
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     run = journal(root, path, FA_LABEL, ["r-f1"])
@@ -3345,6 +3376,19 @@ def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_al
     for name in ("repeat", "reference"):
         q.publish(out / FA.trajectory_path(1, name), trajectory_result(FA, rest, name))
     checkpoint.unlink()  # the container disk lost
+    return path, root, out, run_dir, baseline
+
+
+def test_an_interrupted_scientific_rest_is_recorded_and_the_control_then_runs_alone(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """The lost-checkpoint table's scientific branch: the rest was interrupted after a valid
+    scientific failure in its trajectory results and the container disk was lost. ``control-only``
+    says no (the rest is outstanding) and ``restart-case`` refuses (the failure keeps counting).
+    ``interrupted --part rest --attempt 1 --technical`` records the attempt with its results,
+    the verdict is scientific, and then ``control-only`` exits 0, the control runs alone and
+    ``finish`` exits 0."""
+    path, root, out, run_dir, baseline = interrupted_scientific_rest_world(tmp_path)
     assert exit_code(qualify, control_only(path)) == 3  # the rest is outstanding
     with pytest.raises(SystemExit, match="keeps counting"):
         qualify.main(restart(path, FA, RESTART))
@@ -4414,6 +4458,360 @@ def test_kept_check_verifies_the_volume_copy_and_the_inventory(
     receipt = json.loads(receipts[-1].read_text())
     assert (receipt["exit"], receipt["pending-upload"]) == (13, False)  # the worse state
     assert receipt["teardown"].startswith("planned teardown waits for kept-check")
+
+
+# ------------------------------------------------ a scientific case whose same-path control failed
+
+REASONS = ["control: K_scoring 0.1 at step 25 beyond 0.06"]  # control_record(0.1)'s, prefixed
+LABELS = {"decided": ["baseline attempt 1"], "rest": ["rest attempt 1"]}  # its scientific failure
+
+
+def failed_control_world(tmp_path, kind):
+    """``technical_world``'s case (its same-path control recorded technical, K beyond 0.01·K*)
+    with a scientific failure: ``"decided"``, its baseline decided by itself (a declared
+    instability rule fired on its unshifted trajectory), its rest record removed; ``"rest"``, its
+    rest, bound to the passing baseline, holding one (``scientific_rest``). Returns the campaign,
+    the records' folder, r-f1's directory and the files by name."""
+    path, out, run_dir, files = technical_world(tmp_path)
+    if kind == "decided":
+        edit_part(out, "baseline", lambda b: b["trajectories"]["baseline"].update(
+            instability=dict(UNSTABLE)))  # fmt: skip
+        (out / FA.attempt_path("rest", 1)).unlink()
+    else:
+        edit_part(out, "rest", scientific_rest)
+    return path, out, run_dir, files
+
+
+def with_failed_control(make):
+    """``make``'s world with FA's same-path control recorded technical (K beyond 0.01·K*) on its
+    launcher run."""
+
+    def world(tmp_path):
+        path, root, out, run_dir = make(tmp_path)[:4]
+        failed = control_record(0.1, case=FA, identity=q.launcher_identity(run_dir))
+        publish(out, FA, "control", failed)
+        return path, root, out, run_dir
+
+    return world
+
+
+def without_rest(make):
+    """``make``'s world with FA's rest record removed: the rest due."""
+
+    def world(tmp_path):
+        path, root, out, run_dir = make(tmp_path)
+        (out / FA.attempt_path("rest", 1)).unlink()
+        return path, root, out, run_dir
+
+    return world
+
+
+def with_technical_comparison(make):
+    """``make``'s world with FA's baseline holding a technical comparison of its own
+    (``technical_comparison``)."""
+
+    def world(tmp_path):
+        path, root, out, run_dir = make(tmp_path)
+        technical_comparison(path, root, out, run_dir)
+        return path, root, out, run_dir
+
+    return world
+
+
+def passing(tmp_path):
+    return decided_world(tmp_path, rest=True)
+
+
+NEVER_MEET = {  # a world → control-only's exit, an established technical case, a scientific failure
+    **{world: (make, EXPORT, True, False) for world, (make, _) in TECHNICAL_WORLDS.items()},
+    "a technical rest": (lambda tmp_path: decided_world(tmp_path, rest=technical_rest), EXPORT,
+                         True, False),
+    "a technical comparison and a scientific rest, the control due": (
+        with_technical_comparison(lambda tmp_path: decided_world(tmp_path, rest=scientific_rest)),
+        0, False, True),
+    "a technical comparison, the rest due": (
+        with_technical_comparison(without_rest(passing)), NO, False, False),
+    "Q: a passing case, its control technical": (with_failed_control(passing), EXPORT, True, False),
+    "S5: Q with its rest due": (without_rest(with_failed_control(passing)), NO, False, False),
+    "S1: decided by its baseline, its control technical": (
+        with_failed_control(decided_world), NO, False, True),
+    "S2: a scientific rest, its control technical": (
+        with_failed_control(lambda tmp_path: decided_world(tmp_path, rest=scientific_rest)), NO,
+        False, True),
+    "S3: an interrupted scientific rest, its control technical": (
+        with_failed_control(interrupted_scientific_rest_world), NO, False, True),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("world", list(NEVER_MEET))
+def test_a_technical_mark_and_a_scientific_failure_never_meet(qualify, tmp_path, world) -> None:
+    """A case that holds a scientific failure (``scientific_failures``: ``attempt_failures`` of
+    kind scientific, an interrupted rest by its trajectory results) is never an established
+    technical case, and an established technical case holds none: a scientific verdict takes
+    precedence. 1c's three conditions keep every technical case of their own (exit 9), a passing
+    case whose control is technical (Q) included; a technical control recorded while its rest is
+    due (S5) waits for that rest, which may turn the case scientific (exit 3, the usual path);
+    a scientific case whose control is technical (S1, S2, S3) is no technical case (exit 3)."""
+    make, expected, established, science = NEVER_MEET[world]
+    path, root, out, run_dir = make(tmp_path)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    marks = qualify.established_technical(out, planned, SCOPE)
+    failures = qualify.scientific_failures(out, planned, SCOPE)
+    assert not (marks and failures), (marks, failures)
+    assert (bool(marks), bool(failures)) == (established, science), (marks, failures)
+    assert exit_code(qualify, control_only(path)) == expected
+
+
+@pytest.mark.parametrize("outcome", ["passing", "scientific"])
+def test_a_technical_control_recorded_before_its_rest_waits_for_the_rest(
+    qualify, tmp_path, monkeypatch, capsys, outcome
+) -> None:
+    """A passing baseline, its rest due, its same-path control recorded technical (run by hand
+    before the rest): the rest the verdict still reads may turn the case scientific, so the case
+    is no established technical case (a technical control marks one only with every part the
+    verdict still reads recorded). ``control-only`` takes the usual path (exit 3), which runs the
+    rest, and ``finish`` refuses the case (exit 1), its checkpoints kept, nothing exported; after
+    a lost container disk ``restart-case`` refuses it too (the control is a completed technical
+    failure), so its route is the engineering cycle from the control's record. Once
+    the rest is recorded: passing, the case is technical by its control (``control-only`` exits
+    9, its export); holding a scientific failure, it counts as scientific (``control-only`` says
+    no, and ``finish --kept`` keeps the failed control's evidence, exit 14)."""
+    path, root, out, run_dir = without_rest(with_failed_control(passing))(tmp_path)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    capsys.readouterr()
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert "neither due nor interrupted" in capsys.readouterr().err
+    assert qualify.established_technical(out, planned, SCOPE) == []
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    code = exit_code(qualify, finish_args(path, FA, kept))
+    assert isinstance(code, str) and "rest: due" in code and "its checkpoints are kept" in code
+    assert not list(case_folder(out, FA).glob("kept-checkpoints-*"))
+    code = exit_code(qualify, restart(path, FA, RESTART))  # its checkpoint lost with the disk
+    assert isinstance(code, str) and "completed failure" in code and "control attempt 1" in code
+    assert not list(case_folder(out, FA).glob("restart-*"))
+    _, rest = synthetic(FA, identity=q.launcher_identity(run_dir))
+    rest["launcher_run"] = str(run_dir)
+    rest["launcher"]["classified"] = True
+    baseline = out / FA.attempt_path("baseline", 1)
+    bound = q.record_sha256(json.loads(baseline.read_text()))
+    rest["baseline_record"] = {"path": str(baseline), "sha256": bound}
+    if outcome == "scientific":
+        scientific_rest(rest)
+    publish(out, FA, "rest", rest)
+    assert qualify.case_state(out, planned, SCOPE)[0] is True
+    if outcome == "passing":
+        assert qualify.established_technical(out, planned, SCOPE) == REASONS
+        assert exit_code(qualify, control_only(path)) == qualify.TECHNICAL_CASE
+        assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.TECHNICAL_CASE
+    else:
+        assert qualify.established_technical(out, planned, SCOPE) == []
+        assert qualify.scientific_failures(out, planned, SCOPE) == LABELS["rest"]
+        assert exit_code(qualify, control_only(path)) == qualify.NO
+        assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT
+
+
+@pytest.mark.parametrize("kind", ["decided", "rest"])
+def test_a_scientific_case_whose_control_failed_is_complete_scientific_and_no_technical_case(
+    qualify, tmp_path, capsys, kind
+) -> None:
+    """A case whose recorded parts hold a scientific failure (its baseline decided it, or its
+    bound rest holds one) and whose same-path control is recorded technical is complete and
+    counts as scientific: it is no technical case (``established_technical`` and
+    ``technical_reasons`` give nothing), its failed control is named apart
+    (``failed_control_reasons``), and ``control-only`` says no: nothing is outstanding."""
+    path, out, run_dir, files = failed_control_world(tmp_path, kind)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    assert qualify.case_state(out, planned, SCOPE)[0] is True
+    assert qualify.scientific_failures(out, planned, SCOPE) == LABELS[kind]
+    assert qualify.established_technical(out, planned, SCOPE) == []
+    assert qualify.technical_reasons(out, planned, SCOPE) == []
+    assert qualify.failed_control_reasons(out, planned, SCOPE) == REASONS
+    assert exit_code(qualify, ["complete", *common(path), "--case", FA.name]) == 0
+    capsys.readouterr()
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert "complete, nothing is outstanding" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["decided", "rest"])
+def test_finish_keeps_a_failed_controls_evidence_and_exits_14(
+    qualify, tmp_path, monkeypatch, kind
+) -> None:
+    """``finish --kept DIR`` of a scientific case whose control failed exports its checkpoints as
+    a technical case's (the same files, copies and binding records) and exits 14; the manifest
+    names no technical reasons and the failed control with the scientific failures. Without
+    ``--kept`` it is refused (13), the files kept. Once a ``kept-check`` of exit 0 binds that
+    export, ``finish --kept`` exits 0 and writes nothing; ``finish --release`` deletes the files
+    through that export, its record naming the failed control; after it, ``finish --kept`` still
+    exits 0."""
+    path, out, run_dir, files = failed_control_world(tmp_path, kind)
+    assert exit_code(qualify, finish_args(path, FA)) == qualify.NOT_EXPORTED
+    assert all(file.exists() for file in files.values())
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT == 14
+    assert all(file.exists() for file in files.values())
+    folder = case_folder(out, FA)
+    manifest = json.loads((folder / "kept-checkpoints-1.json").read_text())
+    assert manifest["verified"] is True and manifest["technical_reasons"] == []
+    assert manifest["failed_control"] == {"reasons": REASONS, "scientific": LABELS[kind]}
+    assert {entry["source"] for entry in manifest["files"]} == {str(f) for f in files.values()}
+    assert manifest["binding"]["parts"]["control"]["path"] == str(
+        out / FA.attempt_path("control", 1))  # fmt: skip
+    assert manifest["lost"] == []
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    before = tree(folder)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == 0
+    assert tree(folder) == before
+    qualify.main(finish_args(path, FA, None, "--release"))
+    assert not any(file.exists() for file in files.values())
+    (record,) = [json.loads(f.read_text()) for f in folder.glob("checkpoints-removed-*")]
+    assert record["technical"] == [] and record["failed_control"] == REASONS
+    assert record["manifests"][0]["path"] == str(folder / "kept-checkpoints-1.json")
+    assert exit_code(qualify, finish_args(path, FA, kept)) == 0
+
+
+def test_lost_checkpoints_of_a_failed_controls_case_keep_the_scientific_failure(
+    qualify, tmp_path, monkeypatch, capsys
+) -> None:
+    """Every file of a scientific case whose control failed lost before ``finish``: the export
+    holds the manifest alone, its ``lost`` naming each checkpoint a binding record names, and
+    ``finish`` exits 14 saying that the scientific failure stands, not a technical mark."""
+    path, out, run_dir, files = failed_control_world(tmp_path, "rest")
+    for file in files.values():
+        file.unlink()
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    capsys.readouterr()
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT
+    err = capsys.readouterr().err
+    manifest = json.loads((case_folder(out, FA) / "kept-checkpoints-1.json").read_text())
+    assert manifest["files"] == []
+    assert [e["path"] for e in manifest["lost"]] == sorted([str(files["launcher"]),
+                                                           str(files["baseline"])])  # fmt: skip
+    assert qualify.LOST_BEFORE_CONTROL_EXPORT in err and "the technical mark stands" not in err
+
+
+@pytest.mark.parametrize("kind", ["decided", "rest"])
+def test_no_route_reruns_or_voids_a_scientific_case_whose_control_failed(
+    qualify, tmp_path, monkeypatch, kind
+) -> None:
+    """Neither the failed control nor the scientific failure is rerun or voided: the recorded
+    control is never rerun, ``restart-case`` refuses the complete case and ``supersede`` keeps
+    the case whole; nothing is written, the launch journal included."""
+    path, out, run_dir, files = failed_control_world(tmp_path, kind)
+    log = tmp_path / "runs" / "launch" / "study3-qualification-c1.jsonl"
+    before = log.read_bytes()
+    code = exit_code(qualify, control_args(path, run_dir, tmp_path, "--attempt", "2",
+                                           "--infrastructure", LOST))  # fmt: skip
+    assert isinstance(code, str) and "is never rerun" in code
+    code = exit_code(qualify, restart(path, FA, RESTART))
+    assert isinstance(code, str) and "the case is complete" in code
+    assert not list(case_folder(out, FA).glob("restart-*"))
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)
+    code = exit_code(qualify, supersede_args(path, FA, case_folder(out, FA) /
+                                             "control-attempt-1.json"))  # fmt: skip
+    assert isinstance(code, str) and "keeps the case whole" in code
+    assert not (out / "c1" / "supersede-1.json").exists()
+    assert log.read_bytes() == before
+
+
+def test_an_interrupted_scientific_rest_with_a_failed_control_takes_the_usual_path(
+    qualify, stubbed, tmp_path, monkeypatch
+) -> None:
+    """The rest interrupted with a scientific failure in its trajectory results, the control
+    recorded technical: the case is not complete and no technical case. ``control-only`` takes
+    the usual path (exit 3), ``finish --kept`` refuses it (exit 1), its checkpoints kept, and the
+    rest stops the usual path (exit 8); its rerun is refused (the results keep counting) and
+    names ``interrupted --technical``, which records the attempt. The case is then a complete
+    scientific case whose control failed: ``finish --kept`` exits 14."""
+    path, root, out, run_dir = with_failed_control(interrupted_scientific_rest_world)(tmp_path)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    assert exit_code(qualify, control_only(path)) == qualify.NO
+    assert qualify.established_technical(out, planned, SCOPE) == []
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    code = exit_code(qualify, finish_args(path, FA, kept))
+    assert isinstance(code, str) and "its checkpoints are kept" in code
+    assert not list(case_folder(out, FA).glob("kept-checkpoints-*"))
+    assert exit_code(qualify, part_args(path, tmp_path, "rest", "--resume")) == (
+        qualify.INTERRUPTED)  # fmt: skip
+    code = exit_code(qualify, part_args(path, tmp_path, "rest", "--attempt", "2",
+                                        "--infrastructure", RESTART))  # fmt: skip
+    assert isinstance(code, str) and "keeps counting" in code and "interrupted --technical" in code
+    assert stubbed == []
+    qualify.main(["interrupted", *common(path), "--case", FA.name, "--part", "rest",
+                  "--attempt", "1", "--technical", "the process was killed"])  # fmt: skip
+    assert qualify.case_state(out, planned, SCOPE)[0] is True
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT
+
+
+@pytest.mark.parametrize("kind", ["decided", "rest"])
+def test_the_verdict_counts_the_scientific_failure_and_lists_the_failed_control(
+    qualify, tmp_path, kind
+) -> None:
+    """The verdict of a scientific case whose control failed: its rate fails on the scientific
+    failure, and lists the failed control under its ``control`` (not qualified, technical, with
+    its reasons) and among its own reasons."""
+    path, out, run_dir, files = failed_control_world(tmp_path, kind)
+    qualify.main(["verdict", *common(path)])
+    verdict = json.loads((out / "c1" / "verdict.json").read_text())
+    rate = verdict["rates"][f"adam_frozen-{FA_LR:g}"]
+    assert rate["state"] == "failing"
+    control = rate["control"]
+    assert (control["state"], control["kind"]) == ("not_qualified", "technical")
+    assert control["reasons"] == ["K_scoring 0.1 at step 25 beyond 0.06"]
+    assert "control: K_scoring 0.1 at step 25 beyond 0.06" in rate["reasons"]
+
+
+def failed_control_real_world(tmp_path, code):
+    """FA's case S1 (decided by its baseline, its same-path control technical) with
+    ``technical_world``'s files on disk; AdamW's case complete and passing, bound to its done
+    launcher run r-a1, whose endpoint checkpoint ``ckpt/r-a1.pt`` is on disk. Every record carries
+    ``code``, the GPU code a real ``qualify.py`` reads. Returns the campaign, the records' folder,
+    FA's files by name and r-a1's checkpoint."""
+    path, out, run_dir, files = failed_control_world(tmp_path, "decided")
+    for part_name in ("baseline", "control"):
+        edit_part(out, part_name, lambda r: r["provenance"].update(gpu_code=code))
+    root = tmp_path / "runs"
+    run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
+    log_end(root, path, run, "r-a1")
+    checkpoint = tmp_path / "ckpt" / "r-a1.pt"
+    adamw_dir = with_checkpoint(settled_launcher(root, run, "r-a1"), checkpoint)
+    baseline, rest = synthetic(ADAMW, identity=q.launcher_identity(adamw_dir))
+    for record in (baseline, rest):
+        record.update(launcher_run=str(adamw_dir))
+        record["launcher"]["classified"] = True
+        record["provenance"]["gpu_code"] = code
+    publish(out, ADAMW, "baseline", baseline)
+    rest["baseline_record"] = {"path": str(out / ADAMW.attempt_path("baseline", 1)),
+                               "sha256": q.record_sha256(baseline)}  # fmt: skip
+    publish(out, ADAMW, "rest", rest)
+    return path, out, files, checkpoint
+
+
+def test_the_real_driver_goes_on_past_a_scientific_case_whose_control_failed(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """The generated driver over the real ``qualify.py`` subcommands: FA complete, decided by its
+    baseline, its control technical; AdamW complete and passing. First pass: FA's ``finish``
+    exports the failed control's evidence (14), the upload and ``kept-check`` verify it, and the
+    driver goes on to AdamW, whose ``finish`` deletes its checkpoint; exit 0. Second pass: FA's
+    ``finish`` finds the export bound by that ``kept-check`` and exits 0, so nothing is exported,
+    uploaded or checked again. The launcher is never called."""
+    path, out, files, checkpoint = failed_control_real_world(tmp_path, real_gpu_code())
+    run = real_driver(qualify, tmp_path, monkeypatch, path)
+    code, calls = run()
+    assert code == 0, (tmp_path / "driver.out").read_text()
+    assert calls == ["complete", "finish", "archive", "kept-check", "complete", "finish",
+                     "verdict"]  # fmt: skip
+    assert all(file.exists() for file in files.values()) and not checkpoint.exists()
+    folder = case_folder(out, FA)
+    manifest = json.loads((folder / "kept-checkpoints-1.json").read_text())
+    assert manifest["failed_control"]["reasons"] == REASONS
+    assert json.loads((folder / "kept-check-1.json").read_text())["exit"] == 0
+    code, calls = run()  # a second pass
+    assert code == 0, (tmp_path / "driver.out").read_text()
+    assert calls == ["complete", "finish", "complete", "finish", "verdict"]
+    kept = sorted(f.name for f in folder.glob("kept-*"))
+    assert kept == ["kept-check-1.json", "kept-checkpoints-1.json"]
 
 
 def test_a_part_sets_the_numerics_before_its_environment(qualify, tmp_path, monkeypatch) -> None:
