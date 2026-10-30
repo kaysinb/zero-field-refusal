@@ -107,6 +107,29 @@ class Interval:
     zero_se: int
     undetermined: bool
 
+    def __post_init__(self) -> None:
+        """Refuse a record no computation can produce (a from_json record included)."""
+        lo_nan, hi_nan = math.isnan(self.lower), math.isnan(self.upper)
+        if self.undetermined != (lo_nan and hi_nan) or lo_nan != hi_nan:
+            raise ValueError("an interval is undetermined exactly when both bounds are NaN")
+        if not self.undetermined:
+            if self.lower > self.upper:
+                raise ValueError(f"lower {self.lower!r} lies above upper {self.upper!r}")
+            if self.lower == self.upper and math.isinf(self.lower):
+                raise ValueError("both ends are infinite on the same side")
+        if not 0 < self.level < 1:
+            raise ValueError(f"the level must lie strictly between 0 and 1, not {self.level!r}")
+        if self.n < 1 or self.resamples < 1:
+            raise ValueError("n and resamples must be at least 1")
+        if not (
+            self.infinite_low >= 0
+            and self.infinite_high >= 0
+            and self.infinite_low + self.infinite_high <= self.zero_se <= self.resamples
+        ):
+            raise ValueError(
+                "the counts must satisfy 0 <= infinite_low + infinite_high <= zero_se <= resamples"
+            )
+
     def to_json(self) -> dict:
         out: dict = {}
         for f in fields(self):
@@ -148,8 +171,13 @@ def _float_from_json(value: object, name: str) -> float:
         return math.inf
     if value == "-inf" and isinstance(value, str):
         return -math.inf
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return float(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            out = float(value)
+        except OverflowError:
+            out = math.inf
+        if math.isfinite(out):
+            return out
     raise ValueError(f"{name} must be a finite number, null, '+inf' or '-inf', not {value!r}")
 
 
@@ -167,6 +195,8 @@ def bootstrap_t(
         raise ValueError("d must be a non-empty one-dimensional sequence of numbers")
     if not np.all(np.isfinite(arr)):
         raise ValueError("d must hold finite numbers only")
+    if not isinstance(seed, np.random.SeedSequence):
+        raise ValueError(f"seed must be a numpy SeedSequence, not {type(seed).__name__}")
     k_lo, k_hi = tail_ranks(level, resamples)
     if not _is_int(chunk) or chunk < 1:
         raise ValueError(f"chunk must be a positive integer, not {chunk!r}")
@@ -178,7 +208,7 @@ def bootstrap_t(
                         0, 0, 0, True)  # fmt: skip
     sd = float(arr.std(ddof=1))
     if float(arr.max()) == float(arr.min()):
-        return Interval(n, mean, sd, 0.0, lvl, int(resamples), math.nan, math.nan,
+        return Interval(n, mean, 0.0, 0.0, lvl, int(resamples), math.nan, math.nan,
                         0, 0, 0, True)  # fmt: skip
     se = sd / math.sqrt(n)
     rng = np.random.default_rng(seed)
@@ -202,6 +232,8 @@ def bootstrap_t(
         parts.append(t)
         done += size
     t_all = np.concatenate(parts)
+    if np.isnan(t_all).any():
+        raise ValueError("a resample gave a NaN t*")
     t_part = np.partition(t_all, [k_lo, k_hi])
     lower = mean - float(t_part[k_hi]) * se
     upper = mean - float(t_part[k_lo]) * se

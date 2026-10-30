@@ -65,6 +65,22 @@ def test_the_result_does_not_depend_on_the_chunk():
     a = inf.bootstrap_t(d, level=0.98, resamples=5000, seed=SEED, chunk=5000)
     b = inf.bootstrap_t(d, level=0.98, resamples=5000, seed=SEED, chunk=333)
     assert a == b
+    d9 = np.random.default_rng(4).normal(0, 0.03, 9)
+    whole = inf.bootstrap_t(d9, level=0.98, resamples=5000, seed=SEED, chunk=5000)
+    assert whole == inf.bootstrap_t(d9, level=0.98, resamples=5000, seed=SEED, chunk=333)
+    small = inf.bootstrap_t(d9, level=0.9, resamples=60, seed=SEED, chunk=60)
+    assert small == inf.bootstrap_t(d9, level=0.9, resamples=60, seed=SEED, chunk=1)
+
+
+def test_an_observed_zero_sd_records_exact_zeros():
+    got = inf.bootstrap_t([0.1] * 3, level=0.975, resamples=100, seed=SEED)
+    assert got.sd == 0.0 and got.se == 0.0 and got.undetermined
+
+
+@pytest.mark.parametrize("seed", [np.random.default_rng(1), 5])
+def test_a_seed_that_is_not_a_seed_sequence_is_refused(seed):
+    with pytest.raises(ValueError):
+        inf.bootstrap_t([0.0, 0.01, 0.02], level=0.975, resamples=100, seed=seed)
 
 
 def test_two_blocks_give_infinite_tails():
@@ -232,3 +248,42 @@ def test_from_json_refuses_other_strings():
     data = at(-2.0, -1.0).to_json() | {"lower": "-Infinity"}
     with pytest.raises(ValueError):
         inf.Interval.from_json(data)
+
+
+BAD_RECORDS = [
+    {"lower": None, "upper": -0.01},
+    {"lower": 0.01, "upper": None},
+    {"lower": "-inf", "upper": "-inf"},
+    {"lower": "+inf", "upper": "+inf"},
+    {"n": -3},
+    {"level": 7.0},
+    {"resamples": 0},
+    {"zero_se": -1},
+    {"infinite_low": 3, "zero_se": 2},
+    {"zero_se": 200_000},
+    {"lower": -0.01, "upper": -0.02},
+    {"undetermined": True},
+]
+
+
+@pytest.mark.parametrize("change", BAD_RECORDS)
+def test_malformed_records_are_refused(change):
+    data = at(-2.0, -1.0).to_json() | change
+    with pytest.raises(ValueError):
+        inf.Interval.from_json(data)
+    with pytest.raises(ValueError):
+        inf.Interval(**(inf.Interval.from_json(at(-2.0, -1.0).to_json()).__dict__ | _py(change)))
+
+
+def _py(change):
+    """The same change as constructor arguments (JSON strings and null back to floats)."""
+    back = {"+inf": math.inf, "-inf": -math.inf}
+    return {
+        k: math.nan if v is None else back.get(v, v) if isinstance(v, str) else v
+        for k, v in change.items()
+    }
+
+
+def test_a_huge_integer_in_a_float_field_is_a_value_error():
+    with pytest.raises(ValueError):
+        inf.Interval.from_json(at(-2.0, -1.0).to_json() | {"sd": 10**400})
