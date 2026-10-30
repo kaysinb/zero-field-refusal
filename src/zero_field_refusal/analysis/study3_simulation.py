@@ -2883,6 +2883,22 @@ def curvature_record() -> dict[str, Any]:
     }
 
 
+def calibration_record() -> dict[str, Any]:
+    """The calibration's size and tolerances, as the fixation freezes them and ``read_fixation``
+    checks them against this code: ``studies`` (``CALIBRATION_STUDIES``, the selections per
+    pair), ``blocks`` (``CALIBRATION_BLOCKS``), ``rounds`` (``CALIBRATION_ROUNDS``, the bound on
+    each alternation) and the solvers' ``tolerances``: ``support`` (f's, on the support),
+    ``sigma`` and ``sigma_relative`` (Brent's on σ) and ``offset`` (the offsets', on the mean
+    truth)."""
+    return {
+        "studies": CALIBRATION_STUDIES,
+        "blocks": CALIBRATION_BLOCKS,
+        "rounds": CALIBRATION_ROUNDS,
+        "tolerances": {"support": SUPPORT_TOLERANCE, "sigma": SIGMA_PRECISION,
+                       "sigma_relative": SIGMA_RTOL, "offset": OFFSET_PRECISION},
+    }  # fmt: skip
+
+
 def machine_record() -> dict[str, str]:
     """The machine a fixation is calibrated on (reported, never refused on): the platform, the
     CPU model and numpy's version."""
@@ -2979,11 +2995,12 @@ def build_fixation(
     the ``machine`` it is calibrated on (``machine_record``, reported: ``run`` names a different
     one and goes on); the registration's ``policy`` (``study3_versions.registered_policy`` at
     HEAD of ``repo``, unless given); the inputs record (``vectors_path``, in the checkout) by its
-    sha256; M, the resamples, the ``streams``, the levels, N points and p₀, the gate replicates
-    (M) and the draw bound; the procedure's ``rules`` and the base ``curvature``; every scenario
-    with its calibrations per candidate (a coverage scenario of candidate 1 also at candidate 2,
-    the verification's fallback); the coverage tests' explicit identities, their count and sha256,
-    J, the thresholds and the detection powers."""
+    sha256; M, the resamples, the calibration's size and tolerances (``calibration_record``),
+    the ``streams``, the levels, N points and p₀, the gate replicates (M) and the draw bound;
+    the procedure's ``rules`` and the base ``curvature``; every scenario with its calibrations
+    per candidate (a coverage scenario of candidate 1 also at candidate 2, the verification's
+    fallback); the coverage tests' explicit identities, their count and sha256, J, the
+    thresholds and the detection powers."""
     import datetime
 
     from ..paths import REPO_ROOT
@@ -3023,6 +3040,7 @@ def build_fixation(
         "inputs": {"path": relative, "sha256": hashlib.sha256(full.read_bytes()).hexdigest()},
         "M": m,
         "resamples": {"screen": SCREEN_RESAMPLES, "verification": VERIFICATION_RESAMPLES},
+        "calibration": calibration_record(),
         "streams": {
             "calibration": int(streams["calibration"]),
             "verification": int(streams["verification"]),
@@ -3050,7 +3068,8 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
     """The committed fixation at ``path`` in the checkout ``repo`` (``SIMULATION_FIXATION``),
     as the J check reads it (``study3_decisions.fixation_problems``): committed once, alone and
     unchanged at HEAD (so in HEAD's history: HEAD or an ancestor of it holds it), its schema
-    closed and its tests exactly its coverage scenarios' identities. Returns ``fixation``,
+    closed and its tests exactly its coverage scenarios' identities; and its calibration's size
+    and tolerances this code's (``calibration_record``). Returns ``fixation``,
     ``commit``, ``sha256``, the ``scenarios`` (``Scenario``) and ``calibrations`` ((scenario,
     candidate) → ``Calibration``). ``ValueError`` naming every problem."""
     repo = Path(repo)
@@ -3064,6 +3083,9 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
     fixation, commit, problems = fixation_problems(repo, relative)
     if fixation is None or problems:
         raise ValueError("; ".join(problems))
+    if fixation["calibration"] != calibration_record():
+        raise ValueError(f"{path}: the fixation froze the calibration {fixation['calibration']}, "
+                         f"not this code's {calibration_record()}")  # fmt: skip
     scenarios, calibrations = [], {}
     for entry in fixation["scenarios"]:
         sc = Scenario.from_json({k: v for k, v in entry.items() if k != "calibration"})

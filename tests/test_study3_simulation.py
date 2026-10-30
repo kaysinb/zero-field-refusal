@@ -1314,7 +1314,7 @@ def test_a_calibration_round_trips_through_json() -> None:
         sim.calibration_from_json({**json.loads(text), "extra": 1})
 
 
-def test_the_fixation_is_built_committed_and_read_back(tmp_path) -> None:
+def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) -> None:
     import json
 
     from zero_field_refusal.analysis import study3_decisions as decisions
@@ -1350,6 +1350,11 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path) -> None:
     for rule in fixation["rules"].values():
         assert rule["source"].endswith("decided") and " M" in rule["source"].rsplit(";", 1)[-1]
     assert fixation["max_draws_factor"] == 4 and fixation["gate_replicates"] == fixation["M"]
+    assert fixation["calibration"] == {
+        "studies": 10_000, "blocks": 28, "rounds": 10,
+        "tolerances": {"support": 1e-4, "sigma": 1e-14, "sigma_relative": sim.SIGMA_RTOL,
+                       "offset": 1e-12},
+    }  # fmt: skip
     assert [s["name"] for s in fixation["scenarios"]] == ["C01", "C15", "P18", "G1"]
     assert set(fixation["scenarios"][1]["calibration"]) == {"2"}  # C15 starts at candidate 2
     path = repo / decisions.SIMULATION_FIXATION
@@ -1373,6 +1378,14 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path) -> None:
     run_git(repo, "add", "other.txt")
     run_git(repo, "commit", "-qm", "another file")
     assert sim.read_fixation(path, repo)["commit"] == found["commit"]
+    # a code whose calibration's size or tolerances are not the fixation's does not read it
+    monkeypatch.setattr(sim, "CALIBRATION_STUDIES", 1_000)
+    with pytest.raises(ValueError, match="calibration"):
+        sim.read_fixation(path, repo)
+    monkeypatch.setattr(sim, "CALIBRATION_STUDIES", 10_000)
+    monkeypatch.setattr(sim, "SIGMA_PRECISION", 1e-13)
+    with pytest.raises(ValueError, match="calibration"):
+        sim.read_fixation(path, repo)
 
 
 def test_the_fixations_schema_is_closed(tmp_path) -> None:
@@ -1402,6 +1415,13 @@ def test_the_fixations_schema_is_closed(tmp_path) -> None:
         ({"rules": {**fixation["rules"], "draw_bound": {
             **fixation["rules"]["draw_bound"], "rule": "each test draws at most 5 M"}}}, "rules"),
         ({"machine": {"platform": "x"}}, "machine"),
+        ({"calibration": {**fixation["calibration"], "studies": 0}}, "calibration.studies"),
+        ({"calibration": {**fixation["calibration"], "rounds": 2.5}}, "calibration.rounds"),
+        ({"calibration": {**fixation["calibration"], "tolerances": {"support": 1e-4}}},
+         "calibration.tolerances"),
+        ({"calibration": {**fixation["calibration"], "tolerances": {
+            **fixation["calibration"]["tolerances"], "sigma": -1.0}}}, "calibration.tolerances"),
+        ({"calibration": {"studies": 10_000}}, "calibration"),
         ({"J": 106}, "J"),
         ({"thresholds": {"comparison": 300, "joint": 573}}, "thresholds"),
         ({"streams": {"calibration": 5, "verification": 5}}, "streams"),

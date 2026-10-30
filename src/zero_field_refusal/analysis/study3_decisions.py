@@ -347,9 +347,12 @@ NOT_ATTAINABLE = "not_attainable"
 POWER_REQUIRED, POWER_LEVEL = REQUIRED_GATES["power_af"], LEVELS[0]  # the power without an L
 COVERAGE_ROLES, POWER_ROLES = ("coverage", "coverage_power"), ("coverage_power", "power")
 FIXATION_FIELDS = ("kind", "written_at", "code", "machine", "policy", "inputs", "M", "resamples",
-                   "streams", "levels", "n_points", "p0", "gate_replicates", "max_draws_factor",
-                   "rules", "curvature", "scenarios", "tests", "J", "thresholds",
-                   "detection_power")  # fmt: skip
+                   "calibration", "streams", "levels", "n_points", "p0", "gate_replicates",
+                   "max_draws_factor", "rules", "curvature", "scenarios", "tests", "J",
+                   "thresholds", "detection_power")  # fmt: skip
+# the calibration's size and tolerances (``study3_simulation.calibration_record``)
+CALIBRATION_FIELDS = ("studies", "blocks", "rounds", "tolerances")
+CALIBRATION_TOLERANCES = ("support", "sigma", "sigma_relative", "offset")
 MACHINE_FIELDS = ("platform", "cpu", "numpy")  # where the fixation was calibrated (reported)
 FIXATION_RULES = ("screen_simplifications", "pf_verification", "joint_verification",
                   "draw_bound")  # fmt: skip
@@ -1449,6 +1452,14 @@ def _fixation_schema(f: Any) -> list[str]:
     resamples = check.object("resamples", f["resamples"], ("screen", "verification"))
     for name in ("screen", "verification") if resamples is not None else ():
         check.integer(f"resamples.{name}", resamples[name], 1)
+    calibration = check.object("calibration", f["calibration"], CALIBRATION_FIELDS)
+    if calibration is not None:
+        for name in ("studies", "blocks", "rounds"):
+            check.integer(f"calibration.{name}", calibration[name], 1)
+        tolerances = check.object("calibration.tolerances", calibration["tolerances"],
+                                  CALIBRATION_TOLERANCES)  # fmt: skip
+        for name in CALIBRATION_TOLERANCES if tolerances is not None else ():
+            check.real(f"calibration.tolerances.{name}", tolerances[name], positive=True)
     streams = check.object("streams", f["streams"], TEST_STREAMS)
     counted = streams is not None and all(
         [check.integer(f"streams.{n}", streams[n], 0) for n in TEST_STREAMS]
