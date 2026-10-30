@@ -2334,13 +2334,17 @@ before each command below.
      voided case re-qualifies under the fix, its launcher run through its own recovery round, its
      parts with `--engineering-cycle`; the cases holding a scientific failure are kept whole. Under
      `qualification=reuse` there is none: the qualification is read under the old code.
-  7. **The reissue.** Once the qualification passes (at once under `qualification=reuse`), the
-     campaign writer issues the superseded runs' cells again and prints, for each label whose
-     attempt is used up, its own recovery round, after `check` and before the file's launch
-     (`--only` the label at `--max-attempts 1`, the reason `engineering cycle c<N>`, the cycle's
-     time as the incident's, the fix as its cause and the bridge as its evidence); a
-     confirmation block's `run.sh` runs it after the block's guard. A label under a new config
-     hash is a new run and takes the plain launch.
+  7. **The reissue.** The campaign writer issues the superseded runs' cells again in the
+     route's order: a rerun search first, before the re-qualification; the validation's and the
+     confirmation's cells once the qualification passes (at once under `qualification=reuse`).
+     For each label whose latest attempt the cycle affected and whose attempt is used up, it
+     prints its own recovery round, after `check` and before the file's launch (`--only` the
+     label at `--max-attempts 1`, the reason `engineering cycle c<N>`, the cycle's time as the
+     incident's, the fix as its cause and the bridge as its evidence); a confirmation block's
+     `run.sh` runs it after the block's guard. A label under a new config hash is a new run and
+     takes the plain launch. A validation or confirmation reissue under the fix needs a new
+     versions record first: `check` refuses a descendant of the pinned commit that changes more
+     than the record (below, "After the validation fixation").
   8. **After the cycle.** The cycle is spent once the candidate has a supersession record,
      whichever path wrote it. A technical mark outside the qualification after that is unresolved
      after the cycle: the step is blocked and technical, with the reason `unresolved_after_cycle`,
@@ -2348,6 +2352,40 @@ before each command below.
      `unresolved_after_cycle`; its `cycle` the candidate's supersession record by its path and
      sha256), beside its recovery round where the launcher opens one ("Holds and closures",
      below).
+- **After the validation fixation.** A cycle moves the candidate's GPU code, so every
+  write-once record of the old code goes stale: the validation fixation, the confirmation
+  supplement, the n and budget records and the standing versions record (the cycle record lists
+  each by its path and sha256). Each stale record stays as it was; its successor is a new file
+  that names it and the cycle (`supersedes`: its path, its sha256, the reason `cycle_c<N>` and the
+  cycle record), and carries the fix: `docs/study3-fixation-validation-c<N>-2.json`,
+  `docs/study3-fixation-confirmation-c<N>-2.json`, `study3/decisions/n-c<N>-2.json` (the
+  `n-c<N>-2` record) and `budget-c<N>-2.json`. The search is never rerun after the fixation
+  (`search=reuse`), and the fixed rates stand: a repair the re-qualified runs would call for is
+  listed (`repair_not_applied`) and never issued. The successors come in this order, each written
+  when the state's step names it and committed alone (one written out of turn is refused with
+  the step the state names):
+  1. the validation fixation's successor (`study3_summary.py fixation validation`, once the
+     re-qualification has passed) and its versions record (`versions --supersedes ...
+     --supersedes-reason cycle_c<N>`, its `--fixation` the successor);
+  2. the validation rerun, issued under them (the claim `validation=rerun`; none under `reuse`);
+  3. the spread, N and budget decisions, as the step names them (`record n-c<N>`, then `record
+     budget-c<N>` when N asks for one: the next successor when the record in force is stale, its
+     file carrying `supersedes`), on the validation that counts;
+  4. the confirmation supplement's successor (`fixation confirmation`, the same seeds) and its
+     versions record.
+
+  **The confirmation boundary.** Once a block of the candidate's confirmation has started, the
+  candidate, the rates, the started seeds and the cohort's order never change: there is no
+  candidate 2, no new N and no reopening of the validation without an explicit prospective
+  amendment, which the code never infers. `cycle` refuses `validation=rerun` and `search=rerun`;
+  a re-qualification failing scientifically blocks the route with the reason
+  `confirmation_fixed` instead of moving the candidate or closing an arm; the n, budget and
+  supplement successors differ from their predecessors only in their code, time, `supersedes`
+  and the references to the records in force (N, the cap, the cohort and the seeds stand).
+  Before the confirmation has started, the registered routes apply unchanged: a fixed rate's
+  re-qualification failing scientifically moves A or F to candidate 2 (at candidate 2, the
+  scientific feasibility report) and closes P–F for P; a rerun validation failing its gate takes
+  its route.
 - **A fix that leaves the GPU code unchanged.** An analysis fix (a reader's rule) is no cycle
   and gets no record of its own: `cycle` refuses it. Commit the fix and read the state again:
   every reader recomputes from the raw records, and the mark resolves only if the recomputed
