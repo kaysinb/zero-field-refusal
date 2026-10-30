@@ -818,8 +818,8 @@ def test_a_superseded_launcher_run_waits_for_its_next_attempt() -> None:
 ROUTE_PENDING = "engineering_route_pending"
 ROUTE_WHY = ("the registered engineering cycle for a technical mark outside the qualification is "
              "not implemented yet: the researcher decides")  # fmt: skip
-NOT_ACCEPTED = ("a closure of a technical mark outside the qualification is not accepted until "
-                "its engineering route exists")  # fmt: skip
+NOT_ACCEPTED = ("a closure carries its route's reason (an uncounted reason, or "
+                "unresolved_after_cycle), never the launcher's outcome")  # fmt: skip
 
 
 def assert_route_pending(result, *runs: Endpoint) -> None:

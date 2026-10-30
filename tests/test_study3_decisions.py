@@ -20,12 +20,14 @@ from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
     UNCOUNTED_REASONS,
+    UNRESOLVED_AFTER_CYCLE,
     DecisionRefused,
     budget_needed,
     budget_reason,
     cap_of,
     closures,
     coverage_threshold,
+    cycle_path,
     decision_path,
     decisions,
     end_lines,
@@ -2216,9 +2218,9 @@ def test_a_diverged_end_with_a_published_terminal_record_may_be_closed(world) ->
 @pytest.mark.parametrize("reason", ["launcher_technical", "launcher_exhausted", "no_end_line"])
 def test_a_closure_of_a_technical_mark_outside_the_qualification_is_refused(world, reason):
     """A closure whose reason is an end's outcome (``launcher_<outcome>``) or the start line's
-    (``no_end_line``) closes a technical mark outside the qualification, whose route is its
-    engineering cycle: refused, with the stop's words. A hold's reason on an end line is no
-    reason of it either."""
+    (``no_end_line``) would close a technical mark outside the qualification by the launcher's
+    outcome, never its route's reason: refused, with the words that say so. A hold's reason on
+    an end line is no reason of it either."""
     record = ended(world, outcome="technical") if reason != "no_end_line" else started(world)
     kind = record["kind"]
     refused(
@@ -2226,8 +2228,8 @@ def test_a_closure_of_a_technical_mark_outside_the_qualification_is_refused(worl
         kind,
         {**record, "reason": reason},
         "reason",
-        "a closure of a technical mark "
-        "outside the qualification is not accepted until its engineering route exists",
+        "a closure carries its route's reason (an uncounted reason, or unresolved_after_cycle), "
+        "never the launcher's outcome",
     )
     refused(world, "closure-c1-F", {**ended(world), "reason": "no_recorded_commit"}, "reason")
 
@@ -2405,3 +2407,210 @@ def test_the_decisions_folder_is_reserved(world) -> None:
     from zero_field_refusal.analysis.study3_records import DECISIONS, EXPERIMENT
 
     assert decision_path(world.runs, "engineering").parent == world.runs / EXPERIMENT / DECISIONS
+
+
+# ------------------------------------------------------------------ the engineering cycle
+
+OLD_CODE, FIX_CODE = "b" * 64, "f" * 64
+MARK = ENDED  # F on 10300: its start and its last end line, technical
+OTHER = "20261026T000005Z-A-1.45e-05-s10300-0123abcd-a1"  # A on 10300, ended done
+VALIDATION_LOG = "launch/study3-c1-validation.jsonl"
+
+
+def supersession(world: World, candidate: int = 1, record: dict | None = None) -> dict:
+    """The candidate's supersession record (``qualification/c<N>/supersede-1.json``) and its
+    evidence, as a closure cites it."""
+    path = world.runs / "qualification" / f"c{candidate}" / "supersede-1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record or {"candidate": candidate, "supersession": 1}))
+    return {"path": f"qualification/c{candidate}/supersede-1.json", "sha256": sha256(path)}
+
+
+def run_files(world: World, run_id: str, *, terminal: bool = True) -> list[dict]:
+    """A run's config.yaml, meta.json and terminal.json as a cycle lists them: evidence, or an
+    absence marker for a terminal record that is not there."""
+    run_dir = world.runs / "study3" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name, text in (("config.yaml", "seed: 10300\n"), ("meta.json", '{"status": "failed"}'),
+                       ("terminal.json", '{"steps": 25}')):  # fmt: skip
+        where = f"study3/{run_id}/{name}"
+        if name == "terminal.json" and not terminal:
+            out.append({"path": where, "absent": True})
+            continue
+        (run_dir / name).write_text(text)
+        out.append({"path": where, "sha256": sha256(run_dir / name)})
+    return out
+
+
+def line_of(world: World, log: str, number: int) -> dict:
+    """A launch log's line as a cycle cites it: its log, its number and its own sha256."""
+    text = (world.runs / log).read_bytes().split(b"\n")[number - 1]
+    return {"path": log, "line": number, "line_sha256": hashlib.sha256(text).hexdigest()}
+
+
+def cycle_record(world: World, **over) -> dict:
+    """A schema-valid cycle record of candidate 1, its evidence files and journal lines present:
+    the validation mark of F on 10300 (its last end line, technical, no terminal record), the
+    affected runs F and A on 10300, the search reused."""
+    ended(world)
+    ended(world, arm="A", rate=1.45e-5, run_id=OTHER, outcome="done")
+    data = (world.runs / VALIDATION_LOG).read_bytes()
+    runs = []
+    for run_id, arm, rate, first in ((MARK, "F", 1.83e-5, 1), (OTHER, "A", 1.45e-5, 3)):
+        runs.append({"run_id": run_id, "label": f"{arm}-{rate:g}/s10300", "step": "validation",
+                     "arm": arm, "rate": rate, "seed": 10300, "gpu_code": OLD_CODE,
+                     "records": run_files(world, run_id, terminal=run_id != MARK),
+                     "start": line_of(world, VALIDATION_LOG, first),
+                     "end": line_of(world, VALIDATION_LOG, first + 1)})  # fmt: skip
+    record = {
+        "kind": "cycle-c1", "state": "passed", "written_at": WHEN,
+        "code": {"commit": "c" * 40, "gpu_code_sha256": FIX_CODE},
+        "candidate": 1, "stage": "validation", "old_code": OLD_CODE,
+        "marks": [{"run_id": MARK, "label": "F-1.83e-05/s10300", "step": "validation",
+                   "arm": "F", "rate": 1.83e-5, "seed": 10300,
+                   "line": {"kind": "end", **line_of(world, VALIDATION_LOG, 2)}}],
+        "diagnosis": "a stale kernel cache", "fix": "the cache is cleared at start",
+        "stages": {
+            "search": {"action": "reuse", "arms": [],
+                       "justification": "the fix touches the evaluation only"},
+            "qualification": {"action": "reuse", "arms": [],
+                              "justification": "its runs evaluate nothing"},
+            "validation": {"action": "rerun", "arms": ["A", "F", "P"],
+                           "justification": "its runs evaluate"}},
+        "fixation": None,
+        "journal": [{"path": VALIDATION_LOG, "lines": 4,
+                     "sha256": hashlib.sha256(data).hexdigest()}],
+        "affected": {"runs": runs, "qualification": {"records": [], "launchers": []},
+                     "records": []},
+        "kept": [{"why": "reused_stage", "stage": "search", "runs": 24}],
+        "bridge": "qualification/c1/supersede-1.json",
+    }  # fmt: skip
+    return {**record, **over}
+
+
+def test_a_closure_after_the_cycle_carries_its_cycle_and_reason(world) -> None:
+    """A technical mark outside the qualification left unresolved after the candidate's cycle
+    closes by its last end line (or its start line), with the reason ``unresolved_after_cycle``
+    and the candidate's supersession record as its cycle; the launcher's outcome stays no reason,
+    and a run under another commit keeps its uncounted reason with no cycle."""
+    line = ended(world, seed=10304)
+    bridge = supersession(world, 1)
+    ok = {**line, "cycle": bridge, "reason": "unresolved_after_cycle"}
+    for reason, cycle, word in (("unresolved_after_cycle", None, "cycle"),
+                                ("launcher_technical", bridge, "reason"),
+                                ("other_commit", bridge, "cycle")):  # fmt: skip
+        refused(world, "closure-c1-F", {**ok, "reason": reason, "cycle": cycle}, word)
+    other = World(world.runs.parent / "other")
+    refused(other, "closure-c1-F", {**ended(other, seed=10304), "cycle": supersession(other, 2),
+                                    "reason": "unresolved_after_cycle"}, "cycle")  # fmt: skip
+    assert write_decision(world.runs, "closure-c1-F", ok, repo=world.repo).name == (
+        "closure-c1-F.json")  # fmt: skip
+    assert world.read("closure-c1-F") == (ok, [])
+    start = {**started(world), "cycle": bridge, "reason": "unresolved_after_cycle"}
+    world.write("closure-c1-P", start)
+    assert world.read("closure-c1-P") == (start, [])
+
+
+def test_other_gpu_code_is_an_uncounted_reason() -> None:
+    assert "other_gpu_code" in UNCOUNTED_REASONS
+    assert UNRESOLVED_AFTER_CYCLE == "unresolved_after_cycle"
+    assert UNRESOLVED_AFTER_CYCLE not in UNCOUNTED_REASONS
+
+
+def test_the_cycle_kind_is_closed_and_needs_a_new_code(world) -> None:
+    record = cycle_record(world)
+    assert kind_of("cycle-c2") == ("cycle", 2) and kind_of("cycle-c1") == ("cycle", 1)
+    for bad in ("cycle", "cycle-c3", "cycle-c1-A"):
+        with pytest.raises(ValueError):
+            kind_of(bad)
+    same = {**record["code"], "gpu_code_sha256": record["old_code"]}
+    for change in ({"extra": 1}, {"code": same}, {"stage": "numerical"},
+                   {"bridge": "qualification/c2/supersede-1.json"}, {"marks": []},
+                   {"diagnosis": " "},
+                   {"stages": {"search": {"action": "keep", "arms": [], "justification": "x"}}},
+                   {"state": "failed"}, {"candidate": 2}, {"old_code": "B" * 64},
+                   {"fix": "two\nlines"}, {"journal": []}):  # fmt: skip
+        refused(world, "cycle-c1", {**record, **change}, next(iter(change)))  # names the field
+    assert write_decision(world.runs, "cycle-c1", record, repo=world.repo) == cycle_path(
+        world.runs, 1)  # fmt: skip
+    assert world.read("cycle-c1") == (record, [])
+    with pytest.raises(DecisionRefused, match="already written"):
+        write_decision(world.runs, "cycle-c1", record, repo=world.repo)
+
+
+def test_a_cycles_claims_rerun_the_marks_stage_and_claim_every_stage_before_it(world) -> None:
+    record = cycle_record(world)
+    stages = record["stages"]
+    for change, words in (
+        ({"validation": {**stages["validation"], "action": "reuse", "arms": []}}, ("marked",)),
+        ({"validation": {**stages["validation"], "arms": ["A", "P"]}}, ("marked", "F")),
+        ({"search": None}, ("search",)),
+        ({"qualification": {"action": "rerun", "arms": ["A"], "justification": "x"}},
+         ("qualification", "all or nothing")),
+        ({"search": {"action": "reuse", "arms": ["A"], "justification": "x"}}, ("search",)),
+        ({"validation": {**stages["validation"], "arms": ["F", "A"]}}, ("arms",)),
+        ({"search": {**stages["search"], "justification": "x" * 1001}}, ("justification",)),
+        ({"engineering": {**stages["search"]}}, ("engineering",)),
+    ):  # fmt: skip
+        claims = {k: v for k, v in {**stages, **change}.items() if v is not None}
+        refused(world, "cycle-c1", {**record, "stages": claims}, "stages", *words)
+    later = {**stages, "confirmation": {"action": "reuse", "arms": [], "justification": "x"}}
+    world.write("cycle-c1", {**record, "stages": later})  # a later stage already started
+
+
+def test_a_cycles_lists_are_in_canonical_order_and_name_nothing_twice(world) -> None:
+    record = cycle_record(world)
+    runs = record["affected"]["runs"]
+    marks = record["marks"]
+    for change, words in (
+        ({"affected": {**record["affected"], "runs": runs[::-1]}}, ("canonical order",)),
+        ({"affected": {**record["affected"], "runs": [runs[0], *runs]}}, ("twice",)),
+        ({"marks": [*marks, *marks]}, ("twice",)),
+        ({"affected": {**record["affected"],
+                       "runs": [{**runs[0], "records": runs[0]["records"][::-1]}, runs[1]]}},
+         ("canonical order",)),
+        ({"kept": [*record["kept"], *record["kept"]]}, ("twice",)),
+    ):  # fmt: skip
+        refused(world, "cycle-c1", {**record, **change}, *words)
+
+
+def test_a_cycles_evidence_and_absence_markers_are_checked_as_they_are_now(world) -> None:
+    record = cycle_record(world)
+    path = cycle_path(world.runs, 1)
+    world.write("cycle-c1", record)
+    absent = world.runs / "study3" / MARK / "terminal.json"
+    absent.write_text("{}")  # the file the marker says is not there
+    found, problems = world.read("cycle-c1")
+    assert found is None and any("absent" in p and str(absent) in p for p in problems), problems
+    absent.unlink()
+    assert world.read("cycle-c1") == (record, [])
+    meta = world.runs / "study3" / OTHER / "meta.json"
+    meta.write_text('{"status": "completed"}')
+    found, problems = world.read("cycle-c1")
+    assert found is None and any(str(meta) in p and "sha256" in p for p in problems), problems
+    meta.write_text('{"status": "failed"}')
+    log = world.runs / VALIDATION_LOG
+    log.write_bytes(log.read_bytes().replace(b'"outcome": "done"', b'"outcome": "lost"'))
+    found, problems = world.read("cycle-c1")
+    assert found is None and any("line 4" in p for p in problems), problems
+    assert path.exists()
+
+
+def test_a_cycles_fixation_is_evidence_in_the_checkout(world) -> None:
+    fixation = world.ref("study3-fixation-validation-c1.json", root="repo")
+    record = cycle_record(world, fixation=fixation)
+    refused(world, "cycle-c1", {**record, "fixation": {k: fixation[k] for k in ("path",
+                                                                              "sha256")}},
+            "fixation")  # fmt: skip
+    world.write("cycle-c1", record)
+    assert world.read("cycle-c1") == (record, [])
+
+
+def test_a_cycles_absence_marker_under_a_sealed_folder_is_refused_unopened(world) -> None:
+    record = cycle_record(world)
+    runs = record["affected"]["runs"]
+    sealed = {"path": f"study3/{MARK}/responses/harmful_evaluation.jsonl", "absent": True}
+    changed = [{**runs[0], "records": [*runs[0]["records"][:2], sealed]}, runs[1]]
+    refused(world, "cycle-c1", {**record, "affected": {**record["affected"], "runs": changed}},
+            "never")  # fmt: skip

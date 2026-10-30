@@ -213,8 +213,8 @@ counts them, ``study3_records.attempts_left``), for a validation or confirmation
 of the label gave>"`` with the incident (``--incident-time``, ``--cause``, ``--evidence``). No
 closure is offered for such a mark, nothing is voided, no outcome is reached and no cell is issued
 (the confirmation's guard and its writer refuse a new block). A closure record that names such a
-mark is not accepted: a problem that blocks ("a closure of a technical mark outside the
-qualification is not accepted until its engineering route exists"), and it decides nothing.
+mark is not accepted: a problem that blocks (``study3_decisions.NOT_ACCEPTED``: a closure
+carries its route's reason, never the launcher's outcome), and it decides nothing.
 
 A validation or confirmation run under another commit (above) is a technical mark of its arm too,
 read before the rest of its stage, but no cycle case: launched from the wrong checkout, it needs no

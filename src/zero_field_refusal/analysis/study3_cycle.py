@@ -94,15 +94,15 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from ..paths import REPO_ROOT
+from .study3_decisions import CLAIMS, CYCLE_STAGES, CYCLE_STEPS, TEXT_MAX, one_line, pinned_end
 from .study3_records import Endpoint, journal_lines, log_lines, under_sealed
 from .study3_search import ARM_ORDER
 from .study3_versions import _gpu_code
 
-STAGES = ("search", "qualification", "validation", "confirmation")
-STAGE_STEPS = {"search": ("search",), "qualification": ("numerical", "repair"),
-               "validation": ("validation",), "confirmation": ("confirmation",)}  # fmt: skip
-ACTIONS = ("reuse", "rerun")
-JUSTIFICATION_MAX = 1000  # characters of a diagnosis, a fix or a claim's justification
+STAGES = CYCLE_STAGES  # search, qualification, validation, confirmation
+STAGE_STEPS = CYCLE_STEPS  # the qualification's steps: its numerical runs and its repair
+ACTIONS = CLAIMS  # reuse, rerun
+JUSTIFICATION_MAX = TEXT_MAX  # characters of a diagnosis, a fix or a claim's justification
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -124,18 +124,6 @@ class CycleRefused(ValueError):
 
 
 # ------------------------------------------------------------------ claims
-
-
-def one_line(value: Any) -> str | None:
-    """Why ``value`` is no diagnosis, fix or justification (one line, not blank, at most
-    ``JUSTIFICATION_MAX`` characters), or None."""
-    if not isinstance(value, str) or not value.strip():
-        return "is blank"
-    if "\n" in value or "\r" in value:
-        return "is more than one line"
-    if len(value) > JUSTIFICATION_MAX:
-        return f"is longer than {JUSTIFICATION_MAX} characters"
-    return None
 
 
 def parse_claims(stages: Sequence[str], justifications: Sequence[str]) -> dict[str, Claim]:
@@ -242,10 +230,10 @@ def journal_seen(runs_root: str | Path) -> list[dict[str, Any]]:
     out = []
     for log in _logs(root):
         data = _log_bytes(root, log)
-        whole = [(offset, line) for offset, line, _ in log_lines(data)
-                 if offset + len(line) < len(data)]  # fmt: skip
-        end = whole[-1][0] + len(whole[-1][1]) + 1 if whole else 0
-        out.append({"path": log, "lines": len(whole),
+        lines = log_lines(data)
+        count = sum(1 for offset, line, _ in lines if offset + len(line) < len(data))
+        end = pinned_end(lines, count) or 0
+        out.append({"path": log, "lines": count,
                     "sha256": hashlib.sha256(data[:end]).hexdigest()})  # fmt: skip
     return sorted(out, key=lambda entry: entry["path"])
 
@@ -275,11 +263,11 @@ def _seen_starts(root: Path, seen: Sequence[Mapping[str, Any]]) -> dict[str, dic
             reasons += exc.reasons
             continue
         lines = log_lines(data)
-        if type(count) is not int or count < 0 or count > len(lines):
-            reasons.append(f"{path}: it holds {len(lines)} lines, not the pinned prefix of "
-                           f"{count!r}")  # fmt: skip
+        end = pinned_end(lines, count)
+        if end is None:
+            reasons.append(f"{path}: it holds {len(lines)} lines, fewer than the pinned prefix "
+                           f"of {count!r}")  # fmt: skip
             continue
-        end = lines[count - 1][0] + len(lines[count - 1][1]) + 1 if count else 0
         now = hashlib.sha256(data[:end]).hexdigest()
         if end > len(data) or now != sha:
             reasons.append(f"{path}: its pinned prefix of {count} lines has sha256 {now} now, "
