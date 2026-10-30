@@ -175,7 +175,9 @@ closure of the candidate (of its arm, or naming it) whose cited line lies in the
 or by the route itself (``inactive_arms``: the state machine's walk over the records before the
 cycle, under its old code and with the qualification read as it stood before the cycle, shows the
 arm inactive: P–F closed by its validation gate or by a scientific failure, with no closure
-record). A run kept as of an arm closed by neither is a problem.
+record). A run kept as of an arm closed by neither is a problem. A kept run's evidence that
+changes after the cycle (a file appearing or changing after its end line) invalidates the record
+by design: the files changed after the cycle.
 """
 
 from __future__ import annotations
