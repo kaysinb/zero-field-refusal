@@ -210,6 +210,7 @@ offset), since the selected rates are rounded to 3 significant digits and repeat
 from __future__ import annotations
 
 import functools
+import hashlib
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
@@ -228,7 +229,24 @@ from .study3_blocks import (
     utility_gate,
 )
 from .study3_blocks import SLACK as WIDTH_SLACK
-from .study3_decisions import LEVELS, MIN_N, SUPPORTED_AT, VALIDATION_BLOCKS, cap_of, sample_size
+from .study3_decisions import (
+    LEVELS,
+    MAX_DRAWS_FACTOR,
+    MIN_N,
+    N_POINTS,
+    SIMULATION_FIXATION,
+    SUPPORTED_AT,
+    TESTED,
+    VALIDATION_BLOCKS,
+    cap_of,
+    coverage_threshold,
+    detection_power,
+    fixation_problems,
+    identities_sha256,
+    level_slot,
+    sample_size,
+    test_identities,
+)
 from .study3_inference import Interval, bootstrap_t, reading, stream
 from .study3_progress import confirmation_state
 from .study3_records import (
@@ -1091,9 +1109,7 @@ SCREEN_RESAMPLES = 2_000  # bootstrap resamples per interval in the screen ("Req
 VERIFICATION_RESAMPLES = 100_000  # the registered procedure's, in the binding verification
 CHUNK = 500  # bootstrap_t's chunk: the result does not depend on it, the memory does
 MODES = ("screen", "procedure")
-N_POINTS: tuple[int | str, ...] = (36, 45, 60, 75, 90, 99, "cap")  # "Where"
 REACH = 99  # the largest N point: each comparison is followed to 99 supported blocks
-TESTED = ("A-F", "P-F", "joint")
 GATE_OF = {"A-F": "AF", "P-F": "PF"}  # a comparison's name in study3_blocks
 UNCONFIRMED = ("af_gate", "cap_beyond_seeds", "scientific_report")  # why a study is not confirmed
 RUNS = tuple((arm, label) for arm in ARM_ORDER for label in LABELS)  # a block's six runs
@@ -1147,6 +1163,10 @@ class Setup:
             raise ValueError(f"the validation has {VALIDATION_BLOCKS} blocks")
         if self.n_min is not None and not (_integer(self.n_min) and self.n_min >= MIN_N):
             raise ValueError(f"n_min {self.n_min!r} is not an N of at least {MIN_N}")
+        # the vectors' points and the slopes, as one short key of the caches
+        blob = repr((tuple((v.seed, tuple(v.arms[a] for a in ARM_ORDER)) for v in self.vectors),
+                     tuple(sorted(self.slopes.items()))))  # fmt: skip
+        object.__setattr__(self, "fingerprint", hashlib.sha256(blob.encode()).hexdigest())
 
     def calibration(self, scenario: Scenario, candidate: int) -> Calibration:
         try:
@@ -1325,7 +1345,7 @@ def calibration_stream(base: int, scenario: Scenario, candidate: int) -> np.rand
 
 
 _SELECTIONS: dict[tuple, dict[str, dict[str, float]]] = {}
-_SELECTIONS_LIMIT = 200_000
+_SELECTIONS_LIMIT = 50_000
 
 
 def _select(
@@ -1334,8 +1354,7 @@ def _select(
     """``_selected``, remembered by everything it depends on (the scenario's name and jitter,
     the stream, the vectors' K): the calibration's passes and modes share a study's
     selection."""
-    key = (scenario.name, scenario.jitter, base, index, candidate, prefix,
-           tuple((v.seed, tuple(v.arms[a] for a in ARM_ORDER)) for v in setup.vectors))  # fmt: skip
+    key = (scenario.name, scenario.jitter, base, index, candidate, prefix, setup.fingerprint)
     found = _SELECTIONS.get(key)
     if found is None:
         if len(_SELECTIONS) >= _SELECTIONS_LIMIT:
@@ -1778,9 +1797,7 @@ _ROW_FIELDS = ("index", "mode", "candidate", "active", "levels", "rates", "gates
                "utility_claim", "truth")  # fmt: skip
 
 
-def level_key(level: float) -> str:
-    """A level as the identities and the results write it (``"0.975"``, …, ``"0.990"``)."""
-    return f"{level:.3f}"
+level_key = level_slot  # a level as the identities and the results write it ("0.975", …)
 
 
 def _covered_keys(levels: Sequence[float]) -> list[tuple[int | str, float, str]]:
@@ -1986,8 +2003,7 @@ def _draws(scenario: Scenario, setup: Setup, candidate: int, seed: np.random.See
     )
     entropy = tuple(int(x) for x in np.atleast_1d(np.asarray(seed.entropy, dtype=object)))
     key = (scenario, candidate, entropy, tuple(seed.spawn_key), int(studies), shifts,
-           tuple((v.seed, tuple(v.arms[a] for a in ARM_ORDER)) for v in setup.vectors),
-           tuple(sorted(setup.slopes.items())))  # fmt: skip
+           setup.fingerprint)  # fmt: skip
     if key in _DRAWS:
         return _DRAWS[key]
     use = replace(_with(setup, scenario, candidate, replace(calibration, failure=0.0)),
@@ -2403,3 +2419,222 @@ def calibrate_scenario(
         mean, se = _mean_truth(scenario, setup, calibration, draws, comparison)
         attained[comparison] = (100 * mean, 100 * se)
     return replace(calibration, attained_delta_pp=attained)
+
+
+# ------------------------------------------------------------------ the fixation
+
+FIXATION_KIND = "simulation-fixation"
+STREAMS = {"calibration": 20261101, "verification": 20261102}  # M23
+# The procedure's rules the fixation freezes, each with its source (ending "M<n>, decided")
+RULES: dict[str, dict[str, str]] = {
+    "screen_simplifications": {
+        "rule": "the screen runs the scenario's candidate with no fallback (a failed A-F gate ends "
+        "the study, counted), takes N from the rule alone and computes P-F in every confirmed "
+        "study as if active",
+        "source": "the coverage and power tests are per candidate; A-F's analysis set does not "
+        "depend on P's activity; M14 and M16, decided",
+    },
+    "pf_verification": {
+        "rule": "in the verification a P-F test counts only the studies in which P-F is active "
+        "(its validation gate passed)",
+        "source": "P's actual activity in the realized procedure; M16, decided",
+    },
+    "joint_verification": {
+        "rule": "the joint test of the verification",
+        "source": "counted over the studies confirmed for A-F; a study misses jointly if A-F "
+        "misses, or if P-F is active in it and misses; M27, decided",
+    },
+    "draw_bound": {
+        "rule": "each test draws at most max_draws_factor times M studies; a test short of M "
+        "confirmed studies at the bound is not attainable and fails; a power rate counts the "
+        "missing studies as not detecting",
+        "source": "a bounded failure route; M26, decided",
+    },
+}
+CURVATURE_SOURCE = (
+    "study 1's fitted curves (study2_short_sim.STUDY1) at K*, baseline 0.15; M4, decided"
+)
+CURVATURE_NOTE = (
+    "the registration states about 0.06 pp, a fitted estimate with partial cancellation between "
+    "arms"
+)
+
+
+def curvature_record() -> dict[str, Any]:
+    """The base κ of each arm (pp per (ln K)², read by the curvature sensitivity) and the
+    nominal A–F bias at the symmetric bracket, with M4's disclosure, rounded to 4 decimals."""
+    return {
+        **{arm: round(CURVATURE_PP[arm], 4) for arm in ARM_ORDER},
+        "unit": "pp per (ln K)^2",
+        "nominal_bias_af_pp": round(NOMINAL_BIAS_AF_PP, 4),
+        "source": CURVATURE_SOURCE,
+        "note": CURVATURE_NOTE,
+    }
+
+
+def calibration_json(c: Calibration) -> dict[str, Any]:
+    """A calibration as JSON (vector seeds as strings, pairs as lists)."""
+    return {
+        "candidate": c.candidate,
+        "failure": c.failure,
+        "realized_support": c.realized_support,
+        "support_flagged": c.support_flagged,
+        "mmlu_shift": {
+            arm: {str(seed): v for seed, v in d.items()} for arm, d in c.mmlu_shift.items()
+        },  # fmt: skip
+        "factual_shift": dict(c.factual_shift),
+        "utility_realized": {arm: list(v) for arm, v in c.utility_realized.items()},
+        "utility_flagged": c.utility_flagged,
+        "utility_lambda": dict(c.utility_lambda),
+        "sigma_af": c.sigma_af,
+        "sigma_pf": c.sigma_pf,
+        "offset_a": c.offset_a,
+        "offset_p": c.offset_p,
+        "attained_af_pp": c.attained_af_pp,
+        "attained_pf_pp": c.attained_pf_pp,
+        "attained_spread_se_pp": dict(c.attained_spread_se_pp),
+        "attained_delta_pp": {k: list(v) for k, v in c.attained_delta_pp.items()},
+    }
+
+
+def calibration_from_json(d: Mapping[str, Any]) -> Calibration:
+    """The calibration of ``calibration_json``. ``ValueError`` for another field."""
+    names = {f.name for f in fields(Calibration)}
+    if not isinstance(d, Mapping) or set(d) != names:
+        raise ValueError(f"a calibration holds exactly {sorted(names)}")
+    return Calibration(
+        candidate=d["candidate"],
+        failure=float(d["failure"]),
+        realized_support=float(d["realized_support"]),
+        support_flagged=d["support_flagged"],
+        mmlu_shift={
+            arm: {int(seed): float(v) for seed, v in shifts.items()}
+            for arm, shifts in d["mmlu_shift"].items()
+        },  # fmt: skip
+        factual_shift={arm: float(v) for arm, v in d["factual_shift"].items()},
+        utility_realized={
+            arm: tuple(float(x) for x in v) for arm, v in d["utility_realized"].items()
+        },  # fmt: skip
+        utility_flagged=d["utility_flagged"],
+        utility_lambda={arm: float(v) for arm, v in d["utility_lambda"].items()},
+        sigma_af=float(d["sigma_af"]),
+        sigma_pf=float(d["sigma_pf"]),
+        offset_a=float(d["offset_a"]),
+        offset_p=float(d["offset_p"]),
+        attained_af_pp=float(d["attained_af_pp"]),
+        attained_pf_pp=float(d["attained_pf_pp"]),
+        attained_spread_se_pp={k: float(v) for k, v in d["attained_spread_se_pp"].items()},
+        attained_delta_pp={
+            k: (float(v[0]), float(v[1])) for k, v in d["attained_delta_pp"].items()
+        },  # fmt: skip
+    )
+
+
+def build_fixation(
+    vectors_path: str | Path,
+    scenarios: Sequence[Scenario],
+    calibrations: Mapping[tuple[Scenario, int], Calibration],
+    *,
+    code: Mapping[str, str],
+    streams: Mapping[str, int],
+    repo: str | Path | None = None,
+    policy: Mapping[str, Any] | None = None,
+    written_at: str | None = None,
+) -> dict[str, Any]:
+    """The simulation's fixation (``docs/study3-simulation-fixation.json``, committed alone before
+    the first draw; the closed schema ``study3_decisions.fixation_problems`` reads): the code;
+    the registration's ``policy`` (``study3_versions.registered_policy`` at HEAD of ``repo``,
+    unless given); the inputs record (``vectors_path``, in the checkout) by its sha256; M, the
+    resamples, the ``streams``, the levels, N points and p₀, the gate replicates (M) and the
+    draw bound; the procedure's ``rules`` and the base ``curvature``; every scenario with its
+    calibrations per candidate; the coverage tests' explicit identities, their count and sha256,
+    J, the thresholds and the detection powers."""
+    import datetime
+
+    from ..paths import REPO_ROOT
+    from .study3_decisions import COVERAGE_P0, COVERAGE_RUNS
+
+    repo = Path(REPO_ROOT if repo is None else repo)
+    if policy is None:
+        from .study3_versions import registered_policy
+
+        policy = registered_policy(repo)
+    vectors = Path(vectors_path)
+    full = vectors if vectors.is_absolute() else repo / vectors
+    try:
+        relative = full.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"{vectors_path}: the inputs record is not in the checkout") from exc
+    entries = []
+    for sc in scenarios:
+        mine = {c: cal for (s, c), cal in calibrations.items() if s == sc}
+        if sc.candidate not in mine:
+            raise ValueError(f"scenario {sc.name}: no calibration at its candidate")
+        calibrated = {str(c): calibration_json(mine[c]) for c in sorted(mine)}
+        entries.append({**sc.to_json(), "calibration": calibrated})
+    coverage = [sc.name for sc in scenarios if sc.coverage]
+    tests = test_identities(coverage)
+    j, m = len(tests), COVERAGE_RUNS
+    return {
+        "kind": FIXATION_KIND,
+        "written_at": written_at
+        or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "code": dict(code),
+        "policy": dict(policy),
+        "inputs": {"path": relative, "sha256": hashlib.sha256(full.read_bytes()).hexdigest()},
+        "M": m,
+        "resamples": {"screen": SCREEN_RESAMPLES, "verification": VERIFICATION_RESAMPLES},
+        "streams": {
+            "calibration": int(streams["calibration"]),
+            "verification": int(streams["verification"]),
+        },  # fmt: skip
+        "levels": list(LEVELS),
+        "n_points": list(N_POINTS),
+        "p0": dict(COVERAGE_P0),
+        "gate_replicates": m,
+        "max_draws_factor": MAX_DRAWS_FACTOR,
+        "rules": {name: dict(rule) for name, rule in RULES.items()},
+        "curvature": curvature_record(),
+        "scenarios": entries,
+        "tests": {
+            "list": [list(i) for i in tests],
+            "count": j,
+            "sha256": identities_sha256(tests),
+        },  # fmt: skip
+        "J": j,
+        "thresholds": {name: coverage_threshold(j, m, p0) for name, p0 in COVERAGE_P0.items()},
+        "detection_power": detection_power(j, m),
+    }
+
+
+def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
+    """The committed fixation at ``path`` in the checkout ``repo`` (``SIMULATION_FIXATION``),
+    as the J check reads it (``study3_decisions.fixation_problems``): committed once, alone and
+    unchanged at HEAD (so in HEAD's history: HEAD or an ancestor of it holds it), its schema
+    closed and its tests exactly its coverage scenarios' identities. Returns ``fixation``,
+    ``commit``, ``sha256``, the ``scenarios`` (``Scenario``) and ``calibrations`` ((scenario,
+    candidate) → ``Calibration``). ``ValueError`` naming every problem."""
+    repo = Path(repo)
+    full = Path(path) if Path(path).is_absolute() else repo / path
+    try:
+        relative = full.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"{path}: the fixation is not in the checkout {repo}") from exc
+    if relative != SIMULATION_FIXATION:
+        raise ValueError(f"{path}: the simulation's fixation is {SIMULATION_FIXATION}")
+    fixation, commit, problems = fixation_problems(repo, relative)
+    if fixation is None or problems:
+        raise ValueError("; ".join(problems))
+    scenarios, calibrations = [], {}
+    for entry in fixation["scenarios"]:
+        sc = Scenario.from_json({k: v for k, v in entry.items() if k != "calibration"})
+        scenarios.append(sc)
+        for candidate, value in entry["calibration"].items():
+            calibrations[(sc, int(candidate))] = calibration_from_json(value)
+    return {
+        "fixation": fixation,
+        "commit": commit,
+        "sha256": hashlib.sha256(full.read_bytes()).hexdigest(),
+        "scenarios": scenarios,
+        "calibrations": calibrations,
+    }

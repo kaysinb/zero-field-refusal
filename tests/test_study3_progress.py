@@ -34,7 +34,7 @@ from zero_field_refusal.analysis.study3_progress import (
     confirmation_state,
     progress,
 )
-from zero_field_refusal.analysis.study3_records import SEEDS, Cell, Endpoint, step_key
+from zero_field_refusal.analysis.study3_records import RESERVED, SEEDS, Cell, Endpoint, step_key
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
 
 ARMS = ("A", "F", "P")
@@ -2889,7 +2889,8 @@ def test_the_reader_reads_each_run_file_once(worlds, monkeypatch) -> None:
     real_open = builtins.open
 
     def counting(file, *args, **kwargs):
-        if f"{os.sep}study3{os.sep}" in str(file) and "decisions" not in str(file):
+        reserved = any(f"{os.sep}{name}{os.sep}" in str(file) for name in RESERVED)
+        if f"{os.sep}study3{os.sep}" in str(file) and not reserved:  # run files only
             opened[str(file)] = opened.get(str(file), 0) + 1
         return real_open(file, *args, **kwargs)
 

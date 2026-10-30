@@ -31,7 +31,7 @@ from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_progress
 from zero_field_refusal.analysis import study3_versions as sv
-from zero_field_refusal.analysis.study3_decisions import cap_of
+from zero_field_refusal.analysis.study3_decisions import LEVELS, cap_of
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE, Cell, Endpoint
 from zero_field_refusal.paths import REPO_ROOT
 
@@ -97,7 +97,7 @@ class Study:
         self.runs = RunWorld(self.root)
         git(self.repo, "init", "-q")
         (self.repo / ".gitignore").write_text("/evidence/\n")  # the decision records' evidence
-        (self.repo / "docs").mkdir()
+        (self.repo / "docs").mkdir(exist_ok=True)  # the fixation is there already
         (self.repo / REGISTRATION).write_text("# Study 3 preregistration\n" + AMENDMENTS)
         code = self.repo / "src" / "zero_field_refusal" / "train.py"
         code.parent.mkdir(parents=True)
@@ -422,7 +422,7 @@ def test_a_fixation_resting_on_an_engineering_record_that_failed_is_refused_on_r
 
 
 def test_the_validation_size_and_level_are_the_simulation_records(study) -> None:
-    rows = [coverage_row(0.975, passed=False), coverage_row(0.980)]
+    rows = [coverage_row(0.975, passed=False), *(coverage_row(lv) for lv in LEVELS[1:])]
     study.ready(coverage=rows, level=0.98, validation_blocks=40, verification=verified(0.98),
                 gates=gates_with(safe_pass_rate=pass_rate(0.93)))  # fmt: skip
     record = study.fixation()
@@ -836,7 +836,7 @@ def test_the_simulation_folder_is_no_run_without_a_start(study) -> None:
     simulation = study.root / "study3" / "simulation"
     (simulation / "parts").mkdir(parents=True)
     (simulation / "parts" / "x.json").write_text("{}")
-    (simulation / "results.json").write_text("{}")
+    (simulation / "screen.json").write_text("{}")  # results.json is the record's evidence
     assert (study.root / "study3" / "decisions").is_dir()
     assert study.problems() == []
     stray = study.root / "study3" / "simulations"  # a folder of any other name is still walked

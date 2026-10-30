@@ -10,6 +10,7 @@ import io
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,30 +18,41 @@ from pathlib import Path
 import pytest
 
 from zero_field_refusal import launch
+from zero_field_refusal.analysis import study3_simulation as sim
 from zero_field_refusal.analysis.study3_decisions import (
+    COVERAGE_RUNS,
     HOLD_REASONS,
     LEVELS,
     MIN_N,
+    NOT_ATTAINABLE,
     PLANNING_DIFFERENCE_PP,
     PLANNING_POWER,
+    SELECTED_LEVEL,
+    SIMULATION_FIXATION,
+    SIMULATION_RESULTS,
     SPREAD_PERCENTILE,
     UNCOUNTED_REASONS,
     DecisionRefused,
     budget_needed,
     budget_reason,
     cap_of,
+    clopper_pearson,
     closures,
     coverage_threshold,
     decision_path,
     decisions,
+    detection_power,
     end_lines,
     hold_reasons,
+    identities_sha256,
     immutable,
     kind_of,
+    level_slot,
     planning_power,
     read_decision,
     sample_size,
     start_lines,
+    test_identities,
     upper_sd,
     write_decision,
 )
@@ -51,10 +63,33 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
+# The fixture's simulation: one coverage scenario (C16, coverage and power), J = 105
+FIXED = "C16"
+STREAMS = {"calibration": 11, "verification": 12}
+POLICY = {"path": "docs/study3-preregistration.md", "commit": "c" * 40, "sha256": "d" * 64,
+          "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
+INPUTS = "docs/study3-simulation-inputs.json"
+M = COVERAGE_RUNS
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def git(repo: Path, *args: str) -> str:
+    command = ["git", "-c", "user.name=test", "-c", "user.email=test@example.org",
+               "-c", "commit.gpgsign=false", *args]  # fmt: skip
+    return subprocess.run(command, cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
+
+
+def fixed_calibration(candidate: int) -> sim.Calibration:
+    return sim.Calibration(candidate=candidate, failure=0.02, realized_support=0.9,
+                           support_flagged=False, mmlu_shift={}, factual_shift={},
+                           utility_realized={}, utility_flagged=False, sigma_af=0.03,
+                           sigma_pf=0.03, offset_a=0.02, offset_p=0.02, attained_af_pp=3.5,
+                           attained_pf_pp=3.5, attained_delta_pp={"A-F": (2.0, 0.01),
+                                                                  "P-F": (2.0, 0.01)})  # fmt: skip
 
 
 class World:
@@ -71,6 +106,131 @@ class World:
             (run / folder).mkdir(parents=True)
             (run / folder / name).write_text(json.dumps({"text": SENTINEL}) + "\n")
         self.run = run
+        self.J = 105
+        self.checkout()
+
+    # -- the simulation's fixation (committed in the checkout, a Git repository) and results
+
+    def checkout(self, how: str | None = None) -> None:
+        """The checkout a Git repository: a first commit (the inputs record), then the simulation's
+        fixation committed alone (``how``: ``"uncommitted"`` leaves it untracked,
+        ``"with_another_file"`` commits it with another file)."""
+        shutil.rmtree(self.repo / ".git", ignore_errors=True)
+        git(self.repo, "init", "-q")
+        (self.repo / "docs").mkdir(exist_ok=True)
+        (self.repo / INPUTS).write_text('{"kind": "study3-simulation-inputs"}\n')
+        git(self.repo, "add", INPUTS)
+        git(self.repo, "commit", "-qm", "the inputs record")
+        self.first = git(self.repo, "rev-parse", "HEAD")
+        scenario = sim.SCENARIOS_BY_NAME[FIXED]
+        fixation = sim.build_fixation(
+            self.repo / INPUTS, [scenario], {(scenario, c): fixed_calibration(c) for c in (1, 2)},
+            code={"commit": self.first, "gpu_code_sha256": "b" * 64}, streams=STREAMS,
+            repo=self.repo, policy=POLICY, written_at=WHEN)  # fmt: skip
+        path = self.repo / SIMULATION_FIXATION
+        path.write_text(json.dumps(fixation, indent=2, sort_keys=True) + "\n")
+        self.fixation = fixation
+        if how == "uncommitted":
+            self.fixation_commit = self.first
+            return
+        paths = [SIMULATION_FIXATION]
+        if how == "with_another_file":
+            (self.repo / "docs" / "other.md").write_text("other\n")
+            paths.append("docs/other.md")
+        git(self.repo, "add", *paths)
+        git(self.repo, "commit", "-qm", "the simulation's fixation")
+        self.fixation_commit = git(self.repo, "rev-parse", "HEAD")
+
+    def results(self, record: dict, *, mode: str | None = None, ran: str | None = None,
+                not_attainable: tuple | None = None) -> dict:  # fmt: skip
+        """``results.json`` consistent with ``record`` (its levels' counts, its verification and
+        gates), then changed as ``mode`` says."""
+        j = self.J
+        c = {"comparison": coverage_threshold(j, M, 0.025), "joint": coverage_threshold(j, M, 0.05)}
+        rows_by_level = {row.get("level"): row for row in record.get("coverage") or []
+                         if isinstance(row, dict)}  # fmt: skip
+        level = record.get("level") if record.get("level") in LEVELS else None
+        verification = record.get("verification")
+        verified_ok = isinstance(verification, dict) and verification.get("passed") is True
+        rows = []
+        for identity in test_identities([FIXED]):
+            stream, _, _, slot, comparison = identity
+            kind = "joint" if comparison == "joint" else "comparison"
+            if stream == "calibration":
+                counts = (rows_by_level.get(float(slot)) or {}).get("counts")
+                x = counts.get(kind) if isinstance(counts, dict) else None
+                if not (type(x) is int and 0 <= x <= M):
+                    x = c[kind] - 20
+                rows.append(results_row(identity, float(slot), x, c[kind]))
+            elif level is None:
+                rows.append(results_row(identity, None, None, None))
+            else:
+                x = c[kind] - 20 if verified_ok else c[kind] + 1
+                rows.append(results_row(identity, level, x, c[kind]))
+        if not_attainable is not None:
+            stream, slot = not_attainable
+            at = next(i for i, r in enumerate(rows) if r["test"][0] == stream
+                      and r["test"][3] == slot and r["test"][4] == "A-F")  # fmt: skip
+            rows[at] = {**rows[at], "studies": M - 7, "draws": 4 * M, "reason": NOT_ATTAINABLE,
+                        "X": None, "passed": False, "rate": None, "interval": None}  # fmt: skip
+        gates = record.get("gates") if isinstance(record.get("gates"), dict) else {}
+
+        def value(name: str, default: float) -> float:
+            gate = gates.get(name)
+            found = gate.get("value") if isinstance(gate, dict) else None
+            return found if isinstance(found, float | int) and 0 <= found <= 1 else default
+
+        def count(rate: float) -> int:
+            return round(rate * M)
+
+        power = gates.get("power_af") if isinstance(gates.get("power_af"), dict) else {}
+        short = value("power_af", 0.86) < 0.80
+        n_min = power.get("n_min") if type(power.get("n_min")) is int else 84
+        scan = [{"n": n, "by_scenario": {FIXED: {"correct": count(0.80 if n == n_min else 0.79),
+                                                 "studies": M}}}
+                for n in range(MIN_N, max(n_min, MIN_N) + 1)] if short else []  # fmt: skip
+        safe = value("safe_pass_rate", 0.982)
+        results = {
+            "kind": "simulation-results", "written_at": WHEN,
+            "fixation": {"path": SIMULATION_FIXATION,
+                         "sha256": sha256(self.repo / SIMULATION_FIXATION),
+                         "commit": self.fixation_commit},
+            "code": {"commit": ran or self.fixation_commit, "gpu_code_sha256": "b" * 64},
+            "M": M, "J": j, "streams": dict(STREAMS),
+            "resamples": dict(self.fixation["resamples"]),
+            "validation_blocks": 28 if safe >= 0.95 else 40, SELECTED_LEVEL: level,
+            "tests": rows,
+            "gates": {
+                "safe_pass_rate": {"passed": count(safe), "studies": M, "validation_blocks": 28},
+                "empirical_pass_rate": {"passed": count(value("empirical_pass_rate", 0.6)),
+                                        "studies": M, "validation_blocks": 28},
+                **{name: {"level": level if level is not None else 0.975,
+                          "by_scenario": {FIXED: {"correct": count(value(name, default)),
+                                                  "studies": M, "draws": M}}}
+                   for name, default in (("power_af", 0.86), ("power_pf", 0.85))},
+                "n_scan": scan,
+                "detection_power": detection_power(j, M),
+            },
+            "reported": {},
+        }  # fmt: skip
+        tests = results["tests"]
+        first = next(i for i, r in enumerate(tests) if r["test"][0] == "calibration")
+        if mode == "duplicate":
+            tests.append(dict(tests[first]))
+        elif mode == "omit":
+            tests.pop()
+        elif mode == "extra":
+            tests.append({**tests[first], "test": ["calibration", "C99", 36, "0.975", "A-F"]})
+        elif mode == "flip_pass":
+            tests[first] = {**tests[first], "passed": not tests[first]["passed"]}
+        elif mode == "verification_not_due":
+            for i, row in enumerate(tests):
+                if row["test"][0] == "verification":
+                    tests[i] = results_row(tuple(row["test"]), None, None, None)
+        elif mode == "short_without_bound":
+            tests[first] = {**tests[first], "studies": M - 1, "draws": M, "X": None,
+                            "passed": False, "rate": None, "interval": None}  # fmt: skip
+        return results
 
     # -- evidence
 
@@ -95,16 +255,58 @@ class World:
                 "checks": checks, **over}  # fmt: skip
 
     def simulation(self, **over) -> dict:
+        """A simulation record (``over`` replaces its fields), with the committed fixation and
+        ``RUNS_DIR/study3/simulation/results.json`` consistent with it: its ``inputs`` (an
+        object) gain the results' reference. The fixture's own words: ``results`` (``duplicate``,
+        ``omit``, ``extra``, ``flip_pass``, ``verification_not_due``, ``short_without_bound``:
+        results that depart from the record), ``fixation`` as a word (``uncommitted``,
+        ``with_another_file``, ``after_the_results``), ``fail_levels`` (those levels fail),
+        ``not_attainable`` ((stream, level slot): one A–F test short at the 4·M bound) and
+        ``gate_value_off`` (the record's pass rate at the safe alternative off its counts)."""
+        mode = over.pop("results", None)
+        modes = ("uncommitted", "with_another_file", "after_the_results")
+        how = over.pop("fixation") if over.get("fixation") in modes else None
+        failing = set(over.pop("fail_levels", ()))
+        short = over.pop("not_attainable", None)
+        off = over.pop("gate_value_off", None)
+        if how in ("uncommitted", "with_another_file"):
+            self.checkout(how)
+        if short is not None:
+            failing.add(float(short[1]))
+        rows = [coverage_row(lv, passed=lv not in failing) for lv in LEVELS]
+        if short is not None:
+            row = rows[LEVELS.index(float(short[1]))]
+            row["counts"] = {**row["counts"], "comparison": M}
+        level = next((r["level"] for r in rows if r["passed"]), None)
         record = {
-            "kind": "simulation", "state": "passed", "written_at": WHEN, "code": CODE,
-            "fixation": self.ref("simulation-fixation.json"),
+            "kind": "simulation", "state": "passed" if level is not None else "failed",
+            "written_at": WHEN, "code": CODE,
+            "fixation": {"path": SIMULATION_FIXATION,
+                         "sha256": sha256(self.repo / SIMULATION_FIXATION), "root": "repo"},
             "inputs": {"seed_vectors": self.ref("seed-vectors.json"),
                        "design": self.ref("design.json")},
-            "gates": default_gates(),
-            "coverage": [coverage_row(0.975)], "level": 0.975, "validation_blocks": 28,
-            "verification": verified(calibration_stream=11, verification_stream=12),
+            "gates": default_gates(), "coverage": rows, "level": level, "validation_blocks": 28,
+            "verification": verified(level, level is not None),
         }  # fmt: skip
-        return {**record, **over}
+        record.update(over)
+        ran = self.first if how == "after_the_results" else None
+        results = self.results(record, mode=mode, ran=ran, not_attainable=short)
+        path = self.runs / SIMULATION_RESULTS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
+        if isinstance(record["inputs"], dict) and record["inputs"] and "results" not in record[
+                "inputs"]:  # fmt: skip
+            record["inputs"] = {
+                **record["inputs"],
+                "results": {"path": SIMULATION_RESULTS, "sha256": sha256(path)},
+            }
+        if off is not None:
+            gate = record["gates"]["safe_pass_rate"]
+            record["gates"] = {
+                **record["gates"],
+                "safe_pass_rate": {**gate, "value": gate["value"] + off},
+            }
+        return record
 
     def n(self, candidate: int = 1, N: int = 75, **over) -> dict:
         first = SEEDS["validation"][candidate][0]
@@ -215,12 +417,33 @@ def power_gate(value: float, n_min: int | None = None) -> dict:
             "n_min": n_min if short else None}  # fmt: skip
 
 
+def reported(value: float) -> dict:
+    return {"value": value, "requirement": None, "passed": None}
+
+
 def default_gates() -> dict:
     """The gates of a simulation that passed them all: a pass rate at the safe alternative of
-    0.982, the power of 0.86 and the pass rate at study 2's empirical point, reported only."""
+    0.982, the power of 0.86, and, reported only, the pass rate at study 2's empirical point,
+    P–F's power and the detection powers at the fixture's J = 105."""
+    detection = detection_power(105, M)
     return {"safe_pass_rate": {"value": 0.982, "requirement": 0.95, "passed": True},
             "power_af": power_gate(0.86),
-            "empirical_pass_rate": {"value": 0.6, "requirement": None, "passed": None}}  # fmt: skip
+            "empirical_pass_rate": reported(0.6), "power_pf": reported(0.85),
+            "detection_power_comparison": reported(detection["comparison"]),
+            "detection_power_joint": reported(detection["joint"])}  # fmt: skip
+
+
+def results_row(identity: tuple, level: float | None, x: int | None, c: int | None) -> dict:
+    """A row of the results: a test of M studies with its X, or (``level`` None) a verification
+    test not due."""
+    p0 = 0.05 if identity[4] == "joint" else 0.025
+    if level is None:
+        return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
+                "draws": None, "reason": None, "X": None, "c": None, "passed": None,
+                "rate": None, "interval": None}  # fmt: skip
+    return {"test": list(identity), "level": level, "due": True, "p0": p0, "studies": M,
+            "draws": M, "reason": None, "X": x, "c": c, "passed": x <= c, "rate": x / M,
+            "interval": clopper_pearson(x, M)}  # fmt: skip
 
 
 def gates_with(**gates) -> dict:
@@ -233,8 +456,8 @@ def pass_rate(value: float) -> dict:
     return {"value": value, "requirement": 0.95, "passed": value >= 0.95}
 
 
-def coverage_row(level: float, *, passed: bool = True, J: int = 1000, M: int = 10_000,
-                 tests: int = 60) -> dict:  # fmt: skip
+def coverage_row(level: float, *, passed: bool = True, J: int = 105, M: int = 10_000,
+                 tests: int = 21) -> dict:  # fmt: skip
     c, j = coverage_threshold(J, M, 0.025), coverage_threshold(J, M, 0.05)
     counts = {"comparison": c - 20, "joint": j - 20}
     if not passed:
@@ -262,9 +485,10 @@ def refused(world: World, kind: str, record: dict, *words: str) -> None:
 
 
 def verified(level=0.975, passed=True, **kw) -> dict:
-    """A simulation's independent verification."""
-    return {"level": level, "passed": passed, "tests": 20, "calibration_stream": 1,
-            "verification_stream": 2, **kw}  # fmt: skip
+    """A simulation's independent verification (the fixture's 21 verification tests and
+    streams)."""
+    return {"level": level, "passed": passed, "tests": 21, "calibration_stream": 11,
+            "verification_stream": 12, **kw}  # fmt: skip
 
 
 def sim_refused(world: World, *words: str, **over) -> None:
@@ -401,7 +625,7 @@ def test_the_simulation_record_is_accepted(world) -> None:
 
 
 def test_a_simulation_that_passed_a_later_level_and_chose_40_blocks(world) -> None:
-    rows = [coverage_row(0.975, passed=False), coverage_row(0.980)]
+    rows = [coverage_row(0.975, passed=False), *(coverage_row(level) for level in LEVELS[1:])]
     verification = verified(0.98)
     gates = gates_with(safe_pass_rate=pass_rate(0.93))
     world.write("simulation", world.simulation(coverage=rows, level=0.98, validation_blocks=40,
@@ -782,11 +1006,14 @@ def test_an_evidence_sha256_is_64_lowercase_hexadecimal_digits(world, sha) -> No
 
 
 def test_evidence_is_found_by_its_root_and_an_absolute_path_needs_none(world) -> None:
+    # the simulation's own fixation is fixed (the J check), so an input carries the references
     ref = world.ref("both.json", "same\n")
     in_repo = {**ref, "root": "repo"}
-    refused(world, "simulation", world.simulation(fixation=in_repo), "fixation", "missing")
+    plain = {"seed_vectors": world.ref("seed-vectors.json")}
+    refused(world, "simulation", world.simulation(inputs={**plain, "design": in_repo}),
+            "inputs.design", "missing")  # fmt: skip
     absolute = {"path": str(world.file(ref)), "sha256": ref["sha256"]}
-    world.write("simulation", world.simulation(fixation=absolute))
+    world.write("simulation", world.simulation(inputs={**plain, "design": absolute}))
     assert world.read("simulation")[1] == []
 
 
@@ -922,7 +1149,7 @@ def test_the_simulation_state_follows_the_coverage_screen_and_its_verification_o
 
 
 def test_the_coverage_threshold_is_the_recomputed_one(world) -> None:
-    row = coverage_row(0.975)
+    row = coverage_row(0.975, J=1000)
     weaker = {**row, "thresholds": {"comparison": 400, "joint": 587}}
     sim_refused(world, "thresholds.comparison", "313", coverage=[weaker])
     sim_refused(world, "thresholds", coverage=[{**row, "J": 2000}])  # c of J = 1000 do not follow
@@ -975,7 +1202,7 @@ def test_one_j_is_frozen_for_every_level_so_a_level_cannot_pass_on_a_raised_j(wo
     late = coverage_row(0.980, J=10**6)
     late["counts"] = {"comparison": 314, "joint": 100}
     assert coverage_threshold(1000, 10_000, 0.025) == 313 < 314 <= late["thresholds"]["comparison"]
-    rows = [coverage_row(0.975, passed=False), late]
+    rows = [coverage_row(0.975, passed=False, J=1000), late]
     sim_refused(world, "coverage[1].J", "one frozen number", coverage=rows, level=0.98,
                 verification=verified(0.98))  # fmt: skip
     # the same level at the J of the first: it fails, as it should
@@ -986,16 +1213,15 @@ def test_one_j_is_frozen_for_every_level_so_a_level_cannot_pass_on_a_raised_j(wo
 
 def test_the_tests_of_the_levels_and_the_verification_fit_within_the_frozen_j(world) -> None:
     # four levels of 900 tests each under J = 1000
-    rows = [coverage_row(level, passed=level == 0.990, tests=900) for level in LEVELS]
+    rows = [coverage_row(level, passed=level == 0.990, tests=900, J=1000) for level in LEVELS]
     sim_refused(world, "coverage", "add up", "J = 1000", coverage=rows, level=0.99,
                 verification=verified(0.99))  # fmt: skip
-    # the sum equal to J is accepted, one more is not
-    one = [coverage_row(0.975, tests=980)]
-    world.write("simulation", world.simulation(coverage=one, verification=verified(tests=20)))
+    # the sum equal to J is accepted (the fixation's J = 105: four levels of 21 tests and 21
+    # verification tests), one more is not
+    world.write("simulation", world.simulation())
     assert world.read("simulation")[1] == []
     decision_path(world.runs, "simulation").unlink()
-    sim_refused(world, "coverage", "1001", "J = 1000", coverage=one,
-                verification=verified(tests=21))  # fmt: skip
+    sim_refused(world, "coverage", "106", "J = 105", verification=verified(tests=22))
     sim_refused(world, "verification.tests", verification=verified(tests=0))
     sim_refused(world, "verification.tests", verification=verified(tests=1.5))
     sim_refused(world, "verification", "tests",
@@ -1012,9 +1238,8 @@ def test_m_is_exactly_ten_thousand_on_every_row(world, m) -> None:
 
 
 def test_the_reported_gates_are_accepted_and_no_other_gate_is_a_name(world) -> None:
-    reported = {"value": 0.7, "requirement": None, "passed": None}
-    gates = gates_with(power_pf=reported, detection_power_comparison=reported,
-                       detection_power_joint=reported)  # fmt: skip
+    # the detection powers are the fixture's, at its J (default_gates): the J check recomputes them
+    gates = gates_with(power_pf={"value": 0.7, "requirement": None, "passed": None})
     world.write("simulation", world.simulation(gates=gates))
     assert set(world.read("simulation")[0]["gates"]) == {
         "safe_pass_rate", "power_af", "empirical_pass_rate", "power_pf",
@@ -1119,6 +1344,151 @@ def test_a_passed_simulation_has_a_level_a_size_and_inputs(world) -> None:
     refused(world, "simulation", world.simulation(level=None), "level", "passed record")
     refused(world, "simulation", world.simulation(inputs={}), "inputs")
     refused(world, "simulation", world.simulation(inputs=[world.ref("a.json")]), "inputs")
+
+
+# ------------------------------------------------------------------ the J check
+
+
+def test_the_proposed_grid_has_j_1785() -> None:
+    names = [s.name for s in sim.SCENARIOS if s.role.startswith("coverage")]
+    ids = test_identities(names)
+    assert len(names) == 17 and len(ids) == len(set(ids)) == 1785
+    assert sum(i[0] == "verification" for i in ids) == 357
+    assert {i[3] for i in ids if i[0] == "verification"} == {"selected_calibration_level"}
+    assert (coverage_threshold(1785, 10_000, 0.025), coverage_threshold(1785, 10_000, 0.05)) == (
+        315,
+        590,
+    )
+
+
+def test_the_identities_are_in_enumeration_order_with_their_sha256() -> None:
+    ids = test_identities(["C01", "C02"])
+    assert ids[0] == ("calibration", "C01", 36, "0.975", "A-F")
+    assert ids[:3] == [("calibration", "C01", 36, "0.975", c) for c in ("A-F", "P-F", "joint")]
+    assert ids[3] == ("calibration", "C01", 36, "0.980", "A-F")
+    assert ids[84] == ("calibration", "C02", 36, "0.975", "A-F")
+    assert ids[168] == ("verification", "C01", 36, SELECTED_LEVEL, "A-F")
+    assert ids[-1] == ("verification", "C02", "cap", SELECTED_LEVEL, "joint")
+    blob = json.dumps([list(i) for i in ids], separators=(",", ":")).encode()
+    assert identities_sha256(ids) == hashlib.sha256(blob).hexdigest()
+    assert [level_slot(lv) for lv in LEVELS] == ["0.975", "0.980", "0.985", "0.990"]
+
+
+def test_detection_power_reproduces_the_registered_example() -> None:
+    assert detection_power(1000, 10_000) == pytest.approx(
+        {"comparison": 0.978, "joint": 0.995}, abs=5e-4
+    )
+    assert detection_power(1785, 10_000) == pytest.approx(
+        {"comparison": 0.971, "joint": 0.993}, abs=5e-4
+    )
+
+
+def test_the_clopper_pearson_interval_holds_the_rate() -> None:
+    from scipy.stats import binomtest
+
+    for x in (0, 1, 250, 9999, 10_000):
+        lo, hi = clopper_pearson(x, 10_000)
+        assert lo <= x / 10_000 <= hi
+        found = binomtest(x, 10_000).proportion_ci(0.95, method="exact")
+        assert (lo, hi) == pytest.approx((found.low, found.high), abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "change,word", [("duplicate", "twice"), ("omit", "missing"), ("extra", "not in the fixation")]
+)
+def test_a_results_set_other_than_the_fixations_is_refused(world, change, word) -> None:
+    refused(world, "simulation", world.simulation(results=change), word)
+
+
+def test_a_row_j_other_than_the_fixations_is_refused(world) -> None:
+    rows = [coverage_row(lv, J=world.J + 1) for lv in LEVELS]
+    refused(world, "simulation", world.simulation(coverage=rows), "J")
+
+
+def test_a_stored_pass_the_counts_contradict_is_refused(world) -> None:
+    refused(world, "simulation", world.simulation(results="flip_pass"), "recomputed")
+
+
+def test_no_level_passing_leaves_the_verification_not_due_and_is_accepted(world) -> None:
+    world.write("simulation", world.simulation(fail_levels=LEVELS))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["level"] is None and record["state"] == "failed"
+    assert record["verification"]["passed"] is False
+    results = json.loads((world.runs / SIMULATION_RESULTS).read_text())
+    due = {row["due"] for row in results["tests"] if row["test"][0] == "verification"}
+    assert due == {False}
+
+
+def test_due_verification_rows_must_be_present_when_a_level_passed(world) -> None:
+    refused(world, "simulation", world.simulation(results="verification_not_due"), "due")
+
+
+@pytest.mark.parametrize("how", ["uncommitted", "with_another_file", "after_the_results"])
+def test_the_fixation_must_precede_the_first_draw(world, how) -> None:
+    refused(world, "simulation", world.simulation(fixation=how), "fixation")
+
+
+def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:
+    record = world.simulation()
+    path = world.repo / SIMULATION_FIXATION
+    path.write_text(path.read_text().replace('"J": 105', '"J": 105 '))
+    record["fixation"] = {**record["fixation"], "sha256": sha256(path)}
+    refused(world, "simulation", record, "fixation", "changed since its commit")
+
+
+def test_the_gates_are_recomputed_from_their_counts(world) -> None:
+    refused(world, "simulation", world.simulation(gate_value_off=1e-3), "safe_pass_rate")
+
+
+def test_a_not_attainable_test_fails_its_level(world) -> None:
+    world.write("simulation", world.simulation(not_attainable=("calibration", "0.975")))
+    record, problems = world.read("simulation")
+    assert problems == [] and record["coverage"][0]["passed"] is False
+    assert (
+        record["coverage"][0]["counts"]["comparison"] == 10_000
+        or record["coverage"][0]["counts"]["joint"] == 10_000
+    )
+    assert record["level"] == 0.98 and record["state"] == "passed"
+
+
+def test_a_short_row_below_the_draw_bound_is_refused(world) -> None:
+    refused(world, "simulation", world.simulation(results="short_without_bound"), "4·M")
+
+
+def test_a_row_whose_test_is_no_identity_is_refused(world) -> None:
+    record = world.simulation()
+    path = world.runs / SIMULATION_RESULTS
+    results = json.loads(path.read_text())
+    results["tests"][0] = {**results["tests"][0], "test": [["calibration"], FIXED]}
+    path.write_text(json.dumps(results))
+    reference = {"path": SIMULATION_RESULTS, "sha256": sha256(path)}
+    record["inputs"] = {**record["inputs"], "results": reference}
+    refused(world, "simulation", record, "missing")
+
+
+def test_the_record_names_the_fixation_and_the_results_exactly(world) -> None:
+    record = world.simulation()
+    copy = world.repo / "docs" / "copy.json"
+    copy.write_bytes((world.repo / SIMULATION_FIXATION).read_bytes())
+    other = {"path": "docs/copy.json", "sha256": sha256(copy), "root": "repo"}
+    refused(world, "simulation", {**record, "fixation": other}, "fixation", SIMULATION_FIXATION)
+    inputs = {k: v for k, v in record["inputs"].items() if k != "results"}
+    refused(world, "simulation", {**record, "inputs": inputs}, "inputs.results")
+
+
+def test_every_decision_is_recomputed_from_the_results(world) -> None:
+    """The record must be the results' recomputation in every field the J check names."""
+    base = world.simulation()
+    rows = [dict(r) for r in base["coverage"]]
+    rows[1] = {**rows[1], "counts": {**rows[1]["counts"], "comparison": 7}}  # still passes
+    refused(world, "simulation", {**base, "coverage": rows}, "coverage[1].counts", "recomputed")
+    detection = dict(base["gates"]["detection_power_joint"], value=0.5)
+    refused(world, "simulation", {**base, "gates": {**base["gates"],
+            "detection_power_joint": detection}}, "detection_power_joint")  # fmt: skip
+    short = gates_with(power_af=power_gate(0.74, 83))  # the scan reached 0.80 at 84
+    world.simulation(gates=gates_with(power_af=power_gate(0.74, 84)))  # results: n_min 84
+    refused(world, "simulation", {**world.simulation(gates=gates_with(
+        power_af=power_gate(0.74, 84))), "gates": short}, "power_af")  # fmt: skip
 
 
 # ------------------------------------------------------------------ the records answered

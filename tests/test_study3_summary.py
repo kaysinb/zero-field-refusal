@@ -842,7 +842,7 @@ def test_check_holds_before_a_validation_launch_and_refuses_otherwise(
 def test_a_record_is_published_once(world, summary) -> None:
     """Records are published whole and only where none is: a record found at the path when it is
     linked into place is kept, and the command refuses."""
-    path = world.repo / "docs" / "record.json"
+    path = world.repo / "published" / "record.json"  # a folder of its own (docs/ holds others)
     path.parent.mkdir(parents=True, exist_ok=True)
     with pytest.raises(SystemExit) as found:
         summary.script.publish("versions", path, {"kind": "first"})

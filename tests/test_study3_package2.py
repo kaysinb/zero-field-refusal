@@ -857,7 +857,7 @@ class Route(CampaignWorld):
         self.base = base
         git(self.repo, "init", "-q")
         (self.repo / ".gitignore").write_text("/evidence/\n")  # the decision records' evidence
-        (self.repo / "docs").mkdir()
+        (self.repo / "docs").mkdir(exist_ok=True)  # the fixation is there already
         (self.repo / REGISTRATION).write_text("# Study 3 preregistration\n" + AMENDMENTS)
         code = self.repo / "src" / "zero_field_refusal" / "train.py"
         code.parent.mkdir(parents=True)

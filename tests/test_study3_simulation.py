@@ -1123,3 +1123,145 @@ def test_the_label_variance_is_the_simulated_labels(setup) -> None:
         assert float(sim.bivariate_normal(np.array(t1), np.array(t2), rho)) == pytest.approx(
             exact, abs=1e-7
         )
+
+
+# ------------------------------------------------------------------ the fixation
+
+
+def checkout_with_registration(tmp_path: Path) -> Path:
+    """A Git checkout holding a registration and an inputs record, committed."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "study3-preregistration.md").write_text(
+        "# Study 3 preregistration\n\n### Amendment 1: x\n\n### Amendment 2: y\n"
+    )
+    (repo / "docs" / "study3-simulation-inputs.json").write_text('{"kind": "inputs"}\n')
+    run_git(repo, "init", "-q")
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-qm", "the registration and the inputs")
+    return repo
+
+
+def run_git(repo: Path, *args: str) -> str:
+    command = ["git", "-c", "user.name=test", "-c", "user.email=test@example.org",
+               "-c", "commit.gpgsign=false", *args]  # fmt: skip
+    return subprocess.run(command, cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()  # fmt: skip
+
+
+def a_calibration(candidate: int) -> sim.Calibration:
+    return replace(
+        hand_calibration(candidate, mmlu_shift={"A": {2100: 0.5}, "F": {2100: -0.25},
+                                                "P": {2100: 1.0}}),
+        utility_realized={"A": (3.0, 2.0, 2.0)}, utility_lambda={"A": 1.5},
+        attained_delta_pp={"A-F": (0.0, 0.01)}, attained_spread_se_pp={"A-F": 0.02},
+    )  # fmt: skip
+
+
+def test_a_calibration_round_trips_through_json() -> None:
+    import json
+
+    cal = a_calibration(2)
+    text = json.dumps(sim.calibration_json(cal), allow_nan=False, sort_keys=True)
+    assert sim.calibration_from_json(json.loads(text)) == cal
+    with pytest.raises(ValueError):
+        sim.calibration_from_json({**json.loads(text), "extra": 1})
+
+
+def test_the_fixation_is_built_committed_and_read_back(tmp_path) -> None:
+    import json
+
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    repo = checkout_with_registration(tmp_path)
+    scenarios = [sim.SCENARIOS_BY_NAME[n] for n in ("C01", "C15", "P18", "G1")]
+    calibrations = {(sc, c): a_calibration(c) for sc in scenarios for c in (1, 2)
+                    if c == sc.candidate or sc.candidate == 1}  # fmt: skip
+    code = {"commit": run_git(repo, "rev-parse", "HEAD"), "gpu_code_sha256": "b" * 64}
+    inputs = repo / "docs" / "study3-simulation-inputs.json"
+    fixation = sim.build_fixation(
+        inputs, scenarios, calibrations, code=code, streams=sim.STREAMS, repo=repo
+    )
+    assert fixation["J"] == 2 * 105 and fixation["tests"]["count"] == 210
+    assert fixation["streams"] == {"calibration": 20261101, "verification": 20261102}
+    assert fixation["policy"]["path"] == "docs/study3-preregistration.md"
+    assert fixation["policy"]["amendments"] == [1, 2]
+    assert fixation["inputs"]["path"] == "docs/study3-simulation-inputs.json"
+    assert fixation["curvature"] == {
+        "A": 9.537, "F": 11.124, "P": 11.124, "unit": "pp per (ln K)^2",
+        "nominal_bias_af_pp": -0.0395,
+        "source": "study 1's fitted curves (study2_short_sim.STUDY1) at K*, baseline 0.15; "
+                  "M4, decided",
+        "note": "the registration states about 0.06 pp, a fitted estimate with partial "
+                "cancellation between arms",
+    }  # fmt: skip
+    assert set(fixation["rules"]) == {"screen_simplifications", "pf_verification",
+                                      "joint_verification", "draw_bound"}  # fmt: skip
+    assert fixation["rules"]["joint_verification"]["source"] == (
+        "counted over the studies confirmed for A-F; a study misses jointly if A-F misses, or if "
+        "P-F is active in it and misses; M27, decided"
+    )
+    for rule in fixation["rules"].values():
+        assert rule["source"].endswith("decided") and " M" in rule["source"].rsplit(";", 1)[-1]
+    assert fixation["max_draws_factor"] == 4 and fixation["gate_replicates"] == fixation["M"]
+    assert [s["name"] for s in fixation["scenarios"]] == ["C01", "C15", "P18", "G1"]
+    assert set(fixation["scenarios"][1]["calibration"]) == {"2"}  # C15 starts at candidate 2
+    path = repo / decisions.SIMULATION_FIXATION
+    text = json.dumps(fixation, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    path.write_text(text)
+    with pytest.raises(ValueError, match="not committed"):
+        sim.read_fixation(path, repo)
+    run_git(repo, "add", decisions.SIMULATION_FIXATION)
+    run_git(repo, "commit", "-qm", "the fixation")
+    found = sim.read_fixation(decisions.SIMULATION_FIXATION, repo)
+    assert found["fixation"] == fixation and found["commit"] == run_git(repo, "rev-parse", "HEAD")
+    assert found["scenarios"] == scenarios
+    assert found["calibrations"] == {(sc, c): cal for (sc, c), cal in calibrations.items()}
+    # modified after its commit, or its tests edited: refused
+    path.write_text(text.replace('"J": 210', '"J": 211'))
+    with pytest.raises(ValueError, match="changed since its commit"):
+        sim.read_fixation(path, repo)
+    path.write_text(text)
+    # a later commit that leaves the fixation alone keeps it readable (HEAD's ancestor holds it)
+    (repo / "other.txt").write_text("x\n")
+    run_git(repo, "add", "other.txt")
+    run_git(repo, "commit", "-qm", "another file")
+    assert sim.read_fixation(path, repo)["commit"] == found["commit"]
+
+
+def test_the_fixations_schema_is_closed(tmp_path) -> None:
+    import json
+
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    repo = checkout_with_registration(tmp_path)
+    scenarios = [sim.SCENARIOS_BY_NAME["C02"]]
+    fixation = sim.build_fixation(repo / "docs" / "study3-simulation-inputs.json", scenarios,
+                                  {(scenarios[0], 1): a_calibration(1)},
+                                  code={"commit": "a" * 40, "gpu_code_sha256": "b" * 64},
+                                  streams=sim.STREAMS, repo=repo)  # fmt: skip
+    for change, word in (
+        ({"extra": 1}, "fields"),
+        ({"J": 106}, "J"),
+        ({"thresholds": {"comparison": 300, "joint": 573}}, "thresholds"),
+        ({"streams": {"calibration": 5, "verification": 5}}, "streams"),
+        ({"max_draws_factor": 5}, "max_draws_factor"),
+        ({"tests": {**fixation["tests"], "list": fixation["tests"]["list"][:-1]}}, "tests.list"),
+        ({"rules": {**fixation["rules"], "draw_bound": {"rule": "x", "source": "y"}}},
+         "draw_bound"),
+    ):  # fmt: skip
+        problems = decisions._fixation_schema({**fixation, **change})
+        assert problems and any(word in p for p in problems), (change, problems)
+    assert decisions._fixation_schema(json.loads(json.dumps(fixation))) == []
+
+
+def test_the_grid_of_the_proposal_has_its_thresholds() -> None:
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    names = [s.name for s in sim.SCENARIOS if s.coverage]
+    j = len(decisions.test_identities(names))
+    assert j == 1785
+    assert {n: decisions.coverage_threshold(j, 10_000, p) for n, p in
+            decisions.COVERAGE_P0.items()} == {"comparison": 315, "joint": 590}  # fmt: skip
+    assert sim.N_POINTS is decisions.N_POINTS and sim.TESTED is decisions.TESTED
+    assert sim.MAX_DRAWS_FACTOR is decisions.MAX_DRAWS_FACTOR

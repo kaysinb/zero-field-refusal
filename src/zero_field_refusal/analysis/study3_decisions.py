@@ -23,6 +23,11 @@ records; the state machine consumes only what this module accepts.
   validation", the smallest N ≥ 60 with Φ(2·√N/SD_up − z_L) ≥ 0.85. It is the single
   implementation of the rule: the spread script and the simulation both call it, and neither
   copies it.
+- ``test_identities``, ``identities_sha256`` and ``detection_power``: the simulation's coverage
+  tests (stream, scenario, N point, level slot, comparison), their sha256 and the detection
+  power at J; ``fixation_problems`` and ``coverage_decisions``: the simulation's fixation as
+  committed, and the record's decisions recomputed from the results' rows (the J check, which
+  every reader and writer of the simulation record goes through).
 - ``closures``: the closure records of a candidate's arms, each with its state and problems, as
   ``decisions`` lists the others; ``hold_reasons``: the ids of the reasons a hold line states;
   ``end_lines`` and ``start_lines``: each run's last ``end`` line and its start line in the
@@ -71,7 +76,7 @@ on is a response or an observation, and this module opens none.
   c; each X is the largest count over the level's ``tests``, the N grid and the scenarios, and,
   for ``comparison``, over both comparisons A–F and P–F: the worst test decides, so the level
   passes exactly when every X is at or under its c, which is how its ``passed`` is checked; the
-  record carries no count per test, so that aggregate itself cannot be checked here) and
+  aggregate itself is checked against the results, test by test, by the J check below) and
   ``passed``, all with the same J, the one frozen number of coverage tests across the
   grid, the levels and the calibration and verification streams: the ``tests`` of every level
   and of the verification add up to at most J; ``level`` (L, one of 0.975, 0.980, 0.985, 0.990,
@@ -159,8 +164,21 @@ on is a response or an observation, and this module opens none.
   with p₀ = 0.025 per comparison and 0.05 jointly, and a record whose c is another is refused; J
   is one number for all levels, and the tests of the levels and the verification fit within it,
   so a level cannot pass on a J raised for it; a level's ``passed`` must agree with its counts and
-  thresholds. Whether that J is the one the simulation's fixation froze would need the fixation's
-  content, which is not read here.
+  thresholds.
+- *The J check* (the simulation record against its fixation and results, ``_against_fixation``):
+  the record names the fixation ``docs/study3-simulation-fixation.json`` in the checkout and the
+  results ``study3/simulation/results.json`` under the runs directory; the fixation is committed
+  once, alone and unchanged, before the first draw (its commit is the results' commit or an
+  ancestor of it), with the explicit list of its tests, their count and sha256; the results hold
+  exactly that list (no test twice, none missing, none it does not list), a verification test
+  carrying the slot ``selected_calibration_level`` and "not due" exactly when no level passed;
+  and every pass, the levels' counts (a test not attainable, short of M studies at the 4·M
+  bound, counting as X = M), L, the verification, the gates (from their stored counts), the
+  validation size and the state are recomputed from X, c and the counts (``coverage_decisions``)
+  and must be the record's (a failed record may leave its size null, as its schema allows). The
+  thresholds, the identities and the detection power at J are this module's
+  (``coverage_threshold``, ``test_identities``, ``detection_power``), so the writer and the
+  reader share one implementation.
 - *The reserved seeds*: the cap of an ``n-c<N>`` record is within the 200 confirmation seeds
   exactly when its state is ``passed``.
 - *Immutability* (``immutable``): a campaign's header names a record by a reference
@@ -175,10 +193,12 @@ on is a response or an observation, and this module opens none.
   problem and is never opened. The journal is read as ``study3_records`` reads it: through its
   private ``_read_journal``, which this module keeps importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the
-  record to the file's bytes and does not read the evidence's meaning. The closure is the one
-  exception: the launch journal and the supersession record are read for the run ids, labels,
+  record to the file's bytes and does not read the evidence's meaning. Two exceptions: the
+  closure (the launch journal and the supersession record are read for the run ids, labels,
   attempts, outcomes and time stamps they name and the reasons a held line states, as ids, and
-  nothing else (no free text is copied).
+  nothing else: no free text is copied), and the simulation's fixation and results, read for
+  the J check (the tests' identities, counts and the gates' counts; the results' ``reported``
+  part is not read).
 - *The reasons of a hold* are those ``scripts/qualify.py`` gives an unresolved launcher run
   (``resolve_launcher_run``), joined with "; " in the hold line: each has an id here, by the text
   it starts with (``HOLD_REASONS``); a test reads the script's source so that the two stay one
@@ -212,6 +232,7 @@ from .study3_records import (
     sealed_why,
     unresolvable,
 )
+from .study3_records import SIMULATION as SIMULATION_FOLDER
 from .study3_records import under_sealed as _under_sealed  # the one sealed-path rule
 
 DIRECTORY = (EXPERIMENT, DECISIONS_FOLDER)  # reserved in the experiment's folder
@@ -308,6 +329,36 @@ class _Ref(NamedTuple):
 
 Starts = Sequence[tuple[str, Mapping[str, Any]]]  # the journal's starts: (campaign, record)
 SIMULATION_RECORD = "/".join((*DIRECTORY, "simulation.json"))  # an n record's reference to it
+
+# "Simulation before validation": the simulation's fixation (in the checkout), its results (under
+# the runs directory) and the identities of its tests
+SIMULATION_FIXATION = "docs/study3-simulation-fixation.json"
+SIMULATION_RESULTS = "/".join((EXPERIMENT, SIMULATION_FOLDER, "results.json"))
+TEST_STREAMS = ("calibration", "verification")
+N_POINTS: tuple[int | str, ...] = (36, 45, 60, 75, 90, 99, "cap")
+TESTED = ("A-F", "P-F", "joint")
+SELECTED_LEVEL = "selected_calibration_level"  # a verification test's level slot
+P0 = {"A-F": COVERAGE_P0["comparison"], "P-F": COVERAGE_P0["comparison"],
+      "joint": COVERAGE_P0["joint"]}  # fmt: skip
+DETECTION_AT = {"comparison": 0.035, "joint": 0.065}  # the registered example's departures
+MAX_DRAWS_FACTOR = 4  # a test draws at most 4·M studies
+NOT_ATTAINABLE = "not_attainable"
+POWER_REQUIRED, POWER_LEVEL = REQUIRED_GATES["power_af"], LEVELS[0]  # the power without an L
+COVERAGE_ROLES, POWER_ROLES = ("coverage", "coverage_power"), ("coverage_power", "power")
+FIXATION_FIELDS = ("kind", "written_at", "code", "policy", "inputs", "M", "resamples", "streams",
+                   "levels", "n_points", "p0", "gate_replicates", "max_draws_factor", "rules",
+                   "curvature", "scenarios", "tests", "J", "thresholds",
+                   "detection_power")  # fmt: skip
+FIXATION_RULES = ("screen_simplifications", "pf_verification", "joint_verification",
+                  "draw_bound")  # fmt: skip
+CURVATURE_FIELDS = ("A", "F", "P", "unit", "nominal_bias_af_pp", "source", "note")
+RESULTS_FIELDS = ("kind", "written_at", "fixation", "code", "M", "J", "streams", "resamples",
+                  "validation_blocks", SELECTED_LEVEL, "tests", "gates", "reported")  # fmt: skip
+ROW_FIELDS = ("test", "level", "due", "p0", "studies", "draws", "reason", "X", "c", "passed",
+              "rate", "interval")  # fmt: skip
+RESULT_GATES = ("safe_pass_rate", "empirical_pass_rate", "power_af", "power_pf", "n_scan",
+                "detection_power")  # fmt: skip
+_DECIDED = re.compile(r".*\bM\d+[a-z]?, decided")  # a source line's end: "…; M<n>, decided"
 
 
 # ------------------------------------------------------------------ the kinds and their files
@@ -720,7 +771,9 @@ def _problems(root: Path, kind: str, record: Any, repo: Path) -> list[str]:
     if problems:
         return problems  # nothing is read from a record that is not well formed
     problems += _evidence(check.refs, root, repo)
-    if family == "n":
+    if family == "simulation":
+        problems += _against_fixation(root, record, repo)
+    elif family == "n":
         problems += _against_simulation(root, record, candidate, repo)
     elif family == "budget":
         problems += _against_n(root, kind, record, candidate, repo)
@@ -1276,6 +1329,468 @@ def coverage_threshold(tests: int, runs: int, p0: float) -> int:
     return int(binom.ppf(1 - FAMILY_ALPHA / tests, runs, p0))
 
 
+# ------------------------------------------------------------------ the simulation's tests
+
+
+def level_slot(level: float) -> str:
+    """A calibration test's level slot: the level with three decimals (``"0.975"`` …)."""
+    return f"{level:.3f}"
+
+
+def test_identities(scenarios: Sequence[str]) -> list[tuple[str, str, int | str, str, str]]:
+    """The identities of the coverage tests of ``scenarios`` (the coverage scenarios, in the
+    grid's order), in enumeration order: stream (``TEST_STREAMS``), scenario, N point
+    (``N_POINTS``), level slot (each level of the ladder in calibration, ``SELECTED_LEVEL`` in
+    verification) and comparison (``TESTED``). Per scenario 4 × 7 × 3 calibration and 7 × 3
+    verification tests, 105 in all."""
+    out = []
+    for stream in TEST_STREAMS:
+        slots = [level_slot(lv) for lv in LEVELS] if stream == "calibration" else [SELECTED_LEVEL]
+        for scenario in scenarios:
+            for point in N_POINTS:
+                for slot in slots:
+                    out += [(stream, scenario, point, slot, c) for c in TESTED]
+    return out
+
+
+test_identities.__test__ = False  # a function of this module: no test collector's
+
+
+def identities_sha256(identities: Sequence[Sequence[Any]]) -> str:
+    """The sha256 of the identities as canonical JSON (a list of lists, ``separators=(",",
+    ":")``)."""
+    blob = json.dumps([list(i) for i in identities], separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def detection_power(tests: int, runs: int) -> dict[str, float]:
+    """P(X > c) at a true non-coverage of 3.5 % per comparison and 6.5 % jointly, c the
+    threshold at J = ``tests`` and M = ``runs`` (the registration's example: 97.8 % and 99.5 %
+    at J = 1 000)."""
+    from scipy.stats import binom
+
+    return {name: float(binom.sf(coverage_threshold(tests, runs, p0), runs, DETECTION_AT[name]))
+            for name, p0 in COVERAGE_P0.items()}  # fmt: skip
+
+
+def clopper_pearson(x: int, runs: int) -> list[float]:
+    """The ordinary 95 % binomial interval of X/M (Clopper–Pearson, M21)."""
+    from scipy.stats import beta
+
+    lower = 0.0 if x == 0 else float(beta.ppf(0.025, x, runs - x + 1))
+    upper = 1.0 if x == runs else float(beta.ppf(0.975, x + 1, runs - x))
+    return [lower, upper]
+
+
+def fixation_problems(
+    repo: str | Path, path: str = SIMULATION_FIXATION
+) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+    """The simulation's fixation in the checkout ``repo`` (the J check's step 2): its content,
+    the commit that added it and the problems. It is committed once (``study3_versions``'
+    ``_added``), alone (its commit changes that file and no other), unchanged since (the file,
+    HEAD's blob and its commit's blob are the same bytes), and its schema is closed: its
+    ``tests`` are exactly ``test_identities`` of its coverage scenarios, with their count and
+    sha256, J their count, and the thresholds and detection powers recomputed. Nothing is read
+    from a fixation with a problem."""
+    from . import study3_versions as versions  # lazy: it loads the configs
+
+    repo = Path(repo)
+    where = f"fixation {path}"
+    file = repo / path
+    if _under_sealed(file, repo):
+        return None, None, [f"{where}: {sealed_why(file, repo)}: never opened"]
+    if not file.is_file():
+        return None, None, [f"{where} is missing from the checkout {repo}"]
+    commit, why = versions._added(repo, path)
+    if commit is None:
+        return None, None, [f"{where}: {why}: the fixation is committed before the first draw"]
+    problems = []
+    changed = versions.committed_changes(f"{commit}^", commit, repo)
+    if changed != [path]:
+        problems.append(f"{where}: its commit {commit} changes {changed}: the fixation is "
+                        "committed alone")  # fmt: skip
+    data = file.read_bytes()
+    if not data == versions._blob(repo, "HEAD", path) == versions._blob(repo, commit, path):
+        problems.append(f"{where} has changed since its commit {commit}: the fixation is frozen")
+    try:
+        fixation = json.loads(data)
+    except ValueError:
+        return None, commit, [*problems, f"{where} is not JSON"]
+    problems += [f"{where}: {p}" for p in _fixation_schema(fixation)]
+    return (None if problems else fixation), commit, problems
+
+
+def _fixation_schema(f: Any) -> list[str]:
+    """What departs from the fixation's closed schema (``study3_simulation.build_fixation``)."""
+    from . import study3_simulation as simulation  # lazy: the reader of its scenarios
+
+    if not isinstance(f, dict) or set(f) != set(FIXATION_FIELDS):
+        return [f"fields {sorted(f) if isinstance(f, dict) else type(f).__name__}, not "
+                f"{sorted(FIXATION_FIELDS)}"]  # fmt: skip
+    check = _Schema("simulation", "simulation", None)
+    if f["kind"] != "simulation-fixation":
+        check.add("kind", f"is {f['kind']!r}, not 'simulation-fixation'")
+    check._when(f["written_at"])
+    code = check.object("code", f["code"], ("commit", "gpu_code_sha256"))
+    if code is not None and not (_text_matches(code["commit"], _COMMIT)
+                                 and _text_matches(code["gpu_code_sha256"], _SHA256)):  # fmt: skip
+        check.add("code", "is not a commit (40 hexadecimal digits) and a sha256")
+    check.object("policy", f["policy"], ("path", "commit", "sha256", "amendments"))
+    inputs = check.object("inputs", f["inputs"], ("path", "sha256"))
+    if inputs is not None and not _text_matches(inputs["sha256"], _SHA256):
+        check.add("inputs.sha256", "is not a sha256")
+    if f["M"] != COVERAGE_RUNS or type(f["M"]) is not int:
+        check.add("M", f"is {f['M']!r}, not {COVERAGE_RUNS}")
+    resamples = check.object("resamples", f["resamples"], ("screen", "verification"))
+    for name in ("screen", "verification") if resamples is not None else ():
+        check.integer(f"resamples.{name}", resamples[name], 1)
+    streams = check.object("streams", f["streams"], TEST_STREAMS)
+    counted = streams is not None and all(
+        [check.integer(f"streams.{n}", streams[n], 0) for n in TEST_STREAMS]
+    )
+    if counted and streams["calibration"] == streams["verification"]:
+        check.add("streams", "the verification stream is the calibration stream")
+    for name, want in (("levels", list(LEVELS)), ("n_points", list(N_POINTS)),
+                       ("p0", dict(COVERAGE_P0)), ("gate_replicates", f["M"]),
+                       ("max_draws_factor", MAX_DRAWS_FACTOR)):  # fmt: skip
+        if f[name] != want or isinstance(f[name], bool):
+            check.add(name, f"is {f[name]!r}, not {want!r}")
+    rules = check.object("rules", f["rules"], FIXATION_RULES)
+    for name in FIXATION_RULES if rules is not None else ():
+        rule = check.object(f"rules.{name}", rules[name], ("rule", "source"))
+        if rule is not None and not (check.text(f"rules.{name}.rule", rule["rule"])
+                                     and isinstance(rule["source"], str)
+                                     and _DECIDED.fullmatch(rule["source"])):  # fmt: skip
+            check.add(f"rules.{name}.source", "does not end in 'M<n>, decided'")
+    curvature = check.object("curvature", f["curvature"], CURVATURE_FIELDS)
+    if curvature is not None:
+        for arm in ("A", "F", "P"):
+            check.real(f"curvature.{arm}", curvature[arm])
+        check.real("curvature.nominal_bias_af_pp", curvature["nominal_bias_af_pp"])
+    coverage = []
+    scenarios = f["scenarios"]
+    if not (isinstance(scenarios, list) and scenarios):
+        check.add("scenarios", "is not a non-empty list")
+        scenarios = []
+    names = []
+    for i, entry in enumerate(scenarios):
+        where = f"scenarios[{i}]"
+        try:
+            scenario = simulation.Scenario.from_json(
+                {k: v for k, v in entry.items() if k != "calibration"}
+            )
+            calibrations = entry["calibration"]
+            if not (isinstance(calibrations, dict) and calibrations
+                    and str(scenario.candidate) in calibrations):  # fmt: skip
+                raise ValueError(f"a calibration at its candidate {scenario.candidate} is needed")
+            for candidate, value in calibrations.items():
+                if simulation.calibration_from_json(value).candidate != int(candidate):
+                    raise ValueError(f"the calibration of candidate {candidate} is another's")
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            check.add(where, f"is no scenario with its calibrations ({exc})")
+            continue
+        names.append(scenario.name)
+        if scenario.role in COVERAGE_ROLES:
+            coverage.append(scenario.name)
+    if len(set(names)) != len(names):
+        check.add("scenarios", "lists a scenario twice")
+    tests = check.object("tests", f["tests"], ("list", "count", "sha256"))
+    if tests is not None:
+        want = test_identities(coverage)
+        if tests["list"] != [list(i) for i in want]:
+            check.add("tests.list", "is not the identities of its coverage scenarios, in order")
+        if tests["count"] != len(want) or type(tests["count"]) is not int:
+            check.add("tests.count", f"is {tests['count']!r}, not {len(want)}")
+        if tests["sha256"] != identities_sha256(want):
+            check.add("tests.sha256", "is not the sha256 of the identities")
+        if f["J"] != len(want) or type(f["J"]) is not int:
+            check.add("J", f"is {f['J']!r}, not the {len(want)} identities")
+    j = f["J"] if type(f["J"]) is int and f["J"] >= 1 else None
+    if j is not None:
+        want = {name: coverage_threshold(j, COVERAGE_RUNS, p0) for name, p0 in COVERAGE_P0.items()}
+        if f["thresholds"] != want:
+            check.add("thresholds", f"are {f['thresholds']!r}, not the recomputed {want}")
+        power = detection_power(j, COVERAGE_RUNS)
+        found = f["detection_power"]
+        if not (isinstance(found, dict) and set(found) == set(power) and all(
+                _close(found[k], v) for k, v in power.items())):  # fmt: skip
+            check.add("detection_power", f"is {found!r}, not the recomputed {power}")
+    return check.problems
+
+
+def fixation_scenarios(fixation: Mapping[str, Any], roles: Sequence[str]) -> list[str]:
+    """The names of the fixation's scenarios whose role is one of ``roles``, in its order."""
+    return [s["name"] for s in fixation["scenarios"] if s["role"] in roles]
+
+
+def coverage_decisions(
+    results: Mapping[str, Any], fixation: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """The simulation record's decisions recomputed from the results' rows (the J check's step
+    5), and the problems of the rows:
+    - per test, c = ``coverage_threshold(J, M, p₀)``, the pass X ≤ c, the rate X/M and the
+      Clopper–Pearson interval; a row with fewer than M studies must have drawn 4·M (``draws``)
+      and say ``not_attainable``, and then passes never;
+    - per level, the record's ``coverage`` row (all four): the counts are the largest X over the
+      level's tests (A–F and P–F for ``comparison``), a not-attainable test counting as X = M;
+    - L, the first level whose tests passed, and so which verification tests are due: all of
+      them with an L, none without (``selected_calibration_level`` stands for L);
+    - the ``verification`` (its tests, due and passed, at L), the ``gates`` (from their stored
+      counts: the pass rates, the powers as the smallest correct/M over the power scenarios, a
+      scenario short of M counting its missing studies as not detecting, ``n_min`` from the
+      stored scan, the detection powers at the fixation's J), ``validation_blocks`` (28 when the
+      pass rate at the safe alternative reaches 0.95, else 40) and the ``state`` (passed exactly
+      when a level and its verification passed)."""
+    problems: list[str] = []
+    j, m = fixation["J"], COVERAGE_RUNS
+    bound = MAX_DRAWS_FACTOR * m
+    thresholds = {name: coverage_threshold(j, m, p0) for name, p0 in COVERAGE_P0.items()}
+    rows: dict[tuple, Mapping[str, Any]] = {}
+    for i, row in enumerate(results.get("tests") or []):
+        identity = _identity_of(row)
+        if identity is not None:
+            rows.setdefault(identity, row)
+        else:
+            problems.append(f"tests[{i}] is not a row with its test")
+    identities = test_identities(fixation_scenarios(fixation, COVERAGE_ROLES))
+    calibration = [i for i in identities if i[0] == "calibration"]
+    verification = [i for i in identities if i[0] == "verification"]
+
+    def read(identity: tuple, level: float | None) -> tuple[int, bool]:
+        """A due row's effective X (M when not attainable) and pass; its problems noted."""
+        row = rows.get(identity)
+        if row is None:
+            problems.append(f"tests: {list(identity)} has no row")
+            return m, False
+        found = _row(row, identity, level, thresholds, m, bound)
+        problems.extend(found[2])
+        return found[0], found[1]
+
+    coverage = []
+    for level in LEVELS:
+        slot = level_slot(level)
+        mine = [i for i in calibration if i[3] == slot]
+        read_rows = [(i[4], *read(i, level)) for i in mine]
+        counts = {
+            "comparison": max((x for c, x, _ in read_rows if c != "joint"), default=0),
+            "joint": max((x for c, x, _ in read_rows if c == "joint"), default=0),
+        }
+        coverage.append({"level": level, "tests": len(mine), "J": j, "M": m, "counts": counts,
+                         "thresholds": dict(thresholds),
+                         "passed": all(counts[k] <= thresholds[k] for k in counts)})  # fmt: skip
+    selected = next((row["level"] for row in coverage if row["passed"]), None)
+    passed = selected is not None
+    for identity in verification:
+        if selected is None:
+            row = rows.get(identity)
+            if row is None:
+                problems.append(f"tests: {list(identity)} has no row")
+            elif not _not_due(row):
+                problems.append(f"tests: {list(identity)}: no level passed, so the verification "
+                                "is not due: every field but its test, p0 and due (false) is "
+                                "null")  # fmt: skip
+        else:
+            passed = read(identity, selected)[1] and passed
+    streams = fixation["streams"]
+    decided_verification = {
+        "level": selected, "passed": selected is not None and passed, "tests": len(verification),
+        "calibration_stream": streams["calibration"],
+        "verification_stream": streams["verification"],
+    }  # fmt: skip
+    gates, gate_problems = _gates_recomputed(results.get("gates"), fixation, selected)
+    problems += gate_problems
+    safe = gates.get("safe_pass_rate")
+    blocks = None if safe is None else (VALIDATION_BLOCKS[0] if safe["passed"]
+                                        else VALIDATION_BLOCKS[1])  # fmt: skip
+    for name, want in (("validation_blocks", blocks), (SELECTED_LEVEL, selected)):
+        if results.get(name) != want:
+            problems.append(f"results.{name} is {results.get(name)!r}, recomputed {want!r}")
+    state = "passed" if decided_verification["passed"] else "failed"
+    decided = {"J": j, "M": m, "coverage": coverage, "level": selected,
+               "verification": decided_verification, "gates": gates,
+               "validation_blocks": blocks, "state": state}  # fmt: skip
+    return decided, problems
+
+
+def _row(row: Mapping[str, Any], identity: tuple, level: float, thresholds: Mapping[str, int],
+         m: int, bound: int) -> tuple[int, bool, list[str]]:  # fmt: skip
+    """A due row against its recomputation: (effective X, passed, problems)."""
+    where = f"tests: {list(identity)}"
+    if set(row) != set(ROW_FIELDS):
+        return m, False, [f"{where}: fields {sorted(row)}, not {sorted(ROW_FIELDS)}"]
+    comparison = identity[4]
+    c = thresholds["joint" if comparison == "joint" else "comparison"]
+    found = []
+    if row["due"] is not True:
+        found.append(f"{where}: it is due (due is {row['due']!r})")
+    if not _close(row["level"], level):
+        found.append(f"{where}: level is {row['level']!r}, recomputed {level}")
+    if row["p0"] != P0[comparison]:
+        found.append(f"{where}: p0 is {row['p0']!r}, not {P0[comparison]}")
+    if row["c"] != c or type(row["c"]) is not int:
+        found.append(f"{where}: c is {row['c']!r}, recomputed {c}")
+    studies, draws = row["studies"], row["draws"]
+    if not (type(studies) is int and type(draws) is int and 0 <= studies <= m
+            and studies <= draws <= bound):  # fmt: skip
+        return m, False, [*found, f"{where}: studies {studies!r} and draws {draws!r} are not "
+                          f"counts with studies ≤ M = {m} and draws ≤ 4·M = {bound}"]  # fmt: skip
+    if studies < m:
+        if draws != bound or row["reason"] != NOT_ATTAINABLE:
+            found.append(f"{where}: {studies} studies, short of M, below the 4·M = {bound} draws "
+                         f"bound ({draws} drawn, reason {row['reason']!r}): a short test stops "
+                         f"only at the bound, {NOT_ATTAINABLE!r}")  # fmt: skip
+        nulls = {k: row[k] for k in ("X", "rate", "interval") if row[k] is not None}
+        if nulls or row["passed"] is not False:
+            found.append(f"{where}: a test not attainable has no X, rate or interval and does "
+                         f"not pass ({nulls}, passed {row['passed']!r}): recomputed")  # fmt: skip
+        return m, False, found
+    if row["reason"] is not None:
+        found.append(f"{where}: reason is {row['reason']!r} for a test of M studies")
+    x = row["X"]
+    if not (type(x) is int and 0 <= x <= m):
+        return m, False, [*found, f"{where}: X is {x!r}, not a count in [0, {m}]"]
+    passes = x <= c
+    if row["passed"] is not passes:
+        found.append(f"{where}: passed is {row['passed']!r}, but X = {x} against c = {c} gives "
+                     f"{passes}: recomputed")  # fmt: skip
+    if not _close(row["rate"], x / m):
+        found.append(f"{where}: rate is {row['rate']!r}, recomputed {x / m}")
+    interval = clopper_pearson(x, m)
+    stored = row["interval"]
+    if not (isinstance(stored, list) and len(stored) == 2
+            and all(_close(a, b) for a, b in zip(stored, interval, strict=True))):  # fmt: skip
+        found.append(f"{where}: interval is {row['interval']!r}, recomputed {interval}")
+    return x, passes, found
+
+
+def _identity_of(row: Any) -> tuple | None:
+    """A row's test identity as a tuple of strings and integers; None for anything else."""
+    test = row.get("test") if isinstance(row, Mapping) else None
+    if not isinstance(test, list) or not all(isinstance(x, str) or type(x) is int for x in test):
+        return None
+    return tuple(test)
+
+
+def _not_due(row: Any) -> bool:
+    """A verification row that is not due: its test, p0 and due false, every other field null."""
+    kept = ("test", "due", "p0")
+    return (isinstance(row, Mapping) and set(row) == set(ROW_FIELDS) and row["due"] is False
+            and all(row[k] is None for k in ROW_FIELDS if k not in kept))  # fmt: skip
+
+
+def _gates_recomputed(gates: Any, fixation: Mapping[str, Any],
+                      selected: float | None) -> tuple[dict[str, Any], list[str]]:  # fmt: skip
+    """The record's gates from the results' counts (``coverage_decisions``), and the problems."""
+    if not isinstance(gates, Mapping) or set(gates) != set(RESULT_GATES):
+        return {}, [f"results.gates must hold exactly {list(RESULT_GATES)}"]
+    m, replicates = COVERAGE_RUNS, fixation["gate_replicates"]
+    bound = MAX_DRAWS_FACTOR * m
+    power_scenarios = fixation_scenarios(fixation, POWER_ROLES)
+    problems: list[str] = []
+    out: dict[str, Any] = {}
+    for name in ("safe_pass_rate", "empirical_pass_rate"):
+        g = gates[name]
+        if not (isinstance(g, Mapping) and set(g) == {"passed", "studies", "validation_blocks"}
+                and type(g["studies"]) is int and g["studies"] == replicates
+                and type(g["passed"]) is int and 0 <= g["passed"] <= g["studies"]
+                and g["validation_blocks"] == VALIDATION_BLOCKS[0]):  # fmt: skip
+            problems.append(f"results.gates.{name} is not its passes of {replicates} validations "
+                            f"of {VALIDATION_BLOCKS[0]} blocks")  # fmt: skip
+            continue
+        value = g["passed"] / g["studies"]
+        required = REQUIRED_GATES.get(name)
+        out[name] = {"value": value, "requirement": required,
+                     "passed": None if required is None else value >= required}  # fmt: skip
+    level = POWER_LEVEL if selected is None else selected
+    powers = {}
+    for name in ("power_af", "power_pf"):
+        g = gates[name]
+        by = g.get("by_scenario") if isinstance(g, Mapping) else None
+        if not (isinstance(g, Mapping) and set(g) == {"level", "by_scenario"}
+                and _close(g["level"], level) and isinstance(by, Mapping)
+                and set(by) == set(power_scenarios) and by):  # fmt: skip
+            problems.append(f"results.gates.{name} is not the power at {level} of "
+                            f"{power_scenarios}")  # fmt: skip
+            continue
+        values = []
+        for scenario, counts in by.items():
+            if not (isinstance(counts, Mapping) and set(counts) == {"correct", "studies", "draws"}
+                    and all(type(counts[k]) is int for k in counts)
+                    and 0 <= counts["correct"] <= counts["studies"] <= m
+                    and counts["studies"] <= counts["draws"] <= bound
+                    and (counts["studies"] == m or counts["draws"] == bound)):  # fmt: skip
+                problems.append(f"results.gates.{name}.{scenario}: correct ≤ studies ≤ M, draws "
+                                "≤ 4·M, and short of M only at the 4·M bound")  # fmt: skip
+            else:
+                values.append(counts["correct"] / m)  # the missing studies do not detect
+        powers[name] = min(values) if len(values) == len(by) else None
+    af, pf = powers.get("power_af"), powers.get("power_pf")
+    if af is not None:
+        short = af < POWER_REQUIRED
+        n_min, scan_problems = _n_min(gates["n_scan"], short, power_scenarios)
+        problems += scan_problems
+        out["power_af"] = {"value": af, "requirement": POWER_REQUIRED, "passed": not short,
+                           "power_short": short, "n_min": n_min}  # fmt: skip
+    if pf is not None:
+        out["power_pf"] = {"value": pf, "requirement": None, "passed": None}
+    power = detection_power(fixation["J"], m)
+    found = gates["detection_power"]
+    if not (isinstance(found, Mapping) and set(found) == set(power)
+            and all(_close(found[k], v) for k, v in power.items())):  # fmt: skip
+        problems.append(f"results.gates.detection_power is {found!r}, recomputed {power}")
+    for name, value in power.items():
+        out[f"detection_power_{name}"] = {"value": value, "requirement": None, "passed": None}
+    return out, problems
+
+
+def _n_min(scan: Any, short: bool, scenarios: Sequence[str]) -> tuple[int | None, list[str]]:
+    """``n_min`` from the stored scan (§"If a requirement is not met": N raised for power): the
+    scan runs n = 60, 61, … and stops at the first n where the smallest power reaches 0.80, or
+    where the cap of n exceeds the reserved seeds; n_min is that n. Empty when the power is not
+    short."""
+    if not isinstance(scan, list):
+        return None, ["results.gates.n_scan is not a list"]
+    if not short:
+        return None, [] if not scan else ["results.gates.n_scan is not empty, but the power is "
+                                          "not short"]  # fmt: skip
+    if not scan:
+        return None, ["results.gates.n_scan is empty, but the power is short: n_min is its "
+                      "first passing n"]  # fmt: skip
+    reserved = len(SEEDS["confirmation"][1])
+    for k, entry in enumerate(scan):
+        by = entry.get("by_scenario") if isinstance(entry, Mapping) else None
+        if not (isinstance(entry, Mapping) and set(entry) == {"n", "by_scenario"}
+                and entry["n"] == MIN_N + k and type(entry["n"]) is int
+                and isinstance(by, Mapping) and set(by) == set(scenarios) and all(
+                    isinstance(c, Mapping) and set(c) == {"correct", "studies"}
+                    and all(type(v) is int for v in c.values())
+                    and 0 <= c["correct"] <= c["studies"] <= COVERAGE_RUNS
+                    for c in by.values())):  # fmt: skip
+            return None, [f"results.gates.n_scan[{k}] is not the scan at n = {MIN_N + k} over "
+                          f"{list(scenarios)}"]  # fmt: skip
+        power = min(c["correct"] for c in by.values()) / COVERAGE_RUNS
+        last = power >= POWER_REQUIRED or cap_of(entry["n"]) > reserved
+        if last != (k == len(scan) - 1):
+            return None, [f"results.gates.n_scan does not stop at its first n whose power reaches "
+                          f"{POWER_REQUIRED} or whose cap exceeds {reserved} (n = "
+                          f"{entry['n']})"]  # fmt: skip
+    return scan[-1]["n"], []
+
+
+def _close(a: Any, b: Any) -> bool:
+    """Two numbers equal to floating-point rounding (None only with None)."""
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, bool) or isinstance(b, bool):
+        return False
+    return (isinstance(a, int | float) and isinstance(b, int | float)
+            and math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-15))  # fmt: skip
+
+
+def _text_matches(value: Any, pattern: re.Pattern) -> bool:
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
 # ------------------------------------------------------------------ evidence and cross-checks
 
 
@@ -1333,6 +1848,153 @@ def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
             found.append(f"the cohort has {len(seeds)} blocks, below the {SUPPORTED_AT[blocks]} "
                          f"supported that the {blocks}-block validation needs")  # fmt: skip
     return found
+
+
+def _against_fixation(root: Path, record: Mapping[str, Any], repo: Path) -> list[str]:
+    """The J check of a simulation record against its fixation and its results; it fails
+    closed, and checks, in order:
+    1. the references: ``fixation`` is exactly ``SIMULATION_FIXATION`` under the checkout and
+       ``inputs.results`` exactly ``SIMULATION_RESULTS`` under the runs directory;
+    2. the fixation (``fixation_problems``): committed once, alone and unchanged, its schema
+       closed and its tests exactly the identities of its coverage scenarios;
+    3. the results' header: their ``fixation`` is that path, its sha256 and its commit; that
+       commit is the results' ``code.commit`` or an ancestor of it (the fixation preceded the
+       first draw); M is ``COVERAGE_RUNS``, J, the streams and the resamples are the fixation's;
+    4. the identities: the results' tests are the fixation's, in its order, none twice, none
+       missing, none that it does not list;
+    5. the recomputation (``coverage_decisions``): the record equals it in every coverage row's
+       level, J, M, tests, counts, thresholds and pass, and in its level, verification, gates,
+       validation size and state."""
+    from . import study3_versions as versions  # lazy: it loads the configs
+
+    problems = []
+    fixation_ref, results_ref = record["fixation"], record["inputs"].get("results")
+    if fixation_ref.get("path") != SIMULATION_FIXATION or fixation_ref.get("root") != "repo":
+        problems.append(f"fixation: is {fixation_ref.get('path')!r} under "
+                        f"{fixation_ref.get('root', 'runs')!r}, not the simulation's fixation "
+                        f"{SIMULATION_FIXATION!r} under the checkout")  # fmt: skip
+    if not (isinstance(results_ref, dict) and results_ref.get("path") == SIMULATION_RESULTS
+            and results_ref.get("root", "runs") == "runs"):  # fmt: skip
+        problems.append(f"inputs.results: the simulation's results {SIMULATION_RESULTS!r} under "
+                        "the runs directory are not named")  # fmt: skip
+    if problems:
+        return problems
+    fixation, commit, found = fixation_problems(repo)
+    if fixation is None:
+        return found
+    path = root / SIMULATION_RESULTS
+    if _under_sealed(path, root):
+        return [f"inputs.results: {path} {sealed_why(path, root)}: never opened"]
+    try:
+        results = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"inputs.results: {path} is unreadable ({type(exc).__name__})"]
+    if not isinstance(results, dict) or set(results) != set(RESULTS_FIELDS):
+        return [f"results: fields {sorted(results) if isinstance(results, dict) else '?'}, not "
+                f"{sorted(RESULTS_FIELDS)}"]  # fmt: skip
+    if results["kind"] != "simulation-results":
+        problems.append(f"results: kind {results['kind']!r}, not 'simulation-results'")
+    sha = _digest(repo / SIMULATION_FIXATION)
+    want = {"path": SIMULATION_FIXATION, "sha256": sha, "commit": commit}
+    if results["fixation"] != want:
+        problems.append(f"results.fixation is {results['fixation']!r}, not the committed "
+                        f"fixation {want}")  # fmt: skip
+    code = results["code"]
+    ran = code.get("commit") if isinstance(code, dict) else None
+    if not (_text_matches(ran, _COMMIT) and isinstance(code, dict)
+            and _text_matches(code.get("gpu_code_sha256"), _SHA256)):  # fmt: skip
+        problems.append("results.code is not a commit and its GPU code")
+    elif versions.committed_changes(commit, ran, repo) is None:
+        problems.append(f"results.code.commit {ran} is not the fixation's commit {commit} or "
+                        "a descendant of it: the fixation is committed before the first "
+                        "draw")  # fmt: skip
+    for name, value in (("M", COVERAGE_RUNS), ("J", fixation["J"]),
+                        ("streams", fixation["streams"]),
+                        ("resamples", fixation["resamples"])):  # fmt: skip
+        if results[name] != value:
+            problems.append(f"results.{name} is {results[name]!r}, not the fixation's {value!r}")
+    problems += _identities(results["tests"], fixation)
+    if problems:
+        return problems
+    decided, found = coverage_decisions(results, fixation)
+    problems += found
+    return problems + _against_decided(record, decided)
+
+
+def _identities(rows: Any, fixation: Mapping[str, Any]) -> list[str]:
+    """The results' tests against the fixation's identities: none twice, none missing, none
+    that it does not list, in its order."""
+    if not isinstance(rows, list):
+        return ["results.tests is not a list of rows"]
+    listed = [tuple(i) for i in fixation["tests"]["list"]]
+    found = [_identity_of(r) for r in rows]
+    problems = []
+    counts: dict[tuple | None, int] = {}
+    for identity in found:
+        counts[identity] = counts.get(identity, 0) + 1
+    known = set(listed)
+
+    def some(items: list) -> str:
+        return ", ".join(str(list(i)) for i in items[:3]) + (f" … ({len(items)})"
+                                                            if len(items) > 3 else "")  # fmt: skip
+
+    twice = [i for i, n in counts.items() if n > 1 and i is not None]
+    missing = [i for i in listed if i not in counts]
+    extra = [i for i in counts if i not in known]
+    if twice:
+        problems.append(f"results.tests: the tests {some(twice)} are listed twice")
+    if missing:
+        problems.append(f"results.tests: the fixation's tests {some(missing)} are missing")
+    if extra:
+        problems.append(f"results.tests: the tests {some([i for i in extra if i is not None])} "
+                        f"are not in the fixation ({len(extra)})")  # fmt: skip
+    if not problems and found != listed:
+        problems.append("results.tests are not in the fixation's order")
+    return problems
+
+
+def _against_decided(record: Mapping[str, Any], decided: Mapping[str, Any]) -> list[str]:
+    """The record against the recomputed decisions (the J check's step 5)."""
+    problems = []
+    rows = record["coverage"]
+    if len(rows) != len(decided["coverage"]):
+        problems.append(f"coverage lists {len(rows)} levels, recomputed "
+                        f"{len(decided['coverage'])}: every level is tested and "
+                        "listed")  # fmt: skip
+    for i, (row, want) in enumerate(zip(rows, decided["coverage"], strict=False)):
+        for name in ("level", "J", "M", "tests", "counts", "thresholds", "passed"):
+            same = _close(row[name], want[name]) if name == "level" else row[name] == want[name]
+            if not same:
+                problems.append(f"coverage[{i}].{name} is {row[name]!r}, recomputed "
+                                f"{want[name]!r} from the results")  # fmt: skip
+    if not _close(record["level"], decided["level"]):
+        problems.append(f"level is {record['level']!r}, recomputed {decided['level']!r}")
+    verification, want = record["verification"], decided["verification"]
+    for name, value in want.items():
+        same = (_close(verification[name], value) if name == "level"
+                else verification[name] == value)  # fmt: skip
+        if not same:
+            due = "" if decided["level"] is not None else " (no level passed: not due)"
+            problems.append(f"verification.{name} is {verification[name]!r}, recomputed "
+                            f"{value!r}{due}")  # fmt: skip
+    gates, want = record["gates"], decided["gates"]
+    for name in sorted(set(gates) | set(want)):
+        if name not in want or name not in gates:
+            problems.append(f"gates.{name}: {'not recomputed' if name not in want else 'missing'}"
+                            " from the results")  # fmt: skip
+            continue
+        mine, theirs = gates[name], want[name]
+        if set(mine) != set(theirs) or not all(
+                _close(mine[k], theirs[k]) if isinstance(theirs[k], float)
+                else mine[k] == theirs[k] for k in theirs):  # fmt: skip
+            problems.append(f"gates.{name} is {mine!r}, recomputed {theirs!r} from the "
+                            "results' counts")  # fmt: skip
+    for name in ("validation_blocks", "state"):
+        if name == "validation_blocks" and record[name] is None and record["state"] == "failed":
+            continue  # a failed record may leave the size null (the schema's allowance)
+        if record[name] != decided[name]:
+            problems.append(f"{name} is {record[name]!r}, recomputed {decided[name]!r}")
+    return problems
 
 
 def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list[str]:

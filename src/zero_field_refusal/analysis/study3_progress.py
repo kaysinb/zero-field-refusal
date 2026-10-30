@@ -130,8 +130,9 @@ counts, never every id. A failed n record (its cap beyond the 200 reserved confi
 means the confirmation cannot start: the design stop, with the reason; N is never cut. A power
 shortfall needs the budget record (``budget_reason``); a budget decision to stop ends the study
 before the confirmation (the budget stop). Whether the simulation's J is the one its fixation
-froze is checked by the simulation package (package 3), which writes both; it is not checked
-here.
+froze is checked by the simulation record's reader (``study3_decisions``, the J check: the
+record against its committed fixation and the results' tests), so a record read here has passed
+it; it is not checked again here.
 
 **The confirmation** ("Confirmation"). One block per campaign, in seed order from 10400, up to the
 cap N + max(10, ⌈0.12·N⌉) (the cells of every seed up to the cap are prescribed, no further). The
