@@ -848,7 +848,8 @@ remain unchanged. Engineering seeds may run after Part I passes and before Part 
   - **GPU code.** If code written after Part I changes the GPU-code identity before the engineering
     decision, every affected engineering case is re-run, by the [engineering stage's
     rules](#engineering-stage). This covers the simulation, analysis and report code, and any fix
-    found by Part II. Part I's GPU steps are repeated for that code.
+    found by Part II. Part I's GPU steps are repeated for that code. *Clarified by
+    [amendment 6](#amendment-6-replaying-orchestration-changes-on-cpu).*
   - **Analysis code.** A change to analysis code alone does not re-run GPU work. It does require the
     affected part of the dry run to be replayed on CPU, and Part II replayed in full if the change
     falls after it.
@@ -893,3 +894,27 @@ remain unchanged.
   prices, and any stop this rule caused.
 - **What was known.** The registration, the code up to the dry run's Part I, and Part I's report
   with its measured GPU minutes. Only GPU minutes were read; no study-3 outcome.
+
+### Amendment 6: replaying orchestration changes on CPU
+
+Decided on 2026-10-30 by the researcher, before any engineering seed, search or later study-3
+stage ran. The only study-3 runs so far are the dry run's Part I and its repeat, on dry seeds
+outside every registered range. [Amendment 4](#amendment-4-the-dry-run-in-two-parts) repeats
+Part I's GPU steps for any code that changes the GPU-code identity. A change can change that
+identity, because it lies in a GPU path, while leaving the model's execution as it was. This
+amendment states, prospectively, how such a change is repeated. No threshold, route or seed
+changes.
+
+- **The rule.** For changes confined to orchestration and evidence handling, with model execution
+  unchanged, all affected branches are replayed on CPU in the Pod image. GPU steps are repeated
+  when their execution changes.
+- **What it covers.** Only the repetition of the dry run's steps. The GPU-code identity and its
+  rules are unchanged: a change after a qualification voids the verdicts it affects, and a change
+  before the engineering decision re-runs every affected engineering case, by the [engineering
+  stage's rules](#engineering-stage).
+- **The record.** The engineering stage's report gives the exact set of tests replayed, the
+  commit they ran at and their results. A branch covered by synthetic records on CPU is reported
+  as such, never as a GPU demonstration.
+- **Disclosure.** The final report states this amendment and every replay made under it.
+- **What was known.** The registration, the code up to the merge of the fix for a scientific case
+  whose same-path control failed, and Part I's reports with their repeat; no study-3 outcome.
