@@ -156,7 +156,9 @@ cycle's bridge, before and after the repair alike, and with the case restarts th
 (only those count as written before the cycle; no time stamp is compared, the bridge's
 ``superseded_at`` included). ``cycle_problems`` then requires a claim for every stage started
 and none for a stage not started (no rerun of the validation or the search once the
-confirmation has started), ``affected`` (its runs and its stale records) and ``kept`` equal to
+confirmation has started), the record's ``fixation`` the candidate's validation fixation of the
+old code that the stale records list (null when they list none) and the search reused once a
+fixation exists, ``affected`` (its runs and its stale records) and ``kept`` equal to
 their derivation exactly
 (no omission, no extra, nothing twice, canonical order), every mark among the affected runs, the
 qualification's side equal to ``cycle_entries``', no listed run a scientific failure, and the
@@ -1380,9 +1382,10 @@ def cycle_problems(
     problems += [f"{where}: a claim for the {stage}, which had not started" for stage in claims
                  if stage not in started]  # fmt: skip
     problems += [f"{where}: {why}" for why in reopened(claims, started)]
-    problems += _compare(where, "affected.records", record["affected"]["records"],
-                         stale_records(root, candidate, repo=repo, old_code=record["old_code"]),
+    stale = stale_records(root, candidate, repo=repo, old_code=record["old_code"])
+    problems += _compare(where, "affected.records", record["affected"]["records"], stale,
                          lambda r: r["path"])  # fmt: skip
+    problems += [f"{where}: {why}" for why in _fixation_problems(record, claims, stale, repo)]
     run_codes = run_gpu_codes(records.endpoints, repo=repo)
     by_id = {e.run_id: e for e in records.endpoints}
     closed = [k["run_id"] for k in record["kept"] if k.get("why") == "closed_arm"]
@@ -1444,6 +1447,32 @@ def cycle_problems(
             problems.append(f"{where}: {e.run_id} is a scientific failure, and it is listed as "
                             "affected: a scientific failure keeps counting")  # fmt: skip
     return problems
+
+
+def _fixation_problems(
+    record: Mapping[str, Any],
+    claims: Mapping[str, Claim],
+    stale: Sequence[Mapping[str, Any]],
+    repo: str | Path,
+) -> list[str]:
+    """The record's validation fixation against the stale records (module docstring, "The
+    pre-cycle view"): its ``fixation`` is the candidate's validation fixation of the old code in
+    force when it was written (the link ``stale_records`` lists: its path, sha256 and root), or
+    null when there is none; and once a fixation exists the search is reused, never rerun."""
+    from .study3_versions import fixation_chain
+
+    names = set(fixation_chain("validation", record["candidate"], repo=repo))
+    derived = next((dict(entry) for entry in stale if entry.get("path") in names), None)
+    found = []
+    if record.get("fixation") != derived:
+        found.append(f"its fixation {record.get('fixation')} is not the validation fixation of its "
+                     f"old code in force when it was written, {derived}")  # fmt: skip
+    search = claims.get("search")
+    if (record.get("fixation") is not None or derived is not None) and (
+            search is not None and search.action == "rerun"):  # fmt: skip
+        found.append("the validation fixation exists: the search is never rerun after it "
+                      "(search=rerun; search=reuse, with its justification)")  # fmt: skip
+    return found
 
 
 def inactive_arms(records: Records, record: Mapping[str, Any], *, runs_root: str | Path,

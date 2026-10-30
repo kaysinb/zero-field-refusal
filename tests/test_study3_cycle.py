@@ -1902,6 +1902,34 @@ def test_a_cycle_without_a_mark_is_refused_as_such(tmp_path):
         derive(study, root, claims=ALL_RERUN, marks=[])
 
 
+def test_the_reader_checks_the_fixation_a_cycle_names_and_its_search_claim(tmp_path, monkeypatch):
+    """A validation fixation of the old code in the checkout when the cycle is written: the
+    reader requires the record's ``fixation`` to be that fixation (its path and sha256, as the
+    stale records list it), and the search reused once a fixation exists; a record that names
+    none, or reruns the search, is invalid, whatever its writer checked."""
+    study, root = materialized_validation_mark(tmp_path)
+    name = "docs/study3-fixation-validation-c1.json"
+    fixation = root.parent / name
+    fixation.parent.mkdir(parents=True)
+    fixation.write_text(json.dumps({"code": {"commit": "a" * 40, "gpu_code_sha256": OLD}}))
+    ref = {"path": name, "sha256": sha(fixation), "root": "repo"}
+    before = study.records()
+    monkeypatch.setattr(cycle, "pre_cycle_records", lambda *a, **k: before)
+
+    def problems(**kw) -> list[str]:
+        record, bridge = derive(study, root, **kw)
+        found = {"record": record, "path": str(cycle_path(root, 1)), "bridge": bridge}
+        return cycle.cycle_problems(found, runs_root=root, theta0=root, repo=root.parent,
+                                    settings=REGISTERED)  # fmt: skip
+
+    reused = {"search": reuse(), "qualification": reuse(), "validation": rerun()}
+    assert problems(claims=reused, fixation=ref) == []
+    assert any("fixation" in p and "not the validation fixation" in p
+               for p in problems(claims=reused, fixation=None))  # fmt: skip
+    rerun_search = {**reused, "search": rerun()}
+    assert any("search=rerun" in p for p in problems(claims=rerun_search, fixation=ref))
+
+
 def test_a_closed_arm_rests_only_on_a_closure_whose_line_lies_in_the_prefix():
     journal = [{"path": "launch/a.jsonl", "lines": 2, "sha256": "0" * 64}]
     assert cycle._in_prefix({"path": "launch/a.jsonl", "line": 2}, journal)
