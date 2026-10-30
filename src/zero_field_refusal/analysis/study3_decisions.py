@@ -14,7 +14,11 @@ records; the state machine consumes only what this module accepts.
   is not returned.
 - ``decisions``: the records a candidate's route needs (engineering, simulation, ``n-c<N>`` and,
   when N asks for one, ``budget-c<N>``), each with its state and problems, the immutability check
-  of ``immutable`` included; a record is invalid when one it rests on is.
+  of ``immutable`` included; a record is invalid when one it rests on is. An n or budget record is
+  the link in force of its chain of successors (below, "Successors").
+- ``chain``, ``successor_kind``, ``next_successor`` and ``link_of``: an n or budget record's
+  chain of numbered successors; ``confirmation_started``: whether the candidate's confirmation
+  has started (a start of one of its blocks in the launch journal).
 - ``immutable``: a record whose sha256 differs from the one a started campaign's header named.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
 - ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
@@ -31,8 +35,9 @@ records; the state machine consumes only what this module accepts.
   prefix ends.
 
 **Kinds**: ``engineering``, ``simulation``, ``n-c<N>`` (one per candidate), ``budget-c<N>``,
-``cycle-c<N>`` (one per candidate: "Failure routes") and ``closure-c<N>-<arm>`` (one per
-candidate and arm A, F or P).
+their numbered successors ``n-c<N>-<k>`` and ``budget-c<N>-<k>`` (k = 2, 3, …; below,
+"Successors"), ``cycle-c<N>`` (one per candidate: "Failure routes") and ``closure-c<N>-<arm>``
+(one per candidate and arm A, F or P).
 Every record carries ``kind`` (equal to its file's), ``state`` (``passed`` or ``failed``),
 ``written_at`` (ISO 8601 with a UTC offset) and ``code``: ``commit`` (40 hexadecimal digits) and
 ``gpu_code_sha256`` (the sha256 of ``code_identity.gpu_code_identity`` at that commit). The
@@ -100,8 +105,10 @@ on is a response or an observation, and this module opens none.
   state is ``passed`` otherwise.
 - ``budget-c<N>``: ``candidate``, ``N`` and ``cap`` it answers (those of the ``n-c<N>`` record),
   ``decision`` (``proceed``, with state ``passed``, or ``stop``, with state ``failed``) and
-  ``answers``, the evidence of the ``n-c<N>`` record itself, at ``study3/decisions/n-c<N>.json``
-  under the runs directory and no other file (so its sha256 is the recorded one).
+  ``answers``, the evidence of the n record itself, a link of the candidate's n chain
+  (``study3/decisions/n-c<N>.json``, or a successor ``n-c<N>-<k>.json``) under the runs directory
+  and no other file (so its sha256 is the recorded one); a budget successor answers an n
+  successor.
   It is needed when a passed ``n`` record has N above 90 and when N is raised for power (the
   simulation record's ``power_short``), even if N is 90 or less: the extra blocks are the
   researcher's decision; ``decisions`` lists the record as ``missing``, with that as its problem,
@@ -169,6 +176,34 @@ on is a response or an observation, and this module opens none.
   a problem) and every cited line of its bytes, the event and run it names. What the record
   lists against the records it rests on is ``study3_cycle``'s to check.
 
+**Successors** ("Voiding and supersession": a superseded record stays, listed with its reason;
+"Validation, confirmation and stopping", "Sample size from validation"). A candidate's
+engineering cycle moves its GPU code, so a write-once record of the old code goes stale: its
+successor is a new file, ``n-c<N>-<k>`` or ``budget-c<N>-<k>`` (k = 2, 3, …), and the record it
+succeeds stays as it was. A successor carries ``supersedes``: ``{"path", "sha256", "reason",
+"cycle"}``, the record before it (``n-c<N>.json`` for k = 2, else ``n-c<N>-<k-1>.json``, under
+the runs directory) by its path and its sha256 now, the reason ``cycle_c<N>`` and the evidence
+of the candidate's cycle record (``study3/decisions/cycle-c<N>.json``); the first record carries
+none. A successor is accepted only after a stale record: the cycle is one ``study3_cycle.
+read_cycle`` accepts, its old code is the predecessor's ``code.gpu_code_sha256``, it lists the
+predecessor among the records it makes stale (``affected.records``, by path and sha256: the cycle
+was written after it), and the successor carries the cycle's fix as its code. The record in force
+is the last link of an unbroken chain from the first: a fork (a link that names another than the
+one before it), a gap (a missing number), a link changed since its successor named it, or a
+successor of a record that is not stale is a problem of the chain. Only the link in force is
+checked in full; the earlier links for their integrity (there, of the sha256 their successor
+names, unchanged under the campaigns that named them: ``immutable``). A budget successor
+answers the n record's successor.
+
+*The confirmation boundary* ("Validation, confirmation and stopping", "Confirmation": the
+confirmation never triggers a new candidate). Once the candidate's confirmation has started (a
+study-3 start of the candidate in the launch journal whose header names the step
+``confirmation``: the guard lets a block start only under its supplement), the candidate, the
+rates, the started seeds and the cohort's order never change: an n or budget successor differs
+from its predecessor only in ``kind``, ``code``, ``written_at``, ``supersedes`` and, for a budget
+record, ``answers`` (the n record in force). Any other change, of N, the cap or the cohort among
+them, needs an explicit prospective amendment, which the code never infers: it is refused.
+
 **Rulings** where the registration leaves a detail open:
 - *Cross-record checks*: an ``n-c<N>`` record is valid only with a valid ``simulation`` record
   that passed, of the same L, whose validation size its cohort fits (seeds among the first 28 or
@@ -190,7 +225,8 @@ on is a response or an observation, and this module opens none.
   machine's root is found, and a path among the items of a list is named without a sha256. A
   record named with a sha256 other than its own now, or named without a readable one, or no
   longer there, is a problem; a missing journal, or one with a torn line before the last line of
-  its log that is not resolved (``study3_records``' rule), fails closed. A
+  its log that is not resolved (``study3_records``' rule), fails closed. A successor's name
+  (``n-c<N>-<k>.json``) is matched the same way. A
   record that resolves (a link, say) under a ``responses/`` or ``observations/`` folder is a
   problem and is never opened. The journal is read as ``study3_records`` reads it: through its
   private ``_read_journal``, which this module keeps importing (one journal reader, no copy).
@@ -319,8 +355,16 @@ FIELDS = {
               "fixation", "journal", "affected", "kept", "bridge"),
 }  # fmt: skip
 
-_KIND = re.compile(r"(engineering|simulation|(?:n|budget|cycle)-c([12])|closure-c([12])-([AFP]))")
+_KIND = re.compile(
+    r"(engineering|simulation|(?:n|budget)-c([12])(?:-([2-9]|[1-9][0-9]+))?"
+    r"|cycle-c([12])|closure-c([12])-([AFP]))"
+)
+# A successor may differ from its predecessor in these fields alone once the confirmation has
+# started (module docstring, "The confirmation boundary")
+SUCCESSOR_FREE = ("kind", "code", "written_at", "supersedes", "answers")
+OPTIONAL = {"n": ("supersedes",), "budget": ("supersedes",)}  # a successor's field
 _REASON_ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_N_LINK = re.compile(r"study3/decisions/n-c([12])(?:-(?:[2-9]|[1-9][0-9]+))?\.json")
 _CYCLE = re.compile(r"qualification/c([12])/supersede-\d+\.json")
 _INPUT_NAME = re.compile(r"[a-z](?:[a-z_]{0,38}[a-z])?")  # letters and underscores, no digits
 _COMMIT, _SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
@@ -350,15 +394,102 @@ SIMULATION_RECORD = "/".join((*DIRECTORY, "simulation.json"))  # an n record's r
 
 def kind_of(kind: str) -> tuple[str, int | None]:
     """(``engineering``, ``simulation``, ``n``, ``budget``, ``cycle`` or ``closure``, the
-    candidate) of a kind; ``ValueError`` for another name."""
+    candidate) of a kind (a successor's too: ``n-c1-2`` is ``n`` of candidate 1);
+    ``ValueError`` for another name."""
     found = _KIND.fullmatch(kind) if isinstance(kind, str) else None
     if found is None:
         raise ValueError(f"{kind!r} is not a decision kind (engineering, simulation, n-c<N>, "
-                         "budget-c<N>, cycle-c<N>, closure-c<N>-<arm>, N = 1 or 2, arm A, F or "
+                         "budget-c<N> and their successors n-c<N>-<k> and budget-c<N>-<k>, "
+                         "cycle-c<N>, closure-c<N>-<arm>, N = 1 or 2, k = 2, 3, ..., arm A, F or "
                          "P)")  # fmt: skip
-    if found.group(3):
-        return "closure", int(found.group(3))
+    if found.group(5):
+        return "closure", int(found.group(5))
+    if found.group(4):
+        return "cycle", int(found.group(4))
     return (kind.split("-")[0], int(found.group(2))) if found.group(2) else (kind, None)
+
+
+def link_of(kind: str) -> tuple[str, int]:
+    """(the first record's kind, k) of an n or budget record's kind (module docstring,
+    "Successors"): ``("n-c1", 1)`` for ``n-c1``, ``("n-c1", 2)`` for ``n-c1-2``; ``ValueError``
+    for another kind."""
+    found = _KIND.fullmatch(kind) if isinstance(kind, str) else None
+    if found is None or not found.group(2):
+        raise ValueError(f"{kind!r} is not an n or budget record's kind")
+    return (kind.rsplit("-", 1)[0], int(found.group(3))) if found.group(3) else (kind, 1)
+
+
+def successor_kind(kind: str, k: int) -> str:
+    """The kind of the k-th link (k ≥ 2) of the chain of ``kind``, an n or budget record's first
+    kind: ``successor_kind("n-c1", 2) == "n-c1-2"``."""
+    if link_of(kind)[1] != 1 or type(k) is not int or k < 2:
+        raise ValueError(f"no successor {k!r} of {kind!r}: a successor numbers k = 2, 3, ... of "
+                         "an n-c<N> or budget-c<N> record")  # fmt: skip
+    return f"{kind}-{k}"
+
+
+def chain(
+    runs_root: str | Path, kind: str, *, repo: str | Path = REPO_ROOT
+) -> list[dict[str, Any]]:
+    """The chain of an n or budget record (module docstring, "Successors"): every link there, the
+    first record and its successors, in the order of their numbers, each ``{"kind", "path",
+    "sha256"}`` (the sha256 None for a link that resolves under a sealed folder, never opened, or
+    that cannot be read). A gap shows as a missing number. ``kind``: the first record's kind;
+    ``repo`` is the checkout the records' evidence is read in (unused here: the chain is read
+    from RUNS_DIR alone)."""
+    base, own = link_of(kind)
+    if own != 1:
+        raise ValueError(f"{kind!r} is a successor: a chain is named by its first record's kind")
+    root = Path(runs_root)
+    folder = root.joinpath(*DIRECTORY)
+    found = []
+    for path in sorted(folder.glob(f"{base}*.json")) if folder.is_dir() else []:
+        try:
+            first, number = link_of(path.name[: -len(".json")])
+        except ValueError:
+            continue
+        if first == base:
+            found.append((number, path))
+    out = []
+    for _, path in sorted(found):
+        sha = None
+        if not _under_sealed(path, root) and path.is_file():
+            try:
+                sha = _digest(path)
+            except OSError:
+                sha = None
+        out.append({"kind": path.name[: -len(".json")], "path": str(path), "sha256": sha})
+    return out
+
+
+def next_successor(runs_root: str | Path, kind: str) -> str:
+    """The kind the next successor of ``kind`` (an n or budget record's first kind) takes: one
+    above the highest link there. ``ValueError`` when there is no record to succeed."""
+    links = chain(runs_root, kind)
+    if not links:
+        raise ValueError(f"{kind}: no record is there to succeed")
+    return successor_kind(kind, max(link_of(link["kind"])[1] for link in links) + 1)
+
+
+def confirmation_started(runs_root: str | Path, candidate: int) -> bool:
+    """Whether candidate N's confirmation has started (module docstring, "The confirmation
+    boundary"): a study-3 start of the candidate in the launch journal whose campaign header
+    names the step ``confirmation``. A journal that holds logs and cannot be read fails closed
+    (True): that the confirmation has not started cannot be shown."""
+    root = Path(runs_root)
+    if not any((root / "launch").glob("*.jsonl")):
+        return False
+    try:
+        journal = _read_journal(root, {})
+    except (OSError, ValueError):
+        return True
+    for _, start in journal.starts:
+        header = start.get("header") if isinstance(start, Mapping) else None
+        if (isinstance(header, Mapping) and header.get("study") == 3
+                and type(header.get("candidate")) is int and header["candidate"] == candidate
+                and header.get("step") == "confirmation"):  # fmt: skip
+            return True
+    return False
 
 
 def end_reason(outcome: Any) -> str | None:
@@ -491,6 +622,10 @@ def decisions(
     ``missing`` for none, ``invalid`` for one with a problem (its record None), the immutability
     check against the launch journal included.
 
+    The n and budget entries are their chains' links in force (module docstring,
+    "Successors"), each with ``chain``, the path of every link: the entry's kind, path and record
+    the link's, its problems those of the chain too.
+
     A record rests on the ones before it: the ``n`` entry is ``invalid`` when the simulation entry
     is, and the budget entry when the ``n`` entry is (a budget decision that the ``n`` record
     would have asked for cannot then be told, so it is listed, invalid, rather than dropped). The
@@ -503,15 +638,16 @@ def decisions(
     starts, corrupt, sealed = _starts(root)
     kind_n, budget = f"n-c{candidate}", f"budget-c{candidate}"
     out = {kind: _entry(root, kind, starts, corrupt, sealed, repo)
-           for kind in ("engineering", "simulation", kind_n)}  # fmt: skip
+           for kind in ("engineering", "simulation")}  # fmt: skip
+    out[kind_n] = _linked(root, kind_n, starts, corrupt, sealed, repo)
     simulation, n = out["simulation"], out[kind_n]
     if simulation["state"] == "invalid" and n["state"] in STATES:
         invalidate(n, f"the simulation record it rests on is invalid ({simulation['path']})")
     reason = None
     if n["record"] is not None and n["record"]["state"] == "passed":
         reason = budget_reason(n["record"]["N"], simulation["record"])
-    if reason is not None or n["state"] == "invalid" or decision_path(root, budget).exists():
-        out[budget] = _entry(root, budget, starts, corrupt, sealed, repo)
+    if reason is not None or n["state"] == "invalid" or chain(root, budget):
+        out[budget] = _linked(root, budget, starts, corrupt, sealed, repo)
         if n["state"] == "invalid":
             invalidate(out[budget], f"the n-c{candidate} record it answers is invalid "
                                      f"({n['path']})")  # fmt: skip
@@ -552,6 +688,42 @@ def _entry(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
     state = "invalid" if problems else "missing" if record is None else record["state"]
     return {"kind": kind, "path": str(path), "state": state,
             "record": None if problems else record, "problems": problems}  # fmt: skip
+
+
+def _linked(root: Path, kind: str, starts: Starts | None, corrupt: Sequence[str],
+            sealed: Sequence[str], repo: Path) -> dict[str, Any]:  # fmt: skip
+    """The entry of an n or budget record's chain (module docstring, "Successors"): its link in
+    force checked in full (``_entry``), every earlier link for its integrity (there, of the
+    sha256 the link after it names, ``immutable``), a gap a problem; ``chain``: every link's
+    path."""
+    links = chain(root, kind)
+    if len(links) <= 1:
+        return {**_entry(root, kind, starts, corrupt, sealed, repo),
+                "chain": [link["path"] for link in links]}  # fmt: skip
+    problems: list[str] = []
+    numbers = [link_of(link["kind"])[1] for link in links]
+    if numbers != list(range(1, len(links) + 1)):
+        problems.append(f"{decision_path(root, kind)}: its chain {[x['kind'] for x in links]} "
+                        "has a gap: each successor follows the record before it")  # fmt: skip
+    for before, after in zip(links, links[1:], strict=False):
+        problems += [p for p in immutable(before["path"], starts, corrupt=corrupt, sealed=sealed)
+                     if p not in problems]  # fmt: skip
+        cited = None
+        if not _under_sealed(Path(after["path"]), root):
+            try:
+                data = json.loads(Path(after["path"]).read_text(encoding="utf-8"))
+                cited = (data.get("supersedes") or {}).get("sha256")
+            except (OSError, ValueError, AttributeError):
+                cited = None
+        if before["sha256"] is None or cited != before["sha256"]:
+            problems.append(f"{after['path']}: it names {before['kind']} with sha256 {cited!r}, "
+                            f"not its sha256 now {before['sha256']!r}: a link is unchanged once "
+                            "its successor names it")  # fmt: skip
+    entry = _entry(root, links[-1]["kind"], starts, corrupt, sealed, repo)
+    problems += [p for p in entry["problems"] if p not in problems]
+    return {**entry, "state": "invalid" if problems else entry["state"],
+            "record": None if problems else entry["record"], "problems": problems,
+            "chain": [link["path"] for link in links]}  # fmt: skip
 
 
 def _starts(root: Path) -> tuple[Starts | None, list[str], list[str]]:
@@ -724,6 +896,8 @@ def _problems(root: Path, kind: str, record: Any, repo: Path) -> list[str]:
         problems += _against_simulation(root, record, candidate, repo)
     elif family == "budget":
         problems += _against_n(root, kind, record, candidate, repo)
+    if family in ("n", "budget") and link_of(kind)[1] > 1:
+        problems += _against_predecessor(root, kind, record, candidate, repo)
     elif family == "closure":
         problems += _against_line(root, record, candidate)
     elif family == "cycle":
@@ -831,7 +1005,8 @@ class _Schema:
     # -- the common fields
 
     def record(self, record: Any) -> None:
-        top = self.object("", record, (*COMMON, *FIELDS[self.family]))
+        top = self.object("", record, (*COMMON, *FIELDS[self.family]),
+                          OPTIONAL.get(self.family, ()))  # fmt: skip
         if top is None:
             return
         if top["kind"] != self.kind:
@@ -1117,6 +1292,35 @@ class _Schema:
                 self._cap_state(r["state"], cap)
         else:
             self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+        self._supersedes(r)
+
+    def _supersedes(self, r: dict[str, Any]) -> None:
+        """A successor's ``supersedes`` (module docstring, "Successors"): the record before it,
+        by its path under the runs directory and its sha256 now, the reason ``cycle_c<N>`` and
+        the candidate's cycle record as evidence; the first record carries none."""
+        base, k = link_of(self.kind)
+        if k == 1:
+            if "supersedes" in r:
+                self.add("supersedes", f"is a successor's field ({base}-<k>): the first record "
+                         "supersedes none")  # fmt: skip
+            return
+        if "supersedes" not in r:
+            self.add("", f"has no field `supersedes`: a successor ({self.kind}) names the record "
+                     "before it and the candidate's cycle")  # fmt: skip
+            return
+        entry = self.ref("supersedes", r["supersedes"], ("reason", "cycle"))
+        if entry is None:
+            return
+        named = "/".join((*DIRECTORY, f"{base if k == 2 else f'{base}-{k - 1}'}.json"))
+        if entry["path"] != named or entry.get("root", "runs") != "runs":
+            self.add("supersedes.path", f"is {entry['path']!r}, not {named!r} under the runs "
+                     "directory, the record before it: a successor names its predecessor (no "
+                     "fork, no gap)")  # fmt: skip
+        if entry["reason"] != f"cycle_c{self.candidate}":
+            self.add("supersedes.reason", f"is {entry['reason']!r}, not 'cycle_c{self.candidate}':"
+                     " a successor follows the candidate's cycle")  # fmt: skip
+        self._exact_ref("supersedes.cycle", entry["cycle"],
+                        "/".join((*DIRECTORY, f"cycle-c{self.candidate}.json")))  # fmt: skip
 
     def _cap_state(self, state: Any, cap: int) -> None:
         """The state is ``passed`` when the cap fits the reserved confirmation seeds and
@@ -1195,9 +1399,15 @@ class _Schema:
         elif (decision == "proceed") != (r["state"] == "passed"):
             self.add("state", f"is {r['state']!r} for the decision {decision!r} (proceed is "
                      "passed, stop is failed)")  # fmt: skip
-        self._exact_ref(
-            "answers", r["answers"], "/".join((*DIRECTORY, f"n-c{self.candidate}.json"))
-        )
+        entry = self.ref("answers", r["answers"])
+        named = None if entry is None else entry["path"]
+        if entry is not None and (entry.get("root", "runs") != "runs" or not (
+                isinstance(named, str) and _N_LINK.fullmatch(named)
+                and int(_N_LINK.fullmatch(named).group(1)) == self.candidate)):  # fmt: skip
+            self.add("answers", f"is {named!r} under {entry.get('root', 'runs')!r}, not the "
+                     f"record study3/decisions/n-c{self.candidate}.json (or a successor "
+                     f"n-c{self.candidate}-<k>.json) under the runs directory")  # fmt: skip
+        self._supersedes(r)
 
     # -- closure
 
@@ -1886,14 +2096,63 @@ def start_lines(runs_root: str | Path, logs: Sequence[Any] | None = None) -> dic
 
 def _against_n(root: Path, kind: str, record: Mapping[str, Any], candidate: int,
                repo: Path) -> list[str]:  # fmt: skip
-    """A ``budget-c<N>`` record against the ``n-c<N>`` record it answers."""
-    n, problems = read_decision(root, f"n-c{candidate}", repo=repo)
+    """A ``budget-c<N>`` record (or a successor) against the n record it answers: its N and its
+    cap; a successor answers an n successor (module docstring, "Successors")."""
+    named = PurePosixPath(record["answers"]["path"]).name[: -len(".json")]
+    n, problems = read_decision(root, named, repo=repo)
     if n is None:
-        return [f"the n-c{candidate} record it answers is "
+        return [f"the {named} record it answers is "
                 + ("missing" if not problems else f"not valid ({problems[0]})")]  # fmt: skip
-    found = [f"{name} {record[name]} is not the n-c{candidate} record's {n[name]}"
+    found = [f"{name} {record[name]} is not the {named} record's {n[name]}"
              for name in ("N", "cap") if record[name] != n[name]]  # fmt: skip
+    if link_of(kind)[1] > 1 and link_of(named)[1] == 1:
+        found.append(f"answers: {named} is the first n record: a budget successor answers the n "
+                     "record's successor")  # fmt: skip
     return found
+
+
+def _against_predecessor(root: Path, kind: str, record: Mapping[str, Any], candidate: int,
+                         repo: Path) -> list[str]:  # fmt: skip
+    """A successor against the record before it and the candidate's cycle (module docstring,
+    "Successors", "The confirmation boundary")."""
+    from .study3_cycle import read_cycle  # it reads this module's records: here only
+
+    base, k = link_of(kind)
+    before = base if k == 2 else f"{base}-{k - 1}"
+    predecessor, problems = read_decision(root, before, repo=repo)
+    if predecessor is None:
+        return [f"supersedes: the record before it, {before}, is "
+                + ("missing" if not problems else f"not valid ({problems[0]})")]  # fmt: skip
+    found = read_cycle(root, candidate, repo=repo)
+    if found["state"] != "valid" or found["record"] is None:
+        why = "; ".join(found["problems"][:2]) or "none is there"
+        return [f"supersedes.cycle: candidate {candidate}'s cycle is not accepted ({why}): a "
+                "successor follows a stale record through an accepted cycle"]  # fmt: skip
+    cycle, out = found["record"], []
+    old, fix = cycle["old_code"], cycle["code"]["gpu_code_sha256"]
+    own = predecessor["code"]["gpu_code_sha256"]
+    where = "/".join((*DIRECTORY, f"{before}.json"))
+    listed = {(entry.get("path"), entry.get("sha256")) for entry in cycle["affected"]["records"]}
+    pinned = (where, _digest(decision_path(root, before))) in listed
+    if own != old or not pinned:
+        out.append(f"supersedes: {before} is not stale through candidate {candidate}'s cycle (its "
+                   f"code {own}, the cycle's old code {old}; listed among the records the cycle "
+                   f"makes stale: {pinned}): a successor follows a stale record alone")  # fmt: skip
+    if record["code"]["gpu_code_sha256"] != fix:
+        out.append(f"code: its GPU code {record['code']['gpu_code_sha256']} is not the cycle's "
+                   f"fix {fix}: a successor carries the fix")  # fmt: skip
+    if confirmation_started(root, candidate):
+        changed = sorted(key for key in {*record, *predecessor} if key not in SUCCESSOR_FREE
+                         and record.get(key, _ABSENT) != predecessor.get(key, _ABSENT))  # fmt: skip
+        if changed:
+            out.append(f"{', '.join(changed)}: after the confirmation has started, N, the cap and "
+                       "the cohort never change without an explicit prospective amendment (a "
+                       "successor differs from its predecessor only in its code, written_at, "
+                       "supersedes and the reference to the n record in force)")  # fmt: skip
+    return out
+
+
+_ABSENT = object()
 
 
 # ------------------------------------------------------------------ small helpers

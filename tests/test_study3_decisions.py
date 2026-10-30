@@ -25,7 +25,9 @@ from zero_field_refusal.analysis.study3_decisions import (
     budget_needed,
     budget_reason,
     cap_of,
+    chain,
     closures,
+    confirmation_started,
     coverage_threshold,
     cycle_path,
     decision_path,
@@ -34,8 +36,11 @@ from zero_field_refusal.analysis.study3_decisions import (
     hold_reasons,
     immutable,
     kind_of,
+    next_successor,
     read_decision,
+    serialized,
     start_lines,
+    successor_kind,
     write_decision,
 )
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE
@@ -2620,3 +2625,149 @@ def test_a_cycle_without_claims_names_the_stages_it_must_claim(world) -> None:
     record = cycle_record(world)
     refused(world, "cycle-c1", {**record, "stages": {}}, "stages", "search", "claim",
             "validation")  # fmt: skip
+
+
+# ------------------------------------------------------------------ successors of n and budget
+
+FIXED = {"commit": "c" * 40, "gpu_code_sha256": FIX_CODE}  # the fix's code, the cycle's
+
+
+def published_cycle(world: World, *, stale=("n-c1",)) -> dict:
+    """Candidate 1's cycle (``cycle_record``) listing the records it makes stale
+    (``affected.records``: ``stale``, each by its path and sha256 now), published with its bridge
+    as the cycle's writer publishes them: ``study3_cycle.read_cycle`` accepts it."""
+    from zero_field_refusal.analysis import study3_cycle
+
+    record = cycle_record(world)
+    record["affected"]["records"] = [{"path": f"study3/decisions/{kind}.json",
+                                      "sha256": world.digest(kind)}
+                                     for kind in sorted(stale)]  # fmt: skip
+    root = world.runs
+    bridge = study3_cycle.build_bridge(
+        root, 1, cycle_file=cycle_path(root, 1),
+        cycle_sha256=hashlib.sha256(serialized(record)).hexdigest(),
+        diagnosis=record["diagnosis"], fix=record["fix"], old_code=OLD_CODE,
+        fix_identity={"commit": FIXED["commit"], "sha256": FIX_CODE}, entries=None,
+        stage_runs=study3_cycle._stage_runs(root, record), host="host", at=WHEN,
+        commit=FIXED["commit"])  # fmt: skip
+    study3_cycle.publish_cycle(root, 1, record, bridge, repo=world.repo)
+    found = study3_cycle.read_cycle(root, 1, repo=world.repo)
+    assert found["state"] == "valid", found["problems"]
+    return record
+
+
+def supersedes(world: World, predecessor: str) -> dict:
+    """A successor's ``supersedes``: its predecessor and the candidate's cycle, by their paths
+    and sha256 now."""
+    return {"path": f"study3/decisions/{predecessor}.json", "sha256": world.digest(predecessor),
+            "reason": "cycle_c1", "cycle": {"path": "study3/decisions/cycle-c1.json",
+                                            "sha256": world.digest("cycle-c1")}}  # fmt: skip
+
+
+def state_of(world: World, kind: str = "n-c1") -> str:
+    return decisions(world.runs, 1, repo=world.repo)[kind]["state"]
+
+
+def test_successors_name_their_predecessor_and_the_cycle(world) -> None:
+    """``n-c<N>-<k>`` succeeds the record before it through the candidate's cycle: it names that
+    record (path and sha256 now) and the cycle, which ``read_cycle`` accepts, lists the record as
+    stale and has its code as its old code. The in-force record is the chain's last link; a fork,
+    a gap, a changed predecessor or a cycle no longer accepted makes the chain invalid; a
+    successor of a record that is not stale is refused."""
+    assert successor_kind("n-c1", 2) == "n-c1-2" and kind_of("n-c1-2") == ("n", 1)
+    assert kind_of("budget-c2-3") == ("budget", 2)
+    with pytest.raises(ValueError):
+        successor_kind("n-c1-2", 3)
+    world.chain()  # engineering, simulation, n-c1 under the old code
+    published_cycle(world)
+    assert next_successor(world.runs, "n-c1") == "n-c1-2"
+    succ = world.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(world, "n-c1"))
+    refused(world, "n-c2", {**world.n(2), "supersedes": supersedes(world, "n-c1")},
+            "supersedes")  # the first record supersedes none  # fmt: skip
+    assert world.write(next_successor(world.runs, "n-c1"), succ).name == "n-c1-2.json"
+    entry = decisions(world.runs, 1, repo=world.repo)["n-c1"]
+    assert entry["state"] == "passed" and entry["path"].endswith("n-c1-2.json")
+    assert [Path(p).name for p in entry["chain"]] == ["n-c1.json", "n-c1-2.json"]
+    assert [e["kind"] for e in chain(world.runs, "n-c1")] == ["n-c1", "n-c1-2"]
+    assert next_successor(world.runs, "n-c1") == "n-c1-3"
+    base, second = decision_path(world.runs, "n-c1"), decision_path(world.runs, "n-c1-2")
+    saved = {path: path.read_bytes() for path in (base, second)}
+    bridge = world.runs / "qualification" / "c1" / "supersede-1.json"
+    kept = bridge.read_bytes()
+
+    def fork():  # a third link that names the base, not the second
+        world.raw("n-c1-3", succ)
+
+    def gap():  # the second link moved to -3: no -2
+        decision_path(world.runs, "n-c1-3").write_bytes(second.read_bytes())
+        second.unlink()
+
+    for broken in (fork, gap, lambda: world.change("n-c1", spread_pp=5.0), bridge.unlink):
+        broken()
+        assert state_of(world) == "invalid", broken
+        decision_path(world.runs, "n-c1-3").unlink(missing_ok=True)
+        for path, data in saved.items():
+            path.write_bytes(data)
+        bridge.write_bytes(kept)
+    assert state_of(world) == "passed"
+    other = World(world.runs.parent / "other")  # its base under the fix's code: not stale
+    other.chain(through="simulation")
+    other.write("n-c1", other.n(code=FIXED))
+    published_cycle(other)
+    with pytest.raises(DecisionRefused, match="not stale"):
+        other.write("n-c1-2", other.n(code=FIXED, kind="n-c1-2",
+                                      supersedes=supersedes(other, "n-c1")))  # fmt: skip
+
+
+def test_a_successor_carries_the_fix_and_names_a_record_the_cycle_made_stale(world) -> None:
+    """A successor carries the cycle's fix as its code, and its predecessor is one the cycle
+    lists as stale."""
+    world.chain()
+    published_cycle(world, stale=())
+    succ = world.n(code=FIXED, kind="n-c1-2", supersedes=supersedes(world, "n-c1"))
+    with pytest.raises(DecisionRefused, match="not stale"):
+        world.write("n-c1-2", succ)
+    other = World(world.runs.parent / "other")
+    other.chain()
+    published_cycle(other)
+    with pytest.raises(DecisionRefused, match="fix"):
+        other.write("n-c1-2", other.n(kind="n-c1-2", supersedes=supersedes(other, "n-c1")))
+
+
+def test_after_the_confirmation_started_an_n_successor_changes_only_its_code(world) -> None:
+    """Once a block of the candidate's confirmation has started, an n successor differs from its
+    predecessor only in its code, written_at and supersedes: N, the cap, the cohort or anything
+    else changed needs an explicit prospective amendment, and is refused."""
+    world.chain()
+    published_cycle(world)
+    assert not confirmation_started(world.runs, 1)
+    world.start({"study": 3, "candidate": 1, "step": "confirmation", "round": None},
+                "study3-c1-confirmation-s10400")  # fmt: skip
+    assert confirmation_started(world.runs, 1) and not confirmation_started(world.runs, 2)
+    same = world.n(code=FIXED, kind="n-c1-2", written_at="2026-10-29T12:00:00Z",
+                   supersedes=supersedes(world, "n-c1"))  # fmt: skip
+    cohort = same["cohort"]
+    reordered = {**cohort, "run_ids": list(reversed(cohort["run_ids"]))}
+    for change in ({"N": 83, "cap": 93}, {"spread_pp": 5.0}, {"cohort": reordered}):
+        with pytest.raises(DecisionRefused, match="prospective amendment"):
+            world.write("n-c1-2", {**same, **change})
+    assert world.write("n-c1-2", same).name == "n-c1-2.json"
+
+
+def test_a_budget_successor_answers_the_n_successor(world) -> None:
+    """A budget successor answers the n record's successor (and no other); the stale budget
+    record, which answers the stale n record, stays readable."""
+    world.chain(N=99, through="budget")
+    published_cycle(world, stale=("budget-c1", "n-c1"))
+    world.write("n-c1-2", world.n(N=99, code=FIXED, kind="n-c1-2",
+                                  supersedes=supersedes(world, "n-c1")))  # fmt: skip
+    assert state_of(world, "budget-c1") == "passed"  # the stale pair stays readable
+    answers = {"path": "study3/decisions/n-c1-2.json", "sha256": world.digest("n-c1-2")}
+    wrong = world.budget(code=FIXED, kind="budget-c1-2",
+                         supersedes=supersedes(world, "budget-c1"))  # fmt: skip
+    world.raw("budget-c1-2", wrong)  # it answers the first n record
+    assert state_of(world, "budget-c1") == "invalid"
+    decision_path(world.runs, "budget-c1-2").unlink()
+    world.write("budget-c1-2", {**wrong, "answers": answers})
+    entry = decisions(world.runs, 1, repo=world.repo)["budget-c1"]
+    assert entry["state"] == "passed" and entry["path"].endswith("budget-c1-2.json")
