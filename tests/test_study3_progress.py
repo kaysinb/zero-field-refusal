@@ -111,6 +111,7 @@ class Study:
         self.cycles: dict[int, list[dict]] = {1: [], 2: []}  # each candidate's cycle records
         self.expected = EXPECTED  # the chain of engineering cycles' end
         self.uncounted: dict[str, dict] = {}  # runs under another commit than the pinned one
+        self.cycle_records: dict[int, dict] = {}  # each candidate's cycle record, as read
 
     # -- decision records
 
@@ -378,7 +379,7 @@ class Study:
                        headers=self.headers, digests=self.digests, ends=self.ends,
                        starts=self.starts, cycles=self.cycles,
                        recoverable=frozenset(self.recoverable),
-                       uncounted=self.uncounted)  # fmt: skip
+                       uncounted=self.uncounted, cycle_records=self.cycle_records)  # fmt: skip
 
     def advance(self, **kw) -> dict:
         return advance(self.records(), **{"expected_code": self.expected, **kw})
@@ -815,27 +816,32 @@ def test_a_superseded_launcher_run_waits_for_its_next_attempt() -> None:
     assert any("s10200: its next attempt" in w for w in result["step"]["waiting"])
 
 
-ROUTE_PENDING = "engineering_route_pending"
-ROUTE_WHY = ("the registered engineering cycle for a technical mark outside the qualification is "
-             "not implemented yet: the researcher decides")  # fmt: skip
+CYCLE = "engineering_cycle"
+CYCLE_WHY = ("one engineering cycle at once: diagnosis, a fix that changes the GPU code, and a "
+             "claim per stage (reuse or rerun, with its justification); a fix that leaves the GPU "
+             "code unchanged is no cycle, and the mark resolves only if the recomputed reading no "
+             "longer gives it")  # fmt: skip
 NOT_ACCEPTED = ("a closure carries its route's reason (an uncounted reason, or "
                 "unresolved_after_cycle), never the launcher's outcome")  # fmt: skip
 
 
-def assert_route_pending(result, *runs: Endpoint) -> None:
-    """The stop for the researcher's decision: blocked, technical, with its reason id and why;
-    each run named (its id, label, arm and step), its way out the decision, beside a recovery
-    round where the launcher would open one; no closure offered, no outcome, no cell."""
+def assert_cycle_offered(result, *runs: Endpoint) -> None:
+    """The marks' engineering cycle: blocked, technical, with its reason id and why; each run
+    named (its id, label, arm and step), its own way out a recovery round where the launcher
+    would open one, never a decision or a closure; then the cycle's way out, its fields naming
+    the candidate, the marks' stage and every mark; no outcome, no cell."""
     step = result["step"]
     assert (step["kind"], step["technical"], step["reason"], step["why"]) == (
-        "blocked", True, ROUTE_PENDING, ROUTE_WHY)  # fmt: skip
+        "blocked", True, CYCLE, CYCLE_WHY)  # fmt: skip
     assert (result["outcome"], result["reason"], "cells" in step) == (None, None, False)
-    assert [w["run_id"] for w in step["ways_out"]] == [e.run_id for e in runs]
-    for e, way in zip(runs, step["ways_out"], strict=True):
-        assert (way["label"], way["arm"], way["step"], way["decision"]) == (
-            e.label, e.arm, e.cell.step, {"decision": ROUTE_PENDING})  # fmt: skip
-        assert "closure" not in way
+    *ways, way = step["ways_out"]
+    assert [w["run_id"] for w in ways] == [e.run_id for e in runs]
+    for e, found in zip(runs, ways, strict=True):
+        assert (found["label"], found["arm"], found["step"]) == (e.label, e.arm, e.cell.step)
+        assert "closure" not in found and "decision" not in found
         assert any(e.run_id in r and e.label in r and e.cell.step in r for r in step["reasons"])
+    assert way["cycle"]["fields"] == {"candidate": runs[0].candidate, "stage": runs[0].cell.step,
+                                      "marks": sorted(e.run_id for e in runs)}  # fmt: skip
 
 
 def closure_refused(result, arm: str) -> None:
@@ -849,14 +855,13 @@ def closure_refused(result, arm: str) -> None:
 
 @pytest.mark.parametrize("step", ["search", "validation", "confirmation"])
 @pytest.mark.parametrize("arm", ["A", "F", "P"])
-def test_a_technical_mark_outside_the_qualification_stops_for_the_researchers_decision(
-    step, arm
-) -> None:
-    """The registered route of a technical mark is one engineering cycle (diagnosis, fix,
-    re-qualification); outside the qualification it is not implemented yet, and nothing cancels
-    it silently: the step stops for the researcher's decision, with the recovery round where the
-    launcher opens one (a validation or confirmation run's after ``check``), and no closure. A
-    closure record written for the mark anyway is a problem and decides nothing."""
+def test_an_outside_mark_offers_the_cycle_and_the_recovery_round(step, arm) -> None:
+    """The registered route of a technical mark outside the qualification is one engineering
+    cycle per candidate (diagnosis, a fix, a claim per stage): the step is blocked, technical,
+    and offers the cycle (its record, its fields, every stage started that needs a claim, later
+    ones included, and the command that writes it) beside the mark's recovery round where the
+    launcher opens one (a validation or confirmation run's after ``check``); no decision and no
+    closure. A closure record written for the mark anyway is a problem and decides nothing."""
     study = Study()
     study.through_validation()
     if step == "confirmation":
@@ -866,17 +871,59 @@ def test_a_technical_mark_outside_the_qualification_stops_for_the_researchers_de
     broken = study.technical(run_of(study, step, arm, "u", seed),
                              log=f"launch/study3-c1-{step}.jsonl")  # fmt: skip
     result = study.advance()
+    step_ = result["step"]
     assert result["stage"] == step
-    assert_route_pending(result, broken)
-    (way,) = result["step"]["ways_out"]
-    assert broken.label in way["recovery"]
-    assert ("study3_summary.py check" in way["recovery"]) is (step != "search")
+    assert (step_["kind"], step_["technical"], step_["reason"]) == ("blocked", True, CYCLE)
+    assert (result["outcome"], "cells" in step_) == (None, False)
+    assert_cycle_offered(result, broken)
+    *runs, way = step_["ways_out"]
+    assert [w["run_id"] for w in runs] == [broken.run_id]
+    assert "closure" not in runs[0] and "decision" not in runs[0]
+    assert broken.label in runs[0]["recovery"]
+    assert ("study3_summary.py check" in runs[0]["recovery"]) is (step != "search")
+    assert way["cycle"]["fields"] == {"candidate": 1, "stage": step, "marks": [broken.run_id]}
+    started = ["search", "qualification", "validation",
+               *(["confirmation"] if step == "confirmation" else [])]  # fmt: skip
+    assert way["cycle"]["stages"] == started  # every started stage, later ones included
+    assert (way["cycle"]["record"], way["cycle"]["path"], way["cycle"]["fixation"]) == (
+        "cycle-c1", "study3/decisions/cycle-c1.json", None)  # fmt: skip
+    command = way["cycle"]["command"]
+    assert command.startswith("study3_summary.py cycle --runs-root <RUNS_DIR> --candidate 1 ")
+    assert all(f"--stage {s}=" in command and f"--justification {s}=" in command
+               for s in started)  # fmt: skip
     if step == "confirmation":
         assert result["confirmation"]["may_start_next"] is False
-    study.closure(broken.run_id)
+    study.closure(broken.run_id)  # a closure written anyway: refused, decides nothing
     result = study.advance()
     assert result["stage"] == step
+    assert any("never the launcher's outcome" in p for p in result["problems"])
     closure_refused(result, arm)
+
+
+def test_once_the_candidates_cycle_is_spent_no_second_is_offered() -> None:
+    """One engineering cycle per candidate: once a supersession record of the candidate exists
+    (qualify.py's or a cycle's bridge), the step offers no cycle."""
+    study = Study()
+    study.through_validation()
+    broken = study.technical(run_of(study, "validation", "F", "u", 10304))
+    study.cycle()  # the candidate's cycle, recorded by qualify.py
+    step = study.advance()["step"]
+    assert (step["kind"], step["reason"]) == ("blocked", CYCLE)
+    assert [w["run_id"] for w in step["ways_out"]] == [broken.run_id]
+    assert not [w for w in step["ways_out"] if "cycle" in w]
+
+
+def test_an_invalid_cycle_record_blocks_the_candidate_from_the_search_on() -> None:
+    """A cycle record that is not valid (here: a problem the readers found) blocks the
+    candidate's walk from its search on, with its problems, as an invalid decision record
+    blocks the stage that rests on it."""
+    study = Study()
+    study.through_validation()
+    study.cycle_records[1] = {"state": "invalid", "problems": ["/runs/cycle-c1.json: a problem"]}
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("search", "blocked")
+    assert result["step"]["reasons"] == ["/runs/cycle-c1.json: a problem"]
+    assert "/runs/cycle-c1.json: a problem" in result["problems"]
 
 
 def test_a_recovery_round_reruns_a_technical_run_and_its_next_attempt_decides() -> None:
@@ -914,21 +961,21 @@ def test_a_technical_run_the_launcher_never_ended_stops_and_its_start_closure_is
         "attempt": 1,
         "run": broken.label,
     }
-    assert_route_pending(study.advance(), broken)
+    assert_cycle_offered(study.advance(), broken)
     study.closure(broken.run_id)  # its start line
     closure_refused(study.advance(), "P")
 
 
 def test_a_mark_whose_terminal_record_is_published_has_no_recovery_round() -> None:
     """The launcher opens a recovery round only for an attempt with no published terminal record:
-    only the researcher's decision is left."""
+    only the engineering cycle is left."""
     study = Study()
     study.through_validation()
     run_id = run_of(study, "validation", "F", "u", 10304)
     broken = study.technical(run_id, outcome="done", published=True, state="usable", K=None)
     result = study.advance()
-    assert_route_pending(result, broken)
-    (way,) = result["step"]["ways_out"]
+    assert_cycle_offered(result, broken)
+    way, _ = result["step"]["ways_out"]
     assert "recovery" not in way
     assert not any("recovery round" in r for r in result["step"]["reasons"])
 
@@ -944,7 +991,7 @@ def test_a_search_run_the_search_counts_as_technical_is_a_mark_that_stops(fields
     broken = study.technical(run_id, outcome="done", published=True, **fields)
     result = study.advance()
     assert result["stage"] == "search"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     study.closure(run_id)
     closure_refused(study.advance(), "F")
 
@@ -958,7 +1005,7 @@ def test_a_usable_validation_run_lacking_a_number_is_a_mark_that_stops(fields) -
     broken = study.technical(run_id, outcome="done", published=True, **fields)
     result = study.advance()
     assert result["stage"] == "validation"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     study.closure(run_id)
     closure_refused(study.advance(), "P")  # P stays open
 
@@ -981,7 +1028,7 @@ def test_a_validation_run_its_block_cannot_place_is_a_mark_that_stops() -> None:
     }
     result = study.advance()
     assert result["stage"] == "validation"
-    assert_route_pending(result, stray)
+    assert_cycle_offered(result, stray)
     study.closure("stray-r1")
     closure_refused(study.advance(), "F")
 
@@ -1007,7 +1054,7 @@ def test_a_confirmation_run_listed_as_unresolved_is_a_mark_that_stops() -> None:
                              log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
     result = study.advance()
     assert result["stage"] == "confirmation"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     assert result["confirmation"]["may_start_next"] is False
     study.closure(run_id)
     closure_refused(study.advance(), "A")
@@ -1867,8 +1914,8 @@ def test_the_confirmation_never_moves_the_candidate_or_closes_p() -> None:
 
 
 def test_a_technical_confirmation_run_stops_the_confirmation() -> None:
-    """A technical mark in the confirmation is no failed endpoint: the step stops for the
-    researcher's decision, no block starts, and a closure routes nothing."""
+    """A technical mark in the confirmation is no failed endpoint: the step offers its
+    engineering cycle, no block starts, and a closure routes nothing."""
     study = Study()
     study.through_validation()
     study.n(N=60)
@@ -1877,7 +1924,7 @@ def test_a_technical_confirmation_run_stops_the_confirmation() -> None:
                              log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
     result = study.advance()
     assert result["stage"] == "confirmation"
-    assert_route_pending(result, broken)
+    assert_cycle_offered(result, broken)
     assert result["confirmation"]["may_start_next"] is False
     study.closure(broken.run_id)
     closure_refused(study.advance(), "F")
@@ -2541,7 +2588,7 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
 ) -> None:
     """The launcher opens a round of the run's own where its attempts are used up (a round spent
     on an earlier attempt included: a further round, one attempt), and never for a diverged run
-    or a completed one: there only the researcher's decision is listed (no closure)."""
+    or a completed one: there only the engineering cycle is listed (no decision, no closure)."""
     records, runs = worlds
     records.write("engineering", records.engineering())
     records.write("simulation", records.simulation())
@@ -2549,9 +2596,10 @@ def test_ways_out_list_a_recovery_round_only_where_the_launcher_opens_one(
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["problems"]) == (
         "search", "blocked", [])  # fmt: skip
-    assert result["step"]["reason"] == ROUTE_PENDING
-    (way,) = result["step"]["ways_out"]
-    assert way["run_id"] == run_id and way["decision"] == {"decision": ROUTE_PENDING}
+    assert result["step"]["reason"] == CYCLE
+    way, cycle = result["step"]["ways_out"]
+    assert way["run_id"] == run_id and "decision" not in way
+    assert cycle["cycle"]["fields"] == {"candidate": 1, "stage": "search", "marks": [run_id]}
     assert "closure" not in way
     assert ("recovery" in way) is recovery, case
     assert "check" not in way.get("recovery", ""), case  # a search run's round needs none
@@ -2578,8 +2626,8 @@ def test_a_technical_run_whose_round_is_spent_is_recoverable_at_one_attempt(
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["problems"]) == (
         "search", "blocked", [])  # fmt: skip
-    (way,) = result["step"]["ways_out"]
-    assert way["run_id"] == run_id
+    way, cycle = result["step"]["ways_out"]  # the run's own, then its cycle
+    assert way["run_id"] == run_id and cycle["cycle"]["fields"]["marks"] == [run_id]
     assert f"--only {label} --max-attempts 1 --recovery" in way["recovery"]
     assert "no earlier round of the label gave" in way["recovery"]
     assert all(option in way["recovery"] for option in ("--incident-time", "--cause",
@@ -2612,8 +2660,8 @@ def test_a_run_with_attempts_left_under_its_round_is_offered_no_round(worlds) ->
     result = read(records, runs)
     assert (result["stage"], result["step"]["kind"], result["problems"]) == (
         "search", "blocked", [])  # fmt: skip
-    (way,) = result["step"]["ways_out"]
-    assert way["run_id"] == run_id and "recovery" not in way
+    way, cycle = result["step"]["ways_out"]  # the run's own, then its cycle
+    assert way["run_id"] == run_id and "recovery" not in way and "cycle" in cycle
 
 
 def test_the_reader_blocks_on_a_refused_run(worlds) -> None:

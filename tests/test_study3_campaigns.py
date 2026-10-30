@@ -738,8 +738,8 @@ def test_a_blocked_step_and_a_terminal_stage_are_refused(world) -> None:
 
 
 def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_stands(world):
-    """A technical confirmation run stops the route for the researcher's decision: the writer
-    refuses a new block, naming the stop."""
+    """A technical confirmation run's route is its engineering cycle: the writer refuses a new
+    block, naming the stop."""
     study = Study()
     study.through_validation()
     study.n(N=60)
@@ -748,7 +748,7 @@ def test_no_block_is_written_while_a_technical_mark_outside_the_qualification_st
                              log="launch/study3-c1-confirmation.jsonl")  # fmt: skip
     world.core(study)
     error = world.refused("confirmation")
-    assert "the step is blocked" in error and "engineering_route_pending" in error
+    assert "the step is blocked" in error and "engineering_cycle" in error
     assert broken.run_id in error
 
 

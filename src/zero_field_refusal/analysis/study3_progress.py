@@ -12,7 +12,10 @@ or a judge output: the result holds numbers, ids, paths and hashes only.
 - ``advance``: the pure core, over records already read (``Records``): the stage, the next step,
   the active arms and comparisons, the closures, the problems and, for a terminal stage, the
   outcome; and ``prescribed``, the cells the route has issued so far, per step key.
-- ``progress``: the thin reader. It reads the records under RUNS_DIR and calls ``advance``.
+- ``read_records``: the reader. It reads the records under RUNS_DIR (``Records``), each
+  candidate's cycle outside the qualification included; ``chain_end``: the chain of engineering
+  cycles' end from those records alone.
+- ``progress``: ``advance`` over ``read_records``, both under the checkout's expected code.
 - ``confirmation_state``: the confirmation's blocks, counters, cohorts, stop and readings; the
   campaign driver's between-block guard calls it.
 
@@ -30,7 +33,7 @@ outcome (``TERMINAL``, below). ``candidate``.
   no record yet; at the confirmation, the blocks of those runs and each run's way out);
 - ``blocked``: the reasons; ``technical`` when it waits for a diagnosis, with ``ways_out`` for a
   technical run outside the qualification (below: for such a mark the step also carries the
-  ``reason`` id ``engineering_route_pending`` and its ``why``);
+  ``reason`` id ``engineering_cycle`` and its ``why``);
 - ``report`` or ``done``: the outcome and its reason.
 ``outcome`` (a terminal stage), each with its ``reason`` id and the ``reasons`` that name why:
 - ``scientific_feasibility_report``: A or F failed scientifically at candidate 2
@@ -77,8 +80,9 @@ decision is taken only on settled evidence, so that no later record of the stage
    failure lies in the code"). A held run without its closure: the step names it.
 2. P with such a mark: P–F closes (P with it, for the rest of the study), and A–F goes on.
 3. A run technical, awaiting its diagnosis, in any active arm: the stage stays at its step,
-   ``technical``, with the case named (in the qualification, the registered engineering cycle;
-   outside it, the stop for the researcher's decision, below). A failed arm is failed whatever
+   ``technical``, with the case named (in the qualification, the registered engineering cycle
+   of ``qualify.py``; outside it, the candidate's engineering cycle, below). A failed arm is
+   failed whatever
    else, but the route waits: the diagnosis may end in the technical report.
 4. A run that has not ended (``pending``, or ``recovered`` with no later attempt), or a rate whose
    qualification has no record yet: the step waits.
@@ -194,15 +198,24 @@ search, the validation or the confirmation that the readers count as unresolved 
 any arm: an endpoint ``technical``; at the search, a K-only run that is not usable or has no
 positive K; in a block, a usable run that lacks its K or a utility loss, or a run the block cannot
 place; in the confirmation, every run its blocks list as unresolved. Its registered route is one
-engineering cycle at once (diagnosis, fix, re-qualification of every affected case, one cycle per
-candidate); the engineering cycle of ``qualify.py`` is the qualification's, and the route for a run
-outside it is not implemented in this package. Until it is, nothing cancels it silently: such a mark
-stops the route for the researcher's decision. The step is ``blocked``, ``technical``, with the
-reason id ``engineering_route_pending`` (``reason``) and its ``why`` ("the registered engineering
-cycle for a technical mark outside the qualification is not implemented yet: the researcher
-decides"), naming each run (its id, label, arm and step). Its ways out (``ways_out``): the
-researcher's decision (``{"decision": "engineering_route_pending"}``), beside a recovery round of
-its label with its documented cause (the registered infrastructure route: the attempt is
+engineering cycle at once (diagnosis, a fix, re-qualification of every affected case and reruns of
+the affected runs, one cycle per candidate, for every mark of the stage). Before the candidate's
+cycle, the step is ``blocked``, ``technical``, with the reason id ``engineering_cycle``
+(``reason``) and its ``why`` (``ENGINEERING_CYCLE_WHY``: diagnosis, a fix that changes the GPU
+code, and a claim per stage, reuse or rerun with its justification; a fix that leaves the GPU code
+unchanged is no cycle, and the mark resolves only if the recomputed reading no longer gives it),
+naming each run (its id, label, arm and step). Its ways out (``ways_out``): each mark's own (its
+``run_id``, ``label``, ``arm`` and ``step``, and its recovery round where the launcher would open
+one; never a decision or a closure), then the cycle (``{"cycle": ...}``): the record
+``cycle-c<N>`` and its path, its ``fields`` (the candidate, the marks' stage and every mark's run
+id), the ``stages`` of the candidate started that need a claim (``study3_cycle.started_stages``,
+later stages included), the validation ``fixation`` the checkout holds (its path, or None) and the
+``command`` that writes it (``study3_summary.py cycle``, ``cycle_command``). Once the candidate's
+one cycle is spent (a supersession record of it, ``qualify.py``'s or a cycle's bridge, or a cycle
+record), no cycle is offered. A cycle record that is not valid (``study3_cycle.read_cycle``, and
+``cycle_problems`` against the records before it) blocks the candidate's walk from its search on,
+with its problems. The mark's recovery round is the registered infrastructure route, beside the
+cycle, with its documented cause (the attempt is
 ``recovered`` and its next attempt decides), only where the launcher would open one
 (``launch.run_campaign``, "Recovery rounds"; ``_recoverable``: no published terminal record, a
 ``meta.json`` that records the run neither diverged nor completed, the label's latest start, no
@@ -210,8 +223,9 @@ outcome an earlier attempt holds, and its attempts used up at ``--max-attempts 1
 counts them, ``study3_records.attempts_left``), for a validation or confirmation run launched after
 ``study3_summary.py check`` passes. Each way out gives the command (``recovery_command``):
 ``launch.py <campaign file> --only <label> --max-attempts 1 --recovery "<a reason no earlier round
-of the label gave>"`` with the incident (``--incident-time``, ``--cause``, ``--evidence``). No
-closure is offered for such a mark, nothing is voided, no outcome is reached and no cell is issued
+of the label gave>"`` with the incident (``--incident-time``, ``--cause``, ``--evidence``). Until
+a way out is taken, no closure is offered for such a mark, nothing is voided, no outcome is reached
+and no cell is issued
 (the confirmation's guard and its writer refuse a new block). A closure record that names such a
 mark is not accepted: a problem that blocks (``study3_decisions.NOT_ACCEPTED``: a closure
 carries its route's reason, never the launcher's outcome), and it decides nothing.
@@ -353,12 +367,13 @@ CAMPAIGNS = ("search-round0", "search-round1", "numerical", "repair", "validatio
 ROUTED = ("search", "numerical", "repair", "validation", "confirmation")  # a mark routes there
 OUTSIDE = ("search", "validation", "confirmation")  # the steps outside the qualification
 ENDED = ("usable", "unusable", "scientific")  # a run whose records are published and read
-# A technical mark outside the qualification: its registered engineering cycle is not implemented
-# here, so the route stops for the researcher's decision (module docstring)
-ENGINEERING_ROUTE_PENDING = "engineering_route_pending"
-ENGINEERING_ROUTE_WHY = (
-    "the registered engineering cycle for a technical mark outside the "
-    "qualification is not implemented yet: the researcher decides"
+# A technical mark outside the qualification: its registered route is the candidate's one
+# engineering cycle (module docstring, "Technical marks outside the qualification")
+ENGINEERING_CYCLE = "engineering_cycle"
+ENGINEERING_CYCLE_WHY = (
+    "one engineering cycle at once: diagnosis, a fix that changes the GPU code, and a claim per "
+    "stage (reuse or rerun, with its justification); a fix that leaves the GPU code unchanged is "
+    "no cycle, and the mark resolves only if the recomputed reading no longer gives it"
 )
 
 
@@ -373,9 +388,14 @@ class Records:
     now (``digests``), each run's last end line and its start line
     (``study3_decisions.end_lines``, ``start_lines``), the runs the launcher would open a
     recovery round for (``recoverable``), the validation and confirmation runs that do not
-    count for the commit they ran (``uncounted``: ``study3_versions.uncounted_runs``) and the
+    count for the commit they ran (``uncounted``: ``study3_versions.uncounted_runs``), the
     journal's resolved torn lines, each by its log, line and kind (``resolved``:
-    ``study3_records.journal_lines``)."""
+    ``study3_records.journal_lines``), per candidate its cycle outside the qualification as
+    ``study3_cycle.read_cycle`` reads it, checked against the records before it
+    (``cycle_records``: ``study3_cycle.cycle_problems``), each run's GPU code for the
+    candidate's search runs and the runs of every stage its cycle claims (``run_codes``:
+    ``study3_cycle.run_gpu_codes``), and per candidate the validation fixation the checkout
+    holds, by its path (``fixations``)."""
 
     endpoints: Sequence[Endpoint] = ()
     problems: Sequence[str] = ()
@@ -392,6 +412,9 @@ class Records:
     recoverable: Collection[str] = frozenset()
     uncounted: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     resolved: Sequence[Mapping[str, Any]] = ()
+    cycle_records: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
+    run_codes: Mapping[str, str | None] = field(default_factory=dict)
+    fixations: Mapping[int, str] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ the reader
@@ -405,14 +428,41 @@ def progress(
     theta0: str | Path | None = None,
     settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The state of study 3 under ``runs_root`` (module docstring). ``expected_code``: the GPU
-    code's sha256 the qualification and every decision record must carry; ``theta0``: θ₀'s
-    evaluation (study 2's, ``THETA0_RUN`` under ``runs_root``, by default); ``settings``:
-    configs/experiments/qualification.yaml as loaded (by default, this checkout's); ``repo``: the
-    checkout the decision records' ``repo`` evidence is relative to."""
+    """The state of study 3 under ``runs_root`` (module docstring): ``advance`` over the
+    records ``read_records`` reads, both under ``expected_code``, the GPU code's sha256 the
+    qualification and every decision record must carry (the checkout's: the ordinary guards'
+    expected code); ``theta0``: θ₀'s evaluation (study 2's, ``THETA0_RUN`` under ``runs_root``,
+    by default); ``settings``: configs/experiments/qualification.yaml as loaded (by default,
+    this checkout's); ``repo``: the checkout the decision records' ``repo`` evidence is relative
+    to."""
     if not (isinstance(expected_code, str) and expected_code):
         raise ValueError(f"expected_code is the GPU code's sha256, not {expected_code!r}")
+    records = read_records(runs_root, repo=repo, expected_code=expected_code, theta0=theta0,
+                           settings=settings)  # fmt: skip
+    return advance(records, expected_code=expected_code)
+
+
+def read_records(
+    runs_root: str | Path,
+    *,
+    repo: str | Path = REPO_ROOT,
+    expected_code: str | None,
+    theta0: str | Path | None = None,
+    settings: Mapping[str, Any] | None = None,
+) -> Records:
+    """The records under ``runs_root`` as the readers give them (``Records``), the input of
+    ``advance``. ``expected_code``: the GPU code a candidate's qualification is read under when
+    the chain of engineering cycles gives none for it (no engineering record); None: the chain's
+    own end (``chain_end``), which a writer judging the existing chain takes. The other
+    arguments are ``progress``'s. The cells are derived as the module docstring says ("The
+    cells"); each candidate's cycle outside the qualification is read (``read_cycle``, its old
+    code against the chain's before it) and, once the run records are read, checked against the
+    records before it (``cycle_problems``): a problem makes it invalid."""
+    if expected_code is not None and not (isinstance(expected_code, str) and expected_code):
+        raise ValueError(f"expected_code is the GPU code's sha256 or None, not {expected_code!r}")
     from . import qualification_records  # it loads torch (qualification_verdicts): here only
+    from .study3_cycle import STAGE_STEPS, cycle_problems, read_cycle, run_gpu_codes
+    from .study3_versions import fixation_name
 
     root, repo = Path(runs_root), Path(repo)
     theta0 = root / THETA0_RUN if theta0 is None else Path(theta0)
@@ -427,51 +477,94 @@ def progress(
              if e["state"] in ("passed", "failed")}  # read already: no sealed path  # fmt: skip
     cycles = {c: qualification_records.supersessions(root, c) for c in (1, 2)}
     # each candidate's qualification under the code in force for its runs (the chain's)
-    in_force = code_chain(_engineering_code(entries[1].get("engineering") or {}), cycles)[1]
-    codes = {c: code if isinstance(code, str) and code else expected_code
-             for c, code in in_force.items()}  # fmt: skip
+    start = _engineering_code(entries[1].get("engineering") or {})
+    chain, in_force, _ = code_chain(start, cycles)
+    fallback = expected_code if expected_code is not None else (chain[-1] if chain else None)
+    codes = {c: in_force.get(c) or fallback for c in (1, 2)}
+    # the code in force before each candidate's cycle: the chain's start, then candidate 1's
+    before = {1: start, 2: in_force.get(1, start)}
+    cycle_records = {c: read_cycle(root, c, repo=repo, chain_old=before[c]) for c in (1, 2)}
     logs, _ = journal_lines(root)
     fixed = {
         "holds": tuple(holds), "hold_problems": tuple(hold_problems),
         "decisions": entries, "closures": found, "cycles": cycles,
-        "qualification": {c: qualification_records.read_qualification(
-            root, c, expected_code=codes.get(c, expected_code), settings=settings)
-            for c in (1, 2)},
+        "qualification": {c: _qualification_reading(qualification_records, root, c, codes[c],
+                                                    settings) for c in (1, 2)},
         "headers": _headers(root),
         "digests": {k: _record_digest(root, k) for k in valid},
         "ends": end_lines(root, logs), "starts": start_lines(root, logs),
         # the resolved torn lines: their log, line and kind, nothing else of them
         "resolved": tuple({"log": r["path"], "line": r["line"], "kind": r["kind"]}
                           for log in logs for r in log.resolved),
+        "fixations": {c: fixation_name("validation", c) for c in (1, 2)
+                      if (repo / fixation_name("validation", c)).is_file()},
     }  # fmt: skip
     try:
         read_theta0(theta0)
     except ValueError as exc:
         why = (f"{exc}: θ₀'s evaluation is the utility losses' baseline, and no run record is "
                "read without it")  # fmt: skip
-        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+        return Records(problems=(why,), cycle_records=cycle_records, **fixed)
     try:  # one snapshot of the run records, read once whatever cells it is read under
         reader = EndpointReader(
             root, theta0=theta0, cycles=checks, restarts=qualification_records.restart_checks(root)
         )
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
-        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+        return Records(problems=(why,), cycle_records=cycle_records, **fixed)
     try:
         every = _bound(reader.read({})[0])  # every cell a run binds: each outcome is read
         endpoints, problems = reader.read(every)
         derived = advance(Records(tuple(endpoints), tuple(problems), **fixed),
-                          expected_code=expected_code, lenient=True)["prescribed"]  # fmt: skip
+                          expected_code=fallback or "", lenient=True)["prescribed"]  # fmt: skip
         endpoints, problems = reader.read(derived)
         recoverable = _recoverable(reader, endpoints)
     except (OSError, ValueError) as exc:
         why = f"{root}: the run records cannot be read ({type(exc).__name__})"
-        return advance(Records(problems=(why,), **fixed), expected_code=expected_code)
+        return Records(problems=(why,), cycle_records=cycle_records, **fixed)
     from .study3_versions import uncounted_runs  # each run's own commit, against the checkout's
 
     uncounted = uncounted_runs(endpoints, repo=repo)
-    return advance(Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
-                           uncounted=uncounted, **fixed), expected_code=expected_code)  # fmt: skip
+    for found_ in cycle_records.values():  # a valid cycle, against the records before it
+        if found_["state"] == "valid":
+            more = cycle_problems(found_, runs_root=root, theta0=theta0, repo=repo,
+                                  settings=settings)  # fmt: skip
+            if more:
+                found_.update(state="invalid", problems=[*found_["problems"], *more])
+    # each run's GPU code: the candidate's search runs and the runs of every stage its cycle
+    # claims
+    steps = {c: {*STAGE_STEPS["search"], *(step for stage in cycle_records[c]["claims"]
+                                          for step in STAGE_STEPS[stage])}
+             for c in (1, 2)}  # fmt: skip
+    run_codes = run_gpu_codes([e for e in endpoints if e.cell.candidate in steps
+                               and e.cell.step in steps[e.cell.candidate]],
+                              repo=repo)  # fmt: skip
+    return Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
+                   uncounted=uncounted, cycle_records=cycle_records, run_codes=run_codes,
+                   **fixed)  # fmt: skip
+
+
+def chain_end(records: Records) -> str | None:
+    """The end of the chain of engineering cycles from the records alone (module docstring,
+    "Code agreement"): the engineering record's GPU code moved by each candidate's
+    supersession records (``code_chain``); None without a valid engineering record."""
+    engineering = (records.decisions.get(1) or {}).get("engineering") or {}
+    codes = code_chain(_engineering_code(engineering), records.cycles)[0]
+    return codes[-1] if codes else None
+
+
+def _qualification_reading(module: Any, root: Path, candidate: int, code: str | None,
+                           settings: Mapping[str, Any]) -> dict[str, Any]:  # fmt: skip
+    """The candidate's qualification read under ``code`` (``read_qualification``), or, when no
+    code is known for it (no chain and no expected code), a reading with that problem: it blocks
+    wherever the route rests on the qualification."""
+    if code is None:
+        return {"rates": {}, "states": {}, "cases": [], "voided": {}, "supersessions": [],
+                "held": [], "problems": [
+                    f"candidate {candidate}'s qualification is read under no GPU code: the chain "
+                    "of engineering cycles has no start (no valid engineering record) and no "
+                    "expected code is given"]}  # fmt: skip
+    return module.read_qualification(root, candidate, expected_code=code, settings=settings)
 
 
 def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> frozenset[str]:
@@ -501,6 +594,20 @@ def _recoverable(reader: EndpointReader, endpoints: Iterable[Endpoint]) -> froze
             continue
         found.add(e.run_id)
     return frozenset(found)
+
+
+def cycle_command(candidate: int, stage: str, stages: Sequence[str]) -> str:
+    """The command that writes the candidate's cycle record and its bridge
+    (``study3_summary.py cycle``): a claim and a justification per stage started (the marks'
+    stage a rerun of every marked arm; the qualification's claim all or nothing)."""
+    claims = " ".join(
+        f"--stage {name}="
+        + ("reuse|rerun" if name == "qualification" else
+           "rerun[:ARMS]" if name == stage else "reuse|rerun[:ARMS]")
+        for name in stages)  # fmt: skip
+    why = " ".join(f'--justification {name}="<why, one line>"' for name in stages)
+    return (f"study3_summary.py cycle --runs-root <RUNS_DIR> --candidate {candidate} "
+            f'--diagnosis "<one line>" --fix "<one line>" {claims} {why}')  # fmt: skip
 
 
 def recovery_command(label: Any, campaign: str = "<campaign file>") -> str:
@@ -700,6 +807,12 @@ class _Walk:
                         f"{move.event['stage']}: {move.event['why']}"])) from None  # fmt: skip
 
     def _candidate(self, candidate: int) -> None:
+        # an invalid cycle record blocks the candidate's walk from its search on, as an invalid
+        # decision record blocks the stage that rests on it
+        cycle = self.records.cycle_records.get(candidate) or {}
+        if cycle.get("state") == "invalid":
+            self._block_on("search", list(cycle.get("problems") or []) or [
+                f"candidate {candidate}'s cycle record is not valid"])  # fmt: skip
         selected = self._search(candidate)
         self._numerical(candidate, selected)
         final = self._repair(candidate, selected)
@@ -1235,10 +1348,11 @@ class _Walk:
         technical = [x for c in conditions.values() for x in c.technical]
         if technical:
             step = {"kind": "blocked", "technical": True, "reasons": technical}
-            ways = [self._way_out(run) for c in conditions.values() for run in c.closable]
-            if ways:  # a technical mark outside the qualification: the researcher decides
-                step = {**step, "reason": ENGINEERING_ROUTE_PENDING, "why": ENGINEERING_ROUTE_WHY,
-                        "ways_out": ways}  # fmt: skip
+            marks = [run for c in conditions.values() for run in c.closable]
+            if marks:  # technical marks outside the qualification: the candidate's cycle
+                step = {**step, "reason": ENGINEERING_CYCLE, "why": ENGINEERING_CYCLE_WHY,
+                        "ways_out": [*(self._way_out(run) for run in marks),
+                                     *self._cycle_way(stage, marks)]}  # fmt: skip
             raise _Stop(self._result(stage, step))
         pending = [x for c in conditions.values() for x in c.pending]
         if pending:
@@ -1309,16 +1423,39 @@ class _Walk:
 
     def _technical_run(self, c: _Arm, e: Endpoint) -> None:
         """A run outside the qualification that the readers count as a technical mark: its
-        registered route, one engineering cycle, is not implemented here, so the step stops for
-        the researcher's decision, beside the recovery round where the launcher would open one;
-        no closure is offered (module docstring, "Technical marks outside the qualification")."""
+        registered route is the candidate's engineering cycle (``_cycle_way``), beside the
+        recovery round where the launcher would open one; no closure is offered (module
+        docstring, "Technical marks outside the qualification")."""
         mark = self._mark(e)
         c.closable.append(mark)
         way = (f"; a recovery round of {e.label} with its documented cause reruns it: "
                f"{recovery_command(e.label)}" if mark["recovery"] else "")  # fmt: skip
         c.technical.append(f"{e.run_id} ({e.label}, {e.arm}, {e.cell.step}): {e.state}, a "
-                           f"technical mark outside the qualification: {ENGINEERING_ROUTE_WHY}"
-                           f"{way}")  # fmt: skip
+                           "technical mark outside the qualification: its route is the "
+                           f"candidate's engineering cycle{way}")  # fmt: skip
+
+    def _cycle_way(self, stage: str, marks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """The candidate's engineering cycle as a way out of the stage's marks (module
+        docstring, "Technical marks outside the qualification"): the record and its path, its
+        fields (the candidate, the marks' stage, every mark), every stage of the candidate
+        started that needs a claim (later ones included: ``study3_cycle.started_stages``), the
+        validation fixation the checkout holds and the command that writes it; none once the
+        candidate's one cycle is spent (a supersession record of it, qualify.py's or a cycle's
+        bridge, or a cycle record)."""
+        from .study3_cycle import started_stages
+
+        candidate = self.candidate
+        found = self.records.cycle_records.get(candidate) or {}
+        if self.records.cycles.get(candidate) or found.get("state", "missing") != "missing":
+            return []
+        kind = f"cycle-c{candidate}"
+        stages = started_stages(self.records, candidate)
+        return [{"cycle": {
+            "record": kind, "path": _path(kind),
+            "fields": {"candidate": candidate, "stage": stage,
+                       "marks": sorted(str(m["run_id"]) for m in marks)},
+            "stages": stages, "fixation": self.records.fixations.get(candidate),
+            "command": cycle_command(candidate, stage, stages)}}]  # fmt: skip
 
     def _closure_of(self, mark: Mapping[str, Any]) -> dict[str, Any] | None:
         """The closure record of a run under another commit, with the fields the closure schema
@@ -1344,17 +1481,16 @@ class _Walk:
             "decision": "close_pf" if mark["arm"] == "P" else TECHNICAL_REPORT}}  # fmt: skip
 
     def _way_out(self, mark: Mapping[str, Any]) -> dict[str, Any]:
-        """A technical mark's ways out, only those that apply: a recovery round of its label
+        """A technical mark's own ways out, only those that apply: a recovery round of its label
         when no terminal record was published (the launcher opens one only then), for a
         validation or confirmation run after ``study3_summary.py check`` passes; for a run under
-        another commit, its closure record; for any other mark, the researcher's decision
-        (``ENGINEERING_ROUTE_PENDING``), with its arm and step."""
+        another commit, its reason, commit and closure record; for any other mark, its arm and
+        step (its cycle is the step's way out: ``_cycle_way``; no decision, no closure)."""
         out: dict[str, Any] = {"run_id": mark["run_id"], "label": mark["label"]}
         if "uncounted" in mark:  # a run under another commit: its reason and commit
             out |= {"reason": mark["uncounted"], "commit": mark["commit"]}
         else:
-            out |= {"arm": mark["arm"], "step": mark["step"],
-                    "decision": {"decision": ENGINEERING_ROUTE_PENDING}}  # fmt: skip
+            out |= {"arm": mark["arm"], "step": mark["step"]}
         if mark["recovery"]:
             checked = (", launched after study3_summary.py check passes on its campaign file"
                        if mark["step"] in ("validation", "confirmation") else "")  # fmt: skip

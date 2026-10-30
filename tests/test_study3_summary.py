@@ -45,6 +45,7 @@ from test_study3_versions import sha256 as vsha256
 from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import decision_path, end_lines, read_decision
+from zero_field_refusal.analysis.study3_progress import advance, progress, read_records
 from zero_field_refusal.analysis.study3_records import SEEDS, Endpoint
 from zero_field_refusal.launch import load_campaign
 from zero_field_refusal.paths import REPO_ROOT
@@ -146,6 +147,18 @@ def test_progress_prints_the_state_as_json(world, summary, monkeypatch) -> None:
                                    world.root / "no-theta0")  # fmt: skip
     assert code == 0 and json.loads(printed)["step"]["kind"] == "blocked"
     assert "θ₀" in printed
+
+
+def test_progress_is_advance_over_read_records(world) -> None:
+    """``progress`` is ``advance`` over the records ``read_records`` reads, under the same
+    expected code: the reading and the route are two steps, on real files."""
+    world.ready()
+    world.launched(world.write("search-round0"))
+    kw = {"repo": world.repo, "theta0": world.runs.theta0, "settings": {}}
+    state = progress(world.root, expected_code=EXPECTED, **kw)
+    assert state == advance(read_records(world.root, expected_code=EXPECTED, **kw),
+                            expected_code=EXPECTED)  # fmt: skip
+    assert (state["stage"], state["step"]["campaign"]) == ("numerical", "numerical")
 
 
 def test_progress_prints_the_resolved_torn_lines(world, summary) -> None:
@@ -1105,8 +1118,8 @@ def test_closure_writes_a_way_out_chosen_by_its_run(world, summary, monkeypatch)
 def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualification(
     world, summary, monkeypatch
 ) -> None:
-    """A technical validation run stops the route for the researcher's decision: the step names
-    no closure, and ``closure`` writes none."""
+    """A technical validation run's route is its engineering cycle: the step names no closure,
+    and ``closure`` writes none."""
     study = Study()
     study.through_validation()
     run_id = run_of(study, "validation", "F", "u", 10304)
@@ -1119,13 +1132,13 @@ def test_closure_has_none_to_write_for_a_technical_mark_outside_the_qualificatio
     study.technical(run_id, log=end["path"], line=end["line"])
     study.ends[run_id]["line_sha256"] = end["line_sha256"]
     step = study.advance()["step"]
-    assert (step["kind"], step["reason"]) == ("blocked", "engineering_route_pending")
+    assert (step["kind"], step["reason"]) == ("blocked", "engineering_cycle")
     summary.core(study)
     monkeypatch.setattr(
         summary.script, "git_state", lambda repo=None: {"commit": "a" * 40, "dirty": False}
     )
     refused(summary.run("closure", "--runs-root", world.root, "--candidate", 1, "--arm", "F"),
-            "names no closure record closure-c1-F", "engineering_route_pending")  # fmt: skip
+            "names no closure record closure-c1-F", "engineering_cycle")  # fmt: skip
     assert not decision_path(world.root, "closure-c1-F").exists()
 
 
