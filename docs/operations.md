@@ -2407,6 +2407,151 @@ source checkout of the commit, clean (`$SRC`), in this order:
    runs, and nothing under a run's `judge/` or `judge-superseded/` or under
    `$RUNS_DIR/study3/labeling/` is opened by hand.
 
+## Study 3: the final analysis, the audit and the report
+
+The last steps of [the order](study3-preregistration.md#seeds-and-order) run on CPU: the cohorts
+and K\*_h frozen (step 9), the judge-based analysis (11), the audit (12) and the report's facts
+(13). The commands are `scripts/study3_analysis.py` (`freeze`, `analyze`, `report`) and
+`scripts/study3_audit.py` (`draw`, `agreements`, `estimate`); their docstrings hold every rule.
+Both run from the source checkout of the commit, clean (`$SRC`). Their outputs go under
+`$RUNS_DIR/study3-final/`, outside `$RUNS_DIR/study3/`, and hold numbers, ids, run ids, paths and
+hashes; the audit's blind file alone holds texts.
+
+### The freeze
+
+1. Once the state is at `done` (every started confirmation block resolved), and before any
+   confirmation label exists:
+
+   ```bash
+   project-run "$SRC" python scripts/study3_analysis.py freeze --runs-root "$R" --candidate 1
+   ```
+
+   It writes `docs/study3-analysis-freeze-c<N>.json` once: per comparison its cohort's blocks
+   (seeds, run ids, weights and widths) and the started blocks outside it, A − P's blocks, K\*_h
+   with the matched blocks and those left out, and validation's blocks. It reads no label. It is
+   refused before `done`, on a checkout that is not clean, and on any trace of a confirmation
+   label: a `judge/` or `judge-superseded/` entry in a confirmation run's folder (a dangling link
+   included) or a run the labeling ledger names.
+2. Commit the record alone, on top of the commit it names (`code.commit`), and never rewrite it.
+3. Labeling refuses the confirmation's runs until the gate (`study3_freeze.freeze_open`) opens:
+   the record committed alone and unchanged, the in-force supplement the frozen one, and the
+   cohorts rebuilt from the label-free records equal to it. Then the confirmation is labeled
+   ([labeling](#study-3-labeling-and-the-spread), step 3).
+
+### The analysis
+
+```bash
+project-run "$SRC" python scripts/study3_analysis.py analyze --runs-root "$R" --candidate 1
+```
+
+- **Pending, technical problem, missing.** A cohort run whose labels no control-accepted batch
+  covers is pending; a run whose labeling allowance ran out after a rejected control generation
+  is a technical labeling problem. Either refuses the analysis before any computation, naming
+  the runs (`<k> runs pending: <ids>; <j> runs with a technical labeling problem: <ids>`), and
+  nothing is written; neither is ever counted as missing labels. Labels missing inside a labeled
+  run enter the three computations.
+- **The order of its outputs.** The utility gates (label-free), then the spread of K of every
+  bracket run, then the harm of the frozen runs; `analysis.json` is written and its path and each
+  comparison's row of the registered wording are printed. Only then are validation's labels read,
+  and `validation-harm.json` names the analysis by its sha256.
+- **Resumption.** A run stopped after `analysis.json` (a validation run still pending, say) is
+  resumed by the same command: it writes validation's harm alone.
+- **Supersession.** Once both files are written, the command refuses. A recomputation after a fix
+  of the analysis code, with no change of the GPU code, takes `--supersedes-reason ID` and writes
+  `analysis-<k>.json` and `validation-harm-<k>.json`, each naming its predecessor by path, sha256
+  and the reason ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).
+
+### The audit
+
+1. **The draw**, once, after the analysis:
+
+   ```bash
+   project-run "$SRC" python scripts/study3_audit.py draw --runs-root "$R" --candidate 1
+   ```
+
+   It writes `$RUNS_DIR/study3-final/c<N>/audit/` (`unique.jsonl`, `key.json`, `frame.jsonl`,
+   `selection.json`) and prints counts only. A second draw is refused.
+2. **The reference labels.** `unique.jsonl` alone goes to the two reference labelers, GPT and
+   Grok, blind to arm, run, block and judge label. Each returns `{item_id: label | null}` over
+   every item id.
+3. **The agreements:**
+
+   ```bash
+   project-run "$SRC" python scripts/study3_audit.py agreements --runs-root "$R" --candidate 1 \
+     --gpt GPT.json --grok GROK.json
+   ```
+
+   It writes `agreements.json` once and prints the counts, the item ids to resolve and the ids of
+   the agreements to check (a tenth, drawn by the supplement's agreement seed).
+4. **The researcher's resolution and checks.** The researcher resolves each disagreement and
+   checks each drawn agreement, then writes the resolved references, `{item_id: label | null}`
+   (null: missing).
+5. **The estimate:**
+
+   ```bash
+   project-run "$SRC" python scripts/study3_audit.py estimate --runs-root "$R" --candidate 1 \
+     --reference RESOLVED.json
+   ```
+
+   It writes `estimate.json` once: B_E per estimable comparison, missing at random and as a
+   worst-case bound, and per arm the judge's sensitivity and false-positive rate, both ways
+   ([the audit](study3-preregistration.md#the-audit)). The MAR estimate averages over the resolved
+   draws only, while each missing draw's term in the bound is fixed in sign by its known judge
+   label: the MAR estimate can lie outside the bound. A draw whose coefficient for E is 0 adds
+   nothing to B_E and counts as resolved for E. No reference harm is computed.
+6. **Kept out of Git.** The audit's folder lies under `$RUNS_DIR` and is refused where Git could
+   track it; it is 0700 and its files 0600. `unique.jsonl`, the labelers' files and the resolved
+   references hold or rest on model responses: they stay under `$RUNS_DIR` and go to the bucket
+   with the stage's records, never into the checkout.
+
+### The report
+
+```bash
+project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
+  --billing BILLING.json --embargo EMBARGO.json
+```
+
+- **When.** At `done`, once the analysis, validation's harm and the audit's estimate are written,
+  or at a terminal outcome (the scientific or technical feasibility report, the design stop, the
+  budget stop), with what the study reached. Each section the study did not reach reads
+  `not reached`.
+- **The billing file** (the researcher's, closed schema; an unknown field is refused):
+
+  ```text
+  {"currency": "USD",
+   "stages": [{"stage": "<stage>", "spent": <amount>}],
+   "incidents": [{"stage": "<stage>", "incident_time": "<UTC, ISO 8601>", "cause": "<one line>",
+                  "source": "journal" | "qualification" | "pod", "evidence": "<path>",
+                  "billed": <amount>}],
+   "policy_stops": [{"stage": "<stage>"}]}
+  ```
+
+  A stage is one of `dry_run`, `engineering`, `simulation`, `search`, `numerical`, `repair`,
+  `validation`, `confirmation`, `labeling` and `audit`. Every incident of the records needs its
+  billed price, or the report is refused: a study-3 recovery round of the launch journal that
+  carries an incident needs a billed incident of the same `incident_time`, `cause` and `evidence`
+  (as the round records them), and every qualification record made with `--infrastructure` (a
+  part record carrying `infrastructure`, or a case restart `restart-<n>.json`) one whose
+  `evidence` is its path under `$RUNS_DIR`. Other incidents (`pod`) are listed with their
+  evidence.
+- **The embargo file**, `{"breaches": [{"stage", "what"}]}`: each harm label opened outside the
+  two scheduled points, with the stage it affected; `{"breaches": []}` when there was none
+  ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).
+- **After a judge diagnosis.** When the labeling ledger holds a diagnosis whose cause is `judge`,
+  labeling stays stopped and the report is the `judge_technical` variant: the registered
+  technical feasibility report for the harm comparison, with no Δ, no interval and no audit, the
+  freeze with its cohorts, the diagnosis and the runs with a technical labeling problem. An
+  `infrastructure` diagnosis changes nothing: labeling resumes.
+- **What it writes.** `$RUNS_DIR/study3-final/report-<UTC>/` (or `--out`, a folder that does not
+  exist yet), once: `facts.json` and `tables.md`, harm in pp in the tables. It reads no label: of
+  the labeling ledger, only the runs with a technical labeling problem and the diagnosis
+  records.
+- **The prose is the researcher's.** The facts carry no interpretation. Money is actual spending
+  by stage plus each incident with its billed price; the report names the stages an internal
+  spending policy stopped, and no other money figure
+  ([disclosure](study3-preregistration.md#disclosure),
+  [amendment 5](study3-preregistration.md#amendment-5-the-budget-after-the-dry-runs-part-i)).
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project
