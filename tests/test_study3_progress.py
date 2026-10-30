@@ -2319,6 +2319,24 @@ def test_the_reader_accepts_exactly_the_cells_the_rule_issues(worlds) -> None:
     assert any(stray in p and "not prescribed" in p for p in result["problems"])
 
 
+def test_read_state_gives_the_state_and_the_endpoints_it_read(worlds) -> None:
+    records, runs = worlds
+    records.write("engineering", records.engineering())
+    records.write("simulation", records.simulation())
+    search_round0(records, runs)
+    state, endpoints = study3_progress.read_state(
+        runs.root, repo=records.repo, expected_code=EXPECTED, theta0=runs.theta0
+    )
+    assert state == read(records, runs)
+    assert sorted(e.run_id for e in endpoints if e.cell.step == "search") == sorted(
+        p.name for p in (runs.root / "study3").iterdir() if p.name != "decisions"
+    )
+    broken = study3_progress.read_state(
+        runs.root, repo=records.repo, expected_code=EXPECTED, theta0=runs.root / "nowhere"
+    )
+    assert broken[1] == [] and broken[0]["step"]["kind"] == "blocked"
+
+
 def test_the_decision_records_folder_is_no_run_directory(worlds) -> None:
     """``RUNS_DIR/study3/decisions/`` lies in the experiment's folder; it is no run, while any
     other folder with no start stays refused."""
