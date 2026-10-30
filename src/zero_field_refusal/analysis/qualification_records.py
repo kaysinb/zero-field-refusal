@@ -159,8 +159,8 @@ trajectory results, restart, supersession and release records, the kept exports'
 their ``kept-check`` receipts, the verdict cache) with RUNS_DIR as the base. One that resolves under
 a sealed folder is never opened: it is a problem named by its path. This checkout's
 ``configs/`` are read to compose a cell's config. The reserved folders of the experiment's
-folder (``study3_records.RESERVED``: the decision records and the simulation's parts and results)
-are no run and are never walked. The GPU code
+folder (``study3_records.RESERVED``: the decision records', the simulation's parts and results,
+and the labeling ledger's) are no run and are never walked. The GPU code
 identity is not computed here: it is an argument. No GPU path is imported here;
 ``qualification_verdicts`` itself imports ``fa_control_diagnostic`` (and with it torch).
 

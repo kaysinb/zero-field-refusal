@@ -1686,8 +1686,9 @@ def test_pure_reading(qualify, monkeypatch, tmp_path) -> None:
 
 def test_the_reserved_folders_are_no_launcher_run(tmp_path) -> None:
     """The reserved folders of the experiment's folder (``study3_records.RESERVED``: the
-    decision records and the simulation's parts and results) are never read as run
-    directories: a ``meta.json`` there, even one of the cell's config hash, locates nothing."""
+    decision records', the simulation's parts and results, and the labeling ledger's) are never
+    read as run directories: a ``meta.json`` there, even one of the cell's config hash, locates
+    nothing."""
     experiment = tmp_path / "study3"
     meta = json.dumps({"config_hash": "h" * 64, "status": "completed"})
     for name in ("decisions", "simulation", "20261026T000000Z-A-1.45e-05-s10200-hhhhhhhh-a1"):

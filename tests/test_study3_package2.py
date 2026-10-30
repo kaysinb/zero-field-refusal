@@ -91,6 +91,12 @@ from zero_field_refusal.tracking import git_state
 SENTINEL = "PKG2-SENTINEL-qX7v-Rk3W-9zJd"  # in every responses/ and observations/ file here
 SEALED = ("responses", "observations")
 JUDGE = "judge"  # a run's judge outputs (<run>/judge/<judge>.jsonl): sealed for the checks
+# Sealed below the runs root as the judge outputs are: their superseded copies
+# (<run>/judge-superseded/) and the labeling ledger (study3/labeling/)
+SUPERSEDED, LEDGER = "judge-superseded", "labeling"
+UNDER_RUNS = (JUDGE, SUPERSEDED, LEDGER)
+# The sealed folders as a refusal names them (``study3_records.SEALED_WHY``)
+FOLDER = "a responses, observations, judge, judge-superseded or labeling folder"
 RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "evaluations.jsonl",
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
 ANALYSIS = REPO_ROOT / "src" / "zero_field_refusal" / "analysis"
@@ -166,9 +172,9 @@ class SealedGuard:
     a ``responses/`` or ``observations/`` folder, in any mode, fails, and the path is kept in
     ``attempts`` (a caller that swallows the failure is still caught); every path opened while
     armed, resolved, is kept in ``opened``. With ``runs_root``, so does
-    a path under a run's ``judge/`` folder (a ``judge`` component below the runs root: the
-    checkout's ``configs/judge/`` stays readable). ``off()`` disarms it while a test writes a run
-    as the tracker does."""
+    a path under a run's ``judge/`` or ``judge-superseded/`` folder or the labeling ledger's
+    ``labeling/`` (such a component below the runs root: the checkout's ``configs/judge/`` stays
+    readable). ``off()`` disarms it while a test writes a run as the tracker does."""
 
     def __init__(self, monkeypatch, runs_root: Path | None = None) -> None:
         self.attempts: list[str] = []
@@ -206,7 +212,8 @@ class SealedGuard:
         resolved = Path(os.path.realpath(text))
         self.opened.append(str(resolved))
         judged = (self.runs_root is not None and resolved.is_relative_to(self.runs_root)
-                  and JUDGE in resolved.relative_to(self.runs_root).parts)  # fmt: skip
+                  and any(part in UNDER_RUNS
+                          for part in resolved.relative_to(self.runs_root).parts))  # fmt: skip
         if judged or any(part in SEALED for part in resolved.parts):
             self.attempts.append(text)
             raise AssertionError(f"a sealed path was opened: {text}")
@@ -263,7 +270,7 @@ def test_a_record_file_linked_into_its_runs_responses_is_refused_unopened(runs, 
     assert guard.attempts == []
     endpoint = by_id(found)[linked]
     assert (endpoint.state, endpoint.counts) == ("refused", False)
-    why = f"its {name} resolves under a responses or observations folder: never opened"
+    why = f"its {name} resolves under {FOLDER}: never opened"
     assert why in endpoint.reasons
     assert [p for p in problems if p.startswith(linked)] == [f"{linked}: {why}"]
     assert by_id(found)[ordinary].state == "usable"
@@ -290,10 +297,9 @@ def test_records_linked_into_observations_or_another_runs_responses_are_refused(
     guard = SealedGuard(monkeypatch)
     found, problems = runs.read()
     assert guard.attempts == []
-    assert (f"{k_only}: its config.yaml and meta.json resolve under a responses or observations "
-            "folder: never opened") in problems  # fmt: skip
-    assert (f"{regular}: its terminal.json resolves under a responses or observations folder: "
-            "never opened") in problems  # fmt: skip
+    assert (f"{k_only}: its config.yaml and meta.json resolve under {FOLDER}: never "
+            "opened") in problems  # fmt: skip
+    assert f"{regular}: its terminal.json resolves under {FOLDER}: never opened" in problems
     assert by_id(found)[other].state == "usable"
     assert SENTINEL not in repr((found, problems))
 
@@ -310,8 +316,8 @@ def test_a_run_folder_linked_under_another_runs_responses_is_refused_unopened(ru
     guard = SealedGuard(monkeypatch)
     found, problems = runs.read()
     assert guard.attempts == []
-    assert (f"{moved}: its run folder resolves under a responses or observations folder: nothing "
-            "of it is opened") in problems  # fmt: skip
+    assert (f"{moved}: its run folder resolves under {FOLDER}: nothing of it is "
+            "opened") in problems  # fmt: skip
     assert by_id(found)[moved].state == "refused" and by_id(found)[other].state == "usable"
     assert SENTINEL not in repr((found, problems))
 
@@ -348,9 +354,7 @@ def test_the_config_a_qualification_binds_is_never_read_through_a_sealed_link(ru
     found, unbound, refusal = study3_records._config(folder / linked,
                                                      {"command": list(command)}, chash)  # fmt: skip
     assert (found, unbound) == (None, None)
-    assert (
-        refusal == "its config.yaml resolves under a responses or observations folder: never opened"
-    )
+    assert refusal == f"its config.yaml resolves under {FOLDER}: never opened"
     found, unbound, refusal = study3_records._config(folder / ordinary,
                                                      {"command": list(other_command)},
                                                      other_hash)  # fmt: skip
@@ -368,10 +372,10 @@ def test_theta0s_summary_is_never_read_through_a_sealed_link(runs, monkeypatch) 
     shutil.copy(runs.theta0 / "summary.json", sealed / "summary.json")
     guard = SealedGuard(monkeypatch)
     for named in (sealed, sealed / "summary.json"):
-        with pytest.raises(ValueError, match="responses or observations folder: never opened"):
+        with pytest.raises(ValueError, match=f"{FOLDER}: never opened"):
             read_theta0(named)
     link(runs.theta0 / "summary.json", Path("responses") / "harmful_evaluation.jsonl")
-    with pytest.raises(ValueError, match="responses or observations folder: never opened") as found:
+    with pytest.raises(ValueError, match=f"{FOLDER}: never opened") as found:
         read_theta0(runs.theta0)
     assert SENTINEL not in str(found.value) and guard.attempts == []
 
@@ -446,7 +450,7 @@ def test_a_start_whose_command_names_another_config_gives_no_config(runs, monkey
 
 # ------------------------------------------------------------------ records under the runs root
 
-SEALED_WHY = "resolves under a responses or observations folder: never opened"
+SEALED_WHY = f"resolves under {FOLDER}: never opened"
 
 
 def qualification_reading(root: Path) -> dict:
@@ -515,7 +519,7 @@ def test_the_qualification_reader_reads_no_run_file_through_a_sealed_link(runs, 
         if r.get("run_id") == crafted and r["event"] == "start" else r for r in rows])  # fmt: skip
     guard = SealedGuard(monkeypatch)
     reading = qualification_reading(runs.root)
-    why = "its config.yaml and meta.json resolve under a responses or observations folder"
+    why = f"its config.yaml and meta.json resolve under {FOLDER}"
     assert (f"{folder / linked}: {why}: never opened; no launcher run is located there"
             in reading["problems"])  # fmt: skip
     assert any(p.startswith(f"{linked} (A-1.45e-05/s10200): a start of candidate 1's "
@@ -628,9 +632,7 @@ def test_a_theta0_inside_a_sealed_folder_is_refused_unopened(runs, monkeypatch) 
     plant(inner)
     guard = SealedGuard(monkeypatch)
     for named in (inner, inner / "summary.json"):
-        with pytest.raises(
-            ValueError, match="responses or observations folder: never opened"
-        ) as found:
+        with pytest.raises(ValueError, match=f"{FOLDER}: never opened") as found:
             read_theta0(named)
         assert not [value for value in PLANTED if value in str(found.value)]
     assert read_theta0(runs.theta0)["benchmark_accuracy"] == 0.60
@@ -660,7 +662,7 @@ def test_a_link_loop_is_a_named_problem_not_a_crash(runs, monkeypatch, tmp_path)
     found, problems = runs.read()
     assert f"{looped}: its meta.json {LOOP_WHY}" in problems
     assert f"launch/loop.jsonl: a launch log that {LOOP_WHY}" in problems
-    assert not [p for p in problems if "loop" in p and "responses or observations" in p]
+    assert not [p for p in problems if "loop" in p and FOLDER in p]
     assert by_id(found)[ordinary].state == "usable"
     _, unreadable = journal_lines(runs.root)
     assert unreadable == [f"launch/loop.jsonl: a launch log that {LOOP_WHY}"]
@@ -821,10 +823,11 @@ class LabelReaders:
 
 
 def judged(run_dir: Path) -> None:
-    """A judge's labels in the run's ``judge/`` folder, as the labeling writes them: the
-    sentinel."""
-    (run_dir / JUDGE).mkdir()
-    (run_dir / JUDGE / "wildguard.jsonl").write_text(json.dumps({"label": SENTINEL}) + "\n")
+    """A judge's labels in the run's ``judge/`` folder, as the labeling writes them, and a copy
+    moved aside to its ``judge-superseded/`` folder: the sentinel."""
+    for folder in (run_dir / JUDGE, run_dir / SUPERSEDED / "b0001" / "g1-unverified"):
+        folder.mkdir(parents=True)
+        (folder / "wildguard.jsonl").write_text(json.dumps({"label": SENTINEL}) + "\n")
 
 
 def round0(arm, rate, seed, candidate) -> dict:
@@ -878,6 +881,10 @@ class Route(CampaignWorld):
                 (theta0 / folder).mkdir()
                 (theta0 / folder / name).write_text(json.dumps({"text": SENTINEL}) + "\n")
             judged(theta0)
+        # the labeling ledger, in the experiment's folder: no run, never opened
+        ledger = self.root / "study3" / LEDGER / "journal.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(json.dumps({"label": SENTINEL}) + "\n")
         self.ran: list[Ran] = []
         self.guards: list[tuple[int, int]] = []  # (seed, exit code) of each guard run
         self.launched: dict[str, list[str]] = {}  # campaign file -> its run ids
@@ -1126,14 +1133,17 @@ def route(tmp_path_factory):
         world.labels = labels
         world.guard = SealedGuard(sealed, runs_root=world.root)
         world.build()
-        # the guard is live: a sealed file or a judge output cannot be read under it
+        # the guard is live: a sealed file, a judge output, a superseded one or the ledger cannot
+        # be read under it
         live = len(world.guard.attempts)
         live_files = (next(world.root.glob("study3/*/responses/harmful_evaluation.jsonl")),
-                      next(world.root.glob(f"study3/*/{JUDGE}/wildguard.jsonl")))  # fmt: skip
+                      next(world.root.glob(f"study3/*/{JUDGE}/wildguard.jsonl")),
+                      next(world.root.glob(f"study3/*/{SUPERSEDED}/*/*/wildguard.jsonl")),
+                      world.root / "study3" / LEDGER / "journal.jsonl")  # fmt: skip
         for sealed_file in live_files:
             with pytest.raises(AssertionError):
                 sealed_file.read_text()
-        assert len(world.guard.attempts) == live + 2
+        assert len(world.guard.attempts) == live + len(live_files)
         del world.guard.attempts[live:]
         world.attempts = list(world.guard.attempts)
         sealed.undo()
@@ -1144,9 +1154,11 @@ def route(tmp_path_factory):
 
 
 def sealed_part(path: Path, route) -> bool:
-    """Whether a file of the route's world lies in a sealed folder or a run's judge folder."""
+    """Whether a file of the route's world lies in a sealed folder, a run's judge folder or its
+    superseded copies, or the labeling ledger."""
     below = path.relative_to(route.base).parts
-    judge = path.is_relative_to(route.root) and JUDGE in path.relative_to(route.root).parts
+    judge = path.is_relative_to(route.root) and any(
+        part in UNDER_RUNS for part in path.relative_to(route.root).parts)  # fmt: skip
     return judge or any(part in SEALED for part in below)
 
 
@@ -1199,6 +1211,18 @@ def test_the_route_opens_nothing_sealed_and_shows_no_sentinel(route) -> None:
     files = written(route)
     assert len(files) > 1000
     assert [path for path, data in files.items() if SENTINEL.encode() in data] == []
+
+
+def test_the_route_opens_nothing_superseded_and_no_ledger(route) -> None:
+    """Every run's judge outputs moved aside (``judge-superseded/``) and the labeling ledger
+    (``study3/labeling/``) lay in the route's world, each holding the sentinel, while every
+    command ran: none opened a path under them (the guard refuses both below the runs root),
+    and no walk took the ledger's folder for a run."""
+    superseded = list(route.root.glob(f"study3/*/{SUPERSEDED}/*/*/wildguard.jsonl"))
+    ledger = route.root / "study3" / LEDGER / "journal.jsonl"
+    assert len(superseded) > 250 and SENTINEL.encode() in ledger.read_bytes()
+    assert route.attempts == []
+    assert route.state()["problems"] == []
 
 
 @contextlib.contextmanager
@@ -1255,7 +1279,7 @@ def test_runs_whose_config_and_meta_link_into_their_sealed_folders_are_named_pro
     with linked(route) as (regular, k_only, added):
         guard = SealedGuard(monkeypatch, runs_root=route.root)
         first = len(route.ran)
-        why = "its config.yaml and meta.json resolve under a responses or observations folder"
+        why = f"its config.yaml and meta.json resolve under {FOLDER}"
         state = json.loads(route.ok("summary", "progress", "--runs-root", root).out)
         assert state["step"]["kind"] == "blocked"
         for run_id in (regular, k_only):
@@ -1358,7 +1382,7 @@ def test_the_qualification_reader_opens_no_record_linked_into_its_sealed_folders
         found = list(guard.attempts)
         guard.armed = False
     assert found == [] and identity is None
-    why = "its config.yaml and meta.json resolve under a responses or observations folder"
+    why = f"its config.yaml and meta.json resolve under {FOLDER}"
     for run_id in (regular, k_only):
         assert (f"{route.root / 'study3' / run_id}: {why}: never opened; no launcher run is "
                 "located there") in reading["problems"]  # fmt: skip

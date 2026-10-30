@@ -28,29 +28,33 @@ qualification's restart and supersession records (``qualification/c<N>/``).
 - ``read_theta0``: θ₀'s accuracies, the utility losses' baseline (study 2's θ₀ evaluation).
 
 **The reserved folders** (``RESERVED``) lie in the experiment's folder: the decision records'
-(``RUNS_DIR/study3/decisions/``, ``DECISIONS``) and the simulation's parts and results
-(``RUNS_DIR/study3/simulation/``, ``SIMULATION``; "Simulation before validation"). Neither is a run
-directory (no run id is ever named so: they are ``<stamp>-<cell>-s<seed>-<hash>-a<attempt>``), and
-every walk of the experiment's folder skips both.
+(``RUNS_DIR/study3/decisions/``, ``DECISIONS``), the simulation's parts and results
+(``RUNS_DIR/study3/simulation/``, ``SIMULATION``; "Simulation before validation") and the labeling
+ledger's (``RUNS_DIR/study3/labeling/``, ``LABELING``, itself sealed). None is a run directory (no
+run id is ever named so: they are ``<stamp>-<cell>-s<seed>-<hash>-a<attempt>``), and every walk of
+the experiment's folder skips all three.
 
-**The sealing boundary.** Of a run directory only ``config.yaml``, ``meta.json``,
+**The sealing boundary** ("Judge and audit": every label is sealed from the first run). The sealed
+folders (``SEALED``) are a run's ``responses/``, ``observations/``, ``judge/`` (its judge outputs)
+and ``judge-superseded/`` (judge outputs moved aside, unopened), and the labeling ledger's
+``labeling/``. Of a run directory only ``config.yaml``, ``meta.json``,
 ``terminal.json``, ``summary.json``, ``evaluations.jsonl``, ``metrics.jsonl`` and
-``monitor.jsonl`` are read (``RECORD_FILES``); nothing under ``responses/`` or ``observations/`` is
-ever opened, so no response text, harm label or judge output enters a selection ("Seeds and
-order": harm labels never enter a selection). Each record file is checked by the one sealed-path
+``monitor.jsonl`` are read (``RECORD_FILES``); nothing under a sealed folder is ever opened, so no
+response text, harm label or judge output enters a selection ("Seeds and order": harm labels never
+enter a selection). Each record file is checked by the one sealed-path
 rule (``under_sealed``, which ``study3_decisions`` and the scripts use too) before it is opened,
 with the run's folder as the base, and the run's folder itself with the experiment's: a record
-file or a run folder that resolves, through a link, under a ``responses/`` or ``observations/``
-folder is never opened, and its attempt is refused by name before anything of the run is read.
+file or a run folder that resolves, through a link, under a sealed folder is never opened, and its
+attempt is refused by name before anything of the run is read.
 A run folder is a plain child of the experiment's folder: a start whose run id is not a plain
 name (``plain_name``: a separator, ``.``, ``..``, empty) binds no run, a refusal by name, and
 nothing under it is opened. A path the rule cannot resolve (a link loop) counts as sealed, fail
 closed, and its refusal says so (``LOOP_WHY``: it cannot be resolved), not a sealed folder. θ₀'s
-folder must have no ``responses`` or ``observations`` component, and its ``summary.json`` is
+folder must have no sealed component, and its ``summary.json`` is
 checked with that folder as the base (``read_theta0`` refuses it otherwise, unopened). Every
 other file read under RUNS_DIR, a launch log or a record of the qualification (a restart or
 supersession record), is checked by the same rule with RUNS_DIR as the base: one that resolves
-under a ``responses/`` or ``observations/`` folder of any run is never opened, and is a problem
+under a sealed folder of any run, or the ledger's, is never opened, and is a problem
 named by its path (it blocks: what it holds cannot be shown). The structural check of the
 responses that the launcher makes (``stage_a.load_trajectory``) is not repeated here; the
 launcher's verdict on it is its end record, whose outcome is read and whose free text is not
@@ -241,7 +245,8 @@ from ..protocol import load_run_config
 EXPERIMENT = "study3"
 DECISIONS = "decisions"  # RUNS_DIR/study3/decisions/: the decision records, reserved, no run
 SIMULATION = "simulation"  # RUNS_DIR/study3/simulation/: the simulation's parts and results
-RESERVED = (DECISIONS, SIMULATION)  # the experiment's folders that are no run directory
+LABELING = "labeling"  # RUNS_DIR/study3/labeling/: the labeling ledger, reserved and sealed
+RESERVED = (DECISIONS, SIMULATION, LABELING)  # the folders that are no run: every walk skips them
 ROLES = ("engineering", "search", "numerical", "validation", "confirmation")
 K_ONLY_ROLES = ("engineering", "search", "numerical")
 # "Seeds and order": validation to 10339 / 10379 with 40 blocks; confirmation in order, its
@@ -280,12 +285,13 @@ STATES = ("pending", "recovered", "superseded", "held", "refused", "technical", 
 COUNTING = ("pending", "technical", "scientific", "usable", "unusable")
 OUTCOME_ENDS = ("done", "diverged")  # ends after which the records decide
 OPEN_ENDS = (None, "stopped")  # the launcher has not ended the attempt
-# The sealing boundary: a run's folders of responses, labels and judge outputs, never opened; and
-# the run's record files, the only ones read
-SEALED = ("responses", "observations")
+# The sealing boundary: a run's folders of responses, observations, judge outputs and judge
+# outputs moved aside, and the labeling ledger's folder, never opened; and the run's record
+# files, the only ones read
+SEALED = ("responses", "observations", "judge", "judge-superseded", "labeling")
 RECORD_FILES = ("config.yaml", "meta.json", "terminal.json", "summary.json", "evaluations.jsonl",
                 "metrics.jsonl", "monitor.jsonl")  # fmt: skip
-SEALED_WHY = "under a responses or observations folder"
+SEALED_WHY = "under a responses, observations, judge, judge-superseded or labeling folder"
 LOOP_WHY = "cannot be resolved (a link loop)"  # a path the rule counts as sealed: why
 # The configs the launcher composes study 3's runs from (a start's command, composed again)
 STUDY3_CONFIGS = ("experiments/study3", "experiments/study3_k_only")
@@ -592,11 +598,13 @@ def candidate_of(seed: int, role: str) -> int | None:
 
 
 def under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
-    """Whether ``path`` (as written, ``named``, or where its links lead) is under a ``responses``
-    or ``observations`` folder, below ``base`` (a folder of the base itself does not count).
-    Decided from the names alone: nothing is opened. A path that cannot be resolved (a link
-    loop) counts as sealed: where it leads cannot be shown. The one sealed-path rule of study 3's
-    analysis."""
+    """Whether ``path`` (as written, ``named``, or where its links lead) is under a sealed folder
+    (``SEALED``: ``responses``, ``observations``, ``judge``, ``judge-superseded`` or
+    ``labeling``), below ``base`` (a folder of the base itself does not count). Decided from the
+    names alone: nothing is opened. A path that cannot be resolved (a link loop) counts as
+    sealed: where it leads cannot be shown. The one sealed-path rule of study 3's analysis. The
+    checkout's ``configs/judge/`` (the frozen judge's config) is read by ``load_config`` alone and
+    never passes through it."""
     try:
         resolved, root = Path(path).resolve(), Path(base).resolve()
     except (OSError, RuntimeError):  # a link loop
@@ -687,8 +695,8 @@ def _listed(names: Sequence[str]) -> str:
 def read_theta0(path: str | Path) -> dict[str, float]:
     """θ₀'s accuracies from its evaluation's ``summary.json`` (the run directory or the file):
     each a finite fraction in [0, 1]; ``ValueError`` otherwise, and, unopened, for a θ₀ folder
-    whose resolved path has a ``responses`` or ``observations`` component or a file that resolves
-    under a sealed folder below it."""
+    whose resolved path has a sealed component (``SEALED``) or a file that resolves under a sealed
+    folder below it."""
     path = Path(path)
     folder = path if path.is_dir() else path.parent
     file = folder / "summary.json" if path.is_dir() else path

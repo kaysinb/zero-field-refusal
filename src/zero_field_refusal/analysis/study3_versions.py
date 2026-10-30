@@ -1911,8 +1911,7 @@ def _unstarted(root: Path, started: set[str]) -> list[str]:
 def _role(folder: Path, root: Path) -> str | None:
     """A run directory's role: its ``config.yaml``'s ``study3.role``, else the role of its
     ``meta.json``'s campaign step; None when neither can be read. A file that resolves under a
-    responses or observations folder is not opened (the rule, with the run's folder as the
-    base)."""
+    sealed folder is not opened (the rule, with the run's folder as the base)."""
     config, meta = folder / "config.yaml", folder / "meta.json"
     if config.is_file() and not _sealed_file(config):
         try:

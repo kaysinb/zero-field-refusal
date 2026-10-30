@@ -30,8 +30,10 @@ from zero_field_refusal.analysis.study3_records import (
     DECISIONS,
     IDENTITY_KEYS,
     INSTABILITY,
+    LABELING,
     RESERVED,
     ROLES,
+    SEALED_WHY,
     SEEDS,
     SIMULATION,
     TORN_KIND,
@@ -44,6 +46,7 @@ from zero_field_refusal.analysis.study3_records import (
     read_holds,
     read_theta0,
     step_key,
+    under_sealed,
     voided_runs,
 )
 from zero_field_refusal.config import config_hash
@@ -1400,7 +1403,7 @@ def test_the_simulation_folder_is_reserved_and_no_run_directory(world) -> None:
     """``RUNS_DIR/study3/simulation/`` holds the simulation's parts and results ("Simulation
     before validation"): reserved as the decision records' folder is, so no reader takes it for
     a run without a start."""
-    assert RESERVED == (DECISIONS, SIMULATION) == ("decisions", "simulation")
+    assert RESERVED == (DECISIONS, SIMULATION, LABELING) == ("decisions", "simulation", "labeling")
     simulation = world.root / "study3" / "simulation"
     (simulation / "parts").mkdir(parents=True)
     (simulation / "parts" / "x.json").write_text("{}")
@@ -1921,6 +1924,40 @@ def test_the_reader_never_opens_responses_or_observations(world, monkeypatch, ac
     # the guard is live: a sealed file cannot be read under it
     with pytest.raises(AssertionError):
         next((world.root / "study3").glob("*/responses/*.jsonl")).read_text()
+
+
+@pytest.mark.parametrize("folder", ["judge", "judge-superseded"])
+def test_a_record_file_linked_into_a_judge_folder_is_refused_unopened(world, folder) -> None:
+    """A run's judge outputs and their superseded copies are sealed as its responses are: a
+    ``config.yaml`` linked into either is refused, named, and its label is in no reason."""
+    run = world.root / "study3" / world.run("A", 1.45e-5, 10300, role="validation")
+    target = run / folder / "b0001" / "g1" / "wildguard.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps({"label": SENTINEL}) + "\n")
+    (run / "config.yaml").unlink()
+    (run / "config.yaml").symlink_to(target)
+    endpoints, problems = world.read()
+    assert any(SEALED_WHY in p and run.name in p for p in problems)
+    assert SENTINEL not in json.dumps([problems, [e.reasons for e in endpoints]])
+
+
+def test_the_labeling_folder_is_no_run(world) -> None:
+    """The labeling ledger's folder lies in the experiment's folder, reserved: no walk takes it
+    for a run, and nothing of it is opened."""
+    (world.root / "study3" / "labeling").mkdir(parents=True)
+    (world.root / "study3" / "labeling" / "journal.jsonl").write_text(SENTINEL + "\n")
+    endpoints, problems = world.read()
+    assert not [p for p in problems if "labeling" in p]
+    assert all(e.run_id != "labeling" for e in endpoints)
+
+
+def test_under_sealed_follows_links_into_every_sealed_folder(tmp_path) -> None:
+    base = tmp_path / "runs"
+    for folder in ("judge", "judge-superseded", "labeling"):
+        (base / "study3" / "r1" / folder).mkdir(parents=True)
+        (base / f"to-{folder}").symlink_to(base / "study3" / "r1" / folder)
+        assert under_sealed(base / f"to-{folder}" / "x", base)
+    assert not under_sealed(base / "study3" / "r1" / "meta.json", base)
 
 
 # ------------------------------------------------------------------ the launcher's own reading

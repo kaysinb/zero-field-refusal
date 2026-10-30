@@ -202,6 +202,7 @@ from .study3_records import DECISIONS as DECISIONS_FOLDER
 from .study3_records import (
     EXPERIMENT,
     LOOP_WHY,
+    SEALED_WHY,
     SEEDS,
     TORN_LINE,
     _read_journal,
@@ -1276,7 +1277,7 @@ def _evidence(refs: Sequence[_Ref], root: Path, repo: Path) -> list[str]:
         base = repo if ref.root == "repo" else root
         path = named if named.is_absolute() else base / named
         if _under_sealed(path, base, named):
-            why = sealed_why(path, base, "is under a responses or observations folder")
+            why = sealed_why(path, base, f"is {SEALED_WHY}")
             problems.append(f"{ref.where}: {path} {why}: never evidence, never opened")
         elif not path.is_file():
             problems.append(f"{ref.where}: the evidence file {path} is missing")
@@ -1336,7 +1337,7 @@ def _against_line(root: Path, record: Mapping[str, Any], candidate: int) -> list
     run_id, cited = record["run_id"], record["line"]
     path = root / cited["path"]
     if _under_sealed(path, root, Path(cited["path"])):
-        why = sealed_why(path, root, "is under a responses or observations folder")
+        why = sealed_why(path, root, f"is {SEALED_WHY}")
         return [f"line: {path} {why}: never opened"]
     logs, unreadable = journal_lines(root)
     found = [f"line: {problem}: the journal cannot show what follows the run"
