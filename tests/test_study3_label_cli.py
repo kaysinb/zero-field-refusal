@@ -24,6 +24,7 @@ from test_study3_labels import (
     ContentJudge,
     study3_run,
 )
+from test_study3_package2 import LEDGER_OPENERS, NamedOpens
 from test_study3_records import World as RecordsWorld
 
 from zero_field_refusal.analysis import gate1, study3_label_cli, study3_labels, study3_versions
@@ -815,6 +816,29 @@ def test_a_crash_between_the_superseded_line_and_the_move_is_completed(world):
     assert out.outcome == "accepted" and target.is_dir()
     assert {m["sha256"] for m in line["moved"]} == {
         sha256(p) for p in target.rglob("*") if p.is_file()}  # fmt: skip
+
+
+@pytest.mark.parametrize("step", ["validation", "confirmation"])
+def test_a_pending_move_waits_for_the_point(world, monkeypatch, step):
+    """A crash between a ``superseded`` line and its move, then the spread point closed (the n
+    record written): the labeling command refuses before it completes the move. It opens the
+    labeling ledger alone, through the ledger's own openers, and nothing of the run's folder:
+    its ``judge/`` is neither hashed nor moved."""
+    world.crash_before_rename()
+    with pytest.raises(SystemExit):
+        world.batch(["r1"], flips={(1, "control-3")})
+    (line,) = world.events("superseded")
+    world.stage = "confirmation"  # the spread point closed
+    world.judge.reset_counts()
+    guard = NamedOpens(monkeypatch, runs_root=world.root, openers=LEDGER_OPENERS,
+                       under=world.ledger_dir)  # fmt: skip
+    with pytest.raises(BatchRefused, match="point" if step == "validation" else "unfinished"):
+        world.batch(None, step=step)
+    run_dir = world.run("r1").resolve()
+    assert guard.attempts == [] and [p for p in guard.opened
+                                     if Path(p).is_relative_to(run_dir)] == []  # fmt: skip
+    assert (world.run("r1") / "judge").is_dir() and not (world.run("r1") / line["target"]).exists()
+    assert world.judge.attempts == 0
 
 
 def test_a_hash_mismatch_refuses_before_any_label(world):

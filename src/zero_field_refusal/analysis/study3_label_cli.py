@@ -55,14 +55,16 @@ batch ``open``, resumed next time under the same id (an unfinished batch is resu
 other: the same command, or no run ids). In order (steps 1–5 send nothing and write no line):
 1. *the lock*: the ledger's lock, without waiting;
 2. *the ledger*: a ``LedgerError`` refuses (a torn tail names ``resolve-torn``), a stranded
-   diagnosis refuses (naming the ``diagnose`` re-run), every ``superseded`` line whose move is
-   not done is completed (the source's hashes checked first; any other state is ambiguous and
-   refuses), and the candidate's unresolved mark refuses every batch of it;
+   diagnosis refuses (naming the ``diagnose`` re-run), and the candidate's unresolved mark
+   refuses every batch of it;
 3. *which batch*: the unfinished one (its step, candidate and runs), or a new one of the run ids;
 4. *the point*, every invocation: validation runs while the spread point is open
    (``study3_labels.open_point``'s rule), each run id a plain name bound by the launch journal as
    an attempt of the step and candidate, not refused (``_bound``); confirmation runs are refused
-   until the final point opens through the freeze gate;
+   until the final point opens through the freeze gate. Only then is every ``superseded`` line
+   whose move is not done completed (the source's hashes checked first; any other state is
+   ambiguous and refuses): until the point opens, the ledger alone is opened, and nothing of a
+   run's folder;
 5. *the pins*, every invocation: the candidate's in-force validation fixation
    (``study3_versions.read_validation_fixation``) without a problem, its control list's sha256
    the checkout's list now (and, on a resume, the batch's), the list clean, the fixation's judge
@@ -519,7 +521,6 @@ class _Batch:
             raise BatchRefused(f"labeling/diagnosis-{batch}.json is published without its "
                                f"diagnosed line: complete it first with `{PROG} diagnose "
                                f"--runs-root {self.root} --batch {batch} --from FILE`")  # fmt: skip
-        self._complete_moves(ledger)
         stopped = ledger.stopped(self.candidate)
         if stopped is not None:
             if ledger.batches[stopped]["diagnosed"] is not None:
@@ -529,6 +530,7 @@ class _Batch:
                                f"labeling/diagnosis-{stopped}.json")  # fmt: skip
         batch, named = self._which(ledger)
         self._gate(named)
+        self._complete_moves(ledger)  # once the point is open: it hashes a run's judge/
         self._pins(ledger, batch)
         if batch is None:
             batch = self._open(ledger, named)
