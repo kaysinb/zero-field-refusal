@@ -59,7 +59,17 @@ stage's summary once reached. ``problems``: every problem found. ``not_counted``
 or confirmation run that does not count for the commit it ran (below), wherever the walk stops.
 ``resolved_torn_lines``: every torn line of the launch journal that the launcher's resolution
 names (``study3_records``, "Attempts": listed, no problem), each by its ``log`` (its path under
-RUNS_DIR), its ``line`` number and its ``kind``; nothing else of the line.
+RUNS_DIR), its ``line`` number and its ``kind``; nothing else of the line. ``cycle``: per
+candidate with a cycle record outside the qualification (valid or not; ``qualify.py``'s own
+cycle has none), wherever the walk stops: the ``candidate``, its ``record`` and ``bridge``
+paths, its ``state``, the marks' ``stage``, its ``claims`` (each stage's ``reuse`` or
+``rerun``), its ``affected`` runs (each ``run_id``, ``step`` and ``gpu_code``), what it
+``kept``, the ``repair_record`` (the exact ``--record`` of the journal repair), its
+``written_at`` and ``code`` (the fix: the incident of the recovery rounds that reissue the
+affected runs, ``study3_campaigns``) and the ``successors`` of the write-once records it makes
+stale (none yet). Superseded runs need no rule of their own: a
+cell whose attempts are all superseded is issued again (the search's missing seeds, a block's
+missing cells), and a superseded qualification launcher run waits for its next attempt.
 
 **Order** ("Seeds and order"). The engineering record passed (the cells of the engineering stage,
 every arm at candidate 1's starting rates on 10000–10003, are issued from the start), then the
@@ -306,8 +316,11 @@ whose old code is not the chain's is a break, and so is a second record for a ca
 cycle per candidate; ``qualification_records`` voids nothing by either, nor by a record that is not
 the candidate's or does not cite its technical record), and ``expected_code`` must be the chain's
 end: each is a problem. The reader builds the chain first, then reads each candidate's
-qualification under the code in force for its runs. Per record: the engineering record is the
-chain's start (it stays valid across cycles: a cycle's re-qualification certifies its fix); the
+qualification under the code in force for its runs, or, where the candidate's valid cycle record
+outside the qualification claims the qualification ``reuse``, under that cycle's old code: the
+qualification's runs keep counting under the code they ran (``qualification_code``). Per
+record: the engineering record is the chain's start (it stays valid across cycles: a cycle's
+re-qualification certifies its fix); the
 simulation record and the closure records may carry any code on the chain (the simulation runs
 no GPU code; a closure is a record about a run, bound to its line's and its cycle's hashes, so
 one written before its candidate's cycle stays valid); ``n-c<N>`` and ``budget-c<N>`` carry the
@@ -520,14 +533,15 @@ def read_records(
     valid = {k for found_ in (*entries.values(), found) for k, e in found_.items()
              if e["state"] in ("passed", "failed")}  # read already: no sealed path  # fmt: skip
     cycles = {c: qualification_records.supersessions(root, c) for c in (1, 2)}
-    # each candidate's qualification under the code in force for its runs (the chain's)
     start = _engineering_code(entries[1].get("engineering") or {})
     chain, in_force, _ = code_chain(start, cycles)
     fallback = expected_code if expected_code is not None else (chain[-1] if chain else None)
-    codes = {c: in_force.get(c) or fallback for c in (1, 2)}
     # the code in force before each candidate's cycle: the chain's start, then candidate 1's
     before = {1: start, 2: in_force.get(1, start)}
     cycle_records = {c: read_cycle(root, c, repo=repo, chain_old=before[c]) for c in (1, 2)}
+    # each candidate's qualification under the code its runs count under (``qualification_code``)
+    chained = Records(decisions=entries, cycles=cycles, cycle_records=cycle_records)
+    codes = {c: qualification_code(chained, c) or fallback for c in (1, 2)}
     logs, _ = journal_lines(root)
     fixed = {
         "holds": tuple(holds), "hold_problems": tuple(hold_problems),
@@ -586,6 +600,24 @@ def read_records(
     return Records(tuple(endpoints), tuple(problems), recoverable=recoverable,
                    uncounted=uncounted, cycle_records=cycle_records, run_codes=run_codes,
                    **fixed)  # fmt: skip
+
+
+def qualification_code(records: Records, candidate: int) -> str | None:
+    """The GPU code the candidate's qualification is read under (module docstring, "Code
+    agreement"): the old code of the candidate's cycle outside the qualification when its record
+    is valid and claims the qualification ``reuse`` (its runs keep counting under the code they
+    ran), and otherwise the code in force for the candidate's runs on the chain of engineering
+    cycles (``code_chain``); None without a chain. The record's validity is ``read_cycle``'s
+    (a record that ``cycle_problems`` finds invalid later blocks the candidate's walk from its
+    search on, whatever its qualification is read under)."""
+    engineering = (records.decisions.get(1) or {}).get("engineering") or {}
+    _, in_force, _ = code_chain(_engineering_code(engineering), records.cycles)
+    found = records.cycle_records.get(candidate) or {}
+    claim = (found.get("claims") or {}).get("qualification")
+    old = (found.get("record") or {}).get("old_code")
+    if found.get("state") == "valid" and claim is not None and claim.action == "reuse" and old:
+        return old
+    return in_force.get(candidate)
 
 
 def chain_end(records: Records) -> str | None:
@@ -1927,10 +1959,36 @@ class _Walk:
             "problems": list(dict.fromkeys(self.problems)),
             "not_counted": [dict(self.records.uncounted[k])
                             for k in sorted(self.records.uncounted)],
+            "cycle": self._cycles(),
             "resolved_torn_lines": [dict(r) for r in self.records.resolved],
             "prescribed": {k: sorted(v) for k, v in sorted(self.prescribed.items()) if v},
             **self.extra, **extra,
         }  # fmt: skip
+
+    def _cycles(self) -> dict[int, dict[str, Any]]:
+        """Each candidate's cycle outside the qualification, wherever the walk stops (module
+        docstring, "The result"): every candidate with a cycle record, valid or not."""
+        out: dict[int, dict[str, Any]] = {}
+        for candidate, found in sorted(self.records.cycle_records.items()):
+            if not found or found.get("state", "missing") == "missing":
+                continue
+            record = found.get("record") or {}
+            runs = (record.get("affected") or {}).get("runs") or []
+            out[candidate] = {
+                "candidate": candidate, "record": found.get("path"),
+                "bridge": found.get("bridge_path"),
+                "state": found.get("state"), "stage": record.get("stage"),
+                "claims": {stage: claim.action
+                           for stage, claim in (found.get("claims") or {}).items()},
+                "affected": [{"run_id": run.get("run_id"), "step": run.get("step"),
+                              "gpu_code": run.get("gpu_code")} for run in runs],
+                "kept": [dict(entry) for entry in record.get("kept") or []],
+                "repair_record": found.get("repair_record"),
+                "written_at": record.get("written_at"),
+                "code": dict(record["code"]) if isinstance(record.get("code"), Mapping) else None,
+                "successors": {},
+            }  # fmt: skip
+        return out
 
     # -- helpers
 

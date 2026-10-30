@@ -34,6 +34,7 @@ from zero_field_refusal.analysis.study3_progress import (
     advance,
     confirmation_state,
     progress,
+    qualification_code,
 )
 from zero_field_refusal.analysis.study3_records import COUNTING, SEEDS, Cell, Endpoint, step_key
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
@@ -1147,6 +1148,107 @@ def test_a_search_rerun_of_some_arms_leaves_the_others_counting_under_the_old_co
     study.run_codes[late.run_id] = old
     (way,) = study.advance()["step"]["ways_out"]
     assert (way["run_id"], way["reason"]) == (late.run_id, "other_gpu_code")
+
+
+def through_validation_with_mark(arm: str, seed: int) -> Study:
+    """Candidate 1 through its validation, its run of ``arm`` at its upper rate on ``seed`` a
+    technical mark."""
+    study = Study()
+    study.through_validation()
+    study.technical(run_of(study, "validation", arm, "u", seed))
+    return study
+
+
+def qualification_reading(state: str) -> dict:
+    """Candidate 1's qualification reading, every starting rate in ``state``."""
+    study = Study()
+    for arm in ARMS:
+        for label in LABELS:
+            study.rate(1, arm, START[arm][label], state)
+    return study.readings[1]
+
+
+def requalifying_reading() -> dict:
+    """The re-qualification under way: the voided cases wait for their next attempts."""
+    return qualification_reading("incomplete")
+
+
+def qualified_reading() -> dict:
+    return qualification_reading("qualified")
+
+
+def cells_of(study: Study, run_ids) -> set:
+    return {(e.arm, e.lr, e.seed) for e in study.endpoints if e.run_id in set(run_ids)}
+
+
+def search_runs_count(result) -> bool:
+    """The search's runs count: the walk is past candidate 1's search, no search cell issued."""
+    step = result["step"]
+    return (result["candidate"], result["outcome"]) == (1, None) and result["stage"] not in (
+        "engineering", "simulation", "search") and not str(step.get("campaign")).startswith(
+        "search")  # fmt: skip
+
+
+def test_superseded_runs_are_listed_and_reissued_after_requalification() -> None:
+    study = through_validation_with_mark("F", 10304)
+    affected = study.cycle_record(stage="validation", claims={"search": REUSE,
+                                                              "qualification": RERUN,
+                                                              "validation": RERUN})  # fmt: skip
+    study.readings[1] = requalifying_reading()  # numerical: the voided cases waiting
+    result = study.advance()
+    assert (result["stage"], result["step"]["kind"]) == ("numerical", "pending")
+    assert {a["run_id"] for a in result["cycle"][1]["affected"]} == set(affected)
+    listed = result["cycle"][1]
+    assert (listed["state"], listed["stage"], listed["claims"]) == (
+        "valid", "validation", {"search": "reuse", "qualification": "rerun",
+                                "validation": "rerun"})  # fmt: skip
+    assert listed["successors"] == {} and listed["repair_record"] == listed["record"]
+    study.readings[1] = qualified_reading()
+    result = study.advance()
+    assert result["step"]["kind"] == "campaign" and cells(result["step"]) == cells_of(
+        study, affected
+    )
+
+
+def test_a_reused_stage_keeps_counting_under_the_old_code() -> None:
+    study = through_validation_with_mark("F", 10304)
+    old = study.expected
+    study.cycle_record(stage="validation", claims={"search": REUSE, "qualification": REUSE,
+                                                   "validation": RERUN})  # fmt: skip
+    records = study.records()
+    assert qualification_code(records, 1) == old
+    assert search_runs_count(study.advance())
+    study.cycle_records[1]["claims"]["qualification"] = RERUN  # the qualification rerun
+    assert qualification_code(study.records(), 1) == study.expected != old
+
+
+def test_an_analysis_only_fix_resolves_a_mark_only_through_the_recomputed_reading() -> None:
+    study = Study()
+    study.ready()
+    study.search()
+    run = run_of(study, "search", "F", "u", 10102)
+    study.change(run, state="technical", K=None)  # the reading under the old analysis rule
+    assert study.advance()["step"]["reason"] == "engineering_cycle"
+    study.change(run, state="usable", K=6.0, steps=25)  # the fixed rule's reading of the same
+    result = study.advance()
+    assert result["step"].get("reason") != "engineering_cycle" and result["cycle"] == {}
+
+
+def test_the_cycle_is_listed_wherever_the_walk_stops() -> None:
+    """A cycle record of the candidate is listed in the result whatever the stage: an invalid
+    one with its state, a qualify.py cycle (no cycle record) not at all."""
+    study = Study()
+    study.through_validation()
+    study.cycle_records[1] = {"state": "invalid", "path": "/runs/study3/decisions/cycle-c1.json",
+                              "problems": ["/runs/cycle-c1.json: a problem"]}  # fmt: skip
+    listed = study.advance()["cycle"]
+    assert list(listed) == [1] and listed[1]["state"] == "invalid"
+    assert (listed[1]["affected"], listed[1]["claims"], listed[1]["stage"]) == ([], {}, None)
+    plain = Study()
+    plain.ready()
+    plain.search()
+    plain.cycle()
+    assert plain.advance()["cycle"] == {}
 
 
 def test_an_after_cycle_closure_must_cite_the_candidates_cycle() -> None:
