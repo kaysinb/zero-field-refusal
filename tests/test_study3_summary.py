@@ -1202,6 +1202,12 @@ def test_closure_writes_the_closure_of_a_run_under_another_commit(world, summary
         "technical_feasibility_report", "dirty_checkout")  # fmt: skip
 
 
+def test_operations_describe_the_cycle_route() -> None:
+    text = (REPO_ROOT / "docs/operations.md").read_text()
+    assert "engineering_route_pending" not in text and "study3_summary.py cycle" in text
+    assert "unresolved_after_cycle" in text and "other_gpu_code" in text
+
+
 def test_the_summary_imports_no_gpu_path() -> None:
     """The script imports no GPU path, no launcher and no study-2 analysis; the state's reader
     loads the qualification's reader (and torch with it) only when it runs."""
