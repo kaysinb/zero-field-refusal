@@ -124,6 +124,10 @@ def test_registered_values_match_the_preregistration() -> None:
 # ------------------------------------------------------------------ the weight
 
 
+def test_the_helper_is_the_registered_weight() -> None:
+    assert blocks.weight(2.0, 8.0, 4.0) == pytest.approx(0.5)
+
+
 def test_the_weight_is_the_log_position_between_the_endpoints() -> None:
     # K_lo = 4.8, K_hi = 7.5: ln(6/4.8) = ln 1.25 and ln(7.5/4.8) = ln 1.5625 = 2 ln 1.25, so 1/2
     middle = support(4.8, 7.5)

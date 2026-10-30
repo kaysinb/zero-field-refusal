@@ -15,7 +15,8 @@ or a judge output: the result holds numbers, ids, paths and hashes only.
 - ``read_records``: the reader. It reads the records under RUNS_DIR (``Records``), each
   candidate's cycle outside the qualification included; ``chain_end``: the chain of engineering
   cycles' end from those records alone.
-- ``progress``: ``advance`` over ``read_records``, both under the checkout's expected code.
+- ``read_state``: ``advance`` over ``read_records``, both under the checkout's expected code,
+  with the endpoints it read (none when it reads no run); ``progress``: its state alone.
 - ``confirmation_state``: the confirmation's blocks, counters, cohorts, stop and readings; the
   campaign driver's between-block guard calls it.
 
@@ -515,6 +516,30 @@ class Records:
 # ------------------------------------------------------------------ the reader
 
 
+def read_state(
+    runs_root: str | Path,
+    *,
+    repo: str | Path = REPO_ROOT,
+    expected_code: str,
+    theta0: str | Path | None = None,
+    settings: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[Endpoint]]:
+    """The state of study 3 under ``runs_root`` (module docstring) and the endpoints it read:
+    ``advance`` over the records ``read_records`` reads (the cells it derives, each candidate's
+    cycle checked against the records before it, each run's GPU code), both under
+    ``expected_code``, the GPU code's sha256 the qualification and every decision record must
+    carry (the checkout's: the ordinary guards' expected code); the endpoints are none when no
+    run record is read (θ₀'s evaluation or the run records unreadable). ``theta0``: θ₀'s
+    evaluation (study 2's, ``THETA0_RUN`` under ``runs_root``, by default); ``settings``:
+    configs/experiments/qualification.yaml as loaded (by default, this checkout's); ``repo``: the
+    checkout the decision records' ``repo`` evidence is relative to."""
+    if not (isinstance(expected_code, str) and expected_code):
+        raise ValueError(f"expected_code is the GPU code's sha256, not {expected_code!r}")
+    records = read_records(runs_root, repo=repo, expected_code=expected_code, theta0=theta0,
+                           settings=settings)  # fmt: skip
+    return advance(records, expected_code=expected_code), list(records.endpoints)
+
+
 def progress(
     runs_root: str | Path,
     *,
@@ -523,18 +548,10 @@ def progress(
     theta0: str | Path | None = None,
     settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The state of study 3 under ``runs_root`` (module docstring): ``advance`` over the
-    records ``read_records`` reads, both under ``expected_code``, the GPU code's sha256 the
-    qualification and every decision record must carry (the checkout's: the ordinary guards'
-    expected code); ``theta0``: θ₀'s evaluation (study 2's, ``THETA0_RUN`` under ``runs_root``,
-    by default); ``settings``: configs/experiments/qualification.yaml as loaded (by default,
-    this checkout's); ``repo``: the checkout the decision records' ``repo`` evidence is relative
-    to."""
-    if not (isinstance(expected_code, str) and expected_code):
-        raise ValueError(f"expected_code is the GPU code's sha256, not {expected_code!r}")
-    records = read_records(runs_root, repo=repo, expected_code=expected_code, theta0=theta0,
-                           settings=settings)  # fmt: skip
-    return advance(records, expected_code=expected_code)
+    """The state of study 3 under ``runs_root`` (module docstring): ``read_state``'s, without
+    the endpoints. The arguments are ``read_state``'s."""
+    return read_state(runs_root, repo=repo, expected_code=expected_code, theta0=theta0,
+                      settings=settings)[0]  # fmt: skip
 
 
 def read_records(
@@ -549,7 +566,7 @@ def read_records(
     ``advance``. ``expected_code``: the GPU code a candidate's qualification is read under when
     the chain of engineering cycles gives none for it (no engineering record); None: the chain's
     own end (``chain_end``), which a writer judging the existing chain takes. The other
-    arguments are ``progress``'s. The cells are derived as the module docstring says ("The
+    arguments are ``read_state``'s. The cells are derived as the module docstring says ("The
     cells"); each candidate's cycle outside the qualification is read (``read_cycle``, its old
     code against the chain's before it) and, once the run records are read, checked against the
     records before it (``cycle_problems``): a problem makes it invalid."""
