@@ -2498,7 +2498,10 @@ project-run "$SRC" python scripts/study3_analysis.py analyze --runs-root "$R" --
    ([the audit](study3-preregistration.md#the-audit)). The MAR estimate averages over the resolved
    draws only, while each missing draw's term in the bound is fixed in sign by its known judge
    label: the MAR estimate can lie outside the bound. A draw whose coefficient for E is 0 adds
-   nothing to B_E and counts as resolved for E. No reference harm is computed.
+   exactly 0 to B_E and is never missing for E; per arm, the MAR estimate is the mean over the
+   resolved draws with a nonzero coefficient, scaled by the share of the arm's draws that have
+   one (with every reference resolved, the mean over all the arm's draws). No reference harm is
+   computed.
 6. **Kept out of Git.** The audit's folder lies under `$RUNS_DIR` and is refused where Git could
    track it; it is 0700 and its files 0600. `unique.jsonl`, the labelers' files and the resolved
    references hold or rest on model responses: they stay under `$RUNS_DIR` and go to the bucket

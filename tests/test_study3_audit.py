@@ -4,8 +4,8 @@ B_E is reference − judge by Hansen–Hurwitz, checked against an independent o
 rates are undetermined below 20 reference-harmful items; nothing claims a reference harm.
 
 The freeze is synthetic (A–F on ``n_af`` blocks, P–F on ``n_pf``, every weight 0.3), its runs'
-labels L1's ``run_items`` shape (``index``, ``prompt_id``, ``label``), every seventh one
-missing. No file is read."""
+labels the label reader's ``run_items`` shape (``index``, ``prompt_id``, ``label``), every seventh
+one missing. No file is read."""
 
 import json
 import math
@@ -180,8 +180,8 @@ def test_a_missing_reference_is_counted_and_bounded_at_its_worst_case() -> None:
 
 def test_a_draw_outside_e_is_resolved_for_e_whatever_its_reference() -> None:
     """An F draw of a P–F-only block (c^AF = 0) missing its reference adds exactly 0 to B_AF: it
-    is not counted missing for B_AF, it stays in A–F's MAR denominator, B_AF's bound is exact,
-    and its MAR estimate lies inside it; for B_PF it is missing."""
+    is not counted missing for B_AF, B_AF's bound is exact, and its MAR estimate lies inside it;
+    for B_PF it is missing."""
     frame = au.audit_frame(*frame_of(n_af=2, n_pf=3))  # seed 2: P-F only
     sample = au.draw(frame, seed=11)
     reference = {i["index"]: frame[i["index"]]["y_judge"] for i in sample["items"]}
@@ -201,6 +201,93 @@ def test_a_draw_outside_e_is_resolved_for_e_whatever_its_reference() -> None:
     assert low == pytest.approx(high) == pytest.approx(af["mar"]["estimate"])
     pf = au.bias(frame, sample, reference, "PF")
     assert (pf["missing_items"], pf["missing_draws"]) == (1, gone["multiplicity"])
+
+
+def hand_case(f_draws: list[int]) -> tuple[list[dict], dict]:
+    """Four items: A's (c^AF 0.2), F's of the A–F cohort alone (c^AF −0.1, c^PF 0), F's of the P–F
+    cohort alone (c^AF 0, c^PF −0.3) and P's (c^PF 0.4); A and P drawn twice, F as given."""
+    frame = [
+        {"index": 0, "arm": "A", "c": {"AF": 0.2, "PF": 0.0}, "a": 0.2, "y_judge": 0},
+        {"index": 1, "arm": "F", "c": {"AF": -0.1, "PF": 0.0}, "a": 0.1, "y_judge": 1},
+        {"index": 2, "arm": "F", "c": {"AF": 0.0, "PF": -0.3}, "a": 0.3, "y_judge": 0},
+        {"index": 3, "arm": "P", "c": {"AF": 0.0, "PF": 0.4}, "a": 0.4, "y_judge": 1},
+    ]
+    q = {0: 1.0, 1: 0.25, 2: 0.75, 3: 1.0}
+    drawn = {0, 3, *f_draws}
+    sample = {"draws": {"A": [0, 0], "F": list(f_draws), "P": [3, 3]},
+              "items": [{"index": i, "q": q[i]} for i in sorted(drawn)]}  # fmt: skip
+    return frame, sample
+
+
+def test_the_mar_estimate_is_taken_among_the_draws_with_a_coefficient_then_rescaled() -> None:
+    """Per arm, (n_nz/n_a) times the mean over its resolved draws with c^E ≠ 0: a draw with
+    c^E = 0 adds exactly 0 and is never missing for E; an arm whose draws with c^E ≠ 0 are all
+    missing leaves B_E undetermined; an arm with no such draw adds 0."""
+    frame, sample = hand_case([1, 2, 2])
+    reference = {0: 1, 1: 0, 2: None, 3: 0}
+    af = au.bias(frame, sample, reference, "AF")
+    # A: 0.2·(1 − 0)/1; F: n_nz/n_F = 1/3 times −0.1·(0 − 1)/0.25 = 0.4; item 2 is 0 for A-F
+    assert af["mar"]["estimate"] == pytest.approx(0.2 + 0.4 / 3, abs=1e-15)
+    assert (af["missing_draws"], af["undetermined"]) == (0, False)
+    assert af["worst_case"] == [pytest.approx(0.2 + 0.4 / 3, abs=1e-15)] * 2  # exact
+    assert af["mar"]["se"] is None  # F has one resolved draw with c^AF ≠ 0
+    pf = au.bias(frame, sample, reference, "PF")
+    assert pf["undetermined"] is True and pf["worst_case"] is None  # F's draws with c^PF: missing
+    assert (pf["missing_draws"], pf["missing_items"]) == (2, 1)
+    pf = au.bias(frame, sample, {**reference, 2: 1}, "PF")
+    # P: 0.4·(0 − 1)/1; F: 2/3 times −0.3·(1 − 0)/0.75 = −0.4
+    assert pf["mar"]["estimate"] == pytest.approx(-0.4 - 0.4 * 2 / 3, abs=1e-15)
+    assert pf["mar"]["se"] == 0.0
+    frame, sample = hand_case([1, 1, 1])  # F drew no item of the P-F cohort: its term is 0
+    pf = au.bias(frame, sample, reference, "PF")
+    assert pf["mar"]["estimate"] == pytest.approx(-0.4, abs=1e-15) and pf["mar"]["se"] == 0.0
+    assert pf["worst_case"] == [pytest.approx(-0.4, abs=1e-15)] * 2
+
+
+def mixed_arms() -> tuple[list[dict], dict[int, int]]:
+    """A frame whose F arm holds items of the A–F cohort alone (c^PF = 0) and of the P–F cohort
+    alone (c^AF = 0), 300 each, with A's and P's 300; judge labels at 0.3, references at 0.35."""
+    rng = np.random.default_rng(0)
+    frame: list[dict] = []
+    for arm, c_af, c_pf in (("A", 1e-3, 0.0), ("F", -1e-3, 0.0), ("F", 0.0, -1e-3),
+                            ("P", 0.0, 1e-3)):  # fmt: skip
+        for _ in range(300):
+            c = {"AF": c_af, "PF": c_pf}
+            frame.append({"index": len(frame), "arm": arm, "c": c, "a": max(abs(c_af), abs(c_pf)),
+                          "y_judge": int(rng.random() < 0.3),
+                          "cohorts": [e for e in c if c[e]]})  # fmt: skip
+    return frame, {i["index"]: int(rng.random() < 0.35) for i in frame}
+
+
+@pytest.mark.parametrize("comparison", ["PF", "AF"])
+def test_the_mar_estimate_is_unbiased_when_references_are_missing_completely_at_random(
+    comparison,
+) -> None:
+    """With 40 % of the references missing completely at random, the MAR estimate's mean over
+    200 such patterns is the full-reference B_E within its Monte Carlo error; counting the draws
+    with c^E = 0 among the resolved ones (each 0) would pull it toward 0 by several such errors."""
+    frame, truth = mixed_arms()
+    sample = au.draw(frame, seed=7)
+    q = {i["index"]: i["q"] for i in sample["items"]}
+    full = au.bias(frame, sample, truth, comparison)["mar"]["estimate"]
+    found, diluted = [], []
+    for k in range(200):
+        rng = np.random.default_rng(100 + k)
+        reference = {i: (None if rng.random() < 0.4 else v) for i, v in truth.items()}
+        found.append(au.bias(frame, sample, reference, comparison)["mar"]["estimate"])
+        terms = []
+        for arm in au.COMPARISONS[comparison]:
+            kept = [i for i in sample["draws"][arm]
+                    if reference[i] is not None or frame[i]["c"][comparison] == 0]  # fmt: skip
+            terms.append(np.mean([0.0 if frame[i]["c"][comparison] == 0 else
+                                  frame[i]["c"][comparison]
+                                  * (reference[i] - frame[i]["y_judge"]) / q[i]
+                                  for i in kept]))  # fmt: skip
+        diluted.append(sum(terms))
+    error = np.std(found, ddof=1) / math.sqrt(len(found))
+    assert abs(np.mean(found) - full) <= 3 * error
+    if comparison == "PF":  # the case that showed the dilution
+        assert abs(np.mean(diluted) - full) > 3 * np.std(diluted, ddof=1) / math.sqrt(200)
 
 
 def test_an_arm_without_a_resolved_draw_leaves_its_bias_undetermined() -> None:

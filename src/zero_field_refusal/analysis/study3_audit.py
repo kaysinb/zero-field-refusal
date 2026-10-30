@@ -21,8 +21,8 @@ blind texts and writes the audit's files. Nothing here reads a file, a response 
 - ``draw``: per arm, 400 draws of A, 400 of F and 200 of P, with replacement, with probability
   p_i = a_i/A_a (A_a = Σ a_i over the arm's items).
 - ``bias``: B_E = Σ_i c_i^E·(reference_i − judge_i) by Hansen–Hurwitz, with its variance; on the
-  draws with a resolved reference (missing at random), and as a worst-case bound with every
-  missing reference at its extreme.
+  draws with a resolved reference (missing at random; per arm among its draws with c_i^E ≠ 0,
+  rescaled), and as a worst-case bound with every missing reference at its extreme.
 - ``error_rates``: per arm drawn, the judge's sensitivity and false-positive rate, on the
   resolved draws and as worst-case bounds.
 - ``agreements``: the agreements of the two reference labellers the researcher checks.
@@ -43,11 +43,11 @@ reference), so it is given the coefficients negated, −c^E: Σ (−c_i)(judge_i
   the supplement's audit seed; the blind file's order is ``stream(seed, "audit", "order")`` (the
   command line). The agreements are study 2's ``agreement_check(first, second, 0.10,
   agreement_seed)``, unchanged.
-- *Undetermined.* B_E (its MAR estimate and its worst-case bound) when an arm of E has no draw
-  with a resolved reference; an arm's sensitivity and FPR when fewer than 20 distinct items among
-  its resolved draws are harmful by the reference, and each rate whose denominator is empty. A
-  comparison with an empty cohort (or no longer active) is non-estimable, with its reason; an arm
-  with no item is not drawn, with its reason.
+- *Undetermined.* B_E (its MAR estimate and its worst-case bound) when an arm of E has draws with
+  c_i^E ≠ 0 but none of them with a resolved reference; an arm's sensitivity and FPR when fewer
+  than 20 distinct items among its resolved draws are harmful by the reference, and each rate
+  whose denominator is empty. A comparison with an empty cohort (or no longer active) is
+  non-estimable, with its reason; an arm with no item is not drawn, with its reason.
 - *The error rates* are the proportions among the arm's draws, each draw counted (an item drawn
   twice counts twice): a_i/p_i is constant within an arm, so the ratios of the Hansen–Hurwitz
   estimates of the a-weighted confusion totals are these proportions. Sensitivity TP/(TP + FN),
@@ -56,18 +56,26 @@ reference), so it is given the coefficients negated, −c^E: Σ (−c_i)(judge_i
   TN)].
 - *The worst case of B_E* puts each missing reference at the extreme of its term: the low bound
   takes reference 0 where c_i^E > 0 and 1 elsewhere, the high bound the reverse, every draw
-  counted. It bounds what the estimate over every draw can be; the MAR estimate, over the
-  resolved draws alone, is a different estimator and need not lie inside it: a missing draw's
-  term is fixed in sign by its known judge label, and the MAR estimate averages over the
-  resolved draws only.
+  counted, a draw with c_i^E = 0 exactly 0. It bounds what the estimate over every draw can be;
+  the MAR estimate, over the resolved draws alone, is a different estimator and need not lie
+  inside it: a missing draw's term is fixed in sign by its known judge label, and the MAR
+  estimate averages over the resolved draws only.
 - *A draw with c_i^E = 0* ("The audit": each estimate is given on the draws with a resolved
   reference). An F item of the other cohort alone adds exactly 0 to B_E, whatever its reference:
-  for E it counts as resolved, never as missing, and stays in E's MAR denominator; its missing
-  reference is missing for the other comparison and for F's error rates.
-- *Hansen–Hurwitz* is study 2's ``hansen_hurwitz``: per arm the mean over its resolved draws of
-  c_i·(reference_i − judge_i)/p_i, summed over E's arms; its variance Σ_a s_a²/n'_a, its SE the
-  square root (None under two resolved draws in an arm). Its Wald interval is not kept: none is
-  registered.
+  it is never counted missing for E; its missing reference is missing for the other comparison
+  and for F's error rates. The MAR estimate is taken among the arm's draws with c_i^E ≠ 0 alone,
+  then rescaled: with n_a the arm's draws and n_nz those with c_i^E ≠ 0, the arm's term is
+  (n_nz/n_a) times the mean over its resolved draws with c_i^E ≠ 0 of c_i·(reference_i −
+  judge_i)/p_i. With every reference resolved this is the mean over all n_a draws, the zeros
+  included; counting the zeros among the resolved draws instead would let them stand in for the
+  missing nonzero draws and pull the arm's term toward 0 under random missingness. An arm with no
+  draw of c_i^E ≠ 0 (n_nz = 0) adds exactly 0; one with such draws but none resolved leaves B_E
+  undetermined.
+- *Hansen–Hurwitz* is study 2's ``hansen_hurwitz``, per arm among its draws with c_i^E ≠ 0: the
+  mean over the resolved ones of c_i·(reference_i − judge_i)/p_i and its variance s_a²/n'_a, the
+  term and the variance scaled by n_nz/n_a and (n_nz/n_a)², summed over E's arms; the SE the
+  square root of the sum (None under two resolved draws with c_i^E ≠ 0 in an arm that has
+  such draws). Its Wald interval is not kept: none is registered.
 
 Study 2's audit module loads torch through ``study2_short``: it is imported only inside the
 functions that use it, so that importing this module loads neither.
@@ -112,10 +120,11 @@ def audit_frame(
 ) -> list[dict[str, Any]]:
     """The audit's frame (module docstring) from the analysis freeze ``freeze`` (its
     ``comparisons``: ``A-F``, and ``P-F`` while active, each ``{"blocks": [{"seed", "arms": {arm:
-    {"lo", "hi", "w", ...}}}]}``) and ``labels``, run id → its items in L1's ``run_items`` shape
-    (``.index``, ``.prompt_id``, ``.label``), for exactly the frame's runs. Per item, in frame
-    order: ``index``, ``arm``, ``seed``, ``run``, ``side``, ``prompt``, ``w``, ``judge``,
-    ``y_judge``, ``cohorts`` (the comparisons whose cohort holds it), ``c`` ({AF, PF}) and ``a``.
+    {"lo", "hi", "w", ...}}}]}``) and ``labels``, run id → its items in the label reader's
+    ``run_items`` shape (``.index``, ``.prompt_id``, ``.label``), for exactly the frame's runs.
+    Per item, in frame order: ``index``, ``arm``, ``seed``, ``run``, ``side``, ``prompt``, ``w``,
+    ``judge``, ``y_judge``, ``cohorts`` (the comparisons whose cohort holds it), ``c`` ({AF, PF})
+    and ``a``.
     ``ValueError`` for a run with no labels, labels of a run outside the frame, a run's items not
     521 in their order with distinct prompt ids, a label outside ``JUDGE``, a weight outside
     [0, 1], or a run frozen with two origins."""
@@ -274,53 +283,75 @@ def bias(
     reference: Mapping[int, int | None],
     comparison: str,
 ) -> dict[str, Any]:
-    """B_E of ``comparison`` (module docstring, "The sign" and "Rulings"): ``mar``, study 2's
-    ``hansen_hurwitz`` on the coefficients negated (``estimate``, ``se``, ``variance``), over the
-    draws with a resolved reference; ``worst_case`` [low, high], the same estimate with each
-    missing reference at its extreme and every draw counted; ``missing_draws`` and
-    ``missing_items`` over E's arms; ``undetermined`` when an arm of E has no resolved draw (then
-    no estimate and no bound). ``reference``: y_R by frame index of every drawn item (None:
-    missing). A draw whose coefficient for E is 0 (an F item of the other cohort alone) adds
-    exactly 0 to B_E whatever its reference: for E it is resolved, never missing (module
-    docstring, "Rulings")."""
-    from .study2_audit import hansen_hurwitz  # loads torch: here only
-
+    """B_E of ``comparison`` (module docstring, "The sign" and "Rulings"): ``mar`` (``estimate``,
+    ``se``, ``variance``), per arm of E the share n_nz/n_a of its draws with c^E ≠ 0 times the
+    mean over those of them with a resolved reference of c_i·(reference_i − judge_i)/p_i (study
+    2's ``hansen_hurwitz`` on the coefficients negated, among those draws), summed over E's arms,
+    its variance theirs times (n_nz/n_a)²; ``worst_case`` [low, high], every draw counted, each
+    missing reference at its extreme; ``missing_draws`` and ``missing_items`` over E's arms;
+    ``undetermined`` when an arm of E is not drawn, or has a draw with c^E ≠ 0 but none of them
+    resolved (then no estimate and no bound). ``reference``: y_R by frame index of every drawn
+    item (None: missing). A draw whose coefficient for E is 0 (an F item of the other cohort
+    alone) adds exactly 0 to B_E whatever its reference: it is never missing for E, and the MAR
+    estimate is taken among the other draws and rescaled (module docstring, "Rulings")."""
     arms = list(COMPARISONS[comparison])
     drawn = [i for arm in arms for i in sample["draws"].get(arm, [])]
     _references(reference, drawn)
-    # c^E = 0: its term is 0 at any reference, so it is resolved for E and stays in the MAR
-    # denominator (any value serves; 0 is given)
-    given = {**reference, **{i: 0 for i in drawn if reference[i] is None
-                             and frame[i]["c"][comparison] == 0}}  # fmt: skip
-    missing = [i for i in drawn if given[i] is None]
+    missing = [i for i in drawn if frame[i]["c"][comparison] != 0 and reference[i] is None]
     out: dict[str, Any] = {
         "comparison": comparison,
         "arms": arms,
         "missing_draws": len(missing),
         "missing_items": len(set(missing)),
     }
-    resolved = {arm: [i for i in sample["draws"].get(arm, []) if given[i] is not None]
-                for arm in arms}  # fmt: skip
-    if not all(resolved.values()):
+    estimate, variance = _rescaled(frame, sample, reference, comparison)
+    if estimate is None:
         return {**out, "undetermined": True,
                 "mar": {"estimate": None, "se": None, "variance": None},
                 "worst_case": None}  # fmt: skip
-    c = np.array([-item["c"][comparison] for item in frame], dtype=float)  # ref − judge
-
-    def estimate(values: Mapping[int, int | None]) -> dict[str, Any]:
-        return hansen_hurwitz(frame, sample, values, c, arms=arms, level=_HH_LEVEL)
-
-    found = estimate(given)
-    se = found["se"]
     bounds = []
     for low in (True, False):
-        filled = {i: given[i] if given[i] is not None
+        filled = {i: reference[i] if reference[i] is not None
                   else int((frame[i]["c"][comparison] > 0) != low) for i in drawn}  # fmt: skip
-        bounds.append(estimate(filled)["estimate"])
+        bounds.append(_rescaled(frame, sample, filled, comparison)[0])
     return {**out, "undetermined": False,
-            "mar": {"estimate": found["estimate"], "se": se,
-                    "variance": None if se is None else se * se},
+            "mar": {"estimate": estimate, "se": None if variance is None else math.sqrt(variance),
+                    "variance": variance},
             "worst_case": bounds}  # fmt: skip
+
+
+def _rescaled(
+    frame: Sequence[Mapping[str, Any]],
+    sample: Mapping[str, Any],
+    values: Mapping[int, int | None],
+    comparison: str,
+) -> tuple[float | None, float | None]:
+    """B_E and its variance from the references ``values`` (``bias``): per arm of E, study 2's
+    ``hansen_hurwitz`` among its draws with c^E ≠ 0 (the mean over the resolved ones, and its
+    s²/n'), scaled by n_nz/n_a and its variance by (n_nz/n_a)²; an arm with no such draw adds
+    exactly 0, with variance 0. The estimate is None when an arm is not drawn, or has such draws
+    but none resolved; the variance None when it has fewer than two resolved."""
+    from .study2_audit import hansen_hurwitz  # loads torch: here only
+
+    c = np.array([-item["c"][comparison] for item in frame], dtype=float)  # ref − judge
+    terms, variances = [], []
+    for arm in COMPARISONS[comparison]:
+        draws = sample["draws"].get(arm, [])
+        if not draws:
+            return None, None
+        nonzero = [i for i in draws if frame[i]["c"][comparison] != 0]
+        if not nonzero:
+            terms.append(0.0)
+            variances.append(0.0)
+            continue
+        found = hansen_hurwitz(frame, {**sample, "draws": {arm: nonzero}}, values, c, arms=[arm],
+                               level=_HH_LEVEL)  # fmt: skip
+        if found["estimate"] is None:
+            return None, None
+        share = len(nonzero) / len(draws)
+        terms.append(share * found["estimate"])
+        variances.append(None if found["se"] is None else share * share * found["se"] ** 2)
+    return math.fsum(terms), None if None in variances else math.fsum(variances)
 
 
 def error_rates(
