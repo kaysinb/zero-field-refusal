@@ -1533,13 +1533,38 @@ def test_the_fixation_is_built_committed_and_read_back(tmp_path, monkeypatch) ->
     run_git(repo, "commit", "-qm", "another file")
     assert sim.read_fixation(path, repo)["commit"] == found["commit"]
     # a code whose calibration's size or tolerances are not the fixation's does not read it
-    monkeypatch.setattr(sim, "CALIBRATION_STUDIES", 1_000)
+    monkeypatch.setattr(decisions, "CALIBRATION_STUDIES", 1_000)
     with pytest.raises(ValueError, match="calibration"):
         sim.read_fixation(path, repo)
-    monkeypatch.setattr(sim, "CALIBRATION_STUDIES", 10_000)
+    monkeypatch.setattr(decisions, "CALIBRATION_STUDIES", 10_000)
     monkeypatch.setattr(sim, "SIGMA_PRECISION", 1e-13)
     with pytest.raises(ValueError, match="calibration"):
         sim.read_fixation(path, repo)
+    monkeypatch.setattr(sim, "SIGMA_PRECISION", 1e-14)
+    assert sim.read_fixation(path, repo)["commit"] == found["commit"]
+    # nor one whose resamples are not (the dry run's own commit reads its own)
+    monkeypatch.setattr(decisions, "SCREEN_RESAMPLES", 200)
+    with pytest.raises(ValueError, match="resamples"):
+        sim.read_fixation(path, repo)
+
+
+def test_the_simulations_sizes_are_four_adjacent_constants_of_the_decisions() -> None:
+    """M, the screen's and the verification's resamples and the calibration's selections are
+    ``study3_decisions``' four adjacent constants, the registered sizes, which the dry run's
+    commit changes alone (M25); the simulation keeps no copy of its own."""
+    import ast
+
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    names = ("COVERAGE_RUNS", "SCREEN_RESAMPLES", "VERIFICATION_RESAMPLES", "CALIBRATION_STUDIES")
+    assert [getattr(decisions, n) for n in names] == [10_000, 2_000, 100_000, 10_000]
+    lines = {node.targets[0].id: node.lineno
+             for node in ast.parse(Path(decisions.__file__).read_text()).body
+             if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)}  # fmt: skip
+    first = lines[names[0]]
+    assert [lines[n] for n in names] == list(range(first, first + len(names)))
+    assert not any(hasattr(sim, n) for n in names)
+    assert sim.calibration_record()["studies"] == decisions.CALIBRATION_STUDIES
 
 
 def test_the_fixations_schema_is_closed(tmp_path) -> None:
@@ -1671,8 +1696,8 @@ def tiny(tmp_path, monkeypatch, vectors) -> Tiny:
     from zero_field_refusal.analysis import study3_decisions as decisions
 
     monkeypatch.setattr(decisions, "COVERAGE_RUNS", 6)
-    monkeypatch.setattr(sim, "SCREEN_RESAMPLES", 200)
-    monkeypatch.setattr(sim, "VERIFICATION_RESAMPLES", 400)
+    monkeypatch.setattr(decisions, "SCREEN_RESAMPLES", 200)
+    monkeypatch.setattr(decisions, "VERIFICATION_RESAMPLES", 400)
     return Tiny(engine_context(tmp_path / "tiny", tiny_grid(), vectors), monkeypatch)
 
 

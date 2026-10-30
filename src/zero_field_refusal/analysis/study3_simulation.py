@@ -147,7 +147,7 @@ still drawn, so that every stream stays paired, but its P–F gate is not read
 
 **The calibration through the selection** (``calibrate_scenario``; M1, M7, M10, M15). On the
 stream (calibration base, "support", scenario, candidate) (``calibration_stream``),
-``CALIBRATION_STUDIES`` (10 000) studies' search, repair and 28-block validation
+``study3_decisions.CALIBRATION_STUDIES`` (10 000) studies' search, repair and 28-block validation
 (``simulate_study(..., validation_only=True)``) at the rates each selects, drawn once with every
 run's failure uniform kept:
 - *f* (M7): by bisection on [0, 1), the realized A–F support of the validation blocks, bracket
@@ -193,11 +193,12 @@ finish, nor on an interruption: a run that stopped resumes from its parts (each 
 must be the unit's, of this fixation and commit), and every summary is computed from the parts
 read back, by one code path. The workers are spawned processes with single-threaded BLAS, each
 holding the run's ``Context`` (the fixation, its scenarios and calibrations, the inputs'
-vectors) and the truths' moments known already. M is ``study3_decisions.COVERAGE_RUNS``, the
-resamples ``SCREEN_RESAMPLES`` and ``VERIFICATION_RESAMPLES``, the calibration's selections
-``CALIBRATION_STUDIES``: each a single constant read when it is used (the calibration's by the
-script, which passes it), so that the dry run's Part II changes the four constants and nothing
-else (M25).
+vectors) and the truths' moments known already. M, the resamples and the calibration's
+selections are ``study3_decisions``' four adjacent constants ``COVERAGE_RUNS``,
+``SCREEN_RESAMPLES``, ``VERIFICATION_RESAMPLES`` and ``CALIBRATION_STUDIES``, each read when it
+is used (the calibration's by the script, which passes it), and the fixation's reader
+(``study3_decisions.fixation_problems``) checks a fixation against them on every path, so that
+the dry run's Part II changes those four lines and nothing else, and its reader reads them (M25).
 - *gates*: G1 and G2, M validations each (28 blocks, 40 reported), the safe pass rate setting
   the validation size (28 when it reaches 0.95, else 40);
 - *screen*: the non-gate scenarios at that size, four levels, ``SCREEN_RESAMPLES``,
@@ -280,9 +281,9 @@ else (M25).
   concerns "the interval"); decided.
 - M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
   verification resamples and 1 000 calibration selections per (scenario, candidate), set in
-  that run's own commit through ``COVERAGE_RUNS``, ``SCREEN_RESAMPLES``,
-  ``VERIFICATION_RESAMPLES`` and ``CALIBRATION_STUDIES`` alone (the fixation records the last,
-  ``calibration_record``); decided.
+  that run's own commit through ``study3_decisions``' ``COVERAGE_RUNS``, ``SCREEN_RESAMPLES``,
+  ``VERIFICATION_RESAMPLES`` and ``CALIBRATION_STUDIES`` alone, four adjacent lines (the fixation
+  records the last in ``calibration_record``, and its reader checks all four); decided.
 - M26, the bound on draws: each test draws at most 4·M studies; a test short of M confirmed
   studies at the bound is not attainable and fails; a power rate counts the missing studies as
   not detecting (a bounded failure route); decided.
@@ -1422,11 +1423,8 @@ def _shifted(vectors: Sequence[Vector], calibration: Calibration) -> list[Vector
 
 # ------------------------------------------------------------------ the procedure
 
-# The sizes the dry run's Part II changes in its own commit, with study3_decisions.COVERAGE_RUNS
-# (M25): each a single constant, read when it is used
-SCREEN_RESAMPLES = 2_000  # bootstrap resamples per interval in the screen ("Requirements")
-VERIFICATION_RESAMPLES = 100_000  # the registered procedure's, in the binding verification
-CALIBRATION_STUDIES = 10_000  # simulated selections per (scenario, candidate)
+# The sizes (M, the screen's and the verification's resamples, the calibration's selections) are
+# study3_decisions' four adjacent constants, which the dry run's Part II changes alone (M25)
 CHUNK = 500  # bootstrap_t's chunk: the result does not depend on it, the memory does
 MODES = ("screen", "procedure")
 REACH = 99  # the largest N point: each comparison is followed to 99 supported blocks
@@ -2389,7 +2387,7 @@ def _draws(scenario: Scenario, setup: Setup, candidate: int, seed: np.random.See
     rates = []
     kstar_ln = math.log(CANDIDATES[candidate]["targets"]["star"])
     for i in range(studies):
-        o = simulate_study(scenario, use, seed, i, resamples=SCREEN_RESAMPLES,
+        o = simulate_study(scenario, use, seed, i, resamples=_decisions.SCREEN_RESAMPLES,
                            levels=setup.levels, validation_only=True, candidate=candidate,
                            labels=False)  # fmt: skip
         rates.append(o.rates[candidate])
@@ -2432,7 +2430,7 @@ def realized_support(
     failure: float,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
 ) -> tuple[float, float]:
     """The realized A–F support of the validation blocks of ``studies`` simulated selections
     (search, repair, validation) at the rates each selects, at the per-run failure ``failure``,
@@ -2449,7 +2447,7 @@ def calibrate_failure(
     candidate: int,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
 ) -> tuple[float, float, bool]:
     """(f, the realized support, flagged) (M7): f by bisection on [0, 1) until the realized A–F
     support of the validation blocks is the scenario's s within 1e-4; f = 0, flagged, when the
@@ -2532,7 +2530,7 @@ def calibrate_safe(
     candidate: int,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
 ) -> Calibration:
     """The setup's calibration of (scenario, candidate) with the safe alternative's shifts (M10)
     computed on the supported validation blocks' interpolated utility at its f, and the realized
@@ -2668,7 +2666,7 @@ def calibrate_spread(
     candidate: int,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
 ) -> tuple[float, float, float, float]:
     """(σ_AF, σ_PF, the attained A–F and P–F spreads in pp) (M1, M2): each σ by a bracketing
     root-finder (Brent, ``_solve_sigma``) so that the observed SD of d at Δ = 0 (the setup's
@@ -2768,7 +2766,7 @@ def calibrate_offsets(
     candidate: int,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
     mapper: Callable | None = None,
 ) -> tuple[float, float]:
     """(o_A, o_P) (M15, M2): each solved, from the setup's o⁰, so that the mean, over the
@@ -2820,7 +2818,7 @@ def calibrate_scenario(
     candidate: int,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
     mapper: Callable | None = None,
 ) -> Calibration:
     """``_calibrate_scenario``; a jitter scenario's keeps its truths' quadratures across its σ
@@ -2845,7 +2843,7 @@ def _calibrate_scenario(
     candidate: int,
     seed: np.random.SeedSequence,
     *,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
     mapper: Callable | None = None,
 ) -> Calibration:
     """Everything calibrated for (scenario, candidate) through the selection, on the one stream
@@ -2980,7 +2978,7 @@ def calibration_record() -> dict[str, Any]:
     ``sigma`` and ``sigma_relative`` (Brent's on σ) and ``offset`` (the offsets', on the mean
     truth)."""
     return {
-        "studies": CALIBRATION_STUDIES,
+        "studies": _decisions.CALIBRATION_STUDIES,
         "blocks": CALIBRATION_BLOCKS,
         "rounds": CALIBRATION_ROUNDS,
         "tolerances": {"support": SUPPORT_TOLERANCE, "sigma": SIGMA_PRECISION,
@@ -3128,7 +3126,10 @@ def build_fixation(
         "policy": dict(policy),
         "inputs": {"path": relative, "sha256": hashlib.sha256(full.read_bytes()).hexdigest()},
         "M": m,
-        "resamples": {"screen": SCREEN_RESAMPLES, "verification": VERIFICATION_RESAMPLES},
+        "resamples": {
+            "screen": _decisions.SCREEN_RESAMPLES,
+            "verification": _decisions.VERIFICATION_RESAMPLES,
+        },  # fmt: skip
         "calibration": calibration_record(),
         "streams": {
             "calibration": int(streams["calibration"]),
@@ -3157,8 +3158,9 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
     """The committed fixation at ``path`` in the checkout ``repo`` (``SIMULATION_FIXATION``),
     as the J check reads it (``study3_decisions.fixation_problems``): committed once, alone and
     unchanged at HEAD (so in HEAD's history: HEAD or an ancestor of it holds it), its schema
-    closed and its tests exactly its coverage scenarios' identities; and its calibration's size
-    and tolerances this code's (``calibration_record``). Returns ``fixation``,
+    closed, its sizes the registered ones (the resamples and the calibration's size and
+    tolerances, ``calibration_record``, included) and its tests exactly its coverage scenarios'
+    identities. Returns ``fixation``,
     ``commit``, ``sha256``, the ``scenarios`` (``Scenario``) and ``calibrations`` ((scenario,
     candidate) → ``Calibration``). ``ValueError`` naming every problem."""
     repo = Path(repo)
@@ -3172,9 +3174,6 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
     fixation, commit, problems = fixation_problems(repo, relative)
     if fixation is None or problems:
         raise ValueError("; ".join(problems))
-    if fixation["calibration"] != calibration_record():
-        raise ValueError(f"{path}: the fixation froze the calibration {fixation['calibration']}, "
-                         f"not this code's {calibration_record()}")  # fmt: skip
     scenarios, calibrations = [], {}
     for entry in fixation["scenarios"]:
         sc = Scenario.from_json({k: v for k, v in entry.items() if k != "calibration"})
@@ -3820,7 +3819,7 @@ def _screen(runs_root: Path, context: Context, commit: str,
 
     def units(phase: str, scenarios: Sequence[Scenario], levels: Sequence[float], blocks: int,
               n_floor: int) -> dict[str, Unit]:  # fmt: skip
-        return {sc.name: Unit(phase, sc.name, 0, 1, base, SCREEN_RESAMPLES, tuple(levels),
+        return {sc.name: Unit(phase, sc.name, 0, 1, base, d.SCREEN_RESAMPLES, tuple(levels),
                               blocks, n_floor) for sc in scenarios}  # fmt: skip
 
     gate_rows = _phase(pool, runs_root, context, commit,
@@ -3874,7 +3873,7 @@ def _screen(runs_root: Path, context: Context, commit: str,
         "M": m,
         "J": j,
         "streams": dict(fixation["streams"]),
-        "resamples": SCREEN_RESAMPLES,
+        "resamples": d.SCREEN_RESAMPLES,
         "validation_blocks": blocks,
         "level": selected,
         "tests": tests,
@@ -4063,7 +4062,7 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
     def short(_: str, rows: list) -> int:
         return max(m - sum(bool(o.confirmed.get(level)) for o in rows), m - sum(map(pf, rows)))
 
-    units = {sc.name: Unit("verification", sc.name, 0, 1, base, VERIFICATION_RESAMPLES, (level,),
+    units = {sc.name: Unit("verification", sc.name, 0, 1, base, d.VERIFICATION_RESAMPLES, (level,),
                            blocks, floor) for sc in coverage}  # fmt: skip
     rows = _phase(pool, runs_root, context, commit, units, bound, short)
     tests = []
@@ -4083,7 +4082,7 @@ def _verification(runs_root: Path, context: Context, commit: str, screen: Mappin
         "level": level,
         "n_floor": floor,
         "validation_blocks": blocks,
-        "resamples": VERIFICATION_RESAMPLES,
+        "resamples": d.VERIFICATION_RESAMPLES,
         "tests": tests,
     }
 
@@ -4099,7 +4098,8 @@ def _warmed_moments(runs_root: Path, context: Context, commit: str,
         if not sc.jitter:
             continue
         template = Unit("screen", sc.name, 0, 1, context.fixation["streams"]["calibration"],
-                        SCREEN_RESAMPLES, LEVELS, VALIDATION_BLOCKS[0], MIN_N)  # fmt: skip
+                        _decisions.SCREEN_RESAMPLES, LEVELS, VALIDATION_BLOCKS[0],
+                        MIN_N)  # fmt: skip
         try:
             head = _read_part(part_path(runs_root, "screen", sc.name, 0))[0]
             template = replace(template, validation_blocks=head["validation_blocks"])
@@ -4253,7 +4253,7 @@ def calibrate_all(
     *,
     pairs: Sequence[tuple[Scenario, int]],
     workers: int,
-    studies: int = CALIBRATION_STUDIES,
+    studies: int = _decisions.CALIBRATION_STUDIES,
 ) -> dict[tuple[Scenario, int], Calibration]:
     """Every pair's calibration (``calibrate_scenario`` on ``calibration_stream(base, …)``):
     the pairs without jitter one per worker (the gates, which have no σ or offset to solve,

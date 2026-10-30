@@ -172,7 +172,11 @@ on is a response or an observation, and this module opens none.
   the record names the fixation ``docs/study3-simulation-fixation.json`` in the checkout and the
   results ``study3/simulation/results.json`` under the runs directory; the fixation is committed
   once, alone and unchanged, before the first draw (its commit is the results' commit or an
-  ancestor of it), with the explicit list of its tests, their count and sha256; the results hold
+  ancestor of it), with the explicit list of its tests, their count and sha256, and with the
+  registered sizes (M ``COVERAGE_RUNS``, the resamples ``SCREEN_RESAMPLES`` and
+  ``VERIFICATION_RESAMPLES``, the calibration ``study3_simulation.calibration_record``:
+  ``CALIBRATION_STUDIES`` and the solvers' tolerances), so that no record rests on a fixation of
+  reduced sizes whichever path reads it; the results hold
   exactly that list (no test twice, none missing, none it does not list), a verification test
   carrying the slot ``selected_calibration_level`` and "not due" exactly when no level passed;
   and every pass, the levels' counts (a test not attainable, short of M studies at the 4·M
@@ -251,7 +255,17 @@ REQUIRED_GATES = {"safe_pass_rate": 0.95, "power_af": 0.80}
 # detection power of the coverage screen at the actual J (per comparison and joint)
 REPORTED_GATES = ("empirical_pass_rate", "power_pf", "detection_power_comparison",
                   "detection_power_joint")  # fmt: skip
+# The simulation's sizes, together ("Simulation before validation", "Frozen before the
+# simulation"): M, the resamples per interval of the screen and of the binding verification (the
+# registered procedure's), and the calibration's selections per (scenario, candidate). The
+# fixation freezes them, and its reader (``fixation_problems``) refuses a fixation of any other,
+# on every path that reads the simulation record. The dry run's Part II (amendment 4) sets its own
+# in its commit by changing these four lines alone (study3_simulation's M25); its reader then
+# reads its own.
 COVERAGE_RUNS = 10_000  # M, simulated studies per coverage test
+SCREEN_RESAMPLES = 2_000  # bootstrap resamples per interval in the screen ("Requirements")
+VERIFICATION_RESAMPLES = 100_000  # the registered procedure's, in the binding verification
+CALIBRATION_STUDIES = 10_000  # the calibration's simulated selections per (scenario, candidate)
 FAMILY_ALPHA = 0.05
 COVERAGE_P0 = {"comparison": 0.025, "joint": 0.05}
 # "Sample size from validation"
@@ -1396,7 +1410,9 @@ def fixation_problems(
     """The simulation's fixation in the checkout ``repo`` (the J check's step 2): its content,
     the commit that added it and the problems. It is committed once (``study3_versions``'
     ``_added``), alone (its commit changes that file and no other), unchanged since (the file,
-    HEAD's blob and its commit's blob are the same bytes), and its schema is closed: its
+    HEAD's blob and its commit's blob are the same bytes), and its schema is closed: its sizes
+    are the registered ones (M ``COVERAGE_RUNS``, the resamples ``SCREEN_RESAMPLES`` and
+    ``VERIFICATION_RESAMPLES``, the calibration ``study3_simulation.calibration_record``), its
     ``tests`` are exactly ``test_identities`` of its coverage scenarios, with their count and
     sha256, J their count, and the thresholds and detection powers recomputed. Nothing is read
     from a fixation with a problem."""
@@ -1455,6 +1471,9 @@ def _fixation_schema(f: Any) -> list[str]:
     resamples = check.object("resamples", f["resamples"], ("screen", "verification"))
     for name in ("screen", "verification") if resamples is not None else ():
         check.integer(f"resamples.{name}", resamples[name], 1)
+    registered = {"screen": SCREEN_RESAMPLES, "verification": VERIFICATION_RESAMPLES}
+    if resamples is not None and resamples != registered:
+        check.add("resamples", f"is {resamples!r}, not the registered {registered!r}")
     calibration = check.object("calibration", f["calibration"], CALIBRATION_FIELDS)
     if calibration is not None:
         for name in ("studies", "blocks", "rounds"):
@@ -1463,6 +1482,10 @@ def _fixation_schema(f: Any) -> list[str]:
                                   CALIBRATION_TOLERANCES)  # fmt: skip
         for name in CALIBRATION_TOLERANCES if tolerances is not None else ():
             check.real(f"calibration.tolerances.{name}", tolerances[name], positive=True)
+        if calibration != simulation.calibration_record():
+            check.add("calibration", f"is {calibration!r}, not the registered "
+                      f"{simulation.calibration_record()!r} (CALIBRATION_STUDIES and the "
+                      "solvers' tolerances, study3_simulation.calibration_record)")  # fmt: skip
     streams = check.object("streams", f["streams"], TEST_STREAMS)
     counted = streams is not None and all(
         [check.integer(f"streams.{n}", streams[n], 0) for n in TEST_STREAMS]
@@ -1908,6 +1931,7 @@ def _against_fixation(root: Path, record: Mapping[str, Any], repo: Path) -> list
 
 def _j_key(root: Path, record: Mapping[str, Any], repo: Path) -> tuple | None:
     """What the J check of ``record`` depends on, or None when it cannot be told (no Git HEAD)."""
+    from . import study3_simulation as simulation  # lazy: the calibration's registered record
     from . import study3_versions as versions  # lazy: it loads the configs
 
     try:
@@ -1925,7 +1949,8 @@ def _j_key(root: Path, record: Mapping[str, Any], repo: Path) -> tuple | None:
     return (str(Path(repo).resolve()), str(Path(root).resolve()), head,
             hashlib.sha256(text.encode()).hexdigest(), digest(repo / SIMULATION_FIXATION),
             digest(root / SIMULATION_RESULTS), COVERAGE_RUNS, POWER_REQUIRED,
-            MAX_DRAWS_FACTOR)  # fmt: skip
+            MAX_DRAWS_FACTOR, SCREEN_RESAMPLES, VERIFICATION_RESAMPLES,
+            json.dumps(simulation.calibration_record(), sort_keys=True))  # fmt: skip
 
 
 def _j_check(root: Path, record: Mapping[str, Any], repo: Path) -> list[str]:
@@ -1934,7 +1959,8 @@ def _j_check(root: Path, record: Mapping[str, Any], repo: Path) -> list[str]:
     1. the references: ``fixation`` is exactly ``SIMULATION_FIXATION`` under the checkout and
        ``inputs.results`` exactly ``SIMULATION_RESULTS`` under the runs directory;
     2. the fixation (``fixation_problems``): committed once, alone and unchanged, its schema
-       closed and its tests exactly the identities of its coverage scenarios; and
+       closed, its sizes the registered ones and its tests exactly the identities of its
+       coverage scenarios; and
        ``inputs.seed_vectors`` is the fixation's inputs record (its path in the checkout and its
        sha256);
     3.–5. the results (``results_problems``): their header, their identities and the

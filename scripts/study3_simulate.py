@@ -30,14 +30,15 @@ engineering stage, before the search); the models and the values the researcher 
 3. **run** refuses before any draw unless the fixation is tracked, committed once and alone in
    HEAD or an ancestor of it and unchanged since (``read_fixation``), its inputs' sha256 is
    the pinned one, its tests are its scenarios' identities, the checkout is clean, its sizes
-   are this code's, no ``results.json`` and no ``screen.json`` exist, no part of another
-   fixation or commit exists (each named), and the calibration recomputes (integers, flags and
-   identities exactly, floats within a relative 1e-9 or their solver's precision,
-   ``study3_simulation.CALIBRATION_FLOORS``; a different machine is printed, not refused). It
-   then runs the gates, the screen and the n_min scan (``run_screen``) and writes
-   ``screen.json``; it prints L (or "no level passed"), the validation size and the gates'
-   values. Interrupted, it resumes from its finished parts on the same streams, to the same
-   bytes.
+   are the registered ones (``study3_decisions``' four, which the shared reader checks on every
+   path, ``record`` and ``study3_summary.py record simulation`` included), no ``results.json``
+   and no ``screen.json`` exist, no part of another fixation or commit exists (each named), and
+   the calibration recomputes (integers, flags and identities exactly, floats within a relative
+   1e-9 or their solver's precision, ``study3_simulation.CALIBRATION_FLOORS``; a different
+   machine is printed, not refused). It then runs the gates, the screen and the n_min scan
+   (``run_screen``) and writes ``screen.json``; it prints L (or "no level passed"), the
+   validation size and the gates' values. Interrupted, it resumes from its finished parts on the
+   same streams, to the same bytes.
 4. **verify** refuses without ``screen.json``, with one of another commit than the clean HEAD,
    without a recomputed L (the verification is not due), when the n_min scan stopped at an n
    whose cap exceeds the 200 reserved seeds (no attainable n, the design stop: the verification
@@ -139,10 +140,6 @@ def context(command: str):
     except ValueError as exc:
         refuse(command, str(exc))
     code = head_code(command)
-    sizes = {"screen": sim.SCREEN_RESAMPLES, "verification": sim.VERIFICATION_RESAMPLES}
-    if found.fixation["resamples"] != sizes:
-        refuse(command, f"the fixation froze the resamples {found.fixation['resamples']}, not "
-               f"this code's {sizes}")  # fmt: skip
     return found, code
 
 
@@ -208,7 +205,7 @@ def fixation(args: argparse.Namespace) -> None:
     scenarios = list(sim.SCENARIOS)
     calibrations = sim.calibrate_all(setup, sim.STREAMS["calibration"],
                                      pairs=sim.calibration_pairs(scenarios), workers=args.workers,
-                                     studies=sim.CALIBRATION_STUDIES)  # fmt: skip
+                                     studies=decisions.CALIBRATION_STUDIES)  # fmt: skip
     record = sim.build_fixation(REPO / INPUTS_PATH, scenarios, calibrations, code=code,
                                 streams=sim.STREAMS, repo=REPO)  # fmt: skip
     write("fixation", path, record)
@@ -237,7 +234,7 @@ def run(args: argparse.Namespace) -> None:
     setup = replace(found.setup, calibrations={})
     recomputed = sim.calibrate_all(setup, found.fixation["streams"]["calibration"],
                                    pairs=list(frozen), workers=args.workers,
-                                   studies=sim.CALIBRATION_STUDIES)  # fmt: skip
+                                   studies=decisions.CALIBRATION_STUDIES)  # fmt: skip
     problems = sim.calibration_problems(recomputed, frozen)
     if problems:
         refuse("run", "the calibration does not recompute: " + "; ".join(problems[:20]))

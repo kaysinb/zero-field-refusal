@@ -111,10 +111,11 @@ class World:
 
     # -- the simulation's fixation (committed in the checkout, a Git repository) and results
 
-    def checkout(self, how: str | None = None) -> None:
+    def checkout(self, how: str | None = None, change: dict | None = None) -> None:
         """The checkout a Git repository: a first commit (the inputs record), then the simulation's
         fixation committed alone (``how``: ``"uncommitted"`` leaves it untracked,
-        ``"with_another_file"`` commits it with another file)."""
+        ``"with_another_file"`` commits it with another file; ``change``: fields of the built
+        fixation replaced before it is written)."""
         shutil.rmtree(self.repo / ".git", ignore_errors=True)
         git(self.repo, "init", "-q")
         (self.repo / "docs").mkdir(exist_ok=True)
@@ -127,6 +128,7 @@ class World:
             self.repo / INPUTS, [scenario], {(scenario, c): fixed_calibration(c) for c in (1, 2)},
             code={"commit": self.first, "gpu_code_sha256": "b" * 64}, streams=STREAMS,
             repo=self.repo, policy=POLICY, written_at=WHEN)  # fmt: skip
+        fixation.update(change or {})
         path = self.repo / SIMULATION_FIXATION
         path.write_text(json.dumps(fixation, indent=2, sort_keys=True) + "\n")
         self.fixation = fixation
@@ -1477,6 +1479,41 @@ def test_the_j_check_is_remembered_by_what_it_depends_on(world, monkeypatch) -> 
     path.write_text(path.read_text() + " ")
     found, problems = world.read("simulation")
     assert found is None and calls == [1] and any("sha256" in p for p in problems)
+
+
+# A fixation at the registered M with the dry run's reduced sizes, and the constants of the dry
+# run's commit that would freeze it
+REDUCED = {
+    "resamples": ({"resamples": {"screen": 200, "verification": 1_000}},
+                  {"SCREEN_RESAMPLES": 200, "VERIFICATION_RESAMPLES": 1_000}),
+    "calibration": ({"calibration": {**sim.calibration_record(), "studies": 1_000}},
+                    {"CALIBRATION_STUDIES": 1_000}),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("word", list(REDUCED))
+def test_a_fixation_of_reduced_sizes_is_refused_under_the_registered_ones(
+    world, monkeypatch, word
+) -> None:
+    """The shared reader checks the fixation's sizes against the registered ones (2 000 and
+    100 000 resamples, M = 10 000, the calibration's selections and tolerances), not only its
+    types: a fixation of the production M with reduced resamples, or calibration selections, is
+    refused on writing and on reading; under the dry run's own constants (its commit's) the same
+    record is read."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    change, constants = REDUCED[word]
+    world.checkout(change=change)
+    assert world.fixation["M"] == COVERAGE_RUNS
+    record = world.simulation()
+    refused(world, "simulation", record, "fixation", word)
+    with monkeypatch.context() as patched:
+        for name, value in constants.items():
+            patched.setattr(decisions, name, value)
+        world.write("simulation", record)
+        assert world.read("simulation") == (record, [])
+    found, problems = world.read("simulation")  # the registered sizes again
+    assert found is None and any(word in p for p in problems)
 
 
 def test_the_fixation_must_be_unchanged_since_its_commit(world) -> None:

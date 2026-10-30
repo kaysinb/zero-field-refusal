@@ -63,9 +63,9 @@ def calibrate_once(setup, base, *, pairs, workers, studies):
 def patch(monkeypatch) -> None:
     monkeypatch.setattr(sim, "calibrate_all", calibrate_once)
     monkeypatch.setattr(decisions, "COVERAGE_RUNS", 6)
-    monkeypatch.setattr(sim, "SCREEN_RESAMPLES", 200)
-    monkeypatch.setattr(sim, "VERIFICATION_RESAMPLES", 400)
-    monkeypatch.setattr(sim, "CALIBRATION_STUDIES", 400)
+    monkeypatch.setattr(decisions, "SCREEN_RESAMPLES", 200)
+    monkeypatch.setattr(decisions, "VERIFICATION_RESAMPLES", 400)
+    monkeypatch.setattr(decisions, "CALIBRATION_STUDIES", 400)
     monkeypatch.setattr(sim, "UNIT", 4)
     monkeypatch.setattr(sim, "SCENARIOS", tiny_grid())
     monkeypatch.setattr(sim, "_DRAWS_LIMIT", 64)  # the calibration kept across the tests
