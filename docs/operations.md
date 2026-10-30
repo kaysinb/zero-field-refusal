@@ -2374,16 +2374,20 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
   commit, draws the missing ones, and writes the same bytes as an uninterrupted run. A part of
   another fixation or commit stops it, named; remove the run's simulation folder only for a new
   commit.
-- **Time on the 16 local cores** (measured on 2026-10-31 on synthetic inputs of 25 vectors, the
-  machine shared with other work: load 15–50):
-  - the calibration, in `fixation` and again in `run`: about 59 000 CPU-seconds each (1.5 h of
-    wall time under that load; about 1 h on an idle machine). C12's two candidates are the
-    critical path: their selections are drawn in one process;
+- **Time on the 16 local cores.** The figures below were measured under load, on 2026-10-31 on
+  synthetic inputs of 25 vectors, the machine shared with other work (load 15–50), so their
+  CPU-seconds per study are above a quiet machine's. A single process measured alone takes
+  0.21 s per screen study (2 000 resamples) and 0.68 s per verification study (100 000
+  resamples).
+  - the calibration, in `fixation` and again in `run`: about 59 000 CPU-seconds each under that
+    load (1.5 h of wall time; about 1 h on an idle machine); one pair, C13 at 2 000 selections,
+    takes 37 s in a single process. C12's two candidates are the critical path: their
+    selections are drawn in one process;
   - the gates: under a minute;
-  - the screen at 2 000 resamples: 0.35 CPU-seconds per study, about 207 000 studies at
-    M = 10 000 (19 scenarios, about 9 % unconfirmed): 1.2–1.5 h on an idle machine;
-  - the verification at 100 000 resamples: 1.9 CPU-seconds per study, about 185 000 studies:
-    5–6 h on an idle machine;
+  - the screen at 2 000 resamples: 0.35 CPU-seconds per study under load, about 207 000
+    studies at M = 10 000 (19 scenarios, about 9 % unconfirmed): 1.2–1.5 h on an idle machine;
+  - the verification at 100 000 resamples: 1.9 CPU-seconds per study under load, about 185 000
+    studies: 5–6 h on an idle machine;
   - the n_min scan, only when the power is short: some 44 000 studies at one level per value of
     n, a few minutes each;
   - in all about 9 h on an idle machine. The parts take about 1.9 kB per study (about 0.8 GB).
