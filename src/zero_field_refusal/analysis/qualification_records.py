@@ -157,7 +157,12 @@ The view before the cycle is read with ``without`` (the cycle's own bridge, read
 voids nothing and names nothing void), ``prefix`` (each launch log up to the line count the cycle
 pinned) and ``restarts`` (the case restart records the cycle pinned, by path: only they count as
 written before it, so that a case restart after it changes nothing; no time stamp is compared,
-the clocks of the machines need not agree). The writer counts every case restart record there
+the clocks of the machines need not agree). As in ``read_qualification``'s view, a part attempt
+run after the cycle (its ``.started`` file or record names the cycle's bridge, or a launcher run
+started beyond the prefix) is left out with every later attempt of its part, wherever the
+attempts are read: the entries, the launcher runs their records classify and the scientific
+failures that keep a case whole. So an interrupted re-qualification attempt, and the attempt that
+completes it, leave the derivation as it was. The writer counts every case restart record there
 when it writes, and pins those (``restarts`` of the result).
 
 **The view before a cycle** (``read_qualification`` with ``prefix``; "Voiding and
@@ -981,14 +986,19 @@ class _Cycles:
         return named, listed
 
     def _scientific(self, folder: Path, old_code: Any, named: Collection[str],
-                    listed: Collection[tuple[Any, Any]]) -> list[str]:  # fmt: skip
+                    listed: Collection[tuple[Any, Any]],
+                    view: _PreCycle | None = None) -> list[str]:  # fmt: skip
         """The case's attempts that are scientific failures under the old GPU code, as
         ``qualify.py``'s ``scientific_attempts`` finds them at the time of the cycle: every
         recorded attempt, and every interrupted rest's trajectory results, of that code, that no
-        earlier case restart names (``_restarted_before``)."""
+        earlier case restart names (``_restarted_before``); ``view``: only the attempts as they
+        stood before the cycle (``_PreCycle.attempts``)."""
         found = []
         for part in PARTS:
-            for n, state in attempt_files(folder, part).items():
+            attempts = attempt_files(folder, part)
+            if view is not None:
+                attempts = view.attempts(folder, part, attempts)
+            for n, state in attempts.items():
                 file = folder / f"{part}-attempt-{n}.json"
                 if state == "recorded":
                     if _file_sha256(file, self.root) in named:
@@ -1079,9 +1089,13 @@ def cycle_entries(
     (``study3_records.prefixed``); and ``restarts``, the case restart records the cycle pinned
     (their paths under RUNS_DIR): only those count, as written before it, whatever their time
     stamps say. None (the writer's view): every case restart record there now counts; the ones
-    counted are ``restarts`` of the result, for the writer to pin."""
+    counted are ``restarts`` of the result, for the writer to pin. With ``prefix``, a part
+    attempt run after the cycle is left out with every later attempt of its part
+    (``_PreCycle.attempts``) wherever the attempts are read: the entries, the launcher runs the
+    records classify and the scientific failures that keep a case whole."""
     root = Path(runs_root)
     scope = Scope.of(settings)
+    view = _pre_cycle(root, without, prefix, restarts)
     journal = _journal(root, [], prefix)
     issued = {f"s{r.seed}/{r.optimizer}-{r.lr:g}": r
               for r in _issued(root, journal, candidate, [], STEPS)
@@ -1114,7 +1128,10 @@ def cycle_entries(
                           and e.get("stage", STAGE) == STAGE}  # fmt: skip
         entries, mine = [], []
         for part in PARTS:
-            for n, state in attempt_files(case_dir, part).items():
+            numbered = attempt_files(case_dir, part)
+            if view is not None:  # the attempts before the cycle
+                numbered = view.attempts(case_dir, part, numbered)
+            for n, state in numbered.items():
                 file = case_dir / f"{part}-attempt-{n}.json"
                 record = _object(file, root) if state == "recorded" else None
                 launcher = (record or {}).get("launcher")
@@ -1135,7 +1152,7 @@ def cycle_entries(
                     continue  # void already, or not of the old code
                 mine.append(entry)
         entries_of[name] = entries
-        science = cycles._scientific(case_dir, old_code, named, listed)
+        science = cycles._scientific(case_dir, old_code, named, listed, view)
         if science:  # a scientific failure keeps the case whole, its launcher runs included
             kept += entries
             why = f"a scientific failure keeps counting: {sorted(science)}"
@@ -1478,6 +1495,19 @@ class _PreCycle:
             if runs & self.later:
                 return True
         return False
+
+
+def _pre_cycle(root: Path, without: str | None, prefix: Mapping[str, int] | None,
+               restarts: Collection[str] | None) -> _PreCycle | None:  # fmt: skip
+    """The view before a cycle (``_PreCycle``) when a journal prefix is given, None otherwise:
+    the runs started beyond the prefix are no runs of the view."""
+    if prefix is None:
+        return None
+    started = {r.get("run_id") for _, r in _journal(root, [], prefix) if r.get("event") == "start"}
+    later = {r["run_id"] for _, r in _journal(root, []) if r.get("event") == "start"
+             and isinstance(r.get("run_id"), str)} - started  # fmt: skip
+    mine = None if restarts is None else frozenset(restarts)
+    return _PreCycle(root, without, frozenset(later), mine)
 
 
 class _Reading:
@@ -1945,14 +1975,7 @@ def read_qualification(
     scope.seeds(candidate)  # a candidate outside the scope: QualificationError
     policy = settings_record(settings)
     root = Path(runs_root)
-    view = None
-    if prefix is not None:  # the runs started beyond the prefix are no runs of the view
-        started = {r.get("run_id") for _, r in _journal(root, [], prefix)
-                   if r.get("event") == "start"}  # fmt: skip
-        later = {r["run_id"] for _, r in _journal(root, []) if r.get("event") == "start"
-                 and isinstance(r.get("run_id"), str)} - started  # fmt: skip
-        mine = None if restarts is None else frozenset(restarts)
-        view = _PreCycle(root, without, frozenset(later), mine)
+    view = _pre_cycle(root, without, prefix, restarts)
     reading = _Reading(root, candidate, scope, view)
     problems = reading.problems
     journal = _journal(root, problems, prefix)

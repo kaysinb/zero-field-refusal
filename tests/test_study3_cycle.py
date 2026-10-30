@@ -1919,6 +1919,73 @@ def test_the_qualification_before_a_cycle_reads_as_it_stood(qualify, monkeypatch
     assert now["voided"] and now["states"] != before["states"]
 
 
+def part_by_hand(qualify, world, case, *, attempt: int, flag: str, finished: bool) -> None:
+    """``qualify.py part --attempt N`` of the case's baseline by hand with ``flag`` (one
+    argument): its ``.started`` file published, then, ``finished``, a record under the fix
+    (``FIX``) carrying the arguments qualify.py passes the harness; otherwise interrupted, the
+    Pod stopping before any record (the harness raises)."""
+
+    def run_part(settings, env, found, run_dir, out, *, part, attempt, checkpoints,
+                 diagnostic_steps=(), infrastructure=None, engineering_cycle=None):  # fmt: skip
+        if not finished:
+            raise RuntimeError("the Pod stopped")
+        record = {"part": part, "attempt": attempt, "case": found.record(), "status": "passed",
+                  "kind": None, "reasons": [], "infrastructure": infrastructure,
+                  "engineering_cycle": engineering_cycle,
+                  "provenance": {"gpu_code": {"sha256": FIX["sha256"]}}}  # fmt: skip
+        qualify.q.publish(out / found.attempt_path(part, attempt), record)
+        return record
+
+    argv = ["part", *case_args(world, case), "--part", "baseline", "--attempt", attempt, flag,
+            "--run-dir", world.path.parent / "run", "--checkpoints", world.path.parent / "h",
+            "--device", "cpu"]  # fmt: skip
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(qualify.runtime, "configure_numerics", lambda cfg, device: {})
+        patch.setattr(qualify.runtime, "environment", lambda cfg, device: object())
+        patch.setattr(qualify.q, "run_part", run_part)
+        if finished:
+            assert run_main(qualify, argv) == 0
+        else:
+            with pytest.raises(RuntimeError, match="the Pod stopped"):
+                run_main(qualify, argv)
+
+
+def test_an_interrupted_requalification_leaves_the_cycles_derivation_as_it_was(
+    qualify, monkeypatch, tmp_path
+):
+    """On qualify.py's own records after the cycle's repair: a re-qualification attempt started
+    under --engineering-cycle and interrupted (its ``.started`` file names the bridge, no record),
+    then the attempt that completes it (--infrastructure, recorded under the fix). The
+    qualification's side of the published cycle, re-derived in the view before it (its bridge
+    absent, its journal prefix, its pinned restarts), equals the bridge throughout: the attempts
+    run after the cycle are left out, the interrupted one included."""
+    world, bridge_path, bridge = repaired_bridge_world(qualify, monkeypatch, tmp_path)
+    record = json.loads(cycle_path(world.root, 1).read_text())
+    codes_ = all_runs(world, OLD)
+
+    def problems() -> list[str]:
+        entries = cycle._requalified(world.root, record, run_codes=codes_, settings=REGISTERED)
+        found = cycle._bridge_against("w", json.loads(bridge_path.read_text()), entries,
+                                      cycle._stage_runs(world.root, record))  # fmt: skip
+        wanted = cycle._qualification(world.root, entries)
+        return found + [f"{key}: {wanted[key]}" for key in ("records", "launchers", "restarts")
+                        if wanted[key] != record["affected"]["qualification"][key]]  # fmt: skip
+
+    assert problems() == []
+    world.launch(ADAMW, commit="HEAD")  # the recovery round's new run
+    part_by_hand(qualify, world, ADAMW, attempt=2, flag="--engineering-cycle", finished=False)
+    folder = world.folder(ADAMW)
+    started = json.loads((folder / "baseline-attempt-2.json.started").read_text())
+    assert started["engineering_cycle"] == str(bridge_path)
+    assert not (folder / "baseline-attempt-2.json").exists()
+    assert problems() == []  # the interruption
+    part_by_hand(qualify, world, ADAMW, attempt=3, flag="--infrastructure=the Pod stopped",
+                 finished=True)  # fmt: skip
+    completed = json.loads((folder / "baseline-attempt-3.json").read_text())
+    assert completed["infrastructure"]["reason"] == "the Pod stopped"
+    assert problems() == []  # the completion
+
+
 def test_a_dangling_link_at_the_record_or_the_bridge_is_refused_before_anything_is_written(
     tmp_path,
 ):
