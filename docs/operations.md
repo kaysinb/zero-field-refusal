@@ -2022,7 +2022,8 @@ before each command below.
      `qualify.py driver ... --engineering` ([above](#study-3-numerical-qualification)). The
      engineering record then names the records of its four checks: the dry run, the bridge,
      θ₀'s utility (`scripts/check_theta0_utility.py`) and the stage-0 check.
-  2. **The simulation record**, before the search.
+  2. **The simulation record**, before the search: written by `scripts/study3_simulate.py record`
+     ([below](#study-3-simulation)).
   3. **The search.** `search-round0`, then `search-round1` where a median missed.
   4. **The numerical qualification.** `numerical`, run through its printed `qualify.py driver`;
      then `repair` (one round per arm, amendment 3) for an arm whose K misses by more than 0.05
@@ -2072,7 +2073,9 @@ before each command below.
   - `engineering`: the researcher's, once the four checks are recorded, each by its record's path
     and sha256; it passes only when all four passed.
   - `simulation`: the simulation's output (its fixation and inputs, the gates, the coverage
-    screen, L, the validation size and the independent verification).
+    screen, L, the validation size and the independent verification), written by
+    `scripts/study3_simulate.py record` and checked against its fixation and results (the J
+    check, [below](#study-3-simulation)).
   - `n-c<N>`: the precommitted spread script's output, with the fields the `choice` step gives
     (candidate, rates, comparisons, cohort), L, the spread rounded to 0.5 pp, N and the cap.
   - `budget-c<N>`: the researcher's decision on the extra blocks and their price, `proceed` or
@@ -2301,6 +2304,84 @@ before each command below.
 
   The hold and the failure's evidence stay as they are, and a closed or held label is never
   issued again.
+
+## Study 3: simulation
+
+The [simulation before validation](study3-preregistration.md#simulation-before-validation) runs
+after the engineering stage and before the search ([seeds and order](study3-preregistration.md#seeds-and-order)),
+on the CPU of the local machine. `scripts/study3_simulate.py` writes its inputs, its fixation,
+the run's files and the simulation record; `analysis.study3_simulation` holds the models, the
+procedure and the engine, `analysis.study3_seed_vectors` the inputs, `analysis.study3_decisions`
+the record's checks. Their docstrings hold every rule. The modeling values (the harm and label
+models, the support, the safe alternative, the spread and Δ through the selection, the grid, the
+streams, the draw bound and the rest, M1–M27) are the researcher's: each is listed with its
+source in the module's rulings and frozen, with a source line ending "M<n>, decided", in the
+fixation.
+
+```bash
+R="$RUNS_DIR"
+project-run "$SRC" python scripts/study3_simulate.py inputs          # then commit it
+project-run "$SRC" python scripts/study3_simulate.py fixation --workers 16  # commit it alone
+project-run "$SRC" python scripts/study3_simulate.py run --runs-root "$R" --workers 16
+project-run "$SRC" python scripts/study3_simulate.py verify --runs-root "$R" --workers 16
+project-run "$SRC" python scripts/study3_simulate.py record --runs-root "$R"
+project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
+```
+
+- **The order.**
+  1. `inputs` writes study 2's whole seed vectors, `docs/study3-simulation-inputs.json`, from
+     the two study-2 roots under `RUNS_DIR` (`--roots`) and θ₀'s evaluation (`--theta0`). It
+     reads of a run only its config, terminal record and step-25 evaluation (K and the
+     utility), never a response, a label or a judge output. Commit it.
+  2. `fixation` needs a clean checkout with the inputs record tracked. It calibrates every
+     scenario at every candidate it can run (f, the safe shifts, σ at the Δ = 0 offsets and the
+     offsets, through the selection, over `--workers` processes), enumerates the coverage tests
+     (J = 1 785) and writes `docs/study3-simulation-fixation.json`, with the machine it ran on.
+     Commit it alone, before the first draw.
+  3. `run` checks, before any draw, that the fixation is tracked, committed once and alone in
+     HEAD or an ancestor and unchanged, that its inputs and tests are the pinned ones, that the
+     checkout is clean, and that no results, no screen and no part of another fixation or commit
+     exist; it recomputes the calibration (integers and identities exactly, floats at a relative
+     10⁻⁹; a different machine is printed, not refused). It then runs the gates, the screen
+     and, when the power is short, the n_min scan, and writes `screen.json`. It prints L (or "no
+     level passed"), the validation size and the gates' values.
+  4. `verify` runs the binding verification at L on the verification stream (100 000
+     resamples, the realized route) and writes `verification.json`. It refuses without the
+     screen, with a screen of another commit than the clean HEAD, without an L (the
+     verification is not due) and once `verification.json` exists: it is never rerolled.
+  5. `record` writes `results.json` and then the simulation record, which binds the results
+     and the seed vectors by sha256. Both are refused when the results fail the J check (an
+     identity listed twice, missing or not in the fixation, a pass, L, a gate or a size that
+     does not recompute), and a second record is refused, as `study3_summary.py record` refuses
+     it. No level passing, or a verification that fails, gives a failed record: the design stop
+     (`progress`: `design_stop`, `simulation_failed`).
+- **The files.** Under `$RUNS_DIR/study3/simulation/` (reserved, no run directory): the parts
+  (`parts/<phase>/<scenario>/<first>.json`, 250 studies each, the phase `gates`, `screen`,
+  `scan-<n>` or `verification`), `screen.json`, `verification.json` and `results.json`. Every
+  file is JSON, written whole and once. The simulation record lies under
+  `$RUNS_DIR/study3/decisions/simulation.json`.
+- **Resuming.** Every study is a pure function of its stream, its scenario and its index, and a
+  test takes the first M studies that count for it by index: the results depend neither on
+  `--workers`, nor on the order in which parts finish, nor on an interruption. Run `run` (or
+  `verify`) again after an interruption: it keeps the finished parts of this fixation and
+  commit, draws the missing ones, and writes the same bytes as an uninterrupted run. A part of
+  another fixation or commit stops it, named; remove the run's simulation folder only for a new
+  commit.
+- **Time on the 16 local cores** (measured on 2026-10-31 on synthetic inputs of 25 vectors, the
+  machine shared with other work: load 15–50):
+  - the calibration, in `fixation` and again in `run`: about 59 000 CPU-seconds each (1.5 h of
+    wall time under that load; about 1 h on an idle machine). C12's two candidates are the
+    critical path: their selections are drawn in one process;
+  - the gates: under a minute;
+  - the screen at 2 000 resamples: 0.35 CPU-seconds per study, about 207 000 studies at
+    M = 10 000 (19 scenarios, about 9 % unconfirmed): 1.2–1.5 h on an idle machine;
+  - the verification at 100 000 resamples: 1.9 CPU-seconds per study, about 185 000 studies:
+    5–6 h on an idle machine;
+  - the n_min scan, only when the power is short: some 44 000 studies at one level per value of
+    n, a few minutes each;
+  - in all about 9 h on an idle machine. The parts take about 1.9 kB per study (about 0.8 GB).
+  At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples) the screen takes
+  about 1.5 minutes and the verification under 5; the calibration's cost does not change.
 
 ## Judge server
 

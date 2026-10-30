@@ -181,6 +181,8 @@ Implemented:
 | `analysis.study3_search` | study 3's registered candidates, starting rates and slopes, the search per arm and target (round 0, one adjusted round 1, three significant digits) and the scientific repair of amendment 3, as pure functions of endpoints |
 | `analysis.study3_blocks` | a block of study 3 as a pure function of endpoints: each arm's support (two usable endpoints bracketing K\*, at most 0.60 apart in ln K), the interpolation at K\*, the comparisons A–F and P–F, and the utility gate's one-sided t bounds |
 | `analysis.study3_inference` | study 3's inference as pure functions: the paired studentized bootstrap-t over blocks with the registered zero-SE rule (t\* = 0 at exactly the mean, ±∞ otherwise), type-1 order statistics at exact ranks over all resamples, the readings of an interval and of the three computations together, and their strict-JSON form |
+| `analysis.study3_seed_vectors` | study 2's whole seed vectors for study 3's simulation: K and utility only, from each run's config, terminal record and step-25 evaluation |
+| `analysis.study3_simulation` | study 3's simulation: the scenario models and the exact truth, one study through the registered search, blocks, confirmation and bootstrap-t, the fixation and the resumable parts |
 | `analysis.study3_decisions` | study 3's decision records under `RUNS_DIR/study3/decisions/` (engineering, simulation, `n-c<N>`, `budget-c<N>`, closures): closed schemas, evidence checked by sha256, the checks across records, write-once publication and the immutability of a record a campaign header named |
 | `analysis.study3_progress` | study 3's state machine: from the records to the stage and the next step (a campaign with its cells, a decision record to write, a wait, a block with its ways out, a terminal outcome), the active arms and comparisons, the route, and the confirmation's state between blocks (counters, cohorts, the stop); the runs that do not count for the commit they ran |
 | `analysis.study3_versions` | study 3's staged fixation (before a candidate's validation, and the confirmation supplement), its versions records and their check against the checkout and the launch journal (`versions_problems`), and each validation or confirmation run's own commit against the pinned one (`uncounted_runs`) |
@@ -244,6 +246,11 @@ Entry points in `scripts/`:
   blocks, the check of the versions record before a launch, and the versions record, the staged
   fixation and the decision records. They read records and write no GPU result
   (`code_identity.ANALYSIS_SCRIPTS`) ([operations](operations.md#study-3-campaigns));
+- `study3_simulate.py`: study 3's simulation before validation, on the CPU: its inputs (study
+  2's whole seed vectors), its fixation, the run (the gates, the coverage screen and the n_min
+  scan), the binding verification and the simulation record; resumable parts on fixed streams.
+  It reads records and writes no GPU result (`code_identity.ANALYSIS_SCRIPTS`)
+  ([operations](operations.md#study-3-simulation));
 - `harmful_pool_cleaning.py`: the counts and the blind-labeling pairs behind the cleaning of
   study 2's harmful evaluation set (the pairs file holds prompt texts and stays out of Git);
 - `stage_a_campaigns.py`: the campaigns of study 2's Stage A, one seed each, the data-dependent

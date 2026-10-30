@@ -138,6 +138,7 @@ OTHER = (
 SCRIPTS = (
     REPO_ROOT / "scripts" / "study3_campaigns.py",
     REPO_ROOT / "scripts" / "study3_summary.py",
+    REPO_ROOT / "scripts" / "study3_simulate.py",
 )
 SUMMARY = SCRIPTS[1]
 LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
