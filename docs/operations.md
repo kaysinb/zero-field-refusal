@@ -2399,8 +2399,10 @@ source checkout of the commit, clean (`$SRC`), in this order:
    `$RUNS_DIR/study3/decisions/spread-output-c<N>.json` (no SD, mean, sign or per-block value),
    and the n record `n-c<N>` with the code it ran with. Pending labels, a labeling problem, a
    pinned file that differs from the fixation's pin (before any label or at write time) and a
-   checkout that is not clean each refuse it, and nothing is written. Once the n record is
-   written, the spread point closes.
+   checkout that is not clean each refuse it, and nothing is written. A refusal by the n record's
+   own check comes after the output is written: it leaves the output file, and a rerun reuses it
+   when it is identical (a different one refuses). Once the n record is written, the spread point
+   closes.
 6. **Never.** `scripts/label_runs.py` and `analysis.study2_label_cli` are never run on study-3
    runs, and nothing under a run's `judge/` or `judge-superseded/` or under
    `$RUNS_DIR/study3/labeling/` is opened by hand.
