@@ -274,10 +274,13 @@ that the dry run's Part II changes the three constants and nothing else (M25).
   and kept across the calibration's σ and offset steps (``_JitterGrid``); the outer rule, which
   carries the shares, is checked for convergence at every evaluation.
 - ``run`` recomputes the calibration and compares it with the frozen one: integers, flags and
-  identities exactly, floats (from bisection and quadrature) at a relative 10⁻⁹
-  (``calibration_problems``); the fixation records the machine it was calibrated on
-  (``machine_record``: the platform, the CPU model, numpy's version), and a different machine is
-  reported, not refused.
+  identities exactly; floats (from the solvers and the quadrature) equal when they agree within
+  a relative 10⁻⁹ or within an absolute floor at the solvers' own precision, 10⁻⁹ for a pp field
+  (the attained spreads and Δs, the utility shifts), 10⁻¹¹ for a proportion (f, the support, σ,
+  the offsets o and o⁰) and 10⁻¹⁰ for λ (``CALIBRATION_FLOORS``), so that a result near 0, such
+  as the attained Δ at Δ = 0, is compared by its precision (``calibration_problems``); the
+  fixation records the machine it was calibrated on (``machine_record``: the platform, the CPU
+  model, numpy's version), and a different machine is reported, not refused.
 - The reported quantiles of the realized blocks are type-1 order statistics (zero-based rank
   ⌈n·q⌉ − 1, ``study3_inference.tail_ranks``' rule; ``order_statistic``), never an interpolated
   quantile.
@@ -3045,6 +3048,29 @@ PART_KIND, SCREEN_KIND, VERIFICATION_KIND = (
 RESULTS_KIND = "simulation-results"
 PHASES = ("gates", "screen", "verification")  # and "scan-<n>", one per n of the n_min scan
 CALIBRATION_TOLERANCE = 1e-9  # the recomputed calibration's floats, relative
+# ... or within an absolute floor, the solvers' own precision on the field's scale, so that a
+# result near 0 (Δ = 0's attained truth, an offset o⁰ near 0) compares by its precision
+PP_FLOOR = 1e-9  # a pp field: utility shifts and losses, attained spreads, Δs and their SEs
+PROPORTION_FLOOR = 1e-11  # a proportion: f, the support, σ, the offsets o and o⁰
+LAMBDA_FLOOR = 1e-10  # λ scales deviations of a few pp into the shifts: within the pp floor
+CALIBRATION_FLOORS: dict[str, float] = {
+    "failure": PROPORTION_FLOOR,
+    "realized_support": PROPORTION_FLOOR,
+    "mmlu_shift": PP_FLOOR,
+    "factual_shift": PP_FLOOR,
+    "utility_realized": PP_FLOOR,
+    "utility_lambda": LAMBDA_FLOOR,
+    "sigma_af": PROPORTION_FLOOR,
+    "sigma_pf": PROPORTION_FLOOR,
+    "offset_a": PROPORTION_FLOOR,
+    "offset_p": PROPORTION_FLOOR,
+    "null_offset_a": PROPORTION_FLOOR,
+    "null_offset_p": PROPORTION_FLOOR,
+    "attained_af_pp": PP_FLOOR,
+    "attained_pf_pp": PP_FLOOR,
+    "attained_spread_se_pp": PP_FLOOR,
+    "attained_delta_pp": PP_FLOOR,
+}
 QUANTILES = {"q10": Fraction(1, 10), "q50": Fraction(1, 2), "q90": Fraction(9, 10)}
 _SCAN = re.compile(r"scan-([1-9][0-9]*)")
 _PART_NAME = re.compile(r"[0-9]{6}\.json")
@@ -4063,26 +4089,29 @@ def calibrate_all(
     return {pair: out[pair] for pair in pairs}
 
 
-def _close_float(a: float, b: float) -> bool:
-    return math.isclose(a, b, rel_tol=CALIBRATION_TOLERANCE, abs_tol=0.0)
+def _close_float(a: float, b: float, floor: float) -> bool:
+    """Equal within a relative ``CALIBRATION_TOLERANCE`` or within the absolute ``floor``."""
+    return math.isclose(a, b, rel_tol=CALIBRATION_TOLERANCE, abs_tol=floor)
 
 
-def _differences(found: Any, frozen: Any, where: str) -> list[str]:
-    """Where two JSON values differ: integers, flags, names and keys exactly; floats at a
-    relative ``CALIBRATION_TOLERANCE``."""
+def _differences(found: Any, frozen: Any, where: str, floor: float = 0.0) -> list[str]:
+    """Where two JSON values differ: integers, flags, names and keys exactly; floats within a
+    relative ``CALIBRATION_TOLERANCE`` or the absolute ``floor``."""
     if isinstance(frozen, dict):
         if not isinstance(found, dict) or set(found) != set(frozen):
             return [f"{where}: keys {sorted(found) if isinstance(found, dict) else found!r}, "
                     f"frozen {sorted(frozen)}"]  # fmt: skip
         return [p for k in sorted(frozen) for p in _differences(found[k], frozen[k],
-                                                                f"{where}.{k}")]  # fmt: skip
+                                                                f"{where}.{k}", floor)]  # fmt: skip
     if isinstance(frozen, list):
         if not isinstance(found, list) or len(found) != len(frozen):
             return [f"{where}: {found!r}, frozen {frozen!r}"]
         return [p for i, (a, b) in enumerate(zip(found, frozen, strict=True))
-                for p in _differences(a, b, f"{where}[{i}]")]  # fmt: skip
+                for p in _differences(a, b, f"{where}[{i}]", floor)]  # fmt: skip
     if isinstance(frozen, float) and not isinstance(found, bool) and isinstance(found, float):
-        return [] if _close_float(found, frozen) else [f"{where}: {found!r}, frozen {frozen!r}"]
+        if _close_float(found, frozen, floor):
+            return []
+        return [f"{where}: {found!r}, frozen {frozen!r}"]
     if type(found) is not type(frozen) or found != frozen:
         return [f"{where}: {found!r}, frozen {frozen!r}"]
     return []
@@ -4093,8 +4122,10 @@ def calibration_problems(
     frozen: Mapping[tuple[Scenario, int], Calibration],
 ) -> list[str]:
     """How a recomputed calibration departs from the frozen one: a pair missing or extra, an
-    integer, a flag or a vector's seed that differs, or a float off by more than a relative
-    1e-9 (bisection and quadrature, on another machine)."""
+    integer, a flag or a vector's seed that differs, or a float off both by more than a relative
+    1e-9 and by more than its field's absolute floor (``CALIBRATION_FLOORS``: the solvers'
+    precision, 1e-9 for a pp field, 1e-11 for a proportion, 1e-10 for λ), so that a result near
+    0 is compared by its precision (the solvers and the quadrature, on another machine)."""
     problems = []
     for sc, c in frozen:
         if (sc, c) not in found:
@@ -4102,7 +4133,9 @@ def calibration_problems(
             continue
         a = json.loads(_json_bytes(calibration_json(found[(sc, c)])))
         b = json.loads(_json_bytes(calibration_json(frozen[(sc, c)])))
-        problems += [f"{sc.name} at candidate {c}: {p}" for p in _differences(a, b, "calibration")]
+        problems += [f"{sc.name} at candidate {c}: {p}" for name in sorted(b)
+                     for p in _differences(a.get(name), b[name], f"calibration.{name}",
+                                           CALIBRATION_FLOORS.get(name, 0.0))]  # fmt: skip
     problems += [f"{sc.name} at candidate {c}: not in the fixation" for sc, c in found
                  if (sc, c) not in frozen]  # fmt: skip
     return problems

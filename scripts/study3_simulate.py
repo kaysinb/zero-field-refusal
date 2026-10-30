@@ -31,11 +31,12 @@ engineering stage, before the search); the models and the values the researcher 
    the pinned one, its tests are its scenarios' identities, the checkout is clean, its sizes
    are this code's, no ``results.json`` and no ``screen.json`` exist, no part of another
    fixation or commit exists (each named), and the calibration recomputes (integers, flags and
-   identities exactly, floats at a relative 1e-9; a different machine is printed, not
-   refused). It then runs the gates, the screen and the n_min scan (``run_screen``) and
-   writes ``screen.json``; it prints L (or "no level passed"), the validation size and the
-   gates' values. Interrupted, it resumes from its finished parts on the same streams, to the
-   same bytes.
+   identities exactly, floats within a relative 1e-9 or their solver's precision,
+   ``study3_simulation.CALIBRATION_FLOORS``; a different machine is printed, not refused). It
+   then runs the gates, the screen and the n_min scan (``run_screen``) and writes
+   ``screen.json``; it prints L (or "no level passed"), the validation size and the gates'
+   values. Interrupted, it resumes from its finished parts on the same streams, to the same
+   bytes.
 4. **verify** refuses without ``screen.json``, with one of another commit than the clean HEAD,
    without a recomputed L (the verification is not due), or with ``verification.json``
    present (it is never rerolled); it runs the binding verification at L

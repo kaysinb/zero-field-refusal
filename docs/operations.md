@@ -2341,10 +2341,12 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
   3. `run` checks, before any draw, that the fixation is tracked, committed once and alone in
      HEAD or an ancestor and unchanged, that its inputs and tests are the pinned ones, that the
      checkout is clean, and that no results, no screen and no part of another fixation or commit
-     exist; it recomputes the calibration (integers and identities exactly, floats at a relative
-     10⁻⁹; a different machine is printed, not refused). It then runs the gates, the screen
-     and, when the power is short, the n_min scan, and writes `screen.json`. It prints L (or "no
-     level passed"), the validation size and the gates' values.
+     exist; it recomputes the calibration (integers and identities exactly; floats within a
+     relative 10⁻⁹ or within their solver's precision, 10⁻⁹ pp for a pp field and 10⁻¹¹ for a
+     proportion, so that a value near 0 compares by its precision; a different machine is
+     printed, not refused). It then runs the gates, the screen and, when the power is short,
+     the n_min scan, and writes `screen.json`. It prints L (or "no level passed"), the
+     validation size and the gates' values.
   4. `verify` runs the binding verification at L on the verification stream (100 000
      resamples, the realized route) and writes `verification.json`. It refuses without the
      screen, with a screen of another commit than the clean HEAD, without an L (the

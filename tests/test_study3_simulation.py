@@ -6,7 +6,7 @@ and the calibration through the selection, on synthetic whole seed vectors."""
 import math
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -1678,3 +1678,32 @@ def test_the_recomputed_calibration_is_compared_at_a_relative_1e9() -> None:
     assert any("mmlu_shift" in p
                for p in sim.calibration_problems({(sc, 1): seeds}, {(sc, 1): cal}))  # fmt: skip
     assert any("missing" in p for p in sim.calibration_problems({}, {(sc, 1): cal}))
+
+
+def test_a_result_near_zero_is_compared_within_its_solvers_precision() -> None:
+    """A near-zero result (the attained Δ at Δ = 0, an offset o⁰ near 0) moved in its last bits
+    on another machine is the same result; a move beyond its field's floor is refused."""
+    sc = sim.SCENARIOS_BY_NAME["C02"]
+    near = {"A-F": (-2.5426366452122966e-11, 0.0015577865794015396),
+            "P-F": (1.3574346218829063e-11, 0.0017754666554159167)}  # fmt: skip
+    cal = replace(a_calibration(1), null_offset_p=-3.2e-14, attained_delta_pp=near)
+
+    def moved(**change) -> list[str]:
+        return sim.calibration_problems({(sc, 1): replace(cal, **change)}, {(sc, 1): cal})
+
+    delta = cal.attained_delta_pp
+    assert moved(attained_delta_pp={c: (v[0] + 1e-15, v[1]) for c, v in delta.items()}) == []
+    beyond = moved(attained_delta_pp={c: (v[0] + 2e-9, v[1]) for c, v in delta.items()})
+    assert len(beyond) == 2 and all("attained_delta_pp" in p for p in beyond)
+    assert moved(null_offset_p=cal.null_offset_p + 1e-13) == []
+    assert any("null_offset_p" in p for p in moved(null_offset_p=cal.null_offset_p + 1e-10))
+    assert moved(failure=cal.failure + 5e-12) == []
+    assert any("failure" in p for p in moved(failure=cal.failure + 1e-9))
+    # every float the calibration holds has its floor; the integers and flags have none
+    floats = {f.name for f in fields(sim.Calibration)} - {"candidate", "support_flagged",
+                                                          "utility_flagged"}  # fmt: skip
+    assert set(sim.CALIBRATION_FLOORS) == floats
+    pp = ("attained_delta_pp", "attained_af_pp", "attained_pf_pp")
+    proportions = ("failure", "offset_a", "offset_p", "null_offset_a", "null_offset_p")
+    assert {sim.CALIBRATION_FLOORS[n] for n in pp} == {1e-9}
+    assert {sim.CALIBRATION_FLOORS[n] for n in proportions} == {1e-11}
