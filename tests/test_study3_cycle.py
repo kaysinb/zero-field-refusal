@@ -12,13 +12,16 @@ repair."""
 
 import copy
 import hashlib
+import itertools
 import json
 import math
 import shutil
+from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -1196,20 +1199,98 @@ class FixedRoute(CycleRoute):
                                                          for arm in technical})  # fmt: skip
 
 
-@pytest.fixture
-def fixed_route(tmp_path, monkeypatch):
-    """``FixedRoute`` built through the validation fixation and its first versions record, the
-    cycle module reading the route's checkout."""
-    sealed = pytest.MonkeyPatch()
+class Built(NamedTuple):
+    """A world built once per session: its folder (every test restores it at this same absolute
+    path, which its records and its checkout name), the folder's pristine copy, and the world's
+    attributes after the build."""
+
+    base: Path
+    pristine: Path
+    state: dict
+
+
+def clone(value):
+    """A copy of a world's attribute for one test: containers and plain objects copied, a counter
+    at its next value, modules, patches and immutable values shared."""
+    if isinstance(value, itertools.count):
+        return itertools.count(int(repr(value).removeprefix("count(").removesuffix(")")))
+    if isinstance(value, (ModuleType, pytest.MonkeyPatch, Path, str, bytes, int, float, bool,
+                          type(None))):  # fmt: skip
+        return value
+    if isinstance(value, defaultdict):
+        return defaultdict(value.default_factory, {k: clone(v) for k, v in value.items()})
+    if isinstance(value, dict):
+        return {k: clone(v) for k, v in value.items()}
+    if isinstance(value, tuple) and hasattr(value, "_fields"):
+        return type(value)(*(clone(v) for v in value))
+    if isinstance(value, (list, tuple, set)):
+        return type(value)(clone(v) for v in value)
+    if hasattr(value, "__dict__") and not callable(value):
+        found = type(value).__new__(type(value))
+        found.__dict__.update({k: clone(v) for k, v in vars(value).items()})
+        return found
+    return value
+
+
+def built(cls, base: Path, build) -> Built:
+    """``cls``'s world built in ``base`` by ``build``, every sealed read failing meanwhile
+    (``SealedGuard``) and every module patch undone after it; its folder copied aside."""
+    patch, sealed = pytest.MonkeyPatch(), pytest.MonkeyPatch()
     try:
-        world = FixedRoute(tmp_path, monkeypatch)
+        world = cls(base, patch)
         world.guard = SealedGuard(sealed, runs_root=world.root)
-        world.build()
-        sealed.undo()
-        monkeypatch.setattr(cycle, "REPO", world.repo)
-        yield world
+        build(world)
     finally:
         sealed.undo()
+        patch.undo()
+    pristine = base.with_name(f"{base.name}-pristine")
+    shutil.copytree(base, pristine, symlinks=True)
+    return Built(base, pristine, dict(vars(world)))
+
+
+def restored(cls, found: Built, monkeypatch):
+    """The world of ``found`` for one test: its folder restored from the pristine copy at the
+    same absolute path, its attributes copied, and the module patches its constructors make
+    applied again with the test's ``monkeypatch``."""
+    shutil.rmtree(found.base)
+    shutil.copytree(found.pristine, found.base, symlinks=True)
+    world = cls.__new__(cls)
+    world.__dict__.update({key: clone(value) for key, value in found.state.items()})
+    world.monkeypatch = monkeypatch
+    monkeypatch.setattr(world.script, "REPO", world.repo)
+    monkeypatch.setattr(world.script, "stamp", lambda: f"20261027T{next(world.stamps):06d}Z")
+    monkeypatch.setattr(code_identity, "gpu_code_identity", world.identity)
+    monkeypatch.setattr(qr, "read_qualification", world.qualification)
+    monkeypatch.setattr("zero_field_refusal.launch.load_run_config", run_config)
+    monkeypatch.setattr(world.summary, "REPO", world.repo)
+    return world
+
+
+def guarded_build(world, *steps) -> None:
+    """The world built further by ``steps``, every sealed read failing meanwhile."""
+    sealed = pytest.MonkeyPatch()
+    try:
+        world.guard = SealedGuard(sealed, runs_root=world.root)
+        for step in steps:
+            step()
+    finally:
+        sealed.undo()
+
+
+@pytest.fixture(scope="session")
+def fixed_route_built(tmp_path_factory) -> Built:
+    """``FixedRoute`` built through the validation fixation and its first versions record, once
+    per session."""
+    return built(FixedRoute, tmp_path_factory.mktemp("fixed-route"), FixedRoute.build)
+
+
+@pytest.fixture
+def fixed_route(fixed_route_built, monkeypatch):
+    """``FixedRoute`` built through the validation fixation and its first versions record (a
+    pristine copy of the session's), the cycle module reading the route's checkout."""
+    world = restored(FixedRoute, fixed_route_built, monkeypatch)
+    monkeypatch.setattr(cycle, "REPO", world.repo)
+    return world
 
 
 def p_misses(arm, rate, seed, candidate) -> dict:
@@ -1221,42 +1302,32 @@ def p_misses(arm, rate, seed, candidate) -> dict:
 
 
 @pytest.fixture
-def closed_p_route(tmp_path, monkeypatch):
-    """``FixedRoute`` with P–F closed by its validation gate (no closure record), the n record of
-    A–F, its budget, the supplement and its versions record, block 10400 and block 10401 with
-    F's run at its lower rate technical: the state's engineering cycle at the confirmation."""
-    sealed = pytest.MonkeyPatch()
-    try:
-        world = FixedRoute(tmp_path, monkeypatch)
-        world.guard = SealedGuard(sealed, runs_root=world.root)
-        world.build()
-        world.validate(p_misses)
-        world.choose()
-        world.supplement()
-        world.first_block()
-        world.block(10401, technical=("F",))
-        sealed.undo()
-        yield world
-    finally:
-        sealed.undo()
+def closed_p_route(fixed_route_built, monkeypatch):
+    """``FixedRoute`` (the session's, restored) with P–F closed by its validation gate (no
+    closure record), the n record of A–F, its budget, the supplement and its versions record,
+    block 10400 and block 10401 with F's run at its lower rate technical: the state's
+    engineering cycle at the confirmation."""
+    world = restored(FixedRoute, fixed_route_built, monkeypatch)
+    guarded_build(world, lambda: world.validate(p_misses), world.choose, world.supplement,
+                  world.first_block, lambda: world.block(10401, technical=("F",)))  # fmt: skip
+    return world
 
 
 def meta_path(run_id: str) -> str:
     return f"study3/{run_id}/meta.json"
 
 
+@pytest.fixture(scope="session")
+def cycle_route_built(tmp_path_factory) -> Built:
+    """``CycleRoute`` built once per session."""
+    return built(CycleRoute, tmp_path_factory.mktemp("cycle-route"), CycleRoute.build)
+
+
 @pytest.fixture
-def cycle_route(tmp_path, monkeypatch):
-    """``CycleRoute`` built, every sealed read failing while it is built (``SealedGuard``)."""
-    sealed = pytest.MonkeyPatch()
-    try:
-        world = CycleRoute(tmp_path, monkeypatch)
-        world.guard = SealedGuard(sealed, runs_root=world.root)
-        world.build()
-        sealed.undo()
-        yield world
-    finally:
-        sealed.undo()
+def cycle_route(cycle_route_built, monkeypatch):
+    """``CycleRoute`` built (a pristine copy of the session's, every sealed read failing while it
+    was built: ``SealedGuard``)."""
+    return restored(CycleRoute, cycle_route_built, monkeypatch)
 
 
 def edit_record(route, change, *, rebridge=False) -> None:
@@ -1726,13 +1797,14 @@ def test_an_arm_the_route_closed_keeps_the_cycle_valid_after_its_repair_on_files
     assert problems == [], problems[:3]
 
 
-def test_a_cycle_after_the_fixation_lists_the_stale_records_and_never_reruns_the_search(
-    fixed_route,
-):
+def test_successors_follow_the_registered_order(fixed_route):
     """A validation mark after the validation fixation: the search is never rerun (search=rerun
     refused); the cycle that reruns the qualification and the validation names the fixation in
     force and lists the records it makes stale, the fixation and the versions record among
-    them, and it reads valid."""
+    them, and it reads valid. After it, on the route's files: (1) the validation fixation's
+    successor and its versions record, (2) the validation rerun, (3) the n record (and the
+    budget record), (4) the supplement; a record written out of turn is refused with the step
+    the state names, and the fixation's successor is written once."""
     r = fixed_route
     r.validation_mark("F", 10304)
     r.commit_fix()
@@ -1745,17 +1817,6 @@ def test_a_cycle_after_the_fixation_lists_the_stale_records_and_never_reruns_the
     names = {Path(entry["path"]).name for entry in record["affected"]["records"]}
     assert names == {"study3-fixation-validation-c1.json", "study3-versions.json"}
     assert r.cycle_problems() == []
-
-
-def test_successors_follow_the_registered_order(fixed_route):
-    """After a cycle that reruns the qualification and the validation, on the route's files:
-    (1) the validation fixation's successor and its versions record, (2) the validation rerun,
-    (3) the n record (and the budget record), (4) the supplement; a record written out of turn
-    is refused with the step the state names, and the fixation's successor is written once."""
-    r = fixed_route
-    r.validation_mark("F", 10304)
-    r.commit_fix()
-    assert r.claims(search="reuse", qualification="rerun", validation="rerun").code == 0
     r.repair()
     r.requalify()
     assert r.state()["step"]["record"] == "fixation-validation-c1-2"
@@ -1776,21 +1837,15 @@ def test_successors_follow_the_registered_order(fixed_route):
 
 
 @pytest.fixture
-def confirming_route(tmp_path, monkeypatch):
-    """``FixedRoute`` through the confirmation's first block (``Route.build_to``), then block
-    10401 with F's run at its lower rate technical: the state's engineering cycle at the
-    confirmation."""
-    sealed = pytest.MonkeyPatch()
-    try:
-        world = FixedRoute(tmp_path, monkeypatch)
-        world.guard = SealedGuard(sealed, runs_root=world.root)
-        world.build_to("confirming")
-        world.block(10401, technical=("F",))
-        sealed.undo()
-        monkeypatch.setattr(cycle, "REPO", world.repo)
-        yield world
-    finally:
-        sealed.undo()
+def confirming_route(fixed_route_built, monkeypatch):
+    """``FixedRoute`` (the session's, restored) through the confirmation's first block
+    (``Route.build_to``'s steps after the fixation), then block 10401 with F's run at its lower
+    rate technical: the state's engineering cycle at the confirmation."""
+    world = restored(FixedRoute, fixed_route_built, monkeypatch)
+    guarded_build(world, world.validated, world.choose, world.supplement, world.first_block,
+                  lambda: world.block(10401, technical=("F",)))  # fmt: skip
+    monkeypatch.setattr(cycle, "REPO", world.repo)
+    return world
 
 
 def test_a_cycle_during_the_confirmation_cannot_reach_candidate_2_or_a_new_n(confirming_route):

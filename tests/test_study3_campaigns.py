@@ -223,8 +223,8 @@ class World:
         self.capsys, self.monkeypatch = capsys, monkeypatch
         self.script = script_module(SCRIPT, "study3_campaigns")
         monkeypatch.setattr(self.script, "REPO", self.repo)
-        stamps = itertools.count(1)
-        monkeypatch.setattr(self.script, "stamp", lambda: f"20261027T{next(stamps):06d}Z")
+        self.stamps = itertools.count(1)  # the writer's stamps, kept with the world
+        monkeypatch.setattr(self.script, "stamp", lambda: f"20261027T{next(self.stamps):06d}Z")
         monkeypatch.setattr(
             code_identity,
             "gpu_code_identity",
