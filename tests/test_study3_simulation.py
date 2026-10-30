@@ -1135,7 +1135,7 @@ def the_four(primary: np.ndarray, missing_x: float, missing_f: float) -> dict[st
                                                (0.002, 5, None)])  # fmt: skip
 def test_the_final_direction_is_the_final_analysiss_three_way_reading(mean, missing, want) -> None:
     """88 blocks of SD 5 pp, at 100 000 resamples and L 0.975, every endpoint missing
-    ``missing`` labels. At a mean of 2 pp with 5 missing (the reproduction) the primary interval
+    ``missing`` labels. At a mean of 2 pp with 5 missing labels per endpoint the primary interval
     excludes 0, about [0.8, 3.2] pp, but the missing labels' envelope does not: the registered
     reading has no direction, and neither has ``final_direction``. It is the final analysis's
     (``study3_estimates.three_computations``) in every case."""
