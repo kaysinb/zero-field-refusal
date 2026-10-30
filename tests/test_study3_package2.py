@@ -117,8 +117,10 @@ PACKAGE = (
     ANALYSIS / "qualification_records.py",
     ANALYSIS / "campaign_prep.py",
 )
-# study 3's label readers (package 2b), each with its own sealing tests
-LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_labels.py", ANALYSIS / "study3_label_cli.py")
+# study 3's label readers (package 2b), each with its own sealing tests: two modules of the
+# analysis package and the spread's decision script
+LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_labels.py", ANALYSIS / "study3_label_cli.py",
+                                   REPO_ROOT / "scripts" / "study3_spread.py")  # fmt: skip
 OTHER = (
     ANALYSIS / "__init__.py",
     ANALYSIS / "bootstrap.py",
@@ -255,7 +257,7 @@ def test_every_analysis_module_is_classified_once() -> None:
     and 2, shared modules, stage_a among them, which stays a GPU path). A new module of any name
     fails here until it is classified."""
     found = set(ANALYSIS.glob("*.py"))
-    lists = (set(PACKAGE), set(LABEL_READERS), set(OTHER))
+    lists = (set(PACKAGE), {path for path in LABEL_READERS if path.parent == ANALYSIS}, set(OTHER))
     assert set().union(*lists) == found
     assert sum(len(x) for x in lists) == len(found)
     assert ANALYSIS / "stage_a.py" in set(OTHER)
