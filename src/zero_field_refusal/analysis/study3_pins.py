@@ -49,8 +49,11 @@ compares the record with the fixation, record to record, and never hashes the cu
   top level. A package (``<m>/__init__.py``) is taken before a module (``<m>.py``), as Python's
   path finder takes it. What cannot be shown fails closed (``ValueError``, naming it): a project
   module with no file, a name a package does not bind, a relative import outside the package or
-  beyond its top, a file that does not parse. Imports outside the project are not followed, nor
-  imports by a name given at run time (the spread makes none).
+  beyond its top, a file that does not parse, a star import from a project package (it loads the
+  submodules its ``__all__`` names), and an import, in any file of the closure, whose top-level
+  name is a module beside the entry (``scripts/<name>.py`` or ``scripts/<name>/__init__.py``: a
+  script's own folder is first on its import path). Imports outside the project are not
+  followed, nor imports by a name given at run time (the spread makes none).
 - *Checked now* means the files and their closure: a pinned file whose sha256 differs, one that
   is missing, and a closure that gained or lost a file are each named by path, never by content.
 - *The control list* is a file of the checkout, committed before the validation fixation, which
@@ -110,7 +113,7 @@ def import_closure(entry: str, read: Read) -> list[str]:
     included. ``read`` gives a file's bytes, or None when there is none. ``ValueError``, naming
     it, for what cannot be shown: ``entry`` or a project module with no file, a name a package
     does not bind, a relative import outside the package or beyond its top, a file that does not
-    parse."""
+    parse, a star import from a project package, an import that resolves beside ``entry``."""
     cache: dict[str, bytes | None] = {}
 
     def get(path: str) -> bytes | None:
@@ -120,6 +123,7 @@ def import_closure(entry: str, read: Read) -> list[str]:
 
     found: set[str] = set()
     queue = [entry]
+    folder = entry.rpartition("/")[0]  # first on a script's import path
     while queue:
         path = queue.pop()
         if path in found:
@@ -134,9 +138,12 @@ def import_closure(entry: str, read: Read) -> list[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    _not_beside(alias.name, folder, get, path)
                     if _in_project(alias.name):
                         queue += _module_files(alias.name, get, path)
             elif isinstance(node, ast.ImportFrom):
+                if not node.level and node.module:
+                    _not_beside(node.module, folder, get, path)
                 queue += _from_files(node, package, get, path)
     return sorted(found)
 
@@ -147,6 +154,18 @@ def _parse(path: str, data: bytes) -> ast.Module:
     except (SyntaxError, ValueError) as exc:
         raise ValueError(f"{path} does not parse ({type(exc).__name__}): its imports cannot be "
                          "shown") from exc  # fmt: skip
+
+
+def _not_beside(name: str, folder: str, get: Read, where: str) -> None:
+    """``ValueError`` when the absolute import ``name`` resolves to a module in ``folder``, the
+    entry's own folder, which comes first on a script's import path."""
+    top = name.partition(".")[0]
+    base = f"{folder}/{top}" if folder else top
+    for path in (f"{base}.py", f"{base}/__init__.py"):
+        if get(path) is not None:
+            raise ValueError(f"{where} imports {name}, which resolves to {path} beside the entry "
+                             "(its folder is first on a script's import path): the import "
+                             "closure cannot be shown")  # fmt: skip
 
 
 def _in_project(name: str) -> bool:
@@ -208,6 +227,10 @@ def _from_files(node: ast.ImportFrom, package: str | None, get: Read, where: str
             files += _module_files(sub, get, where)
             continue
         own = _module_file(module, get)
+        if alias.name == "*" and own is not None and own.endswith("/__init__.py"):
+            raise ValueError(f"{where}: a star import from the project package {module}, which "
+                             "loads the submodules its __all__ names: the import closure cannot "
+                             "be shown")  # fmt: skip
         if own is None or (alias.name != "*" and own.endswith("/__init__.py")
                            and alias.name not in _bound(_parse(own, get(own)))):  # fmt: skip
             raise ValueError(f"{where} imports {sub}, which is no project module with a file "

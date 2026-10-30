@@ -175,6 +175,38 @@ def test_what_the_closure_cannot_follow_is_refused(tmp_path, files, words) -> No
         import_closure(SPREAD_SCRIPT, reader(repo))
 
 
+def test_a_star_import_from_a_project_package_fails_closed(tmp_path) -> None:
+    """A star import from a project package loads the submodules its ``__all__`` names, which
+    the closure cannot show: refused. One from a project module (no package) is followed."""
+    repo = repo_with(tmp_path, {
+        "scripts/study3_spread.py": "from zero_field_refusal.analysis import *\n",
+        "src/zero_field_refusal/__init__.py": "",
+        "src/zero_field_refusal/analysis/__init__.py": "__all__ = ['hidden']\n",
+        "src/zero_field_refusal/analysis/hidden.py": "x = 1\n"})  # fmt: skip
+    with pytest.raises(ValueError, match="star import from the project package"):
+        import_closure(SPREAD_SCRIPT, reader(repo))
+    (repo / SPREAD_SCRIPT).write_text("from zero_field_refusal.analysis.hidden import *\n")
+    assert import_closure(SPREAD_SCRIPT, reader(repo)) == [
+        "scripts/study3_spread.py", "src/zero_field_refusal/__init__.py",
+        "src/zero_field_refusal/analysis/__init__.py",
+        "src/zero_field_refusal/analysis/hidden.py"]  # fmt: skip
+
+
+@pytest.mark.parametrize("files", [
+    {"scripts/study3_spread.py": "import helper\n", "scripts/helper.py": "x = 1\n"},
+    {"scripts/study3_spread.py": "from helper import x\n", "scripts/helper/__init__.py": ""},
+    {"scripts/study3_spread.py": "import zero_field_refusal.m\n",
+     "src/zero_field_refusal/m.py": "import helper.part\n", "scripts/helper.py": ""},
+])  # fmt: skip
+def test_an_import_that_resolves_beside_the_script_fails_closed(tmp_path, files) -> None:
+    """A script's own folder is first on its import path: an import, in any file of the closure,
+    whose top-level name is a module in ``scripts/`` loads that file, which the closure does not
+    follow. Refused, by name."""
+    repo = repo_with(tmp_path, files)
+    with pytest.raises(ValueError, match="beside the entry"):
+        import_closure(SPREAD_SCRIPT, reader(repo))
+
+
 def test_modules_named_as_sealed_folders_are_read_and_a_link_into_one_is_not(tmp_path) -> None:
     """The project's own ``judge.py`` and ``labeling.py`` are modules, not sealed folders: the
     closure looks for ``judge/__init__.py`` first, which is not there, and reads ``judge.py``. A

@@ -150,7 +150,7 @@ The states are always the recomputation's.
 
 **Pure reading.** No file is written. Of a launcher run, ``meta.json``, ``summary.json`` and the
 files of its identity (``config.yaml``, ``metrics.jsonl``, ``monitor.jsonl``, ``terminal.json``)
-are read; nothing under a run's ``responses/`` or ``observations/`` is opened. Every file is
+are read; nothing under a sealed folder (``study3_records.SEALED``) is opened. Every file is
 checked by ``study3_records``' one sealed-path rule (``under_sealed``) before it is opened, read
 or hashed: a run's files with the run's folder as the base (``_sealed_records``: a run whose
 folder or record files resolve under a sealed folder is read not at all, a problem, and no

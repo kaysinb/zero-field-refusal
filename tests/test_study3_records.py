@@ -1960,6 +1960,13 @@ def test_under_sealed_follows_links_into_every_sealed_folder(tmp_path) -> None:
     assert not under_sealed(base / "study3" / "r1" / "meta.json", base)
 
 
+def test_the_judge_config_would_be_refused_as_evidence() -> None:
+    """The checkout's ``configs/judge/`` has a component named ``judge``: with the checkout as
+    the base, the rule refuses it. So the frozen judge's config stays an identity
+    (``load_config``) and never becomes evidence that passes through the rule."""
+    assert under_sealed(REPO_ROOT / "configs/judge/wildguard.yaml", REPO_ROOT) is True
+
+
 # ------------------------------------------------------------------ the launcher's own reading
 
 

@@ -108,7 +108,7 @@ validation and confirmation seeds). The seeds are registered study-3 seeds, each
 
 FILE and DIR must not exist; every file is written in UTF-8. Nothing here opens a response, a
 harm label or a judge output: the state holds numbers, ids, paths and hashes, and only those are
-printed; a record that resolves under a ``responses/`` or ``observations/`` folder is refused
+printed; a record that resolves under a sealed folder (``study3_records.SEALED``) is refused
 before it is hashed.
 """
 
@@ -143,6 +143,7 @@ from zero_field_refusal.analysis.study3_records import (
     EXPERIMENT,
     K_ONLY_ROLES,
     RATE_TOLERANCE,
+    SEALED_WHY,
     SEEDS,
     STEP_ROLES,
     UPDATES,
@@ -369,12 +370,12 @@ def launcher_cells(candidate: int, step: str, round_: int | None, blocks: list[B
 
 def sha256(kind: str, path: Path, base: Path) -> str:
     """The sha256 of a record file the header names, below ``base`` (the runs directory or the
-    checkout); refused, unopened, when it resolves under a ``responses/`` or ``observations/``
-    folder below ``base`` (or anywhere, when it leads outside it), as
+    checkout); refused, unopened, when it resolves under a sealed folder
+    (``study3_records.SEALED``) below ``base`` (or anywhere, when it leads outside it), as
     ``study3_decisions._under_sealed`` decides: a folder of that name above ``base`` does not
     count."""
     if _under_sealed(path, base):
-        why = sealed_why(path, base, "resolves under a responses/ or observations/ folder")
+        why = sealed_why(path, base, f"resolves {SEALED_WHY}")
         refuse(kind, f"{path} {why}: no record a campaign rests on is one, and it is not opened")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

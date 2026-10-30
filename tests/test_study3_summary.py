@@ -45,7 +45,7 @@ from test_study3_versions import sha256 as vsha256
 from zero_field_refusal import launch
 from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import decision_path, end_lines, read_decision
-from zero_field_refusal.analysis.study3_records import SEEDS, Endpoint
+from zero_field_refusal.analysis.study3_records import SEALED_WHY, SEEDS, Endpoint
 from zero_field_refusal.launch import load_campaign
 from zero_field_refusal.paths import REPO_ROOT
 
@@ -545,16 +545,16 @@ def test_the_guard_opens_nothing_sealed(world, summary, monkeypatch) -> None:
     sealed_file.write_text(SENTINEL + "\n")
     attempts = sealed_reads(monkeypatch)
     assert summary.guard(10400, files[10400])[0] == 0
-    error = refused(summary.guard(10400, sealed_file), "responses/ or observations/")
+    error = refused(summary.guard(10400, sealed_file), SEALED_WHY)
     assert SENTINEL not in error
     linked = world.out / "linked.yaml"
     linked.symlink_to(sealed_file)
-    error = refused(summary.guard(10400, linked), "responses/ or observations/")
+    error = refused(summary.guard(10400, linked), SEALED_WHY)
     record = decision_path(world.root, "n-c1")
     kept = record.read_bytes()
     record.unlink()
     record.symlink_to(sealed_file)
-    error = refused(summary.guard(10400, files[10400]), "responses/ or observations/", "n-c1")
+    error = refused(summary.guard(10400, files[10400]), SEALED_WHY, "n-c1")
     assert SENTINEL not in error and attempts == []
     record.unlink()
     record.write_bytes(kept)
@@ -562,7 +562,7 @@ def test_the_guard_opens_nothing_sealed(world, summary, monkeypatch) -> None:
     kept = versions.read_bytes()
     versions.unlink()
     versions.symlink_to(sealed_file)
-    error = refused(summary.guard(10400, files[10400]), "responses/ or observations/", VERSIONS)
+    error = refused(summary.guard(10400, files[10400]), SEALED_WHY, VERSIONS)
     assert SENTINEL not in error and attempts == []
     versions.unlink()
     versions.write_bytes(kept)
@@ -835,7 +835,7 @@ def test_check_holds_before_a_validation_launch_and_refuses_otherwise(
     sealed.parent.mkdir(parents=True)
     sealed.write_text(SENTINEL + "\n")
     error = refused(summary.run("check", "--runs-root", study.root, "--campaign", sealed),
-                    "responses/ or observations/")  # fmt: skip
+                    SEALED_WHY)  # fmt: skip
     assert SENTINEL not in error and attempts == []
 
 
@@ -971,11 +971,11 @@ def test_record_opens_no_file_under_a_runs_sealed_folder(world, summary, monkeyp
     sealed_file.write_text(SENTINEL + "\n")
     attempts = sealed_reads(monkeypatch)
     error = refused(summary.run("record", "engineering", "--runs-root", world.root, "--from",
-                                sealed_file), "responses/ or observations/")  # fmt: skip
+                                sealed_file), SEALED_WHY)  # fmt: skip
     linked = world.out / "linked.json"
     linked.symlink_to(sealed_file)
     error += refused(summary.run("record", "engineering", "--runs-root", world.root, "--from",
-                                 linked), "responses/ or observations/")  # fmt: skip
+                                 linked), SEALED_WHY)  # fmt: skip
     assert attempts == [] and SENTINEL not in error
     assert not decision_path(world.root, "engineering").exists()
 

@@ -601,10 +601,12 @@ def under_sealed(path: Path, base: Path, named: Path | None = None) -> bool:
     """Whether ``path`` (as written, ``named``, or where its links lead) is under a sealed folder
     (``SEALED``: ``responses``, ``observations``, ``judge``, ``judge-superseded`` or
     ``labeling``), below ``base`` (a folder of the base itself does not count). Decided from the
-    names alone: nothing is opened. A path that cannot be resolved (a link loop) counts as
-    sealed: where it leads cannot be shown. The one sealed-path rule of study 3's analysis. The
-    checkout's ``configs/judge/`` (the frozen judge's config) is read by ``load_config`` alone and
-    never passes through it."""
+    names alone: nothing is opened. A path that resolves outside ``base`` is judged by every
+    component of its resolved path (fail closed). A path that cannot be resolved (a link loop)
+    counts as sealed: where it leads cannot be shown. The one sealed-path rule of study 3's
+    analysis. The checkout's ``configs/judge/`` (the frozen judge's config) is read by
+    ``load_config`` alone and never passes through it: with the checkout as the base, the rule
+    would refuse it."""
     try:
         resolved, root = Path(path).resolve(), Path(base).resolve()
     except (OSError, RuntimeError):  # a link loop

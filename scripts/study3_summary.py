@@ -105,8 +105,8 @@ outcome) and its code HEAD's commit and that commit's GPU code.
 
 Every record is JSON, written whole and only where none is (``study3_decisions._publish``).
 Nothing here opens a response, a harm label or a judge output: a campaign file, a record file or a
-record that resolves under a ``responses/`` or ``observations/`` folder
-(``study3_decisions._under_sealed``) is refused before it is read or hashed.
+record that resolves under a sealed folder (``study3_records.SEALED``;
+``study3_decisions._under_sealed``) is refused before it is read or hashed.
 """
 
 import argparse
@@ -134,6 +134,7 @@ from zero_field_refusal.analysis.study3_records import (
     ARMS,
     BATCH,
     RATE_TOLERANCE,
+    SEALED_WHY,
     SEEDS,
     STEP_ROLES,
     sealed_why,
@@ -175,8 +176,8 @@ def sha256(path: Path) -> str:
 
 def unopened(path: Path, base: Path) -> str:
     """Why the sealed-path rule refuses ``path`` (``study3_decisions._under_sealed``): it resolves
-    under a ``responses/`` or ``observations/`` folder, or it cannot be resolved (a link loop)."""
-    return sealed_why(path, base, "resolves under a responses/ or observations/ folder")
+    under a sealed folder (``study3_records.SEALED``), or it cannot be resolved (a link loop)."""
+    return sealed_why(path, base, f"resolves {SEALED_WHY}")
 
 
 def state_of(args: argparse.Namespace) -> dict[str, Any]:

@@ -43,7 +43,7 @@ from zero_field_refusal import code_identity, launch
 from zero_field_refusal.analysis import campaign_prep, qualification_records
 from zero_field_refusal.analysis.study3_decisions import decision_path, decisions
 from zero_field_refusal.analysis.study3_progress import THETA0_RUN, progress
-from zero_field_refusal.analysis.study3_records import SEEDS, read_endpoints
+from zero_field_refusal.analysis.study3_records import SEALED_WHY, SEEDS, read_endpoints
 from zero_field_refusal.analysis.study3_search import CANDIDATES, adjusted_rate
 from zero_field_refusal.config import config_hash
 from zero_field_refusal.launch import campaign_header, load_campaign
@@ -1024,7 +1024,7 @@ def test_a_record_linked_under_responses_is_refused_unopened(world, monkeypatch)
     versions.symlink_to(sealed_file)
     attempts = sealed_reads(monkeypatch)
     error = world.refused("confirmation")
-    assert "responses/ or observations/" in error and SENTINEL not in error
+    assert SEALED_WHY in error and SENTINEL not in error
     versions.unlink()
     versions.write_text(kept)
     record = decision_path(world.root, "n-c1")

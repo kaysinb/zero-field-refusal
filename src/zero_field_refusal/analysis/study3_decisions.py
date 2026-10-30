@@ -45,8 +45,8 @@ maxima) can ride in a record or gate anything.
 ``"root"``: ``"runs"``, the default, for a path relative to RUNS_DIR, or ``"repo"`` for one
 relative to the checkout). It is checked against the file as it is now, byte for byte, whenever
 the record is read; a missing file or another sha256 is a problem. A reference to a file under a
-``responses/`` or ``observations/`` folder is refused and never opened: nothing a decision rests
-on is a response or an observation, and this module opens none.
+sealed folder (``study3_records.SEALED``) is refused and never opened: nothing a decision rests
+on is a response, an observation or a judge output, and this module opens none.
 
 **The schemas**
 - ``engineering``: ``checks`` with the four prescribed ones, ``dry_run``, ``bridge``,
@@ -182,7 +182,7 @@ on is a response or an observation, and this module opens none.
   record named with a sha256 other than its own now, or named without a readable one, or no
   longer there, is a problem; a missing journal, or one with a torn line before the last line of
   its log that is not resolved (``study3_records``' rule), fails closed. A
-  record that resolves (a link, say) under a ``responses/`` or ``observations/`` folder is a
+  record that resolves (a link, say) under a sealed folder (``study3_records.SEALED``) is a
   problem and is never opened. The journal is read as ``study3_records`` reads it: through its
   private ``_read_journal``, which this module keeps importing (one journal reader, no copy).
 - *Nothing is computed from the evidence*: its content is the writer's; this module binds the

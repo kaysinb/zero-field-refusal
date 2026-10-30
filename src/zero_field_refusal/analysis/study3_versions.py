@@ -154,7 +154,7 @@ the check before a campaign is written under it.
 
 **The sealing boundary.** Of a run directory only ``config.yaml`` and ``meta.json`` are read (a
 directory with no start in the journal here; a started run's cell through ``study3_records``); a
-file that resolves under a ``responses/`` or ``observations/`` folder is checked for that before
+file that resolves under a sealed folder (``study3_records.SEALED``) is checked for that before
 any read or hash of a record path, and never opened. No response text, harm label or judge output
 is read.
 
