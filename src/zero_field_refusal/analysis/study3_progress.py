@@ -307,7 +307,9 @@ writer issues the validation only under a versions record that names the fixatio
 counts, and the budget record's when N asks for one; (4) the supplement's successor, once the
 walk reaches the confirmation, then its versions record. A stale n or budget record is no
 invalid one: the step names its successor (``decision``, the successor's kind, its fields). A
-record of the old code that the cycle does not list is not stale: its code decides
+budget record is needed only when N asks for one (``budget_reason``: N above 90, or N raised
+for power): a stale budget record that the n record in force no longer needs asks for no
+successor. A record of the old code that the cycle does not list is not stale: its code decides
 it (an n or budget record not of the code in force is invalid), and no successor is asked. A
 cycle whose record names a fixation keeps the fixation's rates: a repair the new runs would call
 for is listed (``repair_not_applied``) and never issued. Before the confirmation has started,
@@ -1473,8 +1475,8 @@ class _Walk:
                 "confirmation cannot start, and N is never cut"]))  # fmt: skip
         reason = budget_reason(record["N"], self.entry("simulation")["record"])
         budget = self.entry(budget_kind)
-        if reason is None and budget["state"] == "missing":
-            return record
+        if reason is None and (budget["state"] == "missing" or budget.get("stale")):
+            return record  # no budget decision needed: a stale one is no longer needed either
         self.consumed.add(budget_kind)
         if budget["state"] == "invalid":
             raise _Stop(self._blocked("budget", budget["problems"]))

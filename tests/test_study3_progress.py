@@ -1353,6 +1353,36 @@ def test_after_a_cycle_the_stale_records_successors_come_in_the_registered_order
         "study3/decisions/n-c1.json": "study3/decisions/n-c1-2.json"}  # fmt: skip
 
 
+def test_a_stale_budget_record_is_no_longer_needed_once_n_needs_none() -> None:
+    """A cycle before the confirmation, its n and budget records of the old code listed as stale
+    (N = 99 asked for the budget decision); the validation reissued, and the n record's successor
+    gives N = 60, at most 90 and not raised for power: no budget decision is needed
+    (``budget_reason``), so the stale budget record asks for no successor (none has a ``why``)
+    and the route goes on to the confirmation."""
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 28})
+    record = study.cycle_records[1]["record"]
+    old = record["old_code"]
+    study.n(N=99)
+    study.budget()
+    budget = study.entries["budget-c1"]
+    budget["record"]["code"]["gpu_code_sha256"] = old
+    record["affected"]["records"] = sorted(
+        [*record["affected"]["records"],
+         {"path": "study3/decisions/n-c1.json", "sha256": "5" * 64},
+         {"path": "study3/decisions/budget-c1.json", "sha256": "4" * 64}],
+        key=lambda entry: entry["path"])  # fmt: skip
+    successor = {**study.n(N=60), "kind": "n-c1-2"}
+    study.entries["n-c1"] = {**entry("n-c1", "passed", successor),
+                             "path": "/runs/study3/decisions/n-c1-2.json",
+                             "chain": ["/runs/study3/decisions/n-c1.json",
+                                       "/runs/study3/decisions/n-c1-2.json"]}  # fmt: skip
+    result = study.advance()
+    step = result["step"]
+    assert step.get("record") != "budget-c1-2" and (step.get("fields") or {}).get("why", 1)
+    assert result["stage"] == "confirmation", (result["stage"], step)
+    assert not [p for p in result["problems"] if "budget-c1" in p]
+
+
 def test_an_old_code_record_the_cycle_does_not_list_is_not_stale() -> None:
     """A write-once record is stale only when its cycle lists it (``affected.records``: those
     there when it was written). After a cycle at the validation, its fixation's successor written
