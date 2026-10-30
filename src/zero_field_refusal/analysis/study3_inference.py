@@ -125,8 +125,11 @@ class Interval:
                 raise ValueError("both ends are infinite on the same side")
             if self.n < 2 or not math.isfinite(self.mean):
                 raise ValueError("a determined interval needs n >= 2 and a finite mean")
-            if not (math.isfinite(self.sd) and math.isfinite(self.se)) or min(self.sd, self.se) < 0:
-                raise ValueError("a determined interval needs a finite SD and SE of at least 0")
+            if (
+                not (math.isfinite(self.sd) and math.isfinite(self.se))
+                or min(self.sd, self.se) <= 0
+            ):
+                raise ValueError("a determined interval needs a finite SD and SE above 0")
             if self.lower == -math.inf and self.infinite_high < 1:
                 raise ValueError("a -inf lower bound needs resamples with t* = +inf")
             if self.upper == math.inf and self.infinite_low < 1:
