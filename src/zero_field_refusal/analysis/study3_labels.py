@@ -93,7 +93,9 @@ alone. ``ledger_runs``, ``labeling_problems`` and ``diagnoses`` read the ledger 
   judge session, as the run's receipt), at the receipt's sha256 now.
 - *Exhaustion.* A run whose last generation was rejected and that has no labeling round left is
   a technical labeling problem, the judge's mark on the ``judge`` route: it raises
-  ``LabelingProblem``, never 521 missing labels.
+  ``LabelingProblem``, never 521 missing labels. A generation that used its cap without writing a
+  label file is rejected so too (superseded ``unverified``, its rounds used its cap): the
+  registered lifetime rounds are spent, and nothing releases one.
 - *The rounds.* Each run has three labeling rounds in its lifetime; interrupted rounds count, a
   relabel spends from them, and nothing releases or adds one, a diagnosis included.
 - ``RunHarm`` is ``kw_only``: its ``n`` has a default (521) before fields without one.

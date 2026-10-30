@@ -605,7 +605,7 @@ def test_infrastructure_is_refused_for_a_control_mismatch_or_an_exhausted_run(wo
 
 
 def test_infrastructure_is_refused_for_an_exhausted_mark(world):
-    world.spend("r1", rounds=3)
+    world.spend("r1", rounds=2)  # the batch's labeling uses the third
     out = world.batch(["r1"], garble={(1, "control-3")})  # an unparsed control: no mismatch
     assert out.outcome == "mark" and world.events("mark")[0]["why"] == "exhausted"
     with pytest.raises(ValueError, match="exhausted"):
@@ -677,14 +677,83 @@ def test_a_change_after_a_restart_in_the_relabel_is_the_second(world):
 
 
 def test_exhaustion_after_a_rejection_is_the_judges_mark_never_missing_labels(world):
-    world.spend("r1", rounds=3)  # three rounds used in generation 1
+    world.spend("r1", rounds=2)  # two rounds used in generation 1, the batch's labeling the third
     out = world.batch(["r1", "r2"], flips={(1, "control-3")})
     assert out.outcome == "mark" and world.events("mark")[0]["why"] == "exhausted"
+    assert {(e["run"], e["reason"], e["rounds_used"]) for e in world.events("superseded")} == {
+        ("r1", "control_change", 3), ("r2", "control_change", 1)}  # fmt: skip
     assert world.events("mark")[0]["runs"] == ["r1"] and "exhausted" in out.failure
     with pytest.raises(LabelingProblem):
         world.harm("r1")  # never RunHarm(missing=521)
     with pytest.raises(BatchRefused, match="technical mark"):
         world.batch(["r2"])
+
+
+def test_a_generation_that_spent_its_rounds_without_a_label_file_is_exhausted(world):
+    """Three rounds that each died at their first request, and no label file: the open
+    generation is superseded (unverified, its rounds used its cap), so the run is the judge's
+    mark (exhausted): listed, a labeling problem rather than pending, and never sent again."""
+    world.spend("r1", rounds=3)
+    out = world.batch(["r1", "r2"])
+    assert out.outcome == "mark" and out.statuses["r1"] == "rounds spent"
+    (line,) = world.events("superseded")
+    record = rounds_path(world.run("r1"), "wildguard").relative_to(world.run("r1")).as_posix()
+    assert (line["run"], line["reason"], line["rounds_used"]) == ("r1", "unverified", 3)
+    assert [m["path"] for m in line["moved"]] == [record]  # its rounds record alone
+    (mark,) = world.events("mark")
+    assert (mark["why"], mark["runs"]) == ("exhausted", ["r1"]) and "exhausted" in out.failure
+    assert labeling_problems(world.root) == ("r1",)
+    assert world.ledger().remaining("r1") == 0 and world.ledger().current("r1") is None
+    with pytest.raises(LabelingProblem, match="rounds"):
+        world.harm("r1")
+    for runs in (["r1"], ["r1", "r2"], None):
+        with pytest.raises(BatchRefused, match="technical mark"):
+            world.batch(runs)
+    world.diagnose(out.batch, cause="judge", diagnosis="the rounds spent without an answer",
+                   evidence=[])  # fmt: skip
+    with pytest.raises(BatchRefused, match="judge"):
+        world.batch(["r1"])
+    assert world.judge.attempts == 0 and len(world.events("generation")) == 2
+
+
+def test_three_rounds_dying_at_their_first_request_end_in_the_judges_mark(world):
+    """The same through the batches themselves: each round of r1 dies at its first request and
+    the batch is resumed; once its three rounds are spent, the resume makes r1 the judge's mark."""
+    outcomes = [world.batch(["r1"], fail_before_run="r1").outcome]
+    outcomes += [world.batch(None, fail_before_run="r1").outcome for _ in range(3)]
+    assert outcomes == ["unfinished"] * 3 + ["mark"]
+    assert [(e["reason"], e["rounds_used"]) for e in world.events("superseded")] == [
+        ("unverified", 3)]  # fmt: skip
+    assert world.events("mark")[0]["runs"] == ["r1"] and labeling_problems(world.root) == ("r1",)
+
+
+def test_a_generation_keeps_its_rounds_left_without_a_label_file(world):
+    """A generation whose rounds record shows rounds left under its cap, and no label file, is
+    labeled on: never superseded."""
+    world.spend("r1", rounds=2)
+    out = world.batch(["r1"])
+    assert (out.outcome, out.statuses) == ("accepted", {"r1": LABELED})
+    assert world.events("superseded") == [] and world.ledger().current("r1").number == 1
+
+
+def test_the_rounds_used_fail_closed(tmp_path):
+    """A run's rounds used: 0 with neither a rounds record nor a label file; the cap with a label
+    file and no record (its rounds unknown), or with a record that does not read; never more
+    than the cap."""
+    run = tmp_path / "r1"
+    used = study3_label_cli._rounds_used
+    assert used(run, 2) == 0
+    labels = label_path(run, "wildguard")
+    labels.parent.mkdir(parents=True)
+    labels.write_text("")
+    assert used(run, 2) == 2
+    record = rounds_path(run, "wildguard")
+    for text, found in (('{"used": 1}', 1), ('{"used": 5}', 2), ("{", 2), ('{"used": -1}', 2)):
+        record.write_text(text)
+        assert used(run, 2) == found
+    labels.unlink()
+    record.unlink()
+    assert used(run, 3) == 0
 
 
 def test_fresh_controls_after_a_restart_do_not_certify_the_earlier_receipts(world):

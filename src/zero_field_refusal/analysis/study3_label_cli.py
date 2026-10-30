@@ -77,12 +77,16 @@ other: the same command, or no run ids). In order (steps 1–5 send nothing and 
    batch that left it uncovered); its ``judge/`` is moved aside unopened to
    ``judge-superseded/<batch>/g<g>-unverified/`` (``superseded``, ``unverified``, its rounds used
    counted) and the run relabeled in its next generation. A run whose earlier attempt left only a
-   rounds record keeps its generation. Then the runs are labeled, grouped by their generation's
-   cap, one ``run_judging.label_runs`` call per group at ``rounds=cap`` inside study 2's capture,
-   stopping after a failed round; the judge is re-probed (the token check and one synthetic
-   judgment); ``labeled`` records each run's allowlisted status and the receipt sha256 of the
-   runs completed in this process. A failed round, a failed re-probe or an exception appends
-   ``interrupted``: the batch is ``unfinished``, to be resumed with the same command;
+   rounds record keeps its generation while that record shows rounds left under its cap; once it
+   shows the cap used (or does not read), the generation is superseded ``unverified`` the same
+   way, its rounds used its cap: the run has no round left, so it is the judge's mark
+   (``exhausted``, as in step 10) and is never sent again. Then the runs are labeled, grouped by
+   their generation's cap, one ``run_judging.label_runs`` call per group at ``rounds=cap`` inside
+   study 2's capture, stopping after a failed round; the judge is re-probed (the token check and
+   one synthetic judgment); ``labeled`` records each run's allowlisted status and the receipt
+   sha256 of the runs completed in this process. A failed round, a failed re-probe or an
+   exception appends ``interrupted``: the batch is ``unfinished``, to be resumed with the same
+   command;
 8. *the controls of k*: all 40 labeled anew in this attempt, on its own
    ``labeling/batches/<batch>/controls-k<k>-a<n>.jsonl``; one ``controls`` line, which, when
    accepted, ``covers`` each run whose receipt this attempt's ``labeled`` line records and which
@@ -113,9 +117,11 @@ the same judge session. Outputs of an attempt that died before its controls fini
 aside unverified and relabeled, within the run's rounds.
 
 **The judge's mark** is a second control change in one batch, or a run exhausted after a rejected
-generation (no round left: never 521 missing labels, a ``LabelingProblem``). Labeling of that
-candidate stops until the researcher's diagnosis (``write_diagnosis``, under the ledger's lock),
-a closed record ``labeling/diagnosis-<batch>.json``: ``kind``, ``batch``, ``written_at``,
+generation (no round left: never 521 missing labels, a ``LabelingProblem``), a generation that
+used its cap without a label file included (step 7): the registered lifetime rounds are spent,
+with no release. Labeling of that candidate stops until the researcher's diagnosis
+(``write_diagnosis``, under the ledger's lock), a closed record
+``labeling/diagnosis-<batch>.json``: ``kind``, ``batch``, ``written_at``,
 ``cause`` (``infrastructure``: a documented external interruption of the GPU, the Pod or the
 process; or ``judge``), ``diagnosis`` (one line, at most 200 characters) and ``evidence``
 (``{path, sha256, root}``, rehashed on write, a sealed path refused; for ``infrastructure`` the
@@ -131,9 +137,10 @@ refuses otherwise. **A torn tail** of the ledger refuses ``label``, ``diagnose``
 until ``resolve-torn`` repairs it (it prints ``{offset, length, sha256, kind}``).
 
 **What opens the sealed folders here.** The named sealed openers are ``_label_pass`` (the runs'
-labeling and their receipts), ``_rounds_used`` (a run's rounds record), ``_supersede`` (the
-control-change, mark and unverified moves alike, through ``_hashed``, which hashes a run's
-``judge/`` without parsing it and which the completion of a move uses too), ``label_controls``
+labeling and their receipts), ``_rounds_used`` (a run's rounds record, which step 7's
+``_unverified`` reads through it), ``_supersede`` (the control-change, mark and unverified moves
+alike, through ``_hashed``, which hashes a run's ``judge/`` without parsing it and which the
+completion of a move uses too), ``label_controls``
 (the controls' cache, which ``_controls`` then hashes beside the receipts it re-hashes through
 ``study3_labels._receipt_sha256``) and ``write_diagnosis`` (the ledger's records); the ledger's
 journal is read through ``study3_labels``. What is printed is allowlisted: ids, statuses, counts,
@@ -201,6 +208,7 @@ from .study3_labels import (
     JUDGE,
     JUDGE_CONFIG,
     ROUNDS,
+    Generation,
     LedgerError,
     SealedPoint,
     _receipt_sha256,
@@ -650,9 +658,8 @@ class _Batch:
                 return marked
             k = info["k"]
             ledger = read_ledger(self.root)
-            for run in self.runs:  # unverified outputs of an earlier attempt
-                if ledger.current(run) is not None and label_path(self.run_dir(run),
-                                                                  JUDGE).exists():  # fmt: skip
+            for run in self.runs:  # unverified outputs of an earlier attempt, or its cap spent
+                if self._unverified(run, ledger.current(run)):
                     self._supersede(run, k, "unverified")
             marked = self._settle()
             if marked is not None:
@@ -665,6 +672,17 @@ class _Batch:
             done = self._controls(k, attempt, receipts)
             if done is not None:
                 return done
+
+    def _unverified(self, run: str, generation: Generation | None) -> bool:
+        """Whether the run's open generation is superseded ``unverified`` (step 7): it holds a
+        label file of an earlier attempt, or its rounds record shows its cap used with no label
+        file (no round of it is left: ``_settle`` then makes the run the judge's mark)."""
+        if generation is None:
+            return False
+        run_dir = self.run_dir(run)
+        if label_path(run_dir, JUDGE).exists():
+            return True
+        return _rounds_used(run_dir, generation.cap) >= generation.cap
 
     def _settle(self) -> tuple[str, str] | None:
         """Every run of the batch without an open generation gets its next one, unless a run is
@@ -916,11 +934,12 @@ def _bound(runs_root: Path, state: Mapping[str, Any], step: str, candidate: int,
 
 
 def _rounds_used(run_dir: Path, cap: int) -> int:
-    """The rounds a run's open generation used, from its rounds record: 0 without one, the cap
+    """The rounds a run's open generation used, from its rounds record: 0 without one and without
+    a label file, the cap without one beside a label file (the rounds spent on it are unknown) or
     when it does not read, never more than the cap. A named sealed opener."""
     path = rounds_path(run_dir, JUDGE)
     if not path.exists():
-        return 0
+        return cap if label_path(run_dir, JUDGE).exists() else 0
     try:
         used = json.loads(path.read_text())["used"]
     except (OSError, ValueError, KeyError, TypeError):
