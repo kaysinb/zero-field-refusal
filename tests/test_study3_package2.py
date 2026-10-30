@@ -118,7 +118,7 @@ PACKAGE = (
     ANALYSIS / "campaign_prep.py",
 )
 # study 3's label readers (package 2b), each with its own sealing tests
-LABEL_READERS: tuple[Path, ...] = ()
+LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_labels.py",)
 OTHER = (
     ANALYSIS / "__init__.py",
     ANALYSIS / "bootstrap.py",
@@ -151,7 +151,8 @@ SCRIPTS = (
 )
 SUMMARY = SCRIPTS[1]
 LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusal.labeling",
-                 "zero_field_refusal.run_judging")  # fmt: skip
+                 "zero_field_refusal.run_judging",
+                 "zero_field_refusal.analysis.study3_labels")  # fmt: skip
 # The GPU code study 3 qualifies, as of package 1d: its last commit that changed a GPU path, the
 # launcher's further recovery rounds, the driver's control-only path, the export of a technical
 # case's checkpoints, restart-case's refusals of a control-alone state, of departing numerics and
