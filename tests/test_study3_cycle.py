@@ -1199,7 +1199,7 @@ class FixedRoute(CycleRoute):
         names: its predecessor's content under the fix, naming it and the cycle (``supersedes``)
         and, for a budget record, answering the n record in force."""
         step = self.state()["step"]
-        assert (step["kind"], step["record"]) == ("decision", f"{family}-c1-2"), step
+        assert (step["kind"], step.get("record")) == ("decision", f"{family}-c1-2"), step
         before = self.root / step["fields"]["supersedes"]
         record = {**json.loads(before.read_text()), "kind": step["record"],
                   "code": self.fixed_code(),
