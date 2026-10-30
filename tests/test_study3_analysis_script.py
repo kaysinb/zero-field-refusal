@@ -77,9 +77,9 @@ class World:
         mp.setattr(code_identity, "gpu_code_identity", lambda *a, **kw: {"sha256": EXPECTED})
         for module in (fz, self.script):
             mp.setattr(module, "read_state", lambda *a, **kw: (self.state, list(self.endpoints)))
-            mp.setattr(module, "in_force_supplement", lambda c, **kw: (dict(SUPPLEMENT), []))
+            mp.setattr(module, "in_force_supplement",
+                       lambda c, **kw: (supplement, dict(SUPPLEMENT), []))  # fmt: skip
             mp.setattr(module, "decisions", lambda *a, **kw: n)
-        mp.setattr(self.script, "read_confirmation_fixation", lambda c, **kw: (supplement, []))
         mp.setattr(self.script, "read_validation_fixation", lambda c, **kw: ({"level": 0.975}, []))
         mp.setattr(self.script, "ledger_runs", self.ledger_runs)
         mp.setattr(study3_final, "harm_many", self.harm_many)

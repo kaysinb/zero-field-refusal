@@ -9,6 +9,7 @@ world under the sealed-path guard, every label reader a raiser. Candidate 1's K*
 at K_l = 4.8 and K_u = 7.5, so every arm's weight is 1/2."""
 
 import dataclasses
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -194,7 +195,8 @@ def checkout(tmp_path, monkeypatch):
                               supplement=SUPPLEMENT, code=code, written_at=WHEN,
                               labels={"confirmation_runs": 360, "ledger_runs": 0})  # fmt: skip
     monkeypatch.setattr(fz, "read_state", lambda root, **kw: (study.advance(), study.endpoints))
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (dict(SUPPLEMENT), []))
+    monkeypatch.setattr(fz, "in_force_supplement",
+                        lambda candidate, **kw: ({}, dict(SUPPLEMENT), []))  # fmt: skip
     world = Gate(repo, tmp_path / "runs", study, record)
     return world
 
@@ -305,12 +307,33 @@ def test_the_gate_checks_the_in_force_supplement(checkout, monkeypatch) -> None:
     checkout.write()
     checkout.commit()
     changed = {**SUPPLEMENT, "sha256": "f" * 64}
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (changed, []))
+    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: ({}, changed, []))
     assert any("supplement" in p for p in checkout.open())
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, ["invalid"]))
+    monkeypatch.setattr(fz, "in_force_supplement",
+                        lambda candidate, **kw: (None, None, ["invalid"]))  # fmt: skip
     assert any("supplement" in p and "invalid" in p for p in checkout.open())
-    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, []))
+    monkeypatch.setattr(fz, "in_force_supplement", lambda candidate, **kw: (None, None, []))
     assert any("supplement" in p for p in checkout.open())
+
+
+def test_the_in_force_supplement_and_its_link_are_one_reading(tmp_path, monkeypatch) -> None:
+    """The record the reader returns and the link's sha256 are of the same bytes: a file that
+    no longer parses to the record read is refused, never linked."""
+    name = "docs/study3-fixation-confirmation-c1.json"
+    (tmp_path / "docs").mkdir()
+    data = json.dumps({"bootstrap": {"seed": 7, "resamples": 10000}}).encode()
+    (tmp_path / name).write_bytes(data)
+    read = {"record": json.loads(data)}
+    monkeypatch.setattr(fz, "read_confirmation_fixation",
+                        lambda candidate, **kw: (read["record"], []))  # fmt: skip
+    record, link, problems = fz.in_force_supplement(1, runs_root=tmp_path, repo=tmp_path)
+    assert record == {"bootstrap": {"seed": 7, "resamples": 10000}} and problems == []
+    assert link == {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "root": "repo"}
+    read["record"] = {"bootstrap": {"seed": 8, "resamples": 10000}}  # the file changed since
+    record, link, problems = fz.in_force_supplement(1, runs_root=tmp_path, repo=tmp_path)
+    assert (record, link) == (None, None) and "changed while it was read" in problems[0]
+    monkeypatch.setattr(fz, "read_confirmation_fixation", lambda candidate, **kw: (None, ["bad"]))
+    assert fz.in_force_supplement(1, runs_root=tmp_path, repo=tmp_path) == (None, None, ["bad"])
 
 
 # ------------------------------------------------------------------ the builder on files

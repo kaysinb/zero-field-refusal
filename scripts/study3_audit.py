@@ -19,9 +19,9 @@ The audit's folder is RUNS_DIR/study3-final/c<N>/audit/, beside the analysis.
    problem; a clean checkout of a known commit (the records' code); the latest analysis
    (``analysis.json``, or a recomputation's ``analysis-<k>.json``), candidate N's, naming the
    committed freeze: the one terminal draw comes after the judge-based analysis;
-2. the in-force confirmation supplement's ``audit`` (``study3_versions.read_confirmation_fixation``;
-   its link, ``study3_freeze.in_force_supplement``): the seed, the agreement seed and the
-   registered procedure;
+2. the in-force confirmation supplement's ``audit`` and its link, from one reading
+   (``study3_freeze.in_force_supplement``, by ``study3_versions.read_confirmation_fixation``):
+   the seed, the agreement seed and the registered procedure;
 3. the per-item labels of every bracket run of the frozen comparisons (``study3_final.item_labels``,
    their counts those of the runs' harm), the frame (``study3_audit.audit_frame``) and, per
    estimable comparison, its judge point Σ c_i·y_J,i, which must be the analysis's primary mean to
@@ -109,7 +109,6 @@ from zero_field_refusal.analysis.study3_labels import (
     SealedPoint,
 )
 from zero_field_refusal.analysis.study3_records import EXPERIMENT, under_sealed
-from zero_field_refusal.analysis.study3_versions import read_confirmation_fixation
 from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.tracking import git_state
 
@@ -205,15 +204,11 @@ def audit_folder(command: str, root: Path, candidate: int) -> Path:
 def supplement(command: str, root: Path, candidate: int) -> tuple[dict[str, Any], dict]:
     """The in-force supplement's ``audit`` (its seed, agreement seed and procedure, the
     registered one) and its link."""
-    record, problems = read_confirmation_fixation(candidate, runs_root=root, repo=REPO)
-    if record is None:
+    record, link, problems = in_force_supplement(candidate, runs_root=root, repo=REPO)
+    if record is None or link is None:
         refuse(command, f"candidate {candidate}'s confirmation supplement is "
                + (f"not valid ({problems[0]})" if problems else "missing")
                + ": it fixes the audit's seeds")  # fmt: skip
-    link, problems = in_force_supplement(candidate, runs_root=root, repo=REPO)
-    if link is None:
-        refuse(command, "the in-force confirmation supplement cannot be named: "
-               + ("; ".join(problems) or "missing"))  # fmt: skip
     audit = record["audit"]
     if audit.get("procedure") != study3_audit.PROCEDURE:
         refuse(command, f"the supplement's audit procedure {audit.get('procedure')!r} is not the "

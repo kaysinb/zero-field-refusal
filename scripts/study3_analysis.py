@@ -27,12 +27,12 @@ label. It reads no label: of the sealed folders it reads the labeling ledger's r
 **analyze** runs the judge-based analysis on the frozen cohorts:
 1. the analysis freeze, read by the gate's own reading (``study3_freeze.read_freeze``), with no
    problem, then a clean checkout of a known commit (the records' code);
-2. the in-force records, each through its reader: the confirmation supplement
-   (``study3_versions.read_confirmation_fixation``: the bootstrap's seed and resamples; its link,
-   ``study3_freeze.in_force_supplement``), the validation fixation
-   (``study3_versions.read_validation_fixation``: the level L) and the n record
-   (``study3_decisions.decisions``: validation's A–F cohort, which must be the frozen one); κ per
-   arm from the simulation fixation's ``curvature`` (``simulation_curvature``);
+2. the in-force records, each through its reader: the confirmation supplement and its link from
+   one reading (``study3_freeze.in_force_supplement``, by
+   ``study3_versions.read_confirmation_fixation``: the bootstrap's seed and resamples), the
+   validation fixation (``study3_versions.read_validation_fixation``: the level L) and the n
+   record (``study3_decisions.decisions``: validation's A–F cohort, which must be the frozen
+   one); κ per arm from the simulation fixation's ``curvature`` (``simulation_curvature``);
 3. the outputs so far (below: a resumed or a superseding run);
 4. the utility gates over each comparison's frozen blocks at α = 0.05/8 per bound
    (``study3_blocks.utility_gate``, from the state's endpoints, the frozen runs checked), which
@@ -182,7 +182,6 @@ from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import (
     _added,
     _blob,
-    read_confirmation_fixation,
     read_validation_fixation,
     registered_policy,
 )
@@ -305,15 +304,11 @@ def simulation_curvature() -> dict[str, Any]:
 def in_force(root: Path, candidate: int, freeze_: Mapping[str, Any]) -> dict[str, Any]:
     """Step 2: the supplement's bootstrap and link, L, κ, and the n record's validation cohort
     checked against the frozen validation blocks of A–F."""
-    supplement, problems = read_confirmation_fixation(candidate, runs_root=root, repo=REPO)
-    if supplement is None:
+    supplement, link, problems = in_force_supplement(candidate, runs_root=root, repo=REPO)
+    if supplement is None or link is None:
         refuse("analyze", f"candidate {candidate}'s confirmation supplement is "
                + (f"not valid ({problems[0]})" if problems else "missing")
                + ": it fixes the bootstrap's seed")  # fmt: skip
-    link, problems = in_force_supplement(candidate, runs_root=root, repo=REPO)
-    if link is None:
-        refuse("analyze", "the in-force confirmation supplement cannot be named: "
-               + ("; ".join(problems) or "missing"))  # fmt: skip
     fixation, problems = read_validation_fixation(candidate, runs_root=root, repo=REPO)
     if fixation is None:
         refuse("analyze", f"candidate {candidate}'s validation fixation is "

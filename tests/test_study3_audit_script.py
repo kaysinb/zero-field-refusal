@@ -57,8 +57,8 @@ class Audit:
         supplement = {"bootstrap": dict(BOOTSTRAP), "audit": dict(AUDIT)}
         mp = monkeypatch
         mp.setattr(self.script, "REPO", world.repo)
-        mp.setattr(self.script, "read_confirmation_fixation", lambda c, **kw: (supplement, []))
-        mp.setattr(self.script, "in_force_supplement", lambda c, **kw: (dict(SUPPLEMENT), []))
+        mp.setattr(self.script, "in_force_supplement",
+                   lambda c, **kw: (supplement, dict(SUPPLEMENT), []))  # fmt: skip
         mp.setattr(study3_final, "run_items", self.items)
         mp.setattr(study3_final, "_texts", self.texts)
         self.skew: str | None = None
