@@ -312,10 +312,14 @@ for power): a stale budget record that the n record in force no longer needs ask
 successor. A record of the old code that the cycle does not list is not stale: its code decides
 it (an n or budget record not of the code in force is invalid), and no successor is asked. A
 cycle whose record names a fixation keeps the fixation's rates: a repair the new runs would call
-for is listed (``repair_not_applied``) and never issued. Before the confirmation has started,
-the registered routes apply unchanged: a fixed rate's re-qualification failing scientifically
-moves A or F to candidate 2 (or ends candidate 2 with the scientific feasibility report) and
-closes P–F for P; a rerun validation failing its gate takes its route.
+for is listed (``repair_not_applied``) and never issued. P closed at the re-qualification
+(its technical failure unresolved after the cycle, a closure record, or before the confirmation
+a scientific failure) leaves the validation fixation's successor without P, A's and F's rates
+kept; a fixation in force that leaves out an arm the route holds active blocks. Before the
+confirmation has started, the registered routes apply unchanged: a fixed rate's
+re-qualification failing scientifically moves A or F to candidate 2 (or ends candidate 2 with
+the scientific feasibility report) and closes P–F for P; a rerun validation failing its gate
+takes its route.
 
 *The confirmation boundary* ("Validation, confirmation and stopping", "Confirmation": the
 confirmation never moves the candidate). Once a block of the candidate's confirmation has
@@ -327,7 +331,12 @@ the validation (its runs reused: a cycle once the confirmation has started rerun
 validation nor the search) reads as it did: a failed gate of a comparison the confirmation holds
 would block (``confirmation_fixed``), never move the candidate or close P. An arm closed before
 the start (P–F's gate, a scientific failure) keeps its route as it was. The n and budget
-successors then carry the predecessors' N, cap and cohort (the step's fields).
+successors then carry the predecessors' N, cap and cohort (the step's fields). A technical
+failure of P alone after the start (its re-qualification unresolved after the cycle, or a
+closure record) closes P, and only P–F ends: the n record in force keeps the frozen design as N
+was decided, A's and F's rates, N, the cap, the cohort, and P's rates with P–F (``_frozen_p``:
+P's rates those the validation fixation chain fixed), and it is read against the route's A–F
+alone; P need not stay qualified or active, and A–F goes on.
 
 **Problems.** Nothing is decided on problems. While ``read_endpoints`` or ``read_holds`` reports a
 problem (every problem of the one check of a supersession record among them:
@@ -668,10 +677,12 @@ def read_records(
 def _fixed(repo: Path) -> dict[int, dict[str, dict[str, Any]]]:
     """The link in force of each candidate's fixation chains in the checkout (``Records.fixed``),
     read as written (their reader, ``study3_versions``, checks them): its path, number, GPU code
-    and rates. A link that resolves under a sealed folder or cannot be read gives no code."""
+    and rates, and for the validation fixation the rates of an arm an earlier link fixed and the
+    link in force leaves out (``dropped``: P, closed after a cycle). A link that resolves under a
+    sealed folder or cannot be read gives no code."""
     import json
 
-    from .study3_versions import fixation_chain, fixation_number
+    from .study3_versions import dropped_rates, fixation_chain, fixation_number
 
     out: dict[int, dict[str, dict[str, Any]]] = {}
     for c in (1, 2):
@@ -687,9 +698,10 @@ def _fixed(repo: Path) -> dict[int, dict[str, dict[str, Any]]]:
                     data = None
             data = data if isinstance(data, dict) else {}
             code = data.get("code") if isinstance(data.get("code"), Mapping) else {}
-            out.setdefault(c, {})[step] = {"path": names[-1], "k": fixation_number(names[-1]),
-                                           "code": code.get("gpu_code_sha256"),
-                                           "rates": data.get("rates")}  # fmt: skip
+            out.setdefault(c, {})[step] = {
+                "path": names[-1], "k": fixation_number(names[-1]),
+                "code": code.get("gpu_code_sha256"), "rates": data.get("rates"),
+                "dropped": dropped_rates(c, repo) if step == "validation" else {}}  # fmt: skip
     return out
 
 
@@ -1247,6 +1259,12 @@ class _Walk:
                      for arm in self.arms}  # fmt: skip
         state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
                              qualified, problems=())  # fmt: skip
+        unfixed = [arm for arm in self.arms if arm not in fixed]
+        if unfixed:  # a successor leaves an arm out only once the route closed it
+            link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
+            self._block_on(stage, [f"{link.get('path')}: the validation fixation in force does "
+                                   f"not fix {', '.join(unfixed)}, active on the route: a "
+                                   "successor leaves P out only once P is closed"])  # fmt: skip
         final = {arm: dict(fixed.get(arm) or selected[arm]) for arm in self.arms}
         conditions, loud, held_back = {}, [], []
         for arm in self.arms:
@@ -1514,11 +1532,16 @@ class _Walk:
 
     def _against_n(self, kind: str, record: Mapping[str, Any],
                    fields: Mapping[str, Any]) -> list[str]:  # fmt: skip
-        """An n record against the route (module docstring, "The n record")."""
+        """An n record against the route (module docstring, "The n record"); once the
+        confirmation has started, a P closed since keeps the record's P–F (``_frozen_p``)."""
         found = []
         if self.entry("engineering")["state"] != "passed":
             found.append(f"{kind}: an n record is accepted only once the engineering record "
                          "passed")  # fmt: skip
+        frozen = self._frozen_p(record, fields)
+        if frozen is not None:  # A–F as the route has it, P as the record froze it
+            fields = {**fields, "active": ["A-F", "P-F"],
+                      "rates": {**fields["rates"], "P": frozen}}  # fmt: skip
         if record.get("active") != fields["active"]:
             found.append(f"{kind}: its comparisons {record.get('active')} are not the active "
                          f"ones {fields['active']}")  # fmt: skip
@@ -1548,6 +1571,31 @@ class _Walk:
                          f"{len(extra) + len(given) - len(named)} extra, {twice} "
                          "duplicated")  # fmt: skip
         return found
+
+    def _frozen_p(self, record: Mapping[str, Any],
+                  fields: Mapping[str, Any]) -> dict[str, float] | None:  # fmt: skip
+        """P's rates as a frozen n record keeps them (module docstring, "The confirmation
+        boundary"): once the candidate's confirmation has started, P closed in the route since
+        the record was written (P–F active in it, P inactive now), and the record's P rates
+        those the validation fixation chain fixed for P (its link in force, or the earlier link
+        a successor that left P out names: ``dropped``). None otherwise: the record is read
+        against the route as it is."""
+        candidate = fields["candidate"]
+        rates = record.get("rates")
+        if ("P" in self.arms or not self._confirming(candidate)
+                or record.get("active") != ["A-F", "P-F"] or not isinstance(rates, Mapping)
+                or not isinstance(rates.get("P"), Mapping)):  # fmt: skip
+            return None
+        link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
+        fixed = (link.get("rates") or {}).get("P") or (link.get("dropped") or {}).get("P")
+        if not isinstance(fixed, Mapping):
+            return None
+        try:
+            same = all(math.isclose(rates["P"][k], fixed[k], rel_tol=RATE_TOLERANCE)
+                       for k in ("lr_l", "lr_u"))  # fmt: skip
+        except (KeyError, TypeError):
+            return None
+        return {k: rates["P"][k] for k in ("lr_l", "lr_u")} if same else None
 
     # -- the confirmation
 

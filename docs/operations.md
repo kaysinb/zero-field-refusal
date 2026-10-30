@@ -2375,7 +2375,11 @@ before each command below.
   any cycle: `record`, `fixation` and `versions` refuse it, so what the cycle lists as stale
   changes only when a file is tampered with (the cycle then reads invalid). The search is never
   rerun after the fixation (`search=reuse`), and the fixed rates stand: a repair the re-qualified
-  runs would call for is listed (`repair_not_applied`) and never issued. The successors come in this order, each written
+  runs would call for is listed (`repair_not_applied`) and never issued. P alone may leave the
+  fixed rates: once the re-qualification closes P (its technical failure unresolved after the
+  cycle, a closure record, or before the confirmation a scientific failure), the validation
+  fixation's successor leaves P out and keeps A's and F's rates; the record before it keeps P's
+  rates and states, and P's records stay. The successors come in this order, each written
   when the state's step names it and committed alone (one written out of turn is refused with
   the step the state names):
   1. the validation fixation's successor (`study3_summary.py fixation validation`, once the
@@ -2396,7 +2400,12 @@ before each command below.
   a re-qualification failing scientifically blocks the route with the reason
   `confirmation_fixed` instead of moving the candidate or closing an arm; the n, budget and
   supplement successors differ from their predecessors only in their code, time, `supersedes`
-  and the references to the records in force (N, the cap, the cohort and the seeds stand).
+  and the references to the records in force (N, the cap, the cohort and the seeds stand). A
+  technical failure of P alone (its re-qualification unresolved after the cycle, or a closure
+  record) closes P, and only P–F ends: the n record and its successor keep the frozen design,
+  P's rates and P–F as N was decided included; a validation fixation's successor written once
+  the re-qualification closed P leaves P out; and the confirmation goes on with A and F alone
+  (four runs per block).
   Before the confirmation has started, the registered routes apply unchanged: a fixed rate's
   re-qualification failing scientifically moves A or F to candidate 2 (at candidate 2, the
   scientific feasibility report) and closes P–F for P; a rerun validation failing its gate takes

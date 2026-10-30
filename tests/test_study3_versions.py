@@ -34,6 +34,7 @@ from zero_field_refusal.analysis import study3_versions as sv
 from zero_field_refusal.analysis.study3_decisions import cap_of
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE, Cell, Endpoint
 from zero_field_refusal.paths import REPO_ROOT
+from zero_field_refusal.qualification_constants import FAILING, NOT_QUALIFIED
 
 REGISTRATION = "docs/study3-preregistration.md"
 AMENDMENTS = "".join(f"\n### Amendment {n}: change {n}\n\nText {n}.\n" for n in (1, 2, 3))
@@ -1866,6 +1867,65 @@ def test_after_the_confirmation_started_the_supplement_successor_keeps_n_and_see
         supplement(bootstrap_seed=SEEDED["bootstrap_seed"] + 1)
     record = supplement()
     assert record["validation_fixation"]["path"] == VALIDATION_C1_2
+    assert record["n"]["path"] == "study3/decisions/n-c1-2.json"
+    study.put("docs/study3-fixation-confirmation-c1-2.json", record)
+    assert study.read_confirmation() == (record, [])
+
+
+def p_requalified(study, state: str) -> None:
+    """P's fixed rates re-qualified under the fix as ``state`` (the stage then holds A and F)."""
+    for lr in RATES["P"].values():
+        study.states[("P", lr)] = state
+    study.given = stage(arms=("A", "F"))
+
+
+def test_a_successor_leaves_p_out_only_once_p_is_closed(study) -> None:
+    """Before the confirmation, after a cycle: the validation fixation's successor may leave P
+    out, A's and F's rates kept, only once P is closed (its re-qualification failing or technical);
+    while P's rates stay qualified it is refused. The record before it keeps P's rates
+    (``dropped_rates``); a successor that leaves A out is refused by the reader."""
+    study.validated()
+    cycled(study, [VALIDATION_C1, FIRST])
+    study.given = stage(arms=("A", "F"))  # P qualified, and left out
+    with pytest.raises(sv.RecordRefused, match="P is left out, and P is not closed"):
+        successor(study)
+    p_requalified(study, "failing")
+    record = successor(study)
+    assert record["rates"] == {arm: RATES[arm] for arm in ("A", "F")}
+    study.put(VALIDATION_C1_2, record)
+    assert study.read_validation() == (record, [])
+    assert sv.dropped_rates(1, study.repo) == {"P": RATES["P"]}
+    study.edit(VALIDATION_C1_2, rates={"F": RATES["F"]})
+    found, problems = study.read_validation()
+    assert found is None and has(problems, "rates", "A"), problems
+
+
+def test_a_closed_p_stays_in_the_frozen_n_record_once_the_confirmation_started(study) -> None:
+    """Once the confirmation has started: P's re-qualification failing scientifically closes no
+    arm (``confirmation_fixed``), so a successor leaving P out is refused; P's technical failure
+    closes P alone, and the successor leaves P out. The n record's successor keeps P's rates and
+    P–F as N was decided, and the supplement's successor names it: P's rates are those the earlier
+    link fixed."""
+    study.validated()
+    study.n(75)
+    study.put(CONFIRMATION_C1, study.supplement())
+    study.versions(SECOND, CONFIRMATION_C1, "confirmation_c1", supersedes_reason="next_stage")
+    cycled(study, [CONFIRMATION_C1, FIRST, SECOND, VALIDATION_C1, "n-c1"], step="confirmation",
+           seed=10400)  # fmt: skip
+    p_requalified(study, FAILING)
+    with pytest.raises(sv.RecordRefused, match="P is left out, and P is not closed"):
+        successor(study)
+    p_requalified(study, NOT_QUALIFIED)
+    study.put(VALIDATION_C1_2, successor(study))
+    n = json.loads((study.root / "study3" / "decisions" / "n-c1.json").read_text())
+    cycle = study.root / "study3" / "decisions" / "cycle-c1.json"
+    study.records.write("n-c1-2", {**n, "kind": "n-c1-2", "code": study.now(), "supersedes": {
+        "path": "study3/decisions/n-c1.json", "sha256": study.records.digest("n-c1"),
+        "reason": "cycle_c1", "cycle": {"path": "study3/decisions/cycle-c1.json",
+                                        "sha256": sha256(cycle)}}})  # fmt: skip
+    record = sv.confirmation_fixation(study.root, 1, code=study.now(), repo=study.repo,
+                                      supersedes=superseding(study, CONFIRMATION_C1),
+                                      **SEEDED)  # fmt: skip
     assert record["n"]["path"] == "study3/decisions/n-c1-2.json"
     study.put("docs/study3-fixation-confirmation-c1-2.json", record)
     assert study.read_confirmation() == (record, [])

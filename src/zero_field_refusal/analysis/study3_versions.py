@@ -35,7 +35,8 @@ its confirmation a supplement that names the first.
   ``instruments``: the model and the judge as this checkout's configs give them.
 - ``fixation_name`` and ``versions_name``: the records' paths in the checkout;
   ``fixation_chain`` and ``fixation_number``: a fixation record and its successors there, and a
-  link's number.
+  link's number; ``dropped_rates``: the rates of an arm an earlier link of the validation
+  fixation chain fixed and its link in force leaves out (P, closed after a cycle).
 
 **The records** lie in the checkout (``docs/``). Their schemas are closed: a field the schema does
 not name is refused, and they hold numbers, ids, paths and hashes only (the model's and the
@@ -88,10 +89,17 @@ cycle-c<N>.json`` under RUNS_DIR); the first record carries none. The record in 
 last link of an unbroken chain; a successor is accepted only after a stale record (the cycle
 ``study3_cycle.read_cycle`` accepts has the predecessor's code as its old code and lists the
 predecessor among the records it makes stale; the successor carries the cycle's fix). A
-validation fixation's successor keeps the candidate and the rates of the one before it. A
-supplement's successor names the validation fixation and the n record in force; once the
-confirmation has started (``study3_decisions.confirmation_started``), its N, cap, bootstrap and
-audit seeds are its predecessor's: they never change without an explicit prospective amendment.
+validation fixation's successor keeps the candidate and the rates of the one before it: A's and
+F's as they were, and P's while P–F is open. P alone is left out once the route closed it after
+the cycle ("Failure routes": in P alone, P is closed and only P–F ends): a valid closure record
+of P, or P's re-qualification of a rate the record before it fixed technical (unresolved after
+the cycle) or, before the confirmation has started, failing (after it, a scientific failure
+closes no arm: ``confirmation_fixed``). The record before it stays as it was, P's rates and
+states in it as their evidence (``dropped_rates``). A supplement's successor names the
+validation fixation and the n record in force; once the confirmation has started
+(``study3_decisions.confirmation_started``), its N, cap, bootstrap and audit seeds are its
+predecessor's: they never change without an explicit prospective amendment, and the n record in
+force keeps P's rates and P–F as N was decided, a P closed since fixed by the earlier link alone.
 3. **The versions record**, ``docs/study3-versions.json`` and any later one
    ``docs/study3-versions-<k>.json`` (k = 2, 3, …): ``what`` (the fixed text ``WHAT``),
    ``written_at``, ``code`` (its ``commit`` alone), ``model``, ``judge``, ``fixation`` (the
@@ -123,9 +131,10 @@ is not stale (above, "Successors of a fixation").
 - The confirmation supplement: its schema; its evidence now; its candidate's validation fixation
   valid (its full reader) and the one in force, the n record the one in force
   (``study3_decisions.decisions``) and valid and passed, of its N and cap, of the fixed L, of the
-  fixed rates for the arms it names and of the fixation's GPU code; the budget record named
-  exactly when N needs one, valid, its decision proceed; the seeds' form; its code, checked as the
-  validation fixation's is (so both carry the code in force: one GPU code).
+  fixed rates for the arms it names (once the confirmation has started, P's those of the earlier
+  link that fixed P, when the link in force leaves P out) and of the fixation's GPU code; the
+  budget record named exactly when N needs one, valid, its decision proceed; the seeds' form; its
+  code, checked as the validation fixation's is (so both carry the code in force: one GPU code).
 - The versions record: its schema and the evidence it names now (its fixation, the record it
   supersedes).
 
@@ -244,6 +253,8 @@ from .study3_decisions import (
     _under_sealed,
     budget_reason,
     cap_of,
+    closures,
+    confirmation_started,
     decision_path,
     decisions,
     kind_of,
@@ -943,11 +954,11 @@ def _chain_problems(names: Sequence[str], repo: Path) -> list[str]:
 
 
 def _succession(step: str, record: Mapping[str, Any], candidate: int, k: int, root: Path,
-                repo: Path) -> list[str]:  # fmt: skip
+                repo: Path, reading: Mapping[str, Any] | None = None) -> list[str]:  # fmt: skip
     """A fixation successor against the record before it and the candidate's cycle (module
-    docstring, "Successors of a fixation")."""
+    docstring, "Successors of a fixation"); ``reading``: the candidate's qualification under the
+    code it counts under (``_recomputed``'s), for a validation fixation's successor."""
     from .study3_cycle import read_cycle  # it reads the decision records: here only
-    from .study3_decisions import confirmation_started
 
     before = fixation_name(step, candidate, k - 1)
     path = repo / before
@@ -978,11 +989,7 @@ def _succession(step: str, record: Mapping[str, Any], candidate: int, k: int, ro
         out.append(f"code: its GPU code {record['code']['gpu_code_sha256']} is not the cycle's "
                    f"fix {fix}: a successor carries the fix")  # fmt: skip
     if step == "validation":
-        if record["candidate"] != predecessor.get("candidate") or not _same_rates(
-                record["rates"], predecessor.get("rates")):  # fmt: skip
-            out.append(f"rates: the candidate and the rates are not those of {before}: after the "
-                       "validation fixation a cycle keeps the candidate and the rates (no new "
-                       "candidate, rate or K*)")  # fmt: skip
+        out += _kept_rates(record, predecessor, before, candidate, root, repo, reading)
     elif confirmation_started(root, candidate):
         changed = [key for key in ("N", "cap", "bootstrap", "audit")
                    if record.get(key) != predecessor.get(key)]  # fmt: skip
@@ -991,6 +998,86 @@ def _succession(step: str, record: Mapping[str, Any], candidate: int, k: int, ro
                        "the seeds never change without an explicit prospective amendment (a "
                        "successor differs from its predecessor only in its code, written_at, "
                        "supersedes and the references to the records in force)")  # fmt: skip
+    return out
+
+
+def _kept_rates(record: Mapping[str, Any], predecessor: Mapping[str, Any], before: str,
+                candidate: int, root: Path, repo: Path,
+                reading: Mapping[str, Any] | None) -> list[str]:  # fmt: skip
+    """A validation fixation's successor keeps the candidate and the rates of the record before
+    it (no new candidate, rate or K*): A's and F's as they were, and P's while P–F is open. P
+    alone may be left out, once the route closed it after the cycle (``_closed_p``); the record
+    before it keeps P's rates as its evidence (module docstring, "Successors of a fixation")."""
+    rates, other = record["rates"], predecessor.get("rates")
+    kept = isinstance(other, Mapping) and set(rates) <= set(other)
+    if (record["candidate"] != predecessor.get("candidate") or not kept
+            or not _same_rates(rates, {arm: other[arm] for arm in rates})
+            or set(other) - set(rates) - {"P"}):  # fmt: skip
+        return [f"rates: the candidate and the rates are not those of {before}: after the "
+                "validation fixation a cycle keeps the candidate and the rates (no new candidate, "
+                "rate or K*), P's left out only once P is closed"]  # fmt: skip
+    if "P" in other and "P" not in rates and not _closed_p(candidate, other["P"], root, repo,
+                                                            reading):  # fmt: skip
+        return [f"rates: P is left out, and P is not closed: {before} fixes P, and a successor "
+                "leaves P out only once the route closed it after the cycle (a valid closure "
+                "record of P, or P's re-qualification of a fixed rate technical, or failing "
+                "before the confirmation has started)"]  # fmt: skip
+    return []
+
+
+def _closed_p(candidate: int, rates: Mapping[str, Any], root: Path, repo: Path,
+              reading: Mapping[str, Any] | None) -> bool:  # fmt: skip
+    """Whether the route closes P at the candidate's re-qualification after its cycle ("Failure
+    routes": in P alone, P is closed and only P–F ends; "Validation, confirmation and stopping":
+    once the confirmation has started, a scientific failure closes no arm the confirmation
+    holds): a valid closure record of P, or a rate the record before it fixed for P (``rates``)
+    whose re-qualification under the code it counts under (``reading``) is technical (unresolved
+    after the cycle) or, before the confirmation has started, failing; a rate still waiting
+    closes nothing."""
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+    from .study3_progress import _condition
+
+    closure = closures(root, candidate, repo=repo).get(f"closure-c{candidate}-P") or {}
+    if closure.get("state") == "failed":  # a valid closure record: a terminal outcome
+        return True
+    if reading is None:
+        return False
+    closing = {"technical"} if confirmation_started(root, candidate) else {"technical", "failing"}
+    for label in LABELS:
+        try:
+            rate = qualification_records.rate_of(reading, "P", float(rates[label]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if rate is not None and _condition(rate, reading)[0] in closing:
+            return True
+    return False
+
+
+def dropped_rates(candidate: int, repo: str | Path = REPO_ROOT) -> dict[str, dict[str, Any]]:
+    """The rates of every arm that an earlier link of the candidate's validation fixation chain
+    fixes and its link in force leaves out (P, once closed after a cycle: module docstring,
+    "Successors of a fixation"), as the last link that fixed it gives them; none without such a
+    link. The links are read as written: the chain's reader checks their integrity."""
+    repo = Path(repo)
+    names = fixation_chain("validation", candidate, repo=repo)
+    links = []
+    for name in names:
+        path = repo / name
+        data = None
+        if not _under_sealed(path, repo):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = None
+        rates = data.get("rates") if isinstance(data, dict) else None
+        links.append(rates if isinstance(rates, Mapping) else {})
+    if not links:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for rates in links[:-1]:
+        for arm, pair in rates.items():
+            if arm not in links[-1] and isinstance(pair, Mapping):
+                out[arm] = dict(pair)
     return out
 
 
@@ -1030,25 +1117,28 @@ def _validation_problems(record: Any, candidate: int, root: Path, repo: Path,
     problems += [f"engineering: {p}" for p in _passed("engineering", engineering, found)]
     problems += _instrument_problems(record)
     problems += _code_problems(record["code"], candidate, root, repo, engineering)
+    reading = None
     if engineering is not None:
-        problems += _recomputed(record, candidate, root, engineering, settings, repo)
+        found, reading = _recomputed(record, candidate, root, engineering, settings, repo)
+        problems += found
     if k > 1:
-        problems += _succession("validation", record, candidate, k, root, repo)
+        problems += _succession("validation", record, candidate, k, root, repo, reading)
     return problems
 
 
 def _recomputed(record: Mapping[str, Any], candidate: int, root: Path,
                 engineering: Mapping[str, Any], settings: Mapping[str, Any] | None,
-                repo: Path) -> list[str]:  # fmt: skip
+                repo: Path) -> tuple[list[str], dict[str, Any] | None]:  # fmt: skip
     """The qualification recomputed under the code it counts under for the candidate
     (``_qualification_code``): without a problem, the fixed rates' states the pinned ones, and no
-    input that the ledger does not pin bearing on the fixed rates (``_bears_on``)."""
+    input that the ledger does not pin bearing on the fixed rates (``_bears_on``). Returns the
+    problems and the reading (None when there is none)."""
     in_force = _qualification_code(root, repo, candidate, engineering)
     if in_force is None:
-        return []  # no code in force: named with the code
+        return [], None  # no code in force: named with the code
     reading, problems = _reading(root, candidate, in_force, settings)
     if reading is None:
-        return problems
+        return problems, None
     pinned = record["qualification"]
     for arm, pair in _states(reading, record["rates"]).items():
         for label, state in pair.items():
@@ -1065,7 +1155,7 @@ def _recomputed(record: Mapping[str, Any], candidate: int, root: Path,
     if added:
         problems.append(f"qualification.ledger: the qualification takes now as inputs {added}, "
                         "which the record does not pin")  # fmt: skip
-    return problems
+    return problems, reading
 
 
 def _fixed_folders(reading: Mapping[str, Any], rates: Mapping[str, Mapping[str, float]],
@@ -1291,7 +1381,10 @@ def _confirmation_problems(record: Any, candidate: int, root: Path, repo: Path,
         problems += [f"{name} {record[name]} is not the {kind} record's {n[name]}"
                      for name in ("N", "cap") if record[name] != n[name]]  # fmt: skip
         if fixation is not None:
-            problems += _against_fixation(n, fixation, kind)
+            # once the confirmation has started, the n record keeps P as N was decided: a P
+            # closed since is fixed by an earlier link of the chain alone
+            frozen = dropped_rates(candidate, repo) if confirmation_started(root, candidate) else {}
+            problems += _against_fixation(n, fixation, kind, frozen)
         simulation, _ = read_decision(root, "simulation", repo=repo)
         problems += _budget_problems(record, n, simulation, root, repo, candidate)
     # the supplement's code is in force for the candidate, as the valid validation fixation's is:
@@ -1323,13 +1416,16 @@ def _no_fixation(candidate: int, problems: Sequence[str]) -> str:
         "missing" if not problems else f"not valid ({problems[0]})")  # fmt: skip
 
 
-def _against_fixation(n: Mapping[str, Any], fixation: Mapping[str, Any], kind: str) -> list[str]:
-    """The n record of the fixed L, rates (for the arms it names) and GPU code."""
+def _against_fixation(n: Mapping[str, Any], fixation: Mapping[str, Any], kind: str,
+                      frozen: Mapping[str, Any] | None = None) -> list[str]:  # fmt: skip
+    """The n record of the fixed L, rates (for the arms it names) and GPU code; ``frozen``: the
+    rates of an arm the fixation in force no longer fixes (``dropped_rates``: P, closed after the
+    confirmation started), which a frozen n record keeps as the earlier link fixed them."""
     found = []
     if not math.isclose(n["level"], fixation["level"], rel_tol=1e-12):
         found.append(f"n: the {kind} record's L {n['level']} is not the fixed {fixation['level']}")
     for arm, pair in n["rates"].items():
-        fixed = fixation["rates"].get(arm)
+        fixed = fixation["rates"].get(arm) or (frozen or {}).get(arm)
         if fixed is None or any(not math.isclose(pair[k], fixed[k], rel_tol=RATE_TOLERANCE)
                                 for k in LABELS):  # fmt: skip
             found.append(f"n: the {kind} record's rates of {arm} {pair} are not the fixed {fixed}")
@@ -1392,7 +1488,7 @@ def validation_fixation(
     engineering record is not there, not valid or not passed, or for any problem its reader would
     name; and once the record is written. ``supersedes``: the successor of the fixation in force
     after the candidate's cycle (module docstring, "Successors of a fixation"), with the same
-    candidate and rates, written as the chain's next link."""
+    candidate and A's and F's rates (P's while P–F is open), written as the chain's next link."""
     _candidate(candidate)
     root, repo = Path(runs_root), Path(repo)
     k = _next_link("validation", candidate, repo, supersedes)
