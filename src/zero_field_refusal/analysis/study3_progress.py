@@ -315,7 +315,10 @@ cycle whose record names a fixation keeps the fixation's rates: a repair the new
 for is listed (``repair_not_applied``) and never issued. P closed at the re-qualification
 (its technical failure unresolved after the cycle, a closure record, or before the confirmation
 a scientific failure) leaves the validation fixation's successor without P, A's and F's rates
-kept; a fixation in force that leaves out an arm the route holds active blocks. Before the
+kept. With that successor in force, the repair reads P with the rates the earlier link fixed
+for it (a repaired rate included) and replays P's closure from them before anything else: the
+evidence that closed P closes it again, and A–F goes on; a fixation in force that leaves out an
+arm still active after that (P qualified, or its re-qualification waiting) blocks. Before the
 confirmation has started, the registered routes apply unchanged: a fixed rate's
 re-qualification failing scientifically moves A or F to candidate 2 (or ends candidate 2 with
 the scientific feasibility report) and closes P–F for P; a rerun validation failing its gate
@@ -1231,9 +1234,10 @@ class _Walk:
         return {arm: dict(final[arm]) for arm in self.arms}
 
     def _fixed_rates(self, candidate: int) -> dict[str, dict[str, float]] | None:
-        """The rates the candidate's validation fixation fixed, when its valid cycle record names
-        a fixation (module docstring, "After the validation fixation"): per active arm, ``l``
-        and ``u``; None otherwise."""
+        """The rates the candidate's validation fixation in force fixed, when its valid cycle
+        record names a fixation (module docstring, "After the validation fixation"): per active
+        arm the link in force fixes, ``l`` and ``u`` (an arm it leaves out: ``_dropped``); None
+        otherwise."""
         record = self._cycle_record(candidate)
         link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
         rates = link.get("rates")
@@ -1252,7 +1256,10 @@ class _Walk:
         rate the fixation repaired is qualified as a repair (its runs reissued), a repair the new
         runs would call for (another rate, or one the fixation did not repair) is listed in
         ``repair_not_applied`` and never issued, and once the confirmation has started the
-        repair issues nothing new."""
+        repair issues nothing new. An active arm that the fixation in force leaves out (P, left
+        out by a successor) is read with the rates the earlier link fixed for it (``_dropped``),
+        a repaired one included, and its closure replayed from them first (``_replayed``); an
+        arm still active after that blocks."""
         stage, seeds = "repair", SEEDS["numerical"][candidate]
         qualified = {arm: {selected[arm][label]: (_rate(reading, arm, selected[arm][label]) or {})
                            .get("state") or "not reported" for label in LABELS}
@@ -1260,12 +1267,9 @@ class _Walk:
         state = repair_state(self.endpoints, candidate, {a: selected[a] for a in self.arms},
                              qualified, problems=())  # fmt: skip
         unfixed = [arm for arm in self.arms if arm not in fixed]
-        if unfixed:  # a successor leaves an arm out only once the route closed it
-            link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
-            self._block_on(stage, [f"{link.get('path')}: the validation fixation in force does "
-                                   f"not fix {', '.join(unfixed)}, active on the route: a "
-                                   "successor leaves P out only once P is closed"])  # fmt: skip
-        final = {arm: dict(fixed.get(arm) or selected[arm]) for arm in self.arms}
+        earlier = self._dropped(candidate)
+        final = {arm: dict(fixed.get(arm) or earlier.get(arm) or selected[arm])
+                 for arm in self.arms}  # fmt: skip
         conditions, loud, held_back = {}, [], []
         for arm in self.arms:
             c = _Arm(hold=self._holds_at(candidate, arm, ("repair",)))
@@ -1286,9 +1290,52 @@ class _Walk:
         if held_back:
             self.extra["repair_not_applied"] = held_back
         self._block_on(stage, loud)
+        # the evidence that closed an arm the fixation in force leaves out, first; then the guard
+        for arm in unfixed:
+            if self._replayed(stage, arm, conditions[arm]):
+                del conditions[arm]
+        unclosed = [arm for arm in unfixed if arm in self.arms]
+        if unclosed:  # a successor leaves an arm out only once the route closed it
+            link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
+            self._block_on(stage, [f"{link.get('path')}: the validation fixation in force does "
+                                   f"not fix {', '.join(unclosed)}, active on the route: a "
+                                   "successor leaves P out only once P is closed"])  # fmt: skip
         self._decide(stage, conditions)
         self.rates = {arm: final[arm] for arm in self.arms}
         return {arm: dict(final[arm]) for arm in self.arms}
+
+    def _dropped(self, candidate: int) -> dict[str, dict[str, float]]:
+        """The rates an earlier link of the candidate's validation fixation chain fixed for an
+        arm that its link in force leaves out (``Records.fixed``' ``dropped``: P, left out by a
+        successor), per arm ``l`` and ``u``; an arm whose rates cannot be read is left out."""
+        link = (self.records.fixed.get(candidate) or {}).get("validation") or {}
+        out = {}
+        for arm, rates in (link.get("dropped") or {}).items():
+            try:
+                out[arm] = {"l": float(rates["lr_l"]), "u": float(rates["lr_u"])}
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def _replayed(self, stage: str, arm: str, c: _Arm) -> bool:
+        """The closure of P, left out of the validation fixation in force, replayed at the repair
+        from its records under the rates the earlier link fixed (module docstring, "After the
+        validation fixation"), as ``_decide`` closes P: a valid closure record of P, its rates
+        unresolved after the cycle, or a scientific failure that the started confirmation does
+        not hold. True once P is closed; False for any other arm, and while P is not closed (its
+        rates qualified, waiting or technical awaiting their diagnosis)."""
+        if arm != "P":
+            return False
+        if self._close(stage, arm, c):
+            return True
+        if c.unresolved:
+            why = "unresolved after the candidate's engineering cycle: " + "; ".join(c.unresolved)
+        elif c.scientific and arm not in self._held_arms(self.candidate):
+            why = "a scientific failure: " + "; ".join(c.scientific)
+        else:
+            return False
+        self._close_p(stage, why)
+        return True
 
     def _reading(self, stage: str, candidate: int) -> Mapping[str, Any]:
         """The candidate's qualification reading; its problems block."""

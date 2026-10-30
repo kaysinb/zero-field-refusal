@@ -2383,9 +2383,12 @@ before each command below.
   fixed rates: once the re-qualification closes P (its technical failure unresolved after the
   cycle, a closure record, or before the confirmation a scientific failure), the validation
   fixation's successor leaves P out and keeps A's and F's rates; the record before it keeps P's
-  rates and states, and P's records stay. The successors come in this order, each written
-  when the state's step names it and committed alone (one written out of turn is refused with
-  the step the state names):
+  rates and states, and P's records stay. With the successor in force, the state reads P's
+  closure again from the rates the record before it fixed (a repaired rate included), so A–F
+  goes on; a successor that leaves out a P whose rates are qualified or still waiting is refused
+  by its reader, and the state blocks at the repair. The successors come in this order, each
+  written when the state's step names it and committed alone (one written out of turn is refused
+  with the step the state names):
   1. the validation fixation's successor (`study3_summary.py fixation validation`, once the
      re-qualification has passed) and its versions record (`versions --supersedes ...
      --supersedes-reason cycle_c<N>`, its `--fixation` the successor);
