@@ -2322,7 +2322,10 @@ before each command below.
      It writes the cycle record (`$RUNS_DIR/study3/decisions/cycle-c<N>.json`), then its bridge
      (`$RUNS_DIR/qualification/c<N>/supersede-1.json`, `qualify.py`'s format), and prints both
      paths and the journal repair. Run again with the same arguments over a record whose bridge
-     is missing, it writes only the bridge.
+     is missing, it writes only the bridge. It refuses while a run of the candidate is still in
+     flight, in any stage and arm (its start in the journal, no end line, nothing settling it),
+     and names each: the record pins the files of the runs it lists, and a run that ends later
+     would change them. Wait for the launcher to end those runs, then call it again.
   5. **The repair.** Run the printed command where `$RUNS_DIR` is, with the same `--record` path
      (the bridge names the cycle record by its absolute path on the machine that wrote it):
      `qualify.py supersede --campaign <engineering campaign> --candidate N --engineering --case

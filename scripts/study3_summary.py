@@ -163,9 +163,11 @@ line, a line a published record requires and no log holds: ``journal_problems``)
 stage and arm the claims rerun that has not ended (pending, or recovered with no later attempt);
 a claim or justification missing or malformed, a marked arm not rerun, the search rerun once a
 validation fixation exists, or the validation or the search rerun once the confirmation has
-started; and what ``derive_cycle`` refuses (a mark under a known other GPU
-code, a record under a sealed folder or there and unreadable, a qualification launcher run the
-readers cannot settle, and the rest it names).
+started; and what ``derive_cycle`` refuses (a run of N in flight, in any stage and arm: its
+start in the pinned journal prefix, no end line in it and nothing settling it, named, since its
+records would change after the cycle is written; a mark under a known other GPU code, a record
+under a sealed folder or there and unreadable, a qualification launcher run the readers cannot
+settle, and the rest it names).
 
 Every record is JSON, written whole and only where none is (``study3_decisions._publish``).
 Nothing here opens a response, a harm label or a judge output: a campaign file, a record file or a

@@ -1551,6 +1551,60 @@ def test_an_arm_the_route_closed_without_a_closure_keeps_the_cycle_valid(tmp_pat
                for p in problems)  # fmt: skip
 
 
+def test_a_run_in_flight_in_the_pinned_prefix_refuses_the_cycle_until_it_ends(
+    tmp_path, monkeypatch
+):
+    """P–F closed by its validation gate, a confirmation mark, and a P run still running when the
+    cycle is written (its start in the journal, no end line, no terminal record, its meta.json
+    running): its records would change after the cycle (a kept run's evidence is its terminal
+    record once there), so the cycle is refused, naming the run. Once the run has ended (its end
+    line, its terminal record), the cycle is written and reads valid."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    seeds = SEEDS["validation"][1][:28]
+    study.validation(special={(s, "P", "u"): {"K": 5.0} for s in seeds[:7]})  # P–F fails
+    study.n(N=60, arms=("A", "F"))
+    study.confirmation(count=3, arms=("A", "F"))
+    root = materialize(study, tmp_path, run_of(study, "confirmation", "F", "l", 10401))
+    inflight = run_of(study, "validation", "P", "l", seeds[27])
+    run_dir = root / "study3" / inflight
+    terminal, meta = run_dir / "terminal.json", run_dir / "meta.json"
+    saved = {path: path.read_bytes() for path in (terminal, meta)}
+    log = root / "launch" / f"{LOGS['validation']}.jsonl"
+    lines = log.read_text().splitlines(keepends=True)
+    (end,) = [x for x in lines if json.loads(x)["event"] == "end"
+              and json.loads(x)["run_id"] == inflight]  # fmt: skip
+    log.write_text("".join(x for x in lines if x != end))  # the launcher has not ended it
+    terminal.unlink()
+    meta.write_text(json.dumps({**json.loads(saved[meta]), "status": "running"}))
+    ended = study.change(inflight, state="pending", K=None, K_harmful=None, steps=None,
+                         mmlu_loss_pp=None, factual_loss_pp=None)  # fmt: skip
+    study.ends = end_lines(root)
+    claims = {"search": reuse(), "qualification": reuse(), "validation": reuse(),
+              "confirmation": rerun(arms=("A", "F"))}  # fmt: skip
+    with pytest.raises(cycle.CycleRefused, match=f"have not ended.*{inflight}"):
+        derive(study, root, stage="confirmation", closed_arms=("P",), claims=claims)
+    assert not cycle_path(root, 1).exists()
+    append_line(log, json.loads(end))  # the run ends: its end line, its records
+    for path, data in saved.items():
+        path.write_bytes(data)
+    study.drop(inflight)
+    study.add(ended)
+    study.ends = end_lines(root)
+    record, bridge = derive(study, root, stage="confirmation", closed_arms=("P",), claims=claims)
+    (kept,) = [k for k in record["kept"] if k.get("run_id") == inflight]
+    assert kept["evidence"] == {"path": f"study3/{inflight}/terminal.json", "sha256": sha(terminal)}
+    cycle.publish_cycle(root, 1, record, bridge)
+    found = cycle.read_cycle(root, 1, repo=root.parent)
+    assert found["state"] == "valid", found["problems"]
+    before = study.records()
+    monkeypatch.setattr(cycle, "pre_cycle_records", lambda *a, **k: before)
+    assert cycle.cycle_problems(found, runs_root=root, theta0=root, repo=root.parent,
+                                settings=REGISTERED) == []  # fmt: skip
+
+
 def closed_p_study(tmp_path, closure: str):
     """Candidate 1 through three confirmation blocks of A and F, P closed by the route alone with
     no closure record: by P–F's validation gate (``gate``: P supported in 21 of 28 blocks) or by

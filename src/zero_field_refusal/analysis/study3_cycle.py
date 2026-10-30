@@ -18,6 +18,8 @@ journal repair and re-qualification carry it out, unchanged.
 - ``started_stages``, ``affected_and_kept`` and ``failed``: the stages a candidate has started,
   the runs a cycle affects and those that keep counting, and the readers' own predicate of a
   scientific failure (``study3_blocks.block_state``'s failed endpoint, imported).
+- ``in_flight``: the candidate's runs still in flight in the journal prefix, which refuse a
+  cycle.
 - ``derive_cycle``, ``build_bridge`` and ``publish_cycle``: the cycle record and its bridge,
   derived from the records before the cycle, and published once each, the record first.
 - ``pre_cycle_records``: the records as they stood when the cycle was written (the pre-cycle
@@ -112,7 +114,11 @@ force); once the candidate's confirmation has started (a run of it in the record
 reruns the validation or the search ("Validation, confirmation and stopping": validation is not
 reopened without an explicit prospective amendment); a mark that is not among the affected
 runs; a journal whose prefix moved since the records were read, or a start in the pinned prefix
-that the records read do not hold; a record
+that the records read do not hold; a run of the candidate in flight (``in_flight``: its start in
+the pinned prefix, no end line in it, and the state ``pending``, so that nothing settles it), in
+any stage and arm, named: its records would change after the cycle is written (a kept run's
+evidence is its terminal record once there, an affected run lists its files), so the cycle waits
+for it to end; a record
 under a sealed folder or present and unreadable (a missing one is an absence marker, never a
 refusal); a launcher run of the qualification that no part record classified and that the
 readers cannot settle (``qualification_records.cycle_entries``: ``qualify.py``'s own
@@ -656,7 +662,8 @@ def derive_cycle(
     stage, or has no line in the journal; a mark under a known GPU code other than ``old_code``
     (an ``other_gpu_code`` mark, no cycle case); a journal whose prefix is not ``journal`` now,
     or a start in it that ``records`` does not hold (the records are not of this journal: read
-    them again); a mark that is not among the affected runs; a launcher run of the qualification
+    them again); a run of the candidate in flight in the prefix (``in_flight``), named; a mark
+    that is not among the affected runs; a launcher run of the qualification
     the readers cannot settle (``qualification_records.cycle_entries``' ``unsettled``); case
     restarts the journal prefix cites and the cycle does not pin (``_restart_problems``); and
     what ``affected_and_kept`` refuses."""
@@ -713,6 +720,12 @@ def derive_cycle(
     if unread:
         raise CycleRefused(f"the journal prefix starts {unread[:5]}, which the records read do "
                            "not hold: read the records of this journal again")  # fmt: skip
+    running = in_flight(records, candidate, set(starts))
+    if running:
+        raise CycleRefused(f"runs of candidate {candidate} started in the pinned journal prefix "
+                           f"have not ended (no end line in it, nothing settles them): "
+                           f"{running}: the cycle waits for them, since their records would "
+                           "change after it is written")  # fmt: skip
     cited = {entry["record"]["run_id"] for entry in records.closures.values()
              if entry.get("record") is not None
              and entry["record"].get("candidate") == candidate}  # fmt: skip
@@ -764,6 +777,16 @@ def derive_cycle(
                           fix_identity=fix_identity, entries=entries, stage_runs=stage_runs,
                           host=host, at=written_at, commit=str(code.get("commit")))  # fmt: skip
     return record, json.loads(json.dumps(bridge, allow_nan=False))
+
+
+def in_flight(records: Records, candidate: int, seen: Collection[str]) -> list[str]:
+    """The candidate's runs still in flight in the view before the cycle (module docstring,
+    "Refusals"), by run id: a start in the pinned prefix (``seen``), no end line in it
+    (``records.ends``) and the state ``pending`` (the launcher has not ended it, and neither its
+    ``meta.json`` nor a record or a recovery round settles it: ``study3_records``, "States")."""
+    return sorted(e.run_id for e in records.endpoints
+                  if e.cell.candidate == candidate and e.run_id in seen
+                  and e.state == "pending" and e.run_id not in records.ends)  # fmt: skip
 
 
 def reopened(claims: Mapping[str, Claim], started: Collection[str]) -> list[str]:
