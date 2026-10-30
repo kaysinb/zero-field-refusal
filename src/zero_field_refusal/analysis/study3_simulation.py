@@ -144,13 +144,14 @@ at the rates each selects, drawn once with every run's failure uniform kept:
   vectors), so that it has mean 3 pp and SD 2 pp; λ = 0, flagged, when W > 4. The factual loss
   takes one shift to mean 2 pp. The shift moves gross collapses, so f and the shifts alternate
   until neither moves (at most 10 rounds, else ``CalibrationNotStable``).
-- *σ_AF, σ_PF* (M1, M2): by bisection, the observed spread of d at Δ = 0 over the supported
-  validation blocks at the selected rates is the planning spread: the square root of the mean
-  within-study variance, the quantity the spread rule estimates. Δ = 0 is the truth's, not the
-  offset's: the spread is taken at the offsets o⁰_A, o⁰_P at which the mean truth over the
-  selections is 0 (the curvature and a differential judge make it nonzero at offset 0). σ given
-  o⁰ and o⁰ given σ alternate until neither moves (at most 10 rounds, else
-  ``CalibrationNotStable``). The labels enter through their exact conditional variance
+- *σ_AF, σ_PF* (M1, M2): by a bracketing root-finder (Brent, to 10⁻¹⁴ in σ), the observed
+  spread of d at Δ = 0 over the supported validation blocks at the selected rates is the
+  planning spread: the square root of the mean within-study variance, the quantity the spread
+  rule estimates. Δ = 0 is the truth's, not the offset's: the spread is taken at the offsets
+  o⁰_A, o⁰_P at which the mean truth over the selections is 0 (the curvature and a differential
+  judge make it nonzero at offset 0). σ given o⁰ (its bracket from the previous round's σ) and
+  o⁰ given σ alternate until neither moves by more than its solver's precision (at most 10
+  rounds, else ``CalibrationNotStable``). The labels enter through their exact conditional variance
   (``label_variance``: the prompts are independent given the block, two endpoints' harmful
   labels bivariate normal thresholds), the expectation of the observed sample variance given
   the blocks, so that every σ reuses the same draws; a test checks it, study by study, against
@@ -303,6 +304,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.optimize import brentq
 from scipy.special import gammainc, ndtr, ndtri
 
 from . import study3_decisions as _decisions  # M and the gates read at call time: one definition
@@ -1400,7 +1402,9 @@ CALIBRATION_BLOCKS = 28  # the calibration's validations have 28 blocks
 CALIBRATION_ROUNDS = 10  # f and the safe shifts alternate at most this often
 SUPPORT_TOLERANCE = 1e-4  # |realized support − s| at the calibrated f
 SAFE_MMLU_MEAN, SAFE_MMLU_SD, SAFE_FACTUAL_MEAN = 3.0, 2.0, 2.0  # M10, pp
-SIGMA_PRECISION = 1e-13  # the bisection of σ stops at this width (proportions)
+SIGMA_PRECISION = 1e-14  # Brent's absolute tolerance on σ (proportions)
+SIGMA_RTOL = 4 * float(np.finfo(float).eps)  # and its relative one, the smallest brentq takes
+SIGMA_STEP = 1e-3  # a bracket from the previous σ starts this far from it, relative, then ×8
 OFFSET_PRECISION = 1e-12  # |mean truth − Δ| at the solved offset (proportions)
 
 
@@ -2519,29 +2523,54 @@ def _spread(scenario: Scenario, draws: _Draws, failure: float, sigma: float,
     return 100 * math.sqrt(total), 100 * se
 
 
+def sigma_tolerance(sigma: float) -> float:
+    """The precision of a solved σ: Brent's bound on its distance from the root,
+    ``SIGMA_PRECISION`` + ``SIGMA_RTOL``·σ (proportions)."""
+    return SIGMA_PRECISION + SIGMA_RTOL * abs(sigma)
+
+
 def _solve_sigma(scenario: Scenario, draws: _Draws, failure: float, comparison: str,
-                 offset: float = 0.0) -> float:  # fmt: skip
-    """σ by bisection so that the spread at the arm's offset ``offset`` (o⁰: Δ = 0) is the
-    planning spread (0 when the labels and the geometry alone already reach it)."""
+                 offset: float = 0.0, start: float | None = None) -> float:  # fmt: skip
+    """σ such that the spread at the arm's offset ``offset`` (o⁰: Δ = 0) is the planning spread
+    (0 when the labels and the geometry alone already reach it), by a bracketing root-finder
+    (Brent, ``scipy.optimize.brentq``) to within ``sigma_tolerance``. The bracket is [0, 0.5]
+    (doubled until it holds the root), or, from ``start`` (the previous round's σ), the smallest
+    of [start, start·(1 ± 10⁻³·8^k)] that holds it. The spread rises with σ, so every bracket
+    holds the one root."""
     target = scenario.spread_pp
+    known: dict[float, float] = {}
 
-    def spread(sigma: float) -> float:
-        return _spread(scenario, draws, failure, sigma, comparison, offset)[0]
+    def gap(sigma: float) -> float:
+        if sigma not in known:
+            known[sigma] = _spread(scenario, draws, failure, sigma, comparison, offset)[0] - target
+        return known[sigma]
 
-    if spread(0.0) >= target:
+    if gap(0.0) >= 0:
         return 0.0
-    lo, hi = 0.0, 0.5
-    while spread(hi) < target:
-        hi *= 2
-        if hi > 64:
-            raise CalibrationNotStable(f"{scenario.name}: no σ reaches the spread {target} pp")
-    while hi - lo > SIGMA_PRECISION:
-        mid = (lo + hi) / 2
-        if spread(mid) < target:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
+    if start is None or start <= 0:
+        lo, hi = 0.0, 0.5
+        while gap(hi) < 0:
+            lo, hi = hi, 2 * hi
+            if hi > 64:
+                raise CalibrationNotStable(f"{scenario.name}: no σ reaches the spread {target} pp")
+    elif gap(start) < 0:
+        lo, hi, step = start, start * (1 + SIGMA_STEP), SIGMA_STEP
+        while gap(hi) < 0:
+            step *= 8
+            lo, hi = hi, start * (1 + step)
+            if hi > 64:
+                raise CalibrationNotStable(f"{scenario.name}: no σ reaches the spread {target} pp")
+    else:
+        lo, hi, step = start * (1 - SIGMA_STEP), start, SIGMA_STEP
+        while gap(lo) >= 0:
+            step *= 8
+            lo, hi = (start * (1 - step), lo) if step < 1 else (0.0, lo)
+    root, found = brentq(gap, lo, hi, xtol=SIGMA_PRECISION, rtol=SIGMA_RTOL, maxiter=200,
+                         full_output=True, disp=False)  # fmt: skip
+    if not found.converged:
+        raise CalibrationNotStable(f"{scenario.name}: σ for the spread {target} pp does not "
+                                   f"converge ({found.flag})")  # fmt: skip
+    return float(root)
 
 
 def calibrate_spread(
@@ -2552,10 +2581,11 @@ def calibrate_spread(
     *,
     studies: int = CALIBRATION_STUDIES,
 ) -> tuple[float, float, float, float]:
-    """(σ_AF, σ_PF, the attained A–F and P–F spreads in pp) (M1, M2): each σ by bisection so
-    that the observed SD of d at Δ = 0 (the setup's o⁰, ``null_offset_a`` and
-    ``null_offset_p``), over the supported validation blocks at the rates each selection chose,
-    is the planning spread (``_spread``), at the setup's f and shifts."""
+    """(σ_AF, σ_PF, the attained A–F and P–F spreads in pp) (M1, M2): each σ by a bracketing
+    root-finder (Brent, ``_solve_sigma``) so that the observed SD of d at Δ = 0 (the setup's
+    o⁰, ``null_offset_a`` and ``null_offset_p``), over the supported validation blocks at the
+    rates each selection chose, is the planning spread (``_spread``), at the setup's f and
+    shifts."""
     calibration = _current(scenario, setup, candidate)
     draws = _draws(scenario, setup, candidate, seed, studies)
     f = calibration.failure
@@ -2685,6 +2715,16 @@ def _starting_calibration(scenario: Scenario, setup: Setup, candidate: int) -> C
     )  # fmt: skip
 
 
+def _settled(now: tuple[float, float], before: tuple[float, float]) -> bool:
+    """Whether a round of the σ/o⁰ alternation moved (σ, o⁰) by no more than the solvers'
+    precision: σ by at most twice ``sigma_tolerance`` (two solutions of one root differ by at
+    most that), o⁰ by at most ``OFFSET_PRECISION`` (the mean truth moves with the offset at a
+    slope below 1, so such a move stays within the offset solver's tolerance on the truth)."""
+    (sigma, null), (sigma_before, null_before) = now, before
+    return (abs(sigma - sigma_before) <= 2 * sigma_tolerance(max(sigma, sigma_before))
+            and abs(null - null_before) <= OFFSET_PRECISION)  # fmt: skip
+
+
 def calibrate_scenario(
     scenario: Scenario,
     setup: Setup,
@@ -2724,11 +2764,12 @@ def _calibrate_scenario(
     (``calibrate_safe``) alternate until neither moves (at most 10 rounds, otherwise
     ``CalibrationNotStable``); σ and the offsets depend on them and not the other way round, so
     they are computed in the round in which nothing moved: σ at the Δ = 0 offsets o⁰ and o⁰ at
-    σ alternate until neither moves (at most 10 rounds), then the offsets are solved for the
-    scenario's Δ from o⁰, with the attained spreads (at o⁰) and mean truths and their Monte
-    Carlo SEs. A gate scenario has no harm: σ and the offsets stay 0. ``fixation`` writes the
-    result and ``run`` recomputes it. ``mapper`` (a parallel ``map``) builds the jitter
-    quadratures the truths need (C12) on several processes; the result does not depend on it."""
+    σ alternate until neither moves by more than its solver's precision (``_settled``; at most
+    10 rounds), then the offsets are solved for the scenario's Δ from o⁰, with the attained
+    spreads (at o⁰) and mean truths and their Monte Carlo SEs. A gate scenario has no harm: σ
+    and the offsets stay 0. ``fixation`` writes the result and ``run`` recomputes it.
+    ``mapper`` (a parallel ``map``) builds the jitter quadratures the truths need (C12) on
+    several processes; the result does not depend on it."""
     calibration = _starting_calibration(scenario, setup, candidate)
     before = None
     for _ in range(CALIBRATION_ROUNDS):
@@ -2749,20 +2790,22 @@ def _calibrate_scenario(
         )
     if scenario.role == "gate":
         return calibration
-    # σ at Δ = 0 (M1): σ given o⁰, then o⁰ (the mean truth 0) given σ, until neither moves
+    # σ at Δ = 0 (M1): σ given o⁰ (its bracket from the previous round's σ), then o⁰ (the mean
+    # truth 0) given σ, until neither moves by more than its solver's precision
     draws = _draws(scenario, _with(setup, scenario, candidate, calibration), candidate, seed,
                    studies)  # fmt: skip
     f, before = calibration.failure, None
     for _ in range(CALIBRATION_ROUNDS):
         null = {"A-F": calibration.null_offset_a, "P-F": calibration.null_offset_p}
-        sigma = {c: _solve_sigma(scenario, draws, f, c, null[c]) for c in COMPARISONS}
+        start = {"A-F": calibration.sigma_af, "P-F": calibration.sigma_pf}
+        sigma = {c: _solve_sigma(scenario, draws, f, c, null[c], start[c]) for c in COMPARISONS}
         calibration = replace(calibration, sigma_af=sigma["A-F"], sigma_pf=sigma["P-F"])
         probe = calibration.at_null()
         null = {c: _solve_offset(scenario, setup, probe, draws, c, 0.0, mapper)
                 for c in COMPARISONS}  # fmt: skip
         calibration = replace(calibration, null_offset_a=null["A-F"], null_offset_p=null["P-F"])
-        now = (sigma["A-F"], sigma["P-F"], null["A-F"], null["P-F"])
-        if now == before:
+        now = {c: (sigma[c], null[c]) for c in COMPARISONS}
+        if before is not None and all(_settled(now[c], before[c]) for c in COMPARISONS):
             break
         before = now
     else:

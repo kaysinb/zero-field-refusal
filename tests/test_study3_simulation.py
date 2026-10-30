@@ -1203,6 +1203,51 @@ def test_the_calibration_is_recomputed_identically(setup) -> None:
     assert sim.calibrate_scenario(sc, setup, 1, SEED, studies=2_000) == first
 
 
+def test_sigma_is_brents_root_from_any_bracket(setup, monkeypatch) -> None:
+    """σ is the root of the spread at the planning spread to Brent's tolerance, whether its
+    bracket is [0, 0.5] or starts from a previous σ below, at or above it (each round of the
+    σ/o⁰ alternation starts from the last), in a few evaluations; a bisection to a width of
+    1e-13 finds the same σ."""
+    sc = sim.SCENARIOS_BY_NAME["C02"]
+    cal = hand_calibration(1)
+    draws = sim._draws(sc, replace(setup, calibrations={**setup.calibrations, (sc, 1): cal}), 1,
+                       SEED, 400)  # fmt: skip
+    real, calls = sim._spread, [0]
+
+    def counted(*args, **kwargs):
+        calls[0] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sim, "_spread", counted)
+    fresh = sim._solve_sigma(sc, draws, cal.failure, "A-F", 0.0)
+    assert 0 < fresh and calls[0] <= 15
+    assert real(sc, draws, cal.failure, fresh, "A-F")[0] == pytest.approx(sc.spread_pp, abs=1e-9)
+    for start in (fresh, fresh * 0.97, fresh * 1.03, fresh * 0.2, fresh * 5):
+        calls[0] = 0
+        again = sim._solve_sigma(sc, draws, cal.failure, "A-F", 0.0, start)
+        assert abs(again - fresh) <= 2 * sim.sigma_tolerance(fresh), start
+        assert calls[0] <= 15
+    lo, hi = 0.0, 0.5  # the bisection's σ, as it was solved before
+    while hi - lo > 1e-13:
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if real(sc, draws, cal.failure, mid, "A-F")[0] < sc.spread_pp else (
+            lo, mid)  # fmt: skip
+    assert abs((lo + hi) / 2 - fresh) <= 5e-14 + sim.sigma_tolerance(fresh)
+    # σ is 0 when the labels and the geometry alone reach the spread
+    low = replace(sc, spread_pp=0.1)
+    assert sim._solve_sigma(low, draws, cal.failure, "A-F", 0.0, fresh) == 0.0
+
+
+def test_the_sigma_offset_rounds_stop_within_the_solvers_precision() -> None:
+    sigma, null = 0.054, -0.031
+    tolerance = sim.sigma_tolerance(sigma)
+    assert sim._settled((sigma + 2 * tolerance * 0.99, null), (sigma, null))
+    assert sim._settled((sigma, null + sim.OFFSET_PRECISION), (sigma, null))
+    assert not sim._settled((sigma + 1e-12, null), (sigma, null))
+    assert not sim._settled((sigma, null + 3 * sim.OFFSET_PRECISION), (sigma, null))
+    assert sim.SIGMA_PRECISION <= 1e-14  # Brent's tolerance is no looser than the bisection's
+
+
 @pytest.mark.parametrize("name", ["C02", "C13", "C14"])
 def test_the_label_variance_is_the_simulated_labels(setup, name) -> None:
     """The calibration takes the label noise of a block's difference through its exact variance
