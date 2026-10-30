@@ -67,8 +67,9 @@ numbers, run ids and, for ``blind_texts`` alone, the texts its caller keeps seal
   that the spread is the same measurement as the K the blocks were frozen on.
 - *Validation's harm after the analysis.* ``gather`` reads no validation run: validation's harm is
   read after the final analysis and apart from it, by the caller, through ``cohort_harm``.
-- *The blind texts* wait for the final analysis: the analysis file must name the committed freeze
-  by its sha256 now.
+- *The blind texts* wait for the final analysis: the analysis file, at its place under
+  RUNS_DIR/study3-final/c<N>/, must name the committed freeze by its sha256 now; a run's texts are
+  read with the label reader's checks, its 521 prompts among them.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -110,6 +112,9 @@ MEASURE = "kl_benign"  # the scoring panel's K: K_benign, the K of the blocks
 MEASUREMENTS = Path("observations") / "measurements.jsonl"
 SPREAD_TOLERANCE = 1e-9  # relative: the K samples' mean against the endpoint's K
 ANALYSIS_KIND = "study3-analysis"  # the final analysis's record (scripts/study3_analysis.py)
+FINAL = "study3-final"  # RUNS_DIR/study3-final/c<N>/: the final analysis's outputs
+# analysis.json, then analysis-<k>.json (k = 2, 3, …) for a recomputation
+ANALYSIS_NAME = re.compile(r"analysis(?:-(?:[2-9]|[1-9][0-9]+))?\.json")
 _STRING = rb'(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*'  # a JSON string's content
 _INTEGER = rb"(?:0|[1-9][0-9]*)"
 _NUMBER = rb"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?"
@@ -347,9 +352,10 @@ def blind_texts(
 ) -> dict[str, str]:
     """The step-25 response texts of ``prompt_ids`` in the run, by prompt id in the order given,
     read as study 2's reader reads a run's responses (``study2_labels._responses``). Only once the
-    final analysis is written: ``analysis`` must be candidate N's analysis record naming the
-    committed freeze by its sha256 now (``SealedPoint`` otherwise); and the run must be in the
-    final point's run set. ``ValueError`` for a named prompt with no step-25 response."""
+    final analysis is written: ``analysis`` must be candidate N's analysis record at its place
+    (RUNS_DIR/study3-final/c<N>/) naming the committed freeze by its sha256 now (``SealedPoint``
+    otherwise); and the run must be in the final point's run set. ``ValueError`` for a named
+    prompt with no step-25 response, or a run without 521 prompts."""
     _gate(candidate, runs_root, repo)
     runs_root, repo = Path(runs_root), Path(repo)
     _analysis_of(Path(analysis), candidate, runs_root, repo)
@@ -359,9 +365,22 @@ def blind_texts(
 
 
 def _analysis_of(analysis: Path, candidate: int, runs_root: Path, repo: Path) -> None:
-    """``SealedPoint`` unless ``analysis`` is candidate N's analysis record (``ANALYSIS_KIND``)
-    naming the freeze record in the checkout by its sha256 now. Reads the analysis and the freeze
-    record, neither sealed."""
+    """``SealedPoint`` unless ``analysis`` is candidate N's analysis record (``ANALYSIS_KIND``) at
+    its place, RUNS_DIR/study3-final/c<N>/analysis.json or analysis-<k>.json (k ≥ 2), resolving
+    there, naming the freeze record in the checkout by its sha256 now. Reads the analysis and the
+    freeze record, neither sealed."""
+    folder = runs_root / FINAL / f"c{candidate}"
+    placed = (os.path.normpath(os.path.abspath(analysis.parent))
+              == os.path.normpath(os.path.abspath(folder))
+              and ANALYSIS_NAME.fullmatch(analysis.name) is not None)  # fmt: skip
+    try:
+        placed = placed and analysis.resolve() == folder.resolve() / analysis.name
+    except (OSError, RuntimeError):
+        placed = False
+    if not placed:
+        raise SealedPoint(f"{analysis} is not candidate {candidate}'s final analysis at its place, "
+                          f"{FINAL}/c{candidate}/analysis.json or analysis-<k>.json under "
+                          "RUNS_DIR")  # fmt: skip
     if under_sealed(analysis, runs_root):
         raise SealedPoint(f"{analysis} resolves under a sealed folder: never opened")
     if not analysis.is_file():
@@ -394,6 +413,8 @@ def _texts(run_dir: Path, wanted: Sequence[str]) -> dict[str, str]:
     if ENDPOINT not in conditions:
         raise ValueError(f"{run_dir}: no evaluation at the endpoint {ENDPOINT}")
     ids = run_judging.prompt_ids(cfg, harmful_prompts(cfg))
+    if len(ids) != HARMFUL_PROMPTS:  # the label reader's own check (``study3_labels._read_run``)
+        raise ValueError(f"{run_dir}: {len(ids)} harmful prompts, not {HARMFUL_PROMPTS}")
     study2_labels._check_recorded_prompts(run_dir, cfg, ids, read(run_dir / "meta.json"))
     texts = study2_labels._responses(run_dir, cfg, conditions, ids, read)
     absent = [pid for pid in wanted if (ENDPOINT, pid) not in texts]

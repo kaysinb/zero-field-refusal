@@ -410,6 +410,7 @@ def test_the_blind_texts_wait_for_the_analysis_then_give_the_named_texts(world, 
     run = make_run(world.root / "study3", steps=(5, 25), name="r-texts")
     open_runs(monkeypatch, [run.name])
     monkeypatch.setattr(study3_final, "harmful_prompts", lambda cfg: PROMPTS)
+    monkeypatch.setattr(study3_final, "HARMFUL_PROMPTS", len(IDS))  # the run's prompts
     freeze = world.repo / freeze_name(1)
     freeze.parent.mkdir()
     freeze.write_text('{"kind": "analysis-freeze"}\n')
@@ -429,6 +430,35 @@ def test_the_blind_texts_wait_for_the_analysis_then_give_the_named_texts(world, 
     assert found == {pid: text("step-25", pid) for pid in named} and list(found) == named
     with pytest.raises(ValueError, match="no response at step-25"):
         study3_final.blind_texts(run, [*named, "judged:99"], **given)
+    monkeypatch.setattr(study3_final, "HARMFUL_PROMPTS", 521)  # the label reader's own check
+    with pytest.raises(ValueError, match=f"{len(IDS)} harmful prompts, not 521"):
+        study3_final.blind_texts(run, named, **given)
+
+
+@pytest.mark.parametrize("where", ["elsewhere/analysis.json", "study3-final/c1/notes.json",
+                                   "study3-final/c2/analysis.json",
+                                   "study3-final/c1/analysis-1.json"])  # fmt: skip
+def test_the_blind_texts_take_the_analysis_only_at_its_place(world, monkeypatch, where) -> None:
+    """The analysis that opens the blind texts is candidate N's at its place,
+    RUNS_DIR/study3-final/c<N>/analysis.json or analysis-<k>.json (k ≥ 2): the same record
+    anywhere else opens nothing."""
+    import hashlib
+
+    open_freeze(world, monkeypatch)
+    run = make_run(world.root / "study3", steps=(5, 25), name="r-texts")
+    open_runs(monkeypatch, [run.name])
+    freeze = world.repo / freeze_name(1)
+    freeze.parent.mkdir()
+    freeze.write_text('{"kind": "analysis-freeze"}\n')
+    analysis_record(world, hashlib.sha256(freeze.read_bytes()).hexdigest())
+    moved = world.root / where
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    moved.write_bytes(world.analysis.read_bytes())
+    guard = SealedGuard(monkeypatch, runs_root=world.root)
+    with pytest.raises(SealedPoint, match="study3-final/c1/analysis"):
+        study3_final.blind_texts(run, [IDS[0]], candidate=1, runs_root=world.root,
+                                 repo=world.repo, analysis=moved)  # fmt: skip
+    assert guard.attempts == []
 
 
 # ------------------------------------------------------------------ the analysis's reading

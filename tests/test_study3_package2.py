@@ -153,6 +153,8 @@ SEALED_OPENERS = frozenset({
     "study3_label_cli._supersede", "study3_label_cli._complete_moves",
     "study3_label_cli.label_controls", "study3_label_cli._controls",
     "study3_label_cli.write_diagnosis",
+    # the final analysis's reader: a run's K rows (observations/) and its responses
+    "study3_final._k_spread", "study3_final._texts",
 })  # fmt: skip
 # The labeling ledger's own openers: the labeling command takes the ledger's lock and reads it
 # before it checks the point, through these alone
@@ -1777,9 +1779,10 @@ def test_the_label_readers_import_no_gpu_module_and_load_no_script():
 def test_the_named_sealed_openers_are_functions_of_the_label_readers():
     """Every name of ``SEALED_OPENERS`` is a function (or a method of the batch) of its module: no
     name stands for nothing."""
-    from zero_field_refusal.analysis import study3_label_cli, study3_labels
+    from zero_field_refusal.analysis import study3_final, study3_label_cli, study3_labels
 
-    modules = {"study3_labels": study3_labels, "study3_label_cli": study3_label_cli}
+    modules = {"study3_labels": study3_labels, "study3_label_cli": study3_label_cli,
+               "study3_final": study3_final}  # fmt: skip
     for name in SEALED_OPENERS | LEDGER_OPENERS:
         stem, function = name.split(".")
         module = modules[stem]
@@ -1809,6 +1812,48 @@ def test_a_relabel_and_its_completed_move_open_sealed_paths_only_through_named_f
     assert labeled_world.batch(None).outcome == "accepted"
     assert labeled_world.harm("r1").receipt_sha256
     assert guard.attempts == [] and any("/judge-superseded/" in p for p in guard.opened)
+
+
+def test_the_final_reader_opens_sealed_paths_only_through_named_functions(points_world,
+                                                                         monkeypatch):  # fmt: skip
+    """The final analysis's reader (``study3_final``) on the points world once its final point is
+    open: ``r4``, a confirmation run labeled in a confirmation batch, its K rows beside its
+    responses. Its harm, its items, its spread of K and its blind texts (the analysis at its
+    place, naming a stand-in freeze) open every sealed path inside a named opener: the label
+    reader's, ``study3_final._k_spread`` and ``study3_final._texts``."""
+    from test_study2_labels import IDS, PROMPTS
+    from test_study3_final import K, k_rows
+
+    from zero_field_refusal.analysis import study3_final
+    from zero_field_refusal.analysis.study3_freeze import freeze_name
+
+    points_world.to("final_open")
+    assert not points_world.refused("label", "confirmation", runs=("r4",))
+    root, repo, run = points_world.root, points_world.repo, points_world.labels.run("r4")
+    monkeypatch.setattr(study3_final, "freeze_open", lambda *args: ())  # its own gate, open
+    monkeypatch.setattr(study3_final, "HARMFUL_PROMPTS", len(IDS))
+    monkeypatch.setattr(study3_final, "harmful_prompts", lambda cfg: PROMPTS)
+    (run / "observations").mkdir(exist_ok=True)
+    k_rows(run)
+    freeze = repo / freeze_name(1)
+    freeze.write_text('{"kind": "analysis-freeze"}\n')
+    analysis = root / "study3-final" / "c1" / "analysis.json"
+    analysis.parent.mkdir(parents=True)
+    named = {"path": freeze_name(1), "sha256": hashlib.sha256(freeze.read_bytes()).hexdigest(),
+             "root": "repo"}  # fmt: skip
+    analysis.write_text(json.dumps({"kind": study3_final.ANALYSIS_KIND, "candidate": 1,
+                                    "freeze": named}))  # fmt: skip
+    guard = NamedOpens(monkeypatch, runs_root=root)
+    given = {"candidate": 1, "runs_root": root, "repo": repo}
+    harm = study3_final.cohort_harm({"r4": run}, **given)["r4"]
+    items = study3_final.item_labels(run, **given)
+    assert sum(item.label == "harmful" for item in items) == harm.harmful
+    assert study3_final.k_spread(run, k=K, **given) == [5.0, 6.0, 7.0]
+    texts = study3_final.blind_texts(run, [IDS[0]], analysis=analysis, **given)
+    assert list(texts) == [IDS[0]]
+    assert guard.attempts == []
+    for folder in ("/judge/", "/responses/", "/observations/"):
+        assert any(folder in path for path in guard.allowed), folder
 
 
 @pytest.mark.parametrize("state", ["no_fixation", "validating", "choice", "n_written",
