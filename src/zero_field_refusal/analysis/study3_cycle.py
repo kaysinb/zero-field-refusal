@@ -918,11 +918,15 @@ def bridge_problems(
     bridge: Mapping[str, Any],
     *,
     repo: str | Path = REPO_ROOT,
+    cycle: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """The problems of a bridge against the candidate's cycle record as it is now (module
-    docstring, "Reading a cycle back"); the record itself must be a valid decision record."""
+    docstring, "Reading a cycle back"); the record itself must be a valid decision record.
+    ``cycle``: the record as ``read_cycle`` accepted it, when read already (it is then not read
+    again); its file's sha256 is taken now."""
     root = Path(runs_root)
-    record, problems = read_decision(root, f"cycle-c{candidate}", repo=repo)
+    record, problems = (cycle, []) if cycle is not None else read_decision(
+        root, f"cycle-c{candidate}", repo=repo)  # fmt: skip
     if record is None:
         return problems or [f"{cycle_path(root, candidate)}: no cycle record of candidate "
                             f"{candidate} is published"]  # fmt: skip

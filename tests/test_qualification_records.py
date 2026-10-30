@@ -1176,6 +1176,32 @@ def test_a_cycle_record_naming_a_run_of_no_qualification_step_is_rejected(
     assert "val-run-a1" not in voided and any(p.startswith(f"{path}: ") for p in problems)
 
 
+def test_a_bridge_counts_only_with_its_accepted_cycle_record(qualify, monkeypatch, tmp_path):
+    """A cycle outside the qualification (a validation run of candidate 1 marked, the
+    qualification rerun) is published as a cycle record and its bridge in qualify.py's format,
+    ``qualification/c1/supersede-1.json``, whose old record is the cycle record. The one check
+    accepts the bridge only with that record valid at the cited sha256 and the bridge's lists
+    exactly the record's: then the run readers supersede its launcher runs, the validation run
+    among them, with no problem; a cycle record whose bytes changed, a bridge that holds a run,
+    names a run the record does not list or leaves one out is rejected, and voids nothing."""
+    from test_study3_cycle import HELD, OTHER_RUN, bridge_world, restore, touch_cycle_record
+
+    world, bridge_path, bridge = bridge_world(qualify, monkeypatch, tmp_path)
+    check = qr.cycle_checks(world.root)["qualification/c1/supersede-1.json"]
+    assert check["accepted"] and "val-run-a1" in check["launchers"], check["problems"]
+    voided, problems = voided_runs(world.root)
+    assert voided["val-run-a1"][0] == "superseded" and not problems
+    extra, omitted = [*bridge["launchers"], OTHER_RUN], bridge["launchers"][1:]  # an omission
+    for tamper in (lambda: touch_cycle_record(world),
+                   lambda: rewrite(bridge_path, {**bridge, "held": [HELD]}),
+                   lambda: rewrite(bridge_path, {**bridge, "launchers": extra}),
+                   lambda: rewrite(bridge_path, {**bridge, "launchers": omitted})):  # fmt: skip
+        restore(world)
+        tamper()
+        assert not qr.cycle_checks(world.root)["qualification/c1/supersede-1.json"]["accepted"]
+        assert "val-run-a1" not in voided_runs(world.root)[0]
+
+
 @pytest.mark.parametrize("experiment", [None, "study2_short"])
 @pytest.mark.parametrize("key", ["launchers", "held"])
 def test_a_cycle_binds_only_study3_starts(qualify, monkeypatch, tmp_path, key, experiment):

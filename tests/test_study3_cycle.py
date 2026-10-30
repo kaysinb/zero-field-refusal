@@ -29,7 +29,7 @@ from test_qualification_records import (
 )
 from test_qualification_records import World as QualificationWorld
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
-from test_qualify import ADAMW_LR, FIX, load_script
+from test_qualify import ADAMW_LR, FIX, codes, load_script
 from test_study3_campaigns import START, run_config
 from test_study3_package2 import REAL_IDENTITY, Route, SealedGuard, round0
 from test_study3_progress import OPT, Study, ep, run_of
@@ -535,6 +535,126 @@ def test_a_run_started_after_the_journal_prefix_is_never_listed(tmp_path):
                                              if e.run_id != "late-run")))  # fmt: skip
 
 
+QUALIFIED = {**CODE, "sha256": OLD}  # the old GPU code the qualification ran under (a sha256)
+VAL_RUN, VAL_RATE, VAL_SEED = "val-run-a1", 1.45e-05, 10300  # a validation run of A, marked
+VAL_LABEL, VAL_LOG = f"A-{VAL_RATE:g}/s{VAL_SEED}", "study3-c1-validation"
+VAL_HEADER = {"study": 3, "candidate": 1, "step": "validation", "round": None}
+ENG_CASE = ENGINEERING.name  # the engineering campaign's first case: the repair's --case
+BRIDGE_CLAIMS = {"search": reuse(), "qualification": rerun(), "validation": rerun()}
+# a held entry, and a launcher run the cycle record does not list: a bridge naming either is
+# rejected
+HELD = {"run_id": "r10202-adamw-a1", "campaign": "study3-c1-numerical",
+        "run": f"adamw-{ADAMW_LR:g}/s10202", "experiment": "study3", "config_hash": "c" * 12,
+        "reason": "no recorded commit (git: {})"}  # fmt: skip
+OTHER_RUN = {"run_id": "val-run-b1", "campaign": VAL_LOG, "run": f"F-1.83e-05/s{VAL_SEED}",
+             "experiment": "study3", "config_hash": "c" * 12}  # fmt: skip
+
+
+class BridgeWorld(QualificationWorld):
+    """Candidate 1's numerical qualification in qualify.py's formats
+    (``test_qualification_records.World``), and one validation run of A, ``VAL_RUN``, started
+    under ``VAL_LOG`` from commit abc123 and ended technical (its meta.json failed, no terminal
+    record): the mark of a cycle outside the qualification."""
+
+    def engineering_campaign(self) -> Path:
+        """The candidate's engineering campaign file (its one case ``ENG_CASE``, on the
+        engineering seed): the repair's ``--campaign``."""
+        found = QualificationWorld(self.path.parent, ((("adamw", ADAMW_LR), (10000,)),),
+                                   name="study3-c1-engineering", header=ENGINEERING_HEADER,
+                                   role="engineering")  # fmt: skip
+        return found.path
+
+    def validation_run(self) -> None:
+        cfg = OmegaConf.create({"optimizer": {"name": "adamw", "lr": VAL_RATE}, "seed": VAL_SEED,
+                                "study3": {"role": "validation"}})  # fmt: skip
+        chash = config_hash(cfg)
+        run_dir = self.root / "study3" / VAL_RUN
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.yaml").write_text(OmegaConf.to_yaml(cfg))
+        (run_dir / "meta.json").write_text(json.dumps({
+            "config_hash": chash, "status": "failed",
+            "git": {"commit": "abc123", "dirty": False}}))  # fmt: skip
+        common = {"run": VAL_LABEL, "attempt": 1, "run_id": VAL_RUN}
+        self.log({"event": "start", **common, "experiment": "study3", "config_hash": chash,
+                  "header": VAL_HEADER}, VAL_LOG)  # fmt: skip
+        self.log({"event": "end", **common, "outcome": "technical"}, VAL_LOG)
+
+
+def bridge_records(world: BridgeWorld) -> tuple[dict, dict]:
+    """A schema-valid cycle record of the world's validation mark (the search reused, the
+    qualification and the validation rerun) and its bridge, as ``derive_cycle`` writes them: the
+    qualification's side from ``cycle_entries``, the affected run with its records and lines."""
+    root = world.root
+    entries = qr.cycle_entries(root, 1, old_code=OLD, fix_code=FIXED, settings=REGISTERED,
+                               run_codes=all_runs(world, OLD))  # fmt: skip
+    assert entries.unsettled == [] and entries.attempts
+    ends, starts = end_lines(root), start_lines(root)
+    line = ("path", "line", "line_sha256")
+    run_dir = root / "study3" / VAL_RUN
+    files = [{"path": f"study3/{VAL_RUN}/{name}", "sha256": sha(run_dir / name)}
+             if (run_dir / name).exists() else {"path": f"study3/{VAL_RUN}/{name}", "absent": True}
+             for name in cycle.RUN_FILES]  # fmt: skip
+    run = {"run_id": VAL_RUN, "label": VAL_LABEL, "step": "validation", "arm": "A",
+           "rate": VAL_RATE, "seed": VAL_SEED, "gpu_code": None, "records": files,
+           "start": {k: starts[VAL_RUN][k] for k in line},
+           "end": {k: ends[VAL_RUN][k] for k in line}}  # fmt: skip
+    record = {
+        "kind": "cycle-c1", "state": "passed", "written_at": WRITTEN,
+        "code": {"commit": FIX["commit"], "gpu_code_sha256": FIXED},
+        "candidate": 1, "stage": "validation", "old_code": OLD,
+        "marks": [{**{k: run[k] for k in ("run_id", "label", "step", "arm", "rate", "seed")},
+                   "line": {"kind": "end", **run["end"]}}],
+        "diagnosis": DIAGNOSIS, "fix": FIX_TEXT,
+        "stages": {name: {"action": c.action, "arms": list(c.arms),
+                          "justification": c.justification}
+                   for name, c in BRIDGE_CLAIMS.items()},
+        "fixation": None, "journal": cycle.journal_seen(root),
+        "affected": {"runs": [run], "qualification": cycle._qualification(root, entries),
+                     "records": []},
+        "kept": [], "bridge": bridge_name(1),
+    }  # fmt: skip
+    record = json.loads(json.dumps(record))
+    (start_,) = [r for r in (json.loads(x) for x in (root / "launch" / f"{VAL_LOG}.jsonl")
+                             .read_text().splitlines()) if r["event"] == "start"]  # fmt: skip
+    stage_runs = [{"run_id": VAL_RUN, "campaign": VAL_LOG, "run": VAL_LABEL,
+                   "experiment": "study3", "config_hash": start_["config_hash"]}]  # fmt: skip
+    bridge = cycle.build_bridge(root, 1, cycle_file=cycle_path(root, 1),
+                                cycle_sha256=sha_of(record), diagnosis=DIAGNOSIS, fix=FIX_TEXT,
+                                old_code=OLD, fix_identity=FIX, entries=entries,
+                                stage_runs=stage_runs, host="host", at=WRITTEN,
+                                commit=FIX["commit"])  # fmt: skip
+    return record, json.loads(json.dumps(bridge))
+
+
+def bridge_world(qualify, monkeypatch, tmp_path) -> tuple[BridgeWorld, Path, dict]:
+    """Candidate 1 qualified under the old code (``QUALIFIED``, commit abc123), its validation
+    run ``VAL_RUN`` marked, and the cycle published (``publish_cycle``: the record, then its
+    bridge, ``qualification/c1/supersede-1.json``), its journal lines not yet written; this
+    checkout's GPU code the fix's (``codes``: HEAD is ``FIX``). Returns the world, the bridge's
+    path and the bridge."""
+    world = BridgeWorld(tmp_path)
+    world.full(code=QUALIFIED)
+    world.validation_run()
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)  # this checkout: the fix
+    record, bridge = bridge_records(world)
+    path, bridge_path = cycle.publish_cycle(world.root, 1, record, bridge)
+    world.published = {file: file.read_bytes() for file in (path, bridge_path)}
+    return world, bridge_path, bridge
+
+
+def touch_cycle_record(world: BridgeWorld) -> None:
+    """The cycle record's bytes rewritten (its content kept, its layout another): its sha256
+    changes."""
+    path = cycle_path(world.root, 1)
+    path.write_text(json.dumps(json.loads(path.read_text())))
+
+
+def restore(world: BridgeWorld) -> None:
+    """The cycle record and its bridge as published."""
+    for path, data in world.published.items():
+        path.write_bytes(data)
+
+
 def test_the_cycle_is_published_once_and_a_run_again_writes_only_the_missing_file(tmp_path):
     study, root = materialized_validation_mark(tmp_path)
     claims = {"search": reuse(), "qualification": reuse(), "validation": rerun()}
@@ -741,8 +861,6 @@ def test_the_published_cycle_validates_in_its_pre_cycle_view_before_and_after_th
     assert cycle_route.cycle_problems() == []  # the pre-cycle view suppresses its own effects
 
 
-@pytest.mark.xfail(strict=True, reason="the supersession check does not accept the cycle's "
-                   "bridge form yet: its lines count for nothing")  # fmt: skip
 def test_after_the_repair_the_affected_runs_read_superseded(cycle_route):
     cycle_route.write_cycle()
     cycle_route.repair()  # qualify.py's lines: the runs read superseded now

@@ -60,9 +60,16 @@ read here, and the verdict rules are called where they live, in ``qualification_
 
 **The engineering cycle** ("Failure routes": one engineering cycle per candidate; "Voiding and
 supersession"). A supersession record voids something (attempts and their records, launcher runs,
-kept cases) or holds a run only once the one check has accepted it (``cycle_checks``, ``_Cycles``:
+kept cases) or holds a run only once the one check has accepted it (``cycle_checks``, ``_Cycles``).
+It comes in two forms, told apart by its ``old_record.path``: ``qualify.py supersede``'s own
+record, opened from a technical part record of the qualification, and the bridge of a cycle
+outside the qualification, opened from a technical mark of the search, the validation or the
+confirmation, whose old record is the cycle record (``study3/decisions/cycle-c<N>.json``, by its
+last components) and which analysis code writes in the script's format (``study3_cycle``), so that
+the script's journal repair and re-qualification read it unchanged. Both share the checks of its
+name, its candidate and its only cycle (below). ``qualify.py``'s own record is checked as
 ``qualify.py supersede`` mirrored, so that a cycle the script would refuse is a problem naming the
-record, and one it accepts, followed by the registered steps after it, stays valid):
+record, and one it accepts, followed by the registered steps after it, stays valid:
 - *its name*: only ``supersede-<n>.json`` (``VOIDING_FILE``) is a supersession record; any other
   ``supersede-*.json`` is a problem;
 - *the candidate's*: it lies in ``c<N>/``, and every candidate it names is N: its ``candidate``,
@@ -90,6 +97,23 @@ record, and one it accepts, followed by the registered steps after it, stays val
 - *a new code*: its old GPU code (``old_gpu_code.sha256``) is its old record's
   (``provenance.gpu_code.sha256``), and its fix's (``fix_gpu_code.sha256``) is named and another
   (the same path is not simply rerun).
+The bridge of a cycle outside the qualification takes, in place of the checks from its technical
+record and of the qualification's runs alone (``_bridge``):
+- *its name*: it is ``c<N>/supersede-1.json``, the one name the script's repair and its
+  re-qualification read;
+- *its cycle record*: the candidate's ``study3/decisions/cycle-c<N>.json`` is there and valid
+  (``study3_cycle.read_cycle``: the decision record's form, its evidence and absence markers, its
+  pinned journal prefix and cited lines), and the bridge agrees with it
+  (``study3_cycle.bridge_problems``): the record by the sha256 of its bytes, its diagnosis, fix
+  and old and fix GPU codes, its ``launchers`` exactly the record's affected runs and affected
+  qualification launcher runs and its ``attempts`` exactly the record's affected qualification
+  records (no omission, no extra, nothing twice), its ``held`` empty, and, when the record reuses
+  the qualification, its qualification lists empty;
+- *the candidate's runs*: every run it names is a start of candidate N's numerical, repair,
+  search, validation or confirmation step in study 3's experiment (never the engineering stage's:
+  its records stay as its historical evidence).
+Whether the record's lists equal their derivation from the records before the cycle needs the
+run records, and is checked where they are read (``study3_cycle.cycle_problems``).
 A record that fails any check voids and holds nothing: the failed attempts keep counting, its
 launcher runs stay located and its kept cases add nothing. A ``superseded`` or ``held`` line that
 cites a supersession record counts only through a record the check accepted, and only for a run
@@ -260,6 +284,10 @@ VERDICT = "verdict.json"
 VOIDING_FILE = re.compile(r"(restart|supersede)-(\d+)\.json")
 RESTART_FILE = re.compile(r"restart-\d+\.json")  # a case restart record's name (qualify.py's)
 PART_FILE = re.compile(r"(baseline|rest|control)-attempt-(\d+)\.json")  # a part attempt record
+CYCLE_RECORD = re.compile(r"cycle-c\d+\.json")  # a cycle outside the qualification's record
+# the steps whose runs the bridge of a cycle outside the qualification may supersede: the
+# qualification's (its numerical runs and its repair) and the cycle's stages
+BRIDGE_STEPS = (*STEPS, "search", "validation", "confirmation")
 RELEASED = "checkpoints-removed"  # ``finish``'s record of the checkpoints it removed
 RELEASE_RECORD = "release record"  # what a release record is, among the records read
 # A case's kept exports and their checks (qualify.py's ``finish --kept`` and ``kept-check``):
@@ -658,6 +686,15 @@ def _when(value: Any) -> datetime | None:
     return found if found is not None and found.tzinfo is not None else None
 
 
+def _cycle_record(path: Any) -> bool:
+    """Whether a supersession record's ``old_record.path`` names a cycle record
+    (``study3/decisions/cycle-c<N>.json``, by its last components, whatever root the machine
+    that wrote it had): the record is then the bridge of a cycle outside the qualification."""
+    parts = PurePosixPath(str(path).replace("\\", "/")).parts[-3:]
+    return len(parts) == 3 and parts[:2] == (EXPERIMENT, DECISIONS) and bool(
+        CYCLE_RECORD.fullmatch(parts[2]))  # fmt: skip
+
+
 def _code(record: Mapping[str, Any] | None, key: str = "provenance") -> Any:
     """The GPU code's sha256 a record names: a part record's provenance, or a supersession
     record's ``old_gpu_code`` or ``fix_gpu_code``."""
@@ -686,11 +723,16 @@ class _Cycles:
         # qualification (``_issues_case``: numerical, repair or engineering) in study 3's
         # experiment (``EXPERIMENT``)
         self.starts: dict[str, bool] = {}
+        # and whether a start of it is one of the candidate's runs a cycle's bridge may name: of
+        # the numerical, repair, search, validation or confirmation step (``BRIDGE_STEPS``)
+        self.runs: dict[str, bool] = {}
         for _, record in journal:
             if record.get("event") == "start" and isinstance(record.get("run_id"), str):
-                mine = (_issues_case(record, candidate, (*STEPS, ENGINEERING))
-                        and record.get("experiment") == EXPERIMENT)  # fmt: skip
+                study3 = record.get("experiment") == EXPERIMENT
+                mine = _issues_case(record, candidate, (*STEPS, ENGINEERING)) and study3
                 self.starts[record["run_id"]] = self.starts.get(record["run_id"], False) or mine
+                bridged = _issues_case(record, candidate, BRIDGE_STEPS) and study3
+                self.runs[record["run_id"]] = self.runs.get(record["run_id"], False) or bridged
 
     def issued(self, stage: str) -> list[tuple[Any, float, int]]:
         """The (optimizer, rate, seed) the stage's issued starts name (``_issued``: the numerical
@@ -723,7 +765,7 @@ class _Cycles:
                                  "engineering cycle per candidate, in both stages, and no record "
                                  "of a second voids anything")  # fmt: skip
                 if record is not None:
-                    found += self._record(record)
+                    found += self._record(record, path)
             out[path] = {"candidate": self.candidate, "record": record,
                          "readable": path not in named or record is not None,
                          "accepted": record is not None and not found,
@@ -731,13 +773,15 @@ class _Cycles:
                          "problems": [f"{path}: {why}" for why in found]}  # fmt: skip
         return out
 
-    def _record(self, record: Mapping[str, Any]) -> list[str]:
+    def _record(self, record: Mapping[str, Any], path: Path) -> list[str]:
         """Why a supersession record voids nothing, or none: it names the old record (its path
         and sha256), the diagnosis, the fix and the cases re-qualified ("Voiding and
         supersession"); every candidate it names is this one (its ``candidate`` and its kept
-        cases'); every run of its ``launchers`` and ``held`` is a start of this candidate's
-        numerical, repair or engineering step in study 3's experiment; and its old record is the
-        technical failure ``qualify.py supersede`` starts a cycle from (``_old_record``)."""
+        cases'); and then, for the bridge of a cycle outside the qualification (its old record
+        the cycle record: ``_bridge``), the bridge's checks, or, for qualify.py's own record,
+        every run of its ``launchers`` and ``held`` is a start of this candidate's numerical,
+        repair or engineering step in study 3's experiment, and its old record is the technical
+        failure ``qualify.py supersede`` starts a cycle from (``_old_record``)."""
         found = []
         old = record.get("old_record")
         requalified = record.get("cases_requalified")
@@ -760,6 +804,8 @@ class _Cycles:
             if isinstance(case, Mapping) and case.get("candidate") != self.candidate:
                 found.append(f"a kept case of candidate {case.get('candidate')!r}, not "
                              f"{self.candidate}")  # fmt: skip
+        if given["old_record"] and _cycle_record(old["path"]):
+            return found + self._bridge(record, path)
         for key in ("launchers", "held"):
             entries = record.get(key)
             for entry in entries if isinstance(entries, list) else []:
@@ -773,6 +819,40 @@ class _Cycles:
                                  "alone")  # fmt: skip
         if given["old_record"]:
             found += self._old_record(old, record)
+        return found
+
+    def _bridge(self, record: Mapping[str, Any], path: Path) -> list[str]:
+        """Why the bridge of a cycle outside the qualification voids nothing, or none (module
+        docstring, "The engineering cycle", the bridge): it is the candidate's
+        ``qualification/c<N>/supersede-1.json``; its cycle record is there and valid as
+        ``study3_cycle.read_cycle`` reads it; the bridge agrees with that record
+        (``study3_cycle.bridge_problems``: the record by its bytes' sha256, its diagnosis, fix and
+        codes, its ``launchers`` exactly the record's affected runs and qualification launcher
+        runs, its ``attempts`` exactly the record's qualification records, nothing named twice,
+        ``held`` empty); and every run it names is a start of this candidate's numerical,
+        repair, search, validation or confirmation step in study 3's experiment."""
+        from .study3_cycle import bridge_problems, read_cycle  # the decision records: here only
+
+        found = []
+        cycle = read_cycle(self.root, self.candidate)
+        if Path(cycle["bridge_path"]) != path:
+            found.append(f"a cycle's bridge is {cycle['bridge_path']}, not {path.name}: the one "
+                         "name its journal repair and its re-qualification read")  # fmt: skip
+        if cycle["record"] is None:
+            found += [f"its cycle record is not valid: {p}" for p in cycle["problems"]] or [
+                f"its cycle record {cycle['path']} is not there"]  # fmt: skip
+            return found
+        found += bridge_problems(self.root, self.candidate, record, cycle=cycle["record"])
+        for key in ("launchers", "held"):
+            entries = record.get(key)
+            for entry in entries if isinstance(entries, list) else []:
+                run_id = entry.get("run_id") if isinstance(entry, Mapping) else None
+                if isinstance(run_id, str) and not self.runs.get(run_id):
+                    shown = run_id if plain_name(run_id) else "a run"
+                    found.append(f"it names the run {shown} ({key}), which no start of "
+                                 f"candidate {self.candidate}'s numerical, repair, search, "
+                                 "validation or confirmation step issued in study 3's "
+                                 "experiment")  # fmt: skip
         return found
 
     def _old_record(self, old: Mapping[str, Any], record: Mapping[str, Any]) -> list[str]:
