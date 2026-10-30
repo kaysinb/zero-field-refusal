@@ -8,6 +8,7 @@ import builtins
 import hashlib
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -19,6 +20,10 @@ from zero_field_refusal import launch
 from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
+    MIN_N,
+    PLANNING_DIFFERENCE_PP,
+    PLANNING_POWER,
+    SPREAD_PERCENTILE,
     UNCOUNTED_REASONS,
     DecisionRefused,
     budget_needed,
@@ -32,8 +37,11 @@ from zero_field_refusal.analysis.study3_decisions import (
     hold_reasons,
     immutable,
     kind_of,
+    planning_power,
     read_decision,
+    sample_size,
     start_lines,
+    upper_sd,
     write_decision,
 )
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE
@@ -293,6 +301,63 @@ def test_the_coverage_thresholds_are_the_binomial_quantiles_of_the_example() -> 
     # "at J = 1 000, c = 313 per comparison and 587 jointly"
     assert coverage_threshold(1000, 10_000, 0.025) == 313
     assert coverage_threshold(1000, 10_000, 0.05) == 587
+
+
+# ------------------------------------------------------------------ the N rule
+
+
+@pytest.mark.parametrize("sd,m,level,n", [(3.5, 28, 0.975, 60), (5.0, 28, 0.975, 88),
+                                          (5.0, 22, 0.975, 92), (5.0, 28, 0.98, 93)])  # fmt: skip
+def test_the_n_rule_gives_the_registered_examples(sd, m, level, n) -> None:
+    """The examples of "Sample size from validation": N is the smallest N ≥ 60 whose planning
+    power reaches 0.85."""
+    assert sample_size(sd, m, level) == n
+    up = upper_sd(sd, m)
+    assert planning_power(n, up, level) >= PLANNING_POWER
+    assert n == MIN_N or planning_power(n - 1, up, level) < PLANNING_POWER
+
+
+def test_the_examples_caps() -> None:
+    assert [cap_of(n) for n in (60, 88, 92, 93)] == [70, 99, 104, 105]
+
+
+def test_the_upper_sd_and_the_floor() -> None:
+    assert upper_sd(5.0, 28) == pytest.approx(5.70999, abs=1e-5)
+    assert sample_size(0.0, 28, 0.99) == 60
+    with pytest.raises(ValueError):
+        sample_size(5.0, 1, 0.975)
+
+
+def test_the_n_rule_constants_and_its_power() -> None:
+    assert (PLANNING_POWER, PLANNING_DIFFERENCE_PP, SPREAD_PERCENTILE) == (0.85, 2.0, 0.20)
+    assert planning_power(60, 0.0, 0.975) == 1.0  # SD_up = 0: the direction is certain
+    # Φ(2·√N/SD_up − z_L), z_L = Φ⁻¹((1 + L)/2): at L = 0.975, z_L = 2.241
+    from scipy.stats import norm
+
+    assert planning_power(88, 5.0, 0.975) == pytest.approx(
+        norm.cdf(2 * math.sqrt(88) / 5.0 - norm.ppf(0.9875)))  # fmt: skip
+    assert norm.ppf(0.9875) == pytest.approx(2.241, abs=1e-3)
+
+
+@pytest.mark.parametrize("sd,m,level", [(5.0, 1, 0.975), (5.0, 0, 0.975), (-0.1, 28, 0.975),
+                                        (math.nan, 28, 0.975), (math.inf, 28, 0.975),
+                                        (5.0, 28, 0.95), (5.0, 28, 0.9751), (5.0, 2.0, 0.975),
+                                        (5.0, True, 0.975), ("5", 28, 0.975)])  # fmt: skip
+def test_the_n_rule_refuses_what_it_does_not_define(sd, m, level) -> None:
+    with pytest.raises(ValueError):
+        sample_size(sd, m, level)
+
+
+def test_the_n_rule_steps_to_the_smallest_passing_n() -> None:
+    """N does not depend on how the closed form rounds: every N the rule gives passes, and the
+    one before it (above the floor) does not, across levels, block counts and spreads."""
+    for level in LEVELS:
+        for m in (2, 3, 22, 28, 31, 40):
+            for sd in (0.5, 1.0, 2.5, 3.5, 4.0, 5.0, 6.5, 8.0):
+                n = sample_size(sd, m, level)
+                up = upper_sd(sd, m)
+                assert n >= MIN_N and planning_power(n, up, level) >= PLANNING_POWER
+                assert n == MIN_N or planning_power(n - 1, up, level) < PLANNING_POWER
 
 
 # ------------------------------------------------------------------ each schema accepted

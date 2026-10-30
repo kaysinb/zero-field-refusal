@@ -827,6 +827,23 @@ def test_a_record_changed_after_it_was_added_is_refused(study) -> None:
     assert has(study.problems(), "is never overwritten")
 
 
+def test_the_simulation_folder_is_no_run_without_a_start(study) -> None:
+    """``RUNS_DIR/study3/simulation/`` (the simulation's parts and results) is reserved, as the
+    decision records' folder is: the versions record's walk of the experiment's folder skips
+    it, and names no problem."""
+    study.validated()
+    study.block(10300)
+    simulation = study.root / "study3" / "simulation"
+    (simulation / "parts").mkdir(parents=True)
+    (simulation / "parts" / "x.json").write_text("{}")
+    (simulation / "results.json").write_text("{}")
+    assert (study.root / "study3" / "decisions").is_dir()
+    assert study.problems() == []
+    stray = study.root / "study3" / "simulations"  # a folder of any other name is still walked
+    stray.mkdir()
+    assert has(study.problems(), "simulations", "role cannot be read")
+
+
 def test_a_validation_run_without_its_start_fails_closed(study) -> None:
     study.validated()
     (run_id, other) = study.block(10300)

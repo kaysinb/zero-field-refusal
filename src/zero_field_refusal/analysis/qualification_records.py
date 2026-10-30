@@ -158,8 +158,9 @@ launcher run is located there); the launch logs and the qualification's records 
 trajectory results, restart, supersession and release records, the kept exports' manifests and
 their ``kept-check`` receipts, the verdict cache) with RUNS_DIR as the base. One that resolves under
 a sealed folder is never opened: it is a problem named by its path. This checkout's
-``configs/`` are read to compose a cell's config. The decision records' folder in the
-experiment's folder (``study3_records.DECISIONS``) is no run and is never walked. The GPU code
+``configs/`` are read to compose a cell's config. The reserved folders of the experiment's
+folder (``study3_records.RESERVED``: the decision records and the simulation's parts and results)
+are no run and are never walked. The GPU code
 identity is not computed here: it is an argument. No GPU path is imported here;
 ``qualification_verdicts`` itself imports ``fa_control_diagnostic`` (and with it torch).
 
@@ -199,9 +200,9 @@ from ..qualification_constants import (
 from . import qualification_verdicts as verdicts
 from .study3_records import (
     ARMS,
-    DECISIONS,
     EXPERIMENT,
     RATE_TOLERANCE,
+    RESERVED,
     TORN_WHY,
     _command_config,
     _journal_logs,
@@ -1361,9 +1362,9 @@ class _Located:
             return None
         if run.experiment not in self.metas:
             directory = self.root / run.experiment
-            # the decision records' folder is no run (study3_records.DECISIONS)
+            # the reserved folders are no run (study3_records.RESERVED)
             self.metas[run.experiment] = [(d, self._meta(d)) for d in sorted(directory.glob("*"))
-                                          if d.name != DECISIONS]  # fmt: skip
+                                          if d.name not in RESERVED]  # fmt: skip
         named = {r["run_id"] for r in self.superseded if r.get("run") == run.label
                  and r.get("experiment") == run.experiment
                  and r.get("config_hash") == run.config_hash}  # fmt: skip

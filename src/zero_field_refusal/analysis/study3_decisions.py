@@ -19,6 +19,10 @@ records; the state machine consumes only what this module accepts.
 - ``write_decision``: validates and writes a record atomically, once; a second version is refused.
 - ``cap_of``, ``budget_reason`` and ``budget_needed``: the cap N + max(10, ⌈0.12·N⌉), and why (if
   at all) N asks for a budget decision.
+- ``sample_size`` (with ``upper_sd`` and ``planning_power``): the N rule of "Sample size from
+  validation", the smallest N ≥ 60 with Φ(2·√N/SD_up − z_L) ≥ 0.85. It is the single
+  implementation of the rule: the spread script and the simulation both call it, and neither
+  copies it.
 - ``closures``: the closure records of a candidate's arms, each with its state and problems, as
   ``decisions`` lists the others; ``hold_reasons``: the ids of the reasons a hold line states;
   ``end_lines`` and ``start_lines``: each run's last ``end`` line and its start line in the
@@ -226,6 +230,9 @@ FAMILY_ALPHA = 0.05
 COVERAGE_P0 = {"comparison": 0.025, "joint": 0.05}
 # "Sample size from validation"
 MIN_N = 60
+PLANNING_POWER = 0.85  # power(N) ≥ 0.85
+PLANNING_DIFFERENCE_PP = 2.0  # |Δ| = 2 pp
+SPREAD_PERCENTILE = 0.20  # χ²₀.₂₀,ₘ₋₁: the upper 80 % bound of the SD
 BUDGET_ABOVE = 90  # N above this needs the researcher's budget decision
 CAP_FLOOR, CAP_SHARE_PERCENT = 10, 12
 ACTIVE = (["A-F"], ["A-F", "P-F"])
@@ -357,6 +364,69 @@ def decision_path(runs_root: str | Path, kind: str) -> Path:
 def cap_of(n: int) -> int:
     """N + max(10, ⌈0.12·N⌉), in whole numbers."""
     return n + max(CAP_FLOOR, -(-CAP_SHARE_PERCENT * n // 100))
+
+
+def upper_sd(sd_pp: float, m: int) -> float:
+    """SD_up = SD·√((m − 1)/χ²₀.₂₀,ₘ₋₁) ("Sample size from validation"): the upper 80 % bound
+    of the spread in normal theory, χ²₀.₂₀,ₘ₋₁ the 20th percentile of χ² with m − 1 degrees of
+    freedom. ``ValueError`` for m < 2 or an SD that is negative or not finite."""
+    from scipy.stats import chi2
+
+    _rule_inputs(sd_pp, m)
+    return float(sd_pp) * math.sqrt((m - 1) / chi2.ppf(SPREAD_PERCENTILE, m - 1))
+
+
+def planning_power(n: int, sd_up_pp: float, level: float) -> float:
+    """power(N) = Φ(2·√N/SD_up − z_L), z_L = Φ⁻¹((1 + L)/2): the normal approximation for a
+    direction at |Δ| = 2 pp under the two-sided interval at L; 1.0 for SD_up = 0."""
+    from scipy.stats import norm
+
+    if not (type(n) is int and n >= 1):
+        raise ValueError(f"N must be a positive integer, not {n!r}")
+    _rule_inputs(sd_up_pp, 2)
+    _rule_level(level)
+    if sd_up_pp == 0:
+        return 1.0
+    z = norm.ppf((1 + level) / 2)
+    return float(norm.cdf(PLANNING_DIFFERENCE_PP * math.sqrt(n) / sd_up_pp - z))
+
+
+def sample_size(sd_pp: float, m: int, level: float) -> int:
+    """N, the smallest N ≥ 60 with ``planning_power(N, upper_sd(SD, m), L) ≥ 0.85``
+    ("Sample size from validation"; SD = 100·sd(d_AF) in pp over the m supported validation
+    blocks, at full precision). The closed form N ≈ ((z_L + z_0.85)·SD_up/2)² is only a start:
+    the rule steps from it to the smallest N that passes by direct evaluation, so no
+    floating-point edge moves N. **The single implementation of the N rule**: the spread script
+    and the simulation call it, and neither copies it. ``ValueError`` for m < 2, a negative or
+    non-finite SD, or a level outside ``LEVELS``."""
+    from scipy.stats import norm
+
+    _rule_inputs(sd_pp, m)
+    _rule_level(level)
+    up = upper_sd(sd_pp, m)
+    if up == 0:
+        return MIN_N
+    z = norm.ppf((1 + level) / 2) + norm.ppf(PLANNING_POWER)
+    n = max(MIN_N, math.ceil((z * up / PLANNING_DIFFERENCE_PP) ** 2))
+    while n > MIN_N and planning_power(n - 1, up, level) >= PLANNING_POWER:
+        n -= 1
+    while planning_power(n, up, level) < PLANNING_POWER:
+        n += 1
+    return n
+
+
+def _rule_inputs(sd_pp: Any, m: Any) -> None:
+    """The N rule's SD (non-negative, finite, a real number) and m (an integer, at least 2)."""
+    if not (type(m) is int and m >= 2):
+        raise ValueError(f"m must be an integer of at least 2 blocks, not {m!r}")
+    if not (isinstance(sd_pp, int | float) and not isinstance(sd_pp, bool)
+            and math.isfinite(sd_pp) and sd_pp >= 0):  # fmt: skip
+        raise ValueError(f"the SD must be a finite number at or above 0, not {sd_pp!r}")
+
+
+def _rule_level(level: Any) -> None:
+    if level not in LEVELS or isinstance(level, bool):
+        raise ValueError(f"the level {level!r} is not one of {LEVELS}")
 
 
 def budget_reason(n: int, simulation: Mapping[str, Any] | None = None) -> str | None:

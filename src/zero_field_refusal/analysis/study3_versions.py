@@ -223,9 +223,9 @@ from .study3_decisions import (
 from .study3_decisions import UNCOUNTED_REASONS as UNCOUNTED_REASONS  # ``uncounted_runs``' reasons
 from .study3_records import (
     COUNTING,
-    DECISIONS,
     EXPERIMENT,
     RATE_TOLERANCE,
+    RESERVED,
     STEP_ROLES,
     TORN_LINE,
     VERSIONED_STEPS,
@@ -1886,7 +1886,7 @@ def _unstarted(root: Path, started: set[str]) -> list[str]:
         return [f"{experiment}: the run directories cannot be listed ({type(exc).__name__})"]
     found: dict[str, list[str]] = defaultdict(list)
     for folder in folders:
-        if folder.name == DECISIONS or folder.name in started or not folder.is_dir():
+        if folder.name in RESERVED or folder.name in started or not folder.is_dir():
             continue
         if _sealed_records(folder, experiment) is not None:  # nothing of it is opened
             found["a run whose record files resolve under a sealed folder or cannot be resolved "

@@ -1684,6 +1684,26 @@ def test_pure_reading(qualify, monkeypatch, tmp_path) -> None:
     assert snapshot(tmp_path) == before
 
 
+def test_the_reserved_folders_are_no_launcher_run(tmp_path) -> None:
+    """The reserved folders of the experiment's folder (``study3_records.RESERVED``: the
+    decision records and the simulation's parts and results) are never read as run
+    directories: a ``meta.json`` there, even one of the cell's config hash, locates nothing."""
+    experiment = tmp_path / "study3"
+    meta = json.dumps({"config_hash": "h" * 64, "status": "completed"})
+    for name in ("decisions", "simulation", "20261026T000000Z-A-1.45e-05-s10200-hhhhhhhh-a1"):
+        (experiment / name / "parts").mkdir(parents=True)
+        (experiment / name / "meta.json").write_text(meta)
+        (experiment / name / "parts" / "x.json").write_text("{}")
+    (experiment / "simulation" / "results.json").write_text("{}")
+    problems: list[str] = []
+    located = qr._Located(tmp_path, [], problems)
+    run = qr._Issued(label="A-1.45e-05/s10200", experiment="study3", config_hash="h" * 64)
+    assert located(run) == experiment / "20261026T000000Z-A-1.45e-05-s10200-hhhhhhhh-a1"
+    assert [d.name for d, _ in located.metas["study3"]] == [
+        "20261026T000000Z-A-1.45e-05-s10200-hhhhhhhh-a1"]  # fmt: skip
+    assert problems == []
+
+
 def test_no_gpu_module_is_imported() -> None:
     """The module imports no GPU path (``qualification``, ``schedule``, ``train``, ``launch``,
     ``runtime``, ``fa_control_diagnostic``) and no torch; it reaches the verdict rules through

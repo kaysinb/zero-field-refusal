@@ -27,10 +27,13 @@ from omegaconf import OmegaConf
 from zero_field_refusal import launch
 from zero_field_refusal.analysis.stage_a import TrajectoryError
 from zero_field_refusal.analysis.study3_records import (
+    DECISIONS,
     IDENTITY_KEYS,
     INSTABILITY,
+    RESERVED,
     ROLES,
     SEEDS,
+    SIMULATION,
     TORN_KIND,
     TORN_WHY,
     EndpointReader,
@@ -1391,6 +1394,22 @@ def test_the_decision_records_folder_is_reserved_and_no_run_directory(world) -> 
     stray.mkdir()
     found, problems = world.read()
     assert listed_refused(found, problems, stray.name, "no start")
+
+
+def test_the_simulation_folder_is_reserved_and_no_run_directory(world) -> None:
+    """``RUNS_DIR/study3/simulation/`` holds the simulation's parts and results ("Simulation
+    before validation"): reserved as the decision records' folder is, so no reader takes it for
+    a run without a start."""
+    assert RESERVED == (DECISIONS, SIMULATION) == ("decisions", "simulation")
+    simulation = world.root / "study3" / "simulation"
+    (simulation / "parts").mkdir(parents=True)
+    (simulation / "parts" / "x.json").write_text("{}")
+    (simulation / "results.json").write_text("{}")
+    usable = world.run()
+    found, problems = world.read()
+    assert problems == [] and [e.run_id for e in found] == [usable]
+    reader = EndpointReader(world.root, theta0=world.theta0)
+    assert [d.name for d in reader.folders] == [usable]
 
 
 def test_one_reader_reads_each_run_file_once_across_its_readings(world, monkeypatch) -> None:
