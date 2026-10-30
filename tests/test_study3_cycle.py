@@ -39,6 +39,7 @@ from test_study3_progress import OPT, Study, ep, run_of
 from test_study3_versions import git
 
 from zero_field_refusal import code_identity
+from zero_field_refusal import launch as launcher
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_cycle as cycle
 from zero_field_refusal.analysis.study3_decisions import (
@@ -1324,3 +1325,132 @@ def test_dry_run_writes_nothing(cycle_route):
     assert ran.code == 0 and '"kind": "cycle-c1"' in ran.out, ran.error
     assert not cycle_path(cycle_route.root, 1).exists()
     assert not cycle_route.bridge_path().exists()
+
+
+# ------------------------------------------------------------------ qualify.py on the bridge
+
+
+def run_main(qualify, argv) -> int | str:
+    """qualify.py's ``main`` in process: 0 when it returns, else the code it exits with, or its
+    message when that is text."""
+    try:
+        qualify.main([str(a) for a in argv])
+    except SystemExit as exc:
+        return 0 if exc.code is None else exc.code
+    return 0
+
+
+def case_args(world, case) -> list[str]:
+    return ["--campaign", str(world.path), "--candidate", "1", "--case", case.name,
+            "--runs-root", str(world.root)]  # fmt: skip
+
+
+def superseded_lines(root: Path) -> list[dict]:
+    """The journal's ``superseded`` records, every log."""
+    records = [json.loads(x) for log in sorted((root / "launch").glob("*.jsonl"))
+               for x in log.read_text().splitlines()]  # fmt: skip
+    return [r for r in records if r.get("event") == "superseded"]
+
+
+def repair(world, path, qualify, **over):
+    """qualify.py's journal repair of the cycle, as the writer prints it: ``supersede`` on the
+    engineering campaign with the cycle record as ``--record``."""
+    eng = world.engineering_campaign()  # a valid engineering campaign file
+    return run_main(qualify, ["supersede", "--campaign", str(eng), "--candidate", "1",
+                              "--engineering", "--case", over.get("case", ENG_CASE), "--record",
+                              str(path), "--diagnosis", "d", "--fix", "f", "--runs-root",
+                              str(world.root)])  # fmt: skip
+
+
+def repaired_bridge_world(qualify, monkeypatch, tmp_path):
+    """``bridge_world`` after the repair: the bridge's journal lines written."""
+    world, bridge_path, bridge = bridge_world(qualify, monkeypatch, tmp_path)
+    assert repair(world, bridge["old_record"]["path"], qualify) == 0
+    return world, bridge_path, bridge
+
+
+def run_part_by_hand(qualify, world, case, *, attempt: int, flag: str) -> dict:
+    """``qualify.py part --attempt N`` of the case's baseline, by hand with ``flag``: the
+    harness (``run_part``) publishes a record carrying the ``engineering_cycle`` argument
+    qualify.py passes it, and no model runs. Asserts the arguments; returns the record."""
+    calls = []
+
+    def run_part(settings, env, found, run_dir, out, *, part, attempt, checkpoints,
+                 diagnostic_steps=(), infrastructure=None, engineering_cycle=None):  # fmt: skip
+        calls.append((found.name, part, attempt, infrastructure))
+        record = {"part": part, "attempt": attempt, "case": found.record(), "status": "failed",
+                  "kind": "technical", "reasons": ["run by hand"],
+                  "engineering_cycle": engineering_cycle}  # fmt: skip
+        qualify.q.publish(out / found.attempt_path(part, attempt), record)
+        return record
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(qualify.runtime, "configure_numerics", lambda cfg, device: {})
+        patch.setattr(qualify.runtime, "environment", lambda cfg, device: object())
+        patch.setattr(qualify.q, "run_part", run_part)
+        code = run_main(qualify, ["part", *case_args(world, case), "--part", "baseline",
+                                  "--attempt", attempt, flag, "--run-dir",
+                                  world.path.parent / "run", "--checkpoints",
+                                  world.path.parent / "h", "--device", "cpu"])  # fmt: skip
+    assert code == 0, code
+    assert calls == [(case.name, "baseline", attempt, None)]
+    return json.loads((world.folder(case) / f"baseline-attempt-{attempt}.json").read_text())
+
+
+def test_qualify_writes_the_bridges_journal_lines_and_the_launcher_waits_before(
+    qualify, monkeypatch, tmp_path
+):
+    """Published, the bridge needs its journal lines: until they are written every qualify.py
+    command and the launcher refuse (exit 12, ``TornJournalError``: a launcher started between
+    the bridge and its repair fails closed); qualify.py's own repair, run as the writer prints
+    it, writes exactly the bridge's ``superseded`` lines, each citing the bridge."""
+    world, bridge_path, bridge = bridge_world(qualify, monkeypatch, tmp_path)
+    assert run_main(qualify, ["complete", *case_args(world, ADAMW)]) == 12
+    with pytest.raises(launcher.TornJournalError):
+        launcher.run_campaign(world.name, world.runs, world.root, dry_run=True)
+    assert repair(world, bridge["old_record"]["path"], qualify) == 0
+    assert launcher.missing_lines(world.root) == []
+    lines = superseded_lines(world.root)
+    assert {r["run_id"] for r in lines} == {e["run_id"] for e in bridge["launchers"]} >= {VAL_RUN}
+    assert all(r["record"] == str(bridge_path) for r in lines)
+
+
+def test_qualify_requalifies_the_voided_cases_under_the_fix(qualify, monkeypatch, tmp_path):
+    """After the repair qualify.py's documented re-qualification runs unchanged: a voided case
+    is not complete (3, never stale: 10), the driver stops for its rerun (8), the rerun by hand
+    carries --engineering-cycle and names the bridge, and qualify.py refuses a second cycle."""
+    world, bridge_path, bridge = repaired_bridge_world(qualify, monkeypatch, tmp_path)
+    assert run_main(qualify, ["complete", *case_args(world, ADAMW)]) == 3  # not 10 (stale)
+    resume = ["part", *case_args(world, ADAMW), "--part", "baseline", "--resume", "--run-dir", "x",
+              "--checkpoints", "y"]  # fmt: skip
+    assert run_main(qualify, resume) == 8  # voided: its next attempt by hand
+    world.launch(ADAMW, commit="HEAD")  # the recovery round's new run
+    record = run_part_by_hand(qualify, world, ADAMW, attempt=2, flag="--engineering-cycle")
+    previous = [{"attempt": 1, "state": "recorded"}]
+    assert record["engineering_cycle"] == {"path": str(bridge_path), "sha256": sha(bridge_path),
+                                           "previous": previous}  # fmt: skip
+    second = ["supersede", *case_args(world, ADAMW), "--record",
+              str(world.folder(ADAMW) / "baseline-attempt-2.json"), "--diagnosis", "d", "--fix",
+              "f"]  # fmt: skip
+    refused = run_main(qualify, second)  # one cycle per candidate: qualify.py refuses its own
+    assert "its engineering cycle is recorded already" in refused
+
+
+def test_the_repair_matches_the_bridge_only_by_its_cycle_records_path_and_sha256(
+    qualify, monkeypatch, tmp_path, capsys
+):
+    """qualify.py's repair takes the bridge only by its cycle record's path and the sha256 of its
+    bytes: a cycle record whose bytes changed is no repair. Before the journal lines are written,
+    nothing matches the journal's missing lines, so qualify.py refuses as the journal is not
+    whole (exit 12) and writes no line; after them, the same call is a second cycle, refused."""
+    world, _, bridge = bridge_world(qualify, monkeypatch, tmp_path)
+    touch_cycle_record(world)  # its bytes change
+    capsys.readouterr()
+    assert repair(world, bridge["old_record"]["path"], qualify) == 12  # TornJournalError
+    assert "the launch journal is not whole" in capsys.readouterr().err.lower()
+    assert launcher.missing_lines(world.root) != [] and superseded_lines(world.root) == []
+    restore(world)
+    assert repair(world, bridge["old_record"]["path"], qualify) == 0  # the record as published
+    touch_cycle_record(world)
+    refused = repair(world, bridge["old_record"]["path"], qualify)
+    assert "its engineering cycle is recorded already" in str(refused)
