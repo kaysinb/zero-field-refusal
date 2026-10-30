@@ -110,7 +110,9 @@ its reason). ``read_cycle`` checks, in order: the record as a decision record (i
 evidence file of its sha256, every absence marker's file still absent, its pinned prefix and
 cited lines of their bytes: ``study3_decisions``); its old code, the chain's when given; the
 pair, a record without its bridge or a bridge without its record being a problem that names
-``study3_summary.py cycle``, which writes only the missing file; and the bridge against the
+``study3_summary.py cycle``, which writes only the missing file (``qualify.py``'s own
+supersession record, which names a part record and no cycle record, is no bridge: no cycle outside
+the qualification, and no problem); and the bridge against the
 record (``bridge_problems``): its candidate and number, its ``old_record`` the record by its
 bytes' sha256, the record's diagnosis, fix and codes, its ``launchers`` exactly the affected runs
 and the qualification's affected launcher runs, its ``attempts`` exactly the qualification's
@@ -848,7 +850,9 @@ def read_cycle(
     chain_old: str | None = None,
 ) -> dict[str, Any]:
     """The candidate's cycle as published (module docstring, "Reading a cycle back"), reading no
-    run record: ``state`` (``missing``: neither file; ``valid``; ``invalid``: any problem),
+    run record: ``state`` (``missing``: neither file, or no cycle record and ``qualify.py``'s own
+    supersession record, whose old record is no cycle record: the qualification's cycle, no
+    problem here; ``valid``; ``invalid``: any problem),
     ``path`` and ``bridge_path``, the ``record`` (None unless it is a valid decision record) and
     the ``bridge`` (None unless readable), the ``claims`` by stage, the ``affected`` run ids, the
     ``kept`` entries, ``repair_record`` (the bridge's ``old_record.path``: the exact ``--record``
@@ -865,14 +869,6 @@ def read_cycle(
     if not (has_record or has_bridge):
         return out
     problems: list[str] = []
-    record = None
-    if has_record:
-        record, found = read_decision(root, f"cycle-c{candidate}", repo=repo)
-        problems += found
-    else:
-        problems.append(f"{bridge_path}: the bridge is there without its cycle record {path}: "
-                        "run study3_summary.py cycle again, which writes only the missing "
-                        "file")  # fmt: skip
     bridge = None
     if has_bridge:
         if under_sealed(bridge_path, root):
@@ -885,7 +881,17 @@ def read_cycle(
             if bridge is not None and not isinstance(bridge, dict):
                 problems.append(f"{bridge_path}: the bridge is no JSON object")
                 bridge = None
+    if not has_record and bridge is not None and not _names_cycle_record(bridge):
+        return out  # qualify.py's own cycle, from a part record: no cycle outside it
+    record = None
+    if has_record:
+        record, found = read_decision(root, f"cycle-c{candidate}", repo=repo)
+        problems += found
     else:
+        problems.append(f"{bridge_path}: the bridge is there without its cycle record {path}: "
+                        "run study3_summary.py cycle again, which writes only the missing "
+                        "file")  # fmt: skip
+    if not has_bridge:
         problems.append(f"{path}: the cycle record is published without its bridge "
                         f"{bridge_path}: run study3_summary.py cycle again, which writes only "
                         "the missing file")  # fmt: skip
@@ -910,6 +916,19 @@ def read_cycle(
         problems=problems,
     )  # fmt: skip
     return out
+
+
+def _names_cycle_record(bridge: Mapping[str, Any]) -> bool:
+    """Whether a supersession record's ``old_record.path`` names a cycle record
+    (``study3/decisions/cycle-c<N>.json``, by its last components): the bridge of a cycle outside
+    the qualification. ``qualify.py``'s own record names a part record of the qualification."""
+    old = bridge.get("old_record")
+    named = old.get("path") if isinstance(old, Mapping) else None
+    if not isinstance(named, str):
+        return True  # no part record named: it cannot be told for qualify.py's
+    parts = PurePosixPath(named.replace("\\", "/")).parts[-3:]
+    return len(parts) == 3 and parts[:2] == (EXPERIMENT, "decisions") and bool(
+        re.fullmatch(r"cycle-c\d+\.json", parts[2]))  # fmt: skip
 
 
 def bridge_problems(

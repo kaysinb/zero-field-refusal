@@ -26,6 +26,7 @@ from test_qualification_records import (
     REGISTERED,
     SCIENTIFIC_CASE,
     beyond,
+    technical_cycle,
 )
 from test_qualification_records import World as QualificationWorld
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
@@ -653,6 +654,27 @@ def restore(world: BridgeWorld) -> None:
     """The cycle record and its bridge as published."""
     for path, data in world.published.items():
         path.write_bytes(data)
+
+
+def test_qualifys_own_supersession_record_is_no_cycle_outside_the_qualification(
+    qualify, monkeypatch, tmp_path
+):
+    """The candidate's cycle written by qualify.py itself, from a technical part record: no cycle
+    record, and a supersession record whose old record is a part record, not a cycle record.
+    ``read_cycle`` reads no cycle outside the qualification there (``missing``, no problem):
+    the candidate is not blocked by it. A record that names a cycle record without one, or one
+    that cannot be read, stays a problem."""
+    world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
+    found = cycle.read_cycle(world.root, 1)
+    assert (found["state"], found["problems"], found["record"]) == ("missing", [], None)
+    named = {**record, "old_record": {"path": str(cycle_path(world.root, 1)), "sha256": "0" * 64,
+                                      "kind": "cycle-c1"}}  # fmt: skip
+    path.write_text(json.dumps(named))
+    found = cycle.read_cycle(world.root, 1)
+    assert found["state"] == "invalid" and any("study3_summary.py cycle" in p
+                                               for p in found["problems"])  # fmt: skip
+    path.write_text("{")
+    assert cycle.read_cycle(world.root, 1)["state"] == "invalid"
 
 
 def test_the_cycle_is_published_once_and_a_run_again_writes_only_the_missing_file(tmp_path):
