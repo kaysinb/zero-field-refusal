@@ -1,15 +1,19 @@
-"""Freeze the cohorts and K*_h of study 3's candidate N, then analyze its harm on them.
+"""Freeze the cohorts and K*_h of study 3's candidate N, then analyze its harm on them, and write
+the final report's facts.
 
     python scripts/study3_analysis.py freeze  --runs-root DIR --candidate N [--theta0 RUN_DIR]
     python scripts/study3_analysis.py analyze --runs-root DIR --candidate N [--theta0 RUN_DIR]
         [--supersedes-reason ID]
+    python scripts/study3_analysis.py report  --runs-root DIR --billing FILE --embargo FILE
+        [--theta0 RUN_DIR] [--out DIR]
 
-docs/study3-preregistration.md: "Seeds and order" (order steps 9–11: the cohorts and K*_h frozen
-before any confirmation label is opened, the labeling of the confirmation, the judge-based
-analysis), "Questions and estimands" (the comparisons and the descriptives, validation's harm after
-the final analysis and apart from it), "Inference", "Utility" (the claim at confirmation, at
-α = 0.05/8 per bound), "Validation, confirmation and stopping" ("Confirmation") and "Judge and
-audit" (the denominator 521, the three computations, "Sealing").
+docs/study3-preregistration.md: "Seeds and order" (order steps 9–11 and 13: the cohorts and K*_h
+frozen before any confirmation label is opened, the labeling of the confirmation, the judge-based
+analysis, the final report), "Questions and estimands" (the comparisons and the descriptives,
+validation's harm after the final analysis and apart from it), "Inference", "Utility" (the claim at
+confirmation, at α = 0.05/8 per bound), "Validation, confirmation and stopping" ("Confirmation"),
+"Judge and audit" (the denominator 521, the three computations, "Sealing"), "Voiding and
+supersession", "Disclosure" and amendments 4–6 (what the final report states).
 
 **freeze** writes candidate N's analysis freeze (``study3_freeze.analysis_freeze``: the cohorts,
 A − P's blocks, K*_h and the matched blocks, validation's blocks, from the study's state at
@@ -42,6 +46,37 @@ label. It reads no label: of the sealed folders it reads the labeling ledger's r
    reader (``study3_final.cohort_harm``), and validation's harm
    (``study3_estimates.validation_harm``) in ``validation-harm.json``, which names the analysis
    by its sha256; it prints that path.
+
+**report** writes the final report's facts (``study3_report.report_facts``) and their tables
+(``study3_report.tables``) once, into RUNS_DIR/study3-final/report-<UTC>/ (or ``--out``, a folder
+that does not exist yet): ``facts.json`` and ``tables.md``. The prose of the report is the
+researcher's. Its inputs, gathered label-free:
+1. the researcher's files: the billing file (``--billing``, ``study3_report.read_billing``: actual
+   spending by stage, each incident with its billed price and evidence, the stages an internal
+   spending policy stopped) and the embargo file (``--embargo``, ``study3_report.read_embargo``:
+   the breaches, or none);
+2. the study's state under this checkout's GPU code (``read_state``) with its endpoints; the
+   decision records (``read_decision``: engineering, simulation, the candidate's ``n-c<N>`` and
+   ``budget-c<N>``), the registration at HEAD (``registered_policy``), the engineering verdict's
+   summary (``qualification/c1/engineering/verdict.json``), the simulation's per-test results
+   (``study3_report.simulation_results``) and each candidate's qualification
+   (``qualification_records.read_qualification`` under the GPU code in force for its runs);
+3. the analysis freeze (``read_freeze``, no problem) when it is written;
+4. the labeling ledger's answers, through the label reader's ledger readers alone:
+   ``labeling_problems`` (the runs with a technical labeling problem) and ``diagnoses`` (the
+   diagnosis records; a ``judge`` one makes the report the ``judge_technical`` variant);
+5. the latest analysis and its validation harm (each naming the committed freeze by its sha256,
+   validation's harm naming the analysis by its sha256), and the audit's estimate (naming its
+   selection and agreements by their sha256, the selection naming the freeze and an analysis of
+   the candidate by theirs): the records as written, never a label;
+6. the incidents of the records: the launch journal's (``study3_report.journal_incidents``) and
+   the qualification's ``--infrastructure`` records (``study3_report.qualification_incidents``),
+   each of which needs a billed incident.
+It refuses a stage that is neither ``done`` nor terminal (unless a judge diagnosis calls for the
+``judge_technical`` variant), ``done`` without the analysis, validation's harm and the audit's
+estimate, an incident with no billed price, and a record that does not name what it rests on. It
+prints the two files' paths. It opens no label, no response and nothing of the labeling ledger but
+through ``labeling_problems`` and ``diagnoses``.
 
 **Refusals** exit with ``study3_analysis.py <command>: <why>``, writing nothing more: no analysis
 freeze, one with a problem (not committed, rewritten, not the current records' …) or a dirty
@@ -86,21 +121,29 @@ run ids, paths, hashes, times and the simulation fixation's ``source``.
   of the GPU code is ``analysis-<k>.json``, naming its predecessor by path, sha256 and a reason id.
 - *κ* is the simulation fixation's base ``curvature`` (docs/study3-simulation-fixation.json, in the
   checkout, committed once and unchanged at HEAD), pinned in the analysis by its sha256.
+- *The report* ("Disclosure", amendment 5): the facts are
+  numbers, ids, paths and hashes, the prose is the researcher's, and money is actual spending by
+  stage plus each incident with its billed price; the report says which stages an internal
+  spending policy stopped, by name alone. It is written once per folder, outside
+  RUNS_DIR/study3/.
 """
 
 import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
 from zero_field_refusal import code_identity
-from zero_field_refusal.analysis import study3_estimates, study3_final
+from zero_field_refusal.analysis import study3_estimates, study3_final, study3_report
 from zero_field_refusal.analysis.study3_blocks import (
     CONFIRMATION_ALPHA,
     PAIRS,
@@ -111,7 +154,9 @@ from zero_field_refusal.analysis.study3_decisions import (  # its write-once pub
     DecisionRefused,
     _publish,
     _under_sealed,
+    decision_path,
     decisions,
+    read_decision,
 )
 from zero_field_refusal.analysis.study3_estimates import CURVATURE_UNIT
 from zero_field_refusal.analysis.study3_freeze import (
@@ -126,9 +171,12 @@ from zero_field_refusal.analysis.study3_labels import (
     LabelsPending,
     LedgerError,
     SealedPoint,
+    diagnoses,
+    labeling_problems,
     ledger_runs,
+    record_path,
 )
-from zero_field_refusal.analysis.study3_progress import COMPARISONS, read_state
+from zero_field_refusal.analysis.study3_progress import COMPARISONS, code_chain, read_state
 from zero_field_refusal.analysis.study3_records import EXPERIMENT
 from zero_field_refusal.analysis.study3_search import ARM_ORDER
 from zero_field_refusal.analysis.study3_versions import (
@@ -136,7 +184,9 @@ from zero_field_refusal.analysis.study3_versions import (
     _blob,
     read_confirmation_fixation,
     read_validation_fixation,
+    registered_policy,
 )
+from zero_field_refusal.config import load_config
 from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.tracking import git_state
 
@@ -146,6 +196,9 @@ SIMULATION_FIXATION = "docs/study3-simulation-fixation.json"
 SIMULATION_KIND = "simulation-fixation"
 VALIDATION_KIND = "study3-validation-harm"
 REASON = re.compile(r"[a-z][a-z0-9_]{0,63}")  # a reason id, as the versions record's
+ENGINEERING_VERDICT = "qualification/c1/engineering/verdict.json"  # its summary, under RUNS_DIR
+AUDIT = "audit"  # RUNS_DIR/study3-final/c<N>/audit/: the audit's files
+FACTS, TABLES = "facts.json", "tables.md"  # the report's files
 
 
 def refuse(command: str, why: str) -> NoReturn:
@@ -491,6 +544,234 @@ def resume(root: Path, candidate: int, code: Mapping[str, str], frozen: Mapping[
     print(path)
 
 
+# ------------------------------------------------------------------ the report
+
+
+def report(args: argparse.Namespace) -> None:
+    """The final report's facts and tables (module docstring, "report")."""
+    root = Path(args.runs_root)
+    # 1. the researcher's files
+    billing = researchers("--billing", study3_report.read_billing, args.billing)
+    embargo = researchers("--embargo", study3_report.read_embargo, args.embargo)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = Path(args.out) if args.out is not None else root / FINAL / f"report-{stamp}"
+    if written(out):
+        refuse("report", f"{out} exists: a report is written once, into a folder of its own")
+    if _under_sealed(out, root):
+        refuse("report", f"{out} resolves under a sealed folder: never written")
+    # 2. the state and the label-free records
+    expected = code_identity.gpu_code_identity(repo=REPO)["sha256"]
+    try:
+        state, endpoints = read_state(root, repo=REPO, expected_code=expected,
+                                      theta0=args.theta0)  # fmt: skip
+    except (OSError, ValueError) as exc:
+        refuse("report", f"the study's state cannot be read ({type(exc).__name__})")
+    candidate = state.get("candidate")
+    try:
+        policy = registered_policy(REPO)
+    except ValueError as exc:
+        refuse("report", f"the registration at HEAD cannot be read: {exc}")
+    try:
+        results = study3_report.simulation_results(root)
+    except (OSError, ValueError) as exc:
+        refuse("report", f"the simulation's results cannot be read: {exc}")
+    kinds = ("engineering", "simulation", *(f"{k}-c{candidate}" for k in ("n", "budget")
+                                            if candidate in (1, 2)))  # fmt: skip
+    links = {kind: decision_link(root, kind) for kind in kinds}
+    # 3. the analysis freeze
+    frozen = frozen_link(root, candidate)
+    records = {
+        "endpoints": endpoints, "engineering": links["engineering"], "policy": policy,
+        "engineering_verdict": engineering_verdict(root), "simulation": links["simulation"],
+        "simulation_results": results, "qualification": qualification_readings(root, expected),
+        "decisions": {kind: found for kind, found in links.items()
+                      if kind.startswith(("n-", "budget-")) and found is not None},
+        "freeze": frozen,
+    }  # fmt: skip
+    # 4. the labeling ledger's answers: the runs with a technical problem, the diagnoses
+    try:
+        problems = labeling_problems(root)
+        found = diagnoses(root)
+    except LedgerError as exc:
+        refuse("report", f"the labeling ledger cannot be read: {exc}")
+    judged = [d for d in found if d.cause == "judge"]
+    judge = None if not judged else {
+        "path": record_path(judged[0].batch), "sha256": judged[0].sha256,
+        "batch": judged[0].batch, "cause": judged[0].cause, "diagnosis": judged[0].diagnosis,
+        "evidence": [dict(e) for e in judged[0].evidence]}  # fmt: skip
+    # 5. the analysis, validation's harm and the audit's estimate, as written
+    analysis, validation, audit = final_outputs(root, candidate, frozen)
+    # 6. the incidents of the records
+    try:
+        incidents = {"journal": study3_report.journal_incidents(root),
+                     "qualification": study3_report.qualification_incidents(root)}  # fmt: skip
+    except (OSError, ValueError) as exc:
+        refuse("report", f"the incidents cannot be read: {exc}")
+    try:
+        facts = study3_report.report_facts(
+            state, records=records, billing=billing, incidents=incidents,
+            labeling_problems=problems, analysis=analysis, validation=validation, audit=audit,
+            embargo=embargo, judge_diagnosis=judge)  # fmt: skip
+    except ValueError as exc:
+        refuse("report", str(exc))
+    data = json.dumps(facts, indent=2, allow_nan=False, ensure_ascii=False) + "\n"  # in order
+    write_report(out, {FACTS: data.encode(), TABLES: study3_report.tables(facts).encode()})
+    print(out / FACTS)
+    print(out / TABLES)
+
+
+def researchers(option: str, reader: Any, path: Path) -> Any:
+    """The researcher's file at ``path``, read by ``reader`` (its closed schema)."""
+    try:
+        return reader(path)
+    except (OSError, ValueError) as exc:
+        refuse("report", f"{option}: {exc}")
+
+
+def decision_link(root: Path, kind: str) -> dict[str, Any] | None:
+    """A decision record as the report names it: its path under RUNS_DIR, its sha256 and its
+    record (``read_decision``); None when it is not written; refused with a problem."""
+    record, problems = read_decision(root, kind, repo=REPO)
+    if problems:
+        refuse("report", f"the decision record {kind}: {problems[0]}")
+    if record is None:
+        return None
+    path = decision_path(root, kind)
+    return {"path": path.relative_to(root).as_posix(), "sha256": sha256(path.read_bytes()),
+            "record": record}  # fmt: skip
+
+
+def engineering_verdict(root: Path) -> dict[str, Any] | None:
+    """The engineering verdict's summary (e_eng, the path maxima, the margins) with the verdict's
+    path and sha256; None before the engineering stage's verdict is written."""
+    path = root / ENGINEERING_VERDICT
+    if not written(path):
+        return None
+    if _under_sealed(path, root):
+        refuse("report", f"{ENGINEERING_VERDICT} resolves under a sealed folder: never opened")
+    try:
+        data = path.read_bytes()
+        record = json.loads(data)
+    except (OSError, ValueError) as exc:
+        refuse("report", f"{ENGINEERING_VERDICT} cannot be read ({type(exc).__name__})")
+    summary = record.get("summary") if isinstance(record, dict) else None
+    if not isinstance(summary, dict):
+        refuse("report", f"{ENGINEERING_VERDICT} holds no engineering summary")
+    return {"path": ENGINEERING_VERDICT, "sha256": sha256(data), "summary": summary}
+
+
+def qualification_readings(root: Path, expected: str) -> dict[int, dict[str, Any]]:
+    """Each candidate's numerical qualification (``read_qualification``), read under the GPU code
+    in force for its runs (the chain of engineering cycles from the engineering record, as the
+    state reads it), for each candidate whose qualification folder exists."""
+    from zero_field_refusal.analysis import qualification_records  # it loads torch: here only
+
+    settings = load_config("experiments/qualification")
+    engineering = decisions(root, 1, repo=REPO).get("engineering") or {}
+    record = engineering.get("record") if engineering.get("state") in ("passed", "failed") else None
+    start = ((record or {}).get("code") or {}).get("gpu_code_sha256")
+    cycles = {c: qualification_records.supersessions(root, c) for c in (1, 2)}
+    in_force = code_chain(start, cycles)[1]
+    found = [c for c in (1, 2) if (root / "qualification" / f"c{c}" / "numerical").is_dir()]
+    return {c: qualification_records.read_qualification(
+                root, c, expected_code=in_force.get(c) or expected, settings=settings)
+            for c in found}  # fmt: skip
+
+
+def frozen_link(root: Path, candidate: Any) -> dict[str, Any] | None:
+    """The committed analysis freeze, read by the gate's own reading with no problem, with its
+    path and sha256; None while it is not written."""
+    if candidate not in (1, 2):
+        return None
+    name = freeze_name(candidate)
+    if not written(REPO / name):
+        return None
+    record, problems = read_freeze(candidate, runs_root=root, repo=REPO)
+    if record is None:
+        refuse("report", f"the analysis freeze has {len(problems)} problem(s): "
+               + "; ".join(problems))  # fmt: skip
+    return {"path": name, "sha256": sha256((REPO / name).read_bytes()), "record": record}
+
+
+def output(root: Path, path: Path) -> dict[str, Any]:
+    """A record written under RUNS_DIR/study3-final/: its path under RUNS_DIR, its sha256 and its
+    content."""
+    where = path.relative_to(root).as_posix()
+    if _under_sealed(path, root):
+        refuse("report", f"{where} resolves under a sealed folder: never opened")
+    try:
+        data = path.read_bytes()
+        record = json.loads(data)
+    except (OSError, ValueError) as exc:
+        refuse("report", f"{where} cannot be read ({type(exc).__name__})")
+    if not isinstance(record, dict):
+        refuse("report", f"{where} is no JSON record")
+    return {"path": where, "sha256": sha256(data), "record": record}
+
+
+def final_outputs(root: Path, candidate: Any, frozen: Mapping[str, Any] | None
+                  ) -> tuple[dict | None, dict | None, dict | None]:  # fmt: skip
+    """The latest analysis, its validation harm and the audit's estimate, each checked by the
+    sha256s it names (module docstring, "report", step 5); None for what is not written."""
+    folder = root / FINAL / f"c{candidate}"
+    if candidate not in (1, 2) or not folder.is_dir():
+        return None, None, None
+    k = latest(folder)
+    analysis = validation = audit = None
+    named = None if frozen is None else {"path": frozen["path"], "sha256": frozen["sha256"],
+                                         "root": "repo"}  # fmt: skip
+    if k:
+        analysis = output(root, folder / names(k)[0])
+        if named is None or analysis["record"].get("freeze") != named:
+            refuse("report", f"{analysis['path']} does not name the committed analysis freeze by "
+                   "its sha256")  # fmt: skip
+        if written(folder / names(k)[1]):
+            validation = output(root, folder / names(k)[1])
+            own = {"path": analysis["path"], "sha256": analysis["sha256"], "root": "runs"}
+            if (validation["record"].get("analysis") != own
+                    or validation["record"].get("freeze") != named):  # fmt: skip
+                refuse("report", f"{validation['path']} does not name {analysis['path']} and the "
+                       "freeze by their sha256")  # fmt: skip
+    if written(folder / AUDIT / "estimate.json"):
+        audit = output(root, folder / AUDIT / "estimate.json")
+        if analysis is None:
+            refuse("report", f"{audit['path']} is written without an analysis")
+        for name in ("selection", "agreements"):
+            found = output(root, folder / AUDIT / f"{name}.json")
+            if audit["record"].get(name) != {"path": found["path"], "sha256": found["sha256"],
+                                             "root": "runs"}:  # fmt: skip
+                refuse("report", f"{audit['path']} does not name {found['path']} by its sha256")
+            if name == "selection":
+                drawn = found["record"].get("analysis") or {}
+                analyses = {f"{FINAL}/c{candidate}/{names(j)[0]}" for j in range(1, k + 1)}
+                target = root / str(drawn.get("path"))
+                if (found["record"].get("freeze") != named or drawn.get("path") not in analyses
+                        or drawn.get("root") != "runs"
+                        or sha256(target.read_bytes()) != drawn.get("sha256")):  # fmt: skip
+                    refuse("report", f"{found['path']} does not name the freeze and an analysis "
+                           f"of candidate {candidate} by their sha256")  # fmt: skip
+    return analysis, validation, audit
+
+
+def write_report(out: Path, files: Mapping[str, bytes]) -> None:
+    """The report's files into a new folder: written into a temporary sibling, each synced, then
+    renamed to ``out`` once; the temporary folder removed on any failure."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{out.name}-", dir=out.parent))
+    try:
+        for name, data in files.items():
+            with open(temporary / name, "xb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+        if written(out):
+            refuse("report", f"{out} exists: a report is written once, into a folder of its own")
+        temporary.rename(out)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
 # ------------------------------------------------------------------ the command
 
 
@@ -499,19 +780,29 @@ def main(argv: list[str] | None = None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     frozen = commands.add_parser("freeze", help="write the analysis freeze (once)")
     analyzed = commands.add_parser("analyze", help="the judge-based analysis on the frozen cohorts")
-    for command in (frozen, analyzed):
+    reported = commands.add_parser("report", help="the final report's facts and tables (once)")
+    for command in (frozen, analyzed, reported):
         command.add_argument("--runs-root", type=Path, required=True,
                              help="RUNS_DIR: the run records, the labels and the decision "
                              "records")  # fmt: skip
-        command.add_argument("--candidate", type=int, choices=(1, 2), required=True)
         command.add_argument("--theta0", type=Path,
                              help="θ₀'s evaluation (by default study 2's under "
                              "RUNS_DIR)")  # fmt: skip
+    for command in (frozen, analyzed):
+        command.add_argument("--candidate", type=int, choices=(1, 2), required=True)
     analyzed.add_argument("--supersedes-reason",
                           help="a recomputation after a fix: why the analysis before it no longer "
                           "serves (an id)")  # fmt: skip
+    reported.add_argument("--billing", type=Path, required=True,
+                          help="the researcher's billing file: spending by stage and each "
+                          "incident with its billed price")  # fmt: skip
+    reported.add_argument("--embargo", type=Path, required=True,
+                          help="the researcher's embargo file: the breaches, or none")  # fmt: skip
+    reported.add_argument("--out", type=Path,
+                          help="the report's folder, new (by default "
+                          "RUNS_DIR/study3-final/report-<UTC>/)")  # fmt: skip
     args = parser.parse_args(argv)
-    {"freeze": freeze, "analyze": analyze}[args.command](args)
+    {"freeze": freeze, "analyze": analyze, "report": report}[args.command](args)
 
 
 if __name__ == "__main__":

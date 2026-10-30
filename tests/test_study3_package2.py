@@ -129,6 +129,7 @@ PACKAGE = (
     ANALYSIS / "study3_pins.py",
     ANALYSIS / "study3_progress.py",
     ANALYSIS / "study3_records.py",
+    ANALYSIS / "study3_report.py",
     ANALYSIS / "study3_search.py",
     ANALYSIS / "study3_seed_vectors.py",
     ANALYSIS / "study3_simulation.py",
@@ -855,7 +856,7 @@ def test_the_package_imports_no_gpu_module_and_loads_no_script() -> None:
     - ``campaign_prep``'s lazy import of ``analysis.study2_short`` (study 2's ``prep`` only) loads
       torch and ``zero_field_refusal.runtime``.
     The scripts run no training: none calls a GPU path."""
-    assert len(PACKAGE) == 15 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
+    assert len(PACKAGE) == 16 and all(path.exists() for path in (*PACKAGE, *SCRIPTS))
     for path in PACKAGE:
         assert gpu_uses(path, "zero_field_refusal.analysis") == set(), path.name
     for path in SCRIPTS:
