@@ -2614,3 +2614,9 @@ def test_a_cycles_absence_marker_under_a_sealed_folder_is_refused_unopened(world
     changed = [{**runs[0], "records": [*runs[0]["records"][:2], sealed]}, runs[1]]
     refused(world, "cycle-c1", {**record, "affected": {**record["affected"], "runs": changed}},
             "never")  # fmt: skip
+
+
+def test_a_cycle_without_claims_names_the_stages_it_must_claim(world) -> None:
+    record = cycle_record(world)
+    refused(world, "cycle-c1", {**record, "stages": {}}, "stages", "search", "claim",
+            "validation")  # fmt: skip

@@ -6,11 +6,14 @@ a fix, re-qualification of the affected cases and reruns of the affected runs) a
 supersession" (the affected records listed, the scientific failures kept). The claims a cycle
 makes per stage, each run's GPU code and the journal prefix a cycle pins are tested on synthetic
 launch logs and endpoints; the qualification's entries of a cycle on the qualification tests'
-worlds, in the formats scripts/qualify.py writes."""
+worlds, in the formats scripts/qualify.py writes; the published cycle read back on the files of
+the campaign writer's route (``cycle_route``), with the real readers and qualify.py's own journal
+repair."""
 
 import hashlib
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -26,8 +29,11 @@ from test_qualification_records import (
 )
 from test_qualification_records import World as QualificationWorld
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
-from test_qualify import ADAMW_LR, FIX
+from test_qualify import ADAMW_LR, FIX, load_script
+from test_study3_campaigns import START, run_config
+from test_study3_package2 import REAL_IDENTITY, Route, SealedGuard, round0
 from test_study3_progress import OPT, Study, ep, run_of
+from test_study3_versions import git
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import qualification_records as qr
@@ -39,7 +45,8 @@ from zero_field_refusal.analysis.study3_decisions import (
     serialized,
     start_lines,
 )
-from zero_field_refusal.analysis.study3_records import COUNTING, GROSS_COLLAPSE
+from zero_field_refusal.analysis.study3_progress import _bound
+from zero_field_refusal.analysis.study3_records import COUNTING, GROSS_COLLAPSE, EndpointReader
 from zero_field_refusal.config import config_hash
 
 
@@ -544,3 +551,260 @@ def test_the_cycle_is_published_once_and_a_run_again_writes_only_the_missing_fil
     with pytest.raises(cycle.CycleRefused, match="published"):
         cycle.publish_cycle(root, 1, record, {**bridge, "host": "another"})
     assert sha(path) == sha_of(record)
+
+
+# ------------------------------------------------------------------ the cycle read back on files
+
+ROUTE_CLAIMS = {"search": rerun(arms=("A",), justification="the fix changes A's kernel only")}
+DIAGNOSIS, FIX_TEXT = "a stale kernel cache", "the cache is cleared at start"
+RUN_CLOCK = datetime(2026, 10, 26, tzinfo=UTC)  # the route's journal stamps start here
+
+
+class CycleRoute(Route):
+    """The campaign writer's route (``test_study3_package2.Route``) from the engineering campaign
+    to search round 0, one search run of A technical (ended, its meta.json failed, no terminal
+    record): the state's engineering cycle. A fix is committed in the route's checkout before
+    the cycle is written, so the GPU code changes."""
+
+    def __init__(self, base: Path, monkeypatch) -> None:
+        super().__init__(base, monkeypatch)
+        self.monkeypatch = monkeypatch
+        self.written_at = WRITTEN
+
+    def build(self) -> None:
+        assert self.step()["record"] == "engineering"
+        self.engineering = self.campaign("engineering")
+        self.launch(self.engineering)
+        self.record("engineering", self.records.engineering(code=self.code))
+        self.record("simulation", self.records.simulation(code=self.code))
+        assert self.step()["campaign"] == "search-round0"
+        self.launch(self.campaign("search-round0"), round0)
+        (marked,) = [e for e in self.endpoints(step="search")
+                     if e.arm == "A" and e.lr == START["A"]["l"] and e.seed == 10100]  # fmt: skip
+        (marked.run_dir / "terminal.json").unlink()
+        meta = json.loads((marked.run_dir / "meta.json").read_text())
+        (marked.run_dir / "meta.json").write_text(json.dumps({**meta, "status": "failed"}))
+        self.mark = marked.run_id
+        assert {e.run_id for e in self.endpoints(step="search") if e.state == "technical"} == {
+            self.mark}  # fmt: skip
+
+    # -- the readers
+
+    def endpoints(self, step: str):
+        """The run records as they are now (the real reader, every bound cell)."""
+        reader = EndpointReader(self.root, theta0=self.runs.theta0)
+        found, _ = reader.read(_bound(reader.read({})[0]))
+        return [e for e in found if e.cell.step == step]
+
+    def pre_cycle(self, without=None):
+        return cycle.pre_cycle_records(self.root, 1, journal=cycle.journal_seen(self.root),
+                                       without=without, theta0=self.runs.theta0, repo=self.repo,
+                                       settings=REGISTERED)  # fmt: skip
+
+    def found(self) -> dict:
+        return cycle.read_cycle(self.root, 1, repo=self.repo)
+
+    def cycle_problems(self) -> list[str]:
+        """Every problem of the published cycle as the readers read it: ``read_cycle``'s and
+        ``cycle_problems``' (its lists against their derivation in the pre-cycle view)."""
+        found = self.found()
+        return [*found["problems"], *cycle.cycle_problems(
+            found, runs_root=self.root, theta0=self.runs.theta0, repo=self.repo,
+            settings=REGISTERED)]  # fmt: skip
+
+    def record_(self) -> dict:
+        return json.loads(cycle_path(self.root, 1).read_text())
+
+    def bridge(self) -> dict:
+        return json.loads((self.root / bridge_name(1)).read_text())
+
+    def affected(self) -> set[str]:
+        return {run["run_id"] for run in self.record_()["affected"]["runs"]}
+
+    # -- the cycle, its repair and the edits
+
+    def write_cycle(self) -> None:
+        """A fix committed, then the cycle derived from the records before it and published."""
+        train = self.repo / "src" / "zero_field_refusal" / "train.py"
+        train.write_text("x = 2\n")
+        self.commit("the fix")
+        head = git(self.repo, "rev-parse", "HEAD")
+        identity = REAL_IDENTITY(head, self.repo)
+        records = self.pre_cycle()
+        marks = [e.run_id for e in records.endpoints
+                 if e.cell.step == "search" and e.state == "technical"]  # fmt: skip
+        record, bridge = cycle.derive_cycle(
+            self.root, 1, records=records, marks=marks, stage="search", closed_arms=(),
+            old_code=self.code["gpu_code_sha256"], fixation=None, claims=ROUTE_CLAIMS,
+            diagnosis=DIAGNOSIS, fix=FIX_TEXT,
+            code={"commit": head, "gpu_code_sha256": identity["sha256"]}, fix_identity=identity,
+            settings=REGISTERED, repo=self.repo, written_at=self.written_at,
+            host="host")  # fmt: skip
+        cycle.publish_cycle(self.root, 1, record, bridge)
+
+    def repair(self) -> None:
+        """``qualify.py supersede``'s journal repair, as the cycle's writer prints it: it writes
+        the bridge's ``superseded`` lines."""
+        module = load_script()
+        self.monkeypatch.setattr(module, "load_run_config", run_config)
+        scope = module.q.QualificationScope.of(module.load_settings())
+        _, planned, problems = module.campaign_cases(self.engineering, scope, 1, True)
+        assert problems == [] and planned
+        module.main(["supersede", "--campaign", str(self.engineering), "--candidate", "1",
+                     "--engineering", "--case", planned[0].case.name, "--record",
+                     self.found()["repair_record"], "--diagnosis", DIAGNOSIS, "--fix", FIX_TEXT,
+                     "--runs-root", str(self.root)])  # fmt: skip
+
+    def edit(self, change, *, rebridge: bool = False) -> None:
+        """The published record rewritten with ``change``; with ``rebridge``, the bridge's
+        ``old_record.sha256`` the new record's."""
+        record = self.record_()
+        change(record)
+        cycle_path(self.root, 1).write_bytes(serialized(record))
+        if rebridge:
+            bridge = self.bridge()
+            bridge["old_record"]["sha256"] = sha_of(record)
+            (self.root / bridge_name(1)).write_text(json.dumps(bridge, indent=1) + "\n")
+
+    def omit_one(self, *, rebridge: bool = False) -> None:
+        self.edit(lambda r: r["affected"]["runs"].pop(0), rebridge=rebridge)
+
+    def add_one(self, *, rebridge: bool = False) -> None:
+        """An F search run listed as affected: the claim reruns A alone."""
+        records = self.pre_cycle(without=bridge_name(1))
+        (extra,) = [e for e in records.endpoints if e.cell.step == "search" and e.arm == "F"
+                    and e.seed == 10100 and e.lr == START["F"]["l"]]  # fmt: skip
+        entry = cycle._affected_run(extra, records, {})
+
+        def add(record):
+            runs = record["affected"]["runs"]
+            runs[:] = sorted([*runs, entry], key=lambda run: run["run_id"])
+
+        self.edit(add, rebridge=rebridge)
+
+    def duplicate_one(self, *, rebridge: bool = False) -> None:
+        self.edit(lambda r: r["affected"]["runs"].insert(0, r["affected"]["runs"][0]),
+                  rebridge=rebridge)  # fmt: skip
+
+    def reorder(self, *, rebridge: bool = False) -> None:
+        self.edit(lambda r: r["affected"]["runs"].reverse(), rebridge=rebridge)
+
+    def skew_clock(self, *, hours: float) -> None:
+        """The writer's clock behind the journal's by ``hours``: every journal stamp is later
+        than the record's ``written_at``."""
+        self.written_at = (RUN_CLOCK - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+    def rewrite_line(self, log: str, number: int) -> None:
+        """A line of a launch log rewritten in place (``log`` named by its campaign's stem)."""
+        (path,) = self.root.glob(f"launch/{Path(log).stem}*.jsonl")
+        lines = path.read_bytes().split(b"\n")
+        lines[number - 1] = json.dumps({**json.loads(lines[number - 1]), "x": 1}).encode()
+        path.write_bytes(b"\n".join(lines))
+
+
+@pytest.fixture
+def cycle_route(tmp_path, monkeypatch):
+    """``CycleRoute`` built, every sealed read failing while it is built (``SealedGuard``)."""
+    sealed = pytest.MonkeyPatch()
+    try:
+        world = CycleRoute(tmp_path, monkeypatch)
+        world.guard = SealedGuard(sealed, runs_root=world.root)
+        world.build()
+        sealed.undo()
+        yield world
+    finally:
+        sealed.undo()
+
+
+def edit_record(route, change, *, rebridge=False) -> None:
+    route.edit(change, rebridge=rebridge)
+
+
+def test_a_cycle_needs_a_claim_with_its_justification_for_every_started_stage(cycle_route):
+    cycle_route.write_cycle()
+    edit_record(cycle_route, lambda r: r["stages"].pop("search"), rebridge=True)
+    assert any("search" in p and "claim" in p for p in cycle_route.cycle_problems())
+
+
+def test_the_published_cycle_validates_in_its_pre_cycle_view_before_and_after_the_repair(
+    cycle_route,
+):
+    cycle_route.write_cycle()
+    found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo)
+    assert found["state"] == "valid" and cycle_route.cycle_problems() == []
+    assert cycle_route.mark in found["affected"] and found["claims"] == ROUTE_CLAIMS
+    cycle_route.repair()  # qualify.py's lines
+    lines = [json.loads(line) for log in sorted((cycle_route.root / "launch").glob("*.jsonl"))
+             for line in log.read_text().splitlines()]  # fmt: skip
+    superseded = {r["run_id"] for r in lines if r.get("event") == "superseded"}
+    assert superseded == cycle_route.affected()
+    assert cycle_route.cycle_problems() == []  # the pre-cycle view suppresses its own effects
+
+
+@pytest.mark.xfail(strict=True, reason="the supersession check does not accept the cycle's "
+                   "bridge form yet: its lines count for nothing")  # fmt: skip
+def test_after_the_repair_the_affected_runs_read_superseded(cycle_route):
+    cycle_route.write_cycle()
+    cycle_route.repair()  # qualify.py's lines: the runs read superseded now
+    assert {e.state for e in cycle_route.endpoints(step="search")
+            if e.run_id in cycle_route.affected()} == {"superseded"}  # fmt: skip
+
+
+@pytest.mark.parametrize("edit", ["omit_one", "add_one", "duplicate_one", "reorder"])
+def test_the_lists_equal_their_derivation_exactly(cycle_route, edit):
+    cycle_route.write_cycle()
+    getattr(cycle_route, edit)(rebridge=True)  # the bridge rewritten to the new sha256
+    problems = cycle_route.cycle_problems() + cycle.read_cycle(cycle_route.root, 1)["problems"]
+    words = {"omit_one": "not listed", "add_one": "not derived", "duplicate_one": "twice",
+             "reorder": "canonical order"}  # fmt: skip
+    assert any(words[edit] in p for p in problems), problems
+
+
+def test_a_bridge_set_must_equal_the_records_not_merely_lie_within_it(cycle_route):
+    cycle_route.write_cycle()
+    bridge = cycle_route.bridge()
+    assert cycle.bridge_problems(cycle_route.root, 1, bridge, repo=cycle_route.repo) == []
+    for change in ({"launchers": bridge["launchers"][1:]}, {"held": [{"run_id": "x"}]},
+                   {"launchers": [*bridge["launchers"], bridge["launchers"][0]]},
+                   {"attempts": [{"sha256": "0" * 64}]},
+                   {"fix_gpu_code": {"sha256": "0" * 64}},
+                   {"old_record": {**bridge["old_record"], "sha256": "0" * 64}}):  # fmt: skip
+        assert cycle.bridge_problems(cycle_route.root, 1, {**bridge, **change},
+                                     repo=cycle_route.repo)  # fmt: skip
+
+
+def test_the_record_shows_the_repair_path_and_ignores_time_stamps(cycle_route):
+    cycle_route.skew_clock(hours=+6)  # journal stamps later than written_at
+    cycle_route.write_cycle()
+    found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo)
+    assert cycle_route.cycle_problems() == []
+    assert found["repair_record"] == str(cycle_path(cycle_route.root, 1).resolve())
+
+
+def test_a_rewritten_journal_prefix_invalidates_the_cycle(cycle_route):
+    cycle_route.write_cycle()
+    cycle_route.rewrite_line("launch/study3-c1-search-round0.jsonl", 2)
+    assert any("prefix" in p for p in cycle_route.cycle_problems())
+
+
+def test_a_record_or_a_bridge_alone_names_the_command_that_writes_the_other(cycle_route):
+    assert cycle.read_cycle(cycle_route.root, 1)["state"] == "missing"
+    cycle_route.write_cycle()
+    bridge = cycle_route.root / bridge_name(1)
+    kept = bridge.read_bytes()
+    bridge.unlink()
+    found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo)
+    assert found["state"] == "invalid"
+    assert any("study3_summary.py cycle" in p for p in found["problems"])
+    bridge.write_bytes(kept)
+    record = cycle_path(cycle_route.root, 1)
+    record.rename(record.with_suffix(".kept"))
+    found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo)
+    assert found["state"] == "invalid"
+    assert any("study3_summary.py cycle" in p for p in found["problems"])
+    record.with_suffix(".kept").rename(record)
+    old = cycle_route.code["gpu_code_sha256"]
+    assert cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo,
+                            chain_old=old)["state"] == "valid"  # fmt: skip
+    found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo, chain_old="0" * 64)
+    assert any("old" in p for p in found["problems"])

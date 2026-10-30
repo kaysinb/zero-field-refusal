@@ -20,6 +20,11 @@ journal repair and re-qualification carry it out, unchanged.
   scientific failure (``study3_blocks.block_state``'s failed endpoint, imported).
 - ``derive_cycle``, ``build_bridge`` and ``publish_cycle``: the cycle record and its bridge,
   derived from the records before the cycle, and published once each, the record first.
+- ``pre_cycle_records``: the records as they stood when the cycle was written (the pre-cycle
+  view), from which the cycle is derived and against which it is checked.
+- ``read_cycle``, ``bridge_problems`` and ``cycle_problems``: the published cycle read back
+  (reading no run record), its bridge against it, and its lists against their derivation in the
+  pre-cycle view.
 
 **Claims** ("Failure routes": each earlier stage is reused or rerun according to what the fix
 changes). A stage is ``reuse`` (its runs keep counting under the old code) or ``rerun`` with the
@@ -99,6 +104,34 @@ of the qualification that no part record classified and that the readers cannot 
 (``qualification_records.cycle_entries``: ``qualify.py``'s own resolution of such a run needs
 GPU paths, so the cycle names it instead). ``qualification_records`` (and torch with it) is
 imported only where the qualification is rerun.
+
+**Reading a cycle back** ("Voiding and supersession": every superseded record stays, listed with
+its reason). ``read_cycle`` checks, in order: the record as a decision record (its form, every
+evidence file of its sha256, every absence marker's file still absent, its pinned prefix and
+cited lines of their bytes: ``study3_decisions``); its old code, the chain's when given; the
+pair, a record without its bridge or a bridge without its record being a problem that names
+``study3_summary.py cycle``, which writes only the missing file; and the bridge against the
+record (``bridge_problems``): its candidate and number, its ``old_record`` the record by its
+bytes' sha256, the record's diagnosis, fix and codes, its ``launchers`` exactly the affected runs
+and the qualification's affected launcher runs, its ``attempts`` exactly the qualification's
+affected records, nothing named twice, and ``held`` empty. It reads no run record. The bridge's
+``old_record.path`` is the exact record path the journal repair takes (``repair_record``), shown
+as it is: it names the machine the cycle was written on.
+
+**The pre-cycle view** (``pre_cycle_records``). The records are read with the journal truncated
+to the prefix the cycle pins (each prefix's sha256 checked first: a rewritten journal is a
+refusal) and with the cycle's own bridge read as absent (``without``): the runs it supersedes
+count as they did, its journal lines lie beyond the prefix, and a run started later is no run of
+the view. Every bound cell is read (no cell the route would issue later decides a run's state).
+The qualification's reading is not part of the view: the cycle reads the qualification through
+``qualification_records.cycle_entries``, with the same prefix and without the same bridge. The
+writer derives from this view with ``without=None``; the reader re-derives with ``without`` this
+cycle's bridge, before and after the repair alike. ``cycle_problems`` then requires a claim for
+every stage started and none for a stage not started, ``affected`` and ``kept`` equal to their
+derivation exactly (no omission, no extra, nothing twice, canonical order), the qualification's
+side equal to ``cycle_entries``' and no listed run a scientific failure. A run kept as of a
+closed arm is re-derived as cited by a closure, and needs a valid closure of the candidate of
+its arm or naming it.
 """
 
 from __future__ import annotations
@@ -120,12 +153,18 @@ from .study3_decisions import (
     MARKED_STAGES,
     TEXT_MAX,
     DecisionRefused,
+    _digest,
     _publish,
     bridge_name,
+    closures,
     cycle_path,
+    decisions,
+    end_lines,
     one_line,
     pinned_end,
+    read_decision,
     serialized,
+    start_lines,
     write_decision,
 )
 from .study3_records import (
@@ -133,10 +172,13 @@ from .study3_records import (
     EXPERIMENT,
     GROSS_COLLAPSE,
     Endpoint,
+    EndpointReader,
     _sealed_file,
     journal_lines,
     log_lines,
     plain_name,
+    prefixed,
+    read_holds,
     under_sealed,
 )
 from .study3_search import ARM_ORDER
@@ -743,3 +785,304 @@ def publish_cycle(
     except DecisionRefused as exc:
         raise CycleRefused(str(exc)) from exc
     return path, bridge_path
+
+
+# ------------------------------------------------------------------ reading the cycle back
+
+
+def pre_cycle_records(
+    runs_root: str | Path,
+    candidate: int,
+    *,
+    journal: Sequence[Mapping[str, Any]],
+    without: str | None,
+    theta0: str | Path,
+    repo: str | Path,
+    settings: Mapping[str, Any],
+) -> Records:
+    """The records as they stood when the cycle was written (module docstring, "The pre-cycle
+    view"): ``journal``, the pinned prefix (``journal_seen``'s list; ``CycleRefused`` when it is
+    no longer there with its sha256); ``without``, the cycle's bridge (its path under RUNS_DIR),
+    read as absent, or None (the writer's view); ``theta0``, θ₀'s evaluation; ``repo``, the
+    checkout of the decision records' evidence and the runs' commits; ``settings``, the
+    qualification's. ``candidate`` is the cycle's: every candidate's records are read."""
+    from . import qualification_records  # it loads torch (qualification_verdicts): here only
+    from .study3_progress import Records, _bound, _headers, _record_digest, _recoverable
+    from .study3_versions import uncounted_runs
+
+    root, repo = Path(runs_root), Path(repo)
+    seen_starts(root, journal)  # the prefix is there, of its sha256
+    prefix = {entry["path"]: entry["lines"] for entry in journal}
+    checks = {where: check for where, check in
+              qualification_records.cycle_checks(root, settings=settings).items()
+              if where != without}  # fmt: skip
+    restarts = qualification_records.restart_checks(root)
+    holds, hold_problems = read_holds(root, cycles=checks)
+    entries = {c: decisions(root, c, repo=repo) for c in (1, 2)}
+    found = {k: v for c in (1, 2) for k, v in closures(root, c, repo=repo).items()}
+    valid = {k for found_ in (*entries.values(), found) for k, e in found_.items()
+             if e["state"] in ("passed", "failed")}  # fmt: skip
+    cycles = {c: [x for x in qualification_records.supersessions(root, c)
+                  if Path(x["path"]).relative_to(root).as_posix() != without]
+              for c in (1, 2)}  # fmt: skip
+    logs = prefixed(journal_lines(root)[0], prefix)
+    reader = EndpointReader(root, theta0=theta0, cycles=checks, restarts=restarts, prefix=prefix)
+    endpoints, problems = reader.read(_bound(reader.read({})[0]))
+    return Records(
+        endpoints=tuple(endpoints), problems=tuple(problems), holds=tuple(holds),
+        hold_problems=tuple(hold_problems), decisions=entries, closures=found,
+        headers=_headers(root), digests={k: _record_digest(root, k) for k in valid},
+        ends=end_lines(root, logs), starts=start_lines(root, logs), cycles=cycles,
+        recoverable=_recoverable(reader, endpoints),
+        uncounted=uncounted_runs(endpoints, repo=repo),
+        resolved=tuple({"log": r["path"], "line": r["line"], "kind": r["kind"]}
+                       for log in logs for r in log.resolved),
+    )  # fmt: skip
+
+
+def read_cycle(
+    runs_root: str | Path,
+    candidate: int,
+    *,
+    repo: str | Path = REPO_ROOT,
+    chain_old: str | None = None,
+) -> dict[str, Any]:
+    """The candidate's cycle as published (module docstring, "Reading a cycle back"), reading no
+    run record: ``state`` (``missing``: neither file; ``valid``; ``invalid``: any problem),
+    ``path`` and ``bridge_path``, the ``record`` (None unless it is a valid decision record) and
+    the ``bridge`` (None unless readable), the ``claims`` by stage, the ``affected`` run ids, the
+    ``kept`` entries, ``repair_record`` (the bridge's ``old_record.path``: the exact ``--record``
+    of the journal repair) and the ``problems``. ``repo``: the checkout of the fixation's
+    evidence; ``chain_old``: the code in force before the cycle on the chain of engineering
+    cycles, when known."""
+    root = Path(runs_root)
+    path, bridge_path = cycle_path(root, candidate), root / bridge_name(candidate)
+    out: dict[str, Any] = {"state": "missing", "path": str(path), "bridge_path": str(bridge_path),
+                           "record": None, "bridge": None, "claims": {}, "affected": [],
+                           "kept": [], "repair_record": None, "problems": []}  # fmt: skip
+    has_record = path.exists() or path.is_symlink()
+    has_bridge = bridge_path.exists() or bridge_path.is_symlink()
+    if not (has_record or has_bridge):
+        return out
+    problems: list[str] = []
+    record = None
+    if has_record:
+        record, found = read_decision(root, f"cycle-c{candidate}", repo=repo)
+        problems += found
+    else:
+        problems.append(f"{bridge_path}: the bridge is there without its cycle record {path}: "
+                        "run study3_summary.py cycle again, which writes only the missing "
+                        "file")  # fmt: skip
+    bridge = None
+    if has_bridge:
+        if under_sealed(bridge_path, root):
+            problems.append(f"{bridge_path}: under a sealed folder: never opened")
+        else:
+            try:
+                bridge = json.loads(bridge_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                problems.append(f"{bridge_path}: an unreadable bridge ({type(exc).__name__})")
+            if bridge is not None and not isinstance(bridge, dict):
+                problems.append(f"{bridge_path}: the bridge is no JSON object")
+                bridge = None
+    else:
+        problems.append(f"{path}: the cycle record is published without its bridge "
+                        f"{bridge_path}: run study3_summary.py cycle again, which writes only "
+                        "the missing file")  # fmt: skip
+    if record is not None:
+        if chain_old is not None and record["old_code"] != chain_old:
+            problems.append(f"{path}: its old code {record['old_code']} is not the code in force "
+                            f"before it on the chain of engineering cycles, "
+                            f"{chain_old}")  # fmt: skip
+        if bridge is not None:
+            problems += [f"{bridge_path}: {p}" for p in
+                         _bridge_problems(candidate, bridge, record, _digest(path))]  # fmt: skip
+    old = bridge.get("old_record") if isinstance(bridge, dict) else None
+    out.update(
+        state="invalid" if problems else "valid", record=record, bridge=bridge,
+        claims={} if record is None else {
+            stage: Claim(c["action"], tuple(c["arms"]), c["justification"])
+            for stage, c in record["stages"].items()},
+        affected=[] if record is None else [r["run_id"] for r in record["affected"]["runs"]],
+        kept=[] if record is None else list(record["kept"]),
+        repair_record=(old.get("path") if isinstance(old, Mapping)
+                       and isinstance(old.get("path"), str) else None),
+        problems=problems,
+    )  # fmt: skip
+    return out
+
+
+def bridge_problems(
+    runs_root: str | Path,
+    candidate: int,
+    bridge: Mapping[str, Any],
+    *,
+    repo: str | Path = REPO_ROOT,
+) -> list[str]:
+    """The problems of a bridge against the candidate's cycle record as it is now (module
+    docstring, "Reading a cycle back"); the record itself must be a valid decision record."""
+    root = Path(runs_root)
+    record, problems = read_decision(root, f"cycle-c{candidate}", repo=repo)
+    if record is None:
+        return problems or [f"{cycle_path(root, candidate)}: no cycle record of candidate "
+                            f"{candidate} is published"]  # fmt: skip
+    return _bridge_problems(candidate, bridge, record, _digest(cycle_path(root, candidate)))
+
+
+def _bridge_problems(candidate: int, bridge: Any, record: Mapping[str, Any],
+                     sha: str) -> list[str]:  # fmt: skip
+    """The bridge against its record (whose file has sha256 ``sha``)."""
+    if not isinstance(bridge, Mapping):
+        return ["the bridge is no JSON object"]
+    found = []
+    if bridge.get("candidate") != candidate or type(bridge.get("candidate")) is not int:
+        found.append(f"it names candidate {bridge.get('candidate')!r}, not {candidate}")
+    if bridge.get("supersession") != 1:
+        found.append(f"its supersession is {bridge.get('supersession')!r}, not 1")
+    old = bridge.get("old_record") if isinstance(bridge.get("old_record"), Mapping) else {}
+    named = old.get("path")
+    tail = PurePosixPath(named.replace("\\", "/")).parts[-3:] if isinstance(named, str) else ()
+    if tail != (EXPERIMENT, "decisions", f"cycle-c{candidate}.json"):
+        found.append(f"its old record {named!r} is not the cycle record cycle-c{candidate}.json")
+    if old.get("sha256") != sha:
+        found.append(f"its old record names sha256 {old.get('sha256')!r}, not the cycle record's "
+                     f"{sha}")  # fmt: skip
+    if old.get("kind") != f"cycle-c{candidate}":
+        found.append(f"its old record's kind is {old.get('kind')!r}, not cycle-c{candidate}")
+    for key in ("diagnosis", "fix"):
+        if bridge.get(key) != record[key]:
+            found.append(f"its {key} is not the cycle record's")
+    codes = (("old_gpu_code", record["old_code"]),
+             ("fix_gpu_code", record["code"]["gpu_code_sha256"]))  # fmt: skip
+    for key, code in codes:
+        given = bridge.get(key) if isinstance(bridge.get(key), Mapping) else {}
+        if given.get("sha256") != code:
+            found.append(f"its {key} is {given.get('sha256')!r}, not the cycle record's {code}")
+    affected = record["affected"]
+    wanted = {r["run_id"] for r in affected["runs"]} | {
+        r["run_id"] for r in affected["qualification"]["launchers"]}  # fmt: skip
+    launchers = bridge.get("launchers")
+    ids = [e.get("run_id") if isinstance(e, Mapping) else None
+           for e in (launchers if isinstance(launchers, list) else [None])]  # fmt: skip
+    found += [f"its launchers name {run_id!r} twice" for run_id in sorted(
+        {str(r) for r in ids if ids.count(r) > 1})]  # fmt: skip
+    if set(ids) != wanted:
+        found.append(f"its launchers are not the affected runs and the qualification's affected "
+                     f"launcher runs (missing {sorted(wanted - set(ids), key=str)[:5]}, other "
+                     f"{sorted(set(ids) - wanted, key=str)[:5]})")  # fmt: skip
+    attempts = bridge.get("attempts")
+    if not isinstance(attempts, list) or not all(isinstance(e, Mapping) for e in attempts):
+        found.append("its attempts are not a list of attempt entries")
+        attempts = []
+    shas = [e.get("sha256") for e in attempts if e.get("sha256") is not None]  # recorded ones
+    records = {r["sha256"] for r in affected["qualification"]["records"]}
+    found += [f"its attempts name the record {x!r} twice" for x in sorted(
+        {str(x) for x in shas if shas.count(x) > 1})]  # fmt: skip
+    if set(shas) != records:
+        found.append("its attempts are not the qualification's affected records of the cycle "
+                     "record")  # fmt: skip
+    if bridge.get("held") != []:
+        found.append("its held is not empty: a cycle outside the qualification holds no run")
+    if record["stages"].get("qualification", {}).get("action") != "rerun":
+        for key in ("cases_requalified", "attempts", "kept_cases", "kept"):
+            if bridge.get(key) != []:
+                found.append(f"its {key} is not empty, and the cycle reuses the qualification")
+    return found
+
+
+def cycle_problems(
+    found: Mapping[str, Any],
+    *,
+    runs_root: str | Path,
+    theta0: str | Path,
+    repo: str | Path,
+    settings: Mapping[str, Any],
+) -> list[str]:
+    """The problems of a published cycle (``read_cycle``'s ``found``) against the records before
+    it (module docstring, "The pre-cycle view"); each makes the cycle invalid. None for a cycle
+    whose record is not a valid decision record (``read_cycle`` names why)."""
+    record = found.get("record")
+    if record is None:
+        return []
+    root = Path(runs_root)
+    where = found.get("path") or str(cycle_path(root, record["candidate"]))
+    candidate = record["candidate"]
+    without = bridge_name(candidate)
+    try:
+        records = pre_cycle_records(root, candidate, journal=record["journal"], without=without,
+                                    theta0=theta0, repo=repo, settings=settings)  # fmt: skip
+        seen = seen_starts(root, record["journal"])
+    except CycleRefused as exc:
+        return [f"{where}: {reason}" for reason in exc.reasons]
+    except (OSError, ValueError) as exc:
+        return [f"{where}: the records before the cycle cannot be read ({type(exc).__name__}: "
+                f"{exc})"]  # fmt: skip
+    claims = {stage: Claim(c["action"], tuple(c["arms"]), c["justification"])
+              for stage, c in record["stages"].items()}  # fmt: skip
+    started = started_stages(records, candidate)
+    problems = [f"{where}: the {stage}, started when the cycle was written, has no claim (with its "
+                "justification)" for stage in started if stage not in claims]  # fmt: skip
+    problems += [f"{where}: a claim for the {stage}, which had not started" for stage in claims
+                 if stage not in started]  # fmt: skip
+    run_codes = run_gpu_codes(records.endpoints, repo=repo)
+    by_id = {e.run_id: e for e in records.endpoints}
+    closed = [k["run_id"] for k in record["kept"] if k.get("why") == "closed_arm"]
+    valid = [e["record"] for e in records.closures.values() if e.get("record") is not None
+             and e["record"].get("candidate") == candidate]  # fmt: skip
+    for run_id in closed:
+        arm = by_id[run_id].arm if run_id in by_id else None
+        if not any(c.get("arm") == arm or c.get("run_id") == run_id for c in valid):
+            problems.append(f"{where}: {run_id} is kept as of a closed arm, and no valid closure "
+                            "of the candidate closes its arm or names it")  # fmt: skip
+    try:
+        affected, kept = affected_and_kept(records, candidate, claims, run_codes=run_codes,
+                                           fix_code=record["code"]["gpu_code_sha256"], seen=seen,
+                                           closed_arms=(), cited=closed)  # fmt: skip
+    except CycleRefused as exc:
+        return problems + [f"{where}: {reason}" for reason in exc.reasons]
+    problems += _compare(where, "affected.runs", record["affected"]["runs"], affected,
+                         lambda r: r["run_id"])  # fmt: skip
+    problems += _compare(where, "kept", record["kept"], kept, kept_key)
+    wanted: dict[str, list[dict[str, Any]]] = {"records": [], "launchers": []}
+    if claims.get("qualification", Claim("reuse", (), "")).action == "rerun":
+        from .qualification_records import cycle_entries  # it loads torch: here only
+
+        entries = cycle_entries(root, candidate, old_code=record["old_code"],
+                                fix_code=record["code"]["gpu_code_sha256"], settings=settings,
+                                run_codes=run_codes, without=without,
+                                prefix={j["path"]: j["lines"]
+                                        for j in record["journal"]})  # fmt: skip
+        problems += [f"{where}: the qualification's launcher run {run_id} was classified by no "
+                     "part record, and the readers cannot settle it" for run_id in
+                     entries.unsettled]  # fmt: skip
+        wanted = _qualification(root, entries)
+    for key, by in (("records", lambda r: r["path"]), ("launchers", lambda r: r["run_id"])):
+        problems += _compare(where, f"affected.qualification.{key}",
+                             record["affected"]["qualification"][key], wanted[key],
+                             by)  # fmt: skip
+    mine = [e for e in records.endpoints if e.cell.candidate == candidate]
+    for run in record["affected"]["runs"]:
+        e = by_id.get(run["run_id"])
+        if e is not None and failed(e, mine, candidate):
+            problems.append(f"{where}: {e.run_id} is a scientific failure, and it is listed as "
+                            "affected: a scientific failure keeps counting")  # fmt: skip
+    return problems
+
+
+def _compare(where: str, name: str, recorded: Sequence[Mapping[str, Any]],
+             derived: Sequence[Mapping[str, Any]], key: Any) -> list[str]:  # fmt: skip
+    """A recorded list against its derivation, exactly: nothing derived and not listed, nothing
+    listed and not derived, nothing twice, each entry as derived, in canonical order."""
+    keys = [key(x) for x in recorded]
+    expected = {key(x): x for x in derived}
+    problems = [f"{where}: {k} is derived and not listed in {name}" for k in expected
+                if k not in keys]  # fmt: skip
+    problems += [f"{where}: {k} is listed in {name} and not derived" for k in dict.fromkeys(keys)
+                 if k not in expected]  # fmt: skip
+    problems += [f"{where}: {k} is listed twice in {name}" for k in dict.fromkeys(keys)
+                 if keys.count(k) > 1]  # fmt: skip
+    problems += [f"{where}: {key(x)} in {name} differs from its derivation" for x in recorded
+                 if key(x) in expected and expected[key(x)] != x]  # fmt: skip
+    if len(set(keys)) == len(keys) and keys != sorted(keys):
+        problems.append(f"{where}: {name} is not in canonical order (by run id, then path)")
+    return problems

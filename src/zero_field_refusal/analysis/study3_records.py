@@ -13,7 +13,10 @@ qualification's restart and supersession records (``qualification/c<N>/``).
   (``problems``). Nothing may be computed from records with a refusal: they are ambiguous.
 - ``EndpointReader``: one snapshot of the same records, read under any number of prescriptions
   (``read_endpoints`` is one reading of a fresh snapshot): every file is read once; its
-  ``resolved`` lists the journal's resolved torn lines, each with its kind.
+  ``resolved`` lists the journal's resolved torn lines, each with its kind. With a journal
+  ``prefix`` (an engineering cycle's pinned prefix, ``study3_cycle``), each launch log is read up
+  to its pinned number of lines (``prefixed``) and a run folder whose start lies beyond the
+  prefix is no run of that view: the records as they stood when the cycle was written.
 - ``read_holds``: every held launcher run, by its label under any config hash, with the records
   that hold it and their sha256 (what a closure record cites).
 - ``journal_lines``: every launch log, line by line, each line with its own sha256 and, for a
@@ -573,6 +576,7 @@ class _Journal:
     resolved: list[dict[str, Any]] = field(default_factory=list)  # the resolved torn lines
     sealed: list[str] = field(default_factory=list)  # logs under a sealed folder, never opened
     unbacked: list[str] = field(default_factory=list)  # lines that count for nothing: why
+    later: set[str] = field(default_factory=set)  # run ids started beyond a pinned prefix
 
 
 def step_key(candidate: int, step: str, round_: int | None = None) -> str:
@@ -738,13 +742,14 @@ class EndpointReader:
         theta0: str | Path,
         cycles: Mapping[str, Mapping[str, Any]] | None = None,
         restarts: Mapping[str, Mapping[str, Any]] | None = None,
+        prefix: Mapping[str, int] | None = None,
     ) -> None:
         self.root = Path(runs_root)
         self.baseline = read_theta0(theta0)
         self.voided: dict[str, tuple[str, str]] = {}  # run id -> superseded or held, and why
         cycles = _cycle_checks(self.root, cycles)
         restarts = _restart_checks(self.root, restarts)
-        self.journal = _read_journal(self.root, self.voided, cycles, restarts)
+        self.journal = _read_journal(self.root, self.voided, cycles, restarts, prefix)
         self.problems = _voiding_records(self.root, self.voided, cycles, restarts)
         self.problems += [f"{where}: {TORN_WHY}" for where in self.journal.corrupt]
         # the resolved torn lines, each with its kind: listed, no problem
@@ -753,8 +758,10 @@ class EndpointReader:
                           for where in self.journal.sealed]  # fmt: skip
         self.problems += self.journal.unbacked
         experiment = self.root / EXPERIMENT
+        # a run folder whose start lies beyond a pinned prefix is a later run: no run of the view
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
-                        if d.is_dir() and d.name != DECISIONS]  # fmt: skip
+                        if d.is_dir() and d.name != DECISIONS
+                        and d.name not in self.journal.later]  # fmt: skip
         self.files = _Files(experiment)
 
     def read(
@@ -861,6 +868,7 @@ def _read_journal(
     voided: dict[str, tuple[str, str]],
     cycles: Mapping[str, Mapping[str, Any]] | None = None,
     restarts: Mapping[str, Mapping[str, Any]] | None = None,
+    prefix: Mapping[str, int] | None = None,
 ) -> _Journal:
     """The launch journal's study-3 records from every log (``journal_lines``' reading): the
     starts with their campaign (the log's name), every end by run id, the recovery rounds, and the
@@ -874,14 +882,25 @@ def _read_journal(
     silently (the launcher's rule), a resolved one is listed in ``resolved`` with its kind, and
     any other is listed in ``corrupt`` with its log's name and its number, never its bytes. A
     log that resolves under a sealed folder is never opened: it is listed in ``sealed``, by its
-    path under RUNS_DIR. A log that cannot be read raises its ``OSError``."""
+    path under RUNS_DIR. A log that cannot be read raises its ``OSError``. ``prefix``: each log
+    read up to its pinned number of lines, a log the map does not name as empty (``prefixed``);
+    the run ids started beyond it are listed in ``later``."""
     journal = _Journal()
     lines: list[tuple[str, int, dict[str, Any]]] = []  # the superseded and held lines
     logs, unread = _journal_logs(root)
     for log, error in unread:
+        if prefix is not None and f"launch/{log.name}" not in prefix:
+            continue
         if error is not None:
             raise error
         journal.sealed.append(f"launch/{log.name}")
+    if prefix is not None:
+        every = {line.record.get("run_id") for log in logs for line in log.lines
+                 if line.record is not None and line.record.get("event") == "start"}  # fmt: skip
+        logs = prefixed(logs, prefix)
+        within = {line.record.get("run_id") for log in logs for line in log.lines
+                  if line.record is not None and line.record.get("event") == "start"}  # fmt: skip
+        journal.later = {r for r in every - within if isinstance(r, str)}
     for log in logs:
         campaign = PurePosixPath(log.path).stem
         journal.corrupt += [f"{log.path} line {number}" for number in log.corrupt]

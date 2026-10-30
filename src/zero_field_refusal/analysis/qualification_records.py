@@ -130,8 +130,9 @@ engineering stage, and certify nothing the fix changed; the re-qualification cer
   read are named here instead, never superseded, and the cycle is refused for them. No run is
   held.
 The view before the cycle is read with ``without`` (the cycle's own bridge, read as absent: it
-voids nothing and names nothing void) and ``prefix`` (each launch log up to the line count the
-cycle pinned).
+voids nothing and names nothing void, and its ``superseded_at`` dates the cycle, so that a case
+restart after it changes nothing, as ``_restarted_before`` reads a restart's time) and
+``prefix`` (each launch log up to the line count the cycle pinned).
 
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
@@ -992,6 +993,9 @@ def cycle_entries(
     supersessions = [_object(path, root) or {} for path in sorted(folder.glob("supersede-*.json"))
                      if VOIDING_FILE.fullmatch(path.name)
                      and path.relative_to(root).as_posix() != without]  # fmt: skip
+    # the time of the cycle, when its own bridge is read as absent: a case restart after it
+    # (which names every attempt of its case) changes nothing, as ``_restarted_before`` reads it
+    at = (_object(root / without, root) or {}) if without is not None else {}
     attempts, requalified, kept, kept_cases = [], [], [], []
     run_ids: set[str] = set()
     kept_runs: set[str] = set()
@@ -999,7 +1003,7 @@ def cycle_entries(
     entries_of: dict[str, list[dict[str, Any]]] = {}
     for case_dir in sorted({f.parent for f in (folder / STAGE).glob("s*/*/*-attempt-*")}):
         name = f"{case_dir.parent.name}/{case_dir.name}"
-        before, listed = cycles._restarted_before(case_dir, {})  # every restart, at the cycle
+        before, listed = cycles._restarted_before(case_dir, at)  # the restarts before it
         named = before | {e["sha256"] for record in supersessions
                           for e in record.get("attempts") or []
                           if isinstance(e, Mapping) and isinstance(e.get("sha256"), str)

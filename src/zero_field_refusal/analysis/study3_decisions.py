@@ -1381,7 +1381,7 @@ class _Schema:
         """A claim per stage: ``reuse`` (no arm) or ``rerun`` with its arms (all three for the
         qualification: all or nothing for the candidate), and a justification of one line;
         every stage up to the marks' claimed, the marks' a rerun of every marked arm."""
-        if not isinstance(value, dict) or not value:
+        if not isinstance(value, dict):
             self.add("stages", "is not an object of a claim per stage")
             return
         for name, claim in value.items():
