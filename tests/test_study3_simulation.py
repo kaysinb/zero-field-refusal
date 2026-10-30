@@ -1380,3 +1380,289 @@ def test_the_grid_of_the_proposal_has_its_thresholds() -> None:
             decisions.COVERAGE_P0.items()} == {"comparison": 315, "joint": 590}  # fmt: skip
     assert sim.N_POINTS is decisions.N_POINTS and sim.TESTED is decisions.TESTED
     assert sim.MAX_DRAWS_FACTOR is decisions.MAX_DRAWS_FACTOR
+
+
+# ------------------------------------------------------------------ the engine
+
+ENGINE_COMMIT = "c" * 40
+ENGINE_POLICY = {"path": "docs/study3-preregistration.md", "commit": "d" * 40,
+                 "sha256": "e" * 64, "amendments": [1, 2, 3, 4, 5, 6]}  # fmt: skip
+ENGINE_MACHINE = {"platform": "test", "cpu": "test", "numpy": "test"}
+
+
+class Interrupted(Exception):
+    """A run stopped partway (the test's interruption)."""
+
+
+class Tiny(NamedTuple):
+    """A tiny grid's context (two scenarios and the two gates, M = 6, 200 and 400 resamples:
+    with 20, the interval is the range of 20 t*, and the joint test misses one study in five)
+    and the test's monkeypatch."""
+
+    context: sim.Context
+    monkeypatch: pytest.MonkeyPatch
+
+
+def engine_calibrations(scenarios, never: str | None = None) -> dict:
+    """Hand calibrations: f 0.02 and σ 0.03; a power scenario's offsets ±0.06 (a large Δ: its
+    power is not short); scenario ``never``'s f 0.6 (its A–F gate never passes)."""
+    out = {}
+    for sc in scenarios:
+        for c in (1, 2) if sc.coverage and sc.candidate == 1 else (sc.candidate,):
+            cal = hand_calibration(c, 0.6 if sc.name == never else 0.02)
+            if sc.power:
+                sign = 1 if sc.delta_af_pp > 0 else -1
+                cal = replace(cal, offset_a=0.06 * sign, offset_p=0.06 * sign)
+            out[(sc, c)] = cal
+    return out
+
+
+def engine_context(base: Path, scenarios, vectors, *, never: str | None = None) -> sim.Context:
+    """The context of a fixation built (not committed) for ``scenarios`` in a folder."""
+    import hashlib
+    import json
+
+    from zero_field_refusal.analysis.study3_seed_vectors import inputs_record, utility_slopes
+
+    repo = base / "repo"
+    (repo / "docs").mkdir(parents=True)
+    inputs = repo / "docs" / "study3-simulation-inputs.json"
+    inputs.write_text(json.dumps(inputs_record(vectors, {}, theta0={"path": "x"}, sources=[])))
+    fixation = sim.build_fixation(
+        inputs, scenarios, engine_calibrations(scenarios, never),
+        code={"commit": ENGINE_COMMIT, "gpu_code_sha256": "b" * 64},
+        streams={"calibration": 31, "verification": 32}, repo=repo, policy=ENGINE_POLICY,
+        written_at="2026-10-30T00:00:00Z", machine=ENGINE_MACHINE)  # fmt: skip
+    text = json.dumps(fixation, allow_nan=False, indent=2, sort_keys=True) + "\n"
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    ref = {"path": "docs/study3-simulation-fixation.json", "sha256": digest,
+           "commit": ENGINE_COMMIT}  # fmt: skip
+    return sim.context_of(json.loads(text), ref, vectors, utility_slopes(vectors))
+
+
+def tiny_grid(never: str | None = None) -> list:
+    first = replace(sim.SCENARIOS_BY_NAME["C02"], name=never) if never else (
+        sim.SCENARIOS_BY_NAME["C02"])  # fmt: skip
+    names = ("C16", "G1", "G2")
+    return [first, *(sim.SCENARIOS_BY_NAME[n] for n in names)]
+
+
+@pytest.fixture
+def tiny(tmp_path, monkeypatch, vectors) -> Tiny:
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    monkeypatch.setattr(decisions, "COVERAGE_RUNS", 6)
+    monkeypatch.setattr(sim, "SCREEN_RESAMPLES", 200)
+    monkeypatch.setattr(sim, "VERIFICATION_RESAMPLES", 400)
+    return Tiny(engine_context(tmp_path / "tiny", tiny_grid(), vectors), monkeypatch)
+
+
+def tiny_never_confirms(tiny: Tiny, base: Path, vectors) -> Tiny:
+    """The tiny grid with its coverage scenario NC, whose A–F gate never passes."""
+    return Tiny(engine_context(base, tiny_grid("NC"), vectors, never="NC"), tiny.monkeypatch)
+
+
+def run_screen(tiny: Tiny, root: Path, *, workers: int, unit: int,
+               stop_after_units: int | None = None) -> Path | None:  # fmt: skip
+    """The screen (``run_screen``: gates, screen, scan) in ``root`` with ``unit`` studies per
+    part; with ``stop_after_units``, interrupted once that many parts are written."""
+    tiny.monkeypatch.setattr(sim, "UNIT", unit)
+    if stop_after_units is None:
+        return sim.run_screen(tiny.context, root, ENGINE_COMMIT, workers=workers)
+    real, left = sim.execute, [stop_after_units]
+
+    def limited(units, *args, **kwargs):
+        units = list(units)
+        take = units[: left[0]]
+        real(take, *args, **kwargs)
+        left[0] -= len(take)
+        if left[0] <= 0:
+            raise Interrupted
+
+    tiny.monkeypatch.setattr(sim, "execute", limited)
+    with pytest.raises(Interrupted):
+        sim.run_screen(tiny.context, root, ENGINE_COMMIT, workers=workers)
+    tiny.monkeypatch.setattr(sim, "execute", real)
+    assert not (root / "study3" / "simulation" / "screen.json").exists()
+    return None
+
+
+def rows_of(path: Path) -> list[dict]:
+    import json
+
+    return json.loads(path.read_text())["tests"]
+
+
+def test_the_screen_does_not_depend_on_workers_or_unit_size(tiny, tmp_path) -> None:
+    a = run_screen(tiny, tmp_path / "a", workers=1, unit=2)
+    b = run_screen(tiny, tmp_path / "b", workers=3, unit=5)
+    c = run_screen(tiny, tmp_path / "c", workers=4, unit=2)
+    assert a.read_bytes() == b.read_bytes() == c.read_bytes()
+    assert a == tmp_path / "a" / "study3" / "simulation" / "screen.json"
+
+
+def test_an_interrupted_screen_resumes_to_the_same_bytes(tiny, tmp_path) -> None:
+    whole = run_screen(tiny, tmp_path / "whole", workers=2, unit=2)
+    run_screen(tiny, tmp_path / "cut", workers=2, unit=2, stop_after_units=3)  # raises partway
+    parts = sorted((tmp_path / "cut" / "study3" / "simulation" / "parts").rglob("*.json"))
+    assert len(parts) == 3
+    again = run_screen(tiny, tmp_path / "cut", workers=2, unit=2)
+    assert again.read_bytes() == whole.read_bytes()
+    for part in parts:  # the finished parts were kept, not drawn again
+        assert part.read_bytes() == (tmp_path / "whole" / part.relative_to(tmp_path / "cut")
+                                     ).read_bytes()  # fmt: skip
+
+
+def test_a_part_of_another_commit_or_fixation_is_named(tiny, tmp_path) -> None:
+    ctx = tiny.context
+    unit = sim.Unit("gates", "G1", 0, 2, 31, 200, sim.LEVELS, 28, 60)
+    sim.execute([unit], tmp_path, ctx.ref, ENGINE_COMMIT, workers=1, context=ctx)
+    path = sim.part_path(tmp_path, "gates", "G1", 0)
+    assert path.is_file()
+    found, problems = sim.existing_parts(tmp_path, "gates", ctx.ref, ENGINE_COMMIT)
+    assert found == {("G1", 0): path} and problems == []
+    found, problems = sim.existing_parts(tmp_path, "gates", ctx.ref, "d" * 40)
+    assert found == {} and any(str(path) in p and "commit" in p for p in problems)
+    other = {**ctx.ref, "sha256": "f" * 64}
+    _, problems = sim.existing_parts(tmp_path, "gates", other, ENGINE_COMMIT)
+    assert any(str(path) in p and "fixation" in p for p in problems)
+    with pytest.raises(sim.SimulationError, match=str(path)):
+        sim.run_screen(ctx, tmp_path, "d" * 40, workers=1)
+    assert not (tmp_path / "study3" / "simulation" / "screen.json").exists()
+    with sim.Workers(1, ctx), pytest.raises(sim.SimulationError, match="written once"):
+        sim.run_unit((unit, tmp_path, ctx.ref, ENGINE_COMMIT))  # a part is never drawn again
+    with pytest.raises(sim.SimulationError, match="no context"):  # outside a run's workers
+        sim.run_unit((unit, tmp_path, ctx.ref, ENGINE_COMMIT))
+
+
+def outcome(index: int, confirmed: bool) -> sim.StudyOutcome:
+    level = 0.975
+    return sim.StudyOutcome(index=index, mode="screen", candidate=1, active=["A-F", "P-F"],
+                            levels=(level,), rates={}, gates={}, m=0,
+                            confirmed={level: confirmed}, why={level: None}, N={level: None},
+                            cap={level: None}, blocks={level: None}, covered={}, direction={},
+                            readings={}, utility_claim={}, truth={})  # fmt: skip
+
+
+def test_the_first_m_confirmed_by_index_are_used() -> None:
+    rows = [outcome(i, i % 3 != 0) for i in range(12)]
+    shuffled = rows[::2] + rows[1::2]
+    assert [o.index for o in sim.first_confirmed(shuffled, 4, 0.975)] == [1, 2, 4, 5]
+    assert [o.index for o in sim.first_confirmed(rows, 100, 0.975)] == [
+        i for i in range(12) if i % 3]  # fmt: skip
+
+
+def test_the_blocks_quantiles_are_type_1_ranks() -> None:
+    values = list(range(1, 11))
+    assert [sim.order_statistic(values, q) for q in (0.1, 0.5, 0.9)] == [1, 5, 9]
+    assert sim.order_statistic([7], 0.9) == 7 and sim.order_statistic([3, 1, 2], 0.5) == 2
+
+
+def test_the_results_hold_every_identity_once(tiny, tmp_path) -> None:
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    ctx = tiny.context
+    tiny.monkeypatch.setattr(sim, "UNIT", 4)
+    screen = sim.run_screen(ctx, tmp_path, ENGINE_COMMIT, workers=2)
+    verification = sim.run_verification(ctx, tmp_path, ENGINE_COMMIT, workers=2)
+    import json
+
+    s, v = json.loads(screen.read_text()), json.loads(verification.read_text())
+    code = {"commit": ENGINE_COMMIT, "gpu_code_sha256": "b" * 64}
+    results = sim.results_record(s, v, ctx, code, written_at="2026-10-30T01:00:00Z")
+    assert set(results) == set(decisions.RESULTS_FIELDS)
+    assert [tuple(r["test"]) for r in results["tests"]] == [
+        tuple(i) for i in ctx.fixation["tests"]["list"]]  # fmt: skip
+    assert decisions._identities(results["tests"], ctx.fixation) == []
+    decided, problems = decisions.coverage_decisions(results, ctx.fixation)
+    assert problems == [] and decided["level"] == results["selected_calibration_level"]
+    assert decided["level"] is not None and decided["validation_blocks"] in (28, 40)
+    assert results["M"] == 6 and results["J"] == 210
+    assert all(r["studies"] == 6 for r in results["tests"] if r["due"])
+    # the verification's rows are at L, and every comparison counts its own studies
+    due = [r for r in results["tests"] if r["test"][0] == "verification"]
+    assert {r["level"] for r in due} == {decided["level"]}
+    assert set(results["reported"]) == {"C02", "C16", "G1", "G2"}
+    assert set(results["reported"]["C02"]["blocks"]["0.975"]) == {"q10", "q50", "q90"}
+    # the verification does not depend on the workers either
+    other = tmp_path / "other"
+    sim.run_screen(ctx, other, ENGINE_COMMIT, workers=1)
+    again = sim.run_verification(ctx, other, ENGINE_COMMIT, workers=4)
+    assert again.read_bytes() == verification.read_bytes()
+
+
+def test_a_scenario_that_never_confirms_stops_at_4m_and_is_not_attainable(
+    tiny, tmp_path, vectors
+) -> None:
+    never = tiny_never_confirms(tiny, tmp_path / "never", vectors)
+    rows = run_screen(never, tmp_path, workers=2, unit=2)  # A–F gate never passes
+    test = rows_of(rows)[0]
+    assert test["test"][:2] == ["calibration", "NC"]
+    assert (test["draws"], test["studies"], test["reason"], test["passed"]) == \
+        (4 * 6, 0, "not_attainable", False)  # fmt: skip
+    import json
+
+    screen = json.loads(rows.read_text())
+    assert screen["level"] is None  # every level fails: X = M counted
+    assert screen["reported"]["NC"]["unconfirmed"] == {"af_gate": 24}
+
+
+def test_the_scan_stops_at_the_first_n_with_the_power(tiny, tmp_path) -> None:
+    """A power scenario whose cap readings detect only from N = 63 (one in three before): the
+    power is short, the scan runs n = 60, 61, … and stops at 63, its first n with the power."""
+    from zero_field_refusal.analysis import study3_decisions as decisions
+
+    real = sim.simulate_study
+
+    def slow_power(scenario, setup, base, index, *, n_floor=60, **kw):
+        o = real(scenario, setup, base, index, n_floor=n_floor, **kw)
+        if scenario.name != "C16" or not o.direction:
+            return o
+        hit = n_floor >= 63 or index % 3 == 0
+        direction = {k: (("positive" if hit else None) if k[1] == "A-F" else v)
+                     for k, v in o.direction.items()}  # fmt: skip
+        return replace(o, direction=direction)
+
+    tiny.monkeypatch.setattr(sim, "simulate_study", slow_power)
+    path = run_screen(tiny, tmp_path, workers=1, unit=3)
+    import json
+
+    screen = json.loads(path.read_text())
+    scan = screen["gates"]["n_scan"]
+    assert [entry["n"] for entry in scan] == [60, 61, 62, 63]
+    assert [min(c["correct"] for c in e["by_scenario"].values()) for e in scan][-1] == 6
+    assert all(min(c["correct"] for c in e["by_scenario"].values()) < 5 for e in scan[:-1])
+    assert decisions._n_min(scan, True, ["C16"]) == (63, [])
+
+
+def test_the_calibration_does_not_depend_on_the_workers(vectors) -> None:
+    """Every scenario's calibration, one pair per worker and C12's truths over the pool, is the
+    same with one worker and with four."""
+    from zero_field_refusal.analysis.study3_seed_vectors import utility_slopes
+
+    few = world_vectors(count=6)
+    setup = sim.Setup(vectors=tuple(few), slopes=utility_slopes(few), calibrations={}, M=6,
+                      levels=LEVELS, validation_blocks=28)  # fmt: skip
+    pairs = [(sim.SCENARIOS_BY_NAME[n], 1) for n in ("C02", "C12", "G1")]
+    sim.clear_caches()
+    one = sim.calibrate_all(setup, 41, pairs=pairs, workers=1, studies=400)
+    sim.clear_caches()
+    four = sim.calibrate_all(setup, 41, pairs=pairs, workers=4, studies=400)
+    assert one == four and set(one) == set(pairs)
+    assert sim.calibration_problems(one, one) == []
+
+
+def test_the_recomputed_calibration_is_compared_at_a_relative_1e9() -> None:
+    cal = a_calibration(1)
+    sc = sim.SCENARIOS_BY_NAME["C01"]
+    near = replace(cal, sigma_af=cal.sigma_af * (1 + 1e-12))
+    far = replace(cal, sigma_af=cal.sigma_af * (1 + 1e-6))
+    assert sim.calibration_problems({(sc, 1): near}, {(sc, 1): cal}) == []
+    assert any("sigma_af" in p for p in sim.calibration_problems({(sc, 1): far}, {(sc, 1): cal}))
+    flagged = replace(cal, support_flagged=True)
+    assert any("support_flagged" in p
+               for p in sim.calibration_problems({(sc, 1): flagged}, {(sc, 1): cal}))  # fmt: skip
+    seeds = replace(cal, mmlu_shift={"A": {2101: 0.5}, "F": {2100: -0.25}, "P": {2100: 1.0}})
+    assert any("mmlu_shift" in p
+               for p in sim.calibration_problems({(sc, 1): seeds}, {(sc, 1): cal}))  # fmt: skip
+    assert any("missing" in p for p in sim.calibration_problems({}, {(sc, 1): cal}))

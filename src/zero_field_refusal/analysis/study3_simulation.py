@@ -27,7 +27,14 @@ directory, no harm label, response or judge output.
   ``outcome_json`` and ``outcome_from_json``): one study through the registered functions.
 - ``calibrate_scenario`` (with ``realized_support``, ``calibrate_failure``, ``calibrate_safe``,
   ``calibrate_spread``, ``calibrate_offsets``, ``calibration_stream``, ``label_variance``):
-  everything calibrated per (scenario, candidate), through the selection.
+  everything calibrated per (scenario, candidate), through the selection; ``calibrate_all``
+  every pair over the workers, ``calibration_problems`` the recomputation's comparison with the
+  frozen calibration.
+- ``run_screen``, ``run_verification`` and ``results_record`` (with ``Context``,
+  ``load_context``, ``Unit``, ``part_path``, ``header``, ``run_unit``, ``execute``, ``Workers``,
+  ``existing_parts``, ``first_confirmed``, ``screen_summary``, ``verification_summary``,
+  ``selected_level``): the engine, parts of studies written once, resumed, and aggregated
+  from the parts read back into ``screen.json``, ``verification.json`` and ``results.json``.
 
 **The harm model** (M1–M5). In pp, with x = ln(K/K*), arm a's harm curve is
 H_a(x) = 15 + β_a·x + ½·g·κ_a·x², g the scenario's ``curvature_scale`` (1, or 3 in C11). β_a and
@@ -156,6 +163,34 @@ round in which nothing moved, with the attained spreads (at o⁰) and mean truth
 Carlo SEs. The truth's moments are remembered per (vector, arm, rates, harm model, the arm's σ and
 offset), since the selected rates are rounded to 3 significant digits and repeat.
 
+**The engine** (§"Simulation before validation"; the files under ``RUNS_DIR/study3/simulation/``,
+reserved). A phase (``gates``, ``screen``, ``scan-<n>``, ``verification``) draws, per scenario,
+units of ``UNIT`` (250) studies in index order, each written once as a part
+(``parts/<phase>/<scenario>/<first>.json``: its header, the stream, the sizes, the fixation and
+the commit, and one row per study). A scenario's units are issued while the contiguous finished
+prefix holds fewer than M studies for some test (only as many as the shortfall needs), never past
+4·M draws (the gates: exactly M); a test takes the first M studies by index that count for it
+(confirmed at the level; in the verification's P–F test, with P–F active); a test short of M at
+the bound is not attainable. Each study is a pure function of (stream, scenario, index), so the
+results depend neither on the workers, nor on the unit size, nor on the order in which parts
+finish, nor on an interruption: a run that stopped resumes from its parts (each part's header
+must be the unit's, of this fixation and commit), and every summary is computed from the parts
+read back, by one code path. The workers are spawned processes with single-threaded BLAS, each
+holding the run's ``Context`` (the fixation, its scenarios and calibrations, the inputs'
+vectors) and the truths' moments known already. M is ``study3_decisions.COVERAGE_RUNS``, the
+resamples ``SCREEN_RESAMPLES`` and ``VERIFICATION_RESAMPLES``: each read when it is used, so
+that the dry run's Part II changes the three constants and nothing else (M25).
+- *gates*: G1 and G2, M validations each (28 blocks, 40 reported), the safe pass rate setting
+  the validation size (28 when it reaches 0.95, else 40);
+- *screen*: the non-gate scenarios at that size, four levels, ``SCREEN_RESAMPLES``,
+  ``"screen"`` mode; L the first level whose tests pass (``selected_level``); the powers at
+  every level;
+- *scan-<n>*: when ``power_af`` at L (0.975 without an L) is short, the power scenarios again
+  from the same streams with N at least n = 60, 61, …, to the first n whose smallest power
+  reaches 0.80 or whose cap exceeds the 200 reserved seeds;
+- *verification*: C01–C17 on the verification stream in ``"procedure"`` mode at L,
+  ``VERIFICATION_RESAMPLES``, N at least ``n_min`` when the power was short.
+
 **Rulings** (the study's frozen settings, each with its one-line source):
 - M1, the harm model of block differences: additive on the probability scale, σ calibrated so
   that the observed SD of d at Δ = 0 over the supported validation blocks at the rates the
@@ -234,21 +269,40 @@ offset), since the selected rates are rounded to 3 significant digits and repeat
   ``study2_short_sim``.
 - The bracket compares ln K with ln K* (the measured K's order), the width allows 10⁻⁹ in ln K and
   a usable run's MMLU loss 10⁻⁹ pp, as ``study3_blocks`` and ``study3_records`` do.
+- The jitter quadrature (C12) is split so that the part over the runs' jitters, which depends on
+  neither the block effects' σ nor the offset, is computed once per vector, arm and pair of rates
+  and kept across the calibration's σ and offset steps (``_JitterGrid``); the outer rule, which
+  carries the shares, is checked for convergence at every evaluation.
+- ``run`` recomputes the calibration and compares it with the frozen one: integers, flags and
+  identities exactly, floats (from bisection and quadrature) at a relative 10⁻⁹
+  (``calibration_problems``); the fixation records the machine it was calibrated on
+  (``machine_record``: the platform, the CPU model, numpy's version), and a different machine is
+  reported, not refused.
+- The reported quantiles of the realized blocks are type-1 order statistics (zero-based rank
+  ⌈n·q⌉ − 1, ``study3_inference.tail_ranks``' rule; ``order_statistic``), never an interpolated
+  quantile.
+- The reported figures of a screened scenario count the studies its tests drew (``attempted``,
+  the largest draws over its levels); a study unconfirmed for a reason counts once for it.
 """
 
 from __future__ import annotations
 
 import functools
 import hashlib
+import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+import re
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from scipy.special import gammainc, ndtr, ndtri
 
+from . import study3_decisions as _decisions  # M and the gates read at call time: one definition
 from .study3_blocks import (
     CONFIRMATION_ALPHA,
     VALIDATION_ALPHA,
@@ -264,6 +318,7 @@ from .study3_decisions import (
     MIN_N,
     N_POINTS,
     SIMULATION_FIXATION,
+    SIMULATION_RESULTS,
     SUPPORTED_AT,
     TESTED,
     VALIDATION_BLOCKS,
@@ -279,6 +334,7 @@ from .study3_decisions import (
 from .study3_inference import Interval, bootstrap_t, reading, stream
 from .study3_progress import confirmation_state
 from .study3_records import (
+    EXPERIMENT,
     GROSS_COLLAPSE,
     GROSS_COLLAPSE_PP,
     INSTABILITY,
@@ -289,6 +345,7 @@ from .study3_records import (
     Cell,
     Endpoint,
 )
+from .study3_records import SIMULATION as SIMULATION_FOLDER
 from .study3_search import (
     ARM_ORDER,
     CANDIDATES,
@@ -1133,6 +1190,35 @@ def _grid_key(vector: Vector, arm: str, rates: Mapping[str, float],
             tuple(slopes[arm]), tol, max_nodes)  # fmt: skip
 
 
+def _grid_task(args: tuple) -> _JitterGrid:
+    """A worker's task: one arm's jitter quadrature, its outer levels settled at the shares of
+    ``scenario`` and ``calibration``."""
+    vector, arm, rates, slopes, kstar_ln, scenario, calibration = args
+    grid = _JitterGrid(vector, arm, rates, slopes, kstar_ln, tol=TOLERANCE, max_nodes=MAX_NODES)
+    grid.moments(_share(arm, scenario, calibration))
+    return grid
+
+
+def _build_grids(mapper: Callable, scenario: Scenario, calibration: Calibration,
+                 slopes: Mapping[str, tuple[float, float]], kstar_ln: float,
+                 wanted: Sequence[tuple[Vector, str, Mapping[str, float]]]) -> None:  # fmt: skip
+    """The jitter quadratures of ``wanted`` (vector, arm, rates) not yet kept, built through
+    ``mapper`` (each one a pure function of its inputs) and kept."""
+    tasks, keys = [], []
+    for vector, arm, rates in wanted:
+        key = _grid_key(vector, arm, rates, slopes, kstar_ln, TOLERANCE, MAX_NODES)
+        if key not in _GRIDS and key not in keys:
+            keys.append(key)
+            tasks.append((vector, arm, dict(rates), {arm: tuple(slopes[arm])}, kstar_ln,
+                          scenario, calibration))  # fmt: skip
+    if not tasks:
+        return
+    if len(_GRIDS) + len(tasks) > _GRIDS_LIMIT:
+        _GRIDS.clear()
+    for key, grid in zip(keys, mapper(_grid_task, tasks), strict=True):
+        _GRIDS[key] = grid
+
+
 def _grid(vector: Vector, arm: str, rates: Mapping[str, float],
           slopes: Mapping[str, tuple[float, float]], kstar_ln: float, *, tol: float,
           max_nodes: int) -> _JitterGrid:  # fmt: skip
@@ -1168,7 +1254,34 @@ def _cached_moments(
 ) -> tuple[float, float]:
     """``_arm_moments``, remembered by everything it depends on (the vector's points of the arm,
     as shifted, included)."""
-    key = (
+    key = _moment_key(vector, arm, rates, scenario, calibration, slopes, kstar_ln, tol, max_nodes)
+    found = _MOMENTS.get(key)
+    if found is None:
+        if len(_MOMENTS) >= _MOMENTS_LIMIT:
+            _MOMENTS.clear()
+        found = _arm_moments(
+            vector, arm, rates, scenario, calibration, slopes, kstar_ln, tol=tol,
+            max_nodes=max_nodes,
+        )  # fmt: skip
+        _MOMENTS[key] = found
+    return found
+
+
+def _moment_key(
+    vector: Vector,
+    arm: str,
+    rates: Mapping[str, float],
+    scenario: Scenario,
+    calibration: Calibration,
+    slopes: Mapping[str, tuple[float, float]],
+    kstar_ln: float,
+    tol: float,
+    max_nodes: int,
+) -> tuple:
+    """What ``_arm_moments`` depends on: the vector's seed and points of the arm (as shifted),
+    the arm, the rates, the jitter, the harm and label model, the arm's σ and offset, K*, the
+    slopes and the quadrature's settings."""
+    return (
         vector.seed,
         vector.arms[arm],
         arm,
@@ -1187,16 +1300,6 @@ def _cached_moments(
         tol,
         max_nodes,
     )
-    found = _MOMENTS.get(key)
-    if found is None:
-        if len(_MOMENTS) >= _MOMENTS_LIMIT:
-            _MOMENTS.clear()
-        found = _arm_moments(
-            vector, arm, rates, scenario, calibration, slopes, kstar_ln, tol=tol,
-            max_nodes=max_nodes,
-        )  # fmt: skip
-        _MOMENTS[key] = found
-    return found
 
 
 def truth(
@@ -2455,16 +2558,30 @@ def calibrate_spread(
     return sigma["A-F"], sigma["P-F"], spread["A-F"], spread["P-F"]
 
 
-def _mean_truth(scenario: Scenario, setup: Setup, calibration: Calibration, draws: _Draws,
-                comparison: str) -> tuple[float, float]:  # fmt: skip
+def _mean_truth(
+    scenario: Scenario,
+    setup: Setup,
+    calibration: Calibration,
+    draws: _Draws,
+    comparison: str,
+    mapper: Callable | None = None,
+) -> tuple[float, float]:
     """The mean over the selections of the per-study truth (``truth`` at each study's selected
     rates, through the same moments and ``_combine``; studies share rates, rounded to 3
     significant digits) and its Monte Carlo SE, in proportions. A study whose truth is undefined
-    (no vector supports its rates) is left out."""
+    (no vector supports its rates) is left out. ``mapper`` (a parallel ``map``): the jitter
+    quadratures not yet kept are built through it first (``_JitterGrid``)."""
     arms = COMPARISONS[comparison]
     shifted = _shifted(setup.vectors, calibration)
     kstar_ln = math.log(CANDIDATES[calibration.candidate]["targets"]["star"])
     keys = [tuple((r[arm]["l"], r[arm]["u"]) for arm in arms) for r in draws.rates]
+    if mapper is not None and scenario.jitter:
+        needed = sorted(
+            {(arm, pair) for key in set(keys) for arm, pair in zip(arms, key, strict=True)}
+        )
+        _build_grids(mapper, scenario, calibration, setup.slopes, kstar_ln,
+                     [(v, arm, {"l": pair[0], "u": pair[1]}) for arm, pair in needed
+                      for v in shifted])  # fmt: skip
     moments: dict[tuple[str, tuple[float, float]], list[tuple[float, float]]] = {}
     for key in set(keys):
         for arm, pair in zip(arms, key, strict=True):
@@ -2488,7 +2605,8 @@ def _mean_truth(scenario: Scenario, setup: Setup, calibration: Calibration, draw
 
 
 def _solve_offset(scenario: Scenario, setup: Setup, calibration: Calibration, draws: _Draws,
-                  comparison: str, target: float) -> float:  # fmt: skip
+                  comparison: str, target: float,
+                  mapper: Callable | None = None) -> float:  # fmt: skip
     """The offset of A (A–F) or P (P–F) at which the mean truth over the selections is
     ``target`` (proportions): the secant method from the current offset, its first step with the
     judged share's slope (the truth rises with the offset, nearly linearly: only the clip bends
@@ -2498,7 +2616,7 @@ def _solve_offset(scenario: Scenario, setup: Setup, calibration: Calibration, dr
 
     def gap(offset: float) -> float:
         here = replace(calibration, **{name: offset})
-        return _mean_truth(scenario, setup, here, draws, comparison)[0] - target
+        return _mean_truth(scenario, setup, here, draws, comparison, mapper)[0] - target
 
     m_h, m_n = scenario.missing_rates()
     se, fpr = JUDGES[scenario.judge][arm]
@@ -2525,14 +2643,17 @@ def calibrate_offsets(
     seed: np.random.SeedSequence,
     *,
     studies: int = CALIBRATION_STUDIES,
+    mapper: Callable | None = None,
 ) -> tuple[float, float]:
     """(o_A, o_P) (M15, M2): each solved, from the setup's o⁰, so that the mean, over the
     selections, of the per-study truth (``truth`` at that study's selected rates) is Δ_AF
     (Δ_PF), at the setup's f, shifts and σ."""
     calibration = _current(scenario, setup, candidate).at_null()
     draws = _draws(scenario, setup, candidate, seed, studies)
-    o_a = _solve_offset(scenario, setup, calibration, draws, "A-F", scenario.delta_af_pp / 100)
-    o_p = _solve_offset(scenario, setup, calibration, draws, "P-F", scenario.delta_pf_pp / 100)
+    o_a = _solve_offset(scenario, setup, calibration, draws, "A-F", scenario.delta_af_pp / 100,
+                        mapper)  # fmt: skip
+    o_p = _solve_offset(scenario, setup, calibration, draws, "P-F", scenario.delta_pf_pp / 100,
+                        mapper)  # fmt: skip
     return o_a, o_p
 
 
@@ -2564,6 +2685,7 @@ def calibrate_scenario(
     seed: np.random.SeedSequence,
     *,
     studies: int = CALIBRATION_STUDIES,
+    mapper: Callable | None = None,
 ) -> Calibration:
     """Everything calibrated for (scenario, candidate) through the selection, on the one stream
     ``seed`` (``calibration_stream``): f (``calibrate_failure``) and the safe shifts
@@ -2573,7 +2695,8 @@ def calibrate_scenario(
     σ alternate until neither moves (at most 10 rounds), then the offsets are solved for the
     scenario's Δ from o⁰, with the attained spreads (at o⁰) and mean truths and their Monte
     Carlo SEs. A gate scenario has no harm: σ and the offsets stay 0. ``fixation`` writes the
-    result and ``run`` recomputes it."""
+    result and ``run`` recomputes it. ``mapper`` (a parallel ``map``) builds the jitter
+    quadratures the truths need (C12) on several processes; the result does not depend on it."""
     calibration = _starting_calibration(scenario, setup, candidate)
     before = None
     for _ in range(CALIBRATION_ROUNDS):
@@ -2603,7 +2726,8 @@ def calibrate_scenario(
         sigma = {c: _solve_sigma(scenario, draws, f, c, null[c]) for c in COMPARISONS}
         calibration = replace(calibration, sigma_af=sigma["A-F"], sigma_pf=sigma["P-F"])
         probe = calibration.at_null()
-        null = {c: _solve_offset(scenario, setup, probe, draws, c, 0.0) for c in COMPARISONS}
+        null = {c: _solve_offset(scenario, setup, probe, draws, c, 0.0, mapper)
+                for c in COMPARISONS}  # fmt: skip
         calibration = replace(calibration, null_offset_a=null["A-F"], null_offset_p=null["P-F"])
         now = (sigma["A-F"], sigma["P-F"], null["A-F"], null["P-F"])
         if now == before:
@@ -2621,12 +2745,14 @@ def calibrate_scenario(
                           attained_pf_pp=spread["P-F"][0],
                           attained_spread_se_pp={c: v[1] for c, v in spread.items()})  # fmt: skip
     probe = calibration.at_null()
-    offset_a = _solve_offset(scenario, setup, probe, draws, "A-F", scenario.delta_af_pp / 100)
-    offset_p = _solve_offset(scenario, setup, probe, draws, "P-F", scenario.delta_pf_pp / 100)
+    offset_a = _solve_offset(scenario, setup, probe, draws, "A-F", scenario.delta_af_pp / 100,
+                             mapper)  # fmt: skip
+    offset_p = _solve_offset(scenario, setup, probe, draws, "P-F", scenario.delta_pf_pp / 100,
+                             mapper)  # fmt: skip
     calibration = replace(calibration, offset_a=offset_a, offset_p=offset_p)
     attained = {}
     for comparison in COMPARISONS:
-        mean, se = _mean_truth(scenario, setup, calibration, draws, comparison)
+        mean, se = _mean_truth(scenario, setup, calibration, draws, comparison, mapper)
         attained[comparison] = (100 * mean, 100 * se)
     return replace(calibration, attained_delta_pp=attained)
 
@@ -2876,3 +3002,1076 @@ def read_fixation(path: str | Path, repo: str | Path) -> dict[str, Any]:
         "scenarios": scenarios,
         "calibrations": calibrations,
     }
+
+
+# ------------------------------------------------------------------ the engine
+
+UNIT = 250  # studies per part
+SIMULATION_DIR = (EXPERIMENT, SIMULATION_FOLDER)  # RUNS_DIR/study3/simulation/, reserved
+PART_KIND, SCREEN_KIND, VERIFICATION_KIND = (
+    "simulation-part",
+    "simulation-screen",
+    "simulation-verification",
+)
+RESULTS_KIND = "simulation-results"
+PHASES = ("gates", "screen", "verification")  # and "scan-<n>", one per n of the n_min scan
+CALIBRATION_TOLERANCE = 1e-9  # the recomputed calibration's floats, relative
+QUANTILES = {"q10": Fraction(1, 10), "q50": Fraction(1, 2), "q90": Fraction(9, 10)}
+_SCAN = re.compile(r"scan-([1-9][0-9]*)")
+_PART_NAME = re.compile(r"[0-9]{6}\.json")
+_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def simulation_dir(runs_root: str | Path) -> Path:
+    return Path(runs_root).joinpath(*SIMULATION_DIR)
+
+
+def screen_path(runs_root: str | Path) -> Path:
+    return simulation_dir(runs_root) / "screen.json"
+
+
+def verification_path(runs_root: str | Path) -> Path:
+    return simulation_dir(runs_root) / "verification.json"
+
+
+def results_path(runs_root: str | Path) -> Path:
+    return Path(runs_root) / SIMULATION_RESULTS
+
+
+def _phase_ok(phase: Any) -> bool:
+    if phase in PHASES:
+        return True
+    found = _SCAN.fullmatch(phase) if isinstance(phase, str) else None
+    return found is not None and int(found.group(1)) >= MIN_N
+
+
+def part_path(runs_root: str | Path, phase: str, scenario: str, first: int) -> Path:
+    """The part of ``scenario``'s studies from index ``first`` in ``phase`` (``gates``,
+    ``screen``, ``scan-<n>`` or ``verification``): ``parts/<phase>/<scenario>/<first>.json``
+    under the simulation's folder."""
+    if not _phase_ok(phase):
+        raise ValueError(f"no phase {phase!r} (phases: {PHASES} and scan-<n>, n ≥ {MIN_N})")
+    if not (isinstance(scenario, str) and _NAME.fullmatch(scenario)):
+        raise ValueError(f"scenario {scenario!r} is no folder name")
+    if not (_integer(first) and 0 <= first < 10**6):
+        raise ValueError(f"first {first!r} is not an index")
+    return simulation_dir(runs_root) / "parts" / phase / scenario / f"{first:06d}.json"
+
+
+@dataclass(frozen=True)
+class Unit:
+    """One part's work: ``count`` studies of ``scenario`` from index ``first`` in ``phase``, on
+    the stream ``base``, with ``resamples`` per interval, at ``levels``, a validation of
+    ``validation_blocks`` blocks (the gates: 28, with 40 reported beside it) and N at least
+    ``n_floor`` (the scan's n; the verification's ``n_min`` when the power was short)."""
+
+    phase: str
+    scenario: str
+    first: int
+    count: int
+    base: int
+    resamples: int
+    levels: tuple[float, ...]
+    validation_blocks: int
+    n_floor: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "levels", tuple(float(lv) for lv in self.levels))
+        part_path(".", self.phase, self.scenario, self.first)  # validates the three
+        problems = []
+        if not (_integer(self.count) and self.count >= 1):
+            problems.append(f"count {self.count!r}")
+        if not (_integer(self.base) and self.base >= 0):
+            problems.append(f"base {self.base!r}")
+        if not (_integer(self.resamples) and self.resamples >= 1):
+            problems.append(f"resamples {self.resamples!r}")
+        if not self.levels or not set(self.levels) <= set(LEVELS):
+            problems.append(f"levels {self.levels!r}")
+        if self.validation_blocks not in VALIDATION_BLOCKS:
+            problems.append(f"validation_blocks {self.validation_blocks!r}")
+        if not (_integer(self.n_floor) and self.n_floor >= MIN_N):
+            problems.append(f"n_floor {self.n_floor!r}")
+        if problems:
+            raise ValueError(f"a unit's {', '.join(problems)}")
+
+    @property
+    def mode(self) -> str:
+        return "procedure" if self.phase == "verification" else "screen"
+
+
+def header(unit: Unit, fixation_ref: Mapping[str, str], commit: str) -> dict[str, Any]:
+    """A part's header: what it holds, the stream and sizes it was drawn with, the fixation
+    (``path``, ``sha256``, ``commit``) and the commit the run ran at."""
+    return {
+        "kind": PART_KIND,
+        "phase": unit.phase,
+        "scenario": unit.scenario,
+        "first": unit.first,
+        "count": unit.count,
+        "base": unit.base,
+        "mode": unit.mode,
+        "resamples": unit.resamples,
+        "levels": list(unit.levels),
+        "validation_blocks": unit.validation_blocks,
+        "n_floor": unit.n_floor,
+        "fixation": dict(fixation_ref),
+        "commit": commit,
+    }
+
+
+@dataclass(frozen=True)
+class Context:
+    """What every study of a run needs from its fixation: the fixation itself (its content),
+    its reference ``ref`` (``path``, ``sha256``, ``commit``), the ``setup`` (the inputs'
+    vectors and slopes, the frozen calibrations, M) and the ``scenarios``, in its order."""
+
+    fixation: Mapping[str, Any]
+    ref: Mapping[str, str]
+    setup: Setup
+    scenarios: tuple[Scenario, ...]
+
+    def scenario(self, name: str) -> Scenario:
+        found = [sc for sc in self.scenarios if sc.name == name]
+        if len(found) != 1:
+            raise SimulationError(f"the fixation has no scenario {name!r}")
+        return found[0]
+
+    def of(self, *roles: str) -> list[Scenario]:
+        return [sc for sc in self.scenarios if sc.role in roles]
+
+    def calibration(self, scenario: Scenario) -> Calibration:
+        return self.setup.calibration(scenario, scenario.candidate)
+
+
+def fixation_contents(
+    fixation: Mapping[str, Any],
+) -> tuple[list[Scenario], dict[tuple[Scenario, int], Calibration]]:
+    """The fixation's scenarios (in its order) and calibrations ((scenario, candidate))."""
+    scenarios, calibrations = [], {}
+    for entry in fixation["scenarios"]:
+        sc = Scenario.from_json({k: v for k, v in entry.items() if k != "calibration"})
+        scenarios.append(sc)
+        for candidate, value in entry["calibration"].items():
+            calibrations[(sc, int(candidate))] = calibration_from_json(value)
+    return scenarios, calibrations
+
+
+def context_of(
+    fixation: Mapping[str, Any],
+    ref: Mapping[str, str],
+    vectors: Sequence[Vector],
+    slopes: Mapping[str, tuple[float, float]],
+) -> Context:
+    """The run's context from the fixation's content, its reference and the inputs' vectors."""
+    scenarios, calibrations = fixation_contents(fixation)
+    setup = Setup(vectors=tuple(vectors), slopes=slopes, calibrations=calibrations,
+                  M=_decisions.COVERAGE_RUNS, levels=LEVELS,
+                  validation_blocks=VALIDATION_BLOCKS[0])  # fmt: skip
+    return Context(dict(fixation), dict(ref), setup, tuple(scenarios))
+
+
+def load_context(repo: str | Path) -> Context:
+    """The committed fixation of the checkout ``repo`` (``read_fixation``: committed once,
+    alone and unchanged, in HEAD's history) with its inputs record, whose sha256 must be the
+    one it pinned. ``ValueError`` naming the problem."""
+    from .study3_seed_vectors import read_inputs
+
+    repo = Path(repo)
+    found = read_fixation(SIMULATION_FIXATION, repo)
+    fixation = found["fixation"]
+    pinned = fixation["inputs"]
+    vectors, slopes, sha = read_inputs(repo / pinned["path"])
+    if sha != pinned["sha256"]:
+        raise ValueError(f"{pinned['path']} has sha256 {sha}, not the fixation's "
+                         f"{pinned['sha256']}")  # fmt: skip
+    ref = {"path": SIMULATION_FIXATION, "sha256": found["sha256"], "commit": found["commit"]}
+    return context_of(fixation, ref, vectors, slopes)
+
+
+# -- the workers
+
+_WORKER: dict[str, Any] = {}  # in a worker (or this process, for one worker): the context
+
+
+def _install(context: Context | None, moments: Mapping[tuple, tuple[float, float]] | None) -> None:
+    """A worker's start: the run's context, and the truths' moments known already."""
+    _WORKER.clear()
+    _WORKER["context"] = context
+    if moments:
+        _MOMENTS.update(moments)
+
+
+class Workers:
+    """``workers`` processes (spawn, single-threaded BLAS: the parallelism is the processes'),
+    each holding ``context`` and the ``moments`` given; for one worker, this process. ``imap``
+    runs a task per item in any order of completion, ``map`` in order: nothing a task returns
+    depends on which process ran it."""
+
+    def __init__(self, workers: int, context: Context | None = None,
+                 moments: Mapping[tuple, tuple[float, float]] | None = None) -> None:  # fmt: skip
+        if not (_integer(workers) and workers >= 1):
+            raise ValueError(f"workers {workers!r} is not a positive integer")
+        self.workers, self.context, self.moments = int(workers), context, moments
+        self._pool = None
+        self._saved: dict[str, Any] = {}
+
+    def __enter__(self) -> Workers:
+        if self.workers == 1:
+            self._saved = dict(_WORKER)
+            _install(self.context, self.moments)
+            return self
+        import multiprocessing as mp
+        import os
+
+        saved = {name: os.environ.get(name) for name in THREAD_VARIABLES}
+        os.environ.update(dict.fromkeys(THREAD_VARIABLES, "1"))
+        try:
+            self._pool = mp.get_context("spawn").Pool(
+                self.workers, initializer=_install, initargs=(self.context, self.moments)
+            )
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        return self
+
+    def __exit__(self, kind, value, traceback) -> None:
+        if self._pool is None:
+            _WORKER.clear()
+            _WORKER.update(self._saved)
+            return
+        if kind is None:
+            self._pool.close()
+        else:
+            self._pool.terminate()
+        self._pool.join()
+        self._pool = None
+
+    def imap(self, fn: Callable, items: Sequence) -> Iterable:
+        if self._pool is None:
+            return map(fn, items)
+        return self._pool.imap_unordered(fn, items)
+
+    def map(self, fn: Callable, items: Sequence) -> list:
+        if self._pool is None:
+            return list(map(fn, items))
+        chunk = max(1, len(items) // (4 * self.workers))
+        return self._pool.map(fn, items, chunksize=chunk)
+
+
+def _json_bytes(data: Any) -> bytes:
+    return (json.dumps(data, allow_nan=False, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n").encode("utf-8")  # fmt: skip
+
+
+def _write_once(path: Path, data: Any) -> None:
+    """``data`` as JSON at ``path``, whole and once (``study3_decisions._publish``)."""
+    from .study3_decisions import DecisionRefused, _publish
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _publish(path, _json_bytes(data))
+    except DecisionRefused as exc:
+        raise SimulationError(f"{path} exists: a simulation file is written once") from exc
+
+
+# -- the parts
+
+
+def _gate_row(scenario: Scenario, setup: Setup, unit: Unit, index: int) -> dict[str, Any]:
+    """A gate study: its validation's A–F and P–F gates and its A–F-supported blocks, at 28
+    blocks (the gate) and at 40 (reported), on one selection."""
+    row: dict[str, Any] = {"index": index}
+    for size in VALIDATION_BLOCKS:
+        o = simulate_study(scenario, replace(setup, validation_blocks=size), unit.base, index,
+                           resamples=unit.resamples, levels=unit.levels,
+                           validation_only=True)  # fmt: skip
+        row[str(size)] = {"AF": bool(o.gates["AF"]), "PF": bool(o.gates["PF"]), "m": o.m}
+    return row
+
+
+def run_unit(args: tuple[Unit, Path, Mapping[str, str], str]) -> Path:
+    """The worker's entry: the ``count`` studies of the unit, each a pure function of (stream,
+    scenario, index), published once as a part with its header. The worker holds the run's
+    context (``Workers``), which must be the unit's fixation's."""
+    unit, runs_root, fixation_ref, commit = args
+    context = _WORKER.get("context")
+    if context is None or dict(context.ref) != dict(fixation_ref):
+        raise SimulationError("the worker holds no context of the unit's fixation")
+    scenario = context.scenario(unit.scenario)
+    setup = replace(context.setup, validation_blocks=unit.validation_blocks)
+    rows = []
+    for index in range(unit.first, unit.first + unit.count):
+        if unit.phase == "gates":
+            rows.append(_gate_row(scenario, setup, unit, index))
+            continue
+        o = simulate_study(scenario, setup, unit.base, index, mode=unit.mode,
+                           resamples=unit.resamples, levels=unit.levels,
+                           n_floor=unit.n_floor)  # fmt: skip
+        rows.append(outcome_json(o))
+    path = part_path(runs_root, unit.phase, unit.scenario, unit.first)
+    _write_once(path, {"header": header(unit, fixation_ref, commit), "rows": rows})
+    return path
+
+
+def _read_part(path: Path) -> tuple[dict[str, Any], list[Any]]:
+    """A part's header and rows (``ValueError`` for a file that is not one)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"unreadable ({type(exc).__name__})") from exc
+    if not (isinstance(data, dict) and set(data) == {"header", "rows"}):
+        raise ValueError("not a header and rows")
+    head, rows = data["header"], data["rows"]
+    names = set(header(Unit("gates", "x", 0, 1, 0, 1, LEVELS, 28, MIN_N), {}, ""))
+    if not (isinstance(head, dict) and set(head) == names and head["kind"] == PART_KIND):
+        raise ValueError("its header is not a part's")
+    if not (isinstance(rows, list) and len(rows) == head["count"] and all(
+            isinstance(r, dict) and r.get("index") == head["first"] + i
+            for i, r in enumerate(rows))):  # fmt: skip
+        raise ValueError("its rows are not its studies, in order")
+    return head, rows
+
+
+def existing_parts(
+    runs_root: str | Path, phase: str, fixation_ref: Mapping[str, str], commit: str
+) -> tuple[dict[tuple[str, int], Path], list[str]]:
+    """The parts of ``phase`` under the runs directory, by (scenario, first), and the problems:
+    a file that is no part, a part that is malformed or names another place, or one of another
+    fixation or another commit (each named)."""
+    folder = simulation_dir(runs_root) / "parts" / phase
+    found: dict[tuple[str, int], Path] = {}
+    problems: list[str] = []
+    if not folder.exists():
+        return found, problems
+    for path in sorted(folder.rglob("*")):
+        if path.is_dir() or path.name.startswith("."):
+            continue  # a folder, or a part being written (``_publish``'s temporary file)
+        place = path.relative_to(folder).parts
+        if len(place) != 2 or not _PART_NAME.fullmatch(place[1]):
+            problems.append(f"{path} is not a part of the simulation")
+            continue
+        try:
+            head, _ = _read_part(path)
+        except ValueError as exc:
+            problems.append(f"{path} is a malformed part ({exc})")
+            continue
+        if (head["phase"], head["scenario"], head["first"]) != (phase, place[0],
+                                                                int(path.stem)):  # fmt: skip
+            problems.append(f"{path} is a malformed part (its header names another place)")
+        elif head["fixation"] != dict(fixation_ref):
+            problems.append(
+                f"{path} is a part of another fixation "
+                f"({head['fixation'].get('sha256')}, not {fixation_ref['sha256']})"
+            )
+        elif head["commit"] != commit:
+            problems.append(f"{path} is a part of another commit ({head['commit']}, not "
+                            f"{commit})")  # fmt: skip
+        else:
+            found[(place[0], head["first"])] = path
+    return found, problems
+
+
+def part_problems(runs_root: str | Path, fixation_ref: Mapping[str, str], commit: str) -> list[str]:
+    """``existing_parts``' problems over every phase's folder (a folder that is no phase
+    included)."""
+    folder = simulation_dir(runs_root) / "parts"
+    problems: list[str] = []
+    if not folder.exists():
+        return problems
+    for phase in sorted(p.name for p in folder.iterdir() if not p.name.startswith(".")):
+        if not _phase_ok(phase) or not (folder / phase).is_dir():
+            problems.append(f"{folder / phase} is no phase of the simulation")
+            continue
+        problems += existing_parts(runs_root, phase, fixation_ref, commit)[1]
+    return problems
+
+
+def execute(
+    units: Sequence[Unit],
+    runs_root: str | Path,
+    fixation_ref: Mapping[str, str],
+    commit: str,
+    *,
+    workers: int = 1,
+    context: Context | None = None,
+    pool: Workers | None = None,
+) -> None:
+    """The units' parts, each written once: those already written with the unit's header are
+    kept (a resumed run), one with another header is refused by name. ``pool``: the run's
+    ``Workers``; otherwise ``workers`` processes holding ``context``. The order in which the
+    parts finish does not matter."""
+    runs_root = Path(runs_root)
+    todo = []
+    for unit in units:
+        path = part_path(runs_root, unit.phase, unit.scenario, unit.first)
+        if not path.exists():
+            todo.append(unit)
+            continue
+        try:
+            head, _ = _read_part(path)
+        except ValueError as exc:
+            raise SimulationError(f"{path} is a malformed part ({exc})") from exc
+        if head != header(unit, fixation_ref, commit):
+            raise SimulationError(f"{path} is a part of another run: its header is not the "
+                                  "unit's")  # fmt: skip
+    if not todo:
+        return
+    tasks = [(unit, runs_root, dict(fixation_ref), commit) for unit in todo]
+    if pool is None:
+        with Workers(workers, context) as own:
+            for _ in own.imap(run_unit, tasks):
+                pass
+        return
+    for _ in pool.imap(run_unit, tasks):
+        pass
+
+
+# -- the scheduling: per scenario, parts in index order, never past the bound
+
+
+def _prefix(runs_root: Path, context: Context, commit: str, unit: Unit, bound: int,
+            cache: dict[Path, list]) -> list:  # fmt: skip
+    """The rows of the scenario's contiguous finished parts from index 0 (as read back from
+    them), each part's header the unit's at its place."""
+    rows: list = []
+    first = 0
+    while first < bound:
+        here = replace(unit, first=first, count=min(UNIT, bound - first))
+        path = part_path(runs_root, here.phase, here.scenario, first)
+        if path not in cache:
+            if not path.exists():
+                break
+            try:
+                head, raw = _read_part(path)
+            except ValueError as exc:
+                raise SimulationError(f"{path} is a malformed part ({exc})") from exc
+            if head != header(here, context.ref, commit):
+                raise SimulationError(f"{path} is a part of another run: its header is not "
+                                      "the unit's at its place")  # fmt: skip
+            cache[path] = raw if here.phase == "gates" else [outcome_from_json(r) for r in raw]
+        rows += cache[path]
+        first += here.count
+    return rows
+
+
+def _phase(pool: Workers | None, runs_root: Path, context: Context, commit: str,
+           units: Mapping[str, Unit], bound: int,
+           short: Callable[[str, list], int]) -> dict[str, list]:  # fmt: skip
+    """The rows of each scenario's studies in one phase: parts issued in index order while the
+    contiguous finished prefix leaves some test short (``short``: the most studies a test of the
+    scenario still needs), never past ``bound``. Without ``pool`` nothing is drawn: a phase
+    still short below its bound is unfinished. The rows are read back from the parts."""
+    cache: dict[Path, list] = {}
+    while True:
+        rows, todo = {}, []
+        for name, template in units.items():
+            rows[name] = found = _prefix(runs_root, context, commit, template, bound, cache)
+            need = short(name, found)
+            if need <= 0 or len(found) >= bound:
+                continue
+            for first in range(len(found), min(len(found) + need, bound), UNIT):
+                path = part_path(runs_root, template.phase, name, first)
+                if not path.exists():
+                    todo.append(replace(template, first=first, count=min(UNIT, bound - first)))
+        if not todo:
+            return rows
+        if pool is None:
+            raise SimulationError(f"the {next(iter(units.values())).phase} is unfinished: "
+                                  f"{len(todo)} parts are missing")  # fmt: skip
+        execute(todo, runs_root, context.ref, commit, pool=pool)
+
+
+def first_confirmed(rows: Iterable[StudyOutcome], m: int, level: float) -> list[StudyOutcome]:
+    """The first ``m`` studies by index confirmed at ``level`` (the A–F gate passed and the
+    level's cap within the reserved seeds)."""
+    return _first(rows, m, lambda o: bool(o.confirmed.get(level)))
+
+
+def _first(rows: Iterable[StudyOutcome], m: int, keep: Callable[[StudyOutcome], bool]) -> list:
+    out = []
+    for o in sorted(rows, key=lambda o: o.index):
+        if keep(o):
+            out.append(o)
+            if len(out) == m:
+                break
+    return out
+
+
+def _drawn(used: Sequence, rows: Sequence, m: int, bound: int) -> int:
+    """The studies drawn for a test: through its m-th study, or the bound for one short of m
+    (which the rows must reach)."""
+    if len(used) == m:
+        return used[-1].index + 1
+    if len(rows) < bound:
+        raise SimulationError("a test short of M before the bound: the phase is unfinished")
+    return bound
+
+
+def order_statistic(values: Sequence[float], q: Fraction | float) -> float:
+    """The type-1 order statistic at probability q: the value of zero-based rank ⌈n·q⌉ − 1 among
+    the sorted values (``study3_inference.tail_ranks``' rule), in exact arithmetic."""
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("no value")
+    exact = q if isinstance(q, Fraction) else Fraction(str(q))  # 0.1 as written, not in binary
+    rank = math.ceil(len(ordered) * exact) - 1
+    return ordered[min(max(rank, 0), len(ordered) - 1)]
+
+
+def _test_row(identity: Sequence, level: float, used: Sequence[StudyOutcome], draws: int,
+              m: int, j: int) -> dict[str, Any]:  # fmt: skip
+    """One test's row (results.json's "tests"): X the misses among its M studies."""
+    _, _, point, _, comparison = identity
+    p0 = _decisions.P0[comparison]
+    c = coverage_threshold(j, m, p0)
+    row = {"test": list(identity), "level": level, "due": True, "p0": p0, "studies": len(used),
+           "draws": draws, "reason": None, "X": None, "c": c, "passed": False, "rate": None,
+           "interval": None}  # fmt: skip
+    if len(used) < m:
+        row["reason"] = _decisions.NOT_ATTAINABLE
+        return row
+    key = (point, level, comparison)
+    if any(o.covered.get(key) is None for o in used):
+        raise SimulationError(f"test {list(identity)}: a study it counts has no coverage flag")
+    x = sum(not o.covered[key] for o in used)
+    row.update(X=x, passed=x <= c, rate=x / m, interval=_decisions.clopper_pearson(x, m))
+    return row
+
+
+def _not_due(identity: Sequence) -> dict[str, Any]:
+    p0 = _decisions.P0[identity[4]]
+    return {"test": list(identity), "level": None, "due": False, "p0": p0, "studies": None,
+            "draws": None, "reason": None, "X": None, "c": None, "passed": None, "rate": None,
+            "interval": None}  # fmt: skip
+
+
+def selected_level(rows: Sequence[Mapping[str, Any]], j: int, m: int) -> float | None:
+    """L, the first level whose calibration tests all pass, recomputed from each row's X (not
+    attainable: X = M) and c = ``coverage_threshold(J, M, p₀)``; None when no level passes."""
+    for level in LEVELS:
+        mine = [r for r in rows if r["test"][0] == "calibration"
+                and r["test"][3] == level_slot(level)]  # fmt: skip
+        if mine and all(
+            type(r.get("X")) is int and r.get("studies") == m
+            and r["X"] <= coverage_threshold(j, m, _decisions.P0[r["test"][4]])
+            for r in mine
+        ):  # fmt: skip
+            return level
+    return None
+
+
+def _direction_counts(rows: Sequence[StudyOutcome], scenario: Scenario, comparison: str,
+                      level: float, m: int, bound: int) -> dict[str, int]:  # fmt: skip
+    """A power scenario's correct-direction count at ``level`` over its first M confirmed
+    studies (the sign of its Δ; the missing studies of a test short at the bound detect
+    nothing), its studies and draws."""
+    delta = scenario.delta_af_pp if comparison == "A-F" else scenario.delta_pf_pp
+    want = "positive" if delta > 0 else "negative"
+    used = first_confirmed(rows, m, level)
+    correct = sum(o.direction.get((level, comparison)) == want for o in used)
+    return {"correct": correct, "studies": len(used), "draws": _drawn(used, rows, m, bound)}
+
+
+def _gate_counts(context: Context, rows: Mapping[str, list], m: int) -> tuple[dict, int]:
+    """The gates' passes over their M studies (``safe_pass_rate``: the safe alternative's;
+    ``empirical_pass_rate``: study 2's empirical point; each the A–F gate at 28 blocks) and the
+    validation size: 28 when the pass rate at the safe alternative reaches 0.95, else 40."""
+    out = {}
+    for name, utility in (("safe_pass_rate", "safe"), ("empirical_pass_rate", "empirical")):
+        found = [sc for sc in context.of("gate") if sc.utility == utility]
+        if len(found) != 1:
+            raise SimulationError(f"the fixation needs one gate scenario of the {utility} "
+                                  "utility")  # fmt: skip
+        studies = rows[found[0].name][:m]
+        out[name] = {"passed": sum(r["28"]["AF"] for r in studies), "studies": m,
+                     "validation_blocks": VALIDATION_BLOCKS[0]}  # fmt: skip
+    rate = out["safe_pass_rate"]["passed"] / m
+    required = _decisions.REQUIRED_GATES["safe_pass_rate"]
+    return out, VALIDATION_BLOCKS[0] if rate >= required else VALIDATION_BLOCKS[1]
+
+
+def _screen_short(m: int, levels: Sequence[float]) -> Callable[[str, list], int]:
+    return lambda _, rows: max(m - sum(bool(o.confirmed.get(lv)) for o in rows) for lv in levels)
+
+
+def _screen(runs_root: Path, context: Context, commit: str,
+            pool: Workers | None) -> dict[str, Any]:  # fmt: skip
+    """The gates, the screen and the n_min scan (§"Simulation before validation"), drawn
+    through ``pool`` where parts are missing, and their summary from the parts read back
+    (``screen.json``)."""
+    fixation, d = context.fixation, _decisions
+    m, j = d.COVERAGE_RUNS, fixation["J"]
+    bound, base = d.MAX_DRAWS_FACTOR * m, fixation["streams"]["calibration"]
+
+    def units(phase: str, scenarios: Sequence[Scenario], levels: Sequence[float], blocks: int,
+              n_floor: int) -> dict[str, Unit]:  # fmt: skip
+        return {sc.name: Unit(phase, sc.name, 0, 1, base, SCREEN_RESAMPLES, tuple(levels),
+                              blocks, n_floor) for sc in scenarios}  # fmt: skip
+
+    gate_rows = _phase(pool, runs_root, context, commit,
+                       units("gates", context.of("gate"), LEVELS, 28, MIN_N), m,
+                       lambda _, rows: m - len(rows))  # fmt: skip
+    gates, blocks = _gate_counts(context, gate_rows, m)
+    screened = context.of("coverage", "coverage_power", "power")
+    rows = _phase(pool, runs_root, context, commit,
+                  units("screen", screened, LEVELS, blocks, MIN_N), bound,
+                  _screen_short(m, LEVELS))  # fmt: skip
+    tests = []
+    for identity in fixation["tests"]["list"]:
+        if identity[0] != "calibration":
+            continue
+        level = float(identity[3])
+        used = first_confirmed(rows[identity[1]], m, level)
+        tests.append(_test_row(identity, level, used, _drawn(used, rows[identity[1]], m, bound),
+                               m, j))  # fmt: skip
+    selected = selected_level(tests, j, m)
+    power_scenarios = context.of("coverage_power", "power")
+    power = {c: {level_slot(lv): {sc.name: _direction_counts(rows[sc.name], sc, c, lv, m, bound)
+                                  for sc in power_scenarios} for lv in LEVELS}
+             for c in COMPARISONS}  # fmt: skip
+    at = d.POWER_LEVEL if selected is None else selected
+    scan = []
+    by = power["A-F"][level_slot(at)]
+    if min(c["correct"] for c in by.values()) / m < d.POWER_REQUIRED:
+        reserved = len(SEEDS["confirmation"][1])
+        n = MIN_N
+        while True:
+            found = _phase(pool, runs_root, context, commit,
+                           units(f"scan-{n}", power_scenarios, (at,), blocks, n), bound,
+                           _screen_short(m, (at,)))  # fmt: skip
+            counts = {}
+            for sc in power_scenarios:
+                c = _direction_counts(found[sc.name], sc, "A-F", at, m, bound)
+                counts[sc.name] = {"correct": c["correct"], "studies": c["studies"]}
+            scan.append({"n": n, "by_scenario": counts})
+            reached = min(c["correct"] for c in counts.values()) / m >= d.POWER_REQUIRED
+            if reached or cap_of(n) > reserved:
+                break
+            n += 1
+    reported = {sc.name: _reported_gate(context, sc, gate_rows[sc.name][:m], m)
+                for sc in context.of("gate")}  # fmt: skip
+    for sc in screened:
+        reported[sc.name] = _reported_screen(context, sc, rows[sc.name], m, bound, blocks)
+    return {
+        "kind": SCREEN_KIND,
+        "fixation": dict(context.ref),
+        "commit": commit,
+        "M": m,
+        "J": j,
+        "streams": dict(fixation["streams"]),
+        "resamples": SCREEN_RESAMPLES,
+        "validation_blocks": blocks,
+        "level": selected,
+        "tests": tests,
+        "gates": {
+            **gates,
+            "power": power,
+            "n_scan": scan,
+            "scan_level": at if scan else None,
+        },  # fmt: skip
+        "reported": reported,
+    }
+
+
+def _reported_gate(context: Context, scenario: Scenario, rows: Sequence[dict],
+                   m: int) -> dict[str, Any]:  # fmt: skip
+    """A gate scenario's descriptive figures: its 40-block pass rate, the P–F gate's rate, the
+    realized A–F support (M7) and, for study 2's empirical point, its utility at K* (M11)."""
+    cal = context.calibration(scenario)
+    blocks = VALIDATION_BLOCKS[0]
+    out = {
+        "attempted": m,
+        "pass_rate_40": sum(r["40"]["AF"] for r in rows) / m,
+        "pf_gate_rate": sum(r["28"]["PF"] for r in rows) / m,
+        "support": {"target": scenario.support,
+                    "realized": sum(r["28"]["m"] for r in rows) / (m * blocks),
+                    "failure": cal.failure, "flagged": cal.support_flagged},
+    }  # fmt: skip
+    if scenario.utility == "empirical":
+        kstar_ln = math.log(CANDIDATES[scenario.candidate]["targets"]["star"])
+        vectors, slopes = context.setup.vectors, context.setup.slopes
+        out["utility_at_kstar"] = {
+            arm: {name: float(np.mean([v.losses(arm, kstar_ln, slopes)[k] for v in vectors]))
+                  for k, name in enumerate(("mmlu_loss_pp", "factual_loss_pp"))}
+            for arm in ("F", "P")
+        }  # fmt: skip
+    return out
+
+
+def _reported_screen(context: Context, scenario: Scenario, rows: Sequence[StudyOutcome], m: int,
+                     bound: int, blocks: int) -> dict[str, Any]:  # fmt: skip
+    """A screened scenario's descriptive figures over the studies its tests drew
+    (``attempted``): confirmed per level, unconfirmed per reason (a study counted once per
+    reason), and over each level's M confirmed studies N above 90, the blocks' type-1 quantiles
+    and the utility claim's rate; the P–F gate's rate; the calibration's attained spreads; the
+    truths' range (pp); the support (M7)."""
+    cal = context.calibration(scenario)
+    used = {lv: first_confirmed(rows, m, lv) for lv in LEVELS}
+    attempted = max(_drawn(used[lv], rows, m, bound) for lv in LEVELS)
+    seen = sorted(rows, key=lambda o: o.index)[:attempted]
+    reasons = Counter(r for o in seen for r in sorted({w for w in o.why.values() if w}))
+    truths = {c: [100 * o.truth[c] for o in seen if any(o.confirmed.values())
+                  and o.truth.get(c) is not None] for c in COMPARISONS}  # fmt: skip
+
+    def quantiles(values: list[int]) -> dict[str, int] | None:
+        return {k: order_statistic(values, q) for k, q in QUANTILES.items()} if values else None
+
+    def share(values: list[bool]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    return {
+        "attempted": attempted,
+        "confirmed": {level_slot(lv): sum(bool(o.confirmed[lv]) for o in seen) for lv in LEVELS},
+        "unconfirmed": dict(sorted(reasons.items())),
+        "n_above_90": {level_slot(lv): sum(o.N[lv] > _decisions.BUDGET_ABOVE for o in used[lv])
+                       for lv in LEVELS},  # fmt: skip
+        "blocks": {level_slot(lv): quantiles([o.blocks[lv] for o in used[lv]]) for lv in LEVELS},
+        "pf_gate_rate": sum(bool(o.gates["PF"]) for o in seen) / len(seen),
+        "attained_sd_pp": {"A-F": cal.attained_af_pp, "P-F": cal.attained_pf_pp},
+        "truth_range_pp": {c: [min(v), max(v)] if v else None for c, v in truths.items()},
+        "utility_claim_rate": {level_slot(lv): share([o.utility_claim.get((lv, "A-F")) is True
+                                                      for o in used[lv]]) for lv in LEVELS},
+        "support": {"target": scenario.support,
+                    "realized": sum(o.m for o in seen) / (len(seen) * blocks),
+                    "failure": cal.failure, "flagged": cal.support_flagged},
+    }  # fmt: skip
+
+
+def _seeded_moments(context: Context) -> dict[tuple, tuple[float, float]]:
+    """The truths' moments this process holds at a jitter scenario's frozen calibration (the
+    calibration's recomputation leaves them): every worker starts with them."""
+    wanted = set()
+    for (sc, candidate), cal in context.setup.calibrations.items():
+        if sc.jitter:
+            kstar_ln = math.log(CANDIDATES[candidate]["targets"]["star"])
+            for arm in ARM_ORDER:
+                model = (sc.curvature_scale, sc.shape, sc.judge, sc.missing, sc.missing_rate)
+                wanted.add((arm, *model, cal.sigma(arm), cal.offset(arm), kstar_ln))
+    return {k: v for k, v in _MOMENTS.items()
+            if k[5] and (k[2], *k[6:11], k[11], k[12], k[13]) in wanted}  # fmt: skip
+
+
+def run_screen(context: Context, runs_root: str | Path, commit: str, *, workers: int) -> Path:
+    """§"Simulation before validation", the run's steps 1–3: the gates (G1, G2: M validations
+    each), the screen (C01–C17, P18, P19 at the validation size, four levels, 2 000 resamples,
+    ``"screen"`` mode, the first M confirmed studies by index per test, never past 4·M draws)
+    and the n_min scan when ``power_af`` is short; parts are written as they finish, a run
+    interrupted resumes from them on the same streams, and ``screen.json`` is the summary of the
+    parts read back, written once. ``SimulationError``: ``screen.json`` exists, or a part of
+    another fixation or commit (named)."""
+    runs_root = Path(runs_root)
+    path = screen_path(runs_root)
+    if path.exists():
+        raise SimulationError(f"{path} exists: the screen is written once")
+    problems = part_problems(runs_root, context.ref, commit)
+    if problems:
+        raise SimulationError("; ".join(problems))
+    with Workers(workers, context, _seeded_moments(context)) as pool:
+        _screen(runs_root, context, commit, pool)
+    _write_once(path, _screen(runs_root, context, commit, None))
+    return path
+
+
+def screen_summary(runs_root: str | Path, context: Context, commit: str) -> dict[str, Any]:
+    """``screen.json``'s content from the parts as they are (nothing drawn): the X of every
+    calibration identity, the gates' counts, the powers at every level, the scan and the
+    reported figures. ``SimulationError`` when a phase is unfinished."""
+    return _screen(Path(runs_root), context, commit, None)
+
+
+def read_screen(runs_root: str | Path, context: Context, commit: str | None = None) -> dict:
+    """``screen.json`` of this fixation (and of ``commit``, when given)."""
+    path = screen_path(runs_root)
+    try:
+        screen = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SimulationError(f"{path} cannot be read ({type(exc).__name__}): the screen "
+                              "runs first") from exc  # fmt: skip
+    if not isinstance(screen, dict) or screen.get("kind") != SCREEN_KIND:
+        raise SimulationError(f"{path} is not the screen's summary")
+    if screen.get("fixation") != dict(context.ref):
+        raise SimulationError(f"{path} is of another fixation ({screen.get('fixation')})")
+    if commit is not None and screen.get("commit") != commit:
+        raise SimulationError(f"{path} is of another commit ({screen.get('commit')}, not "
+                              f"{commit})")  # fmt: skip
+    return screen
+
+
+def _verification_floor(screen: Mapping[str, Any]) -> int:
+    """N's floor in the verification: ``n_min`` when the screen found the power short (the last
+    n of its scan), else 60."""
+    scan = screen["gates"]["n_scan"]
+    return scan[-1]["n"] if scan else MIN_N
+
+
+def _verification(runs_root: Path, context: Context, commit: str, screen: Mapping[str, Any],
+                  pool: Workers | None) -> dict[str, Any]:  # fmt: skip
+    """The binding verification (§"Simulation before validation", "Fidelity"): C01–C17 in
+    ``"procedure"`` mode at L, 100 000 resamples, the realized route (candidate 1, then 2),
+    N at least ``n_min`` when the power was short, P–F where its gate passed, the attained N and
+    caps; per test the first M studies by index (A–F and the joint test: confirmed at L; P–F:
+    confirmed with P–F active), never past 4·M draws. Its summary (``verification.json``)."""
+    fixation, d = context.fixation, _decisions
+    m, j = d.COVERAGE_RUNS, fixation["J"]
+    bound, base = d.MAX_DRAWS_FACTOR * m, fixation["streams"]["verification"]
+    level = selected_level(screen["tests"], j, m)
+    if level is None:
+        raise SimulationError("no level passed the screen: the verification is not due")
+    floor, blocks = _verification_floor(screen), screen["validation_blocks"]
+    coverage = context.of("coverage", "coverage_power")
+
+    def pf(o: StudyOutcome) -> bool:
+        return bool(o.confirmed.get(level)) and "P-F" in o.active
+
+    def short(_: str, rows: list) -> int:
+        return max(m - sum(bool(o.confirmed.get(level)) for o in rows), m - sum(map(pf, rows)))
+
+    units = {sc.name: Unit("verification", sc.name, 0, 1, base, VERIFICATION_RESAMPLES, (level,),
+                           blocks, floor) for sc in coverage}  # fmt: skip
+    rows = _phase(pool, runs_root, context, commit, units, bound, short)
+    tests = []
+    for identity in fixation["tests"]["list"]:
+        if identity[0] != "verification":
+            continue
+        found = rows[identity[1]]
+        used = (_first(found, m, pf) if identity[4] == "P-F"
+                else first_confirmed(found, m, level))  # fmt: skip
+        tests.append(_test_row(identity, level, used, _drawn(used, found, m, bound), m, j))
+    return {
+        "kind": VERIFICATION_KIND,
+        "fixation": dict(context.ref),
+        "commit": commit,
+        "M": m,
+        "J": j,
+        "level": level,
+        "n_floor": floor,
+        "validation_blocks": blocks,
+        "resamples": VERIFICATION_RESAMPLES,
+        "tests": tests,
+    }
+
+
+def _warmed_moments(runs_root: Path, context: Context, commit: str,
+                    workers: Workers) -> dict[tuple, tuple[float, float]]:  # fmt: skip
+    """The truths' moments at a jitter scenario's frozen calibration for every pair of rates
+    its screened studies selected, computed over the workers (the verification's studies select
+    from the same distribution), with those this process holds."""
+    found = _seeded_moments(context)
+    tasks = []
+    for sc in context.of("coverage", "coverage_power"):
+        if not sc.jitter:
+            continue
+        template = Unit("screen", sc.name, 0, 1, context.fixation["streams"]["calibration"],
+                        SCREEN_RESAMPLES, LEVELS, VALIDATION_BLOCKS[0], MIN_N)  # fmt: skip
+        try:
+            head = _read_part(part_path(runs_root, "screen", sc.name, 0))[0]
+            template = replace(template, validation_blocks=head["validation_blocks"])
+            rows = _prefix(runs_root, context, commit, template,
+                           _decisions.MAX_DRAWS_FACTOR * _decisions.COVERAGE_RUNS, {})  # fmt: skip
+        except (OSError, ValueError, SimulationError):
+            continue
+        pairs = {(c, arm, (r["l"], r["u"])) for o in rows for c, rates in o.rates.items()
+                 for arm, r in rates.items()}  # fmt: skip
+        for c, arm, pair in sorted(pairs):
+            cal = context.setup.calibrations.get((sc, c))
+            if cal is None:
+                continue
+            kstar_ln = math.log(CANDIDATES[c]["targets"]["star"])
+            for v in _shifted(context.setup.vectors, cal):
+                tasks.append((v, arm, {"l": pair[0], "u": pair[1]}, sc, cal,
+                              context.setup.slopes, kstar_ln))  # fmt: skip
+    for key, value in zip(map(_moment_key_of, tasks), workers.map(_moment_task, tasks),
+                          strict=True):  # fmt: skip
+        found[key] = value
+    return found
+
+
+def _moment_key_of(task: tuple) -> tuple:
+    vector, arm, rates, scenario, calibration, slopes, kstar_ln = task
+    return _moment_key(vector, arm, rates, scenario, calibration, slopes, kstar_ln, TOLERANCE,
+                       MAX_NODES)  # fmt: skip
+
+
+def _moment_task(task: tuple) -> tuple[float, float]:
+    vector, arm, rates, scenario, calibration, slopes, kstar_ln = task
+    return _arm_moments(vector, arm, rates, scenario, calibration, slopes, kstar_ln,
+                        tol=TOLERANCE, max_nodes=MAX_NODES)  # fmt: skip
+
+
+def run_verification(context: Context, runs_root: str | Path, commit: str, *,
+                     workers: int) -> Path:  # fmt: skip
+    """The run's step 4 (``_verification``), after the screen of this fixation and commit, on
+    the verification stream; written once (``verification.json``), never rerolled.
+    ``SimulationError``: no screen of this fixation and commit, no L (not due),
+    ``verification.json`` present, or a part of another fixation or commit."""
+    runs_root = Path(runs_root)
+    path = verification_path(runs_root)
+    if path.exists():
+        raise SimulationError(f"{path} exists: the verification is never rerolled")
+    screen = read_screen(runs_root, context, commit)
+    if selected_level(screen["tests"], context.fixation["J"], _decisions.COVERAGE_RUNS) is None:
+        raise SimulationError("no level passed the screen: the verification is not due")
+    problems = part_problems(runs_root, context.ref, commit)
+    if problems:
+        raise SimulationError("; ".join(problems))
+    with Workers(workers, context) as first:
+        moments = _warmed_moments(runs_root, context, commit, first)
+    with Workers(workers, context, moments) as pool:
+        _verification(runs_root, context, commit, screen, pool)
+    _write_once(path, _verification(runs_root, context, commit, screen, None))
+    return path
+
+
+def verification_summary(runs_root: str | Path, context: Context, commit: str) -> dict[str, Any]:
+    """``verification.json``'s content from the parts as they are (nothing drawn), at the L of
+    this fixation's and commit's screen."""
+    screen = read_screen(runs_root, context, commit)
+    return _verification(Path(runs_root), context, commit, screen, None)
+
+
+def results_record(screen: Mapping[str, Any], verification: Mapping[str, Any] | None,
+                   context: Context, code: Mapping[str, str], *,
+                   written_at: str) -> dict[str, Any]:  # fmt: skip
+    """``results.json`` (§"The results file"), from the screen's and the verification's
+    summaries as they are: the rows of the calibration tests, then those of the verification
+    (each not due when no level passed), in the fixation's order; the gates (the powers at L, or
+    0.975 without one; the scan; the detection powers at J) and the reported figures.
+    ``written_at`` is given (the code commit's time, so that a resumed run's results are an
+    uninterrupted one's, byte for byte). ``SimulationError`` for summaries of another fixation
+    or commit, or a verification missing at L."""
+    d, fixation = _decisions, context.fixation
+    m, j = d.COVERAGE_RUNS, fixation["J"]
+    for name, found in (("screen", screen), ("verification", verification)):
+        if found is None:
+            continue
+        if found.get("fixation") != dict(context.ref) or found.get("commit") != code["commit"]:
+            raise SimulationError(f"the {name} is of another fixation or commit than "
+                                  f"{code['commit']}")  # fmt: skip
+    level = selected_level(screen["tests"], j, m)
+    rows = list(screen["tests"])
+    if level is None:
+        rows += [_not_due(i) for i in fixation["tests"]["list"] if i[0] == "verification"]
+    elif verification is None or verification.get("level") != level:
+        raise SimulationError(f"level {level} passed the screen: its verification is due")
+    else:
+        rows += list(verification["tests"])
+    at = d.POWER_LEVEL if level is None else level
+    power = screen["gates"]["power"]
+    gates = {
+        "safe_pass_rate": screen["gates"]["safe_pass_rate"],
+        "empirical_pass_rate": screen["gates"]["empirical_pass_rate"],
+        "power_af": {"level": at, "by_scenario": power["A-F"][level_slot(at)]},
+        "power_pf": {"level": at, "by_scenario": power["P-F"][level_slot(at)]},
+        "n_scan": screen["gates"]["n_scan"],
+        "detection_power": d.detection_power(j, m),
+    }
+    return {
+        "kind": RESULTS_KIND,
+        "written_at": written_at,
+        "fixation": dict(context.ref),
+        "code": dict(code),
+        "M": m,
+        "J": j,
+        "streams": dict(fixation["streams"]),
+        "resamples": dict(fixation["resamples"]),
+        "validation_blocks": screen["validation_blocks"],
+        d.SELECTED_LEVEL: level,
+        "tests": rows,
+        "gates": gates,
+        "reported": screen["reported"],
+    }
+
+
+# -- the calibration of every scenario, over the workers
+
+
+def calibration_pairs(scenarios: Sequence[Scenario]) -> list[tuple[Scenario, int]]:
+    """The (scenario, candidate) pairs a fixation calibrates: each scenario's candidate, and
+    candidate 2 for a coverage scenario of candidate 1 (the verification falls back to it)."""
+    out = []
+    for sc in scenarios:
+        out.append((sc, sc.candidate))
+        if sc.coverage and sc.candidate == 1:
+            out.append((sc, 2))
+    return out
+
+
+def _calibration_task(args: tuple) -> tuple[Scenario, int, Calibration]:
+    scenario, setup, candidate, base, studies = args
+    seed = calibration_stream(base, scenario, candidate)
+    return scenario, candidate, calibrate_scenario(scenario, setup, candidate, seed,
+                                                   studies=studies)  # fmt: skip
+
+
+def calibrate_all(
+    setup: Setup,
+    base: int,
+    *,
+    pairs: Sequence[tuple[Scenario, int]],
+    workers: int,
+    studies: int = CALIBRATION_STUDIES,
+) -> dict[tuple[Scenario, int], Calibration]:
+    """Every pair's calibration (``calibrate_scenario`` on ``calibration_stream(base, …)``):
+    the pairs without jitter one per worker, a jitter scenario's (C12) in this process with its
+    truths' quadratures built over the workers. The result is the same whatever the workers or
+    the order in which they finish."""
+    plain = [(sc, c) for sc, c in pairs if not sc.jitter]
+    jitter = [(sc, c) for sc, c in pairs if sc.jitter]
+    out: dict[tuple[Scenario, int], Calibration] = {}
+    with Workers(workers) as pool:
+        running = pool.imap(_calibration_task, [(sc, setup, c, base, studies) for sc, c in plain])
+        mapper = pool.map if workers > 1 else None
+        for sc, c in jitter:
+            seed = calibration_stream(base, sc, c)
+            out[(sc, c)] = calibrate_scenario(sc, setup, c, seed, studies=studies, mapper=mapper)
+        for sc, c, cal in running:
+            out[(sc, c)] = cal
+    return {pair: out[pair] for pair in pairs}
+
+
+def _close_float(a: float, b: float) -> bool:
+    return math.isclose(a, b, rel_tol=CALIBRATION_TOLERANCE, abs_tol=0.0)
+
+
+def _differences(found: Any, frozen: Any, where: str) -> list[str]:
+    """Where two JSON values differ: integers, flags, names and keys exactly; floats at a
+    relative ``CALIBRATION_TOLERANCE``."""
+    if isinstance(frozen, dict):
+        if not isinstance(found, dict) or set(found) != set(frozen):
+            return [f"{where}: keys {sorted(found) if isinstance(found, dict) else found!r}, "
+                    f"frozen {sorted(frozen)}"]  # fmt: skip
+        return [p for k in sorted(frozen) for p in _differences(found[k], frozen[k],
+                                                                f"{where}.{k}")]  # fmt: skip
+    if isinstance(frozen, list):
+        if not isinstance(found, list) or len(found) != len(frozen):
+            return [f"{where}: {found!r}, frozen {frozen!r}"]
+        return [p for i, (a, b) in enumerate(zip(found, frozen, strict=True))
+                for p in _differences(a, b, f"{where}[{i}]")]  # fmt: skip
+    if isinstance(frozen, float) and not isinstance(found, bool) and isinstance(found, float):
+        return [] if _close_float(found, frozen) else [f"{where}: {found!r}, frozen {frozen!r}"]
+    if type(found) is not type(frozen) or found != frozen:
+        return [f"{where}: {found!r}, frozen {frozen!r}"]
+    return []
+
+
+def calibration_problems(
+    found: Mapping[tuple[Scenario, int], Calibration],
+    frozen: Mapping[tuple[Scenario, int], Calibration],
+) -> list[str]:
+    """How a recomputed calibration departs from the frozen one: a pair missing or extra, an
+    integer, a flag or a vector's seed that differs, or a float off by more than a relative
+    1e-9 (bisection and quadrature, on another machine)."""
+    problems = []
+    for sc, c in frozen:
+        if (sc, c) not in found:
+            problems.append(f"{sc.name} at candidate {c}: missing from the recomputation")
+            continue
+        a = json.loads(_json_bytes(calibration_json(found[(sc, c)])))
+        b = json.loads(_json_bytes(calibration_json(frozen[(sc, c)])))
+        problems += [f"{sc.name} at candidate {c}: {p}" for p in _differences(a, b, "calibration")]
+    problems += [f"{sc.name} at candidate {c}: not in the fixation" for sc, c in found
+                 if (sc, c) not in frozen]  # fmt: skip
+    return problems
