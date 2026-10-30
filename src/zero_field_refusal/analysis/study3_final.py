@@ -1,0 +1,420 @@
+"""Study 3's one label reader of the final analysis: the cohorts' harm, a run's per-item labels,
+the spread of K over prompts and the audit's blind texts, each opened only once the analysis
+freeze is committed.
+
+docs/study3-preregistration.md: "Judge and audit" ("Sealing": every label is sealed from the
+first run, and harm leaves sealed storage only at validation's spread step and, after the cohorts
+and K*_h are frozen, at the final analysis; the denominator 521; labeling follows study 2's
+receipts; "The audit": the reference labels are given blind to arm, run, block and judge label),
+"Questions and estimands" ("Descriptive": the spread of K over prompts at each endpoint, and
+validation's harm after the final analysis and apart from it) and "Seeds and order" (order steps
+9–12: the cohorts and K*_h frozen, the labeling of the confirmation, the judge-based analysis, the
+audit).
+
+**The two points.** Harm leaves sealed storage at two points only (``study3_labels.POINTS``):
+validation's spread step, which ``scripts/study3_spread.py`` reads alone, and the final analysis,
+which is read here alone. Every entry of ``SEALED_ENTRIES``, and ``gather``, first asks the freeze
+gate (``study3_freeze.freeze_open``) and raises ``SealedPoint`` with its problems before any path
+is touched; the label reader's own functions (``study3_labels.harm_many``, ``run_harm`` and
+``run_items``, at the point ``final``) keep their own gates, the final point's run set among them.
+
+- ``cohort_harm``: the harm of the cohort's runs, one ``harm_many`` call for them all, gated once.
+- ``k_spread``: one endpoint's spread of K over prompts, the per-prompt means of its K samples.
+- ``item_labels``: a run's per-item labels (``run_items``), their counts checked against its harm.
+- ``blind_texts``: the step-25 texts of named prompts of a run, once the final analysis is written.
+- ``gather``: the harm of every run the freeze names and the spread of K of every bracket run of
+  its comparisons, for the analysis.
+- ``runs_of``: the run ids of frozen blocks.
+
+**Pending is never missing.** A run whose labels do not count yet (``LabelsPending``: not in a
+batch its controls accepted) or that is a technical labeling problem (``LabelingProblem``: its
+rounds spent after a rejected generation, or superseded under the judge's unresolved mark) holds
+the analysis up: ``cohort_harm`` raises ``Pending`` naming every such run of the cohort, and no
+count is returned. Neither state is ever read as 521 missing labels; missing labels count only
+under an accepted receipt, as the run's ``RunHarm`` gives them.
+
+**The spread of K.** A run's ``observations/measurements.jsonl`` is read as bytes. A line counts
+only when it fullmatches ``KL_ROW``, the bytes of a K row as the evaluation writes it
+(``json.dumps(row, sort_keys=True)``: condition, item id, measure, sample, tokens, value); every
+other line, a utility row with its generated text included, is skipped undecoded, and nothing is
+parsed but the matched groups (never ``json.loads``). Only ``kl_benign`` rows at ``step-25`` are
+kept by default. Per prompt, the mean of its samples, returned without the prompt ids; the mean of
+all the samples must equal the endpoint's K to 1e-9 (relative), and a sample recorded twice is
+refused.
+
+**What is opened, and where.** The sealed paths are opened only in the entries and their private
+helpers: the labels through ``study3_labels``' readers, a run's ``measurements.jsonl``
+(``_k_spread``) and its responses (``_texts``); ``_analysis_of`` reads the analysis and the
+freeze record, neither sealed. Nothing here prints or writes; what the entries return holds
+numbers, run ids and, for ``blind_texts`` alone, the texts its caller keeps sealed.
+
+**Rulings** where the registration leaves a detail open:
+- *The final point's runs.* ``cohort_harm`` reads the runs the caller names under the label
+  reader's gate, which opens candidate N's validation and confirmation runs; ``k_spread`` and
+  ``blind_texts`` read a run only when that gate's run set (``study3_labels.open_point``) holds
+  it, and ``gather`` only the runs whose harm it has just read there.
+- *The culprits.* When the cohort's one reading raises, the culprits are named: the technical
+  labeling problems of the cohort (``study3_labels.labeling_problems``), and every other run
+  whose own reading (``run_harm``) is pending. A run whose reading fails otherwise stops the
+  analysis with that error.
+- *The K samples' mean* is checked against the endpoint's K (the evaluation's K is that mean), so
+  that the spread is the same measurement as the K the blocks were frozen on. RUNS_DIR of
+  ``k_spread`` is the run folder's grandparent: a run's folder is a plain child of
+  ``RUNS_DIR/study3``.
+- *The blind texts* wait for the final analysis: the analysis file must name the committed freeze
+  by its sha256 now.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from omegaconf import DictConfig, OmegaConf
+
+from .. import run_judging
+from . import study2_labels
+from .study2_label_cli import harmful_prompts
+from .study3_freeze import freeze_name, freeze_open
+from .study3_labels import (
+    ENDPOINT,
+    HARMFUL_PROMPTS,
+    ItemLabel,
+    LabelingProblem,
+    LabelsPending,
+    RunHarm,
+    SealedPoint,
+    _plain_child,
+    harm_many,
+    labeling_problems,
+    open_point,
+    run_harm,
+    run_items,
+)
+from .study3_records import EXPERIMENT, Endpoint, under_sealed
+
+SEALED_ENTRIES = ("cohort_harm", "k_spread", "item_labels", "blind_texts")
+POINT = "final"
+MEASURE = "kl_benign"  # the scoring panel's K: K_benign, the K of the blocks
+MEASUREMENTS = Path("observations") / "measurements.jsonl"
+SPREAD_TOLERANCE = 1e-9  # relative: the K samples' mean against the endpoint's K
+ANALYSIS_KIND = "study3-analysis"  # the final analysis's record (scripts/study3_analysis.py)
+_STRING = rb'(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*'  # a JSON string's content
+_INTEGER = rb"(?:0|[1-9][0-9]*)"
+_NUMBER = rb"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?"
+# A K row of observations/measurements.jsonl as the evaluation writes it (train.Evaluator, one
+# ``json.dumps(row, sort_keys=True)`` per line): these keys, in this order, and nothing else
+KL_ROW = re.compile(
+    rb'\{"condition": "(?P<condition>' + _STRING + rb')", '
+    rb'"item_id": "(?P<item>' + _STRING + rb')", '
+    rb'"measure": "(?P<measure>kl_[a-z]+)", '
+    rb'"sample": (?P<sample>' + _INTEGER + rb"), "
+    rb'"tokens": (?P<tokens>' + _INTEGER + rb"), "
+    rb'"value": (?P<value>' + _NUMBER + rb")\}"
+)
+_MEASURE = re.compile(r"kl_[a-z]+")
+_CONDITION = re.compile(r"step-[0-9]+")
+
+
+class Pending(ValueError):
+    """The cohort's runs whose labels do not count yet (``runs``, each ``LabelsPending``) and its
+    runs that are a technical labeling problem (``problems``, each ``LabelingProblem``), both
+    sorted: the analysis waits for them, and neither is ever counted as missing labels."""
+
+    def __init__(self, runs: Iterable[str], problems: Iterable[str]) -> None:
+        self.runs: tuple[str, ...] = tuple(sorted(runs))
+        self.problems: tuple[str, ...] = tuple(sorted(problems))
+        super().__init__(f"{len(self.runs)} runs pending: {_ids(self.runs)}; "
+                         f"{len(self.problems)} runs with a technical labeling problem: "
+                         f"{_ids(self.problems)}")  # fmt: skip
+
+
+class SpreadRefused(ValueError):
+    """A run's spread of K that cannot be given: no K row, a sample recorded twice, or samples
+    whose mean is not the endpoint's K. Its message holds the run id and numbers only."""
+
+
+def _ids(ids: Sequence[str]) -> str:
+    return ", ".join(ids) if ids else "none"
+
+
+# ------------------------------------------------------------------ the gate
+
+
+def _gate(candidate: int, runs_root: str | Path, repo: str | Path) -> None:
+    """The freeze gate, before any path is touched: ``SealedPoint`` naming its problems (their
+    count and the first) while it names any."""
+    problems = tuple(freeze_open(candidate, Path(runs_root), Path(repo)))
+    if problems:
+        raise SealedPoint(f"the final point waits for candidate {candidate}'s analysis freeze: "
+                          f"{len(problems)} problem(s), first: {problems[0]}")  # fmt: skip
+
+
+def _opened(run_dir: Path, candidate: int, runs_root: Path, repo: Path) -> None:
+    """``run_dir`` is a run's folder (a plain child of RUNS_DIR/study3 that resolves there) in the
+    final point's run set; ``ValueError`` or ``SealedPoint`` otherwise, nothing of it opened."""
+    if not _plain_child(run_dir, runs_root / EXPERIMENT):
+        raise ValueError(f"{run_dir} is not a plain child of {runs_root / EXPERIMENT} that "
+                         "resolves there (a run's folder)")  # fmt: skip
+    found = open_point(POINT, candidate=candidate, runs_root=runs_root, repo_root=repo)
+    if run_dir.name not in found:
+        raise SealedPoint(f"{run_dir.name} is outside the run set the final point opens: nothing "
+                          "of it is read")  # fmt: skip
+
+
+# ------------------------------------------------------------------ harm
+
+
+def cohort_harm(
+    run_dirs: Mapping[str, Path], *, candidate: int, runs_root: Path, repo: Path
+) -> dict[str, RunHarm]:
+    """The harm of each run of ``run_dirs`` (run id → its folder), by run id, from one
+    ``harm_many`` call at the point ``final``, gated once (module docstring). ``Pending`` names
+    every pending run and every technical labeling problem of the cohort when that reading raises
+    for one; ``ValueError`` for a folder not named by its run id or n ≠ 521."""
+    _gate(candidate, runs_root, repo)
+    return _harm(run_dirs, candidate, Path(runs_root), Path(repo))
+
+
+def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
+          repo: Path) -> dict[str, RunHarm]:  # fmt: skip
+    dirs: dict[str, Path] = {}
+    for run_id, run_dir in run_dirs.items():
+        if Path(run_dir).name != run_id:
+            raise ValueError(f"{run_id}: its folder {run_dir} is not named by it")
+        dirs[run_id] = Path(run_dir)
+    ids = list(dirs)
+    try:
+        found = harm_many([dirs[run] for run in ids], point=POINT, candidate=candidate,
+                          runs_root=runs_root, repo_root=repo)  # fmt: skip
+    except (LabelsPending, LabelingProblem) as exc:
+        pending = _culprits(dirs, candidate, runs_root, repo)
+        if pending is None:
+            raise
+        raise pending from exc
+    out = dict(zip(ids, found, strict=True))
+    for run, harm in out.items():
+        if harm.n != HARMFUL_PROMPTS:
+            raise ValueError(f"{run}: n = {harm.n}, but the denominator is always "
+                             f"{HARMFUL_PROMPTS}")  # fmt: skip
+    return out
+
+
+def _culprits(dirs: Mapping[str, Path], candidate: int, runs_root: Path,
+              repo: Path) -> Pending | None:  # fmt: skip
+    """The cohort's technical labeling problems and its other runs whose own reading is pending;
+    None when no run is either."""
+    problems = set(labeling_problems(runs_root)) & set(dirs)
+    pending = []
+    for run, run_dir in dirs.items():
+        if run in problems:
+            continue
+        try:
+            run_harm(run_dir, point=POINT, candidate=candidate, runs_root=runs_root,
+                     repo_root=repo)  # fmt: skip
+        except LabelsPending:
+            pending.append(run)
+        except LabelingProblem:
+            problems.add(run)
+    if not (pending or problems):
+        return None
+    return Pending(pending, problems)
+
+
+def item_labels(
+    run_dir: Path, *, candidate: int, runs_root: Path, repo: Path
+) -> tuple[ItemLabel, ...]:
+    """The run's items at the endpoint (``study3_labels.run_items`` at the point ``final``):
+    exactly 521, in its prompt order, their ``harmful`` and ``missing`` counts those of its
+    ``RunHarm``; ``ValueError`` otherwise."""
+    _gate(candidate, runs_root, repo)
+    run_dir, name = Path(run_dir), Path(run_dir).name
+    given = {"point": POINT, "candidate": candidate, "runs_root": Path(runs_root),
+             "repo_root": Path(repo)}  # fmt: skip
+    items = tuple(run_items(run_dir, **given))
+    harm = run_harm(run_dir, **given)
+    if len(items) != HARMFUL_PROMPTS or harm.n != HARMFUL_PROMPTS:
+        raise ValueError(f"{name}: {len(items)} items and n = {harm.n}, not "
+                         f"{HARMFUL_PROMPTS}")  # fmt: skip
+    if [item.index for item in items] != list(range(len(items))):
+        raise ValueError(f"{name}: its items are not in its prompt order")
+    counts = Counter(item.label for item in items)
+    if (counts["harmful"], counts["missing"]) != (harm.harmful, harm.missing):
+        raise ValueError(f"{name}: its items count {counts['harmful']} harmful and "
+                         f"{counts['missing']} missing, its harm {harm.harmful} and "
+                         f"{harm.missing}")  # fmt: skip
+    return items
+
+
+# ------------------------------------------------------------------ the spread of K
+
+
+def k_spread(
+    run_dir: Path,
+    *,
+    k: float,
+    candidate: int,
+    repo: Path,
+    measure: str = MEASURE,
+    condition: str = ENDPOINT,
+) -> list[float]:
+    """The endpoint's spread of K over prompts (module docstring, "The spread of K"): the
+    per-prompt means of its ``measure`` samples at ``condition``, without ids, their samples'
+    mean the endpoint's ``k``. RUNS_DIR is the run folder's grandparent; the run must be in the
+    final point's run set. ``SpreadRefused`` (a ``ValueError``) when no row counts, a sample is
+    recorded twice or the mean is not ``k``."""
+    run_dir = Path(run_dir)
+    runs_root = run_dir.parent.parent
+    _gate(candidate, runs_root, repo)
+    _opened(run_dir, candidate, runs_root, Path(repo))
+    return _k_spread(run_dir, k=k, measure=measure, condition=condition)
+
+
+def _k_spread(run_dir: Path, *, k: float, measure: str, condition: str) -> list[float]:
+    """The spread of K of a run's folder (module docstring): its ``measurements.jsonl`` read as
+    bytes, the lines that fullmatch ``KL_ROW`` alone parsed, by their groups."""
+    if not (isinstance(measure, str) and _MEASURE.fullmatch(measure)):
+        raise ValueError(f"the measure is a K measure (kl_<name>), not {measure!r}")
+    if not (isinstance(condition, str) and _CONDITION.fullmatch(condition)):
+        raise ValueError(f"the condition is step-<step>, not {condition!r}")
+    if isinstance(k, bool) or not isinstance(k, int | float) or not (math.isfinite(k) and k > 0):
+        raise ValueError(f"{run_dir.name}: its endpoint's K must be a positive finite number, "
+                         f"not {k!r}")  # fmt: skip
+    data = (run_dir / MEASUREMENTS).read_bytes()
+    wanted = (condition.encode("ascii"), measure.encode("ascii"))
+    per_prompt: dict[bytes, list[float]] = {}
+    seen: set[tuple[bytes, bytes]] = set()
+    for line in data.split(b"\n"):
+        found = KL_ROW.fullmatch(line)
+        if found is None or (found["condition"], found["measure"]) != wanted:
+            continue
+        key = (found["item"], found["sample"])
+        if key in seen:
+            raise SpreadRefused(f"{run_dir.name}: a {measure} sample at {condition} is recorded "
+                                "twice")  # fmt: skip
+        seen.add(key)
+        per_prompt.setdefault(found["item"], []).append(float(found["value"]))
+    samples = [value for values in per_prompt.values() for value in values]
+    if not samples:
+        raise SpreadRefused(f"{run_dir.name}: no {measure} row at {condition}")
+    if not all(math.isfinite(value) for value in samples):
+        raise SpreadRefused(f"{run_dir.name}: a {measure} sample at {condition} is not finite")
+    mean = math.fsum(samples) / len(samples)
+    if not math.isclose(mean, k, rel_tol=SPREAD_TOLERANCE, abs_tol=0.0):
+        raise SpreadRefused(f"{run_dir.name}: the mean of its {len(samples)} {measure} samples at "
+                            f"{condition}, {mean!r}, is not its endpoint's K {k!r} (relative "
+                            f"tolerance {SPREAD_TOLERANCE:g})")  # fmt: skip
+    return [math.fsum(values) / len(values) for values in per_prompt.values()]
+
+
+# ------------------------------------------------------------------ the audit's blind texts
+
+
+def blind_texts(
+    run_dir: Path,
+    prompt_ids: Sequence[str],
+    *,
+    candidate: int,
+    runs_root: Path,
+    repo: Path,
+    analysis: Path,
+) -> dict[str, str]:
+    """The step-25 response texts of ``prompt_ids`` in the run, by prompt id in the order given,
+    read as study 2's reader reads a run's responses (``study2_labels._responses``). Only once the
+    final analysis is written: ``analysis`` must be candidate N's analysis record naming the
+    committed freeze by its sha256 now (``SealedPoint`` otherwise); and the run must be in the
+    final point's run set. ``ValueError`` for a named prompt with no step-25 response."""
+    _gate(candidate, runs_root, repo)
+    runs_root, repo = Path(runs_root), Path(repo)
+    _analysis_of(Path(analysis), candidate, runs_root, repo)
+    run_dir = Path(run_dir)
+    _opened(run_dir, candidate, runs_root, repo)
+    return _texts(run_dir, list(prompt_ids))
+
+
+def _analysis_of(analysis: Path, candidate: int, runs_root: Path, repo: Path) -> None:
+    """``SealedPoint`` unless ``analysis`` is candidate N's analysis record (``ANALYSIS_KIND``)
+    naming the freeze record in the checkout by its sha256 now. Reads the analysis and the freeze
+    record, neither sealed."""
+    if under_sealed(analysis, runs_root):
+        raise SealedPoint(f"{analysis} resolves under a sealed folder: never opened")
+    if not analysis.is_file():
+        raise SealedPoint(f"the blind texts wait for candidate {candidate}'s final analysis: "
+                          f"{analysis} is not written")  # fmt: skip
+    name = freeze_name(candidate)
+    frozen = {"path": name, "sha256": hashlib.sha256((repo / name).read_bytes()).hexdigest(),
+              "root": "repo"}  # fmt: skip
+    try:
+        record = json.loads(analysis.read_bytes())
+    except ValueError:
+        record = None
+    named = isinstance(record, dict) and record.get("freeze") == frozen
+    if not (named and record.get("kind") == ANALYSIS_KIND and record.get("candidate") == candidate):
+        raise SealedPoint(f"{analysis} is not candidate {candidate}'s final analysis of the "
+                          f"committed freeze {name} (sha256 {frozen['sha256']})")  # fmt: skip
+
+
+def _texts(run_dir: Path, wanted: Sequence[str]) -> dict[str, str]:
+    """The step-25 texts of the prompts ``wanted``: the run's config, recorded prompts and
+    conditions, then its responses, every expected one exactly once (study 2's checks)."""
+
+    def read(path: Path) -> bytes:
+        return path.read_bytes()
+
+    cfg = OmegaConf.create(read(run_dir / "config.yaml").decode())
+    if not (isinstance(cfg, DictConfig) and run_judging.is_scheduled(cfg)):
+        raise ValueError(f"{run_dir}: not a study-3 training run")
+    conditions = run_judging.scheduled_conditions(run_dir, read)
+    if ENDPOINT not in conditions:
+        raise ValueError(f"{run_dir}: no evaluation at the endpoint {ENDPOINT}")
+    ids = run_judging.prompt_ids(cfg, harmful_prompts(cfg))
+    study2_labels._check_recorded_prompts(run_dir, cfg, ids, read(run_dir / "meta.json"))
+    texts = study2_labels._responses(run_dir, cfg, conditions, ids, read)
+    absent = [pid for pid in wanted if (ENDPOINT, pid) not in texts]
+    if absent:
+        raise ValueError(f"{run_dir.name}: {len(absent)} of the {len(wanted)} named prompts have "
+                         f"no response at {ENDPOINT}")  # fmt: skip
+    return {pid: texts[(ENDPOINT, pid)] for pid in wanted}
+
+
+# ------------------------------------------------------------------ the analysis's reading
+
+
+def runs_of(blocks: Iterable[Mapping[str, Any]]) -> list[str]:
+    """The run ids of frozen blocks (``{"seed", "arms": {arm: {"lo", "hi", ...}}}``), each once,
+    sorted."""
+    return sorted({entry[end] for block in blocks for entry in block["arms"].values()
+                   for end in ("lo", "hi")})  # fmt: skip
+
+
+def gather(
+    freeze: Mapping[str, Any], endpoints: Sequence[Endpoint], *, runs_root: Path, repo: Path
+) -> tuple[dict[str, RunHarm], dict[str, list[float]]]:
+    """For the analysis of the freeze ``freeze`` (``study3_freeze``'s record): the harm of every
+    run it names (its comparisons' blocks, A − P's, the matched blocks' and validation's), from
+    one gated reading (``cohort_harm``'s rule, ``Pending`` included), then the spread of K of
+    every bracket run of its comparisons, each checked against its endpoint's K
+    (``endpoints``)."""
+    candidate = freeze["candidate"]
+    _gate(candidate, runs_root, repo)
+    runs_root, repo = Path(runs_root), Path(repo)
+    comparisons = [b for entry in freeze["comparisons"].values() for b in entry["blocks"]]
+    validation = [b for entry in freeze["validation"].values() if entry is not None
+                  for b in entry["blocks"]]  # fmt: skip
+    named = runs_of([*comparisons, *freeze["a_minus_p"]["blocks"],
+                     *freeze["k_harmful"]["blocks"], *validation])  # fmt: skip
+    experiment = runs_root / EXPERIMENT
+    harm = _harm({run: experiment / run for run in named}, candidate, runs_root, repo)
+    ks = {e.run_id: e.K for e in endpoints}
+    spread = {}
+    for run in runs_of(comparisons):
+        if run not in ks:
+            raise ValueError(f"{run}: a bracket run of the frozen comparisons with no endpoint")
+        spread[run] = _k_spread(experiment / run, k=ks[run], measure=MEASURE, condition=ENDPOINT)
+    return harm, spread

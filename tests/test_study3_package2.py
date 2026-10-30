@@ -24,11 +24,13 @@
   log or a record of the qualification (the base is the runs root); and a journal start's command
   composes only a study-3 config.
 - The label readers' fence (``LABEL_READERS``: ``analysis.study3_label_cli``,
-  ``analysis.study3_labels`` and ``scripts/study3_spread.py``; "Judge and audit", "Sample size from
-  validation"): they import no GPU module and load no script; a sealed path is opened only inside
-  a named opener (``SEALED_OPENERS``, ``NamedOpens``); and each reader refuses a point that is
-  closed: ``spread`` outside candidate N's choice step (it closes once the n record is written),
-  ``final`` until the freeze gate opens it, reading nothing of a run's sealed folders meanwhile.
+  ``analysis.study3_labels``, ``analysis.study3_final`` and ``scripts/study3_spread.py``; "Judge
+  and audit", "Sample size from validation"): they import no GPU module and load no script; a
+  sealed path is opened only inside a named opener (``SEALED_OPENERS``, ``NamedOpens``); and each
+  reader refuses a point that is closed: ``spread`` outside candidate N's choice step (it closes
+  once the n record is written), ``final`` until the freeze gate opens it, reading nothing of a
+  run's sealed folders meanwhile. The final analysis's reader (``study3_final``) has its own
+  sealing tests (tests/test_study3_final.py).
 
 Every sealed file of these worlds holds the sentinel ``SENTINEL``, and every read of a sealed path
 fails under ``SealedGuard``."""
@@ -129,9 +131,11 @@ PACKAGE = (
     ANALYSIS / "qualification_records.py",
     ANALYSIS / "campaign_prep.py",
 )
-# study 3's label readers (package 2b), each with its own sealing tests and this file's fence: two
-# modules of the analysis package and the spread's decision script
+# study 3's label readers (package 2b), each with its own sealing tests and this file's fence: three
+# modules of the analysis package (the final analysis's reader among them) and the spread's
+# decision script
 LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_label_cli.py", ANALYSIS / "study3_labels.py",
+                                   ANALYSIS / "study3_final.py",
                                    REPO_ROOT / "scripts" / "study3_spread.py")  # fmt: skip
 # The label readers' functions that open a sealed path, by module and name: a run's judge outputs
 # (and the responses they are labeled from), their superseded copies or the labeling ledger.
