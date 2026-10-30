@@ -55,6 +55,7 @@ from zero_field_refusal import code_identity
 from zero_field_refusal import launch as launcher
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_cycle as cycle
+from zero_field_refusal.analysis import study3_records as records_module
 from zero_field_refusal.analysis.study3_decisions import (
     _problems,
     bridge_name,
@@ -1269,11 +1270,22 @@ def test_a_cycle_needs_a_claim_with_its_justification_for_every_started_stage(cy
 
 
 def test_the_published_cycle_validates_in_its_pre_cycle_view_before_and_after_the_repair(
-    cycle_route,
+    cycle_route, monkeypatch
 ):
     cycle_route.write_cycle()
     found = cycle.read_cycle(cycle_route.root, 1, repo=cycle_route.repo)
     assert found["state"] == "valid" and cycle_route.cycle_problems() == []
+    # the state reads every run file once: the view before the cycle shares the reader's files
+    bound = []
+    config = records_module._config
+    monkeypatch.setattr(
+        records_module,
+        "_config",
+        lambda run_dir, *a, **k: bound.append(run_dir) or config(run_dir, *a, **k),
+    )
+    assert cycle_route.state()["cycle"][1]["state"] == "valid"
+    assert bound and len(bound) == len(set(bound))
+    monkeypatch.setattr(records_module, "_config", config)
     assert cycle_route.mark in found["affected"] and found["claims"] == ROUTE_CLAIMS
     cycle_route.repair()  # qualify.py's lines
     lines = [json.loads(line) for log in sorted((cycle_route.root / "launch").glob("*.jsonl"))

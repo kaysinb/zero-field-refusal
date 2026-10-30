@@ -730,10 +730,12 @@ class EndpointReader:
     the qualification's restart and supersession records, the experiment's folders and, as they
     are first needed, each run's files. ``read(prescribed)`` gives what ``read_endpoints`` gives
     under ``prescribed``; any number of readings read every file once (a caller that derives the
-    cells to prescribe from the records reads them once). ``resolved``: the journal's resolved
-    torn lines (module docstring, "Attempts"), each its log's ``path`` under RUNS_DIR, its
-    ``line`` number, its ``offset``, ``length`` and ``sha256`` and its ``kind``; listed, no
-    problem."""
+    cells to prescribe from the records reads them once). ``files``: the run files another
+    reader of the same ``runs_root`` read already (its ``files``), so that a second view of the
+    same records (a journal prefix, another set of records voided) reads each run file once,
+    from one snapshot. ``resolved``: the journal's resolved torn lines (module docstring,
+    "Attempts"), each its log's ``path`` under RUNS_DIR, its ``line`` number, its ``offset``,
+    ``length`` and ``sha256`` and its ``kind``; listed, no problem."""
 
     def __init__(
         self,
@@ -743,6 +745,7 @@ class EndpointReader:
         cycles: Mapping[str, Mapping[str, Any]] | None = None,
         restarts: Mapping[str, Mapping[str, Any]] | None = None,
         prefix: Mapping[str, int] | None = None,
+        files: _Files | None = None,
     ) -> None:
         self.root = Path(runs_root)
         self.baseline = read_theta0(theta0)
@@ -762,7 +765,9 @@ class EndpointReader:
         self.folders = [d for d in (sorted(experiment.iterdir()) if experiment.is_dir() else [])
                         if d.is_dir() and d.name != DECISIONS
                         and d.name not in self.journal.later]  # fmt: skip
-        self.files = _Files(experiment)
+        if files is not None and files.base != experiment:
+            raise ValueError(f"the run files read under {files.base} are not {experiment}'s")
+        self.files = _Files(experiment) if files is None else files
 
     def read(
         self, prescribed: Mapping[str, Collection[tuple[str, float, int]]]

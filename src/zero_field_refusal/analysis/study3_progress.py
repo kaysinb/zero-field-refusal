@@ -649,7 +649,7 @@ def read_records(
     for found_ in cycle_records.values():  # a valid cycle, against the records before it
         if found_["state"] == "valid":
             more = cycle_problems(found_, runs_root=root, theta0=theta0, repo=repo,
-                                  settings=settings)  # fmt: skip
+                                  settings=settings, files=reader.files)  # fmt: skip
             if more:
                 found_.update(state="invalid", problems=[*found_["problems"], *more])
     # each run's GPU code: the candidate's search runs and the runs of every stage its cycle

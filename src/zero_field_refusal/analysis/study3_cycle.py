@@ -149,6 +149,8 @@ to the prefix the cycle pins (each prefix's sha256 checked first: a rewritten jo
 refusal) and with the cycle's own bridge read as absent (``without``): the runs it supersedes
 count as they did, its journal lines lie beyond the prefix, and a run started later is no run of
 the view. Every bound cell is read (no cell the route would issue later decides a run's state).
+Where the state is read (``study3_progress.read_records``), the view reads the run files its
+reader read already (one snapshot: each run file is read once).
 The qualification's reading is not part of the view: the cycle reads the qualification through
 ``qualification_records.cycle_entries``, with the same prefix and without the same bridge. The
 writer derives from this view with ``without=None``; the reader re-derives with ``without`` this
@@ -215,6 +217,7 @@ from .study3_records import (
     GROSS_COLLAPSE,
     Endpoint,
     EndpointReader,
+    _Files,
     _sealed_file,
     journal_lines,
     log_lines,
@@ -1133,13 +1136,16 @@ def pre_cycle_records(
     theta0: str | Path,
     repo: str | Path,
     settings: Mapping[str, Any],
+    files: _Files | None = None,
 ) -> Records:
     """The records as they stood when the cycle was written (module docstring, "The pre-cycle
     view"): ``journal``, the pinned prefix (``journal_seen``'s list; ``CycleRefused`` when it is
     no longer there with its sha256); ``without``, the cycle's bridge (its path under RUNS_DIR),
     read as absent, or None (the writer's view); ``theta0``, θ₀'s evaluation; ``repo``, the
     checkout of the decision records' evidence and the runs' commits; ``settings``, the
-    qualification's. ``candidate`` is the cycle's: every candidate's records are read."""
+    qualification's; ``files``, the run files a reader of the same records read already
+    (``EndpointReader.files``: one snapshot, each run file read once), or None. ``candidate`` is
+    the cycle's: every candidate's records are read."""
     from . import qualification_records  # it loads torch (qualification_verdicts): here only
     from .study3_progress import Records, _bound, _headers, _record_digest, _recoverable
     from .study3_versions import uncounted_runs
@@ -1160,7 +1166,8 @@ def pre_cycle_records(
                   if Path(x["path"]).relative_to(root).as_posix() != without]
               for c in (1, 2)}  # fmt: skip
     logs = prefixed(journal_lines(root)[0], prefix)
-    reader = EndpointReader(root, theta0=theta0, cycles=checks, restarts=restarts, prefix=prefix)
+    reader = EndpointReader(root, theta0=theta0, cycles=checks, restarts=restarts, prefix=prefix,
+                            files=files)  # fmt: skip
     endpoints, problems = reader.read(_bound(reader.read({})[0]))
     return Records(
         endpoints=tuple(endpoints), problems=tuple(problems), holds=tuple(holds),
@@ -1354,10 +1361,12 @@ def cycle_problems(
     theta0: str | Path,
     repo: str | Path,
     settings: Mapping[str, Any],
+    files: _Files | None = None,
 ) -> list[str]:
     """The problems of a published cycle (``read_cycle``'s ``found``) against the records before
     it (module docstring, "The pre-cycle view"); each makes the cycle invalid. None for a cycle
-    whose record is not a valid decision record (``read_cycle`` names why)."""
+    whose record is not a valid decision record (``read_cycle`` names why). ``files``: the run
+    files the caller's reader read already (``pre_cycle_records``), or None."""
     record = found.get("record")
     if record is None:
         return []
@@ -1367,7 +1376,8 @@ def cycle_problems(
     without = bridge_name(candidate)
     try:
         records = pre_cycle_records(root, candidate, journal=record["journal"], without=without,
-                                    theta0=theta0, repo=repo, settings=settings)  # fmt: skip
+                                    theta0=theta0, repo=repo, settings=settings,
+                                    files=files)  # fmt: skip
         seen = seen_starts(root, record["journal"])
     except CycleRefused as exc:
         return [f"{where}: {reason}" for reason in exc.reasons]
