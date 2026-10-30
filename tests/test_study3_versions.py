@@ -103,7 +103,7 @@ class Study:
     per (arm, rate) and its input records; the stage is ``progress``'s, or ``given``."""
 
     def __init__(self, tmp_path: Path, monkeypatch) -> None:
-        self.records = DecisionWorld(tmp_path)
+        self.records = DecisionWorld(tmp_path, monkeypatch)
         shutil.rmtree(self.records.run)  # the records tests' own sentinel run: no run here
         self.root, self.repo = self.records.runs, self.records.repo
         self.runs = RunWorld(self.root)
@@ -866,7 +866,9 @@ def test_the_supplement_carries_the_registered_seeds(study) -> None:
 
 def test_the_supplement_rests_on_the_validation_fixation_and_its_n_record(study) -> None:
     study.ready()
+    study.records.pin()  # the n record written under a stand-in fixation, lifted after it
     study.n(75)
+    study.records.unpin()
     with pytest.raises(sv.RecordRefused, match="validation fixation"):
         study.supplement()  # no validation fixation
     study.put(VALIDATION_C1, study.fixation())  # the stage given: before the n record

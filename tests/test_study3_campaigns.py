@@ -206,7 +206,7 @@ class World:
     qualification's reading qualifies the rates in ``qualified``; every other reader is real."""
 
     def __init__(self, tmp_path: Path, monkeypatch, capsys) -> None:
-        self.records = DecisionWorld(tmp_path)
+        self.records = DecisionWorld(tmp_path, monkeypatch)
         shutil.rmtree(self.records.run)  # the records tests' own run: none here without a start
         self.root, self.repo = self.records.runs, self.records.repo
         self.runs = RunWorld(self.root)
@@ -539,6 +539,7 @@ def test_the_route_from_engineering_to_confirmation_through_the_writer(world, mo
 
     # the confirmation: one block per file, in seed order, and the guarded driver
     fields = state["step"]["fields"]
+    world.records.pin()  # no validation fixation here: a stand-in pins the spread
     world.records.write("n-c1", world.records.n(1, 60, rates=fields["rates"],
                                                 active=fields["active"], cohort=fields["cohort"],
                                                 cap=70))  # fmt: skip

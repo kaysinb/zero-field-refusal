@@ -2,9 +2,9 @@
 
 docs/study3-preregistration.md: "Simulation before validation" (the coverage screen, the level L
 and the validation size), "Validation, confirmation and stopping" ("Sample size from validation":
-N, the cap, the budget decision) and "Seeds and order" (harm labels never enter a selection; the
-order of the stages). The records are small JSON files under
-``RUNS_DIR/study3/decisions/<kind>.json``; this module fixes their schemas, reads them and
+the decision script hashed before labeling, N, the cap, the budget decision) and "Seeds and order"
+(harm labels never enter a selection; the order of the stages). The records are small JSON files
+under ``RUNS_DIR/study3/decisions/<kind>.json``; this module fixes their schemas, reads them and
 checks them, and writes them once. Later packages (the simulation, the spread script) write the
 records; the state machine consumes only what this module accepts.
 
@@ -89,8 +89,12 @@ on is a response or an observation, and this module opens none.
 - ``n-c<N>``: ``candidate`` (N of the kind), ``rates`` (per arm A, F and, when P–F is active, P:
   ``lr_l`` and ``lr_u``), ``active`` (``["A-F"]`` or ``["A-F", "P-F"]``), ``level`` (the
   simulation record's), ``cohort`` (the validation block ``seeds`` and the ``run_ids`` used, at
-  least four per block: A and F at both rates), ``spread`` (the evidence of the precommitted
-  spread script, ``script``, and of its ``output`` record), ``spread_pp`` (the A–F spread
+  least four per block: A and F at both rates), ``spread`` (``script``, the precommitted spread
+  script ``{"path": "scripts/study3_spread.py", "sha256", "root": "repo"}``, read record to
+  record: its sha256 is ``code``'s entry for the script, and the file now is not hashed;
+  ``output``, the evidence of its output record, checked against the file whenever the record is
+  read; ``code``, the code the spread ran with, the pin of ``study3_pins.spread_pin``: the script
+  and every file of its import closure, each ``{"path", "sha256"}``), ``spread_pp`` (the A–F spread
   rounded to 0.5 pp, and nothing else about it), ``simulation`` (the evidence of the simulation
   record itself, at ``study3/decisions/simulation.json`` under the runs directory, so the n
   record rests on the exact simulation it follows), ``N`` (an integer, at least 60, and at least
@@ -155,6 +159,13 @@ on is a response or an observation, and this module opens none.
   40 of the candidate's validation seeds, at least 22 or 31 of them: the gate's minimum) and whose
   ``n_min``, when its power is short, N reaches; a
   ``budget-c<N>`` record only with a valid ``n-c<N>`` of its N and cap.
+- *The code the spread ran with*: an ``n-c<N>`` record carries it (``spread.code``), which must
+  equal the pin of the candidate's in-force validation fixation
+  (``study3_versions.read_validation_fixation``), record to record. The current files are checked
+  against it only when the record is written (``write_decision``: a pinned file that differs then
+  refuses the record); a reader never hashes them. An unrelated later change of a pinned module
+  voids nothing; a correction that changes N goes through the registered supersession ("Voiding
+  and supersession"), a successor of the n record.
 - *The thresholds of the coverage screen* are recomputed, c = BinomQuantile(1 − 0.05/J; M, p₀)
   with p₀ = 0.025 per comparison and 0.05 jointly, and a record whose c is another is refused; J
   is one number for all levels, and the tests of the levels and the verification fit within it,
@@ -198,6 +209,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
 from ..paths import REPO_ROOT
+from .study3_pins import SPREAD_SCRIPT, pin_problems
 from .study3_records import DECISIONS as DECISIONS_FOLDER
 from .study3_records import (
     EXPERIMENT,
@@ -655,7 +667,7 @@ def write_decision(
         record = json.loads(json.dumps(record, allow_nan=False))  # what a reader will see
     except (TypeError, ValueError) as exc:
         raise DecisionRefused(f"{kind}: not a JSON record ({exc})") from exc
-    problems = _problems(Path(runs_root), kind, record, Path(repo))
+    problems = _problems(Path(runs_root), kind, record, Path(repo), writing=True)
     if problems:
         raise DecisionRefused(f"{kind}: not written, {len(problems)} problem(s): "
                               + "; ".join(problems))  # fmt: skip
@@ -700,9 +712,11 @@ def _publish(path: Path, data: bytes) -> None:
 # ------------------------------------------------------------------ validation
 
 
-def _problems(root: Path, kind: str, record: Any, repo: Path) -> list[str]:
+def _problems(root: Path, kind: str, record: Any, repo: Path, *,
+              writing: bool = False) -> list[str]:  # fmt: skip
     """Every problem of ``record`` as ``kind``: its schema, the evidence now, and the records it
-    answers."""
+    answers; with ``writing`` (``write_decision`` alone), an n record's ``spread.code`` against
+    the checkout's files now too."""
     family, candidate = kind_of(kind)
     check = _Schema(kind, family, candidate)
     check.record(record)
@@ -712,6 +726,9 @@ def _problems(root: Path, kind: str, record: Any, repo: Path) -> list[str]:
     problems += _evidence(check.refs, root, repo)
     if family == "n":
         problems += _against_simulation(root, record, candidate, repo)
+        problems += _against_pin(root, record, candidate, repo)
+        if writing:
+            problems += [f"spread.code: {p}" for p in pin_problems(record["spread"]["code"], repo)]
     elif family == "budget":
         problems += _against_n(root, kind, record, candidate, repo)
     elif family == "closure":
@@ -1090,9 +1107,12 @@ class _Schema:
             self.add("active", f"is {active!r}, not {ACTIVE}")
         self._rates(r["rates"], "P-F" in active if isinstance(active, list) else False)
         self._cohort(r["cohort"])
-        spread = self.object("spread", r["spread"], ("script", "output"))
-        for name in ("script", "output") if spread is not None else ():
-            self.ref(f"spread.{name}", spread[name])
+        spread = self.object("spread", r["spread"], ("script", "output", "code"))
+        if spread is not None:
+            self._script(spread["script"])
+            self.ref("spread.output", spread["output"])
+            for problem in pin_problems(spread["code"], REPO_ROOT, now=False):
+                self.add("spread.code", problem)
         self._spread_pp(r["spread_pp"])
         self._exact_ref("simulation", r["simulation"], SIMULATION_RECORD)
         if self.integer("N", r["N"], MIN_N):
@@ -1103,6 +1123,19 @@ class _Schema:
                 self._cap_state(r["state"], cap)
         else:
             self.integer("cap", r["cap"], MIN_N + CAP_FLOOR)
+
+    def _script(self, value: Any) -> None:
+        """The spread script, ``SPREAD_SCRIPT`` in the checkout, by its sha256: its form alone
+        (``_against_pin`` reads it against ``spread.code``; the file now is not hashed)."""
+        entry = self.object("spread.script", value, ("path", "sha256", "root"))
+        if entry is None:
+            return
+        if entry["path"] != SPREAD_SCRIPT or entry["root"] != "repo":
+            self.add("spread.script", f"is {entry['path']!r} under {entry['root']!r}, not "
+                     f"{SPREAD_SCRIPT!r} under 'repo', the checkout")  # fmt: skip
+        if not (isinstance(entry["sha256"], str) and _SHA256.fullmatch(entry["sha256"])):
+            self.add("spread.script.sha256", f"is {entry['sha256']!r}, not a sha256 (64 "
+                     "hexadecimal digits)")  # fmt: skip
 
     def _cap_state(self, state: Any, cap: int) -> None:
         """The state is ``passed`` when the cap fits the reserved confirmation seeds and
@@ -1322,6 +1355,30 @@ def _against_simulation(root: Path, record: Mapping[str, Any], candidate: int,
         if len(seeds) < SUPPORTED_AT[blocks]:
             found.append(f"the cohort has {len(seeds)} blocks, below the {SUPPORTED_AT[blocks]} "
                          f"supported that the {blocks}-block validation needs")  # fmt: skip
+    return found
+
+
+def _against_pin(root: Path, record: Mapping[str, Any], candidate: int,
+                 repo: Path) -> list[str]:  # fmt: skip
+    """An ``n-c<N>`` record's spread against the pin of the candidate's in-force validation
+    fixation, record to record (module docstring, "Rulings"): ``spread.code`` is that pin, and
+    ``spread.script``'s sha256 is the pin's entry for the script. No file of the checkout is
+    hashed here."""
+    from . import study3_versions  # it imports this module: here only
+
+    fixation, problems = study3_versions.read_validation_fixation(candidate, runs_root=root,
+                                                                  repo=repo)  # fmt: skip
+    if fixation is None:
+        return [f"spread: no validation fixation of candidate {candidate} pins the spread"
+                + (f" (the fixation is not valid: {problems[0]})" if problems else "")]  # fmt: skip
+    spread, found = record["spread"], []
+    if spread["code"] != fixation["spread"]:
+        found.append(f"spread.code: is not the spread pin of candidate {candidate}'s validation "
+                     "fixation: the spread ran with other code")  # fmt: skip
+    pinned = next((e["sha256"] for e in spread["code"] if e["path"] == SPREAD_SCRIPT), None)
+    if spread["script"]["sha256"] != pinned:
+        found.append(f"spread.script: has sha256 {spread['script']['sha256']}, not "
+                     f"{SPREAD_SCRIPT}'s in spread.code ({pinned})")  # fmt: skip
     return found
 
 

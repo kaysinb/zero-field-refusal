@@ -619,7 +619,7 @@ def test_the_writers_driver_runs_the_real_guard_before_each_block(world, tmp_pat
     study = confirmation_study(world, N=60)
     out = world.write("confirmation", "--blocks", "10400", "10402")
     files = block_files(out)
-    (world.repo / "scripts").mkdir()
+    (world.repo / "scripts").mkdir(exist_ok=True)  # it holds the spread's stand-in
     shutil.copy(SUMMARY, world.repo / "scripts" / "study3_summary.py")
     (world.repo / "scripts" / "launch.py").write_text(LAUNCHER)
     bin_ = tmp_path / "bin"
@@ -926,6 +926,7 @@ def test_the_fixation_command_refuses_what_its_builders_refuse(checkout) -> None
 def test_record_writes_each_kind_once_and_prints_why_it_refuses(world, summary, tmp_path,
                                                                 monkeypatch) -> None:  # fmt: skip
     records = world.records
+    records.pin()  # no validation fixation here: a stand-in pins the spread
     builders = {
         "engineering": records.engineering,
         "simulation": records.simulation,

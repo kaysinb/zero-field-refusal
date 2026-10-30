@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from zero_field_refusal import launch
+from zero_field_refusal.analysis import study3_versions
 from zero_field_refusal.analysis.study3_decisions import (
     HOLD_REASONS,
     LEVELS,
@@ -44,6 +45,7 @@ from zero_field_refusal.analysis.study3_decisions import (
     upper_sd,
     write_decision,
 )
+from zero_field_refusal.analysis.study3_pins import SPREAD_SCRIPT, spread_pin
 from zero_field_refusal.analysis.study3_records import SEEDS, TORN_LINE
 from zero_field_refusal.paths import REPO_ROOT
 
@@ -51,6 +53,9 @@ SENTINEL = "SEALED-RESPONSE-5d1e0b"
 CODE = {"commit": "a" * 40, "gpu_code_sha256": "b" * 64}
 WHEN = "2026-10-26T12:00:00Z"
 SEALED = ("responses", "observations")
+SPREAD_STAND_IN = "from zero_field_refusal import train\n"  # the spread's stand-in
+GPU_CODE = "src/zero_field_refusal/train.py"  # what the stand-in imports
+READ_FIXATION = study3_versions.read_validation_fixation  # the reader a stand-in fixation replaces
 
 
 def sha256(path: Path) -> str:
@@ -58,10 +63,13 @@ def sha256(path: Path) -> str:
 
 
 class World:
-    """A runs directory and a checkout: evidence files, decision records and launch journals."""
+    """A runs directory and a checkout: evidence files, decision records and launch journals.
+    ``monkeypatch`` (the test's) stands a validation fixation in for a candidate (``pin``)."""
 
-    def __init__(self, base: Path) -> None:
+    def __init__(self, base: Path, monkeypatch=None) -> None:
         self.runs, self.repo = base / "runs", base / "repo"
+        self.monkeypatch = monkeypatch
+        self.pins: dict[int, list[dict[str, str]]] = {}  # the stand-in fixations' spread pins
         self.runs.mkdir(parents=True)
         self.repo.mkdir(parents=True)
         self.lines = 0
@@ -85,6 +93,52 @@ class World:
 
     def file(self, ref: dict) -> Path:
         return (self.repo if ref.get("root") == "repo" else self.runs) / ref["path"]
+
+    # -- the spread and its pin
+
+    def stand_in(self) -> None:
+        """The spread's stand-in in the checkout where it has none: a script that imports
+        ``zero_field_refusal.train`` (``GPU_CODE``, written where absent)."""
+        for name, text in ((GPU_CODE, "x = 1\n"), (SPREAD_SCRIPT, SPREAD_STAND_IN)):
+            if not (self.repo / name).exists():
+                (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (self.repo / name).write_text(text)
+
+    def spread(self) -> dict:
+        """An n record's spread: the script by its sha256 now, the output's evidence and the
+        code it ran with, the pin of the checkout's files now."""
+        self.stand_in()
+        script = {"path": SPREAD_SCRIPT, "sha256": sha256(self.repo / SPREAD_SCRIPT),
+                  "root": "repo"}  # fmt: skip
+        return {"script": script, "output": self.ref("spread-output.json"),
+                "code": spread_pin(self.repo)}  # fmt: skip
+
+    def pin(self, candidate: int = 1) -> None:
+        """A stand-in in-force validation fixation of the candidate where the checkout has no
+        real one: ``study3_versions.read_validation_fixation`` gives ``{"spread": the pin of the
+        checkout's files now, ...}`` for it, and reads a real one as before."""
+        assert self.monkeypatch is not None, "the world needs the test's monkeypatch to pin"
+        self.stand_in()
+        pinned = spread_pin(self.repo)
+        real, own = study3_versions.read_validation_fixation, self.repo
+
+        def read(c, *, runs_root, repo=REPO_ROOT, settings=None):
+            named = Path(repo) / f"docs/study3-fixation-validation-c{c}.json"
+            if c == candidate and Path(repo).resolve() == own.resolve() and not named.exists():
+                return {"kind": "fixation-validation", "candidate": c, "spread": pinned}, []
+            return real(c, runs_root=runs_root, repo=repo, settings=settings)
+
+        self.monkeypatch.setattr(study3_versions, "read_validation_fixation", read)
+        self.pins[candidate] = pinned
+
+    def pinned(self, candidate: int = 1) -> list[dict[str, str]]:
+        """The spread pin of the candidate's stand-in fixation."""
+        return self.pins[candidate]
+
+    def unpin(self) -> None:
+        """The stand-in fixations lifted: ``read_validation_fixation`` reads the checkout alone."""
+        self.monkeypatch.setattr(study3_versions, "read_validation_fixation", READ_FIXATION)
+        self.pins.clear()
 
     # -- the records
 
@@ -118,8 +172,7 @@ class World:
             "active": ["A-F", "P-F"], "level": 0.975,
             "cohort": {"seeds": seeds,
                        "run_ids": [f"run-{s}-{k}" for s in seeds for k in range(4)]},
-            "spread": {"script": self.ref("study3_spread.py", root="repo"),
-                       "output": self.ref("spread-output.json")},
+            "spread": self.spread(),
             "spread_pp": 4.5, "N": N, "cap": CAPS.get(N),
             "simulation": {"path": "study3/decisions/simulation.json",
                            "sha256": self.digest("simulation"), "root": "runs"},
@@ -148,7 +201,8 @@ class World:
 
     def chain(self, candidate: int = 1, N: int = 75, *, through: str = "n", **simulation) -> None:
         """The valid records a later one answers: engineering, simulation (with the fields
-        ``simulation`` replaces), n (and budget)."""
+        ``simulation`` replaces), n (and budget), the candidate's spread pinned (``pin``)."""
+        self.pin(candidate)
         self.write("engineering", self.engineering())
         self.write("simulation", self.simulation(**simulation))
         if through in ("n", "budget"):
@@ -244,8 +298,8 @@ def coverage_row(level: float, *, passed: bool = True, J: int = 1000, M: int = 1
 
 
 @pytest.fixture
-def world(tmp_path) -> World:
-    return World(tmp_path)
+def world(tmp_path, monkeypatch) -> World:
+    return World(tmp_path, monkeypatch)
 
 
 def refused(world: World, kind: str, record: dict, *words: str) -> None:
@@ -413,6 +467,8 @@ def test_a_failed_verification_is_a_failed_record(world) -> None:
 
 
 def test_the_n_record_is_accepted_with_and_without_p(world) -> None:
+    world.pin(1)
+    world.pin(2)
     world.write("engineering", world.engineering())
     world.write("simulation", world.simulation())
     world.write("n-c1", world.n(1, 75))
@@ -529,6 +585,7 @@ EXTRA = [
 
 @pytest.mark.parametrize("extra", EXTRA)
 def test_no_mean_sign_per_seed_value_or_exploratory_diagnostic_is_a_field(world, extra) -> None:
+    world.pin()
     refused(world, "engineering", world.engineering(**{extra: 1.0}), extra, "not a field")
     refused(world, "simulation", world.simulation(**{extra: [0.1, 0.2]}), extra)
     world.write("simulation", world.simulation())
@@ -713,19 +770,115 @@ def test_the_cohort_is_validation_seeds_of_the_candidate_with_at_least_four_runs
 
 
 def test_an_evidence_file_changed_after_the_record_is_a_problem(world) -> None:
+    """The spread's output is evidence, checked against its file whenever the record is read; the
+    spread script is read record to record (its sha256 is ``spread.code``'s entry, never the file
+    now), so a change of the script after the record voids nothing."""
     world.chain(through="simulation")
     world.write("n-c1", world.n())
     record = json.loads(decision_path(world.runs, "n-c1").read_text())
     assert world.read("n-c1")[1] == []
-    for ref in (record["spread"]["script"], record["spread"]["output"]):
-        path = world.file(ref)
-        before = path.read_bytes()
-        path.write_bytes(before + b" ")
-        found, problems = world.read("n-c1")
-        assert found is None
-        assert any(str(path) in p and "sha256" in p and ref["sha256"] in p for p in problems)
-        path.write_bytes(before)
-        assert world.read("n-c1")[1] == []
+    ref = record["spread"]["output"]
+    path = world.file(ref)
+    before = path.read_bytes()
+    path.write_bytes(before + b" ")
+    found, problems = world.read("n-c1")
+    assert found is None
+    assert any(str(path) in p and "sha256" in p and ref["sha256"] in p for p in problems)
+    path.write_bytes(before)
+    assert world.read("n-c1")[1] == []
+    (world.repo / SPREAD_SCRIPT).write_text(SPREAD_STAND_IN + "x = 2\n")
+    assert world.read("n-c1")[1] == []
+
+
+# ------------------------------------------------------------------ the code the spread ran with
+
+
+def test_the_n_record_needs_the_pinned_spread(world) -> None:
+    world.write("engineering", world.engineering())
+    world.write("simulation", world.simulation())
+    with pytest.raises(DecisionRefused, match="validation fixation"):
+        world.write("n-c1", world.n())
+    world.pin()
+    world.write("n-c1", world.n())
+    assert world.read("n-c1")[1] == []
+
+
+@pytest.mark.parametrize("changed", ["scripts/study3_spread.py", "src/zero_field_refusal/train.py"])
+def test_a_file_changed_before_the_n_record_refuses_it(world, changed) -> None:
+    world.write("engineering", world.engineering())
+    world.write("simulation", world.simulation())
+    world.pin()
+    record = world.n()  # code: the pin, as the spread ran
+    (world.repo / changed).write_text("changed = True\n")
+    with pytest.raises(DecisionRefused, match=changed):
+        world.write("n-c1", record)
+
+
+@pytest.mark.parametrize("changed", ["scripts/study3_spread.py", "src/zero_field_refusal/train.py"])
+def test_a_file_changed_after_the_n_record_leaves_it_valid(world, changed) -> None:
+    world.chain()
+    (world.repo / changed).write_text("changed = True\n")
+    record, problems = world.read("n-c1")
+    assert problems == [] and record["spread"]["code"] == world.pinned()
+    (world.repo / changed).unlink()  # the reader hashes no file of the checkout
+    assert world.read("n-c1")[1] == []
+
+
+def test_an_n_record_whose_code_is_not_the_pin_is_invalid(world) -> None:
+    world.chain(through="simulation")
+    world.pin()
+    off = world.n()
+    off["spread"]["code"] = off["spread"]["code"][:1]
+    world.raw("n-c1", off)  # written past write_decision
+    record, problems = world.read("n-c1")
+    assert record is None and any("spread.code" in p for p in problems)
+
+
+def test_the_n_record_names_the_pinned_script_and_no_other(world) -> None:
+    world.chain(through="simulation")
+    world.pin()
+    other = world.n()
+    other["spread"]["script"] = {"path": "evidence/other.py", "sha256": "0" * 64, "root": "repo"}
+    with pytest.raises(DecisionRefused, match="scripts/study3_spread.py"):
+        world.write("n-c1", other)
+
+
+def test_the_scripts_sha256_is_the_pins(world) -> None:
+    """``spread.script`` names the script by the sha256 ``spread.code`` pins for it: another
+    sha256 is refused, read record to record."""
+    world.chain(through="simulation")
+    off = world.n()
+    off["spread"]["script"]["sha256"] = "0" * 64
+    with pytest.raises(DecisionRefused, match="spread.script"):
+        world.write("n-c1", off)
+    world.raw("n-c1", off)
+    record, problems = world.read("n-c1")
+    assert record is None and any("spread.script" in p and "0" * 64 in p for p in problems)
+
+
+@pytest.mark.parametrize("spread, words", [
+    ({"script": None}, ("spread.script",)),
+    ({"code": []}, ("spread.code", "non-empty list")),
+    ({"code": [{"path": "scripts/study3_spread.py", "sha256": "x"}]}, ("spread.code", "sha256")),
+    ({"extra": 1}, ("spread", "`extra`")),
+])  # fmt: skip
+def test_the_spreads_form(world, spread, words) -> None:
+    world.chain(through="simulation")
+    record = world.n()
+    record["spread"] = {**record["spread"], **spread}
+    refused(world, "n-c1", record, *words)
+
+
+def test_an_n_record_without_a_validation_fixation_is_invalid_on_reading(world) -> None:
+    """Written past ``write_decision`` while no validation fixation of the candidate pins the
+    spread, the record is not valid; once one does, with that pin, it is."""
+    world.write("engineering", world.engineering())
+    world.write("simulation", world.simulation())
+    world.raw("n-c1", world.n())
+    record, problems = world.read("n-c1")
+    assert record is None and any("no validation fixation of candidate 1" in p for p in problems)
+    world.pin()
+    assert world.read("n-c1")[1] == []
 
 
 @pytest.mark.parametrize("where", ["fixation", "inputs.seed_vectors", "inputs.design"])
@@ -1126,6 +1279,7 @@ def test_an_n_record_after_a_failed_simulation_is_refused(world) -> None:
 
 
 def test_the_cohort_fits_the_validation_size_the_simulation_chose(world) -> None:
+    world.pin()
     world.write("simulation", world.simulation())  # 28 blocks, 22 supported at least
     first = SEEDS["validation"][1][0]
 
@@ -1182,6 +1336,7 @@ SHORT = gates_with(power_af=power_gate(0.74, 84))  # the power is short; N of 84
 
 
 def test_an_n_record_below_n_min_is_refused_and_one_at_or_above_it_is_accepted(world) -> None:
+    world.pin()
     world.write("simulation", world.simulation(gates=SHORT))
     refused(world, "n-c1", world.n(N=75), "N is 75", "n_min 84")
     refused(world, "n-c1", world.n(N=83, cap=93), "N is 83", "n_min 84")
@@ -1193,6 +1348,7 @@ def test_an_n_record_below_n_min_is_refused_and_one_at_or_above_it_is_accepted(w
 
 
 def test_a_simulation_whose_power_is_not_short_has_no_floor_on_n(world) -> None:
+    world.pin()
     world.write("simulation", world.simulation())
     world.write("n-c1", world.n(N=60))
     assert world.read("n-c1")[1] == []
@@ -1222,7 +1378,7 @@ def test_an_n_raised_for_power_needs_a_budget_record_even_at_or_below_ninety(wor
     found = decisions(world.runs, 1, repo=world.repo)
     assert found["budget-c1"]["state"] == "passed" and found["budget-c1"]["problems"] == []
     # without the shortfall the same N needs none
-    other = World(world.runs.parent / "other")
+    other = World(world.runs.parent / "other", world.monkeypatch)
     other.chain(N=84)
     other.start({"study": 3, "candidate": 1, "step": "engineering", "round": None})
     assert list(decisions(other.runs, 1, repo=other.repo)) == ["engineering", "simulation", "n-c1"]
@@ -2220,7 +2376,7 @@ def test_an_end_closure_for_a_run_a_recovery_round_or_a_supersession_followed_is
                     "experiment": "study3", "reason": "the Pod stopped",
                     "runs": ["F-1.83e-05/s10300"]})  # fmt: skip
     refused(world, "closure-c1-F", record, "recovery")
-    other = World(world.runs.parent / "other")
+    other = World(world.runs.parent / "other", world.monkeypatch)
     record = ended(other)
     journal(
         other,
