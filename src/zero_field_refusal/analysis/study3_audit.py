@@ -57,7 +57,13 @@ reference), so it is given the coefficients negated, −c^E: Σ (−c_i)(judge_i
 - *The worst case of B_E* puts each missing reference at the extreme of its term: the low bound
   takes reference 0 where c_i^E > 0 and 1 elsewhere, the high bound the reverse, every draw
   counted. It bounds what the estimate over every draw can be; the MAR estimate, over the
-  resolved draws alone, is a different estimator and need not lie inside it.
+  resolved draws alone, is a different estimator and need not lie inside it: a missing draw's
+  term is fixed in sign by its known judge label, and the MAR estimate averages over the
+  resolved draws only.
+- *A draw with c_i^E = 0* ("The audit": each estimate is given on the draws with a resolved
+  reference). An F item of the other cohort alone adds exactly 0 to B_E, whatever its reference:
+  for E it counts as resolved, never as missing, and stays in E's MAR denominator; its missing
+  reference is missing for the other comparison and for F's error rates.
 - *Hansen–Hurwitz* is study 2's ``hansen_hurwitz``: per arm the mean over its resolved draws of
   c_i·(reference_i − judge_i)/p_i, summed over E's arms; its variance Σ_a s_a²/n'_a, its SE the
   square root (None under two resolved draws in an arm). Its Wald interval is not kept: none is
@@ -274,20 +280,26 @@ def bias(
     missing reference at its extreme and every draw counted; ``missing_draws`` and
     ``missing_items`` over E's arms; ``undetermined`` when an arm of E has no resolved draw (then
     no estimate and no bound). ``reference``: y_R by frame index of every drawn item (None:
-    missing)."""
+    missing). A draw whose coefficient for E is 0 (an F item of the other cohort alone) adds
+    exactly 0 to B_E whatever its reference: for E it is resolved, never missing (module
+    docstring, "Rulings")."""
     from .study2_audit import hansen_hurwitz  # loads torch: here only
 
     arms = list(COMPARISONS[comparison])
     drawn = [i for arm in arms for i in sample["draws"].get(arm, [])]
     _references(reference, drawn)
-    missing = [i for i in drawn if reference[i] is None]
+    # c^E = 0: its term is 0 at any reference, so it is resolved for E and stays in the MAR
+    # denominator (any value serves; 0 is given)
+    given = {**reference, **{i: 0 for i in drawn if reference[i] is None
+                             and frame[i]["c"][comparison] == 0}}  # fmt: skip
+    missing = [i for i in drawn if given[i] is None]
     out: dict[str, Any] = {
         "comparison": comparison,
         "arms": arms,
         "missing_draws": len(missing),
         "missing_items": len(set(missing)),
     }
-    resolved = {arm: [i for i in sample["draws"].get(arm, []) if reference[i] is not None]
+    resolved = {arm: [i for i in sample["draws"].get(arm, []) if given[i] is not None]
                 for arm in arms}  # fmt: skip
     if not all(resolved.values()):
         return {**out, "undetermined": True,
@@ -295,14 +307,14 @@ def bias(
                 "worst_case": None}  # fmt: skip
     c = np.array([-item["c"][comparison] for item in frame], dtype=float)  # ref − judge
 
-    def estimate(given: Mapping[int, int | None]) -> dict[str, Any]:
-        return hansen_hurwitz(frame, sample, given, c, arms=arms, level=_HH_LEVEL)
+    def estimate(values: Mapping[int, int | None]) -> dict[str, Any]:
+        return hansen_hurwitz(frame, sample, values, c, arms=arms, level=_HH_LEVEL)
 
-    found = estimate(reference)
+    found = estimate(given)
     se = found["se"]
     bounds = []
     for low in (True, False):
-        filled = {i: reference[i] if reference[i] is not None
+        filled = {i: given[i] if given[i] is not None
                   else int((frame[i]["c"][comparison] > 0) != low) for i in drawn}  # fmt: skip
         bounds.append(estimate(filled)["estimate"])
     return {**out, "undetermined": False,

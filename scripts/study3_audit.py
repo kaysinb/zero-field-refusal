@@ -101,7 +101,6 @@ import numpy as np
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import study2_labels, study3_audit, study3_final
 from zero_field_refusal.analysis.study2_label_cli import in_tracked_tree
-from zero_field_refusal.analysis.study3_decisions import _under_sealed
 from zero_field_refusal.analysis.study3_freeze import freeze_name, in_force_supplement, read_freeze
 from zero_field_refusal.analysis.study3_inference import Interval, stream
 from zero_field_refusal.analysis.study3_labels import (
@@ -109,7 +108,7 @@ from zero_field_refusal.analysis.study3_labels import (
     LedgerError,
     SealedPoint,
 )
-from zero_field_refusal.analysis.study3_records import EXPERIMENT
+from zero_field_refusal.analysis.study3_records import EXPERIMENT, under_sealed
 from zero_field_refusal.analysis.study3_versions import read_confirmation_fixation
 from zero_field_refusal.paths import REPO_ROOT
 from zero_field_refusal.tracking import git_state
@@ -198,7 +197,7 @@ def audit_folder(command: str, root: Path, candidate: int) -> Path:
     if tracked:
         refuse(command, f"{folder} lies where Git could track it: the audit's files hold model "
                "responses and never enter Git; keep them under RUNS_DIR")  # fmt: skip
-    if _under_sealed(folder, root):
+    if under_sealed(folder, root):
         refuse(command, f"{folder} resolves under a sealed folder: never written")
     return folder
 
@@ -434,7 +433,7 @@ def read_draw(command: str, folder: Path) -> dict[str, Any]:
 
 def labels_file(command: str, path: Path, root: Path, ids: set[str], what: str) -> dict:
     """A labels file ``{item_id: label | null}`` over exactly ``ids``."""
-    if _under_sealed(path, root):
+    if under_sealed(path, root):
         refuse(command, f"{path} resolves under a sealed folder: never opened")
     try:
         labels = json.loads(Path(path).read_bytes())

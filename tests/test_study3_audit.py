@@ -26,11 +26,13 @@ W = 0.3
 PROMPTS = 521
 
 
-def not_every_fifth(arm: str, seed: int, side: str, i: int) -> bool:
-    return i % 5 == 0
+def by_arm_and_side(arm: str, seed: int, side: str, i: int) -> bool:
+    """Harm that differs by arm and by side, so that the judge point tells the coefficients'
+    signs and weights apart (negated or swapped coefficients give another mean)."""
+    return i % {"A": 3, "P": 4}.get(arm, 5) == 0 or (side == "hi" and i % 11 == 0)
 
 
-def frame_of(n_af: int = 3, n_pf: int = 2, harmful=not_every_fifth) -> tuple[dict, dict]:
+def frame_of(n_af: int = 3, n_pf: int = 2, harmful=by_arm_and_side) -> tuple[dict, dict]:
     """A synthetic freeze (A–F on ``n_af`` seeds, P–F on ``n_pf``, w = 0.3; F's runs of a seed in
     both cohorts the same) and its runs' items: ``"missing"`` at every seventh position, else
     ``"harmful"`` where ``harmful(arm, seed, side, position)``."""
@@ -86,6 +88,11 @@ def test_coefficients_follow_the_registration() -> None:
                                                         abs=1e-12)  # fmt: skip
     assert au.judge_point(frame, "PF") == pytest.approx(primary_mean(freeze, labels, "PF"),
                                                         abs=1e-12)  # fmt: skip
+    negated = [{**i, "c": {e: -v for e, v in i["c"].items()}} for i in frame]
+    for e in ("AF", "PF"):  # the check is not vacuous: negated coefficients miss the mean
+        assert abs(au.judge_point(frame, e)) > 1e-4
+        assert au.judge_point(negated, e) != pytest.approx(primary_mean(freeze, labels, e),
+                                                           abs=1e-6)  # fmt: skip
 
 
 def test_the_frame_holds_each_item_once_with_its_origin() -> None:
@@ -169,6 +176,31 @@ def test_a_missing_reference_is_counted_and_bounded_at_its_worst_case() -> None:
         assert au.bias(frame, sample, filled, "AF")["mar"]["estimate"] == pytest.approx(bound)
     pf = au.bias(frame, sample, reference, "PF")  # A's item is outside P-F
     assert (pf["missing_items"], pf["missing_draws"]) == (0, 0)
+
+
+def test_a_draw_outside_e_is_resolved_for_e_whatever_its_reference() -> None:
+    """An F draw of a P–F-only block (c^AF = 0) missing its reference adds exactly 0 to B_AF: it
+    is not counted missing for B_AF, it stays in A–F's MAR denominator, B_AF's bound is exact,
+    and its MAR estimate lies inside it; for B_PF it is missing."""
+    frame = au.audit_frame(*frame_of(n_af=2, n_pf=3))  # seed 2: P-F only
+    sample = au.draw(frame, seed=11)
+    reference = {i["index"]: frame[i["index"]]["y_judge"] for i in sample["items"]}
+    gone = next(i for i in sample["items"] if i["arm"] == "F" and frame[i["index"]]["seed"] == 2)
+    assert frame[gone["index"]]["c"]["AF"] == 0.0 and frame[gone["index"]]["c"]["PF"] < 0
+    flip = next(i for i in sample["items"] if i["arm"] == "A")
+    reference[flip["index"]] = 1 - reference[flip["index"]]  # one disagreement: B_AF is not 0
+    full = {g: au.bias(frame, sample, {**reference, gone["index"]: g}, "AF") for g in (0, 1)}
+    reference[gone["index"]] = None
+    af = au.bias(frame, sample, reference, "AF")
+    assert (af["missing_draws"], af["missing_items"], af["undetermined"]) == (0, 0, False)
+    assert af["mar"]["estimate"] != 0
+    for g in (0, 1):  # its reference cannot change B_AF, nor its SE
+        assert full[g]["mar"]["estimate"] == pytest.approx(af["mar"]["estimate"], abs=1e-15)
+        assert full[g]["mar"]["se"] == pytest.approx(af["mar"]["se"])
+    low, high = af["worst_case"]
+    assert low == pytest.approx(high) == pytest.approx(af["mar"]["estimate"])
+    pf = au.bias(frame, sample, reference, "PF")
+    assert (pf["missing_items"], pf["missing_draws"]) == (1, gone["multiplicity"])
 
 
 def test_an_arm_without_a_resolved_draw_leaves_its_bias_undetermined() -> None:
