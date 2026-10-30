@@ -13,6 +13,7 @@ repair."""
 import copy
 import hashlib
 import json
+import math
 import shutil
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from omegaconf import OmegaConf
 from test_qualification import CODE
 from test_qualification_records import (
@@ -34,7 +36,8 @@ from test_qualification_records import (
 from test_qualification_records import World as QualificationWorld
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
 from test_qualify import ADAMW_LR, FIX, codes, load_script
-from test_study3_campaigns import START, run_config
+from test_study3_campaigns import ARM_OF, START, run_config
+from test_study3_campaigns import target as at_target
 from test_study3_package2 import REAL_IDENTITY, Route, SealedGuard, round0
 from test_study3_progress import OPT, Study, ep, run_of
 from test_study3_versions import git
@@ -59,7 +62,8 @@ from zero_field_refusal.analysis.study3_records import (
 )
 from zero_field_refusal.analysis.study3_search import CANDIDATES
 from zero_field_refusal.config import config_hash
-from zero_field_refusal.launch import load_campaign
+from zero_field_refusal.launch import campaign_header, load_campaign
+from zero_field_refusal.qualification_constants import FAILING
 
 
 def sha(data) -> str:
@@ -967,6 +971,115 @@ class CycleRoute(Route):
         path.write_bytes(b"\n".join(lines))
 
 
+class FixedRoute(CycleRoute):
+    """The campaign writer's route (``Route.build_to``) through candidate 1's validation fixation
+    and its first versions record. Each launcher run of the qualification is classified by its
+    case's baseline record under the old code, so that a cycle may rerun the qualification. The
+    qualification's reading is the route's, but a rate whose case record the candidate's bridge
+    voids (its ``attempts`` name it) is ``incomplete``, unless the reading is the view before the
+    cycle (the bridge read as absent)."""
+
+    def build(self) -> None:
+        self.build_to("fixation")
+        # the engineering campaign file where the operator keeps it: RUNS_DIR/campaigns/
+        self.campaign_file = self.root / "campaigns" / f"{load_campaign(self.engineering)[0]}.yaml"
+        self.campaign_file.parent.mkdir(exist_ok=True)
+        self.campaign_file.write_bytes(self.engineering.read_bytes())
+
+    def qualify(self, rates) -> None:
+        """``Route.qualify``, then every launcher run of the qualification classified by its
+        case's baseline record (attempt 1, the old code)."""
+        super().qualify(rates)
+        for path, ids in self.launched.items():
+            if campaign_header(Path(path)).get("step") not in ("numerical", "repair"):
+                continue
+            _, runs = load_campaign(Path(path))
+            for run, run_id in zip(runs, ids, strict=True):
+                cfg = run_config(run.config, run.overrides)
+                arm, lr = ARM_OF[str(cfg.optimizer.name)], float(cfg.optimizer.lr)
+                folder = (self.root / "qualification" / "c1" / "numerical" / f"s{run.seed}"
+                          / f"{OPT[arm]}-{lr:g}")  # fmt: skip
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "baseline-attempt-1.json").write_text(
+                    json.dumps(
+                        {
+                            "part": "baseline",
+                            "case": {
+                                "candidate": 1,
+                                "optimizer": OPT[arm],
+                                "lr": lr,
+                                "seed": run.seed,
+                                "engineering": False,
+                            },
+                            "launcher": {"identity": {"run_id": run_id}, "classified": True},
+                            "provenance": {"gpu_code": {"sha256": self.code["gpu_code_sha256"]}},
+                        }
+                    )
+                )
+
+    def qualification(self, runs_root, candidate, *, expected_code, settings, without=None,
+                      prefix=None, restarts=None) -> dict:  # fmt: skip
+        out = super().qualification(runs_root, candidate, expected_code=expected_code,
+                                    settings=settings)  # fmt: skip
+        bridge = Path(runs_root) / bridge_name(candidate)
+        if without == bridge_name(candidate) or not bridge.is_file():
+            return out
+        voided = {e.get("sha256") for e in json.loads(bridge.read_text()).get("attempts") or []}
+        for key, rate in out["rates"].items():
+            if sha(Path(rate["cases"][0]["folder"]) / "baseline-attempt-1.json") in voided:
+                rate["state"] = rate["verdict"]["state"] = out["states"][key] = "incomplete"
+        return out
+
+    def claims(self, **claims: str) -> SimpleNamespace:
+        """``study3_summary.py cycle`` with a claim per stage (``STAGE=CLAIM``), each with a
+        justification."""
+        argv = []
+        for stage, claim in claims.items():
+            argv += [f"{stage}={claim}", f"--justification={stage}=what the fix changes"]
+        last = argv.pop()  # given as ``cycle``'s own justification
+        return self.cycle(*argv, justification=last.split("=", 1)[1])
+
+    def block(self, seed: int, technical=()) -> list[str]:
+        """Block ``seed`` guarded and launched; ``technical``: the arms whose run at the lower
+        rate ends technical."""
+        assert self.guarded(seed, self.blocks[seed]).code == 0
+        rates: dict[str, list[float]] = {}
+        for cell in yaml.safe_load(self.blocks[seed].read_text())["cells"]:
+            pairs = dict(o.split("=", 1) for o in cell["overrides"])
+            rates.setdefault(ARM_OF[pairs["optimizer"]], []).append(float(pairs["optimizer.lr"]))
+        return self.launch(self.blocks[seed], technical={(arm, min(rates[arm]))
+                                                         for arm in technical})  # fmt: skip
+
+
+def p_misses(arm, rate, seed, candidate) -> dict:
+    """The validation at its targets, but P's upper rate below K* on the first seven blocks: P is
+    supported in 21 of 28 blocks, and P–F's gate fails."""
+    if arm == "P" and math.isclose(rate, START["P"]["u"]) and seed in SEEDS["validation"][1][:7]:
+        return {"k": 5.0}
+    return at_target(arm, rate, seed, candidate)
+
+
+@pytest.fixture
+def closed_p_route(tmp_path, monkeypatch):
+    """``FixedRoute`` with P–F closed by its validation gate (no closure record), the n record of
+    A–F, its budget, the supplement and its versions record, block 10400 and block 10401 with
+    F's run at its lower rate technical: the state's engineering cycle at the confirmation."""
+    sealed = pytest.MonkeyPatch()
+    try:
+        world = FixedRoute(tmp_path, monkeypatch)
+        world.guard = SealedGuard(sealed, runs_root=world.root)
+        world.build()
+        world.validate(p_misses)
+        world.choose()
+        world.supplement()
+        world.first_block()
+        world.block(10401, technical=("F",))
+        sealed.undo()
+        yield world
+    finally:
+        sealed.undo()
+
+
 def meta_path(run_id: str) -> str:
     return f"study3/{run_id}/meta.json"
 
@@ -1276,6 +1389,147 @@ def test_an_arm_the_route_closed_without_a_closure_keeps_the_cycle_valid(tmp_pat
                                     settings=REGISTERED)  # fmt: skip
     assert any("kept as of a closed arm" in p and "route before the cycle" in p
                for p in problems)  # fmt: skip
+
+
+def closed_p_study(tmp_path, closure: str):
+    """Candidate 1 through three confirmation blocks of A and F, P closed by the route alone with
+    no closure record: by P–F's validation gate (``gate``: P supported in 21 of 28 blocks) or by
+    its own qualification's scientific failure (``qualification``: P's upper rate failing); F's
+    run at its lower rate on 10401 a technical mark; on files (``materialize``)."""
+    study = Study()
+    study.ready()
+    study.search()
+    if closure == "gate":
+        study.numerical()
+        seeds = SEEDS["validation"][1][:28]
+        study.validation(special={(s, "P", "u"): {"K": 5.0} for s in seeds[:7]})
+    else:
+        study.numerical(states={("P", "u"): FAILING})
+        study.validation(arms=("A", "F"))
+    study.n(N=60, arms=("A", "F"))
+    study.confirmation(count=3, arms=("A", "F"))
+    return study, materialize(study, tmp_path, run_of(study, "confirmation", "F", "l", 10401))
+
+
+def repaired_lines(root: Path, bridge: dict) -> None:
+    """The bridge's ``superseded`` lines, as qualify.py's journal repair writes them: one per
+    launcher run, in its own campaign log, citing the bridge (beyond the cycle's prefix)."""
+    for entry in bridge["launchers"]:
+        append_line(root / "launch" / f"{entry['campaign']}.jsonl", {
+            "time": "2026-10-29T00:00:00+00:00", "event": "superseded", "run": entry["run"],
+            "experiment": entry["experiment"], "run_id": entry["run_id"],
+            "config_hash": entry["config_hash"], "record": str(root / bridge_name(1)),
+            "reason": "engineering cycle"})  # fmt: skip
+
+
+@pytest.mark.parametrize("closure", ["gate", "qualification"])
+@pytest.mark.parametrize("repaired", [False, True], ids=["published", "repaired"])
+def test_an_arm_the_route_alone_closed_keeps_a_cycle_that_reruns_the_qualification_valid(
+    tmp_path, monkeypatch, closure, repaired
+):
+    """P closed by the route alone (P–F's validation gate, or P's own qualification failure),
+    no closure record; a confirmation mark; a cycle that reruns the qualification, its bridge
+    published (then, ``repaired``, its journal lines written). An accepted bridge voids the
+    records it names by itself, from its publication on: read now, A's and F's rates wait for
+    their re-qualification, and the walk would stop at the numerical stage with P active. The
+    records before the cycle hold no qualification (``pre_cycle_records``), so ``inactive_arms``
+    reads it, as it stood before the cycle: the bridge read as absent, the cycle's journal
+    prefix. P stays closed, and the cycle stays valid."""
+    study, root = closed_p_study(tmp_path, closure)
+    state = study.advance()
+    assert (state["stage"], state["step"]["reason"]) == ("confirmation", "engineering_cycle")
+    assert state["active"]["arms"] == ["A", "F"]
+    claims = {"search": reuse(), "qualification": rerun(), "validation": reuse(),
+              "confirmation": rerun(arms=("A", "F"))}  # fmt: skip
+    record, bridge = derive(study, root, stage="confirmation", closed_arms=("P",), claims=claims)
+    assert record["affected"]["qualification"]["records"]  # the bridge voids the old records
+    cycle.publish_cycle(root, 1, record, bridge)
+    if repaired:
+        repaired_lines(root, bridge)
+    found = cycle.read_cycle(root, 1, repo=root.parent)
+    assert found["state"] == "valid", found["problems"]
+    before = study.records()
+    calls = []
+
+    def read(runs_root, c, *, expected_code, settings, without=None, prefix=None, restarts=None):
+        """The qualification as the records give it, but every rate the bridge voids waiting
+        (``incomplete``) while the bridge is not read as absent; P's failing case is kept."""
+        calls.append((c, expected_code, without, prefix))
+        reading = before.qualification[c]
+        if without == bridge_name(c) or not (Path(runs_root) / bridge_name(c)).is_file():
+            return reading
+        rates = {key: {**rate, "state": rate["state"] if rate["state"] == FAILING else
+                       "incomplete"} for key, rate in reading["rates"].items()}  # fmt: skip
+        return {**reading, "rates": rates,
+                "states": {key: rate["state"] for key, rate in rates.items()}}  # fmt: skip
+
+    monkeypatch.setattr(qr, "read_qualification", read)
+    monkeypatch.setattr(
+        cycle, "pre_cycle_records", lambda *a, **k: replace(before, qualification={})
+    )
+    problems = cycle.cycle_problems(found, runs_root=root, theta0=root, repo=root.parent,
+                                    settings=REGISTERED)  # fmt: skip
+    assert problems == [], problems[:3]
+    prefix = {j["path"]: j["lines"] for j in record["journal"]}
+    assert (1, OLD, bridge_name(1), prefix) in calls
+
+
+def test_an_arm_the_route_closed_keeps_the_cycle_valid_after_its_repair_on_files(closed_p_route):
+    """On the route's files, read as the readers read them: P–F closed by its validation gate
+    with no closure record, a confirmation mark, the cycle rerunning the qualification written by
+    study3_summary.py cycle, then qualify.py's real repair. The bridge voids the qualification's
+    old records; the view before the cycle reads them as they stood (its bridge absent, its
+    journal prefix), so the route before the cycle still shows P closed, and the cycle stays
+    valid, with no closed-arm problem."""
+    r = closed_p_route
+    state = r.state()
+    assert (state["stage"], state["step"]["reason"]) == ("confirmation", "engineering_cycle")
+    assert state["active"]["arms"] == ["A", "F"]
+    r.commit_fix()
+    ran = r.claims(search="reuse", qualification="rerun", validation="reuse",
+                   confirmation="rerun:A,F")  # fmt: skip
+    assert ran.code == 0, ran.error
+    record = r.record_()
+    closed = {k["run_id"] for k in record["kept"] if k["why"] == "closed_arm"}
+    assert closed and closed == {e.run_id for step in ("search", "validation")
+                                 for e in r.endpoints(step) if e.arm == "P"}  # fmt: skip
+    assert record["affected"]["qualification"]["records"]  # the qualification reruns
+    r.repair()
+    assert launcher.missing_lines(r.root) == []
+    problems = r.cycle_problems()
+    assert problems == [], problems[:3]
+
+
+def test_the_qualification_before_a_cycle_reads_as_it_stood(qualify, monkeypatch, tmp_path):
+    """``read_qualification``'s view before a cycle outside the qualification, on qualify.py's own
+    records: after the cycle's bridge, its repair, a recovery round's new launcher run and a part
+    rerun by hand under --engineering-cycle, the view (the bridge read as absent, the journal up
+    to the cycle's prefix, its pinned case restarts) reads the rates, the void records and the
+    inputs as the reading before the cycle did; read now, the bridge voids the old records."""
+    world = BridgeWorld(tmp_path)
+    world.full(code=QUALIFIED)
+    world.validation_run()
+    monkeypatch.setattr(code_identity, "gpu_code_identity", codes)  # this checkout: the fix
+    before = qr.read_qualification(world.root, 1, expected_code=OLD, settings=REGISTERED)
+    record, bridge = bridge_records(world)
+    cycle.publish_cycle(world.root, 1, record, bridge)
+    assert repair(world, bridge["old_record"]["path"], qualify) == 0
+    world.launch(ADAMW, commit="HEAD")  # the recovery round's new run
+    run_part_by_hand(qualify, world, ADAMW, attempt=2, flag="--engineering-cycle")
+    view = {
+        "without": bridge_name(1),
+        "prefix": {j["path"]: j["lines"] for j in record["journal"]},
+        "restarts": [r["path"] for r in record["affected"]["qualification"]["restarts"]],
+    }
+    then = qr.read_qualification(world.root, 1, expected_code=OLD, settings=REGISTERED, **view)
+    assert before["states"] and then["states"] == before["states"]
+    assert then["voided"] == before["voided"] == {}
+    assert then["inputs"] == before["inputs"]
+    assert [r["located"] for rate in then["rates"].values() for r in rate["runs"]] == [
+        r["located"] for rate in before["rates"].values() for r in rate["runs"]
+    ]
+    now = qr.read_qualification(world.root, 1, expected_code=OLD, settings=REGISTERED)
+    assert now["voided"] and now["states"] != before["states"]
 
 
 def test_a_dangling_link_at_the_record_or_the_bridge_is_refused_before_anything_is_written(

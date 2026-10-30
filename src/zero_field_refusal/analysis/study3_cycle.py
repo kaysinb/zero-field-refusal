@@ -153,9 +153,9 @@ journal prefix (``_restart_problems``): every restart record of the candidate th
 A run kept as of a closed arm is re-derived from the arms closed before the cycle: by a valid
 closure of the candidate (of its arm, or naming it) whose cited line lies in the pinned prefix,
 or by the route itself (``inactive_arms``: the state machine's walk over the records before the
-cycle, under its old code, shows the arm inactive: P–F closed by its validation gate or by a
-scientific failure, with no closure record). A run kept as of an arm closed by neither is a
-problem.
+cycle, under its old code and with the qualification read as it stood before the cycle, shows the
+arm inactive: P–F closed by its validation gate or by a scientific failure, with no closure
+record). A run kept as of an arm closed by neither is a problem.
 """
 
 from __future__ import annotations
@@ -816,10 +816,16 @@ def _runs_of(
 
 
 def publish_cycle(
-    runs_root: str | Path, candidate: int, record: Mapping, bridge: Mapping
+    runs_root: str | Path,
+    candidate: int,
+    record: Mapping,
+    bridge: Mapping,
+    *,
+    repo: str | Path = REPO_ROOT,
 ) -> tuple[Path, Path]:
     """The cycle record, then its bridge, each written once (``study3_decisions._publish``; the
-    record validated by ``write_decision``, the bridge in ``qualify.py``'s format). Run again
+    record validated by ``write_decision``, its evidence in the checkout, the validation fixation,
+    read in ``repo``; the bridge in ``qualify.py``'s format). Run again
     with byte-identical content, it writes only a file that is missing. ``CycleRefused``, before
     anything is written, when another supersession record of the candidate is there
     (``c<N>/supersede-*.json``), when a file is published with other content (it is never
@@ -850,7 +856,7 @@ def publish_cycle(
                            "record is never rewritten, and nothing is written")  # fmt: skip
     if not published:
         try:
-            write_decision(root, f"cycle-c{candidate}", record)
+            write_decision(root, f"cycle-c{candidate}", record, repo=repo)
         except DecisionRefused as exc:
             raise CycleRefused(str(exc)) from exc
     if bridged:
@@ -1332,12 +1338,14 @@ def inactive_arms(records: Records, record: Mapping[str, Any], *, runs_root: str
     docstring, "The pre-cycle view"): those that ``study3_progress.advance`` over the records
     before it (``records``), under the cycle's old code, does not show active once its walk is at
     the candidate. The qualification is read as ``records`` give it, or, when they give none
-    (``pre_cycle_records`` reads no qualification), now: each candidate's under the code in force
-    for its runs on the chain before the cycle, the cycle's candidate's under its old code. An arm
-    closed at or after the qualification by the route alone is shown only where that reading
-    still passes the qualification: under a rerun of the qualification, its records are voided
-    after the cycle's repair, the walk waits at the numerical stage, and such an arm is not
-    shown (a closure record shows it whatever the walk)."""
+    (``pre_cycle_records`` reads no qualification), as it stood before the cycle
+    (``qualification_records.read_qualification`` with the cycle's journal prefix): each
+    candidate's under the code in force for its runs on the chain before the cycle, the cycle's
+    candidate's under its old code, its bridge read as absent (its old records count, none voided
+    by it) and, when the cycle reruns the qualification, only the case restarts it pinned (one
+    that reuses it leaves its records as they are). So an arm the route alone closed at or after
+    the qualification (P–F's validation gate, or a scientific failure) stays shown after the
+    cycle's repair and its re-qualification as before them."""
     from dataclasses import replace
 
     from .study3_progress import _engineering_code, advance, code_chain
@@ -1348,12 +1356,19 @@ def inactive_arms(records: Records, record: Mapping[str, Any], *, runs_root: str
 
         engineering = (records.decisions.get(1) or {}).get("engineering") or {}
         _, in_force, _ = code_chain(_engineering_code(engineering), records.cycles)
+        prefix = {j["path"]: j["lines"] for j in record["journal"]}
+        rerun = (record["stages"].get("qualification") or {}).get("action") == "rerun"
+        pinned = [r["path"] for r in record["affected"]["qualification"]["restarts"]]
         readings = {}
         for c in (1, 2):
             code = old if c == candidate else in_force.get(c)
-            if code is not None:
-                readings[c] = qualification_records.read_qualification(
-                    runs_root, c, expected_code=code, settings=settings)  # fmt: skip
+            if code is None:
+                continue
+            own = c == candidate
+            readings[c] = qualification_records.read_qualification(
+                runs_root, c, expected_code=code, settings=settings, prefix=prefix,
+                without=bridge_name(candidate) if own else None,
+                restarts=pinned if own and rerun else None)  # fmt: skip
         records = replace(records, qualification=readings)
     result = advance(records, expected_code=old)
     if result.get("candidate") != candidate:

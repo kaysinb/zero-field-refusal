@@ -901,9 +901,9 @@ class Route(CampaignWorld):
         git(self.repo, "add", *(paths or ("-A",)))
         git(self.repo, "commit", "-qm", message)
 
-    def qualification(self, runs_root, candidate, *, expected_code, settings) -> dict:
+    def qualification(self, runs_root, candidate, *, expected_code, settings, **view) -> dict:
         """The qualification's reading: the rates in ``qualified``, each with its case's input
-        record (written by ``qualify``)."""
+        record (written by ``qualify``); ``view``, the view before a cycle, is the same here."""
         self.readings.append((candidate, expected_code))
         out = {"rates": {}, "states": {}, "cases": [], "voided": {}, "supersessions": [],
                "held": [], "problems": [], "inputs": []}  # fmt: skip
@@ -1033,9 +1033,32 @@ class Route(CampaignWorld):
         campaign kind, every summary command; the search's two rounds, a repair, the staged
         fixation and two versions records, N = 99 with its budget record, a P run under another
         commit (a dirty checkout) that P's closure record closes."""
+        self.build_to("done")
+
+    BUILD = ("fixation", "validation", "choice", "supplement", "confirming", "done")
+
+    def build_to(self, stage: str) -> None:
+        """``build``, step by step up to ``stage`` (``BUILD``): ``fixation``, through the
+        validation fixation and the first versions record, each committed alone; ``validation``,
+        the validation launched (every run at its target); ``choice``, the n and budget records;
+        ``supplement``, the confirmation supplement and the second versions record; ``confirming``,
+        the confirmation's first block; ``done``, the rest of the route."""
+        steps = {"fixation": self.to_fixation, "validation": self.validated,
+                 "choice": self.choose, "supplement": self.supplement,
+                 "confirming": self.first_block, "done": self.finish}  # fmt: skip
+        assert stage in steps
+        for name, step in steps.items():
+            step()
+            if name == stage:
+                return
+
+    def to_fixation(self) -> None:
+        """From the engineering campaign through the repair, then the validation fixation and the
+        first versions record, each committed alone."""
         root, theta0 = self.root, self.runs.theta0
         assert self.step()["record"] == "engineering"
-        self.launch(self.campaign("engineering"))
+        self.engineering = self.campaign("engineering")
+        self.launch(self.engineering)
         self.record("engineering", self.records.engineering(code=self.code))
         self.record("simulation", self.records.simulation(code=self.code))
         assert self.step()["campaign"] == "search-round0"
@@ -1059,18 +1082,33 @@ class Route(CampaignWorld):
         self.ok("summary", "versions", "--out", FIRST, "--reason", "validation_c1", "--fixation",
                 VALIDATION_C1, "--runs-root", root)  # fmt: skip
         self.commit("the versions record", FIRST)
+
+    def validate(self, values=target, technical=()) -> list[str]:
+        """The validation campaign written, checked and launched (``launch``'s ``values`` and
+        ``technical``); its run ids."""
         validation = self.campaign("validation")
-        self.ok("summary", "check", "--runs-root", root, "--campaign", validation)
-        self.launch(validation)
+        self.ok("summary", "check", "--runs-root", self.root, "--campaign", validation)
+        self.validation = validation
+        return self.launch(validation, values, technical)
+
+    def validated(self) -> None:
+        """The validation launched, every run at its target: the state's step is the n record."""
+        self.validate()
         state = self.state()
         assert (state["stage"], state["step"]["record"], state["problems"]) == (
             "choice", "n-c1", [])  # fmt: skip
-        fields = state["step"]["fields"]
+
+    def choose(self) -> None:
+        """The n record with the step's fields (N = 99) and its budget record."""
+        fields = self.state()["step"]["fields"]
         self.record("n-c1", self.records.n(1, N, rates=fields["rates"], active=fields["active"],
                                           cohort=fields["cohort"], code=self.code))  # fmt: skip
         self.record("budget-c1", self.records.budget(1, N, code=self.code))
         assert self.step()["campaign"] == "confirmation"
-        # the confirmation supplement and the versions record that supersedes the first
+
+    def supplement(self) -> None:
+        """The confirmation supplement and the versions record that supersedes the first."""
+        root = self.root
         self.ok("summary", "fixation", "confirmation", "--runs-root", root, "--candidate", 1,
                 *SUPPLEMENT_SEEDS)  # fmt: skip
         self.commit("the confirmation supplement", CONFIRMATION_C1)
@@ -1078,7 +1116,10 @@ class Route(CampaignWorld):
                 "--fixation", CONFIRMATION_C1, "--runs-root", root, "--supersedes", FIRST,
                 "--supersedes-reason", "confirmation_c1")  # fmt: skip
         self.commit("the second versions record", SECOND)
-        # three blocks, each started only when the real guard lets it
+
+    def first_block(self) -> None:
+        """Three blocks written, the first started only when the real guard lets it."""
+        root = self.root
         out = self.campaign("confirmation", "--blocks", 10400, 10402)
         self.blocks = {campaign_of(p)["cells"][0]["seeds"][0]: p for p in out.glob("*.yaml")}
         assert sorted(self.blocks) == [10400, 10401, 10402]
@@ -1087,6 +1128,11 @@ class Route(CampaignWorld):
         assert self.guarded(10400, self.blocks[10400]).code == 0
         assert self.guarded(10401, self.blocks[10401]).code != 0  # out of seed order
         self.launch(self.blocks[10400])
+
+    def finish(self) -> None:
+        """The second and third blocks, a P run of the third under a dirty checkout closed by
+        P's closure record, the fourth block with A and F alone, and the prep script."""
+        root = self.root
         assert self.guarded(10401, self.blocks[10401]).code == 0
         self.launch(self.blocks[10401])
         assert self.guarded(10402, self.blocks[10402]).code == 0

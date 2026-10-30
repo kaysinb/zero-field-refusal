@@ -802,7 +802,8 @@ def finish_cycle(args: argparse.Namespace, record: dict, bridge: dict, campaign:
         print(json.dumps(bridge, indent=1, ensure_ascii=False))
         return
     try:
-        path, bridge_path = publish_cycle(args.runs_root, args.candidate, record, bridge)
+        path, bridge_path = publish_cycle(args.runs_root, args.candidate, record, bridge,
+                                          repo=REPO)  # fmt: skip
     except CycleRefused as exc:
         refuse("cycle", "; ".join(exc.reasons))
     print(path)

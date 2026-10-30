@@ -160,6 +160,18 @@ written before it, so that a case restart after it changes nothing; no time stam
 the clocks of the machines need not agree). The writer counts every case restart record there
 when it writes, and pins those (``restarts`` of the result).
 
+**The view before a cycle** (``read_qualification`` with ``prefix``; "Voiding and
+supersession"). The qualification as it stood when a cycle outside it was written, which the
+cycle's own checks read (``study3_cycle``: the arms the route had closed before it): the
+cycle's bridge read as absent (``without``: it voids nothing, names nothing void and is no
+input), the launch journal read up to the prefix the cycle pins (a run started beyond it is no
+issued run and is located nowhere), the candidate's case restart records the cycle pinned
+(``restarts``; None: every one there), and a part attempt run after the cycle left out with
+every later attempt of its part: one whose ``.started`` file or record names the cycle's bridge
+(``qualify.py part --engineering-cycle``) or a launcher run started beyond the prefix. Neither
+the journal's time stamps nor the records' decide it. The verdict cache is not read there:
+each qualification campaign after the cycle rewrites it.
+
 **The issued runs.** The campaign file the verdict was given is not read: the launch journal
 stands for it. A start of a campaign whose header names study 3, the candidate and the step
 ``numerical`` or ``repair`` (a repaired rate is qualified as numerical runs) issued a case: its
@@ -1414,12 +1426,68 @@ def restart_checks(runs_root: str | Path) -> dict[str, dict[str, Any]]:
 # ------------------------------------------------------------------ the reading
 
 
+@dataclass(frozen=True)
+class _PreCycle:
+    """The view before an engineering cycle outside the qualification (module docstring, "The
+    view before a cycle"): its bridge read as absent (``without``, its path under RUNS_DIR), the
+    runs started beyond the journal prefix it pins (``later``) and the case restart records it
+    pinned (``restarts``, paths under RUNS_DIR; None: every one there counts)."""
+
+    root: Path
+    without: str | None
+    later: frozenset[str]
+    restarts: frozenset[str] | None
+
+    def counts(self, path: Path) -> bool:
+        """Whether a case restart or supersession record is one of the view."""
+        where = path.relative_to(self.root).as_posix()
+        if where == self.without:
+            return False
+        return (self.restarts is None or not RESTART_FILE.fullmatch(path.name)
+                or where in self.restarts)  # fmt: skip
+
+    def attempts(self, folder: Path, part: str, found: Mapping[int, str]) -> dict[int, str]:
+        """A part's attempts as they stood before the cycle: those before its first attempt run
+        after it (``_after``)."""
+        for n in sorted(found):
+            if self._after(folder, part, n, found[n]):
+                return {k: v for k, v in found.items() if k < n}
+        return dict(found)
+
+    def _after(self, folder: Path, part: str, n: int, state: str) -> bool:
+        """Whether a part attempt was run after the cycle: its ``.started`` file or its record
+        names the cycle's bridge (``qualify.py part --engineering-cycle``) or a launcher run
+        started beyond the pinned prefix. A file under a sealed folder is never opened."""
+        path = folder / f"{part}-attempt-{n}.json"
+        for file in (Path(f"{path}.started"), *([path] if state == "recorded" else [])):
+            data = None if under_sealed(file, self.root) else _object(file, self.root)
+            if not isinstance(data, Mapping):
+                continue
+            cycle = data.get("engineering_cycle")
+            named = cycle.get("path") if isinstance(cycle, Mapping) else cycle
+            if (self.without is not None and isinstance(named, str)
+                    and "/".join(PurePosixPath(named.replace("\\", "/")).parts[-3:])
+                    == self.without):  # fmt: skip
+                return True
+            launcher = data.get("launcher") if isinstance(data.get("launcher"), Mapping) else {}
+            identity = launcher.get("identity") if isinstance(launcher, Mapping) else None
+            run_dir = data.get("run_dir")
+            runs = {identity.get("run_id") if isinstance(identity, Mapping) else None,
+                    PurePosixPath(run_dir.replace("\\", "/")).name
+                    if isinstance(run_dir, str) else None}  # fmt: skip
+            if runs & self.later:
+                return True
+        return False
+
+
 class _Reading:
     """The candidate's numerical stage read as ``qualify.py verdict`` reads it (module
-    docstring, "The inputs of a rate"), every unreadable record a problem."""
+    docstring, "The inputs of a rate"), every unreadable record a problem; ``view``: the view
+    before a cycle outside the qualification, when it is read so."""
 
-    def __init__(self, root: Path, candidate: int, scope: Scope) -> None:
-        self.root, self.candidate, self.scope = root, candidate, scope
+    def __init__(self, root: Path, candidate: int, scope: Scope,
+                 view: _PreCycle | None = None) -> None:  # fmt: skip
+        self.root, self.candidate, self.scope, self.view = root, candidate, scope, view
         self.candidate_dir = root / "qualification" / f"c{candidate}"
         self.base = self.candidate_dir / STAGE
         self.problems: list[str] = []
@@ -1431,7 +1499,8 @@ class _Reading:
         self.folders: list[dict[str, Any]] = []
         self.issued: list[tuple[str, float, int]] = []  # the issued cases (``read``)
         self._read: dict[Path, dict[str, Any] | None] = {}  # every record ``_flagged`` read
-        found = sorted(self.candidate_dir.glob("supersede-*.json"))
+        found = [p for p in sorted(self.candidate_dir.glob("supersede-*.json"))
+                 if view is None or view.counts(p)]  # fmt: skip
         self.supersessions = [(p, self._flagged(p, "supersession record")) for p in found]
         self.voiding: list[tuple[Path, dict[str, Any]]] = []  # the accepted cycle (``read``)
 
@@ -1508,7 +1577,7 @@ class _Reading:
         case's restart records and the candidate's supersession records name."""
         restarts = sorted(
             (int(m[2]), p) for p in folder.glob("restart-*.json")
-            if (m := VOIDING_FILE.fullmatch(p.name))
+            if (m := VOIDING_FILE.fullmatch(p.name)) and (self.view is None or self.view.counts(p))
         )  # fmt: skip
         voiders = [(p, self._flagged(p, "case-restart record")) for _, p in restarts]
         voiders += list(self.voiding)  # the valid cycle alone
@@ -1540,6 +1609,8 @@ class _Reading:
         stale: list[tuple[str, int, dict | None, str | None, str | None]] = []
         for part in PARTS:
             attempts = attempt_files(folder, part)
+            if self.view is not None:  # the attempts before the cycle
+                attempts = self.view.attempts(folder, part, attempts)
             for n, state in attempts.items():
                 path = folder / f"{part}-attempt-{n}.json"
                 recorded = state == "recorded"
@@ -1712,8 +1783,9 @@ class _Located:
     not at all: a problem, into ``problems``, and no launcher run is located there."""
 
     def __init__(self, root: Path, superseded: Sequence[Mapping[str, Any]],
-                 problems: list[str]) -> None:  # fmt: skip
+                 problems: list[str], later: Collection[str] = ()) -> None:  # fmt: skip
         self.root, self.superseded, self.problems = root, superseded, problems
+        self.later = later  # runs started beyond a pinned journal prefix: no run of its view
         self.metas: dict[str, list[tuple[Path, dict[str, Any] | None]]] = {}
 
     def _meta(self, folder: Path) -> dict[str, Any] | None:
@@ -1730,7 +1802,8 @@ class _Located:
             directory = self.root / run.experiment
             # the decision records' folder is no run (study3_records.DECISIONS)
             self.metas[run.experiment] = [(d, self._meta(d)) for d in sorted(directory.glob("*"))
-                                          if d.name != DECISIONS]  # fmt: skip
+                                          if d.name != DECISIONS
+                                          and d.name not in self.later]  # fmt: skip
         named = {r["run_id"] for r in self.superseded if r.get("run") == run.label
                  and r.get("experiment") == run.experiment
                  and r.get("config_hash") == run.config_hash}  # fmt: skip
@@ -1832,7 +1905,14 @@ def _compare(
 
 
 def read_qualification(
-    runs_root: str | Path, candidate: int, *, expected_code: str, settings: Mapping[str, Any]
+    runs_root: str | Path,
+    candidate: int,
+    *,
+    expected_code: str,
+    settings: Mapping[str, Any],
+    without: str | None = None,
+    prefix: Mapping[str, int] | None = None,
+    restarts: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """The candidate's numerical qualification from its records (module docstring): per rate
     (``rates``, keyed ``<optimizer>-<rate:g>``) its ``arm``, optimizer, ``lr``, ``state`` and
@@ -1853,22 +1933,40 @@ def read_qualification(
     restart and supersession records; not the cache, nor ``finish``'s release records, the kept
     exports or their receipts, which decide no state); and the ``problems``, sorted.
     ``expected_code`` is the GPU code's sha256 the qualification must carry (the fixation record's);
-    ``settings`` configs/experiments/qualification.yaml as loaded. ``QualificationError`` (a
-    ``ValueError``) for settings that are not the qualification's or a candidate outside them."""
+    ``settings`` configs/experiments/qualification.yaml as loaded. With ``prefix``, the view
+    before an engineering cycle outside the qualification (module docstring, "The view before a
+    cycle"): ``without``, the cycle's bridge, ``prefix``, the journal prefix it pins, and
+    ``restarts``, the candidate's case restart records it pinned (None: every one there).
+    ``QualificationError`` (a ``ValueError``) for settings that are not the qualification's or a
+    candidate outside them."""
     if not (isinstance(expected_code, str) and expected_code):
         raise ValueError(f"expected_code is the GPU code's sha256, not {expected_code!r}")
     scope = Scope.of(settings)
     scope.seeds(candidate)  # a candidate outside the scope: QualificationError
     policy = settings_record(settings)
     root = Path(runs_root)
-    reading = _Reading(root, candidate, scope)
+    view = None
+    if prefix is not None:  # the runs started beyond the prefix are no runs of the view
+        started = {r.get("run_id") for _, r in _journal(root, [], prefix)
+                   if r.get("event") == "start"}  # fmt: skip
+        later = {r["run_id"] for _, r in _journal(root, []) if r.get("event") == "start"
+                 and isinstance(r.get("run_id"), str)} - started  # fmt: skip
+        mine = None if restarts is None else frozenset(restarts)
+        view = _PreCycle(root, without, frozenset(later), mine)
+    reading = _Reading(root, candidate, scope, view)
     problems = reading.problems
-    journal = _journal(root, problems)
+    journal = _journal(root, problems, prefix)
     issued = _issued(root, journal, candidate, problems)
     cases = [(r.optimizer, r.lr, r.seed) for r in issued if r.optimizer is not None]
     checks = _checks(root, scope, journal, {candidate: cases})  # the one check of every cycle
+    if view is not None:  # the cycle's own bridge read as absent
+        checks = {path: check for path, check in checks.items() if view.counts(path)}
     cycles = {path.relative_to(root).as_posix(): check for path, check in checks.items()}
-    restarts = _restart_check(root, journal)  # what each case restart record voids
+    restarts_ = _restart_check(root, journal)  # what each case restart record voids
+    if view is not None:  # only the case restarts before the cycle
+        restarts_ = {where: check for where, check in restarts_.items()
+                     if not where.startswith(f"qualification/c{candidate}/")
+                     or view.counts(root / where)}  # fmt: skip
     labels = study3_labels([(c, r) for c, r in journal if r.get("event") == "start"
                             and r.get("experiment") == EXPERIMENT])  # fmt: skip
     holds, unreadable = read_holds(root, cycles=cycles)
@@ -1877,14 +1975,15 @@ def read_qualification(
     # a superseded line counts only through an accepted record that names its run
     superseded_lines = []
     for line in _named_runs(journal, "superseded"):
-        why = _unbacked(line, cycles, restarts, labels)
+        why = _unbacked(line, cycles, restarts_, labels)
         if why is None:
             superseded_lines.append(line)
         else:
             shown = f" of {line['run_id']}" if plain_name(line["run_id"]) else ""
             problems.append(f"{root / 'launch' / (line['campaign'] + '.jsonl')}: a superseded "
                             f"line{shown} counts for nothing: {why}")  # fmt: skip
-    cache = _cache(reading.candidate_dir / VERDICT, problems, root)
+    # the cache, rewritten by every qualification campaign, is not read before a cycle
+    cache = None if view is not None else _cache(reading.candidate_dir / VERDICT, problems, root)
     order: list[tuple[str, float]] = []
     for run in issued:
         _add_rate(order, run.optimizer, run.lr)
@@ -1893,7 +1992,7 @@ def read_qualification(
         _add_rate(order, case.get("optimizer"), case.get("lr"))
     for optimizer, lr in (cache or {}).get("rates", {}).values():
         _add_rate(order, optimizer, lr)
-    located = _Located(root, superseded_lines, problems)
+    located = _Located(root, superseded_lines, problems, () if view is None else view.later)
     held = _held(root, candidate, holds, issued)
     inputs = {"scope": scope, "candidate": candidate, "code": {"sha256": expected_code},
               "policy": policy}  # fmt: skip
@@ -2032,6 +2131,8 @@ def _restarts(reading: _Reading) -> list[dict[str, Any]]:
     names and the launcher run it supersedes."""
     out = []
     for path in sorted(reading.base.glob("s*/*/restart-*.json")):
+        if reading.view is not None and not reading.view.counts(path):
+            continue  # a case restart after the cycle: no record of the view before it
         record = reading._flagged(path, "case-restart record") or {}
         launcher = record.get("launcher") if isinstance(record.get("launcher"), Mapping) else {}
         attempts = record.get("attempts") if isinstance(record.get("attempts"), list) else []
