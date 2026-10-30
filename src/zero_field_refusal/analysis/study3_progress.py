@@ -1133,18 +1133,26 @@ class _Walk:
             return set(self.arms)
         return {"A", "F"} | ({"P"} if "P-F" in active else set())
 
-    def _stale(self, candidate: int, code: Any) -> bool:
-        """Whether a write-once record of GPU code ``code`` went stale through the candidate's
-        valid cycle: its code is the cycle's old code, no longer the one in force."""
+    def _stale(self, candidate: int, code: Any, path: Any) -> bool:
+        """Whether the write-once record at ``path`` (a fixation's in the checkout, an n or
+        budget record's ``study3/decisions/<name>``), of GPU code ``code``, went stale through
+        the candidate's valid cycle: the cycle lists it among the records it makes stale
+        (``affected.records``: those there when it was written), and its code is the cycle's old
+        code, no longer the one in force. A record of the old code that the cycle does not list
+        (written after it, or a later link whose code equals the old one) is not stale: no
+        successor could name it, and its code decides it."""
         record = self._cycle_record(candidate)
-        return (record is not None and code == record["old_code"]
-                and code != self.in_force.get(candidate))  # fmt: skip
+        if record is None or code != record["old_code"] or code == self.in_force.get(candidate):
+            return False
+        listed = (record.get("affected") or {}).get("records") or []
+        return any(isinstance(entry, Mapping) and entry.get("path") == path for entry in listed)
 
     def _successor_of(self, stage: str, candidate: int, step: str) -> None:
         """The step that writes the successor of the candidate's stale fixation of ``step``
         (module docstring, "After the validation fixation"); the lenient walk passes over it."""
         link = (self.records.fixed.get(candidate) or {}).get(step)
-        if self.lenient or link is None or not self._stale(candidate, link.get("code")):
+        if self.lenient or link is None or not self._stale(candidate, link.get("code"),
+                                                           link.get("path")):  # fmt: skip
             return
         from .study3_versions import fixation_name
 
@@ -2111,7 +2119,8 @@ class _Walk:
                            f"cycles {self.codes}")  # fmt: skip
             elif (family in ("n", "budget") and candidate in self.in_force
                   and code != self.in_force[candidate]):  # fmt: skip
-                if self._stale(candidate, code):  # its successor is the step that needs it
+                where = "/".join((*DIRECTORY, Path(entry["path"]).name))
+                if self._stale(candidate, code, where):  # its successor is the step that needs it
                     entry["stale"] = True
                     continue
                 invalidate(entry, f"its GPU code {code} is not {self.in_force[candidate]}, the "

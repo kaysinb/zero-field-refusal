@@ -1244,6 +1244,13 @@ def post_fixation_cycle(candidate: int = 1, *, reissued_validation: dict | None 
     record = study.cycle_records[candidate]["record"]
     record["fixation"] = {"path": study.fixed[candidate]["validation"]["path"], "sha256": "7" * 64,
                           "root": "repo"}  # fmt: skip
+    # the write-once records of the old code there when the cycle is written, as it lists them
+    record["affected"]["records"] = sorted(
+        [dict(record["fixation"]),
+         *([{"path": study.fixed[candidate]["confirmation"]["path"], "sha256": "6" * 64,
+             "root": "repo"}, {"path": f"study3/decisions/n-c{candidate}.json",
+                               "sha256": "5" * 64}] if confirming else [])],
+        key=lambda entry: entry["path"])  # fmt: skip
     if requalified_K_miss is not None:  # the re-qualification's runs miss the target
         arm, label = requalified_K_miss
         for e in [
@@ -1312,12 +1319,14 @@ def test_after_a_cycle_the_stale_records_successors_come_in_the_registered_order
     listing names each stale record and its successor once written."""
     study = post_fixation_cycle(candidate=1, confirming=True)
     study.cycle_records[1]["record"]["affected"]["records"] = [
+        {"path": "docs/study3-fixation-confirmation-c1.json", "sha256": "3" * 64, "root": "repo"},
         {"path": "docs/study3-fixation-validation-c1.json", "sha256": "1" * 64, "root": "repo"},
         {"path": "study3/decisions/n-c1.json", "sha256": "2" * 64}]  # fmt: skip
     result = study.advance()
     assert (result["stage"], result["step"]["record"]) == ("validation", "fixation-validation-c1-2")
     assert result["step"]["path"] == "docs/study3-fixation-validation-c1-2.json"
     assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-confirmation-c1.json": None,
         "docs/study3-fixation-validation-c1.json": None,
         "study3/decisions/n-c1.json": None,
     }
@@ -1339,8 +1348,37 @@ def test_after_a_cycle_the_stale_records_successors_come_in_the_registered_order
     assert (result["stage"], result["step"]["record"]) == (
         "confirmation", "fixation-confirmation-c1-2")  # fmt: skip
     assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-confirmation-c1.json": None,
         "docs/study3-fixation-validation-c1.json": "docs/study3-fixation-validation-c1-2.json",
         "study3/decisions/n-c1.json": "study3/decisions/n-c1-2.json"}  # fmt: skip
+
+
+def test_an_old_code_record_the_cycle_does_not_list_is_not_stale() -> None:
+    """A write-once record is stale only when its cycle lists it (``affected.records``: those
+    there when it was written). After a cycle at the validation, its fixation's successor written
+    and the validation reissued: an n record of the old code written after the cycle asks for no
+    successor (none could name a record the cycle lists): it is invalid, its code not the one in
+    force, and the cycle stays valid. A fixation's successor whose code equals the old one is not
+    stale either: no further successor is asked of it."""
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 28})
+    old = study.cycle_records[1]["record"]["old_code"]
+    assert [e["path"] for e in study.cycle_records[1]["record"]["affected"]["records"]] == [
+        "docs/study3-fixation-validation-c1.json"]  # fmt: skip
+    study.n(N=60)
+    study.entries["n-c1"]["record"]["code"]["gpu_code_sha256"] = old
+    result = study.advance()
+    assert result["step"].get("record") != "n-c1-2"
+    assert result["step"]["kind"] == "blocked"
+    assert any(f"its GPU code {old}" in p and "the code in force" in p
+               for p in result["step"]["reasons"])  # fmt: skip
+    assert result["cycle"][1]["state"] == "valid"
+    study = post_fixation_cycle(candidate=1, reissued_validation={"supported": 28})
+    study.fixed[1]["validation"] = fixation_link(1, "validation", 2, old)
+    result = study.advance()
+    assert result["step"].get("record") != "fixation-validation-c1-3"
+    assert result["cycle"][1]["successors"] == {
+        "docs/study3-fixation-validation-c1.json": "docs/study3-fixation-validation-c1-2.json"
+    }
 
 
 def test_once_the_confirmation_started_a_failing_requalification_moves_nothing() -> None:
