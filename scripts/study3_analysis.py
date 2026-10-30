@@ -64,7 +64,8 @@ researcher's. Its inputs, gathered label-free:
 3. the analysis freeze (``read_freeze``, no problem) when it is written;
 4. the labeling ledger's answers, through the label reader's ledger readers alone:
    ``labeling_problems`` (the runs with a technical labeling problem) and ``diagnoses`` (the
-   diagnosis records; a ``judge`` one makes the report the ``judge_technical`` variant);
+   diagnosis records; one whose cause is ``judge`` makes the report the ``judge_technical``
+   variant, which states every such diagnosis);
 5. the latest analysis and its validation harm (each naming the committed freeze by its sha256,
    validation's harm naming the analysis by its sha256), and the audit's estimate (naming its
    selection and agreements by their sha256, the selection naming the freeze and an analysis of
@@ -589,11 +590,10 @@ def report(args: argparse.Namespace) -> None:
         found = diagnoses(root)
     except LedgerError as exc:
         refuse("report", f"the labeling ledger cannot be read: {exc}")
-    judged = [d for d in found if d.cause == "judge"]
-    judge = None if not judged else {
-        "path": record_path(judged[0].batch), "sha256": judged[0].sha256,
-        "batch": judged[0].batch, "cause": judged[0].cause, "diagnosis": judged[0].diagnosis,
-        "evidence": [dict(e) for e in judged[0].evidence]}  # fmt: skip
+    judged = [{"path": record_path(d.batch), "sha256": d.sha256, "batch": d.batch,
+               "cause": d.cause, "diagnosis": d.diagnosis,
+               "evidence": [dict(e) for e in d.evidence]}
+              for d in found if d.cause == "judge"]  # fmt: skip
     # 5. the analysis, validation's harm and the audit's estimate, as written
     analysis, validation, audit = final_outputs(root, candidate, frozen)
     # 6. the incidents of the records
@@ -606,7 +606,7 @@ def report(args: argparse.Namespace) -> None:
         facts = study3_report.report_facts(
             state, records=records, billing=billing, incidents=incidents,
             labeling_problems=problems, analysis=analysis, validation=validation, audit=audit,
-            embargo=embargo, judge_diagnosis=judge)  # fmt: skip
+            embargo=embargo, judge_diagnoses=judged)  # fmt: skip
     except ValueError as exc:
         refuse("report", str(exc))
     data = json.dumps(facts, indent=2, allow_nan=False, ensure_ascii=False) + "\n"  # in order
@@ -740,9 +740,14 @@ def final_outputs(root: Path, candidate: Any, frozen: Mapping[str, Any] | None
                 drawn = found["record"].get("analysis") or {}
                 analyses = {f"{FINAL}/c{candidate}/{names(j)[0]}" for j in range(1, k + 1)}
                 target = root / str(drawn.get("path"))
-                if (found["record"].get("freeze") != named or drawn.get("path") not in analyses
-                        or drawn.get("root") != "runs"
-                        or sha256(target.read_bytes()) != drawn.get("sha256")):  # fmt: skip
+                same = (found["record"].get("freeze") == named and drawn.get("path") in analyses
+                        and drawn.get("root") == "runs")  # fmt: skip
+                try:
+                    same = same and sha256(target.read_bytes()) == drawn.get("sha256")
+                except OSError as exc:
+                    refuse("report", f"{found['path']} names {drawn.get('path')}, which cannot be "
+                           f"read ({type(exc).__name__})")  # fmt: skip
+                if not same:
                     refuse("report", f"{found['path']} does not name the freeze and an analysis "
                            f"of candidate {candidate} by their sha256")  # fmt: skip
     return analysis, validation, audit

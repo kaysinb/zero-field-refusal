@@ -39,8 +39,9 @@ the analysis, validation's harm and the audit's estimate as their records hold t
   when the judge's technical mark is unresolved (a diagnosis record whose cause is ``judge``) and
   labeling stays stopped: no Δ, no interval and no audit (``analysis``, ``validation_harm`` and
   ``audit`` are ``"not reached: the judge's technical mark"``); the freeze with its cohorts when
-  it exists; the diagnosis (``judge_mark``); the runs with a technical labeling problem; every
-  label-free section as in the standard variant. An ``infrastructure`` diagnosis changes nothing
+  it exists; every diagnosis whose cause is ``judge`` (``judge_mark``), each also a technical dead
+  end; the runs with a technical labeling problem; every label-free section as in the standard
+  variant. An ``infrastructure`` diagnosis changes nothing
   here: its lost rounds are released, and labeling resumes. The variants do not mix.
 
 **The sections** (``SECTIONS``): each present in every outcome; one the study did not reach is
@@ -87,7 +88,8 @@ and ``embargo`` are lists, ``[]`` when empty.
 - ``labeling``: the run ids with a technical labeling problem.
 - ``freeze``: the freeze record's path and sha256 and its cohorts as frozen (seeds and run ids per
   comparison, K*_h, A − P).
-- ``judge_mark``: the judge's diagnosis (path, sha256, batch, cause, diagnosis, evidence).
+- ``judge_mark``: the judge's diagnoses, each its path, sha256, batch, cause, diagnosis and
+  evidence.
 - ``money``: actual spending by stage, one row per incident (its id, stage, incident time, cause,
   billed price and evidence list), and the stages an internal spending policy stopped, by name
   alone.
@@ -106,7 +108,9 @@ reference (``{"pod": ref}``), which names no record. The report is refused unles
 is named by exactly one billed incident, every record an incident names is one of them, the ids
 are distinct, every incident names some evidence, and each incident's stage is its records'
 where shown (a journal line's: the step of its log's study-3 starts; a qualification record's:
-its stage folder, ``numerical`` covering the repair). No other money figure is read or written.
+its stage folder, ``numerical`` covering the repair). Every stage the route reached (the stage of
+a route event) or an incident is billed at has its spending entry, ``0`` included; otherwise the
+report is refused. No other money figure is read or written.
 
 **The simulation's results** are read through one adapter, ``simulation_results``: the per-test
 rows of ``RUNS_DIR/study3/simulation/results.json`` (``SIMULATION_RESULTS``), each with the row
@@ -120,7 +124,9 @@ checks, and the decisions recomputed from the rows) takes its place when it is i
 - *The dead ends.* A route's move to candidate 2 and a P–F closure for a scientific failure or a
   failed validation gate are scientific (``scientific_failure``, ``validation_gate``); a technical
   report, a P–F closure after the engineering cycle (``unresolved_after_cycle``) or by a closure
-  record (its reason id) are technical.
+  record (its reason id) are technical, and so is the judge's technical mark in the
+  ``judge_technical`` variant (``judge_mark``, at the labeling, one per diagnosis with its
+  batch).
 - *The registered utility worst case* is over the started confirmation blocks, per arm: the
   largest MMLU and factual losses among the endpoints that ended (usable, unusable or failed
   scientifically), with the run.
@@ -577,7 +583,7 @@ def report_facts(
     validation: Mapping[str, Any] | None = None,
     audit: Mapping[str, Any] | None = None,
     embargo: Sequence[Mapping[str, Any]] = (),
-    judge_diagnosis: Any = None,
+    judge_diagnoses: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The report's facts (module docstring), strict JSON, one entry per ``SECTIONS``.
 
@@ -591,28 +597,29 @@ def report_facts(
     "qualification": qualification_incidents}``; ``labeling_problems``: the runs with a technical
     labeling problem (the label reader's ledger); ``analysis``, ``validation`` and ``audit``: the
     analysis, validation's harm and the audit's estimate, each ``{"path", "sha256", "record"}``;
-    ``embargo``: ``read_embargo``'s; ``judge_diagnosis``: the judge's diagnosis record (``path``,
-    ``sha256``, ``batch``, ``cause``, ``diagnosis``, ``evidence``), given exactly for the
-    ``judge_technical`` variant.
+    ``embargo``: ``read_embargo``'s; ``judge_diagnoses``: every diagnosis record of the labeling
+    ledger whose cause is ``judge`` (each ``path``, ``sha256``, ``batch``, ``cause``,
+    ``diagnosis``, ``evidence``), given exactly for the ``judge_technical`` variant.
 
-    ``ValueError``: the ``judge_technical`` variant without a diagnosis whose cause is ``judge``,
-    or with the analysis, validation's harm or the audit; the standard variant at a stage that is
-    neither ``done`` nor terminal, at ``done`` without the analysis, validation's harm or the
-    audit's estimate (naming the runs with a technical labeling problem, and that a judge
-    diagnosis calls for the ``judge_technical`` variant), or with them before ``done``; a billing
-    record off its schema; an incident of the records (a launch-journal line, a qualification
-    ``--infrastructure`` record) named by no billed incident, a record an incident names that is
-    none of them, or an incident billed at a stage that is not its records' (module docstring,
-    "Money")."""
+    ``ValueError``: the ``judge_technical`` variant with a diagnosis whose cause is not
+    ``judge``, or with the analysis, validation's harm or the audit; the standard variant at a
+    stage that is neither ``done`` nor terminal, at ``done`` without the analysis, validation's
+    harm or the audit's estimate (naming the runs with a technical labeling problem, and that a
+    judge diagnosis calls for the ``judge_technical`` variant), or with them before ``done``; a
+    billing record off its schema; an incident of the records (a launch-journal line, a
+    qualification ``--infrastructure`` record) named by no billed incident, a record an incident
+    names that is none of them, or an incident billed at a stage that is not its records'; a
+    stage the route or an incident reached with no spending entry (module docstring, "Money")."""
+    diagnoses = list(judge_diagnoses)
     variant = _variant(
         state,
         labeling_problems,
-        judge_diagnosis,
+        diagnoses,
         analysis=analysis,
         validation=validation,
         audit=audit,
     )
-    money = _money(billing, incidents)
+    money = _money(billing, incidents, state.get("route") or ())
     endpoints = list(records.get("endpoints") or ())
     uncounted = {entry.get("run_id") for entry in state.get("not_counted") or ()}
     kept = [e for e in endpoints if e.run_id not in uncounted]
@@ -621,7 +628,7 @@ def report_facts(
     confirmation = _confirmation(state, kept)
     judged = variant == "judge_technical"
     facts = {
-        "outcome": _outcome(state, variant),
+        "outcome": _outcome(state, variant, diagnoses),
         "dry_run": _dry_run(records.get("engineering"), records.get("policy")),
         "engineering": _engineering(records.get("engineering_verdict")),
         "simulation": _simulation(simulation, records.get("simulation_results")),
@@ -636,7 +643,7 @@ def report_facts(
         "audit": JUDGE_NOT_REACHED if judged else _audit(audit),
         "labeling": sorted(labeling_problems),
         "freeze": _freeze(records.get("freeze")),
-        "judge_mark": _judge_mark(judge_diagnosis) if judged else None,
+        "judge_mark": [_judge_mark(d) for d in diagnoses] if judged else None,
         "money": money,
         "embargo": [{key: entry[key] for key in EMBARGO_FIELDS} for entry in embargo],
     }
@@ -646,17 +653,20 @@ def report_facts(
 
 
 def _variant(
-    state: Mapping[str, Any], labeling_problems: Sequence[str], judge_diagnosis: Any, **final: Any
+    state: Mapping[str, Any],
+    labeling_problems: Sequence[str],
+    diagnoses: Sequence[Any],
+    **final: Any,
 ) -> str:
     """The variant the inputs call for, or the refusal (``report_facts``)."""
     given = [name for name in FINAL_THREE if final.get(name) is not None]
     stage = state.get("stage")
-    if judge_diagnosis is not None:
-        cause = _field(judge_diagnosis, "cause")
-        if cause != "judge":
+    if diagnoses:
+        causes = [_field(d, "cause") for d in diagnoses]
+        if any(cause != "judge" for cause in causes):
             raise ValueError(
-                f"the judge_technical variant needs the judge's diagnosis record whose "
-                f"cause is judge, not {cause!r}: an infrastructure diagnosis releases "
+                f"the judge_technical variant needs the judge's diagnosis records, each "
+                f"of cause judge, not {causes!r}: an infrastructure diagnosis releases "
                 "its rounds, and labeling resumes"
             )
         if given:
@@ -698,10 +708,13 @@ def _link(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _money(
-    billing: Mapping[str, Any], incidents: Mapping[str, Sequence[Mapping[str, Any]]]
+    billing: Mapping[str, Any],
+    incidents: Mapping[str, Sequence[Mapping[str, Any]]],
+    route: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Money (module docstring): the billing as it is, each incident of the records named by one
-    billed incident of its stage, and nothing else named."""
+    billed incident of its stage, nothing else named, and a spending entry for every stage the
+    route (its events' stages) or an incident reached."""
     problems = billing_problems(billing)
     if problems:
         raise ValueError("the billing file: " + "; ".join(problems))
@@ -734,6 +747,13 @@ def _money(
     if found:
         raise ValueError("every incident of the records is billed once, at its stage: "
                          + "; ".join(found))  # fmt: skip
+    reached = {e.get("stage") for e in route} | {entry["stage"] for entry in billed}
+    spent = {entry["stage"] for entry in billing["stages"]}
+    unlisted = [stage for stage in MONEY_STAGES if stage in reached and stage not in spent]
+    if unlisted:
+        raise ValueError(f"the billing file has no spending entry for {', '.join(unlisted)}: every "
+                         "stage the route or an incident reached is listed with what it "
+                         "spent")  # fmt: skip
     return {
         "currency": billing["currency"],
         "by_stage": [dict(entry) for entry in billing["stages"]],
@@ -760,7 +780,7 @@ def _qualification_stages(path: Any) -> tuple[str, ...] | None:
 # -- the outcome
 
 
-def _outcome(state: Mapping[str, Any], variant: str) -> dict[str, Any]:
+def _outcome(state: Mapping[str, Any], variant: str, diagnoses: Sequence[Any]) -> dict[str, Any]:
     closures = {}
     for kind, entry in sorted((state.get("closures") or {}).items()):
         record = entry.get("record") or {}
@@ -780,13 +800,17 @@ def _outcome(state: Mapping[str, Any], variant: str) -> dict[str, Any]:
         "active": state.get("active"),
         "route": [dict(e) for e in state.get("route") or ()],
         "closures": closures,
-        "dead_ends": _dead_ends(state),
+        "dead_ends": _dead_ends(state, diagnoses),
     }
 
 
-def _dead_ends(state: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def _dead_ends(
+    state: Mapping[str, Any], diagnoses: Sequence[Any] = ()
+) -> dict[str, list[dict[str, Any]]]:
     """The technical dead ends and the scientific failures apart (module docstring,
-    "Rulings"), each with its candidate, stage, arms and reason id."""
+    "Rulings"), each with its candidate, stage, arms and reason id; the judge's technical mark
+    (``diagnoses``, the ``judge_technical`` variant's) a technical one per diagnosis, at the
+    labeling, with its batch."""
     technical: list[dict[str, Any]] = []
     scientific: list[dict[str, Any]] = []
     closures = state.get("closures") or {}
@@ -815,6 +839,16 @@ def _dead_ends(state: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
                 "stage": None,
                 "arms": [],
                 "reason": state.get("reason"),
+            }
+        )
+    for diagnosis in diagnoses:
+        technical.append(
+            {
+                "candidate": state.get("candidate"),
+                "stage": "labeling",
+                "arms": [],
+                "reason": "judge_mark",
+                "batch": _field(diagnosis, "batch"),
             }
         )
     return {"technical": technical, "scientific": scientific}
@@ -1434,9 +1468,16 @@ def _render_outcome(o: Mapping[str, Any]) -> list[str]:
         ],
     )
     lines += _table(
-        ("dead end", "candidate", "stage", "arms", "reason"),
+        ("dead end", "candidate", "stage", "arms", "reason", "batch"),
         [
-            (kind, e.get("candidate"), e.get("stage"), e.get("arms"), e.get("reason"))
+            (
+                kind,
+                e.get("candidate"),
+                e.get("stage"),
+                e.get("arms"),
+                e.get("reason"),
+                e.get("batch"),
+            )
             for kind in ("technical", "scientific")
             for e in o["dead_ends"][kind]
         ],
@@ -2039,13 +2080,18 @@ def _render_freeze(f: Mapping[str, Any]) -> list[str]:
     return lines + _table(("cohort", "reading", "rule", "blocks", "runs", "unknown blocks"), rows)
 
 
-def _render_judge_mark(j: Mapping[str, Any] | None) -> list[str]:
-    if j is None:
+def _render_judge_mark(marks: Sequence[Mapping[str, Any]] | None) -> list[str]:
+    if marks is None:
         return _table(("judge mark",), [(None,)])
-    lines = _pairs({k: j[k] for k in ("path", "sha256", "batch", "cause", "diagnosis")})
+    keys = ("path", "sha256", "batch", "cause", "diagnosis")
+    lines = _table(keys, [tuple(j[k] for k in keys) for j in marks])
     return lines + _table(
-        ("evidence", "sha256", "root"),
-        [(e.get("path"), e.get("sha256"), e.get("root")) for e in j["evidence"]],
+        ("batch", "evidence", "sha256", "root"),
+        [
+            (j["batch"], e.get("path"), e.get("sha256"), e.get("root"))
+            for j in marks
+            for e in j["evidence"]
+        ],
     )
 
 

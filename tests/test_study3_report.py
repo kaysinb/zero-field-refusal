@@ -58,7 +58,14 @@ BILLED = {
 }
 BILLING = {
     "currency": "USD",
-    "stages": [{"stage": "engineering", "spent": 14.21}, {"stage": "confirmation", "spent": 61.5}],
+    "stages": [
+        {"stage": "engineering", "spent": 14.21},
+        {"stage": "search", "spent": 9.4},
+        {"stage": "numerical", "spent": 6.1},
+        {"stage": "repair", "spent": 0},
+        {"stage": "validation", "spent": 22.0},
+        {"stage": "confirmation", "spent": 61.5},
+    ],
     "incidents": [BILLED],
     "policy_stops": [],
 }
@@ -455,6 +462,22 @@ def test_the_dead_ends_are_reported_apart() -> None:
     assert facts_of("design_stop")["outcome"]["dead_ends"] == {"technical": [], "scientific": []}
 
 
+def test_a_stage_the_route_or_an_incident_reached_needs_its_spending_entry() -> None:
+    """The scientific report's route reached search and validation (candidate 1's search failed,
+    candidate 2's validation gate): each needs its spending entry, as does the stage an incident
+    is billed at."""
+    route = facts_of("scientific_feasibility_report")["outcome"]["route"]
+    assert {e["stage"] for e in route} == {"search", "validation"}
+    for gone in ("search", "validation", "confirmation"):
+        stages = [s for s in BILLING["stages"] if s["stage"] != gone]
+        with pytest.raises(ValueError, match=f"no spending entry for {gone}"):
+            facts_of("scientific_feasibility_report", billing={**BILLING, "stages": stages})
+    stages = [s for s in BILLING["stages"] if s["stage"] != "search"]
+    assert facts_of("design_stop", billing={**BILLING, "stages": stages})["money"]["by_stage"] == (
+        stages
+    )
+
+
 def test_the_sections_a_terminal_stop_did_not_reach() -> None:
     facts = facts_of("design_stop")
     for section in (
@@ -669,7 +692,7 @@ def judge_technical(**over) -> dict:
 
 
 def test_the_judge_technical_variant() -> None:
-    facts = judge_technical(judge_diagnosis=JUDGE)
+    facts = judge_technical(judge_diagnoses=[JUDGE])
     standard = facts_of("done")
     assert facts["outcome"]["variant"] == "judge_technical"
     for section in ("analysis", "validation_harm", "audit"):
@@ -677,19 +700,41 @@ def test_the_judge_technical_variant() -> None:
     _, _, freeze, _, _, _ = done_world()
     assert facts["freeze"] == standard["freeze"] and facts["freeze"]["sha256"] == freeze["sha256"]
     assert len(facts["freeze"]["comparisons"]["P-F"]["run_ids"]) == 240
-    assert facts["judge_mark"] == JUDGE and facts["labeling"] == ["r1"]
+    assert facts["judge_mark"] == [JUDGE] and facts["labeling"] == ["r1"]
     assert facts["utility"] == standard["utility"] and facts["money"] == standard["money"]
+    assert facts["outcome"]["dead_ends"] == {
+        "technical": [
+            {"candidate": 1, "stage": "labeling", "arms": [], "reason": "judge_mark",
+             "batch": "b0003"}
+        ],
+        "scientific": [],
+    }  # fmt: skip
     assert set(facts) == set(rp.SECTIONS)
-    assert not re.search(FORBIDDEN, rp.tables(facts) + json.dumps(facts))
+    text = rp.tables(facts)
+    assert "| technical | 1 | labeling |  | judge_mark | b0003 |" in text
+    assert not re.search(FORBIDDEN, text + json.dumps(facts))
+
+
+def test_every_judge_diagnosis_is_reported_with_its_dead_end() -> None:
+    other = {**JUDGE, "path": "study3/labeling/diagnosis-b0005.json", "batch": "b0005"}
+    facts = judge_technical(judge_diagnoses=[JUDGE, other])
+    assert facts["judge_mark"] == [JUDGE, other]
+    technical = facts["outcome"]["dead_ends"]["technical"]
+    assert [(e["reason"], e["batch"]) for e in technical] == [
+        ("judge_mark", "b0003"),
+        ("judge_mark", "b0005"),
+    ]
+    text = rp.tables(facts)
+    assert all(mark["path"] in text for mark in (JUDGE, other))
 
 
 def test_the_judge_technical_variant_needs_a_judge_diagnosis_and_no_analysis() -> None:
     with pytest.raises(ValueError, match="judge"):
         judge_technical()
     with pytest.raises(ValueError, match="judge"):
-        judge_technical(judge_diagnosis={**JUDGE, "cause": "infrastructure"})
+        judge_technical(judge_diagnoses=[JUDGE, {**JUDGE, "cause": "infrastructure"}])
     with pytest.raises(ValueError, match="do not mix"):
-        facts_of("done", judge_diagnosis=JUDGE)
+        facts_of("done", judge_diagnoses=[JUDGE])
 
 
 def test_a_judge_diagnosis_object_reads_as_its_record() -> None:
@@ -701,7 +746,7 @@ def test_a_judge_diagnosis_object_reads_as_its_record() -> None:
         diagnosis=JUDGE["diagnosis"],
         evidence=tuple(JUDGE["evidence"]),
     )
-    mark = judge_technical(judge_diagnosis=found)["judge_mark"]
+    (mark,) = judge_technical(judge_diagnoses=[found])["judge_mark"]
     assert mark["path"] == "/runs/study3/labeling/diagnosis-b0003.json"
     assert mark["evidence"] == JUDGE["evidence"] and mark["cause"] == "judge"
 
@@ -994,6 +1039,22 @@ def test_the_report_command_refuses_an_estimate_of_another_selection(reported) -
     assert not list((world.root / "study3-final").glob("report-*"))
 
 
+def test_the_report_command_refuses_a_selection_naming_an_analysis_it_cannot_read(reported):
+    """The selection names an analysis that cannot be read (here a folder where analysis.json
+    was, a later analysis-2.json in force): refused with the error's type, nothing written."""
+    world = reported
+    c1 = world.root / "study3-final" / "c1"
+    (c1 / "analysis-2.json").write_bytes((c1 / "analysis.json").read_bytes())
+    (c1 / "analysis.json").unlink()
+    (c1 / "analysis.json").mkdir()
+    why = world.refused(
+        "report", "--runs-root", world.root, "--billing", world.billing, "--embargo", world.embargo
+    )
+    assert "names study3-final/c1/analysis.json, which cannot be read" in why
+    assert "IsADirectoryError" in why
+    assert not list((world.root / "study3-final").glob("report-*"))
+
+
 def test_the_report_command_writes_judge_technical_after_a_judge_diagnosis(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -1023,8 +1084,12 @@ def test_the_report_command_writes_judge_technical_after_a_judge_diagnosis(
     (folder,) = sorted((world.root / "study3-final").glob("report-*"))
     facts = json.loads((folder / "facts.json").read_text())
     assert facts["outcome"]["variant"] == "judge_technical"
-    assert facts["judge_mark"]["path"] == "study3/labeling/diagnosis-b0002.json"
-    assert facts["judge_mark"]["sha256"] == "d" * 64 and facts["analysis"].startswith("not reached")
+    (mark,) = facts["judge_mark"]  # the judge's diagnosis alone; the infrastructure one releases
+    assert mark["path"] == "study3/labeling/diagnosis-b0002.json"
+    assert mark["sha256"] == "d" * 64 and facts["analysis"].startswith("not reached")
+    assert [(e["reason"], e["batch"]) for e in facts["outcome"]["dead_ends"]["technical"]] == [
+        ("judge_mark", "b0002")
+    ]
     assert facts["freeze"]["sha256"] == sha256(world.repo / "docs/study3-analysis-freeze-c1.json")
     assert calls == [] and guard.attempts == []
 

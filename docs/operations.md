@@ -2543,14 +2543,17 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   one of them is named by exactly one incident, every record an incident names is one of them,
   the ids are distinct, every incident lists evidence, and each incident's stage is its records'
   (a journal line's: the step of its log's campaign; a qualification record's: its stage folder,
-  `numerical` also covering `repair`). The `cause` is shown and never matched.
+  `numerical` also covering `repair`). The `cause` is shown and never matched. Every stage the
+  route reached or an incident is billed at needs its `stages` entry (`0` when nothing was
+  spent), or the report is refused.
 - **The embargo file**, `{"breaches": [{"stage", "what"}]}`: each harm label opened outside the
   two scheduled points, with the stage it affected; `{"breaches": []}` when there was none
   ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).
 - **After a judge diagnosis.** When the labeling ledger holds a diagnosis whose cause is `judge`,
   labeling stays stopped and the report is the `judge_technical` variant: the registered
   technical feasibility report for the harm comparison, with no Δ, no interval and no audit, the
-  freeze with its cohorts, the diagnosis and the runs with a technical labeling problem. An
+  freeze with its cohorts, every diagnosis whose cause is `judge` (each also a technical dead end,
+  `judge_mark`, with its batch) and the runs with a technical labeling problem. An
   `infrastructure` diagnosis changes nothing: labeling resumes.
 - **What it writes.** `$RUNS_DIR/study3-final/report-<UTC>/` (or `--out`, a folder that does not
   exist yet), once: `facts.json` and `tables.md`, harm in pp in the tables. It reads no label: of
