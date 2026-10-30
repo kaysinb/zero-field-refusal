@@ -88,18 +88,25 @@ and ``embargo`` are lists, ``[]`` when empty.
 - ``freeze``: the freeze record's path and sha256 and its cohorts as frozen (seeds and run ids per
   comparison, K*_h, A − P).
 - ``judge_mark``: the judge's diagnosis (path, sha256, batch, cause, diagnosis, evidence).
-- ``money``: actual spending by stage, each incident with its billed price, stage, cause, source
-  and evidence, and the stages an internal spending policy stopped, by name alone.
+- ``money``: actual spending by stage, one row per incident (its id, stage, incident time, cause,
+  billed price and evidence list), and the stages an internal spending policy stopped, by name
+  alone.
 - ``embargo``: the breaches the researcher's embargo file lists (stage, what).
 
-**Money** ("Budget and timing", amendment 5). The report states actual spending by stage and
-each incident with its billed price, from the researcher's billing file. Every launch-journal
-incident (a study-3 ``recovery`` line carrying ``INCIDENT_KEYS``) needs a billed incident of the
-same incident time, cause and evidence, and every qualification record made with
-``--infrastructure`` (a part record carrying ``infrastructure``, or a case restart) a billed
-incident whose evidence is its path under RUNS_DIR; otherwise the report is refused. Billed
-incidents beyond these (source ``pod``) are listed with their evidence. No other money figure is
-read or written.
+**Money** ("Budget and timing"; amendment 5, "Infrastructure incidents": each incident is counted
+once, with its price). The report states actual spending by stage and each incident with its
+billed price, from the researcher's billing file. One incident can leave several records: a Pod
+stop can leave a launch-journal recovery round, a case restart and a part record made with
+``--infrastructure``. The records' incidents are keyed by what they are: a launch-journal
+incident (a study-3 ``recovery`` line carrying ``INCIDENT_KEYS``) by its log and line, a
+qualification record made with ``--infrastructure`` (a part record carrying ``infrastructure``,
+or a case restart) by its path under RUNS_DIR. Each billed incident names its records in its
+evidence (``{"journal": log, "line": n}``, ``{"qualification": path}``), and may add a provider
+reference (``{"pod": ref}``), which names no record. The report is refused unless every record
+is named by exactly one billed incident, every record an incident names is one of them, the ids
+are distinct, every incident names some evidence, and each incident's stage is its records'
+where shown (a journal line's: the step of its log's study-3 starts; a qualification record's:
+its stage folder, ``numerical`` covering the repair). No other money figure is read or written.
 
 **The simulation's results** are read through one adapter, ``simulation_results``: the per-test
 rows of ``RUNS_DIR/study3/simulation/results.json`` (``SIMULATION_RESULTS``), each with the row
@@ -117,7 +124,9 @@ checks, and the decisions recomputed from the rows) takes its place when it is i
 - *The registered utility worst case* is over the started confirmation blocks, per arm: the
   largest MMLU and factual losses among the endpoints that ended (usable, unusable or failed
   scientifically), with the run.
-- *The incident's cause* is compared as the journal records it, one line.
+- *One incident, one price.* An incident is matched to its records by their keys alone; its
+  cause is the researcher's line, shown and never matched, so that two recovery rounds of one
+  stop whose cause texts differ are still one incident.
 """
 
 from __future__ import annotations
@@ -131,7 +140,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .study3_blocks import PAIRS, SUPPORTED, VALIDATION_ALPHA, block_state, utility_gate
@@ -189,7 +198,6 @@ MONEY_STAGES = (
     "labeling",
     "audit",
 )
-SOURCES = ("journal", "qualification", "pod")
 CURRENCY = "USD"
 NOT_REACHED = "not reached"
 JUDGE_NOT_REACHED = "not reached: the judge's technical mark"
@@ -212,7 +220,15 @@ ROW_FIELDS = (
 )
 BILLING_FIELDS = ("currency", "stages", "incidents", "policy_stops")
 STAGE_FIELDS = ("stage", "spent")
-INCIDENT_FIELDS = ("stage", "incident_time", "cause", "source", "evidence", "billed")
+INCIDENT_FIELDS = ("id", "stage", "incident_time", "cause", "billed", "evidence")
+# An incident's evidence item, by its kind: a launch-journal line, a qualification record (both
+# records of the incident) or a provider reference (no record)
+EVIDENCE_FIELDS = {"journal": ("journal", "line"), "qualification": ("qualification",),
+                   "pod": ("pod",)}  # fmt: skip
+# A qualification record's stage folder, and the stages its incident is billed at: the repair's
+# rates are qualified as numerical runs
+QUALIFICATION_STAGES = {"engineering": ("engineering",), "numerical": ("numerical", "repair")}
+INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 EMBARGO_FIELDS = ("stage", "what")
 LINE = 200  # a one-line text (a cause, an evidence reference, a breach's what), at most
 FINAL_THREE = ("analysis", "validation", "audit")
@@ -230,10 +246,13 @@ BIAS_NOTE = (
 def read_billing(path: str | Path) -> dict[str, Any]:
     """The billing file (closed schema): ``currency`` (``USD``); ``stages``, each ``{"stage",
     "spent"}`` (a ``MONEY_STAGES`` id, once, and a finite amount ≥ 0); ``incidents``, each
-    ``{"stage", "incident_time", "cause", "source", "evidence", "billed"}`` (the time ISO 8601 in
-    UTC, the cause and the evidence one line each, the source one of ``SOURCES``, the billed price
-    a finite amount ≥ 0); ``policy_stops``, each ``{"stage"}``. ``ValueError`` naming every
-    problem, an unknown field included."""
+    ``{"id", "stage", "incident_time", "cause", "billed", "evidence"}`` (the id ``INCIDENT_ID``,
+    once; the time ISO 8601 in UTC; the cause one line; the billed price a finite amount ≥ 0; the
+    evidence a non-empty list of items, each ``{"journal": <log under RUNS_DIR>, "line": n}``
+    (n ≥ 1), ``{"qualification": <record path under RUNS_DIR>}`` or ``{"pod": <provider
+    reference>}``, each text one line, and no journal line or qualification record named twice,
+    within an incident or across incidents); ``policy_stops``, each ``{"stage"}``. ``ValueError``
+    naming every problem, an unknown field included."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     problems = billing_problems(data)
     if problems:
@@ -269,6 +288,8 @@ def billing_problems(data: Any) -> list[str]:
                 found.append(f"{where}: stage {entry['stage']!r} is listed twice")
             seen.add(entry["stage"])
         problems += found
+    ids: set[str] = set()
+    named: dict[tuple[Any, ...], str] = {}  # a record named → the incident naming it
     for i, entry in enumerate(data["incidents"]):
         where = f"incidents[{i}]"
         if not isinstance(entry, dict):
@@ -276,15 +297,20 @@ def billing_problems(data: Any) -> list[str]:
             continue
         found = _closed(entry, INCIDENT_FIELDS, where)
         if not found:
+            if not (isinstance(entry["id"], str) and INCIDENT_ID.fullmatch(entry["id"])):
+                found.append(f"{where}.id is not an id (a letter or digit, then up to 63 "
+                             "letters, digits, '.', '_' or '-')")  # fmt: skip
+            elif entry["id"] in ids:
+                found.append(f"{where}: id {entry['id']!r} is listed twice")
+            else:
+                ids.add(entry["id"])
             found += _stage(entry["stage"], where)
             if _instant(entry["incident_time"]) is None:
                 found.append(f"{where}.incident_time is no ISO 8601 time in UTC")
-            for key in ("cause", "evidence"):
-                if not _one_line(entry[key]):
-                    found.append(f"{where}.{key} is not one non-empty line")
-            if entry["source"] not in SOURCES:
-                found.append(f"{where}.source is not one of {list(SOURCES)}")
+            if not _one_line(entry["cause"]):
+                found.append(f"{where}.cause is not one non-empty line")
             found += _amount(entry["billed"], f"{where}.billed")
+            found += _evidence(entry["evidence"], where, named)
         problems += found
     for i, entry in enumerate(data["policy_stops"]):
         where = f"policy_stops[{i}]"
@@ -353,6 +379,59 @@ def _one_line(value: Any) -> bool:
     )
 
 
+def _evidence(items: Any, where: str, named: dict[tuple[Any, ...], str]) -> list[str]:
+    """The problems of an incident's evidence (``read_billing``'s schema); each record it names
+    is entered in ``named`` (its key → the incident), and one named before is a problem."""
+    if not isinstance(items, list) or not items:
+        return [f"{where}.evidence is not a non-empty list"]
+    found = []
+    for j, item in enumerate(items):
+        at = f"{where}.evidence[{j}]"
+        kind = _evidence_kind(item)
+        if kind is None:
+            found.append(f'{at} is not {{"journal", "line"}}, {{"qualification"}} or {{"pod"}}')
+            continue
+        if not _one_line(item[kind]):
+            found.append(f"{at}.{kind} is not one non-empty line")
+            continue
+        line = item.get("line")
+        if kind == "journal" and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
+            found.append(f"{at}.line is not a line number (an integer from 1)")
+            continue
+        key = _record_key(item)
+        if key is None:
+            continue
+        if key in named:
+            found.append(f"{at}: {_shown(key)} is named twice (by {named[key]} too)")
+        else:
+            named[key] = where
+    return found
+
+
+def _evidence_kind(item: Any) -> str | None:
+    """The kind of an evidence item (``EVIDENCE_FIELDS``), None for anything else."""
+    if not isinstance(item, dict):
+        return None
+    return next((kind for kind, keys in EVIDENCE_FIELDS.items() if set(item) == set(keys)), None)
+
+
+def _record_key(item: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """The record an evidence item names: ``("journal", log, line)`` or ``("qualification",
+    path)``; None for a provider reference (``pod``), which names no record."""
+    if "journal" in item:
+        return ("journal", item["journal"], item["line"])
+    if "qualification" in item:
+        return ("qualification", item["qualification"])
+    return None
+
+
+def _shown(key: tuple[Any, ...]) -> str:
+    """A record's key as the refusals name it."""
+    if key[0] == "journal":
+        return f"the launch journal's {key[1]} line {key[2]}"
+    return f"the qualification's --infrastructure record {key[1]}"
+
+
 def _instant(value: Any) -> datetime | None:
     """An ISO 8601 time in UTC as an instant; None for anything else."""
     if not isinstance(value, str):
@@ -370,9 +449,10 @@ def _instant(value: Any) -> datetime | None:
 def journal_incidents(runs_root: str | Path) -> list[dict[str, Any]]:
     """Every study-3 ``recovery`` line of the launch journal that carries an incident
     (``INCIDENT_KEYS``: ``incident_time``, ``cause``, ``evidence``), with its log (its path under
-    RUNS_DIR) and line number, read through ``study3_records.journal_lines``. ``ValueError`` when a
-    log cannot be read, resolves under a sealed folder or holds a torn line that is not resolved:
-    what it held cannot be shown."""
+    RUNS_DIR), line number and ``stage``: the one step its log's study-3 starts name in their
+    campaign header (a ``MONEY_STAGES`` id; None when they name none or several). Read through
+    ``study3_records.journal_lines``. ``ValueError`` when a log cannot be read, resolves under a
+    sealed folder or holds a torn line that is not resolved: what it held cannot be shown."""
     logs, problems = journal_lines(runs_root)
     torn = [f"{log.path} line {number}" for log in logs for number in log.corrupt]
     if problems or torn:
@@ -382,6 +462,10 @@ def journal_incidents(runs_root: str | Path) -> list[dict[str, Any]]:
         )
     found = []
     for log in logs:
+        steps = {_step(line.record) for line in log.lines if line.record is not None
+                 and line.record.get("event") == "start"
+                 and line.record.get("experiment") == EXPERIMENT}  # fmt: skip
+        stage = next(iter(steps)) if len(steps) == 1 and steps <= set(MONEY_STAGES) else None
         for line in log.lines:
             record = line.record
             if (
@@ -395,10 +479,18 @@ def journal_incidents(runs_root: str | Path) -> list[dict[str, Any]]:
                 {
                     "log": log.path,
                     "line": line.line,
+                    "stage": stage,
                     **{key: record.get(key) for key in INCIDENT_KEYS},
                 }
             )
     return found
+
+
+def _step(start: Mapping[str, Any]) -> Any:
+    """The step a start's campaign header names (None without one)."""
+    header = start.get("header")
+    step = header.get("step") if isinstance(header, Mapping) else None
+    return step if isinstance(step, str) else None
 
 
 def qualification_incidents(runs_root: str | Path) -> list[dict[str, Any]]:
@@ -508,9 +600,10 @@ def report_facts(
     neither ``done`` nor terminal, at ``done`` without the analysis, validation's harm or the
     audit's estimate (naming the runs with a technical labeling problem, and that a judge
     diagnosis calls for the ``judge_technical`` variant), or with them before ``done``; a billing
-    record off its schema; a launch-journal incident with no billed incident of the same
-    incident time, cause and evidence; a qualification ``--infrastructure`` record with no billed
-    incident whose evidence is its path."""
+    record off its schema; an incident of the records (a launch-journal line, a qualification
+    ``--infrastructure`` record) named by no billed incident, a record an incident names that is
+    none of them, or an incident billed at a stage that is not its records' (module docstring,
+    "Money")."""
     variant = _variant(
         state,
         labeling_problems,
@@ -607,37 +700,61 @@ def _link(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
 def _money(
     billing: Mapping[str, Any], incidents: Mapping[str, Sequence[Mapping[str, Any]]]
 ) -> dict[str, Any]:
-    """Money (module docstring): the billing as it is, every incident of the records billed."""
+    """Money (module docstring): the billing as it is, each incident of the records named by one
+    billed incident of its stage, and nothing else named."""
     problems = billing_problems(billing)
     if problems:
         raise ValueError("the billing file: " + "; ".join(problems))
     billed = list(billing["incidents"])
-    keyed = {(_instant(i["incident_time"]), i["cause"], i["evidence"]) for i in billed}
-    unbilled = []
-    for found in incidents.get("journal") or ():
-        key = (_instant(found.get("incident_time")), found.get("cause"), found.get("evidence"))
-        if key[0] is None or key not in keyed:
-            unbilled.append(
-                f"the launch journal's incident at {found.get('log')} line "
-                f"{found.get('line')} (incident_time {found.get('incident_time')!r}) "
-                "has no billed incident of the same incident time, cause and "
-                "evidence"
-            )
-    evidence = {i["evidence"] for i in billed}
-    for found in incidents.get("qualification") or ():
-        if found.get("path") not in evidence:
-            unbilled.append(
-                f"the qualification's --infrastructure record {found.get('path')} "
-                "has no billed incident whose evidence is its path"
-            )
-    if unbilled:
-        raise ValueError("every incident is listed with its billed price: " + "; ".join(unbilled))
+    # each record of an incident → the stages its incident can be billed at (None: not shown)
+    records: dict[tuple[Any, ...], tuple[str, ...] | None] = {}
+    for row in incidents.get("journal") or ():
+        stage = row.get("stage")
+        records[("journal", row.get("log"), row.get("line"))] = None if stage is None else (stage,)
+    for row in incidents.get("qualification") or ():
+        records[("qualification", row.get("path"))] = _qualification_stages(row.get("path"))
+    found, named = [], set()
+    for entry in billed:
+        for item in entry["evidence"]:
+            key = _record_key(item)
+            if key is None:
+                continue
+            named.add(key)
+            if key not in records:
+                found.append(f"incident {entry['id']}: {_shown(key)} is no incident of the "
+                             "records")  # fmt: skip
+                continue
+            stages = records[key]
+            if stages is not None and entry["stage"] not in stages:
+                found.append(f"incident {entry['id']} is billed at {entry['stage']}, but "
+                             f"{_shown(key)} is of {' or '.join(stages)}")  # fmt: skip
+    found += [
+        f"{_shown(key)} is named by no billed incident" for key in records if key not in named
+    ]
+    if found:
+        raise ValueError("every incident of the records is billed once, at its stage: "
+                         + "; ".join(found))  # fmt: skip
     return {
         "currency": billing["currency"],
         "by_stage": [dict(entry) for entry in billing["stages"]],
-        "incidents": [{key: entry[key] for key in INCIDENT_FIELDS} for entry in billed],
+        "incidents": [
+            {
+                **{key: entry[key] for key in INCIDENT_FIELDS},
+                "evidence": [dict(item) for item in entry["evidence"]],
+            }
+            for entry in billed
+        ],
         "policy_stops": [entry["stage"] for entry in billing["policy_stops"]],
     }
+
+
+def _qualification_stages(path: Any) -> tuple[str, ...] | None:
+    """The stages a qualification record's incident is billed at, by its stage folder
+    (``qualification/c<N>/<stage>/...``, ``QUALIFICATION_STAGES``); None when not shown."""
+    parts = PurePosixPath(path).parts if isinstance(path, str) else ()
+    if len(parts) < 3 or parts[0] != "qualification":
+        return None
+    return QUALIFICATION_STAGES.get(parts[2])
 
 
 # -- the outcome
@@ -1937,12 +2054,22 @@ def _render_money(m: Mapping[str, Any]) -> list[str]:
         ("stage", f"spent ({m['currency']})"), [(s["stage"], s["spent"]) for s in m["by_stage"]]
     )
     lines += _table(
-        ("stage", "incident_time", "cause", "source", "evidence", f"billed ({m['currency']})"),
-        [tuple(i[k] for k in INCIDENT_FIELDS) for i in m["incidents"]],
+        ("incident", "stage", "incident_time", "cause", f"billed ({m['currency']})", "evidence"),
+        [
+            (*(i[k] for k in INCIDENT_FIELDS[:-1]), "; ".join(_item(e) for e in i["evidence"]))
+            for i in m["incidents"]
+        ],
     )
     return lines + _table(
         ("stage stopped by the internal spending policy",), [(s,) for s in m["policy_stops"]]
     )
+
+
+def _item(item: Mapping[str, Any]) -> str:
+    """An evidence item as the table shows it."""
+    if "journal" in item:
+        return f"{item['journal']} line {item['line']}"
+    return item.get("qualification") or f"pod {item.get('pod')}"
 
 
 def _render_embargo(found: Sequence[Mapping[str, Any]]) -> list[str]:

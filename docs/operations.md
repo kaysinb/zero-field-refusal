@@ -2520,20 +2520,27 @@ project-run "$SRC" python scripts/study3_analysis.py report --runs-root "$R" \
   ```text
   {"currency": "USD",
    "stages": [{"stage": "<stage>", "spent": <amount>}],
-   "incidents": [{"stage": "<stage>", "incident_time": "<UTC, ISO 8601>", "cause": "<one line>",
-                  "source": "journal" | "qualification" | "pod", "evidence": "<path>",
-                  "billed": <amount>}],
+   "incidents": [{"id": "<id>", "stage": "<stage>", "incident_time": "<UTC, ISO 8601>",
+                  "cause": "<one line>", "billed": <amount>,
+                  "evidence": [{"journal": "<log under $RUNS_DIR>", "line": <n>},
+                               {"qualification": "<record path under $RUNS_DIR>"},
+                               {"pod": "<provider reference>"}]}],
    "policy_stops": [{"stage": "<stage>"}]}
   ```
 
   A stage is one of `dry_run`, `engineering`, `simulation`, `search`, `numerical`, `repair`,
-  `validation`, `confirmation`, `labeling` and `audit`. Every incident of the records needs its
-  billed price, or the report is refused: a study-3 recovery round of the launch journal that
-  carries an incident needs a billed incident of the same `incident_time`, `cause` and `evidence`
-  (as the round records them), and every qualification record made with `--infrastructure` (a
-  part record carrying `infrastructure`, or a case restart `restart-<n>.json`) one whose
-  `evidence` is its path under `$RUNS_DIR`. Other incidents (`pod`) are listed with their
-  evidence.
+  `validation`, `confirmation`, `labeling` and `audit`. Each incident is counted once, with its
+  price ([amendment 5](study3-preregistration.md#amendment-5-the-budget-after-the-dry-runs-part-i),
+  "Infrastructure incidents"): one Pod stop is one entry, whatever records it left (a recovery
+  round of the launch journal, a case restart `restart-<n>.json`, a part record made with
+  `--infrastructure`), and its `evidence` lists each of them, plus any provider reference
+  (`pod`). The records' incidents are a study-3 recovery round that carries an incident, by its
+  log and line, and every qualification record made with `--infrastructure` (a part record
+  carrying `infrastructure`, or a case restart), by its path. The report is refused unless every
+  one of them is named by exactly one incident, every record an incident names is one of them,
+  the ids are distinct, every incident lists evidence, and each incident's stage is its records'
+  (a journal line's: the step of its log's campaign; a qualification record's: its stage folder,
+  `numerical` also covering `repair`). The `cause` is shown and never matched.
 - **The embargo file**, `{"breaches": [{"stage", "what"}]}`: each harm label opened outside the
   two scheduled points, with the stage it affected; `{"breaches": []}` when there was none
   ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).

@@ -1,7 +1,7 @@
 """Study 3's final report (analysis/study3_report.py and ``scripts/study3_analysis.py report``):
 the facts and their tables for every terminal outcome, the ``judge_technical`` variant, the
-researcher's billing and embargo files, and the incidents of the records, each of which needs a
-billed price.
+researcher's billing and embargo files, and the incidents of the records, each named by exactly
+one billed incident, at its stage and its one price.
 
 The states are the progress tests' synthetic studies (``test_study3_progress.Study``): ``done``
 (60 blocks), the scientific report (candidate 2 failing at validation), the technical report (a
@@ -43,14 +43,23 @@ INCIDENT = {
     "cause": "the Pod stopped: host maintenance",
     "evidence": "incidents/pod-events-20261102.log",
 }
+LOG = "launch/study3-c1-confirmation.jsonl"
 INCIDENTS = {
-    "journal": [{"log": "launch/study3-c1-confirmation.jsonl", "line": 7, **INCIDENT}],
+    "journal": [{"log": LOG, "line": 2, "stage": "confirmation", **INCIDENT}],
     "qualification": [],
+}
+BILLED = {
+    "id": "pod-stop-1",
+    "stage": "confirmation",
+    "incident_time": INCIDENT["incident_time"],
+    "cause": INCIDENT["cause"],
+    "billed": 0.81,
+    "evidence": [{"journal": LOG, "line": 2}, {"pod": "pod-events-20261102"}],
 }
 BILLING = {
     "currency": "USD",
     "stages": [{"stage": "engineering", "spent": 14.21}, {"stage": "confirmation", "spent": 61.5}],
-    "incidents": [{"stage": "confirmation", **INCIDENT, "source": "journal", "billed": 0.81}],
+    "incidents": [BILLED],
     "policy_stops": [],
 }
 KAPPA = {
@@ -467,68 +476,137 @@ def test_the_sections_a_terminal_stop_did_not_reach() -> None:
 def test_the_labeling_problems_and_an_unbilled_journal_incident() -> None:
     assert facts_of("done", labeling_problems=("r1",))["labeling"] == ["r1"]
     unbilled = {**BILLING, "incidents": []}
-    with pytest.raises(ValueError, match="billed price"):
+    with pytest.raises(ValueError, match="billed once") as refused:
         facts_of("done", billing=unbilled)
-    other = {**BILLING, "incidents": [{**BILLING["incidents"][0], "cause": "another cause"}]}
-    with pytest.raises(ValueError, match="billed price"):
-        facts_of("design_stop", billing=other)
+    assert f"{LOG} line 2 is named by no billed incident" in str(refused.value)
+    # the cause is shown, never matched: another text names the same record
+    other = {**BILLING, "incidents": [{**BILLED, "cause": "another cause"}]}
+    assert facts_of("design_stop", billing=other)["money"]["incidents"][0]["cause"] == (
+        "another cause"
+    )
 
 
-def qualification_world(root: Path, kind: str) -> str:
-    """A qualification record made with --infrastructure: a part record carrying it, or a case
-    restart; beside it a part record without it."""
+def qualification_world(root: Path, *kinds: str) -> list[str]:
+    """Qualification records made with --infrastructure, of one case: a part record carrying it
+    (``part``) and a case restart (``restart``); beside them a part record without it."""
     case = root / "qualification" / "c1" / "numerical" / "s10200" / "adamw-1.45e-05"
     case.mkdir(parents=True)
     (case / "baseline-attempt-1.json").write_text(
         json.dumps({"part": "baseline", "infrastructure": None})
     )
-    if kind == "part":
-        name = "baseline-attempt-2.json"
-        record = {
-            "part": "baseline",
-            "infrastructure": {"reason": "the Pod stopped", "previous": [], "restarts": []},
-        }
-    else:
-        name = "restart-1.json"
-        record = {
-            "case": {},
-            "restart": 1,
-            "reason": "the Pod stopped",
-            "attempts": [],
-            "launcher": None,
-        }
-    (case / name).write_text(json.dumps(record))
-    return f"qualification/c1/numerical/s10200/adamw-1.45e-05/{name}"
+    paths = []
+    for kind in kinds:
+        if kind == "part":
+            name = "baseline-attempt-2.json"
+            record = {
+                "part": "baseline",
+                "infrastructure": {"reason": "the Pod stopped", "previous": [], "restarts": []},
+            }
+        else:
+            name = "restart-1.json"
+            record = {
+                "case": {},
+                "restart": 1,
+                "reason": "the Pod stopped",
+                "attempts": [],
+                "launcher": None,
+            }
+        (case / name).write_text(json.dumps(record))
+        paths.append(f"qualification/c1/numerical/s10200/adamw-1.45e-05/{name}")
+    return paths
+
+
+def billed(id_: str, *evidence, stage: str = "numerical", price: float = 0.42) -> dict:
+    """A billed incident naming ``evidence``."""
+    return {
+        "id": id_,
+        "stage": stage,
+        "incident_time": "2026-11-01T01:00:00Z",
+        "cause": "the Pod stopped",
+        "billed": price,
+        "evidence": list(evidence),
+    }
 
 
 @pytest.mark.parametrize("kind", ["part", "restart"])
 def test_a_qualification_infrastructure_record_needs_its_billed_incident(tmp_path, kind) -> None:
-    path = qualification_world(tmp_path, kind)
+    (path,) = qualification_world(tmp_path, kind)
     found = rp.qualification_incidents(tmp_path)
     assert [(i["path"], i["kind"]) for i in found] == [(path, kind)]
     incidents = {**INCIDENTS, "qualification": found}
-    with pytest.raises(ValueError, match="billed price") as refused:
+    with pytest.raises(ValueError, match="billed once") as refused:
         facts_of("design_stop", incidents=incidents)
     assert path in str(refused.value)
-    billed = {
-        "stage": "numerical",
-        "incident_time": "2026-11-01T01:00:00Z",
-        "cause": "the Pod stopped",
-        "source": "qualification",
-        "evidence": path,
-        "billed": 0.42,
-    }
-    billing = {**BILLING, "incidents": [*BILLING["incidents"], billed]}
+    stop = billed("stop-2", {"qualification": path})
+    billing = {**BILLING, "incidents": [BILLED, stop]}
     facts = facts_of("design_stop", incidents=incidents, billing=billing)
-    assert billed in facts["money"]["incidents"]
+    assert stop in facts["money"]["incidents"]
     assert path in rp.tables(facts)
+
+
+def test_one_stop_that_left_a_restart_and_a_part_record_is_one_incident(tmp_path) -> None:
+    """A Pod stop that left a case restart and a part record made with --infrastructure is
+    billed once: one incident naming both records, at its one price."""
+    paths = qualification_world(tmp_path, "part", "restart")
+    incidents = {**INCIDENTS, "qualification": rp.qualification_incidents(tmp_path)}
+    stop = billed("stop-2", *({"qualification": p} for p in paths), {"pod": "pod-x"})
+    facts = facts_of("design_stop", incidents=incidents,
+                     billing={**BILLING, "incidents": [BILLED, stop]})  # fmt: skip
+    money = facts["money"]["incidents"]
+    assert [i["id"] for i in money] == ["pod-stop-1", "stop-2"]
+    assert money[1]["billed"] == 0.42 and money[1]["evidence"] == stop["evidence"]
+    assert sum(i["billed"] for i in money) == pytest.approx(0.81 + 0.42)
+    text = rp.tables(facts)
+    assert all(p in text for p in paths) and "pod pod-x" in text
+
+
+def test_a_record_named_twice_or_by_no_incident_is_refused(tmp_path) -> None:
+    paths = qualification_world(tmp_path, "part", "restart")
+    incidents = {**INCIDENTS, "qualification": rp.qualification_incidents(tmp_path)}
+    part, restart = ({"qualification": p} for p in paths)
+    for refused_incidents, words in [
+        ([BILLED, billed("a", part, restart), billed("b", part)], "named twice"),  # across
+        ([BILLED, billed("a", part, restart, part)], "named twice"),  # within one incident
+        ([BILLED, billed("a", part)], f"{paths[1]} is named by no billed incident"),
+        (
+            [BILLED, billed("a", part, restart, {"qualification": "qualification/c1/x.json"})],
+            "qualification/c1/x.json is no incident of the records",
+        ),
+        ([BILLED, billed("a", part, restart), billed("a", {"pod": "pod-x"})], "listed twice"),
+        ([BILLED, billed("a", part, restart), billed("b")], "not a non-empty list"),
+        ([BILLED, billed("a", part, restart, stage="search")], "is of numerical or repair"),
+        ([{**BILLED, "stage": "validation"}, billed("a", part, restart)], "is of confirmation"),
+    ]:
+        billing = {**BILLING, "incidents": refused_incidents}
+        with pytest.raises(ValueError, match=re.escape(words)):
+            facts_of("design_stop", incidents=incidents, billing=billing)
+    repair = billed("a", part, restart, stage="repair")  # the repair's rates: numerical runs
+    facts = facts_of("design_stop", incidents=incidents, billing={**BILLING,
+                     "incidents": [BILLED, repair]})  # fmt: skip
+    assert facts["money"]["incidents"][1]["stage"] == "repair"
+
+
+def test_two_journal_rounds_of_one_stop_with_other_cause_texts_are_one_incident() -> None:
+    rounds = [
+        {"log": LOG, "line": 3, "stage": "confirmation", **INCIDENT},
+        {"log": LOG, "line": 4, "stage": "confirmation", **INCIDENT, "cause": "the Pod stopped."},
+    ]
+    stop = billed("stop", *({"journal": LOG, "line": n} for n in (3, 4)), stage="confirmation")
+    facts = facts_of("design_stop", incidents={"journal": rounds, "qualification": []},
+                     billing={**BILLING, "incidents": [stop]})  # fmt: skip
+    assert facts["money"]["incidents"] == [stop]
+    first = {**stop, "evidence": stop["evidence"][:1]}
+    with pytest.raises(ValueError, match=re.escape(f"{LOG} line 4 is named by no billed")):
+        facts_of("design_stop", incidents={"journal": rounds, "qualification": []},
+                 billing={**BILLING, "incidents": [first]})  # fmt: skip
 
 
 def test_journal_incidents_are_the_study_3_recovery_lines_with_an_incident(tmp_path) -> None:
     launch = tmp_path / "launch"
     launch.mkdir()
+    header = {"study": 3, "candidate": 1, "step": "confirmation", "round": None}
     lines = [
-        {"event": "start", "experiment": "study3", "run": "A-1.45e-05/s10400"},
+        {"event": "start", "experiment": "study3", "run": "A-1.45e-05/s10400", "header": header},
         {
             "event": "recovery",
             "experiment": "study3",
@@ -548,8 +626,15 @@ def test_journal_incidents_are_the_study_3_recovery_lines_with_an_incident(tmp_p
         "".join(json.dumps(line) + "\n" for line in lines)
     )
     assert rp.journal_incidents(tmp_path) == [
-        {"log": "launch/study3-c1-confirmation.jsonl", "line": 3, **INCIDENT}
+        {"log": LOG, "line": 3, "stage": "confirmation", **INCIDENT}
     ]
+    # a log whose study-3 starts name no step, or two, shows no stage
+    for steps in ([None], ["search", "numerical"]):
+        starts = [{**lines[0], "header": {**header, "step": step}} for step in steps]
+        (launch / "study3-c1-confirmation.jsonl").write_text(
+            "".join(json.dumps(line) + "\n" for line in [*starts, *lines[1:]])
+        )
+        assert [i["stage"] for i in rp.journal_incidents(tmp_path)] == [None]
     (launch / "study3-c1-other.jsonl").write_text('{"event": "start"\n{"event": "end"}\n')
     with pytest.raises(ValueError, match="torn line"):
         rp.journal_incidents(tmp_path)
@@ -637,13 +722,21 @@ def test_read_billing_is_a_closed_schema(tmp_path) -> None:
         ({**BILLING, "stages": [{"stage": "fun", "spent": 1}]}, "stage is not one of"),
         ({**BILLING, "stages": [{"stage": "search", "spent": -1}]}, "finite amount"),
         ({**BILLING, "stages": [{"stage": "search", "spent": 1}] * 2}, "listed twice"),
-        ({**BILLING, "incidents": [{**BILLING["incidents"][0], "source": "mail"}]}, "source"),
+        ({**BILLING, "incidents": [{**BILLED, "source": "journal"}]}, "'source' is not a field"),
+        ({**BILLING, "incidents": [{**BILLED, "incident_time": "2026-11-02T03:12:00"}]}, "UTC"),
+        ({**BILLING, "incidents": [{**BILLED, "id": "a b"}]}, "id is not an id"),
+        ({**BILLING, "incidents": [{**BILLED, "evidence": "pod-x"}]}, "not a non-empty list"),
         (
-            {
-                **BILLING,
-                "incidents": [{**BILLING["incidents"][0], "incident_time": "2026-11-02T03:12:00"}],
-            },
-            "UTC",
+            {**BILLING, "incidents": [{**BILLED, "evidence": [{"journal": LOG, "line": 0}]}]},
+            "line is not a line number",
+        ),
+        (
+            {**BILLING, "incidents": [{**BILLED, "evidence": [{"pod": "x", "line": 1}]}]},
+            'is not {"journal", "line"}, {"qualification"} or {"pod"}',
+        ),
+        (
+            {**BILLING, "incidents": [{**BILLED, "evidence": [{"qualification": "a\nb"}]}]},
+            "qualification is not one non-empty line",
         ),
         ({**BILLING, "currency": "EUR"}, "currency"),
         ({**BILLING, "policy_stops": [{"stage": "search", "spent": 5}]}, "'spent' is not"),
@@ -739,18 +832,14 @@ class ReportWorld(AnalysisWorld):
             )
         )
         (root / "launch").mkdir()
-        (root / "launch" / "study3-c1-confirmation.jsonl").write_text(
-            json.dumps(
-                {
-                    "event": "recovery",
-                    "experiment": "study3",
-                    "only": "A-1.45e-05/s10400",
-                    "runs": ["A-1.45e-05/s10400"],
-                    **INCIDENT,
-                }
-            )
-            + "\n"
-        )
+        header = {"study": 3, "candidate": 1, "step": "confirmation", "round": None}
+        lines = [
+            {"event": "start", "experiment": "study3", "run": "A-1.45e-05/s10400",
+             "header": header},
+            {"event": "recovery", "experiment": "study3", "only": "A-1.45e-05/s10400",
+             "runs": ["A-1.45e-05/s10400"], **INCIDENT},
+        ]  # fmt: skip
+        (root / LOG).write_text("".join(json.dumps(line) + "\n" for line in lines))
         self.billing, self.embargo = tmp_path / "billing.json", tmp_path / "embargo.json"
         self.billing.write_text(json.dumps(BILLING))
         self.embargo.write_text(json.dumps({"breaches": []}))
@@ -886,7 +975,7 @@ def test_the_report_command_refuses_an_unbilled_incident_and_writes_nothing(repo
     why = world.refused(
         "report", "--runs-root", world.root, "--billing", world.billing, "--embargo", world.embargo
     )
-    assert "billed price" in why and "launch/study3-c1-confirmation.jsonl line 1" in why
+    assert "billed once" in why and f"{LOG} line 2 is named by no billed incident" in why
     assert not list((world.root / "study3-final").glob("report-*"))
     world.billing.write_text(json.dumps({**BILLING, "available": 294}))
     assert "'available' is not a field" in world.refused(
