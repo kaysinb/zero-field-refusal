@@ -1769,10 +1769,12 @@ docstring holds the rules, and "A case restart" below has the complete list of t
     first case the driver itself exits 1 when `$KEPT` is on the checkpoint directory's device or
     lies under `$RUNS_DIR` or the checkpoint directory.
   - **The manifest.** `kept-checkpoints-<n>.json` in the case's folder, and the same JSON as
-    `MANIFEST.json` in the export with a `SHA256SUMS`: the case, its technical reasons, the
-    binding records by path and sha256 (the launcher run's `summary.json` and `meta.json` with its
-    checkpoint record, and the case's latest baseline, rest and control records; nothing under a
-    run's `responses/`, `observations/` or `judge/` is read), each file (source, copy, size,
+    `MANIFEST.json` in the export with a `SHA256SUMS`: the case, its technical reasons and
+    `failed_control` (null; for a scientific case whose control failed, the control's reasons and
+    the scientific failures), the binding records by path and sha256 (the launcher run's
+    `summary.json` and `meta.json` with its checkpoint record, and the case's latest baseline, rest
+    and control records; nothing under a run's `responses/`, `observations/` or `judge/` is read),
+    each file (source, copy, size,
     sha256, the recorded sha256 and whether it matches), `lost` (each checkpoint a record names
     that is gone and that `finish` did not remove), `verified`, the host, the Pod and the
     provenance. Run again, `finish` reuses an export that still re-hashes and still holds the
@@ -1843,9 +1845,13 @@ docstring holds the rules, and "A case restart" below has the complete list of t
   `kept-check` of exit 0 binds an export that holds the case's files as they are, `finish` exits
   0 for the case and copies nothing. The files stay on the container disk, counted by the next
   case's disk check, until `finish --release` after the control's diagnosis, through that
-  verified export; its `checkpoints-removed-<n>.json` names the failed control. An interrupted
-  rest whose trajectory results hold the scientific failure, its control recorded technical, is
-  not yet complete: `control-only` exits 3, the usual path stops at the rest (exit 8; at the
+  verified export; its `checkpoints-removed-<n>.json` names the failed control. After a 14, the
+  driver goes on with about 13 GB per such case still on the container disk. If the next case's
+  disk check then stops the driver (exit 1), `finish --release`, run through the verified export,
+  clears it: the volume and bucket copies keep the evidence. This is the route out of a disk-check
+  stop; otherwise the release waits for the control's diagnosis. An interrupted rest whose
+  trajectory results hold the scientific failure, its control recorded technical, is not yet
+  complete: `control-only` exits 3, the usual path stops at the rest (exit 8; at the
   launcher, exit 1, after a lost container disk: row 3 of "A lost checkpoint"), and the rest's
   attempt is recorded with `interrupted --technical`; the case is then complete as above.
   - **What is kept.** The full export of a technical case: the launcher run's endpoint `.pt` of

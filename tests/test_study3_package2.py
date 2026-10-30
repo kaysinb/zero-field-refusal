@@ -106,10 +106,10 @@ LABEL_MODULES = ("zero_field_refusal.analysis.study2_labels", "zero_field_refusa
 # The GPU code study 3 qualifies, as of package 1d: its last commit that changed a GPU path, the
 # launcher's further recovery rounds, the driver's control-only path, the export of a technical
 # case's checkpoints, restart-case's refusals of a control-alone state, of departing numerics and
-# of a binding refusal, an established technical case's early export, and a scientific case whose
-# same-path control failed (it counts as scientific, its evidence kept while the driver goes on);
-# with qualify's cleanup: control-only's quiet answer, a present checkpoint hashed once, the
-# launch journal read once per engineering cycle and the record that names an interrupted attempt
+# of a binding refusal, an established technical case's early export, a scientific case whose
+# same-path control failed (it counts as scientific, its evidence kept while the driver goes on),
+# control-only's quiet answer, a present checkpoint hashed once, the launch journal read once per
+# engineering cycle and the record that names an interrupted attempt
 QUALIFIED_GPU_CODE = "14c131f"
 REAL_IDENTITY = code_identity.gpu_code_identity
 REAL_READING = qualification_records.read_qualification  # the route replaces it
