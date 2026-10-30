@@ -1636,7 +1636,7 @@ docstring holds the rules, and "A case restart" below has the complete list of t
      case whose control runs alone; 1 (its recorded parts cannot be bound to its launcher run, a
      provenance problem for diagnosis) or any other answer, carried with its reason;
   7. when the launcher run itself is a completed failure (its declared instability stop,
-     scientific; another stop, technical);
+     scientific; another stop or a departing run, technical);
   8. when the launcher run's numerics setup, or its Rayleigh record when enabled, departs from the
      campaign's config behind a settled missing-checkpoint end (a provenance conflict, for
      diagnosis and the technical route);

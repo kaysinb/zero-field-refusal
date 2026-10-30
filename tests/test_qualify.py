@@ -3369,19 +3369,30 @@ def test_control_only_answer_matches_the_command_and_says_nothing(
     assert code == (answer.why if expected == 1 else answer.code)
 
 
-@pytest.mark.parametrize("command", ["control-only", "restart-case"])
+@pytest.mark.parametrize("command", ["control-only", "restart-case",
+                                     "restart-case, at the binding"])  # fmt: skip
 def test_a_present_checkpoint_is_hashed_once(qualify, tmp_path, monkeypatch, command) -> None:
     """A launcher checkpoint on disk with another sha256 than its recorded one is hashed once:
     ``control-only`` names the sha256 its conflict check found, and ``restart-case`` refuses on
-    that one reading."""
+    that one reading, whether its own last check finds the conflict (``control-only`` answers 3)
+    or ``control-only``'s binding does (a passing baseline and rest, the control interrupted:
+    the binding refuses, exit 1, and ``restart-case`` carries that refusal)."""
     if command == "control-only":
         path, root, out, run_dir = decided_world(tmp_path)
         checkpoint = tmp_path / "ckpt" / "r-f1.pt"
         checkpoint.write_bytes(b"other weights")
         argv = control_only(path)
-    else:
+    elif command == "restart-case":
         path, root, out, checkpoint = present_conflict_world(tmp_path)
         argv = restart(path, ADAMW, RESTART)
+    else:
+        path, root, out, run_dir = decided_world(tmp_path, rest=True)
+        conforming_launcher(run_dir)
+        checkpoint = tmp_path / "ckpt" / "r-f1.pt"
+        checkpoint.write_bytes(b"other weights")
+        q.publish(out / (FA.attempt_path("control", 1) + ".started"),
+                  {"started_at": "t", "run_dir": str(run_dir)})  # fmt: skip
+        argv = restart(path, FA, RESTART)
     counted, real = [], qualify.checkpoint_sha256
     monkeypatch.setattr(qualify, "checkpoint_sha256",
                         lambda file: counted.append(str(file)) or real(file))  # fmt: skip
@@ -3389,8 +3400,12 @@ def test_a_present_checkpoint_is_hashed_once(qualify, tmp_path, monkeypatch, com
     assert isinstance(code, str), code
     if command == "control-only":
         assert hashlib.sha256(b"other weights").hexdigest() in code
-    else:
+    elif command == "restart-case":
         assert "another sha256" in code
+    else:  # control-only's binding refusal, carried, naming the sha256 it found
+        assert "control-only refuses the case" in code and "provenance conflict" in code
+        assert hashlib.sha256(b"other weights").hexdigest() in code
+        assert not list(case_folder(out, FA).glob("restart-*"))
     assert counted.count(str(checkpoint)) == 1, counted
 
 
