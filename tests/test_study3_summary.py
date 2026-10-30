@@ -698,7 +698,11 @@ def checkout(tmp_path, monkeypatch, capsys) -> tuple[VersionsStudy, Summary]:
     """A Git checkout and its RUNS_DIR (the versions tests' ``Study``), and the summary script
     run from that checkout."""
     study = VersionsStudy(tmp_path, monkeypatch)
-    return study, Summary(study, monkeypatch, capsys)
+    summary = Summary(study, monkeypatch, capsys)
+    # the validation fixation's gate open here; it goes once the route after the fixation and its
+    # replay are in place
+    monkeypatch.setattr(summary.script, "POST_FIXATION_ROUTE", True)
+    return study, summary
 
 
 def fixation_argv(study: VersionsStudy, step: str = "validation", *more) -> list:
@@ -906,6 +910,22 @@ def test_the_fixation_records_are_written_at_their_paths_once(checkout, monkeypa
          "procedure": "pps-with-replacement-400-400-200"})  # fmt: skip
     refused(summary.run(*fixation_argv(study, "confirmation", *SEED_ARGS)), "exists")
     assert attempts == []
+
+
+def test_the_validation_fixation_waits_for_the_post_fixation_route(checkout) -> None:
+    """Until the route after the validation fixation (its successor records and the
+    confirmation boundary) and its replay are in place, no validation fixation is written, and so
+    no confirmation supplement either."""
+    study, summary = checkout
+    study.ready(real=True)
+    summary.monkeypatch.setattr(summary.script, "POST_FIXATION_ROUTE", False)
+    code, _, err = summary.run(*fixation_argv(study, "validation", "--theta0",
+                                              study.runs.theta0))  # fmt: skip
+    assert code != 0 and "route after the validation fixation" in err
+    assert not (study.repo / sv.fixation_name("validation", 1)).exists()
+    study.n(75)
+    refused(summary.run(*fixation_argv(study, "confirmation", *SEED_ARGS)), "fixation-validation")
+    assert not (study.repo / sv.fixation_name("confirmation", 1)).exists()
 
 
 def test_the_fixation_command_refuses_what_its_builders_refuse(checkout) -> None:

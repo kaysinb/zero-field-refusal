@@ -88,7 +88,11 @@ the stage read as ``progress`` reads it, θ₀ from --theta0) or its confirmatio
 of agreements, integers in [0, 2³²), as "Inference" and "The audit" require), once, at its fixed
 path docs/study3-fixation-<step>-c<N>.json. It needs a clean checkout of a known commit: the
 record's code is HEAD's commit and that commit's GPU code, which the builders take as given. The
-record is then committed alone, before the next one is written.
+record is then committed alone, before the next one is written. While the route after the
+validation fixation (the successor records of a cycle after it and the confirmation boundary,
+"Voiding and supersession") and its replay have not passed (``POST_FIXATION_ROUTE``), the
+validation fixation is refused and nothing is written; the supplement, which needs it, cannot be
+written either.
 
 **record** writes a decision record (engineering, simulation, n-c<N>, budget-c<N>) from a JSON
 file through ``study3_decisions.write_decision``, which validates it against the evidence it
@@ -233,6 +237,10 @@ MISSING = object()
 # The decision records ``record`` writes from a file (a closure is written from the step)
 RECORDS = ("engineering", "simulation", "n-c1", "n-c2", "budget-c1", "budget-c2")
 STEPS = ("validation", "confirmation")  # the fixation's stages
+# Whether the route after the validation fixation (a cycle's successor records and the
+# confirmation boundary, "Voiding and supersession") and its replay have passed: until they have,
+# no validation fixation is written (module docstring, "fixation")
+POST_FIXATION_ROUTE = False
 NO_CYCLE = ("a fix that leaves the GPU code unchanged is no cycle: commit it and read the state "
             "again")  # fmt: skip
 
@@ -596,6 +604,10 @@ def write_fixation(args: argparse.Namespace) -> None:
     """The validation fixation or the confirmation supplement (module docstring,
     "fixation")."""
     step, candidate = args.step, args.candidate
+    if step == "validation" and not POST_FIXATION_ROUTE:
+        refuse("fixation", "the route after the validation fixation (its successor records and "
+               'the confirmation boundary, "Voiding and supersession") and its replay have not '
+               "passed: no validation fixation is written")  # fmt: skip
     path = REPO / fixation_name(step, candidate)
     if path.exists() or path.is_symlink():
         refuse("fixation", f"{path} exists: a fixation record is written once")
