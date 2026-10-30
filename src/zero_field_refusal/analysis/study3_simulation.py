@@ -139,16 +139,21 @@ at the rates each selects, drawn once with every run's failure uniform kept:
   until neither moves (at most 10 rounds, else ``CalibrationNotStable``).
 - *σ_AF, σ_PF* (M1, M2): by bisection, the observed spread of d at Δ = 0 over the supported
   validation blocks at the selected rates is the planning spread: the square root of the mean
-  within-study variance, the quantity the spread rule estimates. The labels enter through their
-  exact conditional variance (``label_variance``: the prompts are independent given the block,
-  two endpoints' harmful labels bivariate normal thresholds), the expectation of the observed
-  sample variance given the blocks, so that every σ reuses the same draws; a test checks it
-  against simulated labels.
-- *o_A, o_P* (M15): solved so that the mean, over the selections, of the per-study truth at the
-  study's selected rates is Δ_AF (Δ_PF).
+  within-study variance, the quantity the spread rule estimates. Δ = 0 is the truth's, not the
+  offset's: the spread is taken at the offsets o⁰_A, o⁰_P at which the mean truth over the
+  selections is 0 (the curvature and a differential judge make it nonzero at offset 0). σ given
+  o⁰ and o⁰ given σ alternate until neither moves (at most 10 rounds, else
+  ``CalibrationNotStable``). The labels enter through their exact conditional variance
+  (``label_variance``: the prompts are independent given the block, two endpoints' harmful
+  labels bivariate normal thresholds), the expectation of the observed sample variance given
+  the blocks, so that every σ reuses the same draws; a test checks it, study by study, against
+  simulated labels.
+- *o_A, o_P* (M15): solved, from o⁰ and at the calibrated σ, so that the mean, over the
+  selections, of the per-study truth at the study's selected rates is Δ_AF (Δ_PF); at Δ = 0 they
+  are o⁰.
 σ and the offsets depend on f and the shifts, not the other way round: they are computed in the
-round in which nothing moved, with the attained spreads and mean truths and their Monte Carlo
-SEs. The truth's moments are remembered per (vector, arm, rates, harm model, the arm's σ and
+round in which nothing moved, with the attained spreads (at o⁰) and mean truths and their Monte
+Carlo SEs. The truth's moments are remembered per (vector, arm, rates, harm model, the arm's σ and
 offset), since the selected rates are rounded to 3 significant digits and repeat.
 
 **Rulings** (the study's frozen settings, each with its one-line source):
@@ -565,8 +570,9 @@ class Calibration:
     effects' SDs, proportions), ``offset_a`` and ``offset_p`` (proportions), the attained spreads
     ``attained_af_pp`` and ``attained_pf_pp`` (M1) and ``attained_delta_pp`` (comparison → the
     mean truth over the selections and its Monte Carlo SE, pp; M15); ``utility_lambda`` (arm →
-    λ of the safe shifts, M10) and ``attained_spread_se_pp`` (comparison → the attained spread's
-    Monte Carlo SE, pp, M1)."""
+    λ of the safe shifts, M10), ``attained_spread_se_pp`` (comparison → the attained spread's
+    Monte Carlo SE, pp, M1) and ``null_offset_a``, ``null_offset_p`` (o⁰: the offsets at which
+    the mean truth is 0, where σ is calibrated and the spread attained, proportions; M1)."""
 
     candidate: int
     failure: float
@@ -585,6 +591,8 @@ class Calibration:
     attained_delta_pp: Mapping[str, tuple[float, float]]
     utility_lambda: Mapping[str, float] = field(default_factory=dict)
     attained_spread_se_pp: Mapping[str, float] = field(default_factory=dict)
+    null_offset_a: float = 0.0
+    null_offset_p: float = 0.0
 
     def __post_init__(self) -> None:
         if self.candidate not in CANDIDATES or isinstance(self.candidate, bool):
@@ -595,7 +603,7 @@ class Calibration:
             value = getattr(self, name)
             if not (math.isfinite(value) and value >= 0):
                 raise ValueError(f"{name} {value!r} is not a finite SD")
-        for name in ("offset_a", "offset_p"):
+        for name in ("offset_a", "offset_p", "null_offset_a", "null_offset_p"):
             if not math.isfinite(getattr(self, name)):
                 raise ValueError(f"{name} is not finite")
 
@@ -605,6 +613,10 @@ class Calibration:
 
     def offset(self, arm: str) -> float:
         return {"A": self.offset_a, "F": 0.0, "P": self.offset_p}[arm]
+
+    def at_null(self) -> Calibration:
+        """This calibration at the Δ = 0 offsets o⁰ (where σ is calibrated, M1)."""
+        return replace(self, offset_a=self.null_offset_a, offset_p=self.null_offset_p)
 
 
 # ------------------------------------------------------------------ the harm and label models
@@ -2185,14 +2197,20 @@ def calibrate_safe(
     return replace(shifted, utility_realized=_utility_realized(measured, calibration.failure))
 
 
-def _spread(scenario: Scenario, draws: _Draws, failure: float, sigma: float,
-            comparison: str) -> tuple[float, float]:  # fmt: skip
-    """The observed spread of d at Δ = 0 over the supported validation blocks at f (M1): the
-    square root of the mean within-study variance, the quantity the spread rule estimates, in
-    pp, and its Monte Carlo SE. Per study the variance is the sample variance of the blocks'
-    expected judged differences plus the mean of their label variances (``label_variance``):
-    the expectation of the observed d's sample variance given the blocks, so that the labels
-    count exactly and every σ reuses the same draws."""
+def study_variances(
+    scenario: Scenario,
+    draws: _Draws,
+    failure: float,
+    sigma: float,
+    comparison: str,
+    offset: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per calibration study, E[s² | blocks] of d over its supported validation blocks at f (M1),
+    the arm's block effect σ·e + ``offset`` (proportions²), and which studies have the two
+    supported blocks a variance needs: the sample variance of the blocks' expected judged
+    differences plus the mean of their label variances (``label_variance``), the expectation of
+    the observed d's sample variance given the blocks, so that the labels count exactly and
+    every σ reuses the same draws."""
     arm = COMPARISONS[comparison][0]
     a, f_ = ARM_ORDER.index(arm), ARM_ORDER.index("F")
     mask = draws.supported(comparison, failure)
@@ -2204,7 +2222,8 @@ def _spread(scenario: Scenario, draws: _Draws, failure: float, sigma: float,
         x = np.where(mask, which[:, :, index], 0.0)
         return np.clip(harm_curve(name, x, g) + extra, 0.0, 1.0)
 
-    h = np.stack([harm(a, draws.x_lo, sigma * effect), harm(a, draws.x_hi, sigma * effect),
+    shift = sigma * effect + offset
+    h = np.stack([harm(a, draws.x_lo, shift), harm(a, draws.x_hi, shift),
                   harm(f_, draws.x_lo, 0.0), harm(f_, draws.x_hi, 0.0)], axis=-1)  # fmt: skip
     wa, wf = np.where(mask, draws.w[:, :, a], 0.0), np.where(mask, draws.w[:, :, f_], 0.0)
     c = np.stack([1 - wa, wa, -(1 - wf), -wf], axis=-1)
@@ -2218,25 +2237,39 @@ def _spread(scenario: Scenario, draws: _Draws, failure: float, sigma: float,
     mean = np.where(mask_, mu[keep], 0.0).sum(axis=1) / n_
     ss = np.where(mask_, (mu[keep] - mean[:, None]) ** 2, 0.0).sum(axis=1)
     variance = ss / (n_ - 1) + np.where(mask_, noise[keep], 0.0).sum(axis=1) / n_
+    return variance, keep
+
+
+def _spread(scenario: Scenario, draws: _Draws, failure: float, sigma: float,
+            comparison: str, offset: float = 0.0) -> tuple[float, float]:  # fmt: skip
+    """The observed spread of d over the supported validation blocks at f, the arm's offset
+    ``offset`` (M1): the square root of the mean within-study variance (``study_variances``),
+    the quantity the spread rule estimates, in pp, and its Monte Carlo SE."""
+    variance, _ = study_variances(scenario, draws, failure, sigma, comparison, offset)
     total = float(variance.mean())
     se = float(variance.std(ddof=1) / math.sqrt(variance.size)) / (2 * math.sqrt(total))
     return 100 * math.sqrt(total), 100 * se
 
 
-def _solve_sigma(scenario: Scenario, draws: _Draws, failure: float, comparison: str) -> float:
-    """σ by bisection so that the spread at Δ = 0 is the planning spread (0 when the labels and
-    the geometry alone already reach it)."""
+def _solve_sigma(scenario: Scenario, draws: _Draws, failure: float, comparison: str,
+                 offset: float = 0.0) -> float:  # fmt: skip
+    """σ by bisection so that the spread at the arm's offset ``offset`` (o⁰: Δ = 0) is the
+    planning spread (0 when the labels and the geometry alone already reach it)."""
     target = scenario.spread_pp
-    if _spread(scenario, draws, failure, 0.0, comparison)[0] >= target:
+
+    def spread(sigma: float) -> float:
+        return _spread(scenario, draws, failure, sigma, comparison, offset)[0]
+
+    if spread(0.0) >= target:
         return 0.0
     lo, hi = 0.0, 0.5
-    while _spread(scenario, draws, failure, hi, comparison)[0] < target:
+    while spread(hi) < target:
         hi *= 2
         if hi > 64:
             raise CalibrationNotStable(f"{scenario.name}: no σ reaches the spread {target} pp")
     while hi - lo > SIGMA_PRECISION:
         mid = (lo + hi) / 2
-        if _spread(scenario, draws, failure, mid, comparison)[0] < target:
+        if spread(mid) < target:
             lo = mid
         else:
             hi = mid
@@ -2252,15 +2285,16 @@ def calibrate_spread(
     studies: int = CALIBRATION_STUDIES,
 ) -> tuple[float, float, float, float]:
     """(σ_AF, σ_PF, the attained A–F and P–F spreads in pp) (M1, M2): each σ by bisection so
-    that the observed SD of d at Δ = 0, over the supported validation blocks at the rates each
-    selection chose, is the planning spread (``_spread``), at the setup's f and shifts."""
+    that the observed SD of d at Δ = 0 (the setup's o⁰, ``null_offset_a`` and
+    ``null_offset_p``), over the supported validation blocks at the rates each selection chose,
+    is the planning spread (``_spread``), at the setup's f and shifts."""
     calibration = _current(scenario, setup, candidate)
     draws = _draws(scenario, setup, candidate, seed, studies)
     f = calibration.failure
-    sigma_af = _solve_sigma(scenario, draws, f, "A-F")
-    sigma_pf = _solve_sigma(scenario, draws, f, "P-F")
-    return (sigma_af, sigma_pf, _spread(scenario, draws, f, sigma_af, "A-F")[0],
-            _spread(scenario, draws, f, sigma_pf, "P-F")[0])  # fmt: skip
+    null = {"A-F": calibration.null_offset_a, "P-F": calibration.null_offset_p}
+    sigma = {c: _solve_sigma(scenario, draws, f, c, null[c]) for c in COMPARISONS}
+    spread = {c: _spread(scenario, draws, f, sigma[c], c, null[c])[0] for c in COMPARISONS}
+    return sigma["A-F"], sigma["P-F"], spread["A-F"], spread["P-F"]
 
 
 def _mean_truth(scenario: Scenario, setup: Setup, calibration: Calibration, draws: _Draws,
@@ -2334,10 +2368,10 @@ def calibrate_offsets(
     *,
     studies: int = CALIBRATION_STUDIES,
 ) -> tuple[float, float]:
-    """(o_A, o_P) (M15, M2): each solved so that the mean, over the selections, of the per-study
-    truth (``truth`` at that study's selected rates) is Δ_AF (Δ_PF), at the setup's f, shifts
-    and σ."""
-    calibration = _current(scenario, setup, candidate)
+    """(o_A, o_P) (M15, M2): each solved, from the setup's o⁰, so that the mean, over the
+    selections, of the per-study truth (``truth`` at that study's selected rates) is Δ_AF
+    (Δ_PF), at the setup's f, shifts and σ."""
+    calibration = _current(scenario, setup, candidate).at_null()
     draws = _draws(scenario, setup, candidate, seed, studies)
     o_a = _solve_offset(scenario, setup, calibration, draws, "A-F", scenario.delta_af_pp / 100)
     o_p = _solve_offset(scenario, setup, calibration, draws, "P-F", scenario.delta_pf_pp / 100)
@@ -2377,10 +2411,11 @@ def calibrate_scenario(
     ``seed`` (``calibration_stream``): f (``calibrate_failure``) and the safe shifts
     (``calibrate_safe``) alternate until neither moves (at most 10 rounds, otherwise
     ``CalibrationNotStable``); σ and the offsets depend on them and not the other way round, so
-    they are computed in the round in which nothing moved (``calibrate_spread``,
-    ``calibrate_offsets``), with the attained spreads and mean truths and their Monte Carlo SEs.
-    A gate scenario has no harm: σ and the offsets stay 0. ``fixation`` writes the result and
-    ``run`` recomputes it."""
+    they are computed in the round in which nothing moved: σ at the Δ = 0 offsets o⁰ and o⁰ at
+    σ alternate until neither moves (at most 10 rounds), then the offsets are solved for the
+    scenario's Δ from o⁰, with the attained spreads (at o⁰) and mean truths and their Monte
+    Carlo SEs. A gate scenario has no harm: σ and the offsets stay 0. ``fixation`` writes the
+    result and ``run`` recomputes it."""
     calibration = _starting_calibration(scenario, setup, candidate)
     before = None
     for _ in range(CALIBRATION_ROUNDS):
@@ -2401,19 +2436,36 @@ def calibrate_scenario(
         )
     if scenario.role == "gate":
         return calibration
-    here = _with(setup, scenario, candidate, calibration)
-    sigma_af, sigma_pf, spread_af, spread_pf = calibrate_spread(
-        scenario, here, candidate, seed, studies=studies
-    )
-    calibration = replace(calibration, sigma_af=sigma_af, sigma_pf=sigma_pf,
-                          attained_af_pp=spread_af, attained_pf_pp=spread_pf)  # fmt: skip
-    draws = _draws(scenario, here, candidate, seed, studies)
-    spread_se = {c: _spread(scenario, draws, calibration.failure, s, c)[1]
-                 for c, s in (("A-F", sigma_af), ("P-F", sigma_pf))}  # fmt: skip
-    here = _with(setup, scenario, candidate, calibration)
-    offset_a, offset_p = calibrate_offsets(scenario, here, candidate, seed, studies=studies)
-    calibration = replace(calibration, offset_a=offset_a, offset_p=offset_p,
-                          attained_spread_se_pp=spread_se)  # fmt: skip
+    # σ at Δ = 0 (M1): σ given o⁰, then o⁰ (the mean truth 0) given σ, until neither moves
+    draws = _draws(scenario, _with(setup, scenario, candidate, calibration), candidate, seed,
+                   studies)  # fmt: skip
+    f, before = calibration.failure, None
+    for _ in range(CALIBRATION_ROUNDS):
+        null = {"A-F": calibration.null_offset_a, "P-F": calibration.null_offset_p}
+        sigma = {c: _solve_sigma(scenario, draws, f, c, null[c]) for c in COMPARISONS}
+        calibration = replace(calibration, sigma_af=sigma["A-F"], sigma_pf=sigma["P-F"])
+        probe = calibration.at_null()
+        null = {c: _solve_offset(scenario, setup, probe, draws, c, 0.0) for c in COMPARISONS}
+        calibration = replace(calibration, null_offset_a=null["A-F"], null_offset_p=null["P-F"])
+        now = (sigma["A-F"], sigma["P-F"], null["A-F"], null["P-F"])
+        if now == before:
+            break
+        before = now
+    else:
+        raise CalibrationNotStable(
+            f"{scenario.name} at candidate {candidate}: σ and the Δ = 0 offsets still moved "
+            f"after {CALIBRATION_ROUNDS} rounds"
+        )
+    spread = {c: _spread(scenario, draws, f, s, c, n) for c, s, n in
+              (("A-F", calibration.sigma_af, calibration.null_offset_a),
+               ("P-F", calibration.sigma_pf, calibration.null_offset_p))}  # fmt: skip
+    calibration = replace(calibration, attained_af_pp=spread["A-F"][0],
+                          attained_pf_pp=spread["P-F"][0],
+                          attained_spread_se_pp={c: v[1] for c, v in spread.items()})  # fmt: skip
+    probe = calibration.at_null()
+    offset_a = _solve_offset(scenario, setup, probe, draws, "A-F", scenario.delta_af_pp / 100)
+    offset_p = _solve_offset(scenario, setup, probe, draws, "P-F", scenario.delta_pf_pp / 100)
+    calibration = replace(calibration, offset_a=offset_a, offset_p=offset_p)
     attained = {}
     for comparison in COMPARISONS:
         mean, se = _mean_truth(scenario, setup, calibration, draws, comparison)
@@ -2490,6 +2542,8 @@ def calibration_json(c: Calibration) -> dict[str, Any]:
         "sigma_pf": c.sigma_pf,
         "offset_a": c.offset_a,
         "offset_p": c.offset_p,
+        "null_offset_a": c.null_offset_a,
+        "null_offset_p": c.null_offset_p,
         "attained_af_pp": c.attained_af_pp,
         "attained_pf_pp": c.attained_pf_pp,
         "attained_spread_se_pp": dict(c.attained_spread_se_pp),
@@ -2521,6 +2575,8 @@ def calibration_from_json(d: Mapping[str, Any]) -> Calibration:
         sigma_pf=float(d["sigma_pf"]),
         offset_a=float(d["offset_a"]),
         offset_p=float(d["offset_p"]),
+        null_offset_a=float(d["null_offset_a"]),
+        null_offset_p=float(d["null_offset_p"]),
         attained_af_pp=float(d["attained_af_pp"]),
         attained_pf_pp=float(d["attained_pf_pp"]),
         attained_spread_se_pp={k: float(v) for k, v in d["attained_spread_se_pp"].items()},

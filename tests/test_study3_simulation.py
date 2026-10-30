@@ -1068,33 +1068,51 @@ def test_the_safe_alternative_holds_on_the_supported_interpolated_utility(setup)
     assert {v.seed for v in setup.vectors} == set(cal.mmlu_shift["A"])
 
 
-def realized_spread_at_selected_rates(sc, setup, cal, seed) -> tuple[float, float]:
-    """The observed A–F spread at Δ = 0 with simulated labels: the square root of the mean
-    within-study variance of d_AF over the supported validation blocks of the same studies,
-    and its Monte Carlo SE (pp)."""
-    zero = replace(cal, offset_a=0.0, offset_p=0.0)
-    use = replace(setup, calibrations={**setup.calibrations, (sc, 1): zero})
-    variances = []
-    for i in range(2_000):
-        o = sim.simulate_study(sc, use, seed, i, resamples=200, levels=LEVELS,
+def paired_spread_at_selected_rates(sc, setup, cal, seed, studies) -> tuple[float, float, float]:
+    """Study by study, the observed A–F s² with simulated labels at the Δ = 0 offsets (o⁰)
+    against the calibration's exact E[s² | blocks] of the same study (pp²): the mean paired
+    difference, its SE, and the simulated spread (the square root of the mean s²)."""
+    use = replace(setup, calibrations={**setup.calibrations, (sc, 1): cal.at_null()})
+    draws = sim._draws(sc, use, 1, seed, studies)
+    exact, keep = sim.study_variances(sc, draws, cal.failure, cal.sigma_af, "A-F",
+                                      cal.null_offset_a)  # fmt: skip
+    simulated = []
+    for i in np.flatnonzero(keep):
+        o = sim.simulate_study(sc, use, seed, int(i), resamples=200, levels=LEVELS,
                                validation_only=True, candidate=1)  # fmt: skip
-        if o.m is not None and o.m >= 2:
-            variances.append(o.spread_pp**2)
-    v = np.array(variances)
-    spread = math.sqrt(v.mean())
-    return spread, v.std(ddof=1) / math.sqrt(v.size) / (2 * spread)
+        assert o.m >= 2
+        simulated.append(o.spread_pp**2)
+    diff = np.array(simulated) - 1e4 * exact
+    return (
+        float(diff.mean()),
+        float(diff.std(ddof=1) / math.sqrt(diff.size)),
+        math.sqrt(float(np.mean(simulated))),
+    )
 
 
-@pytest.mark.parametrize("name", ["C02", "C07", "C16", "P18"])
+@pytest.mark.parametrize("name", ["C02", "C07", "C13", "C16", "P18"])
 def test_the_spread_and_delta_hold_at_the_selected_rates(setup, name) -> None:
+    """σ is calibrated at Δ = 0, the offsets o⁰ at which the mean truth is 0 (C13's
+    differential judge makes the truth at offset 0 nonzero): the exact spread at o⁰ is the
+    planning spread, and each study's simulated s² matches its exact E[s² | blocks] (paired)."""
     sc = sim.SCENARIOS_BY_NAME[name]
     cal = sim.calibrate_scenario(sc, setup, 1, SEED, studies=2_000)
-    spread, spread_se = realized_spread_at_selected_rates(sc, setup, cal, SEED)  # Δ = 0 copy
-    assert abs(spread - sc.spread_pp) <= 2 * spread_se + 1e-3
     assert cal.attained_af_pp == pytest.approx(sc.spread_pp, abs=1e-6)
+    assert cal.attained_pf_pp == pytest.approx(sc.spread_pp, abs=1e-6)
+    mean, se, spread = paired_spread_at_selected_rates(sc, setup, cal, SEED, 2_000)
+    assert abs(mean) <= 3 * se and abs(spread - sc.spread_pp) <= 0.1
+    # o⁰ gives the mean truth 0; the offsets give Δ
+    use = replace(setup, calibrations={**setup.calibrations, (sc, 1): cal})
+    draws = sim._draws(sc, use, 1, SEED, 2_000)
     for comparison, target in (("A-F", sc.delta_af_pp), ("P-F", sc.delta_pf_pp)):
+        null, _ = sim._mean_truth(sc, setup, cal.at_null(), draws, comparison)
+        assert abs(null) <= 1e-12
         mean, se = cal.attained_delta_pp[comparison]
-        assert abs(mean - target) <= 2 * se + 1e-6
+        assert abs(mean - target) <= 1e-9
+    if sc.delta_af_pp == 0:
+        assert (cal.offset_a, cal.offset_p) == (cal.null_offset_a, cal.null_offset_p)
+    if name == "C13":  # the truth at offset 0 is not 0: o⁰ is not 0
+        assert abs(cal.null_offset_a) > 1e-4
 
 
 def test_the_calibration_is_recomputed_identically(setup) -> None:
@@ -1104,13 +1122,15 @@ def test_the_calibration_is_recomputed_identically(setup) -> None:
     assert sim.calibrate_scenario(sc, setup, 1, SEED, studies=2_000) == first
 
 
-def test_the_label_variance_is_the_simulated_labels(setup) -> None:
+@pytest.mark.parametrize("name", ["C02", "C13", "C14"])
+def test_the_label_variance_is_the_simulated_labels(setup, name) -> None:
     """The calibration takes the label noise of a block's difference through its exact variance
     (prompts independent given the block, pairs of endpoints through the bivariate normal); it
-    matches the simulated labels' variance."""
-    sc = sim.SCENARIOS_BY_NAME["C13"]
+    matches the simulated labels' variance, an endpoint at h = 0 included, for the equal and
+    the differential judge and for labels missing at random or among harmful responses."""
+    sc = sim.SCENARIOS_BY_NAME[name]
     rng = np.random.default_rng(9)
-    h = np.array([0.12, 0.2, 0.1, 0.18, 0.05, 0.3])
+    h = np.array([0.12, 0.2, 0.0, 0.18, 0.05, 0.3])
     arms = ["A", "A", "F", "F", "P", "P"]
     c = np.array([0.4, 0.6, -0.3, -0.7, 0.0, 0.0])
     draws = np.array([c @ sim.endpoint_labels(h, arms, sc, rng) for _ in range(20_000)])
