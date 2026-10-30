@@ -2302,6 +2302,109 @@ before each command below.
   The hold and the failure's evidence stay as they are, and a closed or held label is never
   issued again.
 
+## Study 3: labeling and the spread
+
+Harm labels leave sealed storage at two points only
+([the registration](study3-preregistration.md#judge-and-audit)): validation's labels once, for
+the spread, and every label of the chosen candidate after the cohorts and K\*_h are frozen, for
+the final analysis. Labeling uses the frozen judge on its own Pod ([Judge server](#judge-server)).
+The commands are `analysis.study3_label_cli` (a module of the analysis package, so that it is no
+GPU path) and `scripts/study3_spread.py`; their docstrings hold every rule. Both run from the
+source checkout of the commit, clean (`$SRC`), in this order:
+
+1. **The control list, once.** Restore study 1's judge-calibration folder from the bucket to
+   `$RUNS_DIR/judge_calibration/calibration/`, read only. Draw the 40 control items with the
+   researcher's seed and the folder's bucket URI; the command writes
+   `docs/study3-judge-controls.json` once (ids, hashes and labels, never a text) and prints the
+   counts, the path and the sha256. Commit the list alone, before the validation fixation:
+
+   ```bash
+   project-run "$SRC" python -m zero_field_refusal.analysis.study3_label_cli controls-draw \
+     --calibration "$R/judge_calibration/calibration" --seed S --archive "gs://…/calibration" \
+     --runs-root "$R"
+   ```
+2. **The fixation's pins.** The validation fixation pins the control list by its sha256 and the
+   spread's code: `scripts/study3_spread.py` and every file of its import closure under
+   `src/zero_field_refusal/`, each by its sha256 at the fixation's commit
+   ([decision records](#study-3-campaigns)). The spread runs only while those files equal the
+   pin, and it records them in the n record (`spread.code`). An unrelated later fix of a pinned
+   module voids nothing already written; a correction that changes N goes through the registered
+   supersession, a successor of the n record
+   ([voiding and supersession](study3-preregistration.md#voiding-and-supersession)).
+3. **A batch.** Validation runs are labeled at candidate N's choice step (the spread point, until
+   the n record is written); the validation and confirmation runs once the final point is open
+   (the freeze valid: `study3_freeze.freeze_open` empty). Each batch labels its runs and the 40
+   controls, fetched from `--controls-source` by id and both hashes (a hash that differs refuses
+   before any request):
+
+   ```bash
+   project-run "$SRC" python -m zero_field_refusal.analysis.study3_label_cli label \
+     --runs-root "$R" --step validation --candidate 1 \
+     --controls-source "$R/judge_calibration/calibration" RUN_ID ...
+   ```
+
+   - **What it prints:** `{"run_id", "status"}` per run and `{"batch", "outcome", "runs",
+     "checks", "sealed_record"}`: ids, statuses, counts, control ids, paths and hashes, never a
+     text, a label or a harmful count. Its details (each run's summary, the captured output, the
+     tracebacks) go to a sealed record under `$RUNS_DIR/sealed` (`--sealed-dir`), opened in the
+     final analysis, never before.
+   - **Exit:** 0 only when the batch is accepted and every named run is labeled. A refusal (a
+     closed point, a run the launch journal does not bind to the step, a control list other than
+     the pinned one, the ledger's lock held) exits with its reason and sends nothing.
+   - **Resuming.** A batch is persistent: an unfinished one (the judge failed, the process
+     died) is resumed by the same command, or with no run ids, under the same batch id, before
+     any other. Outputs of an attempt that died before its controls finished are moved, unopened,
+     to the run's `judge-superseded/<batch>/g<g>-unverified/` and relabeled within the run's
+     rounds.
+   - **The ledger,** `$RUNS_DIR/study3/labeling/`, holds the batches, generations, rounds spent,
+     control checks, moves, marks and diagnoses, one JSON line each. It is sealed, and never
+     edited by hand. A torn last line refuses every command until `resolve-torn` repairs it,
+     before anything else:
+
+     ```bash
+     project-run "$SRC" python -m zero_field_refusal.analysis.study3_label_cli resolve-torn \
+       --runs-root "$R"
+     ```
+4. **A changed control and the judge's mark.**
+   - A changed control label moves every run's judge outputs to
+     `judge-superseded/<batch>/g<g>/` and relabels the batch once, on fresh controls. Each run has
+     three labeling rounds in its lifetime, across its generations: interrupted rounds count, a
+     relabel spends from them, and nothing releases one.
+   - A repeated change in the same batch, or a run exhausted after a rejected generation, is the
+     judge's technical mark: labeling of the candidate stops until the researcher's diagnosis.
+   - The diagnosis is a closed JSON record (`kind`, `batch`, `written_at`, `cause`, a one-line
+     `diagnosis` and its `evidence`), written once:
+
+     ```bash
+     project-run "$SRC" python -m zero_field_refusal.analysis.study3_label_cli diagnose \
+       --runs-root "$R" --batch b0001 --from "$R/incidents/diagnosis-b0001.json"
+     ```
+
+     - `infrastructure`, with the external evidence of the interruption (the GPU, the Pod, the
+       process), lets labeling resume in new generations within each run's remaining rounds; it
+       adds no round. It is refused after a parsed control mismatch and for an exhausted run.
+     - `judge` keeps labeling stopped, and the report follows the technical route.
+   - A diagnosis record published without its journal line is completed by a re-run of the same
+     `diagnose` command.
+   - Recovering spent rounds would need a prospective registration amendment, with external
+     evidence for every affected round.
+5. **The spread.** Once every cohort run of the choice step is labeled and accepted:
+
+   ```bash
+   project-run "$SRC" python scripts/study3_spread.py --runs-root "$R" --candidate 1
+   ```
+
+   It prints one line, `{"outcome", "N", "spread_pp"}`: the rule's outcome, N and the A–F spread
+   rounded half up to 0.5 pp. It writes its output,
+   `$RUNS_DIR/study3/decisions/spread-output-c<N>.json` (no SD, mean, sign or per-block value),
+   and the n record `n-c<N>` with the code it ran with. Pending labels, a labeling problem, a
+   pinned file that differs from the fixation's pin (before any label or at write time) and a
+   checkout that is not clean each refuse it, and nothing is written. Once the n record is
+   written, the spread point closes.
+6. **Never.** `scripts/label_runs.py` and `analysis.study2_label_cli` are never run on study-3
+   runs, and nothing under a run's `judge/` or `judge-superseded/` or under
+   `$RUNS_DIR/study3/labeling/` is opened by hand.
+
 ## Judge server
 
 The open-weights judge runs on its own Pod from the official vLLM image, never in the project

@@ -330,6 +330,24 @@ topics:
   - src/zero_field_refusal/analysis/campaign_prep.py
   - tests/test_study3_*.py
   - tests/test_qualification_records.py
+- id: study3_labeling
+  title: Study 3's labeling with control items, the label reader's two points and the spread
+  source: docs/operations.md#study-3-labeling-and-the-spread
+  review:
+  - docs/study3-preregistration.md#judge-and-audit
+  - docs/study3-preregistration.md#sample-size-from-validation
+  - docs/study3-preregistration.md#voiding-and-supersession
+  - docs/architecture.md#modules
+  watch:
+  - src/zero_field_refusal/analysis/study3_pins.py
+  - src/zero_field_refusal/analysis/study3_labels.py
+  - src/zero_field_refusal/analysis/study3_label_cli.py
+  - scripts/study3_spread.py
+  - docs/study3-judge-controls.json
+  - tests/test_study3_pins.py
+  - tests/test_study3_labels.py
+  - tests/test_study3_label_cli.py
+  - tests/test_study3_spread.py
 - id: provenance_and_delivery
   title: Run provenance, storage, reports and release
   source: docs/architecture.md#experiment-tracking-and-storage
