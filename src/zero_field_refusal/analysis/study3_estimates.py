@@ -85,7 +85,7 @@ from typing import Any
 
 import numpy as np
 
-from .study3_blocks import CONFIRMATION_ALPHA, interpolated
+from .study3_blocks import CONFIRMATION_ALPHA, interpolated, weight
 from .study3_inference import (
     UNDETERMINED,
     Interval,
@@ -409,7 +409,7 @@ def matched_blocks(
             elif not (0 < k_lo < k_hi < math.inf and k_lo <= kstar_h <= k_hi):
                 reasons[arm] = NO_BRACKET
             else:
-                w = (math.log(kstar_h) - math.log(k_lo)) / (math.log(k_hi) - math.log(k_lo))
+                w = weight(k_lo, k_hi, kstar_h)
                 arms[arm] = {"lo": lo, "hi": hi, "w": w}
         if reasons:
             left_out.append({"seed": block["seed"], "arms": reasons})

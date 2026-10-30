@@ -84,8 +84,8 @@ from pathlib import Path
 from typing import Any
 
 from ..paths import REPO_ROOT
-from .study3_blocks import PAIRS, SUPPORTED, UNSUPPORTED, block_state
-from .study3_decisions import _digest, _sealed_problem, _under_sealed
+from .study3_blocks import OPEN, PAIRS, SUPPORTED, UNRESOLVED, UNSUPPORTED, block_state
+from .study3_decisions import _digest, _sealed_problem, _under_sealed, decisions
 from .study3_estimates import kstar_h, matched_blocks
 from .study3_progress import COMPARISONS, read_state
 from .study3_records import SEEDS, Endpoint
@@ -152,7 +152,13 @@ def freeze_record(
     arms = [arm for arm in ARM_ORDER if arm != "P" or "P-F" in active]
     started = list(confirmation["started"])
     blocks = {seed: of(seed, arms) for seed in started}
-    comparisons, found = {}, []
+    comparisons = {}
+    found = [f"{c}: block {seed} is started and still {blocks[seed][COMPARISONS[c]]['state']}: "
+             "the cohorts are frozen once every started block is resolved"
+             for c in active for seed in started
+             if blocks[seed][COMPARISONS[c]]["state"] in (OPEN, UNRESOLVED)]  # fmt: skip
+    if found:
+        raise FreezeRefused(_refusal(candidate, found))
     for comparison in active:
         name = COMPARISONS[comparison]
         cohort = list(confirmation["analysis"][comparison])
@@ -307,9 +313,31 @@ def analysis_freeze(
                                code=code, written_at=_now(), labels=counts)  # fmt: skip
     except FreezeRefused as exc:
         problems.insert(0, str(exc).removeprefix(f"analysis-freeze-c{candidate}: "))
+    else:
+        problems += _validation_cohort(record, candidate, runs_root, repo)
     if problems:
         raise FreezeRefused(_refusal(candidate, problems))
     return record
+
+
+def _validation_cohort(record: Mapping[str, Any], candidate: int, runs_root: str | Path,
+                       repo: str | Path) -> list[str]:  # fmt: skip
+    """The frozen A-F validation blocks against the in-force n record's cohort (registration,
+    "Sample size from validation"): the same seeds."""
+    entry = decisions(runs_root, candidate, repo=repo).get(f"n-c{candidate}") or {}
+    n = entry.get("record")
+    if n is None:
+        return [
+            f"validation: the in-force n-c{candidate} record is {entry.get('state', 'missing')}"
+        ]
+    frozen = [b["seed"] for b in record["validation"]["A-F"]["blocks"]]
+    cohort = list(n["cohort"]["seeds"])
+    if frozen != cohort:
+        return [
+            f"validation: the A-F validation blocks {frozen} differ from the n-c{candidate} "
+            f"record's cohort {cohort}"
+        ]
+    return []
 
 
 def _supplement(candidate: int, runs_root: str | Path,
@@ -340,7 +368,7 @@ def read_freeze(
     candidate: int, *, runs_root: str | Path, repo: str | Path = REPO_ROOT
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Candidate N's analysis freeze and ``freeze_open``'s problems: the record only when there
-    is none. No check of its own."""
+    is no problem. No check of its own."""
     return _open(candidate, Path(runs_root), Path(repo))
 
 

@@ -68,6 +68,22 @@ def test_the_freeze_holds_the_cohorts_their_runs_and_kstar_h() -> None:
     assert len(record["validation"]["A-F"]["blocks"]) == 28
 
 
+def test_the_freeze_is_refused_while_a_started_block_is_open() -> None:
+    study = done()
+    state = study.advance()  # done; the endpoints it read lose a run after it
+    study.drop(run_of(study, "confirmation", "F", "u", 10459))
+    with pytest.raises(fz.FreezeRefused, match="started and still open"):
+        fz.freeze_record(
+            state,
+            study.endpoints,
+            candidate=1,
+            supplement=SUPPLEMENT,
+            code=CODE,
+            written_at=WHEN,
+            labels={"confirmation_runs": 0, "ledger_runs": 0},
+        )
+
+
 def test_the_freeze_is_refused_before_the_confirmation_is_done() -> None:
     with pytest.raises(fz.FreezeRefused, match="done"):
         frozen(done(count=30))
@@ -211,9 +227,24 @@ def test_the_gate_opens_only_for_a_record_committed_alone_as_a_child_of_its_code
     checkout.commit()
     assert checkout.open() == ()
     checkout.path.write_text(checkout.path.read_text().replace('"N": 60', '"N": 61'))
-    assert checkout.open()  # changed, uncommitted
+    assert any("uncommitted change" in p for p in checkout.open())  # changed, uncommitted
     checkout.commit(message="a rewrite")
     assert any("rewritten" in p for p in checkout.open())  # changed by a later commit
+
+
+def test_the_gate_refuses_a_record_added_off_its_code_commit(checkout) -> None:
+    other = {
+        **checkout.record,
+        "code": {**checkout.record["code"], "commit": git(checkout.repo, "rev-parse", "HEAD")},
+    }
+    git(checkout.repo, "checkout", "-q", "--orphan", "elsewhere")
+    git(checkout.repo, "rm", "-rfq", ".")
+    (checkout.repo / "other.txt").write_text("another history\n")
+    git(checkout.repo, "add", "other.txt")
+    git(checkout.repo, "commit", "-qm", "another root")
+    checkout.write(other)
+    checkout.commit()
+    assert any("does not descend" in p for p in checkout.open())
 
 
 def test_the_gate_refuses_a_record_committed_with_another_file(checkout) -> None:
@@ -305,3 +336,20 @@ def test_the_freeze_reads_no_label(worlds, monkeypatch) -> None:
     assert "supplement" in why
     assert guard.attempts == [] and labels.calls == []
     assert RECORDS_SENTINEL not in why and PACKAGE_SENTINEL not in why
+
+
+def test_the_freeze_is_refused_when_the_n_record_cohort_differs(checkout, monkeypatch) -> None:
+    monkeypatch.setattr(fz, "labels_untouched", lambda *a, **kw: [])
+    seeds = [b["seed"] for b in checkout.record["validation"]["A-F"]["blocks"]]
+
+    def n_record(cohort):
+        return lambda *a, **kw: {
+            "n-c1": {"state": "passed", "record": {"cohort": {"seeds": cohort}}}
+        }
+
+    monkeypatch.setattr(fz, "decisions", n_record(seeds))
+    built = fz.analysis_freeze(checkout.runs, 1, code=CODE, repo=checkout.repo, ledger_runs=())
+    assert [b["seed"] for b in built["validation"]["A-F"]["blocks"]] == seeds
+    monkeypatch.setattr(fz, "decisions", n_record(seeds[1:]))
+    with pytest.raises(fz.FreezeRefused, match="differ from the n-c1"):
+        fz.analysis_freeze(checkout.runs, 1, code=CODE, repo=checkout.repo, ledger_runs=())

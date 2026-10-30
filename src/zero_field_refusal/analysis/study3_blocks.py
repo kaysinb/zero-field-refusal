@@ -115,6 +115,12 @@ def interpolated(x_lo: float, x_hi: float, weight: float) -> float:
     return (1.0 - weight) * x_lo + weight * x_hi
 
 
+def weight(k_lo: float, k_hi: float, target: float) -> float:
+    """The weight of ``target`` between ``k_lo`` and ``k_hi`` on the log scale: (ln target - ln
+    k_lo) / (ln k_hi - ln k_lo) (registration, "Interpolation weight")."""
+    return (math.log(target) - math.log(k_lo)) / (math.log(k_hi) - math.log(k_lo))
+
+
 def arm_support(
     endpoints: Iterable[Endpoint],
     kstar: float,
@@ -162,9 +168,8 @@ def arm_support(
     reason = _bracket(out["k_lo"], out["k_hi"], kstar, width)
     if reason is not None:
         return {**out, "state": UNSUPPORTED, "reason": reason}
-    weight = (math.log(kstar) - math.log(out["k_lo"])) / (math.log(out["k_hi"])
-                                                          - math.log(out["k_lo"]))  # fmt: skip
-    return {**out, "state": SUPPORTED, "supported": True, "weight": weight}
+    w = weight(out["k_lo"], out["k_hi"], kstar)
+    return {**out, "state": SUPPORTED, "supported": True, "weight": w}
 
 
 def block_state(
