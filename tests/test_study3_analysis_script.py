@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from test_code_identity import gpu_uses
 from test_study3_campaigns import git, script_module
+from test_study3_final import label_raisers
 from test_study3_freeze import SUPPLEMENT, done, k_harmful, scaled
 from test_study3_package2 import SENTINEL, SealedGuard
 from test_study3_progress import EXPECTED
@@ -84,6 +85,7 @@ class World:
         mp.setattr(study3_final, "harm_many", self.harm_many)
         mp.setattr(study3_final, "run_harm", lambda run_dir, **kw: self.harm(run_dir))
         mp.setattr(study3_final, "labeling_problems", self.problems)
+        mp.setattr(study3_labels, "_gated", self.gated)  # the label reader's gate steps
         # the final point's run set: every run of the study (the label reader's own is stubbed)
         mp.setattr(study3_final, "open_point", lambda point, **kw: frozenset(self.by_id))
         for e in self.endpoints:
@@ -100,6 +102,13 @@ class World:
         written = (self.root / "study3-final" / "c1" / "analysis.json").exists()
         self.reads.append((written, sorted(Path(d).name for d in dirs)))
         return [self.harm(d) for d in dirs]
+
+    def gated(self, run_dirs, point, candidate, runs_root, repo_root) -> list:
+        """The label reader's gate steps: ``raised`` for the culprit, the others passing."""
+        for run_dir in run_dirs:
+            if Path(run_dir).name == self.culprit:
+                raise self.raised(f"{self.culprit}: not countable")
+        return [(Path(run_dir), None, "f" * 64) for run_dir in run_dirs]
 
     def harm(self, run_dir) -> RunHarm:
         e = self.by_id[Path(run_dir).name]
@@ -224,14 +233,19 @@ PROBLEM = "1 runs with a technical labeling problem"
 
 @pytest.mark.parametrize("raised,words", [(LabelsPending, "1 runs pending"),
                                           (LabelingProblem, PROBLEM)])  # fmt: skip
-def test_analyze_is_refused_while_a_cohort_run_is_pending_or_broken(world, raised, words):
+def test_analyze_is_refused_while_a_cohort_run_is_pending_or_broken(world, monkeypatch, raised,
+                                                                    words) -> None:  # fmt: skip
+    """The culprit is named through the label reader's gate steps alone: after the refusal, no
+    run's labels are read (``study3_labels._read_run`` and ``run_harm`` are raisers)."""
     world.frozen()
     freeze = json.loads((world.repo / freeze_name(1)).read_text())
     world.culprit = freeze["comparisons"]["P-F"]["blocks"][5]["arms"]["P"]["hi"]
     world.raised = raised
+    reads = label_raisers(monkeypatch)
     why = world.refused("analyze", "--runs-root", world.root, "--candidate", "1")
     assert words in why and world.culprit in why
     assert not (world.root / "study3-final").exists()
+    assert reads == [] and len(world.reads) == 1  # the cohort's one reading, nothing after it
 
 
 def validation_runs(world: World) -> set[str]:

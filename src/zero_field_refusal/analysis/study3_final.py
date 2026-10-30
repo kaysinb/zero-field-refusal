@@ -57,10 +57,12 @@ numbers, run ids and, for ``blind_texts`` alone, the texts its caller keeps seal
   (``study3_labels.open_point``) holds it.
 - *The spreads before the labels.* ``gather`` reads the K rows of the bracket runs before any harm
   label.
-- *The culprits.* When the cohort's one reading raises, the culprits are named: the technical
-  labeling problems of the cohort (``study3_labels.labeling_problems``), and every other run
-  whose own reading (``run_harm``) is pending. A run whose reading fails otherwise stops the
-  analysis with that error.
+- *The culprits.* When the cohort's one reading raises, the culprits are named without reading a
+  label: the technical labeling problems of the cohort (``study3_labels.labeling_problems``), and
+  every other run that the label reader's gate steps alone (``study3_labels._gated``, which stops
+  before a label is opened) find pending; a pending reading those steps do not show names the
+  run its message names. A run whose reading fails otherwise stops the analysis with that
+  error.
 - *The K samples' mean* is checked against the endpoint's K (the evaluation's K is that mean), so
   that the spread is the same measurement as the K the blocks were frozen on.
 - *Validation's harm after the analysis.* ``gather`` reads no validation run: validation's harm is
@@ -83,7 +85,7 @@ from typing import Any
 from omegaconf import DictConfig, OmegaConf
 
 from .. import run_judging
-from . import study2_labels
+from . import study2_labels, study3_labels
 from .study2_label_cli import harmful_prompts
 from .study3_freeze import freeze_name, freeze_open
 from .study3_labels import (
@@ -91,7 +93,6 @@ from .study3_labels import (
     HARMFUL_PROMPTS,
     ItemLabel,
     LabelingProblem,
-    LabelsPending,
     RunHarm,
     SealedPoint,
     _plain_child,
@@ -201,8 +202,8 @@ def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
     try:
         found = harm_many([dirs[run] for run in ids], point=POINT, candidate=candidate,
                           runs_root=runs_root, repo_root=repo)  # fmt: skip
-    except (LabelsPending, LabelingProblem) as exc:
-        pending = _culprits(dirs, candidate, runs_root, repo)
+    except (study2_labels.LabelsPending, LabelingProblem) as exc:  # L1's pending, its base
+        pending = _culprits(dirs, exc, candidate, runs_root, repo)
         if pending is None:
             raise
         raise pending from exc
@@ -214,22 +215,33 @@ def _harm(run_dirs: Mapping[str, Path], candidate: int, runs_root: Path,
     return out
 
 
-def _culprits(dirs: Mapping[str, Path], candidate: int, runs_root: Path,
+def _culprits(dirs: Mapping[str, Path], raised: Exception, candidate: int, runs_root: Path,
               repo: Path) -> Pending | None:  # fmt: skip
-    """The cohort's technical labeling problems and its other runs whose own reading is pending;
-    None when no run is either."""
+    """The cohort's technical labeling problems and its other runs that are pending, named without
+    reading a label; None when no run is either.
+
+    Each run is asked through ``study3_labels._gated``, the label reader's gate steps alone (the
+    point and its run set, the run's folder, its generation in the ledger, its acceptance with its
+    batch's controls and its receipt's sha256), which stop before ``_read_run`` opens a label:
+    ``run_harm`` would read the labels of every countable run of a refused cohort. A pending
+    reading the gates do not show (``raised``: one that arose while a run's labels were read, a
+    ``study2_labels.LabelsPending`` of its receipt included) names the run its message names, as
+    the label reader writes it (``<run id>: ...``, or the run's folder in a path)."""
     problems = set(labeling_problems(runs_root)) & set(dirs)
     pending = []
     for run, run_dir in dirs.items():
         if run in problems:
             continue
         try:
-            run_harm(run_dir, point=POINT, candidate=candidate, runs_root=runs_root,
-                     repo_root=repo)  # fmt: skip
-        except LabelsPending:
+            study3_labels._gated([run_dir], POINT, candidate, runs_root, repo)
+        except study2_labels.LabelsPending:  # study3_labels.LabelsPending is one
             pending.append(run)
         except LabelingProblem:
             problems.add(run)
+    if not (pending or problems) and isinstance(raised, study2_labels.LabelsPending):
+        message = str(raised)
+        pending = [run for run in dirs
+                   if message.startswith(f"{run}:") or f"/{run}/" in message]  # fmt: skip
     if not (pending or problems):
         return None
     return Pending(pending, problems)

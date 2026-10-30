@@ -22,7 +22,7 @@ from test_study3_progress import START
 from test_study3_records import SENTINEL, header
 from test_study3_records import World as RecordsWorld
 
-from zero_field_refusal.analysis import study3_final
+from zero_field_refusal.analysis import study2_labels, study3_final, study3_labels
 from zero_field_refusal.analysis.study3_freeze import freeze_name
 from zero_field_refusal.analysis.study3_labels import (
     ItemLabel,
@@ -151,22 +151,52 @@ def test_the_gate_names_every_problem_by_count_and_the_first(world, monkeypatch)
 # ------------------------------------------------------------------ harm
 
 
+def label_raisers(monkeypatch) -> list[str]:
+    """The label reader's reading of a run's labels (``study3_labels._read_run``) and
+    ``run_harm`` in the final reader, each a raiser that keeps its call: no label is read."""
+    calls: list[str] = []
+
+    def read_run(run_dir, generation, receipt):
+        calls.append(f"_read_run {Path(run_dir).name}")
+        raise AssertionError("a run's labels were read")
+
+    def harm(run_dir, **kw):
+        calls.append(f"run_harm {Path(run_dir).name}")
+        raise AssertionError("run_harm was called")
+
+    monkeypatch.setattr(study3_labels, "_read_run", read_run)
+    monkeypatch.setattr(study3_final, "run_harm", harm)
+    return calls
+
+
+def gate_steps(monkeypatch, named, raised) -> list[str]:
+    """The label reader's gate steps (``study3_labels._gated``): ``raised`` for a run of
+    ``named``, the others passing; every run asked kept."""
+    asked: list[str] = []
+
+    def gated(run_dirs, point, candidate, runs_root, repo_root):
+        out = []
+        for run_dir in run_dirs:
+            asked.append(Path(run_dir).name)
+            if Path(run_dir).name in named:
+                raise raised(f"{Path(run_dir).name}: not countable")
+            out.append((Path(run_dir), None, "f" * 64))
+        return out
+
+    monkeypatch.setattr(study3_labels, "_gated", gated)
+    return asked
+
+
 @pytest.mark.parametrize("raised,field", [(LabelsPending, "runs"), (LabelingProblem, "problems")])
 def test_a_pending_or_broken_cohort_run_refuses_and_is_never_missing(world, monkeypatch, raised,
                                                                      field) -> None:  # fmt: skip
+    """The cohort's one reading (the real ``harm_many``) stops at the gate steps of two runs: the
+    refusal names both, found through the gate steps alone, and no label is read, by the reading
+    or after it (no ``_read_run``, no ``run_harm``)."""
     open_freeze(world, monkeypatch)  # freeze_open -> ()
     named = {world.runs[1], world.runs[3]}
-
-    def fake(run_dir, **kw):
-        if run_dir.name in named:
-            raise raised(f"{run_dir.name}: not countable")
-        return RunHarm(n=521, harmful=10, missing=2, receipt_sha256="f" * 64)
-
-    def many(run_dirs, **kw):
-        return [fake(d, **kw) for d in run_dirs]  # raises at the first culprit
-
-    monkeypatch.setattr(study3_final, "run_harm", fake)
-    monkeypatch.setattr(study3_final, "harm_many", many)
+    reads = label_raisers(monkeypatch)
+    asked = gate_steps(monkeypatch, named, raised)
     monkeypatch.setattr(study3_final, "labeling_problems",
                         lambda root: tuple(named) if raised is LabelingProblem else ())  # fmt: skip
     with pytest.raises(study3_final.Pending) as caught:
@@ -176,6 +206,51 @@ def test_a_pending_or_broken_cohort_run_refuses_and_is_never_missing(world, monk
     other = "problems" if field == "runs" else "runs"
     assert getattr(caught.value, other) == ()
     assert f"{len(named) * (field == 'runs')} runs pending" in str(caught.value)
+    assert reads == [] and set(world.runs) - named <= set(asked)  # every other run asked
+
+
+def test_a_refusal_names_the_pending_run_through_the_gate_steps_and_reads_no_label(
+    world, monkeypatch
+):
+    """One run pending at the gate steps, ``_read_run`` a raiser: the refusal names that run, and
+    no label of the countable runs is read to find it."""
+    open_freeze(world, monkeypatch)
+    culprit = world.runs[2]
+    reads = label_raisers(monkeypatch)
+    gate_steps(monkeypatch, {culprit}, LabelsPending)
+    monkeypatch.setattr(study3_final, "labeling_problems", lambda root: ())
+    with pytest.raises(study3_final.Pending) as caught:
+        study3_final.cohort_harm(world.dirs(), candidate=1, runs_root=world.root, repo=world.repo)
+    assert (caught.value.runs, caught.value.problems) == ((culprit,), ())
+    assert culprit in str(caught.value) and reads == []
+
+
+@pytest.mark.parametrize("raised,message", [
+    (study2_labels.LabelsPending, "{dir}/judge/wildguard.receipt.json is missing: not labeled"),
+    (LabelsPending, "{run}: its label file is missing"),
+])  # fmt: skip
+def test_a_pending_reading_of_a_runs_labels_names_that_run(world, monkeypatch, raised, message):
+    """The gate steps pass for every run and the reading of one run's labels finds them pending
+    (study 2's receipt check, or the label reader's own): the refusal names that run, from the
+    message as the label reader writes it, and nothing more is read after it."""
+    open_freeze(world, monkeypatch)
+    culprit = world.runs[2]
+    asked = gate_steps(monkeypatch, set(), LabelsPending)
+    reads: list[str] = []
+
+    def read_run(run_dir, generation, receipt):
+        reads.append(run_dir.name)
+        if run_dir.name == culprit:
+            raise raised(message.format(dir=run_dir, run=run_dir.name))
+        return ()
+
+    monkeypatch.setattr(study3_labels, "_read_run", read_run)
+    monkeypatch.setattr(study3_final, "labeling_problems", lambda root: ())
+    with pytest.raises(study3_final.Pending) as caught:
+        study3_final.cohort_harm(world.dirs(), candidate=1, runs_root=world.root, repo=world.repo)
+    assert (caught.value.runs, caught.value.problems) == ((culprit,), ())
+    assert reads == world.runs[:3]  # the reading's own, up to the culprit; none after it
+    assert asked == [*world.runs, *world.runs]  # the reading's gate steps, then the scan's
 
 
 def test_a_cohort_is_read_once_and_its_harm_kept_by_run(world, monkeypatch) -> None:
@@ -205,19 +280,20 @@ def test_a_cohort_is_read_once_and_its_harm_kept_by_run(world, monkeypatch) -> N
 
 
 def test_another_reading_error_stops_the_cohort_unchanged(world, monkeypatch) -> None:
-    """A culprit-free failure of the cohort's reading is raised as it is: nothing is missing."""
+    """A culprit-free failure of the cohort's reading (every run's gate steps pass, and its
+    message names no run) is raised as it is: nothing is missing, and no label is read."""
     open_freeze(world, monkeypatch)
 
     def many(run_dirs, **kw):
         raise LabelsPending("the receipt changed while it was read")
 
     monkeypatch.setattr(study3_final, "harm_many", many)
-    monkeypatch.setattr(study3_final, "run_harm",
-                        lambda run_dir, **kw: RunHarm(harmful=1, missing=0,
-                                                      receipt_sha256="f" * 64))  # fmt: skip
+    reads = label_raisers(monkeypatch)
+    gate_steps(monkeypatch, set(), LabelsPending)
     monkeypatch.setattr(study3_final, "labeling_problems", lambda root: ())
     with pytest.raises(LabelsPending, match="changed while it was read"):
         study3_final.cohort_harm(world.dirs(), candidate=1, runs_root=world.root, repo=world.repo)
+    assert reads == []
 
 
 # ------------------------------------------------------------------ the spread of K
