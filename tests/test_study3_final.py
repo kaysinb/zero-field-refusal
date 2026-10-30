@@ -118,9 +118,10 @@ def call(entry: str, world: Final):
     if entry == "k_spread":
         return study3_final.k_spread(run, k=K, **given)
     if entry == "item_labels":
-        return study3_final.item_labels(run, **given)
+        return study3_final.item_labels({world.runs[0]: run}, **given)
     if entry == "blind_texts":
-        return study3_final.blind_texts(run, ["evaluation:0"], analysis=world.analysis, **given)
+        return study3_final.blind_texts({world.runs[0]: ["evaluation:0"]},
+                                        analysis=world.analysis, **given)  # fmt: skip
     assert entry == "gather"
     return study3_final.gather({"candidate": 1}, [], runs_root=world.root, repo=world.repo)
 
@@ -152,8 +153,8 @@ def test_the_gate_names_every_problem_by_count_and_the_first(world, monkeypatch)
 
 
 def label_raisers(monkeypatch) -> list[str]:
-    """The label reader's reading of a run's labels (``study3_labels._read_run``) and
-    ``run_harm`` in the final reader, each a raiser that keeps its call: no label is read."""
+    """The label reader's reading of a run's labels (``study3_labels._read_run``) and its
+    ``run_harm``, each a raiser that keeps its call: no label is read."""
     calls: list[str] = []
 
     def read_run(run_dir, generation, receipt):
@@ -165,7 +166,7 @@ def label_raisers(monkeypatch) -> list[str]:
         raise AssertionError("run_harm was called")
 
     monkeypatch.setattr(study3_labels, "_read_run", read_run)
-    monkeypatch.setattr(study3_final, "run_harm", harm)
+    monkeypatch.setattr(study3_labels, "run_harm", harm)
     return calls
 
 
@@ -383,14 +384,31 @@ def items_of(harmful: int, missing: int, n: int = 521) -> tuple[ItemLabel, ...]:
 def test_a_runs_items_agree_with_its_harm(world, monkeypatch, given, why) -> None:
     open_freeze(world, monkeypatch)
     monkeypatch.setattr(study3_final, "run_items", lambda run_dir, **kw: given)
-    monkeypatch.setattr(study3_final, "run_harm",
-                        lambda run_dir, **kw: RunHarm(harmful=10, missing=2,
-                                                      receipt_sha256="f" * 64))  # fmt: skip
+    monkeypatch.setattr(study3_final, "harm_many",
+                        lambda run_dirs, **kw: [RunHarm(harmful=10, missing=2,
+                                                        receipt_sha256="f" * 64)
+                                                for _ in run_dirs])  # fmt: skip
     if why is None:
-        assert call("item_labels", world) == given
+        assert call("item_labels", world) == {world.runs[0]: given}
     else:
         with pytest.raises(ValueError, match=why):
             call("item_labels", world)
+
+
+def test_runs_items_wait_for_every_runs_harm_reading_no_item(world, monkeypatch) -> None:
+    """The runs' items are read after their harm, from one reading: a pending run refuses with
+    every culprit named, before any run's items are read."""
+    open_freeze(world, monkeypatch)
+    items: list = []
+    monkeypatch.setattr(study3_final, "run_items",
+                        lambda run_dir, **kw: items.append(run_dir) or items_of(10, 2))  # fmt: skip
+    reads = label_raisers(monkeypatch)
+    gate_steps(monkeypatch, {world.runs[3]}, LabelsPending)
+    monkeypatch.setattr(study3_final, "labeling_problems", lambda root: ())
+    with pytest.raises(study3_final.Pending, match=world.runs[3]):
+        study3_final.item_labels(world.dirs(), candidate=1, runs_root=world.root,
+                                 repo=world.repo)  # fmt: skip
+    assert items == [] and reads == []
 
 
 # ------------------------------------------------------------------ the blind texts
@@ -419,20 +437,22 @@ def test_the_blind_texts_wait_for_the_analysis_then_give_the_named_texts(world, 
              "analysis": world.analysis}  # fmt: skip
     guard = SealedGuard(monkeypatch, runs_root=world.root)
     with pytest.raises(SealedPoint, match="final analysis"):
-        study3_final.blind_texts(run, named, **given)
+        study3_final.blind_texts({run.name: named}, **given)
     analysis_record(world, "0" * 64)  # another freeze
     with pytest.raises(SealedPoint, match="committed freeze"):
-        study3_final.blind_texts(run, named, **given)
+        study3_final.blind_texts({run.name: named}, **given)
     assert guard.attempts == []
     guard.armed = False
     analysis_record(world, hashlib.sha256(freeze.read_bytes()).hexdigest())
-    found = study3_final.blind_texts(run, named, **given)
-    assert found == {pid: text("step-25", pid) for pid in named} and list(found) == named
+    found = study3_final.blind_texts({run.name: named}, **given)
+    assert found == {run.name: {pid: {"prompt": PROMPTS[pid], "response": text("step-25", pid)}
+                                for pid in named}}  # fmt: skip
+    assert list(found[run.name]) == named
     with pytest.raises(ValueError, match="no response at step-25"):
-        study3_final.blind_texts(run, [*named, "judged:99"], **given)
+        study3_final.blind_texts({run.name: [*named, "judged:99"]}, **given)
     monkeypatch.setattr(study3_final, "HARMFUL_PROMPTS", 521)  # the label reader's own check
     with pytest.raises(ValueError, match=f"{len(IDS)} harmful prompts, not 521"):
-        study3_final.blind_texts(run, named, **given)
+        study3_final.blind_texts({run.name: named}, **given)
 
 
 @pytest.mark.parametrize("where", ["elsewhere/analysis.json", "study3-final/c1/notes.json",
@@ -456,7 +476,7 @@ def test_the_blind_texts_take_the_analysis_only_at_its_place(world, monkeypatch,
     moved.write_bytes(world.analysis.read_bytes())
     guard = SealedGuard(monkeypatch, runs_root=world.root)
     with pytest.raises(SealedPoint, match="study3-final/c1/analysis"):
-        study3_final.blind_texts(run, [IDS[0]], candidate=1, runs_root=world.root,
+        study3_final.blind_texts({run.name: [IDS[0]]}, candidate=1, runs_root=world.root,
                                  repo=world.repo, analysis=moved)  # fmt: skip
     assert guard.attempts == []
 

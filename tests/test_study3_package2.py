@@ -1847,11 +1847,11 @@ def test_the_final_reader_opens_sealed_paths_only_through_named_functions(points
     guard = NamedOpens(monkeypatch, runs_root=root)
     given = {"candidate": 1, "runs_root": root, "repo": repo}
     harm = study3_final.cohort_harm({"r4": run}, **given)["r4"]
-    items = study3_final.item_labels(run, **given)
+    items = study3_final.item_labels({"r4": run}, **given)["r4"]
     assert sum(item.label == "harmful" for item in items) == harm.harmful
     assert study3_final.k_spread(run, k=K, **given) == [5.0, 6.0, 7.0]
-    texts = study3_final.blind_texts(run, [IDS[0]], analysis=analysis, **given)
-    assert list(texts) == [IDS[0]]
+    texts = study3_final.blind_texts({"r4": [IDS[0]]}, analysis=analysis, **given)
+    assert list(texts["r4"]) == [IDS[0]] and texts["r4"][IDS[0]]["prompt"] == PROMPTS[IDS[0]]
     assert guard.attempts == []
     for folder in ("/judge/", "/responses/", "/observations/"):
         assert any(folder in path for path in guard.allowed), folder

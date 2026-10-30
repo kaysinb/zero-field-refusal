@@ -20,8 +20,9 @@ is touched; the label reader's own functions (``study3_labels.harm_many``, ``run
 
 - ``cohort_harm``: the harm of the cohort's runs, one ``harm_many`` call for them all, gated once.
 - ``k_spread``: one endpoint's spread of K over prompts, the per-prompt means of its K samples.
-- ``item_labels``: a run's per-item labels (``run_items``), their counts checked against its harm.
-- ``blind_texts``: the step-25 texts of named prompts of a run, once the final analysis is written.
+- ``item_labels``: runs' per-item labels (``run_items``), their counts checked against their harm.
+- ``blind_texts``: the prompt and step-25 response texts of named prompts of runs, once the final
+  analysis is written, for the audit's blind file.
 - ``gather``: the harm of every run of the freeze's comparisons, A − P's blocks and the matched
   blocks, and the spread of K of every bracket run of its comparisons, for the analysis.
   Validation's runs are not read there: their harm is read apart, through ``cohort_harm``, once
@@ -101,7 +102,6 @@ from .study3_labels import (
     harm_many,
     labeling_problems,
     open_point,
-    run_harm,
     run_items,
 )
 from .study3_records import EXPERIMENT, Endpoint, under_sealed
@@ -148,6 +148,11 @@ class Pending(ValueError):
 class SpreadRefused(ValueError):
     """A run's spread of K that cannot be given: no K row, a sample recorded twice, or samples
     whose mean is not the endpoint's K. Its message holds the run id and numbers only."""
+
+
+class ItemsRefused(ValueError):
+    """A run's items that do not agree with its harm: not 521, not in its prompt order, or other
+    counts. Its message holds the run id and counts only."""
 
 
 def _ids(ids: Sequence[str]) -> str:
@@ -253,28 +258,33 @@ def _culprits(dirs: Mapping[str, Path], raised: Exception, candidate: int, runs_
 
 
 def item_labels(
-    run_dir: Path, *, candidate: int, runs_root: Path, repo: Path
-) -> tuple[ItemLabel, ...]:
-    """The run's items at the endpoint (``study3_labels.run_items`` at the point ``final``):
-    exactly 521, in its prompt order, their ``harmful`` and ``missing`` counts those of its
-    ``RunHarm``; ``ValueError`` otherwise."""
+    run_dirs: Mapping[str, Path], *, candidate: int, runs_root: Path, repo: Path
+) -> dict[str, tuple[ItemLabel, ...]]:
+    """Each run's items at the endpoint (``study3_labels.run_items`` at the point ``final``), by
+    run id (run id → its folder), gated once: first the runs' harm, from one reading under
+    ``cohort_harm``'s rule (``Pending`` naming every pending run and technical problem before any
+    item is read); then each run's items, exactly 521 in its prompt order, their ``harmful`` and
+    ``missing`` counts those of its ``RunHarm``; ``ItemsRefused`` (a ``ValueError``) otherwise,
+    naming the run and the counts."""
     _gate(candidate, runs_root, repo)
-    run_dir, name = Path(run_dir), Path(run_dir).name
-    given = {"point": POINT, "candidate": candidate, "runs_root": Path(runs_root),
-             "repo_root": Path(repo)}  # fmt: skip
-    items = tuple(run_items(run_dir, **given))
-    harm = run_harm(run_dir, **given)
-    if len(items) != HARMFUL_PROMPTS or harm.n != HARMFUL_PROMPTS:
-        raise ValueError(f"{name}: {len(items)} items and n = {harm.n}, not "
-                         f"{HARMFUL_PROMPTS}")  # fmt: skip
-    if [item.index for item in items] != list(range(len(items))):
-        raise ValueError(f"{name}: its items are not in its prompt order")
-    counts = Counter(item.label for item in items)
-    if (counts["harmful"], counts["missing"]) != (harm.harmful, harm.missing):
-        raise ValueError(f"{name}: its items count {counts['harmful']} harmful and "
-                         f"{counts['missing']} missing, its harm {harm.harmful} and "
-                         f"{harm.missing}")  # fmt: skip
-    return items
+    runs_root, repo = Path(runs_root), Path(repo)
+    harms = _harm(run_dirs, candidate, runs_root, repo)
+    given = {"point": POINT, "candidate": candidate, "runs_root": runs_root, "repo_root": repo}
+    out = {}
+    for name, run_dir in run_dirs.items():
+        items = tuple(run_items(Path(run_dir), **given))
+        harm = harms[name]
+        if len(items) != HARMFUL_PROMPTS:
+            raise ItemsRefused(f"{name}: {len(items)} items, not {HARMFUL_PROMPTS}")
+        if [item.index for item in items] != list(range(len(items))):
+            raise ItemsRefused(f"{name}: its items are not in its prompt order")
+        counts = Counter(item.label for item in items)
+        if (counts["harmful"], counts["missing"]) != (harm.harmful, harm.missing):
+            raise ItemsRefused(f"{name}: its items' counts, {counts['harmful']} harmful and "
+                               f"{counts['missing']} missing, are not its harm's, {harm.harmful} "
+                               f"and {harm.missing}")  # fmt: skip
+        out[name] = items
+    return out
 
 
 # ------------------------------------------------------------------ the spread of K
@@ -342,26 +352,27 @@ def _k_spread(run_dir: Path, *, k: float, measure: str, condition: str) -> list[
 
 
 def blind_texts(
-    run_dir: Path,
-    prompt_ids: Sequence[str],
+    prompts: Mapping[str, Sequence[str]],
     *,
     candidate: int,
     runs_root: Path,
     repo: Path,
     analysis: Path,
-) -> dict[str, str]:
-    """The step-25 response texts of ``prompt_ids`` in the run, by prompt id in the order given,
-    read as study 2's reader reads a run's responses (``study2_labels._responses``). Only once the
-    final analysis is written: ``analysis`` must be candidate N's analysis record at its place
-    (RUNS_DIR/study3-final/c<N>/) naming the committed freeze by its sha256 now (``SealedPoint``
-    otherwise); and the run must be in the final point's run set. ``ValueError`` for a named
-    prompt with no step-25 response, or a run without 521 prompts."""
+) -> dict[str, dict[str, dict[str, str]]]:
+    """The blind texts of the named prompts of each run (run id → its prompt ids): per run, by
+    prompt id in the order given, ``{"prompt", "response"}``, the prompt's text and its step-25
+    response, read as study 2's reader reads a run's responses (``study2_labels._responses``).
+    Gated once, and only once the final analysis is written: ``analysis`` must be candidate N's
+    analysis record at its place (RUNS_DIR/study3-final/c<N>/) naming the committed freeze by its
+    sha256 now (``SealedPoint`` otherwise); and every run must be in the final point's run set,
+    asked once. ``ValueError`` for a named prompt with no step-25 response, or a run without 521
+    prompts."""
     _gate(candidate, runs_root, repo)
     runs_root, repo = Path(runs_root), Path(repo)
     _analysis_of(Path(analysis), candidate, runs_root, repo)
-    run_dir = Path(run_dir)
-    _opened([run_dir], candidate, runs_root, repo)
-    return _texts(run_dir, list(prompt_ids))
+    experiment = runs_root / EXPERIMENT
+    _opened([experiment / run for run in prompts], candidate, runs_root, repo)
+    return {run: _texts(experiment / run, list(ids)) for run, ids in prompts.items()}
 
 
 def _analysis_of(analysis: Path, candidate: int, runs_root: Path, repo: Path) -> None:
@@ -399,9 +410,10 @@ def _analysis_of(analysis: Path, candidate: int, runs_root: Path, repo: Path) ->
                           f"committed freeze {name} (sha256 {frozen['sha256']})")  # fmt: skip
 
 
-def _texts(run_dir: Path, wanted: Sequence[str]) -> dict[str, str]:
-    """The step-25 texts of the prompts ``wanted``: the run's config, recorded prompts and
-    conditions, then its responses, every expected one exactly once (study 2's checks)."""
+def _texts(run_dir: Path, wanted: Sequence[str]) -> dict[str, dict[str, str]]:
+    """The prompt and step-25 response texts of the prompts ``wanted``: the run's config,
+    recorded prompts and conditions, then its responses, every expected one exactly once (study
+    2's checks)."""
 
     def read(path: Path) -> bytes:
         return path.read_bytes()
@@ -412,7 +424,8 @@ def _texts(run_dir: Path, wanted: Sequence[str]) -> dict[str, str]:
     conditions = run_judging.scheduled_conditions(run_dir, read)
     if ENDPOINT not in conditions:
         raise ValueError(f"{run_dir}: no evaluation at the endpoint {ENDPOINT}")
-    ids = run_judging.prompt_ids(cfg, harmful_prompts(cfg))
+    prompts = harmful_prompts(cfg)
+    ids = run_judging.prompt_ids(cfg, prompts)
     if len(ids) != HARMFUL_PROMPTS:  # the label reader's own check (``study3_labels._read_run``)
         raise ValueError(f"{run_dir}: {len(ids)} harmful prompts, not {HARMFUL_PROMPTS}")
     study2_labels._check_recorded_prompts(run_dir, cfg, ids, read(run_dir / "meta.json"))
@@ -421,7 +434,7 @@ def _texts(run_dir: Path, wanted: Sequence[str]) -> dict[str, str]:
     if absent:
         raise ValueError(f"{run_dir.name}: {len(absent)} of the {len(wanted)} named prompts have "
                          f"no response at {ENDPOINT}")  # fmt: skip
-    return {pid: texts[(ENDPOINT, pid)] for pid in wanted}
+    return {pid: {"prompt": prompts[pid], "response": texts[(ENDPOINT, pid)]} for pid in wanted}
 
 
 # ------------------------------------------------------------------ the analysis's reading

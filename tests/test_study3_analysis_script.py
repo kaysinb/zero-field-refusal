@@ -83,7 +83,6 @@ class World:
         mp.setattr(self.script, "read_validation_fixation", lambda c, **kw: ({"level": 0.975}, []))
         mp.setattr(self.script, "ledger_runs", self.ledger_runs)
         mp.setattr(study3_final, "harm_many", self.harm_many)
-        mp.setattr(study3_final, "run_harm", lambda run_dir, **kw: self.harm(run_dir))
         mp.setattr(study3_final, "labeling_problems", self.problems)
         mp.setattr(study3_labels, "_gated", self.gated)  # the label reader's gate steps
         # the final point's run set: every run of the study (the label reader's own is stubbed)
@@ -169,10 +168,13 @@ def world(tmp_path, monkeypatch, capsys) -> World:
 
 
 def raisers(monkeypatch) -> list[str]:
-    """Every harm and item reader, in the label reader and in the final analysis's, a raiser."""
+    """Every harm and item reader, in the label reader and wherever the final analysis's binds
+    it, a raiser."""
     calls: list[str] = []
     for module in (study3_labels, study3_final):
         for name in ("run_harm", "harm_many", "run_items"):
+            if not hasattr(module, name):
+                continue
 
             def raiser(*args, _name=name, **kwargs):
                 calls.append(_name)
