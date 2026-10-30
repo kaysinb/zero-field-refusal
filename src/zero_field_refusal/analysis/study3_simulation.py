@@ -4015,15 +4015,17 @@ def calibrate_all(
     studies: int = CALIBRATION_STUDIES,
 ) -> dict[tuple[Scenario, int], Calibration]:
     """Every pair's calibration (``calibrate_scenario`` on ``calibration_stream(base, …)``):
-    the pairs without jitter one per worker, a jitter scenario's (C12) in this process with its
-    truths' quadratures built over the workers. The result is the same whatever the workers or
-    the order in which they finish."""
-    plain = [(sc, c) for sc, c in pairs if not sc.jitter]
+    the pairs without jitter one per worker (the gates, which have no σ or offset to solve,
+    last), a jitter scenario's (C12) in this process, its truths' quadratures built over a pool
+    of their own, so that they wait for no other pair. The result is the same whatever the
+    workers or the order in which they finish."""
+    plain = sorted((pair for pair in pairs if not pair[0].jitter),
+                   key=lambda pair: pair[0].role == "gate")  # fmt: skip
     jitter = [(sc, c) for sc, c in pairs if sc.jitter]
     out: dict[tuple[Scenario, int], Calibration] = {}
-    with Workers(workers) as pool:
+    with Workers(workers) as pool, Workers(workers if jitter else 1) as grids:
         running = pool.imap(_calibration_task, [(sc, setup, c, base, studies) for sc, c in plain])
-        mapper = pool.map if workers > 1 else None
+        mapper = grids.map if workers > 1 else None
         for sc, c in jitter:
             seed = calibration_stream(base, sc, c)
             out[(sc, c)] = calibrate_scenario(sc, setup, c, seed, studies=studies, mapper=mapper)
