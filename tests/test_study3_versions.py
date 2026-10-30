@@ -1686,3 +1686,205 @@ def test_no_gpu_module_is_imported() -> None:
     assert not {i for i in imported | names if gpu & set(i.split("."))}
     top = {n.names[0].name for n in tree.body if isinstance(n, ast.ImportFrom) and n.names}
     assert "qualification_records" not in top  # read lazily, where the qualification is read
+
+
+# ------------------------------------------------------------------ successors of a fixation
+
+VALIDATION_C1_2 = "docs/study3-fixation-validation-c1-2.json"
+LINE = ("path", "line", "line_sha256")
+
+
+def commit_fix(study) -> dict:
+    """A fix of the GPU code committed: HEAD's code (its commit and GPU code), another."""
+    (study.repo / "src" / "zero_field_refusal" / "train.py").write_text("x = 2\n")
+    study.commit("the fix")
+    fixed = study.now()
+    assert fixed["gpu_code_sha256"] != study.code["gpu_code_sha256"]
+    return fixed
+
+
+def cycled(study, stale, *, step="validation", seed=10300) -> dict:
+    """A fix committed and candidate 1's cycle published: A's two runs of block ``seed`` of
+    ``step`` (``study.block``, ended done) affected, the first the mark, rerun; the stages before
+    reused; its old code the fixation's, its fix HEAD's, its fixation the one in force; listing
+    ``stale`` (names in the checkout, or decision kinds under RUNS_DIR) as the records it makes
+    stale. ``study3_cycle.read_cycle`` accepts it. Returns the record."""
+    from zero_field_refusal.analysis import study3_cycle
+    from zero_field_refusal.analysis.study3_decisions import (
+        cycle_path,
+        end_lines,
+        serialized,
+        start_lines,
+    )
+
+    ids = study.block(seed, step=step, record=FIRST if step == "validation" else SECOND)
+    old = study.code["gpu_code_sha256"]
+    fixed = commit_fix(study)
+    starts, ends = start_lines(study.root), end_lines(study.root)
+    runs = []
+    for run_id, label in zip(ids, ("lr_l", "lr_u"), strict=True):
+        rate = RATES["A"][label]
+        folder = study.root / "study3" / run_id
+        files = [{"path": f"study3/{run_id}/{name}", "sha256": sha256(folder / name)}
+                 if (folder / name).exists() else {"path": f"study3/{run_id}/{name}",
+                                                   "absent": True}
+                 for name in ("config.yaml", "meta.json", "terminal.json")]  # fmt: skip
+        runs.append({"run_id": run_id, "label": f"A-{rate:g}/s{seed}", "step": step, "arm": "A",
+                     "rate": rate, "seed": seed, "gpu_code": old, "records": files,
+                     "start": {k: starts[run_id][k] for k in LINE},
+                     "end": {k: ends[run_id][k] for k in LINE}})  # fmt: skip
+    runs.sort(key=lambda run: run["run_id"])
+    mark = runs[0]
+    reuse = {"action": "reuse", "arms": [], "justification": "the fix leaves it as it ran"}
+    stages = {"search": reuse, "qualification": reuse, "validation": reuse}
+    stages[step] = {"action": "rerun", "arms": ["A"], "justification": "the fix changes it"}
+    affected = [{"path": name, "sha256": sha256(study.repo / name), "root": "repo"}
+                if name.startswith("docs/") else
+                {"path": f"study3/decisions/{name}.json", "sha256": study.records.digest(name)}
+                for name in stale]  # fmt: skip
+    record = {
+        "kind": "cycle-c1", "state": "passed", "written_at": "2026-10-28T12:00:00+00:00",
+        "code": dict(fixed), "candidate": 1, "stage": step, "old_code": old,
+        "marks": [{**{k: mark[k] for k in ("run_id", "label", "step", "arm", "rate", "seed")},
+                   "line": {"kind": "end", **mark["end"]}}],
+        "diagnosis": "a stale kernel cache", "fix": "the cache is cleared at start",
+        "stages": stages,
+        "fixation": {"path": VALIDATION_C1, "sha256": sha256(study.repo / VALIDATION_C1),
+                     "root": "repo"},
+        "journal": study3_cycle.journal_seen(study.root),
+        "affected": {"runs": runs, "records": sorted(affected, key=lambda e: e["path"]),
+                     "qualification": {"records": [], "launchers": [], "restarts": []}},
+        "kept": [], "bridge": "qualification/c1/supersede-1.json",
+    }  # fmt: skip
+    root = study.root
+    bridge = study3_cycle.build_bridge(
+        root, 1, cycle_file=cycle_path(root, 1),
+        cycle_sha256=hashlib.sha256(serialized(record)).hexdigest(),
+        diagnosis=record["diagnosis"], fix=record["fix"], old_code=old,
+        fix_identity={"commit": fixed["commit"], "sha256": fixed["gpu_code_sha256"]},
+        entries=None, stage_runs=study3_cycle._stage_runs(root, record), host="host",
+        at=record["written_at"], commit=fixed["commit"])  # fmt: skip
+    study3_cycle.publish_cycle(root, 1, record, bridge, repo=study.repo)
+    found = study3_cycle.read_cycle(root, 1, repo=study.repo)
+    assert found["state"] == "valid", found["problems"]
+    return record
+
+
+def superseding(study, name: str) -> dict:
+    """A fixation successor's ``supersedes``: ``name`` (in the checkout) and the cycle, by their
+    sha256 now."""
+    cycle = study.root / "study3" / "decisions" / "cycle-c1.json"
+    return {"path": name, "sha256": sha256(study.repo / name), "reason": "cycle_c1",
+            "cycle": {"path": "study3/decisions/cycle-c1.json",
+                      "sha256": sha256(cycle)}}  # fmt: skip
+
+
+def successor(study, **kw) -> dict:
+    """The validation fixation's successor built at HEAD (the fix)."""
+    return sv.validation_fixation(study.root, 1, code=study.now(), repo=study.repo,
+                                  theta0=study.runs.theta0,
+                                  supersedes=superseding(study, VALIDATION_C1), **kw)  # fmt: skip
+
+
+def test_after_the_fixation_a_cycle_keeps_the_candidate_and_rates(study, monkeypatch) -> None:
+    """After the validation fixation, a cycle's fixation successor (``-2``) names the fixation and
+    the cycle, carries the fix, and keeps the candidate and the rates: other rates are refused
+    (no new candidate, rate or K*). The reader reads the link in force in full."""
+    study.validated()
+    cycled(study, [VALIDATION_C1, FIRST])
+    assert sv.fixation_name("validation", 1, 2) == VALIDATION_C1_2
+    other = {**RATES, "A": {"lr_l": 1.5e-5, "lr_u": 2.11e-5}}
+    study.states[("A", 1.5e-5)] = "qualified"
+    with monkeypatch.context() as patch:
+        patch.setattr(sv, "_stage_rates", lambda *a, **k: (other, []))
+        with pytest.raises(sv.RecordRefused, match="rates"):
+            successor(study)
+    record = successor(study)
+    study.put(VALIDATION_C1_2, record)
+    assert sv.fixation_chain("validation", 1, repo=study.repo) == [VALIDATION_C1, VALIDATION_C1_2]
+    found, problems = study.read_validation()
+    assert problems == [] and found == record
+    assert found["supersedes"]["path"] == VALIDATION_C1
+    with pytest.raises(sv.RecordRefused, match="already written"):
+        sv.validation_fixation(study.root, 1, code=study.now(), repo=study.repo,
+                               theta0=study.runs.theta0)  # fmt: skip
+
+
+def test_a_fork_or_a_gap_in_the_fixation_chain_is_a_problem(study) -> None:
+    """A third link that names the first (a fork), a successor moved past a missing number (a
+    gap), or a successor whose cycle is no longer accepted: the chain's reader refuses it."""
+    study.validated()
+    cycled(study, [VALIDATION_C1, FIRST])
+    record = successor(study)
+    study.put(VALIDATION_C1_2, record)
+    assert study.read_validation()[1] == []
+    third = sv.fixation_name("validation", 1, 3)
+    study.put(third, record)  # it names the first record, not the second
+    found, problems = study.read_validation()
+    assert found is None and has(problems, "supersedes.path", VALIDATION_C1_2), problems
+    git(study.repo, "rm", "-q", third)
+    git(study.repo, "mv", VALIDATION_C1_2, third)
+    study.commit("the second link renumbered")
+    found, problems = study.read_validation()
+    assert found is None and has(problems, "gap"), problems
+    git(study.repo, "mv", third, VALIDATION_C1_2)
+    study.commit("the second link back")
+    bridge = study.root / "qualification" / "c1" / "supersede-1.json"
+    kept = bridge.read_bytes()
+    bridge.unlink()
+    found, problems = study.read_validation()
+    assert found is None and has(problems, "cycle"), problems
+    bridge.write_bytes(kept)
+    assert study.read_validation()[1] == []
+
+
+def test_after_the_confirmation_started_the_supplement_successor_keeps_n_and_seeds(study) -> None:
+    """A cycle once the confirmation has started: the validation fixation's and the n record's
+    successors, then the supplement's, which names the validation fixation and the n record in
+    force; another bootstrap seed (or N, cap or audit seed) needs an explicit prospective
+    amendment, and is refused."""
+    study.validated()
+    study.n(75)
+    study.put(CONFIRMATION_C1, study.supplement())
+    study.versions(SECOND, CONFIRMATION_C1, "confirmation_c1", supersedes_reason="next_stage")
+    cycled(study, [CONFIRMATION_C1, FIRST, SECOND, VALIDATION_C1, "n-c1"], step="confirmation",
+           seed=10400)  # fmt: skip
+    study.put(VALIDATION_C1_2, successor(study))
+    n = json.loads((study.root / "study3" / "decisions" / "n-c1.json").read_text())
+    cycle = study.root / "study3" / "decisions" / "cycle-c1.json"
+    study.records.write("n-c1-2", {**n, "kind": "n-c1-2", "code": study.now(), "supersedes": {
+        "path": "study3/decisions/n-c1.json", "sha256": study.records.digest("n-c1"),
+        "reason": "cycle_c1", "cycle": {"path": "study3/decisions/cycle-c1.json",
+                                        "sha256": sha256(cycle)}}})  # fmt: skip
+
+    def supplement(**seeds):
+        return sv.confirmation_fixation(study.root, 1, code=study.now(), repo=study.repo,
+                                        supersedes=superseding(study, CONFIRMATION_C1),
+                                        **{**SEEDED, **seeds})  # fmt: skip
+
+    with pytest.raises(sv.RecordRefused, match="prospective amendment"):
+        supplement(bootstrap_seed=SEEDED["bootstrap_seed"] + 1)
+    record = supplement()
+    assert record["validation_fixation"]["path"] == VALIDATION_C1_2
+    assert record["n"]["path"] == "study3/decisions/n-c1-2.json"
+    study.put("docs/study3-fixation-confirmation-c1-2.json", record)
+    assert study.read_confirmation() == (record, [])
+
+
+def test_runs_under_an_earlier_versions_record_stay_valid_after_a_cycle(study) -> None:
+    """Validation runs started under the first versions record (its fixation the first link)
+    keep counting once the fixation's successor and its own versions record exist; a launch is
+    checked against the fixation in force, which the first record no longer names."""
+    study.validated()
+    study.block(10301)
+    cycled(study, [VALIDATION_C1, FIRST])
+    study.put(VALIDATION_C1_2, successor(study))
+    study.versions(SECOND, VALIDATION_C1_2, "validation_c1", supersedes_reason="cycle_c1")
+    assert study.problems(SECOND) == []
+    assert study.problems(SECOND, step="validation", candidate=1) == []
+    found = study.problems(FIRST, step="validation", candidate=1)
+    assert has(found, VALIDATION_C1, "in force"), found
+    with pytest.raises(sv.RecordRefused, match="in force"):
+        sv.versions_record("docs/study3-versions-3.json", runs_root=study.root,
+                           fixation=VALIDATION_C1, reason="validation_c1",
+                           supersedes_reason="again", repo=study.repo)  # fmt: skip
