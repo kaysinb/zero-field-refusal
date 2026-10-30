@@ -30,12 +30,12 @@ label. It reads no label: of the sealed folders it reads the labeling ledger's r
    (``study3_decisions.decisions``: validation's A–F cohort, which must be the frozen one); κ per
    arm from the simulation fixation's ``curvature`` (``simulation_curvature``);
 3. the outputs so far (below: a resumed or a superseding run);
-4. the labels, through the one label reader (``study3_final.gather``): the harm of every run of
-   the frozen comparisons, A − P's blocks and the matched blocks, then the spread of K of every
-   bracket run of the comparisons; no validation run is read yet;
-5. the utility gates over each comparison's frozen blocks at α = 0.05/8 per bound
-   (``study3_blocks.utility_gate``, from the state's endpoints, the frozen runs checked), then
-   ``study3_estimates.analysis``;
+4. the utility gates over each comparison's frozen blocks at α = 0.05/8 per bound
+   (``study3_blocks.utility_gate``, from the state's endpoints, the frozen runs checked), which
+   read no label; then the labels, through the one label reader (``study3_final.gather``): the
+   spread of K of every bracket run of the comparisons, then the harm of every run of the frozen
+   comparisons, A − P's blocks and the matched blocks; no validation run is read yet;
+5. ``study3_estimates.analysis``;
 6. ``analysis.json``, written; it prints its path, and each comparison's n and the row of the
    registered wording;
 7. only then validation's labels: the harm of validation's frozen runs, read through the final
@@ -346,9 +346,9 @@ def labels(freeze_: Mapping[str, Any], endpoints: Sequence[Any], root: Path,
 
 def utility_gates(freeze_: Mapping[str, Any], state: Mapping[str, Any],
                   endpoints: Sequence[Any]) -> dict[str, dict[str, Any]]:  # fmt: skip
-    """Step 5's gates: per frozen comparison, ``utility_gate`` at α = 0.05/8 over its frozen
-    blocks as the state's endpoints give them now (a run under another commit left out, as the
-    freeze leaves it out), each arm's runs the frozen ones."""
+    """Step 4's gates, which read no label: per frozen comparison, ``utility_gate`` at
+    α = 0.05/8 over its frozen blocks as the state's endpoints give them now (a run under another
+    commit left out, as the freeze leaves it out), each arm's runs the frozen ones."""
     candidate = freeze_["candidate"]
     uncounted = {entry.get("run_id") for entry in state.get("not_counted") or ()}
     kept = [e for e in endpoints if e.run_id not in uncounted]
@@ -439,18 +439,18 @@ def analyze(args: argparse.Namespace) -> None:
     analysis_path, validation_path = (folder / part for part in names(k + 1))
     if written(validation_path):
         refuse("analyze", f"{validation_path} is written already, without its analysis")
-    # 4. the labels of the confirmation (no validation run yet)
+    # 4. the label-free utility gates, then the labels of the confirmation (no validation run)
     try:
         state, endpoints = read_state(root, repo=REPO,
                                       expected_code=freeze_["code"]["gpu_code_sha256"],
                                       theta0=args.theta0)  # fmt: skip
     except (OSError, ValueError) as exc:
         refuse("analyze", f"the study's state cannot be read ({type(exc).__name__})")
+    gates = utility_gates(freeze_, state, endpoints)
     harm, spread = labels(freeze_, endpoints, root)
-    # 5. the gates, then the analysis
+    # 5. the analysis
     bootstrap = inputs["bootstrap"]
     kappa = inputs["kappa"]
-    gates = utility_gates(freeze_, state, endpoints)
     try:
         result = study3_estimates.analysis(
             freeze_, harm, level=inputs["level"], seed=bootstrap["seed"],

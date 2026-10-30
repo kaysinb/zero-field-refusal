@@ -285,6 +285,32 @@ def test_a_pending_validation_run_leaves_the_analysis_written_and_resumes(world)
     assert named["sha256"] == hashlib.sha256(analysis).hexdigest()
 
 
+def test_the_label_free_utility_gates_come_before_any_label(world, monkeypatch) -> None:
+    """The utility gates read no label: they run before the cohort's reading, and their refusal
+    (a frozen block that cannot be read from the state now) reads no label at all."""
+    world.frozen()
+    real, seen = world.script.utility_gates, []
+
+    def gates(*args, **kwargs):
+        seen.append(len(world.reads))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(world.script, "utility_gates", gates)
+    world.run("analyze", "--runs-root", world.root, "--candidate", "1")
+    assert seen == [0] and len(world.reads) == 2
+    world.reads.clear()
+    (world.root / "study3-final").rename(world.root / "aside")
+
+    def broken(*args, **kwargs):
+        raise ValueError("no endpoint of the arm")
+
+    monkeypatch.setattr(world.script, "block_state", broken)
+    reads = label_raisers(monkeypatch)
+    why = world.refused("analyze", "--runs-root", world.root, "--candidate", "1")
+    assert "no endpoint of the arm" in why and world.reads == [] and reads == []
+    assert not (world.root / "study3-final").exists()
+
+
 def test_analyze_writes_the_analysis_then_validations_harm(world) -> None:
     world.frozen()
     root = world.root
