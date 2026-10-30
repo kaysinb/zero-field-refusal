@@ -219,6 +219,15 @@ def journal(root: Path) -> Path:
     return ledger_dir(root) / "journal.jsonl"
 
 
+def opened_line(batch: str, runs: list[str], candidate: int = 1) -> dict:
+    """An ``opened`` line of ``batch`` with ``runs``, for ``candidate``'s validation."""
+    return {"event": "opened", "batch": batch, "step": "validation", "candidate": candidate,
+            "runs": runs, "controls": {"path": "c", "sha256": "0" * 64},
+            "fixation": {"path": "f", "sha256": "1" * 64},
+            "judge": {"config": "judge/wildguard", **IDENTITY},
+            "code": {"commit": None, "dirty": None}}  # fmt: skip
+
+
 # ------------------------------------------------------------------ the reader's gates
 
 
@@ -612,15 +621,38 @@ def test_the_ledger_refuses_a_second_open_generation_or_controls_line(root, labe
         read_ledger(root).batches["b0009"]["k"],
         read_ledger(root).batches["b0009"]["changes"],
     ) == (2, 1)
-    opened_line = {"event": "opened", "batch": "b0002", "step": "validation", "candidate": 1,
-                   "runs": ["r1"], "controls": {"path": "c", "sha256": "0" * 64},
-                   "fixation": {"path": "f", "sha256": "1" * 64}, "judge": {
-                       "config": "judge/wildguard", **IDENTITY},
-                   "code": {"commit": None, "dirty": None}}  # fmt: skip
-    append_event(root, opened_line)
+    append_event(root, opened_line("b0002", ["r1"]))
     with pytest.raises(LedgerError, match="b0002 is open"):
-        append_event(root, {**opened_line, "batch": "b0003"})
+        append_event(root, opened_line("b0003", ["r1"]))
     assert read_ledger(root).unfinished() == "b0002"
+
+
+def test_an_opened_batch_takes_lines_of_its_runs_and_candidate_only(root, labeled_run):
+    """Once a batch is opened, its generation, labeled and covers entries name only its runs, and
+    its mark only its candidate."""
+    name = labeled_run.name
+    append_event(root, opened_line("b0001", [name]))
+    with pytest.raises(LedgerError, match="names r2, a run it was not opened with"):
+        append_event(root, generation_line("r2"))
+    open_generation(root, name, 1, cap=3)
+    receipt = sha256(receipt_path(labeled_run, JUDGE))
+    entry = {"run": name, "status": LABELED, "receipt_sha256": receipt}
+    with pytest.raises(LedgerError, match="names r2, a run it was not opened with"):
+        append_event(root, {"event": "labeled", "batch": "b0001", "k": 1, "attempt": 1,
+                            "runs": [entry, {**entry, "run": "r2"}]})  # fmt: skip
+    append_event(root, {"event": "labeled", "batch": "b0001", "k": 1, "attempt": 1,
+                        "runs": [entry]})  # fmt: skip
+    cover = {"run": name, "generation": 1, "receipt_sha256": receipt,
+             "labels_sha256": sha256(label_path(labeled_run, JUDGE))}  # fmt: skip
+    controls = {"event": "controls", "batch": "b0001", "k": 1, "attempt": 1, "accepted": True,
+                "changed": [], "parsed_changed": [], "cache": {"path": "c", "sha256": "0" * 64},
+                "covers": [cover, {**cover, "run": "r2"}]}  # fmt: skip
+    with pytest.raises(LedgerError, match="names r2, a run it was not opened with"):
+        append_event(root, controls)
+    with pytest.raises(LedgerError, match="candidate 2"):
+        append_event(root, mark("b0001", candidate=2, why="second_change", runs=[]))
+    append_event(root, {**controls, "covers": [cover]})
+    assert read_ledger(root).covered == {(name, 1): receipt}
 
 
 def test_covers_name_only_receipts_of_the_same_attempt(root, labeled_run):

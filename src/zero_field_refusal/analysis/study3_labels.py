@@ -72,6 +72,8 @@ live here, outside every folder a relabel moves. The fold:
   left, a ``covers`` entry for a generation that is not open or with a receipt that its own
   attempt's ``labeled`` line (same batch, k and attempt) does not record, a second ``controls``
   line for one (batch, k), and a second ``opened`` while a batch is open are errors;
+- **an opened batch** takes ``generation`` and ``labeled`` lines and ``covers`` entries of the
+  runs its ``opened`` line names only, and a ``mark`` of its own candidate only;
 - **a batch** is ``accepted`` (an accepting ``controls`` line), else ``mark``, else ``open``; its
   ``k`` is 1, plus 1 after each changed ``controls`` line, counted in ``changes``;
 - **diagnoses**: a ``diagnosed`` line follows its published record (its sha256), resolves its
@@ -541,6 +543,13 @@ class _Fold:
         found = self.generations.get(run, [])
         return found[-1] if found and found[-1].closed is None else None
 
+    def member(self, number: int, kind: str, e: Mapping[str, Any], info: dict[str, Any],
+               run: str) -> None:  # fmt: skip
+        """An opened batch's line names only the runs it was opened with."""
+        if info["opened"] and run not in info["runs"]:
+            self.fail(number, f"a {kind} line of batch {e['batch']} names {run}, a run it was not "
+                      "opened with")  # fmt: skip
+
     def line(self, number: int, e: Mapping[str, Any]) -> None:
         kind = e["event"]
         if kind == "torn":
@@ -562,6 +571,7 @@ class _Fold:
         info.update({key: e[key] for key in FIELDS["opened"]}, opened=True)
 
     def _generation(self, number: int, e: Mapping[str, Any], info: dict[str, Any]) -> None:
+        self.member(number, "generation", e, info, e["run"])
         run, found = e["run"], self.generations.setdefault(e["run"], [])
         if found and found[-1].closed is None:
             self.fail(number, f"a generation of {run} while its generation {found[-1].number} is "
@@ -577,6 +587,8 @@ class _Fold:
 
     def _labeled(self, number: int, e: Mapping[str, Any], info: dict[str, Any]) -> None:
         k, attempt = e["k"], e["attempt"]
+        for entry in e["runs"]:
+            self.member(number, "labeled", e, info, entry["run"])
         if k != info["k"]:
             self.fail(number, f"a labeled line of batch {e['batch']} at k = {k}, not its "
                       f"k = {info['k']}")  # fmt: skip
@@ -600,6 +612,7 @@ class _Fold:
         receipts = {(r["run"], r["receipt_sha256"]) for r in labeled["runs"]}
         for cover in e.get("covers", ()):
             run, wanted = cover["run"], cover["generation"]
+            self.member(number, "controls", e, info, run)
             current = self.current(run)
             if current is None or current.number != wanted:
                 self.fail(number, f"covers generation {wanted} of {run}, not its open "
@@ -635,6 +648,9 @@ class _Fold:
         info["interrupted"].append(e)
 
     def _mark(self, number: int, e: Mapping[str, Any], info: dict[str, Any]) -> None:
+        if info["opened"] and e["candidate"] != info["candidate"]:
+            self.fail(number, f"a mark of batch {e['batch']} names candidate {e['candidate']}, "
+                      f"not the candidate {info['candidate']} it was opened with")  # fmt: skip
         info["mark"] = e
         info["state"] = "mark"
 
