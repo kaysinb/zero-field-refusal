@@ -150,8 +150,12 @@ rerun of the qualification its ``attempts``, interrupted ones included, ``cases_
 ``kept`` and ``kept_cases`` exactly ``cycle_entries``'). The pinned case restarts agree with the
 journal prefix (``_restart_problems``): every restart record of the candidate that a
 ``superseded`` line inside the prefix cites is pinned, and none that only lines beyond it cite.
-A run kept as of a closed arm is re-derived as cited by a closure, and needs a valid closure of
-the candidate of its arm or naming it whose cited line lies in the pinned prefix.
+A run kept as of a closed arm is re-derived from the arms closed before the cycle: by a valid
+closure of the candidate (of its arm, or naming it) whose cited line lies in the pinned prefix,
+or by the route itself (``inactive_arms``: the state machine's walk over the records before the
+cycle, under its old code, shows the arm inactive: P–F closed by its validation gate or by a
+scientific failure, with no closure record). A run kept as of an arm closed by neither is a
+problem.
 """
 
 from __future__ import annotations
@@ -1266,15 +1270,25 @@ def cycle_problems(
     valid = [e["record"] for e in records.closures.values() if e.get("record") is not None
              and e["record"].get("candidate") == candidate
              and _in_prefix(e["record"].get("line"), record["journal"])]  # fmt: skip
-    for run_id in closed:
-        arm = by_id[run_id].arm if run_id in by_id else None
-        if not any(c.get("arm") == arm or c.get("run_id") == run_id for c in valid):
-            problems.append(f"{where}: {run_id} is kept as of a closed arm, and no valid closure "
-                            "of the candidate closes its arm or names it")  # fmt: skip
+    cited = {c["run_id"] for c in valid if isinstance(c.get("run_id"), str)}
+    closed_arms = {c["arm"] for c in valid if isinstance(c.get("arm"), str)}
+    uncovered = [
+        run_id
+        for run_id in closed
+        if run_id not in cited
+        and (by_id[run_id].arm if run_id in by_id else None) not in closed_arms
+    ]
+    if uncovered:  # an arm the route itself closed, with no closure record
+        closed_arms |= inactive_arms(records, record, runs_root=root, settings=settings)
+    for run_id in uncovered:
+        if (by_id[run_id].arm if run_id in by_id else None) not in closed_arms:
+            problems.append(f"{where}: {run_id} is kept as of a closed arm, and neither the route "
+                            "before the cycle closed its arm nor a valid closure of the "
+                            "candidate closes its arm or names it")  # fmt: skip
     try:
         affected, kept = affected_and_kept(records, candidate, claims, run_codes=run_codes,
                                            fix_code=record["code"]["gpu_code_sha256"], seen=seen,
-                                           closed_arms=(), cited=closed)  # fmt: skip
+                                           closed_arms=closed_arms, cited=cited)  # fmt: skip
     except CycleRefused as exc:
         return problems + [f"{where}: {reason}" for reason in exc.reasons]
     problems += _compare(where, "affected.runs", record["affected"]["runs"], affected,
@@ -1310,6 +1324,41 @@ def cycle_problems(
             problems.append(f"{where}: {e.run_id} is a scientific failure, and it is listed as "
                             "affected: a scientific failure keeps counting")  # fmt: skip
     return problems
+
+
+def inactive_arms(records: Records, record: Mapping[str, Any], *, runs_root: str | Path,
+                  settings: Mapping[str, Any]) -> set[str]:  # fmt: skip
+    """The arms the route had closed for the cycle's candidate before the cycle (module
+    docstring, "The pre-cycle view"): those that ``study3_progress.advance`` over the records
+    before it (``records``), under the cycle's old code, does not show active once its walk is at
+    the candidate. The qualification is read as ``records`` give it, or, when they give none
+    (``pre_cycle_records`` reads no qualification), now: each candidate's under the code in force
+    for its runs on the chain before the cycle, the cycle's candidate's under its old code. An arm
+    closed at or after the qualification by the route alone is shown only where that reading
+    still passes the qualification: under a rerun of the qualification, its records are voided
+    after the cycle's repair, the walk waits at the numerical stage, and such an arm is not
+    shown (a closure record shows it whatever the walk)."""
+    from dataclasses import replace
+
+    from .study3_progress import _engineering_code, advance, code_chain
+
+    candidate, old = record["candidate"], record["old_code"]
+    if not records.qualification:
+        from . import qualification_records  # it loads torch: here only
+
+        engineering = (records.decisions.get(1) or {}).get("engineering") or {}
+        _, in_force, _ = code_chain(_engineering_code(engineering), records.cycles)
+        readings = {}
+        for c in (1, 2):
+            code = old if c == candidate else in_force.get(c)
+            if code is not None:
+                readings[c] = qualification_records.read_qualification(
+                    runs_root, c, expected_code=code, settings=settings)  # fmt: skip
+        records = replace(records, qualification=readings)
+    result = advance(records, expected_code=old)
+    if result.get("candidate") != candidate:
+        return set()
+    return {arm for arm in ARM_ORDER if arm not in result["active"]["arms"]}
 
 
 def _requalified(root: Path, record: Mapping[str, Any], *, run_codes: Mapping[str, str | None],

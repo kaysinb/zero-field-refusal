@@ -51,7 +51,13 @@ from zero_field_refusal.analysis.study3_decisions import (
     start_lines,
 )
 from zero_field_refusal.analysis.study3_progress import _bound, progress
-from zero_field_refusal.analysis.study3_records import COUNTING, GROSS_COLLAPSE, EndpointReader
+from zero_field_refusal.analysis.study3_records import (
+    COUNTING,
+    GROSS_COLLAPSE,
+    SEEDS,
+    EndpointReader,
+)
+from zero_field_refusal.analysis.study3_search import CANDIDATES
 from zero_field_refusal.config import config_hash
 from zero_field_refusal.launch import load_campaign
 
@@ -317,7 +323,8 @@ def test_old_code_engineering_records_are_not_voided(qualify, monkeypatch, tmp_p
 OLD, FIXED = "b" * 64, "f" * 64  # the GPU code in force before the cycle, and the fix's
 WRITTEN = "2026-10-28T12:00:00+00:00"
 LOGS = {"search": "study3-c1-search-round0", "numerical": "study3-c1-numerical",
-        "validation": "study3-c1-validation"}  # fmt: skip
+        "validation": "study3-c1-validation",
+        "confirmation": "study3-c1-confirmation"}  # fmt: skip
 
 
 def reuse(justification: str = "the fix changes nothing these runs ran") -> cycle.Claim:
@@ -338,13 +345,19 @@ def materialized_validation_mark(tmp_path, *, arm="A", failed=None):
     pp of MMLU lost). Each endpoint's files written under ``tmp_path/runs/study3/<run_id>`` (its
     config.yaml, meta.json and terminal.json), its start and end logged per step, each numerical
     run classified by its case's baseline record (old code), and the endpoints pointed there."""
-    root = tmp_path / "runs"
     study = Study()
     study.through_validation()
     if failed is not None:
         study.change(run_of(study, "validation", failed[0], "u", failed[1]), state="unusable",
                      unusable_reason=GROSS_COLLAPSE, mmlu_loss_pp=20.0)  # fmt: skip
     mark = run_of(study, "validation", arm, "l", 10305)
+    return study, materialize(study, tmp_path, mark)
+
+
+def materialize(study, tmp_path, mark: str) -> Path:
+    """The study's runs on files (``materialized_validation_mark``), ``mark`` a technical mark
+    (ended technical, no terminal record): RUNS_DIR."""
+    root = tmp_path / "runs"
     study.change(mark, state="technical", K=None, K_harmful=None, steps=None, mmlu_loss_pp=None,
                  factual_loss_pp=None)  # fmt: skip
     clock = iter(range(10_000))
@@ -379,7 +392,7 @@ def materialized_validation_mark(tmp_path, *, arm="A", failed=None):
                 "provenance": {"gpu_code": {"sha256": OLD}}}))  # fmt: skip
         study.change(e.run_id, run_dir=run_dir)
     study.starts, study.ends = start_lines(root), end_lines(root)
-    return study, root
+    return root
 
 
 def derive(study, root, *, claims, stage="validation", marks=None, closed_arms=(), **kw):
@@ -1216,6 +1229,53 @@ def test_a_launcher_record_there_and_unreadable_is_refused_never_marked_absent(t
     meta.symlink_to(tmp_path / "nowhere.json")
     with pytest.raises(cycle.CycleRefused, match=f"{run_id}/meta.json"):
         derive(study, root, claims=ALL_RERUN)
+
+
+def test_an_arm_the_route_closed_without_a_closure_keeps_the_cycle_valid(tmp_path, monkeypatch):
+    """P–F closed by its validation gate (P supported in 21 of 28 blocks), no closure record,
+    then a confirmation mark: the writer keeps P's runs as of a closed arm, and the reader
+    accepts them, since the route before the cycle (``advance`` over the records before it,
+    under its old code) shows P inactive. The same record, with P active before the cycle,
+    stays a problem."""
+    study = Study()
+    study.ready()
+    study.search()
+    study.numerical()
+    seeds = SEEDS["validation"][1][:28]
+    study.validation(special={(s, "P", "u"): {"K": 5.0} for s in seeds[:7]})  # P–F fails
+    study.n(N=60, arms=("A", "F"))
+    study.confirmation(count=3, arms=("A", "F"))
+    root = materialize(study, tmp_path, run_of(study, "confirmation", "F", "l", 10401))
+    state = study.advance()
+    assert (state["stage"], state["step"]["reason"]) == ("confirmation", "engineering_cycle")
+    assert state["active"]["arms"] == ["A", "F"]
+    claims = {"search": reuse(), "qualification": reuse(), "validation": reuse(),
+              "confirmation": rerun(arms=("A", "F"))}  # fmt: skip
+    record, bridge = derive(study, root, stage="confirmation", closed_arms=("P",), claims=claims)
+    closed = {k["run_id"] for k in record["kept"] if k["why"] == "closed_arm"}
+    assert closed == {e.run_id for e in study.endpoints if e.arm == "P"
+                      and e.cell.step in ("search", "validation")}  # fmt: skip
+    cycle.publish_cycle(root, 1, record, bridge)
+    found = cycle.read_cycle(root, 1, repo=root.parent)
+    assert found["state"] == "valid", found["problems"]
+    before = study.records()  # the records before the cycle, the qualification's reading with them
+    monkeypatch.setattr(cycle, "pre_cycle_records", lambda *a, **k: before)
+    problems = cycle.cycle_problems(found, runs_root=root, theta0=root, repo=root.parent,
+                                    settings=REGISTERED)  # fmt: skip
+    assert problems == []
+    # P supported in every block: P–F's gate passes, and P is active when the walk stops (at
+    # the choice: no n record)
+    open_ = replace(before, decisions={1: {k: v for k, v in before.decisions[1].items()
+                                           if k != "n-c1"}, 2: before.decisions[2]},
+                    endpoints=tuple(
+                        replace(e, K=CANDIDATES[1]["targets"]["u"]) if e.arm == "P"
+                        and e.cell.step == "validation" and e.lr == START["P"]["u"] else e
+                        for e in before.endpoints))  # fmt: skip
+    monkeypatch.setattr(cycle, "pre_cycle_records", lambda *a, **k: open_)
+    problems = cycle.cycle_problems(found, runs_root=root, theta0=root, repo=root.parent,
+                                    settings=REGISTERED)  # fmt: skip
+    assert any("kept as of a closed arm" in p and "route before the cycle" in p
+               for p in problems)  # fmt: skip
 
 
 def test_a_dangling_link_at_the_record_or_the_bridge_is_refused_before_anything_is_written(
