@@ -210,6 +210,23 @@ def test_the_worst_case_takes_unknown_blocks_at_minus_and_plus_one() -> None:
 # ------------------------------------------------------------------ matched K_harmful
 
 
+def test_the_worst_case_counts_every_started_block_outside_the_cohort() -> None:
+    # 70 started blocks, A-F supported on all, N = 60; P-F reaches only 30: the blocks beyond N
+    # are unknown like the unsupported ones
+    freeze = frozen(60, unknown=tuple(range(10460, 10470)))
+    freeze["comparisons"]["P-F"]["blocks"] = freeze["comparisons"]["P-F"]["blocks"][:30]
+    freeze["comparisons"]["P-F"]["unknown"] = list(range(10430, 10470))
+    freeze["comparisons"]["A-F"]["unknown"] = list(range(10460, 10470))
+    result = analyzed(freeze, harm_of(60))["comparisons"]
+    assert result["A-F"]["worst_case_unknown_blocks"]["unknown"] == 10
+    assert result["P-F"]["worst_case_unknown_blocks"]["unknown"] == 40
+    got = est.worst_case_unknown(
+        np.zeros(60), 10, level=0.975, resamples=999, seed=np.random.SeedSequence(1)
+    )
+    assert got["high_mean"] == pytest.approx(10 / 70) and got["low_mean"] == pytest.approx(-10 / 70)
+    assert round(100 * got["high_mean"], 2) == 14.29
+
+
 def harmful_ks(n, a=(4.8, 7.5), f=(1.2 * 4.8, 1.2 * 7.5)) -> dict:
     """Each block's endpoints by run id, with A's K_harmful ``a`` and F's ``f`` at (lo, hi)."""
     out = {}

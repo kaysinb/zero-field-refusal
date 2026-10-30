@@ -54,9 +54,10 @@ bounds encoded as ``to_json`` encodes them (NaN as null, ±∞ as "+inf"/"-inf")
   with no width limit (the registration states none); equal values are ``tied``, otherwise ``no
   bracket``. Every left-out block is counted with its reason.
 - *Worst cases*, each labeled apart. ``worst_case_unknown_blocks``: the cohort's primary
-  differences plus one difference per started block unsupported for the comparison, taken at −1
-  for the low side and +1 for the high side (the proportion's extremes): the two means and the
-  envelope of the two augmented vectors (``stream(seed, "worst", key)``). ``observed_extremes``:
+  differences plus one difference per started block outside the cohort (unsupported, or supported
+  beyond N), taken at −1 for the low side and +1 for the high side (the proportion's extremes):
+  the two means and the envelope of the two augmented vectors
+  (``stream(seed, "worst", key)``). ``observed_extremes``:
   the smallest and largest observed primary block difference, with their seeds; it bounds nothing
   outside the cohort. (The registered utility worst case, over the started blocks, is label-free
   and the report's.)

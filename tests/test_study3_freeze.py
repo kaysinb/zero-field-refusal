@@ -137,9 +137,11 @@ def test_at_the_cap_a_comparison_below_36_is_descriptive_on_all_its_blocks() -> 
     record = frozen(k_harmful(study, scaled))
     af, pf = record["comparisons"]["A-F"], record["comparisons"]["P-F"]
     assert record["confirmation"]["stop"] == "cap"
-    assert (af["reading"], len(af["blocks"]), af["unknown"]) == ("confirmatory", 60, [])
+    assert (af["reading"], len(af["blocks"]), af["unknown"]) == ("confirmatory", 60, seeds[60:70])
     assert (pf["reading"], pf["rule"], len(pf["blocks"])) == ("descriptive", "cap", 30)
-    assert pf["unknown"] == seeds[30:70]
+    assert pf["unknown"] == seeds[30:70] and len(pf["unknown"]) == 40
+    for c in (af, pf):  # the cohort and the unknown blocks cover each started block once
+        assert sorted([*(b["seed"] for b in c["blocks"]), *c["unknown"]]) == sorted(seeds[:70])
     assert [b["seed"] for b in record["a_minus_p"]["blocks"]] == seeds[:30]
 
 

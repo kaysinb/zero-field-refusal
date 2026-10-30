@@ -84,7 +84,7 @@ from pathlib import Path
 from typing import Any
 
 from ..paths import REPO_ROOT
-from .study3_blocks import OPEN, PAIRS, SUPPORTED, UNRESOLVED, UNSUPPORTED, block_state
+from .study3_blocks import OPEN, PAIRS, SUPPORTED, UNRESOLVED, block_state
 from .study3_decisions import _digest, _sealed_problem, _under_sealed, decisions
 from .study3_estimates import kstar_h, matched_blocks
 from .study3_progress import COMPARISONS, read_state
@@ -162,13 +162,20 @@ def freeze_record(
     for comparison in active:
         name = COMPARISONS[comparison]
         cohort = list(confirmation["analysis"][comparison])
+        # The worst case ("Confirmation": "Reported: unsupported and excluded started blocks, and
+        # the worst-case values"): every started block outside the cohort is unknown, the
+        # unsupported ones and the supported ones beyond N alike.
+        outside = [s for s in started if s not in set(cohort)]
+        if sorted([*cohort, *outside]) != sorted(started) or len(set(cohort)) != len(cohort):
+            found.append(f"{comparison}: the cohort and the unknown blocks do not cover each "
+                         "started block exactly once")  # fmt: skip
         found += [f"{comparison}: block {seed} of its cohort is not supported as the state reads it"
                   for seed in cohort if blocks[seed][name]["state"] != SUPPORTED]  # fmt: skip
         comparisons[comparison] = {
             "reading": confirmation["readings"][comparison],
             "rule": "n_reached" if confirmation["counters"][comparison] >= N else "cap",
             "blocks": [_block(blocks[seed], PAIRS[name]) for seed in cohort],
-            "unknown": [s for s in started if blocks[s][name]["state"] == UNSUPPORTED],
+            "unknown": outside,
         }
     if found:
         raise FreezeRefused(_refusal(candidate, found))
