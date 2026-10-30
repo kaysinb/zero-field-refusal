@@ -226,7 +226,8 @@ class Generation:
 class Ledger:
     """The ledger's fold (module docstring). ``batches``: per batch, its ``opened`` fields (when
     it was opened), ``state`` (open, accepted or mark), ``k``, ``changes`` and its lines
-    (``labeled`` by (k, attempt), ``controls`` by k, ``superseded``, ``mark``, ``diagnosed``);
+    (``labeled`` by (k, attempt), its ``controls`` lines as ``checks`` by k, ``superseded``,
+    ``interrupted``, ``mark``, ``diagnosed``);
     ``covered``: (run, generation) → the receipt sha256 an accepting line covers;
     ``unresolved_marks``: mark batches with no diagnosis or a ``judge`` one; ``stranded``:
     published diagnosis records with no ``diagnosed`` line; ``closers``: (run, generation) → the
@@ -465,7 +466,7 @@ class _Fold:
     def batch(self, name: str) -> dict[str, Any]:
         return self.batches.setdefault(name, {
             "opened": False, "state": "open", "k": 1, "changes": 0, "labeled": {},
-            "controls": {}, "superseded": [], "interrupted": [], "mark": None,
+            "checks": {}, "superseded": [], "interrupted": [], "mark": None,
             "diagnosed": None})  # fmt: skip
 
     def remaining(self, run: str) -> int:
@@ -522,7 +523,7 @@ class _Fold:
 
     def _controls(self, number: int, e: Mapping[str, Any], info: dict[str, Any]) -> None:
         k, attempt, batch = e["k"], e["attempt"], e["batch"]
-        if k in info["controls"] or k < info["k"]:
+        if k in info["checks"] or k < info["k"]:
             self.fail(number, f"a second controls line of batch {batch} at k = {k}")
         if k != info["k"]:
             self.fail(number, f"a controls line of batch {batch} at k = {k}, not its "
@@ -541,7 +542,7 @@ class _Fold:
             if (run, cover["receipt_sha256"]) not in receipts:
                 self.fail(number, f"covers {run}'s receipt, which the labeled line of attempt "
                           f"{attempt} (batch {batch}, k = {k}) does not record")  # fmt: skip
-        info["controls"][k] = e
+        info["checks"][k] = e
         if e["accepted"]:
             for cover in e["covers"]:
                 self.covered[(cover["run"], cover["generation"])] = cover["receipt_sha256"]
@@ -583,7 +584,7 @@ class _Fold:
                 self.fail(number, f"an infrastructure diagnosis of batch {batch}, whose mark is "
                           "exhausted: an exhausted run stays the judge's labeling "
                           "problem")  # fmt: skip
-            if any(c["parsed_changed"] for c in info["controls"].values()):
+            if any(c["parsed_changed"] for c in info["checks"].values()):
                 self.fail(number, f"an infrastructure diagnosis of batch {batch}, where a control "
                           "label changed to a parsed label: a control mismatch is never "
                           "infrastructure")  # fmt: skip
