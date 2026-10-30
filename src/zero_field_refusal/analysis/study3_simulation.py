@@ -3716,7 +3716,7 @@ def _reported_screen(context: Context, scenario: Scenario, rows: Sequence[StudyO
     truths = {c: [100 * o.truth[c] for o in seen if any(o.confirmed.values())
                   and o.truth.get(c) is not None] for c in COMPARISONS}  # fmt: skip
 
-    def quantiles(values: list[int]) -> dict[str, int] | None:
+    def type1(values: list[int]) -> dict[str, int] | None:  # the order statistics q10, q50, q90
         return {k: order_statistic(values, q) for k, q in QUANTILES.items()} if values else None
 
     def share(values: list[bool]) -> float | None:
@@ -3728,7 +3728,7 @@ def _reported_screen(context: Context, scenario: Scenario, rows: Sequence[StudyO
         "unconfirmed": dict(sorted(reasons.items())),
         "n_above_90": {level_slot(lv): sum(o.N[lv] > _decisions.BUDGET_ABOVE for o in used[lv])
                        for lv in LEVELS},  # fmt: skip
-        "blocks": {level_slot(lv): quantiles([o.blocks[lv] for o in used[lv]]) for lv in LEVELS},
+        "blocks": {level_slot(lv): type1([o.blocks[lv] for o in used[lv]]) for lv in LEVELS},
         "pf_gate_rate": sum(bool(o.gates["PF"]) for o in seen) / len(seen),
         "attained_sd_pp": {"A-F": cal.attained_af_pp, "P-F": cal.attained_pf_pp},
         "truth_range_pp": {c: [min(v), max(v)] if v else None for c, v in truths.items()},
