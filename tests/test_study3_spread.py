@@ -84,6 +84,15 @@ def block(seed: int, ids=None) -> list:
     ]
 
 
+class Records(DecisionWorld):
+    """``test_study3_decisions.World``'s records and stand-ins on a runs directory and a checkout
+    that exist already (another world's): their evidence under ``runs``."""
+
+    def __init__(self, runs: Path, repo: Path, monkeypatch) -> None:  # the folders exist
+        self.runs, self.repo, self.monkeypatch = runs, repo, monkeypatch
+        self.pins, self.lines = {}, 0
+
+
 def harmful(index: int, arm: str, end: str) -> int:
     """A run's harmful count: A above F by 20·(block mod 4), the upper rate 10 above the lower."""
     return 100 + (20 * (index % 4) if arm == "A" else 0) + (10 if end == "u" else 0)

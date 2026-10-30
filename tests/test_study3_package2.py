@@ -8,19 +8,27 @@
   code).
 - No label is read: the label readers' entry points raise wherever they are bound, before the
   package's modules and scripts are loaded, and none is called.
-- The sealing boundary: on the campaign writer's route world, run once for the module (every
-  campaign kind and every summary command, in process, on files, in a Git checkout: the real
-  ``progress`` and ``versions_problems``, the guard among them), every open of a path under a
-  ``responses/`` or ``observations/`` folder fails, and none is made; the sentinel is in no output,
-  refusal, problem or written file; and runs whose ``config.yaml`` and ``meta.json`` link into
-  their sealed folders, and a launch log and qualification records that do, are named problems.
-  The qualification's reader, whose reading the route gives, reads the same files too, and opens
-  no such link.
+- The sealing boundary: the five sealed folders (``study3_records.SEALED``): a run's
+  ``responses/`` and ``observations/``, its judge outputs (``judge/``) and their superseded copies
+  (``judge-superseded/``), and the labeling ledger (``RUNS_DIR/study3/labeling/``). On the campaign
+  writer's route world, run once for the module (every campaign kind and every summary command, in
+  process, on files, in a Git checkout: the real ``progress`` and ``versions_problems``, the guard
+  among them), every open of a path under a sealed folder fails, and none is made; the sentinel is
+  in no output, refusal, problem or written file; and runs whose ``config.yaml`` and ``meta.json``
+  link into their sealed folders, and a launch log and qualification records that do, are named
+  problems. The qualification's reader, whose reading the route gives, reads the same files too,
+  and opens no such link.
 - A run's record files are opened only outside its sealed folders (``study3_records``, and the
   qualification's reader): a record file, or a run's folder, that resolves through a link under a
   ``responses/`` or ``observations/`` folder is refused unopened, a named problem; so is a launch
   log or a record of the qualification (the base is the runs root); and a journal start's command
   composes only a study-3 config.
+- The label readers' fence (``LABEL_READERS``: ``analysis.study3_label_cli``,
+  ``analysis.study3_labels`` and ``scripts/study3_spread.py``; "Judge and audit", "Sample size from
+  validation"): they import no GPU module and load no script; a sealed path is opened only inside
+  a named opener (``SEALED_OPENERS``, ``NamedOpens``); and each reader refuses a point that is
+  closed: ``spread`` outside candidate N's choice step (it closes once the n record is written),
+  ``final`` until the freeze gate opens it, reading nothing of a run's sealed folders meanwhile.
 
 Every sealed file of these worlds holds the sentinel ``SENTINEL``, and every read of a sealed path
 fails under ``SealedGuard``."""
@@ -32,12 +40,14 @@ import hashlib
 import importlib
 import inspect
 import io
+import itertools
 import json
 import math
 import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -117,10 +127,26 @@ PACKAGE = (
     ANALYSIS / "qualification_records.py",
     ANALYSIS / "campaign_prep.py",
 )
-# study 3's label readers (package 2b), each with its own sealing tests: two modules of the
-# analysis package and the spread's decision script
-LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_labels.py", ANALYSIS / "study3_label_cli.py",
+# study 3's label readers (package 2b), each with its own sealing tests and this file's fence: two
+# modules of the analysis package and the spread's decision script
+LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_label_cli.py", ANALYSIS / "study3_labels.py",
                                    REPO_ROOT / "scripts" / "study3_spread.py")  # fmt: skip
+# The label readers' functions that open a sealed path, by module and name: a run's judge outputs
+# (and the responses they are labeled from), their superseded copies or the labeling ledger.
+# Every such open is inside one of them (``NamedOpens``)
+SEALED_OPENERS = frozenset({
+    "study3_labels.read_ledger", "study3_labels.append_event", "study3_labels.ledger_lock",
+    "study3_labels.diagnoses", "study3_labels.torn_tail", "study3_labels.resolve_torn",
+    "study3_labels._read_run", "study3_labels._receipt_sha256",
+    "study3_label_cli._label_pass", "study3_label_cli._rounds_used",
+    "study3_label_cli._supersede", "study3_label_cli._complete_moves",
+    "study3_label_cli.label_controls", "study3_label_cli._controls",
+    "study3_label_cli.write_diagnosis",
+})  # fmt: skip
+# The labeling ledger's own openers: the labeling command takes the ledger's lock and reads it
+# before it checks the point, through these alone
+LEDGER_OPENERS = frozenset({"study3_labels.read_ledger", "study3_labels.ledger_lock",
+                            "study3_labels.torn_tail"})  # fmt: skip
 OTHER = (
     ANALYSIS / "__init__.py",
     ANALYSIS / "bootstrap.py",
@@ -233,6 +259,45 @@ class SealedGuard:
             yield
         finally:
             self.armed = True
+
+
+def stack_names() -> set[str]:
+    """``<module file's stem>.<function>`` of every frame of this thread's stack and, in another
+    thread (a judge client's worker), of the main thread's stack, which waits for it."""
+    frames = [sys._getframe(1)]
+    if threading.current_thread() is not threading.main_thread():
+        frames.append(sys._current_frames().get(threading.main_thread().ident))
+    names = set()
+    for frame in frames:
+        while frame is not None:
+            names.add(f"{Path(frame.f_code.co_filename).stem}.{frame.f_code.co_name}")
+            frame = frame.f_back
+    return names
+
+
+class NamedOpens(SealedGuard):
+    """``SealedGuard`` where a sealed open is allowed only inside a named opener (``openers``,
+    ``SEALED_OPENERS`` by default): a frame of its stack, or, in a judge client's worker thread,
+    of the main thread's stack that waits for it (``stack_names``). With ``under``, only a path
+    under that folder is allowed so. Each allowed open is kept in ``allowed``."""
+
+    def __init__(self, monkeypatch, runs_root: Path | None = None, openers=SEALED_OPENERS,
+                 under: Path | None = None) -> None:  # fmt: skip
+        super().__init__(monkeypatch, runs_root)
+        self.openers = frozenset(openers)
+        self.under = None if under is None else Path(os.path.realpath(under))
+        self.allowed: list[str] = []
+
+    def check(self, path, dir_fd=None) -> None:
+        try:
+            super().check(path, dir_fd)
+        except AssertionError:
+            resolved = Path(self.opened[-1])
+            if (self.under is not None and not resolved.is_relative_to(self.under)) or not (
+                    stack_names() & self.openers):  # fmt: skip
+                raise
+            self.attempts.pop()
+            self.allowed.append(str(resolved))
 
 
 # ------------------------------------------------------------------ a run's sealed folders
@@ -796,13 +861,17 @@ class Ran:
 
 
 class LabelReaders:
-    """The public entry points of the label readers (the functions ``analysis.study2_labels``,
-    ``labeling`` and ``run_judging`` define), replaced wherever a loaded module binds them by one
-    that records the call and raises."""
+    """The public entry points of the label readers (the functions ``LABEL_MODULES`` define),
+    replaced wherever a loaded module binds them by one that records the call and raises; ``lift``
+    gives every binding of one its real function back for a test. ``ACTIVE`` lists the instances
+    in force (the route's, for its module)."""
+
+    ACTIVE: list["LabelReaders"] = []
 
     def __init__(self, monkeypatch) -> None:
         self.calls: list[str] = []
         self.names: list[str] = []
+        self.real: dict[int, tuple[Any, Any]] = {}  # id(raiser) -> (raiser, real function)
         found: dict[int, tuple[Any, Any]] = {}
         for name in LABEL_MODULES:
             module = importlib.import_module(name)
@@ -812,6 +881,7 @@ class LabelReaders:
                     continue
                 self.names.append(f"{name}.{attr}")
                 found[id(value)] = (value, self._raiser(f"{name}.{attr}"))
+                self.real[id(found[id(value)][1])] = (found[id(value)][1], value)
         for module in list(sys.modules.values()):
             try:
                 items = list(vars(module).items())
@@ -828,6 +898,19 @@ class LabelReaders:
             raise AssertionError(f"a label reader was called: {name}")
 
         return raiser
+
+    def lift(self, monkeypatch) -> None:
+        """Every binding of a replaced entry point, in every module loaded now, back to the real
+        function, for the test of ``monkeypatch`` (undone with it)."""
+        for module in list(sys.modules.values()):
+            try:
+                items = list(vars(module).items())
+            except TypeError:
+                continue
+            for attr, value in items:
+                entry = self.real.get(id(value))
+                if entry is not None and entry[0] is value:
+                    monkeypatch.setattr(module, attr, entry[1])
 
 
 def judged(run_dir: Path) -> None:
@@ -1075,7 +1158,7 @@ class Route(CampaignWorld):
         self.commit("the versions record", FIRST)
         validation = self.campaign("validation")
         self.ok("summary", "check", "--runs-root", root, "--campaign", validation)
-        self.launch(validation)
+        self.validation_runs = self.launch(validation)
         state = self.state()
         assert (state["stage"], state["step"]["record"], state["problems"]) == (
             "choice", "n-c1", [])  # fmt: skip
@@ -1133,10 +1216,15 @@ def route(tmp_path_factory):
     """The route built once, with the label readers replaced from the start and every sealed read
     failing while the commands run (``SealedGuard``, kept as ``route.attempts``); the guard is
     lifted once the route is built."""
+    # the label readers' test modules, which import this one, loaded before the entry points are
+    # replaced: the replacement then covers their bindings, and its undo restores them
+    importlib.import_module("test_study3_label_cli")
+    importlib.import_module("test_study3_spread")
     patch = pytest.MonkeyPatch()
     sealed = pytest.MonkeyPatch()
     try:
         labels = LabelReaders(patch)
+        LabelReaders.ACTIVE.append(labels)
         patch.setattr(test_study3_records, "SENTINEL", SENTINEL)
         world = Route(tmp_path_factory.mktemp("route"), patch)
         world.labels = labels
@@ -1160,6 +1248,7 @@ def route(tmp_path_factory):
     finally:
         sealed.undo()
         patch.undo()
+        LabelReaders.ACTIVE.clear()
 
 
 def sealed_part(path: Path, route) -> bool:
@@ -1463,3 +1552,283 @@ def test_the_package_loads_and_binds_no_label_reader() -> None:
     plain = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True,
                                       cwd=REPO_ROOT).stdout)  # fmt: skip
     assert plain == {"calls": [], "bound": [], "readers": 0, "loaded": []}
+
+
+# ------------------------------------------------------------------ the label readers' fence
+
+
+class Labeled:
+    """``test_study3_label_cli.World``'s labeling (its runs, controls, stand-in fixation and fake
+    judge server) with a validation cohort of two blocks, ``r1``–``r8`` (A and F at both rates
+    per block, each arm's weight 1/2), at candidate 1's choice step; and the spread ready to run
+    on it (``test_study3_spread``'s pieces): the stand-in spread script pinned by the fixation,
+    the engineering and simulation records, the checkout in Git, the blocks' endpoints given.
+    The validation gate's minimum is lowered to two supported blocks in this world alone: its
+    tests are of the opens, not of the gate."""
+
+    RUNS = tuple(f"r{i}" for i in range(1, 9))
+    SEEDS = (10300, 10301)
+
+    def __init__(self, tmp_path: Path, monkeypatch, capfd) -> None:
+        # they import this module: here only
+        import test_study3_spread as spread_test
+        from test_study3_label_cli import World as LabelWorld
+        from test_study3_labels import study3_run
+
+        from zero_field_refusal.analysis import study3_decisions, study3_label_cli, study3_labels
+
+        for readers in LabelReaders.ACTIVE:  # the route's replacement, lifted for this world
+            readers.lift(monkeypatch)
+        self.labels = LabelWorld(tmp_path, monkeypatch, capfd)
+        self.root, self.repo = self.labels.root, self.labels.repo
+        for name in self.RUNS[3:]:
+            study3_run(self.root, name, harmful=(0,) if int(name[1:]) % 2 else (0, 1, 3),
+                       unparseable=())  # fmt: skip
+        blocks = [spread_test.block(seed, self.RUNS[4 * i:4 * i + 4])
+                  for i, seed in enumerate(self.SEEDS)]  # fmt: skip
+        self.endpoints = [e for found in blocks for e in found]
+        cohort = {"seeds": list(self.SEEDS), "run_ids": list(self.RUNS)}
+        self.state = {"stage": "choice", "candidate": 1, "problems": [], "prescribed": {},
+                      "step": {"kind": "decision", "record": "n-c1",
+                               "fields": {"candidate": 1, "rates": spread_test.RATES,
+                                          "active": ["A-F"], "cohort": cohort}}}  # fmt: skip
+        monkeypatch.setattr(study3_labels, "_state", lambda runs_root, repo_root: self.state)
+        monkeypatch.setattr(study3_label_cli, "_bound", self.bound)
+        monkeypatch.setitem(study3_decisions.SUPPORTED_AT, 28, len(self.SEEDS))
+        records = spread_test.Records(self.root, self.repo, monkeypatch)
+        records.stand_in()
+        records.write("engineering", records.engineering())
+        records.write("simulation", records.simulation())
+        self.labels.fixation["spread"] = spread_pin(self.repo)
+        named = self.repo / sv.fixation_name("validation", 1)
+        named.write_text(json.dumps(self.labels.fixation) + "\n")
+        git(self.repo, "init", "-q")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "the stand-ins")
+        self.script = spread_test.spread_module()
+        monkeypatch.setattr(self.script, "REPO", self.repo)
+        monkeypatch.setattr(self.script, "read_endpoints",
+                            lambda runs_root, *, theta0, prescribed: (list(self.endpoints),
+                                                                      []))  # fmt: skip
+
+    def bound(self, runs_root, state, step, candidate, run_ids, theta0=None) -> None:
+        from zero_field_refusal.analysis.study3_label_cli import BatchRefused
+
+        if (step, candidate) != ("validation", 1) or set(run_ids) - set(self.RUNS):
+            raise BatchRefused(f"{run_ids} are not candidate 1's validation runs")
+
+    def batch(self, run_ids, **judge):
+        return self.labels.batch(run_ids, **judge)
+
+    def harm(self, name: str):
+        return self.labels.harm(name)
+
+    def spread(self) -> None:
+        """The cohort's runs labeled (those not labeled yet, in a batch), then the spread."""
+        self.labels.batch(list(self.RUNS))
+        self.script.main(["--runs-root", str(self.root), "--candidate", "1"])
+
+    def n_record(self) -> dict:
+        from zero_field_refusal.analysis.study3_decisions import read_decision
+
+        record, problems = read_decision(self.root, "n-c1", repo=self.repo)
+        assert problems == [] and record is not None, problems
+        return record
+
+
+@pytest.fixture
+def labeled_world(tmp_path, monkeypatch, capfd) -> Labeled:
+    return Labeled(tmp_path, monkeypatch, capfd)
+
+
+class Points:
+    """``test_study3_label_cli.World``'s runs ``r1``–``r3``, their responses holding the sentinel,
+    labeled and covered in a batch at candidate 1's choice step; ``to(state)`` then puts the study
+    at another state: ``no_fixation`` (the validation under way, no validation fixation),
+    ``validating`` (the same, the fixation written), ``choice`` (the spread point open) or
+    ``n_written`` (the confirmation under way). Every refusal and output is kept
+    (``everything_shown``)."""
+
+    STATES = {
+        "no_fixation": {"stage": "validation", "step": {"kind": "campaign",
+                                                        "campaign": "validation"}},
+        "validating": {"stage": "validation", "step": {"kind": "campaign",
+                                                       "campaign": "validation"}},
+        "choice": {"stage": "choice", "step": {"kind": "decision", "record": "n-c1",
+                                               "fields": {"cohort": {"run_ids": ["r1", "r2",
+                                                                                 "r3"]}}}},
+        "n_written": {"stage": "confirmation", "step": {"kind": "campaign",
+                                                        "campaign": "confirmation"}},
+    }  # fmt: skip
+
+    def __init__(self, tmp_path: Path, monkeypatch, capfd) -> None:
+        import test_study3_spread as spread_test  # they import this module: here only
+        from test_study3_label_cli import World as LabelWorld
+
+        from zero_field_refusal.analysis import study3_labels
+
+        self.monkeypatch, self.capfd = monkeypatch, capfd
+        for readers in LabelReaders.ACTIVE:  # the route's replacement, lifted for this world
+            readers.lift(monkeypatch)
+        self.labels = LabelWorld(tmp_path, monkeypatch, capfd)
+        self.root, self.repo = self.labels.root, self.labels.repo
+        for name in ("r1", "r2", "r3"):
+            path = self.labels.run(name) / "responses" / "harmful_evaluation.jsonl"
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            path.write_text("".join(json.dumps({**row, "text": f"{row['text']} {SENTINEL}"})
+                                    + "\n" for row in rows))  # fmt: skip
+        assert self.labels.batch(["r1", "r2", "r3"]).outcome == "accepted"
+        self.cohort_run = self.labels.run("r1")
+        self.script = spread_test.spread_module()
+        monkeypatch.setattr(self.script, "REPO", self.repo)
+        self.shown: list[str] = [self.labels.out]
+        self.state = "choice"
+        monkeypatch.setattr(study3_labels, "_state", self.state_of)
+
+    def state_of(self, runs_root, repo_root) -> dict:
+        return {"candidate": 1, "problems": [], "prescribed": {}, **self.STATES[self.state]}
+
+    def to(self, state: str) -> None:
+        self.state = state
+        if state == "no_fixation":
+            self.monkeypatch.setattr(self.labels, "fixation", None)
+            (self.repo / sv.fixation_name("validation", 1)).unlink()
+
+    def _read(self, how: str, run: Path, point: str):
+        from zero_field_refusal.analysis import study3_labels
+
+        read = getattr(study3_labels, how)
+        try:
+            return read(run, point=point, candidate=1, runs_root=self.root, repo_root=self.repo)
+        except Exception as exc:
+            self.shown.append(str(exc))
+            raise
+
+    def harm(self, run: Path, *, point: str):
+        return self._read("run_harm", run, point)
+
+    def items(self, run: Path, *, point: str):
+        return self._read("run_items", run, point)
+
+    def refused(self, command: str, step: str | None = None) -> bool:
+        """Whether the labeling command (a batch of ``r1`` at ``step``) or the spread refuses."""
+        from zero_field_refusal.analysis.study3_label_cli import BatchRefused
+
+        try:
+            if command == "label":
+                self.labels.batch(["r1"], step=step)
+            else:
+                self.script.main(["--runs-root", str(self.root), "--candidate", "1"])
+        except (BatchRefused, SystemExit) as exc:
+            self.shown.append(str(exc))
+            return True
+        finally:
+            self.shown.append(self.labels.out + "".join(self.capfd.readouterr()))
+        return False
+
+    def everything_shown(self) -> str:
+        return "\n".join(self.shown)
+
+
+@pytest.fixture
+def points_world(tmp_path, monkeypatch, capfd) -> Points:
+    return Points(tmp_path, monkeypatch, capfd)
+
+
+def test_the_label_readers_import_no_gpu_module_and_load_no_script():
+    """Each label reader, read as code (``test_code_identity.gpu_uses``): the two modules (their
+    relative imports resolved) and the spread's script import no GPU module and no torch
+    directly, use no CUDA, and load no code by its name or path at run time."""
+    for path in LABEL_READERS:
+        package = None if path.parent.name == "scripts" else "zero_field_refusal.analysis"
+        assert gpu_uses(path, package) == set(), path.name
+
+
+def test_the_named_sealed_openers_are_functions_of_the_label_readers():
+    """Every name of ``SEALED_OPENERS`` is a function (or a method of the batch) of its module: no
+    name stands for nothing."""
+    from zero_field_refusal.analysis import study3_label_cli, study3_labels
+
+    modules = {"study3_labels": study3_labels, "study3_label_cli": study3_label_cli}
+    for name in SEALED_OPENERS | LEDGER_OPENERS:
+        stem, function = name.split(".")
+        module = modules[stem]
+        found = getattr(module, function, None) or getattr(study3_label_cli._Batch, function, None)
+        assert callable(found), name
+
+
+def test_sealed_paths_open_only_through_named_functions(labeled_world, monkeypatch):
+    guard = NamedOpens(monkeypatch, runs_root=labeled_world.root)
+    labeled_world.batch(["r1"])
+    labeled_world.harm("r1")
+    labeled_world.spread()
+    assert guard.attempts == [] and any("/judge/" in p for p in guard.opened)
+    assert any("/labeling/" in p for p in guard.allowed)
+    assert any("/responses/" in p for p in guard.allowed)
+    assert labeled_world.n_record()["N"] >= 60
+
+
+def test_a_relabel_and_its_completed_move_open_sealed_paths_only_through_named_functions(
+        labeled_world, monkeypatch):  # fmt: skip
+    """A control change, a crash between its ``superseded`` line and the move, and the resume
+    that completes the move and relabels: every sealed open inside a named opener."""
+    guard = NamedOpens(monkeypatch, runs_root=labeled_world.root)
+    labeled_world.labels.crash_before_rename()
+    with pytest.raises(SystemExit):
+        labeled_world.batch(["r1"], flips={(1, "control-3")})
+    assert labeled_world.batch(None).outcome == "accepted"
+    assert labeled_world.harm("r1").receipt_sha256
+    assert guard.attempts == [] and any("/judge-superseded/" in p for p in guard.opened)
+
+
+@pytest.mark.parametrize("state", ["no_fixation", "validating", "choice", "n_written"])
+def test_each_reader_refuses_before_its_point_opens(points_world, state, monkeypatch):
+    """At each state of the study, every label reader refuses a closed point: ``run_harm`` and
+    ``run_items`` at ``final`` (closed until the freeze gate is wired) and, outside candidate 1's
+    choice step, at ``spread``; the labeling command for the confirmation always, and for the
+    validation and the spread outside the choice step. While the spread point is closed, nothing
+    of a run's sealed folders is opened (its responses, judge outputs or superseded copies) and
+    the labeling ledger is opened only by its own openers (``LEDGER_OPENERS``: the labeling command
+    reads its ledger under its lock before it checks the point); no sentinel is shown."""
+    from zero_field_refusal.analysis.study3_labels import POINTS, SealedPoint, ledger_dir
+
+    points_world.to(state)
+    spread_open = state == "choice"
+    if spread_open:  # the spread's reads open the runs' labels, through the named openers alone
+        guard = NamedOpens(monkeypatch, runs_root=points_world.root)
+    else:
+        guard = NamedOpens(monkeypatch, runs_root=points_world.root, openers=LEDGER_OPENERS,
+                           under=ledger_dir(points_world.root))  # fmt: skip
+    reads = (points_world.harm, points_world.items)  # run_harm, run_items
+    for read, point in itertools.product(reads, POINTS):
+        if point == "final" or not spread_open:  # final: closed until the freeze gate
+            with pytest.raises(SealedPoint):
+                read(points_world.cohort_run, point=point)
+        else:
+            assert read(points_world.cohort_run, point=point)
+    assert points_world.refused("label", "confirmation")
+    if not spread_open:
+        assert points_world.refused("label", "validation") and points_world.refused("spread")
+        assert guard.attempts == [] and SENTINEL not in points_world.everything_shown()
+        under_runs = [p for p in guard.opened
+                      if Path(p).is_relative_to(Path(os.path.realpath(points_world.root))
+                                                / "study3" / "r1")]  # fmt: skip
+        assert under_runs == []
+    assert guard.attempts == []
+
+
+def test_the_route_ends_with_every_point_closed(route, monkeypatch):
+    """On the route's files and its real ``progress`` (the n record written, the confirmation
+    under way, no freeze), every point is closed: ``run_harm`` raises ``SealedPoint`` at both and
+    opens nothing sealed. Its entry points are the real ones for this test (the route replaced
+    them with raisers)."""
+    from zero_field_refusal.analysis import study3_labels
+
+    route.labels.lift(monkeypatch)
+    guard = SealedGuard(monkeypatch, runs_root=route.root)  # real progress: n written, no freeze
+    run = route.root / "study3" / route.validation_runs[0]
+    for point in study3_labels.POINTS:
+        with pytest.raises(study3_labels.SealedPoint):
+            study3_labels.run_harm(run, point=point, candidate=1, runs_root=route.root,
+                                   repo_root=route.repo)  # fmt: skip
+    assert guard.attempts == []

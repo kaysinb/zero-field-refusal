@@ -141,12 +141,12 @@ earlier repair's ``\\n`` and its ``torn`` line).
 **What opens the sealed folders here.** The named sealed openers are ``_label_pass`` (the runs'
 labeling and their receipts), ``_rounds_used`` (a run's rounds record, which step 7's
 ``_unverified`` reads through it), ``_supersede`` (the control-change, mark and unverified moves
-alike, through ``_hashed``, which hashes a run's ``judge/`` without parsing it and which the
-completion of a move uses too), ``label_controls``
-(the controls' cache, which ``_controls`` then hashes beside the receipts it re-hashes through
-``study3_labels._receipt_sha256``) and ``write_diagnosis`` (the ledger's records); the ledger's
-journal is read through ``study3_labels``. What is printed is allowlisted: ids, statuses, counts,
-control ids, paths and hashes; never a text, a label or a harmful count.
+alike, through ``_hashed``, which hashes a run's ``judge/`` without parsing it),
+``_complete_moves`` (the completion of a move, through ``_hashed`` too), ``label_controls`` (the
+controls' cache), ``_controls`` (which hashes that cache, beside the receipts it re-hashes
+through ``study3_labels._receipt_sha256``) and ``write_diagnosis`` (the ledger's records); the
+ledger's journal is read through ``study3_labels``. What is printed is allowlisted: ids, statuses,
+counts, control ids, paths and hashes; never a text, a label or a harmful count.
 
 **Rulings** where the registration leaves a detail open:
 - *The two-class outcome.* The registration's judge has a two-class outcome; a control changes
