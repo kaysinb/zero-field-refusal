@@ -845,6 +845,15 @@ def numerical(arm, rate, seed, candidate) -> dict:
     return target(arm, rate, seed, candidate)
 
 
+def rates_of(path: Path) -> set[tuple[str, float]]:
+    """The arm and the rate of each cell of a campaign file."""
+    out = set()
+    for cell in campaign_of(path)["cells"]:
+        pairs = dict(o.split("=", 1) for o in cell["overrides"])
+        out.add((ARM_OF[pairs["optimizer"]], float(pairs["optimizer.lr"])))
+    return out
+
+
 class Route(CampaignWorld):
     """The campaign writer's world (``test_study3_campaigns.World``) in a Git checkout, every
     campaign kind and every summary command run in process on its files, from the engineering
@@ -1035,6 +1044,9 @@ class Route(CampaignWorld):
         self.build_to("done")
 
     BUILD = ("fixation", "validation", "choice", "supplement", "confirming", "done")
+    # the K of the search's round 0 and of the numerical runs
+    ROUND0 = staticmethod(round0)
+    NUMERICAL = staticmethod(numerical)
 
     def build_to(self, stage: str) -> None:
         """``build``, step by step up to ``stage`` (``BUILD``): ``fixation``, through the
@@ -1061,17 +1073,18 @@ class Route(CampaignWorld):
         self.record("engineering", self.records.engineering(code=self.code))
         self.record("simulation", self.records.simulation(code=self.code))
         assert self.step()["campaign"] == "search-round0"
-        self.launch(self.campaign("search-round0"), round0)
+        self.launch(self.campaign("search-round0"), self.ROUND0)
         assert self.step()["campaign"] == "search-round1"
         self.launch(self.campaign("search-round1"))
         assert self.step()["campaign"] == "numerical"
-        self.numerical_runs = self.launch(self.campaign("numerical"), numerical)
+        self.numerical_runs = self.launch(self.campaign("numerical"), self.NUMERICAL)
         adjusted = adjusted_rate(START["F"]["u"], math.log(7.5) + 0.2, 7.5, 1.30)
         self.qualify({(arm, START[arm][label]) for arm in OPT for label in LABELS
                       if (arm, label) != ("F", "u")} | {("F", adjusted)})  # fmt: skip
         assert self.step()["campaign"] == "repair"
-        self.launch(self.campaign("repair"))
-        self.qualify({("A", adjusted_rate(START["A"]["l"], math.log(4.8) + 0.3, 4.8, 1.25))})
+        repair = self.campaign("repair")
+        self.launch(repair)
+        self.qualify(rates_of(repair))  # the repaired rates (A's lower one)
         assert self.step()["campaign"] == "validation"
         # the validation fixation and the first versions record, each committed alone
         self.ok("summary", "progress", "--runs-root", root, "--theta0", theta0)
