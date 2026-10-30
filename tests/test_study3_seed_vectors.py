@@ -4,8 +4,11 @@ observations and judge outputs with a sentinel text, a step-25 evaluation row wi
 refusal rate and K_harmful, and a meta.json and summary.json with the sentinel: none of it may be
 opened or reach the record."""
 
+import builtins
+import io
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -162,15 +165,47 @@ def vector(seed: int, **arms) -> sv.Vector:
 
 
 def opened_files(monkeypatch) -> list[Path]:
+    """Every file opened from now on, through ``Path.open``, ``open`` or ``io.open``, once per
+    opening (``Path.open`` itself calls ``io.open``)."""
     opened: list[Path] = []
-    real = Path.open
-    monkeypatch.setattr(
-        Path, "open", lambda self, *a, **k: (opened.append(self), real(self, *a, **k))[1]
-    )
+    real_path_open, real_open = Path.open, builtins.open
+    inside = [0]
+
+    def path_open(self, *a, **k):
+        opened.append(self)
+        inside[0] += 1
+        try:
+            return real_path_open(self, *a, **k)
+        finally:
+            inside[0] -= 1
+
+    def open_(file, *a, **k):
+        if not inside[0] and not isinstance(file, int):
+            opened.append(Path(os.fsdecode(file)))
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr(Path, "open", path_open)
+    monkeypatch.setattr(builtins, "open", open_)
+    monkeypatch.setattr(io, "open", open_)
     return opened
 
 
 # ------------------------------------------------------------------ what is opened and kept
+
+
+def test_the_opened_files_helper_sees_every_way_of_opening(tmp_path, monkeypatch) -> None:
+    files = [tmp_path / f"f{i}.txt" for i in range(4)]
+    for f in files:
+        f.write_text("x")
+    opened = opened_files(monkeypatch)
+    files[0].read_text()
+    with open(files[1]) as fh:
+        fh.read()
+    with io.open(files[2]) as fh:  # noqa: UP020 - io.open is what is checked
+        fh.read()
+    with files[3].open() as fh:
+        fh.read()
+    assert opened == files
 
 
 def test_the_builder_opens_only_the_record_files_and_keeps_k_and_utility(tmp_path, monkeypatch):

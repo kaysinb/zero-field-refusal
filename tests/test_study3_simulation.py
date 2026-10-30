@@ -461,6 +461,15 @@ def test_two_resolutions_agree_or_the_truth_refuses(tiny_vectors) -> None:
         sim.truth(sc, cal, tiny_vectors, slopes, START_RATES, max_nodes=8)
 
 
+def test_a_truth_that_does_not_converge_is_refused(tiny_vectors) -> None:
+    """A tolerance no node count up to the largest can meet: the doubling runs out of nodes
+    (16 against 32, then 32 against 64) and the truth refuses, at every call."""
+    sc = replace(sim.SCENARIOS_BY_NAME["C12"], jitter=True)
+    cal = calibration_for(sc)
+    with pytest.raises(sim.TruthNotConverged):
+        sim.truth(sc, cal, tiny_vectors, slopes, START_RATES, tol=1e-14, max_nodes=64)
+
+
 def boundary_case(where: str):
     """A jitter scenario and two vectors: one whose A and F endpoints sit within 0.01 in ln K
     of a support boundary (the bracket's low or high end, the 0.60 width, or a gross collapse),

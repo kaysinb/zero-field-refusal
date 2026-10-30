@@ -190,6 +190,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import numbers
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -373,6 +374,7 @@ def upper_sd(sd_pp: float, m: int) -> float:
     from scipy.stats import chi2
 
     _rule_inputs(sd_pp, m)
+    m = int(m)
     return float(sd_pp) * math.sqrt((m - 1) / chi2.ppf(SPREAD_PERCENTILE, m - 1))
 
 
@@ -381,8 +383,9 @@ def planning_power(n: int, sd_up_pp: float, level: float) -> float:
     direction at |Δ| = 2 pp under the two-sided interval at L; 1.0 for SD_up = 0."""
     from scipy.stats import norm
 
-    if not (type(n) is int and n >= 1):
+    if not (_integral(n) and n >= 1):
         raise ValueError(f"N must be a positive integer, not {n!r}")
+    n = int(n)
     _rule_inputs(sd_up_pp, 2)
     _rule_level(level)
     if sd_up_pp == 0:
@@ -403,6 +406,7 @@ def sample_size(sd_pp: float, m: int, level: float) -> int:
 
     _rule_inputs(sd_pp, m)
     _rule_level(level)
+    m = int(m)
     up = upper_sd(sd_pp, m)
     if up == 0:
         return MIN_N
@@ -415,9 +419,16 @@ def sample_size(sd_pp: float, m: int, level: float) -> int:
     return n
 
 
+def _integral(value: Any) -> bool:
+    """An integer of any integral type (``numpy.int64`` included), never a bool (numpy's bool
+    is no integral type)."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
 def _rule_inputs(sd_pp: Any, m: Any) -> None:
-    """The N rule's SD (non-negative, finite, a real number) and m (an integer, at least 2)."""
-    if not (type(m) is int and m >= 2):
+    """The N rule's SD (non-negative, finite, a real number) and m (an integer of any integral
+    type, at least 2)."""
+    if not (_integral(m) and m >= 2):
         raise ValueError(f"m must be an integer of at least 2 blocks, not {m!r}")
     if not (isinstance(sd_pp, int | float) and not isinstance(sd_pp, bool)
             and math.isfinite(sd_pp) and sd_pp >= 0):  # fmt: skip

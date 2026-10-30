@@ -43,8 +43,7 @@ counted: ``instability`` (an instability stop, ``study3_records.INSTABILITY``), 
 step-25 row, a missing or non-finite value) and ``nonpositive_k``. Two runs of one (seed, arm,
 rate): the earliest run id (its time stamp) is kept; the others are counted, with the largest
 relative K difference |K − K_kept|/K_kept. The losses are in pp against θ₀ (``read_theta0``;
-study 2's θ₀ evaluation ``20261014T192927Z-theta0-s2000-abb703a1-a1``): 100·(θ₀'s accuracy − the
-run's).
+study 2's θ₀ evaluation, ``study3_progress.THETA0_RUN``): 100·(θ₀'s accuracy − the run's).
 
 **The map to study 3's rates** (M9). ln K of vector v and arm a is piecewise linear in ln η
 through v's points, extended beyond them with the registered slope b_a
@@ -91,7 +90,6 @@ STUDY2_ROOTS = ("study2_short", "study2_stage_a")
 RUN_FILES = ("config.yaml", "terminal.json", "evaluations.jsonl")
 ENDPOINT_KEYS = ("K_benign", "benchmark_accuracy", "factual_accuracy")
 KIND = "study3-simulation-inputs"
-THETA0_RUN = "20261014T192927Z-theta0-s2000-abb703a1-a1"  # study 2's θ₀ evaluation
 UPDATES, BATCH = 25, 20
 JUDGE = "judge"  # a run's judge outputs: never opened, as responses and observations
 EXCLUSIONS = ("instability", "incomplete", "nonpositive_k")
@@ -286,7 +284,7 @@ def _sealed(path: Path, base: Path) -> bool:
 def _refuse_sealed(run: Path, root: Path) -> None:
     """``ValueError`` when the run's folder or one of its record files resolves under a sealed
     folder (or cannot be resolved), before anything of the run is opened."""
-    if _sealed(run, root) or _sealed(run, run.parent):
+    if _sealed(run, root):
         why = sealed_why(run, root, "resolves under a sealed folder")
         raise ValueError(f"{run}: the run folder {why}: never opened")
     for name in RUN_FILES:

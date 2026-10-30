@@ -348,6 +348,21 @@ def test_the_n_rule_refuses_what_it_does_not_define(sd, m, level) -> None:
         sample_size(sd, m, level)
 
 
+def test_the_n_rule_takes_any_integral_type() -> None:
+    """m and N may be numpy integers (a count from an array), cast to int; a bool is no count."""
+    import numpy as np
+
+    assert sample_size(5.0, np.int64(28), 0.975) == sample_size(5.0, 28, 0.975) == 88
+    assert type(sample_size(5.0, np.int64(28), 0.975)) is int
+    assert upper_sd(5.0, np.int32(28)) == upper_sd(5.0, 28)
+    assert planning_power(np.int64(88), 5.0, 0.975) == planning_power(88, 5.0, 0.975)
+    for bad in (True, np.float64(28.0), 28.0):
+        with pytest.raises(ValueError):
+            sample_size(5.0, bad, 0.975)
+    with pytest.raises(ValueError):
+        planning_power(True, 5.0, 0.975)
+
+
 def test_the_n_rule_steps_to_the_smallest_passing_n() -> None:
     """N does not depend on how the closed form rounds: every N the rule gives passes, and the
     one before it (above the floor) does not, across levels, block counts and spreads."""
