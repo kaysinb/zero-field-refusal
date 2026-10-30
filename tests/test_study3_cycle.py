@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from omegaconf import OmegaConf
 from test_qualification import CODE
 from test_qualification_records import (
     ADAMW,
@@ -26,11 +27,20 @@ from test_qualification_records import (
 from test_qualification_records import World as QualificationWorld
 from test_qualification_records import qualify as qualify  # noqa: F401  (the fixture)
 from test_qualify import ADAMW_LR, FIX
-from test_study3_progress import ep
+from test_study3_progress import OPT, Study, ep, run_of
 
 from zero_field_refusal import code_identity
 from zero_field_refusal.analysis import qualification_records as qr
 from zero_field_refusal.analysis import study3_cycle as cycle
+from zero_field_refusal.analysis.study3_decisions import (
+    bridge_name,
+    cycle_path,
+    end_lines,
+    serialized,
+    start_lines,
+)
+from zero_field_refusal.analysis.study3_records import COUNTING, GROSS_COLLAPSE
+from zero_field_refusal.config import config_hash
 
 
 def sha(data) -> str:
@@ -287,3 +297,250 @@ def test_old_code_engineering_records_are_not_voided(qualify, monkeypatch, tmp_p
     engineering = {run_id for run_id, label in launched(world) if "/s10000" in label}
     assert engineering and not engineering & {e["run_id"] for e in entries.launchers}
     assert entries.unsettled == []
+
+
+# ------------------------------------------------------------------ deriving and publishing
+
+OLD, FIXED = "b" * 64, "f" * 64  # the GPU code in force before the cycle, and the fix's
+WRITTEN = "2026-10-28T12:00:00+00:00"
+LOGS = {"search": "study3-c1-search-round0", "numerical": "study3-c1-numerical",
+        "validation": "study3-c1-validation"}  # fmt: skip
+
+
+def reuse(justification: str = "the fix changes nothing these runs ran") -> cycle.Claim:
+    return cycle.Claim("reuse", (), justification)
+
+
+def rerun(arms=("A", "F", "P"), justification: str = "the fix changes what these runs ran"):
+    return cycle.Claim("rerun", tuple(arms), justification)
+
+
+ALL_RERUN = {"search": rerun(), "qualification": rerun(), "validation": rerun()}
+
+
+def materialized_validation_mark(tmp_path, *, arm="A", failed=None):
+    """Candidate 1 through its validation (``Study.through_validation``), its validation run of
+    ``arm`` at its lower rate on 10305 a technical mark (ended technical, no terminal record);
+    ``failed``: (arm, seed) of a validation run at the upper rate that collapsed (more than 15
+    pp of MMLU lost). Each endpoint's files written under ``tmp_path/runs/study3/<run_id>`` (its
+    config.yaml, meta.json and terminal.json), its start and end logged per step, each numerical
+    run classified by its case's baseline record (old code), and the endpoints pointed there."""
+    root = tmp_path / "runs"
+    study = Study()
+    study.through_validation()
+    if failed is not None:
+        study.change(run_of(study, "validation", failed[0], "u", failed[1]), state="unusable",
+                     unusable_reason=GROSS_COLLAPSE, mmlu_loss_pp=20.0)  # fmt: skip
+    mark = run_of(study, "validation", arm, "l", 10305)
+    study.change(mark, state="technical", K=None, K_harmful=None, steps=None, mmlu_loss_pp=None,
+                 factual_loss_pp=None)  # fmt: skip
+    clock = iter(range(10_000))
+    for e in sorted(study.endpoints, key=lambda e: e.run_id):
+        run_dir = root / "study3" / e.run_id
+        run_dir.mkdir(parents=True)
+        cfg = OmegaConf.create({"optimizer": {"name": OPT[e.arm], "lr": e.lr}, "seed": e.seed,
+                                "study3": {"role": e.role}})  # fmt: skip
+        chash = config_hash(cfg)
+        (run_dir / "config.yaml").write_text(OmegaConf.to_yaml(cfg))
+        (run_dir / "meta.json").write_text(json.dumps({"config_hash": chash, "status": (
+            "failed" if e.run_id == mark else "completed")}))  # fmt: skip
+        if e.run_id != mark:
+            (run_dir / "terminal.json").write_text(json.dumps({"steps": 25}))
+        head = {"study": 3, "candidate": 1, "step": e.cell.step, "round": e.cell.round}
+        log = root / "launch" / f"{LOGS[e.cell.step]}.jsonl"
+        when = f"2026-10-26T{next(clock) // 3600:02d}:{next(clock) % 60:02d}:00+00:00"
+        common = {"time": when, "run": e.label, "attempt": 1, "run_id": e.run_id}
+        write_lines(log, [*([json.loads(x) for x in log.read_text().splitlines()]
+                            if log.exists() else []),
+                          {**common, "event": "start", "experiment": "study3",
+                           "config_hash": chash, "header": head},
+                          {**common, "event": "end",
+                           "outcome": "technical" if e.run_id == mark else "done"}])  # fmt: skip
+        if e.cell.step == "numerical":
+            case = root / "qualification" / "c1" / "numerical" / f"s{e.seed}" / (
+                f"{OPT[e.arm]}-{e.lr:g}")  # fmt: skip
+            case.mkdir(parents=True)
+            (case / "baseline-attempt-1.json").write_text(json.dumps({
+                "case": {"candidate": 1, "optimizer": OPT[e.arm], "lr": e.lr, "seed": e.seed},
+                "launcher": {"identity": {"run_id": e.run_id}, "classified": True},
+                "provenance": {"gpu_code": {"sha256": OLD}}}))  # fmt: skip
+        study.change(e.run_id, run_dir=run_dir)
+    study.starts, study.ends = start_lines(root), end_lines(root)
+    return study, root
+
+
+def derive(study, root, *, claims, stage="validation", marks=None, closed_arms=(), **kw):
+    """The cycle derived from the study's records as they are, its marks the stage's technical
+    runs unless ``marks`` names them."""
+    if marks is None:
+        marks = [e.run_id for e in study.endpoints
+                 if e.cell.step == stage and e.state == "technical"]  # fmt: skip
+    fields = {"records": study.records(), "marks": marks, "stage": stage,
+              "closed_arms": closed_arms, "old_code": OLD, "fixation": None, "claims": claims,
+              "diagnosis": "a stale kernel cache", "fix": "the cache is cleared at start",
+              "code": {"commit": "c" * 40, "gpu_code_sha256": FIXED},
+              "fix_identity": {"commit": "c" * 40, "files": 1, "sha256": FIXED},
+              "settings": REGISTERED, "repo": root.parent, "written_at": WRITTEN,
+              "host": "the researcher's machine"}  # fmt: skip
+    return cycle.derive_cycle(root, 1, **{**fields, **kw})
+
+
+def sha_of(record) -> str:
+    return hashlib.sha256(serialized(record)).hexdigest()
+
+
+def old_code_validation_runs(study) -> set[str]:
+    return {e.run_id for e in study.endpoints
+            if e.cell.step == "validation" and e.state in COUNTING}  # fmt: skip
+
+
+def scientific_runs(study) -> set[str]:
+    return {e.run_id for e in study.endpoints if e.state == "scientific"
+            or (e.state == "unusable" and e.unusable_reason == GROSS_COLLAPSE)}  # fmt: skip
+
+
+def test_the_cycle_record_lists_every_affected_record_by_path_and_sha256(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)  # through validation, files per endpoint
+    record, bridge = derive(study, root, claims={"search": reuse(), "qualification": reuse(),
+                                                 "validation": rerun()})  # fmt: skip
+    affected = {r["run_id"] for r in record["affected"]["runs"]}
+    assert affected == old_code_validation_runs(study) - scientific_runs(study)
+    for run in record["affected"]["runs"]:
+        assert all(ref["sha256"] == sha(root / ref["path"]) for ref in run["records"]
+                   if "sha256" in ref)  # fmt: skip
+    assert {x["run_id"] for x in bridge["launchers"]} == affected
+    assert bridge["old_record"] == {"path": str(cycle_path(root, 1).resolve()),
+                                    "sha256": sha_of(record), "kind": "cycle-c1"}  # fmt: skip
+    (mark,) = record["marks"]
+    assert mark["line"]["kind"] == "end" and mark["arm"] == "A"
+    (run,) = [r for r in record["affected"]["runs"] if r["run_id"] == mark["run_id"]]
+    assert {"path": f"study3/{mark['run_id']}/terminal.json", "absent": True} in run["records"]
+    assert record["kept"] == [{"why": "reused_stage", "stage": "search", "runs": 24}]
+    assert record["affected"]["qualification"] == {"records": [], "launchers": []}
+    assert record["journal"] == cycle.journal_seen(root)
+    assert bridge["attempts"] == bridge["held"] == bridge["kept_cases"] == []
+    assert (bridge["old_gpu_code"], bridge["fix_gpu_code"]["sha256"]) == ({"sha256": OLD}, FIXED)
+
+
+def test_the_marks_stage_reruns_every_marked_arm(tmp_path):
+    study, root = materialized_validation_mark(tmp_path, arm="F")
+    for claims in ({"validation": reuse()}, {"validation": rerun(arms=("A", "P"))}):
+        with pytest.raises(cycle.CycleRefused, match="marked"):
+            derive(study, root, claims={"search": reuse(), "qualification": reuse(), **claims})
+
+
+def test_a_cycle_claims_exactly_the_stages_started(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)
+    with pytest.raises(cycle.CycleRefused, match="search.*no claim"):
+        derive(study, root, claims={"qualification": reuse(), "validation": rerun()})
+    with pytest.raises(cycle.CycleRefused, match="confirmation.*not started"):
+        derive(study, root, claims={**ALL_RERUN, "confirmation": reuse()})
+    with pytest.raises(cycle.CycleRefused, match="fix"):
+        derive(study, root, claims=ALL_RERUN, code={"commit": "c" * 40, "gpu_code_sha256": OLD})
+
+
+def test_scientific_failures_and_their_evidence_keep_counting(tmp_path):
+    study, root = materialized_validation_mark(tmp_path, failed=("A", 10301))  # A collapsed
+    record, bridge = derive(study, root, claims=ALL_RERUN)
+    (kept,) = [k for k in record["kept"] if k["why"] == "scientific_failure"]
+    assert kept["run_id"] == run_of(study, "validation", "A", "u", 10301)
+    assert kept["run_id"] not in {r["run_id"] for r in record["affected"]["runs"]}
+    assert kept["evidence"]["sha256"] == sha(root / kept["evidence"]["path"])
+    assert kept["run_id"] not in {x["run_id"] for x in bridge["launchers"]}
+    numerical = {e.run_id for e in study.endpoints if e.cell.step == "numerical"}
+    assert {x["run_id"] for x in record["affected"]["qualification"]["launchers"]} == numerical
+    assert len(record["affected"]["qualification"]["records"]) == len(numerical)
+    assert {x["run_id"] for x in bridge["launchers"]} == numerical | {
+        r["run_id"] for r in record["affected"]["runs"]}  # fmt: skip
+    assert {a["sha256"] for a in bridge["attempts"]} == {
+        r["sha256"] for r in record["affected"]["qualification"]["records"]}  # fmt: skip
+
+
+def test_held_closed_and_reused_runs_are_kept_and_runs_of_the_fix_are_not_listed(
+    tmp_path, monkeypatch
+):
+    study, root = materialized_validation_mark(tmp_path)
+    p_run = run_of(study, "validation", "P", "l", 10300)
+    held = run_of(study, "validation", "F", "u", 10302)
+    study.change(held, state="held")
+    monkeypatch.setattr(code_identity, "gpu_code_identity",
+                        lambda c, *a, **k: {"sha256": {"d" * 40: FIXED}.get(c, OLD)})  # fmt: skip
+    fixed = run_of(study, "validation", "A", "u", 10303)
+    study.change(fixed, git=("d" * 40, False))
+    record, _ = derive(study, root, closed_arms=("P",),
+                       claims={"search": rerun(arms=("A",)), "qualification": reuse(),
+                               "validation": rerun()})  # fmt: skip
+    affected = {r["run_id"]: r for r in record["affected"]["runs"]}
+    why = {k.get("run_id"): k["why"] for k in record["kept"]}
+    assert why[p_run] == "closed_arm" and why[held] == "held"
+    assert fixed not in affected and fixed not in why
+    assert {e.run_id for e in study.endpoints if e.cell.step == "search" and e.arm == "A"} <= set(
+        affected)  # fmt: skip
+    assert {"why": "reused_stage", "stage": "search", "runs": 8} in record["kept"]  # F's (P closed)
+    keys = [(k.get("run_id", ""), (k.get("evidence") or {}).get("path", ""), k.get("stage", ""))
+            for k in record["kept"]]  # fmt: skip
+    assert keys == sorted(keys) and list(affected) == sorted(affected)
+
+
+def test_a_mark_under_a_known_other_gpu_code_is_no_cycle_case(tmp_path, monkeypatch):
+    study, root = materialized_validation_mark(tmp_path)
+    monkeypatch.setattr(code_identity, "gpu_code_identity",
+                        lambda c, *a, **k: {"sha256": "e" * 64})  # fmt: skip
+    (mark,) = [e.run_id for e in study.endpoints if e.state == "technical"]
+    study.change(mark, git=("d" * 40, False))
+    with pytest.raises(cycle.CycleRefused, match="other_gpu_code"):
+        derive(study, root, claims=ALL_RERUN)
+    study.change(mark, git=("d" * 40, True))  # a dirty checkout: its code cannot be told
+    record, _ = derive(study, root, claims={**ALL_RERUN, "qualification": reuse()})
+    assert {r["run_id"]: r["gpu_code"] for r in record["affected"]["runs"]}[mark] is None
+
+
+def test_r9_refuses_a_qualification_run_the_readers_cannot_settle(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)
+    numerical = sorted(e.run_id for e in study.endpoints if e.cell.step == "numerical")
+    folder = root / "qualification" / "c1" / "numerical"
+    (found,) = [p for p in folder.rglob("baseline-attempt-1.json") if numerical[0] in p.read_text()]
+    found.unlink()  # no part record classifies its run now
+    with pytest.raises(cycle.CycleRefused, match=numerical[0]):
+        derive(study, root, claims=ALL_RERUN)
+    derive(study, root, claims={**ALL_RERUN, "qualification": reuse()})
+
+
+def test_a_run_started_after_the_journal_prefix_is_never_listed(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)
+    journal = cycle.journal_seen(root)
+    late = ep("F", 1.83e-5, 10327, step="validation", run_id="late-run")
+    study.add(late)
+    log = root / "launch" / f"{LOGS['validation']}.jsonl"
+    append_line(log, {**start("late-run", "2020-01-01T00:00:00+00:00", late.label),
+                      "header": {"study": 3, "candidate": 1, "step": "validation",
+                                 "round": None}})  # fmt: skip
+    seen = cycle.seen_starts(root, journal)
+    affected, kept = cycle.affected_and_kept(study.records(), 1, ALL_RERUN, run_codes={},
+                                             fix_code=FIXED, seen=seen, closed_arms=(),
+                                             cited=())  # fmt: skip
+    assert "late-run" not in {r["run_id"] for r in affected}
+    assert "late-run" not in {k.get("run_id") for k in kept}
+    assert len(affected) == len(old_code_validation_runs(study)) - 1 + 24  # search too
+    with pytest.raises(cycle.CycleRefused, match="late-run"):  # in the journal now, not read
+        derive(study, root, claims=ALL_RERUN, records=replace(
+            study.records(), endpoints=tuple(e for e in study.endpoints
+                                             if e.run_id != "late-run")))  # fmt: skip
+
+
+def test_the_cycle_is_published_once_and_a_run_again_writes_only_the_missing_file(tmp_path):
+    study, root = materialized_validation_mark(tmp_path)
+    claims = {"search": reuse(), "qualification": reuse(), "validation": rerun()}
+    record, bridge = derive(study, root, claims=claims)
+    path, bridge_path = cycle.publish_cycle(root, 1, record, bridge)
+    assert (path, bridge_path) == (cycle_path(root, 1), root / bridge_name(1))
+    assert sha(path) == sha_of(record) == bridge["old_record"]["sha256"]
+    assert json.loads(bridge_path.read_text()) == bridge
+    bridge_path.unlink()
+    assert cycle.publish_cycle(root, 1, record, bridge) == (path, bridge_path)
+    assert json.loads(bridge_path.read_text()) == bridge
+    with pytest.raises(cycle.CycleRefused, match="published"):
+        cycle.publish_cycle(root, 1, {**record, "diagnosis": "another"}, bridge)
+    with pytest.raises(cycle.CycleRefused, match="published"):
+        cycle.publish_cycle(root, 1, record, {**bridge, "host": "another"})
+    assert sha(path) == sha_of(record)
