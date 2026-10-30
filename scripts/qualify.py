@@ -460,7 +460,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import Any, NoReturn
+from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -967,15 +967,6 @@ def journal_run_ids(run: Run, root: Path) -> list[str]:
     return list(dict.fromkeys(r["run_id"] for r in label_starts(run, launch_records(root))))
 
 
-def label_run_ids(run: Run, root: Path) -> list[str]:
-    """The run ids of every logged attempt of the run's label (its experiment and
-    ``<cell>/s<seed>``), whatever their config hash, in attempt order (``launch.attempt_key``),
-    across all journals: how an engineering cycle finds a case's launcher runs, so that a fix
-    that changes a hashed config key does not hide an attempt issued before it."""
-    starts = label_starts(run, launch_records(root), every_config_hash=True)
-    return list(dict.fromkeys(r["run_id"] for r in starts))
-
-
 def label_superseded(run: Run, root: Path) -> set[str]:
     """The run ids of the run's label (its experiment and ``<cell>/s<seed>``) that the launch
     journal names superseded, whatever their config hash, as ``launch.supersede`` judges a line
@@ -1071,12 +1062,13 @@ def control_binding(
     if run_dir is not None:
         conflict = checkpoint_conflict(run_dir)  # as ``restart-case`` reads it
         if conflict is not None:
+            path, present = conflict  # the sha256 it found: the file is not hashed again
             summary = _read(run_dir / "summary.json") or {}
             recorded = (summary.get("endpoint_checkpoint") or {}).get("sha256")
-            problems.append(f"the launcher run {run_dir.name}'s endpoint checkpoint {conflict} is "
-                            f"on disk with sha256 {checkpoint_sha256(conflict)}, not its recorded "
-                            f"{recorded}: a provenance conflict; the file is kept, and the case "
-                            "goes to diagnosis")  # fmt: skip
+            problems.append(f"the launcher run {run_dir.name}'s endpoint checkpoint {path} is "
+                            f"on disk with sha256 {present}, not its recorded {recorded}: a "
+                            "provenance conflict; the file is kept, and the case goes to "
+                            "diagnosis")  # fmt: skip
         ends = [r.get("outcome") for r in journal
                 if r.get("event") == "end" and r.get("run_id") == run_dir.name]  # fmt: skip
         if not ends or any(outcome != "done" for outcome in ends):
@@ -1087,64 +1079,91 @@ def control_binding(
     return run_dir, problems
 
 
-def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope) -> Path:
-    """The launcher run of a case whose only outstanding part is its same-path control (module
-    docstring, "A case whose control alone is outstanding": decided by its baseline, or with its
-    baseline and rest recorded), not technical: the driver then runs that control on it, and
-    neither the launcher nor any other part. In this order: first, for every case, exits 9
-    (``TECHNICAL_CASE``) for one its recorded parts already mark technical, complete or not
-    (``established_technical``, whatever its bindings): the driver exports its evidence (``finish
-    --kept``) before any launcher call, and nothing of it runs; then exits 3 (``NO``), the
-    driver's usual path, for a case not in that state, then for a case decided by its launcher
-    run's own declared instability stop; exits 1, naming why, for a case whose recorded parts
-    cannot be bound to the launcher run (``control_binding``: a baseline not classified or of
-    another kind included)."""
+@dataclass(frozen=True)
+class ControlOnly:
+    """``control-only``'s answer (``control_only_answer``): its exit (``TECHNICAL_CASE``, ``NO``,
+    1 or 0), why (the line the command prints; for 1 its whole refusal; for 0 the launcher run's
+    directory it prints) and, for 0, that directory."""
+
+    code: int
+    why: str
+    run_dir: Path | None = None
+
+
+def control_only_answer(
+    p: Planned, out: Path, root: Path, scope: q.QualificationScope
+) -> ControlOnly:
+    """``control-only``'s answer, which prints nothing and exits nothing (``control_only`` is the
+    command; ``restart-case`` asks it too): the launcher run of a case whose only outstanding part
+    is its same-path control (module docstring, "A case whose control alone is outstanding":
+    decided by its baseline, or with its baseline and rest recorded), not technical, for the
+    driver to run that control on it, and neither the launcher nor any other part (0). In this
+    order: first, for every case, 9 (``TECHNICAL_CASE``) for one its recorded parts already mark
+    technical, complete or not (``established_technical``, whatever its bindings): the driver
+    exports its evidence (``finish --kept``) before any launcher call, and nothing of it runs;
+    then 3 (``NO``), the driver's usual path, for a case not in that state, then for a case
+    decided by its launcher run's own declared instability stop; 1, naming why, for a case whose
+    recorded parts cannot be bound to the launcher run (``control_binding``: a baseline not
+    classified or of another kind included)."""
     name = p.case.name
 
-    def no(why: str) -> NoReturn:
-        print(f"{name}: {why}: the usual path", file=sys.stderr)
-        sys.exit(NO)
+    def no(why: str) -> ControlOnly:
+        return ControlOnly(NO, f"{name}: {why}: the usual path")
 
     # First: a case its recorded parts already mark technical, complete or not, every case (AdamW's
     # too): its evidence is exported before any launcher call, and nothing of it runs
     technical = established_technical(out, p, scope)
     if technical:
-        print(f"{name}: a technical case ({'; '.join(technical)}): export its evidence (finish "
-              "--kept) before any launcher call; nothing of it runs", file=sys.stderr)  # fmt: skip
-        sys.exit(TECHNICAL_CASE)
+        return ControlOnly(TECHNICAL_CASE, f"{name}: a technical case ({'; '.join(technical)}): "
+                           "export its evidence (finish --kept) before any launcher call; nothing "
+                           "of it runs")  # fmt: skip
     if not p.control:
-        no("it holds no same-path control")
+        return no("it holds no same-path control")
     resolution = resolution_of(out, p.case)
     if resolution is not None:
-        no(f"the engineering cycle kept the case on its launcher run {resolution['run_id']} "
-           f"({resolution['outcome']})")  # fmt: skip
+        return no(f"the engineering cycle kept the case on its launcher run "
+                  f"{resolution['run_id']} ({resolution['outcome']})")  # fmt: skip
     complete, _, why = case_state(out, p, scope)
     if complete:
-        no(f"{why}: complete, nothing is outstanding")
+        return no(f"{why}: complete, nothing is outstanding")
     control = part_state(out, p.case, "control")
     if control.state not in ("due", "interrupted"):
-        no(f"its control's attempt {control.attempt} is {control.state}, neither due nor "
-           "interrupted")  # fmt: skip
+        return no(f"its control's attempt {control.attempt} is {control.state}, neither due nor "
+                  "interrupted")  # fmt: skip
     # The other parts, as ``complete`` reads them: the baseline and, unless it decided, the rest
     others = dataclasses.replace(p, control=False)
     recorded, decided, why = case_state(out, others, scope)
     if not recorded:
-        no(f"{why}: {'' if decided else 'not decided, and '}a part besides its control is "
-           "outstanding")  # fmt: skip
+        return no(f"{why}: {'' if decided else 'not decided, and '}a part besides its control is "
+                  "outstanding")  # fmt: skip
     baseline = part_state(out, p.case, "baseline").record or {}
     launcher = baseline.get("launcher") or {}
     if launcher.get("classified") is True and launcher.get("kind") == q.SCIENTIFIC:
-        no("decided by its launcher run's own declared instability stop, a run the launcher "
-           "accepts without its checkpoint")  # fmt: skip
+        return no("decided by its launcher run's own declared instability stop, a run the "
+                  "launcher accepts without its checkpoint")  # fmt: skip
     records = {"baseline": baseline}
     if not decided:
         records["rest"] = part_state(out, p.case, "rest").record or {}
     run_dir, problems = control_binding(p, records, root)
     if problems or run_dir is None:
-        sys.exit(f"{name}: its same-path control alone is outstanding, but its recorded parts "
-                 f"cannot be bound to its launcher run without the launcher: "
-                 f"{'; '.join(problems)}. The driver stops; nothing is rerun")  # fmt: skip
-    return run_dir
+        return ControlOnly(1, f"{name}: its same-path control alone is outstanding, but its "
+                           "recorded parts cannot be bound to its launcher run without the "
+                           f"launcher: {'; '.join(problems)}. The driver stops; nothing is "
+                           "rerun")  # fmt: skip
+    return ControlOnly(0, str(run_dir), run_dir)
+
+
+def control_only(p: Planned, out: Path, root: Path, scope: q.QualificationScope) -> Path:
+    """The command ``control-only`` (``control_only_answer``): for 0 the launcher run's directory,
+    which ``main`` prints alone on stdout; otherwise its line on stderr and its exit (9, 3), or
+    for 1 its refusal as the exit's message."""
+    answer = control_only_answer(p, out, root, scope)
+    if answer.code == 0 and answer.run_dir is not None:
+        return answer.run_dir
+    if answer.code == 1:
+        sys.exit(answer.why)
+    print(answer.why, file=sys.stderr)
+    sys.exit(answer.code)
 
 
 # ---------------------------------------------------- a technical case's kept checkpoints
@@ -2093,10 +2112,10 @@ def checkpoint_missing(run_dir: Path | None, folder: Path | None = None) -> bool
     return folder is None or str(record.get("path")) not in released(folder)
 
 
-def checkpoint_conflict(run_dir: Path | None) -> Path | None:
+def checkpoint_conflict(run_dir: Path | None) -> tuple[Path, str] | None:
     """The launcher run's recorded endpoint checkpoint when it is on disk with another sha256
-    than its recorded one, or None: a provenance conflict, never a loss (module docstring, "A
-    case restart")."""
+    than its recorded one, with the sha256 it has there (hashed once, here), or None: a
+    provenance conflict, never a loss (module docstring, "A case restart")."""
     if run_dir is None:
         return None
     record = (_read(run_dir / "summary.json") or {}).get("endpoint_checkpoint")
@@ -2105,7 +2124,8 @@ def checkpoint_conflict(run_dir: Path | None) -> Path | None:
     path = Path(record["path"])
     if not path.is_file():
         return None
-    return path if checkpoint_sha256(path) != record.get("sha256") else None
+    present = checkpoint_sha256(path)
+    return (path, present) if present != record.get("sha256") else None
 
 
 def own_conflict_end(run: Run, root: Path, run_dir: Path | None) -> dict | None:
@@ -2187,23 +2207,21 @@ def restart_case(
         sys.exit(f"{case.name}: no restart: a completed failure keeps counting: {failures}. A "
                  "scientific one is never rerun (no reruns to pass); a technical one is lifted "
                  "only by an engineering cycle's supersession record (supersede)")  # fmt: skip
-    try:
-        control_only(planned, out, root, scope)
-    except SystemExit as stop:  # its usual path (3) alone lets the restart go on
-        if stop.code == TECHNICAL_CASE:  # its recorded parts mark it technical
-            sys.exit(f"{case.name}: no restart: control-only answers {TECHNICAL_CASE}, a "
-                     "technical case by its recorded parts: its evidence is exported by the "
-                     "driver, or by finish --kept, and a technical failure goes to the "
-                     "engineering cycle, never a restart")  # fmt: skip
-        if stop.code != NO:  # a binding refusal (1), or any other answer: never swallowed
-            said = stop.code if isinstance(stop.code, str) else f"exit {stop.code}"
-            sys.exit(f"{case.name}: no restart: control-only refuses the case ({said}). A part "
-                     "that cannot be bound to the case's launcher run is a provenance problem, "
-                     "for diagnosis, never a restart")  # fmt: skip
-    else:
+    answer = control_only_answer(planned, out, root, scope)  # asked, never printed
+    if answer.code == TECHNICAL_CASE:  # its recorded parts mark it technical
+        sys.exit(f"{case.name}: no restart: control-only answers {TECHNICAL_CASE}, a "
+                 "technical case by its recorded parts: its evidence is exported by the "
+                 "driver, or by finish --kept, and a technical failure goes to the "
+                 "engineering cycle, never a restart")  # fmt: skip
+    if answer.code == 0:
         sys.exit(f"{case.name}: no restart: only its same-path control is outstanding, and "
                  "control-only runs it alone through the driver; a restart would void the "
                  "passing parts and rerun them. Do not restart")  # fmt: skip
+    if answer.code != NO:  # its usual path (3) alone lets the restart go on; 1 is carried
+        said = answer.why if answer.code == 1 else f"exit {answer.code}"
+        sys.exit(f"{case.name}: no restart: control-only refuses the case ({said}). A part "
+                 "that cannot be bound to the case's launcher run is a provenance problem, "
+                 "for diagnosis, never a restart")  # fmt: skip
     if run_dir is not None:
         kind, why = q.launcher_problems(run_dir, case, checkpoint=False, environment=False)
         if kind is not None:
@@ -2235,7 +2253,7 @@ def restart_case(
     conflict = checkpoint_conflict(run_dir)
     if conflict is not None:  # whatever an interrupted attempt would allow
         sys.exit(f"{case.name}: no restart: the launcher run {run_dir.name}'s endpoint checkpoint "
-                 f"{conflict} is on disk with another sha256 than its recorded one: a "
+                 f"{conflict[0]} is on disk with another sha256 than its recorded one: a "
                  "provenance conflict, not a loss; it goes to the technical route (diagnosis, "
                  "the engineering cycle)")  # fmt: skip
     require_clean()
@@ -2621,10 +2639,11 @@ def supersede_case(
     the candidate in the launch journal that is not of the fix's GPU code (another or an unknown
     code included: the runs its records name and those of the campaign's cases, a case without any
     part attempt included, found by the case's label whatever their config hash:
-    ``label_run_ids``), which it then logs superseded; a case whose run is superseded is
-    re-qualified. A case that holds a scientific failure, as its bound, valid part records read with
-    the verdicts show it (``scientific_attempts``; a launcher run's declared stop counts only when
-    such a record classified it scientific), is kept whole: none of its records, nor its launcher
+    ``launch.label_starts`` with ``every_config_hash``, the launch journal read once), which it
+    then logs superseded; a case whose run is superseded is re-qualified. A case that holds a
+    scientific failure, as its bound, valid part records read with the verdicts show it
+    (``scientific_attempts``; a launcher run's declared stop counts only when such a record
+    classified it scientific), is kept whole: none of its records, nor its launcher
     run, is voided, and it is listed as kept, with why. A launcher run no part record classified
     (``launcher.classified``: a record that names it without it raised before its check) is
     resolved against what it was issued first (``resolve_launcher_run``, ``configs_at``: the
@@ -2676,6 +2695,13 @@ def supersede_case(
         sys.exit(f"{case.name}: the fix's GPU code is the superseded record's "
                  f"({old.get('sha256')}): the same path is not simply rerun")  # fmt: skip
     by_name = {(p.case.name, ROLES[p.case.engineering]): p for p in planned}
+    records = launch_records(root)  # the launch journal, read once
+
+    def label_runs(p: Planned) -> set[str]:
+        """Every launcher run of the case's label (its experiment and ``<cell>/s<seed>``),
+        whatever its config hash: a fix that changes a hashed config key hides none."""
+        return {r["run_id"] for r in label_starts(p.run, records, every_config_hash=True)}
+
     attempts, requalified, kept, kept_cases, run_ids, kept_runs = [], [], [], [], set(), set()
     entries_of: dict[tuple[str, str], list[dict]] = {}  # every attempt of a case, as named
     folder_of: dict[tuple[str, str], Path] = {}  # every case with an attempt: its folder
@@ -2725,7 +2751,7 @@ def supersede_case(
                 )
                 kept_runs |= {e["launcher_run_id"] for e in entries if e["launcher_run_id"]}
                 if p is not None:
-                    kept_runs |= set(label_run_ids(p.run, root))
+                    kept_runs |= label_runs(p)
                 continue
             if any(e["state"] == "recorded" for e in mine):
                 attempts += mine
@@ -2753,7 +2779,7 @@ def supersede_case(
         if (name, stage_name) in kept_names:
             continue
         p = by_name.get((name, stage_name))
-        ids = set(label_run_ids(p.run, root)) if p is not None else set()  # any config hash
+        ids = label_runs(p) if p is not None else set()  # any config hash
         mentioned = {e["launcher_run_id"] for e in entries_of.get((name, stage_name), [])
                      if e["state"] == "recorded" and e["launcher_run_id"]}  # fmt: skip
         outcomes = {}  # in attempt order, never by journal file or run id

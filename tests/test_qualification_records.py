@@ -988,8 +988,9 @@ def test_a_resolved_stop_counts_beside_a_record_that_did_not_classify_it(
 def test_a_runs_attempts_are_read_in_attempt_order_across_journals(qualify, tmp_path) -> None:
     """FA's 10200 restarted after the Pod stopped during its rest; the recovery round's attempt
     2 is logged under a campaign name that sorts before the first's. The issued run's attempts
-    are read by their number, as ``label_run_ids`` and ``journal_run_ids`` read them, whatever
-    journal file holds them, and the second is located."""
+    are read by their number, as ``launch.label_starts`` (with every config hash) and
+    ``journal_run_ids`` read them, whatever journal file holds them, and the second is
+    located."""
     world = World(tmp_path)
     world.full(skip=(FA,))
     identity = world.launch(FA)
@@ -1002,7 +1003,8 @@ def test_a_runs_attempts_are_read_in_attempt_order_across_journals(qualify, tmp_
     reading = world.read()
     assert_as_the_verdict(reading, cached)
     run = world.run(FA)
-    order = qualify.label_run_ids(run, world.root)
+    order = list(dict.fromkeys(r["run_id"] for r in launcher.label_starts(
+        run, launcher.launch_records(world.root), every_config_hash=True)))  # fmt: skip
     assert order == qualify.journal_run_ids(run, world.root) == [
         "r10200-adam_frozen-a1", "r10200-adam_frozen-a2"]  # fmt: skip
     (issued,) = [r for r in reading["rates"][FA_KEY]["runs"] if r["seed"] == FA.seed]
@@ -1076,7 +1078,9 @@ def test_a_label_is_one_launcher_run_whatever_its_config_hash(qualify, monkeypat
     runs = {r["seed"]: r for r in reading["rates"][ADAMW_KEY]["runs"]}
     now = {seed: world.run(qcase(seed, "adamw", ADAMW_LR)) for seed in (10200, 10201)}
     for seed, run in now.items():
-        assert runs[seed]["run_ids"] == qualify.label_run_ids(run, world.root)
+        assert runs[seed]["run_ids"] == list(dict.fromkeys(
+            r["run_id"] for r in launcher.label_starts(
+                run, launcher.launch_records(world.root), every_config_hash=True)))  # fmt: skip
         assert runs[seed]["config_hash"] == run.config_hash
         located = qualify.located(run, world.root)
         assert runs[seed]["located"] == (None if located is None else located.name)
@@ -1153,8 +1157,9 @@ def test_a_cycle_record_naming_a_run_of_no_qualification_step_is_rejected(
     qualify, monkeypatch, tmp_path, key
 ) -> None:
     """A cycle record names only its candidate's qualification runs (``supersede`` lists the
-    ``label_run_ids`` of its campaign's cases): one whose ``launchers`` or ``held`` adds a
-    validation run of candidate 1 is rejected whole, a named problem, and the run still counts."""
+    runs of its campaign's cases' labels, ``launch.label_starts`` with every config hash): one
+    whose ``launchers`` or ``held`` adds a validation run of candidate 1 is rejected whole, a
+    named problem, and the run still counts."""
     world, path, record = technical_cycle(qualify, monkeypatch, tmp_path)
     world.log({"event": "start", "run": "A-1.45e-05/s10300", "attempt": 1,
                "run_id": "val-run-a1", "experiment": "study3", "config_hash": "v" * 12,

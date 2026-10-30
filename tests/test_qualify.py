@@ -2710,11 +2710,10 @@ def test_a_real_disk_loss_is_not_caught_by_the_own_conflict_refusal(qualify, tmp
     assert set(launch.superseded_runs(run, launch.launch_records(root))) == {"r-a1"}
 
 
-def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_path) -> None:
-    """The launcher run's endpoint checkpoint is on disk with another sha256 than its recorded
-    one, and the rest was interrupted: a provenance conflict, not a loss. ``restart-case``
-    refuses, naming it, and writes nothing (removing or replacing the file is no route to a
-    restart: the conflict goes to diagnosis and the technical route)."""
+def present_conflict_world(tmp_path):
+    """AdamW alone: its launcher run r-a1's endpoint checkpoint on disk with another sha256 than
+    its recorded one (b"other weights"), its baseline recorded and its rest interrupted. Returns
+    the campaign, the runs root, the records' folder and the checkpoint."""
     path = campaign(tmp_path, fa=())
     root, out = tmp_path / "runs", tmp_path / "runs" / "qualification"
     run = journal(root, path, f"adamw-{ADAMW_LR:g}/s10200", ["r-a1"])
@@ -2724,6 +2723,15 @@ def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_p
     baseline, _ = synthetic(ADAMW, identity=q.launcher_identity(launcher))
     publish(out, ADAMW, "baseline", baseline)
     q.publish(out / (ADAMW.attempt_path("rest", 1) + ".started"), {"started_at": "t"})
+    return path, root, out, checkpoint
+
+
+def test_a_restart_refuses_a_present_checkpoint_of_another_sha256(qualify, tmp_path) -> None:
+    """The launcher run's endpoint checkpoint is on disk with another sha256 than its recorded
+    one, and the rest was interrupted: a provenance conflict, not a loss. ``restart-case``
+    refuses, naming it, and writes nothing (removing or replacing the file is no route to a
+    restart: the conflict goes to diagnosis and the technical route)."""
+    path, root, out, checkpoint = present_conflict_world(tmp_path)
     log = root / "launch" / "study3-qualification-c1.jsonl"
     before = log.read_bytes()
     with pytest.raises(SystemExit) as stop:
@@ -3311,6 +3319,79 @@ def test_restart_case_restarts_a_case_whose_rest_is_due_after_a_loss(qualify, tm
     assert [(a["part"], a["attempt"]) for a in record["attempts"]] == [("baseline", 1)]
     assert record["checkpoint_missing"] is True
     assert set(launch.superseded_runs(fa_run(path), launch.launch_records(root))) == {run_dir.name}
+
+
+def test_restart_case_prints_no_answer_of_control_only(qualify, tmp_path, capsys) -> None:
+    """``restart-case`` asks ``control-only`` for its answer without printing it: a case whose
+    rest is due after a loss is restarted, and nothing says "the usual path"."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    conforming_launcher(run_dir)
+    (out / FA.attempt_path("rest", 1)).unlink()  # the rest due
+    capsys.readouterr()
+    qualify.main(restart(path, FA, RESTART))
+    assert "the usual path" not in capsys.readouterr().err
+    assert (case_folder(out, FA) / "restart-1.json").is_file()
+
+
+def bound_to_another_run_id(tmp_path):
+    """``BOUND_ELSEWHERE``'s first world: the rest names another launcher run id."""
+    path, root, out, run_dir = decided_world(tmp_path, rest=True)
+    change, _, _ = BOUND_ELSEWHERE["rest run id, not technical: 1"]
+    change(path, root, out, run_dir)
+    return path, root, out, run_dir
+
+
+ANSWERS = {  # a world → control-only's answer
+    "decided, its control due": (lambda tmp_path: decided_world(tmp_path), 0),
+    "a technical rest": (lambda tmp_path: decided_world(tmp_path, rest=technical_rest), EXPORT),
+    "the rest due": (lambda tmp_path: without_rest(passing)(tmp_path), NO),
+    "a rest bound to another run id": (bound_to_another_run_id, 1),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("world", list(ANSWERS))
+def test_control_only_answer_matches_the_command_and_says_nothing(
+    qualify, tmp_path, capsys, world
+) -> None:
+    """``control_only_answer`` gives ``control-only``'s answer and prints nothing: its code (0
+    with the launcher run's directory, 9, 3, or 1 with the whole refusal) is the command's exit,
+    or for 1 the command's message."""
+    make, expected = ANSWERS[world]
+    path, root, out, run_dir = make(tmp_path)
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    capsys.readouterr()
+    answer = qualify.control_only_answer(planned, out, root, SCOPE)
+    assert capsys.readouterr() == ("", "")
+    assert answer.code == expected
+    if expected == 0:
+        assert answer.run_dir == run_dir
+    code = exit_code(qualify, control_only(path))
+    assert code == (answer.why if expected == 1 else answer.code)
+
+
+@pytest.mark.parametrize("command", ["control-only", "restart-case"])
+def test_a_present_checkpoint_is_hashed_once(qualify, tmp_path, monkeypatch, command) -> None:
+    """A launcher checkpoint on disk with another sha256 than its recorded one is hashed once:
+    ``control-only`` names the sha256 its conflict check found, and ``restart-case`` refuses on
+    that one reading."""
+    if command == "control-only":
+        path, root, out, run_dir = decided_world(tmp_path)
+        checkpoint = tmp_path / "ckpt" / "r-f1.pt"
+        checkpoint.write_bytes(b"other weights")
+        argv = control_only(path)
+    else:
+        path, root, out, checkpoint = present_conflict_world(tmp_path)
+        argv = restart(path, ADAMW, RESTART)
+    counted, real = [], qualify.checkpoint_sha256
+    monkeypatch.setattr(qualify, "checkpoint_sha256",
+                        lambda file: counted.append(str(file)) or real(file))  # fmt: skip
+    code = exit_code(qualify, argv)
+    assert isinstance(code, str), code
+    if command == "control-only":
+        assert hashlib.sha256(b"other weights").hexdigest() in code
+    else:
+        assert "another sha256" in code
+    assert counted.count(str(checkpoint)) == 1, counted
 
 
 def test_restart_case_keeps_its_refusal_of_a_decided_case(qualify, tmp_path) -> None:
@@ -4001,7 +4082,7 @@ def test_a_present_checkpoint_of_another_hash_is_exported_as_it_is(
     assert entry["verified"] is True and entry["matches_record"] is False
     assert entry["sha256"] == sha(b"other weights") and entry["recorded_sha256"] == sha(WEIGHTS)
     assert (kept / entry["copy"]).read_bytes() == b"other weights"
-    assert qualify.checkpoint_conflict(run_dir) == files["launcher"]
+    assert qualify.checkpoint_conflict(run_dir) == (files["launcher"], sha(b"other weights"))
     assert qualify.technical_reasons(out, planned, SCOPE) == reasons
     after = tree(case_folder(out, FA))
     assert set(after) - set(records) == {"kept-checkpoints-1.json"}
@@ -4668,6 +4749,39 @@ def test_finish_keeps_a_failed_controls_evidence_and_exits_14(
     assert record["technical"] == [] and record["failed_control"] == REASONS
     assert record["manifests"][0]["path"] == str(folder / "kept-checkpoints-1.json")
     assert exit_code(qualify, finish_args(path, FA, kept)) == 0
+
+
+def test_a_file_changed_after_its_kept_check_unsettles_a_failed_controls_case(
+    qualify, tmp_path, monkeypatch
+) -> None:
+    """A scientific case whose control failed, its export bound by a ``kept-check`` of exit 0,
+    then one of its files changed: ``kept_settled`` no longer settles it, ``finish --kept``
+    exports it anew as ``kept-2`` (exit 14), and ``finish --release`` refuses (13), deleting
+    nothing, until a ``kept-check`` binds that export."""
+    path, out, run_dir, files = failed_control_world(tmp_path, "rest")
+    planned = qualify.campaign_cases(path, SCOPE, 1, False)[1][0]
+    root, folder = tmp_path / "runs", case_folder(out, FA)
+    kept = kept_folder(qualify, monkeypatch, tmp_path)
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT
+    inventory = archived(kept, tmp_path / "inventory.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    assert qualify.kept_settled(planned, root, folder) == folder / "kept-check-1.json"
+    files["state"].write_bytes(b"another state")  # changed since the export
+    assert qualify.kept_settled(planned, root, folder) is None
+    assert exit_code(qualify, finish_args(path, FA, kept)) == qualify.CONTROL_KEPT
+    assert sorted(f.name for f in folder.glob("kept-checkpoints-*")) == [
+        "kept-checkpoints-1.json", "kept-checkpoints-2.json"]  # fmt: skip
+    release = finish_args(path, FA, None, "--release")
+    assert exit_code(qualify, release) == qualify.NOT_EXPORTED
+    assert all(file.exists() for file in files.values())
+    assert not list(folder.glob("checkpoints-removed-*"))
+    inventory = archived(kept, tmp_path / "inventory-2.tsv", monkeypatch)
+    assert exit_code(qualify, kept_check_args(path, FA, inventory)) == 0
+    assert qualify.kept_settled(planned, root, folder) == folder / "kept-check-2.json"
+    qualify.main(release)
+    assert not any(file.exists() for file in files.values())
+    (record,) = [json.loads(f.read_text()) for f in folder.glob("checkpoints-removed-*")]
+    assert record["manifests"][0]["path"] == str(folder / "kept-checkpoints-2.json")
 
 
 def test_lost_checkpoints_of_a_failed_controls_case_keep_the_scientific_failure(

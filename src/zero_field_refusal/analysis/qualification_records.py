@@ -105,8 +105,9 @@ stands for it. A start of a campaign whose header names study 3, the candidate a
 config (its run's ``config.yaml``, or its start's command loaded again, bound by the start's
 config hash as ``study3_records`` binds a start) gives the case's arm, rate and seed. The starts
 of one label and experiment are the attempts of one launcher run whatever their config hash (a
-fix may change a hashed config key: ``qualify.py``'s ``label_run_ids``), in attempt order: the
-attempt number, then the start's time stamp, never the journal file that holds it
+fix may change a hashed config key: ``launch.label_starts`` with ``every_config_hash``, as
+``qualify.py``'s ``supersede`` reads them), in attempt order: the attempt number, then the start's
+time stamp, never the journal file that holds it
 (``launch.attempt_key``). Every start is bound by its own config hash, one refused (its
 ``config.yaml`` of another config hash) is a problem whatever the others, and starts of one label
 that bind different cases are a problem. Every case record (a part record, an interrupted rest's
@@ -523,7 +524,7 @@ def _issued(
     runs: dict[tuple[str, str], _Issued] = {}
     mine = [(campaign, record) for campaign, record in journal
             if _issues_case(record, candidate, steps)]  # fmt: skip
-    # attempt order; a stable sort, so equal keys keep the journal's order, as ``label_run_ids``
+    # attempt order; a stable sort, so equal keys keep the journal's order, as ``label_starts``
     for campaign, record in sorted(mine, key=lambda item: _attempt_key(item[1])):
         run_id, label = record.get("run_id"), record.get("run")
         experiment, chash = record.get("experiment"), record.get("config_hash")
