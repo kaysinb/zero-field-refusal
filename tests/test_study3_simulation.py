@@ -263,6 +263,30 @@ def test_each_shape_has_mean_0_and_sd_1(shape) -> None:
     assert abs(e.mean()) < 4e-3 and e.std() == pytest.approx(1.0, abs=4e-3)
 
 
+def test_no_quantile_is_taken_in_the_simulation_modules() -> None:
+    """No call takes a quantile or a percentile in the simulation's modules (order statistics
+    are type-1 ranks: ``study3_inference.tail_ranks``), and the module's rulings list every
+    decided value M1–M27 that it applies."""
+    import ast
+
+    from zero_field_refusal.paths import REPO_ROOT
+
+    paths = [Path(sim.__file__), Path(sim.__file__).with_name("study3_seed_vectors.py"),
+             REPO_ROOT / "scripts" / "study3_simulate.py"]  # fmt: skip
+    for path in paths:
+        if not path.exists():
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                assert not any(w in name.lower() for w in ("quantile", "percentile", "median")), (
+                    path.name, name)  # fmt: skip
+    rulings = sim.__doc__.split("**Rulings**", 1)[1]
+    for n in (*range(1, 9), *range(10, 28)):
+        assert f"- M{n}," in rulings, n
+
+
 def test_the_shapes_are_as_registered() -> None:
     rng = np.random.default_rng(2)
     rare = sim.draw_effects("rare", rng, 200_000)

@@ -189,6 +189,11 @@ offset), since the selected rates are rounded to 3 significant digits and repeat
   interpolated MMLU loss over the supported validation blocks has mean 3 pp and seed SD 2 pp,
   the factual loss mean 2 pp, support 0.95 (the registration's safe alternative, at its
   boundary); decided.
+- M11, the empirical point: the vectors unchanged, support 0.90 (as in M7), the realized means
+  at K* reported against 3.1 pp (F) and 2.8 pp (P) (the registration's "study 2's empirical
+  point"); decided.
+- M12, the utility of the coverage and power scenarios: the safe alternative (the coverage is
+  conditional on the confirmation starting; the gates' rates are G1's and G2's); decided.
 - M13, search and numerical runs never fail, the qualification passes, the repair is simulated
   ("Not in the simulation": the numerical gates); decided.
 - M14, candidates: the screen runs the scenario's candidate with no chaining; the verification
@@ -201,6 +206,25 @@ offset), since the selected rates are rounded to 3 significant digits and repeat
   model); decided.
 - M18, misses: an undetermined interval, or an N point not reached within 200 blocks, is a miss;
   the cap's descriptive cases count in the cap test (conservative); decided.
+- M19, ``safe_pass_rate``: the A–F gate's pass rate at the safe alternative, the P–F gate's
+  rate reported beside it (the A–F gate is the one that moves candidates); decided.
+- M20, the power: normal shape, Δ = ±2 pp, ``power_af`` the smallest correct-direction rate over
+  the two spreads and signs at L; ``n_min`` by a linear scan from 60 ("Power ≥ 80 % … at
+  |Δ| = 2 pp … the planning spread"); decided.
+- M21, the binomial interval of each test: Clopper–Pearson 95 % ("ordinary 95 % binomial
+  interval"); decided.
+- M22, the grid: 17 coverage scenarios (J = 1 785), 2 power-only and 2 gate scenarios
+  (``SCENARIOS``); decided.
+- M23, the stream integers: calibration 20261101, verification 20261102 (``STREAMS``; any two
+  distinct integers); decided.
+- M24, the coverage test's interval: the primary computation's only (the registration's coverage
+  concerns "the interval"); decided.
+- M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
+  verification resamples, set in that run's own commit through ``COVERAGE_RUNS``,
+  ``SCREEN_RESAMPLES`` and ``VERIFICATION_RESAMPLES`` alone; decided.
+- M26, the bound on draws: each test draws at most 4·M studies; a test short of M confirmed
+  studies at the bound is not attainable and fails; a power rate counts the missing studies as
+  not detecting (a bounded failure route); decided.
 - M27, the joint test in the verification: over the studies confirmed for A–F, a miss when A–F
   misses or when P–F is active and misses (the registration's joint p₀ 0.05 over the two
   comparisons); decided.
