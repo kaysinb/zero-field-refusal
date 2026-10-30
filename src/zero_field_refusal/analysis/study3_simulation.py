@@ -132,9 +132,10 @@ screen found the power short; P–F counted only where its gate passed, the join
 (M27).
 
 **The calibration through the selection** (``calibrate_scenario``; M1, M7, M10, M15). On the
-stream (calibration base, "support", scenario, candidate) (``calibration_stream``), 10 000
-studies' search, repair and 28-block validation (``simulate_study(..., validation_only=True)``)
-at the rates each selects, drawn once with every run's failure uniform kept:
+stream (calibration base, "support", scenario, candidate) (``calibration_stream``),
+``CALIBRATION_STUDIES`` (10 000) studies' search, repair and 28-block validation
+(``simulate_study(..., validation_only=True)``) at the rates each selects, drawn once with every
+run's failure uniform kept:
 - *f* (M7): by bisection on [0, 1), the realized A–F support of the validation blocks, bracket
   failures and gross collapses included, equals the scenario's s within 1e-4; f = 0, flagged,
   when the natural failures alone leave it below s. The selection does not depend on f (M13),
@@ -179,8 +180,10 @@ must be the unit's, of this fixation and commit), and every summary is computed 
 read back, by one code path. The workers are spawned processes with single-threaded BLAS, each
 holding the run's ``Context`` (the fixation, its scenarios and calibrations, the inputs'
 vectors) and the truths' moments known already. M is ``study3_decisions.COVERAGE_RUNS``, the
-resamples ``SCREEN_RESAMPLES`` and ``VERIFICATION_RESAMPLES``: each read when it is used, so
-that the dry run's Part II changes the three constants and nothing else (M25).
+resamples ``SCREEN_RESAMPLES`` and ``VERIFICATION_RESAMPLES``, the calibration's selections
+``CALIBRATION_STUDIES``: each a single constant read when it is used (the calibration's by the
+script, which passes it), so that the dry run's Part II changes the four constants and nothing
+else (M25).
 - *gates*: G1 and G2, M validations each (28 blocks, 40 reported), the safe pass rate setting
   the validation size (28 when it reaches 0.95, else 40);
 - *screen*: the non-gate scenarios at that size, four levels, ``SCREEN_RESAMPLES``,
@@ -256,8 +259,10 @@ that the dry run's Part II changes the three constants and nothing else (M25).
 - M24, the coverage test's interval: the primary computation's only (the registration's coverage
   concerns "the interval"); decided.
 - M25, the sizes of the dry run's Part II (amendment 4): M = 200, 200 screen and 1 000
-  verification resamples, set in that run's own commit through ``COVERAGE_RUNS``,
-  ``SCREEN_RESAMPLES`` and ``VERIFICATION_RESAMPLES`` alone; decided.
+  verification resamples and 1 000 calibration selections per (scenario, candidate), set in
+  that run's own commit through ``COVERAGE_RUNS``, ``SCREEN_RESAMPLES``,
+  ``VERIFICATION_RESAMPLES`` and ``CALIBRATION_STUDIES`` alone (the fixation records the last,
+  ``calibration_record``); decided.
 - M26, the bound on draws: each test draws at most 4·M studies; a test short of M confirmed
   studies at the bound is not attainable and fails; a power rate counts the missing studies as
   not detecting (a bounded failure route); decided.
@@ -1387,8 +1392,11 @@ def _shifted(vectors: Sequence[Vector], calibration: Calibration) -> list[Vector
 
 # ------------------------------------------------------------------ the procedure
 
+# The sizes the dry run's Part II changes in its own commit, with study3_decisions.COVERAGE_RUNS
+# (M25): each a single constant, read when it is used
 SCREEN_RESAMPLES = 2_000  # bootstrap resamples per interval in the screen ("Requirements")
 VERIFICATION_RESAMPLES = 100_000  # the registered procedure's, in the binding verification
+CALIBRATION_STUDIES = 10_000  # simulated selections per (scenario, candidate)
 CHUNK = 500  # bootstrap_t's chunk: the result does not depend on it, the memory does
 MODES = ("screen", "procedure")
 REACH = 99  # the largest N point: each comparison is followed to 99 supported blocks
@@ -1397,7 +1405,6 @@ UNCONFIRMED = ("af_gate", "cap_beyond_seeds", "scientific_report")  # why a stud
 RUNS = tuple((arm, label) for arm in ARM_ORDER for label in LABELS)  # a block's six runs
 RUN_ARMS = tuple(arm for arm, _ in RUNS)
 FAILED_STOP = INSTABILITY[0]  # the stop a simulated scientific failure records
-CALIBRATION_STUDIES = 10_000  # simulated selections per (scenario, candidate)
 CALIBRATION_BLOCKS = 28  # the calibration's validations have 28 blocks
 CALIBRATION_ROUNDS = 10  # f and the safe shifts alternate at most this often
 SUPPORT_TOLERANCE = 1e-4  # |realized support − s| at the calibrated f

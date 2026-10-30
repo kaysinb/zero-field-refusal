@@ -2384,8 +2384,10 @@ project-run "$SRC" python scripts/study3_summary.py progress --runs-root "$R"
   - the n_min scan, only when the power is short: some 44 000 studies at one level per value of
     n, a few minutes each;
   - in all about 9 h on an idle machine. The parts take about 1.9 kB per study (about 0.8 GB).
-  At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples) the screen takes
-  about 1.5 minutes and the verification under 5; the calibration's cost does not change.
+  At the sizes of the dry run's Part II (M = 200, 200 and 1 000 resamples, 1 000 calibration
+  selections per scenario and candidate, `study3_simulation`'s M25) the screen takes about 1.5
+  minutes and the verification under 5; the calibration draws 1 000 selections per pair
+  instead of 10 000.
 
 ## Judge server
 
