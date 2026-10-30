@@ -116,7 +116,7 @@ def call(entry: str, world: Final):
     if entry == "cohort_harm":
         return study3_final.cohort_harm(world.dirs(), **given)
     if entry == "k_spread":
-        return study3_final.k_spread(run, k=K, candidate=1, repo=world.repo)
+        return study3_final.k_spread(run, k=K, **given)
     if entry == "item_labels":
         return study3_final.item_labels(run, **given)
     if entry == "blind_texts":
@@ -235,13 +235,28 @@ def test_the_k_spread_reads_only_k_rows_and_decodes_no_line(world, monkeypatch) 
 
     monkeypatch.setattr(json, "loads", recorded)
     run = world.dir(world.runs[0])
-    assert study3_final.k_spread(run, k=K, candidate=1, repo=world.repo) == [5.0, 6.0, 7.0]
+    given = {"candidate": 1, "runs_root": world.root, "repo": world.repo}
+    assert study3_final.k_spread(run, k=K, **given) == [5.0, 6.0, 7.0]
     assert calls == []
     with pytest.raises(ValueError, match="K"):
-        study3_final.k_spread(run, k=K * 1.01, candidate=1, repo=world.repo)
-    assert study3_final.k_spread(run, k=100.0, candidate=1, repo=world.repo,
-                                 condition="step-0") == [100.0, 100.0, 100.0]  # fmt: skip
+        study3_final.k_spread(run, k=K * 1.01, **given)
+    assert study3_final.k_spread(run, k=100.0, condition="step-0",
+                                 **given) == [100.0, 100.0, 100.0]  # fmt: skip
     assert calls == []
+
+
+def test_the_k_spread_reads_under_the_runs_root_it_is_given(world, monkeypatch, tmp_path):
+    """RUNS_DIR is the argument, never the run folder's grandparent: the gate is asked for it,
+    and a run that is not a plain child of its study3/ folder is refused unopened."""
+    gate = open_freeze(world, monkeypatch)
+    open_runs(monkeypatch, world.runs)
+    run = world.dir(world.runs[0])
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "study3").mkdir(parents=True)
+    guard = SealedGuard(monkeypatch, runs_root=world.root)
+    with pytest.raises(ValueError, match="plain child"):
+        study3_final.k_spread(run, k=K, candidate=1, runs_root=elsewhere, repo=world.repo)
+    assert gate == [(1, elsewhere, world.repo)] and guard.attempts == []
 
 
 def test_the_k_spread_refuses_a_sample_twice_no_row_and_a_run_outside(world, monkeypatch):
@@ -250,14 +265,14 @@ def test_the_k_spread_refuses_a_sample_twice_no_row_and_a_run_outside(world, mon
     run = world.dir(world.runs[0])
     with (run / "observations" / "measurements.jsonl").open("a") as f:
         f.write(kl_row("step-25", "kl:0", "kl_benign", 0, 4.5))
+    given = {"candidate": 1, "runs_root": world.root, "repo": world.repo}
     with pytest.raises(study3_final.SpreadRefused, match="twice"):
-        study3_final.k_spread(run, k=K, candidate=1, repo=world.repo)
+        study3_final.k_spread(run, k=K, **given)
     with pytest.raises(study3_final.SpreadRefused, match="no kl_benign row at step-50"):
-        study3_final.k_spread(world.dir(world.runs[1]), k=K, candidate=1, repo=world.repo,
-                              condition="step-50")  # fmt: skip
+        study3_final.k_spread(world.dir(world.runs[1]), k=K, condition="step-50", **given)
     guard = SealedGuard(monkeypatch, runs_root=world.root)
     with pytest.raises(SealedPoint, match="outside the run set"):
-        study3_final.k_spread(world.dir(world.runs[3]), k=K, candidate=1, repo=world.repo)
+        study3_final.k_spread(world.dir(world.runs[3]), k=K, **given)
     assert guard.attempts == []
 
 
@@ -353,16 +368,28 @@ def block(seed: int, a: tuple[str, str], f: tuple[str, str]) -> dict:
     }
 
 
-def test_gather_reads_every_frozen_run_once_then_the_brackets_k_spread(world, monkeypatch):
+def test_gather_reads_the_brackets_k_spread_then_every_frozen_run_once(world, monkeypatch):
+    """The brackets' spreads first, in the final point's run set, then one harm reading of the
+    comparisons', A − P's and the matched blocks' runs; validation's runs are not read (they are
+    read after the analysis)."""
     open_freeze(world, monkeypatch)
+    open_runs(monkeypatch, world.runs)
     reads: list = []
+    order: list = []
+    real = study3_final._k_spread
 
     def many(run_dirs, **kw):
         reads.append(sorted(d.name for d in run_dirs))
+        order.append("harm")
         return [RunHarm(harmful=3, missing=0, receipt_sha256="f" * 64) for _ in run_dirs]
 
+    def spread(run_dir, **kw):
+        order.append("spread")
+        return real(run_dir, **kw)
+
     monkeypatch.setattr(study3_final, "harm_many", many)
-    validation = make_run(world.root / "study3", name="r-validation")  # named, its harm alone
+    monkeypatch.setattr(study3_final, "_k_spread", spread)
+    validation = make_run(world.root / "study3", name="r-validation")  # frozen, never read here
     a, f = tuple(world.runs[:2]), tuple(world.runs[2:])
     freeze = {"candidate": 1, "comparisons": {"A-F": {"blocks": [block(10400, a, f)]}},
               "a_minus_p": {"blocks": []}, "k_harmful": {"blocks": [block(10400, a, f)]},
@@ -370,11 +397,18 @@ def test_gather_reads_every_frozen_run_once_then_the_brackets_k_spread(world, mo
                              "P-F": None}}  # fmt: skip
     endpoints = [SimpleNamespace(run_id=run, K=K) for run in world.runs]
     harm, spread = study3_final.gather(freeze, endpoints, runs_root=world.root, repo=world.repo)
-    assert reads == [sorted([*world.runs, validation.name])]
-    assert set(harm) == {*world.runs, validation.name}
+    assert reads == [sorted(world.runs)]
+    assert order == ["spread"] * len(world.runs) + ["harm"]
+    assert set(harm) == set(world.runs)
     assert spread == {run: [5.0, 6.0, 7.0] for run in world.runs}
+    order.clear()
     with pytest.raises(ValueError, match="no endpoint"):
         study3_final.gather(freeze, endpoints[1:], runs_root=world.root, repo=world.repo)
+    open_runs(monkeypatch, world.runs[1:])  # a bracket run outside the final point's run set
+    guard = SealedGuard(monkeypatch, runs_root=world.root)
+    with pytest.raises(SealedPoint, match="outside the run set"):
+        study3_final.gather(freeze, endpoints, runs_root=world.root, repo=world.repo)
+    assert order == [] and guard.attempts == []
 
 
 # ------------------------------------------------------------------ where sealed paths open

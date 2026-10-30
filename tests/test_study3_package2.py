@@ -24,13 +24,15 @@
   log or a record of the qualification (the base is the runs root); and a journal start's command
   composes only a study-3 config.
 - The label readers' fence (``LABEL_READERS``: ``analysis.study3_label_cli``,
-  ``analysis.study3_labels``, ``analysis.study3_final`` and ``scripts/study3_spread.py``; "Judge
-  and audit", "Sample size from validation"): they import no GPU module and load no script; a
-  sealed path is opened only inside a named opener (``SEALED_OPENERS``, ``NamedOpens``); and each
-  reader refuses a point that is closed: ``spread`` outside candidate N's choice step (it closes
-  once the n record is written), ``final`` until the freeze gate opens it, reading nothing of a
-  run's sealed folders meanwhile. The final analysis's reader (``study3_final``) has its own
-  sealing tests (tests/test_study3_final.py).
+  ``analysis.study3_labels``, ``analysis.study3_final``, ``scripts/study3_spread.py`` and
+  ``scripts/study3_analysis.py``; "Judge and audit", "Sample size from validation"): they import
+  no GPU module and load no script; a sealed path is opened only inside a named opener
+  (``SEALED_OPENERS``, ``NamedOpens``); and each reader refuses a point that is closed: ``spread``
+  outside candidate N's choice step (it closes once the n record is written), ``final`` until the
+  freeze gate opens it, reading nothing of a run's sealed folders meanwhile. On the route's
+  files, with no freeze, the analysis script's ``analyze`` refuses so, calling no label reader.
+  The final analysis's reader (``study3_final``) and the analysis script have their own sealing
+  tests (tests/test_study3_final.py, tests/test_study3_analysis_script.py).
 
 Every sealed file of these worlds holds the sentinel ``SENTINEL``, and every read of a sealed path
 fails under ``SealedGuard``."""
@@ -132,11 +134,13 @@ PACKAGE = (
     ANALYSIS / "campaign_prep.py",
 )
 # study 3's label readers (package 2b), each with its own sealing tests and this file's fence: three
-# modules of the analysis package (the final analysis's reader among them) and the spread's
-# decision script
+# modules of the analysis package (the final analysis's reader among them), the spread's decision
+# script and the final analysis's script
+ANALYSIS_SCRIPT = REPO_ROOT / "scripts" / "study3_analysis.py"
 LABEL_READERS: tuple[Path, ...] = (ANALYSIS / "study3_label_cli.py", ANALYSIS / "study3_labels.py",
                                    ANALYSIS / "study3_final.py",
-                                   REPO_ROOT / "scripts" / "study3_spread.py")  # fmt: skip
+                                   REPO_ROOT / "scripts" / "study3_spread.py",
+                                   ANALYSIS_SCRIPT)  # fmt: skip
 # The label readers' functions that open a sealed path, by module and name: a run's judge outputs
 # (and the responses they are labeled from), their superseded copies or the labeling ledger.
 # Every such open is inside one of them (``NamedOpens``)
@@ -1227,6 +1231,8 @@ def route(tmp_path_factory):
     # replaced: the replacement then covers their bindings, and its undo restores them
     importlib.import_module("test_study3_label_cli")
     importlib.import_module("test_study3_spread")
+    # the final analysis's reader, which the analysis script imports, likewise
+    importlib.import_module("zero_field_refusal.analysis.study3_final")
     patch = pytest.MonkeyPatch()
     sealed = pytest.MonkeyPatch()
     try:
@@ -1759,9 +1765,10 @@ def points_world(tmp_path, monkeypatch, capfd) -> Points:
 
 
 def test_the_label_readers_import_no_gpu_module_and_load_no_script():
-    """Each label reader, read as code (``test_code_identity.gpu_uses``): the two modules (their
-    relative imports resolved) and the spread's script import no GPU module and no torch
-    directly, use no CUDA, and load no code by its name or path at run time."""
+    """Each label reader, read as code (``test_code_identity.gpu_uses``): the modules (their
+    relative imports resolved) and the two scripts import no GPU module and no torch directly, use
+    no CUDA, and load no code by its name or path at run time."""
+    assert ANALYSIS_SCRIPT in LABEL_READERS
     for path in LABEL_READERS:
         package = None if path.parent.name == "scripts" else "zero_field_refusal.analysis"
         assert gpu_uses(path, package) == set(), path.name
@@ -1867,3 +1874,24 @@ def test_the_route_ends_with_every_point_closed(route, monkeypatch):
             study3_labels.run_harm(run, point=point, candidate=1, runs_root=route.root,
                                    repo_root=route.repo)  # fmt: skip
     assert guard.attempts == []
+
+
+def test_the_analysis_script_refuses_on_the_routes_files_before_any_freeze(route, monkeypatch):
+    """The analysis script, a label reader, on the route's files (the n record written, the
+    confirmation under way, no analysis freeze), its checkout the route's: ``analyze`` refuses
+    naming the missing freeze, with every label reader's entry point raising and none called,
+    nothing sealed opened (``SealedGuard`` over the runs root), no sentinel shown and nothing
+    written under RUNS_DIR/study3-final/."""
+    assert route.labels.calls == []  # the route's raisers stay bound while it lives
+    script = script_module(ANALYSIS_SCRIPT, "study3_analysis")
+    monkeypatch.setattr(script, "REPO", route.repo)
+    guard = SealedGuard(monkeypatch, runs_root=route.root)
+    shown = io.StringIO()
+    with (contextlib.redirect_stdout(shown), contextlib.redirect_stderr(shown),
+          pytest.raises(SystemExit) as caught):  # fmt: skip
+        script.main(["analyze", "--runs-root", str(route.root), "--candidate", "1"])
+    why = str(caught.value.code)
+    assert "no analysis freeze" in why and "analysis-freeze-c1" in why
+    assert guard.attempts == [] and route.labels.calls == []
+    assert SENTINEL not in why + shown.getvalue()
+    assert not (route.root / "study3-final").exists()

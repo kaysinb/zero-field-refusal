@@ -30,14 +30,18 @@ label. It reads no label: of the sealed folders it reads the labeling ledger's r
    (``study3_decisions.decisions``: validation's A–F cohort, which must be the frozen one); κ per
    arm from the simulation fixation's ``curvature`` (``simulation_curvature``);
 3. the outputs so far (below: a resumed or a superseding run);
-4. the labels, through the one label reader (``study3_final.gather``): the harm of every run the
-   freeze names, then the spread of K of every bracket run of its comparisons;
+4. the labels, through the one label reader (``study3_final.gather``): the harm of every run of
+   the frozen comparisons, A − P's blocks and the matched blocks, then the spread of K of every
+   bracket run of the comparisons; no validation run is read yet;
 5. the utility gates over each comparison's frozen blocks at α = 0.05/8 per bound
    (``study3_blocks.utility_gate``, from the state's endpoints, the frozen runs checked), then
    ``study3_estimates.analysis``;
-6. ``analysis.json``, then validation's harm (``study3_estimates.validation_harm``) in
-   ``validation-harm.json``, which names the analysis by its sha256;
-7. it prints both paths, and each comparison's n and the row of the registered wording.
+6. ``analysis.json``, written; it prints its path, and each comparison's n and the row of the
+   registered wording;
+7. only then validation's labels: the harm of validation's frozen runs, read through the final
+   reader (``study3_final.cohort_harm``), and validation's harm
+   (``study3_estimates.validation_harm``) in ``validation-harm.json``, which names the analysis
+   by its sha256; it prints that path.
 
 **Refusals** exit with ``study3_analysis.py <command>: <why>``, writing nothing more: no analysis
 freeze, one with a problem (not committed, rewritten, not the current records' …) or a dirty
@@ -60,12 +64,12 @@ analysis (``comparisons``, ``utility``, ``curvature``, ``k_spread``); ``validati
 is (``study3_decisions._publish``).
 
 **Restart and supersession.** Each record is written once. A run with the analysis written and
-validation's harm not yet written writes validation's harm alone, from the same freeze and
-in-force records. Once both are written, ``analyze`` refuses unless --supersedes-reason gives an
-id (a lowercase letter, then lowercase letters, digits or underscores): a recomputation after a
-fix of the analysis code, with no change of the GPU code, is written as ``analysis-<k>.json`` and
-``validation-harm-<k>.json`` (k = 2, 3, …), its ``superseded`` naming its predecessor by path,
-sha256 and the reason.
+validation's harm not yet written (a validation run pending at step 7, say) writes validation's
+harm alone, from the same freeze and in-force records. Once both are written, ``analyze`` refuses
+unless --supersedes-reason gives an id (a lowercase letter, then lowercase letters, digits or
+underscores): a recomputation after a fix of the analysis code, with no change of the GPU code, is
+written as ``analysis-<k>.json`` and ``validation-harm-<k>.json`` (k = 2, 3, …), its ``superseded``
+naming its predecessor by path, sha256 and the reason.
 
 **The sealing boundary.** The labels, the K rows and nothing else of a run's sealed folders are
 opened, inside ``study3_final`` alone, and only once the freeze gate opens the final point; of the
@@ -76,7 +80,8 @@ run ids, paths, hashes, times and the simulation fixation's ``source``.
 - *Outside the experiment's folder.* The outputs are under RUNS_DIR/study3-final/c<N>/.
 - *Validation's harm* is A–F on the n record's cohort and P–F on the validation blocks supported
   for P and F while P–F is active, computed as the analysis is, descriptive, after the analysis
-  and in its own file, which names the analysis by its sha256.
+  and apart from it: validation's labels are read only once ``analysis.json`` is written, and its
+  file names the analysis by its sha256.
 - *Written once.* The analysis is ``analysis.json``; a recomputation after a fix without a change
   of the GPU code is ``analysis-<k>.json``, naming its predecessor by path, sha256 and a reason id.
 - *κ* is the simulation fixation's base ``curvature`` (docs/study3-simulation-fixation.json, in the
@@ -323,7 +328,7 @@ def predecessor(path: Path, frozen: Mapping[str, str], inputs: Mapping[str, Any]
 def labels(freeze_: Mapping[str, Any], endpoints: Sequence[Any], root: Path,
            run_dirs: Mapping[str, Path] | None = None) -> tuple[dict, dict]:  # fmt: skip
     """Step 4 (``study3_final.gather``), or, with ``run_dirs``, the harm of those runs alone
-    (``study3_final.cohort_harm``); every refusal names ids, counts and types only."""
+    (``study3_final.cohort_harm``: step 7's); every refusal names ids, counts and types only."""
     try:
         if run_dirs is not None:
             return study3_final.cohort_harm(run_dirs, candidate=freeze_["candidate"],
@@ -434,7 +439,7 @@ def analyze(args: argparse.Namespace) -> None:
     analysis_path, validation_path = (folder / part for part in names(k + 1))
     if written(validation_path):
         refuse("analyze", f"{validation_path} is written already, without its analysis")
-    # 4. the labels
+    # 4. the labels of the confirmation (no validation run yet)
     try:
         state, endpoints = read_state(root, repo=REPO,
                                       expected_code=freeze_["code"]["gpu_code_sha256"],
@@ -458,25 +463,23 @@ def analyze(args: argparse.Namespace) -> None:
               "code": code, "freeze": frozen, "supplement": inputs["supplement"],
               "level": inputs["level"], "bootstrap": bootstrap, "kappa": kappa,
               "superseded": superseded, **result}  # fmt: skip
-    # 6. the analysis, then validation's harm
+    # 6. the analysis, written
     data = encoded(record)
     publish("analyze", analysis_path, root, data)
-    validation = validation_record(candidate, code, frozen, inputs, freeze_, harm, analysis_path,
-                                   data)  # fmt: skip
-    publish("analyze", validation_path, root, encoded(validation))
-    # 7. what was written
     print(analysis_path)
-    print(validation_path)
     for key, entry in result["comparisons"].items():
         print(f"{key}: n {entry['n']}, {entry['wording']['row']}")
+    # 7. only then validation's labels, and validation's harm
+    resume(root, candidate, code, frozen, inputs, freeze_, folder, k + 1, data)
 
 
 def resume(root: Path, candidate: int, code: Mapping[str, str], frozen: Mapping[str, str],
            inputs: Mapping[str, Any], freeze_: Mapping[str, Any], folder: Path, k: int,
            data: bytes) -> None:  # fmt: skip
-    """Validation's harm alone, after the k-th analysis (its bytes ``data``) is written without
-    it (module docstring, "Restart and supersession"): the harm of validation's frozen runs, read
-    through the final reader."""
+    """Validation's harm, once the k-th analysis (its bytes ``data``) is written (step 7, and
+    the restart of module docstring, "Restart and supersession"): the harm of validation's frozen
+    runs, read through the final reader only now, then ``validation-harm.json`` naming the
+    analysis."""
     blocks = [block for entry in freeze_["validation"].values() if entry is not None
               for block in entry["blocks"]]  # fmt: skip
     experiment = root / EXPERIMENT

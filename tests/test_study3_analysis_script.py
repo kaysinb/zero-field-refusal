@@ -67,6 +67,7 @@ class World:
         self.culprit: str | None = None
         self.raised: type = LabelsPending
         self.ledger: list[Path] = []
+        self.reads: list[tuple[bool, list[str]]] = []  # (analysis.json written?, the runs read)
         cohort = {"seeds": list(SEEDS["validation"][1][:28])}
         n = {"n-c1": {"state": "passed", "record": {"cohort": cohort}}}
         supplement = {"bootstrap": dict(BOOTSTRAP)}
@@ -80,9 +81,11 @@ class World:
         mp.setattr(self.script, "read_confirmation_fixation", lambda c, **kw: (supplement, []))
         mp.setattr(self.script, "read_validation_fixation", lambda c, **kw: ({"level": 0.975}, []))
         mp.setattr(self.script, "ledger_runs", self.ledger_runs)
-        mp.setattr(study3_final, "harm_many", lambda dirs, **kw: [self.harm(d) for d in dirs])
+        mp.setattr(study3_final, "harm_many", self.harm_many)
         mp.setattr(study3_final, "run_harm", lambda run_dir, **kw: self.harm(run_dir))
         mp.setattr(study3_final, "labeling_problems", self.problems)
+        # the final point's run set: every run of the study (the label reader's own is stubbed)
+        mp.setattr(study3_final, "open_point", lambda point, **kw: frozenset(self.by_id))
         for e in self.endpoints:
             if e.cell.step == "confirmation" and e.K is not None:
                 self.k_rows(e.run_id, e.K)
@@ -90,6 +93,13 @@ class World:
     def ledger_runs(self, runs_root) -> frozenset[str]:
         self.ledger.append(Path(runs_root))
         return frozenset()
+
+    def harm_many(self, dirs, **kw) -> list[RunHarm]:
+        """The label reader's cohort reading, each call kept with whether the analysis was
+        written when it was made."""
+        written = (self.root / "study3-final" / "c1" / "analysis.json").exists()
+        self.reads.append((written, sorted(Path(d).name for d in dirs)))
+        return [self.harm(d) for d in dirs]
 
     def harm(self, run_dir) -> RunHarm:
         e = self.by_id[Path(run_dir).name]
@@ -222,6 +232,43 @@ def test_analyze_is_refused_while_a_cohort_run_is_pending_or_broken(world, raise
     why = world.refused("analyze", "--runs-root", world.root, "--candidate", "1")
     assert words in why and world.culprit in why
     assert not (world.root / "study3-final").exists()
+
+
+def validation_runs(world: World) -> set[str]:
+    freeze = json.loads((world.repo / freeze_name(1)).read_text())
+    blocks = [b for entry in freeze["validation"].values() if entry for b in entry["blocks"]]
+    return set(study3_final.runs_of(blocks))
+
+
+def test_no_validation_run_is_read_before_the_analysis_is_written(world) -> None:
+    """Validation's harm comes after the final analysis and apart from it: the confirmation's
+    runs are read first, with no validation run; validation's runs are read in a reading of their
+    own, once analysis.json exists."""
+    world.frozen()
+    validation = validation_runs(world)
+    world.run("analyze", "--runs-root", world.root, "--candidate", "1")
+    assert len(world.reads) == 2 and len(validation) == 168  # A, F and P at both ends, 28 blocks
+    (before, first), (after, second) = world.reads
+    assert before is False and not set(first) & validation
+    assert after is True and set(second) == validation
+
+
+def test_a_pending_validation_run_leaves_the_analysis_written_and_resumes(world) -> None:
+    """A validation run that is pending refuses validation's harm after the analysis is written;
+    once it counts, a rerun writes validation's harm alone."""
+    world.frozen()
+    world.culprit = sorted(validation_runs(world))[3]
+    argv = ("analyze", "--runs-root", world.root, "--candidate", "1")
+    why = world.refused(*argv)
+    assert "1 runs pending" in why and world.culprit in why
+    folder = world.root / "study3-final" / "c1"
+    assert (folder / "analysis.json").exists() and not (folder / "validation-harm.json").exists()
+    analysis = (folder / "analysis.json").read_bytes()
+    world.culprit = None
+    world.run(*argv)
+    assert (folder / "analysis.json").read_bytes() == analysis
+    named = json.loads((folder / "validation-harm.json").read_text())["analysis"]
+    assert named["sha256"] == hashlib.sha256(analysis).hexdigest()
 
 
 def test_analyze_writes_the_analysis_then_validations_harm(world) -> None:
